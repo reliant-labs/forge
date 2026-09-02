@@ -510,41 +510,38 @@ type FrontendConfig struct {
 	// typo'd or renamed entity would otherwise silently yield a frontend
 	// missing the page its author asked for.
 	Routes []string `yaml:"routes,omitempty"`
-	// AuthMode picks how this frontend signs users IN. It does not change
-	// what authentication means anywhere else: the backend validates the
-	// same JWT either way, and forge still issues no tokens.
+	// AuthMode names the sign-in FLOW this frontend uses. It does not
+	// change what authentication means anywhere else: the backend
+	// validates the same JWT either way, and forge still issues no tokens.
 	//
-	// "redirect" is the only value, and the default. `login()` sends the
-	// browser to the IdP's own hosted pages, which is portable across
-	// every IdP — and MFA, social sign-in and password reset come for
-	// free because the provider's pages implement them.
+	// "native" is the only value, and the default. The scaffolded frontend
+	// POSTs credentials to this app's own API and receives an HttpOnly
+	// session cookie; the server runs the whole OIDC flow against the
+	// issuer (internal/app/login_broker.go, over forge/pkg/devidp). The
+	// browser never contacts the identity provider, so there is no
+	// redirect, no PKCE in the bundle, and no token in JavaScript.
 	//
-	// The field is kept (rather than removed) because a first-party
-	// sign-in FORM is a legitimate thing to want, and a project that
-	// builds one against its own IdP's API has somewhere to declare it.
-	// forge does not scaffold one: driving a hosted sign-in from your own
-	// form is provider-proprietary in every case — there is no standard
-	// the way OIDC discovery generalizes the redirect flow — so a
-	// scaffolded implementation is only ever right for one vendor.
+	// The field is kept (rather than removed) because the flow is a real
+	// axis of variation — a project that replaces the broker with a
+	// different sign-in shape has somewhere to declare it.
 	//
-	// See the `auth/frontend` skill for what a first-party form has to
-	// respect (in particular: the password goes to the IdP, never to your
-	// forge backend, which mints no tokens and has no endpoint for one).
+	// See the `auth/frontend` skill for what the native flow guarantees,
+	// in particular why the credential check happens server-side.
 	AuthMode string `yaml:"auth_mode,omitempty"`
 }
 
 // Auth-mode values for FrontendConfig.AuthMode.
 const (
-	// AuthModeRedirect hands sign-in to the IdP's hosted pages.
-	AuthModeRedirect = "redirect"
+	// AuthModeNative signs users in through this app's own API, with the
+	// server running the OIDC flow on the browser's behalf.
+	AuthModeNative = "native"
 )
 
 // EffectiveAuthMode returns the frontend's sign-in mode, defaulting to the
-// portable redirect flow. Empty means unset, not "no auth" — every mode
-// authenticates; they differ only in where the user types their password.
+// native flow. Empty means unset, not "no auth" — every mode authenticates.
 func (f FrontendConfig) EffectiveAuthMode() string {
 	if f.AuthMode == "" {
-		return AuthModeRedirect
+		return AuthModeNative
 	}
 	return f.AuthMode
 }

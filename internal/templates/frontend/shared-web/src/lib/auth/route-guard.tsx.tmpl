@@ -11,24 +11,23 @@
 // the browser that has not been told what to do about it. This component is
 // that instruction.
 //
-// ── It is a NO-OP unless an IdP is actually configured ────────────────
+// ── It gates on what the SERVER says ─────────────────────────────────
 //
-// `isOidcConfigured()` is false when no issuer + client id reached the
-// browser's env, which is exactly the state of a project that has not set up
-// an identity provider — including every project that never wants one. In
-// that state the auth provider is the MOCK, which reports a signed-in fixture
-// user, and this component renders its children unconditionally. So adding
-// the guard cannot break a project that has no IdP: with no real identity to
-// enforce, there is nothing to enforce it against.
+// Auth state comes from this app's own API (GET /auth/session), not from
+// an identity provider the browser talks to. The session cookie is
+// HttpOnly, so the server is the only thing that can answer the question at
+// all — which is exactly the property that keeps the token away from
+// scripts.
 //
 // ── Why a component and not middleware ────────────────────────────────
 //
-// The session lives in the browser (an authorization-code + PKCE flow keeps
-// the token client-side, which is what lets the backend stay a pure
-// validator). Next.js middleware runs on the server, where that token is not
-// visible, so a middleware guard would have to be told about the session
-// through a cookie forge does not set. Guarding at the top of the tree keeps
-// the check where the truth is.
+// The session cookie IS visible to a server-side middleware, so a Next.js
+// middleware guard is now possible — it just cannot be shared. This file is
+// rendered byte-for-byte into both the Next.js and the Vite scaffolds, and
+// a Vite SPA has no server to run middleware on. One component that both
+// trees mount at the top of the tree beats two divergent implementations of
+// the same rule. Add middleware on top if you want the redirect to happen
+// before the bundle is even served; keep this as the backstop.
 //
 // ── Yours to change ───────────────────────────────────────────────────
 //
@@ -44,7 +43,6 @@
 import { useEffect, useState } from "react";
 
 import { useAuth } from "./context";
-import { isOidcConfigured } from "./oidc-provider";
 
 /** Where an anonymous visitor is sent. Matches the scaffolded sign-in route. */
 const SIGN_IN_PATH = "/auth/sign-in";
@@ -52,12 +50,15 @@ const SIGN_IN_PATH = "/auth/sign-in";
 /**
  * Paths that render without a session.
  *
- * The auth routes themselves MUST be here — sending an anonymous visitor from
- * the sign-in page to the sign-in page is a redirect loop, and the callback
- * route has to run its code exchange while still signed out, which is the
- * very thing that ends the signed-out state.
+ * The sign-in route MUST be here: sending an anonymous visitor from the
+ * sign-in page to the sign-in page is a redirect loop.
+ *
+ * There is no `/auth/callback` in this list because there is no callback in
+ * this architecture. The browser never receives an authorization code to
+ * trade — it posts credentials to this app's own API and the server does the
+ * exchange — so a callback path would be a public hole guarding nothing.
  */
-const publicPaths = [SIGN_IN_PATH, "/auth/callback"];
+const publicPaths = [SIGN_IN_PATH];
 
 function isPublicPath(pathname: string): boolean {
   return publicPaths.some(
@@ -85,10 +86,11 @@ export function RouteGuard({
 }) {
   const { isAuthenticated, isLoading } = useAuth();
 
-  // With no IdP configured there is no real session to require, and the mock
-  // provider reports one anyway — so the guard stands down entirely and a
-  // project with no identity provider renders exactly as it did before.
-  const enforcing = isOidcConfigured();
+  // Native sign-in is ALWAYS enforced. This used to ask whether an OIDC
+  // issuer had reached the browser — a question that no longer exists,
+  // because the browser has no issuer config: the server holds it and
+  // answers "who is signed in?" over this app's own API.
+  const enforcing = true;
   const blocked =
     enforcing && !isLoading && !isAuthenticated && !isPublicPath(pathname);
 
@@ -105,33 +107,78 @@ export function RouteGuard({
 
   // ── Why the render output cannot depend on any of the above ──────────
   //
-  // `enforcing`, `isLoading` and `isAuthenticated` are all browser-only
-  // facts: the session lives in memory here, and the OIDC settings come from
-  // a runtime document the server process never reads. Returning null on the
+  // `isLoading` and `isAuthenticated` are browser-only facts here: the
+  // answer arrives from GET /auth/session after mount, so during a server
+  // render this component has not asked yet. Returning null on the
   // client where the server returned children is a hydration mismatch, and
   // React does not repair one by re-rendering — it abandons the
   // server-streamed markup and mounts a SECOND copy beside it. That is two
   // full app shells stacked down the page, two theme toggles, and a nav
   // whose Collapse button is wired to a tree nothing listens to.
   //
-  // So the first client render reproduces the server's output exactly
-  // (children, always), and the gate is applied one commit later, from an
-  // effect. The cost is a frame of protected markup for a signed-out
-  // visitor; it renders nothing sensitive on its own, and its queries fail
-  // closed at the API.
+  // So the first client render must reproduce the server's output exactly.
+  // What it renders is a PLACEHOLDER, not the app: the server emits the same
+  // placeholder for every visitor (it cannot know who they are), the client's
+  // first render emits it too, and the two agree — no mismatch — while the
+  // protected tree stays hidden until the session is known.
+  //
+  // This used to render `children` on that first pass, which showed a frame
+  // of the DASHBOARD to a signed-out visitor before the effect below bounced
+  // them to sign-in. It hydrated correctly and leaked nothing (the markup is
+  // inert and its queries 401), but it read as a glitch — the app flashing
+  // something you are not allowed to see — and "briefly showing the logged-in
+  // UI to a logged-out person" is the wrong default however harmless the
+  // bytes are.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
 
-  if (!hydrated) return <>{children}</>;
+  // A PUBLIC path is never gated, so it must render immediately — before
+  // hydration, and without waiting on a session it does not need.
+  //
+  // This check has to come FIRST. Showing the pending spinner on the
+  // sign-in route delays the one screen whose job is to END the signed-out
+  // state, and hides the form behind a spinner that never resolves —
+  // nothing on that route establishes the session the spinner waits for,
+  // because the form is what establishes it.
+  //
+  // It is safe to skip the hydration dance here for the same reason the
+  // route is public: the output does not depend on identity, so the server
+  // and the client render the same thing either way.
+  if (isPublicPath(pathname)) return <>{children}</>;
 
-  // While the provider is restoring a session, render nothing rather than the
-  // signed-out view: showing the sign-in screen to a user who IS signed in,
-  // for the one frame it takes to find out, is a worse flicker than a blank.
-  if (enforcing && isLoading) return null;
+  if (!hydrated) return <AuthPending />;
+
+  // While the provider is restoring a session, show the pending state rather
+  // than the signed-out view: showing the sign-in screen to a user who IS
+  // signed in, for the one frame it takes to find out, is a worse flicker.
+  if (enforcing && isLoading) return <AuthPending />;
 
   // Already redirecting — do not render the protected tree, or its queries
   // fire the 401s this component exists to prevent.
-  if (blocked) return null;
+  if (blocked) return <AuthPending />;
 
   return <>{children}</>;
+}
+
+/**
+ * What renders while the guard is deciding.
+ *
+ * Deliberately a quiet spinner and not a skeleton of the app: a skeleton
+ * promises the shape of a page the visitor may not be entitled to see, and a
+ * signed-out visitor is about to be sent elsewhere. It is also what the
+ * SERVER renders for every visitor, so it must not depend on identity.
+ *
+ * `role="status"` with a label so a screen reader announces the wait instead
+ * of reading an empty document.
+ */
+function AuthPending() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-surface-muted">
+      <div
+        className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-accent"
+        role="status"
+        aria-label="Checking your session"
+      />
+    </div>
+  );
 }

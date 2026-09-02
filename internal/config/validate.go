@@ -986,18 +986,17 @@ func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 				})
 			}
 		}
-		// frontends[].auth_mode picks where the user types their password.
-		// "redirect" is the only mode forge scaffolds: driving a hosted
-		// sign-in from a first-party form is provider-proprietary, so
-		// there is nothing generic to generate. A rejected value here is
-		// better than a silently-ignored one.
-		if am := strings.ToLower(strings.TrimSpace(fe.AuthMode)); am != "" && am != AuthModeRedirect {
+		// frontends[].auth_mode names the sign-in flow. "native" is the
+		// only mode forge scaffolds: the app's own form posts to the app's
+		// own API, and the server runs the OIDC flow. A rejected value
+		// here is better than a silently-ignored one.
+		if am := strings.ToLower(strings.TrimSpace(fe.AuthMode)); am != "" && am != AuthModeNative {
 			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "auth_mode"})
 			out = append(out, validationIssue{
 				line:   line,
 				column: col,
 				msg:    fmt.Sprintf("%s.auth_mode value %q is invalid", prefix, fe.AuthMode),
-				fix:    "use redirect (the default, and the only mode forge scaffolds). A first-party sign-in form is yours to build against your IdP's own API — see `forge skill load auth/frontend`.",
+				fix:    "use native (the default, and the only mode forge scaffolds) — see `forge skill load auth/frontend`.",
 			})
 		}
 	}

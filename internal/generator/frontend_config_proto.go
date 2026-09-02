@@ -64,21 +64,31 @@ func FrontendConfigMessageName(frontend string) string {
 // the frontend's templates in the same pass — before `forge generate` has
 // ever run, so there is no descriptor to parse and no generated module to
 // inspect. Deriving the presence set from the template's own field list is
-// what lets a freshly scaffolded oidc-provider.ts import the typed module
+// what lets a freshly scaffolded session-provider.ts import the typed module
 // it is about to be given.
 //
 // It must stay in agreement with frontend_config.proto.tmpl;
 // TestFrontendConfigTemplateMatchesDeclaredEnvVars is the gate.
+//
+// NO OIDC FIELDS, AND THAT IS THE POINT. Sign-in is NATIVE: the browser
+// POSTs credentials to this app's own API and gets an HttpOnly session
+// cookie back, while the server runs the entire OIDC flow. The browser
+// never contacts the identity provider, so an issuer URL, client id,
+// redirect URI, scope list and resource indicator are all BACKEND config
+// (config.proto.tmpl) and none of them belongs in a document delivered to
+// a browser.
+//
+// Shipping them anyway would not merely be redundant. These values ARE the
+// browser-side flow: any code handed an issuer and a client id can mount a
+// PKCE authorization-code exchange in JavaScript and end up holding a token
+// that script can read — which is precisely the architecture the native
+// flow removed. Tags 5-9 are `reserved` in the template so an upgraded
+// project cannot re-bind an old NEXT_PUBLIC_OIDC_* value to a new meaning.
 var frontendConfigEnvVars = []string{
 	"API_URL",
 	"MOCK_API",
 	"APP_VERSION",
 	"OTEL_ENDPOINT",
-	"OIDC_ISSUER",
-	"OIDC_CLIENT_ID",
-	"OIDC_REDIRECT_URI",
-	"OIDC_SCOPES",
-	"OIDC_RESOURCE",
 }
 
 // frontendConfigDescriptions carries each scaffolded field's `description`
@@ -96,11 +106,6 @@ var frontendConfigDescriptions = map[string]string{
 	"MOCK_API":          "Mock-transport mode: `true` answers every RPC locally from fixtures (and selects the mock auth provider, so no IdP is needed), `hybrid` overlays ?scenario= fixtures over a real backend. Empty means the real backend, which is the deployed value.",
 	"APP_VERSION":       "Build identifier surfaced in the UI and as a telemetry attribute. Empty renders as a development placeholder.",
 	"OTEL_ENDPOINT":     "OTLP/HTTP collector endpoint for BROWSER traces. Empty disables browser telemetry entirely, which is the correct default for local development — there is nothing to export to.",
-	"OIDC_ISSUER":       "OIDC issuer URL this frontend signs in against. MUST be the BROWSER-facing origin: issuers are compared literally, so an in-cluster service name will not do. Empty selects the no-auth posture rather than a broken one. Must agree with the backend's jwt_issuer.",
-	"OIDC_CLIENT_ID":    "The client (application) ID of this browser client, as registered with the issuer. NOT a secret and deliberately not `sensitive`: it ships inside the JS bundle and travels in the query string of every authorization request. It is an IDENTIFIER, not a credential — knowing it does not yield a token, because PKCE requires the code verifier and the issuer requires a registered redirect URI.",
-	"OIDC_REDIRECT_URI": "Where the issuer sends the user agent back with the authorization code. It must match a URI registered with the issuer EXACTLY — the comparison is literal, so a trailing slash or an unexpected port is a rejected login AFTER the user has already typed a password. Empty falls back to <origin>/auth/callback, which is what a DEV frontend wants: it names whatever port this run was assigned, and the idp-provision job registers the matching glob (http://localhost:*/auth/callback) with the dev IdP, whose app runs in dev mode. Pin a literal for a deployed environment, where the origin is a fact about the deployment and the issuer will not glob.",
-	"OIDC_SCOPES":       "Space-separated scopes for the authorization request. `openid` is what makes it OIDC rather than bare OAuth 2.0. `offline_access` is what earns a refresh token — without it the access token dies at expiry and signs the user out mid-session. Empty defaults to `openid profile email offline_access` in oidc-provider.ts.",
-	"OIDC_RESOURCE":     "Optional RFC 8707 resource indicator, requested so the issuer mints an access token whose `aud` is THIS API rather than the client. Needed by issuers that would otherwise return an opaque token or one audienced at the client, which the backend then rejects after an apparently successful sign-in. Empty omits the parameter.",
 }
 
 // ScaffoldedFrontendTypedConfig is the presence set a frontend gets from
@@ -115,8 +120,8 @@ func ScaffoldedFrontendTypedConfig() FrontendTypedConfig {
 //
 // It exists because the two are needed at the SAME moment and only one of
 // them used to be produced. `forge scaffold frontend` renders templates that
-// import the typed module (src/lib/auth/oidc-provider.ts and
-// session-provider.ts both `import ... from "@/lib/config_gen"`), and it
+// import the typed module (src/lib/auth/session-provider.ts does so
+// unconditionally: `import ... from "@/lib/config_gen"`), and it
 // gates that on ScaffoldedFrontendTypedConfig — but it never wrote the
 // module those imports name, because writing it lived only in the generate
 // pipeline's "frontend typed config" step. The add verb deliberately does

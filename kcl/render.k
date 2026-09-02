@@ -517,6 +517,12 @@ _render_gateway_listener = lambda l: GatewayListener -> any {
         "port": l.port
         "protocol": l.protocol
         "path_prefix": l.path_prefix if l.path_prefix else None
+        # Per-listener hostname / TLS. Null means "inherit the gateway's"
+        # — consumers (dev urls, doctor, graph) apply the same fallback
+        # the renderer does rather than seeing a pre-resolved value, so
+        # the JSON stays a faithful projection of what was declared.
+        "hostname": l.hostname if l.hostname else None
+        "tls": _render_gateway_tls(l.tls) if l.tls else None
     }
 }
 

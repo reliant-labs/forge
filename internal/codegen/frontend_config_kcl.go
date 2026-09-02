@@ -155,8 +155,19 @@ func EnsureFrontendConfigInstances(configs []FrontendConfig, kclDirAbs, envName,
 	// appended now. That is what lets an existing project — whose config.k
 	// was written before the backend half was wired, and which therefore
 	// appends nothing on this pass — still be backfilled below.
-	readsIdentity := strings.Contains(appends.String(), idpIdentityLookup) ||
-		(devIdentity && strings.Contains(body, idpIdentityLookup))
+	// NATIVE SIGN-IN CHANGED WHAT GATES THIS. The published identity used
+	// to be read only by the FRONTEND instance, so "does anything read it"
+	// was answerable from the frontend's appends. It is now read by the
+	// BACKEND too — the server drives the whole OIDC flow, and the browser
+	// gets no OIDC config at all — so a dev env needs the binding even when
+	// the frontend contributes nothing.
+	//
+	// Without this a freshly scaffolded project got no jwt_issuer, no
+	// oidc_client_id and no broker wiring: the login routes never mounted
+	// and /auth/login answered 404, with nothing in the log to say why.
+	readsIdentity := devIdentity ||
+		strings.Contains(appends.String(), idpIdentityLookup) ||
+		strings.Contains(body, idpIdentityLookup)
 
 	// Bind the BACKEND's half of the same identity, INSIDE the existing
 	// app_config block. The frontend instance tells the browser where to sign
@@ -196,7 +207,17 @@ func EnsureFrontendConfigInstances(configs []FrontendConfig, kclDirAbs, envName,
 	}
 	out.WriteString(appends.String())
 
-	if err := os.WriteFile(path, []byte(out.String()), 0o644); err != nil {
+	// The plugin import, checked against the FINAL content — the
+	// resolve_port call lives in the appended instance, not in the body
+	// that was read from disk, so testing `body` alone always missed it and
+	// emitted a file that referenced an unimported module.
+	final := out.String()
+	if strings.Contains(final, "plugin.resolve_port") && !strings.Contains(final, kclPluginImport) {
+		final = kclPluginImport + "\n" + final
+	}
+
+	if err := os.WriteFile(path, []byte(final), 0o644); err != nil {
+
 		return nil, fmt.Errorf("write %s: %w", path, err)
 	}
 	return added, nil
@@ -297,6 +318,39 @@ func insertBackendDevIdentity(body string, readsIdentity bool, backend []ConfigF
 		fmt.Fprintf(&ins, "    %s = idp.idp_identity[%q]\n", aud, "audience")
 	}
 
+	// ── NATIVE SIGN-IN: the server-side half ─────────────────────────
+	//
+	// Sign-in runs entirely on the server (internal/app/login_broker.go):
+	// the browser POSTs credentials to this app's own API and NEVER
+	// contacts the identity provider. That makes the OAuth client id and
+	// the redirect URI BACKEND values — they used to be public browser
+	// config, and leaving them only on the frontend would mean the server
+	// could not drive the flow at all.
+	//
+	// Written here, next to the issuer the same job publishes, so the
+	// three cannot drift: a client id from one instance and an issuer from
+	// another fails at the token exchange with an error that names
+	// neither.
+	if clientID := names[configOIDCClientIDEnvVar]; clientID != "" {
+		ins.WriteString("\n")
+		ins.WriteString("    # The OAuth client the SERVER drives the sign-in flow with. Native\n")
+		ins.WriteString("    # sign-in means the browser never sees this — it is not public config.\n")
+		fmt.Fprintf(&ins, "    %s = idp.idp_identity[%q]\n", clientID, "client_id")
+	}
+	if base := names[configIdPBaseEnvVar]; base != "" {
+		ins.WriteString("    # Where the SERVER dials the issuer. Same origin the browser would\n")
+		ins.WriteString("    # have used, because in the dev loop both are on this machine — but\n")
+		ins.WriteString("    # nothing in the browser reads it.\n")
+		fmt.Fprintf(&ins, "    %s = idp.idp_identity[%q]\n", base, "issuer")
+	}
+	if creds := names[configCORSAllowCredentialsEnvVar]; creds != "" {
+		ins.WriteString("    # The session cookie only survives a cross-origin request when the\n")
+		ins.WriteString("    # browser is told credentials are allowed. In dev the API and the\n")
+		ins.WriteString("    # frontend are on different ports, so without this the cookie set by\n")
+		ins.WriteString("    # /auth/login is silently discarded and sign-in appears to do nothing.\n")
+		fmt.Fprintf(&ins, "    %s = True\n", creds)
+	}
+
 	return body[:open] + ins.String() + body[open:]
 }
 
@@ -372,6 +426,26 @@ func renderFrontendConfigInstance(fc FrontendConfig, schemaName, envName, projec
 			// are one fact: an issuer, a callback into it, and the id it
 			// issued for that pair.
 			continue
+		case f.EnvVar == configAPIURLEnvVar && envName == configDevEnvName:
+			// THE API's OWN ORIGIN, pinned for dev.
+			//
+			// The proto default is :8080, which in a project with a dev IdP
+			// is the ISSUER's port, not the API's — so a frontend that took
+			// the default sent every call, including its own auth requests,
+			// to the identity provider. That surfaced as "those credentials
+			// were not accepted" from a server that had never seen them.
+			//
+			// _api_port is declared in main.k and is the same value the
+			// service binds, so the two cannot drift.
+			// resolve_port with the SAME key main.k uses, so both files get
+			// the identical number: the plugin is deterministic per key and
+			// caches its answer in .forge/ports-dev.json. config.k cannot
+			// reference main.k's _api_port variable — different module — so
+			// the shared key is what ties them together.
+			// A plain concatenation, not a "${...}" interpolation: KCL
+			// cannot parse a quoted string inside an interpolation, so the
+			// nested resolve_port call has to sit outside the literal.
+			fmt.Fprintf(&b, "    %s = \"http://localhost:\" + str(plugin.resolve_port(%q, 8085))\n", f.Name, projectName+"-dev-api")
 		case f.Role == configModeRole && envName == configDevEnvName:
 			// The mode/environment knob is the one value a dev env must
 			// not inherit from a proto default authored for production —
@@ -410,6 +484,12 @@ const IDPIdentityModule = "idp_identity_gen"
 // module tree still renders — the same rule resolve_port's plugin import
 // followed.
 const idpIdentityImport = "import ." + IDPIdentityModule + " as idp"
+
+// kclPluginImport makes forge's port primitives available in config.k.
+// Needed because the dev api_url is composed from resolve_port with the
+// same key main.k uses — config.k is a separate module and cannot read
+// main.k's variables, so the shared KEY is what makes both files agree.
+const kclPluginImport = "import kcl_plugin.forge as plugin"
 
 // idpIdentityLookup is the marker that decides whether the import above is
 // needed. One spelling, so the two cannot drift into a file that reads the

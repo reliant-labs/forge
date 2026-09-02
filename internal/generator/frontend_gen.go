@@ -110,17 +110,19 @@ type FrontendGenOptions struct {
 //
 // It carries per-FIELD presence rather than a bare "has config" flag
 // because the generated TypeScript module's type has exactly the keys the
-// proto declared. A template that reads cfg.OIDC_SCOPES when the proto
-// never declared oidc_scopes produces a frontend that does not type-check —
-// so each read is gated on the field that backs it.
+// proto declared. A template that reads cfg.MOCK_API when the proto never
+// declared mock_api produces a frontend that does not type-check — so each
+// read is gated on the field that backs it.
+//
+// There are no OIDC gates here because a browser frontend carries no OIDC
+// config at all: sign-in is NATIVE, so the issuer, client id, redirect URI,
+// scopes and resource indicator are backend configuration and never reach
+// the bundle. See frontendConfigEnvVars in frontend_config_proto.go.
 type FrontendTypedConfig struct {
 	// Bound reports that a config message names this frontend.
 	Bound bool
 
-	HasRedirectURI bool
-	HasScopes      bool
-	HasResource    bool
-	HasMockAPI     bool
+	HasMockAPI bool
 }
 
 // FrontendTypedConfigFrom builds the per-field presence set from the leaf
@@ -131,12 +133,6 @@ func FrontendTypedConfigFrom(envVars []string) FrontendTypedConfig {
 	out := FrontendTypedConfig{Bound: true}
 	for _, v := range envVars {
 		switch v {
-		case "OIDC_REDIRECT_URI":
-			out.HasRedirectURI = true
-		case "OIDC_SCOPES":
-			out.HasScopes = true
-		case "OIDC_RESOURCE":
-			out.HasResource = true
 		case "MOCK_API":
 			out.HasMockAPI = true
 		}
@@ -207,9 +203,6 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// bound to THIS frontend. Gated per-field because a template cannot
 		// read a key the generated module's type does not have.
 		HasTypedConfig: opts.TypedConfig.Bound,
-		HasRedirectURI: opts.TypedConfig.HasRedirectURI,
-		HasScopes:      opts.TypedConfig.HasScopes,
-		HasResource:    opts.TypedConfig.HasResource,
 		HasMockAPI:     opts.TypedConfig.HasMockAPI,
 	}
 	if opts.Workspaces {

@@ -9,30 +9,22 @@ import "./index.css";
 import { router } from "./routes";
 import { queryClient } from "@/lib/query-client";
 import { EventBusProvider } from "@/lib/event-context";
-import { AuthContextProvider, useAuth } from "@/lib/auth/context";
-import { setAuthTokenGetter } from "@/lib/connect";
-import { useEffect } from "react";
+import { AuthContextProvider } from "@/lib/auth/context";
 
-/**
- * AuthTokenBridge wires the auth provider's token getter to the Connect
- * transport. Lives outside the router so token retrieval is available before
- * the first matched route renders.
- */
-function AuthTokenBridge() {
-  const { getToken } = useAuth();
-  useEffect(() => {
-    setAuthTokenGetter(getToken);
-  }, [getToken]);
-  return null;
-}
-
+// There is no auth-token bridge here, and that is the design rather than an
+// omission. Sign-in is native: the browser POSTs credentials to this app's
+// own API, the server runs the OIDC flow, and the session comes back as an
+// HttpOnly cookie. Nothing in this bundle can read that cookie — which is
+// the point, since a token no script can reach is a token an XSS cannot
+// steal — and nothing has to, because the browser attaches it to requests
+// automatically. A component that fetched a token to hand to the transport
+// would have nothing to fetch.
 function App() {
   const isDev = import.meta.env.DEV;
   return (
     <QueryClientProvider client={queryClient}>
       <EventBusProvider devMode={isDev}>
         <AuthContextProvider>
-          <AuthTokenBridge />
           <RouterProvider router={router} />
         </AuthContextProvider>
       </EventBusProvider>

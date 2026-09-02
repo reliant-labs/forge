@@ -159,7 +159,7 @@ Rules for real-time data:
 ## What the scaffold provides
 
 - **React Query hooks** (`src/hooks/*-hooks.ts`) — generated, handle server state
-- **Auth context** (`useAuth()`) — DI'd via `AuthProvider`, stable context
+- **Auth context** (`useAuth()`) — the server-held session, read as an identity
 - **Event bus** (`src/lib/events.ts`) — typed, extensible, for imperative actions
 - **UI store** (`src/stores/ui-store.ts`) — Zustand baseline, extend for your domain
 - **URL state** — App Router params and `useSearchParams` for navigation state
@@ -239,16 +239,17 @@ non-persisted client UI state).
 Auth is **owned scaffold, born with every frontend** — there is no
 `forge.yaml` key that turns it on and nothing to install.
 
-- The `AuthProvider` interface in `src/lib/auth/` is the integration point — the
-  scaffold ships a stub provider; implement it for your IdP (Auth0, Clerk,
-  Supabase Auth, etc.) and every consumer keeps reading `useAuth()` unchanged.
+- Sign-in is NATIVE: the browser POSTs credentials to this app's own API
+  (`src/lib/auth/native-login.ts`) and the server runs the OIDC flow, returning
+  an HttpOnly session cookie. `useAuth()` reads the resulting identity from
+  `GET /auth/session`.
 - The base `EventMap` already includes `auth:expired`, `auth:login`, `auth:logout`
-- Next.js frontends also ship `src/components/session_nav.tsx`, which reads
-  `useAuth()` — the same seam the Connect transport takes its bearer token
-  from. Never cache the token or the user a second time; a session store that
-  disagrees with `getToken()` authenticates the UI and not the requests.
+- Browser frontends also ship `src/components/session_nav.tsx`, which reads
+  `useAuth()`. Never mirror the identity into a second store: the cookie the
+  requests ride on is unreadable to script, so a divergent copy authenticates
+  the UI and not the requests.
 - Put auth *UI* state (modal open, last error) in its own
-  `src/stores/auth-store.ts` — never mirror the token or the user into it,
+  `src/stores/auth-store.ts` — never mirror the identity into it,
   `useAuth()` stays the source of truth:
   ```typescript
   import { create } from "zustand";

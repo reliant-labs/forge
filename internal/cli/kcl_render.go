@@ -224,11 +224,37 @@ type GatewayAddressEntity struct {
 
 // GatewayListenerEntity mirrors the kcl/schema.k GatewayListener.
 // Protocol is "HTTP" | "HTTPS" | "H2C".
+//
+// Hostname and TLS are the per-listener overrides that let ONE Gateway
+// serve several hostnames, each terminating its own certificate. Both
+// are empty/nil when the listener inherits the parent Gateway's `host`
+// / `tls`; the JSON carries what was DECLARED, not the resolved value,
+// so consumers apply the fallback themselves (see EffectiveHost).
 type GatewayListenerEntity struct {
-	Name       string `json:"name"`
-	Port       int    `json:"port"`
-	Protocol   string `json:"protocol"`
-	PathPrefix string `json:"path_prefix,omitempty"`
+	Name       string            `json:"name"`
+	Port       int               `json:"port"`
+	Protocol   string            `json:"protocol"`
+	PathPrefix string            `json:"path_prefix,omitempty"`
+	Hostname   string            `json:"hostname,omitempty"`
+	TLS        *GatewayTLSEntity `json:"tls,omitempty"`
+}
+
+// EffectiveHost resolves the hostname a route on this listener is
+// served on: the route's own override wins, then the listener's
+// hostname, then the gateway's default host. Mirrors _route_host in
+// kcl/lib/gateway.k — the two must agree, or `forge cluster urls` prints
+// a URL the cluster does not serve.
+//
+// Returns "" when nothing resolves; callers substitute their own
+// fallback (the dev URL builders use "localhost").
+func (g *GatewayEntity) EffectiveHost(listener *GatewayListenerEntity, routeHost string) string {
+	if routeHost != "" {
+		return routeHost
+	}
+	if listener != nil && listener.Hostname != "" {
+		return listener.Hostname
+	}
+	return g.Host
 }
 
 // GatewayTLSEntity is the TLS block on a Gateway. Mode selects the

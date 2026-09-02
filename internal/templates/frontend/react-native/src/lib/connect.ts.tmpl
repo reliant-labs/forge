@@ -13,7 +13,11 @@ import { DEV_API_URL } from "./apiurl_gen";
 const baseUrl =
   process.env.EXPO_PUBLIC_API_URL ?? DEV_API_URL;
 
-// Module-level token getter, wired up by AuthTokenBridge in _layout.tsx.
+// Module-level token getter. Nothing wires it by default: this tree ships
+// the mock session provider, whose fixture token no server accepts, so the
+// scaffold sends NO Authorization header rather than one that is guaranteed
+// to be rejected. Call this from app/_layout.tsx once you have implemented
+// AuthProvider (src/lib/auth/provider) over a real identity source.
 let _getToken: () => Promise<string | null> = async () => null;
 
 export function setAuthTokenGetter(fn: () => Promise<string | null>) {
@@ -25,7 +29,8 @@ export function setAuthTokenGetter(fn: () => Promise<string | null>) {
 // trace — always on, no collector required) and typed error normalization.
 // It is the SAME stack the Next.js and Vite SPA frontends build, so a mobile
 // request is as traceable as a browser one. The token getter resolves the
-// CURRENT token on every call — the bridge above swaps it after login.
+// CURRENT token on every call, so wiring it after login is enough — there is
+// no captured value to go stale.
 //
 // The import is the runtime's DOM-free entry point, not its "." barrel: the
 // barrel also carries React components typed against React 19, which Expo's

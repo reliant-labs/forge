@@ -29,7 +29,7 @@ This is a Forge-generated Go + Next.js application with:
 
 - **Server state**: Generated React Query hooks (`src/hooks/*-hooks.ts`) — do not copy into Zustand
 - **Client UI state**: Zustand stores in `src/stores/` — subscribe to slices, not whole stores
-- **Auth**: DI'd via `AuthProvider` interface — swap providers without changing components
+- **Auth**: native sign-in — credentials go to this app's own API, the session is an HttpOnly cookie, and `useAuth()` exposes an identity for rendering (never a token)
 - **Events**: Typed event bus (`src/lib/events.ts`) for imperative actions (toasts, navigation) — events are moments, not truth
 - **Forms**: react-hook-form + Zod schemas — do not hand-roll with useState
 - **URL state**: App Router params for anything that should survive refresh/bookmarking

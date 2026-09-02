@@ -77,15 +77,33 @@ func TestScaffold_FrontendConfigDeclaresTheFieldsItsTemplatesRead(t *testing.T) 
 		"MOCK_API",
 		"OTEL_ENDPOINT",
 		"APP_VERSION",
-		"OIDC_ISSUER",
-		"OIDC_CLIENT_ID",
-		"OIDC_REDIRECT_URI",
-		"OIDC_SCOPES",
 	}
 	for _, env := range want {
 		if !strings.Contains(proto, `env_var: "`+env+`"`) {
 			t.Errorf("%s declares no field with env_var %q — the scaffolded frontend reads it, "+
 				"so the generated config module will not carry it", path, env)
+		}
+	}
+
+	// The other half of the same statement: no OIDC value may reach a
+	// browser. Sign-in is NATIVE — credentials go to this app's own API and
+	// the server runs the whole OIDC flow — so the issuer, client id,
+	// redirect URI, scopes and resource indicator are BACKEND config. They
+	// are asserted absent rather than merely left out of `want` because a
+	// value delivered to the bundle is a value some later code can use to
+	// talk to the issuer directly, which is the browser-side flow this
+	// design replaced.
+	for _, env := range []string{
+		"OIDC_ISSUER",
+		"OIDC_CLIENT_ID",
+		"OIDC_REDIRECT_URI",
+		"OIDC_SCOPES",
+		"OIDC_RESOURCE",
+	} {
+		if strings.Contains(proto, `env_var: "`+env+`"`) {
+			t.Errorf("%s declares env_var %q — that value would be delivered to the browser in "+
+				"config.js, but native sign-in means the browser never contacts the issuer; "+
+				"OIDC settings belong on the backend's config message", path, env)
 		}
 	}
 }
@@ -114,22 +132,64 @@ func TestScaffold_FrontendConfigOmitsBasePath(t *testing.T) {
 // half. Declaring the config is pointless if the scaffolded frontend still
 // reads process.env: the annotation would generate artifacts nothing loads.
 //
-// oidc-provider.ts is the file that matters most — auth is the one flow
-// where a build-time-inlined value produces the confusing failure (sign-in
-// succeeds against one issuer, every RPC 401s against another).
+// session-provider.ts is the file that carries the read: it selects mock
+// vs. real-backend mode from MOCK_API, and a build-time-inlined value there
+// splits that decision across two sources — the app in mock mode while this
+// file believes it is driving a real backend, so scaffolded UI renders
+// signed out.
+//
+// The auth modules named here are the ones the NATIVE flow ships.
+// oidc-provider.ts is deliberately not among them: browser-side OIDC was
+// deleted, and internal/templates/frontend_auth_flow_test.go asserts it
+// stays deleted.
 func TestScaffold_FrontendReadsTypedModuleNotProcessEnv(t *testing.T) {
 	root := scaffoldWithFrontend(t, "typedapp", "web")
 
-	rel := filepath.Join("frontends", "web", "src", "lib", "auth", "oidc-provider.ts")
+	rel := filepath.Join("frontends", "web", "src", "lib", "auth", "session-provider.ts")
 	body := readFile(t, filepath.Join(root, rel))
 
 	if !strings.Contains(body, `from "@/lib/config_gen"`) {
 		t.Errorf("%s does not import the generated typed config module — it was scaffolded in its "+
 			"build-time env-var form, so the config system's values never reach auth", rel)
 	}
-	if n := strings.Count(body, "process.env.NEXT_PUBLIC_OIDC"); n > 0 {
-		t.Errorf("%s still reads process.env.NEXT_PUBLIC_OIDC* in %d place(s) — those are inlined "+
+	if n := strings.Count(body, "process.env.NEXT_PUBLIC_MOCK_API"); n > 0 {
+		t.Errorf("%s still reads process.env.NEXT_PUBLIC_MOCK_API in %d place(s) — that is inlined "+
 			"at build time, so the bundle cannot be promoted between environments", rel, n)
+	}
+
+	// The two modules the native flow actually ships must exist, or the
+	// assertion above could pass against a tree that has no sign-in at all.
+	for _, name := range []string{"native-login.ts", "context.tsx"} {
+		p := filepath.Join("frontends", "web", "src", "lib", "auth", name)
+		if _, err := os.Stat(filepath.Join(root, p)); err != nil {
+			t.Errorf("%s was not scaffolded (%v) — the native sign-in flow POSTs credentials to "+
+				"this app's own API through it, so a tree without it cannot sign anyone in", p, err)
+		}
+	}
+
+	// No OIDC values reach the browser at all. Grepping the whole auth
+	// directory rather than one file is what makes this a statement about
+	// the SHIPPED tree instead of about a file someone remembered to check.
+	authDir := filepath.Join(root, "frontends", "web", "src", "lib", "auth")
+	entries, err := os.ReadDir(authDir)
+	if err != nil {
+		t.Fatalf("read scaffolded auth dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("%s is empty — the scan below would report green having read nothing", authDir)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		src := readFile(t, filepath.Join(authDir, e.Name()))
+		for _, key := range []string{"OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_REDIRECT_URI", "OIDC_SCOPES", "OIDC_RESOURCE"} {
+			if strings.Contains(src, key) {
+				t.Errorf("src/lib/auth/%s references %s — the browser is not supposed to know the "+
+					"issuer exists; handing it one is how a script-readable token comes back",
+					e.Name(), key)
+			}
+		}
 	}
 }
 

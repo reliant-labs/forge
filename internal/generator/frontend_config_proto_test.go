@@ -73,17 +73,8 @@ func TestScaffoldedFrontendTypedConfigEnablesTheTypedBranch(t *testing.T) {
 		t.Fatal("ScaffoldedFrontendTypedConfig() is not Bound — every frontend template would render " +
 			"its process.env form even though the scaffold declares a config message")
 	}
-	// Each of these gates one read site in oidc-provider.ts. A false here
+	// This gates the one read site in session-provider.ts. A false here
 	// silently degrades that read to `undefined` rather than failing.
-	if !tc.HasRedirectURI {
-		t.Error("HasRedirectURI is false — oidc-provider.ts would return undefined for the redirect URI")
-	}
-	if !tc.HasScopes {
-		t.Error("HasScopes is false — oidc-provider.ts would drop offline_access and end sessions at token expiry")
-	}
-	if !tc.HasResource {
-		t.Error("HasResource is false — oidc-provider.ts could not request an API-audienced token")
-	}
 	if !tc.HasMockAPI {
 		t.Error("HasMockAPI is false — the mock auth provider could not be selected from config")
 	}

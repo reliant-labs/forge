@@ -271,6 +271,21 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// Connect path(s), recorded for the completeness gate.
 	mounted := spec.Mount(components, srv.Mux, cfg, logger, opts...)
 	srv.RecordMounted(mounted)
+
+	// NATIVE SIGN-IN. Mounts /auth/login, /auth/register, /auth/session and
+	// /auth/logout — the app's own auth API, which runs the whole OIDC flow
+	// server-side so the browser never contacts the identity provider.
+	//
+	// Gated on configuration rather than a build flag: an app that has no
+	// IdP wired (or that authenticates at the edge) mounts nothing and
+	// carries no privileged credential. See internal/app/login_broker.go,
+	// which is yours to edit or delete.
+	if err := app.LoginBrokerConfigured(cfg); err == nil {
+		app.RegisterLoginBroker(srv.Mux, cfg, logger)
+		logger.Info("native sign-in enabled", "routes", "/auth/login /auth/register /auth/session /auth/logout")
+	} else {
+		logger.Debug("native sign-in not configured", "reason", err)
+	}
 {{- if .RESTEnabled}}
 
 	// REST swap (forge.yaml api.rest): serve a vanguard transcoder over the

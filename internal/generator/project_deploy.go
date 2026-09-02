@@ -129,11 +129,17 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		IngressEnabled  bool
 		HasFrontend     bool
 		PrimaryWorkload string
+		// FrontendName lets the dev env declare the frontend's dev server,
+		// so its port is allocated in KCL alongside every other port this
+		// environment owns. Empty when the project has no frontend, which
+		// is exactly when the template's HasFrontend branch is skipped.
+		FrontendName string
 	}{
 		ProjectName:     g.Name,
 		IngressEnabled:  ingressOn,
 		HasFrontend:     g.forScaffold().HasFrontend,
 		PrimaryWorkload: primaryWorkload,
+		FrontendName:    g.FrontendName,
 	}
 
 	for _, f := range envTemplates {

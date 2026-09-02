@@ -97,11 +97,160 @@ func Worktree(projectDir string) string {
 	if sameDir(gitDir, commonDir) {
 		return "" // primary checkout — DEFAULT, regardless of branch
 	}
-	// Linked worktree. Use the worktree's working-tree basename as the name.
-	if root := gitOut(projectDir, "rev-parse", "--show-toplevel"); root != "" {
-		return Sanitize(filepath.Base(root))
+	// Linked worktree. The working-tree basename is the name, EXCEPT when it
+	// is not unique among this repo's worktrees — see disambiguate.
+	root := gitOut(projectDir, "rev-parse", "--show-toplevel")
+	if root == "" {
+		return ""
 	}
-	return ""
+	return disambiguate(projectDir, root, gitDir)
+}
+
+// disambiguate returns the worktree's key: normally the working-tree
+// basename, but qualified when that basename is shared with another live
+// worktree of the same repo.
+//
+// A bare basename is NOT unique in the nested-repo layout, where every
+// worktree is created as <container>/<repo> and the container carries the
+// distinguishing name:
+//
+//	~/worktrees/add-billing/control-plane   -> basename "control-plane"
+//	~/worktrees/fix-oauth/control-plane     -> basename "control-plane"
+//
+// Both resolve to the same key, and the key is the stack's whole identity —
+// it selects the port block AND composes the namespace suffix, the DB names
+// and the NATS credentials. So two such worktrees do not merely share a port
+// block: the second stack renders the first one's namespace and DATABASE
+// NAMES, and the two dev stacks quietly become one. That is data loss, not a
+// port conflict, and nothing downstream can detect it because by then the two
+// stacks are indistinguishable by construction.
+//
+// The unique-basename case — a plain `git worktree add ../wt-feature`, which
+// is what most projects do — is returned UNCHANGED. That matters beyond
+// tidiness: the key is memoized in the block registry and multiplied into a
+// cluster's pre-mapped host ports and an IdP's baked-in `iss` claim, so
+// re-deriving an existing worktree's key to a new string would move a running
+// stack's ports. Only a key that is already broken by collision changes.
+//
+// If the worktree roster cannot be enumerated, the basename is returned as
+// before: a failed enumeration is no reason to invent a different key for a
+// worktree that may well be fine.
+func disambiguate(projectDir, root, gitDir string) string {
+	base := Sanitize(filepath.Base(root))
+	roots, err := liveWorktreeRoots(projectDir)
+	if err != nil {
+		return base
+	}
+	shared := 0
+	for _, other := range roots {
+		if Sanitize(filepath.Base(other)) == base {
+			shared++
+		}
+	}
+	if shared <= 1 {
+		return base // unique — today's key, unchanged
+	}
+	// Qualify with the container directory, which is where the meaningful
+	// name lives in this layout ("add-billing", "fix-oauth"). Accept it only
+	// if it actually separates the colliding set.
+	parent := Sanitize(filepath.Base(filepath.Dir(root)))
+	if parent != "" && parent != base {
+		unique := true
+		for _, other := range roots {
+			if other == root || Sanitize(filepath.Base(other)) != base {
+				continue
+			}
+			if Sanitize(filepath.Base(filepath.Dir(other))) == parent {
+				unique = false
+				break
+			}
+		}
+		if unique {
+			return parent
+		}
+	}
+	// Last resort: git's own per-worktree admin directory name, which git
+	// guarantees unique (it appends an ordinal on collision). Ugly, but a
+	// correct key beats a colliding one.
+	if admin := Sanitize(filepath.Base(gitDir)); admin != "" {
+		return admin
+	}
+	return base
+}
+
+// liveWorktreeRoots returns the working-tree roots git reports for this repo,
+// including the primary checkout. Roots whose directory no longer exists are
+// excluded, matching liveWorktreeKeys — a worktree that is gone cannot
+// collide with anything.
+func liveWorktreeRoots(projectDir string) ([]string, error) {
+	out, err := gitWorktreeListPorcelain(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	var roots []string
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "worktree ") {
+			continue
+		}
+		root := strings.TrimPrefix(line, "worktree ")
+		if root == "" {
+			continue
+		}
+		if _, statErr := os.Stat(root); statErr != nil {
+			continue
+		}
+		roots = append(roots, root)
+	}
+	return roots, nil
+}
+
+// repoAnchor returns the directory the block registry and its lock live
+// under: the PRIMARY checkout's working tree, shared by every linked
+// worktree of the same repo. Outside a git repo it returns projectDir
+// unchanged, so a non-repo scaffold keeps a local registry exactly as before.
+//
+// WHY THE REGISTRY CANNOT BE PER-WORKTREE. A block is only meaningful as a
+// claim against a machine-wide resource: block N means "host ports base+N*100
+// on this machine", pre-mapped once in the cluster's port map. A per-directory
+// registry cannot express that claim, and it fails in both directions at once:
+//
+//   - Every fresh worktree starts with an EMPTY registry, so nextFreeBlock
+//     hands it block 1 — the block another worktree is already running on.
+//     Two stacks then render the identical host ports and the second one
+//     silently loses the bind, which is the exact collision allocate_port
+//     exists to prevent.
+//   - The ceiling counts entries in that empty registry, so it also refuses
+//     legitimate NEW blocks while reporting the machine is "full". That is
+//     how an 8-stack ceiling refused the FIRST worktree on this machine: the
+//     registry it counted had zero entries in it.
+//
+// Anchoring on the primary checkout makes the registry what the ceiling and
+// the pre-map already assume it is — one roster per repo, per machine.
+//
+// The anchor is git's own `--git-common-dir` (the primary's .git), whose
+// PARENT is the primary working tree. That is the same authoritative
+// distinction Worktree() uses, so the two can never disagree about which
+// checkout is primary.
+func repoAnchor(projectDir string) string {
+	commonDir := gitOut(projectDir, "rev-parse", "--git-common-dir")
+	if commonDir == "" {
+		return projectDir // not a git checkout — keep the registry local
+	}
+	if !filepath.IsAbs(commonDir) {
+		base := projectDir
+		if base == "" {
+			if wd, err := os.Getwd(); err == nil {
+				base = wd
+			}
+		}
+		commonDir = filepath.Join(base, commonDir)
+	}
+	// A bare repo has no working tree to anchor to; fall back to projectDir
+	// rather than writing beside the bare .git.
+	if filepath.Base(commonDir) != ".git" {
+		return projectDir
+	}
+	return filepath.Dir(commonDir)
 }
 
 // Branch returns the current git branch for projectDir, sanitized DNS-safe,

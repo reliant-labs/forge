@@ -19,8 +19,12 @@ const lockRel = ".forge/blocks.lock"
 // Blocking (LOCK_EX without LOCK_NB): a second worktree's `up` waits for
 // the first to finish its claim, then proceeds — exactly the serialization
 // the block assignment needs.
+// The lock lives beside the registry it guards, at the REPO ANCHOR (the
+// primary checkout) rather than under projectDir. A per-worktree lock file
+// serializes nothing: two worktrees claiming their first block would each
+// lock their OWN file and race the shared registry anyway. See repoAnchor.
 func withLock(projectDir string, fn func() error) error {
-	p := filepath.Join(projectDir, lockRel)
+	p := filepath.Join(repoAnchor(projectDir), lockRel)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return fmt.Errorf("create .forge dir: %w", err)
 	}

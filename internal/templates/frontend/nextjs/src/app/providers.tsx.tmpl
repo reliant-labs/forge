@@ -12,7 +12,6 @@ import { useCallback, useEffect, useMemo } from "react";
 import ToastNotification from "@/components/ui/toast_notification";
 import { AuthContextProvider, useAuth } from "@/lib/auth/context";
 import { RouteGuard } from "@/lib/auth/route-guard";
-import { setAuthTokenGetter } from "@/lib/connect";
 import { EventBusProvider, useEventBus } from "@/lib/event-context";
 import { initTelemetry } from "@/lib/otel_gen";
 import { queryClient } from "@/lib/query-client";
@@ -68,7 +67,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <EventBusProvider devMode={isDev}>
         <AuthContextProvider>
-          <AuthTokenBridge />
           <AppRouteGuard>
             <RuntimeLayer>{children}</RuntimeLayer>
           </AppRouteGuard>
@@ -116,6 +114,21 @@ function AppRouteGuard({ children }: { children: React.ReactNode }) {
  */
 function RuntimeLayer({ children }: { children: React.ReactNode }) {
   const auth = useAuth();
+  const { identity } = auth;
+
+  // The runtime wants a user object and a token getter. Identity comes from
+  // the server; the token is deliberately unreachable (HttpOnly) and nothing
+  // needs it — the session cookie is attached to requests automatically.
+  const runtimeAuth = useMemo(
+    () => ({
+      ...auth,
+      user: identity.authenticated
+        ? { id: identity.subject ?? "", email: identity.email, name: identity.name }
+        : null,
+      getToken: async () => null,
+    }),
+    [auth, identity],
+  );
   const bus = useEventBus();
 
   const subscribe = useCallback(
@@ -147,19 +160,9 @@ function RuntimeLayer({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <RuntimeShell auth={auth} toast={toast}>
+    <RuntimeShell auth={runtimeAuth} toast={toast}>
       {children}
     </RuntimeShell>
   );
 }
 
-/** Wires the auth provider's token getter to the Connect transport. */
-function AuthTokenBridge() {
-  const { getToken } = useAuth();
-
-  useEffect(() => {
-    setAuthTokenGetter(getToken);
-  }, [getToken]);
-
-  return null;
-}

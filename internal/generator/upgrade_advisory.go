@@ -232,16 +232,13 @@ func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 
 		// The typed-config presence set must match what the scaffold used,
 		// or this lane reports drift on a file forge itself just wrote:
-		// oidc-provider.ts renders one of two forms depending on whether
+		// session-provider.ts renders one of two forms depending on whether
 		// the frontend has a config message, and a zero value here would
 		// render the build-time env-var form against a scaffold that emitted
 		// the typed-module form — a diff on every fresh project, which is
 		// exactly the false positive this lane must never produce.
 		tc := frontendAdvisoryTypedConfig(cfg, fe.Name)
 		data.HasTypedConfig = tc.Bound
-		data.HasRedirectURI = tc.HasRedirectURI
-		data.HasScopes = tc.HasScopes
-		data.HasResource = tc.HasResource
 		data.HasMockAPI = tc.HasMockAPI
 		if workspaces {
 			data.APIPackage = layout.APIPackage

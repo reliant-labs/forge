@@ -179,7 +179,7 @@ Load `frontend/design` before building the real thing; it asks for a brief first
 
 Created by `forge scaffold frontend`, yours to modify:
 
-- **Auth provider** (`src/lib/auth/`) — DI'd via `AuthProvider`; implement the interface to add real auth. `useAuth()` gives user/token/login/logout.
+- **Auth** (`src/lib/auth/`) — native sign-in: the browser POSTs credentials to this app's own API and gets an HttpOnly session cookie; the server runs the OIDC flow. `useAuth()` gives `{ identity, isAuthenticated, isLoading, refresh, logout }` — an identity for rendering, and deliberately no token. See `auth/frontend`.
 - **Event bus** (`src/lib/events.ts` + `src/lib/event-context.tsx`) — typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend `EventMap`; use `useEvent(name, handler)`. Not a source of truth.
 - **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/`. **Subscribe to slices, not the whole store.** Server data stays in the React Query hooks, never copied into Zustand.
 - **`src/lib/format-utils.ts`** — presentation formatting. Import from `@/lib/format-utils`; do not re-derive these per feature (see below).

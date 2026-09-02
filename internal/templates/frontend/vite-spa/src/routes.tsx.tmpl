@@ -28,9 +28,11 @@ import {
   Outlet,
   useRouterState,
 } from "@tanstack/react-router";
+import { useState } from "react";
 
-import { AuthCallbackScreen, SignInScreen } from "@/lib/auth/auth-screens";
+import Button from "@/components/ui/button";
 import { useAuth } from "@/lib/auth/context";
+import { AuthError, signIn, signUp } from "@/lib/auth/native-login";
 import { RouteGuard } from "@/lib/auth/route-guard";
 
 import App from "./App";
@@ -42,20 +44,35 @@ import App from "./App";
 // the sign-in screen instead of getting a rendered page whose every RPC then
 // answers 401. The guard is framework-agnostic and shared byte-for-byte with
 // the Next.js scaffold (`@/lib/auth/route-guard`); this supplies the TanStack
-// Router bindings for "what path are we on" and "how do I navigate". It is a
-// no-op when no identity provider is configured — see that file, and edit it
-// (or delete this wrapper) to change which routes are public.
+// Router bindings for "what path are we on" and "how do I navigate". It asks
+// this app's own API who is signed in — never an identity provider — and it
+// is always enforcing. Edit that file (or delete this wrapper) to change
+// which routes are public.
+//
+// The /auth routes render OUTSIDE the shell, which is the same call the
+// Next.js scaffold makes in src/app/auth/layout.tsx. Framing a sign-in card
+// in the product's own chrome makes two false promises at once: that the
+// visitor is inside the app, and that the header's links lead somewhere they
+// can go. They are signed out. They cannot. Put branding for the sign-in
+// screen in the route's own markup rather than restoring <App /> here.
 export const rootRoute = createRootRoute({
   component: function RootShell() {
     const pathname = useRouterState({ select: (s) => s.location.pathname });
+    const chromeless = pathname.startsWith("/auth/");
     return (
       <RouteGuard
         pathname={pathname}
         navigate={(path) => void router.navigate({ to: path, replace: true })}
       >
-        <App>
-          <Outlet />
-        </App>
+        {chromeless ? (
+          <div className="min-h-screen bg-surface-muted text-ink">
+            <Outlet />
+          </div>
+        ) : (
+          <App>
+            <Outlet />
+          </App>
+        )}
       </RouteGuard>
     );
   },
@@ -84,53 +101,190 @@ const indexRoute = createRoute({
   },
 });
 
-// ── Auth routes ────────────────────────────────────────────────────────
+// ── The sign-in route ──────────────────────────────────────────────────
 //
-// The two screens the OIDC authorization-code flow needs. Both render
-// components from `@/lib/auth/auth-screens`, which the Next.js scaffold
-// shares byte-for-byte — only this navigation adapter differs.
+// ONE route, and no callback route beside it.
 //
-// Delete both routes if your product is gated at the edge and never shows a
-// sign-in page of its own. If you keep them, register
-// `<origin>/auth/callback` as an allowed redirect URI with your IdP.
+// Sign-in is NATIVE: the form below POSTs the credentials to this app's own
+// API, the server runs the whole OIDC flow against the identity provider
+// (internal/app/login_broker.go), and the answer comes back as an HttpOnly
+// session cookie. The browser never contacts the provider — no authorize
+// redirect, no discovery document, no token endpoint, no hidden iframe.
+//
+// That is why there is no `/auth/callback` route here. A callback route
+// exists to receive an authorization code the browser was handed and trade
+// it for a token; in this architecture the browser is never handed one, and
+// the exchange happens server-side before the response to this form is even
+// written. A callback route would be a dead URL that no provider redirects
+// to and no code path navigates to.
+//
+// Delete this route if your product is gated at the edge and never shows a
+// sign-in page of its own — and delete the broker's routes with it.
+//
+// This is STARTER CODE, deliberately plain: most products restyle sign-in
+// heavily, and an opinionated design here would be harder to replace than a
+// neutral one. It is the same form as the Next.js scaffold's
+// src/app/auth/sign-in/page.tsx; only the routing around it differs.
 const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/auth/sign-in",
   component: function SignIn() {
-    const { login, isAuthenticated } = useAuth();
+    const { refresh } = useAuth();
+
     // Where the visitor was headed before the route guard sent them here.
     // Read from the raw query string rather than a typed search schema: the
-    // guard is optional and this param may simply be absent.
+    // guard writes this param only when it redirects, so it is often absent
+    // and a schema would reject the bare /auth/sign-in navigation.
+    //
+    // Same-origin, absolute-path only: this is attacker-supplied input, and
+    // handing it to a navigation unchecked is an open redirect. `//evil.com`
+    // is a protocol-relative URL, so the second character matters as much as
+    // the first.
+    const requested = new URLSearchParams(window.location.search).get("returnTo");
     const returnTo =
-      new URLSearchParams(window.location.search).get("returnTo") || "/";
-    return (
-      <SignInScreen
-        login={login}
-        isAuthenticated={isAuthenticated}
-        returnTo={returnTo}
-        // `replace`: the sign-in page is a waypoint, so Back should not
-        // return a signed-in user to a page that bounces them forward.
-        navigate={(path) => void router.navigate({ to: path, replace: true })}
-      />
-    );
-  },
-});
+      requested !== null && requested.startsWith("/") && !requested.startsWith("//")
+        ? requested
+        : "/";
 
-const authCallbackRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/auth/callback",
-  component: function AuthCallback() {
+    const [mode, setMode] = useState<"signIn" | "signUp">("signIn");
+    const signingUp = mode === "signUp";
+
+    const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
+    const [totp, setTotp] = useState("");
+    const [needsTotp, setNeedsTotp] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [submitting, setSubmitting] = useState(false);
+
+    async function onSubmit(event: React.FormEvent) {
+      event.preventDefault();
+      setSubmitting(true);
+      setError(null);
+      try {
+        if (signingUp) {
+          await signUp({ email, password });
+        } else {
+          await signIn({ email, password, ...(totp ? { totp } : {}) });
+        }
+        // The cookie is set. Tell the app to re-read its auth state, then go
+        // where the visitor was headed. A full navigation rather than a
+        // router navigate: it guarantees every provider re-initialises with
+        // the session in place.
+        await refresh();
+        window.location.assign(returnTo);
+      } catch (err) {
+        const message =
+          err instanceof AuthError ? err.message : "Sign-in failed. Please try again.";
+        // The issuer reports a missing second factor as a rejection; showing
+        // the field on the retry turns a dead end into a completable form.
+        if (/(totp|factor|otp)/i.test(message)) setNeedsTotp(true);
+        setError(message);
+        setSubmitting(false);
+      }
+    }
+
     return (
-      <AuthCallbackScreen
-        // Read straight off the URL rather than through validateSearch: the
-        // provider's params (code/state, or error/error_description) are two
-        // mutually exclusive shapes, and the screen has to report a malformed
-        // callback as an error rather than have the router reject the
-        // navigation before it can.
-        search={window.location.search}
-        // `replace`, so Back never returns to a URL holding a spent code.
-        navigate={(path) => void router.navigate({ to: path, replace: true })}
-      />
+      <div className="flex min-h-full flex-col items-center justify-center py-12">
+        <div className="w-full max-w-sm">
+          <form
+            onSubmit={onSubmit}
+            className="rounded-xl border border-border bg-surface p-8 shadow-sm"
+          >
+            <h1 className="text-xl font-semibold tracking-tight text-ink">
+              {signingUp ? "Create your {{.ProjectName}} account" : "Sign in to {{.ProjectName}}"}
+            </h1>
+
+            <label className="mt-6 block text-sm font-medium text-ink" htmlFor="email">
+              Email
+            </label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="username"
+              required
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+            />
+
+            <label className="mt-4 block text-sm font-medium text-ink" htmlFor="password">
+              Password
+            </label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autoComplete={signingUp ? "new-password" : "current-password"}
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+            />
+
+            {!signingUp && needsTotp ? (
+              <>
+                <label className="mt-4 block text-sm font-medium text-ink" htmlFor="totp">
+                  Authentication code
+                </label>
+                <input
+                  id="totp"
+                  name="totp"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={totp}
+                  onChange={(e) => setTotp(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                />
+              </>
+            ) : null}
+
+            {error ? (
+              <p
+                role="alert"
+                className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
+              >
+                {error}
+              </p>
+            ) : null}
+
+            <Button type="submit" disabled={submitting} className="mt-6 w-full">
+              {submitting
+                ? signingUp
+                  ? "Creating your account…"
+                  : "Signing in…"
+                : signingUp
+                  ? "Create account"
+                  : "Sign in"}
+            </Button>
+
+            {/*
+              Sign in and sign up on ONE screen, swapping behaviour rather
+              than navigating: both post to the same API and land in the same
+              place, so a second route would add a page transition and
+              nothing else.
+
+              Delete this block for an invite-only product, and delete the
+              /auth/register route in internal/app/login_broker.go with it.
+            */}
+            <p className="mt-4 text-center text-sm text-ink-muted">
+              {signingUp ? "Already have an account?" : "New here?"}{" "}
+              <button
+                type="button"
+                className="font-medium text-accent underline"
+                onClick={() => {
+                  setMode(signingUp ? "signIn" : "signUp");
+                  setError(null);
+                }}
+              >
+                {signingUp ? "Sign in" : "Create an account"}
+              </button>
+            </p>
+          </form>
+        </div>
+      </div>
     );
   },
 });
@@ -163,7 +317,6 @@ const generatedRoutes: any[] = [];
 const routeTree = rootRoute.addChildren([
   indexRoute,
   signInRoute,
-  authCallbackRoute,
   ...generatedRoutes,
 ]);
 

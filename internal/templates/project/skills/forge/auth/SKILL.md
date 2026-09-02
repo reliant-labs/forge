@@ -11,7 +11,7 @@ Authentication is a **middleware, nothing more**: an interceptor validates the b
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/dev-loop`** (a token locally, the opt-in dev IdP), **`auth/frontend`** (`AuthProvider`, PKCE), **`auth/api-keys`**.
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/dev-loop`** (a token locally, the opt-in dev IdP), **`auth/frontend`** (native sign-in, the login broker), **`auth/api-keys`**.
 
 ## Choosing the validator (owned code, not config)
 
@@ -67,7 +67,7 @@ validator, err := auth.Clerk(auth.ClerkOpts{JWKSURL: cfg.JwtJwksUrl, Issuer: cfg
 validator, err := auth.Firebase(auth.FirebaseOpts{ProjectIDs: strings.Split(cfg.FirebaseProjectIds, ",")})
 ```
 
-A constructor needing a value the config lacks gets a config field, never an `os.Getenv`. Other non-standard shapes ride `UserResolver`. Change the frontend `AuthProvider` to match — both halves must name the same issuer.
+A constructor needing a value the config lacks gets a config field, never an `os.Getenv`. Other non-standard shapes ride `UserResolver`. Point the login broker at the same issuer — both halves must name it, or a session minted by one is rejected by the other.
 
 ## The Claims struct
 
@@ -160,7 +160,7 @@ Load `auth/dev-loop` before debugging a local 401: it covers the traps that are 
 
 ## Frontend wiring
 
-**Forge issues no tokens, so it ships no login form** — no `/auth/login` route, no `/login` page. Identity plugs into two seams: `SetupAuth` validates on the server, `AuthProvider` (`src/lib/auth/provider.ts`) supplies on the client. The PKCE browser flow (`forge/pkg/oauth2`) and its public, non-secret config (`oidc_client_id`, `oidc_redirect_uri`, `oidc_scopes`) are in `auth/frontend`.
+**Sign-in is NATIVE, and the browser never contacts the identity provider.** The browser POSTs credentials to this app's own API (`POST /auth/login`) and receives an HttpOnly session cookie; the server runs the whole OIDC flow against the issuer (`internal/app/login_broker.go`, over `forge/pkg/devidp`). So there is no token in JavaScript, no redirect, and no PKCE in the bundle — the issuer values (`oidc_client_id`, `oidc_redirect_uri`, `oidc_scopes`) are read SERVER-side. React Native cannot use the cookie model and keeps the `AuthProvider` seam (`src/lib/auth/provider.ts`) instead. All of it is in `auth/frontend`.
 
 ## Testing auth
 
@@ -176,5 +176,5 @@ Inject claims: `middleware.ContextWithClaims(ctx, &middleware.Claims{UserID: "us
 - Custom claim DATA rides `enrichClaims`, not a parallel claim type. Hydrate by the IdP `sub`, never by email.
 - **Input validation is protovalidate's job**, via `buf.validate` rules on the proto — not `enrichClaims`, which runs only on authenticated requests and reports failures as auth errors.
 - Pin the dev IdP's image to an exact version; a moving tag makes "login broke today" unattributable. Declare its instance (`idp-steps.yaml`) rather than clicking through a console — a setup step that must be RUN is one a teammate's clone will not have.
-- **Forge validates tokens; it never issues them.** No login/signup/logout route belongs in a service — implement `AuthProvider` against your IdP. Provisioning is yours: a public `Register` RPC that trusts the verified `sub`, never a body field.
+- **Forge validates tokens; it never issues them.** The scaffolded login broker does not mint credentials either — it brokers to the issuer, which is what makes an `/auth/login` route legitimate here. It stays an owned HTTP handler, not an RPC on a service. Provisioning is yours: a public `Register` RPC that trusts the verified `sub`, never a body field.
 - This skill ends at identity. **Forge ships no authorization** — what a caller may do is yours to design and enforce, and nothing in the framework will flag its absence.

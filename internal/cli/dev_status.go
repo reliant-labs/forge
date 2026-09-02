@@ -191,7 +191,7 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 // URL construction:
 //   - scheme: "https" when the matched listener.Protocol == "HTTPS";
 //     "grpc" for GRPCRoute; else "http".
-//   - host: route.Host > gateway.Host > "localhost".
+//   - host: route.Host > listener.Hostname > gateway.Host > "localhost".
 //   - port: matched listener.Port (zero is rendered, callers can
 //     filter if needed — the KCL schema requires Port).
 //   - path: listener.PathPrefix concatenated with route.Path; double
@@ -263,10 +263,7 @@ func buildRouteURL(r routeSpec, gwByName map[string]*GatewayEntity) (ingressURLE
 	} else if strings.EqualFold(l.Protocol, "HTTPS") {
 		scheme = "https"
 	}
-	host := r.host
-	if host == "" {
-		host = gw.Host
-	}
+	host := gw.EffectiveHost(l, r.host)
 	if host == "" {
 		host = "localhost"
 	}

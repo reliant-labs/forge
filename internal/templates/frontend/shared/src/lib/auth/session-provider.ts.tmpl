@@ -3,42 +3,58 @@
 {{end}}import type { AuthProvider, AuthUser } from "./provider";
 
 /**
- * The scaffolded {@link AuthProvider} — the one the app runs on until you
- * wire your IdP. It has exactly two states, and which one it is in is
- * decided by what it was actually given, never by a "pretend I'm logged in"
- * switch:
+ * The scaffolded {@link AuthProvider} — a session with no credential behind
+ * it. It has exactly two states, and which one it is in is decided by what
+ * it was actually given, never by a "pretend I'm logged in" switch:
  *
  *  1. **Mock mode.** Every RPC is answered locally, so there is no server to
  *     authenticate to. The session is a FIXTURE — it exists so scaffolded UI
- *     has a user to render — and `login()`/`logout()` move it for real, so a
- *     signed-out-first product can build its public/gated routes against it.
+ *     has a user to render — and `logout()` moves it for real, so a
+ *     signed-out state can be built against.
  *
  *  2. **A real backend.** Signed out, no credential, and a warning on first
  *     use: this bundle is driving a real server with nothing to present, so
  *     anything gated on identity will 401. That is the honest state, not a
  *     bug — forge issues no tokens, so it ships no session.
  *
- * There is no persistence and no token in this file. A fixture session
+ * There is no persistence and no real token in this file. A fixture session
  * restored across a reload would still be a fixture, and a real credential
  * inlined into a bundle would be a credential in the repo.
+{{- if eq .Platform "react-native"}}
  *
- * ── Wiring real sign-in ──────────────────────────────────────────────
- * This file's ROLE is the seam, not its contents: implement
- * {@link AuthProvider} over your IdP's SDK (Clerk `useAuth().getToken`,
- * Firebase `getIdToken`, an OIDC client's access token) and pass it to
- * `<AuthContextProvider provider={...}>` in `src/app/providers.tsx`.
- * Everything downstream — the Connect transport's bearer token, the session
- * UI — already reads that one object, so nothing else changes. Point the
- * backend's `jwt_jwks_url` at the same issuer and both halves agree.
+ * ── Wiring real sign-in (this is the file to replace) ─────────────────
+ * React Native is the one tree that still needs a provider: it has no
+ * automatic cookie jar and no same-origin, so it cannot use the browser
+ * frontends' native sign-in and must carry its own credential. Implement
+ * {@link AuthProvider} over your IdP's native SDK — or over a token your
+ * app obtains and stores itself — and use it in `src/lib/auth/context.tsx`
+ * in place of this one. Feed the same object's `getToken` to the transport
+ * in `app/_layout.tsx` (`setAuthTokenGetter`), so the UI and the requests
+ * cannot disagree about who is signed in. Point the backend's
+ * `jwt_jwks_url` at the same issuer and both halves agree.
+{{- else}}
+ *
+ * ── Why the browser frontends do not use this ─────────────────────────
+ * They sign in NATIVELY: credentials are POSTed to this app's own API, the
+ * server runs the whole OIDC flow, and the session comes back as an
+ * HttpOnly cookie the browser attaches by itself (src/lib/auth/
+ * native-login.ts). There is no token in JavaScript to supply, so
+ * `src/lib/auth/context.tsx` reads its identity from the server rather than
+ * from a provider object.
+ *
+ * This file survives because PURE-MOCK frontend development is a supported
+ * mode, not a legacy state: a UI built against locally-answered RPCs still
+ * needs a user to render. Reach for it when there is no server to ask.
+{{- end}}
  */
 {{- if .HasTypedConfig}}
-// Read through the generated typed config — the SAME source oidc-provider.ts
-// uses to select between this provider and the real one. Reading a
-// build-time-inlined NEXT_PUBLIC_/VITE_ name here instead would split the
-// decision across two sources: selectAuthProvider() would hand back the mock
-// while this file, seeing an env var the typed-config build never sets,
-// believed it was driving a real backend — so the "mock" provider returned a
-// null user and a null token, and scaffolded UI rendered signed-out.
+// Read through the generated typed config, the same source the rest of the
+// frontend reads. Reading a build-time-inlined NEXT_PUBLIC_/VITE_ name here
+// instead would split the decision across two sources: the app would be in
+// mock mode while this file, seeing an env var the typed-config build never
+// sets, believed it was driving a real backend — so the "mock" provider
+// returned a null user and a null token, and scaffolded UI rendered signed
+// out.
 //
 // Deliberately a function, not a module-scope const: loadConfig() throws on
 // invalid config, and evaluating that at import time turns a fixable
@@ -85,20 +101,14 @@ export function createSessionAuthProvider(): AuthProvider {
   // The session this provider can offer at all. Null against a real backend.
   const fixtureUser: AuthUser | null = isMocked() ? MOCK_USER : null;
 
-  // Start signed in when there is something to be signed in WITH. The value
-  // is inlined into the bundle at build time, so the server render and the
+  // Starts signed in when there is something to be signed in WITH. The value
+  // is inlined into the bundle at build time, so a server render and the
   // first client render agree and there is no hydration mismatch.
   let current: AuthUser | null = fixtureUser;
-  const listeners = new Set<(user: AuthUser | null) => void>();
 
-  const emit = (next: AuthUser | null) => {
-    current = next;
-    for (const cb of listeners) cb(next);
-  };
-
-  // Warn on first use, not at construction: <AuthContextProvider> builds this
-  // as its fallback even when the app passes a real provider, so an eager
-  // warning would fire at apps that wired auth correctly.
+  // Warn on first use, not at construction: a tree may build this as a
+  // fallback even when the app wires a real provider, so an eager warning
+  // would fire at apps that did the right thing.
   let warned = false;
   const warnUnwired = () => {
     if (fixtureUser || warned) return;
@@ -106,7 +116,7 @@ export function createSessionAuthProvider(): AuthProvider {
     console.warn(
       "[auth] No credential: this bundle is driving a real backend with nothing to present, " +
         "so every request that needs identity will 401. Implement AuthProvider over your IdP " +
-        "and pass it to <AuthContextProvider> in src/app/providers.tsx."
+        "and use it in src/lib/auth/context.tsx."
     );
   };
 
@@ -122,22 +132,8 @@ export function createSessionAuthProvider(): AuthProvider {
       warnUnwired();
       return current;
     },
-    isAuthenticated: () => {
-      warnUnwired();
-      return current !== null;
-    },
-    isLoading: () => false,
-    login: async () => {
-      if (!fixtureUser) {
-        warnUnwired();
-        return;
-      }
-      emit(fixtureUser);
-    },
-    logout: async () => emit(null),
-    onAuthStateChange: (cb) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
+    logout: async () => {
+      current = null;
     },
   };
 }

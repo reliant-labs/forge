@@ -465,15 +465,19 @@ type FrontendTemplateData struct {
 	// env-var behavior byte-for-byte, so adopting this is a proto edit and
 	// nothing else.
 	HasTypedConfig bool
-	// Has<Field> report which well-known OIDC/mock fields that message
-	// actually declares. A template cannot reference cfg.OIDC_SCOPES when
-	// the proto never declared it — the generated module's type would not
-	// have the key and `tsc` would fail — so each read is gated on its own
-	// field being present.
-	HasRedirectURI bool
-	HasScopes      bool
-	HasResource    bool
-	HasMockAPI     bool
+	// Has<Field> reports which well-known fields that message actually
+	// declares. A template cannot reference cfg.MOCK_API when the proto
+	// never declared it — the generated module's type would not have the
+	// key and `tsc` would fail — so each read is gated on its own field
+	// being present.
+	//
+	// There is no OIDC gate here, and that is deliberate: browser sign-in
+	// is NATIVE (credentials POSTed to this app's own API, HttpOnly cookie
+	// back, server runs the OIDC flow), so no issuer, client id, redirect
+	// URI, scope list or resource indicator is ever delivered to a bundle.
+	// Handing the browser those values is what would let a browser-side
+	// PKCE flow — and a script-readable token — come back.
+	HasMockAPI bool
 	// NavHookImports is the per-module aggregation of the list hooks the
 	// dashboard tiles consume. Derived from Pages by the nav generator.
 	NavHookImports []NavHookImport

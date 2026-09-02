@@ -59,17 +59,23 @@ func checkCeiling(key string, block int) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"refusing to allocate a NEW port block for key %q: this machine has already reached the "+
-			"%d-stack ceiling (dev_stack.max_stacks in forge.yaml).\n"+
+		"refusing to allocate a NEW port block for key %q: this repo has already reached the "+
+			"%d-stack ceiling (dev_stack.max_stacks in forge.yaml), counting %d stacks already "+
+			"registered in .forge/blocks.json at the primary checkout.\n"+
 			"\n"+
 			"A block multiplies into a project's cluster port pre-map (e.g. k3d.yaml's hand-mapped\n"+
 			"host-port range) and into the dev IdP's baked-in `iss` claim and registered redirect URIs.\n"+
 			"Handing out one past the ceiling is how a stack allocates cleanly here and then fails much\n"+
 			"later as an unrelated \"gateway unreachable\" — nowhere near this cause.\n"+
 			"\n"+
-			"Remedy:\n"+
-			"  - `forge env devstack prune` reclaims blocks held by worktrees that no longer exist on disk\n"+
-			"  - raising dev_stack.max_stacks requires widening the project's cluster port pre-map to cover\n"+
-			"    the new block range FIRST, or the newly-legal blocks render ports the cluster never mapped",
-		key, limit)
+			"Remedy, in order:\n"+
+			"  1. `forge env devstack list` shows which worktrees hold the %d blocks. If a stack there is\n"+
+			"     one you have finished with, remove its worktree (`git worktree remove <path>`) and run\n"+
+			"     `forge env devstack prune` to reclaim the block.\n"+
+			"  2. If every listed stack is genuinely still in use, this is NOT a stale-state problem and\n"+
+			"     pruning will reclaim nothing — you need a wider ceiling. Raise dev_stack.max_stacks in\n"+
+			"     forge.yaml, then run `forge generate` to REGENERATE the cluster port pre-map for the\n"+
+			"     new range, then recreate the cluster so it forwards the new host ports. Raising the\n"+
+			"     number alone renders ports the cluster never mapped.",
+		key, limit, limit, limit)
 }

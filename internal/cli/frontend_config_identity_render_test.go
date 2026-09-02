@@ -107,11 +107,11 @@ func TestScaffoldedIdentityConfigKRenders(t *testing.T) {
 		t.Errorf("OIDC_ISSUER = %v", got)
 	}
 	// The redirect URI projects through EMPTY, and that is the un-pinning:
-	// oidc-provider.ts then falls back to `<window.location.origin>/auth/
-	// callback`, naming whatever dev port this run was assigned. A literal
-	// here would re-pin the frontend's port.
+	// the value is only ever a registered constant the server echoes on the
+	// auth request it makes — nothing navigates to it under native sign-in —
+	// so a literal here would re-pin the frontend's port for no gain.
 	if got := web["OIDC_REDIRECT_URI"]; got != "" {
-		t.Errorf("OIDC_REDIRECT_URI = %v, want empty so the browser names its own origin", got)
+		t.Errorf("OIDC_REDIRECT_URI = %v, want empty so the port stays unpinned", got)
 	}
 }
 

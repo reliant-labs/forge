@@ -340,6 +340,57 @@ message AppConfig {
     description: "Comma-separated scopes to request in the authorization request. `openid` is what makes the request OIDC rather than bare OAuth 2.0 and must be present. `offline_access` is what earns a refresh token, and without it the access token simply dies after its hour and signs the user out mid-session — so it is a default, not an add-on. Note that the scope ALONE is not enough: OIDC Core §11 requires `prompt=consent` alongside it, and a server that does not see the prompt drops the scope SILENTLY (no error, no refresh token). The frontend derives that prompt from these scopes, so the two cannot drift; see promptFor() in src/lib/auth/oidc-provider.ts. Drop `offline_access` if you want sessions to end hard at token expiry. Comma-separated here because that is how this config system carries lists; the flow joins them with SPACES, which is what RFC 6749 §3.3 puts on the wire."
   }];
 
+  // ── API-only sign-in (the app renders its OWN login screen) ───────────
+  //
+  // OPTIONAL, and OFF unless idp_login_uri is set. Left empty, sign-in is
+  // the standard OIDC redirect above: the browser goes to the issuer, types
+  // a password on the issuer's page, and comes back with a code.
+  //
+  // Set them to keep the user inside the app. The issuer then redirects the
+  // authorization request INTO this app, the app collects credentials on a
+  // screen it owns, and a small server endpoint completes the flow through
+  // the issuer's session API (internal/app/login_broker.go).
+  //
+  // NOTE THE ASYMMETRY WITH THE BLOCK ABOVE. Those fields are public
+  // because a PKCE client has no secret to keep. idp_broker_token IS a
+  // secret, and marked sensitive, because this flow needs something the
+  // browser flow does not: a confidential credential permitted to complete
+  // an authorization request on a user's behalf. That is exactly why it
+  // lives on the SERVER and never reaches the bundle — the browser half of
+  // this flow still uses PKCE and still holds no secret.
+  //
+  // TREAT idp_broker_token AS HIGHLY PRIVILEGED. It carries the issuer's
+  // login-client role, which can complete a sign-in for ANY user in the
+  // instance. It belongs to the one service that brokers logins: not in a
+  // frontend, not in a build environment, not shared with the provisioning
+  // credential (`auth idp-provision` creates a separate account for it, so
+  // the two can be rotated and revoked independently).
+
+  string idp_login_uri = 33 [(forge.v1.config) = {
+    env_var: "IDP_LOGIN_URI",
+    flag: "idp-login-uri",
+    description: "The app's OWN sign-in route (e.g. http://localhost:3000/auth/login). Set it to run the API-only sign-in flow, where the issuer redirects the authorization request back into this app instead of rendering its own login pages; `auth idp-provision` converges the issuer's login-UI setting to this value. EMPTY (the default) keeps the issuer-hosted login pages, which is the standard OIDC redirect flow and needs no extra credential. Setting this ALSO changes the shape of the auth request the issuer mints (v2 rather than v1), which is what the finalize call requires — so it is not a cosmetic redirect target, it is the switch that makes the whole flow available."
+  }];
+
+  string idp_base = 34 [(forge.v1.config) = {
+    env_var: "IDP_BASE",
+    flag: "idp-base",
+    description: "The issuer origin the SERVER dials for the session and finalize calls. Often differs from the browser-facing issuer URL: a server inside a cluster or compose network reaches the IdP by service DNS, while the browser reaches it by a published address. Only read by the login broker; the token validator uses jwt_issuer / jwt_jwks_url."
+  }];
+
+  string idp_host = 35 [(forge.v1.config) = {
+    env_var: "IDP_HOST",
+    flag: "idp-host",
+    description: "Host header to present when idp_base differs from the address the issuer instance is REGISTERED under. An issuer that hosts several instances resolves which one a request belongs to from this header, not from the socket it arrived on — so a server dialing an in-network address gets `Instance not found` on an otherwise valid, correctly authenticated request unless this names the browser-facing host. Leave empty when idp_base already names the registered host."
+  }];
+
+  string idp_broker_token = 36 [(forge.v1.config) = {
+    env_var: "IDP_BROKER_TOKEN",
+    flag: "idp-broker-token",
+    sensitive: true,
+    description: "The login broker's service-account token. SENSITIVE and HIGHLY PRIVILEGED: it holds the issuer's login-client role, which can complete an authorization request for ANY user in the instance, so a leak is an impersonation capability rather than a data exposure. Provisioned by `auth idp-provision` as a DEDICATED account, separate from the provisioning credential, so the login path and the deploy path have independent blast radii and can be rotated separately. The deploy projection binds it to valueFrom.secretKeyRef in every environment; it must never appear in a frontend bundle or a build environment. Required only when idp_login_uri is set."
+  }];
+
   // NOTE: there is intentionally NO `service_name` config field. The OTel
   // service.name is the binary's APP IDENTITY, emitted as the generated
   // `ServiceName` constant in internal/cli/root.go and passed to serverkit

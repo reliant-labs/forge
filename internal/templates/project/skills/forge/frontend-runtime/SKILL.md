@@ -53,7 +53,7 @@ utility only the runtime renders vanishes from the built CSS.
 import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 
 const interceptors = buildRuntimeInterceptors({
-  getToken: () => _getToken(),      // bearer token (wired by AuthTokenBridge)
+  getToken: () => _getToken(),      // optional; see the note below
   getBrand: () => currentBrand(),   // optional: X-Brand header
   onError: (e) => report(e),        // optional: typed-error sink
 });
@@ -62,6 +62,12 @@ const interceptors = buildRuntimeInterceptors({
 The chain (outermost → innermost): **retry → error-normalize → auth →
 brand headers → traceparent**. Every attempt re-runs the whole chain
 (fresh token, fresh traceparent).
+
+**Every field is optional, and the browser frontends supply no `getToken`.**
+They sign in natively: the session is an HttpOnly cookie the browser attaches
+to same-origin requests itself, so there is no token in JavaScript to hand
+over and the auth interceptor simply adds no header. React Native is the tree
+that does wire one, from its `AuthProvider` (see `auth/frontend`).
 
 ### Full-stack tracing (always on)
 
@@ -177,10 +183,17 @@ function RuntimeLayer({ children }: { children: React.ReactNode }) {
 `{ user, isAuthenticated, isLoading, getToken }`), `toast` (optional — omit and
 no host is mounted), `onError` (optional — forwarded to the error boundary).
 
+`SessionAuth` is a structural PROP, not an import, so the app adapts whatever
+it has into that shape — which is what lets `src/lib/auth/*` change without
+touching a forge-owned file. The browser scaffolds do exactly that in
+`providers.tsx`: they map their `identity` onto `user` and pass a `getToken`
+that answers null, because the real token is in an HttpOnly cookie no script
+can read. `useSession()` therefore reports the identity and no `claims`.
+
 `RuntimeShell` supplies three batteries:
 
-- **`SessionProvider` / `useSession()`** — the signed-in user, merged from the
-  `auth` prop and the bearer token's JWT claims.
+- **`SessionProvider` / `useSession()`** — the signed-in user, from the `auth`
+  prop, plus any JWT claims decodable from a bearer token when one is supplied.
   ```ts
   const { userId, email, name, claims, isAuthenticated, isLoading } = useSession();
   ```

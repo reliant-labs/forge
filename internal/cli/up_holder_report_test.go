@@ -75,7 +75,7 @@ func TestHostReadyErrorNamesTheForeignHolder(t *testing.T) {
 		t.Errorf(":6060 = %+v, want portReadyNobody with no holder attributed", nobody)
 	}
 
-	msg := hostReadyError("dev", hostReadyUnready(rs)).Error()
+	msg := hostReadyError("dev", hostReadyUnready(rs), nil).Error()
 	for _, want := range []string{"holder: pid 200", "kubectl port-forward", "control-plane-prod"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("readiness error missing %q — the reader is still sent to lsof:\n%s", want, msg)
@@ -113,7 +113,7 @@ func TestHostReadyErrorDegradesWhenArgvIsUnreadable(t *testing.T) {
 		t.Errorf("holderCmd = %q, want empty when argv is unreadable", foreign.holderCmd)
 	}
 
-	msg := hostReadyError("dev", hostReadyUnready(rs)).Error()
+	msg := hostReadyError("dev", hostReadyUnready(rs), nil).Error()
 	if !strings.Contains(msg, "holder: pid 200\n") {
 		t.Errorf("the holder line should end at the pid, with no dangling separator:\n%s", msg)
 	}

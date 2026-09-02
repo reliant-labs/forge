@@ -23,16 +23,19 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -448,7 +451,78 @@ func upDeployNamespace(entities *KCLEntities, store metaReader, env string) stri
 // phases 1-2 (no point bringing host processes up against a busted
 // cluster). Phases 3-4 are collected into the running-process set and
 // torn down by the Ctrl-C cleanup cascade on exit.
+// proxyPreflightTimeout bounds the proxy reachability probe. A local proxy
+// answers a TCP connect in microseconds; anything past this is unusable for a
+// dev loop either way.
+var proxyPreflightTimeout = 2 * time.Second
+
+// preflightProxyReachable fails fast when the environment names an HTTP proxy
+// that nothing is listening on.
+//
+// A dead proxy is uniquely destructive because the environment routes
+// EVERYTHING through it: the failure is not confined to the traffic the user
+// wanted to inspect. It reaches kubectl talking to a cluster on this very
+// machine, which is both the earliest and the least obvious casualty — the
+// address k3d writes into kubeconfig is 0.0.0.0, and 0.0.0.0 matches no
+// conventional NO_PROXY entry, so a loopback call gets proxied and dies.
+//
+// Only a REFUSED connection is treated as fatal. A proxy that accepts but is
+// slow, or a name that does not resolve, is left to the individual call sites:
+// the point here is to catch the unambiguous case where the proxy is simply
+// not running.
+func preflightProxyReachable(ctx context.Context, env []string) error {
+	var raw, from string
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if v := envutil.Lookup(env, key); v != "" {
+			raw, from = v, key
+			break
+		}
+	}
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return nil // unparseable: not our call to reject
+	}
+	host := u.Host
+	if u.Port() == "" {
+		if u.Scheme == "https" {
+			host = net.JoinHostPort(u.Hostname(), "443")
+		} else {
+			host = net.JoinHostPort(u.Hostname(), "80")
+		}
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, proxyPreflightTimeout)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", host)
+	if err == nil {
+		_ = conn.Close()
+		return nil
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		return nil // slow/unresolvable — let the real calls report it
+	}
+	return fmt.Errorf(
+		"%s=%s but nothing is listening on %s — every outbound call in this run would fail through it,\n"+
+			"     including kubectl against your LOCAL cluster (k3d writes 0.0.0.0 into kubeconfig, which no NO_PROXY entry matches).\n"+
+			"     start the proxy, or clear %s (and drop any -D flag that sets it) and re-run",
+		from, raw, host, from)
+}
+
 func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `forge env up` lifecycle in order: resolve, render, conflict-check, launch, wait. The sequence is the contract.
+	// PROXY PREFLIGHT, first thing. When the environment routes through an HTTP
+	// proxy that is not actually listening, EVERY outbound call in the run
+	// fails — kubectl against the local cluster, the package-manager install,
+	// each host service's own traffic — and each one reports it differently
+	// ("proxyconnect ... connection refused" buried under a kubectl retry
+	// storm, an npm stall that looks like a hang). One check up front replaces
+	// that cascade with the true cause, before any work is done.
+	if err := preflightProxyReachable(ctx, os.Environ()); err != nil {
+		return err
+	}
+
 	store, err := loadProjectStore()
 	if err != nil {
 		return err
@@ -1003,6 +1077,20 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	// so a best-effort failure here is non-fatal. Skipped when the deploy
 	// phase won't run (--no-deploy): nothing would consume the infra and
 	// nothing later barriers on it.
+	// FRONTEND DEPENDENCY PREFLIGHT. The install used to run in the frontend
+	// phase, which is LAST — so a frontend whose deps cannot be installed
+	// failed the run only after the image build had already spent minutes,
+	// and every retry paid that cost again before reaching the same failure.
+	// The check is free in the steady state (frontendDepsStale short-circuits
+	// when node_modules is current), so hoisting it costs nothing on a warm
+	// run and converts the cold failure from "5 minutes, then broken" into
+	// "broken now". upFrontends still calls it and is then a no-op.
+	if frontendPhaseEnabled(store, entities) && !opts.noInstall {
+		if err := preflightFrontendDeps(ctx, entities, opts.targets); err != nil {
+			return err
+		}
+	}
+
 	var infraWarm chan error
 	if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
 		infraWarm = make(chan error, 1)
@@ -1918,7 +2006,7 @@ func hostReadyUnready(rs []hostReadyResult) []hostReadyResult {
 // host-service ports still not bound by this run's child. It DETECTS ONLY —
 // nothing is killed here; the started children are already in the ledger, so
 // `forge env down` (which the message points at) reaches them.
-func hostReadyError(envName string, unready []hostReadyResult) error {
+func hostReadyError(envName string, unready []hostReadyResult, e *KCLEntities) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[up] host service(s) never came up under this run (env=%s):\n", envName)
 	for _, r := range unready {
@@ -1930,10 +2018,48 @@ func hostReadyError(envName string, unready []hostReadyResult) error {
 		if r.holderPID > 0 {
 			fmt.Fprintf(&b, "       %-14s   holder: pid %d%s\n", "", r.holderPID, holderCmdSuffix(r.holderCmd))
 		}
+		// A service can be declared against a port that a DIFFERENT component
+		// actually binds — an Electron shell pointed at its web dev server is
+		// the common shape. Blaming the shell for "failing to bind its port"
+		// then sends the reader after the wrong process entirely, so name who
+		// else declared it.
+		if r.state != portReadyForeign {
+			if others := portAlsoDeclaredBy(e, r.port, r.name); len(others) > 0 {
+				fmt.Fprintf(&b, "       %-14s   note: %s also declares :%d — if it failed to start, nothing was ever going to bind this port\n",
+					"", strings.Join(others, ", "), r.port)
+			}
+		}
 	}
 	fmt.Fprintf(&b, "     inspect the log under %s/ (lsof -i :<port> for the holder),\n", upLogDir(envName))
 	fmt.Fprintf(&b, "     stop what this run started with: forge env down %s", envName)
 	return errors.New(b.String())
+}
+
+// portAlsoDeclaredBy names the other declared services/frontends that claim
+// this port, excluding the one being reported. Used to explain a "nothing is
+// listening" verdict against a component that never binds the port itself.
+func portAlsoDeclaredBy(e *KCLEntities, port int, except string) []string {
+	if e == nil || port == 0 {
+		return nil
+	}
+	var out []string
+	for _, fe := range e.Frontends {
+		if fe.Name != except && fe.Port == port {
+			out = append(out, fmt.Sprintf("frontend %q", fe.Name))
+		}
+	}
+	for _, svc := range e.Services {
+		if svc.Name == except {
+			continue
+		}
+		for _, p := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
+			if p == port {
+				out = append(out, fmt.Sprintf("service %q", svc.Name))
+				break
+			}
+		}
+	}
+	return out
 }
 
 // holderCmdSuffix renders a foreign holder's command line for the readiness
@@ -1995,7 +2121,7 @@ func waitHostServicesReady(e *KCLEntities, projectID, envName string, targets []
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return hostReadyError(envName, unready)
+			return hostReadyError(envName, unready, e)
 		}
 		time.Sleep(poll)
 	}
@@ -2343,6 +2469,23 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 	return failures
 }
 
+// reportEnvConflicts prints every declared variable whose value differed from
+// one already in the developer's shell. Silence here is what made a broken
+// stack unexplainable: the project declares one value, the process runs with
+// another, and nothing says so. Ports have been reported this way for a while
+// (forceHostBindPorts); this extends it to every declared key.
+func reportEnvConflicts(service string, conflicts []envutil.EnvConflict) {
+	for _, c := range conflicts {
+		if c.ShellWon {
+			fmt.Printf("  %s: %s taken from your shell (%s=%s), overriding the declared value — %s names it\n",
+				service, c.Key, hostlaunch.ShellWinsEnvVar, c.Key, hostlaunch.ShellWinsEnvVar)
+			continue
+		}
+		fmt.Printf("  %s: %s uses the DECLARED value, ignoring a different one in your shell (export %s=%s to prefer the shell)\n",
+			service, c.Key, hostlaunch.ShellWinsEnvVar, c.Key)
+	}
+}
+
 // buildHostServiceCmd composes the exec.Cmd for a host-mode service
 // based on its deploy.Host.Runner. Thin shim over hostlaunch.BuildCmd
 // with the secrets_file + env_vars + forge.yaml config composition done
@@ -2422,7 +2565,9 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 	// classified via the same config source the seed gate reads.
 	dev, _ := seedTargetIsDev(env)
 	projectConfigEnv = withDevRunDefaults(projectConfigEnv, dev)
-	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, secretVals, envVars)
+	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), projectConfigEnv, secretVals, envVars)
+	reportEnvConflicts(svc.Name, envConflicts)
+	cmd.Env = hostEnv
 	cmd.Env = forceHostBindPorts(cmd.Env, svc.Name, envVars)
 
 	return cmd, svc.Name, nil
@@ -2600,6 +2745,40 @@ func upFrontends(ctx context.Context, fl frontendLaunch) int {
 	return failures
 }
 
+// preflightFrontendDeps installs every selected frontend's dependencies before
+// the expensive phases run. Returns the FIRST failure, so the run stops while
+// the user is still watching rather than after a full build.
+func preflightFrontendDeps(ctx context.Context, e *KCLEntities, targets []string) error {
+	if e == nil {
+		return nil
+	}
+	var selected []FrontendEntity
+	for _, fe := range e.Frontends {
+		if len(targets) > 0 && !slices.Contains(targets, fe.Name) {
+			continue
+		}
+		if fe.Path == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(fe.Path, "package.json")); err != nil {
+			continue
+		}
+		if frontendDepsStale(fe.Path) {
+			selected = append(selected, fe)
+		}
+	}
+	if len(selected) == 0 {
+		return nil // warm run: nothing stale, nothing printed
+	}
+	fmt.Println("\n[up] frontend dependency phase (before build — a dep failure should not cost a build)")
+	for _, fe := range selected {
+		if err := ensureFrontendDeps(ctx, fe, false); err != nil {
+			return fmt.Errorf("frontend %s: %w", fe.Name, err)
+		}
+	}
+	return nil
+}
+
 // ensureFrontendDeps installs a frontend's node_modules when they are
 // missing or stale relative to its lockfile/manifest, so `npm run dev`
 // doesn't fail with "next: command not found" on a fresh checkout. No-op
@@ -2626,14 +2805,103 @@ func ensureFrontendDeps(ctx context.Context, fe FrontendEntity, noInstall bool) 
 		runner = "npm"
 	}
 	fmt.Printf("[up] %s: node_modules missing/stale — running `%s install`\n", fe.Name, runner)
-	cmd := exec.CommandContext(ctx, runner, "install")
-	cmd.Dir = fe.Path
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	err := runFrontendInstall(ctx, runner, fe.Path)
+	if err != nil && transientInstallFailure(err.Error()) {
+		// The package manager reported ITS OWN internal failure, not a problem
+		// with the tree — retrying converges where failing the whole `up` does
+		// not. Without this a known npm bug ends a run that had already spent
+		// minutes building images, and re-running hits the same coin flip.
+		fmt.Printf("[up] %s: `%s install` hit a package-manager internal error — retrying once\n", fe.Name, runner)
+		err = runFrontendInstall(ctx, runner, fe.Path)
+	}
+	if err != nil {
 		return fmt.Errorf("install deps in %s: %w", fe.Path, err)
 	}
+	markFrontendInstallOK(fe.Path)
 	return nil
+}
+
+// proxiedInstallSockets caps a package manager's parallel connections when the
+// install runs through an HTTP proxy.
+//
+// Package managers open many sockets at once — npm's default is 15 — which a
+// local debugging/inspection proxy (Proxyman, Charles, mitmproxy) does not
+// survive: measured on a 579-package tree, 15 sockets through such a proxy did
+// not finish in FOUR MINUTES, while 8 finished in 7.6s against 6.6s direct.
+// The failure is also silent, because npm's fetch-timeout is 300s with 2
+// retries: the install simply sits there for up to fifteen minutes looking
+// hung, and the eventual error names nothing useful.
+//
+// 8 is chosen with margin: 10 also measured clean, 15 did not, so the cliff
+// sits between them. The cost when proxied is ~1s on that tree; the cost when
+// NOT proxied is zero, because the cap is only applied when a proxy is set.
+const proxiedInstallSockets = 8
+
+// installConcurrencyFlags caps network concurrency for this runner, but only
+// when the environment actually routes through a proxy. Returning nil in the
+// common case keeps a normal install at full speed.
+func installConcurrencyFlags(runner string, env []string) []string {
+	proxied := false
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if envutil.Lookup(env, key) != "" {
+			proxied = true
+			break
+		}
+	}
+	if !proxied {
+		return nil
+	}
+	switch runner {
+	case "npm":
+		return []string{fmt.Sprintf("--maxsockets=%d", proxiedInstallSockets)}
+	case "pnpm", "yarn":
+		return []string{fmt.Sprintf("--network-concurrency=%d", proxiedInstallSockets)}
+	default:
+		return nil
+	}
+}
+
+// runFrontendInstall runs one install attempt, teeing output to the terminal
+// while retaining it so the caller can classify the failure.
+func runFrontendInstall(ctx context.Context, runner, dir string) error {
+	var buf bytes.Buffer
+	args := []string{"install"}
+	if flags := installConcurrencyFlags(runner, os.Environ()); len(flags) > 0 {
+		args = append(args, flags...)
+		fmt.Printf("[up] proxy detected — capping %s network concurrency at %d (an inspection proxy stalls at the default)\n",
+			runner, proxiedInstallSockets)
+	}
+	cmd := exec.CommandContext(ctx, runner, args...)
+	cmd.Dir = dir
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(buf.String()))
+	}
+	return nil
+}
+
+// transientInstallFailureSignatures are messages by which a package manager
+// reports a fault in ITSELF rather than in the project. They are worth exactly
+// one retry: the tree is fine, the tool tripped.
+var transientInstallFailureSignatures = []string{
+	// npm's own internal-error marker; it prints "This is an error with npm
+	// itself" and asks the user to file a bug. Frequently succeeds on retry.
+	"Exit handler never called!",
+	// Registry/network flakes that are equally not the project's fault.
+	"ECONNRESET",
+	"ETIMEDOUT",
+	"ERR_SOCKET_TIMEOUT",
+	"registry error",
+}
+
+func transientInstallFailure(output string) bool {
+	for _, sig := range transientInstallFailureSignatures {
+		if strings.Contains(output, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // frontendDepsStale reports whether a frontend's node_modules is missing
@@ -2646,15 +2914,42 @@ func frontendDepsStale(dir string) bool {
 	if err != nil {
 		return true // missing → must install
 	}
-	nmTime := nm.ModTime()
+	// A SUCCESSFUL install is the reference point, not node_modules' mtime.
+	// An install that fails part-way still writes packages, which bumps that
+	// mtime — so the directory looks current, the next run skips the install,
+	// and a half-populated tree is treated as done. That is the whole gate
+	// inverting itself precisely when it matters. The stamp is written only
+	// after the package manager exits 0.
+	ref := nm.ModTime()
+	if stamp, err := os.Stat(frontendInstallStamp(dir)); err == nil {
+		ref = stamp.ModTime()
+	} else {
+		// No stamp: either a tree installed before forge wrote stamps, or one
+		// left behind by a failed install. Fall back to the mtime heuristic so
+		// an existing healthy checkout is not force-reinstalled.
+		ref = nm.ModTime()
+	}
 	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "package.json"} {
 		if info, err := os.Stat(filepath.Join(dir, manifest)); err == nil {
-			if info.ModTime().After(nmTime) {
+			if info.ModTime().After(ref) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// frontendInstallStamp is the marker written after a package manager exits
+// successfully, so "are these deps current?" asks about the last install that
+// COMPLETED rather than the last one that merely ran.
+func frontendInstallStamp(dir string) string {
+	return filepath.Join(dir, "node_modules", ".forge-install-ok")
+}
+
+// markFrontendInstallOK records a completed install. Best-effort: a tree that
+// cannot be stamped just falls back to the mtime heuristic next time.
+func markFrontendInstallOK(dir string) {
+	_ = os.WriteFile(frontendInstallStamp(dir), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
 }
 
 // buildFrontendCmd composes the *exec.Cmd for a single frontend in the

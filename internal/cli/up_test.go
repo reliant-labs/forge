@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
 // TestBuildHostServiceCmd covers each runner dispatch — go-run / air /
@@ -285,17 +287,45 @@ func TestBuildFrontendCmd_KCLEnvVarsInjected(t *testing.T) {
 	}
 }
 
-// TestBuildFrontendCmd_ParentShellOverridesEnvVars pins the precedence:
-// the developer's shell wins over a KCL env_var of the same name (escape
-// hatch), matching host-service layering.
-func TestBuildFrontendCmd_ParentShellOverridesEnvVars(t *testing.T) {
-	parent := []string{"VITE_ADMIN_URL=http://override"}
+// TestBuildFrontendCmd_DeclaredEnvVarBeatsAmbientShell pins the precedence:
+// a KCL-declared env_var WINS over a same-named variable that merely happens to
+// be exported in the developer's shell. The inverse used to hold, which made
+// every declaration advisory — the project renders one value and the process
+// runs with another, silently. An override you typed is a decision; one you
+// inherited is an accident, so the accident no longer wins by default.
+func TestBuildFrontendCmd_DeclaredEnvVarBeatsAmbientShell(t *testing.T) {
+	parent := []string{"VITE_ADMIN_URL=http://ambient"}
+	fe := FrontendEntity{Name: "web", Path: "web", EnvFile: "/does/not/exist",
+		EnvVars: []KCLEnvVar{{Name: "VITE_ADMIN_URL", Value: "http://kcl"}}}
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil, "")
+	found := false
+	for _, kv := range cmd.Env {
+		if kv == "VITE_ADMIN_URL=http://ambient" {
+			t.Errorf("ambient shell value beat the declaration; env: %v", cmd.Env)
+		}
+		if kv == "VITE_ADMIN_URL=http://kcl" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("declared value missing; env: %v", cmd.Env)
+	}
+}
+
+// TestBuildFrontendCmd_ShellWinsWhenNamedExplicitly covers the escape hatch:
+// naming the key in FORGE_ENV_OVERRIDE restores the old behaviour for it, so a
+// deliberate ad-hoc override is still one command away.
+func TestBuildFrontendCmd_ShellWinsWhenNamedExplicitly(t *testing.T) {
+	parent := []string{
+		"VITE_ADMIN_URL=http://ambient",
+		hostlaunch.ShellWinsEnvVar + "=VITE_ADMIN_URL",
+	}
 	fe := FrontendEntity{Name: "web", Path: "web", EnvFile: "/does/not/exist",
 		EnvVars: []KCLEnvVar{{Name: "VITE_ADMIN_URL", Value: "http://kcl"}}}
 	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil, "")
 	for _, kv := range cmd.Env {
 		if kv == "VITE_ADMIN_URL=http://kcl" {
-			t.Errorf("KCL env_var should not override the parent shell; env: %v", cmd.Env)
+			t.Errorf("declared value won despite an explicit opt-out; env: %v", cmd.Env)
 		}
 	}
 }
@@ -1064,7 +1094,7 @@ func TestEvalHostReadiness(t *testing.T) {
 	if len(unready) != 2 {
 		t.Fatalf("unready = %d, want 2 (the foreign + the nobody)", len(unready))
 	}
-	msg := hostReadyError("dev", unready).Error()
+	msg := hostReadyError("dev", unready, nil).Error()
 	for _, want := range []string{"api", "3091", "6060", "forge env down dev"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("readiness error missing %q:\n%s", want, msg)

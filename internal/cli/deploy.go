@@ -974,6 +974,7 @@ type deployPreflightEnvInput struct {
 func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) error {
 	targetArch := kclFirstClusterPlatform(in.entities)
 	return runDeployPreflight(ctx, deployPreflightInput{
+		secretContexts:  declaredClusterContexts(in.entities, in.deployContext),
 		mainK:           in.mainK,
 		imageTag:        in.imageTag,
 		namespace:       in.namespace,
@@ -2007,6 +2008,12 @@ type deployPreflightInput struct {
 	// declared-required-but-absent Secret/key BLOCKS the deploy (and a
 	// value_group byte mismatch is caught). Empty => no declared prereqs.
 	requiredSecrets []cluster.RequiredSecret
+	// secretContexts are the kubectl contexts of every cluster this env
+	// deploys to. The declared-prerequisite check runs in ALL of them: a
+	// workload scheduled onto a secondary cluster needs its Secret there, and
+	// verifying only the primary lets the deploy proceed to a rollout that
+	// dies with CreateContainerConfigError.
+	secretContexts []string
 	// secretSupply is the env's bundle-internal Secret SUPPLY for the
 	// render-time back-propagation gate: the Secrets the bundle PROVIDES via a
 	// forge.KubeconfigSecret mint, a forge.ExternalSecret promise, or a
@@ -2123,6 +2130,33 @@ func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
 // for the same don't-break-dev-loop reason. Image checks DO still run on a
 // local cluster for remote-registry images (e.g. ghcr.io refs in a local
 // test), since those are reachable and a miss is real.
+// declaredClusterContexts lists the kubectl contexts an env deploys to: every
+// cluster its KCL declares, plus the resolved deploy target. A single-cluster
+// env yields exactly the target, so the multi-cluster handling is inert for
+// the common case.
+func declaredClusterContexts(e *KCLEntities, deployCtx string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(c string) {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			return
+		}
+		if _, dup := seen[c]; dup {
+			return
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	add(deployCtx)
+	if e != nil {
+		for _, c := range e.Clusters {
+			add(c.Context)
+		}
+	}
+	return out
+}
+
 func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 	// Render the same manifest stream the apply will consume. Applying the
 	// --target filter keeps the preflight scoped to exactly the apps about
@@ -2180,7 +2214,6 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		// needs the live values, hence the value getter. Gated to remote
 		// clusters like the Secret check (a local dev cluster's out-of-band
 		// Secrets are provisioned by the same up flow).
-		opts.RequiredSecrets = in.requiredSecrets
 		opts.SecretValues = cluster.KubectlSecretValueGetter{}
 		// Verify images using the CLUSTER's pull credentials (the bundle's
 		// imagePullSecrets), not just the local docker daemon: when the local
@@ -2191,6 +2224,22 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		// TRUE verdict. Gated to remote clusters (same as the Secret check) —
 		// local k3d images are skipped via LocalImageRef anyway.
 		opts.PullCreds = cluster.KubectlPullCredsResolver{}
+	}
+
+	// DECLARED external Secret prerequisites are checked on EVERY cluster,
+	// local ones included. The remote-only gate above exists because forge
+	// applies its own projected Secrets moments later, so checking those
+	// locally would false-fail the inner loop — but a forge.ExternalSecret is
+	// by definition one forge does NOT create, so that reasoning never applied
+	// to it. Skipping it locally is why a dev deploy could reach a rollout and
+	// die on a Secret that was missing, or present but missing a KEY, in the
+	// secondary cluster.
+	if len(in.requiredSecrets) > 0 && len(in.secretContexts) > 0 {
+		opts.RequiredSecrets = in.requiredSecrets
+		opts.RequiredSecretContexts = in.secretContexts
+		if opts.Secrets == nil {
+			opts.Secrets = cluster.KubectlSecretGetter{}
+		}
 	}
 	return cluster.Preflight(ctx, opts)
 }

@@ -188,15 +188,104 @@ func helmTemplate(ctx context.Context, spec HelmChartSpec) (string, error) {
 	// The chart ref is the positional argument; append last.
 	args = append(args, chartRef)
 
-	cmd := exec.CommandContext(ctx, "helm", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("helm template %s (%s@%s): %w\n%s",
-			spec.Name, chartRef, spec.Version, err, stderr.String())
+	var lastErr error
+	var lastStderr string
+	for attempt := 1; attempt <= helmTemplateAttempts; attempt++ {
+		cmd := exec.CommandContext(ctx, "helm", args...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		if err == nil {
+			return stripHelmOCIStatus(stdout.String()), nil
+		}
+		lastErr, lastStderr = err, stderr.String()
+		if !transientChartFetchFailure(lastStderr) || attempt == helmTemplateAttempts {
+			break
+		}
+		// The chart is REMOTE, so rendering it is a network operation, and a
+		// truncated blob is a fault in the transfer rather than in the chart.
+		// Measured against a local inspection proxy, the same pull failed about
+		// one attempt in three and succeeded on the next — without a retry that
+		// makes an unrelated deploy fail at random.
+		fmt.Printf("  helm %s: chart fetch failed mid-transfer (%s) — retrying (%d/%d)\n",
+			spec.Name, firstLine(lastStderr), attempt, helmTemplateAttempts)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(helmTemplateRetryDelay):
+		}
 	}
-	return stripHelmOCIStatus(stdout.String()), nil
+	return "", fmt.Errorf("helm template %s (%s@%s): %w\n%s",
+		spec.Name, chartRef, spec.Version, lastErr, lastStderr)
+}
+
+// helmTemplateAttempts / helmTemplateRetryDelay bound the retry for a chart
+// pull that failed in TRANSFER. Vars so tests can shorten them.
+var (
+	helmTemplateAttempts   = 3
+	helmTemplateRetryDelay = 750 * time.Millisecond
+)
+
+// transportFailureSignatures name failures that can ONLY come from the network
+// layer, so they identify a transient transfer on their own.
+var transportFailureSignatures = []string{
+	"connection reset by peer",
+	"TLS handshake timeout",
+	"i/o timeout",
+	"unexpected status from GET request",
+	"proxyconnect",
+}
+
+// truncatedTransferSignatures are ambiguous on their own — a chart whose
+// TEMPLATE is malformed can also report "unexpected EOF" — so they count only
+// alongside evidence that the failure happened while FETCHING. Without that
+// pairing a genuine template syntax error would be retried twice before
+// reporting the same verdict.
+var (
+	truncatedTransferSignatures = []string{"unexpected EOF", "EOF"}
+	fetchContextSignatures      = []string{`"Fetch" on source`, "FetchReference", "failed to perform", "https://", "http://"}
+)
+
+// transientChartFetchFailure reports whether a chart pull died in TRANSFER
+// rather than being a chart that is wrong. A bad version, a missing repo, an
+// auth failure or a broken template must still fail on the first attempt.
+func transientChartFetchFailure(stderr string) bool {
+	for _, sig := range transportFailureSignatures {
+		if strings.Contains(stderr, sig) {
+			return true
+		}
+	}
+	fetching := false
+	for _, sig := range fetchContextSignatures {
+		if strings.Contains(stderr, sig) {
+			fetching = true
+			break
+		}
+	}
+	if !fetching {
+		return false
+	}
+	for _, sig := range truncatedTransferSignatures {
+		if strings.Contains(stderr, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstLine renders the leading line of a multi-line stderr for a one-line
+// progress message.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	const max = 100
+	if r := []rune(s); len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return s
 }
 
 // stripHelmOCIStatus removes Helm 4's OCI pull receipt from stdout. Helm 3

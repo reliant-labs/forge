@@ -266,7 +266,37 @@ func LayerHostEnv(base []string, projectConfig, secrets, envVars map[string]stri
 	for k, v := range envVars {
 		extra[k] = v
 	}
-	return envutil.MergeBaseWins(base, extra)
+	out, _ := LayerHostEnvConflicts(base, projectConfig, secrets, envVars)
+	return out
+}
+
+// ShellWinsEnvVar names the parent-env variable holding the comma-separated
+// list of keys the developer's shell may still override, e.g.
+//
+//	FORGE_ENV_OVERRIDE=DATABASE_URL,LOG_LEVEL forge env up dev
+//
+// It exists because the declared-wins default (see envutil.MergeDeclaredWins)
+// removes the ad-hoc override the old base-wins default provided by accident.
+// Keeping that affordance EXPLICIT is the point: an override you typed is a
+// decision, an override you inherited is an accident.
+const ShellWinsEnvVar = "FORGE_ENV_OVERRIDE"
+
+// LayerHostEnvConflicts is LayerHostEnv with the resolved conflicts returned so
+// the caller can report them. A declared value that silently loses to an
+// ambient one is the failure mode this reporting exists to end.
+func LayerHostEnvConflicts(base []string, projectConfig, secrets, envVars map[string]string) ([]string, []envutil.EnvConflict) {
+	extra := make(map[string]string, len(projectConfig)+len(secrets)+len(envVars))
+	for k, v := range projectConfig {
+		extra[k] = v
+	}
+	for k, v := range secrets {
+		extra[k] = v
+	}
+	for k, v := range envVars {
+		extra[k] = v
+	}
+	shellWins := envutil.ParseShellWins(envutil.Lookup(base, ShellWinsEnvVar))
+	return envutil.MergeDeclaredWins(base, extra, shellWins)
 }
 
 // PIDPath returns the canonical per-service PID file path:

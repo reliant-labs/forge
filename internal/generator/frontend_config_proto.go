@@ -102,10 +102,10 @@ var frontendConfigEnvVars = []string{
 // keeping the text here in step with the template is what keeps the two
 // renders byte-identical.
 var frontendConfigDescriptions = map[string]string{
-	"API_URL":           "Origin of the Connect RPC endpoint this frontend calls. Every service mounts onto the binary's one Connect mux, so this is one origin for the whole API. Deployed environments pin their own in deploy/kcl/<env>/config.k. IN THE DEV LOOP THIS DEFAULT IS STALE AND MUST NOT BE TRUSTED: `forge run` gives the backend a kernel-assigned port and injects the live origin as NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL, which src/lib/connect.ts prefers over everything here. Build a client from the generated transport rather than reading this value, or you will dial the port the default happens to name — which in a project with a dev IdP is the IdP.",
-	"MOCK_API":          "Mock-transport mode: `true` answers every RPC locally from fixtures (and selects the mock auth provider, so no IdP is needed), `hybrid` overlays ?scenario= fixtures over a real backend. Empty means the real backend, which is the deployed value.",
-	"APP_VERSION":       "Build identifier surfaced in the UI and as a telemetry attribute. Empty renders as a development placeholder.",
-	"OTEL_ENDPOINT":     "OTLP/HTTP collector endpoint for BROWSER traces. Empty disables browser telemetry entirely, which is the correct default for local development — there is nothing to export to.",
+	"API_URL":       "Origin of the Connect RPC endpoint this frontend calls. Every service mounts onto the binary's one Connect mux, so this is one origin for the whole API. Deployed environments pin their own in deploy/kcl/<env>/config.k. IN THE DEV LOOP THIS DEFAULT IS STALE AND MUST NOT BE TRUSTED: `forge run` gives the backend a kernel-assigned port and injects the live origin as NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL, which src/lib/connect.ts prefers over everything here. Build a client from the generated transport rather than reading this value, or you will dial the port the default happens to name — which in a project with a dev IdP is the IdP.",
+	"MOCK_API":      "Mock-transport mode: `true` answers every RPC locally from fixtures (and selects the mock auth provider, so no IdP is needed), `hybrid` overlays ?scenario= fixtures over a real backend. Empty means the real backend, which is the deployed value.",
+	"APP_VERSION":   "Build identifier surfaced in the UI and as a telemetry attribute. Empty renders as a development placeholder.",
+	"OTEL_ENDPOINT": "OTLP/HTTP collector endpoint for BROWSER traces. Empty disables browser telemetry entirely, which is the correct default for local development — there is nothing to export to.",
 }
 
 // ScaffoldedFrontendTypedConfig is the presence set a frontend gets from

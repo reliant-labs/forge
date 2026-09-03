@@ -245,18 +245,18 @@ func renderAppConfigEnvMap(fields []ConfigField) string {
 // The lambda takes TWO arguments, and the second is the fix for the defect
 // described below:
 //
-//	<lambda>(cfg, config_secrets)
+//		<lambda>(cfg, config_secrets)
 //
-//   - NON-SENSITIVE fields are projected UNCONDITIONALLY, for every caller.
-//     They lower to an inline `{value = ...}` read straight off the typed
-//     config, so they carry no credential and — crucially — no start-time
-//     dependency on anything existing in the cluster. Broadcasting them is
-//     free, and keeping it free is what stops this design from taxing the
-//     ordinary act of adding a config value: declare `env_var` in the proto
-//     and every workload has it, exactly as before.
-//   - SENSITIVE fields are projected ONLY when the caller NAMES them in
-//     `config_secrets`. A workload's rendered manifest therefore carries the
-//     secretKeyRefs that workload declared it reads, and no others.
+//	  - NON-SENSITIVE fields are projected UNCONDITIONALLY, for every caller.
+//	    They lower to an inline `{value = ...}` read straight off the typed
+//	    config, so they carry no credential and — crucially — no start-time
+//	    dependency on anything existing in the cluster. Broadcasting them is
+//	    free, and keeping it free is what stops this design from taxing the
+//	    ordinary act of adding a config value: declare `env_var` in the proto
+//	    and every workload has it, exactly as before.
+//	  - SENSITIVE fields are projected ONLY when the caller NAMES them in
+//	    `config_secrets`. A workload's rendered manifest therefore carries the
+//	    secretKeyRefs that workload declared it reads, and no others.
 //
 // WHY, and what broke. Every env's main.k layers ONE projected map under
 // EVERY workload, so while the sensitive branch was unconditional, adding a

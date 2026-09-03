@@ -34,7 +34,8 @@
 function apiOrigin(): string {
   const fromRuntime =
     typeof window !== "undefined"
-      ? (window as { __FORGE_CONFIG__?: { API_URL?: unknown } }).__FORGE_CONFIG__?.API_URL
+      ? (window as { __FORGE_CONFIG__?: { API_URL?: unknown } })
+          .__FORGE_CONFIG__?.API_URL
       : undefined;
   const configured =
     fromRuntime ||

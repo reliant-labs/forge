@@ -22,17 +22,27 @@
 # Usage:
 #   scripts/release-web-runtime.sh [--dry-run] vX.Y.Z
 #
-# After a real (non-dry-run) invocation TWO MANUAL STEPS remain, deliberately
-# — both are irreversible, so neither is automated:
+# After a real (non-dry-run) invocation ONE step remains:
 #
 #   git push origin web-runtime/vX.Y.Z
-#   cd web-runtime && npm publish --access public --otp <code>
 #
-# `--access public` is required: the package is scoped, and npm defaults a
-# scoped package to restricted. A restricted package breaks `npm install` for
-# anyone outside the org — including every machine that scaffolds a project
-# with a released forge. npm also requires a 2FA OTP (or a granular token with
-# bypass-2fa) to publish.
+# That push IS the release. .github/workflows/release-web-runtime.yml triggers
+# on web-runtime/v*, re-runs these validations on a clean checkout, and
+# publishes. There is no `npm publish` to type.
+#
+# This script used to end by asking for a hand-typed publish, on the reasoning
+# that an irreversible act should not be automated. That did not hold up: we
+# already publish a notarized Electron app from CI on the same trigger shape,
+# which is more irreversible and more credential-sensitive than a scoped npm
+# publish. And the manual step had a cost — v0.3.0 was tagged but never
+# published, so its devlog module existed in the source and in forge's
+# templates while the registry copy lacked it, and every scaffold built
+# against the registry failed to typecheck.
+#
+# The script keeps its value as the LOCAL gate: it runs the checks before the
+# tag exists, which is where a failure costs nothing. CI repeats them on a
+# clean checkout, because a maintainer's node_modules cannot establish what a
+# stranger downloads.
 set -euo pipefail
 
 DRY_RUN=0
@@ -147,8 +157,7 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
   echo
   echo "DRY RUN — every validation passed. Would create tag: $TAG"
-  echo "Then: git push origin $TAG"
-  echo "Then: (cd $PKG_DIR && npm publish --access public --otp <code>)"
+  echo "Then: git push origin $TAG   (that push publishes, via .github/workflows/release-web-runtime.yml)"
   exit 0
 fi
 
@@ -156,6 +165,9 @@ git tag -a "$TAG" -m "$PKG_NAME $VERSION"
 echo
 echo "Created tag $TAG."
 echo
-echo "Remaining MANUAL steps (both irreversible — that is why they are not automated):"
+echo "Remaining step — pushing the tag IS the release:"
 echo "  git push origin $TAG"
-echo "  (cd $PKG_DIR && npm publish --access public --otp <code>)"
+echo
+echo "That triggers .github/workflows/release-web-runtime.yml, which re-runs these"
+echo "validations on a clean checkout and publishes to npm. Watch it with:"
+echo "  gh run watch \$(gh run list --workflow 'Release web-runtime' --limit 1 --json databaseId -q '.[0].databaseId')"

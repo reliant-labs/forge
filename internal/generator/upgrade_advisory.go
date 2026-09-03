@@ -254,7 +254,25 @@ func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 		data.Output = frontendAdvisoryOutput(fe)
 		data.BasePath = fe.BasePath
 
-		base := filepath.FromSlash(fe.EffectivePath())
+		// Paths are project-RELATIVE here (the advisory rows are joined
+		// against the project root by InspectAdvisories), so containment
+		// is asked against ".".
+		//
+		// !ok means the frontend has no directory in this repository: a
+		// cross-repo `source:` pin, or a path pointing at a sibling
+		// checkout. SKIP it. This is a deliberate behavior change from
+		// the retired EffectivePath, which handed back the conventional
+		// frontends/<name> label for such a frontend — so the advisory
+		// lane compared forge's templates against a tree that is not
+		// there and reported every file as drifted-or-missing. An upgrade
+		// advisory about a directory that does not exist is noise, and
+		// the files in question belong to a repository whose own forge
+		// upgrades them.
+		dir, ok := fe.Dir(".")
+		if !ok {
+			continue
+		}
+		base := filepath.FromSlash(dir)
 		for _, file := range files {
 			root := templateRootOf(file.Path)
 			// A shared root is forge declaring "this file is mechanism I

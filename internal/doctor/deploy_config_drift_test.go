@@ -23,22 +23,26 @@ func frontendRenderJSON(frontends string) string {
 	}`
 }
 
-// firebaseFrontend is the shape the issue was filed about: a Frontend
-// with a FirebaseHosting deploy target, exactly as kcl/render.k's
-// _render_firebase_hosting projects it.
-const firebaseFrontend = `{"name":"reliant-web","type":"vite","path":"../reliant/web",
-	"deploy":{"type":"firebase","project":"reliant-prod","site":"reliant-prod","public_dir":"dist"}}`
+// missingShippingFrontend is the case this check exists for: an IN-REPO
+// path, a FirebaseHosting deploy target, and no directory. It claims to
+// ship and there is nothing to build.
+const missingShippingFrontend = `{"name":"web","type":"vite","path":"frontends/web",
+	"deploy":{"type":"firebase","project":"proj-prod","site":"proj-prod","public_dir":"dist"}}`
 
-// buildOnlyFrontend is `deploy = None` — KCL projects an unset deploy
-// block as a literal null, which is what distinguishes "compile-checked
-// only" from "claims to ship".
-const buildOnlyFrontend = `{"name":"internal-console","type":"nextjs","path":"frontends/internal-console",
+// missingBuildOnlyFrontend is `deploy = None` — KCL projects an unset
+// deploy block as a literal null, which is what distinguishes
+// "compile-checked only" from "claims to ship".
+const missingBuildOnlyFrontend = `{"name":"internal-console","type":"nextjs","path":"frontends/internal-console",
 	"deploy":null}`
 
+// siblingRepoFrontend is control-plane's reliant-web: a path pointing OUT
+// of this repository, at a checkout whose presence is a property of the
+// machine rather than of this repository's configuration.
+const siblingRepoFrontend = `{"name":"reliant-web","type":"vite","path":"../reliant/web",
+	"deploy":{"type":"firebase","project":"reliant-prod","site":"reliant-prod","public_dir":"dist"}}`
+
 // projectWithFrontends writes a forge.yaml declaring the named frontends
-// and returns its directory. A project declaring none still gets a valid
-// forge.yaml — "forge.yaml exists and lists nothing" and "there is no
-// forge.yaml" are different states, and only the first is drift.
+// and returns its directory.
 func projectWithFrontends(t *testing.T, names ...string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -55,6 +59,17 @@ func projectWithFrontends(t *testing.T, names ...string) string {
 	return dir
 }
 
+// withFrontendDir creates the on-disk source tree for a frontend, which
+// is the single fact this check reads about the filesystem.
+func withFrontendDir(t *testing.T, projectDir string, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		if err := os.MkdirAll(filepath.Join(projectDir, "frontends", n), 0o755); err != nil {
+			t.Fatalf("mkdir frontend %s: %v", n, err)
+		}
+	}
+}
+
 // envForDrift wires a pre-seeded render to a project dir, the way the
 // deploy checks see it in production after the first render memoises.
 func envForDrift(t *testing.T, projectDir string, renders ...envRender) *Environment {
@@ -64,33 +79,31 @@ func envForDrift(t *testing.T, projectDir string, renders ...envRender) *Environ
 	return e
 }
 
-// THE BUG. A frontend with a FirebaseHosting target and no forge.yaml
-// entry is deployable in principle and unbuildable in practice:
-// `forge build --target reliant-web` answers "target not found in
-// project config", which names the symptom and not the cause. Nothing
-// reported it before this check — verified on the real project, where
-// both `forge lint` and `forge doctor` matched zero lines for it.
-func TestFrontendConfigDrift_DeployTargetIsAnError(t *testing.T) {
-	dir := projectWithFrontends(t) // declares no frontends at all
+// THE BUG. A frontend with a FirebaseHosting target and no source tree
+// is deployable in principle and unbuildable in practice: `npm run
+// build` cannot run in a directory that does not exist. Nothing else
+// reports it — the sibling forge.yaml→filesystem walk only covers what
+// forge.yaml lists, which by construction this does not.
+func TestFrontendCode_MissingWithDeployTargetIsAnError(t *testing.T) {
+	dir := projectWithFrontends(t)
 	env := envForDrift(t, dir,
-		renderFromJSON(t, "preprod", frontendRenderJSON(firebaseFrontend)),
-		renderFromJSON(t, "prod", frontendRenderJSON(firebaseFrontend)))
+		renderFromJSON(t, "preprod", frontendRenderJSON(missingShippingFrontend)),
+		renderFromJSON(t, "prod", frontendRenderJSON(missingShippingFrontend)))
 
-	got := CheckFrontendConfigDrift(context.Background(), env)
+	got := CheckFrontendCode(context.Background(), env)
 	if got.Status != StatusFail {
 		t.Fatalf("Status = %q, want %q — a frontend that declares a deploy target "+
-			"claims to ship and cannot be built; that contradiction is an error.\n"+
+			"claims to ship and has no code to build; that contradiction is an error.\n"+
 			"message: %s\nevidence: %s", got.Status, StatusFail, got.Message, got.Evidence)
 	}
 
 	// The finding must name the frontend, both environments declaring it,
-	// and the remedy — the batched, named-and-remediated style the
-	// sibling forge.yaml→filesystem check uses.
+	// where forge looked, and the remedy.
 	for _, want := range []string{
-		"reliant-web",
+		"web",
 		"deploy/kcl/{preprod,prod}/main.k",
-		"forge build --target reliant-web",
-		"forge.yaml",
+		"frontends/web/ does not exist",
+		"forge scaffold frontend web",
 	} {
 		if !strings.Contains(got.Evidence, want) {
 			t.Errorf("evidence does not mention %q — a finding the reader cannot act on "+
@@ -99,75 +112,133 @@ func TestFrontendConfigDrift_DeployTargetIsAnError(t *testing.T) {
 	}
 }
 
-// `deploy = None` makes no shipping claim. It is legitimately
-// compile-checked, so an absent forge.yaml entry is a likely oversight
-// rather than a contradiction — a warning, and specifically NOT a
-// failure, because failing it would gate CI on a frontend nothing
-// deploys.
-func TestFrontendConfigDrift_BuildOnlyIsAWarningNotAnError(t *testing.T) {
-	dir := projectWithFrontends(t)
-	env := envForDrift(t, dir,
-		renderFromJSON(t, "dev", frontendRenderJSON(buildOnlyFrontend)))
+// The remedy must never be "add it to forge.yaml frontends[]". That key
+// is the CODEGEN inventory: adding a name to it creates no code, and for
+// a frontend owned by another repository it would project this project's
+// generated TypeScript into the sibling working tree. The old check
+// printed exactly that advice.
+func TestFrontendCode_RemedyIsNotForgeYAML(t *testing.T) {
+	env := envForDrift(t, projectWithFrontends(t),
+		renderFromJSON(t, "prod", frontendRenderJSON(missingShippingFrontend)))
 
-	got := CheckFrontendConfigDrift(context.Background(), env)
+	got := CheckFrontendCode(context.Background(), env)
+	if strings.Contains(got.Evidence, "forge.yaml") {
+		t.Errorf("the finding tells the reader to edit forge.yaml — that key is the codegen "+
+			"inventory and adding a name to it produces no source tree.\nevidence: %s", got.Evidence)
+	}
+}
+
+// `deploy = None` makes no shipping claim. Missing code there is a
+// likely oversight — a declaration written ahead of `forge scaffold
+// frontend` — rather than a contradiction, so it must not fail the gate.
+func TestFrontendCode_BuildOnlyIsAWarningNotAnError(t *testing.T) {
+	env := envForDrift(t, projectWithFrontends(t),
+		renderFromJSON(t, "dev", frontendRenderJSON(missingBuildOnlyFrontend)))
+
+	got := CheckFrontendCode(context.Background(), env)
 	if got.Status != StatusWarn {
 		t.Fatalf("Status = %q, want %q — `deploy = None` makes no shipping claim, so "+
-			"an absent forge.yaml entry must not fail the deployability gate.\n"+
-			"message: %s\nevidence: %s", got.Status, StatusWarn, got.Message, got.Evidence)
+			"missing code must not fail the deployability gate.\nmessage: %s\nevidence: %s",
+			got.Status, StatusWarn, got.Message, got.Evidence)
 	}
 	if !strings.Contains(got.Evidence, "internal-console") {
 		t.Errorf("evidence does not name the frontend: %s", got.Evidence)
 	}
 }
 
-// Declared in both is the steady state and must be silent. A check that
-// fires on a correct project is worse than no check — it trains the
-// reader to ignore the whole report.
-func TestFrontendConfigDrift_DeclaredInBothIsClean(t *testing.T) {
-	dir := projectWithFrontends(t, "reliant-web")
-	env := envForDrift(t, dir,
-		renderFromJSON(t, "preprod", frontendRenderJSON(firebaseFrontend)),
-		renderFromJSON(t, "prod", frontendRenderJSON(firebaseFrontend)))
+// Code on disk is the steady state and must be silent, whether or not
+// forge.yaml lists the frontend. A check that fires on a correct project
+// is worse than no check — it trains the reader to ignore the whole
+// report.
+func TestFrontendCode_PresentDirectoryIsClean(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared []string
+	}{
+		{"declared in forge.yaml", []string{"web"}},
+		{"declared only in KCL", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := projectWithFrontends(t, tc.declared...)
+			withFrontendDir(t, dir, "web")
+			env := envForDrift(t, dir,
+				renderFromJSON(t, "prod", frontendRenderJSON(missingShippingFrontend)))
 
-	got := CheckFrontendConfigDrift(context.Background(), env)
-	if got.Status != StatusPass {
-		t.Fatalf("Status = %q, want %q — the frontend is declared in both places.\n"+
-			"message: %s\nevidence: %s", got.Status, StatusPass, got.Message, got.Evidence)
+			got := CheckFrontendCode(context.Background(), env)
+			if got.Status != StatusPass {
+				t.Fatalf("Status = %q, want %q — the source tree is on disk.\n"+
+					"message: %s\nevidence: %s", got.Status, StatusPass, got.Message, got.Evidence)
+			}
+		})
 	}
 }
 
-// The OPPOSITE direction is not this check's business. A frontend in
+// THE SECOND BUG. A cross-repo `source:` pin is precisely how a project
+// declares "this frontend's code lives elsewhere and forge materializes
+// it at build time". `forge build prod --target reliant-web` resolves
+// the pin into a local cache and builds it, so reporting it as
+// unbuildable describes a failure that does not happen.
+func TestFrontendCode_SourcePinnedFrontendIsBuildable(t *testing.T) {
+	dir := projectWithFrontends(t) // declares no frontends at all
+	pinned := `{"name":"reliant-web","type":"vite","path":"",
+		"source":{"repo":"github.com/reliant-labs/reliant","ref":"v1.7.11"},
+		"deploy":{"type":"firebase","site":"reliant-prod"}}`
+	env := envForDrift(t, dir, renderFromJSON(t, "prod", frontendRenderJSON(pinned)))
+
+	got := CheckFrontendCode(context.Background(), env)
+	if got.Status != StatusPass {
+		t.Fatalf("Status = %q, want %q — a source-pinned frontend's code is materialized "+
+			"from the pin at build time, so forge can build it.\nmessage: %s\nevidence: %s",
+			got.Status, StatusPass, got.Message, got.Evidence)
+	}
+}
+
+// A path pointing OUT of the tree names a checkout whose presence is a
+// property of the machine, not of this repository's configuration.
+// Reporting it would fail on a bare CI checkout and pass on every
+// developer's machine — and every deployability check is required to be
+// answerable in CI. A verdict that flips with the working copy is worse
+// than no verdict.
+func TestFrontendCode_SiblingRepoPathIsNotReported(t *testing.T) {
+	env := envForDrift(t, projectWithFrontends(t),
+		renderFromJSON(t, "prod", frontendRenderJSON(siblingRepoFrontend)))
+
+	got := CheckFrontendCode(context.Background(), env)
+	if got.Status != StatusPass {
+		t.Fatalf("Status = %q, want %q — ../reliant/web is another repository's checkout; "+
+			"its presence is not a fact about this repo.\nmessage: %s\nevidence: %s",
+			got.Status, StatusPass, got.Message, got.Evidence)
+	}
+}
+
+// The opposite direction is not this check's business. A frontend in
 // forge.yaml that no environment's KCL declares is the ordinary shape of
-// a dev-only frontend: `forge build --target` resolves it, and no
-// environment claims to ship it. Reporting it here would fire on every
-// project with a frontend it does not deploy.
-func TestFrontendConfigDrift_ForgeYAMLOnlyIsNotReported(t *testing.T) {
-	dir := projectWithFrontends(t, "docs-site")
-	env := envForDrift(t, dir,
+// a dev-only frontend.
+func TestFrontendCode_ForgeYAMLOnlyIsNotReported(t *testing.T) {
+	env := envForDrift(t, projectWithFrontends(t, "docs-site"),
 		renderFromJSON(t, "prod", frontendRenderJSON("")))
 
-	got := CheckFrontendConfigDrift(context.Background(), env)
+	got := CheckFrontendCode(context.Background(), env)
 	if got.Status != StatusPass {
 		t.Fatalf("Status = %q, want %q — a dev-only frontend declared in forge.yaml and "+
-			"in no environment is legitimate, not drift.\nmessage: %s\nevidence: %s",
+			"in no environment is legitimate.\nmessage: %s\nevidence: %s",
 			got.Status, StatusPass, got.Message, got.Evidence)
 	}
 }
 
 // One frontend, four environments, ONE finding. The fix is a single
-// forge.yaml entry, so a per-environment finding would print the same
+// directory, so a per-environment finding would print the same
 // instruction four times.
-func TestFrontendConfigDrift_OneFindingPerFrontendAcrossEnvs(t *testing.T) {
-	dir := projectWithFrontends(t)
+func TestFrontendCode_OneFindingPerFrontendAcrossEnvs(t *testing.T) {
 	var renders []envRender
 	for _, e := range []string{"dev", "staging", "preprod", "prod"} {
-		renders = append(renders, renderFromJSON(t, e, frontendRenderJSON(firebaseFrontend)))
+		renders = append(renders, renderFromJSON(t, e, frontendRenderJSON(missingShippingFrontend)))
 	}
-	env := envForDrift(t, dir, renders...)
+	env := envForDrift(t, projectWithFrontends(t), renders...)
 
-	got := CheckFrontendConfigDrift(context.Background(), env)
-	if n := strings.Count(got.Evidence, "frontends[name=reliant-web]"); n != 1 {
-		t.Fatalf("frontend reported %d times, want 1 — the remedy is one forge.yaml entry.\nevidence: %s",
+	got := CheckFrontendCode(context.Background(), env)
+	if n := strings.Count(got.Evidence, "frontends[name=web]"); n != 1 {
+		t.Fatalf("frontend reported %d times, want 1 — the remedy is one directory.\nevidence: %s",
 			n, got.Evidence)
 	}
 	if !strings.Contains(got.Evidence, "deploy/kcl/{dev,preprod,prod,staging}/main.k") {
@@ -176,19 +247,18 @@ func TestFrontendConfigDrift_OneFindingPerFrontendAcrossEnvs(t *testing.T) {
 }
 
 // A project mixing both cases rolls up to the worse one: a shipping
-// frontend that cannot be built fails the gate even when a build-only
-// one is also adrift.
-func TestFrontendConfigDrift_ShippingDriftDominatesBuildOnly(t *testing.T) {
-	dir := projectWithFrontends(t)
-	env := envForDrift(t, dir,
-		renderFromJSON(t, "prod", frontendRenderJSON(firebaseFrontend+","+buildOnlyFrontend)))
+// frontend with no code fails the gate even when a build-only one is
+// also missing.
+func TestFrontendCode_ShippingDriftDominatesBuildOnly(t *testing.T) {
+	env := envForDrift(t, projectWithFrontends(t),
+		renderFromJSON(t, "prod", frontendRenderJSON(missingShippingFrontend+","+missingBuildOnlyFrontend)))
 
-	got := CheckFrontendConfigDrift(context.Background(), env)
+	got := CheckFrontendCode(context.Background(), env)
 	if got.Status != StatusFail {
 		t.Fatalf("Status = %q, want %q — one of the two claims to ship.\nevidence: %s",
 			got.Status, StatusFail, got.Evidence)
 	}
-	for _, want := range []string{"reliant-web", "internal-console"} {
+	for _, want := range []string{"frontends[name=web]", "internal-console"} {
 		if !strings.Contains(got.Evidence, want) {
 			t.Errorf("evidence drops %q — findings are batched so one round-trip fixes all of them.\n%s",
 				want, got.Evidence)
@@ -199,14 +269,13 @@ func TestFrontendConfigDrift_ShippingDriftDominatesBuildOnly(t *testing.T) {
 // A cluster-mode frontend ships too — it becomes a real Deployment. The
 // discriminator is named in the finding so the reader knows what the
 // project believes it is shipping.
-func TestFrontendConfigDrift_ClusterDeployAlsoShips(t *testing.T) {
-	dir := projectWithFrontends(t)
+func TestFrontendCode_ClusterDeployAlsoShips(t *testing.T) {
 	const clusterFrontend = `{"name":"ops-console","type":"nextjs","path":"frontends/ops-console",
 		"deploy":{"type":"cluster","cluster":"prod","namespace":"ns","registry":"r"}}`
-	env := envForDrift(t, dir,
+	env := envForDrift(t, projectWithFrontends(t),
 		renderFromJSON(t, "prod", frontendRenderJSON(clusterFrontend)))
 
-	got := CheckFrontendConfigDrift(context.Background(), env)
+	got := CheckFrontendCode(context.Background(), env)
 	if got.Status != StatusFail {
 		t.Fatalf("Status = %q, want %q — a cluster frontend renders a Deployment; it ships.\nevidence: %s",
 			got.Status, StatusFail, got.Evidence)
@@ -216,40 +285,60 @@ func TestFrontendConfigDrift_ClusterDeployAlsoShips(t *testing.T) {
 	}
 }
 
+// A declaration with no explicit path falls back to the
+// frontends/<name> convention every emitter uses, and is judged there.
+func TestFrontendCode_EmptyPathUsesTheConvention(t *testing.T) {
+	noPath := `{"name":"web","type":"vite","path":"","deploy":{"type":"firebase"}}`
+	dir := projectWithFrontends(t)
+	env := envForDrift(t, dir, renderFromJSON(t, "prod", frontendRenderJSON(noPath)))
+
+	got := CheckFrontendCode(context.Background(), env)
+	if got.Status != StatusFail {
+		t.Fatalf("Status = %q, want %q — an absent path means frontends/web, which is missing.\n%s",
+			got.Status, StatusFail, got.Evidence)
+	}
+	if !strings.Contains(got.Evidence, "frontends/web/ does not exist") {
+		t.Errorf("the finding does not name the conventional path forge looked at: %s", got.Evidence)
+	}
+
+	withFrontendDir(t, dir, "web")
+	if got := CheckFrontendCode(context.Background(), env); got.Status != StatusPass {
+		t.Fatalf("Status = %q, want %q once frontends/web exists.\n%s", got.Status, StatusPass, got.Evidence)
+	}
+}
+
 // A project with no environments is a --kind cli / library project. It
 // SKIPs rather than passing: the check never asked its question.
-func TestFrontendConfigDrift_NoEnvironmentsSkips(t *testing.T) {
+func TestFrontendCode_NoEnvironmentsSkips(t *testing.T) {
 	env := envForDrift(t, projectWithFrontends(t))
-	if got := CheckFrontendConfigDrift(context.Background(), env); got.Status != StatusSkip {
+	if got := CheckFrontendCode(context.Background(), env); got.Status != StatusSkip {
 		t.Fatalf("Status = %q, want %q for a project that declares no environments", got.Status, StatusSkip)
 	}
 }
 
-// No forge.yaml means there is nothing for the deploy graph to disagree
-// WITH. Reporting every KCL frontend as drift there would be noise, and
-// a forge.yaml too broken to parse has already failed the command that
-// loaded it first.
-func TestFrontendConfigDrift_NoForgeYAMLSkips(t *testing.T) {
+// The check no longer needs a forge.yaml at all: the deploy graph and
+// the filesystem are its two sources. A project with a KCL frontend and
+// no readable config still has a real, answerable question — is the code
+// there — and the old Skip would have hidden it.
+func TestFrontendCode_NoForgeYAMLStillChecks(t *testing.T) {
 	env := envForDrift(t, t.TempDir(),
-		renderFromJSON(t, "prod", frontendRenderJSON(firebaseFrontend)))
+		renderFromJSON(t, "prod", frontendRenderJSON(missingShippingFrontend)))
 
-	if got := CheckFrontendConfigDrift(context.Background(), env); got.Status != StatusSkip {
-		t.Fatalf("Status = %q, want %q when the project has no readable forge.yaml.\nmessage: %s",
-			got.Status, StatusSkip, got.Message)
+	got := CheckFrontendCode(context.Background(), env)
+	if got.Status != StatusFail {
+		t.Fatalf("Status = %q, want %q — forge.yaml is not an input to this question.\nmessage: %s",
+			got.Status, StatusFail, got.Message)
 	}
 }
 
 // A render that carries no `output` contract at all (a project whose
-// main.k exports only `manifests`) must not read as "declares no
-// frontends, everything is fine" — but it also has nothing to report.
-// The point of the test is that the parse degrades quietly instead of
+// main.k exports only `manifests`) must degrade quietly instead of
 // erroring the whole check.
-func TestFrontendConfigDrift_ManifestsOnlyRenderIsQuiet(t *testing.T) {
-	dir := projectWithFrontends(t, "web")
+func TestFrontendCode_ManifestsOnlyRenderIsQuiet(t *testing.T) {
 	body := `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]}`
-	env := envForDrift(t, dir, renderFromJSON(t, "prod", body))
+	env := envForDrift(t, projectWithFrontends(t, "web"), renderFromJSON(t, "prod", body))
 
-	if got := CheckFrontendConfigDrift(context.Background(), env); got.Status != StatusPass {
+	if got := CheckFrontendCode(context.Background(), env); got.Status != StatusPass {
 		t.Fatalf("Status = %q, want %q — a render exporting only `manifests` carries no "+
 			"frontend contract to check.\nmessage: %s", got.Status, StatusPass, got.Message)
 	}
@@ -257,13 +346,14 @@ func TestFrontendConfigDrift_ManifestsOnlyRenderIsQuiet(t *testing.T) {
 
 // The check belongs to the deployability arm — the one `forge doctor
 // --signal deploy` runs in CI. That is the whole point of the placement:
-// the drift must be caught on a checkout, before a deploy is attempted.
-func TestFrontendConfigDrift_IsInTheDeployabilityArm(t *testing.T) {
+// a frontend with no code must be caught on a checkout, before a deploy
+// is attempted.
+func TestFrontendCode_IsInTheDeployabilityArm(t *testing.T) {
 	for _, c := range deployabilityChecks() {
-		if c.name == "Deploy Config Drift" {
+		if c.name == "Frontend Code" {
 			return
 		}
 	}
-	t.Fatal("Deploy Config Drift is not in deployabilityChecks() — it would not run under " +
+	t.Fatal("Frontend Code is not in deployabilityChecks() — it would not run under " +
 		"`forge doctor --signal deploy`, the arm CI calls")
 }

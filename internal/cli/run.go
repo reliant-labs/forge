@@ -235,7 +235,7 @@ func mergeConfigFrontends(e *KCLEntities, cfg *config.ProjectConfig) {
 		e.Frontends = append(e.Frontends, FrontendEntity{
 			Name: fe.Name,
 			Type: fe.Type,
-			Path: fe.Path,
+			Path: fe.DeclaredDir(),
 			Port: fe.Port,
 		})
 	}

@@ -102,9 +102,11 @@ func writeFrontendRuntimeDocs(cfg *config.ProjectConfig, projectDir string, docs
 		if staticDir == "" {
 			continue // react-native serves no static asset root
 		}
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 		rel := filepath.Join(feDir, staticDir, codegen.FrontendConfigJSFile)
 		// Unchanged is the common case; comparing first keeps a no-op run

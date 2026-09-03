@@ -600,6 +600,22 @@ schema Gateway:
         # cloud bill for a limitation the spec does not have.
         len({"${l.port}/${l.protocol}/${l.hostname}": l for l in listeners}) == len(listeners), \
             "Gateway.listeners[*] must be unique on (port, protocol, hostname) — two listeners share all three"
+        # Listeners that SHARE a port must agree on PROTOCOL. The identity
+        # rule above deliberately permits a shared port — several HTTPS
+        # listeners on :443, one per hostname, is the entire point of one
+        # load balancer serving many hosts by SNI. It does not follow that
+        # two protocols may share one port: a bound port speaks one
+        # protocol, so HTTP and HTTPS on :443 renders a manifest the
+        # controller accepts and then marks Conflicted, serving NEITHER
+        # listener. That failure surfaces as a Gateway status condition
+        # with no application log, which is the expensive kind.
+        #
+        # Keying identity on the triple lost this check, which port-alone
+        # uniqueness had enforced as a side effect. It is restored here as
+        # its own rule so both properties hold: shared ports are allowed,
+        # incoherent ones are not.
+        len({"${l.port}": None for l in listeners}) == len({"${l.port}/${l.protocol}": None for l in listeners}), \
+            "Gateway '${name}': listeners sharing a port must agree on protocol — listeners ${[l.name for l in listeners]} declare ports ${[l.port for l in listeners]} with protocols ${[l.protocol for l in listeners]}"
         # An HTTPS listener must resolve to SOME cert material — its own
         # tls, or the gateway's. Rendering an HTTPS listener with no
         # certificateRefs produces a manifest the Gateway controller

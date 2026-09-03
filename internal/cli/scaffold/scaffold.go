@@ -1997,9 +1997,8 @@ func buildFrontendEntry(in frontendEntryInput) config.FrontendConfig {
 		Name: in.Name,
 		Type: in.FrontendType,
 		Kind: in.FrontendKind,
-		Path: fmt.Sprintf("frontends/%s", in.Name),
 		Port: port,
-	}
+	}.WithDir(fmt.Sprintf("frontends/%s", in.Name))
 	isWeb := in.Kind == "" || in.Kind == "web"
 	if in.Output != "" && isWeb {
 		fe.Output = in.Output

@@ -53,6 +53,10 @@ func TestGenerateHelpSurface(t *testing.T) {
 	cmd := newGenerateCmd()
 
 	assertStringSlicesEqual(t, "generate visible flags", visibleFlagNames(cmd), []string{
+		// VISIBLE on purpose: the downgrade refusal's error message tells
+		// the user to pass this flag when the rollback is deliberate. A
+		// remedy named in an error but hidden from --help is a dead end.
+		"allow-kcl-downgrade",
 		"check",
 		// VISIBLE on purpose: --dry-run is the spelling every other forge
 		// verb uses for "show me, don't do it", and a user who has to

@@ -44,9 +44,11 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) erro
 		if feType != "nextjs" && feType != "vite-spa" {
 			continue
 		}
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 		frontendDir := filepath.Join(projectDir, feDir)
 		if err := generator.EnsureCoreComponents(frontendDir); err != nil {
@@ -113,9 +115,11 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 			continue
 		}
 
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 
 		layout, err := pageLayoutForKind(feType)

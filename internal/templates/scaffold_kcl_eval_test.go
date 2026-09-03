@@ -61,13 +61,32 @@ func TestScaffoldedIngressEvaluates(t *testing.T) {
 	// names/signatures the generators emit.
 	// ONE generated module carrying both halves, matching what
 	// codegen.GenerateConfigKCL emits (schema then lambda, same file).
+	// Shape and SIGNATURE match codegen.GenerateConfigKCL exactly,
+	// including the two-arg projection: a workload passes its OWN
+	// `config_secrets`, so a sensitive field reaches only the workloads that
+	// declared it. `database_url` is here deliberately — with no sensitive
+	// field the render exercises none of that gating and would still pass
+	// if the projection went back to broadcasting every credential.
 	configGenStub := `import forge
+
+schema ConfigSecretRef:
+    name: str
+    key: str
 
 schema AppConfig:
     port: int = 8080
+    database_url: ConfigSecretRef = ConfigSecretRef { name = "app-secrets", key = "database_url" }
 
-appConfigEnvMap = lambda c: AppConfig -> {str: forge.EnvSource} {
-    {"PORT" = {value = str(c.port)}}
+APP_CONFIG_SENSITIVE_ENV: [str] = ["DATABASE_URL"]
+
+appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: forge.EnvSource} {
+    _sensitive: {str: forge.EnvSource} = {
+        "DATABASE_URL" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}
+    }
+    assert all _n in config_secrets { _n in _sensitive }, "unknown config_secrets name"
+    {
+        "PORT" = {value = str(c.port)}
+    } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}
 }
 `
 	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", "config_gen.k"), []byte(configGenStub), 0644); err != nil {

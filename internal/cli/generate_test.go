@@ -231,7 +231,7 @@ func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
 	defer func() { _ = os.Setenv("PATH", pathEnv) }()
 
 	cfg := &config.ProjectConfig{ModulePath: "example.com/project"}
-	fe := config.FrontendConfig{Name: "web", Type: "nextjs", Path: feRelDir}
+	fe := config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir(feRelDir)
 	if err := runBufGenerateTypeScript(fe, cfg, dir); err != nil {
 		t.Fatalf("runBufGenerateTypeScript() error = %v", err)
 	}
@@ -314,8 +314,8 @@ frontends:
 	if cfg.Frontends[0].Type != "nextjs" {
 		t.Fatalf("expected frontend type to be normalized to nextjs, got %q", cfg.Frontends[0].Type)
 	}
-	if cfg.Frontends[0].Path != filepath.Join("frontends", "web") {
-		t.Fatalf("expected frontend path frontends/web, got %q", cfg.Frontends[0].Path)
+	if cfg.Frontends[0].DeclaredDir() != filepath.ToSlash(filepath.Join("frontends", "web")) {
+		t.Fatalf("expected frontend path frontends/web, got %q", cfg.Frontends[0].DeclaredDir())
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 //go:embed all:project all:deploy all:frontend all:ci all:test all:ingress service/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
@@ -75,8 +76,27 @@ func (c TemplateCategory) Get(name string) ([]byte, error) {
 	return stripBuildIgnore(data), nil
 }
 
+// selfDefaulting is a payload that can fill its own optional fields before
+// rendering. Declared HERE, at the consumer, and deliberately one method wide:
+// Render's whole knowledge of the idea is "ask the payload to complete itself,"
+// with no notion of what any payload contains.
+//
+// Any future payload opts in by growing the method; Render never changes.
+type selfDefaulting interface {
+	withDefaults() interface{}
+}
+
 // Render executes a template with the given data and returns the result.
+//
+// Deliberately generic: it renders eleven unrelated template categories and
+// knows nothing about any one payload's shape. A type switch here on one
+// specific struct would make the shared renderer a place every domain is
+// tempted to special-case. Payload defaulting belongs to the payload — see
+// FrontendTemplateData.withDefaults.
 func (c TemplateCategory) Render(name string, data interface{}) ([]byte, error) {
+	if d, ok := data.(selfDefaulting); ok {
+		data = d.withDefaults()
+	}
 	return RenderFromFS(templateFS, c.basePath, name, data)
 }
 
@@ -491,6 +511,18 @@ type FrontendTemplateData struct {
 	// single-frontend output — byte-identical to projects scaffolded
 	// before workspaces landed. Snapshot tests rely on this.
 	Workspaces bool
+	// WebRuntimeTypePins are the packages a frontend's tsconfig must pin
+	// to its OWN copy, so tsc sees one identity per type.
+	//
+	// A plain []string, not a type from another package: this struct is a
+	// TEMPLATE PAYLOAD, so its fields are the values the templates render
+	// and nothing more. Whoever computes the list owns its meaning; this
+	// package only writes it out.
+	//
+	// Left nil by every caller today, and filled by withDefaults. It stays
+	// a field rather than a method so a caller CAN pin a different set —
+	// which is what makes the default a default and not a wall.
+	WebRuntimeTypePins []string
 	// APIPackage is the npm package name for the shared Connect TS
 	// clients workspace, e.g. "@myapp/api". Empty when Workspaces is
 	// false.
@@ -543,6 +575,21 @@ type FrontendTemplateData struct {
 	// "/", [A-Za-z0-9._-] segments) — templates splice it verbatim into
 	// TypeScript string literals.
 	BasePath string
+}
+
+// withDefaults fills the optional fields a caller may leave zero, and
+// satisfies selfDefaulting so Render applies it without knowing this type.
+//
+// WebRuntimeTypePins is defaulted rather than required because there are five
+// construction sites, and one that forgot the field would emit a tsconfig with
+// NO peer pins — which typechecks green on a registry install and fails only
+// under a dev forge build. That is the silent drift the derived list exists to
+// end, so "forgot it" must not be expressible. An explicit value still wins.
+func (d FrontendTemplateData) withDefaults() interface{} {
+	if d.WebRuntimeTypePins == nil {
+		d.WebRuntimeTypePins = webruntimepeers.TypePins()
+	}
+	return d
 }
 
 // WebhookTemplateData holds data for webhook template rendering.

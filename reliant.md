@@ -94,6 +94,41 @@ Run `forge skill list` to discover available playbooks, and `forge skill load <n
 4. **Migrations are the DB source of truth** — the database schema comes from migrations, not proto. Proto drives the ORM layer above them.
 5. **Use `task test`** — not raw `go test`. The project's `Taskfile.yml` sets the correct build tags, timeouts, and frontend lane, and it is what CI runs. (There is no `forge test`.)
 
+## Package boundaries and interfaces
+
+**Package A must be ignorant of package B's internals.** A concept that leaks
+across a package boundary — through a func, a param, a type or a return value —
+is the defect. This is the rule most often broken by a well-intentioned
+"let's share this".
+
+Three idioms that keep it true:
+
+1. **Declare interfaces where they are CONSUMED, not where they are
+   implemented.** Do not export an interface from the implementing package and
+   make callers depend on it. If package X needs "something that can list Y",
+   X declares that one-method interface locally. **WET over DRY is fine here** —
+   two small local declarations beat one shared exported one.
+2. **The larger the interface, the weaker the abstraction.** Prefer thin. A
+   1–2 method interface is strong; a six-method one is a concrete type in
+   disguise and will leak. Reaching for a third method is the signal to ask
+   whether you are modelling the consumer's need or the implementation.
+3. **Accept interfaces, return structs.** Take the narrow interface you need
+   (flexible); return concrete types (explicit). Returning an interface hides
+   what the caller actually got.
+
+**An interface with ONE implementation and no substitution point is
+indirection, not abstraction.** Prefer a concrete type with methods. Go is not
+Java: `Kind() string` that every caller switches on has relocated a switch, not
+removed it.
+
+Worked example in this repo: `templates.Render` serves eleven unrelated
+template categories. It knows only the one-method `selfDefaulting` interface,
+declared at the consumer — not any payload's shape. An earlier version
+type-asserted one concrete struct and reached into another domain's package,
+which made the shared renderer the obvious place for every domain to
+special-case. See `internal/templates/self_defaulting_test.go`, which pins the
+boundary rather than the behaviour.
+
 ## Testing tiers
 
 Run the cheapest tier that answers your question. Wall-clock budgets are enforced conventions, not aspirations — if you add a test that breaks a budget, gate it.

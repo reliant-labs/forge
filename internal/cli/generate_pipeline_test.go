@@ -35,6 +35,10 @@ import (
 func TestGenerateStepsPlanStable(t *testing.T) {
 	want := []string{
 		"load project config",
+		// Immediately after the load: every later gate and emitter reads
+		// the frontend inventory, so it must be settled before any of
+		// them runs. See generate_frontend_inventory.go.
+		"derive frontend inventory",
 		"load checksums",
 		"migrate legacy checksums manifest",
 		"check Tier-1 file-stomp guard",

@@ -49,9 +49,11 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			continue
 		}
 
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 
 		data := templates.FrontendTemplateData{
@@ -210,9 +212,11 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		if !strings.EqualFold(fe.Type, "vite-spa") {
 			continue
 		}
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 		data := templates.FrontendTemplateData{
 			FrontendName: fe.Name,
@@ -247,9 +251,11 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		if !strings.EqualFold(fe.Type, "react-native") && !strings.EqualFold(fe.Type, "rn") {
 			continue
 		}
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 		data := templates.FrontendTemplateData{
 			FrontendName: fe.Name,
@@ -262,6 +268,12 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
 		generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
 	}
+
+	// ── The dev web-runtime bridge (gitignored, project-wide) ──
+	// Per-project rather than per-frontend: it is one npm workspace root
+	// covering frontends/*, so it is reconciled once after every frontend's
+	// tracked manifest has been settled at its published range.
+	generator.EnsureDevWebRuntimeLink(projectDir)
 
 	return nil
 }
@@ -544,9 +556,11 @@ func unlinkedRouteWarnings(cfg *config.ProjectConfig, projectDir string, service
 		if !strings.EqualFold(fe.Type, "nextjs") {
 			continue
 		}
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 		navRel := filepath.Join(feDir, "src", "components", "nav.tsx")
 		missing := missingNavRoutes(projectDir, navRel, pages)

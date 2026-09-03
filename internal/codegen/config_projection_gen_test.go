@@ -47,18 +47,40 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"    shutdown_timeout: str = \"30s\"\n" +
 		"    sample_rate: float = 0.0\n" +
 		"\n" +
+		"# Every ENV_VAR AppConfig declares `sensitive: true` for. Used by forge's\n" +
+		"# host-mode config probe, which resolves the whole config for `forge run`\n" +
+		"# and the parity report. A WORKLOAD must not use it: naming every\n" +
+		"# credential is the broadcast that put one feature's secretKeyRef on\n" +
+		"# every pod. Declare what a workload reads in its `config_secrets` instead.\n" +
+		"APP_CONFIG_SENSITIVE_ENV: [str] = [\"DATABASE_URL\"]\n" +
+		"\n" +
 		"# appConfigEnvMap projects a typed AppConfig into the agnostic-core env\n" +
 		"# MAP — one forge.EnvSource per field that declares an env_var, keyed by\n" +
-		"# ENV_VAR name. A service merges it with `|`: `appConfigEnvMap(cfg) | {…}`.\n" +
-		"appConfigEnvMap = lambda c: AppConfig -> {str: forge.EnvSource} {\n" +
+		"# ENV_VAR name.\n" +
+		"#\n" +
+		"# Non-sensitive fields are projected for EVERY caller: they are inline\n" +
+		"# values, so they carry no credential and no start-time dependency.\n" +
+		"# Sensitive fields are projected ONLY when `config_secrets` NAMES them, so a\n" +
+		"# workload's manifest carries the secretKeyRefs it declared and no others.\n" +
+		"# A pod whose secretKeyRef names a missing key does not start — it stalls\n" +
+		"# in CreateContainerConfigError with no application log — so a credential\n" +
+		"# broadcast to workloads that never read it turns one feature's missing\n" +
+		"# secret into a whole namespace outage.\n" +
+		"#\n" +
+		"#     env = forge.env_project(appConfigEnvMap(cfg, w.config_secrets)) \n" +
+		"appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: forge.EnvSource} {\n" +
+		"    _sensitive: {str: forge.EnvSource} = {\n" +
+		"        \"DATABASE_URL\" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}\n" +
+		"    }\n" +
+		"    assert all _n in config_secrets { _n in _sensitive }, \\\n" +
+		"        \"appConfigEnvMap: config_secrets names ${[_n for _n in config_secrets if _n not in _sensitive]}, which is not a `sensitive` field of AppConfig. Sensitive fields: ${sorted([_k for _k in _sensitive])}. Add `sensitive: true` to the field in proto/config/v1/config.proto, or drop the name from this workload's config_secrets.\"\n" +
 		"    {\n" +
 		"        \"LOG_LEVEL\" = {value = c.log_level}\n" +
 		"        \"PORT\" = {value = str(c.port)}\n" +
 		"        \"CORS_ALLOW_CREDENTIALS\" = {value = \"true\" if c.cors_allow_credentials else \"false\"}\n" +
-		"        \"DATABASE_URL\" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}\n" +
 		"        \"SHUTDOWN_TIMEOUT\" = {value = c.shutdown_timeout}\n" +
 		"        \"SAMPLE_RATE\" = {value = str(c.sample_rate)}\n" +
-		"    }\n" +
+		"    } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n" +
 		"}\n"
 
 	if got != want {
@@ -181,8 +203,16 @@ func TestGenerateConfigProjectionKCL_EmptyFields(t *testing.T) {
 	if !strings.Contains(got, "appConfigEnvMap = lambda") {
 		t.Fatalf("the env-map lambda must be emitted even with no fields:\n%s", got)
 	}
-	if !strings.Contains(got, "    {}\n") {
+	// No fields at all: the inline half is an empty literal and the
+	// sensitive-selection merge still runs, so the lambda compiles and
+	// returns {} for any caller.
+	if !strings.Contains(got, "    {} | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n") {
 		t.Fatalf("empty field set should emit an empty EnvSource map:\n%s", got)
+	}
+	// The sensitive-var constant is emitted even when empty, so forge's
+	// host-mode probe can reference it in a project with no credentials.
+	if !strings.Contains(got, "APP_CONFIG_SENSITIVE_ENV: [str] = []\n") {
+		t.Fatalf("the sensitive-var constant must be emitted even when empty:\n%s", got)
 	}
 	// The ConfigMap projector is gone — no second lambda.
 	if strings.Contains(got, "appConfigConfigMap") {
@@ -278,10 +308,21 @@ schema Svc(forge.Service):
     ports: [int] = [8080]
 
 _svc = Svc {
-    env = config_gen.appConfigEnvMap(appcfg.app_config) | {`, ConfigSchemaModule) + `
+    env = config_gen.appConfigEnvMap(appcfg.app_config, ["API_KEY"]) | {`, ConfigSchemaModule) + `
         "EXTRA" = {value = "extra-val"}
         "LOG_LEVEL" = {value = "override-wins"}
     }
+}
+
+# A SECOND workload that declares no credentials — the whole point of the
+# change. Both are rendered from the SAME config, so if the projection ever
+# goes back to broadcasting, API_KEY appears here too and the assertion at the
+# bottom fails. Before the per-workload gate this pod carried a secretKeyRef
+# for a credential it never read, and a secretKeyRef naming a missing key
+# leaves the pod in CreateContainerConfigError with no application log.
+_worker = Svc {
+    name = "worker"
+    env = config_gen.appConfigEnvMap(appcfg.app_config, [])
 }
 
 _target = forge.ClusterTarget {
@@ -292,12 +333,27 @@ _target = forge.ClusterTarget {
 }
 _bundle = forge.Bundle {
     cluster_target = _target
-    workloads = [_svc]
+    workloads = [_svc, _worker]
 }
 manifests = forge.render_manifests(_bundle, "v1", {}, False)
-_dep = [m for m in manifests if m.kind == "Deployment"][0]
+_deps = [m for m in manifests if m.kind == "Deployment"]
+_dep = [m for m in _deps if m.metadata.name == "demo"][0]
 _ctr = _dep.spec.template.spec.containers[0]
 _env = {e.name: e for e in _ctr.env}
+
+_worker_dep = [m for m in _deps if m.metadata.name == "worker"][0]
+_worker_env = {e.name: e for e in _worker_dep.spec.template.spec.containers[0].env}
+
+# THE FIX, asserted on rendered manifests. The credential is present on the
+# workload that declared it and ABSENT from the one that did not — not merely
+# unread there, but not in the manifest at all, so a missing Secret key cannot
+# stall a pod that has no business holding the value.
+assert_declared_gets_secret = "API_KEY" in _env
+assert_undeclared_has_no_secret = "API_KEY" not in _worker_env
+# Non-sensitive config still reaches BOTH workloads: inline values carry no
+# credential and no start-time dependency, so gating them would tax every
+# ordinary config field for no security gain.
+assert_worker_still_gets_config = _worker_env["DEBUG_MODE"].value == "false"
 
 # sensitive config field -> secretKeyRef (reads the typed ConfigSecretRef).
 assert_secret = _env["API_KEY"].valueFrom.secretKeyRef == {name = "proj-secrets", key = "api_key"}

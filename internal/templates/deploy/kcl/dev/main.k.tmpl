@@ -183,7 +183,20 @@ _database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.Pro
 # assembled with forge.env_merge (name-keyed, LAST-wins) so a later layer
 # overrides an earlier one by name instead of the `+`-concat footgun (which
 # emits duplicate keys kubectl rejects).
-_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_gen.appConfigEnvMap(appcfg.app_config))), [
+# A LAMBDA of the workload's declared config_secrets, not a flat value, because
+# the CONFIG projection is now per-workload. Non-sensitive config still
+# reaches every workload identically (inline values — no credential, no
+# start-time dependency), but a `sensitive` field is projected only into the
+# workloads that NAME it in `config_secrets` in deploy/kcl/workloads.k.
+#
+# It was one flat map layered under every workload, and that was an outage
+# waiting to happen: adding one credential to the shared config added a
+# secretKeyRef to every Deployment, CronJob and Job. A pod whose secretKeyRef
+# names a key that does not exist never starts — CreateContainerConfigError,
+# no application log — so one feature's missing secret took down everything
+# in the namespace rather than that feature.
+_base_env = lambda config_secrets: [str] -> [forge.EnvVar] {
+    forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_gen.appConfigEnvMap(appcfg.app_config, config_secrets))), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
     forge.EnvVar {name = "DATABASE_URL", value = _database_url}
     # PORT is what the process actually BINDS, so it must equal the port
@@ -208,6 +221,7 @@ _base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(
     forge.EnvVar {name = "IDP_BASE", value = _idp_origin}
 {{- end}}
 ])
+}
 
 # Refine the declared workloads with the dev
 # knobs. The `|` merge layers per-env placement onto each workload;
@@ -239,7 +253,10 @@ _workloads = [c | {
     image = "{{.ProjectName}}"
     registry = _registry
     namespace = _namespace
-    env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
+    # `c.config_secrets` is this workload's own declared credential list, so the
+    # config projection under it carries only the secretKeyRefs this workload
+    # reads. A workload that declares none (the common case) gets none.
+    env_vars = forge.env_merge(_base_env(c.config_secrets), [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
 } for c in _declared]
 
 _workload_env = fw.WorkloadEnv {

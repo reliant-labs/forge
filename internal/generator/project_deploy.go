@@ -49,7 +49,11 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// dev build, and a released forge scaffolded a published git tag
 	// instead — a tag that was never published, so every project a
 	// released forge created was unresolvable from birth.
-	if _, err := kclvendor.Materialize(g.Path); err != nil {
+	// allowDowngrade=true: a scaffold is creating the project, so there
+	// is no prior vendor copy to protect and the guard has nothing to
+	// decide. Passing false would be harmless but implies a comparison
+	// that cannot happen here.
+	if _, err := kclvendor.Materialize(g.Path, true); err != nil {
 		return fmt.Errorf("vendor forge KCL module: %w", err)
 	}
 	res, err := kclvendor.EnsureVendorDep(kclModPath, g.Path)

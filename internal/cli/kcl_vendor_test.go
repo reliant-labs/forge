@@ -41,7 +41,7 @@ func TestSyncForgeKCL_VendorsBothCandidates(t *testing.T) {
 	deployMod := writeProjectKclMod(t, dir, "deploy/kcl/kcl.mod", kclLegacyGitTagMod)
 	rootMod := writeProjectKclMod(t, dir, "kcl.mod", kclLegacyGitTagMod)
 
-	if err := syncForgeKCL(dir); err != nil {
+	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("syncForgeKCL: %v", err)
 	}
 	deployGot, _ := os.ReadFile(deployMod)
@@ -57,7 +57,7 @@ func TestSyncForgeKCL_VendorsBothCandidates(t *testing.T) {
 	}
 	// Idempotent second run.
 	before, _ := os.ReadFile(deployMod)
-	if err := syncForgeKCL(dir); err != nil {
+	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
 	after, _ := os.ReadFile(deployMod)
@@ -70,7 +70,7 @@ func TestSyncForgeKCL_VendorsBothCandidates(t *testing.T) {
 // kcl.mod referencing the vendor, nothing is materialized.
 func TestSyncForgeKCL_NoKclModNeverOrphansVendorDir(t *testing.T) {
 	dir := t.TempDir()
-	if err := syncForgeKCL(dir); err != nil {
+	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("syncForgeKCL: %v", err)
 	}
 	if kclvendor.Present(dir) {
@@ -91,7 +91,7 @@ func TestSyncForgeKCL_NoKclModNeverOrphansVendorDir(t *testing.T) {
 func TestSyncForgeKCL_ReleaseBuildDoesNotBreakAWorkingProject(t *testing.T) {
 	dir := t.TempDir()
 	deployMod := writeProjectKclMod(t, dir, "deploy/kcl/kcl.mod", kclLegacyGitTagMod)
-	if err := syncForgeKCL(dir); err != nil {
+	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 	if !kclvendor.Present(dir) {
@@ -101,7 +101,7 @@ func TestSyncForgeKCL_ReleaseBuildDoesNotBreakAWorkingProject(t *testing.T) {
 
 	buildinfo.SetPkgVersion("v9.9.9")
 	defer buildinfo.SetPkgVersion("")
-	if err := syncForgeKCL(dir); err != nil {
+	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("release sync: %v", err)
 	}
 
@@ -129,7 +129,7 @@ func TestSyncForgeKCL_ReleaseBuildVendorsAFreshProject(t *testing.T) {
 
 	buildinfo.SetPkgVersion("v9.9.9")
 	defer buildinfo.SetPkgVersion("")
-	if err := syncForgeKCL(dir); err != nil {
+	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("release sync: %v", err)
 	}
 	if !kclvendor.Present(dir) {
@@ -152,7 +152,7 @@ name = "p"
 forge = { path = "../../.forge-kcl", version = "0.1.0" }
 `
 	modPath := writeProjectKclMod(t, dir, "deploy/kcl/kcl.mod", unmanaged)
-	if err := syncForgeKCL(dir); err != nil {
+	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	got, _ := os.ReadFile(modPath)

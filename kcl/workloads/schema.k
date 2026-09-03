@@ -222,6 +222,38 @@ schema Workload:
     # alongside `env_vars`.
     env: {str: str} = {}
 
+    # The SENSITIVE config fields THIS workload reads, by ENV_VAR name
+    # ("DATABASE_URL", "STRIPE_SECRET_KEY"). Each env's main.k passes this
+    # to the generated `config_gen.<x>ConfigEnvMap(cfg, config_secrets)`, which
+    # projects a secretKeyRef for exactly these names and no others.
+    #
+    # NON-sensitive config is NOT listed here and never needs to be. Every
+    # field that is not marked `sensitive: true` in proto/config/v1/config.proto
+    # projects to an inline value on every workload automatically, so adding
+    # an ordinary config value stays a one-line proto edit. This list is only
+    # the credentials, which is the short list.
+    #
+    # WHY A WORKLOAD MUST DECLARE THEM. The config projection used to emit
+    # every sensitive field into every workload's env, because one map was
+    # layered under all of them. Adding a single credential to a shared
+    # AppConfig therefore added a secretKeyRef to every Deployment, CronJob
+    # and Job in the project — in control-plane, one new `zitadel_broker_token`
+    # landed in 7 Deployments plus a Job that never read it. A pod whose
+    # secretKeyRef names a key that does not exist NEVER STARTS: it stalls in
+    # CreateContainerConfigError, produces no application log, and gives no
+    # hint that the cause is a credential belonging to a different feature. So
+    # the first deploy of one feature's secret could take down the entire
+    # namespace instead of that feature. Declaring the reader makes the blast
+    # radius the workload that actually needs the value.
+    #
+    # It is also plain least privilege: a compromised pod cannot read a
+    # Secret key that is absent from its own manifest.
+    #
+    # Empty is the correct and common answer — most workloads read no
+    # credentials at all. Naming a var that is not a sensitive config field
+    # fails the render and names it, rather than being silently ignored.
+    config_secrets: [str] = []
+
     # resources / env_vars / health_check mirror the parent forge package's
     # Resources / EnvVar / HealthCheck shapes.
     #

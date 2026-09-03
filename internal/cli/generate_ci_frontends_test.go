@@ -64,7 +64,7 @@ func TestDiscoverCIFrontends_DerivedFromKCLWithNoForgeYAMLKey(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 frontend discovered from KCL, got %d: %+v", len(got), got)
 	}
-	if got[0].Name != "internal-console" || got[0].Path != "frontends/internal-console" {
+	if got[0].Name != "internal-console" || got[0].DeclaredDir() != "frontends/internal-console" {
 		t.Fatalf("frontend must come from KCL, got %+v", got[0])
 	}
 
@@ -161,10 +161,10 @@ func TestDiscoverCIFrontends_FallsBackToConfigWhenNoKCL(t *testing.T) {
 	root := t.TempDir()
 	cfg := &config.ProjectConfig{
 		Name:      "legacy",
-		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs", Path: "frontends/web"}},
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
 	}
 	got := discoverCIFrontends(root, cfg)
-	if len(got) != 1 || got[0].Path != "frontends/web" {
+	if len(got) != 1 || got[0].DeclaredDir() != "frontends/web" {
 		t.Fatalf("no-KCL project must fall back to forge.yaml, got %+v", got)
 	}
 }
@@ -177,7 +177,7 @@ func TestDiscoverCIFrontends_EmptyPathDefaultsToConvention(t *testing.T) {
 	useKCLFixture(t, `{"frontends": [{"name": "web", "type": "nextjs", "path": ""}]}`)
 
 	got := discoverCIFrontends(root, &config.ProjectConfig{Name: "demo"})
-	if len(got) != 1 || got[0].Path != "frontends/web" {
+	if len(got) != 1 || got[0].DeclaredDir() != "frontends/web" {
 		t.Fatalf("empty KCL path must default to frontends/<name>, got %+v", got)
 	}
 }

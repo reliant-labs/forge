@@ -145,9 +145,13 @@ func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWor
 
 	var frontends []templates.FrontendCIConfig
 	for _, fe := range declared {
-		p := fe.Path
-		if p == "" {
-			p = "frontends/" + fe.Name
+		// CI workflow paths are committed to git and run on a bare
+		// checkout of THIS repository, so a frontend with no directory
+		// here (a cross-repo pin) contributes no CI step — the workflow
+		// would cd into a path that does not exist on the runner.
+		p, ok := fe.Dir(".")
+		if !ok {
+			continue
 		}
 		frontends = append(frontends, templates.FrontendCIConfig{Name: fe.Name, Path: p})
 	}
@@ -330,7 +334,7 @@ func buildE2EWorkflowData(cfg *config.ProjectConfig, root string) templates.E2EW
 	declared := discoverCIFrontends(root, cfg)
 	var fePath string
 	if len(declared) > 0 {
-		fePath = declared[0].Path
+		fePath = declared[0].DeclaredDir()
 	}
 	return templates.E2EWorkflowData{
 		ProjectName:  cfg.Name,

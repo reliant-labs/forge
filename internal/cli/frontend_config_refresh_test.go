@@ -32,7 +32,7 @@ func TestRefreshFrontendRuntimeConfigs_PicksUpTheConvergedClientID(t *testing.T)
 	projectDir := identityProject(t)
 	cfg := &config.ProjectConfig{
 		Name:      "acme",
-		Frontends: []config.FrontendConfig{{Name: "web", Type: "vite", Path: "frontends/web"}},
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "vite"}.WithDir("frontends/web")},
 	}
 	fc := identityFrontendConfig()
 
@@ -84,7 +84,7 @@ func TestRefreshFrontendRuntimeConfigs_IsANoOpWhenAlreadyCurrent(t *testing.T) {
 	projectDir := identityProject(t)
 	cfg := &config.ProjectConfig{
 		Name:      "acme",
-		Frontends: []config.FrontendConfig{{Name: "web", Type: "vite", Path: "frontends/web"}},
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "vite"}.WithDir("frontends/web")},
 	}
 	writeConvergedIdentity(t, projectDir, "converged-client-id")
 	current := renderRuntimeDoc(t, projectDir, identityFrontendConfig())
@@ -139,7 +139,7 @@ func TestRefreshFrontendRuntimeConfigs_SkipsAProjectWithNoFrontend(t *testing.T)
 
 func configJSPath(cfg *config.ProjectConfig) string {
 	fe := cfg.Frontends[0]
-	return filepath.Join(fe.Path, frontendStaticDir(fe.Type), codegen.FrontendConfigJSFile)
+	return filepath.Join(fe.DeclaredDir(), frontendStaticDir(fe.Type), codegen.FrontendConfigJSFile)
 }
 
 // renderRuntimeDoc produces the config.js body the same way the deploy and

@@ -28,7 +28,7 @@ func TestUpgradeLanes_DoNotBothClaimTheSameFile(t *testing.T) {
 				Name:       "demo",
 				ModulePath: "github.com/example/demo",
 				Frontends: []config.FrontendConfig{
-					{Name: "web", Type: kind, Path: filepath.Join("frontends", "web")},
+					config.FrontendConfig{Name: "web", Type: kind}.WithDir(filepath.Join("frontends", "web")),
 				},
 			}
 
@@ -63,7 +63,7 @@ func TestUpgradeLanes_EslintIsStillClaimedByExactlyOneLane(t *testing.T) {
 		Name:       "demo",
 		ModulePath: "github.com/example/demo",
 		Frontends: []config.FrontendConfig{
-			{Name: "web", Type: "nextjs", Path: filepath.Join("frontends", "web")},
+			config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir(filepath.Join("frontends", "web")),
 		},
 	}
 	want := "frontends/web/eslint.config.mjs"

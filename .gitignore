@@ -231,3 +231,4 @@ tmp/
 # Root-anchored so it cannot match the many `forge` DIRECTORIES in the
 # tree (e.g. internal/templates/project/skills/forge/).
 /forge
+.grepai/

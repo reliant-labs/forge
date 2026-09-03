@@ -339,12 +339,14 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		}
 	}
 
-	// Resolve the @reliantlabs/forge-web-runtime specifier for THIS machine before
-	// anything installs. The scaffold flow runs `npm install` straight after
-	// generating the files, so a dev build has to have swapped the published
-	// range for its `file:` bridge by now or that first install would go
-	// looking for the package in the registry.
+	// Declare @reliantlabs/forge-web-runtime in the frontend's own (tracked)
+	// package.json at its published range, then — on a dev build only — lay
+	// down the gitignored workspace root that redirects that requirement to
+	// the local forge checkout. Both must happen before anything installs:
+	// the scaffold flow runs `npm install` straight after generating, and the
+	// bridge only takes effect if npm sees it on that first install.
 	EnsureWebRuntimeDependency(root, filepath.Join("frontends", frontendName), frontendName)
+	EnsureDevWebRuntimeLink(root)
 
 	return nil
 }

@@ -266,6 +266,16 @@ func TestFirstCommandToken(t *testing.T) {
 		{"env_var", "CGO_ENABLED=0 go build", "", "build_cmd starts with env-var assignment — first-token heuristic doesn't apply"},
 		{"env_var_lower_passes_through", "key=value go build", "key=value", ""}, // not uppercase → not detected as env, returned as-is
 		{"tabs_split", "docker\tbuild .", "docker", ""},
+		// Shell builtins are never on PATH, so a lookup always "fails".
+		// `set -e` opens most multi-step build_cmds, and warning about it
+		// told two real targets (workspace-base, daemon-gateway) their
+		// build was broken for doing the careful thing.
+		{"set_e", "set -e\ndocker build .", "", "build_cmd starts with the shell builtin `set` — first-token heuristic doesn't apply"},
+		{"set_euo", "set -euo pipefail\ngo build ./...", "", "build_cmd starts with the shell builtin `set` — first-token heuristic doesn't apply"},
+		{"export", "export FOO=1\ngo build", "", "build_cmd starts with the shell builtin `export` — first-token heuristic doesn't apply"},
+		// A word that is BOTH a builtin and a real binary is not skipped —
+		// looking it up is harmless and still informative.
+		{"echo_not_skipped", "echo hi", "echo", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

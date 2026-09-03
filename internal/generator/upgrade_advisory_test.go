@@ -33,7 +33,7 @@ func advisoryTestProject(t *testing.T) (string, *config.ProjectConfig) {
 		Name:       "demo",
 		ModulePath: "github.com/example/demo",
 		Frontends: []config.FrontendConfig{
-			{Name: "web", Type: "nextjs", Path: filepath.Join("frontends", "web")},
+			config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir(filepath.Join("frontends", "web")),
 		},
 	}
 	return dir, cfg
@@ -72,7 +72,7 @@ func inspect(t *testing.T, dir string, cfg *config.ProjectConfig, force ForceSel
 }
 
 func advisoryPath(cfg *config.ProjectConfig, rel string) string {
-	return filepath.Join(cfg.Frontends[0].EffectivePath(), filepath.FromSlash(rel))
+	return filepath.Join(cfg.Frontends[0].DeclaredDir(), filepath.FromSlash(rel))
 }
 
 // TestAdvisories_FreshScaffoldSaysNothing is the false-positive gate for
@@ -88,7 +88,7 @@ func advisoryPath(cfg *config.ProjectConfig, rel string) string {
 func TestAdvisories_FreshScaffoldSaysNothing(t *testing.T) {
 	dir, cfg := advisoryTestProject(t)
 	results := inspect(t, dir, cfg, ForceNone(), true)
-	frontendDir := cfg.Frontends[0].EffectivePath()
+	frontendDir := cfg.Frontends[0].DeclaredDir()
 
 	for path, r := range results {
 		if !strings.HasPrefix(path, frontendDir) {
@@ -313,7 +313,7 @@ func TestAdvisories_SetIsEveryTemplateWrittenFile(t *testing.T) {
 	for _, row := range advisoryRows(t, cfg) {
 		got[filepath.ToSlash(row.Path)] = true
 	}
-	base := filepath.ToSlash(cfg.Frontends[0].EffectivePath()) + "/"
+	base := filepath.ToSlash(cfg.Frontends[0].DeclaredDir()) + "/"
 	for _, want := range []string{
 		// Shared mechanism modules — the lane's original membership.
 		"src/lib/query-client.ts",

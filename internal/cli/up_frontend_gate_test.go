@@ -64,7 +64,7 @@ func TestFrontendPhaseEnabled(t *testing.T) {
 		},
 		{
 			name:     "forge.yaml inventory still enables the phase",
-			cfg:      config.ProjectConfig{Name: "p", Kind: "service", Frontends: []config.FrontendConfig{{Name: "web", Path: "frontends/web"}}},
+			cfg:      config.ProjectConfig{Name: "p", Kind: "service", Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web"}.WithDir("frontends/web")}},
 			entities: declared,
 			want:     true,
 		},

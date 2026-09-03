@@ -28,7 +28,7 @@ func managedFrontendCfg() *config.ProjectConfig {
 		Name:       "demo",
 		ModulePath: "github.com/example/demo",
 		Frontends: []config.FrontendConfig{
-			{Name: "web", Type: "nextjs", Path: filepath.Join("frontends", "web")},
+			config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir(filepath.Join("frontends", "web")),
 		},
 	}
 }
@@ -237,7 +237,7 @@ func TestFrontendESLintAbsentWithoutFrontends(t *testing.T) {
 		{"react-native only", &config.ProjectConfig{
 			Name: "demo", ModulePath: "github.com/example/demo",
 			Frontends: []config.FrontendConfig{
-				{Name: "mobile", Type: "react-native", Path: filepath.Join("frontends", "mobile")},
+				config.FrontendConfig{Name: "mobile", Type: "react-native"}.WithDir(filepath.Join("frontends", "mobile")),
 			},
 		}},
 		{"nil config", nil},

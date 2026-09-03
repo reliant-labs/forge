@@ -440,7 +440,7 @@ func TestAppendBuildContexts(t *testing.T) {
 // unrelated deployable service), but the gate is a no-op when there are
 // no frontends or a real framework is configured.
 func TestFrontendsSkippedByFramework(t *testing.T) {
-	fe := []config.FrontendConfig{{Name: "dashboard", Type: "nextjs", Path: "frontends/dashboard"}}
+	fe := []config.FrontendConfig{config.FrontendConfig{Name: "dashboard", Type: "nextjs"}.WithDir("frontends/dashboard")}
 	cases := []struct {
 		name      string
 		framework string

@@ -101,6 +101,28 @@ Load `architecture` for the deep version.
 
 If a handler grows past six steps (validate / auth / convert / call service / convert / map error), the extra logic belongs in the service. If a service grows past one domain, it should split.
 
+## Package boundaries and interfaces
+
+**Package A must be ignorant of package B's internals.** A concept that leaks
+across a package boundary — through a func, a param, a type or a return value —
+is the defect.
+
+1. **Declare interfaces where they are CONSUMED, not where they are
+   implemented.** If package X needs "something that can list Y", X declares
+   that one-method interface locally. **WET over DRY is fine here** — two small
+   local declarations beat one shared exported one.
+2. **The larger the interface, the weaker the abstraction.** Prefer thin. A
+   1–2 method interface is strong; a six-method one is a concrete type in
+   disguise and will leak.
+3. **Accept interfaces, return structs.** Take the narrow interface you need
+   (flexible); return concrete types (explicit). Returning an interface hides
+   what the caller actually got.
+
+**An interface with ONE implementation and no substitution point is
+indirection, not abstraction.** Prefer a concrete type with methods. Go is not
+Java: a `Kind() string` that every caller switches on has relocated a switch,
+not removed it.
+
 ## Schema and proto conventions
 
 SQL is the schema language. Entities are PROJECTIONS of the applied `db/migrations` schema — the columns ARE the declaration. The historical proto entity annotations (`(forge.v1.entity)`, `pk:`, `timestamps:` …) are retired and IGNORED; delete leftovers instead of copying them forward.

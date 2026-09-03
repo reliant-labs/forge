@@ -120,9 +120,12 @@ func runScenario(f *factory.Factory, name, frontend, from, description string) e
 			err)
 	}
 
-	feDir := fe.Path
-	if feDir == "" {
-		feDir = filepath.Join("frontends", fe.Name)
+	feDir, ok := fe.Dir(root)
+	if !ok {
+		return cliutil.WrapUserErr(ctxLabel, "resolve target frontend", fe.Name,
+			"a frontend whose code is in another repository has no directory in this "+
+				"project to write scenarios into — scaffold scenarios in that repository instead",
+			fmt.Errorf("frontend %q has no directory in this project", fe.Name))
 	}
 	scenariosRel := filepath.Join(feDir, "src", "mocks", "scenarios")
 	scenariosDir := filepath.Join(root, scenariosRel)

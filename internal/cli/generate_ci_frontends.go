@@ -107,7 +107,7 @@ func discoverCIFrontendsUncached(projectDir string, cfg *config.ProjectConfig) [
 			// First env wins. Envs are walked in ListEnvs' sorted order, so
 			// which one that is stays stable across runs.
 			if _, seen := found[fe.Name]; !seen {
-				found[fe.Name] = config.FrontendConfig{Name: fe.Name, Type: fe.Type, Path: path}
+				found[fe.Name] = config.FrontendConfig{Name: fe.Name, Type: fe.Type}.WithDir(path)
 			}
 		}
 	}

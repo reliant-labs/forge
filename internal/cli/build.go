@@ -654,14 +654,23 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		entities = filterEntitiesByTarget(entities, opts.targets)
 	}
 
-	// `-t <service>` scopes the KCL set the same way. opts.targets is the
+	// `-t <name>` scopes the KCL set the same way. opts.targets is the
 	// orchestrator's channel (set by `forge env up`); opts.buildTarget is this
 	// command's own flag, and it must narrow the entities too — otherwise
 	// naming one service still runs every other service's build_cmd, which is
 	// exactly the "one command rebuilt my whole stack" failure. `all` and
 	// `external` keep their existing meanings and are not names.
+	//
+	// A FRONTEND name narrows the same way, and for the same reason. It
+	// used not to matter: a frontend was resolvable only from the codegen
+	// inventory, which no external-build service is ever in, so the branch
+	// was unreachable for one. Now that a KCL-declared frontend resolves,
+	// `forge build prod --target reliant-web` reached it — and observed:
+	// the frontend built in 22s, then every external service's build_cmd
+	// ran anyway and four docker pushes failed, on a command that named
+	// one frontend.
 	if entities != nil && opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != "external" {
-		if kclHasServiceNamed(entities, opts.buildTarget) {
+		if kclHasServiceNamed(entities, opts.buildTarget) || kclFrontendAsBuildTarget(entities, opts.buildTarget) != nil {
 			entities = filterEntitiesByTarget(entities, []string{opts.buildTarget})
 		}
 	}
@@ -751,10 +760,24 @@ func validateExternalBuildTarget(entities *KCLEntities, opts buildOptions) error
 // reliant-desktop — was unreachable: "target not found in project config",
 // despite the service being right there in the rendered env.
 func resolveNamedBuildTarget(cfg *config.ProjectConfig, entities *KCLEntities, opts *buildOptions, frontends []config.FrontendConfig) ([]config.FrontendConfig, bool, error) {
-	frontends = filterFrontends(frontends, opts.buildTarget)
-	if len(frontends) > 0 {
+	if hit := filterFrontends(frontends, opts.buildTarget); len(hit) > 0 {
 		// Target is a frontend, skip binary build.
-		return frontends, false, nil
+		return hit, false, nil
+	}
+	// Not in the codegen inventory — which does not mean forge cannot
+	// build it. cfg.Frontends (and everything derived from it) answers
+	// "whose TypeScript does this repo generate", and that set
+	// deliberately excludes a frontend pinned to another repository: see
+	// config.KCLFrontend.OwnsFrontendCode. The BUILD set is a different
+	// question, and the rendered env answers it — renderBuildEntities has
+	// already materialized the pin into a real directory precisely so
+	// `npm run build` has somewhere to run.
+	//
+	// Conflating them made control-plane's `forge build prod --target
+	// reliant-web` print "Frontends (skip docker): reliant-web" in its own
+	// plan and then fail with "target not found", one screen apart.
+	if hit := kclFrontendAsBuildTarget(entities, opts.buildTarget); hit != nil {
+		return []config.FrontendConfig{*hit}, false, nil
 	}
 	if opts.buildTarget == cfg.Name {
 		// The project binary, with its frontends already filtered away.
@@ -1105,7 +1128,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
-				r := dockerBuild(ctx, cfg, f.Name, f.Path, opts.pushRegistry, dockerArch, resolvedTag)
+				r := dockerBuild(ctx, cfg, f.Name, f.DeclaredDir(), opts.pushRegistry, dockerArch, resolvedTag)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -1164,7 +1187,7 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			}
 		}
 		for _, fe := range dockerFrontends {
-			r := dockerBuild(ctx, cfg, fe.Name, fe.Path, opts.pushRegistry, dockerArch, resolvedTag)
+			r := dockerBuild(ctx, cfg, fe.Name, fe.DeclaredDir(), opts.pushRegistry, dockerArch, resolvedTag)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -1429,10 +1452,16 @@ func resolveBuildVersion(ctx context.Context, override string) versionInfo {
 
 func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildMemoryCaps) buildResult {
 	start := time.Now()
-	fmt.Printf("[build] %s: NODE_ENV=production npm run build in %s\n", fe.Name, fe.Path)
+	// DeclaredDir, not Dir: by this point resolveBuildFrontendSources has
+	// REWRITTEN the path of every source-pinned frontend to the
+	// materialized cache directory, which is outside the project tree on
+	// purpose. Re-deriving through Dir would apply a containment check to
+	// a path that is legitimately external and undo the resolution.
+	feDir := fe.DeclaredDir()
+	fmt.Printf("[build] %s: NODE_ENV=production npm run build in %s\n", fe.Name, feDir)
 
 	cmd := exec.CommandContext(ctx, "npm", "run", "build")
-	cmd.Dir = fe.Path
+	cmd.Dir = feDir
 	cmd.Env = withForcedEnv(os.Environ(), "NODE_ENV", "production")
 	// Cap V8's heap under a constrained budget so `next build` can't
 	// balloon past the envelope. Merged with any inherited NODE_OPTIONS so
@@ -1848,6 +1877,40 @@ func filterFrontends(frontends []config.FrontendConfig, target string) []config.
 		if f.Name == target {
 			return []config.FrontendConfig{f}
 		}
+	}
+	return nil
+}
+
+// kclFrontendAsBuildTarget finds the named frontend in the rendered env
+// and converts it to the build-set shape, or nil when the env declares
+// no such frontend.
+//
+// It is deliberately NOT a fallback for every frontend: filterFrontends
+// runs first, so a name the codegen inventory already carries keeps that
+// entry. The inventory is the project's own declaration and is not
+// per-env, whereas a KCL entry is only as true as the environment being
+// built. This is the widening for the case the inventory cannot express
+// at all.
+//
+// Path is taken verbatim from the entity because by this point
+// resolveFrontendEntitySources has REWRITTEN it to the materialized
+// source directory. Falling back to the frontends/<name> convention here
+// would hand `npm run build` a path that does not exist.
+func kclFrontendAsBuildTarget(e *KCLEntities, target string) *config.FrontendConfig {
+	if e == nil || target == "" {
+		return nil
+	}
+	for _, fe := range e.Frontends {
+		if fe.Name != target {
+			continue
+		}
+		// WithDir carries the entity path VERBATIM — it has already been
+		// rewritten to the materialized source directory by
+		// resolveFrontendEntitySources, so this is a resolved location,
+		// not a declaration. (WithDir clears Source for exactly that
+		// reason: the code is on disk now.)
+		fe2 := config.FrontendConfig{Name: fe.Name, Type: fe.Type}.WithDir(fe.Path)
+		return &fe2
 	}
 	return nil
 }

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli"
 )
 
@@ -26,9 +25,14 @@ import (
 // having rendered nothing.
 //
 // Routing that argv into cli.Execute() makes the test binary a faithful
-// stand-in for the real forge binary, which is what allows the pipeline
-// to run IN-PROCESS — the requirement for reading
-// checksums.Tier1TargetSet, which lives in this process's memory.
+// stand-in for the real forge binary, which is what lets the pipeline run
+// inside a test process at all — the requirement for reading
+// checksums.Tier1TargetSet, which lives in that process's memory.
+//
+// The second dispatch, renderChildArgv, re-executes this binary as a
+// single-fixture renderer so the four fixtures can render concurrently
+// in separate processes. See render_child_test.go for why concurrency
+// has to be bought with processes rather than goroutines.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "protoc-gen-forge" {
 		if err := cli.Execute(); err != nil {
@@ -36,6 +40,10 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 		os.Exit(0)
+	}
+	if len(os.Args) > 1 && os.Args[1] == renderChildArgv {
+		runRenderChild()
+		return
 	}
 	os.Exit(m.Run())
 }
@@ -69,22 +77,56 @@ func renders(t *testing.T) (inputs []*renderResult, identity *renderResult) {
 			renderErr = err
 			return
 		}
-		for _, spec := range []struct {
+
+		// The four fixtures are independent trees, but render() cannot
+		// run concurrently IN THIS PROCESS: forgeIn drives the pipeline
+		// via os.Chdir + os.Args, and the Tier-1 inventory is read from
+		// checksums.Tier1TargetSet — all three are process-global, so
+		// two concurrent renders would interleave working directories
+		// and attribute one fixture's targets to another.
+		//
+		// So each render runs in its own CHILD of this test binary,
+		// where those globals are private again, and reports its result
+		// back as JSON. The children are the same binary (os.Args[0]),
+		// dispatched by TestMain, which is the trick the protoc-gen-forge
+		// dispatch above already relies on.
+		specs := []struct {
 			dir string
 			fx  fixture
 		}{
 			{"a", projectA()},
 			{"b", projectB()},
 			{"d", projectD()},
-		} {
-			r, rerr := render(filepath.Join(base, spec.dir), spec.fx)
-			if rerr != nil {
-				renderErr = fmt.Errorf("fixture %s: %w", spec.fx.Label, rerr)
+			{"c", projectC()},
+		}
+
+		results := make([]*renderResult, len(specs))
+		errs := make([]error, len(specs))
+		var wg sync.WaitGroup
+		for i, spec := range specs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r, rerr := renderInChild(filepath.Join(base, spec.dir), spec.fx)
+				if rerr != nil {
+					errs[i] = fmt.Errorf("fixture %s: %w", spec.fx.Label, rerr)
+					return
+				}
+				results[i] = r
+			}()
+		}
+		wg.Wait()
+
+		for _, e := range errs {
+			if e != nil {
+				renderErr = e
 				return
 			}
-			renderInputs = append(renderInputs, r)
 		}
-		renderC, renderErr = render(filepath.Join(base, "c"), projectC())
+		// Order is fixed by the specs slice, not by completion order, so
+		// the inventory and every failure message stay deterministic.
+		renderInputs = results[:3]
+		renderC = results[3]
 	})
 	if renderErr != nil {
 		t.Fatalf("rendering the fixtures failed: %v\n\n"+
@@ -489,8 +531,14 @@ func TestTier1InventoryIsProducerDerived(t *testing.T) {
 
 	// The pipeline must have populated the set through the checksums
 	// chokepoint; nothing else writes it.
-	if len(checksums.Tier1Targets()) == 0 {
-		t.Error("checksums.Tier1TargetSet is empty after a render — the inventory channel this guard " +
-			"depends on has changed; re-derive the method before trusting any verdict")
+	//
+	// Read from the render, not from this process: renders run in child
+	// processes, so checksums.Tier1TargetSet HERE is legitimately empty
+	// and asserting on it would only prove that the parent never
+	// rendered. a.ChokepointTargets is the same measurement taken in the
+	// process that did.
+	if a.ChokepointTargets == 0 {
+		t.Error("checksums.Tier1TargetSet was empty in the rendering process — the inventory channel " +
+			"this guard depends on has changed; re-derive the method before trusting any verdict")
 	}
 }

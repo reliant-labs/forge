@@ -37,9 +37,29 @@ jobs:
             pkg/go.sum
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+        with:
+          # See ci.yml: unauthenticated release lookups are rate-limited
+          # per runner IP, which took this very job red at "Install buf"
+          # having run nothing.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       # The go-imports hook shells out to a goimports BINARY and fails with
       # "goimports not installed or available in the PATH" when it is absent
       # — the runner image does not ship one, and setup-go does not add it.
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-precommit-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-precommit-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-precommit-${{ runner.os }}-
       - name: Install goimports
-        run: go install golang.org/x/tools/cmd/goimports@latest
+        # Pinned, for the same reason ci.yml pins govulncheck and
+        # go-licenses: @latest makes the job non-reproducible (a hook can
+        # start reformatting on a day nobody committed anything) and lets
+        # a compromised upstream release run in CI. Dependabot watches
+        # this file, so bumps arrive as PRs.
+        # v0.49.0 matches the golang.org/x/tools already in go.mod, so the
+        # hook formats with the same version the module builds against.
+        run: go install golang.org/x/tools/cmd/goimports@v0.49.0
       - uses: pre-commit/action@v3.0.1

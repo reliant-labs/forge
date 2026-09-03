@@ -149,9 +149,9 @@ func TestWithDevFloorSuffix(t *testing.T) {
 
 // TestEmbeddedVersionFileMatchesSource mirrors internal/assets'
 // TestEmbeddedForgeProtoMatchesSource: this package's embedded copy of
-// VERSION must stay byte-identical to the repo-root source of truth, since
-// go:embed cannot reach outside its own package directory to read it
-// directly. Sync with:
+// VERSION must stay byte-identical to the repo-root source of truth, because
+// an embed directive cannot reach outside its own package directory to read
+// it directly. Sync with:
 //
 //	cp VERSION internal/buildinfo/VERSION
 func TestEmbeddedVersionFileMatchesSource(t *testing.T) {

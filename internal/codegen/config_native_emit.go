@@ -68,7 +68,7 @@ const (
 
 	configOIDCClientIDEnvVar         = "OIDC_CLIENT_ID"
 	configOIDCRedirectURIEnvVar      = "OIDC_REDIRECT_URI"
-	configIdPBaseEnvVar              = "IDP_BASE"
+	configIDPBaseEnvVar              = "IDP_BASE"
 	configCORSAllowCredentialsEnvVar = "CORS_ALLOW_CREDENTIALS"
 )
 

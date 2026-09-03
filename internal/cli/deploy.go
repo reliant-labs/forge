@@ -21,6 +21,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
+	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 	"github.com/reliant-labs/forge/internal/statefile"
 )
@@ -342,6 +343,25 @@ type deployOptions struct {
 	rollout cluster.RolloutPolicy
 }
 
+// resolveEnvMainK locates an environment's KCL entrypoint and proves it
+// exists, returning the path to <kcl_dir>/<env>/main.k.
+//
+// The KCL directory is configurable and defaults to deploy/kcl, so the
+// default and the "which environments are there?" hint both have to be
+// stated in terms of whatever the project actually declared — which is why
+// the not-found error names the resolved directory rather than the default.
+func resolveEnvMainK(store *projectstore.Store, envName string) (string, error) {
+	kclDir := store.K8s().KCLDir
+	if kclDir == "" {
+		kclDir = "deploy/kcl"
+	}
+	mainK := filepath.Join(kclDir, envName, "main.k")
+	if _, err := os.Stat(mainK); os.IsNotExist(err) {
+		return "", fmt.Errorf("environment %q not found: %s does not exist\nAvailable environments can be found under %s/", envName, mainK, kclDir)
+	}
+	return mainK, nil
+}
+
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	dryRun := opts.dryRun
 	namespace := opts.namespace
@@ -359,17 +379,9 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 
-	// Resolve KCL directory.
-	kclDir := store.K8s().KCLDir
-	if kclDir == "" {
-		kclDir = "deploy/kcl"
-	}
-	envDir := filepath.Join(kclDir, envName)
-	mainK := filepath.Join(envDir, "main.k")
-
-	// Validate environment exists.
-	if _, err := os.Stat(mainK); os.IsNotExist(err) {
-		return fmt.Errorf("environment %q not found: %s does not exist\nAvailable environments can be found under %s/", envName, mainK, kclDir)
+	mainK, err := resolveEnvMainK(store, envName)
+	if err != nil {
+		return err
 	}
 
 	projectDir := projectDirForKCL()

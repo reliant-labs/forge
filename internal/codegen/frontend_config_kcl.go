@@ -337,7 +337,7 @@ func insertBackendDevIdentity(body string, readsIdentity bool, backend []ConfigF
 		ins.WriteString("    # sign-in means the browser never sees this — it is not public config.\n")
 		fmt.Fprintf(&ins, "    %s = idp.idp_identity[%q]\n", clientID, "client_id")
 	}
-	if base := names[configIdPBaseEnvVar]; base != "" {
+	if base := names[configIDPBaseEnvVar]; base != "" {
 		ins.WriteString("    # Where the SERVER dials the issuer. Same origin the browser would\n")
 		ins.WriteString("    # have used, because in the dev loop both are on this machine — but\n")
 		ins.WriteString("    # nothing in the browser reads it.\n")

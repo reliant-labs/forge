@@ -11,8 +11,8 @@ import (
 // TestEmbeddedPeersMatchWebRuntime is the mechanism that replaces four
 // "keep this list in step with…" comments.
 //
-// go:embed cannot reach outside its own package directory, so peers.json is a
-// copy of web-runtime/package.json's peerDependencies. This test is what keeps
+// Because go:embed cannot reach outside its own package directory, peers.json
+// is a copy of web-runtime/package.json's peerDependencies. This test keeps
 // the copy honest — the same pattern internal/buildinfo uses for VERSION.
 //
 // If this fails, regenerate rather than hand-editing:

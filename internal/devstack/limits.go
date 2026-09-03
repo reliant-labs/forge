@@ -76,6 +76,6 @@ func checkCeiling(key string, block int) error {
 			"     pruning will reclaim nothing — you need a wider ceiling. Raise dev_stack.max_stacks in\n"+
 			"     forge.yaml, then run `forge generate` to REGENERATE the cluster port pre-map for the\n"+
 			"     new range, then recreate the cluster so it forwards the new host ports. Raising the\n"+
-			"     number alone renders ports the cluster never mapped.",
+			"     number alone renders ports the cluster never mapped",
 		key, limit, limit, limit)
 }

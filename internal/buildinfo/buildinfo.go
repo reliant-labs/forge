@@ -20,9 +20,9 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// embeddedVersionFile is a build-time copy of the repo-root VERSION file —
-// go:embed cannot reach outside its own package directory, so this file is
-// kept byte-identical to ../../VERSION (see TestEmbeddedVersionFileMatchesSource,
+// embeddedVersionFile is a build-time copy of the repo-root VERSION file.
+// Because go:embed cannot reach outside its own package directory, this file
+// is kept byte-identical to ../../VERSION (see TestEmbeddedVersionFileMatchesSource,
 // mirroring internal/assets' proto sync pattern). It states the last RELEASED
 // forge version, and is the floor Version()/Build.String() fall back to when
 // build info cannot supply a real one — most importantly the go.work case: a

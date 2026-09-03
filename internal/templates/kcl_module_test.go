@@ -84,6 +84,14 @@ func trimKCLNoise(out []byte) []byte {
 // Skips when kcl is not on PATH (local dev shouldn't be forced to
 // install it; CI does).
 func TestKCLModule_PositiveAssertions(t *testing.T) {
+	// Parallel at the parent too, so this test's fixtures overlap with
+	// TestKCLModule_NegativeChecks's rather than merely with each other.
+	// Safe here: nothing in this file sets an env var or changes the
+	// working directory (the one t.Setenv in this package is in
+	// release_scaffold_kcl_render_test.go, which stays serial — Go
+	// panics on t.Setenv in a parallel test).
+	t.Parallel()
+
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping KCL module assertion test")
 	}
@@ -126,6 +134,14 @@ func TestKCLModule_PositiveAssertions(t *testing.T) {
 		}
 		found++
 		t.Run(name, func(t *testing.T) {
+			// Each fixture is an independent `kcl run` over a read-only
+			// module, so the subtests overlap freely and the test costs
+			// roughly the slowest fixture instead of their sum. runKCL is
+			// already hardened for this: see its doc comment on the
+			// package-cache lock chatter that concurrent kcl processes
+			// print to stdout.
+			t.Parallel()
+
 			out, err := runKCL(t, filepath.Join(testsDir, name))
 			if err != nil {
 				t.Fatalf("kcl run %s failed: %v\n%s", name, err, out)
@@ -357,6 +373,9 @@ func runFileSecretsFixture(t *testing.T, entry string) {
 // what produces the failure; if a schema change accidentally loosens
 // validation, this catches it.
 func TestKCLModule_NegativeChecks(t *testing.T) {
+	// See TestKCLModule_PositiveAssertions for why this is safe.
+	t.Parallel()
+
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping KCL negative-check test")
 	}
@@ -376,6 +395,10 @@ func TestKCLModule_NegativeChecks(t *testing.T) {
 		found++
 		name := e.Name()
 		t.Run(name, func(t *testing.T) {
+			// Independent read-only `kcl run` per fixture — same
+			// reasoning as the positive loop above.
+			t.Parallel()
+
 			out, err := runKCL(t, filepath.Join(testsDir, name))
 			if err == nil {
 				t.Fatalf("expected kcl to reject %s but it succeeded:\n%s",

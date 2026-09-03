@@ -19,7 +19,7 @@
       "@/components/ui/*": ["../../packages/ui-web/src/components/ui/*"],
 {{- end}}
 {{- range .WebRuntimeTypePins}}
-      "{{.}}": ["./node_modules/{{.}}"],
+      "{{.}}": ["./node_modules/{{typePinTarget .}}"],
 {{- end}}
       "@/*": ["./src/*"]
     }

@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // jsonCommentLine strips `// …` line comments so a tsconfig (JSONC) can be
@@ -66,7 +68,11 @@ func TestAddPeerPinsToTsconfig_LegacyProject(t *testing.T) {
 	paths := parseTsconfig(t, raw)
 
 	for _, pkg := range tsconfigPeerPins() {
-		want := "./node_modules/" + pkg
+		// The key is the import specifier; the value is where its TYPES
+		// live. Those differ for a package typed by a separate @types/
+		// package — pinning react at ./node_modules/react gives tsc a
+		// directory with no .d.ts and fails every .tsx with TS7016.
+		want := "./node_modules/" + webruntimepeers.TypePinTarget(pkg)
 		got, ok := paths[pkg]
 		if !ok {
 			t.Errorf("paths has no entry for %q — tsc resolves it from the linked runtime "+

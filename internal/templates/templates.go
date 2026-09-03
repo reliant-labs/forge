@@ -37,6 +37,11 @@ func FuncMap() template.FuncMap {
 		"plural":        pluralize,
 		"singular":      singularize,
 		"formatComment": formatComment,
+		// typePinTarget maps a tsconfig `paths` KEY to the node_modules
+		// directory its VALUE must point at. They differ only for packages
+		// whose typings ship separately under @types/ — see
+		// webruntimepeers.TypePinTarget.
+		"typePinTarget": webruntimepeers.TypePinTarget,
 		"joinStrings":   strings.Join,
 		"default":       getDefault,
 		"add":           add,

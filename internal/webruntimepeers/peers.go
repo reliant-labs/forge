@@ -63,6 +63,37 @@ var extraBundlerDedupe = []string{
 	"react-dom",
 }
 
+// typesOnlyDir maps a package whose TYPES ship separately, under @types/, to
+// that types package. A tsconfig `paths` entry is a full override of module
+// resolution, not a hint: once "react" maps to ./node_modules/react, tsc looks
+// there and NOWHERE else, so it finds index.js, finds no bundled .d.ts, and
+// never consults @types/react the way it would have unaided:
+//
+//	error TS7016: Could not find a declaration file for module 'react'.
+//	'…/node_modules/react/index.js' implicitly has an 'any' type.
+//
+// Every other pinned package bundles its own typings, so pointing at the
+// implementation directory is right for them and wrong only here. Pointing
+// react's entry at @types/react keeps the dedupe intent — one copy of the type
+// — while giving tsc a directory that actually declares them.
+//
+// Reproduced in isolation: with target/lib set and real react + @types/react
+// installed, `"react": ["./node_modules/react"]` fails with the TS7016 above
+// and `"react": ["./node_modules/@types/react"]` typechecks clean.
+var typesOnlyDir = map[string]string{
+	"react": "@types/react",
+}
+
+// TypePinTarget returns the node_modules-relative directory a tsconfig `paths`
+// entry for name should resolve to. It is the package itself for anything that
+// bundles its typings, and the @types/ package for anything that does not.
+func TypePinTarget(name string) string {
+	if types, ok := typesOnlyDir[name]; ok {
+		return types
+	}
+	return name
+}
+
 // decodePeers returns the runtime's declared peer dependency names.
 func decodePeers() []string {
 	var doc struct {

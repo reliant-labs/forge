@@ -144,7 +144,11 @@ func addPeerPinsToTsconfig(path string) bool {
 	out.WriteString("\n" + indent + "  // link target's node_modules. tsc sees two distinct copies of the same")
 	out.WriteString("\n" + indent + "  // type and fails mock-transport_gen.ts with TS2322. Pin them here.")
 	for _, pkg := range missing {
-		fmt.Fprintf(&out, "\n%s  %q: [%q],", indent, pkg, "./node_modules/"+pkg)
+		// The key is the import specifier; the VALUE is where its typings
+		// live, which differs for packages typed by a separate @types/
+		// package. Emitting the implementation dir for react pins tsc to a
+		// directory with no .d.ts and fails every .tsx with TS7016.
+		fmt.Fprintf(&out, "\n%s  %q: [%q],", indent, pkg, "./node_modules/"+webruntimepeers.TypePinTarget(pkg))
 	}
 	out.Write(body[insertAt:])
 

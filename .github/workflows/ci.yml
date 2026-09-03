@@ -116,6 +116,16 @@ jobs:
       # pass, so this is a hard dependency of the test job, not a nicety.
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+        with:
+          # Without a token the action resolves buf's release through an
+          # UNAUTHENTICATED api.github.com call, rate-limited to 60/hour
+          # per runner IP and shared with every other job on that host.
+          # Exhausted, the step dies with "API rate limit exceeded" and
+          # the job fails for a reason that has nothing to do with the
+          # commit. The built-in token lifts that to 1000/hour per
+          # repository; contents: read is all a release lookup needs.
+          # Same failure mode ci.yml already pins KCL_VERSION to avoid.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Go tests
         # -timeout is explicit rather than left to `go test`'s 10-minute
         # default. Under -race the removalguard scan alone once exceeded that

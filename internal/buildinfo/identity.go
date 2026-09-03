@@ -22,6 +22,7 @@ import (
 // fails. Nothing in that failure used to say "a different forge build
 // generated this tree."
 //
+
 // Build is the identity that makes the two distinguishable. It is derived
 // from the binary's own runtime/debug build info, so it works for anything
 // `go install`/`go build` produced and needs no build-system change; ldflags
@@ -59,6 +60,55 @@ type Build struct {
 
 const forgeCmdModulePath = "github.com/reliant-labs/forge"
 
+// pkgPathFrom describes how forge/pkg resolved for this binary: a replace
+// target, a published version, or an in-tree workspace copy.
+//
+// The workspace case is named explicitly rather than left as "(devel)" —
+// a workspace build is one of the ways two forge builds come to differ, and
+// that is exactly what this identity exists to make visible.
+func pkgPathFrom(info *debug.BuildInfo) string {
+	for _, dep := range info.Deps {
+		if dep == nil || dep.Path != pkgModulePath {
+			continue
+		}
+		if dep.Replace != nil && dep.Replace.Path != "" {
+			return dep.Replace.Path
+		}
+		if dep.Version != "" && dep.Version != "(devel)" {
+			return dep.Path + "@" + dep.Version
+		}
+		return dep.Path + " (local workspace build)"
+	}
+	return ""
+}
+
+// applyEmbeddedForgeIdentity fills in the embedded-build fields: forge is a
+// DEPENDENCY of some host binary rather than the main module.
+//
+// It reports the REQUIRED forge version rather than a replacement's "(devel)"
+// placeholder, and names the replace target separately — together those say
+// which build this actually is. A go.work setup has no explicit replace and
+// reads "(devel)" directly, where the VERSION-file floor is all there is to
+// fall back on.
+func applyEmbeddedForgeIdentity(b *Build, info *debug.BuildInfo) {
+	for _, dep := range info.Deps {
+		if dep == nil || dep.Path != forgeCmdModulePath {
+			continue
+		}
+		b.Embedded = true
+		b.Embedder = info.Main.Path
+		b.EmbedderVersion = info.Main.Version
+		b.Version = dep.Version
+		if b.Version == "" || b.Version == "(devel)" {
+			b.Version = versionFloor("")
+		}
+		if dep.Replace != nil {
+			b.ReplacedBy = dep.Replace.Path
+		}
+		return
+	}
+}
+
 // buildFrom derives forge's identity from build info, preferring the ldflags
 // stamps when a release build supplied them. Pure, so the standalone and
 // embedded shapes can both be unit-tested without controlling the ambient
@@ -74,48 +124,10 @@ func buildFrom(info *debug.BuildInfo, ldflagsVersion, ldflagsCommit string) Buil
 				b.Version = versionFloor("")
 			}
 		} else {
-			// forge is a dependency of some host binary: embedded.
-			for _, dep := range info.Deps {
-				if dep == nil || dep.Path != forgeCmdModulePath {
-					continue
-				}
-				b.Embedded = true
-				b.Embedder = info.Main.Path
-				b.EmbedderVersion = info.Main.Version
-				// Report the REQUIRED version, not the replacement's
-				// "(devel)" placeholder, and surface the replace target
-				// separately — together they say which build this is.
-				// The go.work case (no explicit replace) reads "(devel)"
-				// here directly — nothing to fall back on but the
-				// VERSION-file floor.
-				b.Version = dep.Version
-				if b.Version == "" || b.Version == "(devel)" {
-					b.Version = versionFloor("")
-				}
-				if dep.Replace != nil {
-					b.ReplacedBy = dep.Replace.Path
-				}
-				break
-			}
+			applyEmbeddedForgeIdentity(&b, info)
 		}
 
-		for _, dep := range info.Deps {
-			if dep == nil || dep.Path != pkgModulePath {
-				continue
-			}
-			if dep.Replace != nil && dep.Replace.Path != "" {
-				b.PkgPath = dep.Replace.Path
-			} else if dep.Version != "" && dep.Version != "(devel)" {
-				b.PkgPath = dep.Path + "@" + dep.Version
-			} else {
-				// "(devel)" means forge/pkg resolved to an in-tree
-				// workspace copy rather than a published version — worth
-				// saying plainly, since a workspace build is one of the
-				// ways two forge builds come to differ.
-				b.PkgPath = dep.Path + " (local workspace build)"
-			}
-			break
-		}
+		b.PkgPath = pkgPathFrom(info)
 
 		for _, s := range info.Settings {
 			switch s.Key {

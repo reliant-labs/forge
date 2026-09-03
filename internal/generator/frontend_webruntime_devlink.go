@@ -38,7 +38,7 @@
 //
 // npm reads the root, sees a workspace member whose package.json declares the
 // name @reliantlabs/forge-web-runtime, and hoists it to <project>/node_modules
-// as a link. The frontends' own `"^0.3.0"` requirement resolves against that
+// as a link. The frontends' own `"^0.3.1"` requirement resolves against that
 // member by NAME, so the tracked manifests never mention a path. Node's
 // resolution walks up from frontends/<name>/, finds the hoisted link, and lands
 // in the live checkout — verified by require.resolve pointing straight into

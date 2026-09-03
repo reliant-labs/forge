@@ -37,8 +37,8 @@ What it does, in order:
    `internal/generator/project_pkgdep.go`;
 4. resolves the `forge/pkg` hashes into `go.sum` **before the tag is public**,
    then asserts they are really there;
-5. tags both refs at the one commit and `git push --atomic origin main
-   pkg/vX.Y.Z vX.Y.Z`.
+5. tags both refs at the one commit, then pushes the branch and both tags in a
+   single atomic `git push`.
 
 `--dry-run` runs every validation and every file edit, prints the plan, then
 restores the tree — no commit, no tag, no push.

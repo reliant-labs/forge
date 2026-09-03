@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 # release-pkg.sh — tag a release of the github.com/reliant-labs/forge/pkg
-# Go submodule.
+# Go submodule, and ONLY that.
+#
+# ⚠️  FOR A NORMAL RELEASE, USE scripts/release-forge.sh (`task release:forge`).
+#
+# That script does everything this one does AND bumps the root module's
+# require, syncs the three version files, populates go.sum with the forge/pkg
+# hashes, and tags both pkg/vX.Y.Z and vX.Y.Z at a SINGLE commit — pushing
+# them atomically. A release driven from this script alone is half done: it
+# leaves the root module requiring a stale pkg, and leaves go.sum without the
+# hashes every consumer outside this workspace needs.
+#
+# This one survives for the narrow case where the submodule genuinely needs a
+# tag by itself.
 #
 # Go resolves submodule versions from tags of the form `pkg/vX.Y.Z`
 # (directory-prefixed tags — the standard multi-module repo convention).
-# This script is the only sanctioned way to mint one: it validates the
-# version shape, the working tree, and — most importantly — that the pkg
-# module builds STANDALONE (GOWORK=off, no sibling replace, no go.work),
-# which is exactly how downstream `go mod download` will consume it.
+# It validates the version shape, the working tree, and — most importantly —
+# that the pkg module builds STANDALONE (GOWORK=off, no sibling replace, no
+# go.work), which is exactly how downstream `go mod download` will consume it.
 #
 # Usage:
 #   scripts/release-pkg.sh [--dry-run] [--repo <dir>] vX.Y.Z

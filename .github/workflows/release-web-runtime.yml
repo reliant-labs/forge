@@ -25,6 +25,28 @@
 # The pack-contents check is the one that matters most: a build that silently
 # emits nothing is indistinguishable from a healthy publish until an install
 # fails somewhere else entirely.
+#
+# HOW IT AUTHENTICATES: npm TRUSTED PUBLISHING (OIDC). There is NO stored
+# credential — no NPM_TOKEN secret exists in this repo, and none should be
+# created. GitHub mints a short-lived OIDC token for this job (that is what
+# `id-token: write` grants), npm verifies it came from THIS repo running THIS
+# workflow file, and only then issues a publish credential that expires
+# minutes later. The trusted publisher is registered on npmjs.com against
+# reliant-labs/forge + release-web-runtime.yml; renaming this file or moving
+# the publish into a different workflow breaks the publish until the
+# registration is updated to match.
+#
+# That is a real security improvement over a long-lived automation token: a
+# leaked token publishes from anywhere, forever, until someone notices and
+# revokes it. An OIDC token is worthless off this runner.
+#
+# --provenance is the other half. It publishes a signed, publicly verifiable
+# attestation linking the tarball to the commit and the CI run that built it,
+# so a consumer can check that what they installed came from this source and
+# not from a maintainer's laptop. That matters here specifically: this repo has
+# already shipped artifacts that could not state their own origin, and the
+# devlog incident (below) was only diagnosable by reading a human's memory of
+# what was published. Provenance makes the tarball answer that question itself.
 name: Release web-runtime
 
 on:
@@ -41,6 +63,11 @@ on:
 
 permissions:
   contents: read
+  # Lets GitHub mint the OIDC token npm exchanges for a short-lived publish
+  # credential, and the one --provenance signs the attestation with. Without
+  # it npm falls back to looking for a token that does not exist and fails
+  # with a 404 that reads like the package is missing.
+  id-token: write
 
 concurrency:
   # Never let two publishes of the same tag race. Not cancel-in-progress: a
@@ -64,9 +91,34 @@ jobs:
           # (EBADENGINE) and would publish an artifact built by a toolchain the
           # package says it does not support.
           node-version: "22"
-          # registry-url is what makes npm read NODE_AUTH_TOKEN. Without it the
-          # publish fails with E401 even though the secret is present.
+          # Still required under trusted publishing. registry-url writes the
+          # .npmrc that points npm at the registry it will perform the OIDC
+          # exchange against; without it the publish targets a default that
+          # has no trusted-publisher registration and fails.
           registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm supports trusted publishing
+        # Node 22 currently bundles npm 10.9.x, which is BELOW the 11.5.1 floor
+        # where OIDC trusted publishing landed. An older npm does not perform
+        # the token exchange at all — it looks for a credential, finds none,
+        # and fails with a 404 on the package name, which reads like "the
+        # package does not exist" rather than "your npm is too old". That
+        # misdiagnosis is expensive, so upgrade first and then assert loudly.
+        #
+        # Pinned to a major range rather than @latest so a future npm 12 cannot
+        # silently change publish behaviour on a release day.
+        run: |
+          echo "bundled npm: $(npm --version)"
+          npm install -g npm@^11.5.1
+          NPM_VERSION="$(npm --version)"
+          echo "active npm:  ${NPM_VERSION}"
+          # Sort-based comparison: succeeds only if 11.5.1 is the lower of the
+          # two, i.e. the active npm is >= the floor.
+          if [ "$(printf '%s\n11.5.1\n' "$NPM_VERSION" | sort -V | head -n1)" != "11.5.1" ]; then
+            echo "::error::npm ${NPM_VERSION} is older than 11.5.1 and cannot use OIDC trusted publishing."
+            exit 1
+          fi
+          echo "npm ${NPM_VERSION} supports trusted publishing"
 
       - name: Install dependencies
         run: npm ci
@@ -115,13 +167,19 @@ jobs:
 
       - name: Publish
         if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        # No `env:` block, and deliberately so — the credential is the OIDC
+        # token GitHub mints for this job, exchanged by npm at publish time.
+        # Adding NODE_AUTH_TOKEN back would take precedence and silently
+        # revert this to token auth.
+        #
         # --access public is required: npm defaults a SCOPED package to
         # restricted, and a restricted package breaks `npm install` for
         # everyone outside the org — including every machine that scaffolds a
         # project with a released forge.
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        #
+        # --provenance emits the signed source attestation described in the
+        # header. It requires id-token: write, which this job has.
+        run: npm publish --provenance --access public
 
       - name: Dry run — publish skipped
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}

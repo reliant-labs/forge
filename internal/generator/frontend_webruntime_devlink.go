@@ -169,6 +169,15 @@ func devWebRuntimeCheckout() (string, bool) {
 	if !buildinfo.IsDevBuild() {
 		return "", false
 	}
+	// CI is a dev BUILD (forge's workflows install the binary under test from
+	// the working tree) but never a dev LOOP: nobody is editing web-runtime
+	// alongside the scaffold, and the bridge's extra resolution root made the
+	// scaffold fail to typecheck with duplicate copies of @connectrpc/connect.
+	// See internal/buildinfo/ci.go for why this is not folded into
+	// IsDevBuild, and why pinning more peers is the wrong fix.
+	if buildinfo.IsCI() && !buildinfo.DevWebRuntimeLinkForced() {
+		return "", false
+	}
 	root := buildinfo.DevForgeRoot
 	if root == "" {
 		root = buildinfo.DiscoverDevForgeRootFromSource()

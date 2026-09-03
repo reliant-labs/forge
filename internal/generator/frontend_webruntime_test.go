@@ -35,10 +35,16 @@ func pinDevBuild(t *testing.T, dev bool, root string) {
 	buildinfo.DevForgeRoot = ""
 	buildinfo.SetDevBuild(dev)
 	buildinfo.SetDiscoveredForgeRoot(root)
+	// Pin CI off too. These tests assert the MAINTAINER's dev loop, and this
+	// suite itself runs on CI — without this the ambient CI=true would
+	// suppress the very bridge they exist to check, so they would pass
+	// locally and fail on a runner for a reason unrelated to their subject.
+	buildinfo.SetCI(false)
 	t.Cleanup(func() {
 		buildinfo.DevForgeRoot = stamped
 		buildinfo.ClearDevBuild()
 		buildinfo.ClearDiscoveredForgeRoot()
+		buildinfo.ClearCI()
 	})
 }
 

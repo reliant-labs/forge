@@ -158,6 +158,32 @@ func runInBackground(t *testing.T, cfg serverkit.Config, srv serverkit.Server) (
 	return errCh, addr
 }
 
+// getDrained issues a GET and fully consumes the response body before
+// returning, which is what lets net/http return the connection to the idle
+// pool instead of leaving it half-read.
+//
+// This matters at SHUTDOWN, not during the request. http.Server.Shutdown
+// closes connections it considers idle and then waits for the remainder to
+// finish — so a connection the client left mid-body is indistinguishable from
+// a request still being served, and Shutdown blocks on it until the budget
+// expires. Under -race the timing widened enough to make that deterministic:
+// TestRun_ProbesBypassEdgeMiddleware failed 100% of the time on a clean
+// origin/main with `go test -race -count=1`, reporting only "Run did not
+// return within 5s".
+//
+// Callers that then drive shutdown should also CloseIdleConnections, since a
+// drained-but-pooled keep-alive is still a connection the server is entitled
+// to wait on.
+func getDrained(url string) (*http.Response, error) {
+	resp, err := http.Get(url) //nolint:gosec,noctx // test-local URL, no context needed
+	if err != nil {
+		return nil, err
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp, nil
+}
+
 // waitReady polls /readyz until it returns 200 or the deadline expires.
 func waitReady(t *testing.T, addr string, deadline time.Duration) {
 	t.Helper()
@@ -305,25 +331,29 @@ func TestRun_ProbesBypassEdgeMiddleware(t *testing.T) {
 	waitReady(t, addr, 2*time.Second)
 
 	// Probe: must NOT carry the edge marker.
-	probeResp, err := http.Get("http://" + addr + "/healthz")
+	probeResp, err := getDrained("http://" + addr + "/healthz")
 	if err != nil {
 		t.Fatalf("healthz: %v", err)
 	}
-	_ = probeResp.Body.Close()
 	if probeResp.Header.Get(marker) != "" {
 		t.Fatal("/healthz was wrapped by the edge middleware — probes must bypass the edge")
 	}
 
 	// App route: MUST carry the edge marker (the edge does wrap the
 	// caller's handler).
-	appResp, err := http.Get("http://" + addr + "/app")
+	appResp, err := getDrained("http://" + addr + "/app")
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	_ = appResp.Body.Close()
 	if appResp.Header.Get(marker) == "" {
 		t.Fatal("/app was not wrapped by the edge middleware — the caller's handler must sit behind the edge")
 	}
+
+	// Hang up before asking the server to stop. Shutdown closes IDLE
+	// connections and then waits for the rest, so a client-side keep-alive
+	// this test never releases is counted as in-flight work and burns the
+	// whole shutdown budget. See getDrained.
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 
 	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
 		t.Fatalf("Run returned error: %v", err)

@@ -281,7 +281,11 @@ var (
 	lookupK3dStateAfterCreateFn  = lookupK3dClusterRuntimeState
 	cleanupK3dCreateToolsFn      = cleanupK3dStartTools
 	mergeK3dKubeconfigFn         = mergeK3dKubeconfig
-	k3dClusterStartPollInterval  = time.Second
+	// lookupClusterStateForUpFn is the `forge cluster up` existence probe.
+	// Seamed like its siblings above so the up path is testable on a host
+	// that happens to have a real cluster of the same name running.
+	lookupClusterStateForUpFn   = lookupK3dClusterRuntimeState
+	k3dClusterStartPollInterval = time.Second
 	k3dClusterStartHealthyGrace  = 10 * time.Second
 )
 
@@ -524,7 +528,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		return err
 	}
 
-	state, err := lookupK3dClusterRuntimeState(ctx, clusterName)
+	state, err := lookupClusterStateForUpFn(ctx, clusterName)
 	if err != nil {
 		return err
 	}
@@ -553,6 +557,18 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		fmt.Printf("Creating k3d cluster from %s...\n", configPath)
 		if effective.temporary {
 			fmt.Printf("  (merging deploy/k3d-ports.yaml from project's ingress KCL)\n")
+		}
+		// A `registries.use` reference names a STANDALONE registry that k3d
+		// does NOT create: `cluster create` fails Cluster Preparation with
+		// "Didn't find container for node '<name>'" and then rolls back. The
+		// declarative env path already ensures these (cluster_phase.go:
+		// ensureDeclaredCluster), so a project whose deploy/k3d.yaml uses a
+		// standalone registry worked under `forge env up` but not under
+		// `forge cluster up` — the same config, two different outcomes.
+		// Read the UN-MERGED user config: the ports merge above rewrites
+		// `ports`, never `registries`.
+		if err := ensureConfigRegistries(ctx, configPath); err != nil {
+			return fmt.Errorf("ensure standalone registry for cluster %q: %w", clusterName, err)
 		}
 		if err := createK3dCluster(ctx, clusterName,
 			[]string{"cluster", "create", "--config", effective.path}); err != nil {

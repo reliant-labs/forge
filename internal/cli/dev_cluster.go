@@ -286,7 +286,7 @@ var (
 	// that happens to have a real cluster of the same name running.
 	lookupClusterStateForUpFn   = lookupK3dClusterRuntimeState
 	k3dClusterStartPollInterval = time.Second
-	k3dClusterStartHealthyGrace  = 10 * time.Second
+	k3dClusterStartHealthyGrace = 10 * time.Second
 )
 
 // runK3dClusterStartCommand is split from startK3dCluster so the latter's

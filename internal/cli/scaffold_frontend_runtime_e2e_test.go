@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
 )
 
 // TestE2EScaffoldFrontendRuntime is the gate on how a generated frontend
@@ -137,6 +139,17 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 		return
 	}
 
+	// The dev bridge is a MAINTAINER's artifact and is deliberately NOT
+	// written under CI (EnsureDevWebRuntimeLink returns early there): bridging
+	// in CI added web-runtime's own node_modules as a second resolution root
+	// and broke the scaffold's typecheck with two copies of @connectrpc/connect.
+	// So on CI the correct outcome is no link at all and a plain registry
+	// install of the published range — which is also the shape a user gets,
+	// and the thing the npm build gate below actually needs to prove.
+	//
+	// Asserting the link unconditionally therefore tested for a state CI is
+	// designed not to produce. Keep the assertion where it means something.
+	//
 	// The dependency is DECLARED, so npm creates the link itself and keeps
 	// it across repeat installs — the precise failure a bare symlink into
 	// node_modules could not survive.
@@ -148,6 +161,9 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		runCmdTimeout(t, webDir, 5*time.Minute,
 			"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		if buildinfo.IsCI() {
+			continue // no dev bridge under CI, by design — see above
+		}
 		linked := false
 		for _, candidate := range linkCandidates {
 			if _, err := os.Readlink(candidate); err == nil {

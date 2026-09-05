@@ -137,6 +137,30 @@ jobs:
           fi
           echo "tag and manifest agree on ${PKG_VERSION}"
 
+      - name: Verify provenance metadata
+        # --provenance makes npm compare package.json's `repository` against
+        # the repository in the signed provenance statement, and reject the
+        # publish with a 422 when they disagree. An ABSENT field reads as ""
+        # and fails that comparison.
+        #
+        # This check exists because that failure happens at the WORST possible
+        # moment: the first 0.3.1 publish was authenticated, packed, signed,
+        # and written to the sigstore transparency log before the registry
+        # refused it. Everything upstream reported success. Catching it here
+        # costs a second and fails with a sentence that names the fix.
+        run: |
+          REPO_URL="$(node -p "require('./package.json').repository?.url ?? ''")"
+          EXPECTED="github.com/${GITHUB_REPOSITORY}"
+          echo "package.json repository.url: ${REPO_URL:-<absent>}"
+          echo "expected to contain:         ${EXPECTED}"
+          case "$REPO_URL" in
+            *"$EXPECTED"*)
+              echo "provenance metadata agrees with ${GITHUB_REPOSITORY}" ;;
+            *)
+              echo "::error::package.json repository.url is '${REPO_URL}', which does not match ${EXPECTED}. npm publish --provenance will reject this with a 422 AFTER signing. Set repository.url to git+https://github.com/${GITHUB_REPOSITORY}.git"
+              exit 1 ;;
+          esac
+
       - name: Typecheck
         run: npm run typecheck
 

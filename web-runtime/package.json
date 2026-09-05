@@ -3,6 +3,16 @@
   "version": "0.3.1",
   "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and client RUM. The web twin of forge/pkg.",
   "license": "BUSL-1.1",
+  "//repository note": "REQUIRED for `npm publish --provenance`, not decoration. npm cross-checks this against the repository in the signed provenance statement and rejects the publish with a 422 if they disagree — an absent field reads as \"\" and fails that comparison. `directory` names the subdirectory this package lives in, so the provenance points at the real source. Omitting this is what made the first 0.3.1 publish fail AFTER the tarball had been signed and written to the sigstore transparency log.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reliant-labs/forge.git",
+    "directory": "web-runtime"
+  },
+  "homepage": "https://github.com/reliant-labs/forge/tree/main/web-runtime#readme",
+  "bugs": {
+    "url": "https://github.com/reliant-labs/forge/issues"
+  },
   "//publishConfig note": "A SCOPED package defaults to restricted. Restricted breaks `npm install` for anyone outside the org — including every machine that scaffolds a project with a released forge, which resolves this package from the registry by semver range. Declaring access here means a publish cannot accidentally ship private by omitting --access public.",
   "publishConfig": {
     "access": "public"

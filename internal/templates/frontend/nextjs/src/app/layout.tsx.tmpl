@@ -1,8 +1,6 @@
 import { Inter } from "next/font/google";
 
-import { AppHeader } from "@/components/app_header";
-import { MobileNav } from "@/components/mobile_nav";
-import { Nav } from "@/components/nav";
+import { AppShell } from "@/components/app_shell";
 import { joinBasePath } from "@/lib/basepath_gen";
 
 import { Providers } from "./providers";
@@ -125,40 +123,7 @@ export default function RootLayout({
       */}
       <body className={`${inter.variable} bg-surface font-sans text-ink antialiased`}>
         <Providers>
-          {/*
-            Chrome vs canvas. The sidebar sits on `bg-surface` (the chrome)
-            and the content area on `bg-surface-muted` (the canvas), so the
-            two read as distinct planes and the cards on the canvas — which
-            are themselves `bg-surface` — separate from their background.
-            Putting both on the same color is what makes a scaffold look
-            like an unstyled wireframe.
-          */}
-          <div className="flex h-screen flex-col overflow-hidden bg-surface text-ink">
-            <MockModeBanner />
-            <div className="flex min-h-0 flex-1 overflow-hidden">
-              <Nav />
-              <MobileNav />
-              {/*
-                The header is a SIBLING of the scroll container, not inside
-                it: identity has to stay put while the page scrolls, and the
-                session control is the one thing a user must always be able
-                to reach.
-              */}
-              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                <AppHeader />
-                <main className="flex-1 overflow-y-auto bg-surface-muted">
-                {/*
-                  A max width on the content column. Full-bleed text on a
-                  27" monitor is unreadable, and a scaffold that never sets
-                  one teaches every page added later to skip it too.
-                */}
-                  <div className="mx-auto max-w-7xl p-6 lg:p-8">
-                    {children}
-                  </div>
-                </main>
-              </div>
-            </div>
-          </div>
+          <AppShell banner={<MockModeBanner />}>{children}</AppShell>
         </Providers>
       </body>
     </html>

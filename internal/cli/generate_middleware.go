@@ -36,6 +36,15 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 	}
 
 	fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
+
+	// The server half of the API-only sign-in flow, so a project that wants
+	// its own sign-in screen has the endpoint already written rather than
+	// having to derive it from the issuer's API docs. Inert until wired.
+	projectName := filepath.Base(projectDir)
+	if err := codegen.GenerateLoginBroker(modPath, projectName, projectDir); err != nil {
+		return err
+	}
+	fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")
 	return nil
 }
 
@@ -571,7 +580,10 @@ func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.C
 	}
 	var out []codegen.ConfigField
 	for _, m := range messages {
-		if m.Binary != "" || composed[m.Name] {
+		// Frontend configs are excluded for the same reason as in the
+		// single-config path above: they are emitted as their own module,
+		// and folding them into AppConfig declares their fields twice.
+		if m.Binary != "" || m.Frontend != "" || composed[m.Name] {
 			continue
 		}
 		for _, f := range m.Fields {
@@ -605,8 +617,28 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 
 	// Flatten all proto config fields. Most projects have a single
 	// AppConfig message; multiple are supported but rendered as one set.
+	//
+	// FRONTEND CONFIGS ARE EXCLUDED, and must be: they are emitted as their
+	// OWN module (frontend_config_gen.k, below) and folding them in here
+	// declares their fields a second time inside AppConfig. The scaffold
+	// itself trips this — config.proto and the frontend's web_config.proto
+	// both legitimately declare oidc_client_id / oidc_redirect_uri /
+	// oidc_scopes / log_level, because a browser client and a server need
+	// the same facts under the same names — so a project scaffolded with a
+	// frontend failed config generation outright and produced no
+	// config_gen.k, which then failed `forge run` at the KCL render with
+	// "Cannot find the module .config", a message naming neither the real
+	// cause nor this file.
+	//
+	// The duplicate check that caught it is doing its job (see
+	// CheckDuplicateConfigFields — a silently-shadowed default shipped an
+	// empty APP_URL to prod once). The bug was feeding it a field set that
+	// was never meant to be one schema.
 	var fields []codegen.ConfigField
 	for _, m := range messages {
+		if m.Frontend != "" {
+			continue
+		}
 		fields = append(fields, m.Fields...)
 	}
 

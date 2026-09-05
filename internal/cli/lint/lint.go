@@ -633,9 +633,12 @@ func frontendDirsForLint() []string {
 		if cfg := store.Config(); cfg != nil && len(cfg.Frontends) > 0 {
 			var dirs []string
 			for _, fe := range cfg.Frontends {
-				dir := fe.Path
-				if dir == "" {
-					dir = filepath.Join("frontends", fe.Name)
+				// A frontend with no directory in this repository (a
+				// cross-repo source pin, a sibling-checkout path) has no
+				// dotenv file here to lint.
+				dir, ok := fe.Dir(".")
+				if !ok {
+					continue
 				}
 				dirs = append(dirs, dir)
 			}
@@ -1308,9 +1311,12 @@ func runFrontendLinters(ctx context.Context, cfg *config.ProjectConfig, fix bool
 func runFrontendLintersFromConfig(ctx context.Context, cfg *config.ProjectConfig, fix bool) error {
 	var outcomes frontendLintOutcomes
 	for _, fe := range cfg.Frontends {
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		// Skips a frontend whose code is in another repository: forge
+		// lints what this project owns, and that tree's own forge lints
+		// the rest.
+		feDir, ok := fe.Dir(".")
+		if !ok {
+			continue
 		}
 		outcomes.record(lintFrontendDir(ctx, fe.Name, feDir, fe.Type, cfg.Lint.Frontend.CSSHealth, fix))
 	}

@@ -35,6 +35,8 @@ import (
 	"sort"
 	"strings"
 
+	"go.yaml.in/yaml/v3"
+
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
@@ -406,7 +408,35 @@ type FrontendConfig struct {
 	Name string `yaml:"name"`
 	Type string `yaml:"type"`           // "nextjs", "react-native", "vite-spa"
 	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native), "vite-spa" (Vite + React + tanstack-router)
-	Path string `yaml:"path"`
+	// path is the frontend's directory, relative to the project root (or
+	// absolute), as declared by `path:` in forge.yaml — later REWRITTEN
+	// in memory to the resolved directory for a frontend whose code came
+	// from a `source:` pin (see cli.resolveFrontendSources).
+	//
+	// It is UNEXPORTED on purpose, and that is the single load-bearing
+	// line in this type. The convention "empty means frontends/<name>"
+	// used to be applied by each caller, inline:
+	//
+	//	feDir := fe.Path
+	//	if feDir == "" { feDir = filepath.Join("frontends", fe.Name) }
+	//
+	// ~20 emitters wrote that, none of them checked containment, and two
+	// earlier helpers that did it properly (EffectivePath, FrontendDirWithin)
+	// went unadopted for four years' worth of call sites — because an
+	// exported string field made the inline version legal and locally
+	// correct. Unexporting is what makes it not compile. Read the
+	// directory through Dir, which applies the fallback AND the
+	// containment check, or through DeclaredDir when the empty case is
+	// the thing you are asking about.
+	//
+	// The `yaml:"path"` tag stays for two reasons even though yaml.v3
+	// cannot itself decode into an unexported field: LoadProject's
+	// unknown-key walker (walkUnknownKeys/yamlKeysOf) reads struct tags
+	// reflectively to decide which keys forge.yaml may contain, so
+	// dropping the tag would make a perfectly valid `path:` line a
+	// validation error. The actual decode and encode go through
+	// UnmarshalYAML/MarshalYAML below.
+	path string `yaml:"path"` //nolint:unused // read/written via UnmarshalYAML, MarshalYAML and yamlKeysOf reflection
 	// Source declares this frontend's code as "that repo at that ref"
 	// instead of a directory that must already be on disk. Set it INSTEAD
 	// of Path when the frontend lives in another repository:
@@ -510,41 +540,38 @@ type FrontendConfig struct {
 	// typo'd or renamed entity would otherwise silently yield a frontend
 	// missing the page its author asked for.
 	Routes []string `yaml:"routes,omitempty"`
-	// AuthMode picks how this frontend signs users IN. It does not change
-	// what authentication means anywhere else: the backend validates the
-	// same JWT either way, and forge still issues no tokens.
+	// AuthMode names the sign-in FLOW this frontend uses. It does not
+	// change what authentication means anywhere else: the backend
+	// validates the same JWT either way, and forge still issues no tokens.
 	//
-	// "redirect" is the only value, and the default. `login()` sends the
-	// browser to the IdP's own hosted pages, which is portable across
-	// every IdP — and MFA, social sign-in and password reset come for
-	// free because the provider's pages implement them.
+	// "native" is the only value, and the default. The scaffolded frontend
+	// POSTs credentials to this app's own API and receives an HttpOnly
+	// session cookie; the server runs the whole OIDC flow against the
+	// issuer (internal/app/login_broker.go, over forge/pkg/devidp). The
+	// browser never contacts the identity provider, so there is no
+	// redirect, no PKCE in the bundle, and no token in JavaScript.
 	//
-	// The field is kept (rather than removed) because a first-party
-	// sign-in FORM is a legitimate thing to want, and a project that
-	// builds one against its own IdP's API has somewhere to declare it.
-	// forge does not scaffold one: driving a hosted sign-in from your own
-	// form is provider-proprietary in every case — there is no standard
-	// the way OIDC discovery generalizes the redirect flow — so a
-	// scaffolded implementation is only ever right for one vendor.
+	// The field is kept (rather than removed) because the flow is a real
+	// axis of variation — a project that replaces the broker with a
+	// different sign-in shape has somewhere to declare it.
 	//
-	// See the `auth/frontend` skill for what a first-party form has to
-	// respect (in particular: the password goes to the IdP, never to your
-	// forge backend, which mints no tokens and has no endpoint for one).
+	// See the `auth/frontend` skill for what the native flow guarantees,
+	// in particular why the credential check happens server-side.
 	AuthMode string `yaml:"auth_mode,omitempty"`
 }
 
 // Auth-mode values for FrontendConfig.AuthMode.
 const (
-	// AuthModeRedirect hands sign-in to the IdP's hosted pages.
-	AuthModeRedirect = "redirect"
+	// AuthModeNative signs users in through this app's own API, with the
+	// server running the OIDC flow on the browser's behalf.
+	AuthModeNative = "native"
 )
 
 // EffectiveAuthMode returns the frontend's sign-in mode, defaulting to the
-// portable redirect flow. Empty means unset, not "no auth" — every mode
-// authenticates; they differ only in where the user types their password.
+// native flow. Empty means unset, not "no auth" — every mode authenticates.
 func (f FrontendConfig) EffectiveAuthMode() string {
 	if f.AuthMode == "" {
-		return AuthModeRedirect
+		return AuthModeNative
 	}
 	return f.AuthMode
 }
@@ -580,22 +607,153 @@ type GitSource struct {
 	Subdir string `yaml:"subdir,omitempty" json:"subdir,omitempty"`
 }
 
-// EffectivePath returns the frontend's directory relative to the project
-// root: the declared `path`, falling back to the conventional
-// `frontends/<name>` layout when it is empty. Every command that shells
-// into a frontend (build, generate, lint) needs this same fallback, so it
-// lives on the config type rather than being re-derived per call site.
+// Dir resolves the frontend's directory against the project root and
+// reports whether it is inside it. It is the ONE answer to "where does
+// this frontend live", and it subsumes both helpers it replaced:
+// EffectivePath's fallback (empty `path:` means frontends/<name>) and
+// FrontendDirWithin's containment check, which the fallback alone never
+// had.
 //
-// A frontend with a `source:` has NO meaningful value here until the
-// source is resolved — its code is not in the project tree. Callers that
-// can shell into a frontend must consult HasGitSource first and route
-// through the resolver; EffectivePath keeps returning the conventional
-// fallback so the many callers that only need a label are unchanged.
-func (f FrontendConfig) EffectivePath() string {
-	if f.Path != "" {
-		return f.Path
+// ok == false means there is no directory in THIS repository to speak
+// of, for one of two reasons the caller almost always wants to treat
+// alike:
+//
+//   - the path escapes the project root (`../reliant/web`) — it names
+//     another repository's working tree, whose own forge owns its
+//     codegen. Writing here puts one repo's generated TypeScript in
+//     another repo's git status.
+//   - the frontend is unnamed, so the convention has nothing to fill in.
+//
+// A `source:` frontend resolves normally ONCE its pin has been
+// materialized, because resolution rewrites path to the cache directory;
+// before that it has no in-tree location and reports ok == false rather
+// than the invented frontends/<name>. That is the behavior difference
+// from the retired EffectivePath, which returned the conventional label
+// for a tree that was not there — fine for a caller printing a name,
+// wrong for the many that then shelled into it.
+//
+// The returned path is slash-separated and relative to projectDir.
+func (f FrontendConfig) Dir(projectDir string) (string, bool) {
+	// An unnamed frontend has no identity to resolve, and a still-pinned
+	// cross-repo one has no directory in this tree — even when a path is
+	// present, since a `source:` frontend's path is either the invalid
+	// both-declared shape validate.go rejects, or a KCL declaration whose
+	// path names the OTHER repo's layout. Both are excluded before the
+	// path is consulted, which is what KCLFrontend.OwnsFrontendCode has
+	// always required. Once the pin is materialized the resolver clears
+	// Source and rewrites the path, and the frontend resolves normally.
+	if f.Name == "" || f.HasGitSource() {
+		return "", false
 	}
-	return filepath.Join("frontends", f.Name)
+	dir := strings.TrimSpace(f.path)
+	if dir == "" {
+		dir = filepath.Join("frontends", f.Name)
+	}
+
+	abs := dir
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(projectDir, dir)
+	}
+	rel, err := filepath.Rel(projectDir, abs)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	return rel, true
+}
+
+// DeclaredDir is the path exactly as declared or resolved, with no
+// fallback and no containment check — empty when forge.yaml named none.
+//
+// Use it ONLY where the empty case, or an out-of-tree path, is the thing
+// being asked about: reporting a sibling-repo frontend, deciding whether
+// a declaration exists, or handing a path to a resolver that will rewrite
+// it. Every caller that wants "the directory to read or write files in"
+// wants Dir instead, which is why this one is deliberately awkward to use
+// by accident.
+func (f FrontendConfig) DeclaredDir() string { return f.path }
+
+// WithDir returns a copy whose directory is dir, and whose code is
+// therefore IN this tree — so it clears Source.
+//
+// Clearing it is the point, not a side effect. Source means "the code is
+// in another repository and there is no directory here yet", which is
+// exactly what Dir reports ok == false for. A resolver that materialized
+// the pin has made that false: the code now sits in the cache directory
+// it is passing in. Leaving Source set would keep every reader excluding
+// a frontend whose code is on disk and ready to build — the shape of the
+// original `forge build --target reliant-web` bug.
+//
+// It is also how a caller assembles a FrontendConfig from a declaration
+// that did not come from forge.yaml (a KCL entity, a discovered
+// directory), which is why the parameter is a directory rather than a
+// pin.
+func (f FrontendConfig) WithDir(dir string) FrontendConfig {
+	f.path = dir
+	f.Source = nil
+	return f
+}
+
+// UnmarshalYAML decodes a frontend entry, routing `path:` into the
+// unexported field yaml.v3's reflection cannot reach.
+//
+// Without this the field would decode as empty with NO error — verified:
+// yaml.v3 skips unexported fields silently, tag or no tag — and every
+// frontend in every project would quietly fall back to the
+// frontends/<name> convention, breaking exactly the custom-path projects
+// this type exists to serve.
+func (f *FrontendConfig) UnmarshalYAML(node *yaml.Node) error {
+	// The alias sheds the methods, so decoding into it does not recurse
+	// back into this function.
+	type plain FrontendConfig
+	var v plain
+	if err := node.Decode(&v); err != nil {
+		return err
+	}
+	var pathOnly struct {
+		Path string `yaml:"path"`
+	}
+	if err := node.Decode(&pathOnly); err != nil {
+		return err
+	}
+	*f = FrontendConfig(v)
+	f.path = pathOnly.Path
+	return nil
+}
+
+// MarshalYAML re-emits `path:` from the unexported field, so a config
+// forge WRITES (scaffold, NormalizeForWrite) round-trips through the
+// same key it reads. Without it, `forge scaffold frontend` would append
+// an entry with no path at all.
+//
+// The key is inserted after `kind`/`type` rather than appended, which is
+// where it sits in every forge.yaml on disk today and in the scaffold
+// templates — so an existing file re-serialized by forge does not
+// reorder its own keys.
+func (f FrontendConfig) MarshalYAML() (any, error) {
+	type plain FrontendConfig
+	var node yaml.Node
+	if err := node.Encode(plain(f)); err != nil {
+		return nil, err
+	}
+	if f.path == "" {
+		return &node, nil
+	}
+	at := len(node.Content)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if k := node.Content[i].Value; k == "kind" || k == "type" || k == "name" {
+			at = i + 2
+		}
+	}
+	pathPair := []*yaml.Node{
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: "path"},
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: f.path},
+	}
+	node.Content = append(node.Content[:at], append(pathPair, node.Content[at:]...)...)
+	return &node, nil
 }
 
 // HasGitSource reports whether this frontend's code comes from another
@@ -624,13 +782,33 @@ func (c *ProjectConfig) FrontendToolchainDisabled() bool {
 // lint pipeline's frontend lane so the two can never disagree about the
 // set. Command-specific filters (--target, KCL deploy mode, per-command
 // skips) layer on top of this set; they do not re-derive it.
+//
+// A cross-repo frontend whose source has not been materialized yet is
+// EXCLUDED rather than given the conventional fallback. This set is the
+// one forge shells into — `npm run build`, `tsc` — and such a frontend has
+// no directory in this tree by design. Naming it frontends/<name> invents
+// a path that does not exist and never will, so the command fails deep
+// inside npm against a fabricated directory instead of simply not
+// attempting a frontend whose code is not on disk. Callers that DO
+// materialize sources (forge build) rewrite Path first, so the frontend
+// is back in this set by the time they read it.
+//
+// Entries are returned AS THEY ARE. Since resolution happens once, at
+// the config load seam (ResolveInventoryAtLoad), a path read here is
+// already the resolved one and this function does not re-derive it —
+// which is what keeps a RESOLVED path from becoming indistinguishable
+// from a DECLARED one. Callers read the directory through Dir, which
+// applies the frontends/<name> convention for a config assembled in
+// memory rather than loaded from disk.
 func (c *ProjectConfig) ToolchainFrontends() []FrontendConfig {
 	if c == nil || c.FrontendToolchainDisabled() {
 		return nil
 	}
 	out := make([]FrontendConfig, 0, len(c.Frontends))
 	for _, fe := range c.Frontends {
-		fe.Path = fe.EffectivePath()
+		if fe.DeclaredDir() == "" && fe.HasGitSource() {
+			continue
+		}
 		out = append(out, fe)
 	}
 	return out

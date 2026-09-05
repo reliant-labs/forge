@@ -976,13 +976,23 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 	ctx, cfg := rc.ctx, rc.cfg
 	type fe struct{ name, dir, feType string }
 	var frontends []fe
+	// css_health is a CONFIG setting, so it is read from config — never from
+	// which branch discovered the frontends. Reading it inside the
+	// `len(cfg.Frontends) > 0` arm silently disabled CSS-health linting for
+	// every project whose inventory is DERIVED rather than declared (forge.yaml
+	// with no `frontends:` block — control-plane today): the directory scan
+	// found the frontend and linted it, with css_health stuck at false and no
+	// "skipped" finding to say so. Every other reader of this field
+	// (lint.go:1315, generate_ci.go:181) reads it unconditionally.
 	cssHealth := false
-	if cfg != nil && len(cfg.Frontends) > 0 {
+	if cfg != nil {
 		cssHealth = cfg.Lint.Frontend.CSSHealth
+	}
+	if cfg != nil && len(cfg.Frontends) > 0 {
 		for _, f := range cfg.Frontends {
-			dir := f.Path
-			if dir == "" {
-				dir = filepath.Join("frontends", f.Name)
+			dir, ok := f.Dir(".")
+			if !ok {
+				continue
 			}
 			frontends = append(frontends, fe{name: f.Name, dir: dir, feType: f.Type})
 		}

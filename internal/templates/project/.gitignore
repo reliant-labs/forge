@@ -30,6 +30,22 @@ vendor/
 go.work
 go.work.sum
 
+# ── Dev web-runtime bridge — the npm twin of go.work above ──
+# A DEV build of forge writes an npm workspace ROOT at the project root
+# (package.json + .forge-link/<symlink>) that points this project's frontends
+# at a local @reliantlabs/forge-web-runtime checkout, so edits there are live
+# here with nothing published. A released forge never writes it.
+#
+# Each frontend's OWN package.json is tracked and keeps the published semver
+# range — the bridge redirects that requirement by workspace name, so no
+# machine-specific path is ever committed. These entries are anchored with a
+# leading "/" on purpose: a bare `package.json` would also ignore
+# frontends/*/package.json, which MUST stay tracked.
+/package.json
+/package-lock.json
+/node_modules/
+/.forge-link/
+
 # ── Node.js / Next.js ──
 node_modules/
 .next/

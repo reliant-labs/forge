@@ -146,7 +146,7 @@ func deployabilityChecks() []namedCheck {
 		{"Deploy Secrets", CheckDeploySecrets},
 		{"Deploy SA Binding", CheckDeployServiceAccount},
 		{"Deploy Migrations", CheckDeployMigrations},
-		{"Deploy Config Drift", CheckFrontendConfigDrift},
+		{"Frontend Code", CheckFrontendCode},
 		{"Object Collision", CheckObjectCollision},
 		{"Payload Limits", CheckPayloadLimits},
 	}

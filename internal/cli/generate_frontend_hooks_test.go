@@ -165,7 +165,7 @@ func TestGenerateFrontendHooks_PerFrontendByDefault(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name: "myapp",
 		Frontends: []config.FrontendConfig{
-			{Name: "web", Type: "nextjs", Path: "frontends/web"},
+			config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web"),
 		},
 	}
 	services := []codegen.ServiceDef{
@@ -216,7 +216,7 @@ func TestGenerateFrontendHooks_WrittenFileCarriesForgeHashMarker(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.ProjectConfig{
 		Name:      "myapp",
-		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs", Path: "frontends/web"}},
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
 	}
 	services := []codegen.ServiceDef{fakeService("UserService", "proto/services/users/v1/users.proto")}
 	cs := &checksums.FileChecksums{}
@@ -249,7 +249,7 @@ func TestGenerateFrontendHooks_RenamedServiceOrphanIsSweptAsStale(t *testing.T) 
 	dir := t.TempDir()
 	cfg := &config.ProjectConfig{
 		Name:      "myapp",
-		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs", Path: "frontends/web"}},
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
 	}
 	cs := &checksums.FileChecksums{}
 
@@ -367,8 +367,8 @@ func TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name: "myapp",
 		Frontends: []config.FrontendConfig{
-			{Name: "web", Type: "nextjs", Path: "frontends/web"},
-			{Name: "mobile", Type: "react-native", Path: "frontends/mobile"},
+			config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web"),
+			config.FrontendConfig{Name: "mobile", Type: "react-native"}.WithDir("frontends/mobile"),
 		},
 		Frontend: config.FrontendProjectConfig{Workspaces: true},
 	}
@@ -394,7 +394,7 @@ func TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir(t *testing.T) {
 	}
 	// Per-frontend hooks dirs should NOT be written in workspace mode.
 	for _, fe := range cfg.Frontends {
-		p := filepath.Join(dir, fe.Path, "src/hooks/user-service-hooks_gen.ts")
+		p := filepath.Join(dir, fe.DeclaredDir(), "src/hooks/user-service-hooks_gen.ts")
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("workspaces=true should not write per-frontend %s, got err=%v", p, err)
 		}
@@ -519,7 +519,7 @@ service OrderService {
 
 	cfg := &config.ProjectConfig{
 		Name:      "myapp",
-		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs", Path: "frontends/web"}},
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
 	}
 	services := []codegen.ServiceDef{{
 		Name:      "OrderService",

@@ -12,7 +12,9 @@ import (
 	"sort"
 )
 
-// registryRel is the on-disk port-block registry: a stable {key: entry} map.
+// registryRel is the on-disk port-block registry: a stable {key: entry} map,
+// resolved relative to the REPO ANCHOR (the primary checkout) so every linked
+// worktree of a repo shares ONE registry — see repoAnchor in gitfacts.go.
 // The block is the INTERNAL index forge multiplies by 100 to offset a
 // stack's ports; it is never surfaced in KCL. The default key "" is
 // implicitly block 0 and is NOT stored — only named keys consume registry
@@ -169,8 +171,11 @@ func AllocatePort(projectDir string, base int, key string) (int, error) {
 // run of a given (base, key) it steps past a port some OTHER project is
 // already holding, then memoizes the answer like any other block.
 //
-// Why this exists. The block registry is per-project, so the default key ""
-// is block 0 in EVERY project — and a second project on the same machine
+// It applies to the DEFAULT key ONLY — see the named-key guard in the body
+// for why probing a dev stack's port is actively wrong.
+//
+// Why this exists. The block registry is per-repo, so the default key ""
+// is block 0 in EVERY repo — and a second project on the same machine
 // therefore asks for the identical base port. For the dev IdP that is fatal
 // rather than inconvenient: forge (correctly) refuses to adopt an identity
 // provider it did not start, because registering this project's application
@@ -193,6 +198,27 @@ func AllocatePortAvoidingForeign(projectDir string, base int, key string, isFree
 	// stability guarantee, and re-deciding here would move an issuer.
 	if assigned, ok := lookupBlock(projectDir, key); ok {
 		return base + assigned*100, nil
+	}
+	// A NAMED key is a dev stack, and a dev stack's block comes from the
+	// registry — never from a socket probe.
+	//
+	// Availability probing exists for the DEFAULT key only, and the reason is
+	// specific (see the doc comment): the registry is per-repo, so key "" is
+	// block 0 in EVERY repo, and two different projects on one machine ask
+	// for the identical base port. A named key cannot have that problem —
+	// within a repo the shared registry already hands out distinct blocks.
+	//
+	// Probing a named key is not merely unnecessary, it is WRONG, because
+	// "the port answers" does not mean "the block is taken". A cluster
+	// pre-maps every stack's host port at CREATE time precisely so a new
+	// worktree needs no cluster recreate, so all N ports answer from the
+	// moment the cluster exists, whether or not any stack is using them.
+	// The probe therefore reads a full machine off an empty registry, walks
+	// every block, and reports the ceiling — which is exactly how the FIRST
+	// worktree on this machine was refused with "already reached the 8-stack
+	// ceiling" while `forge env devstack list` printed nothing at all.
+	if key != "" {
+		return AllocatePort(projectDir, base, key)
 	}
 	if isFree == nil || isFree(base) {
 		// Record the choice even though it is the default block. Without an
@@ -362,8 +388,11 @@ func nextFreeBlock(reg registry) int {
 	}
 }
 
+// registryPath resolves the registry against the REPO ANCHOR (the primary
+// checkout), not projectDir — so every linked worktree of one repo reads and
+// writes the SAME registry. See repoAnchor.
 func registryPath(projectDir string) string {
-	return filepath.Join(projectDir, registryRel)
+	return filepath.Join(repoAnchor(projectDir), registryRel)
 }
 
 // readRegistry loads the {key: entry} map, accepting the legacy bare-int form

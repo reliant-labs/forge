@@ -105,7 +105,23 @@ func configProbeSource(projectDir, envDir string) (string, error) {
 		if i > 0 {
 			b.WriteString(" | ")
 		}
-		fmt.Fprintf(&b, "%s.%s(appcfg.%s)", codegen.ConfigSchemaModule, lambda, inst.varName)
+		// `config_secrets` = ALL_SENSITIVE, the generated list of every sensitive
+		// var this config declares — the one caller that legitimately wants
+		// the whole set.
+		//
+		// A CLUSTER workload names only the credentials it reads, so its
+		// manifest carries only those secretKeyRefs. This probe is not a
+		// workload: it answers "what does the config resolve to in this env"
+		// for host-run injection, the parity report and the seed gate. Host
+		// mode runs every binary as a process on one machine off one
+		// environment, so the honest host answer is the union — and the
+		// parity report specifically exists to compare against the cluster,
+		// which it cannot do for a var it declined to look at. Nothing is
+		// leaked by asking: a from_secret entry surfaces here as a REFERENCE
+		// (name+key), never a value, and buildForgeConfigValues records it as
+		// a placeholder precisely because the host cannot dereference it
+		// either.
+		fmt.Fprintf(&b, "%s.%s(appcfg.%s, %s.%s)", codegen.ConfigSchemaModule, lambda, inst.varName, codegen.ConfigSchemaModule, codegen.KCLAllSensitiveName(inst.schema))
 	}
 	b.WriteString("\n")
 	return b.String(), nil

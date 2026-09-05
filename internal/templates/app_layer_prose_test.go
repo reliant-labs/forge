@@ -37,6 +37,7 @@ var emittedAppLayerFiles = map[string]string{
 	"internal/app/lifecycle.go":           "project/lifecycle.go.tmpl",
 	"internal/app/mounts_services_gen.go": "project/mounts_services_gen.go.tmpl",
 	"internal/app/auth.go":                "project/app-auth.go.tmpl",
+	"internal/app/login_broker.go":        "project/app-login-broker.go.tmpl",
 	"internal/app/inject_gen.go":          "", // internal/codegen/inject_gen.go, no template
 	// The per-component harness is no longer an app-layer file: it lives at
 	// internal/handlers/<svc>/helpers_gen_test.go (a _test.go file, so

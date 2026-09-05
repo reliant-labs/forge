@@ -1310,15 +1310,18 @@ frontends[].base_path in forge.yaml and rendered into next.config.ts
 (basePath + assetPrefix) and the generated src/lib/basepath_gen.ts
 helper. The single runtime override is NEXT_PUBLIC_BASE_PATH.
 
---auth-mode picks where the user types their password. "redirect" is the
-default and the only mode forge scaffolds: sign-in happens on the IdP's
-own hosted pages, which is portable across every IdP, and MFA, social
-sign-in and password reset come for free because the provider
-implements them. A first-party form inside your app is possible — the
-password goes from the browser to the IdP either way — but every
-implementation of one drives a single provider's proprietary API, so
-there is nothing portable to generate. Bringing the environment up
-registers the new frontend with the dev IdP; nothing else to run.
+--auth-mode names the sign-in flow this frontend uses. "native" is the
+default and the only mode forge scaffolds, and it is a first-party form:
+the browser POSTs an email and a password to your own app (POST
+/auth/login) and gets back an HttpOnly session cookie. The browser never
+contacts the identity provider — no /authorize redirect, no PKCE in the
+bundle, and no token any script can read. Your server runs the whole OIDC
+flow against the issuer, in internal/app/login_broker.go, which forge
+scaffolds once and then leaves to you. That is what makes a first-party
+form portable here: the provider-specific part is one server-side file
+written against forge/pkg/devidp, not a flow spread through the frontend.
+Bringing the environment up registers the new frontend with the dev IdP;
+nothing else to run.
 
 Example:
   forge scaffold frontend web
@@ -1327,7 +1330,7 @@ Example:
   forge scaffold frontend admin --kind vite-spa
   forge scaffold frontend dashboard --output standalone
   forge scaffold frontend admin --base-path /admin
-  forge scaffold frontend web --auth-mode credentials
+  forge scaffold frontend web --auth-mode native
   forge scaffold frontend ops --routes users,usage-events`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1339,7 +1342,7 @@ Example:
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
 	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: standalone (default), static, or server. Only applies to --kind web.")
 	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
-	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Where the user signs in. Only `redirect` (the default) is scaffolded: sign-in happens on the IdP's own hosted pages. A first-party form is yours to build against your IdP's API — every such API is provider-specific.")
+	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in flow for this frontend. Only `native` (the default) is scaffolded: your own form POSTs credentials to your own API and gets an HttpOnly session cookie; the server runs the OIDC flow (internal/app/login_broker.go) and the browser never contacts the IdP.")
 	cmd.Flags().StringSliceVar(&routes, "routes", nil, "Only generate CRUD pages for these entity route slugs (e.g. --routes users,usage-events). Default (unset) generates a page set for EVERY entity. Persisted as frontends[].routes and honored by every later generate run.")
 
 	return cmd
@@ -1557,8 +1560,8 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
 	// The templates just rendered import "@/lib/config_gen" (auth's
-	// oidc-provider.ts and session-provider.ts do unconditionally), so the
-	// module has to exist NOW. The add verb does not run generate, and
+	// session-provider.ts does unconditionally), so the module has to
+	// exist NOW. The add verb does not run generate, and
 	// writing this used to live only in the generate pipeline — which left
 	// a freshly added frontend unable to typecheck against its own scaffold.
 	// frontendType is already the platform label the generate pipeline uses
@@ -1659,7 +1662,7 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 // to sign in rather than handing over a setup procedure. Without the line, the
 // cheap-looking move is to hand-roll an AuthProvider that injects a pasted
 // token, which is a credential in a repo and a file that has to be deleted
-// later; the PKCE provider the scaffold already ships needs no code.
+// later; the native sign-in the scaffold already ships needs no code.
 func reportFrontendAuthNextStep(root string) {
 	// Only speak up when nothing is configured. A project already pointed at
 	// an issuer (dev IdP or hosted) needs no advice. The DirSecrets store is
@@ -1954,6 +1957,12 @@ type frontendEntryInput struct {
 	Routes       []string
 }
 
+// defaultFrontendDevPort is the dev-server port a scaffolded frontend gets
+// when the user names none. It matches the base the dev environment's KCL
+// allocates from, so the origin the issuer is told and the origin the dev
+// server binds are the same number. See buildFrontendEntry.
+const defaultFrontendDevPort = 3000
+
 // buildFrontendEntry assembles the forge.yaml entry for a newly scaffolded
 // frontend.
 //
@@ -1962,13 +1971,34 @@ type frontendEntryInput struct {
 // without every existing forge.yaml pinning the old value. That is why each
 // assignment below is conditional rather than unconditional.
 func buildFrontendEntry(in frontendEntryInput) config.FrontendConfig {
+	port := in.Port
+	if port == 0 {
+		// A STABLE default, not an ephemeral one.
+		//
+		// Port 0 means "allocate a free OS port at launch"
+		// (resolveEphemeralFrontendPorts), which never collides and is a
+		// fine default for a frontend nothing else has to find. It stops
+		// being fine the moment something OUTSIDE the dev loop is told the
+		// origin — and with the API-only sign-in flow something is: the
+		// issuer's `idp_login_uri` is where it redirects the authorization
+		// request, and it is compared literally. A frontend on a different
+		// port every run means that redirect lands on whatever else happens
+		// to be listening, which presents as "sign-in took me to some other
+		// app" rather than as a port problem.
+		//
+		// The dev env's KCL allocates the matching number deterministically
+		// (`plugin.allocate_port(3000, worktree)`), so a second worktree of
+		// the same project gets its own stable block rather than colliding.
+		// Set `port:` in forge.yaml to pin a different one; the launcher
+		// honors an explicit value verbatim.
+		port = defaultFrontendDevPort
+	}
 	fe := config.FrontendConfig{
 		Name: in.Name,
 		Type: in.FrontendType,
 		Kind: in.FrontendKind,
-		Path: fmt.Sprintf("frontends/%s", in.Name),
-		Port: in.Port,
-	}
+		Port: port,
+	}.WithDir(fmt.Sprintf("frontends/%s", in.Name))
 	isWeb := in.Kind == "" || in.Kind == "web"
 	if in.Output != "" && isWeb {
 		fe.Output = in.Output
@@ -2017,16 +2047,15 @@ func frontendTypedConfigFor(root, frontendName string) generator.FrontendTypedCo
 
 // validateAuthMode rejects an unrecognized --auth-mode.
 //
-// "redirect" is the only mode forge scaffolds. A first-party sign-in form is
-// a legitimate thing to build, but every implementation of one is specific to
-// a single provider's API, so there is nothing portable to generate.
+// "native" is the only mode forge scaffolds: the app's own sign-in form posts
+// to the app's own API, and the server runs the OIDC flow against the issuer.
 func validateAuthMode(ctxLabel, authMode string) error {
 	switch authMode {
-	case "", config.AuthModeRedirect:
+	case "", config.AuthModeNative:
 		return nil
 	default:
 		return cliutil.UserErr(ctxLabel,
 			fmt.Sprintf("invalid --auth-mode %q", authMode), "",
-			"pass --auth-mode redirect (the default, and the only mode forge scaffolds)")
+			"pass --auth-mode native (the default, and the only mode forge scaffolds)")
 	}
 }

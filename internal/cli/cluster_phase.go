@@ -635,7 +635,7 @@ func resolveDockerHostGatewayIP(ctx context.Context, node string) (string, error
 	}
 	fields := strings.Fields(string(out))
 	if len(fields) < 2 || fields[1] != k3dHostGatewayAlias || net.ParseIP(fields[0]) == nil {
-		return "", fmt.Errorf("Docker returned invalid host-gateway record %q", strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("docker returned invalid host-gateway record %q", strings.TrimSpace(string(out)))
 	}
 	return fields[0], nil
 }

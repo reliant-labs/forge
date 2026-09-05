@@ -87,9 +87,11 @@ func generateFrontendConfigModules(
 				fc.MessageName, fc.Frontend, fc.Frontend, knownFrontendsSuffix(cfg), fc.Frontend)
 		}
 
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 
 		// ── Tier-1: src/lib/config_gen.ts ──

@@ -28,6 +28,7 @@ package templates
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -52,10 +53,23 @@ func TestSignInRouteOwnsItsSuspenseBoundary(t *testing.T) {
 	if !strings.Contains(s, "useSearchParams") {
 		t.Skip("sign-in no longer calls useSearchParams(); boundary requirement moot")
 	}
-	if !strings.Contains(s, `import { Suspense, useCallback } from "react"`) {
-		t.Errorf("sign-in page must import Suspense from react — useSearchParams() " +
-			"bails out of prerendering and `next build` fails the route unless the " +
-			"bailout is caught by a boundary this file owns")
+	// Matched as "Suspense appears in the named-import list from react",
+	// not as one exact import line. The previous spelling pinned the whole
+	// clause — `import { Suspense, useCallback } from "react"` — so it went
+	// red the day the page swapped useCallback for useState, an edit that
+	// changed nothing this test is about. A guard that fires on an unrelated
+	// refactor is one the next person deletes rather than reads, and this
+	// assertion is worth keeping: the real property is that the boundary's
+	// import is present at all.
+	reactImport := regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*"react"`)
+	imported := reactImport.FindStringSubmatch(s)
+	if imported == nil {
+		t.Fatalf("sign-in page has no named import from \"react\"; got:\n%s", s)
+	}
+	if !regexp.MustCompile(`\bSuspense\b`).MatchString(imported[1]) {
+		t.Errorf("sign-in page must import Suspense from react (imports %q) — useSearchParams() "+
+			"bails out of prerendering and `next build` fails the route unless the "+
+			"bailout is caught by a boundary this file owns", strings.TrimSpace(imported[1]))
 	}
 	if !strings.Contains(s, "<Suspense") {
 		t.Fatalf("sign-in page must wrap its useSearchParams() consumer in <Suspense>; got:\n%s", s)

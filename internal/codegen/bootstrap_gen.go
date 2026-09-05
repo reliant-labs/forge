@@ -624,8 +624,10 @@ type DepsAutoStub struct {
 	// the file's import block.
 	CrossPackage bool
 	// ExtraImports lists every package the stub's method signatures
-	// reference (including the interface's own package). Only populated
-	// when CrossPackage = true. The bootstrap_testing assembler
+	// reference. For a CrossPackage stub that includes the interface's
+	// own package; for a LOCAL interface the interface type needs no
+	// import but its parameter / result types still may, so this is
+	// populated independently of CrossPackage. The bootstrap_testing assembler
 	// deduplicates these across stubs into the top-level
 	// ExtraImports field on the template data.
 	ExtraImports []ExtraImport
@@ -1235,9 +1237,10 @@ func reconcileAutoStubAliases(services []BootstrapTestServiceData, packages []Bo
 	for i := range services {
 		for j := range services[i].AutoStubs {
 			stub := &services[i].AutoStubs[j]
-			if !stub.CrossPackage {
-				continue
-			}
+			// Local-interface stubs are reconciled too: their signature
+			// imports can collide with a static import exactly like a
+			// cross-package stub's can. Only the InterfaceQualified rewrite
+			// is cross-package-specific (see rewriteStubAlias).
 			for k := range stub.ExtraImports {
 				imp := &stub.ExtraImports[k]
 				existing, taken := used[imp.Alias]
@@ -1324,9 +1327,12 @@ func mergeExtraImports(services []BootstrapTestServiceData) []ExtraImport {
 	seen := map[string]string{}
 	for _, s := range services {
 		for _, stub := range s.AutoStubs {
-			if !stub.CrossPackage {
-				continue
-			}
+			// Every stub's ExtraImports count, CrossPackage or not. A LOCAL
+			// interface needs no import for the interface type itself, but its
+			// method signatures may still reference other packages — and the
+			// stub renders those signatures verbatim, so the imports are just
+			// as load-bearing. Filtering on CrossPackage here is what produced
+			// `undefined: proxyauthz` in a generated helpers_gen_test.go.
 			for _, imp := range stub.ExtraImports {
 				if _, ok := seen[imp.Path]; ok {
 					continue
@@ -1467,6 +1473,12 @@ func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStu
 				StubType:           "", // resolved below from handlerDir's package
 				InterfaceQualified: "<alias>." + iface.Name,
 				Methods:            iface.Methods,
+				// A local interface's SIGNATURES can still be cross-package
+				// (`Authorize(ctx context.Context, in proxyauthz.Input)`), and
+				// the stub renders them verbatim. CrossPackage stays false —
+				// see the note on that field: it describes where the INTERFACE
+				// lives, and it gates the "<alias>." rewrite this stub needs.
+				ExtraImports: iface.ExtraImports,
 			})
 			continue
 		}

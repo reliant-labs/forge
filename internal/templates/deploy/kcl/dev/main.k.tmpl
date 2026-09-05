@@ -110,6 +110,16 @@ _cluster = forge.ClusterTarget {
 # steps to 5433 and stays there, and the DSN below follows it — which is the
 # whole point.
 _postgres_port = plugin.resolve_port("{{.ProjectName}}-dev-postgres", 5432)
+
+# The API's own port. Availability-checked like postgres: nothing outside
+# these declarations is told where the dev API listens — the frontend reaches
+# it through the generated config, which reads this same variable.
+#
+# It does NOT default to 8080 the way the container does. As a host process
+# the API shares the machine with every other stack on it (and, in a project
+# with a frontend, with the IdP on 8080), so a fixed 8080 is a collision
+# waiting to happen. resolve_port takes 8085 when free and steps on when not.
+_api_port = plugin.resolve_port("{{.ProjectName}}-dev-api", 8085)
 {{- if .HasFrontend}}
 
 # The IdP is the second kind, and it genuinely cannot float. Zitadel derives
@@ -126,6 +136,35 @@ _postgres_port = plugin.resolve_port("{{.ProjectName}}-dev-postgres", 5432)
 # issuer both halves of auth enforce — reads this one variable.
 _idp_port = plugin.allocate_port(8080, option("worktree") or "")
 _idp_origin = "http://localhost:${_idp_port}"
+
+# The FRONTEND's dev-server port.
+#
+# resolve_port, NOT allocate_port, and the difference matters here.
+#
+# Both give a STABLE port, which is what the login URI needs: the issuer is
+# told this origin at provision time and compares it literally, so a number
+# that moved between runs would send sign-in somewhere else. The question is
+# only what to do when the preferred port is already taken.
+#
+#   allocate_port is deterministic and does NOT step off a busy port. It is
+#   right when something OUTSIDE this project was told the number and cannot
+#   be re-told — the IdP below, whose issuer is baked into every token it
+#   has already minted.
+#
+#   resolve_port takes 3000 when free, steps to the next free port when not,
+#   and REMEMBERS the answer (.forge/ports-dev.json). Every consumer here
+#   reads this variable, and the one external consumer — the issuer's
+#   registered login URI — is written from it by the idp-provision job on
+#   the same run. So stepping is safe: nothing has been told the old number
+#   that is not re-told the new one.
+#
+# 3000 is the most contested port on a developer's machine. With
+# allocate_port a project scaffolded next to anything already on 3000 fails
+# bring-up with "held by a process forge doesn't manage" and the developer
+# has to hand-edit this line — which is exactly the scavenger hunt a
+# scaffold exists to prevent.
+_frontend_port = plugin.resolve_port("{{.ProjectName}}-dev-web", 3000)
+_frontend_origin = "http://localhost:${_frontend_port}"
 {{- end}}
 
 # The dev database connection string, composed from the port declared above
@@ -144,10 +183,45 @@ _database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.Pro
 # assembled with forge.env_merge (name-keyed, LAST-wins) so a later layer
 # overrides an earlier one by name instead of the `+`-concat footgun (which
 # emits duplicate keys kubectl rejects).
-_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_gen.appConfigEnvMap(appcfg.app_config))), [
+# A LAMBDA of the workload's declared config_secrets, not a flat value, because
+# the CONFIG projection is now per-workload. Non-sensitive config still
+# reaches every workload identically (inline values — no credential, no
+# start-time dependency), but a `sensitive` field is projected only into the
+# workloads that NAME it in `config_secrets` in deploy/kcl/workloads.k.
+#
+# It was one flat map layered under every workload, and that was an outage
+# waiting to happen: adding one credential to the shared config added a
+# secretKeyRef to every Deployment, CronJob and Job. A pod whose secretKeyRef
+# names a key that does not exist never starts — CreateContainerConfigError,
+# no application log — so one feature's missing secret took down everything
+# in the namespace rather than that feature.
+_base_env = lambda config_secrets: [str] -> [forge.EnvVar] {
+    forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_gen.appConfigEnvMap(appcfg.app_config, config_secrets))), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
     forge.EnvVar {name = "DATABASE_URL", value = _database_url}
+    # PORT is what the process actually BINDS, so it must equal the port
+    # declared for this workload — see _api_port. In a container the app owns
+    # :8080 alone and the default is right; as a host process it shares the
+    # machine with everything else, including the IdP on 8080, so dev states
+    # its own number here rather than inheriting the container convention.
+    forge.EnvVar {name = "PORT", value = str(_api_port)}
+{{- if .HasFrontend}}
+    # NATIVE SIGN-IN's redirect URI. Nothing is redirected — the server
+    # reads the authorization code straight out of the issuer's response —
+    # but the issuer still validates this against the registered allowlist,
+    # and the token exchange must present the identical value.
+    #
+    # Declared HERE rather than in config.k because it is composed from
+    # `_frontend_origin`, which this file owns.
+    forge.EnvVar {name = "OIDC_REDIRECT_URI", value = _frontend_origin + "/auth/callback"}
+{{- end}}
+{{- if .HasFrontend}}
+    # Where the SERVER reaches the issuer for the sign-in broker calls. Same
+    # origin as the browser uses here, because both are host-side.
+    forge.EnvVar {name = "IDP_BASE", value = _idp_origin}
+{{- end}}
 ])
+}
 
 # Refine the declared workloads with the dev
 # knobs. The `|` merge layers per-env placement onto each workload;
@@ -179,7 +253,10 @@ _workloads = [c | {
     image = "{{.ProjectName}}"
     registry = _registry
     namespace = _namespace
-    env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
+    # `c.config_secrets` is this workload's own declared credential list, so the
+    # config projection under it carries only the secretKeyRefs this workload
+    # reads. A workload that declares none (the common case) gets none.
+    env_vars = forge.env_merge(_base_env(c.config_secrets), [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
 } for c in _declared]
 
 _workload_env = fw.WorkloadEnv {
@@ -391,16 +468,41 @@ _bundle = forge.Bundle {
     ] + [forge.RenderedWorkload {
         name = c.name
         image = "{{.ProjectName}}"
-        command = c.command
+        # `go run ./cmd/<binary> server`, spelled out rather than inferred.
+        #
+        # The host runner's default is `go run <target> server <name>`, which
+        # is right for a SHARED binary that fronts several services as cobra
+        # subcommands. This project is per-service — its binary has no `note`
+        # subcommand — so the inferred form dies with `unknown command`.
+        # Naming the command here makes the declaration match the binary the
+        # project actually built.
+        command = ["go", "run", "./cmd/{{.ProjectName}}", "server"]
         env_vars = c.env_vars
+        # ── HOST PROCESS, not a container ────────────────────────────────
+        #
+        # The dev loop runs this service as a plain `go run` on the host,
+        # which is what makes a scaffolded project start with ZERO
+        # containers and rebuild in the time `go run` takes rather than the
+        # time a docker build takes. The Dockerfile is still there and still
+        # correct — `forge build` uses it, and every cloud env deploys the
+        # image — this only changes how DEV executes the same binary.
+        #
+        # WANT THE CONTAINER LOCALLY? Swap this line for:
+        #
+        #     deploy = _cluster.deploy | {ports = [p.port for p in c.ports]}
+        #
+        # which deploys into the k3d cluster from the built image instead.
+        #
         # Ports come from the workload declaration in workloads.k, where a
-        # workload states its own ports. An env that genuinely differs refines
-        # them by name in `_declared` above
-        # (`| {ports = [fw.Port {name = "http", port = 9090, expose = True}]}`)
-        # and they flow to both the manifests and this build/dispatch contract.
-        # The scaffolded default is the standard
-        # :8080 mux, which is the one port the binary actually binds.
-        deploy = _cluster.deploy | {ports = [p.port for p in c.ports]}
+        # workload states its own ports. `listen_ports` tells forge's
+        # pre-flight exactly which ports this process BINDS, so a collision
+        # is reported by name before anything starts rather than surfacing
+        # as a failure to bind.
+        deploy = forge.HostDeploy {
+            runner = "go-run"
+            env_vars = c.env_vars
+            listen_ports = [_api_port]
+        }
         if c.build:
             build = forge.build_of(c.build)
     } for c in _svc_workloads] + [forge.RenderedWorkload {
@@ -425,6 +527,24 @@ _bundle = forge.Bundle {
         crds = c.crds
         env_vars = c.env_vars
     } for c in _op_workloads]
+{{- if .HasFrontend}}
+    # THE FRONTEND'S DEV SERVER, declared here so its port is a fact this
+    # environment owns rather than one the launcher picks.
+    #
+    # forge.yaml also carries a `port:` for each frontend, and either can
+    # drive the dev loop — but only KCL can express `allocate_port`, and the
+    # port has to be composable to be useful: `_frontend_origin` above is
+    # what tells the issuer where to send an authorization request. A number
+    # chosen at launch cannot be in a value that was rendered before launch.
+    #
+    # So the port is declared ONCE, here, and everything that has to agree
+    # reads the same variable.
+    frontends = [forge.Frontend {
+        name = "{{.FrontendName}}"
+        path = "frontends/{{.FrontendName}}"
+        port = _frontend_port
+    }]
+{{- end}}
     jobs = [forge.OneShotJob {
         name = c.name
         image = "{{.ProjectName}}"
@@ -450,9 +570,22 @@ _bundle = forge.Bundle {
         # full timeout and failed with an error three steps downstream of
         # the cause. The generated binary does not have to learn the port;
         # the environment that owns the number hands it over.
+        # FRONTEND_ORIGIN_GLOB registers the callback URI. It reads the
+        # allocated frontend port rather than a wildcard so the registered
+        # URI names the origin the browser will actually be on.
+        #
+        # IDP_LOGIN_URI is the API-ONLY SIGN-IN SWITCH. Set (as it is here),
+        # the issuer redirects the authorization request back into this app
+        # and the scaffolded sign-in screen collects the credential, so the
+        # user never leaves the product; the job also provisions the login
+        # broker's service account and prints its token. Delete this one
+        # line to go back to the issuer's own login pages — nothing else
+        # changes, and no privileged credential is created.
         env_vars = forge.env_merge(c.env_vars, [
             forge.EnvVar {name = "IDP_BASE", value = _idp_origin}
             forge.EnvVar {name = "IDP_BROWSER_ORIGIN", value = _idp_origin}
+            forge.EnvVar {name = "FRONTEND_ORIGIN_GLOB", value = _frontend_origin}
+            forge.EnvVar {name = "IDP_LOGIN_URI", value = _frontend_origin + "/auth/sign-in"}
         ]) if c.name == "idp-provision" else c.env_vars
 {{- else}}
         env_vars = c.env_vars

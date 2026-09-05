@@ -114,6 +114,18 @@ func TestFrontendTsconfigDedupesRuntimePeers(t *testing.T) {
 				}
 			}
 
+			// react is pinned like the others, but its TARGET must be the
+			// @types package. A paths entry overrides resolution outright,
+			// so pointing at ./node_modules/react — which ships no .d.ts —
+			// stops tsc consulting @types/react and fails EVERY .tsx in the
+			// scaffold with TS7016. That shipped once; this pins it.
+			if target, ok := paths["react"]; !ok {
+				t.Errorf("tsconfig.json has no paths entry for react; paths=%v", paths)
+			} else if want := "./node_modules/@types/react"; len(target) != 1 || target[0] != want {
+				t.Errorf("tsconfig.json maps react to %v, want exactly [%q] — the implementation "+
+					"directory has no typings and tsc reports TS7016 for every .tsx", target, want)
+			}
+
 			// The pre-existing "@/*" mapping must survive the addition —
 			// every scaffolded source file imports through it.
 			if got := paths["@/*"]; len(got) != 1 || got[0] != "./src/*" {

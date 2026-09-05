@@ -427,7 +427,7 @@ func ciRunNPMAudit(ctx context.Context, cfg *config.ProjectConfig) (string, erro
 
 	hasFailed := false
 	for _, fe := range cfg.Frontends {
-		dir := fe.Path
+		dir := fe.DeclaredDir()
 		fmt.Printf("Running npm audit in %s ...\n", dir)
 		cmd := exec.CommandContext(ctx, "npm", "audit", "--audit-level=high")
 		cmd.Dir = dir

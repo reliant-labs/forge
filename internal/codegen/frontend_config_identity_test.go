@@ -87,21 +87,62 @@ func TestFrontendConfigInstance_NoDevIdentityForDeployedEnv(t *testing.T) {
 	}
 }
 
-// A hand-written config message with no OIDC fields gets no identity block:
-// emitting one would reference fields the schema does not declare, which is
-// a KCL error rather than a missing convenience.
-func TestFrontendConfigInstance_NoIdentityFieldsNoBlock(t *testing.T) {
+// frontendOIDCBindings reports the oidc_* values bound anywhere in a
+// rendered config.k. Native sign-in gives the browser no OIDC config at
+// all, so these belong to the FRONTEND instance and nothing else writes
+// them — a plain scan is enough to tell whether one was emitted.
+func frontendOIDCBindings(body string) []string {
+	var found []string
+	for _, name := range []string{"oidc_issuer", "oidc_client_id", "oidc_redirect_uri"} {
+		if strings.Contains(body, name+" =") {
+			found = append(found, name)
+		}
+	}
+	return found
+}
+
+// NATIVE SIGN-IN: the BACKEND needs the published identity even when the
+// frontend declares no OIDC fields at all.
+//
+// The server runs the whole OIDC flow — the browser POSTs credentials to
+// this app's own API and never contacts the issuer — so a dev env whose
+// frontend config message is a bare api_url/environment pair still has to
+// bind jwt_issuer, the client id and the idp base. Gating that on the
+// FRONTEND's fields is what shipped a freshly scaffolded project with no
+// identity block at all: the login routes never mounted and /auth/login
+// answered 404, with nothing in the log to say why.
+//
+// The frontend instance still gets NOTHING, for the original reason —
+// emitting a binding for a field the schema does not declare is a KCL
+// error, not a missing convenience.
+func TestFrontendConfigInstance_NoFrontendIdentityFieldsStillWiresBackend(t *testing.T) {
 	body := scaffoldInstance(t, webFrontendConfig(), "dev", true)
 
-	if strings.Contains(body, "idp_identity") {
-		t.Errorf("emitted an identity read for a config with no OIDC fields:\n%s", body)
+	for _, want := range []string{
+		backendJWTOverrideMarker,
+		`jwt_issuer = idp.idp_identity["issuer"]`,
+		`jwt_jwks_url = idp.idp_identity["jwks_url"]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the backend half is not wired without frontend OIDC fields (%s):\n%s", want, body)
+		}
+	}
+	if got := frontendOIDCBindings(body); len(got) != 0 {
+		t.Errorf("bound frontend OIDC fields %v that the config message does not declare:\n%s", got, body)
+	}
+
+	// A DEPLOYED env is still left alone: its issuer is registered out of
+	// band and a read of the dev convergence artifact would not render.
+	if prod := scaffoldInstance(t, webFrontendConfig(), "prod", false); strings.Contains(prod, "idp_identity") {
+		t.Errorf("a deployed env read the dev identity file:\n%s", prod)
 	}
 }
 
-// All three fields or none. A client id without the issuer that minted it,
-// or without the redirect URI it is registered against, declares a sign-in
-// that cannot complete — so a partial field set is left entirely alone.
-func TestFrontendConfigInstance_PartialIdentityFieldsNoBlock(t *testing.T) {
+// All three FRONTEND fields or none. A client id without the redirect URI it
+// is registered against declares a browser sign-in that cannot complete, so a
+// partial field set gets no frontend bindings — while the backend, which is
+// the half that actually drives the flow now, is wired regardless.
+func TestFrontendConfigInstance_PartialFrontendIdentityFieldsNoFrontendBlock(t *testing.T) {
 	fc := webFrontendConfig()
 	fc.Fields = append(fc.Fields,
 		ConfigField{Name: "oidc_issuer", ProtoType: "string", EnvVar: "OIDC_ISSUER"},
@@ -110,8 +151,11 @@ func TestFrontendConfigInstance_PartialIdentityFieldsNoBlock(t *testing.T) {
 	)
 	body := scaffoldInstance(t, fc, "dev", true)
 
-	if strings.Contains(body, "idp_identity") {
-		t.Errorf("emitted a partial identity block:\n%s", body)
+	if got := frontendOIDCBindings(body); len(got) != 0 {
+		t.Errorf("emitted a partial frontend identity block %v:\n%s", got, body)
+	}
+	if !strings.Contains(body, `jwt_issuer = idp.idp_identity["issuer"]`) {
+		t.Errorf("a partial frontend field set suppressed the backend half too:\n%s", body)
 	}
 }
 

@@ -31,9 +31,9 @@ import "forge/v1/forge.proto";
 //     directory breaks that shim's compilation, not just its tidiness.
 //   - Sharing the package means shared DEFINITIONS need no cross-package
 //     import at all: a block declared in config.proto composes onto a
-//     message here by bare name, so one fact (the OIDC issuer both the
-//     browser and the backend need) can be declared once and projected to
-//     both halves, which is the whole point of the composition model.
+//     message here by bare name, so one fact (a collector endpoint, an
+//     API origin) can be declared once and projected into every consumer
+//     that needs it, which is the whole point of the composition model.
 //
 // The generators do not care either way — they read config messages from
 // the forge descriptor, which protoc-gen-forge builds by walking every
@@ -85,50 +85,25 @@ message {{.MessageName}} {
     description: "OTLP/HTTP collector endpoint for BROWSER traces. Empty disables browser telemetry entirely, which is the correct default for local development — there is nothing to export to."
   }];
 
-  // ── OIDC browser sign-in (the PUBLIC/PKCE client) ──────────────────────
+  // ── NO OIDC FIELDS HERE, AND THAT IS THE POINT ───────────────────────
   //
-  // These describe the client that runs in this BROWSER and obtains tokens
-  // (RFC 7636 PKCE + authorization-code exchange), read by
-  // src/lib/auth/oidc-provider.ts.
+  // Sign-in is NATIVE: the browser POSTs credentials to this app's own API
+  // and never contacts the identity provider. The server runs the whole
+  // OIDC flow (internal/app/login_broker.go) and answers with an HttpOnly
+  // session cookie.
   //
-  // NONE of them is a secret, and none is marked sensitive. A PUBLIC PKCE
-  // client HAS no client secret — that is the point of PKCE, which replaces
-  // the secret with a per-attempt code verifier precisely because a browser
-  // cannot keep one. There is deliberately no oidc_client_secret here.
+  // So the issuer URL, the client id, the redirect URI, the scopes and the
+  // resource indicator are all BACKEND configuration now. They live on the
+  // server's own config message, and shipping them here would be worse
+  // than redundant: every value the browser is handed is a value some
+  // future code can be tempted to use to call the issuer directly, which
+  // is exactly the architecture this replaced.
   //
-  // The token endpoint, authorization endpoint and JWKS URI are DERIVED,
-  // not configured: one issuer plus OIDC discovery
-  // (/.well-known/openid-configuration) yields all three, so three more
-  // fields would be three more things to keep consistent.
-  //
-  // Declaring the issuer HERE and on the backend's config is what keeps the
-  // two halves of auth honest — they are one fact projected twice, so they
-  // cannot drift into the failure where sign-in succeeds and every RPC 401s.
-
-  string oidc_issuer = 5 [(forge.v1.config) = {
-    env_var: "OIDC_ISSUER",
-    description: "OIDC issuer URL this frontend signs in against. MUST be the BROWSER-facing origin: issuers are compared literally, so an in-cluster service name will not do. Empty selects the no-auth posture rather than a broken one. Must agree with the backend's jwt_issuer."
-  }];
-
-  string oidc_client_id = 6 [(forge.v1.config) = {
-    env_var: "OIDC_CLIENT_ID",
-    description: "The client (application) ID of this browser client, as registered with the issuer. NOT a secret and deliberately not `sensitive`: it ships inside the JS bundle and travels in the query string of every authorization request. It is an IDENTIFIER, not a credential — knowing it does not yield a token, because PKCE requires the code verifier and the issuer requires a registered redirect URI."
-  }];
-
-  string oidc_redirect_uri = 7 [(forge.v1.config) = {
-    env_var: "OIDC_REDIRECT_URI",
-    description: "Where the issuer sends the user agent back with the authorization code. It must match a URI registered with the issuer EXACTLY — the comparison is literal, so a trailing slash or an unexpected port is a rejected login AFTER the user has already typed a password. Empty falls back to <origin>/auth/callback, which is what a DEV frontend wants: it names whatever port this run was assigned, and the idp-provision job registers the matching glob (http://localhost:*/auth/callback) with the dev IdP, whose app runs in dev mode. Pin a literal for a deployed environment, where the origin is a fact about the deployment and the issuer will not glob."
-  }];
-
-  string oidc_scopes = 8 [(forge.v1.config) = {
-    env_var: "OIDC_SCOPES",
-    description: "Space-separated scopes for the authorization request. `openid` is what makes it OIDC rather than bare OAuth 2.0. `offline_access` is what earns a refresh token — without it the access token dies at expiry and signs the user out mid-session. Empty defaults to `openid profile email offline_access` in oidc-provider.ts."
-  }];
-
-  string oidc_resource = 9 [(forge.v1.config) = {
-    env_var: "OIDC_RESOURCE",
-    description: "Optional RFC 8707 resource indicator, requested so the issuer mints an access token whose `aud` is THIS API rather than the client. Needed by issuers that would otherwise return an opaque token or one audienced at the client, which the backend then rejects after an apparently successful sign-in. Empty omits the parameter."
-  }];
+  // Field tags 5-9 are RESERVED rather than reused, so a project that
+  // upgrades cannot silently re-bind an old NEXT_PUBLIC_OIDC_* value to a
+  // new meaning.
+  reserved 5, 6, 7, 8, 9;
+  reserved "oidc_issuer", "oidc_client_id", "oidc_redirect_uri", "oidc_scopes", "oidc_resource";
 
   // NEXT_PUBLIC_BASE_PATH is deliberately NOT here, and this is the comment
   // for whoever is about to add it.

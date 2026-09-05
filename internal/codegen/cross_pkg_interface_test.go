@@ -685,9 +685,16 @@ func TestMergeExtraImports(t *testing.T) {
 					},
 				},
 				{
-					CrossPackage: false, // should be ignored by mergeExtraImports
+					// A LOCAL-interface stub (CrossPackage=false) that still
+					// carries signature imports. mergeExtraImports used to skip
+					// these, which is exactly the bug: the interface type is
+					// local, but its parameter/result types need not be, and the
+					// stub renders those signatures verbatim. Dropping the import
+					// produced `undefined: <pkg>` in the generated
+					// helpers_gen_test.go (control-plane's proxy_authz handler).
+					CrossPackage: false,
 					ExtraImports: []ExtraImport{
-						{Path: "should/never/appear", Alias: "noop"},
+						{Path: "example.com/proj/internal/localsig", Alias: "localsig"},
 					},
 				},
 			},
@@ -698,6 +705,7 @@ func TestMergeExtraImports(t *testing.T) {
 	wantPaths := []string{
 		"context",
 		"example.com/proj/internal/audit",
+		"example.com/proj/internal/localsig",
 		"example.com/proj/internal/repo",
 	}
 	if len(got) != len(wantPaths) {
@@ -708,10 +716,16 @@ func TestMergeExtraImports(t *testing.T) {
 			t.Errorf("imports[%d].Path = %q, want %q", i, got[i].Path, p)
 		}
 	}
-	// No CrossPackage=false ExtraImports should have leaked through.
+	// The local-interface stub's import must be present — see the comment
+	// on that stub above for why the old "ignore non-CrossPackage" premise
+	// was wrong.
+	var sawLocal bool
 	for _, ei := range got {
-		if ei.Path == "should/never/appear" {
-			t.Error("mergeExtraImports should ignore non-CrossPackage stubs")
+		if ei.Path == "example.com/proj/internal/localsig" {
+			sawLocal = true
 		}
+	}
+	if !sawLocal {
+		t.Error("mergeExtraImports dropped a local-interface stub's signature import")
 	}
 }

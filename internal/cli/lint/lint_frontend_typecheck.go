@@ -149,7 +149,11 @@ func frontendTypecheckTargets(cfg *config.ProjectConfig) []frontendTarget {
 		declared := cfg.ToolchainFrontends()
 		out := make([]frontendTarget, 0, len(declared))
 		for _, fe := range declared {
-			out = append(out, frontendTarget{name: fe.Name, dir: fe.Path})
+			dir, ok := fe.Dir(".")
+			if !ok {
+				continue
+			}
+			out = append(out, frontendTarget{name: fe.Name, dir: dir})
 		}
 		return out
 	}

@@ -525,8 +525,8 @@ func TestFrontendTypecheckTargets_ResolvesFromProject(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name: "demo",
 		Frontends: []config.FrontendConfig{
-			{Name: "web"},                       // conventional layout
-			{Name: "admin", Path: "apps/admin"}, // custom path
+			{Name: "web"}, // conventional layout
+			config.FrontendConfig{Name: "admin"}.WithDir("apps/admin"), // custom path
 		},
 	}
 	got := frontendTypecheckTargets(cfg)

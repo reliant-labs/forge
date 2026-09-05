@@ -83,8 +83,21 @@ func frontendManagedFiles(cfg *config.ProjectConfig) []managedFile {
 		if tmplPath == "" {
 			continue
 		}
+		// A frontend with no directory in this repository — a cross-repo
+		// `source:` pin, or a sibling-checkout path — is SKIPPED rather
+		// than given the conventional frontends/<name> label the retired
+		// EffectivePath returned. Managed files are WRITTEN, not just
+		// named: forge rewrites this path on every upgrade, so a
+		// fabricated location would have forge creating a lint config in
+		// a directory no frontend lives in, and the stale-artifact sweep
+		// would then keep it alive. The real tree belongs to another
+		// repository, whose own forge manages its lint config.
+		dir, ok := fe.Dir(".")
+		if !ok {
+			continue
+		}
 		out = append(out, managedFile{
-			destPath: filepath.Join(filepath.FromSlash(fe.EffectivePath()), frontendManagedRel),
+			destPath: filepath.Join(filepath.FromSlash(dir), frontendManagedRel),
 			tier:     Tier2,
 			render: func() ([]byte, error) {
 				return templates.FrontendTemplates().Get(tmplPath)

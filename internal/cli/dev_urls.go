@@ -174,10 +174,7 @@ func buildOneIngressURL(entities *KCLEntities, r HTTPRouteEntity, kind string) I
 		scheme = "https"
 	}
 
-	host := r.Host
-	if host == "" {
-		host = gw.Host
-	}
+	host := gw.EffectiveHost(listener, r.Host)
 	if host == "" {
 		host = "localhost"
 	}

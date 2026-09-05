@@ -257,24 +257,41 @@ type envRender struct {
 	// JSON contract. A frontend never becomes a k8s object unless it
 	// deploys `cluster`-mode, and a Firebase-hosted one never does at
 	// all, so `manifests` cannot answer "which frontends does this env
-	// declare" — see CheckFrontendConfigDrift.
+	// declare" — see CheckFrontendCode.
 	frontends []renderedFrontend
 	err       error
 }
 
 // renderedFrontend is the slice of the `output.frontends` contract the
-// config-drift check reasons about: the NAME `forge build --target` has
-// to resolve, and whether the declaration claims a deploy target. The
-// rest of the contract (path, dev_runner, env vars, the typed config
-// block) belongs to the build and dev-loop paths, and reading it here
-// would be one more thing that can break.
+// frontend-code check reasons about: the NAME, whether the declaration
+// claims a deploy target, and where its code lives. The rest of the
+// contract (dev_runner, env vars, the typed config block) belongs to the
+// build and dev-loop paths, and reading it here would be one more thing
+// that can break.
 type renderedFrontend struct {
 	Name string `json:"name"`
+	// Path and Source answer whether THIS repository is where the
+	// frontend's code is supposed to be — a contained path with no
+	// cross-repo pin. That is the only shape whose absence from disk
+	// means forge has nothing to build. See CheckFrontendCode.
+	Path   string          `json:"path"`
+	Source *renderedSource `json:"source"`
 	// Deploy is nil when the KCL declared no deploy block (`deploy =
 	// None` / omitted). KCL projects that as a literal null, so the
 	// pointer distinguishes "build-only" from "ships somewhere" without
 	// a second flag.
 	Deploy *renderedFrontendDeploy `json:"deploy"`
+}
+
+// HasSource reports whether the declaration pins its code to another
+// repository, in which case there is no directory in this tree to
+// generate into and the pin is materialized at build time instead.
+func (f renderedFrontend) HasSource() bool { return f.Source != nil && f.Source.Repo != "" }
+
+// renderedSource carries only the field that distinguishes a real
+// cross-repo pin from KCL's projection of an absent one.
+type renderedSource struct {
+	Repo string `json:"repo"`
 }
 
 // renderedFrontendDeploy carries only the discriminator. "firebase" and

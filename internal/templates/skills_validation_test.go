@@ -441,15 +441,21 @@ var knownGeneratedHandlerFiles = map[string]bool{
 
 // knownCodegenInternalAppFiles are the internal/app/ files forge writes:
 // the forge-owned composition layer (compose.go / lifecycle.go /
-// mounts_services_gen.go) plus the two scaffold-once files the user then owns
-// (providers.go / auth.go). They are absent from a bare scaffold tree
-// because `forge generate` — not `forge project new` — emits them.
+// mounts_services_gen.go) plus the scaffold-once files the user then owns
+// (providers.go / auth.go / login_broker.go). They are absent from a bare
+// scaffold tree because `forge generate` — not `forge project new` — emits
+// them.
 var knownCodegenInternalAppFiles = map[string]bool{
 	"compose.go":             true,
 	"lifecycle.go":           true,
 	"mounts_services_gen.go": true,
 	"providers.go":           true,
 	"auth.go":                true,
+	// The native sign-in API: codegen.GenerateLoginBroker renders
+	// app-login-broker.go.tmpl, so a scaffolded project has this beside
+	// auth.go. The skills must be able to name it — it is where the whole
+	// server-side OIDC flow lives.
+	"login_broker.go": true,
 }
 
 // knownCodegenPkgAppFiles are pkg/app/ files written by `forge generate`

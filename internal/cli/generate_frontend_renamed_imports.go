@@ -74,9 +74,11 @@ func rewriteRenamedFrontendImports(cfg *config.ProjectConfig, projectDir string,
 
 	var touched []string
 	for _, fe := range cfg.Frontends {
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 		srcDir := filepath.Join(projectDir, feDir, "src")
 		if _, err := os.Stat(srcDir); err != nil {

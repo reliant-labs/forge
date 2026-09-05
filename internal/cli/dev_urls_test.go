@@ -245,3 +245,87 @@ func TestRenderIngressURLs_GroupsByGateway(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildIngressURLs_ListenerHostnamePrecedence pins the host
+// resolution order route.Host > listener.Hostname > gateway.Host >
+// "localhost". The listener rung is what makes a multi-hostname Gateway
+// (one load balancer serving N hosts) print correct URLs: without it a
+// route on the "admin" listener would be reported on the gateway's
+// default host, which is not the host the cluster serves it on.
+//
+// This mirrors _route_host in kcl/lib/gateway.k. If the two disagree,
+// `forge cluster urls` prints a URL that does not resolve.
+func TestBuildIngressURLs_ListenerHostnamePrecedence(t *testing.T) {
+	cases := []struct {
+		name        string
+		gatewayHost string
+		listenerHos string
+		routeHost   string
+		want        string
+	}{
+		{"nothing-set-falls-back-to-localhost", "", "", "", "localhost"},
+		{"gateway-host-only", "gw.example.com", "", "", "gw.example.com"},
+		{"listener-beats-gateway", "gw.example.com", "l.example.com", "", "l.example.com"},
+		{"route-beats-listener", "gw.example.com", "l.example.com", "r.example.com", "r.example.com"},
+		{"route-beats-gateway", "gw.example.com", "", "r.example.com", "r.example.com"},
+		{"listener-only", "", "l.example.com", "", "l.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entities := &KCLEntities{
+				Gateways: []GatewayEntity{{
+					Name: "public",
+					Host: tc.gatewayHost,
+					Listeners: []GatewayListenerEntity{
+						{Name: "http", Port: 80, Protocol: "HTTP", Hostname: tc.listenerHos},
+					},
+				}},
+				HTTPRoutes: []HTTPRouteEntity{{
+					Name: "r", Gateway: "public", Listener: "http",
+					Service: "s", Port: 80, Host: tc.routeHost,
+				}},
+			}
+			urls := buildIngressURLs(entities)
+			if len(urls) != 1 {
+				t.Fatalf("got %d urls, want 1", len(urls))
+			}
+			want := "http://" + tc.want + ":80/"
+			if urls[0].URL != want {
+				t.Errorf("URL = %q, want %q", urls[0].URL, want)
+			}
+		})
+	}
+}
+
+// TestBuildIngressURLs_MultiHostGatewayPerListener is the CLI-side twin
+// of kcl/tests/positive_gateway_multi_host.k: ONE Gateway serving
+// several hostnames, each on its own listener. Each route must be
+// reported on its own listener's host.
+func TestBuildIngressURLs_MultiHostGatewayPerListener(t *testing.T) {
+	entities := &KCLEntities{
+		Gateways: []GatewayEntity{{
+			Name: "public",
+			Listeners: []GatewayListenerEntity{
+				{Name: "api", Port: 443, Protocol: "HTTPS", Hostname: "api.example.com"},
+				{Name: "admin", Port: 8443, Protocol: "HTTPS", Hostname: "admin.example.com"},
+			},
+		}},
+		HTTPRoutes: []HTTPRouteEntity{
+			{Name: "api", Gateway: "public", Listener: "api", Service: "api", Port: 8080},
+			{Name: "admin", Gateway: "public", Listener: "admin", Service: "admin", Port: 8081},
+		},
+	}
+	got := map[string]string{}
+	for _, u := range buildIngressURLs(entities) {
+		got[u.Route] = u.URL
+	}
+	want := map[string]string{
+		"api":   "https://api.example.com:443/",
+		"admin": "https://admin.example.com:8443/",
+	}
+	for name, wantURL := range want {
+		if got[name] != wantURL {
+			t.Errorf("route %q URL = %q, want %q", name, got[name], wantURL)
+		}
+	}
+}

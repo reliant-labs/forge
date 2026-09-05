@@ -98,18 +98,13 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 	}
 	cfg := *parsed
 
-	// Apply defaults for frontend paths
+	// Path and type defaulting now happens at the config LOAD seam
+	// (config.ResolveInventoryAtLoad), so every command sees the same
+	// inventory rather than only the ones routing through this loader.
+	// What remains here is the type-SPELLING check, which rejects rather
+	// than fills and so is not a default.
 	for i := range cfg.Frontends {
-		// A frontend whose code comes from another repo has no directory
-		// in this tree, so defaulting `path` to frontends/<name> would
-		// invent one — and every path-consuming caller would then shell
-		// into a directory that does not exist. Its real directory is
-		// whatever the source resolver returns.
-		if cfg.Frontends[i].Path == "" && !cfg.Frontends[i].HasGitSource() {
-			cfg.Frontends[i].Path = "frontends/" + cfg.Frontends[i].Name
-		}
 		if cfg.Frontends[i].Type == "" {
-			cfg.Frontends[i].Type = "nextjs"
 			continue
 		}
 		// Frontend type canonical forms are hyphenated ("react-native",

@@ -147,6 +147,10 @@ type pipelineContext struct {
 	// Pass --force-cleanup to actually delete.
 	ForceCleanup bool
 
+	// AllowKCLDowngrade opts out of the vendored-KCL downgrade refusal.
+	// See the matching pipelineFlags field.
+	AllowKCLDowngrade bool
+
 	// TemplatesOnly narrows the pipeline to template-driven render
 	// steps. See the matching pipelineFlags.TemplatesOnly field for the
 	// full rationale and the templatesOnlyStepAllow allowlist.
@@ -256,17 +260,18 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 		return nil, fmt.Errorf("failed to resolve project dir: %w", err)
 	}
 	return &pipelineContext{
-		ProjectDir:      projectDir,
-		AbsPath:         abs,
-		Force:           flags.Force,
-		ExplainDrift:    flags.ExplainDrift,
-		SkipValidate:    flags.SkipValidate,
-		SkipPreChecks:   flags.SkipPreChecks,
-		SkipConfigCheck: flags.SkipConfigCheck,
-		ForceCleanup:    flags.ForceCleanup,
-		TemplatesOnly:   flags.TemplatesOnly,
-		Strict:          flags.Strict,
-		Verbose:         flags.Verbose,
+		ProjectDir:        projectDir,
+		AbsPath:           abs,
+		Force:             flags.Force,
+		ExplainDrift:      flags.ExplainDrift,
+		SkipValidate:      flags.SkipValidate,
+		SkipPreChecks:     flags.SkipPreChecks,
+		SkipConfigCheck:   flags.SkipConfigCheck,
+		ForceCleanup:      flags.ForceCleanup,
+		AllowKCLDowngrade: flags.AllowKCLDowngrade,
+		TemplatesOnly:     flags.TemplatesOnly,
+		Strict:            flags.Strict,
+		Verbose:           flags.Verbose,
 	}, nil
 }
 
@@ -282,6 +287,11 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 func generateSteps() []GenStep {
 	return []GenStep{
 		{Name: "load project config", Gate: always, Run: stepLoadConfig, Tag: "config"},
+		// Immediately after the load, so every gate and emitter that reads
+		// the frontend inventory sees one answer. See
+		// generate_frontend_inventory.go for why a project can reach here
+		// with an empty inventory and a frontend sitting in its own tree.
+		{Name: "derive frontend inventory", Gate: hasForgeYAML, GateReason: "no forge.yaml (directory-scan fallback)", Run: stepDeriveFrontendInventory, Tag: "config"},
 		{Name: "load checksums", Gate: always, Run: stepLoadChecksums, Tag: "config"},
 		// One-time conversion off the dead global manifest. Must run
 		// between state load and the Tier-1 stomp guard: pristine files
@@ -2180,6 +2190,10 @@ func stepFrontendRenamedImports(ctx *pipelineContext) error {
 	// Same lane, same justification: a user-owned frontend file that forge's
 	// own change would otherwise leave broken. See generate_frontend_dedupe.go.
 	reconcileFrontendDedupe(ctx.Cfg, ctx.ProjectDir)
+	// And the tsc half of the same hazard: the bundler configs above never
+	// run under `tsc --noEmit`, which is what `forge lint` invokes. See
+	// generate_frontend_tsconfig_peers.go.
+	reconcileFrontendTsconfigPeers(ctx.Cfg, ctx.ProjectDir)
 	return nil
 }
 

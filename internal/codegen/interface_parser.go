@@ -28,6 +28,26 @@ type LocalInterface struct {
 	// Methods enumerates the interface's method set, with embedded
 	// interfaces flattened so callers get a single list to walk.
 	Methods []InterfaceMethod
+	// ExtraImports lists every package the flattened method signatures
+	// reference by qualifier, resolved through the import block of the
+	// file each method was declared in.
+	//
+	// A LOCAL interface can still have CROSS-PACKAGE signatures — the
+	// interface type itself is in this package, but its parameter and
+	// result types need not be. control-plane's `proxy_authz` handler
+	// is the canonical case:
+	//
+	//	type AccessDecider interface {
+	//	    Authorize(ctx context.Context, in proxyauthz.Input) proxyauthz.Decision
+	//	}
+	//
+	// The synthesized stub renders that signature verbatim, so the
+	// generated helper file must import internal/proxyauthz or it does
+	// not compile. Only qualifiers that actually appear in a rendered
+	// signature are listed: blanket-importing the declaring file's whole
+	// import block would produce UNUSED imports, which fails the build
+	// just as hard as a missing one.
+	ExtraImports []ExtraImport
 }
 
 // InterfaceMethod is one method on a LocalInterface, in a shape
@@ -71,10 +91,14 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 	type entry struct {
 		name    string
 		ifaceAt *ast.InterfaceType
+		// fileImports is the declaring file's alias -> path map, used to
+		// resolve the package qualifiers appearing in this interface's
+		// method signatures. Import scope is per-FILE in Go, so this must
+		// be tracked per declaration, not per directory: two files in the
+		// same package can bind the same alias to different paths.
+		fileImports map[string]string
 	}
 	var entries2 []entry
-	imports := map[string]map[string]string{} // file path -> alias -> path
-	_ = imports                               // reserved for future cross-import resolution
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
@@ -92,6 +116,7 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 		if err != nil {
 			continue
 		}
+		fileImports := fileImportMap(file)
 		for _, decl := range file.Decls {
 			gd, ok := decl.(*ast.GenDecl)
 			if !ok || gd.Tok != token.TYPE {
@@ -106,7 +131,9 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 				if !ok {
 					continue
 				}
-				entries2 = append(entries2, entry{name: ts.Name.Name, ifaceAt: it})
+				entries2 = append(entries2, entry{
+					name: ts.Name.Name, ifaceAt: it, fileImports: fileImports,
+				})
 			}
 		}
 	}
@@ -114,7 +141,12 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 	// Build raw method maps + embed maps, then flatten.
 	directMethods := map[string][]InterfaceMethod{}
 	embeds := map[string][]string{}
+	// declFileImports records which file each interface was declared in,
+	// so a flattened embed's signatures resolve through the EMBEDDED
+	// interface's imports rather than the embedder's.
+	declFileImports := map[string]map[string]string{}
 	for _, e := range entries2 {
+		declFileImports[e.name] = e.fileImports
 		if e.ifaceAt.Methods == nil {
 			continue
 		}
@@ -135,26 +167,131 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 		}
 	}
 
-	var resolve func(name string, visited map[string]bool) []InterfaceMethod
-	resolve = func(name string, visited map[string]bool) []InterfaceMethod {
+	// needed accumulates import path -> alias for the signatures walked
+	// so far. It is filled per declaring interface, so an embedded
+	// interface contributes its OWN file's import bindings.
+	var resolve func(name string, visited map[string]bool, needed map[string]string) []InterfaceMethod
+	resolve = func(name string, visited map[string]bool, needed map[string]string) []InterfaceMethod {
 		if visited[name] {
 			return nil
 		}
 		visited[name] = true
 		methods := append([]InterfaceMethod{}, directMethods[name]...)
+		collectSignatureImports(directMethods[name], declFileImports[name], needed)
 		for _, em := range embeds[name] {
-			methods = append(methods, resolve(em, visited)...)
+			methods = append(methods, resolve(em, visited, needed)...)
 		}
 		return methods
 	}
 
 	for _, e := range entries2 {
+		needed := map[string]string{}
+		methods := resolve(e.name, map[string]bool{}, needed)
 		out[e.name] = LocalInterface{
-			Name:    e.name,
-			Methods: resolve(e.name, map[string]bool{}),
+			Name:         e.name,
+			Methods:      methods,
+			ExtraImports: SortedNeededImports(needed),
 		}
 	}
 	return out, nil
+}
+
+// fileImportMap renders one file's import block as alias -> path, where
+// the alias is the name the file's own code must use: the explicit alias
+// when present, otherwise the path's last segment.
+//
+// The leaf-segment fallback is a heuristic — a package's declared name may
+// differ from its directory (`package v1` under `.../userv1`). That is fine
+// here because we only ever look up qualifiers we OBSERVED in a signature
+// that this same file compiles, and we re-emit the import under exactly the
+// alias we matched. Where the two disagree, the file must already carry an
+// explicit alias, which we read directly.
+//
+// Dot- and blank-imports are skipped: a dot-import contributes no qualifier
+// to match on, and a blank import can never be referenced.
+func fileImportMap(file *ast.File) map[string]string {
+	out := make(map[string]string, len(file.Imports))
+	for _, spec := range file.Imports {
+		path := strings.Trim(spec.Path.Value, `"`)
+		if path == "" {
+			continue
+		}
+		alias := path
+		if i := strings.LastIndexByte(path, '/'); i >= 0 {
+			alias = path[i+1:]
+		}
+		if spec.Name != nil {
+			if spec.Name.Name == "_" || spec.Name.Name == "." {
+				continue
+			}
+			alias = spec.Name.Name
+		}
+		out[alias] = path
+	}
+	return out
+}
+
+// collectSignatureImports records, into needed (path -> alias), every
+// import the RENDERED method signatures actually reference.
+//
+// It reads the rendered Params/Results strings rather than re-walking the
+// AST deliberately: those strings are verbatim what the stub template
+// emits, so matching on them cannot drift from what the generated file
+// says. Emitting an import the signature does not reference would be an
+// unused import — as fatal to the build as the missing one this fixes —
+// so a qualifier that resolves to nothing in fileImports is skipped.
+func collectSignatureImports(methods []InterfaceMethod, fileImports map[string]string, needed map[string]string) {
+	if len(fileImports) == 0 {
+		return
+	}
+	for _, m := range methods {
+		for _, sig := range []string{m.Params, m.Results} {
+			for alias := range qualifiersIn(sig) {
+				if path, ok := fileImports[alias]; ok {
+					needed[path] = alias
+				}
+			}
+		}
+	}
+}
+
+// qualifiersIn returns the set of package qualifiers appearing as the
+// `pkg` in a `pkg.Type` selector inside a rendered type expression.
+//
+// The scan is lexical: walk identifier runs, and take a run as a
+// qualifier when the character immediately after it is '.'. Decoration
+// (`*`, `[]`, `map[`, `chan `, parens, commas) is naturally skipped
+// because none of it is an identifier character. Parameter NAMES cannot
+// be mistaken for qualifiers — a name is always followed by a space, not
+// a dot.
+func qualifiersIn(sig string) map[string]struct{} {
+	out := map[string]struct{}{}
+	i := 0
+	for i < len(sig) {
+		if !isIdentStart(sig[i]) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(sig) && isIdentPart(sig[j]) {
+			j++
+		}
+		if j < len(sig) && sig[j] == '.' {
+			out[sig[i:j]] = struct{}{}
+		}
+		// Skip the whole run (plus a trailing '.' and the selected name)
+		// so `pkg.Type` never re-enters with `Type` as a candidate.
+		i = j + 1
+	}
+	return out
+}
+
+func isIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isIdentPart(c byte) bool {
+	return isIdentStart(c) || (c >= '0' && c <= '9')
 }
 
 // buildInterfaceMethod renders a single interface method into its

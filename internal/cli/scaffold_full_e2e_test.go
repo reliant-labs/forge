@@ -248,11 +248,25 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	assertIncludeImportsPlacement(t, frontendBufGen)
 
 	frontendLayout := readFileE2E(t, filepath.Join(projectDir, "frontends", "web", "src", "app", "layout.tsx"))
-	// Component library integration: layout must wire the scaffold's
-	// shared chrome (the Nav component from @/components).
-	if !strings.Contains(frontendLayout, "Nav") {
-		t.Errorf("frontends/web/src/app/layout.tsx must import the Nav component; got:\n%s",
+	// Component library integration: the layout must wire the scaffold's
+	// shared chrome. That chrome is AppShell, which renders <Nav /> and
+	// <MobileNav /> itself — so the layout composes AppShell and does NOT
+	// name Nav directly.
+	//
+	// This assertion used to look for the literal "Nav" in layout.tsx, which
+	// silently became a test of the old pre-AppShell structure: it passed
+	// only because the layout happened to import Nav directly, and it failed
+	// the moment the chrome was factored into one component without anything
+	// actually regressing. Assert the composition that carries the chrome,
+	// and let app_shell's own template own what goes inside it.
+	if !strings.Contains(frontendLayout, "AppShell") {
+		t.Errorf("frontends/web/src/app/layout.tsx must compose the AppShell chrome; got:\n%s",
 			excerpt(frontendLayout, "import", 400))
+	}
+	appShell := readFileE2E(t, filepath.Join(projectDir, "frontends", "web", "src", "components", "app_shell.tsx"))
+	if !strings.Contains(appShell, "Nav") {
+		t.Errorf("frontends/web/src/components/app_shell.tsx must render the Nav component; got:\n%s",
+			excerpt(appShell, "import", 400))
 	}
 
 	gitignore := readFileE2E(t, filepath.Join(projectDir, ".gitignore"))

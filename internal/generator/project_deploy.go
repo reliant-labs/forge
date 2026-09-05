@@ -49,7 +49,11 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// dev build, and a released forge scaffolded a published git tag
 	// instead — a tag that was never published, so every project a
 	// released forge created was unresolvable from birth.
-	if _, err := kclvendor.Materialize(g.Path); err != nil {
+	// allowDowngrade=true: a scaffold is creating the project, so there
+	// is no prior vendor copy to protect and the guard has nothing to
+	// decide. Passing false would be harmless but implies a comparison
+	// that cannot happen here.
+	if _, err := kclvendor.Materialize(g.Path, true); err != nil {
 		return fmt.Errorf("vendor forge KCL module: %w", err)
 	}
 	res, err := kclvendor.EnsureVendorDep(kclModPath, g.Path)
@@ -129,11 +133,17 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		IngressEnabled  bool
 		HasFrontend     bool
 		PrimaryWorkload string
+		// FrontendName lets the dev env declare the frontend's dev server,
+		// so its port is allocated in KCL alongside every other port this
+		// environment owns. Empty when the project has no frontend, which
+		// is exactly when the template's HasFrontend branch is skipped.
+		FrontendName string
 	}{
 		ProjectName:     g.Name,
 		IngressEnabled:  ingressOn,
 		HasFrontend:     g.forScaffold().HasFrontend,
 		PrimaryWorkload: primaryWorkload,
+		FrontendName:    g.FrontendName,
 	}
 
 	for _, f := range envTemplates {

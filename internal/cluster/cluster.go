@@ -431,6 +431,138 @@ const AppNameLabel = "app.kubernetes.io/name"
 // before, so existing consumers are unaffected.
 const ClusterRoutingLabel = "forge.dev/cluster"
 
+// waitForDeploymentRollouts waits for each managed Deployment in the policy's
+// order, skipping those the caller runs on the host instead.
+//
+// It reports whether the caller should stop immediately: a fail-fast policy in
+// RolloutWait mode abandons the remaining waits on the first failure. Failures
+// themselves are recorded by note, which owns the failures slice.
+func waitForDeploymentRollouts(
+	ctx context.Context,
+	opts ApplyOpts,
+	policy RolloutPolicy,
+	deployments []string,
+	note func(indent, kind, name string, err error),
+) (failFast bool) {
+	var skipped, awaited []string
+	for _, dep := range deployments {
+		if _, skip := opts.HostSkip[dep]; skip {
+			skipped = append(skipped, dep)
+			continue
+		}
+		awaited = append(awaited, dep)
+	}
+	for _, dep := range policy.orderDeployments(awaited) {
+		err := WaitRolloutTimeout(ctx, opts.Context, dep, opts.Namespace, policy.Timeout)
+		if err == nil {
+			fmt.Printf("  %s: ready\n", dep)
+			continue
+		}
+		note("  ", "rollout", dep, err)
+		if policy.FailFast && policy.Mode == RolloutWait {
+			return true
+		}
+	}
+	if len(skipped) > 0 {
+		fmt.Printf("Skipped rollout wait for %d host-mode service(s): %s\n",
+			len(skipped), strings.Join(skipped, ", "))
+	}
+	return false
+}
+
+// reportRolloutListFailure handles the case where the rollout wait cannot
+// enumerate Deployments at all.
+//
+// Failing to LIST is not the same as finding nothing wrong: it means the wait
+// never ran, so under a failing policy it must not pass silently. Only
+// RolloutWarn downgrades it to a warning.
+func reportRolloutListFailure(lerr error, quiet bool, mode RolloutMode) error {
+	indent := "  "
+	if quiet {
+		indent = ""
+	}
+	fmt.Printf("%sWarning: list deployments: %v\n", indent, lerr)
+	if mode == RolloutWarn {
+		return nil
+	}
+	return fmt.Errorf("list deployments for rollout wait: %w", lerr)
+}
+
+// printDryRunManifests writes what a real apply would send, charts included.
+//
+// framed adds the banner the deploy/up path prints; reload passes false and
+// gets the bare stream, which is what its callers pipe into kubectl.
+func printDryRunManifests(manifests string, charts []renderedChart, framed bool) {
+	all := manifests
+	for _, rc := range charts {
+		all = joinNonEmpty(all, rc.crds, rc.manifests, rc.extra)
+	}
+	if !framed {
+		fmt.Println(all)
+		return
+	}
+	fmt.Println("\n--- Generated Manifests (dry-run) ---")
+	fmt.Println(all)
+	fmt.Println("--- End Manifests ---")
+	fmt.Println("\nDry run complete. No changes applied.")
+}
+
+// renderSelectedCharts helm-templates each selected platform dep into the
+// manifests, CRDs and consumer-declared extras the apply pipeline needs.
+//
+// Rendering happens BEFORE the dry-run branch on purpose, so `--dry-run` shows
+// the chart manifests too — they flow through the same pipeline as everything
+// else rather than appearing only on a real apply.
+func renderSelectedCharts(ctx context.Context, specs []HelmChartSpec) ([]renderedChart, error) {
+	out := make([]renderedChart, 0, len(specs))
+	for _, spec := range specs {
+		rendered, rerr := RenderHelmChart(ctx, spec)
+		if rerr != nil {
+			return nil, rerr
+		}
+		// Consumer-declared raw manifests riding this chart's --target
+		// (GatewayClass / ClusterIssuers): stamp them with the chart's
+		// app-label exactly like the chart's own output, so they select +
+		// route as part of the same named platform dep.
+		var extra string
+		if strings.TrimSpace(spec.Manifests) != "" {
+			extra = stampAppLabel(spec.Manifests, spec.Name)
+		}
+		// The FULL CRD set: forge's pinned forge-supplied bundle (spec.CRDs)
+		// PLUS the chart's OWN CRDs that forge does not own (the chart's
+		// `gateway.envoyproxy.io` CRDs the envoy controller starts informers
+		// on; the main render is --skip-crds so they'd otherwise never land
+		// and the controller crashloops on cache-sync). chartOwnCRDs filters
+		// out the standard Gateway API group forge pins separately.
+		ownCRDs, cerr := chartOwnCRDs(ctx, spec)
+		if cerr != nil {
+			return nil, cerr
+		}
+		out = append(out, renderedChart{
+			spec: spec, manifests: rendered,
+			crds: joinNonEmpty(spec.CRDs, ownCRDs), extra: extra,
+		})
+	}
+	return out, nil
+}
+
+// renderApplyManifests renders the env's KCL bundle, wrapping a failure in the
+// phrasing that call site expects.
+//
+// The two messages are not interchangeable: reload's pre-extraction form used
+// the short "KCL render:" wrap and the framed deploy/up path used the longer
+// one, and tests pin both.
+func renderApplyManifests(ctx context.Context, opts ApplyOpts) (string, error) {
+	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV, opts.ImageDigests)
+	if err == nil {
+		return manifests, nil
+	}
+	if opts.Quiet {
+		return "", fmt.Errorf("KCL render: %w", err)
+	}
+	return "", fmt.Errorf("KCL manifest generation failed: %w", err)
+}
+
 // Apply runs the render-KCL → kubectl-apply → wait-rollouts pipeline.
 // It is the single entry point for the three call sites this package
 // collapses. Behavior matches the pre-extraction `runDeploy` /
@@ -438,14 +570,9 @@ const ClusterRoutingLabel = "forge.dev/cluster"
 // warning messages, and ordering); per-call differences are expressed
 // through ApplyOpts fields.
 func Apply(ctx context.Context, opts ApplyOpts) error {
-	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV, opts.ImageDigests)
+	manifests, err := renderApplyManifests(ctx, opts)
 	if err != nil {
-		// Reload's pre-extraction form used the shorter "KCL render:"
-		// wrap; the framed deploy/up path used the longer message.
-		if opts.Quiet {
-			return fmt.Errorf("KCL render: %w", err)
-		}
-		return fmt.Errorf("KCL manifest generation failed: %w", err)
+		return err
 	}
 
 	// Exclusive --target selection — ONE uniform mechanical filter over the
@@ -491,47 +618,13 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// as ONE named app, and carry their forge-supplied CRDs for the
 	// CRD-first apply below. Rendered here (before dry-run) so `--dry-run`
 	// shows the chart manifests too — they flow through the SAME pipeline.
-	renderedCharts := make([]renderedChart, 0, len(selectedCharts))
-	for _, spec := range selectedCharts {
-		rendered, rerr := RenderHelmChart(ctx, spec)
-		if rerr != nil {
-			return rerr
-		}
-		// Consumer-declared raw manifests riding this chart's --target
-		// (GatewayClass / ClusterIssuers): stamp them with the chart's
-		// app-label exactly like the chart's own output, so they select +
-		// route as part of the same named platform dep.
-		var extra string
-		if strings.TrimSpace(spec.Manifests) != "" {
-			extra = stampAppLabel(spec.Manifests, spec.Name)
-		}
-		// The FULL CRD set: forge's pinned forge-supplied bundle (spec.CRDs)
-		// PLUS the chart's OWN CRDs that forge does not own (the chart's
-		// `gateway.envoyproxy.io` CRDs the envoy controller starts informers
-		// on; the main render is --skip-crds so they'd otherwise never land
-		// and the controller crashloops on cache-sync). chartOwnCRDs filters
-		// out the standard Gateway API group forge pins separately.
-		ownCRDs, cerr := chartOwnCRDs(ctx, spec)
-		if cerr != nil {
-			return cerr
-		}
-		crds := joinNonEmpty(spec.CRDs, ownCRDs)
-		renderedCharts = append(renderedCharts, renderedChart{spec: spec, manifests: rendered, crds: crds, extra: extra})
+	renderedCharts, err := renderSelectedCharts(ctx, selectedCharts)
+	if err != nil {
+		return err
 	}
 
 	if opts.DryRun {
-		dryRunManifests := manifests
-		for _, rc := range renderedCharts {
-			dryRunManifests = joinNonEmpty(dryRunManifests, rc.crds, rc.manifests, rc.extra)
-		}
-		if opts.DryRunFramed {
-			fmt.Println("\n--- Generated Manifests (dry-run) ---")
-			fmt.Println(dryRunManifests)
-			fmt.Println("--- End Manifests ---")
-			fmt.Println("\nDry run complete. No changes applied.")
-		} else {
-			fmt.Println(dryRunManifests)
-		}
+		printDryRunManifests(manifests, renderedCharts, opts.DryRunFramed)
 		return nil
 	}
 
@@ -660,44 +753,10 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	}
 	deployments, lerr := ListManagedDeployments(ctx, opts.Context, opts.Namespace)
 	if lerr != nil {
-		// Not being able to LIST is not the same as nothing being wrong:
-		// it means the wait cannot run at all, so under a failing policy
-		// it must not pass silently.
-		if opts.Quiet {
-			fmt.Printf("Warning: list deployments: %v\n", lerr)
-			if policy.Mode == RolloutWarn {
-				return nil
-			}
-			return fmt.Errorf("list deployments for rollout wait: %w", lerr)
-		}
-		fmt.Printf("  Warning: list deployments: %v\n", lerr)
-		if policy.Mode != RolloutWarn {
-			return fmt.Errorf("list deployments for rollout wait: %w", lerr)
-		}
-	} else {
-		var skipped []string
-		var awaited []string
-		for _, dep := range deployments {
-			if _, skip := opts.HostSkip[dep]; skip {
-				skipped = append(skipped, dep)
-				continue
-			}
-			awaited = append(awaited, dep)
-		}
-		for _, dep := range policy.orderDeployments(awaited) {
-			if err := WaitRolloutTimeout(ctx, opts.Context, dep, opts.Namespace, policy.Timeout); err != nil {
-				note("  ", "rollout", dep, err)
-				if policy.FailFast && policy.Mode == RolloutWait {
-					return rolloutError(failures)
-				}
-			} else {
-				fmt.Printf("  %s: ready\n", dep)
-			}
-		}
-		if len(skipped) > 0 {
-			fmt.Printf("Skipped rollout wait for %d host-mode service(s): %s\n",
-				len(skipped), strings.Join(skipped, ", "))
-		}
+		return reportRolloutListFailure(lerr, opts.Quiet, policy.Mode)
+	}
+	if failFast := waitForDeploymentRollouts(ctx, opts, policy, deployments, note); failFast {
+		return rolloutError(failures)
 	}
 
 	// Wait set = every `kind: Job` in the stream this apply just sent,

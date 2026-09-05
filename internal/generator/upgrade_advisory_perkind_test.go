@@ -38,7 +38,7 @@ func perKindFrontendCfg(tree string) *config.ProjectConfig {
 		Name:       "demo",
 		ModulePath: "github.com/example/demo",
 		Frontends: []config.FrontendConfig{
-			{Name: "web", Type: tree, Path: filepath.Join("frontends", "web")},
+			config.FrontendConfig{Name: "web", Type: tree}.WithDir(filepath.Join("frontends", "web")),
 		},
 	}
 }

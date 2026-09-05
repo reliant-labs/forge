@@ -93,9 +93,16 @@ func runBufGenerateTypeScript(fe config.FrontendConfig, cfg *config.ProjectConfi
 	if cfg != nil && cfg.IsFrontendWorkspacesEnabled() {
 		return runBufGenerateTypeScriptWorkspace(cfg, projectDir)
 	}
-	feDir := fe.Path
-	if feDir == "" {
-		feDir = filepath.Join("frontends", fe.Name)
+	// This site FAILS LOUDLY where the other emitters skip, and that is
+	// deliberate: the error is what tells a user their `path:` is wrong
+	// before `buf generate` quietly produces no stubs at all. So !ok
+	// returns an error rather than a silent continue — collapsing it into
+	// a skip would convert a clear diagnostic into the silence it exists
+	// to prevent.
+	feDir, ok := fe.Dir(projectDir)
+	if !ok {
+		return fmt.Errorf("frontend %s has no directory in this project: its path is outside "+
+			"the project root or its code comes from another repository", fe.Name)
 	}
 
 	absFeDir := filepath.Join(projectDir, feDir)
@@ -205,9 +212,10 @@ func runBufGenerateTypeScriptWorkspace(cfg *config.ProjectConfig, projectDir str
 		return nil
 	}
 
-	feDir := pluginFrontend.Path
-	if feDir == "" {
-		feDir = filepath.Join("frontends", pluginFrontend.Name)
+	feDir, ok := pluginFrontend.Dir(projectDir)
+	if !ok {
+		return fmt.Errorf("frontend %s has no directory in this project to resolve the "+
+			"TypeScript plugin from", pluginFrontend.Name)
 	}
 	absFeDir := filepath.Join(projectDir, feDir)
 

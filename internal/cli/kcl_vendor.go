@@ -20,6 +20,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,13 +46,27 @@ func kclModCandidates(projectDir string) []string {
 // binary, and refreshes that copy. Best-effort: failure warns and the
 // pipeline continues (--strict promotes to fatal), matching the
 // forge/pkg sync step.
+// A KCL-module DOWNGRADE is the one failure here that does NOT route
+// through warnOrFail. warnOrFail's default is print-and-continue, which
+// is right for "the sync did not happen" but catastrophic for "the sync
+// happened backwards": the vendor dir is the project's KCL schema, and a
+// warning the user scrolls past leaves an older schema on disk and a
+// broken `env render` waiting somewhere downstream. That is precisely how
+// a stale binary shipped an outdated Gateway listener rule into
+// control-plane and broke prod. Refusals are returned bare so they abort
+// the pipeline whether or not --strict is set.
 func stepSyncForgeKCL(ctx *pipelineContext) error {
-	return ctx.warnOrFail("forge KCL module vendor sync", syncForgeKCL(ctx.ProjectDir))
+	err := syncForgeKCL(ctx.ProjectDir, ctx.AllowKCLDowngrade)
+	var dErr *kclvendor.DowngradeError
+	if errors.As(err, &dErr) {
+		return err
+	}
+	return ctx.warnOrFail("forge KCL module vendor sync", err)
 }
 
 // syncForgeKCL implements the sync. Split from the step for direct
 // testing.
-func syncForgeKCL(projectDir string) error {
+func syncForgeKCL(projectDir string, allowDowngrade bool) error {
 	// Ensure every managed kcl.mod resolves the module from the vendored
 	// copy, then materialize/refresh that copy. A kcl.mod forge cannot
 	// prove it understands is warned about, never edited.
@@ -83,7 +98,7 @@ func syncForgeKCL(projectDir string) error {
 		return nil
 	}
 
-	changed, err := kclvendor.Materialize(projectDir)
+	changed, err := kclvendor.Materialize(projectDir, allowDowngrade)
 	if err != nil {
 		return err
 	}

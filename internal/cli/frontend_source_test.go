@@ -116,11 +116,11 @@ func TestResolveFrontendSources_RewritesPathToTheFetchedDir(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		cfg.Frontends[0].Path = res.Dir
+		cfg.Frontends[0] = cfg.Frontends[0].WithDir(res.Dir)
 		return nil
 	})
 
-	got := cfg.Frontends[0].Path
+	got := cfg.Frontends[0].DeclaredDir()
 	if got == "" {
 		t.Fatal("Path was not rewritten")
 	}
@@ -140,8 +140,8 @@ func TestResolveFrontendSources_RewritesPathToTheFetchedDir(t *testing.T) {
 // anywhere, resolution constructs nothing and changes nothing.
 func TestResolveFrontendSources_NoSourcesIsANoOp(t *testing.T) {
 	cfg := &config.ProjectConfig{Frontends: []config.FrontendConfig{
-		{Name: "web", Type: "nextjs", Path: "frontends/web"},
-		{Name: "admin", Type: "nextjs", Path: "admin-web"},
+		config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web"),
+		config.FrontendConfig{Name: "admin", Type: "nextjs"}.WithDir("admin-web"),
 	}}
 	before := append([]config.FrontendConfig(nil), cfg.Frontends...)
 
@@ -149,9 +149,9 @@ func TestResolveFrontendSources_NoSourcesIsANoOp(t *testing.T) {
 		t.Fatalf("resolveFrontendSources: %v", err)
 	}
 	for i := range before {
-		if cfg.Frontends[i].Path != before[i].Path {
+		if cfg.Frontends[i].DeclaredDir() != before[i].DeclaredDir() {
 			t.Errorf("frontend %s Path changed from %q to %q",
-				before[i].Name, before[i].Path, cfg.Frontends[i].Path)
+				before[i].Name, before[i].DeclaredDir(), cfg.Frontends[i].DeclaredDir())
 		}
 	}
 }
@@ -228,7 +228,7 @@ func TestCheckDeclaredFrontends_SkipsGitSourceFrontends(t *testing.T) {
 func TestCheckDeclaredFrontends_StillFailsMissingPathFrontend(t *testing.T) {
 	projectDir := t.TempDir()
 	cfg := &config.ProjectConfig{Frontends: []config.FrontendConfig{
-		{Name: "web", Type: "nextjs", Path: "frontends/web"},
+		config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web"),
 	}}
 
 	findings := checkDeclaredFrontends(projectDir, cfg)

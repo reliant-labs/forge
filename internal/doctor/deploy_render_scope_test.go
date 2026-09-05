@@ -122,13 +122,13 @@ func scopeEnv(t *testing.T, dir string, renders ...envRender) *Environment {
 // it exists to catch.
 func contentChecks() map[string]CheckFunc {
 	return map[string]CheckFunc{
-		"Deploy Probes":       CheckDeployProbes,
-		"Deploy Resources":    CheckDeployResources,
-		"Deploy Secrets":      CheckDeploySecrets,
-		"Deploy SA Binding":   CheckDeployServiceAccount,
-		"Deploy Migrations":   CheckDeployMigrations,
-		"Deploy Config Drift": CheckFrontendConfigDrift,
-		"Object Collision":    CheckObjectCollision,
+		"Deploy Probes":     CheckDeployProbes,
+		"Deploy Resources":  CheckDeployResources,
+		"Deploy Secrets":    CheckDeploySecrets,
+		"Deploy SA Binding": CheckDeployServiceAccount,
+		"Deploy Migrations": CheckDeployMigrations,
+		"Frontend Code":     CheckFrontendCode,
+		"Object Collision":  CheckObjectCollision,
 	}
 }
 
@@ -273,14 +273,14 @@ func TestRenderScope_CompleteRenderIsUnchanged(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"Deploy Manifests":    "2 env(s), 4 manifest(s) — all applyable",
-		"Deploy Probes":       "2 container(s) probe readiness + liveness",
-		"Deploy Resources":    "2 container(s) set cpu+memory requests and limits",
-		"Deploy Secrets":      "4 credential env var(s), all sourced from a Secret",
-		"Deploy SA Binding":   "2 ServiceAccount(s), all bound to a workload",
-		"Deploy Migrations":   "1 SQL migration(s), applied by all 2 environment(s)",
-		"Deploy Config Drift": "2 env(s): every KCL-declared frontend is in forge.yaml",
-		"Object Collision":    "4 object address(es) across 2 environment(s) — no two environments write the same one",
+		"Deploy Manifests":  "2 env(s), 4 manifest(s) — all applyable",
+		"Deploy Probes":     "2 container(s) probe readiness + liveness",
+		"Deploy Resources":  "2 container(s) set cpu+memory requests and limits",
+		"Deploy Secrets":    "4 credential env var(s), all sourced from a Secret",
+		"Deploy SA Binding": "2 ServiceAccount(s), all bound to a workload",
+		"Deploy Migrations": "1 SQL migration(s), applied by all 2 environment(s)",
+		"Frontend Code":     "2 env(s): every KCL-declared frontend has code forge can build",
+		"Object Collision":  "4 object address(es) across 2 environment(s) — no two environments write the same one",
 	}
 
 	checks := contentChecks()

@@ -90,9 +90,9 @@ func checkDeclaredFrontends(projectDir string, cfg *config.ProjectConfig) []stri
 		if fe.HasGitSource() {
 			continue
 		}
-		path := fe.Path
-		if path == "" {
-			path = "frontends/" + fe.Name
+		path, ok := fe.Dir(projectDir)
+		if !ok {
+			continue
 		}
 		fullPath := filepath.Join(projectDir, path)
 		if !dirExists(fullPath) {

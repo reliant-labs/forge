@@ -59,6 +59,17 @@ const (
 	configJWTIssuerEnvVar   = "JWT_ISSUER"
 	configJWTJWKSURLEnvVar  = "JWT_JWKS_URL"
 	configJWTAudienceEnvVar = "JWT_AUDIENCE"
+
+	// NATIVE SIGN-IN. The server runs the whole OIDC flow, so the OAuth
+	// client is a BACKEND value: the browser posts credentials to this
+	// app's API and never contacts the issuer. See the login-broker
+	// scaffold and devIdentityBackendLines.
+	configAPIURLEnvVar = "API_URL"
+
+	configOIDCClientIDEnvVar         = "OIDC_CLIENT_ID"
+	configOIDCRedirectURIEnvVar      = "OIDC_REDIRECT_URI"
+	configIDPBaseEnvVar              = "IDP_BASE"
+	configCORSAllowCredentialsEnvVar = "CORS_ALLOW_CREDENTIALS"
 )
 
 // devDatabaseDSN is the dev DSN the scaffold seeds for a project's database

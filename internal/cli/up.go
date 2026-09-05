@@ -2920,7 +2920,7 @@ func frontendDepsStale(dir string) bool {
 	// and a half-populated tree is treated as done. That is the whole gate
 	// inverting itself precisely when it matters. The stamp is written only
 	// after the package manager exits 0.
-	ref := nm.ModTime()
+	var ref time.Time
 	if stamp, err := os.Stat(frontendInstallStamp(dir)); err == nil {
 		ref = stamp.ModTime()
 	} else {

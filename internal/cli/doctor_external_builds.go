@@ -242,8 +242,44 @@ func firstCommandToken(cmd string) (token string, skipReason string) {
 	if i := strings.Index(first, "="); i > 0 && isShellEnvKey(first[:i]) {
 		return "", "build_cmd starts with env-var assignment — first-token heuristic doesn't apply"
 	}
+	// Shell builtins are not executables and are never on PATH, so looking
+	// one up always "fails". forge runs build_cmd THROUGH A SHELL, which is
+	// what makes `set -e` (the canonical opener for a multi-line build_cmd
+	// that must abort on the first failing step) both correct and idiomatic
+	// — so warning about it told a project its build was broken when it was
+	// exemplary. Observed on two real targets, workspace-base and
+	// daemon-gateway, whose only sin was failing safe.
+	if isShellBuiltin(first) {
+		return "", "build_cmd starts with the shell builtin `" + first + "` — first-token heuristic doesn't apply"
+	}
 	return first, ""
 }
+
+// shellBuiltins are the builtins plausible as the FIRST token of a
+// build_cmd. Deliberately not the full builtin list: this decides only
+// whether to skip a PATH lookup, and a word that is both a builtin and a
+// real binary (`echo`, `test`, `[`) is fine to look up either way.
+//
+// `set` is the one that matters in practice — `set -e` / `set -eu` /
+// `set -euo pipefail` opens most multi-step build_cmds.
+var shellBuiltins = map[string]bool{
+	"set":    true,
+	"export": true,
+	"unset":  true,
+	"shift":  true,
+	"exec":   true,
+	"eval":   true,
+	"source": true,
+	".":      true,
+	"umask":  true,
+	"trap":   true,
+	"local":  true,
+	"read":   true,
+}
+
+// isShellBuiltin reports whether tok is a shell builtin that would never
+// resolve on PATH.
+func isShellBuiltin(tok string) bool { return shellBuiltins[tok] }
 
 // isShellEnvKey returns true when s looks like a shell env-var key
 // (uppercase letters, digits, underscore, must start with a letter or

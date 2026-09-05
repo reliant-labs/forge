@@ -1,6 +1,7 @@
 package kclvendor
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,7 +242,7 @@ forge = { path = "../../.forge-kcl" }
 // otherwise sit silently on a module an older forge materialized.
 func TestMaterialize_StampsForgeVersionAndReportsStaleness(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Materialize(dir); err != nil {
+	if _, err := Materialize(dir, false); err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
 	stampPath := filepath.Join(dir, VendorDirName, StampFileName)
@@ -271,13 +272,13 @@ func TestMaterialize_StampsForgeVersionAndReportsStaleness(t *testing.T) {
 	}
 
 	// Re-materializing heals it, and stays byte-idempotent afterwards.
-	if _, err := Materialize(dir); err != nil {
+	if _, err := Materialize(dir, false); err != nil {
 		t.Fatalf("re-materialize: %v", err)
 	}
 	if stale, _ := Stale(dir); stale {
 		t.Errorf("still stale after re-materialize")
 	}
-	changed, err := Materialize(dir)
+	changed, err := Materialize(dir, false)
 	if err != nil {
 		t.Fatalf("third materialize: %v", err)
 	}
@@ -291,10 +292,129 @@ func TestMaterialize_StampsForgeVersionAndReportsStaleness(t *testing.T) {
 	}
 }
 
+// TestMaterialize_RefusesDowngrade is the regression test for the failure
+// the stamp originally FAILED to catch. Stamping alone recorded a
+// downgrade as cheerfully as an upgrade, so an older forge silently
+// rewrote control-plane's `.forge-kcl/schema.k` — outdated Gateway
+// listener rule included — and prod's `env render` broke somewhere else
+// entirely. The stamp was a no-op that looked like a guard.
+//
+// Each subtest pins one branch of checkDowngrade, because the value of
+// this guard is as much in what it does NOT block: a refusal that fires
+// on equal versions, on unorderable strings, or on a no-op refresh gets
+// switched off by the first person it inconveniences.
+func TestMaterialize_RefusesDowngrade(t *testing.T) {
+	// stampedNewer materializes a real vendor copy, then rewrites both
+	// the stamp AND one source file so the running forge is provably
+	// older AND the refresh would genuinely change bytes.
+	stampedNewer := func(t *testing.T, version string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if _, err := Materialize(dir, false); err != nil {
+			t.Fatalf("seed materialize: %v", err)
+		}
+		stampPath := filepath.Join(dir, VendorDirName, StampFileName)
+		if err := os.WriteFile(stampPath, []byte(version+"\n"), 0o644); err != nil {
+			t.Fatalf("rewrite stamp: %v", err)
+		}
+		return dir
+	}
+
+	// The damage case: on-disk copy stamped by a much newer forge, and
+	// the embedded module differs from what is vendored.
+	t.Run("refuses and writes nothing", func(t *testing.T) {
+		dir := stampedNewer(t, "v99.0.0")
+		modPath := filepath.Join(dir, VendorDirName, "kcl.mod")
+		sentinel := "# hand-synced by the other agent — must survive a refusal\n"
+		if err := os.WriteFile(modPath, []byte(sentinel), 0o644); err != nil {
+			t.Fatalf("drift a source file: %v", err)
+		}
+
+		changed, err := Materialize(dir, false)
+		var dErr *DowngradeError
+		if !errors.As(err, &dErr) {
+			t.Fatalf("Materialize() error = %v, want *DowngradeError", err)
+		}
+		if changed {
+			t.Error("a refused materialize must report changed=false")
+		}
+		// The refusal must be actionable: both identities and the remedy.
+		msg := dErr.Error()
+		for _, want := range []string{"v99.0.0", buildinfo.Version(), "--allow-kcl-downgrade"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("refusal message missing %q:\n%s", want, msg)
+			}
+		}
+		// The guard runs BEFORE the walk, so the file another agent
+		// synced is still theirs. This is the byte that got clobbered.
+		if got := readFile(t, modPath); got != sentinel {
+			t.Errorf("refused materialize still overwrote a vendored file:\ngot  %q\nwant %q", got, sentinel)
+		}
+	})
+
+	// The deliberate rollback: --allow-kcl-downgrade lets it through.
+	t.Run("allowDowngrade opts out", func(t *testing.T) {
+		dir := stampedNewer(t, "v99.0.0")
+		if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
+			t.Fatalf("drift a source file: %v", err)
+		}
+		changed, err := Materialize(dir, true)
+		if err != nil {
+			t.Fatalf("Materialize(allowDowngrade=true) = %v, want nil", err)
+		}
+		if !changed {
+			t.Error("the opt-out must actually perform the refresh")
+		}
+		if stale, _ := Stale(dir); stale {
+			t.Error("an allowed downgrade must restamp to the running forge")
+		}
+	})
+
+	// A downgrade that would change nothing is not worth blocking —
+	// otherwise anyone on a pinned older build with an identical module
+	// is wedged out of `forge generate` for no schema difference at all.
+	t.Run("identical content is not refused", func(t *testing.T) {
+		dir := stampedNewer(t, "v99.0.0")
+		changed, err := Materialize(dir, false)
+		if err != nil {
+			t.Fatalf("no-op downgrade refused: %v", err)
+		}
+		if !changed {
+			t.Error("expected the stamp itself to be rewritten")
+		}
+	})
+
+	// Unorderable versions are a coin flip, and a guard that fires on a
+	// coin flip gets disabled by everyone. Equal versions are the normal
+	// refresh. Neither may refuse.
+	for name, stamp := range map[string]string{
+		"unorderable stamp": "(devel)",
+		"hand-edited stamp": "not-a-version",
+		"same version":      buildinfo.Version(),
+	} {
+		t.Run(name+" is not refused", func(t *testing.T) {
+			dir := stampedNewer(t, stamp)
+			if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
+				t.Fatalf("drift a source file: %v", err)
+			}
+			if _, err := Materialize(dir, false); err != nil {
+				t.Fatalf("Materialize() = %v, want nil (stamp %q must not trigger a refusal)", err, stamp)
+			}
+		})
+	}
+
+	// Nothing on disk to protect: a fresh project must always vendor.
+	t.Run("absent vendor dir is not refused", func(t *testing.T) {
+		if _, err := Materialize(t.TempDir(), false); err != nil {
+			t.Fatalf("materialize into an empty project: %v", err)
+		}
+	})
+}
+
 func TestMaterialize_IdempotentRefreshesDriftAndDeletesStrays(t *testing.T) {
 	dir := t.TempDir()
 
-	changed, err := Materialize(dir)
+	changed, err := Materialize(dir, false)
 	if err != nil {
 		t.Fatalf("first materialize: %v", err)
 	}
@@ -317,7 +437,7 @@ func TestMaterialize_IdempotentRefreshesDriftAndDeletesStrays(t *testing.T) {
 	}
 
 	// Second run: byte-idempotent.
-	changed, err = Materialize(dir)
+	changed, err = Materialize(dir, false)
 	if err != nil {
 		t.Fatalf("second materialize: %v", err)
 	}
@@ -338,7 +458,7 @@ func TestMaterialize_IdempotentRefreshesDriftAndDeletesStrays(t *testing.T) {
 	if err := os.WriteFile(lockPath, []byte("[dependencies]\n"), 0o644); err != nil {
 		t.Fatalf("inject lock: %v", err)
 	}
-	changed, err = Materialize(dir)
+	changed, err = Materialize(dir, false)
 	if err != nil {
 		t.Fatalf("heal materialize: %v", err)
 	}

@@ -36,7 +36,8 @@ func renderDevMainK(t *testing.T, template string) string {
 		IngressEnabled  bool
 		HasFrontend     bool
 		PrimaryWorkload string
-	}{ProjectName: "demo", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "api"})
+		FrontendName    string
+	}{ProjectName: "demo", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "api", FrontendName: "web"})
 	if err != nil {
 		t.Fatalf("render %s: %v", template, err)
 	}

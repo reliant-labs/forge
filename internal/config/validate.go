@@ -173,11 +173,21 @@ func LoadProject(data []byte, path string) (*ProjectConfig, error) {
 	// forge.yaml directory. When there is no on-disk project to read
 	// (byte-only loads against a synthetic path) there is nothing to read a
 	// shape off, so the config is a bare module: library.
-	if dir := sourceProjectDir(path); dir != "" {
-		cfg.Kind = deriveProjectKindFromSources(dir)
+	projectDir := sourceProjectDir(path)
+	if projectDir != "" {
+		cfg.Kind = deriveProjectKindFromSources(projectDir)
 	} else {
 		cfg.Kind = ProjectKindLibrary
 	}
+
+	// Resolve the frontend inventory HERE, before validation and before
+	// feature derivation, so every command that loads this file sees one
+	// answer. Feature derivation reads len(cfg.Frontends) to decide
+	// features.frontend, so an inventory resolved after it would leave the
+	// frontend pipeline steps gated off by a flag computed against an
+	// empty list — which is precisely the bug the generate-only mutation
+	// had to re-run ApplyDerivedDefaults to paper over.
+	ResolveInventoryAtLoad(&cfg, projectDir)
 
 	// Phase 3: required-field validation. The yaml root is threaded
 	// through so issues can carry the line:col of the *parent* mapping
@@ -927,7 +937,7 @@ func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		// other a lie that reads as truth in review. Reject instead.
 		if fe.Source != nil {
 			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "source"})
-			if fe.Path != "" {
+			if fe.DeclaredDir() != "" {
 				out = append(out, validationIssue{
 					line:   line,
 					column: col,
@@ -986,18 +996,17 @@ func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 				})
 			}
 		}
-		// frontends[].auth_mode picks where the user types their password.
-		// "redirect" is the only mode forge scaffolds: driving a hosted
-		// sign-in from a first-party form is provider-proprietary, so
-		// there is nothing generic to generate. A rejected value here is
-		// better than a silently-ignored one.
-		if am := strings.ToLower(strings.TrimSpace(fe.AuthMode)); am != "" && am != AuthModeRedirect {
+		// frontends[].auth_mode names the sign-in flow. "native" is the
+		// only mode forge scaffolds: the app's own form posts to the app's
+		// own API, and the server runs the OIDC flow. A rejected value
+		// here is better than a silently-ignored one.
+		if am := strings.ToLower(strings.TrimSpace(fe.AuthMode)); am != "" && am != AuthModeNative {
 			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "auth_mode"})
 			out = append(out, validationIssue{
 				line:   line,
 				column: col,
 				msg:    fmt.Sprintf("%s.auth_mode value %q is invalid", prefix, fe.AuthMode),
-				fix:    "use redirect (the default, and the only mode forge scaffolds). A first-party sign-in form is yours to build against your IdP's own API — see `forge skill load auth/frontend`.",
+				fix:    "use native (the default, and the only mode forge scaffolds) — see `forge skill load auth/frontend`.",
 			})
 		}
 	}

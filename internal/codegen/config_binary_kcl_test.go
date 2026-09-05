@@ -32,8 +32,8 @@ func TestPerBinaryKCL_EmitsOneSchemaAndLambdaPerBinary(t *testing.T) {
 		"schema ConfigSecretRef:", // declared once for the module
 		"schema AdminConfig:",
 		"schema GatewayConfig:",
-		"adminConfigEnvMap = lambda c: AdminConfig -> {str: forge.EnvSource} {",
-		"gatewayConfigEnvMap = lambda c: GatewayConfig -> {str: forge.EnvSource} {",
+		"adminConfigEnvMap = lambda c: AdminConfig, config_secrets: [str] -> {str: forge.EnvSource} {",
+		"gatewayConfigEnvMap = lambda c: GatewayConfig, config_secrets: [str] -> {str: forge.EnvSource} {",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("per-binary config module missing %q\n%s", want, got)
@@ -112,8 +112,13 @@ func TestPerBinaryKCL_EndToEndDisjointEnvMaps(t *testing.T) {
 _admin = config_gen.AdminConfig {log_level = "debug"}
 _gateway = config_gen.GatewayConfig {upstream_timeout_ms = 1500}
 
-_admin_env = config_gen.adminConfigEnvMap(_admin)
-_gateway_env = config_gen.gatewayConfigEnvMap(_gateway)
+# The two mechanisms COMPOSE, and this is where that shows. Per-binary
+# configs make the FIELD SETS disjoint (gateway's schema has no
+# admin_api_key at all); config_secrets then gates which of a binary's own
+# sensitive fields reach a given workload. Admin declares its credential,
+# so it gets it.
+_admin_env = config_gen.adminConfigEnvMap(_admin, ["ADMIN_API_KEY"])
+_gateway_env = config_gen.gatewayConfigEnvMap(_gateway, [])
 
 # Each binary carries its OWN leaf ...
 assert_admin_has_own = "ADMIN_API_KEY" in _admin_env

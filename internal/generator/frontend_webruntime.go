@@ -40,8 +40,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/buildinfo"
 )
 
 // WebRuntimePackage is the npm package name of forge's frontend runtime
@@ -52,7 +50,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // not bridged to a local checkout. Keep the major.minor pointed at
 // web-runtime/package.json's version — TestWebRuntimePublishedRangeTracksPackage
 // fails the build when the two drift apart.
-const webRuntimePublishedRange = "^0.3.0"
+const webRuntimePublishedRange = "^0.3.1"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a
@@ -75,105 +73,22 @@ type webRuntimeDecision struct {
 	// leave an existing one alone": a dev build that cannot locate its own
 	// source tree has no business replacing a bridge somebody else set up.
 	authoritative bool
-	// hint is a one-line explanation printed when forge declines to bridge.
-	hint string
 }
 
 // decideWebRuntimeDependency resolves the specifier for the frontend rooted at
 // feAbs (an absolute path to frontends/<name>).
-func decideWebRuntimeDependency(feAbs string) webRuntimeDecision {
-	if !buildinfo.IsDevBuild() {
-		// Released binary: an ordinary range, publish-ready, no local paths.
-		return webRuntimeDecision{spec: webRuntimePublishedRange, authoritative: true}
-	}
-
-	// Prefer the explicitly stamped ldflag; otherwise recover the source root
-	// from this binary's own compiled file paths, which is what makes the
-	// bridge work when forge runs EMBEDDED in a host binary that never
-	// stamped DevForgeRoot.
-	root := buildinfo.DevForgeRoot
-	if root == "" {
-		root = buildinfo.DiscoverDevForgeRootFromSource()
-	}
-	if root == "" {
-		return webRuntimeDecision{
-			spec: webRuntimePublishedRange,
-			hint: fmt.Sprintf("dev forge build without a discoverable source root: %s is left unbridged. "+
-				"Rebuild forge with `make dev` (injects DevForgeRoot) to enable the bridge.", WebRuntimePackage),
-		}
-	}
-
-	target := filepath.Join(root, "web-runtime")
-	if _, err := os.Stat(filepath.Join(target, "package.json")); err != nil {
-		// A forge checkout that does not carry the package. Declare the
-		// published range if nothing is declared, but never overwrite.
-		return webRuntimeDecision{spec: webRuntimePublishedRange}
-	}
-
-	home, _ := os.UserHomeDir()
-	spec := webRuntimeFileSpec(resolvePath(feAbs), resolvePath(target), resolvePath(home))
-	if spec == "" {
-		return webRuntimeDecision{
-			spec: webRuntimePublishedRange,
-			hint: fmt.Sprintf("%s at %s cannot be reached by a relative or ~-anchored path from this project; "+
-				"leaving the declared version range in place (forge never writes an absolute path into package.json).",
-				WebRuntimePackage, target),
-		}
-	}
-	return webRuntimeDecision{spec: spec, authoritative: true}
-}
-
-// webRuntimeFileSpec builds the npm `file:` specifier a frontend at feAbs uses
-// to reach the web-runtime directory at targetAbs.
 //
-// It prefers a plain relative path: npm records that verbatim in
-// package-lock.json too, so neither committed file learns anything about the
-// machine. A relative path is only usable when it does not have to climb ABOVE
-// the home directory and descend back through it — "../../../Users/<name>/..."
-// re-embeds the username, which is exactly what must never be written. In that
-// case it falls back to npm's "~/"-anchored form. Returning "" means neither
-// form is expressible and the caller must not write a dev specifier.
-func webRuntimeFileSpec(feAbs, targetAbs, home string) string {
-	if rel, err := filepath.Rel(feAbs, targetAbs); err == nil && !pathLeaksHome(rel, feAbs, targetAbs, home) {
-		return "file:" + filepath.ToSlash(rel)
-	}
-	if home != "" && isUnder(targetAbs, home) {
-		if rel, err := filepath.Rel(home, targetAbs); err == nil {
-			return "file:~/" + filepath.ToSlash(rel)
-		}
-	}
-	return ""
-}
-
-// pathLeaksHome reports whether the relative path from feAbs to targetAbs
-// spells out part of the home directory — the username above all.
+// The answer is now the published range on EVERY build flavour, dev included.
+// frontends/<name>/package.json is a tracked file, and the dev bridge moved
+// out of it into a gitignored npm workspace root — see
+// frontend_webruntime_devlink.go for the mechanism and why npm needs the link
+// to come from a workspace member rather than a bare symlink.
 //
-// Structurally: a relative path is "up to the common ancestor, then down to
-// the target". The up half is only "..". The down half is the target's own
-// segments below that ancestor. So the path can only name the home directory
-// when the target lives under home AND the common ancestor sits STRICTLY above
-// home — then the descent must pass through home's own name.
-//
-// The literal-substring checks that follow are a belt-and-braces guard for the
-// odd tree that repeats the username outside $HOME; a false positive there
-// costs nothing but the ~-anchored form, which is equally correct.
-func pathLeaksHome(rel, feAbs, targetAbs, home string) bool {
-	if home == "" {
-		return false
-	}
-	if ancestor := commonAncestor(feAbs, targetAbs); isUnder(targetAbs, home) && isUnder(home, ancestor) && home != ancestor {
-		return true
-	}
-	if strings.Contains(rel, home) {
-		return true
-	}
-	user := filepath.Base(home)
-	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
-		if seg == user {
-			return true
-		}
-	}
-	return false
+// It stays authoritative so a dev build NORMALISES a manifest that an older
+// forge already rewrote to `file:<path>`: those checkouts exist, and leaving
+// the local path in place would keep them dirty forever.
+func decideWebRuntimeDependency(_ string) webRuntimeDecision {
+	return webRuntimeDecision{spec: webRuntimePublishedRange, authoritative: true}
 }
 
 // resolvePath makes p absolute and resolves symlinks, best-effort: the
@@ -192,36 +107,6 @@ func resolvePath(p string) string {
 		return real
 	}
 	return abs
-}
-
-// isUnder reports whether p is dir or lives beneath it.
-func isUnder(p, dir string) bool {
-	if p == "" || dir == "" {
-		return false
-	}
-	if p == dir {
-		return true
-	}
-	return strings.HasPrefix(p, strings.TrimSuffix(dir, string(filepath.Separator))+string(filepath.Separator))
-}
-
-// commonAncestor returns the deepest directory that contains both paths.
-func commonAncestor(a, b string) string {
-	as := strings.Split(filepath.Clean(a), string(filepath.Separator))
-	bs := strings.Split(filepath.Clean(b), string(filepath.Separator))
-	n := len(as)
-	if len(bs) < n {
-		n = len(bs)
-	}
-	i := 0
-	for i < n && as[i] == bs[i] {
-		i++
-	}
-	joined := strings.Join(as[:i], string(filepath.Separator))
-	if joined == "" {
-		return string(filepath.Separator)
-	}
-	return joined
 }
 
 // EnsureWebRuntimeDependency reconciles the @reliantlabs/forge-web-runtime entry in
@@ -278,9 +163,6 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) {
 	case found && current == decision.spec:
 		return // already correct — idempotent and silent
 	case found && !decision.authoritative:
-		if decision.hint != "" {
-			fmt.Fprintf(os.Stderr, "ℹ️  %s\n", decision.hint)
-		}
 		return // declared, and forge has no better answer than what is there
 	case found:
 		// Splice over the quoted value only; a literal splice keeps `$` in a
@@ -292,9 +174,6 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not declare %s in %s: %v\n", WebRuntimePackage, pkgPath, err)
 			return
-		}
-		if decision.hint != "" {
-			fmt.Fprintf(os.Stderr, "ℹ️  %s\n", decision.hint)
 		}
 	}
 

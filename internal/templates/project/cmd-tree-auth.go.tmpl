@@ -74,6 +74,7 @@ func newIDPProvisionCmd() *cobra.Command {
 		basePath       string
 		configMapName  string
 		kclFilePath    string
+		loginURI       string
 		timeout        time.Duration
 	)
 
@@ -105,11 +106,38 @@ identity and changes nothing. That is what lets this run on every deploy.`,
 				Frontend:       "{{.FrontendName}}",
 				RedirectURIs:   []string{devidp.RedirectGlob(frontendOrigin, basePath, "/auth/callback")},
 				PostLogoutURIs: []string{devidp.LogoutGlob(frontendOrigin)},
+				// Empty unless --login-uri is passed: an unset value keeps
+				// the issuer's own login pages, and Reconcile converges the
+				// setting BOTH ways, so removing the flag restores them.
+				LoginURI: loginURI,
 			}
 
 			identity, err := devidp.Reconcile(ctx, client, spec, browserOrigin)
 			if err != nil {
 				return fmt.Errorf("idp-provision: %w", err)
+			}
+
+			// The API-only sign-in flow needs a credential the browser
+			// cannot have. Provision it only when that flow is actually
+			// requested — an app using the issuer's login pages should not
+			// be handed a privileged token it has no use for.
+			//
+			// PRINTED, NOT PUBLISHED. Zitadel returns a personal access
+			// token exactly once and never again, so this cannot be made
+			// idempotent the way the identity above is: a re-run mints a
+			// NEW token rather than recovering the old one. Publishing it
+			// into the identity file would therefore rewrite a live
+			// credential on every deploy. It goes to stdout, once, for an
+			// operator to put in their secret store.
+			if loginURI != "" {
+				cred, err := client.EnsureLoginBroker(ctx, "{{.Name}}-login-broker")
+				if err != nil {
+					return fmt.Errorf("idp-provision: provision the login broker: %w", err)
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"idp-provision: login broker ready (user %s)\n"+
+						"  set idp_broker_token to this value — it is shown ONCE and cannot be retrieved again:\n"+
+						"  %s\n", cred.UserID, cred.Token)
 			}
 
 			var publisher devidp.Publisher
@@ -151,6 +179,8 @@ identity and changes nothing. That is what lets this run on every deploy.`,
 		"ConfigMap this job publishes into, on a cluster target")
 	cmd.Flags().StringVar(&kclFilePath, "kcl-file", envOrIDP("IDP_KCL_FILE", "deploy/kcl/dev/idp_identity_gen.k"),
 		"committed KCL file this job publishes into, on a compose/dev target")
+	cmd.Flags().StringVar(&loginURI, "login-uri", envOrIDP("IDP_LOGIN_URI", ""),
+		"the app's OWN sign-in route; set it to run the API-only sign-in flow (the issuer redirects into this app instead of showing its own login pages) and to provision the login-broker credential. Empty keeps the issuer-hosted pages")
 	cmd.Flags().DurationVar(&timeout, "timeout", 3*time.Minute, "overall timeout (a first boot waits on the IdP's own initialization)")
 
 	config.RegisterFlags(cmd)

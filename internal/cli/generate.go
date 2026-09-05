@@ -36,6 +36,7 @@ func newGenerateCmd() *cobra.Command {
 		skipConfigCheck bool
 		checkOnly       bool
 		forceCleanup    bool
+		allowKCLDown    bool
 		templatesOnly   bool
 		strict          bool
 		verbose         bool
@@ -82,15 +83,16 @@ forensics, parallel-lane and migration escape hatches); run
 			}
 			if planOnly {
 				return runGeneratePlan(".", pipelineFlags{
-					Force:           force,
-					SkipValidate:    skipValidate,
-					SkipPreChecks:   skipPreChecks,
-					SkipConfigCheck: skipConfigCheck,
-					ForceCleanup:    forceCleanup,
-					TemplatesOnly:   templatesOnly,
-					Strict:          strict,
-					Verbose:         verbose,
-					Steps:           steps,
+					Force:             force,
+					SkipValidate:      skipValidate,
+					SkipPreChecks:     skipPreChecks,
+					SkipConfigCheck:   skipConfigCheck,
+					ForceCleanup:      forceCleanup,
+					AllowKCLDowngrade: allowKCLDown,
+					TemplatesOnly:     templatesOnly,
+					Strict:            strict,
+					Verbose:           verbose,
+					Steps:             steps,
 				})
 			}
 			// Capture pre-pipeline body hashes (from the embedded
@@ -107,18 +109,19 @@ forensics, parallel-lane and migration escape hatches); run
 
 			generateMu.Lock()
 			err := runGeneratePipelineFlags(".", pipelineFlags{
-				Force:           force,
-				ExplainDrift:    explainDrift,
-				SkipValidate:    skipValidate,
-				SkipPreChecks:   skipPreChecks,
-				SkipConfigCheck: skipConfigCheck,
-				ForceCleanup:    forceCleanup,
-				TemplatesOnly:   templatesOnly,
-				Strict:          strict,
-				Verbose:         verbose,
-				Heal:            heal,
-				NoRevert:        noRevert,
-				Steps:           steps,
+				Force:             force,
+				ExplainDrift:      explainDrift,
+				SkipValidate:      skipValidate,
+				SkipPreChecks:     skipPreChecks,
+				SkipConfigCheck:   skipConfigCheck,
+				ForceCleanup:      forceCleanup,
+				AllowKCLDowngrade: allowKCLDown,
+				TemplatesOnly:     templatesOnly,
+				Strict:            strict,
+				Verbose:           verbose,
+				Heal:              heal,
+				NoRevert:          noRevert,
+				Steps:             steps,
 			})
 			generateMu.Unlock()
 
@@ -160,6 +163,7 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVar(&skipPreChecks, "skip-pre-checks", false, "Bypass the pre-codegen contract-shape check (useful when a parallel lane's contract violation would otherwise block regen of this lane)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Actually delete stale generated files. Default is report-only: print which files WOULD be deleted and leave them in place.")
+	cmd.Flags().BoolVar(&allowKCLDown, "allow-kcl-downgrade", false, "Permit this forge to overwrite .forge-kcl/ with its embedded KCL module even when a NEWER forge vendored the copy on disk. Off by default: a version-blind overwrite once replaced control-plane's vendored schema with a stale one and broke prod's 'env render'. Pass this only when rolling forge back deliberately.")
 	cmd.Flags().BoolVar(&templatesOnly, "templates-only", false, "Re-render template-driven files only. Skips cleanup sweep, drift-guard, and validation. Use when a template change needs to propagate to a project that has uncommitted WIP and can't tolerate a full regen.")
 	cmd.Flags().StringVar(&steps, "steps", "", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files).")
 	// Loud-by-default architecture flags. See the per-flag fields on
@@ -281,6 +285,16 @@ type pipelineFlags struct {
 	// on disk. See the matching pipelineContext.ForceCleanup field for
 	// the cp-forge surprise-delete rationale.
 	ForceCleanup bool
+
+	// AllowKCLDowngrade lets `forge generate` overwrite `.forge-kcl/`
+	// with an OLDER forge's embedded KCL module. Off by default, and the
+	// default is the whole point: the silent version-blind overwrite is
+	// what put an outdated Gateway listener rule into control-plane's
+	// vendored schema and broke prod's `env render`, with nothing in the
+	// generate output to suggest a downgrade had happened. On for the
+	// case where the rollback is the intent — pinning an older forge
+	// deliberately and wanting its KCL to match.
+	AllowKCLDowngrade bool
 
 	// TemplatesOnly restricts the pipeline to template-driven render
 	// steps only. Skips the Tier-1 drift guard, the validation tail

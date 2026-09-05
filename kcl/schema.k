@@ -396,6 +396,27 @@ schema GatewayListener:
       * H2C   — HTTP/2 cleartext. Use this for gRPC routes in dev
                 where TLS is not yet wired; flip to HTTPS in the prod
                 env override.
+
+    `hostname` and `tls` make a listener SELF-SUFFICIENT: one Gateway
+    can serve many hostnames, each terminating its own certificate,
+    which is what Gateway API models (spec.listeners[*].hostname and
+    spec.listeners[*].tls.certificateRefs) and what a cloud provider
+    bills as ONE load balancer. Without them, N hostnames forced N
+    Gateways — and on GKE/Vultr that is N load balancers, N Envoy
+    deployments and N IPs for what is architecturally one ingress.
+
+    Both fall back to the parent Gateway's `host` / `tls` when unset,
+    so the common single-host Gateway stays a two-line declaration.
+    The listener-level value is the PRIMITIVE; the gateway-level value
+    is the default it inherits. Set neither and the listener is
+    hostname-less (serves all hosts) — correct for a plaintext HTTP
+    listener carrying an ACME HTTP-01 solver route.
+
+    `tls` here is per-listener cert material only. Mode `gke_certmap`
+    is inherently gateway-scoped (forge stamps a single
+    `networking.gke.io/certmap` annotation on the Gateway, and the map
+    itself maps every hostname to its cert), so it is rejected at the
+    listener level — declare it once on the Gateway.
     """
     name: str
     port: int
@@ -405,12 +426,21 @@ schema GatewayListener:
     # port and route by path. Empty in prod where each env owns its
     # own hostname.
     path_prefix: str = ""
+    # Per-listener hostname. Overrides the parent Gateway's `host`.
+    hostname: str = ""
+    # Per-listener TLS. Overrides the parent Gateway's `tls`, letting a
+    # single Gateway terminate a different certificate per hostname.
+    tls?: GatewayTLS
 
     check:
         name, "GatewayListener.name is required"
         port > 0 and port < 65536, "GatewayListener.port must be 1..65535"
         path_prefix == "" or path_prefix.startswith("/"), \
             "GatewayListener.path_prefix must start with '/' when set"
+        protocol == "HTTPS" or not tls, \
+            "GatewayListener.tls is only valid on an HTTPS listener (listener '${name}' is ${protocol}) — a plaintext listener that carries cert material is a silent misconfiguration, not a no-op"
+        not tls or tls.mode != "gke_certmap", \
+            "GatewayListener.tls.mode 'gke_certmap' is gateway-level only (it renders a single networking.gke.io/certmap annotation on the Gateway, and the map supplies a cert per hostname) — declare it on the Gateway's tls instead of on listener '${name}'"
 
 schema GatewayTLS:
     """TLS config for a Gateway.
@@ -506,6 +536,19 @@ schema Gateway:
     which required dev/e2e envs to pin `gateway_class_name = "traefik"`;
     that exception is gone — every env now uses the `eg` default.)
 
+    `host` and `tls` are DEFAULTS that every listener inherits. A
+    listener may override either (`GatewayListener.hostname` /
+    `GatewayListener.tls`), which is how ONE Gateway serves many
+    hostnames with a certificate each — one load balancer instead of
+    one per hostname. A Gateway whose listeners all set their own
+    `hostname` needs no gateway-level `host` at all.
+
+    Hostname precedence for a route on this gateway is
+    `route.host` > `listener.hostname` > `gateway.host`: the route
+    override is the most specific statement of intent, the listener's
+    hostname is what the LB actually serves on that section, and the
+    gateway host is the fallback default.
+
     `host` is the default hostname for routes on this gateway. Per-
     route `host:` overrides win. `raw_policy` is the v1 escape hatch
     for provider-specific policy CRDs (Envoy Gateway
@@ -548,8 +591,48 @@ schema Gateway:
         len(listeners) > 0, "Gateway must declare at least one listener"
         len({l.name: l for l in listeners}) == len(listeners), \
             "Gateway.listeners[*].name must be unique within a gateway"
-        len({str(l.port): l for l in listeners}) == len(listeners), \
-            "Gateway.listeners[*].port must be unique within a gateway"
+        # Listener identity in Gateway API is (port, protocol, hostname) —
+        # NOT port alone. Several HTTPS listeners MUST be able to share :443
+        # with different hostnames: that is exactly how one Gateway (one
+        # load balancer, one IP) serves many hosts by SNI. Keying uniqueness
+        # on port alone forced one Gateway per hostname, and on a cloud
+        # provider each Gateway is its own LoadBalancer — a per-hostname
+        # cloud bill for a limitation the spec does not have.
+        len({"${l.port}/${l.protocol}/${l.hostname}": l for l in listeners}) == len(listeners), \
+            "Gateway.listeners[*] must be unique on (port, protocol, hostname) — two listeners share all three"
+        # Listeners that SHARE a port must agree on PROTOCOL. The identity
+        # rule above deliberately permits a shared port — several HTTPS
+        # listeners on :443, one per hostname, is the entire point of one
+        # load balancer serving many hosts by SNI. It does not follow that
+        # two protocols may share one port: a bound port speaks one
+        # protocol, so HTTP and HTTPS on :443 renders a manifest the
+        # controller accepts and then marks Conflicted, serving NEITHER
+        # listener. That failure surfaces as a Gateway status condition
+        # with no application log, which is the expensive kind.
+        #
+        # Keying identity on the triple lost this check, which port-alone
+        # uniqueness had enforced as a side effect. It is restored here as
+        # its own rule so both properties hold: shared ports are allowed,
+        # incoherent ones are not.
+        len({"${l.port}": None for l in listeners}) == len({"${l.port}/${l.protocol}": None for l in listeners}), \
+            "Gateway '${name}': listeners sharing a port must agree on protocol — listeners ${[l.name for l in listeners]} declare ports ${[l.port for l in listeners]} with protocols ${[l.protocol for l in listeners]}"
+        # An HTTPS listener must resolve to SOME cert material — its own
+        # tls, or the gateway's. Rendering an HTTPS listener with no
+        # certificateRefs produces a manifest the Gateway controller
+        # accepts and then cannot serve: TLS handshakes fail at runtime
+        # with no config error to point at. Fail here instead.
+        len([l for l in listeners if l.protocol == "HTTPS" and not l.tls and not tls]) == 0, \
+            "Gateway '${name}': HTTPS listener(s) ${[l.name for l in listeners if l.protocol == 'HTTPS' and not l.tls and not tls]} resolve to no TLS config — set the listener's own `tls`, or a gateway-level `tls` for every HTTPS listener to inherit"
+        # A hostname-less HTTPS listener wedges reconcile: cert-manager's
+        # gateway-shim rejects the whole Gateway ("spec.listeners[*].hostname:
+        # Required value"), and the LB has no SNI key to select a cert with.
+        #
+        # gke_certmap is the ONE legitimate exception: TLS is terminated by a
+        # GCP Certificate Manager map that maps each hostname to its own cert,
+        # so such a Gateway deliberately carries no host and lets the attached
+        # routes' hostnames select. No Secret, no cert-manager, no shim.
+        len([l for l in listeners if l.protocol == "HTTPS" and not l.hostname and not host and not (not l.tls and tls and tls.mode == "gke_certmap")]) == 0, \
+            "Gateway '${name}': HTTPS listener(s) ${[l.name for l in listeners if l.protocol == 'HTTPS' and not l.hostname and not host and not (not l.tls and tls and tls.mode == 'gke_certmap')]} resolve to no hostname — set the listener's own `hostname`, or a gateway-level `host`. An HTTPS listener with no hostname has no SNI key for cert selection"
 
 schema HTTPRoute:
     """An HTTPRoute attached to a Gateway+listener. Forwards HTTP

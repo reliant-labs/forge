@@ -104,7 +104,7 @@ describe("ui-store", () => {
 
 - **Snapshot tests on components** (locks implementation, not behavior). Only OK for stable serialized output (CSV export, generated SQL).
 - **Mocking React Query directly** (`vi.mock('@tanstack/react-query')`) — wraps the wrong layer. Mock the transport; let React Query work normally.
-- **Mocking `useAuth()`** — render with `<AuthProvider value={...}>` so the integration shape is tested.
+- **Mocking `useAuth()`** — render inside a real `<AuthContextProvider>` and control the session at the seam below it (stub `GET /auth/session`), so the integration shape is tested.
 - **Implementation-detail assertions** (`vi.spyOn` on private functions, querying by component name). Test from the user's perspective.
 
 ## Tooling
@@ -131,7 +131,7 @@ describe("ui-store", () => {
 ## Rules
 
 - Test behavior, not implementation.
-- Mock at the seam that's stable (transport, AuthProvider value), not the layer above (hook return).
+- Mock at the seam that's stable (the transport, the auth endpoints), not the layer above (hook return).
 - Four states per data-fetching page (loading / error / empty / success). Generated hooks expose all four.
 - Co-locate tests with the file under test.
 - Snapshot tests are forbidden except for stable serialized output.

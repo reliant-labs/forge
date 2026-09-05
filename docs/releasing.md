@@ -14,29 +14,61 @@ Dockerfile** to bump.
 See `docs/pkg-versioning.md` for the dev-vs-release dependency model behind the
 `pkg` module. This file is the operational checklist for cutting a version.
 
-## 1. Tag forge (from a clean `main`)
+## 1. Tag forge (from a clean `main`) — ONE command
 
 ```sh
 cd forge
-task release:pkg -- vX.Y.Z          # validates clean pkg/ tree + standalone
-                                    # (GOWORK=off) build/vet, then tags pkg/vX.Y.Z
-git push origin pkg/vX.Y.Z          # publish pkg FIRST — the require below needs it
-
-go mod edit -require=github.com/reliant-labs/forge/pkg@vX.Y.Z
-go build ./... && git commit -am "chore: require forge/pkg vX.Y.Z"
-
-git tag vX.Y.Z                      # root module tag, on the require bump
-git push origin main vX.Y.Z
+task release:forge -- vX.Y.Z --dry-run   # optional: every validation, no side effects
+task release:forge -- vX.Y.Z
 ```
 
-**Also bump `defaultPublishedForgePkgVersion`** in
-`internal/generator/project_pkgdep.go` to `vX.Y.Z` and include it in the same
-commit as the require bump above. This is the fallback a _dev-build_ forge
-binary (no ldflags `PkgVersion` stamp) pins into every scaffold — if it lags,
-dev builds keep pinning an old `forge/pkg` and generated code targeting newer
-`forge/pkg` APIs won't compile. `resolveForgePkgVersion()` is the only reader;
-there is no automated staleness check (a test that read git tags would be
-non-hermetic), so this step is the guard.
+That is the whole step. It commits once, tags `pkg/vX.Y.Z` **and** `vX.Y.Z` at
+that single commit, and pushes the branch plus both tags atomically.
+
+What it does, in order:
+
+1. validates the version shape, a **clean tree**, that **neither** tag already
+   exists, and that `pkg/` builds and vets **standalone** (`GOWORK=off`, the
+   consumer's view);
+2. bumps `require github.com/reliant-labs/forge/pkg@vX.Y.Z`;
+3. syncs all three version files — `VERSION`, `internal/buildinfo/VERSION`
+   (which must stay byte-identical to the root one; `buildinfo` embeds a copy)
+   and `defaultPublishedForgePkgVersion` in
+   `internal/generator/project_pkgdep.go`;
+4. resolves the `forge/pkg` hashes into `go.sum` **before the tag is public**,
+   then asserts they are really there;
+5. tags both refs at the one commit, then pushes the branch and both tags in a
+   single atomic `git push`.
+
+`--dry-run` runs every validation and every file edit, prints the plan, then
+restores the tree — no commit, no tag, no push.
+
+### Why one commit, and what it fixes
+
+The old flow was `task release:pkg` → push → `go mod edit` → a **second**
+commit → tag → push again, which left three ways to ship a broken release:
+
+- **Push ordering.** The require bump could not resolve until `pkg/vX.Y.Z` was
+  pushed, so the steps spanned two pushes. Stopping halfway published a pkg tag
+  with no root release, or a root release requiring a pkg version nobody could
+  download.
+- **The `go.sum` trap.** `go build ./...` in this repo passes with **no**
+  `forge/pkg` hashes in `go.sum`, because `go.work` resolves `pkg` from the
+  local directory. A consumer has no `go.work`, so their `go mod download`
+  needs those hashes — and their absence is invisible here until after the
+  release is public.
+- **Three version files drifting**, each bumped by hand.
+
+Two tags still exist — Go requires the directory-prefixed form for submodules —
+but they now land on the **same commit**, which removes the ordering hazard
+entirely: either the whole release lands or none of it does.
+
+How step 4 escapes the circularity (hashes normally come from the proxy, which
+cannot serve an unpushed tag): the script makes a temporary **bare clone** of
+the repo, tags it locally, and resolves with `GOPROXY=direct`. That is sound
+because a module's `h1:` hash digests the module's **file tree**, not the commit
+carrying the tag — and the release commit touches only root-module files, never
+`pkg/`. The script asserts that precondition rather than assuming it.
 
 **The require bump is not optional.** The root module has no
 `replace ... => ./pkg`, so the require IS how a consumer resolves forge/pkg.
@@ -45,14 +77,17 @@ requiring `pkg v0.0.3` while `pkg/v0.0.4` existed, and no in-repo build could
 have noticed. `internal/modguard` fails the suite if the require is a
 pseudo-version or a placeholder.
 
-The two tags therefore land on DIFFERENT commits (pkg on the release commit,
-root one commit later on the bump). That is expected; `pkg/` content is
-identical at both.
+If the standalone build fails, `pkg/`'s go.mod isn't tidied for the consumer's
+view — run `cd pkg && GOWORK=off go mod tidy`, commit, and retry. (Normal
+in-workspace CI never exercises this, so the gap only shows at release time.)
 
-If `task release:pkg` fails on the standalone build, the `pkg/` go.mod isn't
-tidied for the consumer's view — run `cd pkg && GOWORK=off go mod tidy`, commit,
-and retry. (Normal in-workspace CI never exercises this, so the gap only shows at
-release time.)
+### `task release:pkg` — the narrow tool
+
+`scripts/release-pkg.sh` still works and still tags `pkg/vX.Y.Z` alone. Reach
+for it only when the submodule genuinely needs a tag by itself: it does **not**
+bump the root require, sync the version files, or populate `go.sum`, so a
+release driven from it is only half done. `release:forge` is the documented
+path.
 
 ## 2. Bump reliant (both modules) — PR
 

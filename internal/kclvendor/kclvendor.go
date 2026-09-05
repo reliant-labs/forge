@@ -28,6 +28,27 @@
 // say so out loud rather than let a confusing schema error stand in for
 // "you have not regenerated".
 //
+// Staleness has a second, sharper failure mode that the stamp did not
+// originally guard: refreshing BACKWARDS. `forge generate` rewrites the
+// vendor dir from whatever binary happens to be on PATH, so a developer
+// or CI job running a slightly older forge silently replaced a project's
+// KCL with an OLDER schema. That is not hypothetical — it broke prod.
+// An agent ran `forge generate` in control-plane with a binary predating
+// forge d51e8b6c; generate overwrote `.forge-kcl/schema.k` with the stale
+// copy, including an outdated Gateway listener rule, and prod's `env
+// render` started failing. Nothing warned: the stamp recorded the
+// downgrade as cheerfully as it records an upgrade, so the marker was a
+// no-op that looked like a guard. The symptom surfaced later, in a
+// different command, looking like a different bug.
+//
+// So Materialize now REFUSES to write an older module over a newer one
+// ([DowngradeError]), and refuses loudly and early — before any byte is
+// written — rather than producing a subtly-wrong render downstream. The
+// refusal is precise in both directions: it fires only when the running
+// forge is provably older by semver AND the embedded module would
+// actually change bytes on disk, so identical-content republishes and
+// unorderable version strings never wedge a project.
+//
 // The kcl.mod is user-owned. All edits are marker-delimited and
 // exact-match (the same discipline as the Dockerfile COPY block in
 // internal/cli/generate_pipeline.go): only a recognized `forge = { … }`
@@ -44,6 +65,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	forgekcl "github.com/reliant-labs/forge/kcl"
@@ -289,15 +312,173 @@ func Present(projectDir string) bool {
 	return err == nil
 }
 
+// DowngradeError is returned by [Materialize] when the running forge's
+// embedded KCL module would overwrite a vendor dir that a NEWER forge
+// wrote. It carries both versions so callers can print the two identities
+// side by side — "which binary is doing this" is the one question the
+// original silent-overwrite failure left unanswerable.
+type DowngradeError struct {
+	// Stamped is the version recorded in .forge-kcl/.forge-version —
+	// the forge that produced the copy currently on disk.
+	Stamped string
+	// Running is the version of the forge that just tried to overwrite it.
+	Running string
+	// ProjectDir is the project whose vendor dir was protected.
+	ProjectDir string
+}
+
+func (e *DowngradeError) Error() string {
+	upgrade := "go install github.com/reliant-labs/forge/cmd/forge@" + e.Stamped
+	if buildinfo.IsDevVersion(e.Stamped) {
+		// A `+dirty`/workspace stamp names no ref any proxy can serve,
+		// so pointing at it would hand the user a command that fails.
+		upgrade = "rebuild forge from a checkout at or after " + e.Stamped + " (task install:dev)"
+	}
+	return fmt.Sprintf(
+		"refusing to overwrite %s/ with an OLDER forge's KCL module.\n"+
+			"    on disk:  %s  (wrote %s/)\n"+
+			"    running:  %s  (this binary)\n"+
+			"  This forge is older than the one that vendored the module, so refreshing would\n"+
+			"  REPLACE the project's KCL schemas with a stale copy. That exact downgrade shipped\n"+
+			"  an outdated Gateway listener rule into control-plane and broke prod's `env render`,\n"+
+			"  with the failure surfacing later in a different command.\n"+
+			"  Fix: upgrade this binary — %s\n"+
+			"  Or, if the downgrade is deliberate (rolling forge back on purpose):\n"+
+			"    forge generate --allow-kcl-downgrade",
+		VendorDirName, e.Stamped, VendorDirName, e.Running, upgrade)
+}
+
+// checkDowngrade returns a [DowngradeError] when the running forge is
+// provably older, by semver, than the forge stamped on the vendor dir.
+//
+// Deliberately narrow — every branch that returns nil is a case where
+// refusing would wedge a project for no safety gain:
+//
+//   - no vendor dir, or no stamp: nothing to protect (and an unstamped
+//     copy predates stamping entirely, so a refresh is the whole point).
+//   - either version unorderable by semver (the "dev" sentinel,
+//     "(devel)", a hand-edited stamp): comparison would be a coin flip,
+//     and a guard that fires on a coin flip gets disabled by everyone.
+//   - equal or newer: the normal refresh path.
+//
+// Build metadata is stripped before comparing: `v0.1.12+dirty` and
+// `v0.1.12` are the same source vintage, and semver.Compare already
+// ignores it — but +dev/+dirty floors compare EQUAL to the release tag,
+// which is what we want (a dirty local build of the same release must
+// not be called a downgrade).
+func checkDowngrade(projectDir string) error {
+	if !Present(projectDir) {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, VendorDirName, StampFileName))
+	if err != nil {
+		return nil
+	}
+	stamped := strings.TrimSpace(string(data))
+	running := buildinfo.Version()
+	if stamped == "" || stamped == running {
+		return nil
+	}
+	if !semver.IsValid(stamped) || !semver.IsValid(running) {
+		return nil
+	}
+	if semver.Compare(running, stamped) >= 0 {
+		return nil
+	}
+	return &DowngradeError{Stamped: stamped, Running: running, ProjectDir: projectDir}
+}
+
+// wouldChange reports whether materializing the embedded module into dst
+// would create, rewrite, or delete anything.
+//
+// The downgrade guard consults this so it fires on SUBSTANCE, not on
+// version strings alone: an older forge whose embedded module is
+// byte-identical to what is already vendored is doing nothing, and
+// blocking it would break `forge generate` for anyone on a pinned older
+// build with no actual schema difference. Only a downgrade that would
+// really move bytes is worth refusing.
+func wouldChange(dst string, want map[string]struct{}) (bool, error) {
+	for path := range want {
+		src, err := fs.ReadFile(forgekcl.Module, path)
+		if err != nil {
+			return false, err
+		}
+		existing, err := os.ReadFile(filepath.Join(dst, filepath.FromSlash(path)))
+		if err != nil || !bytes.Equal(existing, src) {
+			return true, nil
+		}
+	}
+	stray := false
+	_ = filepath.Walk(dst, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || stray {
+			return nil
+		}
+		rel, relErr := filepath.Rel(dst, path)
+		if relErr != nil {
+			return nil
+		}
+		slashRel := filepath.ToSlash(rel)
+		if slashRel == "kcl.mod.lock" || slashRel == StampFileName {
+			return nil
+		}
+		if _, keep := want[slashRel]; !keep {
+			stray = true
+		}
+		return nil
+	})
+	return stray, nil
+}
+
+// embeddedModuleFiles lists every file path in the embedded KCL module,
+// in the forward-slash form both the walk and the stray sweep key on.
+func embeddedModuleFiles() (map[string]struct{}, error) {
+	want := make(map[string]struct{})
+	err := fs.WalkDir(forgekcl.Module, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != "." && !d.IsDir() {
+			want[path] = struct{}{}
+		}
+		return nil
+	})
+	return want, err
+}
+
 // Materialize syncs the embedded forge KCL module into
 // <projectDir>/.forge-kcl. Content-hash idempotent: byte-identical
 // files are not rewritten, files that drifted are replaced, and files
 // under the vendor dir that are not in the embedded module are deleted
 // (so renames/removals upstream never leave stale sources behind).
 // Returns true when anything was created, rewritten, or deleted.
-func Materialize(projectDir string) (changed bool, err error) {
+//
+// It refuses, before writing anything, when the running forge is older
+// than the forge that vendored the copy on disk AND the refresh would
+// actually change bytes — see [DowngradeError] and the package doc's
+// account of the prod render this broke. allowDowngrade is the deliberate
+// opt-out (`forge generate --allow-kcl-downgrade`), for rolling forge
+// back on purpose.
+func Materialize(projectDir string, allowDowngrade bool) (changed bool, err error) {
 	dst := filepath.Join(projectDir, VendorDirName)
-	want := make(map[string]struct{})
+	want, err := embeddedModuleFiles()
+	if err != nil {
+		return false, fmt.Errorf("read embedded forge KCL module: %w", err)
+	}
+
+	// Guard FIRST, and on a would-change check rather than the version
+	// alone. Ordering is the point: a guard that runs after the walk has
+	// already rewritten half the files protects nothing.
+	if !allowDowngrade {
+		if dErr := checkDowngrade(projectDir); dErr != nil {
+			differs, cErr := wouldChange(dst, want)
+			if cErr != nil {
+				return false, cErr
+			}
+			if differs {
+				return false, dErr
+			}
+		}
+	}
 
 	walkErr := fs.WalkDir(forgekcl.Module, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

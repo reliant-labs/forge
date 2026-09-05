@@ -1,18 +1,38 @@
-// frontend_auth_flow_test.go — the scaffolded sign-in flow must be complete
-// and consistent across BOTH browser frontend kinds.
+// frontend_auth_flow_test.go — the scaffolded sign-in flow is NATIVE, and
+// these guards keep it that way in both browser frontend kinds.
 //
-// The defect this guards against is the one frontend_routes_test.go documents
-// from the other side: a scaffold that ships auth UI pointing at routes forge
-// does not emit. The fix was to emit them — which creates the mirror-image
-// risk, that one kind gains a route and the other silently does not. A
-// Next.js scaffold with a working sign-in page and a Vite scaffold whose
-// `/auth/callback` 404s is the same class of "looks finished" failure, just
-// harder to see, because each tree is internally consistent.
+// ── What changed ──────────────────────────────────────────────────────
 //
-// Every assertion here derives from the COMPOSED TEMPLATE TREE — the same
+// Sign-in used to be a browser-side OIDC authorization-code + PKCE flow:
+// the browser fetched the discovery document, redirected to the issuer,
+// came back to /auth/callback with a code, redeemed it at the token
+// endpoint, and held the resulting tokens in JavaScript. Every one of those
+// steps is gone.
+//
+// The browser now POSTs credentials to THIS APP'S OWN API and gets an
+// HttpOnly session cookie. The server (internal/app/login_broker.go, over
+// pkg/devidp) runs the whole OIDC flow. The browser never contacts the
+// identity provider at all.
+//
+//	sign in  →  POST /auth/login     → cookie set, identity returned
+//	sign up  →  POST /auth/register  → cookie set, identity returned
+//	who am I →  GET  /auth/session   → identity, never a token
+//	sign out →  POST /auth/logout    → cookie cleared
+//
+// ── Why these are the assertions ──────────────────────────────────────
+//
+// The property that makes this design worth having is a NEGATIVE one — the
+// token is unreachable from script — and a negative property is exactly
+// what no functional test catches. A scaffold that quietly grew a token
+// endpoint call, a client secret, or a localStorage write would still sign
+// users in perfectly; it would just have given the XSS back its prize. So
+// the headline guard below is a scan for absence, run over the whole
+// composed browser tree rather than over a hand-listed file set.
+//
+// Every assertion derives from the COMPOSED TEMPLATE TREE — the same
 // listing the scaffolder writes from — rather than from a hardcoded file
-// list, so a file that stops being emitted fails here instead of at a user's
-// first login.
+// list, so a file that stops being emitted fails here instead of at a
+// user's first login.
 package templates
 
 import (
@@ -22,15 +42,21 @@ import (
 	"testing"
 )
 
-// authRoutePaths are the two URLs the OIDC authorization-code flow needs. The
-// callback path is also what a user registers with their IdP, so it is a
-// published interface: changing it silently breaks every project whose
-// provider is already configured.
-var authRoutePaths = []string{"/auth/sign-in", "/auth/callback"}
-
-// browserKinds are the frontend kinds that get the browser-redirect flow.
-// React Native is deliberately absent — see TestReactNativeShipsNoBrowserOIDC.
+// browserKinds are the frontend kinds that get native sign-in. React Native
+// is deliberately absent — see TestReactNativeShipsNoBrowserSignIn.
 var browserKinds = []string{"nextjs", "vite-spa"}
+
+// deletedBrowserOIDCModules are the modules the old browser-side flow lived
+// in. They are listed by DESTINATION path, and asserted absent, because a
+// half-restored flow is worse than either design on its own: a tree that
+// ships both native-login.ts and oidc.ts has two ways to become
+// authenticated, and only one of them keeps the token away from script.
+var deletedBrowserOIDCModules = []string{
+	"src/lib/auth/oidc.ts",
+	"src/lib/auth/oidc-provider.ts",
+	"src/lib/auth/oidc-storage.ts",
+	"src/lib/auth/auth-screens.tsx",
+}
 
 // authTreeFor returns the composed tree for a kind, keyed by the file's
 // DESTINATION path in the generated project — i.e. FrontendTreeFile.Rel with
@@ -72,29 +98,149 @@ func renderFrontend(t *testing.T, tmplPath, kind string) string {
 	return string(content)
 }
 
-// TestBothBrowserKindsShipTheWholeAuthFlow pins that each browser kind
-// carries every piece the flow needs: the mechanism, the storage decision,
-// the provider, the screens, and a route for each of the two URLs.
-func TestBothBrowserKindsShipTheWholeAuthFlow(t *testing.T) {
+// isBrowserSource reports whether a destination path is TypeScript that ends
+// up in the browser bundle. The scan below is about what the BROWSER runs, so
+// KCL, JSON, CSS and Go-side templates are deliberately out of scope: the
+// server is exactly where the issuer URL is supposed to live.
+func isBrowserSource(rel string) bool {
+	if !strings.HasPrefix(rel, "src/") {
+		return false
+	}
+	return strings.HasSuffix(rel, ".ts") || strings.HasSuffix(rel, ".tsx")
+}
+
+// idpContact is one way a browser could reach an identity provider, paired
+// with the sentence a failure should make a reader understand.
+type idpContact struct {
+	name string
+	re   *regexp.Regexp
+	why  string
+}
+
+// idpContacts are the traces the browser-side OIDC flow leaves behind. Each
+// is matched against CODE, with comments stripped: the scaffold's prose
+// explains at length what it no longer does, and a guard that fires on its
+// own documentation is one people delete.
+var idpContacts = []idpContact{
+	{
+		"an authorization endpoint", regexp.MustCompile(`/authorize\b`),
+		"a redirect to the issuer's /authorize puts the whole flow back in the browser",
+	},
+	{
+		"OIDC discovery", regexp.MustCompile(`openid-configuration`),
+		"fetching the discovery document means the browser is talking to the issuer directly",
+	},
+	{
+		"a token endpoint", regexp.MustCompile(`token_endpoint|/oauth/token|/oauth2/token`),
+		"redeeming a code in the browser lands the access token in JavaScript, which is the one thing this design exists to prevent",
+	},
+	{
+		"a PKCE code challenge", regexp.MustCompile(`code_challenge|code_verifier`),
+		"PKCE only exists to protect a browser-side code exchange; its presence means one is happening",
+	},
+	{
+		"an OIDC grant", regexp.MustCompile(`grant_type`),
+		"a grant type is a token-endpoint parameter, so the browser is redeeming a credential itself",
+	},
+	{
+		"an OIDC client id", regexp.MustCompile(`\bclient_id\b|\bclientId\b`),
+		"the client id is only needed to address the issuer; the server holds it now",
+	},
+	{
+		// Case-insensitive: a hardcoded issuer is at least as likely to
+		// arrive spelled `ISSUER_URL` or `oidcIssuer` as `issuer`, and the
+		// case-sensitive version of this pattern was verified to miss it.
+		"an issuer", regexp.MustCompile(`(?i)\bissuer\b|(?i)issuer_?url`),
+		"the browser has no issuer configuration at all — the server does, and it answers `who is signed in?` over this app's own API",
+	},
+	{
+		// The name-based patterns above all assume the code calls the thing
+		// what it is. A pasted URL does not, so match the endpoints and the
+		// hosted-IdP vendors by shape. Not exhaustive and not meant to be:
+		// it catches the copy-paste that skips every other pattern here.
+		"an identity provider URL", regexp.MustCompile(`(?i)https?://[^"'\s]*(auth0\.com|okta\.com|zitadel|login\.microsoftonline|accounts\.google\.com|/realms/)`),
+		"a provider URL in browser code means the browser is addressing the IdP, whatever the surrounding identifier is called",
+	},
+}
+
+// TestBrowserNeverContactsTheIdentityProvider is the headline guarantee.
+//
+// THE BROWSER NEVER TALKS TO THE IDP. Not /authorize, not discovery, not the
+// token endpoint, not a hidden iframe. It POSTs credentials to this app's own
+// API and receives an HttpOnly cookie; the server does the OIDC.
+//
+// This is a scan for ABSENCE across the whole composed browser tree, and it
+// is written that way on purpose. A regression here does not break sign-in —
+// a scaffold that grew a token-endpoint call would log users in perfectly
+// well — it silently moves the access token back into JavaScript, where any
+// XSS can read it. There is no functional test that can notice that, so the
+// static scan IS the test.
+func TestBrowserNeverContactsTheIdentityProvider(t *testing.T) {
 	t.Parallel()
 
-	// The mechanism modules, shared by both kinds. Named by destination path
-	// so a file moved between roots still satisfies this.
-	sharedModules := []string{
-		"src/lib/auth/oidc.ts",
-		"src/lib/auth/oidc-storage.ts",
-		"src/lib/auth/oidc-provider.ts",
-		"src/lib/auth/auth-screens.tsx",
-		// The mock must remain reachable: pure-mock frontend development is a
-		// supported mode, not a legacy state.
-		"src/lib/auth/session-provider.ts",
-		"src/lib/auth/provider.ts",
+	for _, kind := range browserKinds {
+		tree := authTreeFor(t, kind)
+
+		// The deleted modules must not come back. Half-restoring the old
+		// flow gives a tree two ways to authenticate, and only one of them
+		// keeps the token out of script.
+		for _, rel := range deletedBrowserOIDCModules {
+			if _, ok := tree[rel]; ok {
+				t.Errorf("%s composed %s — the browser-side OIDC flow was replaced by native sign-in (POST /auth/login + HttpOnly cookie).\n"+
+					"    Resurrecting it puts the access token back in JavaScript, which is the exact property the new design buys.", kind, rel)
+			}
+		}
+
+		// Guard against a scan that has quietly stopped scanning anything.
+		scanned := 0
+		for rel, tmplPath := range tree {
+			if !isBrowserSource(rel) {
+				continue
+			}
+			scanned++
+			src := stripCommentsKeepingStrings(renderFrontend(t, tmplPath, kind))
+			for _, contact := range idpContacts {
+				if m := contact.re.FindString(src); m != "" {
+					t.Errorf("%s: %s mentions %s (matched %q) in CODE.\n"+
+						"    %s\n"+
+						"    The browser POSTs credentials to this app's own API and gets an HttpOnly cookie; the server runs the OIDC flow.",
+						kind, rel, contact.name, m, contact.why)
+				}
+			}
+		}
+		if scanned == 0 {
+			t.Fatalf("%s: scanned NO browser sources — this guard is blind", kind)
+		}
+	}
+}
+
+// TestBothBrowserKindsShipNativeSignIn pins that each browser kind carries
+// every piece the flow needs.
+//
+// The defect this guards against is the mirror image of the one
+// frontend_routes_test.go documents: a scaffold that ships auth UI whose
+// supporting module is not emitted. Each tree is internally consistent, so
+// the gap only shows up at a user's first login.
+func TestBothBrowserKindsShipNativeSignIn(t *testing.T) {
+	t.Parallel()
+
+	requiredModules := []string{
+		// The browser half of native sign-in: the only file that talks to
+		// the API's auth endpoints.
+		"src/lib/auth/native-login.ts",
+		// What an anonymous visitor sees.
+		"src/lib/auth/route-guard.tsx",
+		// The app's auth state, and the seam types behind it. The mock must
+		// remain reachable: pure-mock frontend development is a supported
+		// mode, not a legacy state.
 		"src/lib/auth/context.tsx",
+		"src/lib/auth/provider.ts",
+		"src/lib/auth/session-provider.ts",
 	}
 
 	for _, kind := range browserKinds {
 		tree := authTreeFor(t, kind)
-		for _, rel := range sharedModules {
+		for _, rel := range requiredModules {
 			if _, ok := tree[rel]; !ok {
 				t.Errorf("%s: composed tree has no %s — the sign-in flow is incomplete in this kind", kind, rel)
 			}
@@ -102,8 +248,126 @@ func TestBothBrowserKindsShipTheWholeAuthFlow(t *testing.T) {
 	}
 }
 
-// TestBothBrowserKindsRouteTheAuthPaths pins that each kind actually SERVES
-// both URLs, in whatever way that kind expresses a route.
+// TestCredentialsGoToTheAppsOwnAPI pins the four endpoints and, more
+// importantly, the fetch option that makes them work.
+//
+// `credentials: "include"` is the assertion worth having. In the dev loop the
+// API is on its own port, so every auth call is cross-origin — and under the
+// default ("same-origin") the browser SILENTLY DROPS the Set-Cookie. Login
+// returns 200, the identity comes back, and the user stays signed out, with
+// nothing in the console to explain it. It is the single most confusing way
+// this flow can fail, and a one-word edit reintroduces it.
+func TestCredentialsGoToTheAppsOwnAPI(t *testing.T) {
+	t.Parallel()
+
+	const rel = "src/lib/auth/native-login.ts"
+
+	for _, kind := range browserKinds {
+		tree := authTreeFor(t, kind)
+		tmplPath, ok := tree[rel]
+		if !ok {
+			t.Fatalf("%s: no %s in the composed tree", kind, rel)
+		}
+		src := stripCommentsKeepingStrings(renderFrontend(t, tmplPath, kind))
+
+		// The four paths, read from the code rather than from the prose that
+		// tabulates them in the file header.
+		for _, endpoint := range []string{"/auth/login", "/auth/register", "/auth/session", "/auth/logout"} {
+			if !strings.Contains(src, `"`+endpoint+`"`) && !strings.Contains(src, endpoint+"`") {
+				t.Errorf("%s: %s never names %s — the scaffolded server (internal/app/login_broker.go) serves it, so a browser that does not call it has half a flow",
+					kind, rel, endpoint)
+			}
+		}
+
+		// Every request must be resolved against the API origin, not against
+		// the page's. They are different hosts in dev, and a bare relative
+		// path would 404 against the frontend dev server.
+		if !strings.Contains(src, "apiOrigin()") {
+			t.Errorf("%s: %s does not resolve its requests against apiOrigin() — in the dev loop the API is on its own port, so a page-relative path hits the Vite/Next dev server instead",
+				kind, rel)
+		}
+
+		// Every fetch must send and accept cookies. Counted rather than
+		// merely present: one uncredentialed call among several is the same
+		// silent-failure bug, confined to whichever endpoint it is on.
+		fetches := regexp.MustCompile(`\bfetch\(`).FindAllString(src, -1)
+		if len(fetches) == 0 {
+			t.Fatalf("%s: %s calls fetch() nowhere — either the file no longer talks to the API or this guard has gone blind:\n%s", kind, rel, src)
+		}
+		includes := regexp.MustCompile(`credentials:\s*"include"`).FindAllString(src, -1)
+		if len(includes) != len(fetches) {
+			t.Errorf("%s: %s has %d fetch() call(s) but %d `credentials: \"include\"`.\n"+
+				"    Every auth call is CROSS-ORIGIN in the dev loop, and the default (\"same-origin\") makes the browser drop the session cookie without a word:\n"+
+				"    login returns 200, the identity comes back, and the user stays signed out. The server pairs this with cors_allow_credentials.",
+				kind, rel, len(fetches), len(includes))
+		}
+	}
+}
+
+// TestTheSessionTokenIsUnreachableFromScript pins the property the whole
+// design exists for.
+//
+// The session cookie is HttpOnly, so no script can read it — that is what
+// makes the token something an XSS cannot steal. The guard is that the
+// browser half never tries to hold one itself: no persistent store, no
+// in-memory token, no Authorization header. The cookie rides along
+// automatically, so any code that reaches for a token is code that has
+// started keeping a second, script-readable credential beside the one that
+// is protected.
+func TestTheSessionTokenIsUnreachableFromScript(t *testing.T) {
+	t.Parallel()
+
+	const rel = "src/lib/auth/native-login.ts"
+
+	forbidden := []struct {
+		name string
+		re   *regexp.Regexp
+		why  string
+	}{
+		{
+			"a persistent store", regexp.MustCompile(`localStorage|sessionStorage|document\.cookie`),
+			"anything written here is readable by script, which is the exact exposure the HttpOnly cookie removes",
+		},
+		{
+			"an Authorization header", regexp.MustCompile(`(?i)authorization\s*:|Bearer `),
+			"the session cookie is attached automatically; a bearer header means the code got a token from somewhere it should not have one",
+		},
+		{
+			"a token field", regexp.MustCompile(`access_token|refresh_token|id_token`),
+			"the server keeps the tokens; the browser is only ever told WHO is signed in",
+		},
+	}
+
+	for _, kind := range browserKinds {
+		tree := authTreeFor(t, kind)
+		tmplPath, ok := tree[rel]
+		if !ok {
+			t.Fatalf("%s: no %s in the composed tree", kind, rel)
+		}
+		src := stripCommentsKeepingStrings(renderFrontend(t, tmplPath, kind))
+
+		for _, f := range forbidden {
+			if m := f.re.FindString(src); m != "" {
+				t.Errorf("%s: %s contains %s (matched %q).\n    %s", kind, rel, f.name, m, f.why)
+			}
+		}
+
+		// And the positive half: what the browser DOES get back is an
+		// identity, for rendering. If this ever disappears the file has
+		// stopped being the thing these negatives are guarding.
+		if !strings.Contains(src, "interface Identity") {
+			t.Errorf("%s: %s no longer declares an Identity — the API answers with who is signed in, never with a token, and that shape is what the rest of the app reads",
+				kind, rel)
+		}
+	}
+}
+
+// TestBothBrowserKindsRouteTheSignInPath pins that each kind actually SERVES
+// the sign-in screen, in whatever way that kind expresses a route.
+//
+// There is exactly ONE auth route now. /auth/callback belonged to the browser
+// redirect flow — the issuer sent the browser back there with a code — and
+// with the exchange moved server-side there is nothing for it to do.
 //
 // The two mechanisms are genuinely different, so this checks each on its own
 // terms rather than grepping for a shared string:
@@ -111,18 +375,18 @@ func TestBothBrowserKindsShipTheWholeAuthFlow(t *testing.T) {
 //   - Next.js App Router: a `page.tsx` at the path's directory.
 //   - Vite + TanStack Router: a `createRoute({... path: "<p>" ...})` entry in
 //     the scaffolded routes.tsx.
-func TestBothBrowserKindsRouteTheAuthPaths(t *testing.T) {
+func TestBothBrowserKindsRouteTheSignInPath(t *testing.T) {
 	t.Parallel()
+
+	const signInPath = "/auth/sign-in"
 
 	// ── Next.js: the route IS the file path. ──
 	nextTree := authTreeFor(t, "nextjs")
-	for _, route := range authRoutePaths {
-		rel := path.Join("src", "app", strings.TrimPrefix(route, "/"), "page.tsx")
-		if _, ok := nextTree[rel]; !ok {
-			t.Errorf("nextjs serves no %s: expected the App Router page %s.\n"+
-				"    A scaffolded sign-in button that navigates to a route forge does not emit ships broken.",
-				route, rel)
-		}
+	rel := path.Join("src", "app", strings.TrimPrefix(signInPath, "/"), "page.tsx")
+	if _, ok := nextTree[rel]; !ok {
+		t.Errorf("nextjs serves no %s: expected the App Router page %s.\n"+
+			"    The route guard redirects anonymous visitors there, so a scaffold that does not emit it bounces them to a 404.",
+			signInPath, rel)
 	}
 
 	// ── Vite: the route is an entry in routes.tsx. ──
@@ -133,188 +397,26 @@ func TestBothBrowserKindsRouteTheAuthPaths(t *testing.T) {
 		t.Fatalf("vite-spa composed no %s — the router entry point is gone", routesRel)
 	}
 	routes := renderFrontend(t, routesTmpl, "vite-spa")
-	for _, route := range authRoutePaths {
-		// Derived from the router's own declaration form, so a route
-		// mentioned only in a comment does not count.
-		re := regexp.MustCompile(`path:\s*"` + regexp.QuoteMeta(route) + `"`)
-		if !re.MatchString(stripComments(routes)) {
-			t.Errorf("vite-spa serves no %s: %s declares no `path: %q` route.\n"+
-				"    The Next.js scaffold serves it, so a Vite project's callback would 404 where a Next.js one works.",
-				route, routesRel, route)
-		}
+
+	// Derived from the router's own declaration form, so a route mentioned
+	// only in a comment does not count.
+	declared := regexp.MustCompile(`path:\s*"` + regexp.QuoteMeta(signInPath) + `"`)
+	if !declared.MatchString(stripComments(routes)) {
+		t.Errorf("vite-spa serves no %s: %s declares no `path: %q` route.\n"+
+			"    The Next.js scaffold serves it, so a Vite project's guard would redirect into a 404 where a Next.js one works.",
+			signInPath, routesRel, signInPath)
 	}
 
-	// A route declared but never added to the tree is not served. Both auth
-	// routes must reach addChildren.
-	for _, name := range []string{"signInRoute", "authCallbackRoute"} {
-		if !strings.Contains(routes, name) {
-			t.Errorf("vite-spa routes.tsx does not reference %s — a route that is declared but not added to the route tree is not served", name)
-		}
+	// A route declared but never added to the tree is not served.
+	if !strings.Contains(routes, "signInRoute") {
+		t.Fatalf("vite-spa routes.tsx does not reference signInRoute — a route that is declared but not added to the route tree is not served")
 	}
 	addChildren := regexp.MustCompile(`(?s)addChildren\(\[(.*?)\]`).FindStringSubmatch(routes)
 	if addChildren == nil {
-		t.Fatal("vite-spa routes.tsx has no addChildren([...]) call — cannot verify the auth routes are mounted")
+		t.Fatal("vite-spa routes.tsx has no addChildren([...]) call — cannot verify the sign-in route is mounted")
 	}
-	for _, name := range []string{"signInRoute", "authCallbackRoute"} {
-		if !strings.Contains(addChildren[1], name) {
-			t.Errorf("vite-spa: %s is declared but never passed to addChildren — the route exists in the file and not in the app", name)
-		}
-	}
-}
-
-// TestScaffoldedAuthUsesOnlyS256 pins the one PKCE property that is a silent
-// downgrade rather than a visible failure.
-//
-// Under `plain` the code challenge IS the verifier, so an attacker who can
-// observe the authorization request can redeem the code — and the flow still
-// works perfectly, which is why no functional test would catch it. RFC 7636
-// §7.2 permits plain only for clients that cannot compute SHA-256; a browser
-// with crypto.subtle has no such excuse.
-func TestScaffoldedAuthUsesOnlyS256(t *testing.T) {
-	t.Parallel()
-
-	for _, kind := range browserKinds {
-		tree := authTreeFor(t, kind)
-		tmplPath, ok := tree["src/lib/auth/oidc.ts"]
-		if !ok {
-			t.Fatalf("%s: no src/lib/auth/oidc.ts in the composed tree", kind)
-		}
-		src := renderFrontend(t, tmplPath, kind)
-
-		// The challenge method sent on the wire, read out of the assignment
-		// itself rather than from prose about it.
-		methods := regexp.MustCompile(`code_challenge_method"?,\s*"([^"]+)"`).FindAllStringSubmatch(src, -1)
-		if len(methods) == 0 {
-			t.Fatalf("%s: oidc.ts sets no code_challenge_method — either the parameter is missing (providers will reject the request) or this guard has gone blind:\n%s", kind, src)
-		}
-		for _, m := range methods {
-			if m[1] != "S256" {
-				t.Errorf("%s: oidc.ts sends code_challenge_method=%q. Only S256 is acceptable; RFC 7636 §7.2 permits plain only for clients that cannot hash.", kind, m[1])
-			}
-		}
-
-		// The digest algorithm, likewise read from the call.
-		digests := regexp.MustCompile(`subtle\.digest\(\s*"([^"]+)"`).FindAllStringSubmatch(src, -1)
-		if len(digests) == 0 {
-			t.Errorf("%s: oidc.ts never calls crypto.subtle.digest — the challenge cannot be a real hash of the verifier", kind)
-		}
-		for _, d := range digests {
-			if d[1] != "SHA-256" {
-				t.Errorf("%s: oidc.ts hashes the verifier with %q; RFC 7636 §4.2 specifies SHA-256", kind, d[1])
-			}
-		}
-
-		// Math.random must never be CALLED: it is not a CSPRNG, and a
-		// predictable verifier or state removes the point of PKCE and of the
-		// CSRF check respectively.
-		//
-		// Matched as a call, not as a substring. The file's own error text
-		// names Math.random to tell a reader why there is no fallback, and a
-		// bare substring check would flag that sentence — a guard that fires
-		// on its own documentation is one people delete.
-		if m := regexp.MustCompile(`Math\.random\s*\(`).FindString(stripComments(src)); m != "" {
-			t.Errorf("%s: oidc.ts CALLS Math.random. A code verifier or state drawn from a non-cryptographic PRNG is guessable, which defeats PKCE.", kind)
-		}
-
-		// And the CSPRNG must actually be reached.
-		if !strings.Contains(src, "getRandomValues") {
-			t.Errorf("%s: oidc.ts never calls crypto.getRandomValues — there is no cryptographic source for the verifier or state", kind)
-		}
-	}
-}
-
-// TestScaffoldedAuthKeepsTheTokenOutOfPersistentStorage pins the
-// token-storage decision at the TEMPLATE level.
-//
-// The decision itself (in-memory only) plus its tradeoff is documented in
-// oidc-storage.ts, which is the file a user reads. This test is the guard
-// that keeps the code matching the documentation: the credential-bearing
-// setters must not write to a persistent store, while the verifier and state
-// legitimately do (they must survive the redirect).
-func TestScaffoldedAuthKeepsTheTokenOutOfPersistentStorage(t *testing.T) {
-	t.Parallel()
-
-	for _, kind := range browserKinds {
-		tree := authTreeFor(t, kind)
-		tmplPath, ok := tree["src/lib/auth/oidc-storage.ts"]
-		if !ok {
-			t.Fatalf("%s: no src/lib/auth/oidc-storage.ts in the composed tree", kind)
-		}
-		src := stripComments(renderFrontend(t, tmplPath, kind))
-
-		// localStorage outlives the tab and the browser session, so it is
-		// never the right home for a bearer token in this design.
-		if strings.Contains(src, "localStorage") {
-			t.Errorf("%s: oidc-storage.ts touches localStorage. The scaffold's documented decision is in-memory only; "+
-				"localStorage survives tab close and is readable by any script on the origin.", kind)
-		}
-
-		// document.cookie set from JS cannot be HttpOnly, so a cookie written
-		// here would be script-readable AND automatically attached (inviting
-		// CSRF) — the worst of both options.
-		if regexp.MustCompile(`document\.cookie\s*=`).MatchString(src) {
-			t.Errorf("%s: oidc-storage.ts writes document.cookie. A cookie set from JavaScript cannot be HttpOnly, "+
-				"so it is script-readable and auto-attached; if you want a cookie session, the exchange belongs on a server.", kind)
-		}
-
-		// sessionStorage IS used, for the redirect round-trip values only.
-		// Assert it is present (so the flow can actually survive a redirect)
-		// and that what goes in is the verifier/state, not a token.
-		if !strings.Contains(src, "sessionStorage") {
-			t.Errorf("%s: oidc-storage.ts never touches sessionStorage — the PKCE verifier cannot survive the redirect to the provider, so no login can complete", kind)
-		}
-		for _, m := range regexp.MustCompile(`sessionStorage\.setItem\(\s*([A-Za-z_$][\w$]*)`).FindAllStringSubmatch(src, -1) {
-			switch m[1] {
-			case "VERIFIER_KEY", "STATE_KEY", "RETURN_TO_KEY":
-				// Single-use, single-login values. Expected.
-			default:
-				t.Errorf("%s: oidc-storage.ts writes %s to sessionStorage. Only the redirect round-trip values "+
-					"(verifier, state, return path) may be persisted — a token there survives a reload and is XSS-readable.", kind, m[1])
-			}
-		}
-	}
-}
-
-// TestScaffoldedAuthHardcodesNoIdentityProvider pins that the flow is
-// configured, not baked in.
-//
-// forge ships Zitadel as an opt-in dev-compose convenience; a scaffold that
-// named it in code would make every other provider a code change rather than
-// a config change.
-func TestScaffoldedAuthHardcodesNoIdentityProvider(t *testing.T) {
-	t.Parallel()
-
-	// Vendor names that would indicate a provider had been wired in rather
-	// than configured.
-	vendors := []string{
-		"logto", "auth0", "okta", "keycloak", "zitadel", "clerk",
-		"cognito", "firebaseapp", "onelogin", "accounts.google.com",
-	}
-
-	for _, kind := range browserKinds {
-		for _, rel := range []string{
-			"src/lib/auth/oidc.ts",
-			"src/lib/auth/oidc-storage.ts",
-			"src/lib/auth/oidc-provider.ts",
-			"src/lib/auth/auth-screens.tsx",
-		} {
-			tree := authTreeFor(t, kind)
-			tmplPath, ok := tree[rel]
-			if !ok {
-				t.Fatalf("%s: no %s in the composed tree", kind, rel)
-			}
-			// Comments dropped: naming providers in prose ("works with Auth0,
-			// Keycloak, ...") is documentation, and useful. What matters is
-			// that no vendor appears in CODE.
-			code := strings.ToLower(stripCommentsKeepingStrings(renderFrontend(t, tmplPath, kind)))
-			for _, vendor := range vendors {
-				if strings.Contains(code, vendor) {
-					t.Errorf("%s/%s names the identity provider %q in code. Endpoints must come from configuration "+
-						"(issuer + client id) or OIDC discovery so any compliant provider works with no code change.",
-						kind, rel, vendor)
-				}
-			}
-		}
+	if !strings.Contains(addChildren[1], "signInRoute") {
+		t.Error("vite-spa: signInRoute is declared but never passed to addChildren — the route exists in the file and not in the app")
 	}
 }
 
@@ -324,9 +426,9 @@ func TestScaffoldedAuthHardcodesNoIdentityProvider(t *testing.T) {
 // The package's own stripComments cannot be used here: it is documented as
 // naive about "//" inside a string, which is harmless for the route guard it
 // was written for (an absolute URL is not a same-origin route) but fatal for
-// THIS guard — it truncates `"https://tenant.auth0.com/oidc"` at the "//",
-// deleting the very vendor name being looked for. Verified: with
-// stripComments, a hardcoded issuer URL passed this test.
+// THESE guards — it truncates `"https://tenant.auth0.com/oidc"` at the "//",
+// deleting the very thing being looked for. Verified: with stripComments, a
+// hardcoded issuer URL passed this test.
 func stripCommentsKeepingStrings(src string) string {
 	var out strings.Builder
 	var quote byte // 0 when not inside a string
@@ -369,26 +471,30 @@ func stripCommentsKeepingStrings(src string) string {
 	return out.String()
 }
 
-// TestReactNativeShipsNoBrowserOIDC pins the deliberate omission.
+// TestReactNativeShipsNoBrowserSignIn pins the deliberate omission.
 //
-// The flow implemented here is a BROWSER redirect flow: it calls
-// window.location.assign, reads window.location.search, and uses
-// sessionStorage. None of those exist under React Native, where the
-// equivalent needs expo-auth-session and a native redirect scheme. Shipping
-// these files into an RN tree would produce code that typechecks (RN's
-// tsconfig includes the DOM lib) and crashes at runtime.
-func TestReactNativeShipsNoBrowserOIDC(t *testing.T) {
+// Native sign-in is a COOKIE flow: the server's answer is a Set-Cookie the
+// browser stores and re-attaches on its own. React Native does not share that
+// model — there is no cookie jar attached to fetch by default and no
+// same-origin to be same as — so shipping native-login.ts into an RN tree
+// would produce code that typechecks (RN's tsconfig includes the DOM lib) and
+// silently never authenticates: every call returns 200 and the next one is
+// anonymous.
+//
+// The route guard is excluded for the same reason plus a second one: it is
+// written against a web router's pathname.
+func TestReactNativeShipsNoBrowserSignIn(t *testing.T) {
 	t.Parallel()
 
 	tree := authTreeFor(t, "react-native")
-	for _, rel := range []string{
-		"src/lib/auth/oidc.ts",
-		"src/lib/auth/oidc-storage.ts",
-		"src/lib/auth/oidc-provider.ts",
-		"src/lib/auth/auth-screens.tsx",
-	} {
+
+	excluded := append([]string{
+		"src/lib/auth/native-login.ts",
+		"src/lib/auth/route-guard.tsx",
+	}, deletedBrowserOIDCModules...)
+	for _, rel := range excluded {
 		if _, ok := tree[rel]; ok {
-			t.Errorf("react-native composed %s — the browser redirect flow (window.location, sessionStorage) does not exist on this platform and would crash at runtime", rel)
+			t.Errorf("react-native composed %s — it is written against the browser's cookie and routing model, neither of which exists on this platform", rel)
 		}
 	}
 
@@ -405,72 +511,73 @@ func TestReactNativeShipsNoBrowserOIDC(t *testing.T) {
 	}
 }
 
-// TestAuthContextSelectsProviderPerPlatform pins the mock-vs-real switch.
+// TestAuthContextReadsIdentityFromTheServer pins the shape of the app's auth
+// state, per platform.
 //
-// The scaffolded context must reach the SELECTOR (which decides from
-// configuration) on browser kinds, and must NOT reach it on React Native,
-// where the module it lives in is not emitted — a stale import there is a
+// On the web there is one question — "who is signed in?" — and one way to
+// answer it: ask this app's own API, because the cookie that holds the answer
+// is unreadable to script. The context therefore exposes an IDENTITY and no
+// token. A `getToken` here would be a promise the design cannot keep: the
+// only honest implementation returns null, and every caller that believed it
+// would ship broken.
+//
+// React Native keeps its own branch (the mock), and must NOT reach for
+// native-login.ts — a stale import of a module this tree does not emit is a
 // build failure in a generated project.
-func TestAuthContextSelectsProviderPerPlatform(t *testing.T) {
+func TestAuthContextReadsIdentityFromTheServer(t *testing.T) {
 	t.Parallel()
 
-	for _, kind := range append(browserKinds, "react-native") {
+	const rel = "src/lib/auth/context.tsx"
+
+	for _, kind := range append(append([]string{}, browserKinds...), "react-native") {
 		tree := authTreeFor(t, kind)
-		tmplPath, ok := tree["src/lib/auth/context.tsx"]
+		tmplPath, ok := tree[rel]
 		if !ok {
-			t.Fatalf("%s: no src/lib/auth/context.tsx in the composed tree", kind)
+			t.Fatalf("%s: no %s in the composed tree", kind, rel)
 		}
 		src := renderFrontend(t, tmplPath, kind)
-		importsSelector := strings.Contains(src, `from "./oidc-provider"`)
+		code := stripCommentsKeepingStrings(src)
+
+		importsNativeLogin := strings.Contains(code, `from "./native-login"`)
+
+		// The context value is the same on every platform: what a component
+		// reads must not depend on which tree it was scaffolded into.
+		for _, member := range []string{"identity", "isAuthenticated", "isLoading", "refresh", "logout"} {
+			if !strings.Contains(code, member) {
+				t.Errorf("%s %s does not expose %q — the context value is the app's whole auth surface, and it is the same on every platform so a component can be moved between them",
+					kind, rel, member)
+			}
+		}
+
+		// No token, anywhere, on any platform. The web cannot read the
+		// HttpOnly cookie, and React Native ships a mock whose token is a
+		// fixture no server accepts — so a getToken on this context would be
+		// a null-returning method that callers build on.
+		if m := regexp.MustCompile(`\bgetToken\b`).FindString(code); m != "" {
+			t.Errorf("%s %s exposes getToken. The session cookie is HttpOnly, so there is no token to return — the only implementation is one that answers null, and every caller that trusts it is broken by construction.",
+				kind, rel)
+		}
 
 		if kind == "react-native" {
-			if importsSelector {
-				t.Errorf("react-native context.tsx imports ./oidc-provider, which is not emitted for this platform — the generated project will not build")
+			if importsNativeLogin {
+				t.Errorf("react-native %s imports ./native-login, which is not emitted for this platform — the generated project will not build", rel)
 			}
-			if !strings.Contains(src, "createSessionAuthProvider") {
-				t.Errorf("react-native context.tsx must fall back to the mock provider — it is the only implementation this tree ships")
+			if !strings.Contains(code, "createSessionAuthProvider") {
+				t.Errorf("react-native %s must fall back to the mock provider — it is the only implementation this tree ships", rel)
 			}
 			continue
 		}
 
-		if !importsSelector {
-			t.Errorf("%s context.tsx does not import from ./oidc-provider, so the real provider can never be selected no matter how the app is configured", kind)
+		if !importsNativeLogin {
+			t.Errorf("%s %s does not import ./native-login, so it has no way to ask the server who is signed in", kind, rel)
 		}
-		if !strings.Contains(src, "selectAuthProvider") {
-			t.Errorf("%s context.tsx must build its default from selectAuthProvider() so the choice is made by configuration, not by a hardcoded provider", kind)
+		if !strings.Contains(code, "fetchIdentity") {
+			t.Errorf("%s %s must read its identity from fetchIdentity() (GET /auth/session). The cookie is HttpOnly, so the server is the ONLY thing that can answer the question at all.",
+				kind, rel)
 		}
-	}
-}
-
-// TestAuthScreensAreSharedNotForked pins that the two kinds render the SAME
-// screens.
-//
-// The failure this prevents is drift: two copies of a sign-in screen, one per
-// framework, where a fix to the error handling reaches one scaffold and not
-// the other. Only the `"use client"` prologue may differ, which is the
-// project's established mechanism for a single-line platform delta.
-func TestAuthScreensAreSharedNotForked(t *testing.T) {
-	t.Parallel()
-
-	rendered := make(map[string]string, len(browserKinds))
-	for _, kind := range browserKinds {
-		tree := authTreeFor(t, kind)
-		tmplPath, ok := tree["src/lib/auth/auth-screens.tsx"]
-		if !ok {
-			t.Fatalf("%s: no src/lib/auth/auth-screens.tsx in the composed tree", kind)
+		if strings.Contains(code, "createSessionAuthProvider") {
+			t.Errorf("%s %s falls back to the mock provider. On the web the real answer is one cheap same-origin request away, and a fixture identity here renders a signed-in UI over a server that will 401 every RPC.",
+				kind, rel)
 		}
-		// Both kinds must resolve to the SAME template file, not two copies.
-		if want := path.Join("shared-web", "src/lib/auth/auth-screens.tsx.tmpl"); tmplPath != want {
-			t.Errorf("%s resolves auth-screens.tsx to %s, not the shared %s — a per-kind copy will drift", kind, tmplPath, want)
-		}
-		rendered[kind] = renderFrontend(t, tmplPath, kind)
-	}
-
-	next := strings.TrimPrefix(rendered["nextjs"], "\"use client\";\n\n")
-	if next == rendered["nextjs"] {
-		t.Error("the Next.js render of auth-screens.tsx carries no \"use client\" prologue; it uses hooks and state, so the App Router will reject it as a server component")
-	}
-	if next != rendered["vite-spa"] {
-		t.Error("the two browser kinds' auth screens differ by more than the \"use client\" prologue — they must be one shared implementation, or a fix will reach only one scaffold")
 	}
 }

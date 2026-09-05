@@ -4,10 +4,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 // `vitest/config` re-exports vite's defineConfig with the `test` block typed.
 // Importing it from "vite" instead type-errors on `test`, and this file is in
-// the tsconfig `include` list. loadEnv itself carries no `test` typing, so it
-// comes from plain "vite".
+// the tsconfig `include` list.
 import { defineConfig } from "vitest/config";
-import { loadEnv } from "vite";
 
 import { devLogPlugin } from "./src/lib/devlog-plugin";
 
@@ -47,13 +45,16 @@ const webRuntimePeers: string[] = Object.keys(
 // pipeline first-party (no PostCSS config needed). The path aliases mirror
 // the tsconfig "paths" entries so editor and runtime resolution agree.
 //
-// Wrapped in the function form (rather than a plain object) so `loadEnv`
-// below can read IDP_UPSTREAM_ORIGIN from .env.local before `server.proxy`
-// is built — Vite does not populate process.env from dotenv files for its
-// own config script the way it does for import.meta.env in app code.
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, __dirname, "");
-
+// There is no dev proxy to the identity provider here. This config used to
+// read IDP_UPSTREAM_ORIGIN through `loadEnv` and forward a path to the IdP,
+// because the browser had to reach the issuer's discovery and authorize
+// endpoints same-origin. It does not any more: sign-in is native, so the
+// browser talks only to this app's own API and the SERVER talks to the
+// issuer. Nothing in the dev loop needs the IdP reachable from a page.
+//
+// Still the function form rather than a plain object, so a `mode`-dependent
+// setting can be added without restructuring the file.
+export default defineConfig(() => {
   return {
     // devLogPlugin is dev-only (`apply: "serve"`): it receives the browser
     // console lines that installDevLogging() posts in src/main.tsx and prints

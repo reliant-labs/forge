@@ -35,10 +35,16 @@ func pinDevBuild(t *testing.T, dev bool, root string) {
 	buildinfo.DevForgeRoot = ""
 	buildinfo.SetDevBuild(dev)
 	buildinfo.SetDiscoveredForgeRoot(root)
+	// Pin CI off too. These tests assert the MAINTAINER's dev loop, and this
+	// suite itself runs on CI — without this the ambient CI=true would
+	// suppress the very bridge they exist to check, so they would pass
+	// locally and fail on a runner for a reason unrelated to their subject.
+	buildinfo.SetCI(false)
 	t.Cleanup(func() {
 		buildinfo.DevForgeRoot = stamped
 		buildinfo.ClearDevBuild()
 		buildinfo.ClearDiscoveredForgeRoot()
+		buildinfo.ClearCI()
 	})
 }
 
@@ -77,103 +83,6 @@ func readDeps(t *testing.T, path string) map[string]string {
 		t.Fatalf("manifest is not valid JSON after reconcile: %v\n%s", err, raw)
 	}
 	return doc.Dependencies
-}
-
-func TestEnsureWebRuntimeDependency_DevBuildWritesFileSpec(t *testing.T) {
-	// Both trees under one root, so the relative path never has to climb
-	// above the home directory.
-	base := t.TempDir()
-	forgeRoot := fakeForgeCheckout(t, filepath.Join(base, "forge"))
-	pinDevBuild(t, true, forgeRoot)
-
-	projectDir := filepath.Join(base, "app")
-	manifest := writeFrontendManifest(t, projectDir, "web", "\n    \"react\": \"^19.1.0\"")
-
-	EnsureWebRuntimeDependency(projectDir, filepath.Join("frontends", "web"), "web")
-
-	got := readDeps(t, manifest)[WebRuntimePackage]
-	if want := "file:../../../forge/web-runtime"; got != want {
-		t.Errorf("specifier = %q, want %q", got, want)
-	}
-
-	// The resolved path must actually be the package directory.
-	resolved := filepath.Join(projectDir, "frontends", "web", strings.TrimPrefix(got, "file:"))
-	if _, err := os.Stat(filepath.Join(resolved, "package.json")); err != nil {
-		t.Errorf("specifier does not resolve to the package: %v", err)
-	}
-}
-
-// TestWebRuntimeFileSpec is the path-hygiene gate. The manifest is a
-// COMMITTED file, so no shape of checkout may put an absolute path, a home
-// directory or a username into it.
-func TestWebRuntimeFileSpec(t *testing.T) {
-	sep := string(filepath.Separator)
-	home := filepath.Join(sep, "Users", "someone")
-	abs := func(parts ...string) string { return filepath.Join(append([]string{sep}, parts...)...) }
-
-	tests := []struct {
-		name   string
-		fe     string
-		target string
-		home   string
-		want   string
-	}{
-		{
-			name:   "siblings under home use a plain relative path",
-			fe:     filepath.Join(home, "src", "app", "frontends", "web"),
-			target: filepath.Join(home, "src", "forge", "web-runtime"),
-			home:   home,
-			want:   "file:../../../forge/web-runtime",
-		},
-		{
-			name:   "project outside home falls back to the ~ form",
-			fe:     abs("tmp", "throwaway", "frontends", "web"),
-			target: filepath.Join(home, "src", "forge", "web-runtime"),
-			home:   home,
-			want:   "file:~/src/forge/web-runtime",
-		},
-		{
-			name:   "neither path under home keeps the relative form",
-			fe:     abs("srv", "app", "frontends", "web"),
-			target: abs("opt", "forge", "web-runtime"),
-			home:   home,
-			want:   "file:../../../../opt/forge/web-runtime",
-		},
-		{
-			name:   "sibling of home is still a descent through the username",
-			fe:     abs("Users", "other", "app", "frontends", "web"),
-			target: filepath.Join(home, "forge", "web-runtime"),
-			home:   home,
-			want:   "file:~/forge/web-runtime",
-		},
-		{
-			name:   "no home directory to protect keeps the relative form",
-			fe:     abs("srv", "app", "frontends", "web"),
-			target: filepath.Join(home, "forge", "web-runtime"),
-			home:   "",
-			want:   "file:../../../../Users/someone/forge/web-runtime",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := webRuntimeFileSpec(tc.fe, tc.target, tc.home)
-			if got != tc.want {
-				t.Fatalf("spec = %q, want %q", got, tc.want)
-			}
-			if tc.home == "" {
-				return
-			}
-			if strings.Contains(got, tc.home) {
-				t.Errorf("spec %q embeds the home directory", got)
-			}
-			if user := filepath.Base(tc.home); strings.Contains(got, user) {
-				t.Errorf("spec %q embeds the username %q", got, user)
-			}
-			if strings.HasPrefix(got, "file:/") {
-				t.Errorf("spec %q is an absolute path", got)
-			}
-		})
-	}
 }
 
 // TestEnsureWebRuntimeDependency_ManifestCarriesNoHomePath is the same gate at
@@ -221,20 +130,6 @@ func TestEnsureWebRuntimeDependency_ReleaseBuildWritesAVersionRange(t *testing.T
 	}
 }
 
-func TestEnsureWebRuntimeDependency_UndiscoverableRootKeepsAnExistingBridge(t *testing.T) {
-	pinDevBuild(t, true, "")
-
-	projectDir := filepath.Join(t.TempDir(), "app")
-	const existing = "file:../../../forge/web-runtime"
-	manifest := writeFrontendManifest(t, projectDir, "web", "\n    \""+WebRuntimePackage+"\": \""+existing+"\"")
-
-	EnsureWebRuntimeDependency(projectDir, filepath.Join("frontends", "web"), "web")
-
-	if got := readDeps(t, manifest)[WebRuntimePackage]; got != existing {
-		t.Errorf("a dev build that cannot find its own source rewrote the bridge: %q", got)
-	}
-}
-
 func TestEnsureWebRuntimeDependency_IdempotentAndFormatPreserving(t *testing.T) {
 	base := t.TempDir()
 	forgeRoot := fakeForgeCheckout(t, filepath.Join(base, "forge"))
@@ -268,6 +163,8 @@ func TestEnsureWebRuntimeDependency_IdempotentAndFormatPreserving(t *testing.T) 
 	}
 }
 
+// TestEnsureWebRuntimeDependency_CorrectsAStalePath — a dev build normalises a
+// manifest an older forge bridged in place, back to the committed range.
 func TestEnsureWebRuntimeDependency_CorrectsAStalePath(t *testing.T) {
 	base := t.TempDir()
 	forgeRoot := fakeForgeCheckout(t, filepath.Join(base, "forge"))
@@ -279,7 +176,7 @@ func TestEnsureWebRuntimeDependency_CorrectsAStalePath(t *testing.T) {
 
 	EnsureWebRuntimeDependency(projectDir, filepath.Join("frontends", "web"), "web")
 
-	if got := readDeps(t, manifest)[WebRuntimePackage]; got != "file:../../../forge/web-runtime" {
+	if got := readDeps(t, manifest)[WebRuntimePackage]; got != webRuntimePublishedRange {
 		t.Errorf("stale path not corrected: %q", got)
 	}
 }
@@ -294,7 +191,7 @@ func TestEnsureWebRuntimeDependency_EmptyDependenciesObject(t *testing.T) {
 
 	EnsureWebRuntimeDependency(projectDir, filepath.Join("frontends", "web"), "web")
 
-	if got := readDeps(t, manifest)[WebRuntimePackage]; got != "file:../../../forge/web-runtime" {
+	if got := readDeps(t, manifest)[WebRuntimePackage]; got != webRuntimePublishedRange {
 		t.Errorf("specifier = %q", got)
 	}
 }

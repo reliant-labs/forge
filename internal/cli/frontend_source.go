@@ -87,7 +87,7 @@ func resolveFrontendSources(ctx context.Context, projectDir string, cfg *config.
 		if err != nil {
 			return fmt.Errorf("frontend %q: %w", fe.Name, err)
 		}
-		fe.Path = res.Dir
+		*fe = fe.WithDir(res.Dir)
 	}
 	return nil
 }

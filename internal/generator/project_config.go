@@ -66,17 +66,16 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 
 	if g.FrontendName != "" {
 		cfg.Frontends = []config.FrontendConfig{
-			{
+			config.FrontendConfig{
 				Name: g.FrontendName,
 				Type: "nextjs",
-				Path: fmt.Sprintf("frontends/%s", g.FrontendName),
 				// g.FrontendPort is 0 for a fresh scaffold (ephemeral): with
 				// FrontendConfig.Port omitempty this writes NO `port:` line, so
 				// `forge run`/`up` allocate a free port at launch and report it
 				// — two dev stacks never fight for the frontend port. An
 				// explicit override (>0) is serialized verbatim.
 				Port: g.FrontendPort,
-			},
+			}.WithDir(fmt.Sprintf("frontends/%s", g.FrontendName)),
 		}
 	}
 
@@ -421,9 +420,8 @@ func AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, 
 		Name: frontendName,
 		Type: feType,
 		Kind: kind,
-		Path: fmt.Sprintf("frontends/%s", frontendName),
 		Port: port,
-	}
+	}.WithDir(fmt.Sprintf("frontends/%s", frontendName))
 	return appendToProjectConfigSequence(configPath, "frontends", entry)
 }
 

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
 )
 
 // TestE2EScaffoldFrontendRuntime is the gate on how a generated frontend
@@ -65,28 +67,39 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 		t.Errorf("frontend still carries an emitted src/lib/runtime directory (stat err = %v)", err)
 	}
 
-	// ── package.json declares it, by a path that names nobody. ──
-	linkPath := filepath.Join(webDir, "node_modules", "@reliantlabs", "forge-web-runtime")
+	// ── The TRACKED manifest declares the published range, never a path. ──
+	//
+	// This used to assert the opposite — that a dev build rewrote the
+	// specifier to `file:<path>` inside frontends/<name>/package.json. That
+	// mechanism was deliberately retired: package.json is a TRACKED file, so
+	// rewriting it left every maintainer permanently dirty and made it easy
+	// to commit a path that resolves only on one machine. The dev bridge now
+	// lives in a gitignored npm workspace root above the frontends
+	// (<project>/package.json + <project>/.forge-link/), exactly mirroring
+	// how a gitignored go.work bridges Go without touching go.mod. See
+	// internal/generator/frontend_webruntime_devlink.go.
+	//
+	// So the invariant is now the REVERSE of the old one: a path specifier
+	// here is the defect.
+	// npm HOISTS the workspace member to the workspace root's node_modules,
+	// so the link lands at <project>/node_modules, not under frontends/web/.
+	// Node resolution walks up from the frontend and finds it there. Check
+	// both, because which one npm picks is npm's business — what matters is
+	// that a link (not a registry copy) is reachable from the frontend.
+	linkCandidates := []string{
+		filepath.Join(projectDir, "node_modules", "@reliantlabs", "forge-web-runtime"),
+		filepath.Join(webDir, "node_modules", "@reliantlabs", "forge-web-runtime"),
+	}
 	pkgJSON := readFileE2E(t, filepath.Join(webDir, "package.json"))
 	spec := webRuntimeSpecE2E(t, pkgJSON)
-	if !strings.HasPrefix(spec, "file:") {
-		t.Fatalf("dev forge did not bridge the runtime package; specifier = %q", spec)
+	if strings.HasPrefix(spec, "file:") || strings.HasPrefix(spec, "link:") {
+		t.Fatalf("tracked frontend manifest carries a local path specifier %q; "+
+			"the dev bridge belongs in the gitignored workspace root, not in a tracked file", spec)
+	}
+	if !strings.HasPrefix(spec, "^") {
+		t.Fatalf("frontend manifest should declare the published semver range; specifier = %q", spec)
 	}
 	assertNoHomePathE2E(t, filepath.Join(webDir, "package.json"))
-	// The declared path has to resolve to the package on disk.
-	rel := strings.TrimPrefix(spec, "file:")
-	if strings.HasPrefix(rel, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatalf("home directory: %v", err)
-		}
-		rel = filepath.Join(home, strings.TrimPrefix(rel, "~/"))
-	} else {
-		rel = filepath.Join(webDir, rel)
-	}
-	if _, err := os.Stat(filepath.Join(rel, "package.json")); err != nil {
-		t.Errorf("declared specifier %q does not resolve to the package: %v", spec, err)
-	}
 
 	// ── Tailwind is told to scan the package. ──
 	globalsCSS := readFileE2E(t, filepath.Join(webDir, "src", "app", "globals.css"))
@@ -105,7 +118,12 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	//    boundary + toast host), feeds them the app-owned auth + toast
 	//    wiring, and inits client telemetry. ──
 	providersTSX := readFileE2E(t, filepath.Join(webDir, "src", "app", "providers.tsx"))
-	if !strings.Contains(providersTSX, "RuntimeShell auth={auth}") {
+	// The prop must be FED, but the variable it is fed from is the template's
+	// business: the scaffold adapts its own auth context into the runtime's
+	// shape and passes it as `runtimeAuth`. Matching the whole literal
+	// `auth={auth}` pinned an identifier name rather than the wiring, so a
+	// rename broke the test with nothing regressing.
+	if !strings.Contains(providersTSX, "<RuntimeShell auth={") {
 		t.Errorf("providers.tsx does not hand RuntimeShell the app's auth state:\n%s", providersTSX)
 	}
 	if !strings.Contains(providersTSX, "ToastNotification") {
@@ -121,6 +139,17 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 		return
 	}
 
+	// The dev bridge is a MAINTAINER's artifact and is deliberately NOT
+	// written under CI (EnsureDevWebRuntimeLink returns early there): bridging
+	// in CI added web-runtime's own node_modules as a second resolution root
+	// and broke the scaffold's typecheck with two copies of @connectrpc/connect.
+	// So on CI the correct outcome is no link at all and a plain registry
+	// install of the published range — which is also the shape a user gets,
+	// and the thing the npm build gate below actually needs to prove.
+	//
+	// Asserting the link unconditionally therefore tested for a state CI is
+	// designed not to produce. Keep the assertion where it means something.
+	//
 	// The dependency is DECLARED, so npm creates the link itself and keeps
 	// it across repeat installs — the precise failure a bare symlink into
 	// node_modules could not survive.
@@ -132,8 +161,19 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		runCmdTimeout(t, webDir, 5*time.Minute,
 			"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
-		if _, err := os.Readlink(linkPath); err != nil {
-			t.Fatalf("npm install #%d left no link at %s: %v", i, linkPath, err)
+		if buildinfo.IsCI() {
+			continue // no dev bridge under CI, by design — see above
+		}
+		linked := false
+		for _, candidate := range linkCandidates {
+			if _, err := os.Readlink(candidate); err == nil {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			t.Fatalf("npm install #%d left no link to the runtime package; looked in %v",
+				i, linkCandidates)
 		}
 	}
 	// Regenerating is idempotent — it neither duplicates nor disturbs the entry.
@@ -160,7 +200,12 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	// resolvable, link-stable across installs, idempotent under regenerate);
 	// what is left to prove is how the toolchain CONSUMES a linked package,
 	// and the copy is the faithful subject for that.
-	shadowed := materializeShadowedRuntimeE2E(t, dir, rel)
+	// The package source is this repo's own web-runtime/. It used to be read
+	// back out of the `file:` specifier forge wrote into the frontend
+	// manifest; now that the tracked manifest carries only the published
+	// range, take it from the checkout directly.
+	runtimeSrc := filepath.Join(findRepoRoot(t), "web-runtime")
+	shadowed := materializeShadowedRuntimeE2E(t, dir, runtimeSrc)
 	setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "file:"+shadowed)
 	runCmdTimeout(t, webDir, 5*time.Minute,
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")

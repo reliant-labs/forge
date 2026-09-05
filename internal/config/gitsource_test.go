@@ -39,8 +39,8 @@ func TestLoadProject_FrontendGitSource_Accepted(t *testing.T) {
 	if fe.Source.Subdir != "web" {
 		t.Errorf("source.subdir = %q", fe.Source.Subdir)
 	}
-	if fe.Path != "" {
-		t.Errorf("path = %q, want empty — a source-backed frontend has no directory in this repo", fe.Path)
+	if fe.DeclaredDir() != "" {
+		t.Errorf("path = %q, want empty — a source-backed frontend has no directory in this repo", fe.DeclaredDir())
 	}
 }
 
@@ -110,10 +110,10 @@ func TestLoadProject_FrontendPathOnly_Unchanged(t *testing.T) {
 	if fe.Source != nil {
 		t.Errorf("source = %+v, want nil", fe.Source)
 	}
-	if fe.Path != "frontends/web" {
-		t.Errorf("path = %q, want frontends/web", fe.Path)
+	if fe.DeclaredDir() != "frontends/web" {
+		t.Errorf("path = %q, want frontends/web", fe.DeclaredDir())
 	}
-	if got := fe.EffectivePath(); got != "frontends/web" {
-		t.Errorf("EffectivePath() = %q, want frontends/web", got)
+	if got, ok := fe.Dir(t.TempDir()); !ok || got != "frontends/web" {
+		t.Errorf("Dir() = (%q, %v), want frontends/web", got, ok)
 	}
 }

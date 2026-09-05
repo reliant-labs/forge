@@ -626,6 +626,24 @@ type PreflightOpts struct {
 	// (a SecretGetter against the live target). Empty => no declared prereqs.
 	RequiredSecrets []RequiredSecret
 
+	// RequiredSecretContexts are the kubectl contexts in which the declared
+	// prerequisites must ALL exist. An environment can deploy one render to
+	// several clusters, and a workload scheduled onto the secondary needs its
+	// Secret THERE — checking only the primary passes a deploy that then dies
+	// at rollout with CreateContainerConfigError, which is the same class of
+	// late, opaque failure this preflight exists to prevent.
+	//
+	// Unlike the manifest-driven secretKeyRef check, this one is NOT gated to
+	// remote clusters. That gate exists because forge applies its own projected
+	// Secrets moments after the preflight, so checking them locally would
+	// false-fail the inner loop. A forge.ExternalSecret is BY DEFINITION one
+	// forge does not create — the provisioning is out-of-band — so the
+	// rationale does not apply, and skipping it locally removed the check
+	// exactly where the local dev loop needed it.
+	//
+	// Empty falls back to Context, preserving single-cluster behaviour.
+	RequiredSecretContexts []string
+
 	// SecretValues, when set, resolves a Secret's full .data value bytes
 	// (base64-decoded) for the cross-secret BYTE-MATCH check: ExternalSecrets
 	// sharing a `value_group` must carry IDENTICAL bytes under their keys. A
@@ -938,8 +956,8 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// its OWN declared namespace (often NOT opts.Namespace). One GetSecretKeys
 	// per declared Secret; a missing key/Secret BLOCKS. Verified only against a
 	// live target (a SecretGetter + a context), like the secretKeyRef check.
-	if opts.Secrets != nil && hasContext && len(opts.RequiredSecrets) > 0 {
-		checkRequiredSecrets(ctx, opts, &wg, sink)
+	if opts.Secrets != nil && len(opts.RequiredSecrets) > 0 && len(requiredSecretContexts(opts)) > 0 {
+		checkRequiredSecrets(ctx, opts, refs, &wg, sink)
 	}
 
 	// Cross-secret BYTE-MATCH — for each value_group, read every member's live
@@ -1090,31 +1108,100 @@ func checkServedKinds(ctx context.Context, opts PreflightOpts, wg *sync.WaitGrou
 // (often NOT opts.Namespace). One GetSecretKeys per declared Secret; a missing
 // key/Secret BLOCKS via MissingRequiredSecretKeys. Only called when a
 // SecretGetter and a target context are set and prerequisites are declared.
-func checkRequiredSecrets(ctx context.Context, opts PreflightOpts, wg *sync.WaitGroup, sink preflightSink) {
-	for _, rs := range opts.RequiredSecrets {
-		rs := rs
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			present, exists, err := opts.Secrets.GetSecretKeys(ctx, opts.Context, rs.Namespace, rs.Name)
-			if err != nil {
-				sink.recordErr(fmt.Errorf("preflight: read required Secret %s/%s: %w", rs.Namespace, rs.Name, err))
-				return
-			}
-			want := map[string]struct{}{}
-			for _, k := range rs.Keys {
+// requiredSecretKeys is the key set a declared prerequisite must carry: the
+// keys it DECLARES, unioned with the keys the rendered manifests actually
+// reference from it (in the deploy namespace).
+//
+// The declared list is hand-maintained and drifts. A workload that starts
+// reading a new key is a change to what the Secret must contain, but nothing
+// makes the author also add it to the ExternalSecret's `keys` — so the
+// preflight passed on a Secret that was, for the workload's purposes,
+// incomplete, and the pod failed at rollout with CreateContainerConfigError
+// naming a key the preflight had never been told to look for. Deriving the
+// requirement from the reference removes the second place to keep in sync.
+//
+// A whole-Secret reference (key "") asserts existence only and adds no key.
+func requiredSecretKeys(rs RequiredSecret, refs ManifestRefs, deployNS string) []string {
+	want := map[string]struct{}{}
+	for _, k := range rs.Keys {
+		want[k] = struct{}{}
+	}
+	// Manifest references are resolved in the pod's own namespace, so only
+	// fold them in when the prerequisite lives there.
+	if rs.Namespace == deployNS {
+		for k := range refs.Secrets[rs.Name] {
+			if k != "" {
 				want[k] = struct{}{}
 			}
-			missing := missingSecretKeys(want, present, exists)
-			if len(missing) == 0 {
-				return
-			}
-			sort.Strings(missing)
-			sink.mu.Lock()
-			sink.result.MissingRequiredSecretKeys[rs.Namespace+"/"+rs.Name] = missing
-			sink.mu.Unlock()
-		}()
+		}
 	}
+	out := make([]string, 0, len(want))
+	for k := range want {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func checkRequiredSecrets(ctx context.Context, opts PreflightOpts, refs ManifestRefs, wg *sync.WaitGroup, sink preflightSink) {
+	contexts := requiredSecretContexts(opts)
+	multi := len(contexts) > 1
+	for _, rs := range opts.RequiredSecrets {
+		for _, kctx := range contexts {
+			rs, kctx := rs, kctx
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				present, exists, err := opts.Secrets.GetSecretKeys(ctx, kctx, rs.Namespace, rs.Name)
+				if err != nil {
+					sink.recordErr(fmt.Errorf("preflight: read required Secret %s/%s in %s: %w", rs.Namespace, rs.Name, kctx, err))
+					return
+				}
+				want := map[string]struct{}{}
+				for _, k := range requiredSecretKeys(rs, refs, opts.Namespace) {
+					want[k] = struct{}{}
+				}
+				missing := missingSecretKeys(want, present, exists)
+				if len(missing) == 0 {
+					return
+				}
+				sort.Strings(missing)
+				// The cluster qualifies the key ONLY when more than one is
+				// checked: naming it is what makes a multi-cluster miss
+				// actionable, and omitting it keeps the single-cluster message
+				// (by far the common case) unchanged.
+				key := rs.Namespace + "/" + rs.Name
+				if multi {
+					key = kctx + "/" + key
+				}
+				sink.mu.Lock()
+				sink.result.MissingRequiredSecretKeys[key] = missing
+				sink.mu.Unlock()
+			}()
+		}
+	}
+}
+
+// requiredSecretContexts resolves the clusters the declared prerequisites are
+// verified in, falling back to the single deploy target.
+func requiredSecretContexts(opts PreflightOpts) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, c := range opts.RequiredSecretContexts {
+		if c = strings.TrimSpace(c); c != "" {
+			if _, dup := seen[c]; !dup {
+				seen[c] = struct{}{}
+				out = append(out, c)
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if c := strings.TrimSpace(opts.Context); c != "" {
+		return []string{c}
+	}
+	return nil
 }
 
 // checkByteMatchGroupsAsync runs the cross-secret BYTE-MATCH check on its own

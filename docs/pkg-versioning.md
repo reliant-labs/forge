@@ -12,18 +12,23 @@ released. The implementation lives in:
 - `internal/cli/dev_pkg_replace.go` — dev-mode `.forge-pkg` vendor sync
 - `internal/cli/doctor_pkgpin.go` — `forge doctor` "stuck on dev path" check
 - `internal/buildinfo` + `cmd/forge/main.go` — the embedded pkg version
-- `scripts/release-pkg.sh` / `task release:pkg` — tagging discipline
+- `scripts/release-forge.sh` / `task release:forge` — the full release
+  (both tags at one commit); `scripts/release-pkg.sh` / `task release:pkg`
+  tags the submodule alone
 
 ## The two flows
 
 ### Release flow (published forge binary)
 
-1. A maintainer tags a pkg release: `task release:pkg -- vX.Y.Z`.
-   The script validates the version shape, a clean `pkg/` tree, no
-   pre-existing tag, and — critically — that the pkg module builds and
-   vets **standalone** (`GOWORK=off`, exactly the consumer's view), then
-   creates the Go submodule tag `pkg/vX.Y.Z`.
-2. **Manual step:** push the tag — `git push origin pkg/vX.Y.Z`.
+1. A maintainer cuts the release: `task release:forge -- vX.Y.Z`.
+   It validates the version shape, a clean tree, that neither tag exists,
+   and — critically — that the pkg module builds and vets **standalone**
+   (`GOWORK=off`, exactly the consumer's view). Then it bumps the root
+   require, syncs the version files, records the `forge/pkg` hashes in
+   `go.sum`, and tags **both** `pkg/vX.Y.Z` and `vX.Y.Z` at one commit.
+2. No manual push step: the script pushes the branch and both tags
+   atomically. (`task release:pkg` still tags the submodule alone, and
+   still leaves the push to you — see `docs/releasing.md`.)
 3. Release builds of the forge binary are stamped with that version:
 
    ```sh

@@ -50,14 +50,35 @@ tasks:
       # never write a go.work.
       - go install -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
-  release:pkg:
-    desc: "Tag a forge/pkg release: task release:pkg -- vX.Y.Z (add --dry-run to validate only)"
+  release:forge:
+    desc: "Cut a full forge release (both modules, one commit): task release:forge -- vX.Y.Z (add --dry-run to validate only)"
     cmds:
-      # Validates version shape, clean pkg/ tree, no existing tag, and a
-      # standalone (GOWORK=off) build/vet of the pkg module before
-      # creating the pkg/vX.Y.Z submodule tag. Pushing the tag is a
-      # deliberate manual step the script prints at the end. See
-      # docs/pkg-versioning.md for the dev-vs-release dependency model.
+      # THE release command — prefer this over release:pkg, which tags only
+      # the pkg submodule and leaves the root module bump to you.
+      #
+      # Does the whole release against ONE commit: validates the version
+      # shape, a clean tree, that neither tag exists and that pkg builds
+      # standalone (GOWORK=off); bumps the forge/pkg require; syncs all three
+      # version files (VERSION, internal/buildinfo/VERSION,
+      # defaultPublishedForgePkgVersion); resolves the forge/pkg hashes into
+      # go.sum BEFORE the tag is public (the trap an in-workspace build cannot
+      # catch, because go.work resolves pkg locally); then tags pkg/vX.Y.Z and
+      # vX.Y.Z at that single commit and pushes all three refs atomically.
+      #
+      # Two tags still exist because Go requires the directory-prefixed form
+      # for submodules — but they land on the SAME commit, so the old
+      # push-ordering hazard is gone. See docs/releasing.md.
+      - ./scripts/release-forge.sh {{.CLI_ARGS}}
+
+  release:pkg:
+    desc: "Tag ONLY the forge/pkg submodule (prefer release:forge): task release:pkg -- vX.Y.Z"
+    cmds:
+      # The narrow tool, kept working for the case where only the submodule
+      # needs a tag. It validates version shape, a clean pkg/ tree, no
+      # existing tag, and a standalone (GOWORK=off) build/vet before creating
+      # pkg/vX.Y.Z — but it does NOT bump the root module's require, sync the
+      # version files, or populate go.sum, so a release driven from here is
+      # only half done. release:forge above does all of it in one commit.
       - ./scripts/release-pkg.sh {{.CLI_ARGS}}
 
   release:web-runtime:

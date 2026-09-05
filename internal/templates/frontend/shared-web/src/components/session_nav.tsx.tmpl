@@ -9,22 +9,20 @@
  *   import { SessionNav } from "@/components/session_nav";
  *   <header><SessionNav /></header>
  *
- * Reads the app's AuthProvider through `useAuth()` — the SAME seam
- * `providers.tsx` feeds the Connect transport's bearer token from. There is
- * no second session store and no auth endpoint of its own: what this renders
- * and what your RPCs send are the same identity by construction.
+ * Reads the app's auth state through `useAuth()`, which answers from THIS
+ * APP'S API (GET /auth/session) — not from an identity provider the browser
+ * talks to. There is no second session store and no auth endpoint of its
+ * own: what this renders and what your RPCs authenticate as are the same
+ * session by construction, because both ride the one HttpOnly cookie.
  *
- * Which provider sits behind that seam is decided by CONFIGURATION, in
- * `selectAuthProvider()` (src/lib/auth/oidc-provider.ts):
+ * There is nothing to configure here and no provider to select. The server
+ * holds the issuer, the client id and the tokens; the browser holds an
+ * opaque cookie it cannot even read. So this file looks the same whether
+ * your IdP is the dev one or a production issuer.
  *
- *   - with an OIDC issuer + client id configured, the real
- *     authorization-code + PKCE provider, which redirects to your IdP;
- *   - otherwise (and always in pure-mock mode) `createSessionAuthProvider()`
- *     — a fixture session while the mock transport answers, and signed out
- *     with a first-use warning against a real backend.
- *
- * Nothing in this file changes when you configure an IdP: it reads the same
- * `useAuth()` either way.
+ * `identity` is PRESENTATION ONLY — a name and an email to render. Never
+ * gate anything on it: the server validates the real token on every request,
+ * and a caller who edits this component changes the UI and nothing else.
  *
  * Built from forge's base UI primitives (`Avatar`, `Button`).
  */
@@ -35,7 +33,7 @@ import Button from "@/components/ui/button";
 import { useAuth } from "@/lib/auth/context";
 
 export function SessionNav() {
-  const { user, isAuthenticated, isLoading, logout } = useAuth();
+  const { identity, isAuthenticated, isLoading, logout } = useAuth();
 
   // See the isLoading branch below.
   const [hydrated, setHydrated] = useState(false);
@@ -51,7 +49,7 @@ export function SessionNav() {
   //     stop, no keyboard path — and it also eats clicks that anything above
   //     this component legitimately wants to see.
   //   - Escape, with focus handed back to the trigger. Click-away alone
-  //     leaves a keyboard user with a menu they can open and not close, and
+  //     leaves a keyboard identity with a menu they can open and not close, and
   //     closing while focus sits on "Sign out" would otherwise drop focus to
   //     <body> and lose their place on the page.
   useEffect(() => {
@@ -79,7 +77,7 @@ export function SessionNav() {
 
   // The skeleton is CLIENT-ONLY, for the same reason the route guard's gate
   // is: `isLoading` is a browser fact (the session lives in memory here), so
-  // rendering a placeholder on the client where the server rendered a user —
+  // rendering a placeholder on the client where the server rendered a identity —
   // or vice versa — is a hydration mismatch, and React answers one by
   // discarding the server tree and mounting a second copy of the whole app.
   //
@@ -93,16 +91,13 @@ export function SessionNav() {
 
   // Signed out: render NOTHING.
   //
-  // With an IdP configured the route guard has already redirected this
-  // visitor to sign in, so a "Sign in" button here is unreachable in the
-  // gated app — and where it IS reachable (a public route you added to the
-  // guard's publicPaths), a control in the corner of the chrome is the wrong
-  // way to offer sign-in anyway: link to /auth/sign-in from the page itself,
-  // where you can say why.
-  //
-  // Without an IdP the mock provider reports a signed-in fixture user, so
-  // this branch is not reached there either.
-  if (!isAuthenticated || !user) {
+  // The route guard has already redirected this visitor to sign in, so a
+  // "Sign in" button here is unreachable in the gated app — and where it IS
+  // reachable (a public route you added to the guard's publicPaths), a
+  // control in the corner of the chrome is the wrong way to offer sign-in
+  // anyway: link to /auth/sign-in from the page itself, where you can say
+  // why.
+  if (!isAuthenticated || !identity) {
     return null;
   }
 
@@ -118,9 +113,9 @@ export function SessionNav() {
         aria-expanded={open}
         className="gap-2"
       >
-        <Avatar size="xs" name={user.name ?? user.email ?? undefined} />
+        <Avatar size="xs" name={identity.name ?? identity.email ?? undefined} />
         <span className="max-w-[12rem] truncate">
-          {user.name ?? user.email ?? "User"}
+          {identity.name ?? identity.email ?? "User"}
         </span>
       </Button>
 
@@ -129,7 +124,7 @@ export function SessionNav() {
           <div className="border-b border-border px-3 py-2 text-xs text-ink-subtle">
             Signed in as
             <div className="truncate text-sm font-medium text-ink">
-              {user.email ?? user.id}
+              {identity.email ?? identity.subject}
             </div>
           </div>
 

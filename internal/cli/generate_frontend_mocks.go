@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -47,9 +46,11 @@ func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.Service
 			continue
 		}
 
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 
 		count, err := generator.EmitFrontendMockSurface(projectDir, feDir, services, entities, seed, cs)

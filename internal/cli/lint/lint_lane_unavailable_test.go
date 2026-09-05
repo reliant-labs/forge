@@ -260,11 +260,19 @@ func TestFrontendLintDirUnavailableWhenDepsMissing(t *testing.T) {
 // could not is a different thing, and a consumer filtering out info/"skipped"
 // noise would have dropped it entirely.
 func TestCollectFrontendLintJSONUnavailableIsNotASkip(t *testing.T) {
-	feDir := t.TempDir()
+	// Declared frontend paths are project-relative and the lane runs from
+	// the project root, so the fixture chdirs there rather than handing
+	// the resolver an absolute path outside any project.
+	root := t.TempDir()
+	feDir := filepath.Join(root, "apps", "dashboard")
+	if err := os.MkdirAll(feDir, 0o755); err != nil {
+		t.Fatalf("mkdir frontend: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(feDir, "package.json"), []byte(`{"scripts":{"lint":"eslint ."}}`), 0o644); err != nil {
 		t.Fatalf("write package.json: %v", err)
 	}
-	cfg := &config.ProjectConfig{Frontends: []config.FrontendConfig{{Name: "dashboard", Path: feDir}}}
+	inDir(t, root)
+	cfg := &config.ProjectConfig{Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "dashboard"}.WithDir("apps/dashboard")}}
 
 	rc := testRunCtx(t, false)
 	rc.cfg = cfg

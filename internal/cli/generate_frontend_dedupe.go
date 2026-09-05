@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // The vitest `resolve.dedupe` reconcile, for projects that predate it.
@@ -61,7 +63,17 @@ var resolveOpenRe = regexp.MustCompile(`(?m)^(\s*)resolve\s*:\s*\{`)
 // injecting the file-reading preamble would mean restructuring imports in a
 // config forge does not own. The scaffolded form stays derived; this repair
 // stays minimal.
-const dedupeLine = `dedupe: ["react", "react-dom", "@tanstack/react-query", "@bufbuild/protobuf", "@connectrpc/connect"],`
+// DERIVED, not hand-written. This was a literal that had already drifted from
+// the runtime's real peerDependencies by nine packages (including
+// @opentelemetry/api). See internal/webruntimepeers for the source of truth.
+func dedupeLine() string {
+	pkgs := webruntimepeers.BundlerDedupe()
+	quoted := make([]string, 0, len(pkgs))
+	for _, p := range pkgs {
+		quoted = append(quoted, `"`+p+`"`)
+	}
+	return `dedupe: [` + strings.Join(quoted, ", ") + `],`
+}
 
 // reconcileFrontendDedupe adds `resolve.dedupe` to each frontend's
 // vitest.config.ts when it is missing.
@@ -82,9 +94,11 @@ func reconcileFrontendDedupe(cfg *config.ProjectConfig, projectDir string) {
 		if !isWebFrontendType(fe.Type) {
 			continue
 		}
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			// No directory in this repository — a cross-repo
+			// source pin, or a path outside the project root.
+			continue
 		}
 		rel := filepath.Join(feDir, "vitest.config.ts")
 		if addDedupeToConfig(filepath.Join(projectDir, rel)) {
@@ -127,7 +141,7 @@ func addDedupeToConfig(path string) bool {
 	out.WriteString(indent + "  // @reliantlabs/forge-web-runtime, which a dev forge build links by path.\n")
 	out.WriteString(indent + "  // Without this, React and React Query load twice (once from the\n")
 	out.WriteString(indent + "  // link target) and the two copies do not share a React context.\n")
-	out.WriteString(indent + "  " + dedupeLine)
+	out.WriteString(indent + "  " + dedupeLine())
 	out.Write(body[insertAt:])
 
 	info, err := os.Stat(path)

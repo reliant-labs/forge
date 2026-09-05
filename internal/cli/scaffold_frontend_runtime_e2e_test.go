@@ -79,7 +79,15 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	//
 	// So the invariant is now the REVERSE of the old one: a path specifier
 	// here is the defect.
-	linkPath := filepath.Join(webDir, "node_modules", "@reliantlabs", "forge-web-runtime")
+	// npm HOISTS the workspace member to the workspace root's node_modules,
+	// so the link lands at <project>/node_modules, not under frontends/web/.
+	// Node resolution walks up from the frontend and finds it there. Check
+	// both, because which one npm picks is npm's business — what matters is
+	// that a link (not a registry copy) is reachable from the frontend.
+	linkCandidates := []string{
+		filepath.Join(projectDir, "node_modules", "@reliantlabs", "forge-web-runtime"),
+		filepath.Join(webDir, "node_modules", "@reliantlabs", "forge-web-runtime"),
+	}
 	pkgJSON := readFileE2E(t, filepath.Join(webDir, "package.json"))
 	spec := webRuntimeSpecE2E(t, pkgJSON)
 	if strings.HasPrefix(spec, "file:") || strings.HasPrefix(spec, "link:") {
@@ -108,7 +116,12 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	//    boundary + toast host), feeds them the app-owned auth + toast
 	//    wiring, and inits client telemetry. ──
 	providersTSX := readFileE2E(t, filepath.Join(webDir, "src", "app", "providers.tsx"))
-	if !strings.Contains(providersTSX, "RuntimeShell auth={auth}") {
+	// The prop must be FED, but the variable it is fed from is the template's
+	// business: the scaffold adapts its own auth context into the runtime's
+	// shape and passes it as `runtimeAuth`. Matching the whole literal
+	// `auth={auth}` pinned an identifier name rather than the wiring, so a
+	// rename broke the test with nothing regressing.
+	if !strings.Contains(providersTSX, "<RuntimeShell auth={") {
 		t.Errorf("providers.tsx does not hand RuntimeShell the app's auth state:\n%s", providersTSX)
 	}
 	if !strings.Contains(providersTSX, "ToastNotification") {
@@ -135,8 +148,16 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		runCmdTimeout(t, webDir, 5*time.Minute,
 			"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
-		if _, err := os.Readlink(linkPath); err != nil {
-			t.Fatalf("npm install #%d left no link at %s: %v", i, linkPath, err)
+		linked := false
+		for _, candidate := range linkCandidates {
+			if _, err := os.Readlink(candidate); err == nil {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			t.Fatalf("npm install #%d left no link to the runtime package; looked in %v",
+				i, linkCandidates)
 		}
 	}
 	// Regenerating is idempotent — it neither duplicates nor disturbs the entry.

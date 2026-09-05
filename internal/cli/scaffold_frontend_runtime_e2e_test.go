@@ -65,28 +65,31 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 		t.Errorf("frontend still carries an emitted src/lib/runtime directory (stat err = %v)", err)
 	}
 
-	// ── package.json declares it, by a path that names nobody. ──
+	// ── The TRACKED manifest declares the published range, never a path. ──
+	//
+	// This used to assert the opposite — that a dev build rewrote the
+	// specifier to `file:<path>` inside frontends/<name>/package.json. That
+	// mechanism was deliberately retired: package.json is a TRACKED file, so
+	// rewriting it left every maintainer permanently dirty and made it easy
+	// to commit a path that resolves only on one machine. The dev bridge now
+	// lives in a gitignored npm workspace root above the frontends
+	// (<project>/package.json + <project>/.forge-link/), exactly mirroring
+	// how a gitignored go.work bridges Go without touching go.mod. See
+	// internal/generator/frontend_webruntime_devlink.go.
+	//
+	// So the invariant is now the REVERSE of the old one: a path specifier
+	// here is the defect.
 	linkPath := filepath.Join(webDir, "node_modules", "@reliantlabs", "forge-web-runtime")
 	pkgJSON := readFileE2E(t, filepath.Join(webDir, "package.json"))
 	spec := webRuntimeSpecE2E(t, pkgJSON)
-	if !strings.HasPrefix(spec, "file:") {
-		t.Fatalf("dev forge did not bridge the runtime package; specifier = %q", spec)
+	if strings.HasPrefix(spec, "file:") || strings.HasPrefix(spec, "link:") {
+		t.Fatalf("tracked frontend manifest carries a local path specifier %q; "+
+			"the dev bridge belongs in the gitignored workspace root, not in a tracked file", spec)
+	}
+	if !strings.HasPrefix(spec, "^") {
+		t.Fatalf("frontend manifest should declare the published semver range; specifier = %q", spec)
 	}
 	assertNoHomePathE2E(t, filepath.Join(webDir, "package.json"))
-	// The declared path has to resolve to the package on disk.
-	rel := strings.TrimPrefix(spec, "file:")
-	if strings.HasPrefix(rel, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatalf("home directory: %v", err)
-		}
-		rel = filepath.Join(home, strings.TrimPrefix(rel, "~/"))
-	} else {
-		rel = filepath.Join(webDir, rel)
-	}
-	if _, err := os.Stat(filepath.Join(rel, "package.json")); err != nil {
-		t.Errorf("declared specifier %q does not resolve to the package: %v", spec, err)
-	}
 
 	// ── Tailwind is told to scan the package. ──
 	globalsCSS := readFileE2E(t, filepath.Join(webDir, "src", "app", "globals.css"))
@@ -160,7 +163,12 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	// resolvable, link-stable across installs, idempotent under regenerate);
 	// what is left to prove is how the toolchain CONSUMES a linked package,
 	// and the copy is the faithful subject for that.
-	shadowed := materializeShadowedRuntimeE2E(t, dir, rel)
+	// The package source is this repo's own web-runtime/. It used to be read
+	// back out of the `file:` specifier forge wrote into the frontend
+	// manifest; now that the tracked manifest carries only the published
+	// range, take it from the checkout directly.
+	runtimeSrc := filepath.Join(findRepoRoot(t), "web-runtime")
+	shadowed := materializeShadowedRuntimeE2E(t, dir, runtimeSrc)
 	setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "file:"+shadowed)
 	runCmdTimeout(t, webDir, 5*time.Minute,
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")

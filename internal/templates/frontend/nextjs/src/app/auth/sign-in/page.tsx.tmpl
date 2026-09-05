@@ -13,7 +13,7 @@
 // their sign-in heavily, and an opinionated design here would be harder to
 // replace than a neutral one.
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import Button from "@/components/ui/button";
@@ -21,7 +21,6 @@ import { useAuth } from "@/lib/auth/context";
 import { AuthError, signIn, signUp } from "@/lib/auth/native-login";
 
 function SignIn() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const { refresh } = useAuth();
 

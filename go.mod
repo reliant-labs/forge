@@ -8,7 +8,7 @@ require (
 	github.com/evanw/esbuild v0.28.2
 	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/go-delve/delve v1.27.1
+	github.com/go-delve/delve v1.26.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jinzhu/inflection v1.0.0
 	github.com/lib/pq v1.12.3

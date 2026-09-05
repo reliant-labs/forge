@@ -274,7 +274,13 @@ func openMigrator(cmd *cobra.Command) (*migratekit.Migrator, error) {
 func migratorDSN(cmd *cobra.Command) (string, error) {
 	url, err := cmd.Flags().GetString("database-url")
 	if err != nil || url == "" {
-		url = os.Getenv("DATABASE_URL")
+		// forbidigo bans reading env directly, and is right to: the typed
+		// loader is how settings should be reached. This is the ONE command
+		// that cannot use it — config.Load validates every required field in
+		// the whole config message, which is exactly the coupling this
+		// function exists to remove. DATABASE_URL is the env var the field's
+		// own (forge.v1.config) annotation declares, so the two cannot drift.
+		url = os.Getenv("DATABASE_URL") //nolint:forbidigo // see above: the typed loader validates the WHOLE config
 	}
 	if url == "" {
 		return "", fmt.Errorf("DATABASE_URL (or --database-url) is required")

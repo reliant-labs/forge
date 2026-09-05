@@ -37,6 +37,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -227,24 +228,56 @@ func withOptionalMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) f
 	}
 }
 
-// openMigrator loads config and opens a migrator over the embedded set.
+// openMigrator resolves the DSN and opens a migrator over the embedded set.
 //
-// The DSN comes from the same typed config the server reads, so `db migrate`
-// and the application can never be pointed at different databases by
-// accident. NO POOL TUNING is applied: migrations run once, at boot, on a
-// dedicated connection that holds locks the serving pool must not queue
-// behind — the serving pool's sizing has nothing to say about it.
+// The DSN comes from the same flag and env var the server reads, so
+// `db migrate` and the application can never be pointed at different
+// databases by accident. NO POOL TUNING is applied: migrations run once, at
+// boot, on a dedicated connection that holds locks the serving pool must not
+// queue behind — the serving pool's sizing has nothing to say about it.
+//
+// It reads that ONE field directly rather than calling config.Load, and the
+// distinction is load-bearing. config.Load validates every field marked
+// `required: true` across the WHOLE config message, so a project with a
+// required credential — an internal-service secret, a signing key — got a
+// migrate command that refused to start without a value it never reads:
+//
+//	load config: required config field internal_service_secret is not set
+//
+// That is unsatisfiable for the deploy-time migration Job, which is
+// deliberately deployed with none of the app's secrets: a schema migration
+// has no business holding a signing key, and forge's own guidance is to give
+// each workload only the credentials it reads. The Job exited before opening
+// a connection, and every workload gated behind it then failed against a
+// schema that was never created — reported as a missing relation, which
+// reads like a migration-ordering bug and is not one.
+//
+// A required field the SERVER needs is still enforced where the server loads
+// its config. This narrows the migrator's credential surface to what it
+// actually consumes.
 func openMigrator(cmd *cobra.Command) (*migratekit.Migrator, error) {
-	cfg, err := config.Load(cmd)
+	dsn, err := migratorDSN(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
-	}
-	if cfg.DatabaseUrl == "" {
-		return nil, fmt.Errorf("DATABASE_URL (or --database-url) is required")
+		return nil, err
 	}
 	return migratekit.Open(migratekit.Options{
 		FS:  forgedb.Source(),
 		Dir: forgedb.SourceDir,
-		DSN: cfg.DatabaseUrl,
+		DSN: dsn,
 	})
+}
+
+// migratorDSN resolves the migration DSN from --database-url, else
+// DATABASE_URL. Flag beats env, matching config.Load's precedence for this
+// field. Empty is an error: a migrator with no DSN must say so rather than
+// fall back to a default and migrate something unintended.
+func migratorDSN(cmd *cobra.Command) (string, error) {
+	url, err := cmd.Flags().GetString("database-url")
+	if err != nil || url == "" {
+		url = os.Getenv("DATABASE_URL")
+	}
+	if url == "" {
+		return "", fmt.Errorf("DATABASE_URL (or --database-url) is required")
+	}
+	return url, nil
 }

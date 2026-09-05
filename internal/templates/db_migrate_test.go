@@ -444,3 +444,77 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// TestMigratorDSNDoesNotLoadWholeConfig pins the migrator's CREDENTIAL
+// SURFACE to the one field it consumes.
+//
+// The scaffold used to resolve the DSN with config.Load, which validates every
+// field marked `required: true` across the whole config message. That coupled
+// `db migrate` to credentials it never reads, and the two constraints are not
+// jointly satisfiable in a real deployment: the migration Job is deployed with
+// none of the app's secrets (a schema migration has no business holding a
+// signing key — forge's own guidance is to give each workload only what it
+// reads), so the Job exited at config load with
+//
+//	load config: required config field internal_service_secret is not set
+//
+// before opening a single connection. Every workload gated behind that Job
+// then failed against a schema nothing had created, surfacing as a missing
+// relation — which reads like a migration-ordering bug and is not one. The
+// migration had never run.
+//
+// So: openMigrator must NOT call config.Load. It resolves --database-url /
+// DATABASE_URL directly. A required field the SERVER needs is still enforced
+// where the server loads its config.
+func TestMigratorDSNDoesNotLoadWholeConfig(t *testing.T) {
+	src := renderDB(t, "cmd-tree-db.go.tmpl", true)
+
+	funcs := dbFileFuncs(t, src)
+	if !funcs["migratorDSN"] {
+		t.Error("rendered db.go declares no migratorDSN — the DSN must be resolved from its own " +
+			"field, not from a whole-config load that enforces unrelated required fields")
+	}
+
+	body := dbFuncBody(t, src, "migratorDSN")
+	if strings.Contains(body, "config.Load") {
+		t.Errorf("migratorDSN calls config.Load, which validates EVERY required field in the "+
+			"config message. That is what made the migration Job unable to start without "+
+			"credentials it never reads. Resolve the DSN field directly.\n%s", body)
+	}
+	if !strings.Contains(body, "DATABASE_URL") {
+		t.Errorf("migratorDSN does not reference DATABASE_URL; it must read the same env var "+
+			"the server does so the two cannot target different databases.\n%s", body)
+	}
+
+	openBody := dbFuncBody(t, src, "openMigrator")
+	if strings.Contains(openBody, "config.Load") {
+		t.Errorf("openMigrator still calls config.Load — the whole-config validation is exactly "+
+			"what this guards against.\n%s", openBody)
+	}
+}
+
+// dbFuncBody returns the printed source of one top-level function in the
+// rendered file. Asserting against the FUNCTION rather than the whole file
+// keeps the doc comments — which necessarily mention config.Load to explain
+// why it is not called — from failing the check.
+func dbFuncBody(t *testing.T, src, name string) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "db.go", src, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Name.Name != name {
+			continue
+		}
+		var buf bytes.Buffer
+		if perr := printer.Fprint(&buf, fset, fn.Body); perr != nil {
+			t.Fatalf("print %s body: %v", name, perr)
+		}
+		return buf.String()
+	}
+	t.Fatalf("no top-level func %q in rendered db.go:\n%s", name, src)
+	return ""
+}

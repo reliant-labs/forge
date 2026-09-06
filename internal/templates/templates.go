@@ -46,13 +46,13 @@ func FuncMap() template.FuncMap {
 		// aimed at whichever node_modules the project actually has. One
 		// element, never a list: SWC panics `next build` on a multi-element
 		// value for a non-wildcard key. See webruntimepeers.TypePinPath.
-		"typePinPath": webruntimepeers.TypePinPath,
-		"joinStrings":   strings.Join,
-		"default":       getDefault,
-		"add":           add,
-		"last":          lastStringSlice,
-		"tableFromFK":   tableFromFK,
-		"columnFromFK":  columnFromFK,
+		"typePinPath":  webruntimepeers.TypePinPath,
+		"joinStrings":  strings.Join,
+		"default":      getDefault,
+		"add":          add,
+		"last":         lastStringSlice,
+		"tableFromFK":  tableFromFK,
+		"columnFromFK": columnFromFK,
 	}
 }
 

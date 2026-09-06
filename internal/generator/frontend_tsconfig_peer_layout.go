@@ -132,7 +132,9 @@ func retargetTsconfigPins(path string, hoisted bool) bool {
 		want := webruntimepeers.TypePinPath(pkg, hoisted)
 		re := tsconfigPinEntryRe(pkg)
 		loc := re.FindSubmatchIndex(body)
-		if loc == nil || string(body[loc[4]:loc[5]]) == want {
+		// len < 6 means the value group did not participate, so loc[4:6] is
+		// not addressable — the pin is absent or in a shape this does not own.
+		if len(loc) < 6 || string(body[loc[4]:loc[5]]) == want {
 			continue
 		}
 		body = re.ReplaceAll(body, []byte(`${1}"`+want+`"${3}`))

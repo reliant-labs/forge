@@ -26,20 +26,33 @@ import { devLogPlugin } from "./src/lib/devlog-plugin";
 // byte of them shipped twice. It typechecks and builds perfectly green, so no
 // type-level or build-level gate can see it; `resolve.dedupe` below is what
 // forces the single copy the contract promised.
-const webRuntimePeers: string[] = Object.keys(
-  JSON.parse(
-    fs.readFileSync(
-      path.join(
-        __dirname,
-        "node_modules",
-        "@reliantlabs",
-        "forge-web-runtime",
-        "package.json",
-      ),
-      "utf8",
-    ),
-  ).peerDependencies ?? {},
-);
+// The lookup walks UP. An npm workspace — which forge's own dev bridge writes
+// — hoists every member's dependencies to the workspace root, so this frontend
+// legitimately has no node_modules of its own and the package sits at the
+// project root. Reading only __dirname/node_modules throws ENOENT there and
+// takes the whole config load down before anything builds.
+const readWebRuntimePeers = (): string[] => {
+  let dir = __dirname;
+  for (;;) {
+    const manifest = path.join(
+      dir,
+      "node_modules",
+      "@reliantlabs",
+      "forge-web-runtime",
+      "package.json",
+    );
+    if (fs.existsSync(manifest)) {
+      return Object.keys(
+        JSON.parse(fs.readFileSync(manifest, "utf8")).peerDependencies ?? {},
+      );
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return []; // not installed — nothing to dedupe
+    dir = parent;
+  }
+};
+
+const webRuntimePeers: string[] = readWebRuntimePeers();
 
 // Vite config for the SPA scaffold. Tailwind v4 plugin keeps the CSS
 // pipeline first-party (no PostCSS config needed). The path aliases mirror

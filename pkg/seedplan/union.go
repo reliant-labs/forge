@@ -121,6 +121,11 @@ type unionTerm struct {
 // satisfies that (and unionEligible is what makes "plain data column" true).
 type unionCell struct {
 	null bool
+	// requireEdge marks a nullable FOREIGN KEY the branch asserts IS NOT
+	// NULL. It places no value — the reference path still picks the parent
+	// — it only forbids that path from declining the edge on this table.
+	// See columnPlan.requireEdge.
+	requireEdge bool
 	// lit is how an INSERT spells the pin; raw is the same value undecorated,
 	// which is what a consumer that is not writing SQL — the generated CRUD
 	// fixtures, see UnionPlacement — needs.
@@ -287,6 +292,14 @@ func unionClaimedChecks(t schemadef.Table) map[string]bool {
 		}
 		if _, ok := parseUnionBranches(body); ok {
 			out[ck.Name] = true
+			continue
+		}
+		// A status guard is this pass's too (guard.go) — it is a union
+		// spelled negatively. Without this the ordering pass reports every
+		// guard as "not a two-column ordering comparison", which is both
+		// noise and wrong: the constraint IS placed.
+		if _, ok := parseStatusGuard(body); ok {
+			out[ck.Name] = true
 		}
 	}
 	return out
@@ -350,8 +363,18 @@ func tableUnionSpecs(t schemadef.Table, pools EnumPools, ordered map[string]orde
 			t.Name, name, why))
 	}
 	conv := schemadef.DetectConventions(t)
+
+	// Status guards are resolved FIRST, and TOGETHER. Several guards over one
+	// lifecycle column is the normal shape — a jobs table states one rule for
+	// SCHEDULED and another for COMPLETED — and resolving them one at a time
+	// makes each refuse the other for spanning `status` too. Merged, they are
+	// ONE union over that column whose branches satisfy every guard at once.
+	guarded, guardWarns, claimed := tableGuardSpecs(t, conv, pools, ordered)
+	specs = append(specs, guarded...)
+	warns = append(warns, guardWarns...)
+
 	for _, ck := range t.Checks {
-		if len(ck.Columns) < 2 {
+		if len(ck.Columns) < 2 || claimed[ck.Name] {
 			continue
 		}
 		body, ok := checkBody(ck.Def)
@@ -362,7 +385,7 @@ func tableUnionSpecs(t schemadef.Table, pools EnumPools, ordered map[string]orde
 		if !ok {
 			continue // not this shape — the ordering pass reports it
 		}
-		spec, why := buildUnionSpec(t, conv, pools, ordered, ck, groups)
+		spec, why := buildUnionSpec(t, conv, pools, ordered, ck, groups, nil)
 		if why != "" {
 			refuse(ck.Name, why)
 			continue
@@ -375,6 +398,12 @@ func tableUnionSpecs(t schemadef.Table, pools EnumPools, ordered map[string]orde
 // buildUnionSpec validates one parsed union against everything else the table
 // declares and resolves it into per-branch placements. A non-empty why is a
 // refusal naming the reason; the caller warns and leaves the constraint alone.
+//
+// speaksFor names every real constraint this spec stands for — one for a
+// hand-written union, several for a merged status-guard union. Members are
+// exempt from the joint-satisfiability scan below, since sharing a column is
+// exactly why they were merged rather than a reason to refuse. Empty means
+// "just ck".
 func buildUnionSpec(
 	t schemadef.Table,
 	conv schemadef.Conventions,
@@ -382,7 +411,11 @@ func buildUnionSpec(
 	ordered map[string]orderSlot,
 	ck schemadef.CheckConstraint,
 	groups [][]unionTerm,
+	speaksFor map[string]bool,
 ) (unionSpec, string) {
+	if len(speaksFor) == 0 {
+		speaksFor = map[string]bool{ck.Name: true}
+	}
 	spans := make(map[string]bool, len(ck.Columns))
 	for _, c := range ck.Columns {
 		spans[c] = true
@@ -417,8 +450,13 @@ func buildUnionSpec(
 	// constraints that talk about the same columns — including a second
 	// union — so forge refuses rather than placing one and hoping the other
 	// survives it.
+	//
+	// `speaksFor` is the set this spec IS. For a hand-written union that is
+	// the one constraint; for a MERGED status-guard union it is every guard
+	// folded into it (guard.go), which must not be mistaken for rivals to
+	// itself — they were combined precisely because they share a column.
 	for _, other := range t.Checks {
-		if other.Name == ck.Name || len(other.Columns) < 2 {
+		if speaksFor[other.Name] || len(other.Columns) < 2 {
 			continue
 		}
 		for _, c := range other.Columns {
@@ -459,6 +497,15 @@ func unionBranchCells(
 		a, ok := byCol[term.column]
 		if !ok {
 			col, reason := unionEligible(t, conv, ordered, term.column)
+			// A term that only asserts IS NOT NULL places no VALUE, so a
+			// column another mechanism owns is still compatible with it:
+			// the reference path picks the parent, and all this asks is
+			// that it pick one. Without this an ordinary lifecycle guard
+			// (`… OR crew_id IS NOT NULL`) is refused for naming a foreign
+			// key, which is most of them.
+			if reason != "" && term.kind == termNotNull && notNullOnlyFor(terms, term.column) {
+				reason = ""
+			}
 			if reason != "" {
 				return nil, false, reason
 			}
@@ -514,9 +561,17 @@ func unionBranchCells(
 			}
 			cells[name] = unionCell{bound: b, hasBound: true}
 		default:
-			// IS NOT NULL only. unionEligible already established that forge
-			// fills this column on every row, so it holds by construction and
-			// the natural value stands.
+			// IS NOT NULL only. For a plain data column this holds by
+			// construction — forge synthesizes a value on every row.
+			//
+			// A NULLABLE FOREIGN KEY is the exception, and it is why this
+			// case is no longer a no-op: the reference path nulls an
+			// optional edge on ~1 row in 5 for variety, which is exactly
+			// the row that then violates the guard. Record it so the plan
+			// can force the edge present (columnPlan.requireEdge).
+			if !a.col.NotNull && isForeignKey(t, name) {
+				cells[name] = unionCell{requireEdge: true}
+			}
 		}
 	}
 	return cells, true, ""

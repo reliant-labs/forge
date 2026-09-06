@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "// vite range note": "devDependencies.vite admits 7 deliberately. Everything this scaffold pairs vite with already resolves 7 — @tailwindcss/vite and @vitejs/plugin-react declare it as their peer, and vitest 3 depends on it directly. Pinning ^6 alone did not keep vite 7 out; it only guaranteed a SECOND copy beside it, and in a project that also has a Next.js frontend npm hoisted 7 to the root and nested 6 under this frontend. Two copies of vite are two copies of its TYPES, so `tsc --noEmit` failed vite.config.ts with TS2769 'Plugin<any> is not assignable to PluginOption' — the plugins came from one copy and defineConfig from the other. This note sits at the TOP LEVEL because npm rejects a comment key inside devDependencies with EINVALIDPACKAGENAME.",
   "engines": {
     "node": ">=22"
   },
@@ -56,7 +57,7 @@
     "tailwindcss": "^4.1.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.30.0",
-    "vite": "^6.0.0",
+    "vite": "^6.0.0 || ^7.0.0",
     "vitest": "^3.1.0"
   }
 }

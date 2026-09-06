@@ -1647,6 +1647,22 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		fmt.Printf("\n⚠️  %v\n", err)
 	}
 
+	// The install above is what DECIDES the node_modules layout, and the
+	// tsconfig written before it had to guess. When the project is an npm
+	// workspace — which forge's dev bridge makes it — npm hoists the
+	// dependencies to the project root and leaves frontends/<name>/node_modules
+	// absent, so the peer pins just scaffolded name a directory that does not
+	// exist. tsc reports nothing for a pin that resolves to nothing: it falls
+	// back to the ordinary walk, finds the linked runtime's own copy, and the
+	// freshly added frontend fails its very first `tsc --noEmit` with
+	// TS2322 "Type Transport is not assignable to type Transport".
+	//
+	// Reconciling AFTER the install is what closes that window. `forge
+	// generate` performs the same pass, but a user typechecking the frontend
+	// they just added — before running generate again — would otherwise hit
+	// the error first.
+	generator.ReconcileFrontendTsconfigPeers(root)
+
 	fmt.Printf("\n✅ Frontend '%s' added successfully!\n", name)
 	reportFrontendAuthNextStep(root)
 

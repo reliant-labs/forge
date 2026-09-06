@@ -73,6 +73,19 @@ type columnPlan struct {
 	// constraint. BuildPlan caps this table's row count at the parent's so a
 	// distinct parent always exists. Never set for a self-reference.
 	uniqueFK bool
+	// requireEdge marks a NULLABLE foreign key that a status-guard CHECK
+	// requires to be present on some rows (`status <> 'x' OR crew_id IS NOT
+	// NULL`). An optional FK is normally nulled on ~1 row in 5 for variety;
+	// on a guarded table that coin flip is what produced a SCHEDULED job
+	// with no crew and aborted the seed. Set, the edge is always resolved,
+	// so the column is non-NULL on every row and the guard holds whichever
+	// status the row carries.
+	//
+	// The variety is given up deliberately and only for these columns: a
+	// guarded optional FK cannot be both "sometimes absent" and "present
+	// whenever the status demands it" without the seeder reasoning about
+	// the two columns jointly, and always-present is the safe half.
+	requireEdge bool
 }
 
 // uniqueSingleColumn reports whether the table has a UNIQUE index/constraint on
@@ -85,16 +98,42 @@ type columnPlan struct {
 //
 // A PARTIAL unique index counts only when it can actually bind a row this plan
 // writes — see partialIndexBinds.
+// A one-column UNIQUE over a CASE FOLD — `UNIQUE (lower(name))` — counts
+// too, and reports its fold: the rule it states is "distinct ignoring
+// case", which the value assigner can satisfy by comparing case-folded.
+//
+// Any OTHER expression key is skipped. Its Columns are only the bare-column
+// subset, so `UNIQUE (supplier_id, lower(sku))` would otherwise read here
+// as a one-column UNIQUE(supplier_id) — a stricter claim than the table
+// makes, which capped the child table at one row per supplier and then
+// wrote rows the real index rejected. Uniqueness of `f(x)` never implies
+// uniqueness of `x`.
 func uniqueSingleColumn(t schemadef.Table, col string) bool {
+	_, ok := uniqueSingleColumnFold(t, col)
+	return ok
+}
+
+// uniqueSingleColumnFold is uniqueSingleColumn plus the case fold the index
+// keys on: "" for a plain UNIQUE (col), "lower"/"upper" for
+// UNIQUE (lower(col)) / UNIQUE (upper(col)).
+func uniqueSingleColumnFold(t schemadef.Table, col string) (fold string, ok bool) {
 	for _, ix := range t.Indexes {
-		if !ix.Unique || len(ix.Columns) != 1 || ix.Columns[0] != col {
+		keys := ix.KeyList()
+		if !ix.Unique || len(keys) != 1 {
 			continue
 		}
-		if partialIndexBinds(t, ix) {
-			return true
+		k := keys[0]
+		if k.Column != col {
+			continue
 		}
+		// A non-fold expression is unattributed (Column == ""), so it never
+		// reaches here; a fold names the column it wraps.
+		if !partialIndexBinds(t, ix) {
+			continue
+		}
+		return k.Fold, true
 	}
-	return false
+	return "", false
 }
 
 // partialNullPredRE matches the WHERE clause of a partial index in the one
@@ -457,6 +496,11 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 				if forceNull[n] != nil && forceNull[n][c.Name] {
 					cp.forceNull = true
 				}
+				// A status guard asserting `<fk> IS NOT NULL` needs the
+				// optional edge resolved on every row — see
+				// columnPlan.requireEdge. Read from the union specs, which
+				// were resolved just above.
+				cp.requireEdge = unionRequiresEdge(plan.unions[n], c.Name)
 			}
 			tp.cols = append(tp.cols, cp)
 		}

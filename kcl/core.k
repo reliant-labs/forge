@@ -522,8 +522,11 @@ schema Container:
       * `image`   — container image (bare or fully-qualified); the adapter
                     resolves registry/tag exactly as it does the primary image.
       * `command` — entrypoint argv. Omit to use the image's entrypoint.
-      * `args`    — args appended after command (folded into one argv, same as
-                    the primary container).
+      * `args`    — arguments passed to the container, rendered as k8s `args`
+                    so the image's OWN entrypoint is preserved. This is the
+                    field you want for a third-party sidecar you are only
+                    passing flags to (`cloud-sql-proxy --address=…`); set
+                    `command` only to REPLACE the entrypoint.
       * `env`     — the container's env as a MAP keyed by var NAME
                     (`{str: EnvSource}`), projected via env_project like the
                     primary. Omit for none.
@@ -673,15 +676,25 @@ _HostDeployForAdapter = HostDeploy
 
 # _project_container — project one agnostic `Container` (a Service sidecar /
 # init container) into the neutral dict render_k8s_service consumes: name,
-# image, folded command+args argv, env projected to [EnvVar], and ports.
+# image, command, args, env projected to [EnvVar], and ports.
 # Returns a RAW dict (no schema literal) so it is legal inside a lambda body.
 # render_k8s_service (`_render_extra_container`) resolves the image ref, pull
 # policy, and the restricted-PSA container securityContext from this.
+#
+# `command` and `args` stay SEPARATE here, unlike the primary container.
+# A sidecar is almost always a third-party image whose entrypoint you want to
+# KEEP while passing it flags — `cloud-sql-proxy --address=127.0.0.1 …`. Folding
+# args into command overrides that entrypoint, so the flags become the argv and
+# the container dies with `exec: "--address=127.0.0.1": executable file not
+# found in $PATH`. k8s already models the distinction (command=entrypoint,
+# args=arguments); mapping straight onto it is both correct and what the
+# Container docstring promises ("args appended after command").
 _project_container = lambda c: Container -> {str: any} {
     {
         name = c.name
         image = c.image
-        command = (c.command if c.command else []) + (c.args if c.args else [])
+        command = c.command if c.command else []
+        args = c.args if c.args else []
         env_vars = env_project(c.env)
         ports = c.ports if c.ports else []
     }

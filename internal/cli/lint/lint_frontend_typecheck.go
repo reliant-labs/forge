@@ -210,6 +210,32 @@ func resolveLocalTSC(feDir, projectRoot string) string {
 	}
 }
 
+// anyAncestorHasNodeModules reports whether feDir or any ancestor up to and
+// including projectRoot has a node_modules directory — the same walk (and the
+// same stop condition) resolveLocalTSC uses, so the "are deps installed?"
+// probe and the "where is the compiler?" probe cannot disagree about what a
+// workspace layout means.
+func anyAncestorHasNodeModules(feDir, projectRoot string) bool {
+	dir, err := filepath.Abs(feDir)
+	if err != nil {
+		return false
+	}
+	root := projectRoot
+	if abs, absErr := filepath.Abs(projectRoot); absErr == nil {
+		root = abs
+	}
+	for {
+		if dirExists(filepath.Join(dir, "node_modules")) {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir || dir == root {
+			return false
+		}
+		dir = parent
+	}
+}
+
 // typecheckFrontend runs the typecheck for one frontend and classifies
 // the outcome. It never returns an error: every failure mode is a
 // classified result, because "the check errored" and "the check found
@@ -238,10 +264,21 @@ func typecheckFrontend(ctx context.Context, t frontendTarget, projectRoot string
 		return res // not a TypeScript project — silent no-op
 	}
 
-	if !dirExists(filepath.Join(t.dir, "node_modules")) {
+	// "Are the deps installed?" is an ANCESTOR-WALK question, not a
+	// frontend-local one — the same walk resolveLocalTSC already does, and for
+	// the same reason. An npm/pnpm WORKSPACE hoists every member's
+	// dependencies to the workspace root, leaving <feDir>/node_modules absent
+	// even though the install completed perfectly; forge's own dev bridge
+	// (internal/generator/frontend_webruntime_devlink.go) makes exactly that
+	// layout. Requiring the frontend-local directory reported "node_modules
+	// not installed" for a fully installed tree and downgraded the whole run
+	// to "1 gating linter could NOT run" — a lane that silently stopped
+	// checking, which is the outcome this file's own comments call worse than
+	// a failure.
+	if !anyAncestorHasNodeModules(t.dir, projectRoot) {
 		res.status = typecheckUnavailable
 		res.reason = "node_modules not installed — typecheck did NOT run"
-		res.fixHint = fmt.Sprintf("run `npm install` in %s, then re-run `forge lint`", t.dir)
+		res.fixHint = fmt.Sprintf("run `npm install` in %s (or at the workspace root), then re-run `forge lint`", t.dir)
 		return res
 	}
 

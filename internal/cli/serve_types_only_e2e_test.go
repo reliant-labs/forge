@@ -4,55 +4,56 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
-	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
-// TestE2ERegistrationTypesOnlyService drives the real `forge generate`
-// pipeline through the registration-in-code lifecycle (what a binary
-// serves is the row list in the user-owned pkg/app/services.go):
+// TestE2EUnmountedServiceIsFailClosed is the modern replacement for the
+// retired TestE2ERegistrationTypesOnlyService.
 //
-//	A. newly added (UNLISTED): a "project" service appears in proto but
-//	   nowhere in services.go → handlers scaffold + row
-//	   constructor generate (the user might be about to implement it),
-//	   but the binary does NOT serve it: audit warns "row
-//	   constructor generated but unreferenced", generate prints the
-//	   exact line to add.
-//	B. registered: the user adds the serviceRowProject line → audit
-//	   clears. The opt-in is one line of user-owned code.
-//	C. tombstoned (types-only): the user deletes the row and leaves a
-//	   comment naming the serving binary → handlers Tier-1 stops
-//	   regenerating (stale candidates), audit warns with
-//	   state=tombstoned.
-//	D. --force-cleanup deletes the tracked generated files but never the
-//	   user-written scaffold files; the user removes the dir.
-//	E. steady state + idempotency: the tombstone comment keeps the
-//	   scaffold retired across repeated generates; bootstrap, manifest,
-//	   and services_gen are byte-stable.
+// WHY IT WAS REWRITTEN RATHER THAN DELETED. The old test drove the
+// registration-in-code lifecycle: a user-owned pkg/app/services.go row list,
+// serviceRow<X> constructors, and BootstrapOnly's string-keyed registration
+// guard. That whole mechanism is gone — a fresh project's pkg/app/ holds only
+// CONVENTIONS.md, and mount selection is now compile-time typed via
+// (*app.Components).Mount<Svc> method expressions with no string→func table
+// anywhere on the run path. Its skip comment pointed at the services.go PARSER
+// unit tests (TestServiceRegistry_* in generate_serve_test.go) as residual
+// coverage, and those do still exist. But they cover the parser for MIGRATED
+// projects that still carry the file; they say nothing about the guarantee
+// that replaced the registration guard. Deleting outright would have left that
+// guarantee — the boot-time completeness gate — with no e2e coverage at all,
+// so this file now pins the current model instead.
 //
-// Plus a runtime probe: BootstrapOnly's registration guard fails
-// pointedly when the unregistered name is passed to `server <name>`.
-func TestE2ERegistrationTypesOnlyService(t *testing.T) {
-	// RETIRED (FORGE_SHAPE_REDESIGN §2): this test drove the old
-	// registration-in-code lifecycle — the user-owned pkg/app/services.go
-	// row list, serviceRow<X> constructors, and BootstrapOnly's
-	// string-keyed registration guard. That whole generation mechanism is
-	// gone: fresh §2 projects no longer scaffold pkg/app/services.go;
-	// every service with a handler dir is constructed by the by-type
-	// injector (internal/app/inject_gen.go) and listed in the data-only
-	// internal/app/inventory_gen.go, with mount selection done at runtime
-	// via `server [services...]`. The residual services.go PARSER (kept
-	// for migrated projects that still carry the file) is covered by the
-	// TestServiceRegistry_* unit tests in generate_serve_test.go. A §2
-	// types-only e2e (proto generates but the binary doesn't mount it)
-	// should be written against the inventory/inject model.
-	t.Skip("registration-in-code mechanism retired in FORGE_SHAPE_REDESIGN §2; see comment")
-
+// THE QUESTION IS THE SAME ONE, ASKED OF THE NEW MODEL: what happens to a
+// service whose proto generates and whose handler dir exists, but which a
+// given binary does not mount? Four answers, in order:
+//
+//	A. The typed mount method IS generated for it — being unmounted is a
+//	   composition choice, never a gap in what forge emitted.
+//	B. Inventory lists it, so `forge project map` / `forge project audit`
+//	   still see it. Introspection is data-only and independent of mounting.
+//	C. FAIL-CLOSED: the all-services command sets RequireComplete: true, and
+//	   a binary that declares a service but does not mount it REFUSES TO
+//	   BOOT, naming the service. This is the guarantee that replaced the old
+//	   registration guard, and it is what makes a silent 404 in production
+//	   unreachable.
+//	D. A deliberate subset mount, with the gate off, boots fine and serves
+//	   ONLY the chosen service. The shipped per-service subcommand is exactly
+//	   this shape.
+//
+// C and D are two halves of one design and are only meaningful together: the
+// gate must refuse the accident and permit the intent.
+func TestE2EUnmountedServiceIsFailClosed(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -61,22 +62,29 @@ func TestE2ERegistrationTypesOnlyService(t *testing.T) {
 		"project", "new", "tonly",
 		"--mod", "github.com/test/tonly",
 		"--service", "api",
-		"--frontend", "web",
 	)
 	projectDir := filepath.Join(dir, "tonly")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 
-	// `forge project new` scaffolds the user-owned registration file listing the
-	// initial service — the migration contract for fresh projects.
-	registryPath := filepath.Join(projectDir, "pkg", "app", "services.go")
-	registry := readFileE2E(t, registryPath)
-	if !strings.Contains(registry, "serviceRowAPI(app, cfg, logger, opts...),") {
-		t.Fatalf("forge project new must scaffold pkg/app/services.go with the api row:\n%s", registry)
+	// The scaffolded api service has no RPCs, and a zero-RPC service mounts
+	// no routes at all — which would make "not mounted" and "mounted but
+	// empty" indistinguishable over HTTP in phase D. Give it one RPC so the
+	// served/not-served probe has something real to hit.
+	apiProtoPath := filepath.Join(projectDir, "proto", "services", "api", "v1", "api.proto")
+	apiProto := readFileE2E(t, apiProtoPath)
+	const rpcTODO = "  // TODO: Add your RPC methods here.\n"
+	if !strings.Contains(apiProto, rpcTODO) {
+		t.Fatalf("scaffolded api.proto no longer carries the RPC TODO anchor:\n%s", apiProto)
+	}
+	apiProto = strings.Replace(apiProto, rpcTODO, "  rpc Ping(PingRequest) returns (PingResponse) {}\n", 1)
+	apiProto += "\nmessage PingRequest {}\n\nmessage PingResponse {\n  string ok = 1;\n}\n"
+	if err := os.WriteFile(apiProtoPath, []byte(apiProto), 0o644); err != nil {
+		t.Fatalf("write api.proto: %v", err)
 	}
 
-	// Declare the second "project" service — the proto IS the declaration.
-	// Its canonical implementation will live in a sibling binary
-	// (control-plane); this repo ends up consuming only types/client.
+	// Declare a SECOND service. Its canonical implementation lives in a
+	// sibling binary (the control-plane shape); this project generates its
+	// types and handler dir but a carved binary may well not serve it.
 	protoDir := filepath.Join(projectDir, "proto", "services", "project", "v1")
 	if err := os.MkdirAll(protoDir, 0o755); err != nil {
 		t.Fatalf("mkdir proto dir: %v", err)
@@ -87,19 +95,11 @@ package services.project.v1;
 
 option go_package = "github.com/test/tonly/gen/services/project/v1;projectv1";
 
-// ProjectService is canonically served by a sibling binary
-// (control-plane); this repo only consumes the generated types/client.
+// ProjectService is canonically served by a sibling binary; this project
+// generates its types and its typed mount, and composition decides whether a
+// given binary actually mounts it.
 service ProjectService {
-  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {}
   rpc GetProject(GetProjectRequest) returns (GetProjectResponse) {}
-}
-
-message CreateProjectRequest {
-  string name = 1;
-}
-
-message CreateProjectResponse {
-  string id = 1;
 }
 
 message GetProjectRequest {
@@ -114,254 +114,272 @@ message GetProjectResponse {
 	if err := os.WriteFile(filepath.Join(protoDir, "project.proto"), []byte(projectProto), 0o644); err != nil {
 		t.Fatalf("write project.proto: %v", err)
 	}
-	addProjectServiceEntry(t, projectDir)
 
-	// Wire the unpublished forge/pkg + gen modules to local sources, same
-	// as the fixture-corpus harness (appkit/serverkit revisions are newer
-	// than any published snapshot).
+	// Wire the unpublished forge/pkg to local sources, same as the
+	// fixture-corpus harness (serverkit's completeness gate — the thing
+	// under test — is newer than any published snapshot).
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// ── Phase A: newly added — generated but NOT served ─────────────────
-	out := runCmdOutput(t, projectDir, forgeBin, "generate")
-
-	// Types + Connect client + frontend hooks generate (caller-side
-	// artifacts are never gated on registration).
-	assertPathExistsE2E(t, filepath.Join(projectDir, "gen", "services", "project", "v1"))
-	genEntries, err := os.ReadDir(filepath.Join(projectDir, "gen", "services", "project", "v1"))
-	if err != nil || len(genEntries) == 0 {
-		t.Fatalf("expected generated proto types for project service, err=%v entries=%v", err, genEntries)
-	}
-	assertPathExistsE2E(t, filepath.Join(projectDir, "frontends", "web", "src", "hooks", "project-service-hooks.ts"))
-
-	// The handlers scaffold + row constructor DO generate for a newly
-	// added service — implement-then-register is the supported flow.
-	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "project"))
-	rows := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
-	if !strings.Contains(rows, "func serviceRowProject(") {
-		t.Errorf("services_gen.go must carry the row constructor for the unregistered project service:\n%s", rows)
-	}
-
-	// But the binary does not SERVE it: generate says so, with the exact
-	// line to add.
-	if !strings.Contains(out, "serviceRowProject(app, cfg, logger, opts...),") {
-		t.Errorf("generate must print the registration line for the unlisted service:\n%s", out)
-	}
-
-	// The bootstrap registration guard knows the full inventory.
-	bootstrap := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	if !strings.Contains(bootstrap, `"project"`) || !strings.Contains(bootstrap, "not registered in pkg/app/services.go") {
-		t.Errorf("bootstrap must carry the registration guard naming the project inventory entry:\n%s", bootstrap)
-	}
-
-	assertAuditRegistration(t, projectDir, forgeBin, false /* served */, "unlisted")
-
-	runCmd(t, projectDir, "go", "build", "./...")
-
-	// ── Phase B: register — one user-owned line serves the service ──────
-	editServiceRegistry(t, registryPath, registerProjectRow)
 	runCmd(t, projectDir, forgeBin, "generate")
-	assertAuditRegistration(t, projectDir, forgeBin, true, "")
+
+	// ── A. The typed mount surface is generated for BOTH services ───────
+	//
+	// Not being mounted is a composition decision. Forge still emits
+	// everything needed to mount it, so turning it on is a one-line change
+	// and never a regeneration.
+	assertPathExistsE2E(t, filepath.Join(projectDir, "gen", "services", "project", "v1"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "project"))
+
+	mounts := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "mounts_services_gen.go"))
+	for _, method := range []string{
+		"func (c *Components) MountProject(",
+		"func (c *Components) MountAPI(",
+		"func (c *Components) MountAll(",
+	} {
+		if !strings.Contains(mounts, method) {
+			t.Errorf("mounts_services_gen.go must generate %q:\n%s", method, mounts)
+		}
+	}
+	// The typed method expression is what a subset command names; it exists
+	// per-service in its own generated file next to the user-owned command.
+	projectMountExpr := readFileE2E(t, filepath.Join(projectDir,
+		"cmd", "tonly", "cmd", "services", "project_mount_gen.go"))
+	if !strings.Contains(projectMountExpr, "(*app.Components).MountProject") {
+		t.Errorf("per-service mount file must name the typed method expression:\n%s", projectMountExpr)
+	}
+
+	// ── B. Inventory lists it — introspection is independent of mounting ─
+	//
+	// Inventory is DATA-ONLY (`forge project map` / `audit` / the services
+	// listing read it; the run path never does), so a service that no binary
+	// mounts is still fully discoverable.
+	for _, row := range []string{
+		`Name:        "project"`,
+		"ConnectPath: projectv1connect.ProjectServiceName",
+	} {
+		if !strings.Contains(mounts, row) {
+			t.Errorf("Inventory must carry the project row %q:\n%s", row, mounts)
+		}
+	}
+	assertAuditSeesService(t, projectDir, forgeBin, "project", "GetProject")
+
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// ── Phase C: retire — delete the row, leave the tombstone comment ───
-	editServiceRegistry(t, registryPath, tombstoneProjectRow)
-	out = runCmdOutput(t, projectDir, forgeBin, "generate")
-	if !strings.Contains(out, "types-only — not registered in pkg/app/services.go") {
-		t.Errorf("generate output must announce the types-only skip:\n%s", out)
-	}
-	// The tracked Tier-1 file under the retired dir is a report-only
-	// stale candidate (the dir itself survives).
-	if !strings.Contains(out, "stale generated file") || !strings.Contains(out, "internal/handlers/project/mock_gen.go") {
-		t.Errorf("generate must report the retired tracked files as stale candidates:\n%s", out)
-	}
-	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "project", "mock_gen.go"))
-	rows = readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
-	if strings.Contains(rows, "serviceRowProject") {
-		t.Errorf("tombstoned service must drop out of services_gen.go")
-	}
-	assertAuditRegistration(t, projectDir, forgeBin, false, "tombstoned")
-
-	// ── Phase D: --force-cleanup removes generated files, never user files ─
-	// --skip-validate: the user-owned scaffold files still reference the
-	// generated code until the user moves or deletes them — exactly what
-	// the audit finding instructs.
-	runCmd(t, projectDir, forgeBin, "generate", "--force-cleanup", "--skip-validate")
-	if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project", "mock_gen.go")); !os.IsNotExist(err) {
-		t.Errorf("--force-cleanup must delete the tracked mock_gen.go, stat err = %v", err)
-	}
-	for _, userFile := range []string{"service.go", codegen.RPCHandlerFileName("CreateProject")} {
-		if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project", userFile)); err != nil {
-			t.Errorf("user-written %s must survive --force-cleanup: %v", userFile, err)
-		}
-	}
-
-	// User completes the retirement by removing their scaffold files.
-	if err := os.RemoveAll(filepath.Join(projectDir, "internal", "handlers", "project")); err != nil {
-		t.Fatalf("remove retired dir: %v", err)
-	}
-
-	// ── Phase E: steady state + idempotency ─────────────────────────────
-	out = runCmdOutput(t, projectDir, forgeBin, "generate")
-	if strings.Contains(out, "stale generated file") {
-		t.Errorf("steady-state generate must report no stale candidates:\n%s", out)
-	}
-	// The tombstone comment keeps the scaffold retired — generate must
-	// NOT re-scaffold handlers/project for a comment-mentioned service.
-	if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project")); !os.IsNotExist(err) {
-		t.Fatalf("tombstoned service must stay retired (no handlers re-scaffold), stat err = %v", err)
-	}
-	assertAuditRegistration(t, projectDir, forgeBin, false, "")
-	firstBootstrap := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	firstRows := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
-
-	out = runCmdOutput(t, projectDir, forgeBin, "generate")
-	if strings.Contains(out, "stale generated file") {
-		t.Errorf("second generate must be a no-op for cleanup:\n%s", out)
-	}
-	if got := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go")); got != firstBootstrap {
-		t.Errorf("bootstrap.go must be byte-stable across repeated generates")
-	}
-	if got := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go")); got != firstRows {
-		t.Errorf("services_gen.go must be byte-stable across repeated generates")
-	}
-	runCmd(t, projectDir, "go", "build", "./...")
-
-	// The registration guard is live behavior, not just rendered text:
-	// running the binary with the unregistered name must fail pointedly.
-	t.Run("server-name-guard", func(t *testing.T) {
-		cmd := exec.Command("go", "run", "./cmd", "server", "project")
-		cmd.Dir = projectDir
-		// The scaffold's own internal/app/auth.go supplies a validator, so
-		// interceptor construction succeeds and BootstrapOnly's guard is
-		// reached. Nothing here disables authentication — nothing can.
-		cmd.Env = append(os.Environ(), "ENVIRONMENT=development")
-		guardOut, runErr := cmd.CombinedOutput()
-		if runErr == nil {
-			t.Fatalf("running the unregistered service name must fail; output:\n%s", guardOut)
-		}
-		if !strings.Contains(string(guardOut), "not registered in pkg/app/services.go") {
-			t.Errorf("guard error must name the registration file:\n%s", guardOut)
-		}
-	})
-}
-
-// addProjectServiceEntry is a deliberate no-op: services are discovered from
-// the proto descriptor written above, and what a binary serves is decided by
-// the row list in the user-owned pkg/app/services.go. Nothing else has to be
-// told about the service; the call sites stay so the lifecycle steps in the
-// test read explicitly.
-func addProjectServiceEntry(t *testing.T, projectDir string) {
-	t.Helper()
-}
-
-type registryEdit int
-
-const (
-	registerProjectRow registryEdit = iota
-	tombstoneProjectRow
-)
-
-// editServiceRegistry mutates the user-owned pkg/app/services.go the
-// way a user (or their agent) would: adding the project row after the
-// api row, or replacing it with the tombstone comment.
-func editServiceRegistry(t *testing.T, registryPath string, edit registryEdit) {
-	t.Helper()
-	const apiRow = "serviceRowAPI(app, cfg, logger, opts...),"
-	const projectRow = "serviceRowProject(app, cfg, logger, opts...),"
-	const tombstone = "// project: types-only — served by control-plane"
-
-	data, err := os.ReadFile(registryPath)
+	// One postgres for both boots below: the scaffolded config declares
+	// database_url REQUIRED and OpenInfra pings it, so "no database" is not
+	// a bootable configuration and neither phase could run without it.
+	dsn, cleanup, err := pgtest.NewURL()
 	if err != nil {
-		t.Fatalf("read services.go: %v", err)
+		t.Fatalf("provision boot postgres: %v", err)
 	}
-	content := string(data)
-	switch edit {
-	case registerProjectRow:
-		if !strings.Contains(content, apiRow) {
-			t.Fatalf("services.go missing the api row to anchor the edit:\n%s", content)
+	defer cleanup()
+
+	// ── C. FAIL-CLOSED: declared but not mounted refuses to boot ────────
+	//
+	// Carve the all-services command down to one service while leaving
+	// RequireComplete: true — precisely the mistake the gate exists to
+	// catch, and exactly what a half-finished refactor looks like. Boot must
+	// FAIL and must NAME the unmounted service; a server that came up here
+	// would answer production traffic for ProjectService with a 404.
+	serverCmdPath := filepath.Join(projectDir, "cmd", "tonly", "cmd", "server.go")
+	allServicesCmd := readFileE2E(t, serverCmdPath)
+	const mountAllLine = "Mount:           (*app.Components).MountAll,"
+	if !strings.Contains(allServicesCmd, mountAllLine) {
+		t.Fatalf("all-services command no longer names MountAll as expected:\n%s", allServicesCmd)
+	}
+	if !strings.Contains(allServicesCmd, "RequireComplete: true,") {
+		t.Fatalf("all-services command must set RequireComplete: true:\n%s", allServicesCmd)
+	}
+	incomplete := strings.Replace(allServicesCmd, mountAllLine,
+		"Mount:           (*app.Components).MountAPI,", 1)
+	if err := os.WriteFile(serverCmdPath, []byte(incomplete), 0o644); err != nil {
+		t.Fatalf("write carved server.go: %v", err)
+	}
+
+	incompleteBin := filepath.Join(projectDir, "tonly-incomplete")
+	runCmd(t, projectDir, "go", "build", "-o", incompleteBin, "./cmd/tonly")
+	bootOut, bootErr := runServerExpectingExit(t, incompleteBin, projectDir, dsn)
+	if bootErr == nil {
+		t.Fatalf("a binary that declares ProjectService but does not mount it MUST refuse to boot "+
+			"with RequireComplete: true; it started instead:\n%s", bootOut)
+	}
+	for _, want := range []string{
+		"completeness check",
+		"services.project.v1.ProjectService",
+	} {
+		if !strings.Contains(bootOut, want) {
+			t.Errorf("fail-closed boot error must contain %q:\n%s", want, bootOut)
 		}
-		content = strings.Replace(content, apiRow, apiRow+"\n\t\t"+projectRow, 1)
-	case tombstoneProjectRow:
-		if !strings.Contains(content, projectRow) {
-			t.Fatalf("services.go missing the project row to tombstone:\n%s", content)
-		}
-		content = strings.Replace(content, projectRow, tombstone, 1)
 	}
-	if err := os.WriteFile(registryPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write services.go: %v", err)
+
+	// ── D. A deliberate subset mount boots, and serves only its service ──
+	//
+	// Same carved mount, gate turned off — the shape every per-service
+	// subcommand ships with. It must boot cleanly and mount EXACTLY the
+	// chosen service. The discriminator is the status code: a mounted
+	// Connect route rejects the unauthenticated call with 401 (the auth
+	// interceptor ran, so the route is registered), while an unmounted one
+	// is a plain 404 from the mux.
+	subset := strings.Replace(incomplete, "RequireComplete: true,", "RequireComplete: false,", 1)
+	if err := os.WriteFile(serverCmdPath, []byte(subset), 0o644); err != nil {
+		t.Fatalf("write subset server.go: %v", err)
 	}
+	subsetBin := filepath.Join(projectDir, "tonly-subset")
+	runCmd(t, projectDir, "go", "build", "-o", subsetBin, "./cmd/tonly")
+
+	assertSubsetMountServesOnly(t, subsetBin, projectDir, dsn,
+		"/services.api.v1.APIService/Ping",
+		"/services.project.v1.ProjectService/GetProject")
 }
 
-// assertAuditRegistration runs `forge project audit --json` and asserts (a) the
-// shape category carries the served flag for the project service and
-// (b) the codegen category carries (or doesn't) the
-// unregistered_services finding with the expected state ("" = no
-// finding expected).
-func assertAuditRegistration(t *testing.T, projectDir, forgeBin string, projectServed bool, wantFindingState string) {
+// assertAuditSeesService asserts that `forge project audit --json` reports the
+// named service and one of its RPCs under the shape category. Mounting is a
+// composition decision made in Go source; the audit reads the proto surface
+// and the data-only Inventory, so a service no binary mounts must still be
+// fully visible to introspection.
+func assertAuditSeesService(t *testing.T, projectDir, forgeBin, serviceName, rpcName string) {
 	t.Helper()
-	out := runCmdOutput(t, projectDir, forgeBin, "audit", "--json")
+	out := runCmdOutput(t, projectDir, forgeBin, "project", "audit", "--json")
 	var report struct {
 		Categories map[string]struct {
-			Status  string         `json:"status"`
-			Details map[string]any `json:"details"`
+			Details struct {
+				Services []struct {
+					Name string `json:"name"`
+					RPCs []struct {
+						Name string `json:"name"`
+					} `json:"rpcs"`
+				} `json:"services"`
+			} `json:"details"`
 		} `json:"categories"`
 	}
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("parse audit JSON: %v\n%s", err, out)
 	}
 
-	shape := report.Categories["shape"]
-	services, _ := shape.Details["services"].([]any)
-	var project map[string]any
-	for _, s := range services {
-		m := s.(map[string]any)
-		if m["name"] == "project" {
-			project = m
+	for _, svc := range report.Categories["shape"].Details.Services {
+		if svc.Name != serviceName {
+			continue
 		}
-	}
-	if project == nil {
-		t.Fatalf("audit shape must keep the unregistered service discoverable: %v", shape.Details)
-	}
-	if project["served"] != projectServed {
-		t.Errorf("audit shape project.served = %v, want %v", project["served"], projectServed)
-	}
-	if !projectServed {
-		if rpcs, ok := project["rpcs"].([]any); ok {
-			for _, r := range rpcs {
-				m := r.(map[string]any)
-				if m["served"] != false {
-					t.Errorf("audit shape rpc %v must carry additive served:false", m["name"])
-				}
+		for _, rpc := range svc.RPCs {
+			if rpc.Name == rpcName {
+				return
 			}
 		}
+		t.Fatalf("audit shape service %q is missing rpc %q: %+v", serviceName, rpcName, svc)
+	}
+	t.Fatalf("audit shape must keep the unmounted service %q discoverable:\n%s", serviceName, out)
+}
+
+// runServerExpectingExit boots serverBin's all-services command and waits for
+// it to EXIT, returning its combined output. It is the fail-closed probe: the
+// gate rejects before the listener opens, so a refusal is a fast exit rather
+// than anything observable over HTTP. A server that stays up past the deadline
+// is itself the failure — it is killed and reported as still running.
+func runServerExpectingExit(t *testing.T, serverBin, projectDir, dsn string) (string, error) {
+	t.Helper()
+	port := freePortE2E(t)
+
+	cmd := exec.Command(serverBin, "server")
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("PORT=%d", port),
+		"DATABASE_URL="+dsn,
+		"ENVIRONMENT=development",
+	)
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
 	}
 
-	codegen := report.Categories["codegen"]
-	findings, hasFinding := codegen.Details["unregistered_services"]
-	if wantFindingState == "" {
-		if hasFinding {
-			t.Errorf("audit codegen unregistered_services present, want absent (details: %v)", codegen.Details)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return out.String(), err
+	case <-time.After(60 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		return out.String(), nil // nil error == "it did not refuse", which the caller fails on
+	}
+}
+
+// assertSubsetMountServesOnly boots serverBin's carved all-services command
+// (subset mount, completeness gate off), then asserts it is healthy, that
+// mountedPath is served, and that unmountedPath is NOT.
+//
+// The status code is the discriminator, and the distinction is sharp: a
+// registered Connect route runs the auth interceptor and rejects the
+// unauthenticated probe with 401, while an unregistered one never reaches a
+// handler and the mux answers 404. Asserting 401 (not 2xx) also keeps the
+// test honest about auth — nothing here disables authentication.
+func assertSubsetMountServesOnly(t *testing.T, serverBin, projectDir, dsn, mountedPath, unmountedPath string) {
+	t.Helper()
+	port := freePortE2E(t)
+
+	cmd := exec.Command(serverBin, "server")
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("PORT=%d", port),
+		"DATABASE_URL="+dsn,
+		"ENVIRONMENT=development",
+	)
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start subset server: %v", err)
+	}
+	killed := false
+	defer func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
-		return
+	}()
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if !waitForServer(t, base+"/healthz", 30*time.Second) {
+		t.Fatalf("subset mount must boot with the completeness gate off; it never became ready\noutput:\n%s", out.String())
 	}
-	if !hasFinding {
-		t.Fatalf("audit codegen missing unregistered_services finding (details: %v)", codegen.Details)
+
+	if code := postStatus(t, base+mountedPath); code != http.StatusUnauthorized {
+		t.Errorf("mounted route %s = %d, want 401 (route registered, auth interceptor rejects)\noutput:\n%s",
+			mountedPath, code, out.String())
 	}
-	list, _ := findings.([]any)
-	found := false
-	for _, f := range list {
-		m := f.(map[string]any)
-		if m["service"] == "project" {
-			found = true
-			if m["state"] != wantFindingState {
-				t.Errorf("finding state = %v, want %s", m["state"], wantFindingState)
-			}
+	if code := postStatus(t, base+unmountedPath); code != http.StatusNotFound {
+		t.Errorf("unmounted route %s = %d, want 404 (never registered on the mux)\noutput:\n%s",
+			unmountedPath, code, out.String())
+	}
+
+	// A carved process must still shut down cleanly.
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		killed = true
+		if err != nil {
+			t.Fatalf("subset server did not shut down cleanly on SIGTERM: %v\noutput:\n%s", err, out.String())
 		}
+	case <-time.After(30 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		killed = true
+		t.Fatalf("subset server did not exit within 30s of SIGTERM\noutput:\n%s", out.String())
 	}
-	if !found {
-		t.Errorf("unregistered_services has no entry for project: %v", findings)
+}
+
+// postStatus POSTs an empty Connect/JSON body and returns the status code.
+func postStatus(t *testing.T, url string) int {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
 	}
-	if codegen.Status != "warn" && codegen.Status != "error" {
-		t.Errorf("registration finding must degrade codegen status, got %s", codegen.Status)
-	}
+	defer resp.Body.Close()
+	return resp.StatusCode
 }

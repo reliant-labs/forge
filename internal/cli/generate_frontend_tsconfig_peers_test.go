@@ -60,7 +60,7 @@ func TestAddPeerPinsToTsconfig_LegacyProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !addPeerPinsToTsconfig(path) {
+	if !addPeerPinsToTsconfig(path, false) {
 		t.Fatal("addPeerPinsToTsconfig reported no change on a tsconfig with no peer pins")
 	}
 
@@ -72,7 +72,10 @@ func TestAddPeerPinsToTsconfig_LegacyProject(t *testing.T) {
 		// live. Those differ for a package typed by a separate @types/
 		// package — pinning react at ./node_modules/react gives tsc a
 		// directory with no .d.ts and fails every .tsx with TS7016.
-		want := "./node_modules/" + webruntimepeers.TypePinTarget(pkg)
+		// EXACTLY ONE element, aimed at this project's layout. Not a
+		// candidate list: SWC asserts the single-element rule for a
+		// non-wildcard key and panics `next build` on anything longer.
+		want := webruntimepeers.TypePinPath(pkg, false)
 		got, ok := paths[pkg]
 		if !ok {
 			t.Errorf("paths has no entry for %q — tsc resolves it from the linked runtime "+
@@ -102,10 +105,10 @@ func TestAddPeerPinsToTsconfig_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	addPeerPinsToTsconfig(path)
+	addPeerPinsToTsconfig(path, false)
 	first := mustReadTsconfig(t, path)
 
-	if addPeerPinsToTsconfig(path) {
+	if addPeerPinsToTsconfig(path, false) {
 		t.Error("second pass reported a change; the reconcile must be idempotent")
 	}
 	if second := mustReadTsconfig(t, path); second != first {
@@ -126,7 +129,7 @@ func TestAddPeerPinsToTsconfig_NoPathsBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if addPeerPinsToTsconfig(path) {
+	if addPeerPinsToTsconfig(path, false) {
 		t.Error("changed a tsconfig with no paths block; forge must leave it alone")
 	}
 	if got := mustReadTsconfig(t, path); got != noPaths {
@@ -150,7 +153,7 @@ func TestAddPeerPinsToTsconfig_PartialPins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !addPeerPinsToTsconfig(path) {
+	if !addPeerPinsToTsconfig(path, false) {
 		t.Fatal("reported no change though several pins were missing")
 	}
 
@@ -162,6 +165,95 @@ func TestAddPeerPinsToTsconfig_PartialPins(t *testing.T) {
 	for _, pkg := range tsconfigPeerPins() {
 		if _, ok := paths[pkg]; !ok {
 			t.Errorf("paths has no entry for %q after reconcile; paths=%v", pkg, paths)
+		}
+	}
+}
+
+// TestAddPeerPinsToTsconfig_RetargetsStaleLayout pins the healing half.
+//
+// tsconfig.json is scaffold-once, so a project whose node_modules layout later
+// changed — most commonly because a dev forge build wrote the workspace bridge
+// and npm hoisted every frontend's dependencies to the project root — keeps
+// pins aimed at a frontends/<name>/node_modules that no longer exists. tsc
+// reports nothing for a pin that resolves to nothing: it silently falls back
+// to the ordinary walk, finds the linked runtime's own copy, and fails
+// mock-transport_gen.ts with TS2322. Adding the missing pins is not enough;
+// the present-but-wrong ones have to be retargeted.
+func TestAddPeerPinsToTsconfig_RetargetsStaleLayout(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "tsconfig.json")
+	if err := os.WriteFile(path, []byte(legacyTsconfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Born standalone…
+	if !addPeerPinsToTsconfig(path, false) {
+		t.Fatal("first pass reported no change")
+	}
+	// …then the tree became a workspace and npm hoisted.
+	if !addPeerPinsToTsconfig(path, true) {
+		t.Fatal("layout changed to hoisted but the reconcile reported no change — " +
+			"the pins still name a directory that does not exist, and tsc silently " +
+			"resolves the linked runtime's copy instead (TS2322)")
+	}
+
+	paths := parseTsconfig(t, mustReadTsconfig(t, path))
+	for _, pkg := range tsconfigPeerPins() {
+		want := webruntimepeers.TypePinPath(pkg, true)
+		got, ok := paths[pkg]
+		if !ok {
+			t.Errorf("paths lost its entry for %q; paths=%v", pkg, paths)
+			continue
+		}
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("paths[%q] = %v, want exactly [%q] for the hoisted layout", pkg, got, want)
+		}
+	}
+
+	// Retargeting must not duplicate the key, and must leave "@/*" alone.
+	raw := mustReadTsconfig(t, path)
+	if n := strings.Count(raw, `"@connectrpc/connect":`); n != 1 {
+		t.Errorf("@connectrpc/connect appears %d times after retarget, want 1", n)
+	}
+	if got := paths["@/*"]; len(got) != 1 || got[0] != "./src/*" {
+		t.Errorf(`paths must still map "@/*" to ["./src/*"], got %v`, got)
+	}
+
+	// Re-running against the SAME layout is a no-op, so `forge generate`
+	// twice in a row still reports no changes.
+	if addPeerPinsToTsconfig(path, true) {
+		t.Error("second pass at the same layout reported a change; the reconcile must be idempotent")
+	}
+}
+
+// A pin must carry exactly one element. TypeScript tolerates more, but Next.js
+// resolves through SWC, which asserts the single-element rule for a key with
+// no `*` and takes the whole build down with a Rust panic:
+//
+//	assertion `left == right` failed: value of `paths.@bufbuild/protobuf`
+//	should be an array with one element because the src path does not
+//	contains * (wildcard)
+//
+// That is why the fix resolves the layout instead of listing both.
+func TestAddPeerPinsToTsconfig_EmitsExactlyOneCandidate(t *testing.T) {
+	t.Parallel()
+
+	for _, hoisted := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "tsconfig.json")
+		if err := os.WriteFile(path, []byte(legacyTsconfig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		addPeerPinsToTsconfig(path, hoisted)
+
+		for pkg, got := range parseTsconfig(t, mustReadTsconfig(t, path)) {
+			if pkg == "@/*" {
+				continue // a wildcard key, exempt from the SWC rule
+			}
+			if len(got) != 1 {
+				t.Errorf("paths[%q] (hoisted=%v) has %d elements, want 1 — SWC panics `next build` "+
+					"on a multi-element value for a non-wildcard key", pkg, hoisted, len(got))
+			}
 		}
 	}
 }

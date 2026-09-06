@@ -174,15 +174,41 @@ func distinctVariant(s string, k, minLen, maxLen int) (string, bool) {
 // supply that many distinct values; the caller caps the table's row count at
 // its length (the same treatment a 1-1 UNIQUE foreign key already gets) and
 // surfaces the accompanying warning.
-func (p *Plan) assignUnique(tp *tablePlan, col schemadef.Column) ([]string, string) {
+//
+// fold is the case fold the index keys on ("lower"/"upper" for
+// `UNIQUE (lower(name))`, "" for a plain one). It changes what DISTINCT
+// means: under a fold, "Acme" and "ACME" are the same key, so the used-set
+// is keyed case-insensitively. Values are still emitted in their natural
+// casing — the index folds them, the data does not have to.
+func (p *Plan) assignUnique(tp *tablePlan, col schemadef.Column, fold string) ([]string, string) {
 	table := tp.table.Name
 	n := tp.n
+	// key maps a candidate literal to the value the INDEX compares.
+	key := func(lit string) string { return lit }
+	if fold != "" {
+		key = strings.ToLower
+	}
 
 	// Closed vocabulary → draw WITHOUT replacement. This is the case pool
 	// depth alone could never fix: with replacement, a 24-value pool drew only
 	// 10 distinct values across 20 rows.
 	if pool, ok := p.closedPool(table, col); ok {
 		vals := permute(pool, p.cfg.EffectiveSalt(), table, col.Name)
+		// Under a fold, two pool entries differing only in case are ONE
+		// index key, so the usable depth is the folded-distinct count, not
+		// len(pool). Collapsing here keeps the cap honest instead of
+		// discovering the collision at INSERT time.
+		if fold != "" {
+			seen := make(map[string]bool, len(vals))
+			kept := vals[:0]
+			for _, v := range vals {
+				if k := strings.ToLower(v); !seen[k] {
+					seen[k] = true
+					kept = append(kept, v)
+				}
+			}
+			vals = kept
+		}
 		warn := ""
 		if len(vals) < n {
 			warn = fmt.Sprintf("seed plan: %s.%s is UNIQUE but draws from a %d-value vocabulary — %s capped to %d row(s) (a UNIQUE column cannot repeat a value)",
@@ -221,9 +247,9 @@ func (p *Plan) assignUnique(tp *tablePlan, col schemadef.Column) ([]string, stri
 			// and rejected by postgres at parse time. The column has exactly
 			// one candidate (the document the schema declares), so the honest
 			// answer is the row cap below, not a mangled second value.
-			next, ok = lit, !used[lit]
+			next, ok = lit, !used[key(lit)]
 		case isStr:
-			next, ok = probeString(raw, used, limit, minLen, maxLen, admits)
+			next, ok = probeStringFold(raw, used, limit, minLen, maxLen, admits, key)
 		case col.Type == schemadef.TypeInt:
 			next, ok = probeInt(lit, used, limit, bound)
 		case col.Type == schemadef.TypeBytes:
@@ -235,13 +261,13 @@ func (p *Plan) assignUnique(tp *tablePlan, col schemadef.Column) ([]string, stri
 			// Every other literal shape (timestamps, JSON documents, arrays):
 			// no safe way to invent a distinct variant, so the natural value
 			// is the only candidate.
-			next, ok = lit, !used[lit]
+			next, ok = lit, !used[key(lit)]
 		}
 		if !ok {
 			return lits, fmt.Sprintf("seed plan: %s.%s is UNIQUE but its constraints admit only %d distinct value(s) — %s capped to %d row(s)",
 				table, col.Name, len(lits), table, len(lits))
 		}
-		used[next] = true
+		used[key(next)] = true
 		lits = append(lits, next)
 	}
 	return lits, ""
@@ -252,8 +278,12 @@ func (p *Plan) assignUnique(tp *tablePlan, col schemadef.Column) ([]string, stri
 // are the rendered LITERAL, so they key the caller's used-set identically.
 // admits rejects a variant the column's pattern CHECK would not accept; it is
 // nil for a column with no such CHECK.
-func probeString(raw string, used map[string]bool, limit, minLen, maxLen int, admits func(string) bool) (string, bool) {
-	if lit := sqlString(raw); !used[lit] {
+// key maps a candidate to the value the INDEX compares, which is how a
+// case-folded UNIQUE index is satisfied: under `UNIQUE (lower(name))` "Acme"
+// and "ACME" are ONE key, so the probe must treat them as equal while still
+// emitting the value in its natural casing. An unfolded index passes identity.
+func probeStringFold(raw string, used map[string]bool, limit, minLen, maxLen int, admits func(string) bool, key func(string) string) (string, bool) {
+	if lit := sqlString(raw); !used[key(lit)] {
 		return lit, true
 	}
 	for k := 1; k <= limit; k++ {
@@ -264,7 +294,7 @@ func probeString(raw string, used map[string]bool, limit, minLen, maxLen int, ad
 		if admits != nil && !admits(alt) {
 			continue
 		}
-		if lit := sqlString(alt); !used[lit] {
+		if lit := sqlString(alt); !used[key(lit)] {
 			return lit, true
 		}
 	}
@@ -415,10 +445,11 @@ func (p *Plan) finalize() {
 			if cp.col.IsPK || cp.fk != nil || p.managedRole(name, cp.col) == managedDeletedAt {
 				continue // referential / managed columns are already unique
 			}
-			if !uniqueSingleColumn(tp.table, cp.col.Name) {
+			fold, isUnique := uniqueSingleColumnFold(tp.table, cp.col.Name)
+			if !isUnique {
 				continue
 			}
-			lits, warn := p.assignUnique(tp, cp.col)
+			lits, warn := p.assignUnique(tp, cp.col, fold)
 			if warn != "" {
 				p.planWarns = append(p.planWarns, warn)
 			}

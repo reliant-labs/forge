@@ -129,10 +129,18 @@ func installFrontendTSPlugin(ctx context.Context, projectDir string, force bool)
 		if _, err := os.Stat(pkgJSON); err != nil {
 			continue
 		}
-		pluginBin := filepath.Join(feDir, "node_modules", ".bin", "protoc-gen-es")
+		// Ask both layouts, not just the frontend-local one. Under forge's dev
+		// workspace bridge npm HOISTS every member's dependencies to
+		// <project>/node_modules and creates no frontends/<name>/node_modules
+		// at all, so a frontend-local-only probe reports the plugin missing
+		// when it is installed one directory up — reinstalling it on every
+		// run and then warning that the binary it just installed is "not
+		// found". resolveLocalTSPluginRel is the same resolver the buf pass
+		// uses, so the two cannot disagree about where the plugin lives.
+		feRel := filepath.Join("frontends", entry.Name())
 		if !force {
-			if _, err := os.Stat(pluginBin); err == nil {
-				fmt.Printf("✅ %-26s already installed in frontends/%s/ (use --force to reinstall)\n", "protoc-gen-es", entry.Name())
+			if _, ok := resolveLocalTSPluginRel(projectDir, feRel); ok {
+				fmt.Printf("✅ %-26s already installed for frontends/%s/ (use --force to reinstall)\n", "protoc-gen-es", entry.Name())
 				continue
 			}
 		}
@@ -145,8 +153,10 @@ func installFrontendTSPlugin(ctx context.Context, projectDir string, force bool)
 			fmt.Fprintf(os.Stderr, "  ⚠️  npm install in frontends/%s/ failed: %v\n", entry.Name(), err)
 			continue
 		}
-		if _, err := os.Stat(pluginBin); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠️  Installed %s but %s not found.\n", frontendTSPluginPackage, pluginBin)
+		if _, ok := resolveLocalTSPluginRel(projectDir, feRel); !ok {
+			fmt.Fprintf(os.Stderr, "  ⚠️  Installed %s but protoc-gen-es is in neither "+
+				"frontends/%s/node_modules/.bin nor the workspace root's node_modules/.bin.\n",
+				frontendTSPluginPackage, entry.Name())
 			continue
 		}
 		fmt.Printf("  ✅ protoc-gen-es installed in frontends/%s/\n", entry.Name())

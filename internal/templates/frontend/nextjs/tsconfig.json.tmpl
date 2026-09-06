@@ -23,8 +23,9 @@
 {{- if .Workspaces}}
       "@/components/ui/*": ["../../packages/ui-web/src/components/ui/*"],
 {{- end}}
+{{- $hoisted := .WebRuntimePinsHoisted}}
 {{- range .WebRuntimeTypePins}}
-      "{{.}}": ["./node_modules/{{typePinTarget .}}"],
+      "{{.}}": ["{{typePinPath . $hoisted}}"],
 {{- end}}
       "@/*": ["./src/*"]
     }

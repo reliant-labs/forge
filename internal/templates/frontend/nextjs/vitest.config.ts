@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
@@ -25,14 +25,34 @@ import { defineConfig } from "vitest/config";
 // Reading the list from the package rather than hard-coding it means a peer
 // added to the runtime later is deduped here without anyone remembering to
 // update this file. Same mechanism the vite-spa scaffold uses.
-const webRuntimePeers: string[] = Object.keys(
-  JSON.parse(
-    fs.readFileSync(
-      join(__dirname, "node_modules", "@reliantlabs", "forge-web-runtime", "package.json"),
-      "utf8",
-    ),
-  ).peerDependencies ?? {},
-);
+// Walk up to find the package. An npm workspace — which forge's own dev bridge
+// writes — HOISTS every member's dependencies to the workspace root, so this
+// frontend legitimately has no node_modules of its own and the package sits at
+// the project root instead. Reading only __dirname/node_modules threw
+// `ENOENT: no such file or directory` and took the whole vitest run down at
+// config load, before a single test ran.
+const readRuntimePeers = (): string[] => {
+  let dir = __dirname;
+  for (;;) {
+    const manifest = join(
+      dir,
+      "node_modules",
+      "@reliantlabs",
+      "forge-web-runtime",
+      "package.json",
+    );
+    if (fs.existsSync(manifest)) {
+      return Object.keys(
+        JSON.parse(fs.readFileSync(manifest, "utf8")).peerDependencies ?? {},
+      );
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return []; // not installed — nothing to dedupe
+    dir = parent;
+  }
+};
+
+const webRuntimePeers: string[] = readRuntimePeers();
 
 export default defineConfig({
   plugins: [react()],

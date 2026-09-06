@@ -102,6 +102,13 @@ func (p *Plan) constraintDef(table, name string) string {
 	}
 	for _, ix := range t.Indexes {
 		if ix.Name == name && ix.Unique {
+			// Columns is only the bare-column subset of an expression
+			// index, so rendering it as the whole key would print a
+			// constraint the table does not have (or, for an
+			// all-expression index, an empty one).
+			if ix.Expression {
+				return "UNIQUE (expression)"
+			}
 			return fmt.Sprintf("UNIQUE (%s)", strings.Join(ix.Columns, ", "))
 		}
 	}

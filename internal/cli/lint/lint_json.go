@@ -1031,9 +1031,15 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 			// Not a Node project — does not apply, so it contributes nothing.
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(f.dir, "node_modules")); os.IsNotExist(err) {
-			unavailable(fmt.Sprintf("%s: node_modules not found in %s — eslint did NOT run", f.name, f.dir),
-				fmt.Sprintf("run `npm install` in %s, then re-run `forge lint`", f.dir))
+		// Walk to the workspace root: an npm/pnpm workspace HOISTS a member's
+		// dependencies, so <feDir>/node_modules is legitimately absent in a
+		// fully installed tree (forge's own dev bridge produces exactly that
+		// layout). A frontend-local-only probe turns that into "eslint did NOT
+		// run" — a lane silently downgraded to advisory on a tree that is
+		// perfectly lintable.
+		if !anyAncestorHasNodeModules(f.dir, ".") {
+			unavailable(fmt.Sprintf("%s: node_modules not found in %s or any ancestor — eslint did NOT run", f.name, f.dir),
+				fmt.Sprintf("run `npm install` in %s (or at the workspace root), then re-run `forge lint`", f.dir))
 			continue
 		}
 		scripts, err := readPackageScripts(pkgJSON)

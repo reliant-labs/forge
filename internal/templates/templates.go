@@ -42,6 +42,11 @@ func FuncMap() template.FuncMap {
 		// whose typings ship separately under @types/ — see
 		// webruntimepeers.TypePinTarget.
 		"typePinTarget": webruntimepeers.TypePinTarget,
+		// typePinPath renders the single `paths` value for a pinned package,
+		// aimed at whichever node_modules the project actually has. One
+		// element, never a list: SWC panics `next build` on a multi-element
+		// value for a non-wildcard key. See webruntimepeers.TypePinPath.
+		"typePinPath": webruntimepeers.TypePinPath,
 		"joinStrings":   strings.Join,
 		"default":       getDefault,
 		"add":           add,
@@ -528,6 +533,18 @@ type FrontendTemplateData struct {
 	// a field rather than a method so a caller CAN pin a different set —
 	// which is what makes the default a default and not a wall.
 	WebRuntimeTypePins []string
+	// WebRuntimePinsHoisted selects WHICH node_modules the pins above point
+	// at: the project root's (true) or the frontend's own (false, the
+	// default).
+	//
+	// It exists because a `paths` value for a non-wildcard key must hold
+	// EXACTLY ONE element — SWC panics `next build` otherwise — so the
+	// emitter cannot list both layouts and let the toolchain choose. See
+	// webruntimepeers.TypePinPath.
+	//
+	// True when an npm workspace hoists the frontend's dependencies to the
+	// project root, which is what forge's own dev bridge creates.
+	WebRuntimePinsHoisted bool
 	// APIPackage is the npm package name for the shared Connect TS
 	// clients workspace, e.g. "@myapp/api". Empty when Workspaces is
 	// false.

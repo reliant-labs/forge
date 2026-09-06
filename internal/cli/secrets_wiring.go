@@ -119,6 +119,42 @@ func renderedSecretsValueSource(envName string) (secrets.Provider, error) {
 	})
 }
 
+// scopeSecretsToEnvVars narrows the env-wide secret map to the keys a
+// workload DECLARES via EnvVar.secret_ref, and DROPS any slot whose value is
+// empty.
+//
+// The empty-slot rule is the important half. `forge secret ensure` scaffolds
+// the store with every declared slot present and blank, so an untouched
+// project's secrets/<env>.yaml reads `DATABASE_URL: ""`. Injected as-is that
+// is not "no value", it is a REAL env var bound to the empty string — and it
+// lands in a layer that outranks project config, so it beat the DSN the KCL
+// composes and the migrate job died with
+// `required config field database_url is not set`, pointing at a file that
+// plainly declares it. A blank slot means "this machine holds no value for
+// this name"; the declaration below it should win.
+//
+// An empty value that is genuinely meaningful (disable a feature by blanking
+// it) is expressed in KCL, which is where declarations live and where the
+// intent is visible in version control.
+func scopeSecretsToEnvVars(all map[string]string, vars []KCLEnvVar) map[string]string {
+	if len(all) == 0 {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, ev := range vars {
+		if ev.SecretRef == "" {
+			continue
+		}
+		if v, ok := all[ev.Name]; ok && v != "" {
+			out[ev.Name] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // scopeSecretsToService narrows the env-wide secret map to the keys this
 // service DECLARES via EnvVar.secret_ref.
 //
@@ -140,9 +176,14 @@ func scopeSecretsToService(all map[string]string, svc *ServiceEntity) map[string
 	}
 	out := make(map[string]string, len(refs))
 	for _, r := range refs {
-		if v, ok := all[r.EnvName]; ok {
+		// An EMPTY slot is not a value — see scopeSecretsToEnvVars for why
+		// injecting one is worse than injecting nothing.
+		if v, ok := all[r.EnvName]; ok && v != "" {
 			out[r.EnvName] = v
 		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

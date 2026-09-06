@@ -40,13 +40,14 @@
 //     (one with a webhook), 2 internal packages where one package's
 //     Deps references a repository interface satisfied by a concrete
 //     adapter living in ANOTHER package, a `forge:optional-dep` field,
-//     and AppExtras fields wired via setup.go.
+//     and a component-to-component dep — all resolved off the owned
+//     internal/app Infra (providers.go) by internal/app/compose.go.
 //
 //   - "kalshi-shaped" (TestE2EFixtureCorpusKalshiShaped): 3 workers
 //     with snake_case multi-word names, one implementing
 //     RunContext(ctx), one cron worker, and a worker Deps field typed
-//     as a worker-local interface satisfied by a concrete adapter on
-//     AppExtras — the literal kalshi regression shape.
+//     as a worker-local interface satisfied by a concrete adapter in a
+//     third package — the literal kalshi regression shape.
 //
 //   - "zero-service" (TestE2EFixtureCorpusZeroService): bare `forge project new`
 //     with NO --service. Pins the binary-is-not-an-entity contract:
@@ -64,17 +65,32 @@
 //
 // The Go-shaped fixtures assert, in order:
 //
-//  1. `forge generate` succeeds AND is idempotent: a second run
-//     produces zero file changes (full tree hash) and zero
-//     ownership-machinery warnings.
-//  2. The generated wiring (wire_gen.go + bootstrap.go) contains NO
-//     silent nil / dropped wire for the known name-matched Deps
-//     fields — the deps-matcher pin.
-//  3. The generated project compiles (`go build ./...` with a local
+//  1. THE REFUSAL (half 1 of the cross-package deps guarantee). With a
+//     Deps field typed as a consumer-local interface that only a
+//     concrete type in ANOTHER package satisfies, and no matching field
+//     on the owned Infra, `forge generate` must FAIL, revert every file
+//     it wrote that run, and print the no-provider runbook naming the
+//     component, the field and the interface — including the explicit
+//     "will NOT emit a nil" guarantee. This is what makes the original
+//     kalshi FORGE_BACKLOG #13 silent-nil regression STRUCTURALLY
+//     impossible rather than merely fixed, so it is the single most
+//     valuable thing this corpus pins.
+//  2. THE WIRE (half 2). After adding the field to the Infra struct and
+//     assigning it in OpenInfra, generate succeeds and
+//     internal/app/compose.go's NewComponents carries the INLINE
+//     `Field: infra.Field` assignment. One concrete Infra field
+//     satisfies several different consumer-local interfaces across
+//     packages; a component-to-component dep resolves off the
+//     constructed *Components instead.
+//  3. `forge generate` is idempotent: a second run produces zero file
+//     changes (full tree hash) and zero ownership-machinery warnings.
+//  4. The generated project compiles (`go build ./...` with a local
 //     forge/pkg replace).
-//  4. The built binary boots, /healthz returns 200, and SIGTERM shuts
+//  5. The built binary boots, /healthz returns 200, and SIGTERM shuts
 //     it down cleanly within a bounded wait.
-//  5. Disown lifecycle round-trip on pkg/app/wire_gen.go:
+//  6. Disown lifecycle round-trip on internal/app/mounts_services_gen.go
+//     (the Tier-1 generated mount surface — compose.go and providers.go
+//     are user-owned and so are NOT disown targets):
 //     hand-edit → generate (drift error with the new option text) →
 //     `forge project disown --reason` (one-way transfer) → generate (file left
 //     alone, zero warnings) → delete + generate (re-adopted to the
@@ -125,17 +141,6 @@ import (
 // ───────────────────────── fixture 1: cp-forge-shaped ─────────────────────────
 
 func TestE2EFixtureCorpusCPForgeShaped(t *testing.T) {
-	// PENDING setup.go ↔ providers.go reconciliation (FORGE_SHAPE_REDESIGN
-	// §2): this fixture wires collaborators (Store/Ledger/Notifier/...)
-	// through the RETIRED AppExtras + setup.go name-match path. The live
-	// by-type injector (internal/app/inject_gen.go) resolves Deps from the
-	// Infra struct (internal/app/providers.go / OpenInfra), not AppExtras,
-	// so these fixtures must be re-authored to seed Infra before they can
-	// run + assert wiring against the §2 model. The assertFieldWired
-	// `Field: app.Field` shape is itself the old wire_gen pattern. Re-enable
-	// once the providers reconciliation lands.
-	t.Skip("fixture wires via retired AppExtras path; re-author against internal/app Infra (§2 providers reconciliation)")
-
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -161,9 +166,9 @@ func TestE2EFixtureCorpusCPForgeShaped(t *testing.T) {
 	// pgstore: adapter package hosting the concrete *Store.
 	runCmd(t, projectDir, forgeBin, "scaffold", "package", "pgstore", "--type", "adapter")
 
-	// ledger contract: Service + the package-local Repository/Notifier
-	// interfaces. Tier-2 (one-shot) — user edits are the steady state.
-	writeCorpusFile(t, filepath.Join(projectDir, "internal", "ledger", "contract.go"), `// forge:scaffold one-shot — package contract; canonical pattern lives in `+"`forge skill load contracts`"+`.
+	// ledger contract: Service + the package-local Repository interface.
+	// Tier-2 (one-shot) — user edits are the steady state.
+	writeCorpusFile(t, filepath.Join(projectDir, "internal", "ledger", "contract.go"), `// yours: scaffolded once, never touched again — forge will not overwrite this file
 package ledger
 
 import "context"
@@ -176,10 +181,10 @@ type Service interface {
 
 // Repository is the ledger's persistence boundary. It is satisfied by
 // the CONCRETE *pgstore.Store adapter living in internal/pgstore — the
-// cross-package assignability case the deps matcher must prove instead
-// of silently wiring nil (kalshi FORGE_BACKLOG #13 bug class). The
-// context.Context in the method signatures is the cross-package named
-// type that defeated the old two-universe matcher.
+// cross-package assignability case the composition must either PROVE or
+// LOUDLY REFUSE, never silently wire nil (kalshi FORGE_BACKLOG #13 bug
+// class). The context.Context in the method signatures is the
+// cross-package named type that defeated the old two-universe matcher.
 type Repository interface {
 	SaveEntry(ctx context.Context, entry string) error
 	ListEntries(ctx context.Context) ([]string, error)
@@ -192,20 +197,20 @@ type Notifier interface {
 }
 `)
 
-	// ledger Deps: cross-package repo interface + an optional-dep field
-	// that IS satisfied via AppExtras (so a silent downgrade to nil
-	// would be the exact kalshi regression).
+	// ledger Deps: the cross-package repo interface (REQUIRED — no
+	// provider yet, which is what makes generate refuse below) plus an
+	// optional-dep field that stays unprovided for the whole fixture.
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "ledger", "service.go"),
-		"\tConfig *config.Config\n\t// Add your dependencies here.",
+		"\tConfig *config.Config\n",
 		`	Config *config.Config
 	// LedgerRepo is satisfied by *pgstore.Store (concrete adapter in
-	// another package) — name-matched against AppExtras.LedgerRepo.
+	// another package), supplied via the owned Infra struct.
 	LedgerRepo Repository
-	// Notifier is an optional collaborator, also satisfied by
-	// *pgstore.Store on AppExtras. Optional must NOT mean "silently
-	// unwired when the matcher gets confused".
+	// Notifier is an optional collaborator that this fixture NEVER
+	// provides — see the optional-dep assertion after the wire.
 	// forge:optional-dep
-	Notifier Notifier`)
+	Notifier Notifier
+`)
 
 	// Service-interface implementation for ledger.
 	writeCorpusFile(t, filepath.Join(projectDir, "internal", "ledger", "record.go"), `package ledger
@@ -233,10 +238,10 @@ import (
 	"sync"
 )
 
-// Store is a concrete in-memory adapter. One value satisfies three
-// different consumer-local interfaces (ledger.Repository,
-// ledger.Notifier, reporting.ReportSource) without ever importing
-// them — the deps-assignability matcher must prove each wire.
+// Store is a concrete in-memory adapter. ONE value satisfies two
+// different consumer-local interfaces in two different packages
+// (ledger.Repository and reporting.ReportSource) without ever importing
+// either — the composition must prove each wire separately.
 type Store struct {
 	mu      sync.Mutex
 	entries []string
@@ -261,22 +266,17 @@ func (s *Store) ListEntries(_ context.Context) ([]string, error) {
 	copy(out, s.entries)
 	return out, nil
 }
-
-// Notify records the event as an entry (test stand-in for a real sink).
-func (s *Store) Notify(ctx context.Context, event string) error {
-	return s.SaveEntry(ctx, "event:"+event)
-}
 `)
 
-	// reporting handler: a HANDLER-LOCAL interface satisfied by the
-	// cross-package concrete adapter on AppExtras — the wire_gen-side
-	// matcher case (Matcher B).
+	// reporting handler: a HANDLER-LOCAL interface satisfied by the same
+	// cross-package concrete adapter — a second, independent proof that
+	// one Infra field resolves several unrelated consumer interfaces.
 	writeCorpusFile(t, filepath.Join(projectDir, "internal", "handlers", "reporting", "source.go"), `package reporting
 
 import "context"
 
 // ReportSource is reporting's read path. Handler-local interface,
-// satisfied by the concrete *pgstore.Store held on AppExtras.
+// satisfied by the concrete *pgstore.Store on Infra.
 type ReportSource interface {
 	ListEntries(ctx context.Context) ([]string, error)
 }
@@ -284,116 +284,183 @@ type ReportSource interface {
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "reporting", "service.go"),
 		"\tConfig *config.Config\n",
 		`	Config *config.Config
-	// Store is satisfied by *pgstore.Store via the assignability
-	// matcher (name match, cross-package concrete type).
+	// Store is satisfied by the concrete *pgstore.Store on Infra —
+	// cross-package, handler-local interface.
 	Store ReportSource
 `)
 
-	// api handler: exact-type match against an AppExtras field that
-	// setup.go constructs (ledger.Service on both sides).
+	// api handler: a COMPONENT-TO-COMPONENT dep. ledger.Service is not an
+	// Infra field at all; it resolves off the constructed *Components,
+	// which is the other half of the resolution rule.
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"),
 		"\tConfig *config.Config\n",
 		`	Config *config.Config
-	// Ledger is the ledger package's contract interface, constructed
-	// in pkg/app/setup.go and exact-type-matched by wire_gen.
+	// Ledger is another COMPONENT, referenced by its Service interface
+	// type — resolved from *Components, not from Infra.
 	Ledger ledger.Service
 `)
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"),
 		"\t\"example.com/cpforge/pkg/config\"",
 		"\t\"example.com/cpforge/internal/ledger\"\n\t\"example.com/cpforge/pkg/config\"")
 
-	// ── AppExtras + setup.go wiring ───────────────────────────────────
-	writeCorpusFile(t, filepath.Join(projectDir, "pkg", "app", "app_extras.go"), `// app_extras.go is YOUR code — forge generate will never overwrite it.
-//
-//forge:scaffold one-shot
-//forge:allow
-package app
-
-import (
-	"example.com/cpforge/internal/ledger"
-	"example.com/cpforge/internal/pgstore"
-)
-
-// AppExtras is the user-owned extension surface for *App.
-// LedgerRepo / Notifier / Store are all the same concrete *pgstore.Store
-// satisfying three different consumer-local interfaces across packages.
-type AppExtras struct {
-	LedgerRepo *pgstore.Store
-	Notifier   *pgstore.Store
-	Store      *pgstore.Store
-	Ledger     ledger.Service
-}
-`)
-	mustReplaceFirstInFile(t, filepath.Join(projectDir, "pkg", "app", "setup.go"),
-		"\n\treturn nil\n}",
-		"\n\treturn setupExtras(app, cfg)\n}")
-	writeCorpusFile(t, filepath.Join(projectDir, "pkg", "app", "setup_extras.go"), `package app
-
-import (
-	"fmt"
-	"log/slog"
-
-	"example.com/cpforge/internal/ledger"
-	"example.com/cpforge/internal/pgstore"
-	"example.com/cpforge/pkg/config"
-)
-
-// setupExtras wires the user-owned AppExtras fields. Called from Setup.
-func setupExtras(app *App, cfg *config.Config) error {
-	st := pgstore.NewStore()
-	app.LedgerRepo = st
-	app.Notifier = st
-	app.Store = st
-
-	ledgerSvc, err := ledger.New(ledger.Deps{
-		Logger:     slog.Default().With("package", "ledger"),
-		Config:     cfg,
-		LedgerRepo: st,
-		Notifier:   st,
+	// ── 1. THE REFUSAL ────────────────────────────────────────────────
+	// No Infra field satisfies ledger.Repository or reporting.ReportSource
+	// yet. forge must REFUSE rather than emit a nil that passes
+	// validateDeps and nil-derefs in production. Asserting on the MESSAGE
+	// (component, field, interface, and the explicit no-nil guarantee) is
+	// the point: a bare non-zero exit would pass on any unrelated failure.
+	assertNoProviderRefusal(t, forgeBin, projectDir, []depGap{
+		{Component: "Ledger", Field: "LedgerRepo", Iface: "Repository"},
+		{Component: "Reporting", Field: "Store", Iface: "ReportSource"},
 	})
-	if err != nil {
-		return fmt.Errorf("init ledger: %w", err)
-	}
-	app.Ledger = ledgerSvc
-	return nil
-}
-`)
 
-	// ── 1. generate ×2 — idempotency is a first-class assertion ──────
+	// ── 2. THE WIRE ───────────────────────────────────────────────────
+	// One CONCRETE field on Infra resolves both consumer-local interfaces.
+	// The field type only has to be assignable to each dep type.
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "app", "providers.go"),
+		"\tDB *sql.DB\n",
+		`	DB *sql.DB
+
+	// LedgerRepo is the CONCRETE adapter. It satisfies BOTH
+	// ledger.Repository and reporting.ReportSource; compose.go proves
+	// each assignment independently.
+	LedgerRepo *pgstore.Store
+`)
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "app", "providers.go"),
+		"\t\"example.com/cpforge/pkg/config\"",
+		"\t\"example.com/cpforge/internal/pgstore\"\n\t\"example.com/cpforge/pkg/config\"")
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "app", "providers.go"),
+		"\tinfra.DB = db\n",
+		"\tinfra.DB = db\n\tinfra.LedgerRepo = pgstore.NewStore()\n")
+
+	// ── 3. generate ×2 — succeeds now, and is idempotent ─────────────
 	generateTwiceIdempotent(t, forgeBin, projectDir)
 
-	// ── 2. no silent nil for the name-matched Deps fields ────────────
-	wireGen := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
-	assertFieldWired(t, "wire_gen.go", wireGen, "Store")
-	assertFieldWired(t, "wire_gen.go", wireGen, "Ledger")
-	bootstrap := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	assertFieldWired(t, "bootstrap.go", bootstrap, "LedgerRepo")
-	assertFieldWired(t, "bootstrap.go", bootstrap, "Notifier")
+	// The inline wire, at the one explicit construction site.
+	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
+	assertComposeWired(t, compose, "LedgerRepo", "infra.LedgerRepo")
+	assertComposeWired(t, compose, "Store", "infra.LedgerRepo")
+	// Component-to-component: resolved off *Components, never off Infra.
+	assertComposeWired(t, compose, "Ledger", "c.Ledger")
 
-	// ── 3. compiles ───────────────────────────────────────────────────
+	// Optional-dep semantics under the new refusal rule, asserted from
+	// OBSERVED behavior rather than assumed: an unprovided REQUIRED dep
+	// is a hard refusal (step 1), but an unprovided field carrying
+	// `// forge:optional-dep` is wired to an explicitly commented nil and
+	// generate proceeds. That asymmetry IS the contract — optional means
+	// "nil is a legitimate value here", and the comment keeps it visible
+	// at the construction site instead of silent.
+	if !strings.Contains(compose, "Notifier:") {
+		t.Errorf("compose.go dropped the optional Notifier key entirely; want an explicit nil assignment:\n%s", compose)
+	}
+	if !regexp.MustCompile(`Notifier: +nil, // optional — no provider`).MatchString(compose) {
+		t.Errorf("compose.go must wire an unprovided optional dep to an explicitly COMMENTED nil "+
+			"(`Notifier: nil, // optional — no provider`) — an uncommented nil is indistinguishable "+
+			"from the silent-nil bug this corpus exists to keep dead; got:\n%s", compose)
+	}
+
+	// ── 4. compiles ───────────────────────────────────────────────────
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// ── 4. boots: /healthz 200, clean SIGTERM shutdown ───────────────
+	// ── 5. boots: /healthz 200, clean SIGTERM shutdown ───────────────
 	bootHealthzAndShutdown(t, projectDir)
 
-	// ── 5. disown lifecycle round-trip on pkg/app/wire_gen.go ────────
-	disownRoundTrip(t, forgeBin, projectDir, "pkg/app/wire_gen.go")
+	// ── 6. disown lifecycle round-trip ────────────────────────────────
+	// Retargeted from the retired pkg/app/wire_gen.go. The Tier-1 file in
+	// the current model is the generated mount surface; compose.go and
+	// providers.go are USER-OWNED (compose.go is reconciled, not
+	// regenerated) and so carry no forge:hash and no stomp guard — they
+	// are not disown targets at all.
+	disownRoundTrip(t, forgeBin, projectDir, "internal/app/mounts_services_gen.go")
 
 	t.Logf("cp-forge-shaped fixture total: %s", time.Since(start))
+}
+
+// depGap is one expected entry in the no-provider refusal report.
+type depGap struct {
+	Component string // e.g. "Ledger"
+	Field     string // e.g. "LedgerRepo"
+	Iface     string // e.g. "Repository"
+}
+
+// assertNoProviderRefusal runs `forge generate` expecting it to FAIL with
+// the composition's no-provider report, and pins the parts of that message
+// a user actually acts on.
+//
+// This is the strongest guarantee in the corpus and it replaced a weaker
+// one. The old fixtures grepped generated wiring for `Field: app.Field`
+// and for the absence of `Field: nil` — an after-the-fact check that a
+// silent nil had not been emitted. The current model does not emit one to
+// catch: a required custom-interface dep with no provider stops the
+// generate outright. So the pin moved from "no nil in the output" to
+// "there IS no output, and the error says exactly what to wire", which is
+// what makes the kalshi FORGE_BACKLOG #13 regression structurally
+// impossible rather than merely absent on this run.
+//
+// Asserting on the message text (not just a non-zero exit) is load-bearing
+// twice over: a bare exit check would pass on any unrelated generate
+// failure, and the runbook lines ARE the feature — a refusal that does not
+// name the field and the fix is just a broken build.
+func assertNoProviderRefusal(t *testing.T, forgeBin, projectDir string, gaps []depGap) {
+	t.Helper()
+
+	out, err := runCorpusCmd(projectDir, forgeBin, "generate")
+	if err == nil {
+		t.Fatalf("generate must REFUSE while a required custom-interface dep has no provider — "+
+			"emitting a nil there passes validateDeps and nil-derefs at runtime; output:\n%s", out)
+	}
+
+	// The guarantee itself, in forge's own words.
+	for _, want := range []string{
+		"has Deps fields with no provider",
+		"will NOT emit a nil for a custom-interface dep",
+		"internal/app/providers.go",
+		"internal/app/compose.go",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no-provider refusal missing %q; got:\n%s", want, out)
+		}
+	}
+
+	// Every gap must be named specifically, with its runbook.
+	for _, g := range gaps {
+		if !strings.Contains(out, fmt.Sprintf("%s.Deps.%s (%s) has no provider", g.Component, g.Field, g.Iface)) {
+			t.Errorf("refusal does not name the %s.Deps.%s (%s) gap; got:\n%s", g.Component, g.Field, g.Iface, out)
+		}
+		if !strings.Contains(out, fmt.Sprintf("infra.%s = ", g.Field)) {
+			t.Errorf("refusal does not show the OpenInfra assignment for %s; got:\n%s", g.Field, out)
+		}
+		if !strings.Contains(out, fmt.Sprintf("NewComponents sets %s.Deps.%s = infra.%s", g.Component, g.Field, g.Field)) {
+			t.Errorf("refusal does not explain how compose.go will wire %s.Deps.%s; got:\n%s", g.Component, g.Field, out)
+		}
+	}
+
+	// A failed generate must leave the tree in its pre-run state — the
+	// revert is what makes the refusal safe to hit repeatedly.
+	if !strings.Contains(out, "your tree is back to its pre-run state") {
+		t.Errorf("a refused generate must report reverting what it wrote this run; got:\n%s", out)
+	}
+}
+
+// assertComposeWired pins ONE inline Deps assignment at the explicit
+// construction site (internal/app/compose.go NewComponents): the field must
+// be filled from the named expression, and must not be a bare nil.
+// gofmt column-aligns struct-literal values, so match any run of spaces.
+func assertComposeWired(t *testing.T, compose, field, want string) {
+	t.Helper()
+	wired := regexp.MustCompile(regexp.QuoteMeta(field) + `: +` + regexp.QuoteMeta(want) + `\b`)
+	if !wired.MatchString(compose) {
+		t.Errorf("compose.go: missing inline wire `%s: %s` in NewComponents; got:\n%s", field, want, compose)
+	}
+	nilWire := regexp.MustCompile(regexp.QuoteMeta(field) + `: +nil\b`)
+	if nilWire.MatchString(compose) {
+		t.Errorf("compose.go: `%s` wired to a bare nil — the silent-nil downgrade bug class", field)
+	}
 }
 
 // ───────────────────────── fixture 2: kalshi-shaped ─────────────────────────
 
 func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
-	// PENDING setup.go ↔ providers.go reconciliation (FORGE_SHAPE_REDESIGN
-	// §2): like the cp-forge fixture, this wires the worker's collaborators
-	// (Unsettled, ...) through the RETIRED AppExtras name-match path and
-	// asserts `Field: app.Field` against pkg/app/wire_gen.go. The live
-	// by-type injector resolves Deps from internal/app Infra, so the
-	// fixture must be re-authored against the §2 model. Re-enable once the
-	// providers reconciliation lands.
-	t.Skip("fixture wires via retired AppExtras path; re-author against internal/app Infra (§2 providers reconciliation)")
-
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -408,7 +475,9 @@ func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
 
 	// ── Workers: snake_case multi-word names, one cron ────────────────
 	// --no-generate: scaffold-only; one explicit generate at the end
-	// (the parallel-agent staging pattern the flag exists for).
+	// (the parallel-agent staging pattern the flag exists for). Note the
+	// flag is a `scaffold worker` affordance only — `scaffold package`
+	// below has no such flag and must not be passed one.
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "engine_shadow", "--no-generate")
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "settlement_processor", "--no-generate")
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "book_snapshotter",
@@ -417,14 +486,16 @@ func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
 		assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "workers", w, "worker.go"))
 	}
 
-	// settlement_processor: worker-local interface dep (ctx in the
-	// method signature — the cross-package named type that defeated the
-	// two-universe matcher), satisfied by a concrete adapter on
-	// AppExtras, marked forge:optional-dep. The literal kalshi shape.
+	// settlement_processor: worker-local interface dep (ctx in the method
+	// signature — the cross-package named type that defeated the
+	// two-universe matcher), satisfied only by a concrete adapter in a
+	// THIRD package. The literal kalshi shape. Left REQUIRED on purpose:
+	// that is what makes the refusal below fire.
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "workers", "settlement_processor", "worker.go"),
-		"type Deps struct {\n\tLogger *slog.Logger\n\tConfig *config.Config\n}",
+		"// Deps contains the dependencies for the settlement_processor worker.\ntype Deps struct {\n\tLogger *slog.Logger\n\tConfig *config.Config\n}",
 		`// UnsettledSource feeds the settlement loop. Worker-local
-// interface, satisfied by *marketfeed.Adapter on AppExtras.
+// interface, satisfied by the concrete *marketfeed.Adapter in another
+// package, supplied through the owned Infra struct.
 type UnsettledSource interface {
 	Pending(ctx context.Context) ([]string, error)
 }
@@ -433,10 +504,9 @@ type UnsettledSource interface {
 type Deps struct {
 	Logger *slog.Logger
 	Config *config.Config
-	// Unsettled drives the settlement loop. Optional — but optional
-	// must never mean "silently downgraded to nil when the matcher
-	// cannot prove assignability" (kalshi FORGE_BACKLOG #13).
-	// forge:optional-dep
+	// Unsettled drives the settlement loop. REQUIRED: with no provider,
+	// generate must refuse rather than hand the worker a nil
+	// (kalshi FORGE_BACKLOG #13).
 	Unsettled UnsettledSource
 }`)
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "workers", "settlement_processor", "worker.go"),
@@ -480,40 +550,49 @@ func (*Adapter) Pending(_ context.Context) ([]string, error) {
 }
 `)
 
-	// AppExtras + setup wiring.
-	writeCorpusFile(t, filepath.Join(projectDir, "pkg", "app", "app_extras.go"), `// app_extras.go is YOUR code — forge generate will never overwrite it.
-//
-//forge:scaffold one-shot
-//forge:allow
-package app
+	// ── 1. THE REFUSAL ────────────────────────────────────────────────
+	// The kalshi pin, in its strongest form: a worker-local interface dep
+	// with no provider stops the generate and names the wiring, instead
+	// of silently handing the worker a nil it will deref on its first
+	// cycle.
+	assertNoProviderRefusal(t, forgeBin, projectDir, []depGap{
+		{Component: "SettlementProcessor", Field: "Unsettled", Iface: "UnsettledSource"},
+	})
 
-import "example.com/kalshishape/internal/marketfeed"
+	// ── 2. THE WIRE ───────────────────────────────────────────────────
+	// The Infra field is typed as the WORKER-LOCAL interface and filled
+	// with the third package's concrete adapter — the cross-package hop
+	// the old matcher got wrong.
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "app", "providers.go"),
+		"\tDB *sql.DB\n",
+		`	DB *sql.DB
 
-// AppExtras is the user-owned extension surface for *App.
-type AppExtras struct {
-	// Unsettled is the CONCRETE adapter; the settlement_processor
-	// worker consumes it as its worker-local UnsettledSource.
-	Unsettled *marketfeed.Adapter
-}
+	// Unsettled satisfies the settlement_processor worker's local
+	// UnsettledSource, via the concrete *marketfeed.Adapter.
+	Unsettled settlement_processor.UnsettledSource
 `)
-	mustReplaceFirstInFile(t, filepath.Join(projectDir, "pkg", "app", "setup.go"),
-		"\n\treturn nil\n}",
-		"\n\tapp.Unsettled = marketfeed.NewAdapter()\n\treturn nil\n}")
-	mustReplaceFirstInFile(t, filepath.Join(projectDir, "pkg", "app", "setup.go"),
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "app", "providers.go"),
 		"\t\"example.com/kalshishape/pkg/config\"",
-		"\t\"example.com/kalshishape/internal/marketfeed\"\n\t\"example.com/kalshishape/pkg/config\"")
+		"\t\"example.com/kalshishape/internal/marketfeed\"\n\tsettlement_processor \"example.com/kalshishape/internal/workers/settlement_processor\"\n\t\"example.com/kalshishape/pkg/config\"")
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "app", "providers.go"),
+		"\tinfra.DB = db\n",
+		"\tinfra.DB = db\n\tinfra.Unsettled = marketfeed.NewAdapter()\n")
 
-	// ── 1. generate ×2 — idempotency ──────────────────────────────────
+	// ── 3. generate ×2 — succeeds now, and is idempotent ─────────────
 	generateTwiceIdempotent(t, forgeBin, projectDir)
 
-	// ── 2. the kalshi pin: optional worker-local interface dep must be
-	// wired to app.Unsettled, never silently nil ──────────────────────
-	wireGen := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
-	assertFieldWired(t, "wire_gen.go", wireGen, "Unsettled")
-	// All three snake_case workers must have wire functions.
-	for _, fn := range []string{"wireWorkerEngineShadowDeps", "wireWorkerSettlementProcessorDeps", "wireWorkerBookSnapshotterDeps"} {
-		if !strings.Contains(wireGen, fn) {
-			t.Errorf("wire_gen.go missing %s — snake_case worker not wired", fn)
+	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
+	assertComposeWired(t, compose, "Unsettled", "infra.Unsettled")
+	// All three snake_case workers must be constructed at the one
+	// explicit site. The old `wireWorker<Name>Deps` functions are gone
+	// with wire_gen.go; the equivalent pin is the inline construction.
+	for _, ctor := range []string{
+		"engine_shadow.New(engine_shadow.Deps{",
+		"settlement_processor.New(settlement_processor.Deps{",
+		"book_snapshotter.New(book_snapshotter.Deps{",
+	} {
+		if !strings.Contains(compose, ctor) {
+			t.Errorf("compose.go missing %s — snake_case worker not constructed; got:\n%s", ctor, compose)
 		}
 	}
 	// Cron worker scaffold must carry its schedule.
@@ -521,15 +600,20 @@ type AppExtras struct {
 	if !strings.Contains(cronWorker, "0 3 * * *") {
 		t.Errorf("book_snapshotter worker.go does not carry the cron schedule")
 	}
+	// engine_shadow's ctx-aware loop must have survived the round-trip.
+	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "internal", "workers", "engine_shadow", "worker.go")), "func (w *Worker) RunContext(") {
+		t.Errorf("engine_shadow lost its RunContext(ctx) loop across generate")
+	}
 
-	// ── 3. compiles ───────────────────────────────────────────────────
+	// ── 4. compiles ───────────────────────────────────────────────────
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// ── 4. boots with all workers registered; clean shutdown ─────────
+	// ── 5. boots with all workers registered; clean shutdown ─────────
 	bootHealthzAndShutdown(t, projectDir)
 
-	// ── 5. disown lifecycle round-trip ────────────────────────────────
-	disownRoundTrip(t, forgeBin, projectDir, "pkg/app/wire_gen.go")
+	// ── 6. disown lifecycle round-trip (see the cp-forge fixture for
+	// why this retargeted off pkg/app/wire_gen.go) ────────────────────
+	disownRoundTrip(t, forgeBin, projectDir, "internal/app/mounts_services_gen.go")
 
 	t.Logf("kalshi-shaped fixture total: %s", time.Since(start))
 }

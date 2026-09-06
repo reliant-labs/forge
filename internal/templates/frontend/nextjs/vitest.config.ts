@@ -34,17 +34,9 @@ import { defineConfig } from "vitest/config";
 const readRuntimePeers = (): string[] => {
   let dir = __dirname;
   for (;;) {
-    const manifest = join(
-      dir,
-      "node_modules",
-      "@reliantlabs",
-      "forge-web-runtime",
-      "package.json",
-    );
+    const manifest = join(dir, "node_modules", "@reliantlabs", "forge-web-runtime", "package.json");
     if (fs.existsSync(manifest)) {
-      return Object.keys(
-        JSON.parse(fs.readFileSync(manifest, "utf8")).peerDependencies ?? {},
-      );
+      return Object.keys(JSON.parse(fs.readFileSync(manifest, "utf8")).peerDependencies ?? {});
     }
     const parent = dirname(dir);
     if (parent === dir) return []; // not installed — nothing to dedupe

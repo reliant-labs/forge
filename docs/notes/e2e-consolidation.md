@@ -8,10 +8,10 @@
 >
 > Measured on this 16-core machine:
 >
-> | | test-seconds | wall-clock |
-> |---|---|---|
-> | whole e2e suite | 9,764 | **817s** (~12x concurrency) |
-> | Family B's 7 members | 577 | **158s** |
+> |                      | test-seconds | wall-clock                  |
+> | -------------------- | ------------ | --------------------------- |
+> | whole e2e suite      | 9,764        | **817s** (~12x concurrency) |
+> | Family B's 7 members | 577          | **158s**                    |
 >
 > Wall-clock is bounded below by the SINGLE LONGEST MEMBER, not by the sum.
 > Family B's longest member is 151.7s, so perfect consolidation of all seven
@@ -52,7 +52,6 @@
 > D (derive in-process) needs no shared tree and stays the better move wherever
 > it applies.
 
-
 Status: **proposal only**. Nothing here has been implemented. Written for the
 implementing tasks (plan tasks "Implement the highest-value consolidation
 family" and "Roll out consolidation to remaining families").
@@ -67,10 +66,10 @@ this writing. Timings are measured seconds from one real full-suite run on a
 
 The naive framing — "30 tests scaffold the same project, so scaffold once and
 share the tree" — **does not survive contact with the code.** Almost every
-expensive test writes its own `proto/services/<svc>/v1/<svc>.proto` *before*
+expensive test writes its own `proto/services/<svc>/v1/<svc>.proto` _before_
 running `forge scaffold`, and several also write their own hand-rolled
 migrations. Their scaffold inputs are not identical; they are identical only in
-the `forge project new` flags, which is the *cheap* part of the pipeline. The
+the `forge project new` flags, which is the _cheap_ part of the pipeline. The
 expensive parts are `forge generate` (buf compile + embedded-postgres shadow
 apply), `go build ./...`, and `npm install`.
 
@@ -100,73 +99,73 @@ postgres; **npm** = needs node/npm; **boot** = boots a server on a
 `freePortE2E`; **fail** = asserts a failure path; **RO** = purely read-only
 over the emitted tree after its own setup.
 
-| Test | s | new flags | mutates after scaffold | pg | npm | boot | fail | RO |
-|---|---|---|---|---|---|---|---|---|
-| `Vocabulary_EntityCarriesEveryScalarKind` | 0.00 | none — no scaffold | writes fixture proto to TempDir only | – | – | – | – | ✔ |
-| `Vocabulary_CreateRequestCarriesEveryScalarKind` | 0.00 | none | as above | – | – | – | – | ✔ |
-| `Vocabulary_EveryScalarFieldHasAColumn` | 0.00 | none | as above | – | – | – | – | ✔ |
-| `ScaffoldVersion` | ~0 | none (runs `forge --version`) | – | – | – | – | – | ✔ |
-| `AllBinaryConfigNoPrimaryBinding_RejectsAtGenerate` | 20 | `--service item` | edits config/binary wiring, then `generate` must FAIL | – | – | – | **✔** | ✖ |
-| `ScaffoldKCLRendersDevManifest` | 27 | `--service item` | none; `kcl` render + read | – | – | – | – | ✔ |
-| `ScaffoldReadOnlyMarkerWithNoFieldFailsLoudly` | 55 | `--service orders` | writes bad proto, `scaffold` must FAIL | – | – | – | **✔** | ✖ |
-| `ComponentsKCLDeclaredFromSources` | 59 | `--service order --service intake` | none | – | – | – | – | ✔ |
-| `JSONBUnmappableFieldFailsGenerate` | 64 | `--service orders` | proto + hand migration, `generate` must FAIL | ✔ | – | – | **✔** | ✖ |
-| `ZeroServiceScaffoldCompiles` | 69 | *(no `--service`)* | none | – | – | – | – | ✔ |
-| `ScaffoldNoConflictingProtos` | 75 | `--service api` | writes an extra proto | – | – | – | – | ✖ |
-| `GenerateRollbackOnValidateFailure` | 88 | `--service api` | corrupts a Tier-1 file, `generate` must revert | – | – | – | **✔** | ✖ |
-| `SelfCertCloneReproduces` | 90 | `--service api` | edits a generated file, clones tree | – | – | – | – | ✖ |
-| `ScaffoldSecretFieldPreservedOnFullReplace` | 92 | `--service vaults` | own proto; injects a Go test; runs it | ✔ | – | – | – | ✖ |
-| `ScaffoldReadOnlySurvivesInlineOptions` | 92 | `--service orders` | own proto | – | – | – | – | ✖ |
-| `ScaffoldConfigNaming` | 93 | `--service api` | none | – | – | – | – | ✔ |
-| `AllBinaryConfigScaffoldCompiles` | 95 | `--service item` | binary/config wiring edits | – | – | – | – | ✖ |
-| `ScaffoldAddService` | 95 | `--service api` | `scaffold service billing` | – | – | – | – | ✖ |
-| `ScaffoldReadOnlyFieldOmittedFromCreate` | 100 | `--service orders` | own proto | – | – | – | – | ✖ |
-| `ScaffoldKCLVendorFlow` | 100 | `--service item` | breaks then repairs `deploy/kcl/kcl.mod` | – | – | – | – | ✖ |
-| `CRUDFixtureSurvivesAddedConstraints` | 103 | `--service widget` | own proto + hand constraint migration | ✔ | – | – | – | ✖ |
-| `ScaffoldBasicProject` | 118 | `--service api` | none; `golangci-lint` + `buf lint` | – | – | – | – | ✔ |
-| `SelfCertLegacyManifestMigration` | 119 | `--service api` | rewrites `.forge/checksums.json` | – | – | – | – | ✖ |
-| `SelfCertParallelLaneSubsetCommit` | 125 | `--service api` | `scaffold service billing` | – | – | – | – | ✖ |
-| `ScaffoldSchemaHardeningDefaults` | 140 | `--service shop` | own proto | – | – | – | – | ✖ |
-| `OrderByWithoutDescending` | 145 | `--service widgets` | own proto | – | – | – | – | ✖ |
-| `GeneratedStoreSeam` | 154 | `--service widgets` | own proto, `scaffold package pricing`, hand service | ✔ | – | **✔** | – | ✖ |
-| `AddServiceThenEntityGenerates` | 164 | *(no `--service`)* | `scaffold service item` + own proto | – | – | – | – | ✖ |
-| `SchemaDriftNotice` | 205 | `--service orders` | own proto, hand migration, tightened proto | ✔ | – | – | – | ✖ |
-| `JSONBEntityConversion` | 215 | `--service orders` | own proto + injected Go test | ✔ | – | – | – | ✖ |
-| `ScaffoldFrontendEnumEntityBuilds` | 389 | `--service brand --frontend dashboard` | own proto | – | **✔** | – | – | ✖ |
-| `FreshScaffoldLintExitsZero` | 396 | `--service orders --frontend dashboard` | own proto; `forge lint --no-fix` | – | – | – | – | ✖ |
-| `GeneratedHooksExposeTheTypedErrorContract` | 396 | `--frontend web` | `scaffold service item` + own proto; 3 tsc runs | – | **✔** | – | – | ✖ |
-| `ScaffoldFrontendBuilds` | * | `--frontend web` | `scaffold service item`, corpus proto+migration | – | **✔** | – | – | ✖ |
-| `ScaffoldFrontendListResource` | * | `--frontend dashboard` | `scaffold service order` | – | **✔** | – | – | ✖ |
-| `ScaffoldFrontendRuntime` | * | `--frontend web` | `scaffold service item` | – | **✔** | – | – | ✖ |
-| `AddFrontendKindsProduceABuildableTree` | * | `--service widget` | three `scaffold frontend --kind` adds, each `npm install` | – | **✔** | – | – | ✖ |
-| `FreshScaffoldFrontendLintClean` | * | `--service catalog --frontend dashboard` | own proto; npm lint/styles/fix cycle | – | **✔** | – | – | ✖ |
-| `ValidateConstraintsProjection` | * | `--service catalog --frontend dashboard` | own proto; npm install; wire test | ✔ | **✔** | – | – | ✖ |
-| `FixtureCorpusFrontendBasePath` | * | `--service api` | own proto, `scaffold frontend console`, two npm builds | – | **✔** | – | **✔** (one build must fail) | ✖ |
-| `ScaffoldFullSpecProject` | * | `--service api --frontend web` | none | – | – | – | – | ✔ |
-| `ScaffoldMultiServiceProject` | * | `--service api,users,orders --frontend web` | none | – | – | – | – | ✔ |
-| `ScaffoldServerStartup` | * | `--service api` | none; builds and boots | – | – | **✔** | – | ✖ |
-| `ScaffoldIsReviveExportedClean` | * | `--service orders` | own proto + 4 `scaffold` noun adds | – | – | – | – | ✖ |
-| `TestingPackageNotLinkedIntoBinary` | * | `--service order` | own proto | – | – | – | – | ✖ |
-| `ScaffoldMarkedEntityDeclaresManagedFields` | * | `--service widget` | own proto | – | – | – | – | ✖ |
-| `ScaffoldHandlersFilePlusMarkedEntityCompiles` | * | `--service widget` | own proto + hand handler file | – | – | – | – | ✖ |
-| `ScaffoldReadOnlyColumnTakesItsSchemaDefault` | * | `--service widget` | own proto + tightening migration | – | – | – | – | ✖ |
-| `OptionalScalarEntityBirthAndConversion` | * | `--service orders` | own proto | ✔ | – | – | – | ✖ |
-| `EnumEntityConversionAndFilter` | * | `--service orders` | own proto + injected Go test | ✔ | – | – | – | ✖ |
-| `PbThroughCrudPlusCustomRpc` | * | `--service widget` | own proto | ✔ | – | – | – | ✖ |
-| `PbThroughStubToCrudTransition` | * | `--service catalog` | proto twice (stub → CRUD) | – | – | – | – | ✖ |
-| `CRUDFixtureSatisfiesCheckConstraints` | * | `--service storefront` | own proto + check-constraint migration | ✔ | – | – | – | ✖ |
-| `CRUDFixtureGuardFailsLoudlyOnUninvertibleCheck` | * | `--service account` | proto + migration, `generate` must FAIL | – | – | – | **✔** | ✖ |
-| `ComponentObserveMarkerAndEnforceLint` | * | `--service api` | `scaffold package checkout`, 5 generates, lint | – | – | – | – | ✖ |
-| `ObservedDecoratorGeneratedAndWired` | * | `--service api` | `scaffold package checkout`, contract edits | – | – | – | – | ✖ |
-| `AddVerbsProduceABuildableTree` | * | `--service widget` | worker/cron/operator/crd/webhook adds | – | – | – | – | ✖ |
-| `CmdAsCodeSubcommands` | * | `--service api` | writes custom commands file | ✔ | – | **✔** | – | ✖ |
-| `FailedGenerateRevertConsistencyAndPreservation` | * | `--service widget` | conflicting file, `scaffold` must fail, then repair | – | – | – | **✔** | ✖ |
-| `ScaffoldWorkloads`/`AllBinaryConfig` (2nd) | 20–95 | `--service item` | binary config edits | – | – | – | – | ✖ |
-| `FixtureCorpusZeroService` | * | *(no `--service`)* | `scaffold service item` | – | – | – | – | ✖ |
-| `FixtureCorpusCRUDLifecycle` | * | corpus shape | migrations + CRUD drive | ✔ | – | **✔** | – | ✖ |
-| `FixtureCorpusCPForgeShaped` | skip | `--service api,billing,reporting` | webhook + 2 packages | – | – | ✔ | – | ✖ |
-| `FixtureCorpusKalshiShaped` | skip | `--service engine` | 3 workers + adapter package | – | – | ✔ | – | ✖ |
-| `RegistrationTypesOnlyService` | skip | `--service api --frontend web` | protos + registry edits | – | – | – | – | ✖ |
+| Test                                                | s     | new flags                                   | mutates after scaffold                                    | pg  | npm    | boot   | fail                         | RO  |
+| --------------------------------------------------- | ----- | ------------------------------------------- | --------------------------------------------------------- | --- | ------ | ------ | ---------------------------- | --- |
+| `Vocabulary_EntityCarriesEveryScalarKind`           | 0.00  | none — no scaffold                          | writes fixture proto to TempDir only                      | –   | –      | –      | –                            | ✔  |
+| `Vocabulary_CreateRequestCarriesEveryScalarKind`    | 0.00  | none                                        | as above                                                  | –   | –      | –      | –                            | ✔  |
+| `Vocabulary_EveryScalarFieldHasAColumn`             | 0.00  | none                                        | as above                                                  | –   | –      | –      | –                            | ✔  |
+| `ScaffoldVersion`                                   | ~0    | none (runs `forge --version`)               | –                                                         | –   | –      | –      | –                            | ✔  |
+| `AllBinaryConfigNoPrimaryBinding_RejectsAtGenerate` | 20    | `--service item`                            | edits config/binary wiring, then `generate` must FAIL     | –   | –      | –      | **✔**                       | ✖  |
+| `ScaffoldKCLRendersDevManifest`                     | 27    | `--service item`                            | none; `kcl` render + read                                 | –   | –      | –      | –                            | ✔  |
+| `ScaffoldReadOnlyMarkerWithNoFieldFailsLoudly`      | 55    | `--service orders`                          | writes bad proto, `scaffold` must FAIL                    | –   | –      | –      | **✔**                       | ✖  |
+| `ComponentsKCLDeclaredFromSources`                  | 59    | `--service order --service intake`          | none                                                      | –   | –      | –      | –                            | ✔  |
+| `JSONBUnmappableFieldFailsGenerate`                 | 64    | `--service orders`                          | proto + hand migration, `generate` must FAIL              | ✔  | –      | –      | **✔**                       | ✖  |
+| `ZeroServiceScaffoldCompiles`                       | 69    | _(no `--service`)_                          | none                                                      | –   | –      | –      | –                            | ✔  |
+| `ScaffoldNoConflictingProtos`                       | 75    | `--service api`                             | writes an extra proto                                     | –   | –      | –      | –                            | ✖  |
+| `GenerateRollbackOnValidateFailure`                 | 88    | `--service api`                             | corrupts a Tier-1 file, `generate` must revert            | –   | –      | –      | **✔**                       | ✖  |
+| `SelfCertCloneReproduces`                           | 90    | `--service api`                             | edits a generated file, clones tree                       | –   | –      | –      | –                            | ✖  |
+| `ScaffoldSecretFieldPreservedOnFullReplace`         | 92    | `--service vaults`                          | own proto; injects a Go test; runs it                     | ✔  | –      | –      | –                            | ✖  |
+| `ScaffoldReadOnlySurvivesInlineOptions`             | 92    | `--service orders`                          | own proto                                                 | –   | –      | –      | –                            | ✖  |
+| `ScaffoldConfigNaming`                              | 93    | `--service api`                             | none                                                      | –   | –      | –      | –                            | ✔  |
+| `AllBinaryConfigScaffoldCompiles`                   | 95    | `--service item`                            | binary/config wiring edits                                | –   | –      | –      | –                            | ✖  |
+| `ScaffoldAddService`                                | 95    | `--service api`                             | `scaffold service billing`                                | –   | –      | –      | –                            | ✖  |
+| `ScaffoldReadOnlyFieldOmittedFromCreate`            | 100   | `--service orders`                          | own proto                                                 | –   | –      | –      | –                            | ✖  |
+| `ScaffoldKCLVendorFlow`                             | 100   | `--service item`                            | breaks then repairs `deploy/kcl/kcl.mod`                  | –   | –      | –      | –                            | ✖  |
+| `CRUDFixtureSurvivesAddedConstraints`               | 103   | `--service widget`                          | own proto + hand constraint migration                     | ✔  | –      | –      | –                            | ✖  |
+| `ScaffoldBasicProject`                              | 118   | `--service api`                             | none; `golangci-lint` + `buf lint`                        | –   | –      | –      | –                            | ✔  |
+| `SelfCertLegacyManifestMigration`                   | 119   | `--service api`                             | rewrites `.forge/checksums.json`                          | –   | –      | –      | –                            | ✖  |
+| `SelfCertParallelLaneSubsetCommit`                  | 125   | `--service api`                             | `scaffold service billing`                                | –   | –      | –      | –                            | ✖  |
+| `ScaffoldSchemaHardeningDefaults`                   | 140   | `--service shop`                            | own proto                                                 | –   | –      | –      | –                            | ✖  |
+| `OrderByWithoutDescending`                          | 145   | `--service widgets`                         | own proto                                                 | –   | –      | –      | –                            | ✖  |
+| `GeneratedStoreSeam`                                | 154   | `--service widgets`                         | own proto, `scaffold package pricing`, hand service       | ✔  | –      | **✔** | –                            | ✖  |
+| `AddServiceThenEntityGenerates`                     | 164   | _(no `--service`)_                          | `scaffold service item` + own proto                       | –   | –      | –      | –                            | ✖  |
+| `SchemaDriftNotice`                                 | 205   | `--service orders`                          | own proto, hand migration, tightened proto                | ✔  | –      | –      | –                            | ✖  |
+| `JSONBEntityConversion`                             | 215   | `--service orders`                          | own proto + injected Go test                              | ✔  | –      | –      | –                            | ✖  |
+| `ScaffoldFrontendEnumEntityBuilds`                  | 389   | `--service brand --frontend dashboard`      | own proto                                                 | –   | **✔** | –      | –                            | ✖  |
+| `FreshScaffoldLintExitsZero`                        | 396   | `--service orders --frontend dashboard`     | own proto; `forge lint --no-fix`                          | –   | –      | –      | –                            | ✖  |
+| `GeneratedHooksExposeTheTypedErrorContract`         | 396   | `--frontend web`                            | `scaffold service item` + own proto; 3 tsc runs           | –   | **✔** | –      | –                            | ✖  |
+| `ScaffoldFrontendBuilds`                            | \*    | `--frontend web`                            | `scaffold service item`, corpus proto+migration           | –   | **✔** | –      | –                            | ✖  |
+| `ScaffoldFrontendListResource`                      | \*    | `--frontend dashboard`                      | `scaffold service order`                                  | –   | **✔** | –      | –                            | ✖  |
+| `ScaffoldFrontendRuntime`                           | \*    | `--frontend web`                            | `scaffold service item`                                   | –   | **✔** | –      | –                            | ✖  |
+| `AddFrontendKindsProduceABuildableTree`             | \*    | `--service widget`                          | three `scaffold frontend --kind` adds, each `npm install` | –   | **✔** | –      | –                            | ✖  |
+| `FreshScaffoldFrontendLintClean`                    | \*    | `--service catalog --frontend dashboard`    | own proto; npm lint/styles/fix cycle                      | –   | **✔** | –      | –                            | ✖  |
+| `ValidateConstraintsProjection`                     | \*    | `--service catalog --frontend dashboard`    | own proto; npm install; wire test                         | ✔  | **✔** | –      | –                            | ✖  |
+| `FixtureCorpusFrontendBasePath`                     | \*    | `--service api`                             | own proto, `scaffold frontend console`, two npm builds    | –   | **✔** | –      | **✔** (one build must fail) | ✖  |
+| `ScaffoldFullSpecProject`                           | \*    | `--service api --frontend web`              | none                                                      | –   | –      | –      | –                            | ✔  |
+| `ScaffoldMultiServiceProject`                       | \*    | `--service api,users,orders --frontend web` | none                                                      | –   | –      | –      | –                            | ✔  |
+| `ScaffoldServerStartup`                             | \*    | `--service api`                             | none; builds and boots                                    | –   | –      | **✔** | –                            | ✖  |
+| `ScaffoldIsReviveExportedClean`                     | \*    | `--service orders`                          | own proto + 4 `scaffold` noun adds                        | –   | –      | –      | –                            | ✖  |
+| `TestingPackageNotLinkedIntoBinary`                 | \*    | `--service order`                           | own proto                                                 | –   | –      | –      | –                            | ✖  |
+| `ScaffoldMarkedEntityDeclaresManagedFields`         | \*    | `--service widget`                          | own proto                                                 | –   | –      | –      | –                            | ✖  |
+| `ScaffoldHandlersFilePlusMarkedEntityCompiles`      | \*    | `--service widget`                          | own proto + hand handler file                             | –   | –      | –      | –                            | ✖  |
+| `ScaffoldReadOnlyColumnTakesItsSchemaDefault`       | \*    | `--service widget`                          | own proto + tightening migration                          | –   | –      | –      | –                            | ✖  |
+| `OptionalScalarEntityBirthAndConversion`            | \*    | `--service orders`                          | own proto                                                 | ✔  | –      | –      | –                            | ✖  |
+| `EnumEntityConversionAndFilter`                     | \*    | `--service orders`                          | own proto + injected Go test                              | ✔  | –      | –      | –                            | ✖  |
+| `PbThroughCrudPlusCustomRpc`                        | \*    | `--service widget`                          | own proto                                                 | ✔  | –      | –      | –                            | ✖  |
+| `PbThroughStubToCrudTransition`                     | \*    | `--service catalog`                         | proto twice (stub → CRUD)                                 | –   | –      | –      | –                            | ✖  |
+| `CRUDFixtureSatisfiesCheckConstraints`              | \*    | `--service storefront`                      | own proto + check-constraint migration                    | ✔  | –      | –      | –                            | ✖  |
+| `CRUDFixtureGuardFailsLoudlyOnUninvertibleCheck`    | \*    | `--service account`                         | proto + migration, `generate` must FAIL                   | –   | –      | –      | **✔**                       | ✖  |
+| `ComponentObserveMarkerAndEnforceLint`              | \*    | `--service api`                             | `scaffold package checkout`, 5 generates, lint            | –   | –      | –      | –                            | ✖  |
+| `ObservedDecoratorGeneratedAndWired`                | \*    | `--service api`                             | `scaffold package checkout`, contract edits               | –   | –      | –      | –                            | ✖  |
+| `AddVerbsProduceABuildableTree`                     | \*    | `--service widget`                          | worker/cron/operator/crd/webhook adds                     | –   | –      | –      | –                            | ✖  |
+| `CmdAsCodeSubcommands`                              | \*    | `--service api`                             | writes custom commands file                               | ✔  | –      | **✔** | –                            | ✖  |
+| `FailedGenerateRevertConsistencyAndPreservation`    | \*    | `--service widget`                          | conflicting file, `scaffold` must fail, then repair       | –   | –      | –      | **✔**                       | ✖  |
+| `ScaffoldWorkloads`/`AllBinaryConfig` (2nd)         | 20–95 | `--service item`                            | binary config edits                                       | –   | –      | –      | –                            | ✖  |
+| `FixtureCorpusZeroService`                          | \*    | _(no `--service`)_                          | `scaffold service item`                                   | –   | –      | –      | –                            | ✖  |
+| `FixtureCorpusCRUDLifecycle`                        | \*    | corpus shape                                | migrations + CRUD drive                                   | ✔  | –      | **✔** | –                            | ✖  |
+| `FixtureCorpusCPForgeShaped`                        | skip  | `--service api,billing,reporting`           | webhook + 2 packages                                      | –   | –      | ✔     | –                            | ✖  |
+| `FixtureCorpusKalshiShaped`                         | skip  | `--service engine`                          | 3 workers + adapter package                               | –   | –      | ✔     | –                            | ✖  |
+| `RegistrationTypesOnlyService`                      | skip  | `--service api --frontend web`              | protos + registry edits                                   | –   | –      | –      | –                            | ✖  |
 
 `*` = not in the quoted timing extract; treat as "expensive" (all are
 scaffold-bearing, and every npm-bearing one is 150s+).
@@ -193,9 +192,9 @@ members.
 
 **Why they group:** all six are `project new --frontend {web,dashboard}` plus
 one service, and each pays its own `npm install` (the dominant term — the two
-measured members are 389s and 396s). Their *assertions* differ (build green,
+measured members are 389s and 396s). Their _assertions_ differ (build green,
 vitest green, tsc typed-error contract, enum form projection, runtime link
-shape, style lint) but their *tree* need not.
+shape, style lint) but their _tree_ need not.
 
 **Mechanism:** a `sync.Once`-guarded `sharedFrontendTree(t)` helper, exactly
 like `buildforgeBinary` and `sharedTestPostgres`. It scaffolds ONE
@@ -203,13 +202,14 @@ like `buildforgeBinary` and `sharedTestPostgres`. It scaffolds ONE
 that is the **union** of what the members need (CRUD entity + an enum field +
 the scalar-vocabulary fields), runs `forge scaffold`, `forge generate`,
 `go build ./...`, and one `npm install`. It returns the project dir. Members
-read from it and run their own *non-mutating* npm scripts
+read from it and run their own _non-mutating_ npm scripts
 (`npm run build`, `npm test`, `tsc --noEmit`, `npm run lint:styles`).
 
 **Isolation risk and the answer:** `npm run build` writes `.next/` and
 `FreshScaffoldFrontendLintClean` runs `lint:styles:fix`, which REWRITES
 `globals.css`. Those are mutations, so:
-- members that only *read* generated TS or run `tsc --noEmit` use the shared
+
+- members that only _read_ generated TS or run `tsc --noEmit` use the shared
   tree directly;
 - members that run a build or a fixer get a **copy-on-write clone** of the
   shared tree (`cp -a`, or better, clone everything except `node_modules` and
@@ -218,7 +218,7 @@ read from it and run their own *non-mutating* npm scripts
   establishes tree-cloning as an idiom in this suite.
 
 **Members that must NOT join:** `AddFrontendKindsProduceABuildableTree` (its
-whole subject is three *different* `scaffold frontend --kind` adds each doing
+whole subject is three _different_ `scaffold frontend --kind` adds each doing
 its own install — sharing an install would delete the thing under test) and
 `FixtureCorpusFrontendBasePath` (asserts a build must FAIL under an empty
 `NEXT_PUBLIC_BASE_PATH`, and needs its own `--base-path /admin` add).
@@ -244,7 +244,7 @@ then asserts read-only facts about the generated Go (which fields the create
 request carries, which columns the ORM projects, what the order-by helper
 emits, what the schema hardening produced). They do not conflict, because
 **each one's proto declares a differently-named entity.** Nothing forces them
-into separate *projects*; they were separate only because each was written
+into separate _projects_; they were separate only because each was written
 standalone.
 
 **Mechanism:** one `sync.Once` `sharedEntityProjectionTree(t)` that scaffolds a
@@ -252,7 +252,7 @@ single project with one service whose proto file set contains **all seven
 entities, each preserved verbatim from the test it came from** (rename the
 service dir, not the messages). One `forge scaffold`, one `forge generate`, one
 `go build ./...`. Each former test becomes a top-level test that calls the
-helper and reads only *its* generated files.
+helper and reads only _its_ generated files.
 
 **Non-negotiable:** every existing assertion moves across unchanged. The
 implementing task must produce an explicit old-test → new-assertion map. If two
@@ -261,7 +261,7 @@ rather than having its migration weakened.
 
 **Members that must NOT join:** `ScaffoldReadOnlyColumnTakesItsSchemaDefault`
 and `CRUDFixtureSurvivesAddedConstraints` and
-`CRUDFixtureSatisfiesCheckConstraints` write *additional* migrations after the
+`CRUDFixtureSatisfiesCheckConstraints` write _additional_ migrations after the
 first generate and re-generate — that is a tree mutation. `SchemaDriftNotice`
 deliberately mutates proto and migrations across three generates. All keep
 their own tree.
@@ -279,11 +279,12 @@ three in the same 90–150s band), the family costs roughly **~800s today and
 
 These genuinely share input in the plan's original sense. But note two splits:
 `ComponentsKCLDeclaredFromSources` and `ScaffoldMultiServiceProject` are
-*multi-service*, `ScaffoldFullSpecProject`/`ScaffoldMultiServiceProject` carry a
+_multi-service_, `ScaffoldFullSpecProject`/`ScaffoldMultiServiceProject` carry a
 frontend. So this is **two** shared trees, not one:
+
 - **C1** — `sharedPlainAPITree`: `--service api`, no frontend. Serves
   `ScaffoldConfigNaming`, `ScaffoldBasicProject`, `ScaffoldServerStartup`
-  (which only *builds and boots* — read-only w.r.t. the tree, and keeps its
+  (which only _builds and boots_ — read-only w.r.t. the tree, and keeps its
   `freePortE2E`), plus `ScaffoldKCLRendersDevManifest` if its `--service item`
   is harmonised to `api` (check the KCL assertions do not name the service).
 - **C2** — `sharedMultiServiceTree`: `--service a,b,c --frontend web`. Serves
@@ -300,13 +301,14 @@ against the fixture consts, and fail **by name** when the generator's closed
 table gains a kind the fixture does not cover.
 
 Candidates to convert rather than consolidate:
+
 - `ScaffoldConfigNaming` — the naming rule is a pure function of the project
   name; if the naming logic is reachable in-process from `internal/codegen`,
   this test does not need a 93-second scaffold at all.
 - `ComponentsKCLDeclaredFromSources` — "the components KCL enumerates exactly
   the declared sources" is a set-equality between the project manifest and the
   rendered KCL; derivable if the renderer is callable in-process. The `kcl`
-  *render* itself (`ScaffoldKCLRendersDevManifest`) is not derivable and stays.
+  _render_ itself (`ScaffoldKCLRendersDevManifest`) is not derivable and stays.
 - `TestingPackageNotLinkedIntoBinary` — currently shells `go list -deps`; keep
   the subprocess, but it can run against a Family C1 tree rather than its own.
 
@@ -323,7 +325,7 @@ faster, more precise, and cannot rot the way a shared tree can.
 `ScaffoldReadOnlyMarkerWithNoFieldFailsLoudly`,
 `AllBinaryConfigNoPrimaryBinding_RejectsAtGenerate`,
 `CRUDFixtureGuardFailsLoudlyOnUninvertibleCheck`,
-`FailedGenerateRevertConsistencyAndPreservation`. Their subject *is* the
+`FailedGenerateRevertConsistencyAndPreservation`. Their subject _is_ the
 half-written state, and they are cheap anyway (20–88s).
 
 **Multi-generate / migration-mutating:** `SchemaDriftNotice`,
@@ -337,7 +339,7 @@ manifest evolve across edits; they mutate by definition.
 
 **Add-verb / growth tests:** `ScaffoldAddService`, `AddServiceThenEntityGenerates`,
 `AddVerbsProduceABuildableTree`, `ScaffoldIsReviveExportedClean`,
-`ZeroServiceScaffoldCompiles`, `FixtureCorpusZeroService`. The *act of adding* is
+`ZeroServiceScaffoldCompiles`, `FixtureCorpusZeroService`. The _act of adding_ is
 the subject.
 
 **Runtime/boot with injected tests:** `GeneratedStoreSeam`,
@@ -365,16 +367,16 @@ Two consequences:
 2. **Therefore: `sync.Once` shared fixtures, not `t.Run` trees.** Every member
    stays its own top-level `TestE2E*` function — the shard partition and the
    ledger are unchanged, the count stays put — and the expensive tree is built
-   once per *package run* by whichever member reaches it first. This is exactly
+   once per _package run_ by whichever member reaches it first. This is exactly
    the idiom `buildforgeBinary` and `sharedTestPostgres` already use, so it
    composes with `t.Parallel()` without new machinery.
 
 **The trade-off I am choosing, stated plainly:** `sync.Once` sharing means that
 within a single shard the members serialise on the first one to arrive, and a
 failure in fixture construction fails several tests at once rather than one.
-That is worse for *diagnosis* than fully independent trees. It is accepted
+That is worse for _diagnosis_ than fully independent trees. It is accepted
 because (a) the fixture failure message can name the fixture explicitly, and
-(b) the alternative — one giant parent test — is worse on *both* diagnosis and
+(b) the alternative — one giant parent test — is worse on _both_ diagnosis and
 shard balance. Across shards the fixture is built up to 4 times (once per shard
 process), which is fine: 4 installs beats 6, and the shards are the parallelism.
 
@@ -392,12 +394,12 @@ loud-precondition discipline — a member needing npm must still hard-fail under
 
 ## 6. Ranked recommendation
 
-| Rank | Family | Mechanism | Est. saving (test-seconds) | Risk |
-|---|---|---|---|---|
-| 1 | **A — shared npm frontend tree** | `sync.Once` + clone-for-mutators | **~1,200–1,500** | medium (clone semantics, npm hoisting) |
-| 2 | **B — multi-entity projection tree** | `sync.Once`, one project, N entities | **~600** | low (read-only members) |
-| 3 | **C — read-only plain/multi-service trees** | two `sync.Once` trees | **~440** | low |
-| 4 | D — derive instead of scaffold | in-process against `codegen` | 90–150 per convert | low, but only a few candidates |
+| Rank | Family                                      | Mechanism                            | Est. saving (test-seconds) | Risk                                   |
+| ---- | ------------------------------------------- | ------------------------------------ | -------------------------- | -------------------------------------- |
+| 1    | **A — shared npm frontend tree**            | `sync.Once` + clone-for-mutators     | **~1,200–1,500**           | medium (clone semantics, npm hoisting) |
+| 2    | **B — multi-entity projection tree**        | `sync.Once`, one project, N entities | **~600**                   | low (read-only members)                |
+| 3    | **C — read-only plain/multi-service trees** | two `sync.Once` trees                | **~440**                   | low                                    |
+| 4    | D — derive instead of scaffold              | in-process against `codegen`         | 90–150 per convert         | low, but only a few candidates         |
 
 **Do Family A first**, as the plan's "highest-value consolidation family" task
 intends. It carries the most saving and it is the one whose risks (tree cloning

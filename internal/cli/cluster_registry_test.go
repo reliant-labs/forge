@@ -136,6 +136,84 @@ func TestEnsureStandaloneRegistry_Idempotent(t *testing.T) {
 	}
 }
 
+// TestRunDevClusterUp_EnsuresStandaloneRegistry pins that `forge cluster up`
+// ensures a `registries.use` standalone registry BEFORE `k3d cluster create`,
+// exactly as the declarative `forge env up` path does.
+//
+// Without the ensure, k3d fails Cluster Preparation ("Didn't find container
+// for node 'k3d-control-plane-registry'") and rolls the create back, so the
+// same deploy/k3d.yaml worked under `forge env up` and failed under
+// `forge cluster up`. Ordering is asserted, not just the call: a registry
+// created after the cluster is too late to matter.
+func TestRunDevClusterUp_EnsuresStandaloneRegistry(t *testing.T) {
+	origExists := registryExistsFn
+	origCreate := registryCreateFn
+	origCreateCmd := runK3dClusterCreateCommandFn
+	origStateAfter := lookupK3dStateAfterCreateFn
+	origCleanup := cleanupK3dCreateToolsFn
+	origMergeKubeconfig := mergeK3dKubeconfigFn
+	origStateForUp := lookupClusterStateForUpFn
+	t.Cleanup(func() {
+		registryExistsFn = origExists
+		registryCreateFn = origCreate
+		runK3dClusterCreateCommandFn = origCreateCmd
+		lookupK3dStateAfterCreateFn = origStateAfter
+		cleanupK3dCreateToolsFn = origCleanup
+		mergeK3dKubeconfigFn = origMergeKubeconfig
+		lookupClusterStateForUpFn = origStateForUp
+	})
+
+	// runDevClusterUp gates on features.deploy read from the forge.yaml it
+	// finds by walking up from cwd. forge's OWN forge.yaml has deploy off
+	// (it is a CLI project), so the test needs a deploy-enabled project to
+	// stand in for a downstream one.
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/forge.yaml", []byte(
+		"name: testproj\nmodule_path: example.com/testproj\nfeatures:\n  deploy: true\n"), 0o644); err != nil {
+		t.Fatalf("write temp forge.yaml: %v", err)
+	}
+	t.Chdir(dir)
+
+	configPath := dir + "/k3d.yaml"
+	if err := os.WriteFile(configPath, []byte(k3dUseConfig), 0o644); err != nil {
+		t.Fatalf("write temp k3d.yaml: %v", err)
+	}
+
+	// One ordered log, so "registry before cluster" is a real assertion
+	// rather than two independent call counts.
+	var calls []string
+	// The cluster does not exist yet — this is the create path. Stubbed so
+	// the test does not depend on whatever k3d clusters the host happens to
+	// be running.
+	lookupClusterStateForUpFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{}, nil
+	}
+	registryExistsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
+	registryCreateFn = func(_ context.Context, ref k3dRegistryRef) error {
+		calls = append(calls, "registry:"+ref.Name)
+		return nil
+	}
+	runK3dClusterCreateCommandFn = func(_ context.Context, _ []string) error {
+		calls = append(calls, "cluster-create")
+		return nil
+	}
+	lookupK3dStateAfterCreateFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: true}, nil
+	}
+	cleanupK3dCreateToolsFn = func(_ context.Context, _ string) error { return nil }
+	mergeK3dKubeconfigFn = func(_ context.Context, _ string) error { return nil }
+
+	// pinKubectlContext shells out to kubectl, which a unit test must not
+	// depend on; it runs after both calls under test, so an error there
+	// does not invalidate the ordering assertion below.
+	_ = runDevClusterUp(t.Context(), configPath, false)
+
+	if len(calls) < 2 || calls[0] != "registry:k3d-control-plane-registry" || calls[1] != "cluster-create" {
+		t.Fatalf("call order was %v; want the standalone registry ensured BEFORE cluster create "+
+			"([registry:k3d-control-plane-registry cluster-create])", calls)
+	}
+}
+
 // TestEnsureConfigRegistries_FromFile drives the full file->ensure path
 // against a temp k3d.yaml, asserting the standalone registry is ensured with
 // the name + host port parsed from the config.

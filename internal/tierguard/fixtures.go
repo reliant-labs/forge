@@ -300,6 +300,16 @@ type renderResult struct {
 	// (skipped as disowned, or emitted to a path outside the project).
 	// Surfaced rather than silently dropped.
 	Missing []string
+	// ChokepointTargets is the size of checksums.Tier1TargetSet as seen
+	// in the process that ran this render, captured immediately after
+	// the pipeline finished.
+	//
+	// Renders happen in a child process (see render_child_test.go), so
+	// the rendering process's globals are not the reading process's.
+	// This carries the one observation that must be made where the
+	// pipeline ran: that the inventory arrived through the checksums
+	// chokepoint at all.
+	ChokepointTargets int
 }
 
 // render scaffolds fx into a fresh directory under parent and runs the

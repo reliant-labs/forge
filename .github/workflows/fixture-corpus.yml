@@ -56,6 +56,11 @@ jobs:
 
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+        with:
+          # See ci.yml: unauthenticated release lookups share a 60/hour
+          # per-runner-IP budget and fail the job for a reason unrelated
+          # to the commit.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       # Node/npm for the frontend-basepath fixture (npm install +
       # `next build`). The fixture skips its npm phase with a logged

@@ -17,6 +17,35 @@ concurrency:
 # Go version is read from go.mod's `go` directive via setup-go's
 # `go-version-file` input so CI stays in sync with the project's declared
 # version without a duplicate env var that drifts.
+#
+# Build-cache note (the "Restore Go build cache" steps below).
+#
+# setup-go's own `cache: true` DOES cache the build cache — it saves
+# `go env GOCACHE` alongside `go env GOMODCACHE`. What it does not do is
+# give that cache any RESTORE-KEYS: cache-restore.ts calls
+# restoreCache(paths, primaryKey) with no fallback list, and the primary
+# key ends in a hash of go.sum. So the hit is all-or-nothing — touch a
+# single dependency and the restore misses, and the job recompiles the
+# world from cold rather than reusing the ~99% of build artifacts that
+# did not change.
+#
+# A go.sum change is not the rare case here: this repo is 2 modules and
+# Dependabot bumps them continuously, and it is exactly the PR where a
+# cold compile is least affordable. The steps below add a second, keyed
+# cache over the same GOCACHE directory with a restore-key ladder, so a
+# go.sum change degrades to "reuse the previous commit's build cache"
+# instead of "start from nothing".
+#
+# Keys are ordered most- to least-specific:
+#   …-<go.sum hash>-<sha>  exact commit (a re-run reuses everything)
+#   …-<go.sum hash>-       same deps, different code
+#   …-                     same Go version, any deps  ← the Dependabot case
+#
+# GOCACHE is content-addressed and self-validating: every entry is keyed
+# by the hash of its own inputs, so a stale entry is ignored rather than
+# mis-used. That is what makes a loose restore-key safe here — the worst
+# case of an old cache is a miss on the changed packages, never a wrong
+# object.
 
 jobs:
   lint:
@@ -34,6 +63,17 @@ jobs:
           cache-dependency-path: |
             go.sum
             pkg/go.sum
+      # golangci-lint type-checks the whole repo, which is a full compile
+      # in all but name. Its own action caches the analyzer results; this
+      # caches the Go build artifacts underneath them.
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-lint-${{ runner.os }}-
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -56,6 +96,19 @@ jobs:
           cache-dependency-path: |
             go.sum
             pkg/go.sum
+      # This job compiles far more than it looks: the suite scaffolds real
+      # projects and runs real `go build` / `go mod tidy` inside them, and
+      # it runs under -race, which is a separate set of build artifacts
+      # from the non-race ones every other job produces. It is the job
+      # that benefits most from a warm GOCACHE.
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-test-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-test-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-test-${{ runner.os }}-
       # internal/tierguard renders real fixture projects, which drives the
       # generate pipeline's "buf generate (Go stubs)" step. Without buf on
       # PATH those guards fail with `exec: "buf": executable file not found`
@@ -63,6 +116,16 @@ jobs:
       # pass, so this is a hard dependency of the test job, not a nicety.
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+        with:
+          # Without a token the action resolves buf's release through an
+          # UNAUTHENTICATED api.github.com call, rate-limited to 60/hour
+          # per runner IP and shared with every other job on that host.
+          # Exhausted, the step dies with "API rate limit exceeded" and
+          # the job fails for a reason that has nothing to do with the
+          # commit. The built-in token lifts that to 1000/hour per
+          # repository; contents: read is all a release lookup needs.
+          # Same failure mode ci.yml already pins KCL_VERSION to avoid.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Go tests
         # -timeout is explicit rather than left to `go test`'s 10-minute
         # default. Under -race the removalguard scan alone once exceeded that
@@ -88,6 +151,17 @@ jobs:
           cache-dependency-path: |
             go.sum
             pkg/go.sum
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          # -trimpath below is part of the cache identity: artifacts built
+          # with it do not match ones built without, so this job keeps its
+          # own scope rather than sharing the test job's.
+          path: ~/.cache/go-build
+          key: go-build-build-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-build-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-build-${{ runner.os }}-
       - name: Go build
         # -trimpath makes builds reproducible across runners;
         # -buildvcs=true stamps the commit/dirty flag into runtime
@@ -111,6 +185,19 @@ jobs:
           cache-dependency-path: |
             go.sum
             pkg/go.sum
+      # verify-generated, validate-kcl and vuln-scan all run
+      # `go install ./cmd/forge` with identical flags, so they share ONE
+      # cache scope: whichever job finishes first warms the other two on
+      # the next run, instead of three jobs each compiling forge from
+      # cold in parallel.
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-tools-${{ runner.os }}-
       - name: Install forge
         # THIS repo is forge. A scaffolded project pins the published forge
         # that generated it, but forge's own CI must verify the checkout under
@@ -136,6 +223,16 @@ jobs:
           cache-dependency-path: |
             go.sum
             pkg/go.sum
+      # Shares the tools scope with verify-generated and vuln-scan — same
+      # `go install ./cmd/forge`, same flags, same artifacts.
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-tools-${{ runner.os }}-
       # KCL_VERSION is pinned deliberately. Left unset, the installer
       # resolves "latest" through an UNAUTHENTICATED api.github.com call,
       # which is rate-limited to 60/hour per runner IP and shared across
@@ -180,6 +277,15 @@ jobs:
           cache-dependency-path: |
             go.sum
             pkg/go.sum
+      # Shares the tools scope with verify-generated and validate-kcl.
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-tools-${{ runner.os }}-
       - name: Install govulncheck
         # Pinned explicitly: @latest makes CI non-reproducible and lets a
         # compromised upstream release silently alter scan results. The
@@ -216,6 +322,18 @@ jobs:
           cache-dependency-path: |
             go.sum
             pkg/go.sum
+      # go-licenses is compiled from source on every run and then walks
+      # the whole dependency graph, both of which are pure compile work.
+      # Its own scope: it is the only job that builds go-licenses, and it
+      # never builds ./cmd/forge.
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-licenses-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-licenses-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-licenses-${{ runner.os }}-
       - name: Install go-licenses
         run: go install github.com/google/go-licenses@v1.6.0
       - name: Check licenses

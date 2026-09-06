@@ -44,6 +44,11 @@ jobs:
 
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+        with:
+          # See ci.yml: unauthenticated release lookups share a 60/hour
+          # per-runner-IP budget and fail the job for a reason unrelated
+          # to the commit.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"

@@ -361,7 +361,16 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j JobEntity, 
 	// container on, so the job dials the IdP that is actually running
 	// rather than the "http://localhost:8080" literal baked into its flag
 	// defaults at project-generation time.
-	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, secretsLayer, kclEnvVarsToMap(j.EnvVars))
+	// Secrets are scoped to what this job DECLARES, exactly as a host
+	// service's are. Handing a job the whole store was the same wholesale
+	// injection the dotenv provider was removed for — and it did real
+	// damage here: the scaffolded store ships every declared slot present
+	// and BLANK, so an untouched project injected `DATABASE_URL=""` into a
+	// layer that outranks project config, and the migrate job failed with
+	// `required config field database_url is not set` while both the KCL
+	// and `forge env config` plainly showed the DSN.
+	jobSecrets := scopeSecretsToEnvVars(secretsLayer, j.EnvVars)
+	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, jobSecrets, kclEnvVarsToMap(j.EnvVars))
 
 	// What this job gates, for the human reading the log. The raw
 	// `before` would print a bare "*", which says nothing about what is

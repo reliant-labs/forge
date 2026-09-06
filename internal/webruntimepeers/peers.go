@@ -84,6 +84,48 @@ var typesOnlyDir = map[string]string{
 	"react": "@types/react",
 }
 
+// The two node_modules layouts a forge frontend can have, and the reason a pin
+// must name the RIGHT one rather than listing both.
+//
+// A `paths` entry whose key has no `*` wildcard must be an array of EXACTLY
+// ONE element. TypeScript itself tolerates more and falls through to the next
+// candidate, but Next.js resolves imports with SWC, whose tsc-compatible
+// resolver asserts the single-element rule and PANICS the whole build:
+//
+//	thread '<unnamed>' panicked at swc_ecma_loader/src/resolvers/tsc.rs:82:21:
+//	assertion `left == right` failed: value of `paths.@bufbuild/protobuf`
+//	should be an array with one element because the src path does not
+//	contains * (wildcard)
+//
+// So "list both and let the toolchain pick" is not available: it typechecks
+// green under tsc and takes `next build` down. The pin has to be resolved to
+// the layout the project actually has.
+//
+// WHICH LAYOUT, AND WHY IT VARIES. Ordinarily each frontend installs its own
+// dependencies and localPinPrefix is right. But forge's dev bridge makes the
+// project an npm WORKSPACE ROOT (internal/generator/frontend_webruntime_devlink.go),
+// and npm hoists every member's dependencies to the root — in a bridged
+// project frontends/<name>/node_modules does not exist at all. A pin left
+// naming the frontend-local path then points at nothing, which tsc does not
+// report as an error: the pin silently no-ops, resolution falls back to the
+// ordinary upward walk, and it finds the LINKED runtime's own private copies
+// first, producing exactly the duplicate-identity failure the pins exist to
+// prevent:
+//
+//	src/lib/mock-transport_gen.ts(54,3): error TS2322: Type
+//	'…/forge/web-runtime/node_modules/@connectrpc/connect/…'.Transport is not
+//	assignable to type '…/<project>/node_modules/@connectrpc/connect/…'.Transport
+//
+// Measured in a scaffolded bridged project: frontend-local pin → 2 TS2322
+// errors; hoisted pin → 0, with no tsc setting relaxed.
+const (
+	// localPinPrefix — the frontend installed its own dependencies.
+	localPinPrefix = "./node_modules/"
+	// hoistedPinPrefix — an npm workspace hoisted them to the project root,
+	// two levels up from frontends/<name>/.
+	hoistedPinPrefix = "../../node_modules/"
+)
+
 // TypePinTarget returns the node_modules-relative directory a tsconfig `paths`
 // entry for name should resolve to. It is the package itself for anything that
 // bundles its typings, and the @types/ package for anything that does not.
@@ -92,6 +134,22 @@ func TypePinTarget(name string) string {
 		return types
 	}
 	return name
+}
+
+// TypePinPath returns the single `paths` value for one pinned package, for a
+// frontend whose dependencies are hoisted to the project root when hoisted is
+// true and installed locally otherwise.
+//
+// Exactly one element, never two — see the layout constants above for why a
+// candidate list panics `next build`. Every emitter goes through this so the
+// layout decision lands in one place rather than in each template's inline
+// string.
+func TypePinPath(name string, hoisted bool) string {
+	prefix := localPinPrefix
+	if hoisted {
+		prefix = hoistedPinPrefix
+	}
+	return prefix + TypePinTarget(name)
 }
 
 // decodePeers returns the runtime's declared peer dependency names.

@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -145,10 +147,19 @@ plugins:
 	// buf emits a confusing "fork/exec: no such file" error. If absent, surface
 	// a clear remediation message and skip cleanly.
 	if usesLocalTSPlugin(feBufGen) {
-		pluginPath := filepath.Join(absFeDir, "node_modules", ".bin", "protoc-gen-es")
-		if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
+		pluginRel, ok := resolveLocalTSPluginRel(projectDir, feDir)
+		if !ok {
 			fmt.Printf("  ⚠️  %s: @bufbuild/protoc-gen-es not installed yet — run `npm install` in %s before `forge generate`.\n", fe.Name, feDir)
 			return nil
+		}
+		// Heal a buf.gen.yaml whose plugin path names a layout this project
+		// does not have. buf.gen.yaml is scaffold-once, so a project whose
+		// node_modules later moved (npm hoisting it to the workspace root
+		// under forge's dev bridge) would otherwise keep pointing at a path
+		// that no longer exists — and the skip above would report "not
+		// installed yet" for a plugin that IS installed, one directory up.
+		if err := retargetLocalTSPlugin(feBufGen, pluginRel); err != nil {
+			return fmt.Errorf("retarget TypeScript plugin path for %s: %w", fe.Name, err)
 		}
 	}
 
@@ -306,6 +317,69 @@ func withNodeNoDeprecation() []string {
 // a `local:` plugin entry that points at protoc-gen-es (the default since
 // the BSR removal). Best-effort — if the file is unreadable we assume yes
 // to err on the side of running the existence check.
+// resolveLocalTSPluginRel finds the protoc-gen-es binary for one frontend and
+// returns its path RELATIVE TO THE PROJECT ROOT, which is where forge invokes
+// `buf generate --template`. Reports false when no copy is installed anywhere.
+//
+// Two locations, in the order npm itself would resolve them:
+//
+//  1. frontends/<name>/node_modules/.bin — an ordinary standalone frontend.
+//  2. <project>/node_modules/.bin — a WORKSPACE install. Forge's dev bridge
+//     writes a gitignored workspace root (see
+//     internal/generator/frontend_webruntime_devlink.go), and npm hoists every
+//     member's dependencies to the root, so the frontend-local directory does
+//     not exist at all in a bridged project.
+//
+// Looking in only the first place is what made a bridged project generate NO
+// TypeScript stubs: the plugin check above skipped with "not installed yet",
+// `buf generate` never ran for the frontend, and src/gen/ stayed empty. The
+// symptom surfaced much later and far away, as tsc reporting TS2307 "Cannot
+// find module '@/gen/services/<svc>/v1/<svc>_pb'" against files forge had just
+// generated — a missing-module error for code the generator was silently
+// skipped for, which reads as a codegen bug rather than a missing plugin.
+func resolveLocalTSPluginRel(projectDir, feDir string) (string, bool) {
+	candidates := []string{
+		filepath.Join(feDir, "node_modules", ".bin", "protoc-gen-es"),
+		filepath.Join("node_modules", ".bin", "protoc-gen-es"),
+	}
+	for _, rel := range candidates {
+		if _, err := os.Stat(filepath.Join(projectDir, rel)); err == nil {
+			return "./" + filepath.ToSlash(rel), true
+		}
+	}
+	return "", false
+}
+
+// localTSPluginLineRe matches the `- local: …protoc-gen-es` line in a
+// buf.gen.yaml, capturing the leading punctuation so a rewrite preserves the
+// file's own indentation.
+var localTSPluginLineRe = regexp.MustCompile(`(?m)^(\s*-\s*local:\s*)\S*protoc-gen-es\s*$`)
+
+// retargetLocalTSPlugin rewrites the local protoc-gen-es path in bufGenPath to
+// want when it differs. No-op — and no write — when it already matches, so a
+// re-run neither churns the file nor its mtime.
+func retargetLocalTSPlugin(bufGenPath, want string) error {
+	body, err := os.ReadFile(bufGenPath)
+	if err != nil {
+		return err
+	}
+	loc := localTSPluginLineRe.FindSubmatchIndex(body)
+	if loc == nil {
+		// A plugin line this cannot recognise is one a user has restructured.
+		// Forge does not rewrite what it no longer understands.
+		return nil
+	}
+	updated := localTSPluginLineRe.ReplaceAll(body, []byte("${1}"+want))
+	if bytes.Equal(updated, body) {
+		return nil
+	}
+	mode := os.FileMode(0o644)
+	if info, statErr := os.Stat(bufGenPath); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	return os.WriteFile(bufGenPath, updated, mode)
+}
+
 func usesLocalTSPlugin(bufGenPath string) bool {
 	data, err := os.ReadFile(bufGenPath)
 	if err != nil {

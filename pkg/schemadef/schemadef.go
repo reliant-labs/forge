@@ -59,6 +59,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -243,6 +244,79 @@ type Index struct {
 	// `UNIQUE (email)` describes a stricter table than the one that
 	// exists. An unqualified claim is worse than no claim.
 	Predicate string
+	// Expression is true when at least one index key is an EXPRESSION
+	// rather than a bare column — `UNIQUE (lower(name))`,
+	// `UNIQUE (supplier_id, lower(sku))`.
+	//
+	// It exists because such an index cannot be described by Columns
+	// alone, and describing it partially is worse than not describing it.
+	// pg_catalog stores an expression key as attnum 0, which carries no
+	// pg_attribute row, so a column-joining introspection query drops that
+	// key silently: `UNIQUE (lower(name))` came back as an index with NO
+	// columns, and `UNIQUE (supplier_id, lower(sku))` came back as
+	// `UNIQUE (supplier_id)` — a DIFFERENT, stricter constraint than the
+	// one the table has.
+	//
+	// Columns holds only the bare-column subset, so it must never be read
+	// as the whole key: `lower(name)` being unique does not make `name`
+	// unique, and `(supplier_id, lower(sku))` being unique does not make
+	// `supplier_id` unique. Read Keys for the full key, in order.
+	Expression bool
+	// Keys is every index key in order, as postgres renders it: a bare
+	// column is its name, an expression key is its SQL text
+	// (`lower(name)`). It is the only faithful description of an
+	// expression index, and it is what lets a consumer recognise the
+	// common case-insensitive form and plan against the underlying column
+	// instead of giving up on the index entirely.
+	//
+	// Populated for every index by introspection. A hand-constructed Index
+	// may leave it nil, so read it through [Index.KeyList], which falls
+	// back to Columns.
+	Keys []IndexKey
+}
+
+// KeyList returns the index's keys in order, falling back to one plain key
+// per entry in Columns when Keys is unset.
+//
+// The fallback exists because Index is constructed in two ways: introspection
+// (which fills Keys) and by hand, in tests and in callers that only ever
+// describe bare columns. Requiring both fields at every construction site
+// would make the zero value a trap — an index with keys silently missing —
+// so the accessor derives the one from the other instead.
+func (ix Index) KeyList() []IndexKey {
+	if len(ix.Keys) > 0 {
+		return ix.Keys
+	}
+	out := make([]IndexKey, 0, len(ix.Columns))
+	for _, c := range ix.Columns {
+		out = append(out, IndexKey{Expr: c, Column: c})
+	}
+	return out
+}
+
+// IndexKey is one key of an index — a column, or an expression over columns.
+type IndexKey struct {
+	// Expr is the key as postgres renders it: "name" for a bare column,
+	// "lower(name)" for an expression.
+	Expr string
+	// Column is the bare column this key is over, when that is knowable:
+	// the column itself for a plain key, and the argument for a
+	// single-column case fold like `lower(name)`. Empty when the key spans
+	// several columns or uses an expression this package does not read
+	// (`(a || b)`, `(meta->>'k')`).
+	//
+	// A consumer that can only place a value for a real column uses this
+	// to decide whether the key is reachable at all.
+	Column string
+	// Fold names the case-folding function wrapping Column — "lower" or
+	// "upper" — and is empty for every other key, including a plain one.
+	//
+	// This is the one expression form worth reading rather than refusing.
+	// `UNIQUE (lower(email))` is how case-insensitive uniqueness is
+	// spelled in postgres and is common in hand-written migrations, and
+	// its rule is exactly "these values must be distinct ignoring case" —
+	// which a value generator CAN satisfy without evaluating SQL.
+	Fold string
 }
 
 // ForeignKey is a declared REFERENCES constraint.
@@ -953,57 +1027,115 @@ func introspectPrimaryKey(ctx context.Context, db Queryer, schema, table string)
 
 // introspectIndexes returns the non-PK indexes (unique and plain) of a
 // table via pg_catalog, with columns in index order.
+//
+// An index key may be an EXPRESSION (`lower(name)`) rather than a column.
+// pg_catalog spells that as attnum 0, which has no pg_attribute row, so
+// the join below cannot yield a name for it. The index is still reported —
+// with the bare-column subset in Columns and Expression set — because the
+// alternative is what this query used to do: emit `UNIQUE (lower(name))`
+// as an index with no columns at all, and `UNIQUE (supplier_id,
+// lower(sku))` as plain `UNIQUE (supplier_id)`. The second is the
+// dangerous one: it does not look malformed, it looks like a stricter
+// table, and every consumer downstream believed it.
+//
+// indnatts (the key count) is selected so the expression case is detected
+// from the catalog rather than inferred from a row that never arrived —
+// an index whose keys are ALL expressions produces no join rows at all,
+// so it is picked up by the separate no-column pass below.
 func introspectIndexes(ctx context.Context, db Queryer, schema, table string) ([]Index, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT ic.relname AS index_name,
 		       idx.indisunique AS is_unique,
 		       COALESCE(pg_get_expr(idx.indpred, idx.indrelid), '') AS predicate,
-		       a.attname AS column_name,
-		       array_position(idx.indkey, a.attnum) AS ord
+		       idx.indnkeyatts AS key_count,
+		       k.ord AS ord,
+		       pg_get_indexdef(idx.indexrelid, k.ord::int, true) AS key_expr,
+		       a.attname AS column_name
 		FROM pg_class t
 		JOIN pg_namespace n ON n.oid = t.relnamespace
 		JOIN pg_index idx ON idx.indrelid = t.oid
 		JOIN pg_class ic ON ic.oid = idx.indexrelid
-		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(idx.indkey)
+		JOIN LATERAL generate_series(1, idx.indnkeyatts) AS k(ord) ON TRUE
+		LEFT JOIN pg_attribute a
+		       ON a.attrelid = t.oid
+		      AND a.attnum = idx.indkey[k.ord - 1]
+		      AND a.attnum <> 0
 		WHERE n.nspname = $1
 		  AND t.relname = $2
 		  AND NOT idx.indisprimary
-		ORDER BY ic.relname, ord`, schema, table)
+		ORDER BY ic.relname, k.ord`, schema, table)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	var (
-		order  []string
-		byName = map[string]*Index{}
+		order    []string
+		byName   = map[string]*Index{}
+		keyCount = map[string]int{}
 	)
 	for rows.Next() {
 		var (
 			idxName   string
 			unique    bool
 			predicate string
-			colName   string
-			ord       sql.NullInt64
+			keyAtts   int
+			ord       int
+			keyExpr   string
+			colName   sql.NullString
 		)
-		if err := rows.Scan(&idxName, &unique, &predicate, &colName, &ord); err != nil {
+		if err := rows.Scan(&idxName, &unique, &predicate, &keyAtts, &ord, &keyExpr, &colName); err != nil {
 			return nil, err
 		}
 		ix, ok := byName[idxName]
 		if !ok {
 			ix = &Index{Name: idxName, Unique: unique, Predicate: predicate}
 			byName[idxName] = ix
+			keyCount[idxName] = keyAtts
 			order = append(order, idxName)
 		}
-		ix.Columns = append(ix.Columns, colName)
+		key := IndexKey{Expr: strings.TrimSpace(keyExpr)}
+		if colName.Valid {
+			// A bare column key: attnum resolved to a real column.
+			key.Column = colName.String
+			ix.Columns = append(ix.Columns, colName.String)
+		} else {
+			// An expression key (attnum 0, no pg_attribute row). Read the
+			// case-fold form; anything else stays unattributed.
+			key.Column, key.Fold = parseFoldedKey(key.Expr)
+		}
+		ix.Keys = append(ix.Keys, key)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	idxs := make([]Index, 0, len(order))
 	for _, n := range order {
-		idxs = append(idxs, *byName[n])
+		ix := byName[n]
+		// Fewer named columns than declared keys means the rest are
+		// expressions. Columns then describes a PREFIX of the real key, so
+		// mark it opaque rather than let a consumer read it as the whole.
+		ix.Expression = len(ix.Columns) < keyCount[n]
+		idxs = append(idxs, *ix)
 	}
 	return idxs, nil
+}
+
+// foldedKeyRE matches a case-folded single-column index key as postgres
+// renders it: `lower(name)`, `upper((sku)::text)`, `lower(email::text)`.
+// pg_get_indexdef parenthesises and casts freely, so the column is read
+// out of the middle rather than by exact match.
+var foldedKeyRE = regexp.MustCompile(`^(?i)(lower|upper)\(\s*\(?\s*"?([a-zA-Z_][a-zA-Z0-9_$]*)"?\s*\)?\s*(?:::[a-zA-Z_][a-zA-Z0-9_ ]*)?\s*\)$`)
+
+// parseFoldedKey reads `lower(col)` / `upper(col)` and returns the column and
+// the fold. Everything else returns ("", "") — an expression this package
+// cannot attribute to one column is left unattributed rather than guessed at,
+// because a wrong attribution is the failure this whole path exists to end.
+func parseFoldedKey(expr string) (column, fold string) {
+	m := foldedKeyRE.FindStringSubmatch(strings.TrimSpace(expr))
+	if m == nil {
+		return "", ""
+	}
+	return m[2], strings.ToLower(m[1])
 }
 
 // introspectForeignKeys returns the declared REFERENCES constraints of a

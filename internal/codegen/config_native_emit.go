@@ -425,11 +425,18 @@ func generateEnvSecretsBody(sensitive []ConfigField, projectName, envName string
 	b.WriteString("# resolves the dev postgres port on every render and composes the\n")
 	b.WriteString("# connection string from it, so a copy in this file would pin the port\n")
 	b.WriteString("# that happened to be free the day the project was scaffolded and then\n")
-	b.WriteString("# silently disagree with the running stack. KCL env vars override this\n")
-	b.WriteString("# store on host launch, so the declaration is what your app receives.\n")
+	b.WriteString("# silently disagree with the running stack.\n")
 	b.WriteString("#\n")
-	b.WriteString("# Set a slot when the value is genuinely a secret this machine holds and\n")
-	b.WriteString("# KCL cannot state — a real database password, an API token.\n\n")
+	b.WriteString("# An EMPTY slot is not a value: forge drops it before layering, so the\n")
+	b.WriteString("# name falls through to whatever declares it. That is what makes a\n")
+	b.WriteString("# fresh clone turnkey with this file untouched.\n")
+	b.WriteString("#\n")
+	b.WriteString("# Precedence on host launch, lowest to highest:\n")
+	b.WriteString("#   project config  ->  THIS STORE  ->  the env's KCL env_vars  ->  your shell\n")
+	b.WriteString("# So a name the KCL DECLARES (DATABASE_URL in dev) wins over a value set\n")
+	b.WriteString("# here. Setting one is still the right move for a secret the KCL cannot\n")
+	b.WriteString("# state -- a real password, an API token -- which is the case where\n")
+	b.WriteString("# nothing above it competes.\n\n")
 	// Every slot is scaffolded EMPTY — the store lists each declared
 	// sensitive ref by NAME so `forge secret ensure <env>` and a human
 	// reading the file both see what wants a value; supplying it is the

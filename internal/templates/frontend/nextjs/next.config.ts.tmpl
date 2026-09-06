@@ -136,12 +136,39 @@ const nextConfig: NextConfig = {
     // globally (a `resolve.modules` prefix) would also override the nested,
     // version-pinned copies npm installs beneath other packages — next's own
     // included.
-    const runtimeLink = path.join(
-      __dirname,
-      "node_modules",
-      "@reliantlabs",
-      "forge-web-runtime",
-    );
+    // Both the link and the app's dependency roots are found by walking UP,
+    // because an npm workspace — which forge's own dev bridge writes — hoists
+    // every member's dependencies to the workspace root. This frontend can
+    // therefore have no node_modules of its own, or (worse) a PARTIAL one
+    // holding just the linked runtime while the shared libraries sit at the
+    // project root.
+    //
+    // appModules is consequently the whole ANCESTOR CHAIN, not the first
+    // directory found. Pointing the redirect at a single node_modules that
+    // happens to exist but does not contain the peer resolves nothing, and
+    // webpack then falls back to the runtime's own copy — exactly the
+    // duplicate this block exists to collapse, and the shape a partial
+    // frontend-local install produces.
+    const nodeModulesChain = (): string[] => {
+      const out: string[] = [];
+      let dir = __dirname;
+      for (;;) {
+        const candidate = path.join(dir, "node_modules");
+        if (fs.existsSync(candidate)) out.push(candidate);
+        const parent = path.dirname(dir);
+        if (parent === dir) return out;
+        dir = parent;
+      }
+    };
+    const appModules = nodeModulesChain();
+    const findUp = (leaf: string): string => {
+      for (const base of appModules) {
+        const candidate = path.join(base, leaf);
+        if (fs.existsSync(candidate)) return candidate;
+      }
+      return "";
+    };
+    const runtimeLink = findUp(path.join("@reliantlabs", "forge-web-runtime"));
     let runtimeReal = "";
     try {
       runtimeReal = fs.realpathSync(runtimeLink);
@@ -159,7 +186,7 @@ const nextConfig: NextConfig = {
           (resource.startsWith(runtimeReal + path.sep) ||
             resource.startsWith(runtimeLink + path.sep)),
         resolve: {
-          modules: [path.join(__dirname, "node_modules"), "node_modules"],
+          modules: [...appModules, "node_modules"],
         },
       });
     }
@@ -247,12 +274,39 @@ const nextConfig: NextConfig = {
     // globally (a `resolve.modules` prefix) would also override the nested,
     // version-pinned copies npm installs beneath other packages — next's own
     // included.
-    const runtimeLink = path.join(
-      __dirname,
-      "node_modules",
-      "@reliantlabs",
-      "forge-web-runtime",
-    );
+    // Both the link and the app's dependency roots are found by walking UP,
+    // because an npm workspace — which forge's own dev bridge writes — hoists
+    // every member's dependencies to the workspace root. This frontend can
+    // therefore have no node_modules of its own, or (worse) a PARTIAL one
+    // holding just the linked runtime while the shared libraries sit at the
+    // project root.
+    //
+    // appModules is consequently the whole ANCESTOR CHAIN, not the first
+    // directory found. Pointing the redirect at a single node_modules that
+    // happens to exist but does not contain the peer resolves nothing, and
+    // webpack then falls back to the runtime's own copy — exactly the
+    // duplicate this block exists to collapse, and the shape a partial
+    // frontend-local install produces.
+    const nodeModulesChain = (): string[] => {
+      const out: string[] = [];
+      let dir = __dirname;
+      for (;;) {
+        const candidate = path.join(dir, "node_modules");
+        if (fs.existsSync(candidate)) out.push(candidate);
+        const parent = path.dirname(dir);
+        if (parent === dir) return out;
+        dir = parent;
+      }
+    };
+    const appModules = nodeModulesChain();
+    const findUp = (leaf: string): string => {
+      for (const base of appModules) {
+        const candidate = path.join(base, leaf);
+        if (fs.existsSync(candidate)) return candidate;
+      }
+      return "";
+    };
+    const runtimeLink = findUp(path.join("@reliantlabs", "forge-web-runtime"));
     let runtimeReal = "";
     try {
       runtimeReal = fs.realpathSync(runtimeLink);
@@ -270,7 +324,7 @@ const nextConfig: NextConfig = {
           (resource.startsWith(runtimeReal + path.sep) ||
             resource.startsWith(runtimeLink + path.sep)),
         resolve: {
-          modules: [path.join(__dirname, "node_modules"), "node_modules"],
+          modules: [...appModules, "node_modules"],
         },
       });
     }
@@ -371,12 +425,39 @@ const nextConfig: NextConfig = {
     // globally (a `resolve.modules` prefix) would also override the nested,
     // version-pinned copies npm installs beneath other packages — next's own
     // included.
-    const runtimeLink = path.join(
-      __dirname,
-      "node_modules",
-      "@reliantlabs",
-      "forge-web-runtime",
-    );
+    // Both the link and the app's dependency roots are found by walking UP,
+    // because an npm workspace — which forge's own dev bridge writes — hoists
+    // every member's dependencies to the workspace root. This frontend can
+    // therefore have no node_modules of its own, or (worse) a PARTIAL one
+    // holding just the linked runtime while the shared libraries sit at the
+    // project root.
+    //
+    // appModules is consequently the whole ANCESTOR CHAIN, not the first
+    // directory found. Pointing the redirect at a single node_modules that
+    // happens to exist but does not contain the peer resolves nothing, and
+    // webpack then falls back to the runtime's own copy — exactly the
+    // duplicate this block exists to collapse, and the shape a partial
+    // frontend-local install produces.
+    const nodeModulesChain = (): string[] => {
+      const out: string[] = [];
+      let dir = __dirname;
+      for (;;) {
+        const candidate = path.join(dir, "node_modules");
+        if (fs.existsSync(candidate)) out.push(candidate);
+        const parent = path.dirname(dir);
+        if (parent === dir) return out;
+        dir = parent;
+      }
+    };
+    const appModules = nodeModulesChain();
+    const findUp = (leaf: string): string => {
+      for (const base of appModules) {
+        const candidate = path.join(base, leaf);
+        if (fs.existsSync(candidate)) return candidate;
+      }
+      return "";
+    };
+    const runtimeLink = findUp(path.join("@reliantlabs", "forge-web-runtime"));
     let runtimeReal = "";
     try {
       runtimeReal = fs.realpathSync(runtimeLink);
@@ -394,7 +475,7 @@ const nextConfig: NextConfig = {
           (resource.startsWith(runtimeReal + path.sep) ||
             resource.startsWith(runtimeLink + path.sep)),
         resolve: {
-          modules: [path.join(__dirname, "node_modules"), "node_modules"],
+          modules: [...appModules, "node_modules"],
         },
       });
     }

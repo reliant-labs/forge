@@ -246,6 +246,8 @@ _render_extra_container = lambda c: any, image_registry: str, image_tag: str, im
         imagePullPolicy = _pull_policy(_img)
         if c.command:
             command = c.command
+        if c.args:
+            args = c.args
         if c.ports:
             ports = [
                 {containerPort = p, protocol = "TCP", name = "port-${p}"}
@@ -267,6 +269,26 @@ _image_has_tag_or_digest = lambda image: str -> bool {
     _last_slash = image.rfind("/")
     _tail = image[_last_slash + 1:] if _last_slash >= 0 else image
     ("@" in image) or (":" in _tail)
+}
+
+# Does `image` already name its OWN registry host — `gcr.io/x/y`,
+# `localhost:5050/z`, `us-central1-docker.pkg.dev/p/r/i` — so the env
+# registry must NOT be prefixed onto it?
+#
+# A third-party image (a cloud-sql-proxy / OTel-collector sidecar) is pulled
+# from ITS vendor's registry, not from the env's. Prefixing produced refs like
+# `us-central1-docker.pkg.dev/proj/repo/gcr.io/cloud-sql-connectors/
+# cloud-sql-proxy:2.14.1`, which cannot be pulled and fails at runtime as
+# ImagePullBackOff rather than at render.
+#
+# The heuristic is Docker's own: the FIRST path segment is a registry host
+# iff it contains a `.` (a DNS name) or a `:` (a host:port) — or is exactly
+# `localhost`. Bare `nginx` and namespaced `library/nginx` have neither, so
+# they still take the env registry exactly as before.
+_image_has_registry_host = lambda image: str -> bool {
+    _first_slash = image.find("/")
+    _head = image[:_first_slash] if _first_slash > 0 else ""
+    _head != "" and (("." in _head) or (":" in _head) or (_head == "localhost"))
 }
 
 # Build the full image reference for a container.
@@ -294,11 +316,15 @@ _image_has_tag_or_digest = lambda image: str -> bool {
 _image_ref = lambda image: str, image_registry: str, image_tag: str, image_digests: {str:str} -> str {
     _pinned = _image_has_tag_or_digest(image)
     _digest = image_digests[image] if (image in image_digests) else ""
-    "${image_registry}/${image}" if (_pinned and image_registry) \
+    # An image that names its own registry host is passed through untouched:
+    # it belongs to a third party, not to this env's registry.
+    _own_registry = _image_has_registry_host(image)
+    _reg = "" if _own_registry else image_registry
+    "${_reg}/${image}" if (_pinned and _reg) \
         else (image if _pinned \
-        else ("${image_registry}/${image}@${_digest}" if (_digest and image_registry) \
+        else ("${_reg}/${image}@${_digest}" if (_digest and _reg) \
         else ("${image}@${_digest}" if _digest \
-        else ("${image_registry}/${image}:${image_tag}" if image_registry \
+        else ("${_reg}/${image}:${image_tag}" if _reg \
         else "${image}:${image_tag}"))))
 }
 

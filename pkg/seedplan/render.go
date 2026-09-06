@@ -308,8 +308,10 @@ func (p *Plan) fkParentRowIndependent(tp tablePlan, cp columnPlan, i int) (int, 
 
 	salt := p.cfg.EffectiveSalt()
 
-	// Optional relationship: null ~1 in 5 rows.
-	if nullable && cellHash(salt, name, cp.col.Name, i)%5 == 0 {
+	// Optional relationship: null ~1 in 5 rows — unless a status guard
+	// requires the edge present (see columnPlan.requireEdge), in which case
+	// the coin flip is what would violate the constraint.
+	if nullable && !cp.requireEdge && cellHash(salt, name, cp.col.Name, i)%5 == 0 {
 		return 0, false
 	}
 

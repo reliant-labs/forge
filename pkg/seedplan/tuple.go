@@ -3,6 +3,7 @@ package seedplan
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
@@ -171,7 +172,25 @@ func (p *Plan) assignTuples(tp *tablePlan) ([]tupleAssign, []string) {
 		warns []string
 	)
 	for _, ix := range tp.table.Indexes {
-		if !ix.Unique || len(ix.Columns) < 2 || !partialIndexBinds(tp.table, ix) {
+		// Expression keys are opaque: forge cannot place a value that
+		// controls `lower(sku)` without evaluating the expression, and
+		// Columns holds only the bare-column part of the key. Planning
+		// against that prefix produces tuples that satisfy a constraint the
+		// table does not have while violating the one it does.
+		//
+		// Say so rather than skip silently: the insert can still fail on
+		// the real index, and a seeder that reported nothing left the
+		// author reading `forge generated both this schema and this data,
+		// and they disagree` with no way to reach the cause.
+		if ix.Unique && ix.Expression && !foldOnlyKeys(ix) && partialIndexBinds(tp.table, ix) {
+			warns = append(warns, fmt.Sprintf(
+				"seed plan: %s unique index %q keys on an EXPRESSION forge cannot place (%s) — "+
+					"seeded rows satisfy it only by chance. Index the bare column, or key on "+
+					"lower()/upper(), if you want forge to seed it.",
+				tp.table.Name, ix.Name, unplaceableKeys(ix)))
+			continue
+		}
+		if !ix.Unique || len(ix.KeyList()) < 2 || !partialIndexBinds(tp.table, ix) {
 			continue
 		}
 		ta, warn, ok := p.assignOneTuple(tp, ix)
@@ -185,15 +204,53 @@ func (p *Plan) assignTuples(tp *tablePlan) ([]tupleAssign, []string) {
 	return out, warns
 }
 
+// foldOnlyKeys reports whether every EXPRESSION key of ix is a case fold over
+// a single column — the one expression shape the planner can satisfy, because
+// "distinct ignoring case" is a rule about values rather than about SQL.
+// A key that is anything else (`(a || b)`, `(meta->>'k')`) makes the whole
+// index unplaceable: its value cannot be controlled by choosing a column's.
+func foldOnlyKeys(ix schemadef.Index) bool {
+	for _, k := range ix.KeyList() {
+		if k.Column == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// unplaceableKeys renders the keys that made an index unplaceable, so the
+// warning names the expression the author has to change rather than only the
+// index.
+func unplaceableKeys(ix schemadef.Index) string {
+	var out []string
+	for _, k := range ix.KeyList() {
+		if k.Column == "" {
+			out = append(out, k.Expr)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
 // assignOneTuple resolves one composite UNIQUE index. ok is false when nothing
 // needs placing (the constraint is already satisfied, or cannot bind) or when
 // forge could not place it at all — warn then carries the reason.
 func (p *Plan) assignOneTuple(tp *tablePlan, ix schemadef.Index) (tupleAssign, string, bool) {
 	table := tp.table.Name
 
+	// Keys, not Columns: a folded key (`lower(sku)`) names a real column
+	// that must take part in the tuple. Iterating Columns would silently
+	// drop it and place a tuple distinct on the REMAINING columns only —
+	// which satisfies a constraint the table does not have.
+	keyCols := make([]string, 0, len(ix.KeyList()))
+	for _, k := range ix.KeyList() {
+		if k.Column != "" {
+			keyCols = append(keyCols, k.Column)
+		}
+	}
+
 	// Already satisfied, or vacuous. Both are silent: there is nothing for the
 	// author to do about either.
-	for _, c := range ix.Columns {
+	for _, c := range keyCols {
 		cp, found := tupleColumnPlan(tp, c)
 		if !found {
 			continue // a generated column: the database computes it
@@ -203,8 +260,8 @@ func (p *Plan) assignOneTuple(tp *tablePlan, ix schemadef.Index) (tupleAssign, s
 		}
 	}
 
-	members := make([]tupleMember, 0, len(ix.Columns))
-	for _, c := range ix.Columns {
+	members := make([]tupleMember, 0, len(keyCols))
+	for _, c := range keyCols {
 		cp, found := tupleColumnPlan(tp, c)
 		if !found {
 			continue
@@ -358,7 +415,9 @@ func (p *Plan) tupleSupply(tp *tablePlan, cp columnPlan) (tupleMember, bool) {
 	// synthesis probed apart. Its warning describes a one-column UNIQUE this
 	// column does not carry, so it is dropped — the composite's own cap
 	// warning is the one that fits.
-	lits, _ := p.assignUnique(tp, cp.col)
+	// No fold here: a composite member is made distinct on its own value.
+	// The composite's own key comparison is handled by the tuple assignment.
+	lits, _ := p.assignUnique(tp, cp.col, "")
 	if len(lits) < 2 {
 		return tupleMember{}, false
 	}

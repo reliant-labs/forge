@@ -1380,9 +1380,13 @@ func lintFrontendDir(ctx context.Context, name, feDir, feType string, cssHealth,
 		return nil
 	}
 
-	if _, err := os.Stat(filepath.Join(feDir, "node_modules")); os.IsNotExist(err) {
-		return laneUnavailable(fmt.Sprintf("run `npm install` in %s, then re-run `forge lint`", feDir),
-			"%s: node_modules not found in %s — eslint did NOT run", name, feDir)
+	// Ancestor walk, not a frontend-local stat: an npm/pnpm workspace hoists a
+	// member's dependencies to the workspace root, so this directory is
+	// legitimately absent in a fully installed tree — which is the layout
+	// forge's own dev bridge creates. See anyAncestorHasNodeModules.
+	if !anyAncestorHasNodeModules(feDir, ".") {
+		return laneUnavailable(fmt.Sprintf("run `npm install` in %s (or at the workspace root), then re-run `forge lint`", feDir),
+			"%s: node_modules not found in %s or any ancestor — eslint did NOT run", name, feDir)
 	}
 
 	scripts, err := readPackageScripts(pkgJSON)

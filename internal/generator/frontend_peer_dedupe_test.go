@@ -107,10 +107,16 @@ func TestFrontendTsconfigDedupesRuntimePeers(t *testing.T) {
 						peer, paths)
 					continue
 				}
+				// EXACTLY ONE element. Not belt-and-braces pedantry: Next.js
+				// resolves through SWC, which asserts the single-element rule
+				// for a key with no `*` and panics the whole build on a
+				// longer value. The scaffold therefore names the one layout
+				// the project has; the generate-time reconcile retargets it
+				// if that layout later changes.
 				want := "./node_modules/" + peer
 				if len(target) != 1 || target[0] != want {
-					t.Errorf("tsconfig.json maps %q to %v, want exactly [%q] so it resolves to THIS app's copy",
-						peer, target, want)
+					t.Errorf("tsconfig.json maps %q to %v, want exactly [%q] so it resolves to "+
+						"THIS app's copy (and so SWC does not panic `next build`)", peer, target, want)
 				}
 			}
 

@@ -31,26 +31,6 @@ type quarantined struct {
 }
 
 var quarantine = []quarantined{
-	// ── Tests that can never run ────────────────────────────────────────
-	{
-		Rule: RuleDeadSkip,
-		Key:  "internal/cli/fixture_corpus_e2e_test.go::TestE2EFixtureCorpusCPForgeShaped",
-		Cost: "Unconditional skip: \"fixture wires via retired AppExtras path; re-author against " +
-			"internal/app Infra (§2 providers reconciliation)\". The cp-forge-shaped corpus has not " +
-			"been exercised since that reconciliation and reports green. Owner: internal/cli.",
-	},
-	{
-		Rule: RuleDeadSkip,
-		Key:  "internal/cli/fixture_corpus_e2e_test.go::TestE2EFixtureCorpusKalshiShaped",
-		Cost: "Same unconditional skip on the kalshi-shaped corpus. Owner: internal/cli.",
-	},
-	{
-		Rule: RuleDeadSkip,
-		Key:  "internal/cli/serve_types_only_e2e_test.go::TestE2ERegistrationTypesOnlyService",
-		Cost: "Unconditional skip: \"registration-in-code mechanism retired in FORGE_SHAPE_REDESIGN §2\". " +
-			"Owner: internal/cli.",
-	},
-
 	// ── Skips guarding files this repository tracks ─────────────────────
 	// Each stats a path that is committed here, so it cannot fire on a
 	// checkout — nothing falsifies it — and the day the layout moves it

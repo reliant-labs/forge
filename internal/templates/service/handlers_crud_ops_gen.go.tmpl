@@ -74,7 +74,7 @@ func {{.EntityLower}}FromProto(m *pb.{{.EntityName}}) (*db.{{.EntityName}}, erro
 func (s *Service) crud{{.MethodName}}Op() crud.CreateOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}] {
 	return crud.CreateOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}]{
 		EntityLower: "{{.EntityLower}}",
-		Entity: func(req *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+		Entity: func(_ context.Context, req *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
 			e := &db.{{.EntityName}}{}
 {{- range .CreateAssigns}}
 			{{.}}
@@ -100,8 +100,19 @@ func (s *Service) crud{{.MethodName}}Op() crud.GetOp[pb.{{.InputType}}, pb.{{.Ou
 	return crud.GetOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}]{
 		EntityLower: "{{.EntityLower}}",
 		ID: func(req *pb.{{.InputType}}) string { return req.{{.PkField}} },
-		Fetch: func(ctx context.Context, id string) (*db.{{.EntityName}}, error) {
-			return db.Get{{.EntityName}}ByID(ctx, s.deps.DB, id)
+		// opts carry an ownership predicate an override attached (see the
+		// forge `auth/authorization` skill). With none, this is the plain
+		// PK lookup; with some, crud.ScopedGet runs ONE query carrying
+		// both, so a row that is not the caller's is never read and
+		// reports NotFound exactly as an unknown id does.
+		Fetch: func(ctx context.Context, id string, opts ...orm.QueryOption) (*db.{{.EntityName}}, error) {
+			return crud.ScopedGet(ctx, "{{.PkColumnName}}", id, opts,
+				func(ctx context.Context, id string) (*db.{{.EntityName}}, error) {
+					return db.Get{{.EntityName}}ByID(ctx, s.deps.DB, id)
+				},
+				func(ctx context.Context, opts ...orm.QueryOption) ([]*db.{{.EntityName}}, error) {
+					return db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+				})
 		},
 		Pack: func(entity *db.{{.EntityName}}) (*pb.{{.OutputType}}, error) {
 			m, err := {{.EntityLower}}ToProto(entity)
@@ -131,17 +142,17 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 {{- end}}
 {{- if .HasOrderBy}}
 {{- if .HasDescending}}
-		OrderBy: func(req *pb.{{.InputType}}) (string, bool) { return req.OrderBy, req.Descending },
+		OrderBy: func(_ context.Context, req *pb.{{.InputType}}) (string, bool) { return req.OrderBy, req.Descending },
 {{- else}}
 		// No companion `bool descending` field on the request: order is
 		// always ascending. Returning a constant false keeps the generated
 		// closure from dereferencing a descending field the request type
 		// doesn't declare.
-		OrderBy: func(req *pb.{{.InputType}}) (string, bool) { return req.OrderBy, false },
+		OrderBy: func(_ context.Context, req *pb.{{.InputType}}) (string, bool) { return req.OrderBy, false },
 {{- end}}
 {{- end}}
 {{- if .HasFilters}}
-		Filters: func(req *pb.{{.InputType}}) []orm.QueryOption {
+		Filters: func(_ context.Context, req *pb.{{.InputType}}) ([]orm.QueryOption, error) {
 			var opts []orm.QueryOption
 {{- range .FilterFields}}
 {{- if .IsOptional}}
@@ -184,7 +195,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 {{- end}}
 {{- end}}
 {{- end}}
-			return opts
+			return opts, nil
 		},
 {{- end}}
 		Query: func(ctx context.Context, opts []orm.QueryOption) ([]*db.{{.EntityName}}, error) {
@@ -231,22 +242,38 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 	return crud.UpdateOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}]{
 		EntityLower:    "{{.EntityLower}}",
 		EntityFieldLow: "{{.UpdateEntityField | lower}}",
-		Entity: func(req *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+		Entity: func(_ context.Context, req *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
 			if req.{{.UpdateEntityField}} == nil {
 				return nil, crud.ErrEntityRequired
 			}
 			return {{.EntityLower}}FromProto(req.{{.UpdateEntityField}})
 		},
-		Persist: func(ctx context.Context, entity *db.{{.EntityName}}) error {
-			return db.Update{{.EntityName}}(ctx, s.deps.DB, entity)
+		// See the Get op for what opts are. crud.ScopedUpdate checks them
+		// against the STORED row, never the submitted entity — a caller
+		// who rewrites the owner column in their request must not pass a
+		// check made against their own submission.
+		Persist: func(ctx context.Context, entity *db.{{.EntityName}}, opts ...orm.QueryOption) error {
+			return crud.ScopedUpdate(ctx, "{{.PkColumnName}}", entity.{{.PkField}}, entity, opts,
+				func(ctx context.Context, entity *db.{{.EntityName}}) error {
+					return db.Update{{.EntityName}}(ctx, s.deps.DB, entity)
+				},
+				func(ctx context.Context, opts ...orm.QueryOption) ([]*db.{{.EntityName}}, error) {
+					return db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+				})
 		},
 {{- if .UpdateMaskField}}
 		// AIP-134: concrete update_mask paths write ONLY those columns; an
 		// absent/empty/"*" mask is a full replace via Persist above.
 		// db.Update{{.EntityName}}Masked rejects unknown/immutable paths.
 		Mask: func(req *pb.{{.InputType}}) []string { return req.Get{{.UpdateMaskField}}().GetPaths() },
-		PersistMasked: func(ctx context.Context, entity *db.{{.EntityName}}, fields []string) error {
-			return db.Update{{.EntityName}}Masked(ctx, s.deps.DB, entity, fields)
+		PersistMasked: func(ctx context.Context, entity *db.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {
+			return crud.ScopedUpdateMasked(ctx, "{{.PkColumnName}}", entity.{{.PkField}}, entity, fields, opts,
+				func(ctx context.Context, entity *db.{{.EntityName}}, fields []string) error {
+					return db.Update{{.EntityName}}Masked(ctx, s.deps.DB, entity, fields)
+				},
+				func(ctx context.Context, opts ...orm.QueryOption) ([]*db.{{.EntityName}}, error) {
+					return db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+				})
 		},
 {{- end}}
 		Pack: func(entity *db.{{.EntityName}}) (*pb.{{.OutputType}}, error) {
@@ -265,8 +292,17 @@ func (s *Service) crud{{.MethodName}}Op() crud.DeleteOp[pb.{{.InputType}}, pb.{{
 	return crud.DeleteOp[pb.{{.InputType}}, pb.{{.OutputType}}]{
 		EntityLower: "{{.EntityLower}}",
 		ID: func(req *pb.{{.InputType}}) string { return req.{{.PkField}} },
-		Persist: func(ctx context.Context, id string) error {
-			return db.Delete{{.EntityName}}(ctx, s.deps.DB, id)
+		// See the Get op for what opts are. crud.ScopedDelete verifies the
+		// predicate against the STORED row before deleting; with no opts
+		// it is the plain PK delete.
+		Persist: func(ctx context.Context, id string, opts ...orm.QueryOption) error {
+			return crud.ScopedDelete(ctx, "{{.PkColumnName}}", id, opts,
+				func(ctx context.Context, id string) error {
+					return db.Delete{{.EntityName}}(ctx, s.deps.DB, id)
+				},
+				func(ctx context.Context, opts ...orm.QueryOption) ([]*db.{{.EntityName}}, error) {
+					return db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+				})
 		},
 	}
 }

@@ -326,6 +326,13 @@ func markerSpecs() []MarkerSpec {
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:fill=ulid'; or 'forge:fill=handler'; in a migration",
 			Example:   "COMMENT ON COLUMN customers.company_id IS 'forge:fill=handler';",
 		},
+		{
+			Name:      schemadef.ColumnMarkerOwner,
+			AppliesTo: "column",
+			Effect:    "Declares this column as the one naming WHO a row belongs to. Changes NO codegen — forge ships no ownership of its own and never injects a WHERE clause for you, because only your app knows how a caller's claims map onto this column's values. What it changes is what forge lets ship: it ARMS the `unscoped_auth` audit category for this table, so an authenticated RPC over this entity whose handler never resolves the caller stops being a warning and becomes an ERROR, failing `forge project audit`. Declare nothing and the category behaves exactly as before (warn, exit 0), which is why a fresh scaffold is unaffected. The gate arms PER TABLE — declaring an owner on customers does not fail an unscoped RPC over a global product catalog — and `// forge:auth-unscoped-ok: <reason>` above the handler suppresses the error for a legitimately global RPC (the reason is mandatory; a bare directive does not count). Pairs naturally with forge:immutable on the same column, since an owner column is exactly the kind a full-replace Update must not zero.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:owner'; in a migration",
+			Example:   "COMMENT ON COLUMN customers.company_id IS 'forge:owner';",
+		},
 
 		// ── Go-source markers ──
 		//

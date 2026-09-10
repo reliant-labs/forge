@@ -201,7 +201,7 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 	report.Categories["config_deps"] = auditConfigDeps(abs)
 	report.Categories["scaffold_markers"] = auditScaffoldMarkers(abs)
 	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
-	report.Categories["unscoped_auth"] = auditUnscopedAuth(abs)
+	report.Categories["unscoped_auth"] = auditUnscopedAuth(cfg, abs)
 	report.Categories["file_sizes"] = auditFileSizes(abs)
 	report.Categories["orphan_stubs"] = auditOrphanStubs(f, cfg, abs)
 	report.Categories["deps"] = auditDeps(abs)

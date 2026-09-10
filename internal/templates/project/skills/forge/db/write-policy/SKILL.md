@@ -25,6 +25,24 @@ from the request, so a request that never carried the column arrives with it
 zero-valued and overwrites the stored value. `forge:immutable` stops that. The
 queries and checks around it are yours; `db/crud-overrides` covers the seams.
 
+**Say so with `forge:owner`, and forge will hold you to it.** That column is also
+the one fact forge needs in order to tell "unscoped" apart from "unsafe", so
+declare it:
+
+```sql
+COMMENT ON COLUMN crews.company_id IS 'forge:owner';
+```
+
+This changes no codegen. Forge still stores no ownership of its own and will not
+inject a `WHERE` clause for you, because only your app knows how a caller's
+claims map onto this column's values. What it changes is what forge lets ship: it
+arms the `unscoped_auth` audit gate for this table, so an authenticated RPC over
+`crews` whose handler never resolves the caller becomes an `error` rather than a
+warning. A column can carry both markers — `'forge:owner forge:immutable'` — and
+usually should, since an owner column is exactly the kind a full-replace Update
+must not zero. `auth/authorization` has the gate's semantics and a worked example
+of scoping the generated ops.
+
 ## `forge:immutable`
 
 ```sql

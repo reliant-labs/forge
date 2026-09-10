@@ -29,12 +29,22 @@ tasks:
       # -trimpath strips local filesystem paths so builds are reproducible
       # across machines; -buildvcs=true embeds the commit/dirty flag for
       # runtime correlation.
-      - go build -trimpath -buildvcs=true -o bin/forge ./cmd/forge
+      #
+      # CGO_ENABLED=1 is REQUIRED, not a preference. internal/kclplugin's
+      # Register — which installs the kcl_plugin.forge namespace every
+      # rendered environment imports — is `//go:build cgo`; the !cgo build
+      # gets a no-op stub. A CGO-free forge installs cleanly, reports a
+      # correct --version and passes generate/lint/build, then fails EVERY
+      # `forge run` / `env up` / `env render`. Do not drop this to make a
+      # static binary without also solving plugin registration.
+      - CGO_ENABLED=1 go build -trimpath -buildvcs=true -o bin/forge ./cmd/forge
 
   install:
     desc: Install the CLI binary to $GOBIN (or $GOPATH/bin)
     cmds:
-      - go install -trimpath -buildvcs=true ./cmd/forge
+      # CGO_ENABLED=1: see the note on `build` above — without it the
+      # installed binary cannot render any environment.
+      - CGO_ENABLED=1 go install -trimpath -buildvcs=true ./cmd/forge
 
   install:dev:
     desc: "Contributor install: stamp the local forge source root so `forge project new` auto-bridges scaffolds to this checkout's forge/pkg (gitignored go.work)"
@@ -48,7 +58,10 @@ tasks:
       # relies on the embedded "(devel)" version / vcs info a plain install
       # records. Released binaries use `task install` (no stamp), so they
       # never write a go.work.
-      - go install -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
+      # CGO_ENABLED=1: see the note on `build` above — the kcl_plugin.forge
+      # namespace is registered by a `//go:build cgo` file, so a CGO-free
+      # contributor install renders nothing.
+      - CGO_ENABLED=1 go install -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
   release:forge:
     desc: "Cut a full forge release (both modules, one commit): task release:forge -- vX.Y.Z (add --dry-run to validate only)"

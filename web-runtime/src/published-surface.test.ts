@@ -193,6 +193,54 @@ describe("the published surface", () => {
     ).toEqual([]);
   });
 
+  it('marks every hook-bearing module "use client"', () => {
+    // The React Server Components boundary is invisible to every gate this
+    // package already has. A module that calls a hook but lacks the
+    // directive typechecks, lints and `next build`s clean, then compiles
+    // into the SERVER graph — where it binds a SECOND @tanstack/react-query
+    // instance and every generated hook throws "No QueryClient set" at
+    // runtime. service-hooks.ts shipped exactly that way, and the app that
+    // hit it paid for a ~200-line reimplementation and a webpack alias
+    // before anyone found the missing line.
+    //
+    // The directive is applied per MODULE, never package-wide: ./interceptors
+    // exists to be importable without React, and a blanket banner would drag
+    // server-safe code into the client graph. So the invariant has to be
+    // "carries it iff it needs it", which is what this checks.
+    //
+    // Detection is on call SYNTAX after comments are stripped, not on the
+    // spelling. basepath.js mentions `useRouter().push()` in prose and holds
+    // no hook — matching text alone would fail it and teach the next person
+    // to stamp the directive on a module that must not have it.
+    const stripComments = (src: string) =>
+      src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const callsHook = (src: string) =>
+      /(?:^|[^.\w])(?:React\.)?use[A-Z][A-Za-z0-9]*\s*\(/m.test(src);
+
+    const missing: string[] = [];
+    const gratuitous: string[] = [];
+    for (const name of distFiles.filter((f) => f.endsWith(".js"))) {
+      const body = readFileSync(join(pkgDir, "dist", name), "utf8");
+      const hasDirective = /^\s*(["'])use client\1\s*;?/.test(body);
+      if (callsHook(stripComments(body))) {
+        if (!hasDirective) missing.push(`dist/${name}`);
+      } else if (hasDirective && !/\bReact\b|\bjsx\b/.test(body)) {
+        gratuitous.push(`dist/${name}`);
+      }
+    }
+    expect(
+      missing,
+      'these dist modules call React hooks without a leading "use client" — ' +
+        "Next.js will compile them into the server graph and their React " +
+        "Query / context reads will fail at runtime",
+    ).toEqual([]);
+    expect(
+      gratuitous,
+      "these dist modules carry the directive but touch no React at all; " +
+        "the directive pulls them into the client graph for nothing",
+    ).toEqual([]);
+  });
+
   it("emits a .d.ts and a .js for every module a consumer can import", () => {
     for (const entry of Object.values(pkg.exports)) {
       if (typeof entry === "string") {

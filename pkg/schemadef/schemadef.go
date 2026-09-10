@@ -192,6 +192,43 @@ const (
 	FillStrategyHandler = "handler"
 )
 
+// ColumnMarkerOwner declares that a column names WHO a row belongs to:
+// the rows of this table are the property of distinct principals, and
+// this is the column that says whose.
+//
+// Forge ships no ownership of its own — no implicit scope, no ambient
+// principal — and this marker does not change that. It injects no WHERE
+// clause and changes no codegen, because only the application knows how
+// a caller's claims map onto this column's values (a direct user id, a
+// company id read from a membership table, an org resolved from a
+// subdomain). Inventing that mapping is exactly the domain policy forge
+// deliberately does not own. What the marker changes is what forge is
+// willing to let SHIP.
+//
+// It ARMS the `unscoped_auth` audit category. That category has always
+// detected an authenticated RPC whose handler never resolves the caller,
+// and has always reported it as advice, on the sound reasoning that a
+// freshly-scaffolded project is entirely unscoped by construction: forge
+// emits the delegations, the developer writes the scoping, and erroring
+// would make forge's own output fail forge's own gate.
+//
+// That reasoning conflated two different claims. "Unscoped" is a fact
+// about handlers; "these rows belong to someone" is a fact about data,
+// and forge could not previously observe the second one. A project that
+// never says any row belongs to anyone has no boundary to breach. A
+// project that declares this marker has stated the exact thing the
+// fresh-scaffold argument assumed was unknowable — so from that point an
+// authenticated RPC over this table that reads no caller is not a nudge,
+// it is one principal reading (or writing) another's rows, and it fails
+// the audit.
+//
+// Measured, against a real downstream app: forge reported "63 of 74
+// authenticated RPCs never resolve the caller" and exited 0. Any
+// authenticated user could read, update, delete and create rows
+// belonging to every other one. The diagnosis was exactly right and
+// nothing gated on it.
+const ColumnMarkerOwner = "forge:owner"
+
 // KnownColumnMarkers is the complete set of `forge:*` marker NAMES a
 // COMMENT ON COLUMN or COMMENT ON CONSTRAINT may carry. It is the single
 // source of truth shared by `forge project annotations --kind column`
@@ -200,7 +237,7 @@ const (
 // maintaining its own copy, which is exactly the discoverability gap
 // forge:ref fell into (undiscoverable outside two skill files) that this
 // registry exists to close.
-var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerVersion, ColumnMarkerFill}
+var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner}
 
 // HasMarker reports whether the column's catalog comment carries marker.
 //

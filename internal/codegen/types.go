@@ -262,6 +262,14 @@ type EntityColumn struct {
 	// unsatisfiable-column lint and changes no codegen behavior. See
 	// schemadef.ColumnMarkerFill for the full grammar and rationale.
 	FillStrategy string `json:",omitempty"`
+	// Owner marks a column declared `forge:owner` in its catalog comment:
+	// the rows of this table belong to distinct principals, and this
+	// column says whose. It injects no WHERE clause — only the
+	// application knows how a caller's claims map onto these values — but
+	// it names the column in the CRUD shim's scaffolded scoping
+	// reminder, and it arms the `unscoped_auth` audit gate. See
+	// schemadef.ColumnMarkerOwner.
+	Owner bool `json:",omitempty"`
 }
 
 // FieldKind classifies a proto field for code generation branching.

@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -12,6 +13,26 @@ import (
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
+
+// ownerMarkerTokenRE matches a `forge:owner` declaration as a WHOLE
+// token, so a future or unrelated marker whose name merely begins with
+// this one (`forge:owner-hint`) does not read as an ownership
+// declaration. Column.HasMarker is a plain substring test, which is right
+// for the markers that have no near-neighbours and wrong here.
+//
+// The audit applies the same discipline to the same marker
+// (internal/cli/audit's ownerMarkerTokenRE), and it matters that the two
+// agree: this one decides whether the shim scaffolds a scoping reminder,
+// that one decides whether shipping without it fails the build. A
+// scaffold that fired where the gate did not — or a gate that fired with
+// no scaffold to answer it — is worse than either alone.
+var ownerMarkerTokenRE = regexp.MustCompile(regexp.QuoteMeta(schemadef.ColumnMarkerOwner) + `(?:[^\w:-]|$)`)
+
+// declaresOwnerMarker reports whether a catalog comment declares
+// schemadef.ColumnMarkerOwner.
+func declaresOwnerMarker(comment string) bool {
+	return ownerMarkerTokenRE.MatchString(comment)
+}
 
 // BuildSchemaEntities is the entity source of truth: it joins the
 // APPLIED schema (db/migrations shadow-applied and introspected) with
@@ -127,6 +148,7 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 			Immutable:    c.HasMarker(schemadef.ColumnMarkerImmutable),
 			Version:      c.HasMarker(schemadef.ColumnMarkerVersion),
 			FillStrategy: fillStrategy,
+			Owner:        declaresOwnerMarker(c.Comment),
 		})
 	}
 

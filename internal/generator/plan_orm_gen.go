@@ -334,9 +334,11 @@ type ormField struct {
 	// hand-rolled (Bun's ,soft_delete stamps a time.Time that a TEXT column
 	// can't round-trip — kalshi fr-3fba9166ba style).
 	softDeleteNative bool
-	// isGenerated marks a GENERATED ALWAYS AS (...) STORED column → ,scanonly
-	// so Bun reads it but never writes it (postgres rejects writes to
-	// generated columns).
+	// isGenerated marks a GENERATED ALWAYS AS (...) STORED column →
+	// ,nullzero,skipupdate: postgres rejects the column in an INSERT column
+	// list or an UPDATE SET, but it must still be SELECTed. See bunTag for
+	// why ,scanonly (which silently drops it from the SELECT projection) is
+	// the wrong mechanism.
 	isGenerated bool
 	// isSecret marks a `// forge:secret` column: preserved on a maskless
 	// full-replace Update (the repo's Spec.SecretColumns) so a client
@@ -640,6 +642,9 @@ func lowerFirst(s string) string {
 //   - column DEFAULT             → ,default:<expr> so Bun knows the DB
 //     supplies the value (skipped for the PK/autoincrement and
 //     soft_delete, whose lifecycle Bun manages).
+//   - GENERATED ALWAYS STORED    → ,nullzero,skipupdate — the DB computes
+//     it, so it must be absent from both write clauses but PRESENT in the
+//     SELECT projection. Notably NOT ,scanonly; see the block below.
 func bunTag(f ormField) string {
 	parts := []string{f.columnName}
 
@@ -671,18 +676,40 @@ func bunTag(f ormField) string {
 		}
 	}
 
-	// GENERATED ALWAYS AS (...) STORED: the DB computes it. ,scanonly tells
-	// Bun to read the column but never write it on INSERT/UPDATE (postgres
-	// rejects writes to a generated column). Applied after the switch so it
+	// GENERATED ALWAYS AS (...) STORED: the DB computes it, and postgres
+	// rejects naming it in an INSERT column list or an UPDATE SET clause.
+	// ,nullzero handles the INSERT half: Bun emits the literal DEFAULT
+	// keyword for a zero-valued nullzero field (query_insert.go's
+	// marshalsToDefault → appendStructValues), which postgres ACCEPTS for a
+	// generated column, and the same branch registers the field for
+	// RETURNING so Create reads the computed value straight back. The
+	// UPDATE half is the shared ,skipupdate below, which isGenerated now
+	// feeds alongside immutable/secret/version.
+	//
+	// NOT ,scanonly, which is what this used to emit. ,scanonly does not
+	// mean "read but don't write": Bun's schema/table.go early-returns
+	// BEFORE `t.Fields = append(...)` for a scanonly field, and
+	// Table.Fields is exactly the list query_select.go projects. A scanonly
+	// column is therefore never SELECTed at all and reads back as the Go
+	// zero forever, with no error anywhere — the DB holds the right value
+	// and the app sees 0.
+	//
+	// One residual hazard, closed on the write side rather than here:
+	// ,nullzero keys off the Go zero, so re-INSERTing an entity that was
+	// READ (non-zero computed value) would send that value literally and
+	// postgres would reject it. pkg/crud.Repo excludes generated columns
+	// from the INSERT/UPSERT column set outright, which covers the
+	// non-zero case the tag cannot express. Applied after the switch so it
 	// stacks on whatever else the column needs (array/notnull for scanning).
 	if f.isGenerated {
-		parts = append(parts, "scanonly")
+		parts = append(parts, "nullzero")
 	}
 
 	// ,skipupdate omits the column from a full-replace UPDATE's SET clause
 	// while leaving it writable on INSERT and on an explicit masked Update.
-	// Three independent declarations project onto it, because all three
-	// describe a column the client could not have sent a value for:
+	// Four independent declarations project onto it. Three describe a column
+	// the client could not have sent a value for; the fourth is a column
+	// postgres refuses to be sent at all:
 	//
 	//   - `forge:immutable` in the column's COMMENT — schema truth, a fact
 	//     about the column applied by the migration.
@@ -695,11 +722,18 @@ func bunTag(f ormField) string {
 	//     UpdateMasked's allowlist, which ,skipupdate alone cannot express —
 	//     see meta.versionColumn); the tag here is defense in depth against
 	//     a hand-rolled Bun query bypassing the generic Repo entirely.
+	//   - GENERATED ALWAYS AS (...) STORED — postgres itself rejects the
+	//     column in a SET clause, so this one is not a policy choice but a
+	//     hard constraint of the schema (see the isGenerated block above,
+	//     which owns the INSERT half via ,nullzero).
 	//
 	// The secret case is the narrower one and predates the marker; it is
 	// folded in here rather than requiring every secret column to ALSO carry
 	// a COMMENT, which would make forgetting one a silent credential wipe.
-	if f.isImmutable || f.isSecret || f.isVersion {
+	//
+	// Sharing the single append is what keeps a column that is BOTH generated
+	// and (say) immutable from emitting ,skipupdate twice.
+	if f.isImmutable || f.isSecret || f.isVersion || f.isGenerated {
 		parts = append(parts, "skipupdate")
 	}
 
@@ -707,9 +741,9 @@ func bunTag(f ormField) string {
 }
 
 // structTag returns the full Go struct tag literal for a field — the
-// `bun:"..."` tag bunTag builds, plus a `forge:"version"` or
-// `forge:"fill=ulid"` tag in its OWN namespace for the (at most one, per
-// field) forge-specific column marker.
+// `bun:"..."` tag bunTag builds, plus a `forge:"version"`,
+// `forge:"fill=ulid"` or `forge:"generated"` tag in its OWN namespace for
+// the (at most one, per field) forge-specific column marker.
 //
 // A second tag namespace, not another bun tag option, because Bun has no
 // native concept for either declaration and inventing a private option name
@@ -728,6 +762,21 @@ func structTag(f ormField) string {
 		return fmt.Sprintf("`%s forge:%q`", bunPart, "version")
 	case f.isFillULID:
 		return fmt.Sprintf("`%s forge:%q`", bunPart, "fill=ulid")
+	case f.isGenerated:
+		// GENERATED ALWAYS AS (...) STORED. The bun tag's ,nullzero handles
+		// the common INSERT (a zero value marshals to DEFAULT, which
+		// postgres accepts), but ,nullzero keys off the GO zero and so
+		// cannot express the case that matters most: re-inserting an entity
+		// that was READ back carries a NON-zero computed value, which bun
+		// would send literally and postgres would reject. Bun has no tag
+		// option for "never name this column in a write", so the fact is
+		// declared here, in forge's own namespace, and pkg/crud.Repo reads
+		// it to drop the column from the INSERT/UPSERT column set outright.
+		//
+		// Mutually exclusive with the two above in practice: the database
+		// computes a generated column, so it can be neither a ULID fill
+		// target nor the repo-incremented version column.
+		return fmt.Sprintf("`%s forge:%q`", bunPart, "generated")
 	default:
 		return bunTag(f)
 	}

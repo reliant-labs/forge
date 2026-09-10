@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -346,13 +347,20 @@ type buildResult struct {
 	duration time.Duration
 	err      error
 	// digest is the content-addressed manifest digest (`sha256:...`) of a
-	// pushed docker image, captured after `docker push` for the PROJECT
-	// image so runBuild can record it in the build state. Empty for
+	// pushed docker image, captured after `docker push` so runBuild can
+	// record it in the build state. Empty for
 	// non-docker results, non-pushed builds, and any build where the digest
 	// lookup failed (capture is best-effort). platforms is the arch set the
 	// pushed manifest advertises, captured alongside.
 	digest    string
 	platforms []string
+	// image is the BARE image name this result built (`internal-console`),
+	// as opposed to name, which carries the " (docker)" display suffix. It is
+	// the key the KCL `_image_ref` seam looks up in image_digests, so a
+	// per-image build state can only be written for results that carry it.
+	// Set by the frontend docker path; the project image derives its own name
+	// from cfg.Name.
+	image string
 }
 
 func runBuild(ctx context.Context, opts buildOptions) error {
@@ -557,6 +565,14 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// Dockerfile) or the docker build failed.
 	if opts.buildDocker && resolvedTag != "" && !skipProjectDocker {
 		persistProjectBuildState(ctx, cfg, opts, resolvedTag, succeeded)
+	}
+
+	// The same handoff for every non-project image (cluster-deployed
+	// frontends). Deliberately NOT gated on skipProjectDocker: a
+	// `--target <frontend>` build skips the project image by design, and
+	// that is exactly the case where the frontend's own state was missing.
+	if opts.buildDocker && resolvedTag != "" {
+		persistImageBuildStates(opts, resolvedTag, succeeded)
 	}
 
 	// Print summary
@@ -786,10 +802,26 @@ func resolveNamedBuildTarget(cfg *config.ProjectConfig, entities *KCLEntities, o
 	if !kclHasServiceNamed(entities, opts.buildTarget) {
 		return nil, false, fmt.Errorf("target %q not found in project config or in env %q's KCL services", opts.buildTarget, opts.env)
 	}
-	// A KCL service target builds that service only: no project binary, no
-	// frontends.
+	// A KCL service target builds that service only: no frontends.
+	//
+	// It DOES still build the binary. Returning false here reported success
+	// having compiled nothing, which is worse than the "not found" error this
+	// branch was added to replace — a silent no-op that finishes in 0s and
+	// looks like a cache hit.
+	//
+	// Concretely: control-plane's `admin-server` is a go-build service whose
+	// EffectiveBuild maps onto the shared ./cmd/control-plane binary (its
+	// container command is ["./control-plane","public-api"]). `forge build prod
+	// --target admin-server` printed a 0s summary with no build lines, and the
+	// stale image was then deployed and served old code against a migrated
+	// database. resolveGoTargets(false, ...) returns nil unconditionally, so
+	// no go target survived to be built.
+	//
+	// goBuildTargetsFromKCL already dedupes by (cmd, output), so a named
+	// service resolves to exactly the one binary it needs — the same binary
+	// the full build would produce for it, not the whole project's set.
 	opts.skipFrontends = true
-	return nil, false, nil
+	return nil, true, nil
 }
 
 func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions) (buildTargetSet, error) {
@@ -978,6 +1010,51 @@ func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, op
 		fmt.Printf("[build]   Warning: failed to write build-state file: %v\n", werr)
 	} else {
 		fmt.Printf("[build]   Wrote build state: %s\n", buildStatePath(projectDirForKCL(), opts.env))
+	}
+}
+
+// persistImageBuildStates records the build→deploy handoff for every NON-project
+// image built in this run — today, the cluster-deployed frontends.
+//
+// It writes the same per-image `.forge/state/build-<env>-<image>.json` files the
+// external-build dispatcher writes, because `resolveDeployImageDigests` already
+// globs that pattern to assemble the per-image name→digest map. Reusing the
+// existing file shape means deploy needs no new read path: the frontend's digest
+// lands in the map beside reliant's and workspace-base's, and `_image_ref` pins
+// `<image>@sha256:...` for it like any other.
+//
+// Why this exists: the project image was the ONLY thing that recorded state, so
+// a successful `forge build <env> --target <frontend> --push` left no trace. The
+// following `forge env deploy <env> --target <frontend>` then found nothing for
+// that image, fell through to the release ledger's stale digest, and redeployed
+// the OLD image while reporting a clean rollout — a silent no-op deploy that is
+// indistinguishable from success until someone opens the app.
+//
+// Failure to write is non-fatal (warned): the build already succeeded, and the
+// worst case is the tag-fallback deploy path that existed before.
+func persistImageBuildStates(opts buildOptions, resolvedTag string, succeeded []buildResult) {
+	projDir := projectDirForKCL()
+	for _, r := range succeeded {
+		// Only docker results carry an image name, and only a pushed one has a
+		// registry-addressable digest worth recording. A build with no digest
+		// still records the tag handoff, which non-registry transports need.
+		if r.kind != "docker" || r.image == "" {
+			continue
+		}
+		state := buildtarget.State{
+			Service:   r.image,
+			Image:     r.image,
+			Tag:       resolvedTag,
+			Registry:  opts.pushRegistry,
+			PushedAt:  nowRFC3339(),
+			Digest:    r.digest,
+			Platforms: r.platforms,
+		}
+		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
+			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
+			continue
+		}
+		fmt.Printf("[build]   Wrote build state: %s\n", buildtarget.StatePath(projDir, opts.env, r.image))
 	}
 }
 
@@ -1764,6 +1841,7 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 		return buildResult{
 			name:     name + " (docker)",
 			kind:     "docker",
+			image:    name,
 			duration: time.Since(start),
 			err:      nil,
 		}
@@ -1826,6 +1904,7 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 		return buildResult{
 			name:     name + " (docker)",
 			kind:     "docker",
+			image:    name,
 			duration: time.Since(start),
 			err:      err,
 		}
@@ -1840,17 +1919,39 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 			return buildResult{
 				name:     name + " (docker)",
 				kind:     "docker",
+				image:    name,
 				duration: time.Since(start),
 				err:      fmt.Errorf("docker push %s: %w", t, err),
 			}
 		}
 	}
 
+	// Capture the pushed digest, exactly as dockerBuildProject does for the
+	// project image. A frontend deployed as forge.K8sCluster is an image like
+	// any other, and without this its build recorded nothing — so
+	// `forge env deploy --target <frontend>` silently fell back to whatever
+	// digest the release ledger still pinned and RE-DEPLOYED THE OLD IMAGE,
+	// reporting success. That shipped a months-stale operator console against
+	// a current backend.
+	digest, platforms := "", []string(nil)
+	if len(pushTags) > 0 {
+		ref := pushTags[len(pushTags)-1]
+		if d, p, derr := imageRepoDigest(ctx, ref); derr == nil {
+			digest, platforms = d, p
+			fmt.Printf("[build] %s: pushed digest %s\n", name, digest)
+		} else {
+			fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", ref, derr)
+		}
+	}
+
 	return buildResult{
-		name:     name + " (docker)",
-		kind:     "docker",
-		duration: time.Since(start),
-		err:      nil,
+		name:      name + " (docker)",
+		kind:      "docker",
+		duration:  time.Since(start),
+		err:       nil,
+		image:     name,
+		digest:    digest,
+		platforms: platforms,
 	}
 }
 

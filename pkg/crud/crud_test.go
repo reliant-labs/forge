@@ -75,7 +75,7 @@ func TestHandleCreate_HappyPath(t *testing.T) {
 	repo := newRepo()
 	h := HandleCreate(CreateOp[createReq, createResp, *user]{
 		EntityLower: "user",
-		Entity: func(r *createReq) (*user, error) {
+		Entity: func(_ context.Context, r *createReq) (*user, error) {
 			return &user{Name: r.Name, Email: r.Email}, nil
 		},
 		Persist: func(ctx context.Context, e *user) error {
@@ -102,7 +102,7 @@ func TestHandleCreate_RepoError_WrappedAsInternal(t *testing.T) {
 	repo.createErr = errors.New("db down")
 	h := HandleCreate(CreateOp[createReq, createResp, *user]{
 		EntityLower: "user",
-		Entity:      func(r *createReq) (*user, error) { return &user{}, nil },
+		Entity:      func(_ context.Context, r *createReq) (*user, error) { return &user{}, nil },
 		Persist:     func(context.Context, *user) error { return repo.createErr },
 		Pack:        func(*user) (*createResp, error) { return &createResp{}, nil },
 	})
@@ -127,7 +127,7 @@ func TestHandleGet_HappyPath(t *testing.T) {
 	h := HandleGet(GetOp[getReq, getResp, *user]{
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
-		Fetch:       func(context.Context, string) (*user, error) { return want, nil },
+		Fetch:       func(context.Context, string, ...orm.QueryOption) (*user, error) { return want, nil },
 		Pack:        func(u *user) (*getResp, error) { return &getResp{User: u}, nil },
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&getReq{ID: "u1"}))
@@ -143,7 +143,7 @@ func TestHandleGet_NotFound(t *testing.T) {
 	h := HandleGet(GetOp[getReq, getResp, *user]{
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
-		Fetch: func(context.Context, string) (*user, error) {
+		Fetch: func(context.Context, string, ...orm.QueryOption) (*user, error) {
 			// Repos signal a missing row via orm.ErrNoRows (possibly wrapped).
 			return nil, fmt.Errorf("get users by id: %w", orm.ErrNoRows)
 		},
@@ -169,7 +169,7 @@ func TestHandleGet_SvcerrNotFound(t *testing.T) {
 	h := HandleGet(GetOp[getReq, getResp, *user]{
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
-		Fetch: func(context.Context, string) (*user, error) {
+		Fetch: func(context.Context, string, ...orm.QueryOption) (*user, error) {
 			return nil, svcerr.NotFound("user")
 		},
 		Pack: func(u *user) (*getResp, error) { return &getResp{User: u}, nil },
@@ -187,7 +187,7 @@ func TestHandleGet_ArbitraryRepoError_Internal(t *testing.T) {
 	h := HandleGet(GetOp[getReq, getResp, *user]{
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
-		Fetch: func(context.Context, string) (*user, error) {
+		Fetch: func(context.Context, string, ...orm.QueryOption) (*user, error) {
 			return nil, errors.New("boom: SELECT * FROM x")
 		},
 		Pack: func(u *user) (*getResp, error) { return &getResp{User: u}, nil },
@@ -211,13 +211,13 @@ func TestHandleUpdate_HappyPath(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity: func(r *updateReq) (*user, error) {
+		Entity: func(_ context.Context, r *updateReq) (*user, error) {
 			if r.User == nil {
 				return nil, ErrEntityRequired
 			}
 			return r.User, nil
 		},
-		Persist: func(context.Context, *user) error { return nil },
+		Persist: func(context.Context, *user, ...orm.QueryOption) error { return nil },
 		Pack:    func(u *user) (*updateResp, error) { return &updateResp{User: u}, nil },
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&updateReq{User: &user{ID: "u1", Name: "B"}}))
@@ -233,8 +233,8 @@ func TestHandleUpdate_NilEntity_InvalidArgument(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
-		Persist:        func(context.Context, *user) error { return nil },
+		Entity:         func(_ context.Context, r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+		Persist:        func(context.Context, *user, ...orm.QueryOption) error { return nil },
 		Pack:           func(*user) (*updateResp, error) { return &updateResp{}, nil },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&updateReq{}))
@@ -257,15 +257,15 @@ func maskedUpdateOp(fullCalled *bool, maskedFields *[]string, maskedErr error) U
 	return UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity: func(r *updateReq) (*user, error) {
+		Entity: func(_ context.Context, r *updateReq) (*user, error) {
 			return r.User, entityOrRequired(r.User)
 		},
 		Mask: func(r *updateReq) []string { return r.Mask },
-		Persist: func(context.Context, *user) error {
+		Persist: func(context.Context, *user, ...orm.QueryOption) error {
 			*fullCalled = true
 			return nil
 		},
-		PersistMasked: func(_ context.Context, _ *user, fields []string) error {
+		PersistMasked: func(_ context.Context, _ *user, fields []string, _ ...orm.QueryOption) error {
 			*maskedFields = append([]string{}, fields...)
 			return maskedErr
 		},
@@ -338,9 +338,9 @@ func TestHandleUpdate_MaskWithoutPersistMasked_Internal(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+		Entity:         func(_ context.Context, r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
 		Mask:           func(r *updateReq) []string { return r.Mask },
-		Persist: func(context.Context, *user) error {
+		Persist: func(context.Context, *user, ...orm.QueryOption) error {
 			fullCalled = true
 			return nil
 		},
@@ -389,8 +389,8 @@ func TestHandleUpdate_NilMaskHook_LegacyFullReplace(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
-		Persist: func(context.Context, *user) error {
+		Entity:         func(_ context.Context, r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+		Persist: func(context.Context, *user, ...orm.QueryOption) error {
 			fullCalled = true
 			return nil
 		},
@@ -413,7 +413,7 @@ func TestHandleDelete_DefaultZeroResp(t *testing.T) {
 	h := HandleDelete(DeleteOp[deleteReq, deleteResp]{
 		EntityLower: "user",
 		ID:          func(r *deleteReq) string { return r.ID },
-		Persist:     func(context.Context, string) error { return nil },
+		Persist:     func(context.Context, string, ...orm.QueryOption) error { return nil },
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&deleteReq{ID: "u1"}))
 	if err != nil {
@@ -428,7 +428,7 @@ func TestHandleDelete_PackOverride(t *testing.T) {
 	h := HandleDelete(DeleteOp[deleteReq, deleteResp]{
 		EntityLower: "user",
 		ID:          func(r *deleteReq) string { return r.ID },
-		Persist:     func(context.Context, string) error { return nil },
+		Persist:     func(context.Context, string, ...orm.QueryOption) error { return nil },
 		Pack:        func() *deleteResp { return &deleteResp{ID: "echoed"} },
 	})
 	resp, _ := h(context.Background(), connect.NewRequest(&deleteReq{ID: "u1"}))
@@ -441,7 +441,7 @@ func TestHandleDelete_RepoError_WrappedInternal(t *testing.T) {
 	h := HandleDelete(DeleteOp[deleteReq, deleteResp]{
 		EntityLower: "user",
 		ID:          func(r *deleteReq) string { return r.ID },
-		Persist:     func(context.Context, string) error { return errors.New("fk violation") },
+		Persist:     func(context.Context, string, ...orm.QueryOption) error { return errors.New("fk violation") },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&deleteReq{ID: "u1"}))
 	cerr := new(connect.Error)
@@ -466,7 +466,7 @@ func TestHandleDelete_MissingRow_NotFound(t *testing.T) {
 	h := HandleDelete(DeleteOp[deleteReq, deleteResp]{
 		EntityLower: "user",
 		ID:          func(r *deleteReq) string { return r.ID },
-		Persist: func(context.Context, string) error {
+		Persist: func(context.Context, string, ...orm.QueryOption) error {
 			return fmt.Errorf("delete users: %w", orm.ErrNoRows)
 		},
 	})
@@ -492,8 +492,8 @@ func TestHandleUpdate_MissingRow_NotFound(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
-		Persist: func(context.Context, *user) error {
+		Entity:         func(_ context.Context, r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+		Persist: func(context.Context, *user, ...orm.QueryOption) error {
 			return fmt.Errorf("update users: %w", orm.ErrNoRows)
 		},
 		Pack: func(e *user) (*updateResp, error) { return &updateResp{User: e}, nil },
@@ -652,7 +652,7 @@ func TestHandleList_OrderByValidation(t *testing.T) {
 		HasOrderBy:    true,
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
-		OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
+		OrderBy:       func(_ context.Context, r *listReq) (string, bool) { return r.OrderBy, r.Descending },
 		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
 			return nil, nil
 		},
@@ -678,7 +678,7 @@ func listOrderByOp(columns []string) func(context.Context, *connect.Request[list
 		HasOrderBy:    true,
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
-		OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
+		OrderBy:       func(_ context.Context, r *listReq) (string, bool) { return r.OrderBy, r.Descending },
 		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
 			return nil, nil
 		},
@@ -727,9 +727,9 @@ func TestHandleList_TotalCount_PopulatedFromCount(t *testing.T) {
 		HasPagination: true,
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
-		Filters: func(r *listReq) []orm.QueryOption {
+		Filters: func(_ context.Context, r *listReq) ([]orm.QueryOption, error) {
 			// One filter opt — must reach BOTH count and list.
-			return []orm.QueryOption{orm.WhereEq("name", "x")}
+			return []orm.QueryOption{orm.WhereEq("name", "x")}, nil
 		},
 		Query: func(ctx context.Context, opts []orm.QueryOption) ([]*user, error) {
 			listOpts = len(opts)
@@ -834,7 +834,7 @@ func TestHandlerErrors_CarryReason(t *testing.T) {
 			Columns:       []string{"id", "name"},
 			HasPagination: true,
 			HasOrderBy:    true,
-			OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
+			OrderBy:       func(_ context.Context, r *listReq) (string, bool) { return r.OrderBy, r.Descending },
 			PageToken:     func(r *listReq) string { return r.PageToken },
 			PageSize:      func(r *listReq) int { return r.PageSize },
 			Query:         func(context.Context, []orm.QueryOption) ([]*user, error) { return nil, nil },
@@ -855,8 +855,8 @@ func TestHandlerErrors_CarryReason(t *testing.T) {
 				h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 					EntityLower:    "user",
 					EntityFieldLow: "user",
-					Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
-					Persist:        func(context.Context, *user) error { return nil },
+					Entity:         func(_ context.Context, r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+					Persist:        func(context.Context, *user, ...orm.QueryOption) error { return nil },
 					Pack:           func(*user) (*updateResp, error) { return &updateResp{}, nil },
 				})
 				_, err := h(ctx, connect.NewRequest(&updateReq{}))
@@ -871,9 +871,9 @@ func TestHandlerErrors_CarryReason(t *testing.T) {
 				h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 					EntityLower:    "user",
 					EntityFieldLow: "user",
-					Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+					Entity:         func(_ context.Context, r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
 					Mask:           func(r *updateReq) []string { return r.Mask },
-					Persist:        func(context.Context, *user) error { return nil },
+					Persist:        func(context.Context, *user, ...orm.QueryOption) error { return nil },
 					Pack:           func(u *user) (*updateResp, error) { return &updateResp{User: u}, nil },
 				})
 				_, err := h(ctx, connect.NewRequest(&updateReq{User: &user{ID: "u1"}, Mask: []string{"name"}}))
@@ -918,7 +918,7 @@ func TestHandlerErrors_CarryReason(t *testing.T) {
 				h := HandleGet(GetOp[getReq, getResp, *user]{
 					EntityLower: "user",
 					ID:          func(r *getReq) string { return r.ID },
-					Fetch:       func(context.Context, string) (*user, error) { return &user{ID: "u1"}, nil },
+					Fetch:       func(context.Context, string, ...orm.QueryOption) (*user, error) { return &user{ID: "u1"}, nil },
 					Pack: func(*user) (*getResp, error) {
 						return nil, errors.New(`corrupt enum value "LEGACY" for column status`)
 					},

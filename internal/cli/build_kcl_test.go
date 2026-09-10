@@ -256,3 +256,59 @@ func TestKCLFrontendAsBuildTarget_RecognisesFrontendNames(t *testing.T) {
 		t.Error("a nil entity set (no --env) must not resolve anything")
 	}
 }
+
+// TestNamedKCLServiceTargetStillBuildsItsBinary pins the fix for a silent
+// no-op: `forge build <env> --target <kcl-service>` reported success having
+// compiled nothing.
+//
+// resolveNamedBuildTarget returned buildBinary=false for a KCL service, and
+// resolveGoTargets(false, ...) returns nil unconditionally — so no go target
+// survived. The command printed a 0s summary with no build lines, which reads
+// exactly like a cache hit. In control-plane that shipped a stale admin-server
+// image to production against a freshly migrated database; every RPC touching
+// the users table 500'd until the real image was built.
+//
+// The service here mirrors that shape: a go-build service whose cmd is the
+// SHARED project binary (control-plane's admin-server runs
+// ["./control-plane","public-api"]), which is why "did the target resolve"
+// and "did anything get compiled" are different questions.
+func TestNamedKCLServiceTargetStillBuildsItsBinary(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{{
+			Name:  "admin-server",
+			Image: "control-plane",
+			Build: BuildConfigEntity{
+				Type: "go",
+				Go:   &GoBuild{Cmd: "./cmd/control-plane", OutputName: "control-plane"},
+			},
+		}},
+	}
+	cfg := &config.ProjectConfig{Name: "control-plane"}
+	opts := &buildOptions{buildTarget: "admin-server", env: "prod"}
+
+	frontends, buildBinary, err := resolveNamedBuildTarget(cfg, entities, opts, nil)
+	if err != nil {
+		t.Fatalf("resolveNamedBuildTarget: %v", err)
+	}
+	if len(frontends) != 0 {
+		t.Errorf("frontends = %d, want 0 — a named service target builds no frontends", len(frontends))
+	}
+	if !opts.skipFrontends {
+		t.Error("skipFrontends = false, want true for a named service target")
+	}
+	if !buildBinary {
+		t.Fatal("buildBinary = false — the named service's binary would not be built, " +
+			"so the command succeeds having compiled nothing and a stale image ships")
+	}
+
+	// The contract that matters is the one runBuild consumes: resolving the
+	// target must yield real work. Asserting the flag alone would pass even if
+	// resolveGoTargets later dropped it.
+	got := resolveGoTargets(buildBinary, entities, cfg)
+	if len(got) == 0 {
+		t.Fatal("resolveGoTargets returned no targets for a named go-build service")
+	}
+	if got[0].cmd != "./cmd/control-plane" {
+		t.Errorf("go target cmd = %q, want the service's own ./cmd/control-plane", got[0].cmd)
+	}
+}

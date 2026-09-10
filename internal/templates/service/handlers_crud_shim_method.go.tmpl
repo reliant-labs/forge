@@ -73,7 +73,10 @@ func (s *Service) {{.MethodName}}(
 // in handlers_crud_ops_gen.go. To customize, replace this delegation —
 // this file is yours. See the forge `auth` / `db` / `contracts` skill.
 //
-{{- if .AuthRequired}}
+{{- if .Scoped}}
+// AUTHENTICATED: this RPC's proto declares auth_required: true, so the
+// interceptor rejected any caller without a valid token before this ran.
+{{- else if .AuthRequired}}
 // AUTHENTICATED, UNSCOPED: this RPC's proto declares auth_required: true,
 // so the interceptor rejected any caller without a valid token before this
 // ran. Nothing below reads WHO they are — call {{.AuthSeam}}(ctx) above the
@@ -95,22 +98,121 @@ func (s *Service) {{.MethodName}}(
 // `google.protobuf.FieldMask update_mask` for AIP-134 partial updates.
 {{- end}}
 {{- end}}
-{{- if .FillHandlerColumns}}
+{{- if .Scoped}}
+//
+// SCOPED. {{.EntityName}}'s {{.OwnerColumn}} column is declared `forge:owner`,
+// so this table's rows belong to distinct principals — and this RPC is
+// authenticated, so the rows it touches are scoped to the caller below.
+//
+// forge wrote the mechanism (claims resolved, op seam wrapped, column named)
+// but not the POLICY: how a caller's claims map onto {{.OwnerColumn}}'s values
+// is a domain decision only this app can make. The `owner` expression is where
+// that decision lives; while it still carries a FORGE_SCAFFOLD marker it is
+// forge's placeholder rather than your answer, and `forge lint` says so.
+{{- end}}
+{{- if and .FillHandlerColumns (not .Scoped)}}
 //
 // forge:fill=handler: {{range $i, $c := .FillHandlerColumns}}{{if $i}}, {{end}}{{$c}}{{end}} — NOT NULL, no DB
 // DEFAULT, and forge:read-only, so nothing else assigns them. The
 // FORGE_SCAFFOLD marker below fails `forge lint` until each is set.
+{{- else if .FillHandlerColumns}}
+//
+// forge:fill=handler: {{range $i, $c := .FillHandlerColumns}}{{if $i}}, {{end}}{{$c}}{{end}} — NOT NULL, no DB
+// DEFAULT, and forge:read-only, so nothing else assigns them either.
+{{- end}}
+{{- if or .FillHandlerColumns .Scoped}}
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
 ) (*connect.Response[pb.{{.OutputType}}], error) {
+{{- if .Scoped}}
+	claims, err := {{.AuthSeam}}(ctx)
+	if err != nil {
+		return nil, err // connect.CodeUnauthenticated
+	}
+	// FORGE_SCAFFOLD: `claims.UserID` is forge's placeholder for the value of
+	// {{.EntityName}}.{{.OwnerColumn}} that belongs to this caller. Only your app
+	// knows that mapping — replace the expression, then remove this comment.
+	owner := claims.UserID
+{{- end}}
 	op := s.crud{{.MethodName}}Op()
+{{- if eq .Operation "list"}}
+{{- if .Scoped}}
+	// The predicate goes in the QUERY, never on the returned page: Count runs
+	// over these same opts, so a post-filtered page would report a total
+	// including rows this caller may not see.
+	filters := op.Filters // nil when the RPC declares no filter fields
+	op.Filters = func(ctx context.Context, r *pb.{{.InputType}}) ([]orm.QueryOption, error) {
+		var opts []orm.QueryOption
+		if filters != nil {
+			var err error
+			if opts, err = filters(ctx, r); err != nil {
+				return nil, err
+			}
+		}
+		return append(opts, orm.WhereEq("{{.OwnerColumn}}", owner)), nil
+	}
+{{- end}}
+{{- else if eq .Operation "get"}}
+{{- if .Scoped}}
+	// Passed as a query option rather than compared after the fetch: a row
+	// that is not this caller's is never read, and reports NotFound exactly
+	// as an unknown id does. A distinguishable "exists but is not yours"
+	// tells an attacker which ids are real.
+	fetch := op.Fetch
+	op.Fetch = func(ctx context.Context, id string, opts ...orm.QueryOption) (*db.{{.EntityName}}, error) {
+		return fetch(ctx, id, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
+	}
+{{- end}}
+{{- else if eq .Operation "delete"}}
+{{- if .Scoped}}
+	// Scoped like Get: a row that is not this caller's is not deleted, and
+	// the absent-row check reports NotFound.
+	del := op.Persist
+	op.Persist = func(ctx context.Context, id string, opts ...orm.QueryOption) error {
+		return del(ctx, id, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
+	}
+{{- end}}
+{{- else if eq .Operation "update"}}
+{{- if .Scoped}}
+	// Two halves, and both are needed. The predicate is checked against the
+	// STORED row, so a caller cannot take ownership by rewriting
+	// {{.OwnerColumn}} in the request they send; the stamp then keeps the
+	// written row on the same owner, since a maskless update writes every
+	// column of the submitted entity.
 	build := op.Entity
-	op.Entity = func(r *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
-		e, err := build(r)
+	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+		e, err := build(ctx, r)
 		if err != nil {
 			return nil, err
 		}
+		e.{{.OwnerField}} = owner
+		return e, nil
+	}
+	persist := op.Persist
+	op.Persist = func(ctx context.Context, e *db.{{.EntityName}}, opts ...orm.QueryOption) error {
+		return persist(ctx, e, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
+	}
+{{- if .UpdateMaskField}}
+	persistMasked := op.PersistMasked
+	op.PersistMasked = func(ctx context.Context, e *db.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {
+		return persistMasked(ctx, e, fields, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
+	}
+{{- end}}
+{{- end}}
+{{- else if eq .Operation "create"}}
+	build := op.Entity
+	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+		e, err := build(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+{{- if .Scoped}}
+		// Stamped from the caller, never from the request: a create that
+		// took {{.OwnerColumn}} off the wire would let anyone file a row
+		// under anyone else's name.
+		e.{{.OwnerField}} = owner
+{{- end}}
 {{- range .FillHandlerColumns}}
 		// FORGE_SCAFFOLD: {{.}} is forge:read-only with no column DEFAULT,
 		// so nothing assigns it and every Create fails the NOT NULL / FK check.
@@ -118,6 +220,7 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 		return e, nil
 	}
+{{- end}}
 	return crud.Handle{{.Operation | title}}(op)(ctx, req)
 }
 {{- else}}

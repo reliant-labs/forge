@@ -21,8 +21,16 @@ help:
 	@echo "  test          go test ./..."
 	@echo "  e2e-ingress   real k3d Gateway API ingress smoke test"
 
+# CGO_ENABLED=1 is REQUIRED for any binary a human will run.
+# internal/kclplugin's Register — which installs the kcl_plugin.forge
+# namespace every rendered environment imports — is `//go:build cgo`; the
+# !cgo build gets a no-op stub. A CGO-free forge installs cleanly, reports
+# a correct --version and passes generate/lint/build, then fails EVERY
+# `forge run` / `env up` / `env render`. (Plain `go build ./...` / `go vet`
+# without CGO still work and are deliberately left alone — that is what the
+# nocgo stub exists for.)
 build:
-	go build -o forge ./cmd/forge
+	CGO_ENABLED=1 go build -o forge ./cmd/forge
 
 # Contributor dev loop: install forge into $GOBIN (add $HOME/go/bin to PATH)
 # with its own source root stamped in. Then `forge project new` writes a
@@ -31,7 +39,7 @@ build:
 # `go mod edit -replace`. Use plain `make build` / a release install for a
 # binary that pins the published forge/pkg instead.
 dev:
-	go install -ldflags "$(DEV_FORGE_ROOT_LDFLAG)" ./cmd/forge
+	CGO_ENABLED=1 go install -ldflags "$(DEV_FORGE_ROOT_LDFLAG)" ./cmd/forge
 
 test:
 	go test ./...

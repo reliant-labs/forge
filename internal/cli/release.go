@@ -442,7 +442,7 @@ func addFrontendSourceArtifactsWith(ctx context.Context, resolver pinResolver, e
 			return fmt.Errorf("frontend %q is served by a LOCAL SOURCE OVERRIDE (%s), not its declared pin %s.\n"+
 				"  A release must be reproducible, and an override is by definition not — freezing one into a\n"+
 				"  release ledger would record a version that no other machine can rebuild.\n"+
-				"  Remove the entry from %s and re-cut.",
+				"  Remove the entry from %s and re-cut",
 				fe.Name, res.Dir, src, filepath.Join(gitsource.OverridesDirName, gitsource.OverridesFileName))
 		}
 		out[fe.Name] = ReleaseArtifact{
@@ -534,7 +534,7 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]ReleaseAr
 		"  so promoting this release would deploy them from a mutable tag (or leave them on whatever the\n"+
 		"  previous binding pinned) while every other artifact advanced — one version, two releases.\n"+
 		"  Build the full set (drop --target, and pass --push <registry> so images are digest-addressable),\n"+
-		"  or remove what the environment no longer ships.",
+		"  or remove what the environment no longer ships",
 		opts.release, envName, strings.Join(missing, "\n    "), envName)
 }
 

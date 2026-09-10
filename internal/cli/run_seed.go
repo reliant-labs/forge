@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/database"
@@ -33,8 +34,8 @@ func ensureDevDatabase(cfg *config.ProjectConfig, entities *KCLEntities, env str
 	if err != nil || !dev {
 		return nil
 	}
-	dsn := resolveSeedDSN(entities, cfg, env)
-	if dsn == "" {
+	primary := resolveSeedDSN(entities, cfg, env)
+	if primary == "" {
 		return nil
 	}
 	// Reconcile BEFORE the first write. This is the last point at which
@@ -50,13 +51,141 @@ func ensureDevDatabase(cfg *config.ProjectConfig, entities *KCLEntities, env str
 	// divergence that had projects creating their schema inside another
 	// stack's database while their own postgres sat empty, with `forge run`
 	// reporting success throughout. Refuse loudly instead.
-	if err := reconcileDevDatabasePort(dsn, entities); err != nil {
+	//
+	// Only the PRIMARY DSN is reconciled. It is the one the seed hook and
+	// the discovery facts write through, and the one whose port could have
+	// drifted from compose; the additional DSNs below are collected from
+	// the KCL that this same render produced, so they cannot disagree with
+	// it about which server is the project's.
+	if err := reconcileDevDatabasePort(primary, entities); err != nil {
 		return err
 	}
-	if err := pgtest.EnsureDatabase(dsn); err != nil {
-		return fmt.Errorf("ensure dev database: %w", err)
+	for _, dsn := range devDatabaseDSNs(entities, primary) {
+		if err := pgtest.EnsureDatabase(dsn); err != nil {
+			return fmt.Errorf("ensure dev database %q: %w", devpg.DatabaseOf(dsn), err)
+		}
 	}
 	return nil
+}
+
+// devDatabaseDSNs returns every distinct dev database forge should
+// ensure-create this run: the primary DSN plus every OTHER DATABASE_URL the
+// env's services declare, de-duplicated by (server, database).
+//
+// WHY MORE THAN ONE. resolveSeedDSN answers "which database does this
+// project seed and report on", so it returns the FIRST match and stops —
+// correct for its own callers, and the reason this function exists rather
+// than changing it. But an env is not limited to one database: a project
+// with sibling services (control-plane's own DB plus the reliant DB its
+// daemon-gateway dials) declares several, and forge created exactly one of
+// them. The rest surfaced as a crash-looping pod reporting
+//
+//	FATAL: database "reliant_<worktree>" does not exist (SQLSTATE 3D000)
+//
+// which names the database but not the reason it is absent — and on a
+// per-worktree name, nothing on disk had ever created it. Ensuring every
+// declared DSN closes that by construction.
+//
+// Ordering is deterministic: the primary first, then declaration order.
+func devDatabaseDSNs(entities *KCLEntities, primary string) []string {
+	out := []string{primary}
+	seen := map[string]bool{devDatabaseKey(primary): true}
+	for _, dsn := range declaredDatabaseURLs(entities) {
+		reachable := hostReachableDSN(dsn)
+		if reachable == "" {
+			continue
+		}
+		key := devDatabaseKey(reachable)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, reachable)
+	}
+	return out
+}
+
+// declaredDatabaseURLs returns every DATABASE_URL declared across the env's
+// services, in declaration order, including duplicates — the caller
+// de-duplicates. Both the service's own env_vars and its deploy block's are
+// walked, matching resolveSeedDSN's view of where a DSN can be declared.
+func declaredDatabaseURLs(entities *KCLEntities) []string {
+	if entities == nil {
+		return nil
+	}
+	var out []string
+	add := func(vars []KCLEnvVar) {
+		if v := envVarValue(vars, "DATABASE_URL"); v != "" {
+			out = append(out, v)
+		}
+	}
+	for _, s := range entities.Services {
+		add(s.EnvVars)
+		if s.Deploy.Host != nil {
+			add(s.Deploy.Host.EnvVars)
+		}
+		if s.Deploy.Cluster != nil {
+			add(s.Deploy.Cluster.EnvVars)
+		}
+	}
+	return out
+}
+
+// hostReachableDSN rewrites a DSN into one forge can dial FROM THE HOST, or
+// returns "" when it names a server forge has no route to.
+//
+// A cluster service's DSN is written from the POD's point of view, so it
+// reaches the developer's machine through the docker host-gateway alias
+// (`host.k3d.internal`, the same constant cluster_phase.go plumbs into each
+// cluster's DNS). That name deliberately does not resolve on the host —
+// dialing it here fails with "no such host" — but it denotes the very
+// machine forge is running on, so the database it names is reachable on
+// loopback at the same port.
+//
+// Anything else is left alone and skipped by the caller: a DSN pointing at
+// a managed cloud database is not forge's to create, and guessing a route
+// to it would be how `CREATE DATABASE` lands somewhere it was never meant
+// to. Only an explicitly host-denoting alias is rewritten.
+func hostReachableDSN(dsn string) string {
+	host := devpg.HostOf(dsn)
+	if host == "" {
+		return ""
+	}
+	if isHostGatewayAlias(host) {
+		return strings.Replace(dsn, host, "localhost", 1)
+	}
+	if isLoopbackHost(host) {
+		return dsn
+	}
+	return ""
+}
+
+// isHostGatewayAlias reports whether host is a docker/k3d alias for the
+// machine forge itself runs on.
+func isHostGatewayAlias(host string) bool {
+	return host == k3dHostGatewayAlias || host == "host.docker.internal"
+}
+
+// isLoopbackHost mirrors devpg's loopback set. Declared here (rather than
+// exported from devpg) because this is the consumer's question — "can I
+// dial this from here" — not devpg's port-reconciliation question.
+func isLoopbackHost(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		return true
+	}
+	return false
+}
+
+// devDatabaseKey identifies a database by SERVER and NAME, so two DSNs that
+// differ only in credentials or query parameters are recognized as the same
+// database and it is not created twice.
+func devDatabaseKey(dsn string) string {
+	name := devpg.DatabaseOf(dsn)
+	if name == "" {
+		return ""
+	}
+	return devpg.HostOf(dsn) + ":" + devpg.PortOf(dsn) + "/" + name
 }
 
 // reconcileDevDatabasePort checks the dev DSN against the port this

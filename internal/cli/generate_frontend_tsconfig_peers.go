@@ -133,16 +133,77 @@ func frontendDepsAreHoisted(projectDir, feDir string) bool {
 	// directory exists" does not mean "the peer is here" — and pinning at a
 	// directory that lacks the package resolves to nothing, which tsc answers
 	// by binding the linked runtime's copy instead.
+	// ── DETERMINISM FIRST ────────────────────────────────────────────────
+	// tsconfig.json is GENERATED AND COMMITTED, and CI re-runs `forge
+	// generate` and fails on any diff. So this decision must depend only on
+	// TRACKED FILES — never on whether node_modules happens to be installed,
+	// which differs between a developer's machine and a CI checkout and would
+	// make committed output unreproducible by construction.
+	//
+	// Measured, and the reason this ordering exists: control-plane's root
+	// package.json is forge's own dev web-runtime bridge and is GITIGNORED
+	// (see its .gitignore "Dev web-runtime bridge" block). A developer's tree
+	// therefore has both a workspace root AND hoisted node_modules, so the old
+	// probe answered "hoisted" and wrote "../../node_modules/…". CI checks out
+	// neither the manifest nor the modules, answered "not hoisted", rewrote
+	// all 14 pins to "./node_modules/…", and failed Verify Generated Code —
+	// on a file nobody had touched.
+	//
+	// A frontend's OWN package.json is tracked, so it is a legitimate input.
+	// Its parent workspace manifest may not be, so the filesystem probes below
+	// are a last resort, consulted only when the tracked evidence is silent.
+	if projectDeclaresFrontendWorkspace(projectDir) {
+		return true
+	}
+	if frontendDeclaresWorkspaceMember(projectDir, feDir) {
+		return true
+	}
+
+	// No tracked declaration either way. Fall back to the tree, which at least
+	// describes THIS machine correctly — a project with no workspace root and
+	// a real nested install is the plain non-workspace layout.
+	//
+	// A nested install wins when one genuinely exists: node resolution prefers
+	// the nearest node_modules, so the pin must too.
 	probe := filepath.FromSlash(pinLayoutProbePackage)
 	if dirExists(filepath.Join(feDir, "node_modules", probe)) {
 		return false // really installed here — nearest wins
 	}
-	if dirExists(filepath.Join(projectDir, "node_modules", probe)) {
-		return true // hoisted to the root, where the pin must point
+	return dirExists(filepath.Join(projectDir, "node_modules", probe))
+}
+
+// frontendDeclaresWorkspaceMember reports whether the frontend's own (TRACKED)
+// package.json shows it is a member of a parent npm workspace, by carrying the
+// web-runtime as a `workspace:`-protocol or `file:`-linked dependency.
+//
+// This is the tracked signal that survives when the workspace ROOT manifest is
+// gitignored — as forge's own dev bridge root is. Without it, a project using
+// that bridge has no reproducible way to answer the hoisting question.
+func frontendDeclaresWorkspaceMember(projectDir, feDir string) bool {
+	body, err := os.ReadFile(filepath.Join(feDir, "package.json"))
+	if err != nil {
+		return false
 	}
-	// Nothing installed yet: believe the declaration, since a workspace root
-	// means npm WILL hoist.
-	return projectDeclaresFrontendWorkspace(projectDir)
+	var manifest struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return false
+	}
+	for _, deps := range []map[string]string{manifest.Dependencies, manifest.DevDependencies} {
+		for name, constraint := range deps {
+			if name != webRuntimePackage {
+				continue
+			}
+			// `workspace:*` and `file:../..` both mean "resolved from a parent
+			// workspace", which is exactly the hoisted layout.
+			if strings.HasPrefix(constraint, "workspace:") || strings.HasPrefix(constraint, "file:") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // pinLayoutProbePackage is the package the layout decision is probed against —

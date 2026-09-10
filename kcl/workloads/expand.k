@@ -21,6 +21,7 @@ field access here.
 """
 
 import crypto
+import .capabilities as caps
 import ..lib.rbac as rbac_lib
 import ..lib.quantity as qty_lib
 import ..lib.labels as labels_lib
@@ -133,16 +134,14 @@ _resolved_image = lambda c: any, env_registry: str, image_tag: str -> str {
 # Health probes, drain window, and disruption budget.
 # ---------------------------------------------------------------------------
 
-# The kinds that serve HTTP health endpoints BY CONSTRUCTION. A server
-# and a worker both run through serverkit, which binds a listener and
-# mounts /healthz + /readyz — a worker declares no Service but still
-# answers on its PORT. An `operator` runs a controller-runtime manager
-# on its own endpoints and a `cron` runs to completion, so neither is
-# probed unless the workload DECLARES a probe via `health_check`. An
-# HTTP probe against a process that serves no HTTP is not a safety net,
-# it is a guaranteed CrashLoopBackOff — probes must be absent rather
-# than present-and-wrong.
-_PROBED_KINDS = ["service", "worker"]
+# The kinds that serve HTTP health endpoints BY CONSTRUCTION — read from
+# the capability matrix (capabilities.k) rather than restated here. A
+# server and a worker both run through serverkit, which binds a listener
+# and mounts /healthz + /readyz. Every other kind is probed only when the
+# workload DECLARES a probe via `health_check`: an HTTP probe against a
+# process that serves no HTTP is not a safety net, it is a guaranteed
+# CrashLoopBackOff.
+_PROBED_KINDS = caps.PROBED_KINDS
 
 # Read one env var's literal value off a workload. The per-env
 # `env_vars` overlay wins over the base `env` map, matching the
@@ -330,26 +329,65 @@ _job_init = lambda j: any, image: str -> any {
     }
 }
 
-# The kinds a BROADCAST job (`before = ["*"]`) gates. Everything a
-# release rolls out, and nothing that is not part of a rollout:
+# The kinds a BROADCAST job (`before = ["*"]`) gates — everything a
+# release rolls out, and nothing that is not part of a rollout — are the
+# kinds carrying CAP_GATED in the capability matrix. `BROADCAST_GATED_KINDS`
+# is DEFINED in capabilities.k, derived from that table, and referenced
+# qualified below (a second declaration here would collide with it, not
+# alias it — the same KCL package-flattening rule `BEFORE_ALL` documents).
 #
-#   service / worker / operator — the Deployment-shaped kinds. These are
-#       what serve traffic and consume queues, so these are exactly what
-#       must not come up against a world the job was to prepare.
-#   job — a NON-broadcast one-shot. A seed job that writes rows must not
-#       beat the migration that creates the table it writes to. (A
-#       broadcast job gating another broadcast job is excluded below,
-#       which is what makes the graph acyclic by construction rather
-#       than by a cycle check.)
+# It used to be a hand-maintained list here, which meant "does a broadcast
+# job gate a cron?" was answered in two places — this list, and whether the
+# per-kind expansion threaded `gating` through — and a kind could be added
+# to one and not the other. See capabilities.k for the per-kind
+# justification, in particular why `cron` is excluded (a CronJob pod fires
+# on a SCHEDULE, so gating it would re-run the one-shot on every tick,
+# forever) and why `tool` is (there is no pod to gate).
+
+# THE RBAC SURFACE, for every kind, in ONE place.
 #
-# Deliberately EXCLUDED:
-#   cron — a CronJob pod fires on a SCHEDULE, not as part of a release.
-#       Gating it would re-run the job on every tick, forever, to no
-#       purpose. This preserves exactly the behaviour the bespoke
-#       migration step had.
-#   tool — built into the image and never scheduled. There is no pod to
-#       gate.
-BROADCAST_GATED_KINDS: [str] = ["service", "worker", "operator", "job"]
+# This lambda is the fix for the defect the capability matrix exists to
+# prevent, and its shape is the point: no expansion decides its own RBAC
+# any more. Each renderer calls this, the matrix decides the tier, and a
+# kind that gains or loses a tier does so by editing the matrix.
+#
+# Previously each expansion picked its own, by hand:
+#   * render_service / render_worker / render_cron called
+#     render_service_account unconditionally — a bare identity, no Role,
+#     no way for the workload to ask for one. `worker` is where that hurt
+#     (a reconcile loop that cannot list its CR), and it was invisible
+#     until the first sweep failed in prod.
+#   * render_job had grown a `namespaced_rbac` branch, so ONE kind could
+#     express what the others could not.
+#   * render_operator passed a hardcoded `{rules = []}`, so the kind that
+#     by definition needs cluster permission could not state any.
+#
+# THE TIERS ARE EXCLUSIVE. A workload gets a ClusterRole or a Role, never
+# both: two bindings on one ServiceAccount means the wider one decides
+# every outcome, which makes the narrower one an audit-log lie and its
+# deletion a no-op. `rbac_tier` (capabilities.k) is where that is decided.
+#
+# EMPTY RULES STILL MEAN THE BARE IDENTITY. A workload of an RBAC-capable
+# kind that declares no rules renders exactly what it did before this
+# existed — a ServiceAccount with no Role and no mounted token. Most
+# workloads never call the Kubernetes API (their config arrives as
+# container env, projected at render time), so granting them read on
+# every Secret in the namespace would buy nothing and hand an RCE a
+# credential dump. You get a Role by ASKING for one.
+#
+# The one exception is `operator`, which gets its ClusterRole even with an
+# empty rule set: `render_cluster_rbac` also emits the config-read
+# defaults, and a controller-runtime manager cannot start without them.
+_workload_rbac = lambda c: any, namespace: str, part_of: str = "" -> [any] {
+    _tier = caps.rbac_tier(c.kind)
+    _ns_rules = c.namespaced_rbac
+    _cluster_rules = c.cluster_rbac
+    rbac_lib.render_cluster_rbac(c.name, namespace, {rules = _cluster_rules}, [], part_of) \
+        if _tier == "cluster" \
+        else (rbac_lib.render_namespaced_rbac(c.name, namespace, _ns_rules, [], part_of) \
+            if (_tier == "namespaced" and _ns_rules) \
+            else rbac_lib.render_service_account(c.name, namespace, part_of))
+}
 
 # Does job `j` gate workload `target`?
 #
@@ -369,7 +407,7 @@ BROADCAST_GATED_KINDS: [str] = ["service", "worker", "operator", "job"]
 # re-implementing the predicate per target is how they drift.
 job_gates = lambda j: any, target: any -> bool {
     _broadcast = BEFORE_ALL in j.before
-    (target.name != j.name and target.kind in BROADCAST_GATED_KINDS \
+    (target.name != j.name and target.kind in caps.BROADCAST_GATED_KINDS \
         and not (target.kind == "job" and BEFORE_ALL in target.before)) \
         if _broadcast else (target.name in j.before)
 }
@@ -472,15 +510,22 @@ render_service = lambda c: any, namespace: str, env_registry: str, image_tag: st
         }
     }
     [_deploy, _service] + _pdb(c, namespace, part_of) \
-        + rbac_lib.render_service_account(_name, namespace, part_of)
+        + _workload_rbac(c, namespace, part_of)
 }
 
 # kind="worker" → Deployment only (no Service). Nothing dials a worker,
 # so it gets no Service; a distinct entrypoint comes from `command`.
+#
+# It is otherwise a service in every respect that matters here, INCLUDING
+# its RBAC surface — which it did not previously have. A worker is the
+# kind most likely to need one: reconcile loops and sweepers live here,
+# and they read the API server by definition. `_workload_rbac` gives it
+# the same namespaced Role a service gets, on the same terms (declared
+# rules or nothing).
 render_worker = lambda c: any, namespace: str, env_registry: str, image_tag: str, part_of: str = "", gating: [any] = [] -> [any] {
     _image = _resolved_image(c, env_registry, image_tag)
     [_deployment(c, namespace, _image, [], [], c.name, part_of, gating)] + _pdb(c, namespace, part_of) \
-        + rbac_lib.render_service_account(c.name, namespace, part_of)
+        + _workload_rbac(c, namespace, part_of)
 }
 
 # Cron → CronJob (or one-shot Job when schedule == "").
@@ -488,8 +533,34 @@ render_cron = lambda c: any, namespace: str, env_registry: str, image_tag: str, 
     _name = c.name
     _labels = _managed_labels(_name, part_of)
     _image = _resolved_image(c, env_registry, image_tag)
+    _env = _container_env(c)
+    # A cron pod is a pod, and it was the only one forge rendered that did
+    # not say so. Three things were missing, each of which fails somewhere
+    # other than where it was caused:
+    #
+    #   securityContext — forge's OWN Namespace enforces `restricted` Pod
+    #     Security (see render.k::_render_namespace), and a pod with no
+    #     securityContext does not satisfy it. The API server rejects the
+    #     CronJob's pods at CREATION time, so the CronJob object applies
+    #     cleanly, `kubectl get cronjob` looks healthy, and the failure
+    #     appears only on the first tick — as a FailedCreate event on the
+    #     Job, which nothing is watching.
+    #
+    #   serviceAccountName — the SA was emitted and then never bound, so
+    #     the pod ran as the namespace `default`: indistinguishable from
+    #     every other workload in audit logs, and unable to use the Role
+    #     this kind can now carry. An unbound SA is the exact "manifests
+    #     that look like scoped RBAC and are not" shape lib/rbac.k warns
+    #     about.
+    #
+    #   resources — absent means BestEffort, which is the first thing the
+    #     kubelet evicts under node pressure. For the sweeper this kind
+    #     usually expresses, being evicted mid-run means the sweep silently
+    #     did not happen.
     _pod_spec = {
         restartPolicy = "OnFailure"
+        serviceAccountName = _name
+        securityContext = _default_pod_security_context
         containers = [
             {
                 name = _name
@@ -497,9 +568,10 @@ render_cron = lambda c: any, namespace: str, env_registry: str, image_tag: str, 
                 imagePullPolicy = _pull_policy(_image)
                 if c.command:
                     command = c.command
-                _env = _container_env(c)
+                resources = _resource_block(c.resources if c.resources else _default_resources)
                 if _env:
                     env = _env
+                securityContext = _default_container_security_context
             }
         ]
     }
@@ -536,7 +608,7 @@ render_cron = lambda c: any, namespace: str, env_registry: str, image_tag: str, 
             template = {metadata = {labels = _labels | {"forge.dev/job-name" = _name}}, spec = _pod_spec}
         }
     }]
-    _jobs + rbac_lib.render_service_account(_name, namespace, part_of)
+    _jobs + _workload_rbac(c, namespace, part_of)
 }
 
 # Job → a one-shot batch/v1 Job, and ONLY when it gates nothing.
@@ -646,16 +718,17 @@ render_job = lambda c: any, namespace: str, env_registry: str, image_tag: str, p
         }
     }] if not c.before else []
     # Most one-shots never touch the Kubernetes API — a migration talks to
-    # postgres, not to the cluster — so they get the bare identity
-    # render_service_account gives every non-RBAC workload: an SA with no
-    # Role and no mounted token, byte-identical to before this field
-    # existed. A job that DECLARES namespaced_rbac (a convergence step
-    # that writes a ConfigMap, say) gets a real Role + RoleBinding instead
-    # — the same namespaced-RBAC shape a Service gets, because the need is
-    # identical: in-cluster writes this specific workload does and nothing
-    # else in the namespace should inherit.
-    _job + (rbac_lib.render_namespaced_rbac(_name, namespace, c.namespaced_rbac, [], part_of) \
-        if c.namespaced_rbac else rbac_lib.render_service_account(_name, namespace, part_of))
+    # postgres, not to the cluster — so a job that declares no rules gets
+    # the bare identity: an SA with no Role and no mounted token. A job
+    # that DECLARES namespaced_rbac (a convergence step that writes a
+    # ConfigMap, say) gets a real Role + RoleBinding.
+    #
+    # That branch used to live here, and it was the only one of its kind —
+    # which is precisely how the gap on `worker` stayed invisible: one
+    # expansion having the capability made it look considered rather than
+    # accidental. It is now the shared `_workload_rbac` rule, applied to
+    # every kind the matrix says can carry it, on identical terms.
+    _job + _workload_rbac(c, namespace, part_of)
 }
 
 # Operator → manager Deployment + cluster-scoped RBAC. The Deployment
@@ -664,11 +737,31 @@ render_operator = lambda c: any, namespace: str, env_registry: str, image_tag: s
     _name = c.name
     _image = _resolved_image(c, env_registry, image_tag)
     _leader_env = [{name = "LEADER_ELECTION", value = "true"}] if c.leader_election else []
-    _deploy = _deployment(c, namespace, _image, [], _leader_env, _name, part_of, gating)
-    # Operators get cluster RBAC with the default config-read rules
-    # (rbac_lib adds them); operator CRDs don't carry custom rules in
-    # the denormalized shape, so pass an empty rule set.
-    [_deploy] + rbac_lib.render_cluster_rbac(_name, namespace, {rules = []}, [], part_of)
+    # A manager binds ports as a matter of course — :8080 metrics, :8081
+    # health, :9443 for a webhook — and this passed an empty list, so an
+    # operator that declared them got a manifest that did not mention
+    # them. containerPort is documentary in k8s, which is exactly why the
+    # omission was invisible: nothing broke, the manifest simply stopped
+    # describing what the process does, and `kubectl describe` could not
+    # tell you what to port-forward to.
+    #
+    # No Service object is rendered from these (unlike kind="service"),
+    # deliberately: a Service is a routable name other workloads resolve,
+    # and forge should not conjure one for a manager on the strength of a
+    # port number. An operator that wants to be dialed attaches its own.
+    _ports = [{containerPort = p.port, protocol = "TCP", name = p.name} for p in c.ports]
+    _deploy = _deployment(c, namespace, _image, _ports, _leader_env, _name, part_of, gating)
+    # Operators get CLUSTER RBAC — the default config-read rules that
+    # rbac_lib adds, plus whatever the workload declares in `cluster_rbac`.
+    #
+    # That second half is new. This passed a hardcoded `{rules = []}`, so
+    # the one kind that by definition watches the API server across
+    # namespaces had no way to say what it watches. Every real operator
+    # therefore needed its ClusterRole supplied out of band as a raw
+    # manifest, next to a forge-generated ClusterRole of the same name
+    # that granted almost nothing — two objects competing for one name,
+    # where whichever applied last won.
+    [_deploy] + _pdb(c, namespace, part_of) + _workload_rbac(c, namespace, part_of)
 }
 
 # Dispatch a single workload on its kind. Each branch produces the

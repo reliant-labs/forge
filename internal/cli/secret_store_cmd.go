@@ -165,6 +165,20 @@ func secretStorePath(ctx context.Context, envName string) (string, *KCLEntities,
 		path = filepath.Join("secrets", envName+".yaml")
 	}
 	if !filepath.IsAbs(path) {
+		if shared := sharedSecretStorePath(projectDir, path); shared != "" {
+			// In a linked worktree, the store that actually holds the
+			// values is usually the primary checkout's. Write THERE by
+			// default, so `forge secret set` in a worktree updates the
+			// store every checkout reads instead of creating a local
+			// one-key file that shadows it per key. A worktree that
+			// genuinely wants its own value creates the local file
+			// deliberately — and once it exists, it wins.
+			if _, err := os.Stat(filepath.Join(projectDir, path)); err != nil {
+				if _, sharedErr := os.Stat(shared); sharedErr == nil {
+					return shared, entities, nil
+				}
+			}
+		}
 		path = filepath.Join(projectDir, path)
 	}
 	return path, entities, nil

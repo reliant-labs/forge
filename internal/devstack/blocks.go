@@ -392,7 +392,7 @@ func nextFreeBlock(reg registry) int {
 // checkout), not projectDir — so every linked worktree of one repo reads and
 // writes the SAME registry. See repoAnchor.
 func registryPath(projectDir string) string {
-	return filepath.Join(repoAnchor(projectDir), registryRel)
+	return filepath.Join(RepoAnchor(projectDir), registryRel)
 }
 
 // readRegistry loads the {key: entry} map, accepting the legacy bare-int form

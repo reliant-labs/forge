@@ -1,10 +1,45 @@
 package cli
 
 import (
+	"fmt"
+	"io"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/secrets"
 )
+
+// sharedSecretStorePath resolves relPath against the REPO ANCHOR — the
+// primary checkout — returning "" when that is the same file the caller
+// already has (the primary checkout itself, or a non-git directory).
+//
+// This is what makes a `git worktree add`'ed checkout usable without
+// replaying every `forge secret set`: the store is gitignored, so a new
+// worktree materializes none of it, but the values are sitting in the
+// primary checkout. The anchor is git's own `--git-common-dir`, the same
+// authoritative signal the port-block registry uses.
+func sharedSecretStorePath(projectDir, relPath string) string {
+	anchor := devstack.RepoAnchor(projectDir)
+	if anchor == "" || sameDirPath(anchor, projectDir) {
+		return "" // primary checkout / not a repo — one store, no layering
+	}
+	return filepath.Join(anchor, relPath)
+}
+
+// sameDirPath compares two directory paths tolerantly of symlinks (macOS
+// /var vs /private/var) so the primary checkout is never mistaken for a
+// linked worktree.
+func sameDirPath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, ea := filepath.EvalSymlinks(a)
+	rb, eb := filepath.EvalSymlinks(b)
+	if ea == nil && eb == nil {
+		return filepath.Clean(ra) == filepath.Clean(rb)
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
 
 // secretProviderFromEntities builds a secrets.Provider from the bundle's
 // declared provider, resolving a dotenv relative path against projectDir.
@@ -32,9 +67,34 @@ func secretProviderFromEntities(e *KCLEntities, projectDir string) (secrets.Prov
 		Path: e.SecretProvider.Path,
 	}
 	if cfg.Path != "" && !filepath.IsAbs(cfg.Path) {
+		cfg.SharedPath = sharedSecretStorePath(projectDir, cfg.Path)
 		cfg.Path = filepath.Join(projectDir, cfg.Path)
 	}
 	return secrets.NewProvider(cfg)
+}
+
+// noteSecretLayering prints, on STDERR, where a linked worktree's secret
+// values came from when any were inherited from the primary checkout.
+//
+// Inheriting credentials from another directory must never be silent: the
+// KCL declares `path = "secrets/dev.yaml"`, which reads as project-relative,
+// so a developer has to be able to see that it resolved elsewhere — and to
+// see it BEFORE debugging why a worktree is talking to the wrong Stripe
+// account. STDERR (not stdout) so it cannot corrupt the JSON document of a
+// `--json` command.
+func noteSecretLayering(prov secrets.Provider, out io.Writer) {
+	l, ok := prov.(secrets.Layered)
+	if !ok {
+		return
+	}
+	sharedPath, _, inherited, overridden := l.Layering()
+	if inherited == 0 && overridden == 0 {
+		return
+	}
+	fmt.Fprintf(out, "[secrets] inherited %d value(s) from the primary checkout's store %s\n", inherited, sharedPath)
+	if overridden > 0 {
+		fmt.Fprintf(out, "[secrets] %d value(s) overridden by this worktree's own store\n", overridden)
+	}
 }
 
 // secretRefsFromEntities walks every service's EnvVars and returns the

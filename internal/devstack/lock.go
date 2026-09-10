@@ -24,7 +24,7 @@ const lockRel = ".forge/blocks.lock"
 // serializes nothing: two worktrees claiming their first block would each
 // lock their OWN file and race the shared registry anyway. See repoAnchor.
 func withLock(projectDir string, fn func() error) error {
-	p := filepath.Join(repoAnchor(projectDir), lockRel)
+	p := filepath.Join(RepoAnchor(projectDir), lockRel)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return fmt.Errorf("create .forge dir: %w", err)
 	}

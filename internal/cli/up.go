@@ -767,6 +767,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if err != nil {
 		return fmt.Errorf("secret provider: %w", err)
 	}
+	noteSecretLayering(prov, os.Stderr)
 	dotenvPath := ""
 	if entities.SecretProvider != nil {
 		dotenvPath = entities.SecretProvider.Path

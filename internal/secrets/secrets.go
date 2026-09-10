@@ -66,6 +66,13 @@ type Provider interface {
 type ProviderConfig struct {
 	Type string // "file" | "external"
 	Path string // secret-store file (already resolved to an absolute/project path by caller)
+	// SharedPath is the same store resolved against the repo anchor (the
+	// primary checkout) when Path is inside a LINKED git worktree. It is
+	// the BASE layer: Path overrides it key by key. Empty on the primary
+	// checkout, outside a repo, or when it would equal Path.
+	//
+	// See layeredProvider for why this is a merge and not a fallback.
+	SharedPath string
 }
 
 // NewProvider builds a Provider. cfg==nil -> a noop provider (Kind
@@ -82,17 +89,18 @@ func NewProvider(cfg *ProviderConfig) (Provider, error) {
 	case "external":
 		return externalProvider{}, nil
 	case "file":
-		values, err := ReadSecretFile(cfg.Path)
+		local, err := readStoreAllowingMissing(cfg.Path)
 		if err != nil {
-			// A missing file is non-fatal: ValidateDeclaredRefs reports
-			// the unresolvable refs with a `forge secret set` fix line,
-			// which is far more useful than a bare stat error.
-			if errors.Is(err, os.ErrNotExist) {
-				return fileProvider{values: map[string]string{}, path: cfg.Path}, nil
-			}
-			return nil, fmt.Errorf("load secret file %q: %w", cfg.Path, err)
+			return nil, err
 		}
-		return fileProvider{values: values, path: cfg.Path}, nil
+		if cfg.SharedPath == "" || cfg.SharedPath == cfg.Path {
+			return fileProvider{values: local, path: cfg.Path}, nil
+		}
+		shared, err := readStoreAllowingMissing(cfg.SharedPath)
+		if err != nil {
+			return nil, err
+		}
+		return newLayeredProvider(shared, local, cfg.SharedPath, cfg.Path), nil
 	case "", "none":
 		return noopProvider{}, nil
 	case "dotenv":
@@ -151,6 +159,98 @@ func (f fileProvider) Resolve(name string) (string, bool) {
 }
 
 func (f fileProvider) All() map[string]string { return f.values }
+
+// readStoreAllowingMissing loads a store, treating a MISSING file as empty
+// (the fresh-clone / fresh-worktree case) but an unreadable or malformed
+// one as fatal. A missing store is reported later by ValidateDeclaredRefs,
+// naming the exact keys and the fix — far more useful than a bare stat
+// error at load time.
+func readStoreAllowingMissing(path string) (map[string]string, error) {
+	values, err := ReadSecretFile(path)
+	if err == nil {
+		return values, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]string{}, nil
+	}
+	return nil, fmt.Errorf("load secret file %q: %w", path, err)
+}
+
+// layeredProvider resolves a linked git worktree's secrets from TWO stores:
+// the primary checkout's (shared, the base) with the worktree's own store
+// (local) overriding it PER KEY.
+//
+// WHY THIS EXISTS. The store is gitignored, by design — it holds real
+// credentials. But `git worktree add` only materializes TRACKED files, so
+// every new worktree begins with no store at all and forge fail-fasts on
+// every declared secret_ref. The developer has already set those values;
+// they are simply in the other checkout. That made a new worktree unusable
+// until ~30 `forge secret set` calls had been replayed by hand, which is
+// the same class of bug the port-block registry hit and fixed by anchoring
+// on the primary checkout (see devstack.RepoAnchor).
+//
+// WHY PER-KEY MERGE, NOT WHOLE-FILE FALLBACK. A worktree that wants its
+// own Stripe test account should be able to override THAT ONE KEY and keep
+// inheriting the other twenty-seven. Under whole-file fallback the first
+// `forge secret set` in a worktree creates a one-key file that shadows the
+// shared store entirely, and the remaining secrets break in a way that
+// looks nothing like its cause. Merging makes the override granular and
+// makes `set` safe by construction.
+//
+// The layering applies ONLY to a file provider, which forge already
+// restricts to dev/e2e — it can never affect staging or prod.
+type layeredProvider struct {
+	merged     map[string]string
+	sharedPath string
+	localPath  string
+	inherited  int // keys taken from shared and NOT overridden locally
+	overridden int // keys present in both, where local won
+}
+
+func newLayeredProvider(shared, local map[string]string, sharedPath, localPath string) layeredProvider {
+	merged := make(map[string]string, len(shared)+len(local))
+	for k, v := range shared {
+		merged[k] = v
+	}
+	var overridden int
+	for k, v := range local {
+		if _, inShared := shared[k]; inShared {
+			overridden++
+		}
+		merged[k] = v
+	}
+	return layeredProvider{
+		merged:     merged,
+		sharedPath: sharedPath,
+		localPath:  localPath,
+		inherited:  len(shared) - overridden,
+		overridden: overridden,
+	}
+}
+
+func (l layeredProvider) Kind() string { return "file" }
+
+func (l layeredProvider) Resolve(name string) (string, bool) {
+	v, ok := l.merged[name]
+	return v, ok
+}
+
+func (l layeredProvider) All() map[string]string { return l.merged }
+
+// Layering reports where this provider's values came from, so `forge env up`
+// can say so out loud. Inheriting another directory's credentials silently
+// would be its own surprise — the declared KCL path says "secrets/dev.yaml",
+// and a developer must be able to see when that resolved elsewhere.
+func (l layeredProvider) Layering() (sharedPath, localPath string, inherited, overridden int) {
+	return l.sharedPath, l.localPath, l.inherited, l.overridden
+}
+
+// Layered is implemented by a provider that merged more than one store.
+// Declared at the CONSUMER (the CLI prints the notice) rather than exported
+// as a wide provider interface — Provider stays three methods.
+type Layered interface {
+	Layering() (sharedPath, localPath string, inherited, overridden int)
+}
 
 // ReadSecretFile loads the YAML secret file: a flat mapping of env-var
 // name to value.
@@ -279,12 +379,20 @@ func ValidateDeclaredRefs(p Provider, refs []SecretRef, storePath string) error 
 		return nil
 	}
 	values := p.All()
+	// De-duplicate by env-var NAME. Refs are collected per SERVICE, so a
+	// secret three services declare produced three identical lines — a
+	// project with ten missing secrets reported "28 missing value(s)" and
+	// listed GITHUB_CLIENT_SECRET three times, which reads as a much
+	// bigger problem than it is. The unit a developer acts on is the KEY:
+	// one `forge secret set` fixes every service that declares it.
 	var missing []SecretRef
+	seen := map[string]bool{}
 	for _, r := range refs {
-		if r.EnvName == "" {
+		if r.EnvName == "" || seen[r.EnvName] {
 			continue
 		}
 		if _, ok := values[r.EnvName]; !ok {
+			seen[r.EnvName] = true
 			missing = append(missing, r)
 		}
 	}

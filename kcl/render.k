@@ -949,9 +949,15 @@ _render_operator_manifests = lambda o: Operator, namespace: str, registry: str, 
         + rbac_lib.render_cluster_rbac(o.name, namespace, o.cluster_rbac, pull_secrets, part_of)
 }
 
+# A CronJob's Role carries the rules the schedule DECLARES, on top of the
+# config-read default rbac_lib always adds. The rule list was hardcoded `[]`
+# here, so the Role was emitted and bound but could never grant anything
+# beyond config-read — which made a scheduled sweeper (list + delete against
+# the API server, the textbook cron) inexpressible on this path.
 _render_cronjob_manifests = lambda c: CronJob, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str], part_of: str = "" -> [any] {
     svc_lib.render_cronjob(c, namespace, registry, image_tag, image_digests, part_of) \
-        + rbac_lib.render_namespaced_rbac(c.name, namespace, [], pull_secrets, part_of)
+        + rbac_lib.render_namespaced_rbac(c.name, namespace, \
+            c.namespaced_rbac if c.namespaced_rbac else [], pull_secrets, part_of)
 }
 
 # Render a RuntimeClass as a node.k8s.io/v1 manifest. Cluster-scoped

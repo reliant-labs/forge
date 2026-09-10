@@ -25,6 +25,36 @@ exists to prevent.
   kind = "operator"  manager Deployment + cluster RBAC
   kind = "tool"      built into the image, never scheduled
 
+WHAT EACH KIND CAN EXPRESS
+==========================
+A kind does not merely select an expansion; it decides which fields are
+MEANINGFUL. `forge.workloads` declares that as data — the kind ×
+capability matrix in the forge module's `workloads/capabilities.k` — and
+both the schema checks and the renderers read the same table.
+
+The practical consequence: a field your kind cannot express is REJECTED
+at render time, naming the field and the kind, rather than being
+silently dropped. `replicas` on a cron fails (a CronJob's concurrency is
+concurrencyPolicy, not a replica count); `cluster_rbac` on a worker fails
+and points you at `namespaced_rbac`, or at declaring the workload an
+operator if it genuinely watches cluster-wide.
+
+RBAC is the capability most often needed and most often forgotten. Any
+scheduled kind can ask for in-namespace permission:
+
+    reaper = fw.Workload {
+        name = "reaper"
+        kind = "worker"
+        namespaced_rbac = [
+            {apiGroups = ["example.com"], resources = ["widgets"], verbs = ["list", "watch"]}
+        ]
+    }
+
+Declare nothing and you get a ServiceAccount with no Role and no mounted
+token — the right default, because most workloads never call the
+Kubernetes API and a blanket Role would hand an RCE a credential dump.
+An `operator` uses `cluster_rbac` instead; the two tiers are exclusive.
+
 DECLARE COMPLETE, REFINE PER ENV
 ================================
 Each declaration below is a COMPLETE, valid workload — ports and all —

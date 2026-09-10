@@ -105,17 +105,31 @@ inside a lambda.
 """
 
 import .expand as expand
+import .capabilities as caps
 
 # ---------------------------------------------------------------------------
 # The workload kinds. A kind answers HOW this thing runs — never what
 # language it is in, what code is inside it, or how it was built.
+#
+# WHAT EACH KIND CAN EXPRESS is declared ONCE, as data, in capabilities.k.
+# These lists are derived from that matrix rather than restated, so the
+# question "does a worker get RBAC?" has exactly one answer in exactly one
+# file — and the renderers (expand.k) read the SAME table, which is what
+# makes a capability impossible to wire into the schema and forget in the
+# expansion, or the reverse.
 # ---------------------------------------------------------------------------
 
-# Kinds that render a long-running Deployment.
-DEPLOYMENT_KINDS: [str] = ["service", "worker", "operator"]
-
-# Every valid kind. `tool` is included but renders no workload manifest.
-WORKLOAD_KINDS: [str] = ["service", "worker", "cron", "job", "operator", "tool"]
+# `WORKLOAD_KINDS` (every valid kind — `tool` included, though it renders
+# no manifest) and `DEPLOYMENT_KINDS` (the kinds that render a long-running
+# Deployment) are DEFINED in capabilities.k, derived from the matrix, and
+# referenced qualified from here.
+#
+# They are not re-declared in this file for the same reason `BEFORE_ALL` is
+# not: KCL flattens top-level names across a package for export, so a
+# project still writes the unqualified `fw.WORKLOAD_KINDS` — but a second
+# declaration here would COLLIDE with that one rather than alias it
+# ("Can not change the value of 'WORKLOAD_KINDS', because it was declared
+# immutable").
 
 # The BROADCAST selector for `Workload.before` is `expand.BEFORE_ALL`
 # ("*") — "gate every workload in this environment", as opposed to an
@@ -273,27 +287,59 @@ schema Workload:
     env_vars: [any] = []
     health_check?: any
 
-    # Extra namespaced RBAC rules appended to this workload's forge-
-    # generated Role (lib/rbac.k always grants configmaps/secrets read;
-    # these rules add to that). Same PolicyRule dict shape as the parent
-    # forge package's Service.namespaced_rbac:
-    #   { apiGroups: [...], resources: [...], verbs: [...] }
+    # --- RBAC ---
     #
-    # A `job` is the kind that actually needs this: a one-shot that
-    # CONVERGES state into the cluster — writing a ConfigMap another
-    # workload reads by name, say — needs write access nothing else
-    # here does. `service` / `worker` / `operator` already get a Role
-    # with the default config-read rules via their own expansion; only
-    # `job` had no path to widen its own, because a plain one-shot never
-    # previously needed to touch the Kubernetes API at all. Unset =>
-    # the default config-read rules only, unchanged from before this
-    # field existed.
+    # Two fields, two TIERS, and a workload uses at most one of them. Which
+    # one a kind may use is the capability matrix's call (capabilities.k):
+    # `service` / `worker` / `cron` / `job` take namespaced rules,
+    # `operator` takes cluster rules, `tool` takes neither because it is
+    # never scheduled. Declaring the wrong one for your kind FAILS the
+    # render and names both — see the check block below.
+    #
+    # Both take the same PolicyRule dict shape:
+    #   { apiGroups: [...], resources: [...], verbs: [...] }
+    # and both are ADDITIVE to the default config-read rules forge already
+    # grants (lib/rbac.k). Unset => no Role at all for the namespaced tier
+    # (a bare ServiceAccount: identity, no permission, no mounted token),
+    # which is the right default because most workloads never call the
+    # Kubernetes API — their config arrives as container env, projected at
+    # render time.
+
+    # Namespaced rules — a Role + RoleBinding in the workload's OWN
+    # namespace. What a reconcile loop, a sweeper or a convergence step
+    # needs: in-namespace access this specific workload does, and nothing
+    # else in the namespace should inherit.
+    #
+    # Until the capability matrix existed only `job` could express this,
+    # not because the other kinds did not need it but because nobody had
+    # threaded it through their expansions. A `worker` that reaps stale
+    # custom resources shipped with a ServiceAccount that could not list
+    # them, and the manifests were valid, the Deployment rolled, and the
+    # first sweep failed in production with `cannot list resource
+    # "workspaces" in API group "reliant.dev"`.
     namespaced_rbac: [{str: any}] = []
+
+    # Cluster-scoped rules — a ClusterRole + ClusterRoleBinding. Only
+    # `operator` may set these, because watching resources ACROSS
+    # namespaces is what distinguishes an operator from a service that
+    # happens to read the API.
+    #
+    # The tier is a REPLACEMENT, not an addition: an operator gets a
+    # ClusterRole INSTEAD OF a Role. Emitting both would put two bindings
+    # on one ServiceAccount, where the wider one decides every outcome —
+    # so the narrower Role would describe permissions that are not the
+    # permissions in force, and deleting it would change nothing.
+    #
+    # A `service` that needs cluster scope should be declared
+    # `kind = "operator"`. That is not a workaround: it is what the kind
+    # means, and it also gets you leader election and the CRD wiring, which
+    # a workload watching cluster-wide state almost certainly wants too.
+    cluster_rbac: [{str: any}] = []
 
     check:
         name, "Workload.name is required"
-        kind in WORKLOAD_KINDS, \
-            "Workload.kind must be one of ${WORKLOAD_KINDS} — got '${kind}'. A kind says HOW this runs, not what code is inside it."
+        kind in caps.WORKLOAD_KINDS, \
+            "Workload.kind must be one of ${caps.WORKLOAD_KINDS} — got '${kind}'. A kind says HOW this runs, not what code is inside it."
         replicas > 0, "Workload.replicas must be positive"
 
         # --- cron ---
@@ -324,8 +370,38 @@ schema Workload:
         kind != "operator" or len(crds) > 0, \
             "kind='operator' must list at least one CRD kind in `crds`"
 
-        # --- tool ---
-        # A tool is built into the image and never scheduled, so anything
-        # that only makes sense for a scheduled workload is a mistake.
-        kind != "tool" or len(ports) == 0, \
-            "kind='tool' cannot declare ports — a tool is never scheduled, so nothing can dial it. Use kind='service'."
+        # --- CAPABILITY CHECKS (capabilities.k) ---
+        #
+        # THE POINT OF THESE. A workload that declares something its kind
+        # cannot express used to render successfully and silently drop the
+        # declaration — which is the failure mode the capability matrix
+        # exists to end. A dropped `namespaced_rbac` is a pod that runs
+        # without the permission its author wrote down; a dropped
+        # `replicas = 3` is one replica serving traffic sized for three.
+        # Both look fine in the manifest, because the manifest is the thing
+        # that lost the information.
+        #
+        # So the rule is: if the matrix says this kind cannot express the
+        # capability, REJECT the declaration and say which kind can. Each
+        # message names the field, the kind, and the alternative — the
+        # author knows what they wanted, and the error should tell them
+        # where to put it rather than only that it is not allowed here.
+        #
+        # Every check is written "no declaration OR the kind supports it",
+        # so a workload that declares nothing is unaffected — these can only
+        # fire on an explicit statement of intent.
+
+        len(namespaced_rbac) == 0 or caps.supports(kind, caps.CAP_NAMESPACED_RBAC), \
+            "Workload.namespaced_rbac is not supported for kind='${kind}'. An operator's permissions are CLUSTER-scoped, so an operator uses `cluster_rbac` instead; a tool is never scheduled, so it has no pod to grant permission to (use kind='service' or kind='worker')."
+
+        len(cluster_rbac) == 0 or caps.supports(kind, caps.CAP_CLUSTER_RBAC), \
+            "Workload.cluster_rbac is only supported for kind='operator' — got '${kind}'. Watching resources ACROSS namespaces is what makes a workload an operator. For access within this workload's own namespace use `namespaced_rbac`; if it genuinely watches cluster-wide, declare kind='operator' (which also gets you leader election and CRD wiring)."
+
+        len(ports) == 0 or caps.supports(kind, caps.CAP_PORTS), \
+            "Workload.ports is not supported for kind='${kind}' — a tool is never scheduled and a batch kind (cron/job) runs to completion, so in neither case is there a pod anything can dial. Use kind='service'."
+
+        replicas == 1 or caps.supports(kind, caps.CAP_REPLICAS), \
+            "Workload.replicas is not supported for kind='${kind}' — a tool is never scheduled, and a batch pod's concurrency is a property of the batch object (a CronJob's concurrencyPolicy, a Job's parallelism) rather than a replica count, so k8s has nowhere to put this value."
+
+        len(crds) == 0 or caps.supports(kind, caps.CAP_CRDS), \
+            "Workload.crds is only supported for kind='operator' — got '${kind}'. `crds` names the custom resources a controller-runtime manager owns."

@@ -2406,6 +2406,27 @@ schema CronJob:
     # project on a container the project has no knob to size, which is
     # what happened before this field existed.
     resources?: Resources
+    # Extra namespaced RBAC rules appended to this CronJob's forge-generated
+    # Role — the same PolicyRule dict shape, and the same additive contract,
+    # as `RenderedWorkload.namespaced_rbac`:
+    #   { apiGroups: [...], resources: [...], verbs: [...] }
+    #
+    # This is the BUNDLE path's half of the RBAC gap the workload capability
+    # matrix closes for the expander path (kcl/workloads/capabilities.k). The
+    # two paths are independent — a project either composes agnostic
+    # `forge.Service` / `forge.CronJob` values into a Bundle, or declares
+    # `forge.workloads.Workload`s and renders them through the expander — so
+    # a capability added to one is NOT thereby available in the other, and
+    # this one was missing here for the same reason it was missing on
+    # `worker` there: nobody threaded it through.
+    #
+    # A scheduled sweeper is the case. `_render_cronjob_manifests` already
+    # emitted a Role (via render_namespaced_rbac) and already bound its
+    # ServiceAccount, so the identity and the binding were in place and only
+    # the RULES were unreachable — the Role existed and could never say
+    # anything beyond the config-read default. Unset => exactly that default,
+    # byte-identical to before this field existed.
+    namespaced_rbac?: [{str: any}]
 
     check:
         name, "CronJob.name is required"

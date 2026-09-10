@@ -96,7 +96,14 @@ _workloads = [c | {
     image = "{{.ProjectName}}"
     registry = _registry
     namespace = _namespace
-    replicas = c.replicas if c.replicas > _replicas else _replicas
+    # The floor applies only to kinds that HAVE a replica count. A cron or
+    # a job has none — its concurrency is a property of the batch object
+    # (concurrencyPolicy / parallelism), not a replica field — so applying
+    # the floor to one used to render a value Kubernetes has nowhere to
+    # put. The capability matrix now rejects that outright, which is how
+    # this line came to be conditional rather than blanket.
+    if fw.supports(c.kind, fw.CAP_REPLICAS):
+        replicas = c.replicas if c.replicas > _replicas else _replicas
     resources = _resources
     # `c.config_secrets` is this workload's own declared credential list, so the
     # config projection under it carries only the secretKeyRefs this workload

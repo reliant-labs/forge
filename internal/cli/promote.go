@@ -79,10 +79,12 @@ func runPromote(version, env string) error {
 	if err != nil {
 		return fmt.Errorf("read env-release bindings: %w", err)
 	}
+	sources := resolveReleaseSources(*rel)
 	prev, hadPrev := er.Bindings[env]
 	er.Bindings[env] = EnvBinding{
 		Release:    version,
 		Resolved:   resolved,
+		Sources:    sources,
 		PromotedAt: nowRFC3339(),
 	}
 	if err := WriteEnvReleases(projectDir, *er); err != nil {
@@ -101,6 +103,22 @@ func runPromote(version, env string) error {
 	sort.Strings(images)
 	for _, name := range images {
 		fmt.Printf("  %-20s %s\n", name, resolved[name])
+	}
+	// Source-built frontends print alongside the images: a promotion that
+	// listed only digests read as though the frontend were not part of the
+	// release, which is precisely the impression that let one drift.
+	feNames := make([]string, 0, len(sources))
+	for name := range sources {
+		feNames = append(feNames, name)
+	}
+	sort.Strings(feNames)
+	for _, name := range feNames {
+		src := sources[name]
+		pin := src.Ref
+		if src.Commit != "" {
+			pin = fmt.Sprintf("%s (%s)", src.Ref, shortSHA(src.Commit))
+		}
+		fmt.Printf("  %-20s %s @ %s\n", name, src.Repo, pin)
 	}
 	fmt.Printf("  Binding: %s\n", envReleasesPath(projectDir))
 	fmt.Printf("  Deploy:  forge env deploy %s\n", env)

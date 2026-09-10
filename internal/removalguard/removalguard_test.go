@@ -223,6 +223,12 @@ var removals = []removal{
 				Token: regexp.MustCompile(`(?i)\brbac\b`),
 				Paths: []string{
 					"kcl/",
+					// The template copy of the same deploy surface. The
+					// KCL module under kcl/ and the workload template that
+					// scaffolds a project's deploy/kcl/ are the same
+					// Kubernetes-only prose; scoping to one and not the
+					// other made the guard fail on forge's own scaffold.
+					"internal/templates/deploy/kcl/",
 					"internal/cluster/",
 					"internal/kclrender/",
 					"internal/kclvendor/",

@@ -339,8 +339,6 @@ github.com/prometheus/otlptranslator v1.0.0 h1:s0LJW/iN9dkIH+EnhiD3BlkkP5QVIUVEo
 github.com/prometheus/otlptranslator v1.0.0/go.mod h1:vRYWnXvI6aWGpsdY/mOT/cbeVRBlPWtBNDb7kGR3uKM=
 github.com/prometheus/procfs v0.22.0 h1:6q9+/JL9IKAPbCmBrv9n5O5Ty3NKnciV5X7YGw0oics=
 github.com/prometheus/procfs v0.22.0/go.mod h1:CvmFr/GVhIjIvWJZW3tgkODBQMRIf0EyWMQLHCHab58=
-github.com/reliant-labs/forge/pkg v0.1.11 h1:IzqgWVKky4/mFfJ+yZqU3iGrlPOVSGkcxi55Y/oPXvk=
-github.com/reliant-labs/forge/pkg v0.1.11/go.mod h1:tCmmf+zmc1Z2dsrPWEKkC3ylZ4Rp71xXMvRFyMwpymA=
 github.com/reliant-labs/forge/pkg v0.1.13 h1:8LYeSRthAH82Xe0gpjbBgNRXB+nNNzJheK8wPuyEb7Q=
 github.com/reliant-labs/forge/pkg v0.1.13/go.mod h1:sfx6mK8xPMq8RqvfpkNa3mj4mBp7CDOKaNyTZLmX1QE=
 github.com/robfig/cron/v3 v3.0.1 h1:WdRxkvbJztn8LMz/QEvLN5sBU+xKpSqwwUO1Pjr4qDs=

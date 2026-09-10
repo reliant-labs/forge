@@ -495,6 +495,34 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	skipProjectDocker := targets.skipProjectDocker
 	cfgArchForDocker := targets.cfgArchForDocker
 
+	// Re-render every frontend's runtime config document (public/config.js)
+	// from THIS env's KCL before the frontend build reads it.
+	//
+	// Without this the built image ships whatever config.js happened to be on
+	// disk, and `forge generate` renders that from the DEV environment — so a
+	// `forge build prod` baked DEV's runtime config into the production image.
+	// It hid for a long time in projects whose envs happened to share a
+	// literal (a console whose dev and prod api_url were both
+	// http://localhost:8090); the day they diverge, the image silently keeps
+	// the dev value and the deployed frontend calls the wrong origin, with
+	// nothing in the build output naming the cause.
+	//
+	// `forge env up` already did exactly this for the dev loop. Doing it here
+	// too is what makes "the same bundle can be promoted between environments
+	// by shipping it beside a different copy of this file" true for images as
+	// well as for the dev server.
+	//
+	// Best-effort, matching the env-up path: a render failure warns and the
+	// build proceeds on the existing document rather than failing a build that
+	// would otherwise succeed.
+	if opts.env != "" && len(frontends) > 0 {
+		if changed, ferr := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), opts.env); ferr != nil {
+			fmt.Printf("[build]   Warning: frontend runtime config: %v (building with the previously generated config.js)\n", ferr)
+		} else if changed > 0 {
+			fmt.Printf("[build]   Refreshed %d frontend runtime config(s) from env %q\n", changed, opts.env)
+		}
+	}
+
 	start := time.Now()
 	var results []buildResult
 

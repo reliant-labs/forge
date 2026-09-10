@@ -209,6 +209,7 @@ func resolveClusterName(configPath string) (string, error) {
 // install hint is now emitted ONLY when the binary is genuinely absent.
 func listK3dClusters(ctx context.Context) ([]k3dClusterListEntry, error) {
 	cmd := exec.CommandContext(ctx, "k3d", "cluster", "list", "-o", "json")
+	scrubSubprocessLogEnv(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -224,6 +225,19 @@ func listK3dClusters(ctx context.Context) ([]k3dClusterListEntry, error) {
 	}
 	var entries []k3dClusterListEntry
 	if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+		// Output that does not begin with '[' is almost always diagnostics
+		// interleaved ahead of the JSON by a log-verbosity env var forge did
+		// not scrub. Say so: the raw error names an escape byte
+		// ("invalid character '\x1b'"), which is unactionable on its own.
+		if !strings.HasPrefix(trimmed, "[") {
+			return nil, fmt.Errorf(
+				"parse k3d cluster list output: %w\n"+
+					"k3d wrote non-JSON on stdout — usually a log-verbosity env var it inherited.\n"+
+					"first line: %s\n"+
+					"fix: unset the variable (LOG_LEVEL / K3D_LOG_LEVEL / DEBUG) for this shell,\n"+
+					"     or report it so forge scrubs that name too (internal/cli/subprocess_env.go)",
+				err, firstLine(trimmed))
+		}
 		return nil, fmt.Errorf("parse k3d cluster list output: %w", err)
 	}
 	return entries, nil

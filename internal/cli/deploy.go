@@ -1882,7 +1882,9 @@ func gitShortSHA(ctx context.Context) (string, error) {
 
 func ensureDevCluster(ctx context.Context) error {
 	fmt.Println("Checking k3d cluster...")
-	out, err := exec.CommandContext(ctx, "k3d", "cluster", "list", "-o", "json").Output()
+	listCmd := exec.CommandContext(ctx, "k3d", "cluster", "list", "-o", "json")
+	scrubSubprocessLogEnv(listCmd)
+	out, err := listCmd.Output()
 	if err != nil {
 		return fmt.Errorf("k3d not available: %w\nInstall k3d: https://k3d.io", err)
 	}
@@ -2608,6 +2610,7 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 	if err != nil {
 		return fmt.Errorf("secret provider: %w", err)
 	}
+	noteSecretLayering(prov, os.Stderr)
 	// Fail-fast: declared cluster refs must resolve (no-op for
 	// external/none).
 	dotenvPath := ""

@@ -204,10 +204,21 @@ func liveWorktreeRoots(projectDir string) ([]string, error) {
 	return roots, nil
 }
 
-// repoAnchor returns the directory the block registry and its lock live
-// under: the PRIMARY checkout's working tree, shared by every linked
+// RepoAnchor returns the directory machine-local, developer-scoped state
+// lives under: the PRIMARY checkout's working tree, shared by every linked
 // worktree of the same repo. Outside a git repo it returns projectDir
-// unchanged, so a non-repo scaffold keeps a local registry exactly as before.
+// unchanged, so a non-repo scaffold keeps that state local exactly as before.
+//
+// Two consumers share this anchor, for the same underlying reason — both
+// hold state that is gitignored (so `git worktree add` never materializes
+// it) but machine-scoped rather than checkout-scoped:
+//
+//   - the port-block registry (blocks.go), because a block is a claim
+//     against a machine-wide resource; see the argument below.
+//   - the dev secret store (internal/secrets), because a fresh worktree
+//     would otherwise start with NO values and fail every declared
+//     secret_ref, even though the developer set them all in the primary
+//     checkout an hour earlier.
 //
 // WHY THE REGISTRY CANNOT BE PER-WORKTREE. A block is only meaningful as a
 // claim against a machine-wide resource: block N means "host ports base+N*100
@@ -231,7 +242,7 @@ func liveWorktreeRoots(projectDir string) ([]string, error) {
 // PARENT is the primary working tree. That is the same authoritative
 // distinction Worktree() uses, so the two can never disagree about which
 // checkout is primary.
-func repoAnchor(projectDir string) string {
+func RepoAnchor(projectDir string) string {
 	commonDir := gitOut(projectDir, "rev-parse", "--git-common-dir")
 	if commonDir == "" {
 		return projectDir // not a git checkout — keep the registry local

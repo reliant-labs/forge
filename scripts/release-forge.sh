@@ -371,6 +371,33 @@ if ! GIT_CONFIG_COUNT=1 \
   exit 1
 fi
 
+# ── 8b. Drop the SUPERSEDED forge/pkg hashes ────────────────────────
+# Step 8 ADDS the new version's hashes but leaves the previous version's
+# behind, because `go mod download` only ever appends. Nothing in the root
+# module requires the old forge/pkg any more, so `forge generate` (which runs
+# a tidy) prunes those lines — and CI's "Verify Generated Code" then sees
+# go.sum move and fails the build on the very next PR.
+#
+# That has now happened on three consecutive releases (v0.1.11 stale after
+# v0.1.13, v0.1.13 stale after v0.1.14), each time surfacing as a confusing
+# red check on an unrelated PR rather than on the release itself. Pruning here
+# means the release commit leaves go.sum in the state a tidy would produce.
+#
+# Deliberately narrow: only forge/pkg lines whose version is NOT the one being
+# released. A general `go mod tidy` here would also rewrite third-party
+# requirements as a side effect of cutting a release, which is not this
+# script's job.
+if [ -f go.sum ] && grep -q "^$PKG_MODULE " go.sum; then
+  STALE_PKG="$(grep "^$PKG_MODULE " go.sum | grep -cv "^$PKG_MODULE $VERSION" || true)"
+  if [ -n "$STALE_PKG" ] && [ "$STALE_PKG" -gt 0 ]; then
+    echo "→ pruning $STALE_PKG superseded $PKG_MODULE go.sum line(s)"
+    grep -v "^$PKG_MODULE " go.sum > go.sum.tmp || true
+    grep "^$PKG_MODULE $VERSION" go.sum >> go.sum.tmp || true
+    LC_ALL=C sort -o go.sum.tmp go.sum.tmp
+    mv go.sum.tmp go.sum
+  fi
+fi
+
 # ── 9. Assert the hashes actually landed ────────────────────────────
 # The check the old flow lacked entirely. Without it, a silently-skipped
 # resolution ships a root module whose go.sum cannot verify forge/pkg, and the

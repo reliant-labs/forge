@@ -1506,16 +1506,15 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 		if st == nil {
 			continue
 		}
-		// Stale-image guard: the recorded build may be from an older
-		// commit than the one currently checked out. Deploying it would
-		// silently ship code the user already moved past — a real-money
-		// footgun on prod. When the working tree is CLEAN and the build's
-		// source commit differs from HEAD, refuse by default and point at
-		// the two escape hatches (rebuild, or --tag to deploy the recorded
-		// tag anyway). Dirty trees skip this check: there's no single HEAD
-		// the build can be "behind," and warnIfNonReproducible already
-		// flags the dirty build.
-		if serr := checkBuildStateFreshness(ctx, projectDir, st); serr != nil {
+		// Stale-image guard: the recorded build may be from a different
+		// commit than the one this env is supposed to be running. Deploying
+		// it would silently ship code the user already moved past — a
+		// real-money footgun on prod. The comparison is anchored to the
+		// bound RELEASE's commit when the env has one, and to git HEAD
+		// otherwise (see resolveFreshnessAnchor); envName is what selects
+		// between them. Refuse by default and point at the two escape
+		// hatches (rebuild, or --tag to deploy the recorded tag anyway).
+		if serr := checkBuildStateFreshness(ctx, projectDir, envName, st); serr != nil {
 			return "", "", "", serr
 		}
 		warnIfNonReproducible(st)
@@ -1702,46 +1701,123 @@ func buildStateLookupEnvs(envName string) []string {
 	return []string{envName, "default"}
 }
 
-// checkBuildStateFreshness refuses to deploy a build whose recorded
-// source commit is behind the current git HEAD, so `forge env deploy` never
-// silently ships a stale image after a fresh commit/push (fr-02d44d2b03).
+// freshnessAnchor is the commit a recorded build is measured against by
+// checkBuildStateFreshness, plus enough provenance to say so out loud. The
+// anchor is NOT always HEAD — see resolveFreshnessAnchor.
+type freshnessAnchor struct {
+	// Commit is the full sha the build's recorded commit must match.
+	Commit string
+	// Release is the version label when the anchor came from a release
+	// ledger, empty when the anchor is HEAD.
+	Release string
+}
+
+// describe renders the anchor for an error message. Naming WHAT was compared
+// against — not just the sha — is the difference between an operator fixing
+// the build and an operator guessing which of two plausible commits forge
+// meant.
+func (a freshnessAnchor) describe() string {
+	if a.Release != "" {
+		return fmt.Sprintf("release %q was cut from %s", a.Release, shortSHA(a.Commit))
+	}
+	return fmt.Sprintf("HEAD is %s", shortSHA(a.Commit))
+}
+
+// remedy is the rebuild instruction that matches the anchor: a release-bound
+// env must rebuild the RELEASE (so the ledger's digests and the images agree
+// again), where an unbound env just rebuilds from HEAD.
+func (a freshnessAnchor) remedy(envName string) string {
+	if a.Release != "" {
+		return fmt.Sprintf("rebuild the release (forge build %s --release %s --push <registry>), then re-promote and deploy", envName, a.Release)
+	}
+	return "rebuild from HEAD (forge build --docker ...), then deploy"
+}
+
+// resolveFreshnessAnchor picks the commit a recorded build must match to be
+// considered current for this env, and reports whether staleness can be
+// proven at all.
 //
-// The check fires ONLY when all of these hold, to keep it a precise
-// footgun-guard rather than a nag:
+// THE ANCHOR IS THE RELEASE'S COMMIT WHEN THE ENV IS BOUND TO A RELEASE.
+// This is the correctness fix for a false refusal that made every
+// release-ledger deploy require `--tag`: a release records `git.commit` — the
+// commit its images were ACTUALLY built from — and then CUTTING the ledger
+// adds one more commit on top of it. HEAD is therefore legitimately ahead of
+// the images by the ledger commit itself, and comparing against HEAD refused a
+// deploy that was exactly right. The release record is the honest anchor: the
+// question "is this image stale?" means "was it built from something other
+// than what this release claims", not "was it built from the newest commit in
+// my working tree".
 //
-//   - The build recorded a source commit (st.Commit non-empty). Older
-//     state files predating commit-stamping skip the check.
-//   - There are no uncommitted changes to TRACKED files. Such a tree
-//     has no single HEAD the build can be measured against, so the
-//     comparison would be meaningless (warnIfNonReproducible covers the
-//     dirty-build reproducibility angle separately). Untracked files
-//     (editor dirs, build artifacts, gitignored caches) are deliberately
-//     ignored — they don't change which commit HEAD points at, and a
-//     stray `.idea/` directory must not silently disable a real-money
-//     stale-deploy guard.
-//   - HEAD is resolvable and differs from st.Commit.
+// When the env is bound to a release, that release is the ONLY valid anchor —
+// if it can't be read (missing/corrupt ledger, no recorded commit), this
+// reports enforce=false rather than silently falling back to HEAD, because
+// falling back is precisely the false refusal above.
 //
-// Escape hatch: pass `--tag <tag>` to deploy a specific tag directly —
-// that path bypasses build-state (and therefore this check) entirely.
-// Git being unavailable is treated as "can't prove staleness" → allow.
-func checkBuildStateFreshness(ctx context.Context, projectDir string, st *BuildState) error {
-	if st == nil || st.Commit == "" {
-		return nil
+// Unbound envs keep the original HEAD comparison, which fires only when:
+//
+//   - HEAD is resolvable, and
+//   - there are no uncommitted changes to TRACKED files. Such a tree has no
+//     single HEAD the build can be measured against, so the comparison would
+//     be meaningless (warnIfNonReproducible covers the dirty-build
+//     reproducibility angle separately). Untracked files (editor dirs, build
+//     artifacts, gitignored caches) are deliberately ignored — they don't
+//     change which commit HEAD points at, and a stray `.idea/` directory must
+//     not silently disable a real-money stale-deploy guard.
+//
+// A release-anchored comparison needs no git at all: it is ledger-vs-ledger,
+// so it stays correct in a dirty tree, in CI, and on a detached checkout.
+func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (freshnessAnchor, bool) {
+	binding, bound, err := boundReleaseForEnv(projectDir, envName)
+	if err != nil {
+		// Unreadable binding ledger — can't prove anything. The real error
+		// surfaces from resolveDeployDigests with a better message.
+		return freshnessAnchor{}, false
+	}
+	if bound && binding.Release != "" {
+		rel, rerr := ReadRelease(projectDir, binding.Release)
+		if rerr != nil || rel == nil || rel.Git.Commit == "" {
+			return freshnessAnchor{}, false
+		}
+		return freshnessAnchor{Commit: rel.Git.Commit, Release: binding.Release}, true
 	}
 	head, clean, ok := gitHEADAndClean(ctx, projectDir)
 	if !ok || !clean {
-		// No HEAD to compare against, or a dirty tree (handled by the
-		// dirty warning) — don't block.
+		return freshnessAnchor{}, false
+	}
+	return freshnessAnchor{Commit: head}, true
+}
+
+// checkBuildStateFreshness refuses to deploy a build whose recorded source
+// commit does not match the commit this env is supposed to be running, so
+// `forge env deploy` never silently ships a stale image after a fresh
+// commit/push (fr-02d44d2b03).
+//
+// What "supposed to be running" means is resolveFreshnessAnchor's job: the
+// bound release's commit for a release-bound env, otherwise git HEAD.
+//
+// The check fires ONLY when both hold, to keep it a precise footgun-guard
+// rather than a nag:
+//
+//   - The build recorded a source commit (st.Commit non-empty). Older state
+//     files predating commit-stamping skip the check.
+//   - An anchor is resolvable (see resolveFreshnessAnchor). "Can't prove
+//     staleness" always resolves to allow.
+//
+// Escape hatch: pass `--tag <tag>` to deploy a specific tag directly — that
+// path bypasses build-state (and therefore this check) entirely.
+func checkBuildStateFreshness(ctx context.Context, projectDir, envName string, st *BuildState) error {
+	if st == nil || st.Commit == "" {
 		return nil
 	}
-	if head == st.Commit {
+	anchor, enforce := resolveFreshnessAnchor(ctx, projectDir, envName)
+	if !enforce || anchor.Commit == st.Commit {
 		return nil
 	}
 	return fmt.Errorf(
-		"refusing to deploy stale image: tag %q was built from %s, but HEAD is %s.\n"+
-			"  The recorded build predates your current commit — deploying it would ship old code.\n"+
-			"  Fix: rebuild from HEAD (forge build --docker ...), then deploy; or pass --tag %s to deploy the recorded image anyway",
-		st.Tag, shortSHA(st.Commit), shortSHA(head), st.Tag)
+		"refusing to deploy stale image: tag %q was built from %s, but %s.\n"+
+			"  The recorded build does not match the commit this env should be running — deploying it would ship the wrong code.\n"+
+			"  Fix: %s; or pass --tag %s to deploy the recorded image anyway",
+		st.Tag, shortSHA(st.Commit), anchor.describe(), anchor.remedy(envName), st.Tag)
 }
 
 // gitHEADAndClean returns the current HEAD commit, whether the working

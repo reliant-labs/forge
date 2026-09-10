@@ -213,3 +213,187 @@ func TestResolveDeployImageTag_NoCommitSkipsFreshnessCheck(t *testing.T) {
 		t.Fatalf("tag = %q, want legacy", tag)
 	}
 }
+
+// bindEnvToRelease writes both halves of a release-bound env: the release
+// ledger (which records the commit the images were built from) and the
+// env→release binding. This is the state a real `forge build --release` +
+// `forge env promote` pair leaves behind.
+func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
+	t.Helper()
+	if err := WriteRelease(dir, Release{
+		Version:   version,
+		Git:       ReleaseGit{Commit: builtCommit, Tag: version},
+		CreatedAt: nowRFC3339(),
+		Artifacts: map[string]ReleaseArtifact{
+			"app": {Mode: "shared", Digests: map[string]string{sharedVariantKey: sha("a")}},
+		},
+	}); err != nil {
+		t.Fatalf("write release: %v", err)
+	}
+	er, err := ReadEnvReleases(dir)
+	if err != nil {
+		t.Fatalf("read env releases: %v", err)
+	}
+	er.Bindings[envName] = EnvBinding{
+		Release:    version,
+		Resolved:   map[string]string{"app": sha("a")},
+		PromotedAt: nowRFC3339(),
+	}
+	if err := WriteEnvReleases(dir, *er); err != nil {
+		t.Fatalf("write env releases: %v", err)
+	}
+}
+
+// TestResolveDeployImageTag_ReleaseCommitAllowsHEADAhead is the incident
+// this fix exists for. Cutting a release ledger adds a commit ON TOP of the
+// commit the images were built from, so HEAD is legitimately one ahead of a
+// perfectly current release — and comparing against HEAD refused a deploy
+// that was exactly right, forcing --tag every single time.
+//
+// The images match the release's recorded commit, so this MUST be allowed.
+func TestResolveDeployImageTag_ReleaseCommitAllowsHEADAhead(t *testing.T) {
+	dir := newGitRepo(t)
+	gitignoreForgeState(t, dir)
+
+	// The images were built here...
+	builtCommit := gitHeadSHA(t, dir)
+	// ...and then cutting the release ledger advanced HEAD past them.
+	gitCommitEmpty(t, dir, "chore: release v1.4.0")
+	headAfterLedger := gitHeadSHA(t, dir)
+	if headAfterLedger == builtCommit {
+		t.Fatal("precondition: HEAD should have advanced past the build commit")
+	}
+
+	bindEnvToRelease(t, dir, "prod", "v1.4.0", builtCommit)
+	if err := WriteBuildState(dir, "prod", BuildState{
+		Tag: "ship-20260909-192914", Image: "app", Commit: builtCommit, GitTag: "v1.4.0",
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	tag, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err != nil {
+		t.Fatalf("image built from the bound release's commit must deploy without --tag, got: %v", err)
+	}
+	if tag != "ship-20260909-192914" {
+		t.Fatalf("tag = %q, want ship-20260909-192914", tag)
+	}
+}
+
+// TestResolveDeployImageTag_ReleaseCommitStillRefusesOlderImage: anchoring
+// to the release must not defang the guard. An image built BEFORE the
+// release it claims to be is genuinely stale and must still refuse — even
+// though (unlike the case above) nothing about HEAD is involved.
+func TestResolveDeployImageTag_ReleaseCommitStillRefusesOlderImage(t *testing.T) {
+	dir := newGitRepo(t)
+	gitignoreForgeState(t, dir)
+
+	olderCommit := gitHeadSHA(t, dir)
+	gitCommitEmpty(t, dir, "work that went into the release")
+	releaseCommit := gitHeadSHA(t, dir)
+	gitCommitEmpty(t, dir, "chore: release v1.4.0")
+
+	bindEnvToRelease(t, dir, "prod", "v1.4.0", releaseCommit)
+	// The build state records an image from BEFORE the release's commit.
+	if err := WriteBuildState(dir, "prod", BuildState{
+		Tag: "stale-build", Image: "app", Commit: olderCommit, GitTag: "v1.3.0",
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err == nil {
+		t.Fatal("an image older than the release it claims to be is stale; expected refusal")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "stale") {
+		t.Fatalf("expected a stale refusal, got: %v", err)
+	}
+	// The message must name WHAT it compared against, so the next operator
+	// is not guessing between HEAD and the release commit.
+	if !strings.Contains(msg, "v1.4.0") || !strings.Contains(msg, shortSHA(releaseCommit)) {
+		t.Fatalf("refusal must name the release and its commit; got: %v", msg)
+	}
+	if !strings.Contains(msg, shortSHA(olderCommit)) {
+		t.Fatalf("refusal must name the image's build commit; got: %v", msg)
+	}
+}
+
+// TestResolveDeployImageTag_ReleaseAnchorIgnoresDirtyTree: a release-anchored
+// comparison is ledger-vs-ledger and needs no git state at all, so it stays
+// correct in a dirty tree — where the HEAD-anchored path deliberately
+// stands down. A stale image is caught even mid-edit.
+func TestResolveDeployImageTag_ReleaseAnchorIgnoresDirtyTree(t *testing.T) {
+	dir := newGitRepo(t)
+	gitignoreForgeState(t, dir)
+	olderCommit := gitHeadSHA(t, dir)
+	gitCommitEmpty(t, dir, "release work")
+	releaseCommit := gitHeadSHA(t, dir)
+
+	bindEnvToRelease(t, dir, "prod", "v1.4.0", releaseCommit)
+	if err := WriteBuildState(dir, "prod", BuildState{Tag: "stale-build", Commit: olderCommit}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	// Dirty a TRACKED file — irrelevant to a release-anchored comparison.
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("mid-edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err == nil {
+		t.Fatal("release-anchored staleness does not depend on the working tree; expected refusal")
+	}
+	if !strings.Contains(err.Error(), "v1.4.0") {
+		t.Fatalf("expected a release-anchored refusal, got: %v", err)
+	}
+}
+
+// TestResolveDeployImageTag_ReleaseWithoutCommitSkipsCheck: a release ledger
+// cut on a non-git tree records no commit. There is then no anchor the
+// build can be measured against — and falling back to HEAD is exactly the
+// false refusal this fix removes — so the guard stands down.
+func TestResolveDeployImageTag_ReleaseWithoutCommitSkipsCheck(t *testing.T) {
+	dir := newGitRepo(t)
+	gitignoreForgeState(t, dir)
+	builtCommit := gitHeadSHA(t, dir)
+	gitCommitEmpty(t, dir, "chore: release v1.4.0")
+
+	// Release ledger with NO recorded git commit.
+	bindEnvToRelease(t, dir, "prod", "v1.4.0", "")
+	if err := WriteBuildState(dir, "prod", BuildState{Tag: "ship-1", Commit: builtCommit, GitTag: "v1.4.0"}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	tag, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err != nil {
+		t.Fatalf("commit-less release must not fall back to a HEAD comparison, got: %v", err)
+	}
+	if tag != "ship-1" {
+		t.Fatalf("tag = %q, want ship-1", tag)
+	}
+}
+
+// TestResolveDeployImageTag_UnboundEnvStillUsesHEAD: an env with no release
+// binding keeps the original HEAD-anchored behaviour, and its message names
+// HEAD as what it compared against.
+func TestResolveDeployImageTag_UnboundEnvStillUsesHEAD(t *testing.T) {
+	dir := newGitRepo(t)
+	gitignoreForgeState(t, dir)
+	builtCommit := gitHeadSHA(t, dir)
+	gitCommitEmpty(t, dir, "fix shipped after last build")
+	head := gitHeadSHA(t, dir)
+
+	// A release exists and is bound to a DIFFERENT env — prod is unbound.
+	bindEnvToRelease(t, dir, "staging", "v1.4.0", builtCommit)
+	if err := WriteBuildState(dir, "prod", BuildState{Tag: "v0.1.0", Commit: builtCommit, GitTag: "v0.1.0"}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err == nil {
+		t.Fatal("unbound env must still be measured against HEAD; expected refusal")
+	}
+	if !strings.Contains(err.Error(), "HEAD is "+shortSHA(head)) {
+		t.Fatalf("unbound refusal must name HEAD as the anchor; got: %v", err)
+	}
+}

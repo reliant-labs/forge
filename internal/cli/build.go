@@ -363,15 +363,21 @@ type buildResult struct {
 	image string
 }
 
-func runBuild(ctx context.Context, opts buildOptions) error {
+// prepareBuild runs the three setup steps every build needs before it can
+// reason about targets: load the project config, bind the render options, and
+// make sure generated code is fresh.
+//
+// Extracted from runBuild purely to keep that function under the funlen limit.
+// It is a prologue, not an abstraction — the steps are ordered and each one's
+// failure aborts the build.
+func prepareBuild(opts buildOptions) (*config.ProjectConfig, error) {
 	store, err := loadProjectStore()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cfg := store.Config()
 
 	if err := bindBuildRenderOptions(opts); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Ensure generated code exists / is fresh before any `go build`.
@@ -380,6 +386,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// on staleness so the steady-state loop pays nothing; --no-generate
 	// opts out. See ensureGeneratedCode.
 	if err := ensureGeneratedCode(projectDirForKCL(), opts.skipGenerate); err != nil {
+		return nil, err
+	}
+
+	return store.Config(), nil
+}
+
+func runBuild(ctx context.Context, opts buildOptions) error {
+	cfg, err := prepareBuild(opts)
+	if err != nil {
 		return err
 	}
 

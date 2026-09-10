@@ -337,15 +337,15 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 
 	seam := codegen.CRUDAuthSeam()
 	details := map[string]any{
-		"authenticated_rpcs":          authTotal,
-		"scoped_rpcs":                 scopedTotal,
-		"unscoped_rpcs":               unscoped,
+		"authenticated_rpcs":         authTotal,
+		"scoped_rpcs":                scopedTotal,
+		"unscoped_rpcs":              unscoped,
 		"owner_scoped_unscoped_rpcs": gating,
 		"owner_scoped_tables":        sortedKeys(ownerTables),
 		"owner_marker":               schemadef.ColumnMarkerOwner,
-		"acknowledged_rpcs":           acknowledged,
-		"auth_seam":                   seam,
-		"acknowledge_marker":          AuthUnscopedOKDirective,
+		"acknowledged_rpcs":          acknowledged,
+		"auth_seam":                  seam,
+		"acknowledge_marker":         AuthUnscopedOKDirective,
 		"hint": fmt.Sprintf(
 			"resolve the caller with %s(ctx) and scope what the handler touches to those claims; "+
 				"if an RPC is intentionally global, say so in code above it with `// %s <reason>`",

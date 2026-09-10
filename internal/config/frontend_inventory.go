@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 )
 
@@ -262,13 +263,97 @@ func DiscoverInRepoFrontends(projectDir string) []FrontendConfig {
 			continue
 		}
 		out = append(out, FrontendConfig{
-			Name: e.Name(),
-			Type: feType,
+			Name:     e.Name(),
+			Type:     feType,
+			BasePath: basePathFromNextConfig(filepath.Join(projectDir, rel)),
 		}.WithDir(filepath.ToSlash(rel)))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
+
+// basePathFromNextConfig recovers a Next.js frontend's mount prefix from
+// its own next.config.ts when forge.yaml does not declare one.
+//
+// # The bug this closes
+//
+// BasePath fed two generated artifacts that MUST agree, and a discovered
+// frontend supplied neither of them a value:
+//
+//	next.config.ts           basePath = env ?? "/internal"   (user-owned, correct)
+//	src/lib/basepath_gen.ts  createBasePath(env ?? "")       (forge-owned, EMPTY)
+//
+// An undeclared prefix therefore did not fail — it produced a HALF-PREFIXED
+// app. Next served routes and assets under the prefix from its own config,
+// while forge's joinBasePath() became a no-op, so every hand-built URL lost
+// the prefix. The casualty is the runtime config document: a scaffolded
+// layout writes <script src={joinBasePath("/config.js")}>, which rendered as
+// "/config.js" and 404'd against a file living at "/internal/config.js".
+// window.__FORGE_CONFIG__ then never existed, every runtime value silently
+// fell back to its schema default, and the app called whatever API origin
+// that default happened to name.
+//
+// Measured on control-plane's operator console: the deployed frontend dialed
+// the API's DEV origin and every request died on CORS — which reads as a
+// backend CORS misconfiguration and is actually this. The generated helper
+// and the generated next.config disagreeing about the same value is a defect
+// forge can see and must not emit.
+//
+// # Why next.config.ts is the right source
+//
+// Because it is where the value already IS. A project that declares its
+// frontends in KCL rather than forge.yaml (a deploy-topology-first layout,
+// which forge explicitly supports — see DiscoverInRepoFrontends) has no
+// forge.yaml frontend entry to carry base_path, but its next.config.ts
+// necessarily states the prefix or Next could not serve the app at all.
+// Reading it back makes the two generated files agree by construction
+// instead of by the user remembering to state the prefix twice.
+//
+// forge.yaml ALWAYS wins when it declares base_path: this runs only on the
+// discovery path, which is by definition the case where forge.yaml said
+// nothing. Returns "" for a frontend served from the root, an unreadable
+// config, or a prefix forge cannot parse — the previous behaviour, so a
+// frontend this cannot read is no worse off than before.
+func basePathFromNextConfig(feDir string) string {
+	for _, name := range []string{"next.config.ts", "next.config.js", "next.config.mjs"} {
+		body, err := os.ReadFile(filepath.Join(feDir, name))
+		if err != nil {
+			continue
+		}
+		if m := nextConfigBasePathRE.FindSubmatch(body); m != nil {
+			candidate := string(m[1])
+			// Validate rather than trust: this value is written into
+			// generated TypeScript, and the shape rules are the same ones
+			// forge.yaml's base_path is held to. A malformed prefix is
+			// dropped, not propagated. An empty fallback is the legitimate
+			// root-served case and is returned as-is.
+			if candidate == "" {
+				return ""
+			}
+			if _, ok := ValidateBasePath(candidate); ok {
+				return candidate
+			}
+		}
+		// The config exists but names no parsable prefix — root-served, or
+		// a shape forge does not model. Either way, stop: a second config
+		// file for the same frontend would be a different framework's.
+		return ""
+	}
+	return ""
+}
+
+// nextConfigBasePathRE matches the scaffolded declaration
+//
+//	const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "/prefix";
+//
+// which is the line forge's own next.config.ts template emits, and which
+// warnIfNextConfigIgnoresBasePath already relies on being present. Only the
+// literal fallback is read — the env var is a RUNTIME override and cannot be
+// resolved at generate time, which is the same reason it must be baked at
+// build time for the browser bundle. Both quote styles are accepted because
+// a formatter may rewrite them.
+var nextConfigBasePathRE = regexp.MustCompile(
+	`(?m)^\s*const\s+basePath\s*=\s*process\.env\.NEXT_PUBLIC_BASE_PATH\s*\?\?\s*["']([^"']*)["']`)
 
 // frontendTypeFromMarkers identifies a frontend's kind by the config file
 // its framework requires, and returns "" for a directory that is not a
@@ -311,7 +396,17 @@ func DeriveFrontendsFromKCL(projectDir string, kcl []KCLFrontend) []FrontendConf
 			continue
 		}
 		dir, _ := fe.InRepoDir(projectDir)
-		byName[fe.Name] = FrontendConfig{Name: fe.Name, Type: fe.Type}.WithDir(dir)
+		// BasePath is recovered from the frontend's own next.config.ts for
+		// the same reason the filesystem-discovery path does it: a KCL
+		// declaration carries deploy topology and has no base_path field,
+		// so without this a KCL-declared frontend generates a
+		// basepath_gen.ts that contradicts the next.config.ts sitting
+		// beside it. See basePathFromNextConfig for what that breaks.
+		byName[fe.Name] = FrontendConfig{
+			Name:     fe.Name,
+			Type:     fe.Type,
+			BasePath: basePathFromNextConfig(filepath.Join(projectDir, dir)),
+		}.WithDir(dir)
 	}
 	if len(byName) == 0 {
 		return nil

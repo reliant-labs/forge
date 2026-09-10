@@ -28,12 +28,17 @@
 # entirely: either the whole release lands or none of it does.
 #
 # Usage:
-#   scripts/release-forge.sh [--dry-run] [--repo <dir>] [--branch <name>] vX.Y.Z
+#   scripts/release-forge.sh [--dry-run] [--repo <dir>] [--branch <name>]
+#                            [--skip-proxy-check] vX.Y.Z
 #
 #   --dry-run     run every validation and every file edit, print the plan,
 #                 then RESTORE the working tree and create no commit or tag.
 #   --repo DIR    operate on DIR instead of the enclosing git repo (tests).
 #   --branch NAME the branch to push (default: main).
+#   --skip-proxy-check
+#                 skip the immutable-version gate (step 5). Only for an
+#                 offline release where you have verified BY HAND that the
+#                 version has never been published. See that step's comment.
 #
 # scripts/release-pkg.sh still works and still tags pkg/ alone. It is the
 # narrow tool; this is the one to reach for. See docs/releasing.md.
@@ -43,15 +48,20 @@ DRY_RUN=0
 REPO_ROOT=""
 BRANCH="main"
 VERSION=""
+SKIP_PROXY_CHECK=0
+# Overridable so the tests can point the check at a local fixture server
+# instead of the public proxy; nothing else should set it.
+PROXY_BASE="${FORGE_RELEASE_PROXY_BASE:-https://proxy.golang.org}"
 
 usage() {
-  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] vX.Y.Z" >&2
+  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--skip-proxy-check] vX.Y.Z" >&2
   exit 2
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
+    --skip-proxy-check) SKIP_PROXY_CHECK=1; shift ;;
     --repo)    [ $# -ge 2 ] || usage; REPO_ROOT="$2"; shift 2 ;;
     --branch)  [ $# -ge 2 ] || usage; BRANCH="$2"; shift 2 ;;
     -h|--help) usage ;;
@@ -127,7 +137,121 @@ for tag in "$PKG_TAG" "$ROOT_TAG"; do
   fi
 done
 
-# ── 5. Standalone build validation ──────────────────────────────────
+# ── 5. The version must not already be PUBLISHED at another commit ──
+# proxy.golang.org is IMMUTABLE. Once it has served a version, that content is
+# permanent: deleting the tag and re-cutting it at a different commit does
+# NOT change what the proxy serves, and there is no way to correct it. The
+# version is burned forever.
+#
+# This really happened. pkg/v0.1.12 was tagged, published, deleted, and
+# re-cut elsewhere; the proxy still serves the first tree, which does not
+# compile. The symptom is maddening from inside the repo — `git show <tag>`
+# plainly contains your code while every consumer gets the old bytes — so the
+# gate belongs HERE, before a tag exists, not in the debugging afterwards.
+#
+# Step 4 only sees LOCAL tags, and the poisoning case is precisely the one
+# where the local tag was deleted. Only the proxy knows.
+#
+# A network failure must NOT pass this check. "The proxy said 404" and "curl
+# could not reach the proxy" are the same empty output and must never be
+# conflated, so curl's exit status is inspected before its body: unreachable
+# is a hard error, and --skip-proxy-check is the only way past it.
+proxy_published_commit() {
+  # Echoes the published commit hash, or nothing if the version is unpublished.
+  # Exits 1 (with a diagnosis on stderr) if the proxy could not be consulted.
+  local module="$1" version="$2" body http_code curl_status hash
+  # -sS keeps the progress meter off but lets curl's own diagnosis reach
+  # stderr, which is worth more than the exit code alone when this fails.
+  body="$(curl -sS -w '\n%{http_code}' --max-time 30 \
+    "$PROXY_BASE/$module/@v/$version.info")" && curl_status=0 || curl_status=$?
+
+  if [ "$curl_status" -ne 0 ]; then
+    echo "error: could not reach the Go module proxy to check whether $version is already published" >&2
+    echo "       (curl exited $curl_status for $PROXY_BASE/$module/@v/$version.info)" >&2
+    echo "hint: this check is NOT optional — publishing over an existing version is" >&2
+    echo "      unrecoverable, so a proxy it cannot read is a hard stop. Fix the" >&2
+    echo "      network, or pass --skip-proxy-check if you have verified BY HAND" >&2
+    echo "      that $version has never been published." >&2
+    return 1
+  fi
+
+  http_code="$(printf '%s' "$body" | tail -n 1)"
+  body="$(printf '%s' "$body" | sed '$d')"
+
+  case "$http_code" in
+    404|410)
+      # The proxy is authoritative that this version does not exist. Free.
+      return 0 ;;
+    200)
+      ;;
+    *)
+      echo "error: the Go module proxy returned HTTP $http_code for $module@$version" >&2
+      echo "       $body" >&2
+      echo "hint: this check cannot be answered, and publishing over an existing" >&2
+      echo "      version is unrecoverable. Retry, or pass --skip-proxy-check if" >&2
+      echo "      you have verified BY HAND that $version has never been published." >&2
+      return 1 ;;
+  esac
+
+  # Published. Pull Origin.Hash out of the .info JSON without a jq dependency.
+  hash="$(printf '%s' "$body" | grep -o '"Hash":"[0-9a-fA-F]*"' | head -n 1 | cut -d'"' -f4)"
+  if [ -z "$hash" ]; then
+    # Published but the origin commit is unknown, so equality cannot be
+    # proven. Refusing is the only safe reading: an unprovable match is a
+    # possible overwrite of immutable bytes.
+    echo "error: $module@$version is ALREADY PUBLISHED on the module proxy, and the" >&2
+    echo "       response carries no origin commit to compare against:" >&2
+    echo "       $body" >&2
+    echo "hint: proxy.golang.org is immutable — this version can never be corrected." >&2
+    echo "      Bump to the next version." >&2
+    return 1
+  fi
+  printf '%s\n' "$hash"
+}
+
+if [ "$SKIP_PROXY_CHECK" = "1" ]; then
+  echo "→ SKIPPING the immutable-version proxy check (--skip-proxy-check)"
+  echo "  you are asserting that $VERSION has NEVER been published. If it has,"
+  echo "  this release is permanently broken and cannot be fixed."
+else
+  echo "→ checking $VERSION is not already published on the module proxy"
+  # The commit that will carry the tags. The release commit is created on top
+  # of HEAD, so an already-published version can only legitimately match when
+  # HEAD *is* that release commit (a re-run after a successful push) — every
+  # other match means the tag is about to move, which is the poisoning case.
+  TAG_COMMIT="$(git rev-parse HEAD)"
+  for module in "$ROOT_MODULE" "$PKG_MODULE"; do
+    if ! PUBLISHED_COMMIT="$(proxy_published_commit "$module" "$VERSION")"; then
+      exit 1
+    fi
+    if [ -z "$PUBLISHED_COMMIT" ]; then
+      echo "  $module@$VERSION: not published — free to use"
+      continue
+    fi
+    if [ "$PUBLISHED_COMMIT" = "$TAG_COMMIT" ]; then
+      echo "  $module@$VERSION: already published at $PUBLISHED_COMMIT (this commit) — idempotent"
+      continue
+    fi
+    echo "error: REFUSING TO RELEASE — $VERSION IS ALREADY PUBLISHED AT A DIFFERENT COMMIT." >&2
+    echo "" >&2
+    echo "  module:            $module" >&2
+    echo "  published commit:  $PUBLISHED_COMMIT   (what proxy.golang.org serves today)" >&2
+    echo "  commit to be used: $TAG_COMMIT   (what you are about to tag)" >&2
+    echo "" >&2
+    echo "This is NOT a network problem and NOT a transient error. The proxy answered" >&2
+    echo "successfully: $module@$VERSION already exists, built from a different commit." >&2
+    echo "" >&2
+    echo "proxy.golang.org is IMMUTABLE. The content it has already served for" >&2
+    echo "$VERSION is permanent. Deleting the tag and re-cutting it here will NOT" >&2
+    echo "change what consumers download — they will keep getting $PUBLISHED_COMMIT" >&2
+    echo "forever, and $VERSION can never be corrected by any action you take." >&2
+    echo "" >&2
+    echo "Release a NEW version instead. Treat $VERSION as burned and skip it." >&2
+    exit 1
+  done
+fi
+
+# ── 6. Standalone build validation ──────────────────────────────────
 # GOWORK=off detaches go.work (which stitches pkg to the main module).
 # -mod=readonly is load-bearing: the validation must FAIL when pkg/go.mod is
 # incomplete standalone, never silently edit it. This is the consumer's view:
@@ -137,7 +261,7 @@ echo "→ validating pkg module builds standalone (GOWORK=off go build ./...)"
 echo "→ validating pkg module vets standalone (GOWORK=off go vet ./...)"
 ( cd pkg && GOWORK=off GOFLAGS=-mod=readonly go vet ./... )
 
-# ── 6. Edit the release files ───────────────────────────────────────
+# ── 7. Edit the release files ───────────────────────────────────────
 # Everything below mutates the working tree. Back the files up first and
 # restore them on ANY exit that is not a completed real release, so a failed
 # or dry run leaves the checkout exactly as it was found. This matters more
@@ -197,7 +321,7 @@ if ! grep -q "^const defaultPublishedForgePkgVersion = \"$VERSION\"$" "$PKGDEP_F
   exit 1
 fi
 
-# ── 7. Populate go.sum for a version that is not pushed yet ─────────
+# ── 8. Populate go.sum for a version that is not pushed yet ─────────
 # THE go.sum TRAP, and why this step is the heart of the script.
 #
 # An in-workspace `go build ./...` passes with NO forge/pkg hashes in go.sum,
@@ -247,7 +371,34 @@ if ! GIT_CONFIG_COUNT=1 \
   exit 1
 fi
 
-# ── 8. Assert the hashes actually landed ────────────────────────────
+# ── 8b. Drop the SUPERSEDED forge/pkg hashes ────────────────────────
+# Step 8 ADDS the new version's hashes but leaves the previous version's
+# behind, because `go mod download` only ever appends. Nothing in the root
+# module requires the old forge/pkg any more, so `forge generate` (which runs
+# a tidy) prunes those lines — and CI's "Verify Generated Code" then sees
+# go.sum move and fails the build on the very next PR.
+#
+# That has now happened on three consecutive releases (v0.1.11 stale after
+# v0.1.13, v0.1.13 stale after v0.1.14), each time surfacing as a confusing
+# red check on an unrelated PR rather than on the release itself. Pruning here
+# means the release commit leaves go.sum in the state a tidy would produce.
+#
+# Deliberately narrow: only forge/pkg lines whose version is NOT the one being
+# released. A general `go mod tidy` here would also rewrite third-party
+# requirements as a side effect of cutting a release, which is not this
+# script's job.
+if [ -f go.sum ] && grep -q "^$PKG_MODULE " go.sum; then
+  STALE_PKG="$(grep "^$PKG_MODULE " go.sum | grep -cv "^$PKG_MODULE $VERSION" || true)"
+  if [ -n "$STALE_PKG" ] && [ "$STALE_PKG" -gt 0 ]; then
+    echo "→ pruning $STALE_PKG superseded $PKG_MODULE go.sum line(s)"
+    grep -v "^$PKG_MODULE " go.sum > go.sum.tmp || true
+    grep "^$PKG_MODULE $VERSION" go.sum >> go.sum.tmp || true
+    LC_ALL=C sort -o go.sum.tmp go.sum.tmp
+    mv go.sum.tmp go.sum
+  fi
+fi
+
+# ── 9. Assert the hashes actually landed ────────────────────────────
 # The check the old flow lacked entirely. Without it, a silently-skipped
 # resolution ships a root module whose go.sum cannot verify forge/pkg, and the
 # first person to find out is a consumer outside the workspace.
@@ -279,13 +430,13 @@ if ! grep -q "^$PKG_MODULE $VERSION/go.mod h1:" go.sum; then
 fi
 echo "  go.sum: $GOSUM_HITS entries for $PKG_MODULE $VERSION"
 
-# ── 9. The root module still builds with the new require ────────────
+# ── 10. The root module still builds with the new require ───────────
 echo "→ building the root module against the new require"
 go build ./...
 
-# ── 10. Commit, tag, push (or describe the plan) ────────────────────
+# ── 11. Commit, tag, push (or describe the plan) ────────────────────
 # The pkg/ tree must be untouched by everything above, or the hash resolved in
-# step 7 describes different bytes than the tag will point at.
+# step 8 describes different bytes than the tag will point at.
 if [ "$(git rev-parse "HEAD:pkg")" != "$HEAD_PKG_TREE" ]; then
   echo "error: pkg/ changed during the release edits — the resolved hash is stale" >&2
   exit 1

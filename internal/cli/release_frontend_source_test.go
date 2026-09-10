@@ -130,6 +130,35 @@ func TestCheckReleaseCoversEnv_FailsOnMissingImage(t *testing.T) {
 	}
 }
 
+// TestCheckReleaseCoversEnv_DedupesSharedImages pins the report shape. Several
+// services routinely share one image — in the project this was built against,
+// five run "control-plane" and three run "reliant" — so keying the report by
+// service turns one missing image into nine lines that read like nine separate
+// problems. The image is named once, with the services that need it.
+func TestCheckReleaseCoversEnv_DedupesSharedImages(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "admin-api", Image: "control-plane"},
+			{Name: "admin-server", Image: "control-plane"},
+			{Name: "workspace-proxy", Image: "control-plane"},
+		},
+	}
+
+	err := checkReleaseCoversEnv(entities, map[string]ReleaseArtifact{}, buildOptions{release: "v1.6.0", env: "prod"})
+	if err == nil {
+		t.Fatal("expected a failure for a wholly uncovered env")
+	}
+	if got := strings.Count(err.Error(), "control-plane (image"); got != 1 {
+		t.Errorf("control-plane should be reported ONCE, got %d occurrences:\n%v", got, err)
+	}
+	// The services are still named, so the operator knows what is affected.
+	for _, svc := range []string{"admin-api", "admin-server", "workspace-proxy"} {
+		if !strings.Contains(err.Error(), svc) {
+			t.Errorf("report should name the affected service %q, got:\n%v", svc, err)
+		}
+	}
+}
+
 // TestCheckReleaseCoversEnv_PassesWhenComplete is the negative control: the
 // gate must not fire on a release that genuinely covers the env, or it would
 // just be a wall.

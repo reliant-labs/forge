@@ -483,14 +483,30 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]ReleaseAr
 		return nil
 	}
 
-	var missing []string
+	// Deduplicate by IMAGE, not by service. Several services routinely share
+	// one image (in this project five run `control-plane` and three run
+	// `reliant`), and listing the same missing image once per service turns
+	// one fact into nine lines and reads like nine separate problems.
+	missingImages := map[string][]string{}
+	var imageOrder []string
 	for _, s := range entities.Services {
 		if s.Image == "" {
 			continue
 		}
-		if _, ok := artifacts[s.Image]; !ok {
-			missing = append(missing, fmt.Sprintf("%s (service %q)", s.Image, s.Name))
+		if _, ok := artifacts[s.Image]; ok {
+			continue
 		}
+		if _, seen := missingImages[s.Image]; !seen {
+			imageOrder = append(imageOrder, s.Image)
+		}
+		missingImages[s.Image] = append(missingImages[s.Image], s.Name)
+	}
+
+	var missing []string
+	for _, image := range imageOrder {
+		svcs := missingImages[image]
+		sort.Strings(svcs)
+		missing = append(missing, fmt.Sprintf("%s (image, used by %s)", image, strings.Join(svcs, ", ")))
 	}
 	for _, fe := range entities.Frontends {
 		// Cluster frontends ship as images and are covered by the image

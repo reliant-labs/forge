@@ -141,7 +141,9 @@ func mintOneKubeconfigSecret(ctx context.Context, k KubeconfigSecretEntity, owne
 
 // k3dKubeconfigGet returns the target cluster's kubeconfig YAML.
 func k3dKubeconfigGet(ctx context.Context, target string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, "k3d", "kubeconfig", "get", target).Output()
+	getCmd := exec.CommandContext(ctx, "k3d", "kubeconfig", "get", target)
+	scrubSubprocessLogEnv(getCmd)
+	out, err := getCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("k3d kubeconfig get %s: %w", target, err)
 	}

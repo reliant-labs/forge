@@ -191,7 +191,9 @@ func portFromMirrorKey(mirrors map[string]any, wantHost string) (int, bool) {
 // registry name (which equals the container name, `k3d registry create`
 // prefixes `k3d-`).
 func k3dRegistryExists(ctx context.Context, name string) (bool, error) {
-	out, err := exec.CommandContext(ctx, "k3d", "registry", "list", "--no-headers").Output()
+	listCmd := exec.CommandContext(ctx, "k3d", "registry", "list", "--no-headers")
+	scrubSubprocessLogEnv(listCmd)
+	out, err := listCmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("k3d registry list: %w", err)
 	}

@@ -638,13 +638,16 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// Cut the Release ledger when --release is set. This is the build-once →
 	// promote spine: harvest the per-image digests the build just captured
 	// (the SAME build-state sources resolveDeployImageDigests reads at deploy
-	// time) into a durable .forge/releases/<version>.json. A release with no
-	// captured digest fails loudly rather than writing an empty ledger — a
-	// release that can't pin anything is useless and almost always means the
-	// user forgot --push (or built against a registry that didn't return a
+	// time) into a durable .forge/releases/<version>.json, plus the resolved
+	// commit of every source-pinned frontend the env declares — a Firebase
+	// SPA has no image, and omitting it made the ledger cover only the
+	// containerized half of an environment. A release with no captured
+	// artifact fails loudly rather than writing an empty ledger — a release
+	// that can't pin anything is useless and almost always means the user
+	// forgot --push (or built against a registry that didn't return a
 	// digest). See writeReleaseLedger.
 	if opts.release != "" {
-		if err := writeReleaseLedger(ctx, opts); err != nil {
+		if err := writeReleaseLedger(ctx, opts, entities); err != nil {
 			return err
 		}
 	}
@@ -1111,13 +1114,29 @@ func persistImageBuildStates(opts buildOptions, resolvedTag string, succeeded []
 // latent footgun (a later `forge env promote`/`deploy` would resolve nothing and
 // fall back to tags — exactly the mutable-tag failure the release model exists
 // to kill). The actionable remedy is in the error: pass --push.
-func writeReleaseLedger(ctx context.Context, opts buildOptions) error {
+func writeReleaseLedger(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
 	projectDir := projectDirForKCL()
 	artifacts := harvestReleaseArtifacts(projectDir, opts.env)
 	if len(artifacts) == 0 {
 		return fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
 			"  A release pins immutable digests, which require a registry push — re-run with --push <registry>\n"+
 			"  (a release built without --push has only a local tag, which can't be promoted across envs)", opts.release)
+	}
+
+	// Source-pinned frontends (Firebase SPAs fetched via forge.GitSource)
+	// carry no image and so contribute no build state. Record each one's
+	// resolved commit so the release covers the whole environment, not just
+	// the half that ships as containers.
+	if err := addFrontendSourceArtifacts(ctx, projectDir, entities, artifacts); err != nil {
+		return fmt.Errorf("--release %s: %w", opts.release, err)
+	}
+
+	// Completeness gate. Every image the env DECLARES must be in the ledger.
+	// A release that silently omits a declared artifact is the failure this
+	// whole model exists to prevent: it looks like a full release, promotes
+	// like one, and ships an environment with a hole in it.
+	if err := checkReleaseCoversEnv(entities, artifacts, opts); err != nil {
+		return err
 	}
 
 	commit, gitTag, dirty := gitBuildProvenance(ctx)
@@ -1130,7 +1149,7 @@ func writeReleaseLedger(ctx context.Context, opts buildOptions) error {
 	if err := WriteRelease(projectDir, rel); err != nil {
 		return fmt.Errorf("--release %s: write release ledger: %w", opts.release, err)
 	}
-	fmt.Printf("\n[build] Cut release %s (%d image(s)): %s\n",
+	fmt.Printf("\n[build] Cut release %s (%d artifact(s)): %s\n",
 		rel.Version, len(rel.Artifacts), strings.Join(releaseImageNames(rel), ", "))
 	fmt.Printf("[build]   Ledger: %s\n", releasePath(projectDir, rel.Version))
 	fmt.Printf("[build]   Promote: forge env promote %s --to <env>\n", rel.Version)

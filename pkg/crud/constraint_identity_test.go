@@ -189,7 +189,7 @@ func TestCreate_CheckViolationNamesTheConstraintOnTheWire(t *testing.T) {
 		createPrescriptionProcedure,
 		HandleCreate(CreateOp[structpb.Struct, structpb.Struct, *prescription]{
 			EntityLower: "prescription",
-			Entity: func(req *structpb.Struct) (*prescription, error) {
+			Entity: func(_ context.Context, req *structpb.Struct) (*prescription, error) {
 				issued, err := time.Parse(time.RFC3339, req.GetFields()["issued_at"].GetStringValue())
 				if err != nil {
 					return nil, err

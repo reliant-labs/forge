@@ -222,3 +222,92 @@ func TestPreflightProxyReachableNoProxyIsNoop(t *testing.T) {
 		t.Fatalf("empty HTTPS_PROXY rejected: %v", err)
 	}
 }
+
+// TestGoModuleDirsIsInertForNonGoProjects pins the caveat that matters most:
+// a forge project may reference only external builds that are not Go at all.
+// The check must find nothing to say about them rather than inventing a
+// requirement they cannot satisfy.
+func TestGoModuleDirsIsInertForNonGoProjects(t *testing.T) {
+	root := t.TempDir() // no go.mod anywhere
+	npmOnly := filepath.Join(root, "web")
+	if err := os.MkdirAll(npmOnly, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := &KCLEntities{Services: []ServiceEntity{
+		{Name: "web", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cwd: npmOnly}}},
+	}}
+	if got := goModuleDirs(e, root); len(got) != 0 {
+		t.Fatalf("dirs = %v; want none for a project with no Go modules", got)
+	}
+}
+
+// TestGoModuleDirsFindsSiblingExternalBuilds is the regression for where the
+// staleness actually bit: not the project's own module, but a SIBLING checkout
+// driven by an external build. A project-root-only check would have missed it,
+// and the failure surfaced four and a half minutes into the build.
+func TestGoModuleDirsFindsSiblingExternalBuilds(t *testing.T) {
+	root := t.TempDir()
+	sibling := filepath.Join(root, "sibling")
+	for _, d := range []string{root, sibling} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &KCLEntities{Services: []ServiceEntity{
+		{Name: "a", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cwd: sibling}}},
+		// Same directory twice must not be probed twice.
+		{Name: "b", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cwd: sibling}}},
+		// A shell build with no cwd, and one pointing at a non-module dir.
+		{Name: "c", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{}}},
+	}}
+	got := goModuleDirs(e, root)
+	if len(got) != 2 {
+		t.Fatalf("dirs = %v; want exactly the project root and the sibling", got)
+	}
+	if got[0] != filepath.Clean(root) || got[1] != filepath.Clean(sibling) {
+		t.Fatalf("dirs = %v; want [%s %s]", got, root, sibling)
+	}
+}
+
+// TestPreflightGoModulesTidyCleanTreePasses keeps the happy path silent.
+func TestPreflightGoModulesTidyCleanTreePasses(t *testing.T) {
+	root := t.TempDir() // no go.mod => nothing probed, nothing to report
+	if err := preflightGoModulesTidy(t.Context(), nil, root); err != nil {
+		t.Fatalf("inert case returned an error: %v", err)
+	}
+}
+
+// TestStaleModuleDiffDistinguishesDiffFromFailure pins the discriminator that
+// replaced a shape-based guess. `go mod tidy -diff` exits non-zero both when it
+// finds a difference and when it cannot run at all; only the former is evidence
+// of staleness. Predicting the latter from go.work's shape stood the check down
+// on exactly the repos it exists for.
+func TestStaleModuleDiffDistinguishesDiffFromFailure(t *testing.T) {
+	realDiff := []byte(`diff current/go.mod tidy/go.mod
+--- current/go.mod
++++ tidy/go.mod
+@@ -33,6 +33,7 @@
+ 	github.com/prometheus/client_golang v1.24.1
++	github.com/prometheus/client_model v0.6.3
+`)
+	if !staleModuleDiff(realDiff) {
+		t.Error("a genuine tidy diff was not recognised as staleness")
+	}
+
+	// Every one of these is tidy failing to RUN, not the tree being stale.
+	for _, out := range [][]byte{
+		[]byte("go: github.com/reliant-labs/forge/pkg@v0.1.12: reading ...: 404 Not Found"),
+		[]byte("go: module lookup disabled by GOFLAGS=-mod=vendor"),
+		[]byte("go: no required module provides package example.com/x; to add it:\n\tgo get example.com/x"),
+		[]byte("dial tcp: lookup proxy.golang.org: no such host"),
+		[]byte("   \n  "),
+		{},
+	} {
+		if staleModuleDiff(out) {
+			t.Errorf("probe failure treated as staleness: %q", out)
+		}
+	}
+}

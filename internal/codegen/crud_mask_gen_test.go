@@ -103,8 +103,11 @@ func TestGenerateCRUDHandlers_UpdateMaskWired(t *testing.T) {
 	if !strings.Contains(ops, "Mask: func(req *pb.UpdatePatientRequest) []string { return req.GetUpdateMask().GetPaths() },") {
 		t.Error("ops file should wire UpdateOp.Mask from req.GetUpdateMask().GetPaths()")
 	}
-	if !strings.Contains(ops, "PersistMasked: func(ctx context.Context, entity *db.Patient, fields []string) error {") {
-		t.Error("ops file should wire UpdateOp.PersistMasked")
+	// The trailing opts are the scoping seam: an override attaches an
+	// ownership predicate there, and a masked write must honor it or the
+	// mask becomes a way around the scope.
+	if !strings.Contains(ops, "PersistMasked: func(ctx context.Context, entity *db.Patient, fields []string, opts ...orm.QueryOption) error {") {
+		t.Error("ops file should wire UpdateOp.PersistMasked with the variadic scoping options")
 	}
 	if !strings.Contains(ops, "db.UpdatePatientMasked(ctx, s.deps.DB, entity, fields)") {
 		t.Error("PersistMasked should delegate to db.UpdatePatientMasked")

@@ -206,7 +206,14 @@ func TestGoDoc_PackageViewOmitsMethods(t *testing.T) {
 	if !strings.Contains(text, "Repo") {
 		t.Fatalf("go doc output does not mention Repo at all; the fixture assumption is wrong:\n%s", text)
 	}
-	if strings.Contains(text, "UpdateMasked") {
+	// The needle is the METHOD form — `func (r *Repo[M]) UpdateMasked(`
+	// — not the bare name. go doc renders a package-level func flush
+	// left and a method with its receiver, and the package now exports a
+	// plain function whose name CONTAINS this one (ScopedUpdateMasked),
+	// which a bare-substring test read as "methods are being shown".
+	// Matching the receiver's closing paren is what keeps this checking
+	// the claim forge actually prints.
+	if strings.Contains(text, ") UpdateMasked(") {
 		t.Errorf("`go doc %s/crud` now shows methods — forge's printed guidance says it does not,\n"+
 			"so that guidance needs revisiting:\n%s", forgePkgModule, text)
 	}

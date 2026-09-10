@@ -1,4 +1,14 @@
+"use client";
+
 // Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
+//
+// Every export below is a React hook or builds one, so this module belongs in
+// the CLIENT graph. Without the directive the Next.js App Router compiles it
+// into the SERVER graph, where it binds a SECOND @tanstack/react-query
+// instance and every generated hook throws "No QueryClient set" at runtime —
+// invisible to tsc, eslint AND `next build`. published-surface.test.ts asserts
+// the directive survives into dist/. It is NOT applied package-wide: the
+// ./interceptors subpath exists to be importable without React.
 //
 // The React Query wrapper machinery behind forge's generated per-service hook
 // files (`src/hooks/<svc>-service-hooks_gen.ts`).

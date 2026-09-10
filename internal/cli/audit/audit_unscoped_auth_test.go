@@ -131,7 +131,7 @@ func TestUnscopedAuth_FlagsAuthenticatedRPCThatNeverReadsTheCaller(t *testing.T)
 		"ListMyOrders": true,
 	}, src)
 
-	cat := auditUnscopedAuth(dir)
+	cat := auditUnscopedAuth(nil, dir)
 
 	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("status = %q, want warn — an unscoped authenticated RPC must not report clean\nsummary: %s", cat.Status, cat.Summary)
@@ -155,7 +155,7 @@ func TestUnscopedAuth_IgnoresPublicRPCs(t *testing.T) {
 		"ListProducts": false,
 	}, src)
 
-	cat := auditUnscopedAuth(dir)
+	cat := auditUnscopedAuth(nil, dir)
 
 	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok — public RPCs read no caller BY DECLARATION\nsummary: %s", cat.Status, cat.Summary)
@@ -173,7 +173,7 @@ func TestUnscopedAuth_AcknowledgementSuppressesWithReason(t *testing.T) {
 		delegationBody("ListAllOrders")
 	dir := writeProject(t, "ShopService", map[string]bool{"ListAllOrders": true}, src)
 
-	cat := auditUnscopedAuth(dir)
+	cat := auditUnscopedAuth(nil, dir)
 
 	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok — an acknowledged global RPC is not a finding\nsummary: %s", cat.Status, cat.Summary)
@@ -200,7 +200,7 @@ func TestUnscopedAuth_BareAcknowledgementDoesNotCount(t *testing.T) {
 		delegationBody("GetOrder")
 	dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true}, src)
 
-	cat := auditUnscopedAuth(dir)
+	cat := auditUnscopedAuth(nil, dir)
 
 	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("status = %q, want warn — a reasonless directive must not suppress\nsummary: %s", cat.Status, cat.Summary)
@@ -226,7 +226,7 @@ func TestUnscopedAuth_AcceptsHelperIndirection(t *testing.T) {
 		"\t_ = id\n\treturn nil, nil\n}\n"
 	dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true}, src)
 
-	cat := auditUnscopedAuth(dir)
+	cat := auditUnscopedAuth(nil, dir)
 
 	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok — the handler resolves the caller one hop away\nsummary: %s", cat.Status, cat.Summary)
@@ -249,7 +249,7 @@ func TestUnscopedAuth_EmptyDerivationFailsLoudly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cat := auditUnscopedAuth(dir)
+	cat := auditUnscopedAuth(nil, dir)
 
 	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("status = %q, want warn — 1 authenticated RPC declared and 0 inspected is a broken check, not a clean project\nsummary: %s", cat.Status, cat.Summary)
@@ -267,11 +267,179 @@ func TestUnscopedAuth_EmptyDerivationFailsLoudly(t *testing.T) {
 // worker-only app) is n/a, not clean-by-luck.
 func TestUnscopedAuth_NonServiceProjectsAreNotSubject(t *testing.T) {
 	dir := t.TempDir()
-	cat := auditUnscopedAuth(dir)
+	cat := auditUnscopedAuth(nil, dir)
 	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok for a project with no descriptor", cat.Status)
 	}
 	if !strings.Contains(cat.Summary, "n/a") {
 		t.Errorf("summary = %q, want it marked n/a rather than implying a clean audit", cat.Summary)
+	}
+}
+
+// TestUnscopedAuth_AcceptsGenericFreeFunctionIndirection is the
+// regression test for the false negative measured against a real
+// downstream app: 63 correctly-scoped CRUD RPCs reported as unscoped.
+//
+// The shape is the DRY way to scope a generated CRUD surface, and the
+// one forge's own authorization guidance steers people toward — a
+// generic free helper taking the service as a parameter, which resolves
+// the caller through a receiver method rather than touching the seam
+// itself:
+//
+//	ListCustomers -> scopedList(s, ...) -> s.caller(ctx) -> middleware.GetUser(ctx)
+//
+// The seam is two hops from the handler, so a one-hop pass reports it as
+// unscoped. An audit that penalizes the recommended factoring teaches
+// developers to disable the audit.
+func TestUnscopedAuth_AcceptsGenericFreeFunctionIndirection(t *testing.T) {
+	seam := codegen.CRUDAuthSeam()
+	src := handlerHeader +
+		"func scopedList[Req, Resp, Ent any](s *Service, ctx context.Context, op Ent, column string) (Ent, error) {\n" +
+		"\tc, err := s.caller(ctx)\n" +
+		"\tif err != nil {\n\t\treturn op, err\n\t}\n" +
+		"\t_ = c\n\treturn op, nil\n}\n\n" +
+		"func (s *Service) caller(ctx context.Context) (string, error) {\n" +
+		"\tclaims, err := " + seam + "(ctx)\n" +
+		"\tif err != nil {\n\t\treturn \"\", err\n\t}\n" +
+		"\treturn claims.UserID, nil\n}\n\n" +
+		"func (s *Service) ListCustomers(ctx context.Context, req *connect.Request[pb.ListCustomersRequest]) (*connect.Response[pb.ListCustomersResponse], error) {\n" +
+		"\top, err := scopedList(s, ctx, s.crudListCustomersOp(), ownerColumn)\n" +
+		"\tif err != nil {\n\t\treturn nil, err\n\t}\n" +
+		"\treturn crud.HandleList(op)(ctx, req)\n}\n"
+	dir := writeProject(t, "ShopService", map[string]bool{"ListCustomers": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	if cat.Status != audittype.StatusOK {
+		t.Fatalf("status = %q, want ok — ListCustomers resolves the caller through scopedList -> s.caller -> the seam\nsummary: %s", cat.Status, cat.Summary)
+	}
+	if names := unscopedMethods(t, cat); len(names) != 0 {
+		t.Fatalf("unscoped = %v, want empty — this is the correctly-scoped shape, reporting it is a false alarm", names)
+	}
+}
+
+// TestUnscopedAuth_ResolvesArbitraryDepthWithinThePackage pins that the
+// closure is transitive rather than fixed at two hops: moving one more
+// helper between the handler and the seam must not resurrect the false
+// alarm. Four hops, mixing free functions and receiver methods.
+func TestUnscopedAuth_ResolvesArbitraryDepthWithinThePackage(t *testing.T) {
+	seam := codegen.CRUDAuthSeam()
+	src := handlerHeader +
+		"func (s *Service) hopD(ctx context.Context) (string, error) {\n" +
+		"\tclaims, err := " + seam + "(ctx)\n" +
+		"\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn claims.UserID, nil\n}\n\n" +
+		"func hopC(s *Service, ctx context.Context) (string, error) { return s.hopD(ctx) }\n\n" +
+		"func (s *Service) hopB(ctx context.Context) (string, error) { return hopC(s, ctx) }\n\n" +
+		"func hopA[T any](s *Service, ctx context.Context, v T) (T, error) {\n" +
+		"\tid, err := s.hopB(ctx)\n" +
+		"\tif err != nil {\n\t\treturn v, err\n\t}\n\t_ = id\n\treturn v, nil\n}\n\n" +
+		"func (s *Service) GetOrder(ctx context.Context, req *connect.Request[pb.GetOrderRequest]) (*connect.Response[pb.GetOrderResponse], error) {\n" +
+		"\top, err := hopA(s, ctx, s.crudGetOrderOp())\n" +
+		"\tif err != nil {\n\t\treturn nil, err\n\t}\n\t_ = op\n\treturn nil, nil\n}\n"
+	dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	if cat.Status != audittype.StatusOK {
+		t.Fatalf("status = %q, want ok — the seam is four hops away but every hop is in this package\nsummary: %s", cat.Status, cat.Summary)
+	}
+}
+
+// TestUnscopedAuth_HelperChainThatReachesNothingStaysUnscoped is the
+// other half of the closure, and the one that keeps it honest: growing
+// the reachable set must not clear a handler whose helpers never touch
+// the seam. Without this, "call any helper" would silence the category.
+func TestUnscopedAuth_HelperChainThatReachesNothingStaysUnscoped(t *testing.T) {
+	src := handlerHeader +
+		"func (s *Service) innermost(ctx context.Context) string { return \"nothing\" }\n\n" +
+		"func middle(s *Service, ctx context.Context) string { return s.innermost(ctx) }\n\n" +
+		"func outer[T any](s *Service, ctx context.Context, v T) T {\n\t_ = middle(s, ctx)\n\treturn v\n}\n\n" +
+		"func (s *Service) GetOrder(ctx context.Context, req *connect.Request[pb.GetOrderRequest]) (*connect.Response[pb.GetOrderResponse], error) {\n" +
+		"\t_ = outer(s, ctx, 1)\n\treturn nil, nil\n}\n"
+	dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	if cat.Status != audittype.StatusWarn {
+		t.Fatalf("status = %q, want warn — no hop in this chain reaches the seam\nsummary: %s", cat.Status, cat.Summary)
+	}
+	if names := unscopedMethods(t, cat); len(names) != 1 || names[0] != "GetOrder" {
+		t.Fatalf("unscoped = %v, want [GetOrder] — a helper that resolves nobody must not vouch for its caller", names)
+	}
+}
+
+// TestUnscopedAuth_RecursiveHelpersTerminate pins termination and the
+// self guard together. A mutually recursive pair that reaches the seam
+// clears its caller; a recursive helper that reaches nothing does not
+// clear its caller and does not vouch for itself. Either way the fixed
+// point must converge rather than spin.
+func TestUnscopedAuth_RecursiveHelpersTerminate(t *testing.T) {
+	seam := codegen.CRUDAuthSeam()
+	src := handlerHeader +
+		// Self-recursive, reaches the seam: still a valid voucher.
+		"func (s *Service) walkUp(ctx context.Context, n int) (string, error) {\n" +
+		"\tif n > 0 {\n\t\treturn s.walkUp(ctx, n-1)\n\t}\n" +
+		"\tclaims, err := " + seam + "(ctx)\n" +
+		"\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn claims.UserID, nil\n}\n\n" +
+		// Mutual recursion, reaches nothing: must not clear anyone.
+		"func spinA(s *Service, ctx context.Context) { spinB(s, ctx) }\n\n" +
+		"func spinB(s *Service, ctx context.Context) { spinA(s, ctx) }\n\n" +
+		"func (s *Service) GetOrder(ctx context.Context, req *connect.Request[pb.GetOrderRequest]) (*connect.Response[pb.GetOrderResponse], error) {\n" +
+		"\tid, err := s.walkUp(ctx, 3)\n" +
+		"\tif err != nil {\n\t\treturn nil, err\n\t}\n\t_ = id\n\treturn nil, nil\n}\n\n" +
+		"func (s *Service) ListOrders(ctx context.Context, req *connect.Request[pb.ListOrdersRequest]) (*connect.Response[pb.ListOrdersResponse], error) {\n" +
+		"\tspinA(s, ctx)\n\treturn nil, nil\n}\n"
+	dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true, "ListOrders": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	names := unscopedMethods(t, cat)
+	if len(names) != 1 || names[0] != "ListOrders" {
+		t.Fatalf("unscoped = %v, want exactly [ListOrders] — GetOrder reaches the seam through a recursive helper, ListOrders reaches nothing through a recursive cycle", names)
+	}
+}
+
+// TestUnscopedAuth_SelfRecursionAloneDoesNotVouch keeps the existing
+// self guard explicit: a handler that calls only itself has not
+// resolved anybody, and must not be cleared by its own presence in the
+// reachable set.
+func TestUnscopedAuth_SelfRecursionAloneDoesNotVouch(t *testing.T) {
+	src := handlerHeader +
+		"func (s *Service) GetOrder(ctx context.Context, req *connect.Request[pb.GetOrderRequest]) (*connect.Response[pb.GetOrderResponse], error) {\n" +
+		"\treturn s.GetOrder(ctx, req)\n}\n"
+	dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	if names := unscopedMethods(t, cat); len(names) != 1 || names[0] != "GetOrder" {
+		t.Fatalf("unscoped = %v, want [GetOrder] — a method cannot vouch for itself", names)
+	}
+}
+
+// TestUnscopedAuth_AmbiguousNameDoesNotClear covers the one hazard the
+// name-keyed reachable set introduces. Package scope forbids two free
+// functions sharing a name, but a METHOD and a free function may share
+// one, and a call site does not name the receiver's type without full
+// type checking. So `scope` is ambiguous here: the method reaches the
+// seam, the free function does not.
+//
+// The safe reading is that an ambiguous name vouches for nobody —
+// otherwise a handler calling the unscoped spelling would be silently
+// cleared, which is the failure this whole category exists to prevent.
+func TestUnscopedAuth_AmbiguousNameDoesNotClear(t *testing.T) {
+	seam := codegen.CRUDAuthSeam()
+	src := handlerHeader +
+		"func (s *Service) scope(ctx context.Context) (string, error) {\n" +
+		"\tclaims, err := " + seam + "(ctx)\n" +
+		"\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn claims.UserID, nil\n}\n\n" +
+		"func scope(ctx context.Context) string { return \"\" }\n\n" +
+		"func (s *Service) GetOrder(ctx context.Context, req *connect.Request[pb.GetOrderRequest]) (*connect.Response[pb.GetOrderResponse], error) {\n" +
+		"\t_ = scope(ctx)\n\treturn nil, nil\n}\n"
+	dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	if names := unscopedMethods(t, cat); len(names) != 1 || names[0] != "GetOrder" {
+		t.Fatalf("unscoped = %v, want [GetOrder] — `scope` names two different functions and only one resolves the caller, so it vouches for neither", names)
 	}
 }

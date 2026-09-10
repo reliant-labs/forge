@@ -278,6 +278,28 @@ func clientErr(err error, reason string) error {
 // sibling mapRepoErr has understood sentinels all along. The asymmetry was
 // invisible: the same svcerr value meant 404 from Fetch and 500 from Entity.
 func mapPackErr(err error) error {
+	return mapClosureErr(err, "response projection failed")
+}
+
+// mapFilterErr maps a ListOp.Filters failure. Filters can fail for one
+// reason the other closures cannot: it could not determine WHO is asking,
+// so it refused to run a query it would have had to widen to every row.
+// That refusal is usually already classified (svcerr.Unauthenticated,
+// svcerr.PermissionDenied) and passes through with its own code; an
+// unclassified one becomes Internal, and the fallback message says
+// "filters" rather than borrowing Pack's "response projection", because
+// the two failures happen at opposite ends of the request and a log line
+// that names the wrong one sends the reader to the wrong code.
+func mapFilterErr(err error) error {
+	return mapClosureErr(err, "list filters failed")
+}
+
+// mapClosureErr is the shared shim-closure error path: an application's
+// own classified rejection passes through verbatim (see mapPackErr for
+// why that pass-through keys on IsClassified rather than *connect.Error),
+// anything else becomes Internal with safeMsg on the wire and the
+// original retained as a server-side cause.
+func mapClosureErr(err error, safeMsg string) error {
 	if svcerr.IsClassified(err) {
 		ce := svcerr.ToConnect(err)
 		if ce.Meta().Get(svcerr.ReasonHeader) == "" {
@@ -291,7 +313,7 @@ func mapPackErr(err error) error {
 	// the DSN contains. Letting svcerr classify it instead routes through
 	// clientSafe, which substitutes InternalMessage on the wire and keeps the
 	// original reachable as a cause for the logging interceptor.
-	return clientErr(svcerr.WithCause(svcerr.Internal("response projection failed"), err), ReasonInternal)
+	return clientErr(svcerr.WithCause(svcerr.Internal(safeMsg), err), ReasonInternal)
 }
 
 // pgFailure is the part of a postgres error the APPLICATION authored: the
@@ -373,7 +395,12 @@ type CreateOp[Req, Resp, Ent any] struct {
 	// repeated message onto a jsonb column, say) must fail the call, not
 	// store a default and report success. Shims that cannot fail return
 	// (entity, nil).
-	Entity  func(req *Req) (Ent, error)
+	//
+	// It takes ctx because stamping a new row's owner needs the CALLER,
+	// and the caller lives on the context (see the package doc's note on
+	// scoping seams). Generated shims that read nothing from it declare
+	// `_ context.Context`.
+	Entity  func(ctx context.Context, req *Req) (Ent, error)
 	Persist func(ctx context.Context, entity Ent) error
 	// Pack projects the persisted entity onto the response. It returns an
 	// error so a corrupt-data projection (e.g. a generated <entity>ToProto
@@ -390,7 +417,7 @@ type CreateOp[Req, Resp, Ent any] struct {
 // All error-mapping is fixed; the shim only carries data shape.
 func HandleCreate[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
-		entity, err := op.Entity(req.Msg)
+		entity, err := op.Entity(ctx, req.Msg)
 		if err != nil {
 			return nil, mapPackErr(err)
 		}
@@ -409,7 +436,21 @@ func HandleCreate[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.
 type GetOp[Req, Resp, Ent any] struct {
 	EntityLower string
 	ID          func(req *Req) string
-	Fetch       func(ctx context.Context, id string) (Ent, error)
+	// Fetch reads the row named by the primary key.
+	//
+	// The variadic opts carry an ADDITIONAL predicate the caller wants
+	// applied in the query — canonically the ownership filter, e.g.
+	// orm.WhereEq("company_id", claims.OrgID). It is variadic so an
+	// override that has nothing to add passes nothing, and so the
+	// predicate composes with whatever the repository already applies
+	// (soft-delete scoping, and so on) rather than replacing it.
+	//
+	// Scoping in the QUERY is what makes "not yours" and "not there"
+	// the same answer: a fetch-then-compare returns the row to the
+	// handler first, and every branch after that is one an author has
+	// to remember to write. HandleGet passes no opts of its own — this
+	// parameter exists for the shim and for overrides.
+	Fetch func(ctx context.Context, id string, opts ...orm.QueryOption) (Ent, error)
 	// Pack projects the fetched entity onto the response; see CreateOp.Pack
 	// for why it returns an error.
 	Pack func(entity Ent) (*Resp, error)
@@ -447,10 +488,15 @@ type UpdateOp[Req, Resp, Ent any] struct {
 	EntityLower    string
 	EntityFieldLow string // lowercase form of the proto field that holds the entity, e.g. "user"
 	// Entity projects the request onto the internal entity; see
-	// CreateOp.Entity for why it can fail, and ErrEntityRequired for the
-	// one failure that is the CALLER's fault rather than the data's.
-	Entity  func(req *Req) (Ent, error)
-	Persist func(ctx context.Context, entity Ent) error
+	// CreateOp.Entity for why it can fail and why it takes ctx, and
+	// ErrEntityRequired for the one failure that is the CALLER's fault
+	// rather than the data's.
+	Entity func(ctx context.Context, req *Req) (Ent, error)
+	// Persist writes the whole row. See GetOp.Fetch for the variadic
+	// opts: on an update they are what stops a caller reassigning
+	// someone else's row to themselves, because the predicate is
+	// evaluated against the STORED row rather than the submitted entity.
+	Persist func(ctx context.Context, entity Ent, opts ...orm.QueryOption) error
 	// Pack projects the updated entity onto the response; see CreateOp.Pack
 	// for why it returns an error.
 	Pack func(entity Ent) (*Resp, error)
@@ -467,7 +513,9 @@ type UpdateOp[Req, Resp, Ent any] struct {
 	// arrives with concrete paths, HandleUpdate fails CodeInternal —
 	// silently widening a masked write to a full replace is the
 	// data-loss bug this hook exists to prevent.
-	PersistMasked func(ctx context.Context, entity Ent, fields []string) error
+	//
+	// The variadic opts mean the same thing they do on Persist.
+	PersistMasked func(ctx context.Context, entity Ent, fields []string, opts ...orm.QueryOption) error
 }
 
 // HandleUpdate runs validate-required -> persist -> pack.
@@ -489,7 +537,7 @@ type UpdateOp[Req, Resp, Ent any] struct {
 // authoritative row.
 func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
-		entity, err := op.Entity(req.Msg)
+		entity, err := op.Entity(ctx, req.Msg)
 		if errors.Is(err, ErrEntityRequired) {
 			return nil, clientErr(connect.NewError(
 				connect.CodeInvalidArgument,
@@ -590,7 +638,12 @@ func maskPaths(raw []string) (paths []string, full bool) {
 type DeleteOp[Req, Resp any] struct {
 	EntityLower string
 	ID          func(req *Req) string
-	Persist     func(ctx context.Context, id string) error
+	// Persist removes the row named by the primary key. See GetOp.Fetch
+	// for why the opts are variadic and what belongs in them: a delete
+	// scoped by a WHERE predicate touches no row when the row is not the
+	// caller's, and the repository's absent-row check then reports
+	// NotFound — the same answer an unknown id gets.
+	Persist func(ctx context.Context, id string, opts ...orm.QueryOption) error
 	// Pack is optional. When nil, HandleDelete returns the proto's
 	// zero-value response (matching the legacy DeleteResponse{} shape).
 	Pack func() *Resp
@@ -643,14 +696,29 @@ type ListOp[Req, Resp, Ent any] struct {
 	// HasOrderBy enables req.Msg.OrderBy / req.Msg.Descending handling
 	// via the OrderBy/Descending closures.
 	HasOrderBy bool
-	OrderBy    func(req *Req) (clause string, descending bool)
+	OrderBy    func(ctx context.Context, req *Req) (clause string, descending bool)
 
 	// Filters returns extra orm.QueryOption values built from per-field
 	// filter logic. The shim implements this as a static sequence of
 	// "if req.Msg.X != nil { opts = append(opts, orm.WhereILike(...)) }"
 	// statements — same as the legacy template, just lifted into a
 	// closure.
-	Filters func(req *Req) []orm.QueryOption
+	//
+	// It is also THE place a per-caller row scope belongs, which is why
+	// it takes ctx: the ownership predicate is a WHERE clause like any
+	// other, and it must be in the query rather than applied to the
+	// returned page, because Count runs over these same opts and a
+	// post-filtered page would report a total including rows the caller
+	// cannot see.
+	//
+	// It returns an error so a closure that CANNOT determine the scope
+	// can fail closed. Without one, the only way to say "I could not
+	// resolve who is asking" is to return no filter — which silently
+	// widens the query to every row, the exact failure this seam exists
+	// to prevent. HandleList maps the error the way it maps Entity's, so
+	// an svcerr sentinel keeps its code and a bare error becomes
+	// Internal.
+	Filters func(ctx context.Context, req *Req) ([]orm.QueryOption, error)
 
 	// PageToken / PageSize accessors. PageSize is clamped by the
 	// library; PageToken is decoded by the library.
@@ -691,7 +759,11 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 		// appended to a separate list-query slice below.
 		var filterOpts []orm.QueryOption
 		if op.Filters != nil {
-			filterOpts = op.Filters(req.Msg)
+			var ferr error
+			filterOpts, ferr = op.Filters(ctx, req.Msg)
+			if ferr != nil {
+				return nil, mapFilterErr(ferr)
+			}
 		}
 
 		opts := append([]orm.QueryOption{}, filterOpts...)
@@ -704,7 +776,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 		var orderClause string
 		var orderDesc bool
 		if op.HasOrderBy && op.OrderBy != nil {
-			orderClause, orderDesc = op.OrderBy(req.Msg)
+			orderClause, orderDesc = op.OrderBy(ctx, req.Msg)
 			if orderClause != "" {
 				if err := orm.ValidateOrderBy(orderClause, op.Columns); err != nil {
 					return nil, clientErr(connect.NewError(connect.CodeInvalidArgument, err), ReasonInvalidOrderBy)

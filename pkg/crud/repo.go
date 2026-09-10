@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -96,6 +97,17 @@ type meta struct {
 	// at its Go zero (empty string), the same chokepoint and same
 	// empty-means-unset convention as the PK.
 	fillULIDFields []int
+	// generatedCols are the SQL names of `forge:generated` columns —
+	// GENERATED ALWAYS AS (...) STORED, computed by the database. Create
+	// and Upsert ExcludeColumn each of them so the INSERT never names one,
+	// which postgres rejects outright. columnExcludedFromSet also bars them
+	// from both update allowlists.
+	//
+	// A write-set exclusion rather than reliance on the struct's own
+	// ,nullzero, because nullzero keys off the GO zero: an entity read back
+	// from the database holds the real computed value, and re-inserting it
+	// would send that value literally. See generatedTagValue.
+	generatedCols []string
 }
 
 // sliceCol pairs a NOT NULL slice-typed column's struct-field index with
@@ -322,6 +334,15 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 			}
 		}
 
+		// Generated columns, resolved BEFORE the allowlists below (which
+		// exclude them by name through columnExcludedFromSet) and read by
+		// Create/Upsert to ExcludeColumn each from the INSERT.
+		for _, f := range tbl.Fields {
+			if generatedTagged(f) {
+				r.m.generatedCols = append(r.m.generatedCols, f.Name)
+			}
+		}
+
 		// Two distinct allowlists, both starting from every declared column
 		// EXCEPT the PK, deleted_at, the version column, and — under managed
 		// timestamps — created_at and updated_at (the latter is repo-stamped,
@@ -386,6 +407,28 @@ const versionTagValue = "version"
 // as the PK's own ULID-on-empty behavior below.
 const fillULIDTagValue = "fill=ulid"
 
+// generatedTagValue is the forge-tag value marking a
+// GENERATED ALWAYS AS (...) STORED column: one the DATABASE computes, and
+// which postgres refuses to see named in an INSERT column list or an
+// UPDATE SET clause.
+//
+// The generated struct also carries Bun's ,nullzero for it, which covers
+// the ordinary insert — a zero-valued nullzero field marshals to the
+// literal DEFAULT keyword, which postgres accepts. But ,nullzero keys off
+// the GO zero value, so it cannot cover the case that actually bites: an
+// entity READ back from the database holds the real computed value, and
+// re-inserting it (an idempotent ingest, a seed-or-update, any
+// read-modify-write) would send that non-zero value literally and be
+// rejected. Bun has no tag option for "never name this column in a write",
+// so the repo drops it from the write set itself — see the ExcludeColumn
+// calls in Create and Upsert.
+//
+// NOT derivable from Bun's schema: Bun models a generated column as an
+// ordinary field, and the ,scanonly option that superficially fits is the
+// bug this replaced (it removes the field from Table.Fields entirely, so
+// SELECT stops projecting the column and every read returns the Go zero).
+const generatedTagValue = "generated"
+
 // versionTagged reports whether a Bun field carries forge's version tag.
 // Read off the raw StructField rather than Bun's parsed Tag: the value
 // lives in forge's own tag namespace, which Bun does not parse.
@@ -396,6 +439,37 @@ func versionTagged(f *schema.Field) bool {
 // fillULIDTagged reports whether a Bun field carries forge's fill=ulid tag.
 func fillULIDTagged(f *schema.Field) bool {
 	return f.StructField.Tag.Get(forgeTagKey) == fillULIDTagValue
+}
+
+// generatedTagged reports whether a Bun field carries forge's generated tag.
+func generatedTagged(f *schema.Field) bool {
+	return f.StructField.Tag.Get(forgeTagKey) == generatedTagValue
+}
+
+// columnIsGenerated reports whether col is a GENERATED ALWAYS AS (...)
+// STORED column, resolved from the struct's forge tags in ensureMeta.
+//
+// Read by columnExcludedFromSet, which runs DURING the same ensureMeta pass
+// that populates generatedCols — the generated-column loop deliberately
+// precedes the allowlist loop so this lookup is already answerable.
+func (r *Repo[M]) columnIsGenerated(col string) bool {
+	return slices.Contains(r.m.generatedCols, col)
+}
+
+// excludeGeneratedColumns drops every generated column from an INSERT's
+// column list.
+//
+// Necessary in ADDITION to the struct's own ,nullzero: nullzero keys off
+// the GO zero value, so it emits DEFAULT only while the field is unset. An
+// entity read back from the database carries the real computed value, and
+// re-inserting that entity would name the column with a literal value —
+// which postgres rejects outright for a generated column. Excluding it by
+// name makes the write correct whatever the struct happens to hold.
+func (r *Repo[M]) excludeGeneratedColumns(q *bun.InsertQuery) *bun.InsertQuery {
+	for _, col := range r.m.generatedCols {
+		q = q.ExcludeColumn(col)
+	}
+	return q
 }
 
 // columnExcludedFromSet mirrors the generator's excludedFromSet: columns
@@ -413,6 +487,14 @@ func (r *Repo[M]) columnExcludedFromSet(col string) bool {
 		return true
 	}
 	if r.m.versionColumn != "" && col == r.m.versionColumn {
+		return true
+	}
+	// A generated column is excluded from BOTH allowlists, like the version
+	// column and for a stronger reason: postgres rejects it in a SET clause,
+	// so a mask naming it could not be honored by any means. Barring it from
+	// updatableSet turns that mask into an UnknownFieldError — a legible 400
+	// — instead of a database error surfacing from deep inside the write.
+	if r.columnIsGenerated(col) {
 		return true
 	}
 	if r.m.timestamps && (col == "created_at" || col == "updated_at") {
@@ -531,7 +613,7 @@ func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 	}
 	r.normalizeArrays(entity)
 
-	q := db.Bun().NewInsert().Model(entity)
+	q := r.excludeGeneratedColumns(db.Bun().NewInsert().Model(entity))
 	if r.m.pkAutoInc {
 		q = q.ExcludeColumn(r.m.pkColumn).Returning("?", bun.Ident(r.m.pkColumn))
 		pk := r.pkFieldValue(entity)
@@ -620,7 +702,7 @@ func (r *Repo[M]) Upsert(ctx context.Context, db orm.Context, entity *M) error {
 	}
 	r.normalizeArrays(entity)
 
-	q := db.Bun().NewInsert().Model(entity).
+	q := r.excludeGeneratedColumns(db.Bun().NewInsert().Model(entity)).
 		On("CONFLICT (?) DO UPDATE", bun.Ident(r.m.pkColumn))
 	for _, col := range r.m.updatable {
 		q = q.Set("? = EXCLUDED.?", bun.Ident(col), bun.Ident(col))

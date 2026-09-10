@@ -53,6 +53,49 @@ func warnIfVendorStale(workDir string) {
 	})
 }
 
+// pluginPreflight refuses the render when this binary cannot service
+// kcl_plugin.forge.* calls, which is the case exactly when it was built
+// with CGO_ENABLED=0 (kclplugin.Register is a no-op under !cgo).
+//
+// Without this, the no-op registration is silent until render time and
+// the user sees KCL's own diagnostic — "the plugin package
+// 'kcl_plugin.forge' is not found ... confirm if plugin mode is enabled"
+// — which names a knob forge does not have and never mentions CGO. Every
+// forge environment's KCL imports kcl_plugin.forge, so a CGO-free binary
+// cannot render ANY environment while passing --version, generate, lint
+// and build. The failure belongs here, at the one seam every render
+// passes through, phrased as a runbook.
+//
+// available is a parameter rather than a direct kclplugin.Available()
+// call so the message is testable in a CGO-enabled test binary — build
+// tags cannot be flipped inside one test process.
+func pluginPreflight(available bool, version string) error {
+	if available {
+		return nil
+	}
+	if version == "" || buildinfo.IsDevVersion(version) {
+		// A "(devel)"/+dirty stamp names no ref a module proxy can
+		// serve, so `go install ...@<version>` would hand the user a
+		// command that fails. Point at the contributor install instead.
+		return fmt.Errorf(
+			"this forge binary was built without CGO, so the kcl_plugin.forge namespace is\n"+
+				"  unavailable and no environment can be rendered.\n"+
+				"    expected: a forge built with CGO_ENABLED=1 (registers kcl_plugin.forge in-process)\n"+
+				"    found:    this binary (%s) has no plugin namespace to register\n"+
+				"  Fix: rebuild this checkout with CGO enabled:\n"+
+				"    CGO_ENABLED=1 task install:dev",
+			version)
+	}
+	return fmt.Errorf(
+		"this forge binary was built without CGO, so the kcl_plugin.forge namespace is\n"+
+			"  unavailable and no environment can be rendered.\n"+
+			"    expected: a forge built with CGO_ENABLED=1 (registers kcl_plugin.forge in-process)\n"+
+			"    found:    this binary (%s) has no plugin namespace to register\n"+
+			"  Fix: reinstall with CGO enabled:\n"+
+			"    CGO_ENABLED=1 go install github.com/reliant-labs/forge/cmd/forge@%s",
+		version, version)
+}
+
 // Run renders the KCL at source — a package directory or a single .k
 // file — and returns the raw JSON result.
 //
@@ -66,6 +109,12 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 	// Make kcl_plugin.forge (resolve_port, …) available. Idempotent;
 	// the registry is process-global.
 	kclplugin.Register()
+
+	// Register is a no-op in a CGO-free build, so verify the namespace
+	// is actually there before handing KCL a program that imports it.
+	if err := pluginPreflight(kclplugin.Available(), buildinfo.Version()); err != nil {
+		return nil, err
+	}
 
 	warnIfVendorStale(workDir)
 

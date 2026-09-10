@@ -470,6 +470,127 @@ var proxyPreflightTimeout = 2 * time.Second
 // slow, or a name that does not resolve, is left to the individual call sites:
 // the point here is to catch the unambiguous case where the proxy is simply
 // not running.
+// goModTidyTimeout bounds one staleness probe. `go mod tidy -diff` can reach the
+// module proxy, so it is not guaranteed local; past this the check stands down
+// rather than holding the build hostage to a slow or unreachable proxy.
+var goModTidyTimeout = 45 * time.Second
+
+// goModuleDirs returns the directories whose Go module graph this env's build
+// depends on: the project itself, plus the working directory of every shell
+// build. The second half is what matters — a sibling checkout driven by an
+// external build (`cd ../reliant && npm run build:backend`) has its own go.mod,
+// and that is exactly where the staleness bit, four and a half minutes into a
+// build, after the expensive image had already been produced.
+func goModuleDirs(e *KCLEntities, projectDir string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(projectDir, dir)
+		}
+		dir = filepath.Clean(dir)
+		if _, dup := seen[dir]; dup {
+			return
+		}
+		// No go.mod means this is not a Go module — a project (or an external
+		// build) that is pure npm, or a container image, is simply not our
+		// business.
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+			return
+		}
+		seen[dir] = struct{}{}
+		out = append(out, dir)
+	}
+	add(projectDir)
+	if e != nil {
+		for _, svc := range e.Services {
+			// EffectiveBuildCwd, not Build.Shell.Cwd: BuildConfigEntity is
+			// `json:"-"`, so the raw field is empty on entities that came from
+			// the render — the accessor is what resolves the declaration.
+			add(svc.EffectiveBuildCwd())
+		}
+	}
+	return out
+}
+
+// staleModuleDiff reports whether `go mod tidy -diff` output is an actual diff
+// rather than a failure to run. A diff names the files it compares; a proxy
+// 404, an unresolvable module or a disabled module lookup does not.
+func staleModuleDiff(out []byte) bool {
+	t := string(out)
+	if strings.TrimSpace(t) == "" {
+		return false
+	}
+	return strings.Contains(t, "diff ") && strings.Contains(t, "go.mod")
+}
+
+// preflightGoModulesTidy fails fast when a Go module graph the build depends on
+// is stale, instead of letting the build discover it.
+//
+// It DETECTS; it does not fix. `go mod tidy` rewrites go.mod and go.sum — files
+// the project owns and commits — and it resolves the module graph, so running it
+// implicitly would mean the artifact you just built is not the one your tree
+// describes. That is the same bargain forge already refuses elsewhere: a
+// declaration is the author's, and a tool that silently edits it turns a signal
+// (someone changed imports without tidying) into a diff that lands in whatever
+// unrelated commit comes next.
+//
+// Stands down, deliberately, in three cases:
+//   - no go.mod in a directory: not a Go module, nothing to say
+//   - no `go` on PATH: a project whose Go work happens in a container
+//   - the probe did not produce a DIFF: see staleDiff below
+func preflightGoModulesTidy(ctx context.Context, e *KCLEntities, projectDir string) error {
+	if _, err := exec.LookPath("go"); err != nil {
+		return nil
+	}
+	for _, dir := range goModuleDirs(e, projectDir) {
+		probeCtx, cancel := context.WithTimeout(ctx, goModTidyTimeout)
+		cmd := exec.CommandContext(probeCtx, "go", "mod", "tidy", "-diff")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		// Read the deadline state BEFORE cancelling. cancel() sets Err() to
+		// context.Canceled, so checking it afterwards is true for EVERY probe
+		// and skips them all — which is precisely what it did: the check ran,
+		// saw the diff, and discarded it as "probe did not finish".
+		timedOut := errors.Is(probeCtx.Err(), context.DeadlineExceeded)
+		cancel()
+		if err == nil {
+			continue
+		}
+		// A probe that could not run (proxy unreachable, timeout) is not
+		// evidence of staleness; only a real diff is.
+		if timedOut {
+			fmt.Printf("  go module check skipped for %s (probe did not finish in %s)\n", dir, goModTidyTimeout)
+			continue
+		}
+		// `go mod tidy -diff` exits non-zero for two very different reasons: it
+		// found a difference, or it could not run. Only the first is evidence.
+		//
+		// The distinction is not theoretical. A dev `go.work` that bridges a
+		// module to a local checkout makes tidy unreliable — it ignores the
+		// workspace and resolves from the proxy, so it 404s when the local copy
+		// has an unpublished API. An earlier version of this check tried to
+		// predict that from go.work's SHAPE and stood down whenever it bridged
+		// anything outside the tree. That was too broad by exactly the repos
+		// this check exists for: the bridge usually overrides a PUBLISHED
+		// require, where tidy works fine. Observing the output settles it;
+		// guessing from the configuration did not.
+		if !staleModuleDiff(out) {
+			continue
+		}
+		return fmt.Errorf(
+			"go module graph is stale in %s — the build would fail partway through, after the expensive steps:\n"+
+				"     cd %s && go mod tidy\n"+
+				"   (forge reports this rather than running it: go.mod and go.sum are yours, and tidy\n"+
+				"    resolves the module graph, so an implicit rewrite would change what you just built)",
+			dir, dir)
+	}
+	return nil
+}
+
 func preflightProxyReachable(ctx context.Context, env []string) error {
 	var raw, from string
 	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
@@ -1085,6 +1206,13 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	// when node_modules is current), so hoisting it costs nothing on a warm
 	// run and converts the cold failure from "5 minutes, then broken" into
 	// "broken now". upFrontends still calls it and is then a no-op.
+	// A stale module graph fails the build partway through — after the images
+	// are already built. Detecting it here costs one `go mod tidy -diff` and
+	// turns four minutes of wasted work into an immediate, actionable message.
+	if err := preflightGoModulesTidy(ctx, entities, in.projectDir); err != nil {
+		return err
+	}
+
 	if frontendPhaseEnabled(store, entities) && !opts.noInstall {
 		if err := preflightFrontendDeps(ctx, entities, opts.targets); err != nil {
 			return err

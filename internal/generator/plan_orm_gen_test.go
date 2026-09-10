@@ -1414,24 +1414,80 @@ func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
 	}
 }
 
-// TestBunTag_GeneratedColumnScanOnly proves a GENERATED ALWAYS column gets
-// the ,scanonly Bun tag (Bun reads it, never writes it — postgres rejects
-// writes to a generated column), and that a normal column does not.
-func TestBunTag_GeneratedColumnScanOnly(t *testing.T) {
-	gen := bunTag(ormField{columnName: "search_vector", isGenerated: true, notNull: true})
-	if !strings.Contains(gen, "scanonly") {
-		t.Errorf("generated column should carry ,scanonly; got %s", gen)
+// TestBunTag_GeneratedColumnIsReadableAndNotWritten pins the tag projection
+// for a GENERATED ALWAYS AS (...) STORED column: ,nullzero,skipupdate — and,
+// just as importantly, NOT ,scanonly.
+//
+// The ,scanonly spelling this replaces was wrong on its central claim. It
+// does not mean "read but don't write": Bun's schema/table.go early-returns
+// BEFORE `t.Fields = append(...)` for a scanonly field, and Table.Fields is
+// exactly what query_select.go uses to build the SELECT projection. So a
+// scanonly column is never SELECTed at all and always reads back as the Go
+// zero value. Nothing errors — postgres holds the right number and the app
+// sees 0. (Measured downstream: every money total on a product rendered as
+// $0.00.)
+//
+// What the two replacement options actually buy:
+//
+//   - ,nullzero — a zero-valued field is emitted as the literal DEFAULT
+//     keyword in the INSERT VALUES list, which postgres ACCEPTS for a
+//     generated column (bun query_insert.go marshalsToDefault →
+//     appendStructValues). It also registers the field for RETURNING, so
+//     Create reads the computed value straight back.
+//   - ,skipupdate — keeps the column out of the UPDATE SET clause, which
+//     postgres would otherwise reject.
+//
+// The column stays in Table.Fields either way, so SELECT projects it and
+// reads work. The residual hazard — re-INSERTing an entity read back with a
+// NON-zero computed value, which nullzero would send literally — is closed
+// on the write side by pkg/crud excluding generated columns from the INSERT
+// column set (see Repo.ensureMeta's generatedCols and
+// TestRepo_Create_NonZeroGeneratedColumnIsNotWritten).
+func TestBunTag_GeneratedColumnIsReadableAndNotWritten(t *testing.T) {
+	gen := bunTag(ormField{columnName: "total_cents", isGenerated: true, notNull: true})
+	if strings.Contains(gen, "scanonly") {
+		t.Errorf("generated column must NOT carry ,scanonly — it drops the column from Bun's "+
+			"SELECT projection entirely, so reads silently return the Go zero; got %s", gen)
+	}
+	if !strings.Contains(gen, "nullzero") {
+		t.Errorf("generated column should carry ,nullzero so the INSERT emits DEFAULT (and RETURNING "+
+			"reads the computed value back); got %s", gen)
+	}
+	if !strings.Contains(gen, "skipupdate") {
+		t.Errorf("generated column should carry ,skipupdate — postgres rejects it in an UPDATE SET; got %s", gen)
 	}
 
 	plain := bunTag(ormField{columnName: "title", notNull: true})
-	if strings.Contains(plain, "scanonly") {
-		t.Errorf("non-generated column must not carry ,scanonly; got %s", plain)
+	for _, opt := range []string{"scanonly", "nullzero", "skipupdate"} {
+		if strings.Contains(plain, opt) {
+			t.Errorf("non-generated column must not carry ,%s; got %s", opt, plain)
+		}
 	}
 
-	// A generated array column keeps ,array (for scanning) alongside ,scanonly.
+	// A generated array column keeps ,array (native bind/scan) alongside both.
 	genArr := bunTag(ormField{columnName: "tags_lc", isGenerated: true, isArray: true})
-	if !strings.Contains(genArr, "array") || !strings.Contains(genArr, "scanonly") {
-		t.Errorf("generated array column should carry both ,array and ,scanonly; got %s", genArr)
+	for _, opt := range []string{"array", "nullzero", "skipupdate"} {
+		if !strings.Contains(genArr, opt) {
+			t.Errorf("generated array column should carry ,%s; got %s", opt, genArr)
+		}
+	}
+
+	// Composition: a column that is BOTH generated and immutable/secret/version
+	// must not emit ,skipupdate twice. Bun tolerates the duplicate, but the tag
+	// is read by humans and asserted on by tests, so one occurrence is the
+	// contract.
+	for _, tc := range []struct {
+		name string
+		f    ormField
+	}{
+		{"immutable", ormField{columnName: "total_cents", isGenerated: true, isImmutable: true}},
+		{"secret", ormField{columnName: "total_cents", isGenerated: true, isSecret: true}},
+		{"version", ormField{columnName: "total_cents", isGenerated: true, isVersion: true}},
+	} {
+		got := bunTag(tc.f)
+		if n := strings.Count(got, "skipupdate"); n != 1 {
+			t.Errorf("generated + %s column should carry exactly one ,skipupdate; got %d in %s", tc.name, n, got)
+		}
 	}
 }
 

@@ -1664,9 +1664,32 @@ func resolveDeployDigests(projectDir, envName string, noDigest bool) (digests ma
 		base = map[string]string{}
 	}
 	for image, digest := range binding.Resolved {
+		// Name every image whose freshly-built digest the release is about to
+		// discard. The release winning is correct — a promotion is a
+		// deliberate "these exact bytes ship" — but doing it SILENTLY is how a
+		// successful `forge build --push` becomes a deploy that ships the old
+		// image and still reports a clean rollout. The operator sees a green
+		// deploy and an unchanged app, with nothing connecting the two.
+		if built, ok := base[image]; ok && built != digest {
+			fmt.Printf("  Note: %s was just built as %s, but release %s pins %s — deploying the RELEASE.\n"+
+				"        To ship the build instead: forge build %s --release <version> --push <registry> && forge env promote <version> --to %s\n"+
+				"        Or deploy the built image directly: forge env deploy %s --no-digest --tag <tag>\n",
+				image, shortDigest(built), binding.Release, shortDigest(digest), envName, envName, envName)
+		}
 		base[image] = digest
 	}
 	return base, binding.Release, nil
+}
+
+// shortDigest trims a canonical `sha256:<64 hex>` to a human-comparable head.
+// Two digests differ in their first few bytes in practice, and a full-length
+// pair on one line is unreadable — which defeats the point of printing them.
+func shortDigest(d string) string {
+	const shown = len("sha256:") + 12
+	if len(d) <= shown {
+		return d
+	}
+	return d[:shown]
 }
 
 // buildStateLookupEnvs is the ordered fallback of build-state keys to try

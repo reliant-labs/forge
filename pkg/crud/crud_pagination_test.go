@@ -23,7 +23,7 @@ func paginatedOrderOp(rows []*user) func(context.Context, *connect.Request[listR
 		HasOrderBy:    true,
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
-		OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
+		OrderBy:       func(_ context.Context, r *listReq) (string, bool) { return r.OrderBy, r.Descending },
 		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
 			return rows, nil
 		},

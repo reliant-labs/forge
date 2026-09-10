@@ -120,7 +120,11 @@ type CRUDTemplateData struct {
 	HasPagination bool   // true if any list method uses pagination
 	HasFilters    bool   // true if any list method has filter fields
 	HasOrderBy    bool   // true if any list method has order_by
-	NeedsORM      bool   // true if pagination, filters, or ordering requires orm import
+	// NeedsORM is true when the ops file names pkg/orm — which every real
+	// op now does, because the get/update/delete scoping seams are typed
+	// in orm.QueryOption. Also set by a list feature or a jsonb create
+	// conversion on a service whose methods are all custom-shaped.
+	NeedsORM bool
 	// NeedsCRUDLib is true when at least one method emits a real CRUD
 	// body (i.e. uses pkg/crud and internal/db). When every
 	// method's request/response shape failed validation and we emit
@@ -238,6 +242,47 @@ type CRUDMethodTemplateData struct {
 	// FORGE_SCAFFOLD reminder to stamp each one, instead of the bare
 	// crud.HandleCreate(...) delegation.
 	FillHandlerColumns []string
+	// OwnerColumn names the entity's `forge:owner` column — the column
+	// that says which principal a row belongs to — or "" when the table
+	// declares none.
+	//
+	// It changes no generated behavior: forge injects no WHERE clause,
+	// because only the application knows how a caller's claims map onto
+	// this column's values. What it does is aim the shim's scaffolded
+	// reminder at a NAMED column, with middleware.GetUser already called
+	// and the op seam already wrapped, so satisfying the `unscoped_auth`
+	// gate is filling in one expression rather than writing ten lines.
+	//
+	// Only the first such column is carried. A table with two owner
+	// columns is expressing a composite scope this scaffold cannot guess
+	// at, and the FORGE_SCAFFOLD marker still fails lint until a person
+	// writes the real predicate.
+	OwnerColumn string
+	// OwnerField is OwnerColumn as the Go field name on the generated
+	// entity struct (e.g. "company_id" -> "CompanyId"), for the Create
+	// scaffold, which stamps the column rather than filtering on it.
+	OwnerField string
+	// Scoped is true when the shim should scaffold the scoping wrapper:
+	// an OwnerColumn exists AND the RPC is authenticated.
+	//
+	// Both halves, because they are the same two halves the
+	// `unscoped_auth` gate compares. An owned table reached by a
+	// deliberately public RPC is not a finding there and must not get a
+	// GetUser call here — that call would reject the credential-less
+	// callers the proto advertises as welcome, which is forge quietly
+	// overruling a declaration the author made.
+	Scoped bool
+}
+
+// OwnerColumn returns the entity's `forge:owner` column name, or "" when
+// the table declares none. See CRUDMethodTemplateData.OwnerColumn.
+func OwnerColumn(entity EntityDef) string {
+	for _, col := range entity.Columns {
+		if col.Owner {
+			return col.Name
+		}
+	}
+	return ""
 }
 
 // CreateFieldData holds a field mapping from a create request to the ORM entity.
@@ -520,6 +565,13 @@ func crudShimHeader(data CRUDTemplateData) string {
 		labels = append(labels, c.Label)
 	}
 	middlewarePkg := data.Module + "/pkg/" + crudAuthSeamPkg
+	anyScoped := false
+	for _, m := range data.CRUDMethods {
+		if m.Scoped {
+			anyScoped = true
+			break
+		}
+	}
 
 	paragraphs := []string{
 		"yours: scaffolded once, never touched again — forge will not overwrite this file",
@@ -554,6 +606,24 @@ func crudShimHeader(data CRUDTemplateData) string {
 		"To customize an RPC, replace its delegation with a real implementation right here. CRUD " +
 			"RPCs added later are appended to this file by `forge generate`; your existing " +
 			"content is never modified.",
+	}
+
+	// A file whose methods DO read the caller must not open with three
+	// paragraphs saying they do not. The scoped scaffold exists precisely
+	// so the header's instruction is already carried out below, and a
+	// header that contradicts the code teaches the reader to stop
+	// believing the header — which is how the sixteen-delegation incident
+	// happened in the first place.
+	if anyScoped {
+		paragraphs = append(paragraphs,
+			"",
+			"SOME METHODS BELOW ARE ALREADY SCOPED, so the three paragraphs above describe the "+
+				"OTHERS. An entity here declares a `forge:owner` column, and forge scaffolded "+
+				"the scoping for its authenticated RPCs: claims resolved, op seam wrapped, "+
+				"column named. What forge could not write is the POLICY — how a caller's "+
+				"claims map onto that column's values — so each scoped method leaves that one "+
+				"expression under a FORGE_SCAFFOLD marker, and `forge lint` fails while the "+
+				"marker stands.")
 	}
 
 	var b strings.Builder
@@ -605,6 +675,7 @@ func crudShimImports(data CRUDTemplateData) []string {
 	hasMismatch := false
 	hasReal := false
 	needsDB := false
+	scoped := false
 	for _, m := range data.CRUDMethods {
 		if m.ShapeMismatch {
 			hasMismatch = true
@@ -614,22 +685,43 @@ func crudShimImports(data CRUDTemplateData) []string {
 		if len(m.FillHandlerColumns) > 0 {
 			needsDB = true
 		}
+		if m.Scoped {
+			// The scoping scaffold names *db.<Entity> in its op wrappers
+			// (except on delete, which is keyed by id — but any owned
+			// service has more than one shape, and an unused import
+			// would not compile, so this is decided per method below via
+			// the same flag the template branches on).
+			scoped = true
+			if m.Operation != "delete" {
+				needsDB = true
+			}
+		}
 	}
 	if hasReal {
 		imports = append(imports, crudLibImport)
+	}
+	if scoped {
+		// The GetUser call the scoping scaffold opens with.
+		imports = append(imports, data.Module+"/pkg/"+crudAuthSeamPkg)
 	}
 	if hasMismatch {
 		// The WIRED custom-read-shape body runs a real query: it builds
 		// orm.QueryOption filters and calls db.List<Entity>, projecting
 		// rows via the generated <entity>ToProto helper.
 		imports = append(imports,
-			"github.com/reliant-labs/forge/pkg/orm",
 			"github.com/reliant-labs/forge/pkg/svcerr",
 			data.Module+"/internal/db")
 	} else if needsDB {
-		// The forge:fill=handler scaffold's op.Entity wrapper names the
-		// *db.<Entity> type the build closure returns.
+		// The forge:fill=handler scaffold's op.Entity wrapper and the
+		// scoping scaffold's op wrappers both name the *db.<Entity> type.
 		imports = append(imports, data.Module+"/internal/db")
+	}
+	// orm reaches this file from either scaffold — the custom-read-shape
+	// body's filters or the scoping predicate — so it is added once,
+	// after both, rather than by each branch (two appends of the same
+	// path produce a duplicate import that does not compile).
+	if scoped || hasMismatch {
+		imports = append(imports, "github.com/reliant-labs/forge/pkg/orm")
 	}
 	imports = append(imports, "pb "+data.Module+"/gen/"+data.ProtoPackage+"/v1")
 	return imports
@@ -1176,6 +1268,16 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		fillHandlerColumns = FillHandlerColumns(cm.Entity)
 	}
 
+	// The owner column seeds the shim's scoping scaffold. Only for a
+	// shape the shim actually delegates: a custom-read-shape method has
+	// no op to wrap, and its body already carries its own UNSCOPED note.
+	ownerColumn, ownerField := "", ""
+	if shapeOK {
+		if ownerColumn = OwnerColumn(cm.Entity); ownerColumn != "" {
+			ownerField = naming.ToProtoPascalCase(ownerColumn)
+		}
+	}
+
 	return CRUDMethodTemplateData{
 		MethodName:         cm.Method.Name,
 		InputType:          cm.Method.InputType,
@@ -1204,6 +1306,9 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		MismatchReason:     shapeReason,
 		CustomFilters:      customFilters,
 		FillHandlerColumns: fillHandlerColumns,
+		OwnerColumn:        ownerColumn,
+		OwnerField:         ownerField,
+		Scoped:             ownerColumn != "" && cm.Method.AuthRequired,
 	}, nil
 }
 
@@ -1249,7 +1354,10 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			needsCRUDLib = true
 		}
 	}
-	needsORM := hasPagination || hasFilters || hasOrderBy
+	// Any real op names orm.QueryOption now: the get/update/delete shims
+	// take the variadic scoping options their op fields declare, so the
+	// import is no longer conditional on a list feature.
+	needsORM := needsCRUDLib || hasPagination || hasFilters || hasOrderBy
 	// A json/jsonb pairing reaches pkg/orm (and fmt) from the create
 	// closure too, and a legacy-TEXT timestamp reaches `time` the same way.
 	// The create closure is built per METHOD, so it sits outside the

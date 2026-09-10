@@ -65,7 +65,7 @@ func accountCreateServer(t *testing.T) *httptest.Server {
 		createAccountProcedure,
 		HandleCreate(CreateOp[structpb.Struct, structpb.Struct, *account]{
 			EntityLower: "account",
-			Entity: func(req *structpb.Struct) (*account, error) {
+			Entity: func(_ context.Context, req *structpb.Struct) (*account, error) {
 				return &account{Email: req.GetFields()["email"].GetStringValue()}, nil
 			},
 			Persist: func(ctx context.Context, entity *account) error {
@@ -185,7 +185,7 @@ func TestCreate_ReasonIsTotalOnTheWire(t *testing.T) {
 				createAccountProcedure,
 				HandleCreate(CreateOp[structpb.Struct, structpb.Struct, *account]{
 					EntityLower: "account",
-					Entity:      func(*structpb.Struct) (*account, error) { return &account{}, nil },
+					Entity:      func(context.Context, *structpb.Struct) (*account, error) { return &account{}, nil },
 					Persist:     tc.persist,
 					Pack: func(*account) (*structpb.Struct, error) {
 						return structpb.NewStruct(map[string]any{})

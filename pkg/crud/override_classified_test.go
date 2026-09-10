@@ -37,7 +37,7 @@ func TestOverrideSeams_PreserveClassifiedCodes(t *testing.T) {
 		t.Run("entity/"+tc.name, func(t *testing.T) {
 			h := HandleCreate(CreateOp[createReq, createResp, *user]{
 				EntityLower: "user",
-				Entity:      func(*createReq) (*user, error) { return nil, tc.err },
+				Entity:      func(context.Context, *createReq) (*user, error) { return nil, tc.err },
 				Persist:     func(context.Context, *user) error { return nil },
 				Pack:        func(*user) (*createResp, error) { return &createResp{}, nil },
 			})
@@ -50,7 +50,7 @@ func TestOverrideSeams_PreserveClassifiedCodes(t *testing.T) {
 		t.Run("pack/"+tc.name, func(t *testing.T) {
 			h := HandleCreate(CreateOp[createReq, createResp, *user]{
 				EntityLower: "user",
-				Entity:      func(*createReq) (*user, error) { return &user{}, nil },
+				Entity:      func(context.Context, *createReq) (*user, error) { return &user{}, nil },
 				Persist:     func(context.Context, *user) error { return nil },
 				Pack:        func(*user) (*createResp, error) { return nil, tc.err },
 			})
@@ -69,7 +69,7 @@ func TestOverrideSeams_PreserveClassifiedMessage(t *testing.T) {
 	const msg = "customer_id does not name a customer of this company"
 	h := HandleCreate(CreateOp[createReq, createResp, *user]{
 		EntityLower: "user",
-		Entity:      func(*createReq) (*user, error) { return nil, svcerr.InvalidArgument(msg) },
+		Entity:      func(context.Context, *createReq) (*user, error) { return nil, svcerr.InvalidArgument(msg) },
 		Persist:     func(context.Context, *user) error { return nil },
 		Pack:        func(*user) (*createResp, error) { return &createResp{}, nil },
 	})
@@ -91,7 +91,7 @@ func TestOverrideSeams_UnclassifiedStillRedacted(t *testing.T) {
 	raw := errors.New(`pq: relation "users" does not exist dsn=postgres://app:s3cr3t@db/prod`)
 	h := HandleCreate(CreateOp[createReq, createResp, *user]{
 		EntityLower: "user",
-		Entity:      func(*createReq) (*user, error) { return nil, raw },
+		Entity:      func(context.Context, *createReq) (*user, error) { return nil, raw },
 		Persist:     func(context.Context, *user) error { return nil },
 		Pack:        func(*user) (*createResp, error) { return &createResp{}, nil },
 	})
@@ -123,7 +123,7 @@ func TestOverrideSeams_ReasonHandling(t *testing.T) {
 		err := svcerr.WithReason(svcerr.FailedPrecondition("no active subscription"), "no_subscription")
 		h := HandleCreate(CreateOp[createReq, createResp, *user]{
 			EntityLower: "user",
-			Entity:      func(*createReq) (*user, error) { return nil, err },
+			Entity:      func(context.Context, *createReq) (*user, error) { return nil, err },
 			Persist:     func(context.Context, *user) error { return nil },
 			Pack:        func(*user) (*createResp, error) { return &createResp{}, nil },
 		})
@@ -140,7 +140,7 @@ func TestOverrideSeams_ReasonHandling(t *testing.T) {
 	t.Run("unreasoned gets one", func(t *testing.T) {
 		h := HandleCreate(CreateOp[createReq, createResp, *user]{
 			EntityLower: "user",
-			Entity:      func(*createReq) (*user, error) { return nil, svcerr.NotFound("user") },
+			Entity:      func(context.Context, *createReq) (*user, error) { return nil, svcerr.NotFound("user") },
 			Persist:     func(context.Context, *user) error { return nil },
 			Pack:        func(*user) (*createResp, error) { return &createResp{}, nil },
 		})

@@ -10,6 +10,15 @@ import (
 
 var registerOnce sync.Once
 
+// Available reports whether this binary can service kcl_plugin.forge.*
+// calls — true here, false in the CGO-free build (register_nocgo.go).
+//
+// It is the capability probe callers use BEFORE attempting a render, so a
+// binary that cannot register the namespace says so in forge's own words
+// rather than surfacing KCL's "the plugin package 'kcl_plugin.forge' is
+// not found", which suggests enabling a plugin mode forge does not have.
+func Available() bool { return true }
+
 // Register installs the kcl_plugin.forge namespace into the process-global
 // KCL plugin registry. Idempotent and safe to call before every render.
 //

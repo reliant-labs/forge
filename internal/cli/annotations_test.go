@@ -44,12 +44,12 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 			t.Errorf("markers missing %q", want)
 		}
 	}
-	// Seven proto markers plus the three column-comment markers plus the
+	// Seven proto markers plus the column-comment markers plus the
 	// Go-source markers. The authoritative per-marker pin is
 	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
 	// this only guards the full dump against silent loss.
-	if len(spec.Markers) != 19 {
-		t.Errorf("expected 19 markers, got %d", len(spec.Markers))
+	if len(spec.Markers) != 20 {
+		t.Errorf("expected 20 markers, got %d", len(spec.Markers))
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -222,13 +222,18 @@ func TestAnnotations_KindFilters(t *testing.T) {
 			t.Errorf("--kind column returned a %s marker: %s", m.AppliesTo, m.Name)
 		}
 	}
-	for _, want := range []string{"forge:immutable", "forge:ref", "forge:version", "forge:fill"} {
+	for _, want := range []string{"forge:immutable", "forge:ref", "forge:version", "forge:fill", "forge:owner"} {
 		if !columnNames[want] {
 			t.Errorf("--kind column missing %q", want)
 		}
 	}
-	if len(column.Markers) != 4 {
-		t.Errorf("--kind column returned %d markers, want 4: %+v", len(column.Markers), column.Markers)
+	// Counted from the registry rather than a literal: the whole point of
+	// schemadef.KnownColumnMarkers is that the dump and the vocabulary
+	// forge actually reads cannot drift, and a hardcoded number here
+	// would make adding a marker fail this test for no reason.
+	if len(column.Markers) != len(schemadef.KnownColumnMarkers) {
+		t.Errorf("--kind column returned %d markers, want %d (schemadef.KnownColumnMarkers): %+v",
+			len(column.Markers), len(schemadef.KnownColumnMarkers), column.Markers)
 	}
 
 	// bogus → error.
@@ -297,7 +302,7 @@ message LedgerEntity {
 	}
 
 	// The dump lists exactly the recognized names — the six proto markers,
-	// the four column-comment markers, plus the Go-source markers, each
+	// the column-comment markers, plus the Go-source markers, each
 	// pinned against its real recognizer below so the catalog cannot
 	// advertise a marker nothing reads.
 	got := map[string]bool{}
@@ -315,8 +320,8 @@ message LedgerEntity {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 19 {
-		t.Errorf("expected 19 marker specs, got %d", len(got))
+	if len(got) != 20 {
+		t.Errorf("expected 20 marker specs, got %d", len(got))
 	}
 
 	// Proto markers are pinned against codegen.KnownProtoMarkers — the same

@@ -1,6 +1,6 @@
 ---
 name: crud-overrides
-description: Diverge from generated CRUD without forking the projection — override op fields in your owned handlers_crud.go, and the per-op seams (op.Filters, op.Persist) a per-caller policy attaches to.
+description: Diverge from generated CRUD without forking the projection — override op fields in your owned handlers_crud.go, and the per-op seams (op.Filters, op.Fetch, op.Persist) a per-caller policy attaches to.
 ---
 
 # Diverging From Generated CRUD
@@ -39,23 +39,34 @@ these are the seams that restriction attaches to. What the rule should be is
 yours; these are the mechanics of each op, and the constraints are not obvious
 from the struct:
 
-- **List** — `op.Filters`. The generated closure is **nil unless the RPC
-  declares filter fields**, so capture and nil-check it before calling, or you
-  silently drop the per-field filters. Valid column names are exactly
-  `db.<Entity>Columns`. A predicate belongs in the query, not after it — the
-  response's `total_count` comes from a COUNT over the same filters, so
+Every request-projecting closure takes a `context.Context`, so the caller's
+claims are reachable from all of them. If a table declares `forge:owner`, forge
+scaffolds these overrides for you — see `auth/authorization`; what follows is
+the mechanics for everything else.
+
+- **List** — `op.Filters`, signature
+  `func(ctx, *Req) ([]orm.QueryOption, error)`. The generated closure is **nil
+  unless the RPC declares filter fields**, so capture and nil-check it before
+  calling, or you silently drop the per-field filters. Valid column names are
+  exactly `db.<Entity>Columns`. A predicate belongs in the query, not after it —
+  the response's `total_count` comes from a COUNT over the same filters, so
   post-filtering a page leaves the total reporting rows the caller cannot see.
-- **Get / Update / Delete** — the single-row repo funcs (`db.Get<Entity>ByID`,
-  …) take **no** `orm.QueryOption`, so a check here means fetch first, compare,
-  then delegate. The row is read twice; that is the honest cost.
+  The `error` return is there so a closure that cannot determine the scope can
+  **fail closed**: returning no filter is not "no restriction", it is every row.
+- **Get / Update / Delete** — `op.Fetch`, `op.Persist` and `op.PersistMasked`
+  take trailing `opts ...orm.QueryOption`. Append your predicate and the
+  generated shim composes it into the query, so the check is one statement, not
+  a fetch-then-compare. On Update the predicate is evaluated against the
+  **stored** row, which is what stops a caller reassigning someone else's row by
+  rewriting the owner column in their request.
 - **Anything reachable only via a join** — `orm.QueryOption` is
   `func(*bun.SelectQuery)` and orm ships no join helper, so drop to raw bun:
   `q.Where("id IN (SELECT intake_id FROM assignments WHERE provider_id = ?)", claims.UserID)`.
   For anything the op cannot express, hand-roll against `s.deps.DB`.
-- **Create** — `op.Entity` runs with the request only; it takes **no ctx**, so
-  a value read from the context (claims, a request-scoped id) has to be
-  resolved in the handler body and captured, or applied in `op.Persist`, which
-  does take one.
+- **Create** — `op.Entity`, signature `func(ctx, *Req) (Ent, error)`. Stamp an
+  owner column here, from the claims on `ctx` and never from a wire field: a
+  create that took the owner off the request would let anyone file a row under
+  anyone else's name.
 
 ### A column that is not on the wire, and full-replace Update
 
@@ -93,8 +104,8 @@ error nobody triaged, and wrong for a decision you made — so make the decision
 explicit rather than returning a bare `errors.New`.
 
 ```go
-op.Entity = func(req *pb.CreateJobRequest) (*db.Job, error) {
-    e, err := build(req)
+op.Entity = func(ctx context.Context, req *pb.CreateJobRequest) (*db.Job, error) {
+    e, err := build(ctx, req)
     if err != nil {
         return nil, err
     }

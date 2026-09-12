@@ -138,6 +138,20 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 		}
 	}
 
+	// Every interface type name declared in this package, known before
+	// any method is rendered. A method result naming one of these must
+	// return nil, not `T{}` — a composite literal is legal only for a
+	// struct. The self-returning `WithTx(...) T` on generated stores is
+	// the shape that made this load-bearing.
+	//
+	// Only bare local names are decidable here: this path has the AST
+	// and no type information, so a result typed `pkg.Iface` is left to
+	// the cross-package resolver, which has real types.
+	localIfaceNames := make(map[string]bool, len(entries2))
+	for _, e := range entries2 {
+		localIfaceNames[e.name] = true
+	}
+
 	// Build raw method maps + embed maps, then flatten.
 	directMethods := map[string][]InterfaceMethod{}
 	embeds := map[string][]string{}
@@ -154,7 +168,7 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 			switch ft := field.Type.(type) {
 			case *ast.FuncType:
 				for _, n := range field.Names {
-					m := buildInterfaceMethod(fset, n.Name, ft)
+					m := buildInterfaceMethod(fset, n.Name, ft, localIfaceNames)
 					directMethods[e.name] = append(directMethods[e.name], m)
 				}
 			case *ast.Ident:
@@ -298,7 +312,11 @@ func isIdentPart(c byte) bool {
 // stub-template-ready form: pretty-printed params, results, and a
 // "return <zeroes>" body the template can drop into the generated
 // stub method.
-func buildInterfaceMethod(fset *token.FileSet, name string, ft *ast.FuncType) InterfaceMethod {
+//
+// localIfaceNames is the set of interface type names declared in this
+// package, used to emit nil rather than an invalid `T{}` for a result
+// typed as one of them. May be nil (treated as empty).
+func buildInterfaceMethod(fset *token.FileSet, name string, ft *ast.FuncType, localIfaceNames map[string]bool) InterfaceMethod {
 	m := InterfaceMethod{Name: name}
 
 	// Params: render each field's name(s) + type. We keep the names
@@ -344,12 +362,12 @@ func buildInterfaceMethod(fset *token.FileSet, name string, ft *ast.FuncType) In
 		m.ReturnStatement = ""
 	case 1:
 		m.Results = resultTypes[0]
-		m.ReturnStatement = "return " + zeroValueForType(resultTypes[0])
+		m.ReturnStatement = "return " + zeroValueForResultType(resultTypes[0], localIfaceNames[strings.TrimSpace(resultTypes[0])])
 	default:
 		m.Results = "(" + strings.Join(resultTypes, ", ") + ")"
 		var zeroes []string
 		for _, t := range resultTypes {
-			zeroes = append(zeroes, zeroValueForType(t))
+			zeroes = append(zeroes, zeroValueForResultType(t, localIfaceNames[strings.TrimSpace(t)]))
 		}
 		m.ReturnStatement = "return " + strings.Join(zeroes, ", ")
 	}
@@ -357,16 +375,42 @@ func buildInterfaceMethod(fset *token.FileSet, name string, ft *ast.FuncType) In
 	return m
 }
 
+// zeroValueForResultType returns the Go literal for the zero value of
+// a stub method's result, given whether the CALLER has proven that
+// result type to be an interface.
+//
+// The isInterface flag is the whole point, and it must come from real
+// type information — never from the shape of the type string. A
+// composite literal is legal Go only for a struct, so `T{}` where T is
+// an interface does not compile, and nothing about the rendered text
+// "store.CrewStore" distinguishes it from "store.Snapshot".
+//
+// This was not a corner case: every generated store carries
+// `WithTx(orm.Context) T`, returning the interface itself, so any
+// db.*Store on a handler's Deps emitted an uncompilable
+// helpers_gen_test.go — and that file is Tier-1 regenerated with a
+// forge:hash, so the user could not hand-roll around it. The failure
+// surfaced far from its cause, as `packages failed to load` from the
+// contract linter and `[build failed]` from the test run.
+//
+// Both call sites can prove this cheaply: ResolveCrossPkgInterface
+// holds the types.Type (types.IsInterface), and ParseLocalInterfaces
+// knows every interface name declared in the package.
+func zeroValueForResultType(t string, isInterface bool) string {
+	if isInterface {
+		return "nil"
+	}
+	return zeroValueForType(t)
+}
+
 // zeroValueForType returns the Go literal for the zero value of the
 // given pretty-printed type expression. Mirrors the contract package's
 // zeroValue but lives here so the codegen package doesn't take an
 // import-cycle on internal/generator/contract.
 //
-// The auto-stub use case is forgiving: stubs satisfy validateDeps,
-// they don't satisfy realistic test assertions. A "T{}" fallback for
-// a same-package interface would still typecheck because the stub
-// itself is what implements the interface — we only use these zero
-// values for return statements, not for the receiver type.
+// Callers that can prove a result is an interface must go through
+// zeroValueForResultType instead — this function sees only rendered
+// text and cannot tell an interface from a struct.
 func zeroValueForType(t string) string {
 	t = strings.TrimSpace(t)
 	switch t {
@@ -395,12 +439,11 @@ func zeroValueForType(t string) string {
 		strings.HasPrefix(t, "interface ") {
 		return "nil"
 	}
-	// Named type — most safely emitted as a composite literal.
-	// Worst case (an imported interface): the resulting line won't
-	// compile, the user gets a clear "T{} not allowed for interface"
-	// error, and they can hand-roll a stub override. The marker
-	// `// forge:optional-dep` exists for fields the user explicitly
-	// doesn't want auto-stubbed.
+	// Named type — a composite literal, which is correct and useful
+	// for the struct case this branch now exclusively serves.
+	// Interface results never reach here: they are answered by
+	// zeroValueForResultType from proven type information, because
+	// `T{}` for an interface is not valid Go.
 	return t + "{}"
 }
 

@@ -43,6 +43,15 @@ type PageTemplateData struct {
 	ItemsField   string
 	CreateFields []PageField // Fields for the create form
 	UpdateFields []PageField // Fields for the edit form
+	// GuardedFields are the columns a custom RPC owns
+	// (`// forge:guards <table>.<column>`), removed from UpdateFields and
+	// rendered as disabled rows naming the RPC instead. They are NOT in
+	// the update_mask — that is the point — and they are not in
+	// CreateFields either, since a guard is a rule about transitions
+	// rather than about the initial value.
+	GuardedFields []GuardedPageField
+	// HasGuardedFields gates the edit form's read-only guarded section.
+	HasGuardedFields bool
 	// UpdateEntityFieldCamel is the camelCase request field wrapping the
 	// entity when the update request follows AIP-134 ("task" for
 	// `Task task = 1;`). The edit page then nests the form values under
@@ -1374,7 +1383,111 @@ func listColumnExcluded(fieldName string) bool {
 // resolve enum COLUMNS to their protobuf-es TS type (which the badge cell
 // passes to StatusBadge); an unresolvable enum column degrades to the
 // enum-like string path (String(item.field)).
+// GuardedPageField is one column the scaffolded edit page refuses to write
+// because a custom RPC owns it (`// forge:guards <table>.<column>`), plus
+// the name of that RPC.
+//
+// GuardedBy is the load-bearing half. The column could simply have been
+// dropped — it is off the update_mask either way — but a field that is
+// merely absent reproduces the discoverability failure the marker exists to
+// close: the author who lowered an invoice's total below its collected
+// amount and got a 500 learns nothing from a form control that is not
+// there. A disabled row reading "managed by RecordPayment" is a pointer to
+// the correct API at the one moment the user is looking for it, and it costs
+// a row on a form that already shows every sibling column.
+type GuardedPageField struct {
+	// Name is the camelCase accessor the detail row reads off the entity.
+	Name string
+	// Label is the humanized column name ("Amount Paid Cents").
+	Label string
+	// ProtoName is the snake_case column — the update_mask path this field
+	// is deliberately NOT contributing.
+	ProtoName string
+	// GuardedBy is the RPC that owns the column's writes ("RecordPayment").
+	GuardedBy string
+}
+
+// guardedColumns indexes every `<table>.<column>` the service's RPCs declare
+// with ProtoMarkerGuards, mapped to the RPC that declared it.
+//
+// The marker sits on a FIELD of a request message, but the thing it says is
+// about the enclosing RPC — "this call owns that column" — so the walk is
+// over methods, not over messages: a request message reached some other way
+// would carry the marker with no rpc to name, and a row reading "managed by
+// (unknown)" is worse than the raw write it replaced.
+//
+// Two RPCs guarding one column keeps the FIRST in method order. That is
+// arbitrary but deterministic, and the alternative — naming neither — turns
+// the strongest case (a column so protected that two calls mediate it) into
+// the one that gets no guidance.
+func guardedColumns(svc ServiceDef) map[string]string {
+	guards := map[string]string{}
+	for _, m := range svc.Methods {
+		fq := m.InputTypeFQ
+		if fq == "" {
+			continue
+		}
+		for _, f := range svc.Schemas[fq] {
+			for _, target := range f.Guards {
+				if _, taken := guards[target]; !taken {
+					guards[target] = m.Name
+				}
+			}
+		}
+	}
+	return guards
+}
+
+// attachGuardedFields moves every guarded column off the edit form and onto
+// the page's read-only guarded list.
+//
+// The removal is from UpdateFields specifically because UpdateFields IS the
+// update_mask — both edit templates render `paths: [...]` straight off it —
+// so a guarded field left in the slice is not a cosmetic problem but a
+// guaranteed raw write that bypasses whatever the RPC enforces.
+//
+// Create is deliberately untouched. A guard is a rule about TRANSITIONS
+// (RecordPayment refuses an overpayment, ScheduleJob refuses a double
+// booking); the initial value is the author's to set, and stripping it from
+// Create would leave a NOT NULL column with nothing to fill it.
+func attachGuardedFields(page *PageTemplateData, tableName string, guards map[string]string) {
+	if page == nil || tableName == "" || len(guards) == 0 {
+		return
+	}
+	kept := page.UpdateFields[:0]
+	for _, f := range page.UpdateFields {
+		rpc, guarded := guards[tableName+"."+f.ProtoName]
+		if !guarded {
+			kept = append(kept, f)
+			continue
+		}
+		page.GuardedFields = append(page.GuardedFields, GuardedPageField{
+			Name: f.Name, Label: f.Label, ProtoName: f.ProtoName, GuardedBy: rpc,
+		})
+	}
+	page.UpdateFields = kept
+	page.HasGuardedFields = len(page.GuardedFields) > 0
+
+	// Recompute what the edit form's IMPORT block is gated on. Both are
+	// derived from the field list this function just shortened, and a
+	// stale `true` here ships the pristine scaffold with an import nothing
+	// uses — which the generated frontend's own lint fails on, turning a
+	// correct guard into a build break.
+	page.UpdateEnumImports = collectEnumImports(page.UpdateFields)
+	page.HasDateUpdateFields = false
+	for _, f := range page.UpdateFields {
+		if f.Type == "date" {
+			page.HasDateUpdateFields = true
+		}
+	}
+}
+
 func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) {
+	// Columns a custom RPC owns come off the edit form BEFORE the detail
+	// metadata below is derived, so the guarded rows are already parked on
+	// GuardedFields when the template asks for them.
+	attachGuardedFields(page, entity.TableName, guardedColumns(svc))
+
 	importSource := entity.ProtoFile
 	if importSource == "" {
 		// Entity declared in the service's proto file.

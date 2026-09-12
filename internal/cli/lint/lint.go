@@ -42,10 +42,13 @@ type lintFlags struct {
 	configDeps        bool
 	columnMarkers     bool
 	crudFixtures      bool
+	fixtureDrift      bool
 	protoMarkers      bool
 	protoOptions      bool
 	createNullability bool
 	computedFields    bool
+	readOnlyFields    bool
+	guardedFields     bool
 	vendoredProtos    bool
 	configReach       bool
 	generatedDrift    bool
@@ -101,6 +104,11 @@ Examples:
                                  # scaffolded lifecycle test that names no
                                  # seeded parent row (a FK added after the
                                  # test was scaffolded)
+  forge lint --fixture-drift     # Flag a scaffolded lifecycle test whose
+                                 # seed INSERT the CURRENT schema rejects:
+                                 # a column list naming a GENERATED ALWAYS
+                                 # column, or one statement writing the same
+                                 # value twice into a now-UNIQUE column
   forge lint --proto-markers     # Flag a .proto comment carrying an
                                  # unrecognized forge:* marker (a misspelled
                                  # one does nothing and warns nowhere)
@@ -111,6 +119,16 @@ Examples:
   forge lint --computed-fields   # Flag a forge:computed field that no
                                  # non-generated Go file assigns — nothing
                                  # populates it, so the column default ships
+  forge lint --read-only-fields  # FAIL on a forge:read-only column that
+                                 # nothing populates — no write path, no
+                                 # meaningful DEFAULT, so every row ships as
+                                 # the zero with no other symptom at all
+  forge lint --guarded-fields    # Flag a scaffolded edit page whose
+                                 # update_mask still writes a column a
+                                 # custom rpc guards (forge:guards) — the
+                                 # form bypasses the rpc's own rules, and
+                                 # scaffold-once means regenerating cannot
+                                 # fix it
   forge lint --proto-options     # Flag a (forge.v1.*) annotation naming an
                                  # option field forge's descriptors do not
                                  # define — it compiles, and forge reads it
@@ -171,9 +189,12 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/config and take it as a typed field (warnings only)")
 	cmd.Flags().BoolVar(&flags.columnMarkers, "column-markers", false, "Flag COMMENT ON COLUMN/CONSTRAINT text containing forge: that matches no known column marker (warnings only)")
 	cmd.Flags().BoolVar(&flags.crudFixtures, "crud-fixtures", false, "Flag seeded foreign-key values in handlers_crud_test.go that name no seeded parent row — a foreign key added after the test was scaffolded (warnings only)")
+	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Flag a scaffolded handlers_crud_test.go seed INSERT the current schema rejects — a column list naming a column a later migration made GENERATED ALWAYS (postgres refuses it outright), or one statement writing the same value twice into a column a later migration made UNIQUE (warnings only)")
 	cmd.Flags().BoolVar(&flags.protoMarkers, "proto-markers", false, "Flag .proto comments containing forge: that match no known proto marker — a misspelled marker is inert and warns nowhere (warnings only)")
 	cmd.Flags().BoolVar(&flags.createNullability, "create-nullability", false, "Fail when a field's optional label disagrees between an entity message and its Create<Entity>Request — the flattened request drops write presence silently")
 	cmd.Flags().BoolVar(&flags.computedFields, "computed-fields", false, "Flag a forge:computed field that no non-generated Go file assigns — nothing populates it, so the insert takes the column default (warnings only)")
+	cmd.Flags().BoolVar(&flags.readOnlyFields, "read-only-fields", false, "Flag a forge:read-only field whose column nothing populates — no non-generated Go file assigns it, no meaningful DEFAULT, not GENERATED — so every row ships as the type's zero with no error anywhere. FAILS the build — unlike its computed-field twin, this defect has no symptom other than a human noticing $0.00 on a screen")
+	cmd.Flags().BoolVar(&flags.guardedFields, "guarded-fields", false, "Flag a scaffolded edit page whose update_mask still names a column declared `forge:guards` — saving the form writes it raw and bypasses the rpc that owns it, and pages are scaffold-once so `forge generate` cannot repair them (warnings only)")
 	cmd.Flags().BoolVar(&flags.protoOptions, "proto-options", false, "Flag (forge.v1.*) annotation fields this forge binary's descriptors do not define — a retired or misspelled option field compiles under buf and is read by nothing (warnings only)")
 	cmd.Flags().BoolVar(&flags.vendoredProtos, "vendored-protos", false, "Fail when a vendored proto (proto/forge/v1/forge.proto) differs from the copy embedded in this forge binary — forge's upgrade path does not track these copies, so drift is otherwise invisible")
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
@@ -225,8 +246,7 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 			return err
 		}
 		if store != nil && !store.Features().ContractsEnabled() {
-			fmt.Println("contracts feature is disabled in forge.yaml")
-			return nil
+			return errFeatureDisabled("--contract", "contracts")
 		}
 		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
@@ -243,8 +263,7 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 			return err
 		}
 		if store != nil && !store.Features().MigrationsEnabled() {
-			fmt.Println("migrations feature is disabled in forge.yaml")
-			return nil
+			return errFeatureDisabled("--migration-safety", "migrations")
 		}
 		return runMigrationSafetyLint(cfg)
 	}
@@ -289,6 +308,13 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		}
 		return runWithCwd(func(cwd string) error { return runCrudFixturesLint(cwd, cfg) })
 	}
+	if flags.fixtureDrift {
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runWithCwd(func(cwd string) error { return runFixtureDriftLint(cwd, cfg) })
+	}
 	if flags.protoMarkers {
 		return runProtoMarkersLint(protoDirDefault)
 	}
@@ -297,6 +323,20 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	}
 	if flags.computedFields {
 		return runWithCwd(runComputedFieldsLint)
+	}
+	if flags.readOnlyFields {
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runWithCwd(func(cwd string) error {
+			return runReadOnlyFieldsLint(cwd, migrationsDirFor(cfg))
+		})
+	}
+	if flags.guardedFields {
+		return runWithCwd(func(cwd string) error {
+			return runGuardedFieldsLint(cwd, frontendDirsForLint())
+		})
 	}
 	if flags.protoOptions {
 		return runProtoOptionsLint(protoDirDefault)
@@ -853,6 +893,31 @@ func runScaffoldsLint() error {
 	return nil
 }
 
+// errFeatureDisabled is what an EXPLICITLY REQUESTED lint returns when its
+// feature is off.
+//
+// These arms used to print one line and return nil, which exits 0. A CI job
+// whose entire purpose is `forge lint --migration-safety` then went green
+// having checked nothing, and the green was indistinguishable from a clean
+// tree — the same hazard migrationlint's Result.Skipped exists to prevent one
+// layer down. It was reachable by accident: a partially-written `database:`
+// block left the driver empty and derived migrations off (fixed at the loader
+// in internal/config/derive_fill.go), so a user following forge's own
+// escape-hatch advice silently disabled the check they were working around.
+//
+// An UNFLAGGED `forge lint` still skips the lane — the user asked for whatever
+// applies. Naming the flag is what makes silence wrong: they asked for this
+// lane specifically, and it did not run.
+func errFeatureDisabled(flag, feature string) error {
+	return cliutil.UserErr("forge lint "+flag,
+		fmt.Sprintf("the %s feature is disabled in forge.yaml, so this lint cannot run", feature),
+		"",
+		fmt.Sprintf("set `features.%s: true` in forge.yaml to run it, or drop %s from this command — "+
+			"an unflagged `forge lint` skips the lane instead of failing. "+
+			"Note that %s also derives OFF when `database.driver` is empty or \"none\"",
+			feature, flag, feature))
+}
+
 func runMigrationSafetyLint(cfg *config.ProjectConfig) error {
 	fmt.Println("🔍 Running SQL migration safety lint...")
 	fmt.Println()
@@ -875,7 +940,7 @@ func runMigrationSafetyLint(cfg *config.ProjectConfig) error {
 		return cliutil.UserErr("forge lint --migration-safety",
 			"migration safety violations found",
 			"",
-			migrationlint.DestructiveChangeRemediation)
+			migrationlint.PrimaryRemediation(result.Findings))
 	}
 	return nil
 }

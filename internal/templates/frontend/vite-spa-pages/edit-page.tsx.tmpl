@@ -241,6 +241,34 @@ export default function Edit{{.EntityName}}Page() {
         </div>
         {{- end}}
         {{- end}}
+        {{- if .HasGuardedFields}}
+
+        {{- /* Columns a custom RPC owns, declared with
+               `// forge:guards <table>.<column>` on that rpc's request.
+               They are shown, disabled, and NOT in the update_mask above —
+               writing them through Update would bypass whatever the rpc
+               enforces (an overpayment refusal, a double-booking check) and
+               surface as a raw CHECK violation 500.
+
+               Shown rather than omitted on purpose: a field that is simply
+               absent tells the reader nothing, while a disabled row naming
+               the rpc points at the API that can make the change. Wire the
+               button to that rpc's generated hook, or delete the row. */}}
+        <div className="space-y-3 border-t border-border pt-6">
+          <p className="text-sm font-medium text-ink">Managed elsewhere</p>
+          {{- range .GuardedFields}}
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-muted px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-ink">{{.Label}}</p>
+              <p className="text-xs text-ink-muted">
+                Changed through <code>{{.GuardedBy}}</code>, which enforces the rules for this value.
+              </p>
+            </div>
+            <span className="text-sm tabular-nums text-ink-muted">{String(item?.{{.Name}} ?? "")}</span>
+          </div>
+          {{- end}}
+        </div>
+        {{- end}}
 
         <div className="flex items-center justify-end gap-3 border-t border-border pt-6">
           <Link

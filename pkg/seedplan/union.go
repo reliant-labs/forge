@@ -460,9 +460,24 @@ func buildUnionSpec(
 			continue
 		}
 		for _, c := range other.Columns {
-			if touched[c] {
-				return unionSpec{}, fmt.Sprintf("constraint %q spans %s too and forge cannot prove the two are jointly satisfiable", other.Name, c)
+			if !touched[c] {
+				continue
 			}
+			// When the rival is a biconditional it is not merely an
+			// obstacle — it is a constraint with a known one-line fix, and
+			// fixing it releases THIS union as well. Saying only "cannot
+			// prove the two are jointly satisfiable" is what sent a
+			// dogfood author to delete a production schema constraint.
+			if rewrite, isBiconditional := biconditionalRewrite(other.Def); isBiconditional {
+				return unionSpec{}, fmt.Sprintf(
+					"constraint %q spans %s too and %s — fixing that one releases this constraint as well",
+					other.Name, c, biconditionalAdvice(rewrite, biconditionalDiscriminator(rewrite)))
+			}
+			return unionSpec{}, fmt.Sprintf(
+				"constraint %q spans %s too and forge cannot prove the two are jointly satisfiable — "+
+					"state the combined rule as ONE constraint over those columns (forge can place a single "+
+					"multi-column CHECK, but not two that overlap), or narrow one of them so they no longer share %s",
+				other.Name, c, c)
 		}
 	}
 	return unionSpec{constraint: ck.Name, branches: branches}, ""

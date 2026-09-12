@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -128,6 +129,21 @@ func newDBSeedResetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reset",
 		Short: "Delete seeded rows (child-first) and re-seed (dev-only)",
+		Long: `Delete the rows forge seeded, child-first so foreign keys stay satisfied,
+then seed again from the applied schema.
+
+This is the command to reach for instead of dropping and recreating the
+database by hand. It is the supported way to get back to a clean dev dataset
+after bad seed data, a vocab.yaml change, or hand-edited rows — your schema and
+migration state are left alone, so there is nothing to re-migrate afterwards.
+
+It does NOT repair a broken migration state. reset seeds, and seeding requires
+a fully-migrated schema, so on a database with pending or dirty migrations it
+refuses exactly as 'seed apply' does — clear that first with
+'forge db migrate up' or 'forge db migrate force <version>'.
+
+Only rows matching forge's deterministic seed data are deleted; rows you or
+your application created are left in place.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDBSeedReset(cmd.Context(), dsn, env, migDir)
 		},
@@ -268,17 +284,57 @@ func openSeedDB(ctx context.Context, dsn, migDir string, checkPending bool) (*sq
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 	if checkPending {
-		pending, why, perr := seedplan.MigrationsPending(ctx, db, migDir)
+		block, perr := seedplan.MigrationsPending(ctx, db, migDir)
 		if perr != nil {
 			_ = db.Close()
 			return nil, perr
 		}
-		if pending {
+		if block != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("refusing to seed: %s. Run `forge db migrate up` first", why)
+			return nil, errors.New(seedBlockedMessage(block))
 		}
 	}
 	return db, nil
+}
+
+// seedBlockedMessage turns a MigrationBlock into a refusal that names the next
+// command to run.
+//
+// The two states need OPPOSITE advice, and collapsing them is what made this a
+// dead end in a dogfood run. A PENDING database simply has not caught up:
+// `forge db migrate up` is exactly right. A DIRTY database has a migration
+// that failed part-way, and `migrate up` refuses it again — so advising that
+// sends the author in a circle. They escaped by hand-editing schema_migrations
+// with raw SQL and hand-repairing rows, which is precisely the manual database
+// surgery forge exists to prevent. `forge db migrate force <version>` already
+// existed; the message simply never named it.
+//
+// Order matters in the dirty case. `forge db seed reset` is the blunter exit
+// for a scratch database — and it runs THIS SAME CHECK, so on a dirty database
+// it refuses identically. Naming it first would be a second dead end wearing
+// the first one's clothes, so it is named as the step after the flag clears.
+func seedBlockedMessage(block *seedplan.MigrationBlock) string {
+	if !block.Dirty {
+		return fmt.Sprintf("refusing to seed: %s. Run `forge db migrate up` first", block.Reason)
+	}
+
+	version := block.Version
+	if version == "" {
+		version = "<version>"
+	}
+	return fmt.Sprintf(`refusing to seed: migration %s failed part-way and is marked dirty, so the schema is in an unknown state and no further migration will run until that flag is cleared.
+
+To recover:
+
+  1. Inspect what migration %s actually applied (`+"`forge db introspect`"+`), and finish or undo it by hand so the schema matches what %s intended.
+  2. Clear the flag:  forge db migrate force %s
+  3. Catch up:        forge db migrate up
+  4. Re-seed:         forge db seed apply
+
+Step 2 is the one that unwedges this: re-running `+"`forge db migrate up`"+` on its own will refuse again, because golang-migrate will not run a migration over a dirty version. Forcing records %s as applied WITHOUT running any SQL — which is why step 1 comes first: forge cannot know how much of %s landed, so you are asserting the schema is correct, not asking forge to verify it.
+
+If this is a scratch dev database whose contents do not matter, steps 1-2 are still required to clear the flag; after that `+"`forge db seed reset`"+` wipes the seeded rows and re-seeds in one step.`,
+		version, version, version, version, version, version)
 }
 
 func runDBSeedApply(ctx context.Context, dsn, env, migDir string) error {

@@ -272,8 +272,13 @@ func (p *Plan) assignOneTuple(tp *tablePlan, ix schemadef.Index) (tupleAssign, s
 	}
 	if len(members) == 0 {
 		return tupleAssign{}, fmt.Sprintf(
-			"seed plan: %s index %q is a composite UNIQUE but forge cannot place its values (no column of it supplies distinct values forge may assign) — seeded rows satisfy it only by chance",
-			table, ix.Name), false
+			"seed plan: %s index %q is a composite UNIQUE but forge cannot place its values "+
+				"(no column of it supplies distinct values forge may assign: every member is a key column, "+
+				"a self-reference, a reference to an unseeded or single-row table, or a column another "+
+				"constraint already owns) — give one member a value set forge can deal out, either a "+
+				"single-column `CHECK (%s IN (…))` vocabulary or a reference to a table that seeds more "+
+				"than one row, and forge can place the tuple. Until then seeded rows satisfy it only by chance",
+			table, ix.Name, firstKeyColumn(ix)), false
 	}
 
 	// Widest supply advances fastest, so the fewest columns have to move.
@@ -366,6 +371,18 @@ func (p *Plan) keyValueVariesPerRow(table string, col schemadef.Column) bool {
 		}
 	}
 	return col.Type != schemadef.TypeBool
+}
+
+// firstKeyColumn names a bare column of the index, for use as the concrete
+// example in a refusal. It falls back to a placeholder for an index whose keys
+// are all expressions, so the advice still reads as SQL.
+func firstKeyColumn(ix schemadef.Index) string {
+	for _, k := range ix.KeyList() {
+		if k.Column != "" {
+			return k.Column
+		}
+	}
+	return "<column>"
 }
 
 // tupleSupply classifies one member into the supply of distinct values it can

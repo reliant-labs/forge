@@ -10,7 +10,7 @@ import "text/template"
 // re-deriving Imports / InterfaceNames.
 type templateData struct {
 	Package          string
-	Imports          []string
+	Imports          []ImportDef
 	Interfaces       []InterfaceDef
 	InterfaceNames   map[string]bool   // local interface names (for zeroValue)
 	PrimitiveAliases map[string]string // local named primitive aliases (for zeroValue)
@@ -40,36 +40,36 @@ package {{ .Package }}
 
 {{ if .Imports -}}
 import (
-{{ range .Imports }}	"{{ . }}"
+{{ range .Imports }}	{{ .Declaration }}
 {{ end }})
 {{ end -}}
 
 {{ range $iface := .Interfaces -}}
-// Mock{{ $iface.Name }} is a test mock for the {{ $iface.Name }} interface.
+// {{ $iface.MockName }} is a test mock for the {{ $iface.QualifiedName }} interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
 // assert call counts and captured arguments. Set XxxFunc fields to
 // override per-method behaviour; unset methods return the canonical
-// "Mock{{ $iface.Name }}.<Method>Func not set" error.
-type Mock{{ $iface.Name }} struct {
+// "{{ $iface.MockName }}.<Method>Func not set" error.
+type {{ $iface.MockName }} struct {
 	contractkit.Recorder
 {{ range $iface.Methods }}	{{ .Name }}Func {{ .FuncFieldType }}
 {{ end }}}
 
 {{ range $m := $iface.Methods -}}
 // {{ $m.Name }} records the call and delegates to {{ $m.Name }}Func when set.
-func (m *Mock{{ $iface.Name }}) {{ $m.Name }}({{ $m.ParamSignature }}){{ with $m.ResultSignature }} {{ . }}{{ end }} {
+func (m *{{ $iface.MockName }}) {{ $m.Name }}({{ $m.ParamSignature }}){{ with $m.ResultSignature }} {{ . }}{{ end }} {
 	m.Recorder.Record("{{ $m.Name }}"{{ with $m.RecordArgs }}, {{ . }}{{ end }})
 	if m.{{ $m.Name }}Func != nil {
 		{{ if $m.HasResults }}return {{ end }}m.{{ $m.Name }}Func({{ $m.CallArgs }}){{ if not $m.HasResults }}
 		return{{ end }}
 	}
-{{ if $m.HasResults }}	return {{ $m.ZeroResults (printf "Mock%s" $iface.Name) $.InterfaceNames $.PrimitiveAliases }}
+{{ if $m.HasResults }}	return {{ $m.ZeroResults $iface.MockName $.InterfaceNames $.PrimitiveAliases }}
 {{ end }}}
 
 {{ end -}}
 // Compile-time check.
-var _ {{ $iface.Name }} = (*Mock{{ $iface.Name }})(nil)
+var _ {{ $iface.QualifiedName }} = (*{{ $iface.MockName }})(nil)
 
 {{ end -}}
 `))

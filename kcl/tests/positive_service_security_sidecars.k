@@ -136,7 +136,14 @@ assert_sidecar_sc = _app_pod.containers[1].securityContext.readOnlyRootFilesyste
 # Init container present as initContainers, image + command resolved.
 assert_init_present = len(_app_pod.initContainers) == 1
 assert_init_name = _app_pod.initContainers[0].name == "migrate"
-assert_init_command = _app_pod.initContainers[0].command == ["/app/control-plane", "migrate"]
+# `command` and `args` stay SEPARATE on an init/sidecar container, unlike the
+# primary (where Service.command+args fold into one argv). A sidecar is usually
+# a third-party image whose ENTRYPOINT you want to keep while passing it flags;
+# folding `args` into `command` overrides that entrypoint and the container dies
+# with `exec: "--flag": executable file not found in $PATH`. k8s already models
+# the split, so the projection maps straight onto it.
+assert_init_command = _app_pod.initContainers[0].command == ["/app/control-plane"]
+assert_init_args = _app_pod.initContainers[0].args == ["migrate"]
 assert_init_env = _app_pod.initContainers[0].env[0].valueFrom.secretKeyRef == {name = "db-credentials", key = "url"}
 
 # ── (2b) health probe -> liveness + readiness (k8s) + healthcheck (compose) ─

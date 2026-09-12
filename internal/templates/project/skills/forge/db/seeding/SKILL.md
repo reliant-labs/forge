@@ -213,6 +213,74 @@ redemption path at all. The matcher is narrow on purpose: the terms it reads are
 as is a union whose columns another mechanism owns (a key, a foreign key, a
 UNIQUE column) or that a second multi-column constraint also spans.
 
+### Write a status-lifecycle rule as an implication, never a biconditional
+
+"An approved estimate has an approval timestamp" has two spellings in SQL, and
+only one of them seeds. This is the single highest-cost authoring choice in this
+document, so it is worth the paragraph.
+
+```sql
+-- YES: a one-way implication. Any number of these over the same column seed.
+CONSTRAINT estimates_sent_has_stamp
+    CHECK (status <> 'ESTIMATE_STATUS_SENT'     OR sent_at     IS NOT NULL),
+CONSTRAINT estimates_approved_has_stamp
+    CHECK (status <> 'ESTIMATE_STATUS_APPROVED' OR approved_at IS NOT NULL),
+CONSTRAINT estimates_rejected_has_stamp
+    CHECK (status <> 'ESTIMATE_STATUS_REJECTED' OR rejected_at IS NOT NULL)
+
+-- NO: a biconditional. Not placeable — not even one of them.
+CONSTRAINT estimates_approved_iff
+    CHECK ((status = 'ESTIMATE_STATUS_APPROVED') = (approved_at IS NOT NULL))
+```
+
+The implication is a **status guard**: an exempting arm (`<>`, `NOT IN`, or the
+positive `IN (…)` complement) followed by what must hold when the row is *not*
+exempt. Forge reads the guarded column's vocabulary from its single-column
+`CHECK (status IN (…))`, rewrites each guard into positive branches, and MERGES
+every guard over that column into one union with a branch per status value
+carrying the consequents of every guard that value triggers. Because they are
+merged rather than placed one at a time, they are not rivals to each other and
+the count does not matter — three over one column seed exactly as cleanly as
+one.
+
+A biconditional has no top-level `OR`, so it is neither a guard nor a
+discriminated union; no pass can read it, and `status` and `approved_at` are
+then drawn independently. Measured across six salts, a single biconditional had
+its INSERT rejected on **all six** — `apply` is one transaction, so that is the
+whole dev dataset, every time, not an occasional unlucky run.
+
+The mixing rule is the part that surprises people: **one biconditional also
+takes the well-formed guards down with it.** It still spans `status`, so the
+merged guard union refuses for a constraint it cannot prove itself jointly
+satisfiable with, and two perfectly good implications go unplaced alongside it:
+
+> seed plan: estimates constraints `"estimates_rejected_has_stamp"`,
+> `"estimates_sent_has_stamp"` over status are well-formed and would seed, but
+> `"estimates_approved_iff"` also spans status and states a status rule as a
+> biconditional — fix that ONE constraint and they get placed too. Until then
+> seeded rows satisfy them only by chance
+
+Forge names the blocker and the two innocents separately on purpose: repairing
+the well-formed pair while leaving the biconditional in place produces an
+identical refusal, which is what makes this failure read as "the rewrite does
+not work."
+
+The guarded column must carry a readable vocabulary — a single-column
+`CHECK (status IN (…))` — or there is no value set to draw the un-guarded branch
+from and forge refuses by name rather than inventing domain facts. Entities born
+from proto enums get this automatically (`TEXT` + `CHECK (col IN (...))`); a
+hand-written migration with a bare `TEXT status` is refused even with perfect
+implications.
+
+**You are not giving up the other half of the rule — you are moving it to the
+writer that owns it.** An implication states "approved ⇒ stamped"; the mirror
+("not approved ⇒ NULL stamp") is a single-writer lifecycle invariant, so enforce
+it in the RPC that owns the status transition, which is where it belongs anyway.
+Do the reverse — weakening or deleting constraints round after round until the
+seeder stops complaining — and a dev-tooling limit has permanently weakened a
+production schema. That is the failure this section exists to prevent: it has
+happened, over four rounds, ending with a constraint deleted outright.
+
 **A `BYTEA` column varies per row** (`sample_<column>_<row>`, hex-encoded), so a
 `key_hash BYTEA NOT NULL UNIQUE` carries the full row target instead of capping
 its table at one row. A `length(col) = N` CHECK is honored, and the row

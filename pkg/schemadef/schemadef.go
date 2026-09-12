@@ -70,6 +70,16 @@ import (
 type Table struct {
 	Name    string
 	Columns []Column
+	// Comment is the table's catalog comment (COMMENT ON TABLE), "" when
+	// none. It is where a TABLE-level `forge:*` declaration lives, the twin
+	// of Column.Comment one level up.
+	Comment string
+	// Triggers lists the table's trigger names, sorted. It exists because a
+	// declaration forge started writing at some release is absent from
+	// every table born before it, and a table's ENFORCEMENT outlives the
+	// release that wrote it: AppendOnly reads the guard trigger as a
+	// second, older declaration of the same fact. See appendOnlyGuardTrigger.
+	Triggers []string
 	// PKCols lists primary-key column names in key order.
 	PKCols []string
 	// Indexes lists non-PK indexes (unique and plain).
@@ -228,6 +238,94 @@ const (
 // belonging to every other one. The diagnosis was exactly right and
 // nothing gated on it.
 const ColumnMarkerOwner = "forge:owner"
+
+// TableMarkerAppendOnly declares that a table is an immutable ledger:
+// rows may be inserted and read, never rewritten or erased. It is the
+// STORAGE half of the `forge:append-only` proto marker, and it is what
+// every post-birth pass reads.
+//
+// It is declared in the migration rather than inferred from the proto for
+// the same reason forge:immutable is: whether a row may be rewritten is a
+// fact about STORAGE. The proto marker is a birth-time instruction that
+// stops existing the moment the birth is over — it writes the trigger and
+// omits the Update/Delete RPCs, and then nothing carries it forward. That
+// is precisely how an append-only entity ended up with a generated store
+// exposing UpdateX, UpdateXMasked and DeleteX: the only pass that had ever
+// heard of the marker was the one that wrote the migration.
+//
+// Declaring it on the table closes that, because the applied schema is the
+// one truth every generate-time pass already reads. It is also honest
+// about the general case: a table can be append-only because a hand-written
+// migration made it so, with no proto marker anywhere.
+const TableMarkerAppendOnly = "forge:append-only"
+
+// KnownTableMarkers is the complete set of `forge:*` marker NAMES a
+// COMMENT ON TABLE may carry — the table-level twin of
+// KnownColumnMarkers, and registered for the same reason: a vocabulary
+// nothing enumerates is a vocabulary a typo silently leaves inert.
+var KnownTableMarkers = []string{TableMarkerAppendOnly}
+
+// AppendOnly reports whether the table is an append-only ledger: INSERT and
+// SELECT only, no UPDATE and no DELETE.
+//
+// TWO declarations satisfy it, and the second one is not redundancy — it is
+// the upgrade path.
+//
+//  1. TableMarkerAppendOnly in the catalog comment. The declaration forge
+//     writes at birth, and the one a hand-written migration should use.
+//     Matched as a WHOLE token so a longer marker that merely begins with
+//     this one (a hypothetical `forge:append-only-soft`) cannot read as
+//     this one — the same discipline declaresOwnerMarker applies to
+//     forge:owner, and stricter than Column.HasMarker's substring test.
+//
+//  2. forge's own guard trigger, `<table>_append_only`. Forge wrote that
+//     trigger long before it wrote the comment, so EVERY append-only table
+//     that predates the declaration has the trigger and no comment. Reading
+//     only the comment would mean the tables with the longest-standing
+//     immutability guarantee were the ones that silently lost it — the
+//     generated store would hand back UpdateX/DeleteX for a table postgres
+//     rejects every write to. The trigger is a real declaration of the same
+//     fact, made in the only vocabulary that release had.
+//
+// The trigger arm is matched by forge's exact NAME, never by the shape
+// "some trigger fires on UPDATE". An updated_at stamper is also BEFORE
+// UPDATE and means the opposite. The asymmetry of harm sets that precision:
+// missing the marker silently weakens a guarantee, while inventing one
+// DELETES Update/Delete from a generated store and breaks a build that was
+// correct. A hand-written guard under any other name declares itself with
+// the comment.
+func (t Table) AppendOnly() bool {
+	if appendOnlyTableMarkerRE.MatchString(t.Comment) {
+		return true
+	}
+	guard := appendOnlyGuardTrigger(t.Name)
+	for _, trg := range t.Triggers {
+		if trg == guard {
+			return true
+		}
+	}
+	return false
+}
+
+// AppendOnlyDeclared reports whether the table carries the CATALOG
+// declaration specifically — the comment, not the guard-trigger fallback
+// AppendOnly also accepts.
+//
+// It exists so a test can pin that its fixture really does reproduce the
+// pre-declaration shape. Without it an upgrade test keeps passing if a
+// future change starts writing the comment into the fixture, while proving
+// nothing about the upgrade it was written to cover.
+func (t Table) AppendOnlyDeclared() bool { return appendOnlyTableMarkerRE.MatchString(t.Comment) }
+
+// AppendOnlyGuardTrigger returns the name of the guard trigger forge
+// installs on an append-only table. Exported because the upgrade path has
+// to name the same trigger forge writes, and two spellings of one name is
+// how a migration ends up looking for a guard that is really there.
+func AppendOnlyGuardTrigger(table string) string { return appendOnlyGuardTrigger(table) }
+
+func appendOnlyGuardTrigger(table string) string { return table + "_append_only" }
+
+var appendOnlyTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerAppendOnly) + `(?:[^\w:-]|$)`)
 
 // KnownColumnMarkers is the complete set of `forge:*` marker NAMES a
 // COMMENT ON COLUMN or COMMENT ON CONSTRAINT may carry. It is the single
@@ -425,6 +523,14 @@ const (
 type Conventions struct {
 	SoftDelete bool
 	Timestamps bool
+	// AppendOnly mirrors Table.AppendOnly (a COMMENT ON TABLE
+	// `forge:append-only` declaration). Unlike the two above it is a
+	// DECLARATION rather than a column-shape convention — no arrangement of
+	// columns can express "this table refuses UPDATE" — but it rides here
+	// because every consumer of behavior-by-table already reads
+	// Conventions, and a second channel is how one pass ends up honouring
+	// what another ignores.
+	AppendOnly bool
 	// SearchColumns are the text columns (excluding the PK and managed
 	// columns) the generated search filter matches against.
 	SearchColumns []string
@@ -447,6 +553,7 @@ func DetectConventions(t Table) Conventions {
 	if col, ok := byName[ColDeletedAt]; ok && col.Type == TypeTime {
 		c.SoftDelete = true
 	}
+	c.AppendOnly = t.AppendOnly()
 	// Managed timestamps are type-gated like deleted_at: the pair counts
 	// only when the generator can actually STAMP both columns — time
 	// columns (stamped as time.Time) or legacy TEXT columns (stamped as
@@ -884,6 +991,28 @@ func introspect(db Queryer) ([]Table, error) {
 func introspectTable(ctx context.Context, db Queryer, schema, name string) (Table, error) {
 	t := Table{Name: name}
 
+	// The TABLE's own catalog comment, where a table-level `forge:*`
+	// declaration lives (TableMarkerAppendOnly). Read by regclass for the
+	// same reason col_description is: information_schema exposes no path
+	// to pg_description. Queryer is deliberately one method wide, so this
+	// reads a single row through QueryContext rather than widening the
+	// interface every implementer would then have to satisfy.
+	comment, err := introspectTableComment(ctx, db, schema, name)
+	if err != nil {
+		return t, err
+	}
+	t.Comment = comment
+
+	// Trigger names, which carry a declaration of their own: forge's
+	// append-only guard predates the catalog comment that now declares the
+	// same fact, so a table born before that change is recognized by its
+	// enforcement instead. See Table.AppendOnly.
+	triggers, err := introspectTriggers(ctx, db, schema, name)
+	if err != nil {
+		return t, err
+	}
+	t.Triggers = triggers
+
 	// Columns in ordinal order. udt_name carries the precise postgres
 	// type (int8, timestamptz, jsonb, _text for a text[] …) which
 	// MapDeclaredType already understands; data_type = 'ARRAY' marks
@@ -1225,6 +1354,63 @@ func introspectForeignKeys(ctx context.Context, db Queryer, schema, table string
 		fks[i].Comment = comments[fks[i].Column]
 	}
 	return fks, nil
+}
+
+// introspectTableComment returns a table's COMMENT ON TABLE text, "" when
+// it carries none. A table with no comment returns no row from
+// obj_description's join, so an empty result is the ordinary case and not
+// an error.
+func introspectTableComment(ctx context.Context, db Queryer, schema, table string) (string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT COALESCE(obj_description(cl.oid, 'pg_class'), '')
+		FROM pg_class cl
+		JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+		WHERE ns.nspname = $1 AND cl.relname = $2`, schema, table)
+	if err != nil {
+		return "", fmt.Errorf("read comment on table %s.%s: %w", schema, table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var comment string
+	if rows.Next() {
+		if err := rows.Scan(&comment); err != nil {
+			return "", err
+		}
+	}
+	return comment, rows.Err()
+}
+
+// introspectTriggers returns the table's trigger names, sorted.
+//
+// Read from pg_trigger rather than information_schema.triggers because the
+// latter emits one ROW PER EVENT — a `BEFORE UPDATE OR DELETE` guard
+// appears twice under the same name — and a caller asking "is the guard
+// installed" should not have to de-duplicate the catalog's shape. Internal
+// constraint triggers (tgisinternal: the ones postgres creates to enforce
+// foreign keys) are excluded; they are an implementation detail of a
+// constraint already reported in ForeignKeys.
+func introspectTriggers(ctx context.Context, db Queryer, schema, table string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT DISTINCT tg.tgname
+		FROM pg_trigger tg
+		JOIN pg_class cl ON cl.oid = tg.tgrelid
+		JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+		WHERE ns.nspname = $1 AND cl.relname = $2 AND NOT tg.tgisinternal
+		ORDER BY tg.tgname`, schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("read triggers on %s.%s: %w", schema, table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
 }
 
 // introspectFKComments returns, per constrained column, the foreign-key

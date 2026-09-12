@@ -184,9 +184,15 @@ func tableGuardSpecs(
 		names[g.column] = append(names[g.column], ck.Name)
 	}
 
+	// The biconditionals on this table, by name. A rival in this set is not
+	// just an unplaceable constraint — it is the REASON the guards below are
+	// unplaceable, and it has a known one-line fix, so a refusal that names
+	// it converts several constraints' worth of failure into one edit.
+	biconditionals := biconditionalChecks(t)
+
 	for _, column := range columns {
 		guards := byColumn[column]
-		label := strings.Join(names[column], "\", \"")
+		label := quotedList(names[column])
 		for _, n := range names[column] {
 			claimed[n] = true
 		}
@@ -198,7 +204,7 @@ func tableGuardSpecs(
 			// rather than skipped: the fix is one line of SQL, and the
 			// author can only act on it if they are told.
 			warns = append(warns, fmt.Sprintf(
-				"seed plan: %s constraint%s %q guards %s, but %s declares no value set forge can "+
+				"seed plan: %s constraint%s %s guards %s, but %s declares no value set forge can "+
 					"draw from — add a single-column `CHECK (%s IN (…))` and forge can place %s "+
 					"— until then seeded rows satisfy it only by chance",
 				t.Name, plural(len(guards)), label, column, column, column, itThem(len(guards))))
@@ -207,8 +213,29 @@ func tableGuardSpecs(
 
 		spec, why := buildGuardUnion(t, conv, pools, ordered, column, guards, vocab, names[column])
 		if why != "" {
+			// The collateral-damage case, and the single most expensive
+			// failure in either dogfood run. These guards are well-formed;
+			// they are unplaceable only because a BICONDITIONAL over the
+			// same column cannot be merged with them, so it rivals the
+			// union they were folded into and takes all of them down.
+			//
+			// Saying so is what makes the fix findable. An author who sees
+			// only "forge cannot place their values" repairs one constraint
+			// at a time, gets the identical failure every round because the
+			// biconditional is still there, and concludes the rewrite does
+			// not work — measured, four rounds, ending in deleted schema
+			// constraints.
+			if blocker, rewrite, blocking := guardBlockedByBiconditional(t, biconditionals, names[column], column); blocking {
+				warns = append(warns, fmt.Sprintf(
+					"seed plan: %s constraint%s %s over %s %s well-formed and would seed, but %q also spans %s and %s — "+
+						"fix that ONE constraint and %s %s placed too. Until then seeded rows satisfy %s only by chance",
+					t.Name, plural(len(guards)), label, column, isAre(len(guards)),
+					blocker, column, biconditionalAdvice(rewrite, column),
+					label, areGet(len(guards)), itThem(len(guards))))
+				continue
+			}
 			warns = append(warns, fmt.Sprintf(
-				"seed plan: %s constraint%s %q guard%s %s but forge cannot place %s values (%s) — "+
+				"seed plan: %s constraint%s %s guard%s %s but forge cannot place %s values (%s) — "+
 					"seeded rows satisfy %s only by chance",
 				t.Name, plural(len(guards)), label, plural(len(guards)), column,
 				itsTheir(len(guards)), why, itThem(len(guards))))
@@ -278,6 +305,76 @@ func buildGuardUnion(
 		return unionSpec{}, why
 	}
 	return spec, ""
+}
+
+// guardBlockedByBiconditional reports whether a biconditional over the same
+// column is what made these guards unplaceable.
+//
+// It is deliberately narrow: only a constraint that (a) reads as a
+// biconditional and (b) actually spans the guarded column can be the rival
+// buildUnionSpec refused on. Anything else keeps the original message, because
+// "rewrite it as an implication" is wrong advice for a constraint that is not
+// one.
+func guardBlockedByBiconditional(
+	t schemadef.Table,
+	biconditionals map[string]string,
+	guardNames []string,
+	column string,
+) (blocker, rewrite string, ok bool) {
+	mine := make(map[string]bool, len(guardNames))
+	for _, n := range guardNames {
+		mine[n] = true
+	}
+	for _, ck := range t.Checks {
+		if mine[ck.Name] || len(ck.Columns) < 2 {
+			continue
+		}
+		rw, isBiconditional := biconditionals[ck.Name]
+		if !isBiconditional {
+			continue
+		}
+		for _, c := range ck.Columns {
+			if c == column {
+				return ck.Name, rw, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// quotedList renders names as `"a"`, `"a" and "b"`, `"a", "b" and "c"`.
+//
+// A plain strings.Join with an escaped-quote separator, fed through %q,
+// double-escapes every inner quote and prints `"a\", \"b"` in the user's
+// terminal — observed in the guard refusal before this existed.
+func quotedList(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = fmt.Sprintf("%q", n)
+	}
+	switch len(quoted) {
+	case 0:
+		return ""
+	case 1:
+		return quoted[0]
+	}
+	return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
+}
+
+// isAre / areGet render a verb for a count, so one sentence reads correctly
+// whether it speaks for one guard or several.
+func isAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
+func areGet(n int) string {
+	if n == 1 {
+		return "gets"
+	}
+	return "get"
 }
 
 // plural renders "" or "s" for a count, so one warning sentence reads

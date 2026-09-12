@@ -11,6 +11,7 @@ package codegen
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -158,7 +159,9 @@ func TestScanRawProtoDir_MarkersAndFields(t *testing.T) {
 			t.Errorf("Order field %q not captured", c.name)
 			continue
 		}
-		if got != c.want {
+		// DeepEqual, not ==: SchemaFieldDef carries slice-typed fields
+		// (Guards), so the struct is no longer comparable.
+		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("Order field %q = %+v, want %+v", c.name, got, c.want)
 		}
 	}
@@ -337,7 +340,7 @@ message Holder { Widget widget = 1; map<string, int64> attrs = 2; }
 			t.Errorf("inline-body field %q not captured", c.name)
 			continue
 		}
-		if got != c.want {
+		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("inline-body field %q = %+v, want %+v", c.name, got, c.want)
 		}
 	}

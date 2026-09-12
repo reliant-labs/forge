@@ -88,6 +88,50 @@ generate`. Three decisions live there, all in `db/write-policy`:
 - **`forge:version`** — opt-in optimistic concurrency. Without it the last
   writer wins silently.
 
+One decision lives on the TABLE rather than a column, same `COMMENT ON`
+vocabulary one level up:
+
+- **`forge:append-only`** — `COMMENT ON TABLE payments IS 'forge:append-only';`
+  declares an immutable ledger. Rewriting or erasing a row is a COMPILE error
+  rather than a runtime rejection, because forge omits the mutators from BOTH
+  routes to a write: the `PaymentStore` interface and its adapter lose
+  `UpdatePayment` / `UpdatePaymentMasked` / `DeletePayment`, and so does the
+  package-level delegate set in the entity's generated ORM file —
+  `db.DeletePayment(ctx, tx, id)` does not resolve. (Omitting them from the interface alone was not
+  enough: the exported delegates reopened exactly the write the interface was
+  narrowed to forbid, and the guarantee decayed back to a SQLSTATE P0001 at
+  runtime.) The generated test factory also takes no overrides — applying one
+  would UPDATE the row it just inserted. `forge scaffold entity --from-proto`
+  writes this alongside the guard trigger when the message carries
+  `// forge:append-only`; declare it by hand on a table a hand-written migration
+  made append-only. Correcting a bad row means appending its reversal.
+
+  Reads and `Create` are untouched, as is `WithTx`: append-only means immutable,
+  not invisible.
+
+  Because there is no delegate to call, an `Update`/`Delete` **RPC** declared
+  against an append-only table cannot be wired, and `forge generate` refuses it
+  by name rather than emitting an op that fails as `undefined: db.UpdatePayment`
+  in a forge-owned file. That is a contradiction between two things you own —
+  the RPC in the proto and the comment in the migration — so resolve it in
+  whichever one is wrong: drop the RPC, or drop the declaration in a migration.
+
+  The proto marker alone is not enough, and this is the trap: it is a
+  BIRTH-TIME instruction. It writes the trigger and omits the Update/Delete
+  RPCs, and then nothing carries it forward — every later pass reads the
+  applied schema. Without the table comment an append-only ledger generates a
+  store exposing `UpdateX`/`DeleteX` that type-check fine and fail only when
+  postgres refuses them.
+
+  A table born BEFORE forge wrote this declaration needs nothing from you.
+  Forge installed a `<table>_append_only` guard trigger long before it wrote
+  the comment, and detection reads that trigger as a declaration of the same
+  fact — so an existing ledger keeps generating an immutable store with no
+  migration and no action. Matching is by forge's exact trigger name, never by
+  "some trigger fires on UPDATE": an `updated_at` stamper is also `BEFORE
+  UPDATE` and means the opposite. A hand-written guard under a different name
+  declares itself with the comment.
+
 ### Two routes to the same parent
 
 When a table reaches the same parent two ways — `estimates.customer_id`
@@ -126,6 +170,28 @@ CONSTRAINT total_is_subtotal_plus_tax CHECK (total_cents = subtotal_cents + tax_
 
 The CHECK version costs you the whole chain: forge's write envelopes exclude the column (correctly — no client should assert it), so nothing writes it; `forge db seed` warns it cannot place the value; and the fix people reach for is hand-written CRUD overrides that every future entity needs too. The generated column needs none of that, and no CHECK — the equality is true by construction.
 
+### A status-lifecycle rule is an implication, not a biconditional
+
+"An approved estimate has an approval timestamp" seeds cleanly one way only:
+
+```sql
+-- YES: one-way implication. Any number of these over `status` seed fine.
+CONSTRAINT estimates_approved_has_stamp
+    CHECK (status <> 'ESTIMATE_STATUS_APPROVED' OR approved_at IS NOT NULL)
+
+-- NO: biconditional. `forge db seed apply` cannot place it, and because it
+-- spans `status` it also blocks every well-formed guard on that column.
+CONSTRAINT estimates_approved_iff
+    CHECK ((status = 'ESTIMATE_STATUS_APPROVED') = (approved_at IS NOT NULL))
+```
+
+Forge merges implications over one column into a single union and satisfies them
+together; a biconditional has no top-level `OR`, so nothing can read it and the
+columns are drawn independently. `apply` is one transaction, so the cost is the
+entire dev dataset. Enforce the mirror half (not approved ⇒ NULL stamp) in the
+RPC that owns the transition — it is a single-writer invariant. Full reasoning
+and the mixing rule are in the `db/seeding` skill.
+
 **Derived from OTHER ROWS is the other case, and no generated column can express it.** An invoice's `amount_paid` summing a `payments` table, a job's cost rolling up its materials: postgres cannot reach another table from a generated column. Keep the column plain, mark the proto field `// forge:computed`, and write it from the RPC that owns the change — `forge lint --computed-fields` then holds you to it and fails if nothing assigns it.
 
 ## Just write postgres
@@ -156,6 +222,7 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 - With stampable `created_at` / `updated_at` columns, both are stamped on create and `updated_at` on update; `created_at` is immutable on update. Stamps use the column's projected type: time columns get `time.Now().UTC()`, legacy `TEXT` columns get RFC3339Nano text, nullable columns are stamped through their pointer.
 - `internal/db/*_orm.go` (and `orm_shared.go`) are Tier-1 self-certifying: each carries an embedded `forge:hash` marker, so hand-edits trip the drift guard in any clone or worktree. `forge project disown internal/db/<entity>_orm.go --reason ...` is the sanctioned one-way exit.
 - Each entity exports `<Entity>Columns`, the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.
+- Each entity also exports `<Entity>Constraint<Name>` for every named UNIQUE / CHECK / FOREIGN KEY on its table — the value **postgres** reports in a violation, including the names it auto-derives for inline declarations (`UNIQUE` on `jobs.estimate_id` → `jobs_estimate_id_key`) that appear nowhere in your migration text. Branch on them with `orm.ConstraintName(err)` rather than a hand-written string, so renaming a constraint in a migration is a compile error instead of a branch that stops matching. No constant for the primary key: `pkg/crud` generates the id, so nothing branches on a duplicate-PK insert. See `service-layer` for the classification switch.
 - `Get<Entity>ByID` answers a missing row with `svcerr.NotFound("<entity>")` — return or `svcerr.Wrap` it, never re-derive it. `Update`/`Delete` still give `orm.ErrNoRows`. Other repo errors → `Internal`, no SQL on the wire.
 - The delegates above are free functions, so `internal/db/store_gen.go` also exports them as INTERFACES: `<Entity>Store` per entity, and `Store` embedding all of them. That is what a service's `Deps` field names — **never hand-write an interface plus a passthrough adapter over the ORM**; forge generates both and asserts at generate time that they match. Depend on the narrowest one that works.
 - **To see what a store offers, read the interface, not forge:** `go doc ./internal/db Store` or `go doc ./internal/db <Entity>Store` prints the full method set (`go doc` renders interfaces in full — it is only structs it collapses). `forge project shapes --kind store` lists every one with its `file:line`. Do **not** go looking in forge's generator source for this: that code describes every project rather than your schema, and a measured run lost 11 turns to exactly that detour.
@@ -172,10 +239,26 @@ Each takes `--dsn "$DATABASE_URL"`:
 forge db migration new <name>      # create an empty migration pair
 forge db migrate up                # apply pending migrations
 forge db migrate status            # show what's applied
-forge db migrate force <version>   # recover from a dirty migration
+forge db migrate force <version>   # clear a dirty migration state (runs no SQL)
 forge db introspect                # show live schema
 task dev-psql                      # interactive shell (no --dsn)
 ```
+
+### Recovering a wedged dev database
+
+Never hand-edit `schema_migrations` or `DROP DATABASE` — measured, two runs did exactly that because they missed the two commands above. Match the symptom:
+
+| Symptom | Do this |
+|---|---|
+| `migration N failed part-way and is marked dirty` — nothing will migrate until the flag clears, and `migrate up` refuses too | repair the schema, then `forge db migrate force N`, then `migrate up` |
+| `applied version N is behind latest on disk M` — nothing is broken | `forge db migrate up` |
+| dev rows are stale, wrong, or hand-mangled | `forge db seed reset` |
+
+`migrate force` **asserts** a version is applied without verifying it — forge cannot know how much of the failed migration landed. Inspect with `forge db introspect` and finish or undo the partial migration **first**; forcing past SQL that never ran leaves the schema permanently behind what forge thinks is applied. Use it only for a migration that genuinely failed mid-flight, never to skip one.
+
+`seed reset` fixes *data*, not migration state: it seeds, so on a dirty database it refuses just like `seed apply`. Clear the migration state first.
+
+**Correcting a born schema** (an enum gained a value, a constraint was wrong) is a *migration*, not a recovery: write one and `forge generate`.
 
 Dev DSN convention: `postgres://postgres:postgres@localhost:5432/<project>?sslmode=disable`
 

@@ -90,8 +90,22 @@ func TestLintHelpSurface(t *testing.T) {
 		"create-nullability",
 		"crud-fixtures",
 		"fix",
+		// The crud-fixtures sibling, visible for the same reason and then
+		// some: a scaffold-once seed block that names a now-GENERATED
+		// column is rejected by postgres outright, in test setup, with an
+		// error naming neither the fixture nor the migration. Forge knows
+		// the right answer — the regenerated factory omits the column — but
+		// cannot deliver it to a file it never rewrites, so this lane is
+		// the only place the drift is legible.
+		"fixture-drift",
 		"frontend-stores",
 		"generated-drift",
+		// Visible because it is the ONLY signal for a defect regenerating
+		// cannot reach: scaffolded pages are write-if-absent, so an edit
+		// page that predates a `forge:guards` marker keeps writing the
+		// guarded column forever. It typechecks, nothing logs, and the
+		// symptom is a user's save returning a 500 from the raw CHECK.
+		"guarded-fields",
 		"help-dev",
 		"json",
 		"migration-safety",
@@ -106,6 +120,14 @@ func TestLintHelpSurface(t *testing.T) {
 		// Visible for the same reason: it is a continuous rule about the
 		// user's own protos, and the only place the failure surfaces.
 		"proto-options",
+		// The computed-fields twin for the marker where the failure is
+		// SILENT rather than merely unreported. forge:read-only strips a
+		// field from every write envelope and promises nothing in return,
+		// so a plain zero-default money column is written by nothing at
+		// all — and unlike the computed case the author declared no
+		// obligation anyone could check. Visible for the same reason:
+		// a human reading $0.00 on a screen is otherwise the only detector.
+		"read-only-fields",
 		// User surface, not maintainer: it is the answer to "how do I lint
 		// the backend without paying for the Node toolchain", and it mirrors
 		// the frontend-skipping vocabulary `forge build` already uses.

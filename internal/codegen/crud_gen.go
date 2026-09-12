@@ -1312,6 +1312,29 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	}, nil
 }
 
+// appendOnlyCRUDConflict reports the mutating-RPC-on-an-immutable-table
+// contradiction, in terms of the two declarations that disagree and the two
+// ways out. Nil for every other combination, including Create/Get/List on
+// an append-only table — append-only removes the mutating verbs only.
+func appendOnlyCRUDConflict(cm CRUDMethod) error {
+	if !cm.Entity.AppendOnly {
+		return nil
+	}
+	if cm.Operation != "update" && cm.Operation != "delete" {
+		return nil
+	}
+	verb := map[string]string{"update": "Update", "delete": "Delete"}[cm.Operation]
+	return fmt.Errorf(
+		"rpc %s cannot be generated: table %q is declared append-only "+
+			"(COMMENT ON TABLE %s IS 'forge:append-only', or forge's %s_append_only guard trigger), "+
+			"so forge emits no db.%s%s delegate for it and the database rejects the write outright. "+
+			"Either drop the %s RPC and its request/response messages from the proto — correcting a bad "+
+			"row in a ledger means appending its reversal — or, if the table was never meant to be "+
+			"immutable, remove the declaration in a migration",
+		cm.Method.Name, cm.Entity.TableName, cm.Entity.TableName, cm.Entity.TableName,
+		verb, cm.Entity.Name, cm.Method.Name)
+}
+
 func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) (CRUDTemplateData, error) {
 	// Synthesized Package is a placeholder only: GenerateCRUDHandlers
 	// overrides it with the disk-resolved package clause before rendering
@@ -1323,6 +1346,22 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 
 	var methods []CRUDMethodTemplateData
 	for _, cm := range crudMethods {
+		// An Update/Delete RPC against a `forge:append-only` table is a
+		// contradiction between two things the USER owns — the RPC in the
+		// proto and the table comment in the migration — so forge cannot
+		// pick a winner. It can only choose which failure the user gets.
+		//
+		// Generating the op anyway produces the worst one: the ops
+		// template calls db.Update<Entity> / db.Delete<Entity>, which the
+		// ORM generator no longer emits for an append-only table, so the
+		// build fails with `undefined: db.UpdatePayment` inside a
+		// forge-owned file the user is told never to edit — a compile
+		// error that names neither declaration that caused it. Name the
+		// disagreement here instead, while both halves are still in hand.
+		if err := appendOnlyCRUDConflict(cm); err != nil {
+			return CRUDTemplateData{}, err
+		}
+
 		// Strict filter classification: an unmappable list filter fails the
 		// generate LOUDLY (phantom-column queries silently match nothing).
 		mtd, err := crudMethodFacts(svc, cm, true)

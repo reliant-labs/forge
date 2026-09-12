@@ -175,26 +175,34 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 // Called by the loader (LoadProject) — code that hand-constructs a
 // ProjectConfig in tests without calling this keeps the historical
 // zero-value semantics.
+//
+// Prefer ApplyDerivedDefaultsFromNode when the yaml.Node is in hand: a
+// partially-written section needs FIELD-level defaulting, and only the node
+// knows which keys the user actually wrote. See derive_fill.go for why a
+// zero-value test cannot substitute.
 func ApplyDerivedDefaults(c *ProjectConfig) {
+	ApplyDerivedDefaultsFromNode(c, nil)
+}
+
+// ApplyDerivedDefaultsFromNode is ApplyDerivedDefaults with the parsed
+// forge.yaml mapping in hand, so an absent FIELD inside a present section
+// still gets its derived default.
+//
+// A nil root reproduces the historical whole-section behaviour, which is what
+// the no-node callers want: they are filling a config nobody hand-wrote, so
+// there are no user-written keys to respect.
+func ApplyDerivedDefaultsFromNode(c *ProjectConfig, root *yaml.Node) {
 	d := sectionDefaults(c)
-	if sectionIsZero(c.Database) {
-		c.Database = d.Database
+	present := map[string]bool{}
+	if root != nil {
+		present = presentKeys(root)
 	}
-	if sectionIsZero(c.CI) {
-		c.CI = d.CI
-	}
-	if sectionIsZero(c.Deploy) {
-		c.Deploy = d.Deploy
-	}
-	if sectionIsZero(c.Docker) {
-		c.Docker = d.Docker
-	}
-	if sectionIsZero(c.K8s) {
-		c.K8s = d.K8s
-	}
-	if sectionIsZero(c.Lint) {
-		c.Lint = d.Lint
-	}
+	fillSectionDefaults(&c.Database, d.Database, "database", present)
+	fillSectionDefaults(&c.CI, d.CI, "ci", present)
+	fillSectionDefaults(&c.Deploy, d.Deploy, "deploy", present)
+	fillSectionDefaults(&c.Docker, d.Docker, "docker", present)
+	fillSectionDefaults(&c.K8s, d.K8s, "k8s", present)
+	fillSectionDefaults(&c.Lint, d.Lint, "lint", present)
 	// Features derivation runs AFTER the database fill — the orm /
 	// migrations rules read the effective driver.
 	c.Features.derived = DeriveFeatureDefaults(c)
@@ -211,24 +219,16 @@ func ApplyDerivedDefaults(c *ProjectConfig) {
 func NormalizeForWrite(c *ProjectConfig) *ProjectConfig {
 	out := *c
 	d := sectionDefaults(c)
-	if sectionsEquivalent(out.Database, d.Database) {
-		out.Database = DatabaseConfig{}
-	}
-	if sectionsEquivalent(out.CI, d.CI) {
-		out.CI = CIConfig{}
-	}
-	if sectionsEquivalent(out.Deploy, d.Deploy) {
-		out.Deploy = DeployConfig{}
-	}
-	if sectionsEquivalent(out.Docker, d.Docker) {
-		out.Docker = DockerConfig{}
-	}
-	if sectionsEquivalent(out.K8s, d.K8s) {
-		out.K8s = K8sConfig{}
-	}
-	if sectionsEquivalent(out.Lint, d.Lint) {
-		out.Lint = LintConfig{}
-	}
+	// Field-level, mirroring the field-level fill: a section that matches
+	// its default in every field collapses to the zero value and vanishes
+	// from forge.yaml, while a section with one real override keeps that
+	// override alone instead of dragging the whole default block along.
+	stripSectionDefaults(&out.Database, d.Database)
+	stripSectionDefaults(&out.CI, d.CI)
+	stripSectionDefaults(&out.Deploy, d.Deploy)
+	stripSectionDefaults(&out.Docker, d.Docker)
+	stripSectionDefaults(&out.K8s, d.K8s)
+	stripSectionDefaults(&out.Lint, d.Lint)
 
 	// Feature flags: drop every explicit value that matches derivation.
 	// Recompute fresh against the EFFECTIVE shape (absent sections filled

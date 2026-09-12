@@ -33,6 +33,57 @@ import (
 type InterfaceDef struct {
 	Name    string
 	Methods []MethodDef
+	// Qualifier is the package name to reach this interface by when it is
+	// declared in ANOTHER package of the module (e.g. "db" for a
+	// db.EstimateStore named in a Deps field). Empty for the ordinary
+	// case: an interface declared in this package's own contract.go.
+	//
+	// The mock TYPE is always unqualified — MockEstimateStore, in the
+	// consuming package — because the mock is generated here. Only the
+	// compile-time check refers back to the original, as
+	// `var _ db.EstimateStore = (*MockEstimateStore)(nil)`.
+	Qualifier string
+	// Collides is set when this foreign interface's bare name is also
+	// declared locally, so MockName must disambiguate. See MockName.
+	Collides bool
+}
+
+// QualifiedName is how the interface must be written inside the package
+// being generated: bare when it is local, package-qualified when it was
+// discovered through a Deps field pointing at another package.
+func (i InterfaceDef) QualifiedName() string {
+	if i.Qualifier == "" {
+		return i.Name
+	}
+	return i.Qualifier + "." + i.Name
+}
+
+// MockName is the generated mock's type name. A foreign interface whose
+// bare name collides with something the package already declares is
+// prefixed with its qualifier — forge's own internal/docs is the live
+// case: it declares Service AND depends on contract.Service, so the
+// plain name would emit two MockService types and the package would not
+// build. Disambiguate only on collision, so the overwhelmingly common
+// case keeps the name the scaffolded comment promises (MockEstimateStore,
+// not MockDbEstimateStore).
+func (i InterfaceDef) MockName() string {
+	if i.Collides && i.Qualifier != "" {
+		return "Mock" + capitalizeASCII(i.Qualifier) + i.Name
+	}
+	return "Mock" + i.Name
+}
+
+// capitalizeASCII upper-cases the first byte. Go package names are ASCII
+// by convention, so this avoids strings.Title (deprecated) and the
+// unicode casing rules it would drag in.
+func capitalizeASCII(s string) string {
+	if s == "" {
+		return s
+	}
+	if s[0] >= 'a' && s[0] <= 'z' {
+		return string(s[0]-('a'-'A')) + s[1:]
+	}
+	return s
 }
 
 // MethodDef represents a single method on an interface.
@@ -57,9 +108,14 @@ type ParamDef struct {
 
 // File holds everything extracted from a single contract.go.
 type File struct {
-	Package    string
-	Imports    map[string]string // alias/name → import path (e.g. "sql" → "database/sql")
-	Interfaces []InterfaceDef
+	Package string
+	Imports map[string]string // alias/name → import path (e.g. "sql" → "database/sql")
+	// ExplicitImports records aliases that were written explicitly in
+	// contract.go (for example `controlplanev1 ".../v1"`). Keeping that
+	// bit lets the mock renderer preserve aliases whose spelling cannot be
+	// recovered from the import path alone.
+	ExplicitImports map[string]bool
+	Interfaces      []InterfaceDef
 	// InterfaceNames is the set of interface type names defined in this file.
 	// Used by the zero-value generator to emit "nil" for interface-typed
 	// returns instead of the invalid composite literal "T{}".
@@ -71,6 +127,12 @@ type File struct {
 	// underlying primitive's zero (`""`, `0`, `false`) instead of the
 	// invalid composite literal `BalanceCapReason{}`.
 	PrimitiveAliases map[string]string
+	// ForeignImports are import paths required by interfaces discovered
+	// through the Deps struct rather than through contract.go. They are
+	// held separately because collectImports only sees contract.go's own
+	// import block, and a db.EstimateStore's signatures routinely mention
+	// packages contract.go never imports (orm, the db package itself).
+	ForeignImports map[string]ImportDef
 }
 
 // Options controls optional aspects of mock generation. The zero value is
@@ -176,6 +238,7 @@ func ParseContract(path string) (*File, error) {
 	cf := &File{
 		Package:          file.Name.Name,
 		Imports:          make(map[string]string),
+		ExplicitImports:  make(map[string]bool),
 		InterfaceNames:   make(map[string]bool),
 		PrimitiveAliases: make(map[string]string),
 	}
@@ -219,6 +282,7 @@ func ParseContract(path string) (*File, error) {
 		var name string
 		if imp.Name != nil {
 			name = imp.Name.Name
+			cf.ExplicitImports[name] = true
 		} else {
 			// Default name is the last path element.
 			parts := strings.Split(path, "/")
@@ -304,6 +368,33 @@ func ParseContract(path string) (*File, error) {
 		}
 		cf.Interfaces = append(cf.Interfaces, iface)
 	}
+
+	// Interfaces this package DEPENDS on but does not declare — the
+	// db.*Store shape forge tells every user to put in Deps. Without
+	// these the scaffolded contract_test.go's promise of a
+	// "pipeline.MockStore" is false, and users hand-roll the fake that
+	// same comment forbids. See deps_stores.go.
+	foreign, foreignImports := foreignInterfaces(dir, fset, cf.Imports, cf.ExplicitImports)
+	localNames := make(map[string]bool, len(cf.Interfaces))
+	for _, iface := range cf.Interfaces {
+		localNames[iface.Name] = true
+	}
+	for _, iface := range foreign {
+		// Two foreign interfaces from different packages can share a bare
+		// name too, so the collision test is against everything already
+		// claimed, not just contract.go's own.
+		if localNames[iface.Name] {
+			iface.Collides = true
+		}
+		localNames[iface.Name] = true
+		// Registered under the QUALIFIED name because that is the form
+		// the zero-value generator sees in a rendered signature: a
+		// WithTx returning db.EstimateStore must collapse to nil, not to
+		// the invalid composite literal db.EstimateStore{}.
+		cf.InterfaceNames[iface.QualifiedName()] = true
+		cf.Interfaces = append(cf.Interfaces, iface)
+	}
+	cf.ForeignImports = foreignImports
 
 	return cf, nil
 }
@@ -487,35 +578,35 @@ func renderExpr(expr ast.Expr, fset *token.FileSet) string {
 
 // collectImports determines which imports from the source file are needed
 // by the generated code for the given interfaces.
-func collectImports(cf *File, ifaces []InterfaceDef) []string {
-	needed := make(map[string]bool)
+func collectImports(cf *File, ifaces []InterfaceDef) []ImportDef {
+	needed := make(map[string]ImportDef)
 	for _, iface := range ifaces {
 		for _, m := range iface.Methods {
 			for _, p := range m.Params {
-				collectFromTypeExpr(p.TypeExpr, cf.Imports, needed)
+				collectFromTypeExpr(p.TypeExpr, cf.Imports, cf.ExplicitImports, needed)
 			}
 			for _, r := range m.Results {
-				collectFromTypeExpr(r.TypeExpr, cf.Imports, needed)
+				collectFromTypeExpr(r.TypeExpr, cf.Imports, cf.ExplicitImports, needed)
 			}
 		}
 	}
 
-	var imports []string
-	for imp := range needed {
+	var imports []ImportDef
+	for _, imp := range needed {
 		imports = append(imports, imp)
 	}
-	sort.Strings(imports)
+	sort.Slice(imports, func(i, j int) bool { return imports[i].Path < imports[j].Path })
 	return imports
 }
 
 // collectFromTypeExpr scans a type expression string for package references
 // and adds the corresponding import paths to the needed set.
-func collectFromTypeExpr(typeExpr string, importMap map[string]string, needed map[string]bool) {
+func collectFromTypeExpr(typeExpr string, importMap map[string]string, explicit map[string]bool, needed map[string]ImportDef) {
 	for alias, path := range importMap {
 		// Look for "alias." in the type expression. This handles cases like
 		// "context.Context", "*sql.Rows", "sql.Result", "func([]byte) ([]byte, error)".
 		if strings.Contains(typeExpr, alias+".") {
-			needed[path] = true
+			needed[path] = ImportDef{Path: path, Name: alias, Explicit: explicit[alias]}
 		}
 	}
 }
@@ -538,7 +629,14 @@ func renderMock(cf *File, opts Options) ([]byte, error) {
 	// import even for interfaces that have zero methods, so include it
 	// whenever the file declares at least one interface.
 	if len(cf.Interfaces) > 0 {
-		addImport(&imports, contractkitImport)
+		addImport(&imports, ImportDef{Path: contractkitImport, Name: "contractkit"})
+	}
+
+	// Foreign dep interfaces bring their own imports: collectImports only
+	// consults contract.go's import block, which knows nothing about the
+	// packages a db.EstimateStore's signatures mention.
+	for _, imp := range cf.ForeignImports {
+		addImport(&imports, imp)
 	}
 
 	// Union the project-supplied extras into a fresh copy of the contract's
@@ -607,27 +705,34 @@ func writeMock(cf *File, dir string, opts Options) error {
 }
 
 // addImport adds an import path if not already present.
-func addImport(imports *[]string, path string) {
-	for _, p := range *imports {
-		if p == path {
+func addImport(imports *[]ImportDef, imp ImportDef) {
+	for _, existing := range *imports {
+		if existing.Path == imp.Path {
 			return
 		}
 	}
-	*imports = append(*imports, path)
-	sort.Strings(*imports)
+	*imports = append(*imports, imp)
+	sort.Slice(*imports, func(i, j int) bool { return (*imports)[i].Path < (*imports)[j].Path })
 }
 
 // ParamSignature returns the Go parameter list for a method, e.g. "ctx context.Context, id string".
 func (m MethodDef) ParamSignature() string {
 	var parts []string
-	for _, p := range m.Params {
-		if p.Name != "" {
-			parts = append(parts, p.Name+" "+p.TypeExpr)
-		} else {
-			parts = append(parts, p.TypeExpr)
-		}
+	for i, p := range m.Params {
+		parts = append(parts, concreteParamName(p, i)+" "+p.TypeExpr)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// concreteParamName returns a usable identifier for a parameter on the
+// generated concrete mock method. Interface declarations may omit names (as
+// protoc-gen-connect-go does) or spell them `_`; concrete method bodies cannot
+// record or forward either form, so Forge supplies stable positional names.
+func concreteParamName(p ParamDef, index int) string {
+	if p.Name == "" || p.Name == "_" {
+		return fmt.Sprintf("p%d", index)
+	}
+	return p.Name
 }
 
 // ResultSignature returns the Go result type list, e.g. "(string, error)" or "error".
@@ -660,11 +765,8 @@ func (m MethodDef) ResultSignature() string {
 // string and the template emits Record("Method") with no extra args.
 func (m MethodDef) RecordArgs() string {
 	var parts []string
-	for _, p := range m.Params {
-		name := p.Name
-		if name == "" {
-			name = "_"
-		}
+	for i, p := range m.Params {
+		name := concreteParamName(p, i)
 		// For variadic params, pass the slice as a single value rather
 		// than spreading it — Recorder.Record uses ...any internally,
 		// so spreading would scatter the elements across multiple
@@ -678,13 +780,8 @@ func (m MethodDef) RecordArgs() string {
 // e.g. "ctx, id" or "ctx, query, args...".
 func (m MethodDef) CallArgs() string {
 	var parts []string
-	for _, p := range m.Params {
-		name := p.Name
-		if name == "" {
-			// Unnamed params — should not happen in well-formed contracts,
-			// but generate a placeholder.
-			name = "_"
-		}
+	for i, p := range m.Params {
+		name := concreteParamName(p, i)
 		if p.Variadic {
 			parts = append(parts, name+"...")
 		} else {
@@ -776,12 +873,9 @@ func (m MethodDef) HasContext() bool {
 
 // ContextParamName returns the name of the context.Context parameter, or empty string.
 func (m MethodDef) ContextParamName() string {
-	for _, p := range m.Params {
+	for i, p := range m.Params {
 		if p.TypeExpr == "context.Context" {
-			if p.Name != "" {
-				return p.Name
-			}
-			return "ctx"
+			return concreteParamName(p, i)
 		}
 	}
 	return ""

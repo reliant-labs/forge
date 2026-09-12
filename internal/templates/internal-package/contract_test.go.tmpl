@@ -26,9 +26,11 @@ import (
 // error-path.
 //
 // Fill Deps with the MOCKS forge already generated — never a
-// hand-rolled fake. `forge generate` writes one mock per interface in
-// contract.go into mock_gen.go, so a `Store` dep interface has a
-// `{{.Name}}.MockStore` sitting in the file next to this one. Set its
+// hand-rolled fake. `forge generate` writes mock_gen.go next to this
+// file, holding one mock per interface in contract.go AND one per
+// interface your Deps names from another package — so a generated
+// `db.EstimateStore` dep has a `{{.Name}}.MockEstimateStore`, and a
+// `Store` dep has a `{{.Name}}.MockStore`, sitting right there. Set its
 // `GetFunc` (etc.) to script the case; every call is recorded by the
 // embedded contractkit.Recorder, so `m.Calls("Get")` and
 // `m.CallCount("Get")` assert ordering and short-circuiting without

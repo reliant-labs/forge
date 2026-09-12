@@ -70,6 +70,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
@@ -650,6 +651,16 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 		fmt.Fprintf(&b, "\n-- forge:append-only — %s is an immutable ledger: UPDATE and DELETE are\n", spec.Table)
 		b.WriteString("-- rejected at the database (the generated API carries no Update/Delete RPC\n")
 		b.WriteString("-- either). This guard is defense in depth.\n")
+
+		// DECLARE it in the catalog as well as enforcing it. The trigger
+		// defends the rows; this comment is what every later pass READS —
+		// the proto marker is a birth-time instruction that nothing carries
+		// forward, so without this the applied schema looks ordinary and
+		// the generated store happily offers UpdateX/DeleteX for a table
+		// postgres refuses every write to.
+		fmt.Fprintf(&b, "COMMENT ON TABLE %s IS '%s — rows are inserted and read, never rewritten or erased.';\n",
+			spec.Table, schemadef.TableMarkerAppendOnly)
+
 		fmt.Fprintf(&b, "CREATE OR REPLACE FUNCTION %s_forbid_mutation() RETURNS trigger\n", spec.Table)
 		b.WriteString("    LANGUAGE plpgsql AS $$\n")
 		b.WriteString("BEGIN\n")

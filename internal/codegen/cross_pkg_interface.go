@@ -186,11 +186,21 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 
 		// Results: collect types, defer the parens decision to match
 		// the existing buildInterfaceMethod shape.
+		//
+		// Each result's interface-ness is recorded alongside its
+		// rendered text. We are already inside a full types walk, so
+		// types.IsInterface answers it exactly — and it is the only
+		// thing that can, since the rendered string for an interface
+		// result is indistinguishable from a struct one. Getting this
+		// wrong emits `store.CrewStore{}`, which is not valid Go; see
+		// zeroValueForResultType.
 		var resultTypes []string
+		var resultIsIface []bool
 		for j := 0; j < sig.Results().Len(); j++ {
 			r := sig.Results().At(j)
 			tStr := types.TypeString(r.Type(), qualifier)
 			resultTypes = append(resultTypes, tStr)
+			resultIsIface = append(resultIsIface, types.IsInterface(r.Type()))
 		}
 		switch len(resultTypes) {
 		case 0:
@@ -198,12 +208,12 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 			m.ReturnStatement = ""
 		case 1:
 			m.Results = resultTypes[0]
-			m.ReturnStatement = "return " + zeroValueForType(resultTypes[0])
+			m.ReturnStatement = "return " + zeroValueForResultType(resultTypes[0], resultIsIface[0])
 		default:
 			m.Results = "(" + strings.Join(resultTypes, ", ") + ")"
 			var zeroes []string
-			for _, t := range resultTypes {
-				zeroes = append(zeroes, zeroValueForType(t))
+			for idx, t := range resultTypes {
+				zeroes = append(zeroes, zeroValueForResultType(t, resultIsIface[idx]))
 			}
 			m.ReturnStatement = "return " + strings.Join(zeroes, ", ")
 		}

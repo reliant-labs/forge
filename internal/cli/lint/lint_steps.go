@@ -571,6 +571,111 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-sexies. Read-only-fields — the twin of computed-fields for the
+		// marker where the same failure is SILENT. `// forge:read-only`
+		// strips a field from every write envelope; when nothing else
+		// populates the column and its DEFAULT is the type's zero, every
+		// row ships as 0 — no constraint violated, no test failed (the born
+		// CRUD test derives its fixtures from the same schema and agrees
+		// with the defect by construction), no log line. Schema-gated to
+		// stay quiet on GENERATED columns, managed timestamps, and real
+		// defaults.
+		//
+		// GATES, unlike its computed-field twin, and the asymmetry is the
+		// point. forge:computed declares an obligation the author has not
+		// met YET — a project mid-migration (marker added before the hook)
+		// is a legitimate intermediate state, so warning is right there.
+		// forge:read-only plus an unwritten column is not an intermediate
+		// state; it is a shipped defect whose ONLY symptom is a human
+		// reading $0.00 on a screen. A warning inside a hundred-line lint
+		// run is very close to the "no log line anywhere" the rule exists
+		// to fix, and the audited run caught its two only because someone
+		// was deliberately looking for them.
+		//
+		// Gating is defensible because every exclusion is pinned by a test
+		// (GENERATED, managed timestamps, real defaults, NOT NULL-without-
+		// DEFAULT, forge:fill=, forge:computed), and because the two write
+		// paths the Go scan structurally could not see — a trigger body and
+		// a column-named UPDATE — are now read out of the migrations and
+		// the Go SQL literals. See columnsWrittenBySQL.
+		{
+			name:  "read-only-fields lint",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return dirExists(protoDirDefault) && rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runReadOnlyFieldsLint(rc.cwd, migrationsDirFor(rc.cfg))
+			},
+			errFormat: "❌ read-only-fields lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectReadOnlyFieldsJSON(rc.cwd, migrationsDirFor(rc.cfg))
+				return fs, len(fs) > 0, err
+			},
+		},
+
+		// 13d-sexies-bis. Fixture-drift — the sibling of crud-fixtures, for
+		// the two ways a scaffold-once seed block ages out of its schema
+		// that a foreign-key check cannot see. A column the schema later
+		// made GENERATED ALWAYS is rejected outright by postgres (428C9),
+		// and a column it later made UNIQUE rejects a statement that writes
+		// one value twice. Both surface only as a pq error in test SETUP,
+		// naming postgres's complaint and neither the fixture nor the
+		// migration that caused it — and they QUEUE, so each becomes
+		// visible only after the previous is fixed.
+		//
+		// Forge demonstrably knows the answer: the regenerated sibling
+		// factories_gen_test.go omits the generated column correctly. The
+		// knowledge simply never reaches a file forge deliberately never
+		// rewrites, which is scaffold-once working as designed rather than
+		// a bug in it.
+		//
+		// Warnings only, matching crud-fixtures and guarded-fields: the fix
+		// is an edit to a file forge does not own and may legitimately be
+		// mid-edit, so gating would be a generator holding a user's file
+		// hostage.
+		{
+			name:  "fixture-drift lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runFixtureDriftLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "⚠️  fixture-drift lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectFixtureDriftJSON(rc.cwd, rc.cfg)
+				return fs, false, err
+			},
+		},
+
+		// 13d-septies. Guarded-fields — the marker's blind spot. The page
+		// generator honours `forge:guards` for every page it emits, but
+		// pages are WRITE-IF-ABSENT: the natural order (scaffold CRUD,
+		// write the custom rpc, then add the marker) leaves an edit page
+		// whose update_mask still names the guarded column, and no
+		// regenerate will ever touch it again. The frontend typechecks,
+		// nothing logs, and the symptom is a user saving a form and
+		// getting a 500 from the raw CHECK the rpc exists to avoid.
+		// Warnings only — the file is the user's, so forge must not
+		// rewrite it.
+		{
+			name:  "guarded-fields lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return dirExists(protoDirDefault) && rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runGuardedFieldsLint(rc.cwd, frontendDirsForLint())
+			},
+			errFormat: "⚠️  guarded-fields lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectGuardedFieldsJSON(rc.cwd, frontendDirsForLint())
+				return fs, false, err
+			},
+		},
+
 		// 13e. Enforce-component-observe — every wired component with a Service
 		// interface + a canonical New(Deps) Service constructor must make an
 		// observability decision: `// forge:constructor` to instrument, or

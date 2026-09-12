@@ -48,11 +48,27 @@ type PlanFrontend struct {
 
 // PlanEntity describes a database entity to scaffold.
 type PlanEntity struct {
-	Name       string            `yaml:"name" json:"name"`                                 // PascalCase message name, e.g. "Project"
-	TableName  string            `yaml:"table_name,omitempty" json:"table_name,omitempty"` // override; defaults to pluralized snake_case
-	SoftDelete bool              `yaml:"soft_delete,omitempty" json:"soft_delete,omitempty"`
-	Timestamps bool              `yaml:"timestamps,omitempty" json:"timestamps,omitempty"`
+	Name       string `yaml:"name" json:"name"`                                 // PascalCase message name, e.g. "Project"
+	TableName  string `yaml:"table_name,omitempty" json:"table_name,omitempty"` // override; defaults to pluralized snake_case
+	SoftDelete bool   `yaml:"soft_delete,omitempty" json:"soft_delete,omitempty"`
+	Timestamps bool   `yaml:"timestamps,omitempty" json:"timestamps,omitempty"`
+	// AppendOnly marks an immutable ledger: the table is declared
+	// `forge:append-only` in its COMMENT ON TABLE, so the generated store
+	// omits Update/UpdateMasked/Delete entirely. The declaration lives in
+	// the MIGRATION (schemadef.TableMarkerAppendOnly) — the proto marker of
+	// the same name is a birth-time instruction that nothing carries
+	// forward, which is why the store used to expose mutators for a table
+	// postgres rejects every write to.
+	AppendOnly bool              `yaml:"append_only,omitempty" json:"append_only,omitempty"`
 	Fields     []PlanEntityField `yaml:"fields" json:"fields"`
+	// Constraints are the table's named UNIQUE / CHECK / FOREIGN KEY
+	// constraints, which the ORM generator publishes as per-entity
+	// constants so a service can branch on orm.ConstraintName(err) without
+	// hardcoding the identifier. The PRIMARY KEY is deliberately absent:
+	// inserting a duplicate id is a forge-internal concern (pkg/crud
+	// generates the ULID), so no service branches on it, and emitting a
+	// constant nobody reads is noise in every generated file.
+	Constraints []PlanEntityConstraint `yaml:"constraints,omitempty" json:"constraints,omitempty"`
 }
 
 // PlanEntityField describes a field on an entity.
@@ -98,4 +114,31 @@ type PlanEntityField struct {
 	// "handler" changes no codegen behavior — it only suppresses the
 	// unsatisfiable-column lint. See schemadef.ColumnMarkerFill.
 	FillStrategy string `yaml:"fill_strategy,omitempty" json:"fill_strategy,omitempty"`
+}
+
+// ConstraintKind classifies a named constraint by the kind of violation it
+// produces, because that is the only thing a service branching on it cares
+// about: a UNIQUE is a lost race, a CHECK is bad input, a FOREIGN KEY is a
+// missing parent. Each maps to a different sentinel.
+type ConstraintKind string
+
+// The ConstraintKind values forge projects from the applied schema. There is
+// deliberately no primary-key kind — see PlanEntity.Constraints.
+const (
+	ConstraintKindUnique     ConstraintKind = "unique"
+	ConstraintKindCheck      ConstraintKind = "check"
+	ConstraintKindForeignKey ConstraintKind = "foreign_key"
+)
+
+// PlanEntityConstraint is one named constraint on an entity's table, as the
+// APPLIED schema knows it. Name is what postgres reports in a violation's
+// structured constraint field — the value orm.ConstraintName(err) returns —
+// so it must be carried through verbatim rather than re-derived.
+type PlanEntityConstraint struct {
+	Name string         `yaml:"name" json:"name"`
+	Kind ConstraintKind `yaml:"kind" json:"kind"`
+	// Columns are the columns the constraint spans, in key order. It is
+	// what makes the generated doc comment say WHICH columns must be
+	// distinct rather than just naming the constraint back to the reader.
+	Columns []string `yaml:"columns,omitempty" json:"columns,omitempty"`
 }

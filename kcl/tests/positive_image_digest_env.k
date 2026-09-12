@@ -20,8 +20,9 @@ Invariants:
   * Two services SHARING an image both render THAT image's digest.
   * A service whose image has NO entry in the map falls back to the env tag.
   * A per-service plain image_tag pin wins (image absent from digest map).
-  * A third-party image that already carries its OWN `:tag` passes through
-    verbatim (registry prefixed); the digest map is irrelevant for it.
+  * A third-party image that names its OWN registry host and `:tag` passes
+    through fully verbatim — neither the env registry nor the digest map
+    touches it. It is pulled from ITS vendor's registry.
   * imagePullPolicy for a digest ref is IfNotPresent (immutable → cacheable,
     NOT the dirty/latest Always path).
 """
@@ -125,9 +126,10 @@ assert_nodigest_fallback = _image_of("no-digest") == "ghcr.io/reliant/no-digest:
 # Per-service plain pin wins (rendered as :tag).
 assert_pinned_wins = _image_of("sidecar") == "ghcr.io/reliant/sidecar:v9.9.9"
 
-# Third-party :tag image passes through verbatim (registry prefixed).
-assert_vendor_passthrough = _image_of("litellm") == \
-    "ghcr.io/reliant/ghcr.io/berriai/litellm:main-v1.0"
+# Third-party image naming its own registry host passes through verbatim:
+# the env registry is NOT prefixed. `ghcr.io/reliant/ghcr.io/berriai/...`
+# is unpullable and fails only once the pod is scheduled.
+assert_vendor_passthrough = _image_of("litellm") == "ghcr.io/berriai/litellm:main-v1.0"
 
 # A digest ref is immutable → IfNotPresent (NOT the dirty/latest Always path).
 assert_digest_pull_policy = _container_of("control-plane").imagePullPolicy == "IfNotPresent"

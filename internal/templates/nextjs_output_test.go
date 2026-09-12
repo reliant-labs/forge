@@ -42,8 +42,22 @@ func TestNextJSConfig_DefaultsToStandalone(t *testing.T) {
 		if !strings.Contains(s, `output: "standalone"`) {
 			t.Errorf("next.config.ts (output=%q) must contain `output: \"standalone\"` so the build emits .next-prod/standalone/server.js for the Dockerfile; got:\n%s", output, s)
 		}
-		if !strings.Contains(s, `outputFileTracingRoot: path.join(__dirname)`) {
-			t.Errorf("next.config.ts (output=%q) must contain outputFileTracingRoot so the standalone bundle lands at .next-prod/standalone/server.js (not under a workspace-rooted subpath the Dockerfile can't find); got:\n%s", output, s)
+		if !strings.Contains(s, `outputFileTracingRoot:`) {
+			t.Errorf("next.config.ts (output=%q) must set outputFileTracingRoot explicitly — Next's own root detection keys off a lockfile, and forge's dev-bridge workspace root is gitignored, so the output path would depend on which forge built the project; got:\n%s", output, s)
+		}
+		// The tracing root must NOT be this frontend's own directory.
+		// Traced files are written to <distDir>/standalone/<path relative
+		// to the root>, and the hoisted workspace install of `next` lives
+		// ABOVE the frontend — so a frontend-pinned root makes that path
+		// `../../node_modules/next/...` and the write escapes back into
+		// frontends/<name>/node_modules/next as a pruned, package.json-less
+		// copy. Node resolves that stub first on the NEXT build and dies
+		// inside Next's own package ("Can't resolve '../shared/lib/utils'"),
+		// so consecutive builds alternated pass/fail forever.
+		if strings.Contains(s, `outputFileTracingRoot: path.join(__dirname)`) {
+			t.Errorf("next.config.ts (output=%q) pins outputFileTracingRoot to the frontend directory — "+
+				"file tracing then writes a partial `next` into frontends/<name>/node_modules and poisons the "+
+				"following build; the root must be an ancestor of every traced file; got:\n%s", output, s)
 		}
 		// The default must NOT emit the static-export conditional — that
 		// shape fails `next build` on the generated dynamic [id] routes.
@@ -143,8 +157,10 @@ func TestNextJSConfig_StaticOptIn_BasePathGuard(t *testing.T) {
 
 // TestNextJSConfig_StandaloneExplicit verifies the explicit standalone
 // opt-in renders identically in shape to the default: `output:
-// "standalone"` + `outputFileTracingRoot: path.join(__dirname)` so the
-// scaffold-shipped Dockerfile finds `.next-prod/standalone/server.js`.
+// "standalone"` plus a workspace-rooted outputFileTracingRoot, so the
+// scaffold-shipped Dockerfile finds `.next-prod/standalone/server.js`
+// (in the container the frontend is the whole context, so the walk finds
+// no workspace above it and roots at /app).
 func TestNextJSConfig_StandaloneExplicit(t *testing.T) {
 	content, err := FrontendTemplates().Render(
 		filepath.Join("nextjs", "next.config.ts.tmpl"),

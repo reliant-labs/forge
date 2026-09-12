@@ -302,7 +302,7 @@ func observedImports(cf *File, iface InterfaceDef) []observedImport {
 
 	set := map[string]bool{}
 	for _, p := range paths {
-		set[p] = true
+		set[p.Path] = true
 	}
 	// A CHAIN-routed (non-skip) method body always references context — either
 	// its own context.Context param or context.Background() for the outer call

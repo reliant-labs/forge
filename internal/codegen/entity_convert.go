@@ -21,7 +21,11 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 		TableName:  entity.TableName,
 		SoftDelete: entity.SoftDelete,
 		Timestamps: entity.Timestamps,
+		AppendOnly: entity.AppendOnly,
 		Fields:     make([]config.PlanEntityField, 0, len(entity.Columns)),
+		// Constraints come from the applied schema for the same reason the
+		// fields do: postgres names them, forge only reports the name back.
+		Constraints: EntityConstraintsToPlan(entity.Constraints),
 	}
 
 	// A `// forge:secret` marker lives on the WIRE field, not the column (the

@@ -10,6 +10,10 @@
 //     the generated CRUD cannot express.
 //   - [ErrNoRows]     the missing-row sentinel. Match it with errors.Is and
 //     let pkg/svcerr map it to a clean NotFound — never leak SQL text.
+//   - [IsUniqueViolation], [IsCheckViolation], [ConstraintName] the write-side
+//     twins of ErrNoRows: classify a constraint violation a service wrote
+//     itself into, so a lost UNIQUE race becomes AlreadyExists instead of a
+//     500 carrying driver prose.
 //   - <Entity>Columns the declared-column allowlist generated per entity,
 //     used to validate an order_by against a closed set.
 //   - [WhereILikeAny] the multi-column case-insensitive search predicate

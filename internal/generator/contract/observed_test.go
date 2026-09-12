@@ -100,6 +100,28 @@ type State struct{ N int }
 	}
 }
 
+func TestObservedDecorator_UnnamedParamsUseConcreteNames(t *testing.T) {
+	dir := writeContract(t, `package checkout
+
+import "context"
+
+type Service interface {
+	Run(context.Context, string) error
+}
+`)
+	got := genDecorator(t, dir, "Service", "checkout")
+
+	for _, want := range []string{
+		"func (o *forgeMiddlewareService) Run(p0 context.Context, p1 string) error {",
+		`o.chain.Run(p0, "checkout.Run", func(p0 context.Context) error {`,
+		"return o.inner.Run(p0, p1)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("unnamed-parameter decorator missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
 func TestObservedDecorator_EmptyInterfaceCompilesShape(t *testing.T) {
 	dir := writeContract(t, `package empty
 

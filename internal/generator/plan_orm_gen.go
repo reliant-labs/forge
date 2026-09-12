@@ -175,7 +175,16 @@ func renderRepoExtSeam(ent config.PlanEntity) []byte {
 	b.WriteString("// sibling file forge never rewrites. You have three building blocks:\n")
 	b.WriteString("//\n")
 	fmt.Fprintf(&b, "//   1. The generated repo + delegates: %s (a *crud.Repo[%s]) and the\n", repoVar, msgName)
-	fmt.Fprintf(&b, "//      package-level Get%sByID / List%s / Create%s / Update%s / Delete%s\n", msgName, msgName, msgName, msgName, msgName)
+	// The seam must name only the delegates that EXIST. An append-only
+	// entity has no Update/Delete to reuse, and advertising them sends the
+	// reader hunting for a symbol forge deliberately refuses to emit.
+	if ent.AppendOnly {
+		fmt.Fprintf(&b, "//      package-level Get%sByID / List%s / Create%s — %s is append-only,\n", msgName, msgName, msgName, msgName)
+		b.WriteString("//      so there is no Update/Delete delegate to reuse; correct a bad row\n")
+		b.WriteString("//      by appending its reversal\n")
+	} else {
+		fmt.Fprintf(&b, "//      package-level Get%sByID / List%s / Create%s / Update%s / Delete%s\n", msgName, msgName, msgName, msgName, msgName)
+	}
 	b.WriteString("//      functions — compose orm.QueryOption filters (orm.WhereEq,\n")
 	b.WriteString("//      orm.WhereILikeAny, orm.WithOrderBy, orm.WithLimit) onto List/Count.\n")
 	b.WriteString("//   2. Raw SQL via the Bun handle: db.Bun() (bun.IDB) gives you\n")
@@ -471,6 +480,10 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 	}
 	b.WriteString("}\n\n")
 
+	// Constraint name constants — the sibling of the column constants
+	// above, for the other identifier a service has to spell.
+	writeConstraintConstants(&b, msgName, ent.Constraints)
+
 	// CRUD: a single generic crud.Repo[<Entity>] owns the lifecycle
 	// (built on Bun, metadata derived from the schema/tags at first use),
 	// and thin package-level delegates preserve the standalone-function API
@@ -482,7 +495,7 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 	// ,skipupdate tag on the column itself (see bunTag), where Bun enforces
 	// it. A parallel list of column NAMES in the Spec was the same fact
 	// spelled a second way, unchecked against the struct it described.
-	writeORMRepoAndDelegates(&b, msgName, pkGoType, ent.SoftDelete)
+	writeORMRepoAndDelegates(&b, msgName, pkGoType, ent.SoftDelete, ent.AppendOnly)
 
 	// gofmt the render so struct-tag/const alignment matches what the
 	// project's gofmt/CI check (and the drift guard) expect. The writers
@@ -527,7 +540,7 @@ func writeORMImports(b *strings.Builder, needsTime bool) {
 // keeps compiling unchanged. Spec carries only the conventions Bun's schema
 // can't infer: managed timestamps, legacy-TEXT deleted_at, and
 // the `// forge:secret` columns preserved on a maskless full-replace Update.
-func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, softDelete bool) {
+func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, softDelete, appendOnly bool) {
 	repoVar := lowerFirst(msgName) + "Repo"
 
 	// The per-entity repo, constructed once at package init. Everything it
@@ -589,6 +602,21 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
 		fmt.Fprintf(b, "\treturn %s.ListAll(ctx, db, opts...)\n", repoVar)
 		b.WriteString("}\n\n")
+	}
+
+	// forge:append-only — the SECOND of the two routes to a mutating
+	// write, and the one the first cut of this fix missed. Narrowing
+	// PaymentStore to omit Update/Delete was defeated by the delegates
+	// right here, which are exported: `db.DeletePayment(ctx, tx, id)`
+	// still type-checked, so a money ledger's immutability came back as
+	// SQLSTATE P0001 at runtime rather than the compile error the db
+	// skill promises. An invariant enforced on one of two available
+	// routes is a convention, not an invariant.
+	//
+	// Create, the reads and the repo all stay: append-only means
+	// immutable, not invisible.
+	if appendOnly {
+		return
 	}
 
 	// Update

@@ -92,6 +92,33 @@ const (
 	// vocabulary of any single scanner.
 	ProtoMarkerSecret = "forge:secret"
 
+	// ProtoMarkerGuards declares that a CUSTOM RPC owns a column's writes,
+	// naming the column as `<table>.<column>`. Written on a FIELD of that
+	// rpc's request message; the field it sits on is incidental — it is the
+	// attachment point, not the subject. Read by the descriptor path
+	// (fieldGuardTargets) and consumed by the frontend page generator,
+	// which drops the named column from the scaffolded edit page's
+	// update_mask.
+	//
+	// It exists because the page generator reasons from the ENTITY's column
+	// list and can see nothing of what the service's custom RPCs enforce.
+	// The measured case: RecordPayment refuses an overpayment, while the
+	// scaffolded invoice edit page writes amount_cents raw through
+	// UpdateInvoice — lower it below amount_paid_cents and the raw
+	// invoices_not_overpaid CHECK surfaces as a 500. The state machine the
+	// author wrote is bypassed by the form forge itself generated.
+	//
+	// The declaration is EXPLICIT because inference was tried and is
+	// unsound. RecordPaymentRequest carries `invoice_id` and
+	// `amount_cents`, yet guards `invoices.amount_paid_cents` — a column
+	// its request never names — while `amount_cents`, the field a
+	// name-matcher WOULD latch onto, is a freely editable column on a
+	// different table. Matching request field names against entity columns
+	// would therefore miss the real guard AND freeze an unrelated column,
+	// both in silence. That is strictly worse than the defect it set out to
+	// fix, which is why the marker names its target rather than implying it.
+	ProtoMarkerGuards = "forge:guards"
+
 	// ProtoMarkerMutation forces an rpc's generated React Query hook to be a
 	// useMutation. Read by the frontend hook generator on EVERY generate,
 	// not at birth — the one marker here that is not an entity-birth
@@ -114,7 +141,50 @@ var KnownProtoMarkers = []string{
 	ProtoMarkerReadOnly,
 	ProtoMarkerComputed,
 	ProtoMarkerSecret,
+	ProtoMarkerGuards,
 	ProtoMarkerMutation,
+}
+
+// guardTargetRE matches ONE `forge:guards <table>.<column>` declaration and
+// captures the target. It accepts the comment in both shapes forge reads
+// proto comments in — the raw `//`-prefixed source line and the text buf has
+// already stripped the slashes from — because unlike the other field markers
+// this one is read by BOTH a source scan (the lint check) and the descriptor
+// path, and two spellings of one grammar is how they would come to disagree
+// about what a target is.
+//
+// The target must be `<table>.<column>`: the table half is load-bearing, not
+// decoration. `payments.amount_cents` and `invoices.amount_cents` are
+// different columns that share a name, and that exact pair is what made
+// name-only matching unusable.
+// The two alternatives are the two shapes, not two spellings of one: `//+\s*`
+// matches a comment anywhere on a RAW source line — which is where the marker
+// is most naturally written, trailing the field it rides on — while `^\s*`
+// matches text buf has already stripped the slashes from. Anchoring to line
+// start ALONE silently matched nothing in raw source, so the lint check found
+// no guards at all while the descriptor path found them fine.
+var guardTargetRE = regexp.MustCompile(`(?m)(?:^\s*|//+\s*)` +
+	regexp.QuoteMeta(ProtoMarkerGuards) + `\s+(\w+\.\w+)`)
+
+// GuardTargets returns every `<table>.<column>` a comment declares with
+// ProtoMarkerGuards, in declaration order. Trailing prose after the target
+// is tolerated (`forge:guards invoices.amount_paid_cents — refuses
+// overpayment`), a bare `forge:guards` with no target yields nothing, and a
+// longer token that merely starts with the marker (`forge:guardsmen`) is
+// refused — the same exactness the rest of the registry enforces, for the
+// same reason: a marker that half-matches changes generated output on a
+// spelling its author never wrote.
+//
+// A field may carry several, which is the shape a multi-column guard
+// actually takes: ScheduleJob owns crew_id, scheduled_start AND
+// scheduled_end together, and declaring them one per line keeps each target
+// individually greppable.
+func GuardTargets(comment string) []string {
+	var out []string
+	for _, m := range guardTargetRE.FindAllStringSubmatch(comment, -1) {
+		out = append(out, m[1])
+	}
+	return out
 }
 
 // RemovedProtoMarkers maps a spelling forge USED to recognize onto the

@@ -383,12 +383,58 @@ const nextConfig: NextConfig = {
   // (`forge generate --force`) — see that mode's caveats in the
   // forge.yaml schema docs.
   output: "standalone",
-  // outputFileTracingRoot pins the tracing base directory to this frontend's
-  // own folder. Without this, Next.js walks up looking for a workspace root
-  // (e.g. a lockfile in the repo root) and emits the standalone bundle under
-  // `<distDir>/standalone/<relative-path>/server.js`, which the Dockerfile's
-  // `COPY --from=builder /app/.next-prod/standalone ./` cannot locate at runtime.
-  outputFileTracingRoot: path.join(__dirname),
+  // outputFileTracingRoot is the BASE that traced file paths are made
+  // relative to, and Next.js writes each traced file to
+  // `<distDir>/standalone/<path relative to this root>`. So the root must be
+  // an ANCESTOR of every file the trace can reach, or the relative path
+  // starts with `../` and the write escapes the dist directory.
+  //
+  // This was pinned to `path.join(__dirname)` — this frontend's own folder —
+  // and that is exactly the escape. forge's dev bridge makes the project root
+  // an npm workspace root (`workspaces: ["frontends/*", ".forge-link/*"]`),
+  // which HOISTS the real `next` to `<project>/node_modules`. Relative to a
+  // frontend-pinned root that install is `../../node_modules/next/...`, so
+  // joining it onto `.next-prod/standalone/` lands the traced copy back
+  // inside `frontends/<name>/node_modules/next` — a 29-file pruned `next`
+  // with no package.json, sitting in the nearest node_modules Node consults.
+  // The NEXT build resolved that stub instead of the complete hoisted
+  // install and died inside Next's own package:
+  //
+  //   ./node_modules/next/dist/pages/_app.js
+  //   Module not found: Can't resolve '../shared/lib/utils'
+  //
+  // Consecutive builds therefore alternated pass/fail forever, each one
+  // poisoning the next, with an error naming a file the user never wrote.
+  //
+  // Rooting at the workspace root instead keeps the hoisted install a
+  // DESCENDANT, so every traced path stays under `.next-prod/` and nothing
+  // is ever written into a module-resolution path. Inside the Docker build
+  // the frontend is the whole context (WORKDIR /app, no workspace root
+  // above it), so this resolves to `/app` and the bundle still lands at
+  // `.next-prod/standalone/server.js` exactly where the Dockerfile's
+  // `COPY --from=builder /app/.next-prod/standalone ./` expects it.
+  //
+  // Resolved explicitly rather than left to Next's own root detection:
+  // that walks up looking for a lockfile, and the bridge's workspace root is
+  // GITIGNORED — present for a dev forge, absent for a release one. Letting
+  // it decide would make the output path depend on which forge built the
+  // project, which is the same class of bug one level up.
+  outputFileTracingRoot: (() => {
+    let dir = __dirname;
+    for (;;) {
+      const manifest = path.join(dir, "package.json");
+      if (fs.existsSync(manifest)) {
+        try {
+          if (JSON.parse(fs.readFileSync(manifest, "utf8")).workspaces) return dir;
+        } catch {
+          // An unreadable/!JSON package.json is not a workspace root; keep walking.
+        }
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) return __dirname; // no workspace above: self-contained
+      dir = parent;
+    }
+  })(),
   // @reliantlabs/forge-web-runtime ships TypeScript sources, so Next has to run
   // them through its own compiler instead of treating node_modules as
   // pre-built JavaScript.

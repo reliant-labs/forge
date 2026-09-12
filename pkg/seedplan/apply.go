@@ -635,13 +635,35 @@ func singleCheckColumn(ctx context.Context, db schemadef.Queryer, table string, 
 // filename (e.g. "00007_add_x.up.sql" -> "00007").
 var migrationVersionRE = regexp.MustCompile(`^(\d+)_`)
 
-// MigrationsPending reports whether the target DB is behind the on-disk
-// migrations (or in a dirty state). Seeds apply only against a fully-migrated
-// schema, so the CLI refuses when this is true.
-func MigrationsPending(ctx context.Context, db *sql.DB, migDir string) (bool, string, error) {
+// MigrationBlock describes WHY a database is not in a state seeds may be
+// applied to. It is structured rather than a prose string because the two
+// states need opposite advice and the caller cannot tell them apart from
+// prose: a PENDING database is fixed by `forge db migrate up`, while a DIRTY
+// one refuses that command again and is fixed by `forge db migrate force
+// <version>`. Version and Latest carry the numbers the advice has to name —
+// telling someone to force a version without saying which one leaves most of
+// the dead end in place.
+type MigrationBlock struct {
+	// Dirty is set when golang-migrate recorded a migration that failed
+	// part-way. The schema is in an unknown state and no further migration
+	// will run until the flag is cleared.
+	Dirty bool
+	// Version is the version recorded in schema_migrations — for a dirty
+	// database, the migration that failed. Empty when none is recorded.
+	Version string
+	// Latest is the highest version present on disk.
+	Latest string
+	// Reason is the human-readable diagnosis for the non-dirty cases.
+	Reason string
+}
+
+// MigrationsPending reports why the target DB is not seedable, or nil when it
+// is. Seeds apply only against a fully-migrated schema, so the CLI refuses on
+// any non-nil result.
+func MigrationsPending(ctx context.Context, db *sql.DB, migDir string) (*MigrationBlock, error) {
 	maxFile := highestMigrationVersion(migDir)
 	if maxFile == "" {
-		return false, "", nil // no migrations at all — nothing to be behind
+		return nil, nil // no migrations at all — nothing to be behind
 	}
 
 	var version sql.NullString
@@ -649,15 +671,27 @@ func MigrationsPending(ctx context.Context, db *sql.DB, migDir string) (bool, st
 	err := db.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations LIMIT 1").Scan(&version, &dirty)
 	if err != nil {
 		// No schema_migrations table (or empty) — nothing applied yet.
-		return true, fmt.Sprintf("no migrations applied; latest on disk is %s", maxFile), nil
+		return &MigrationBlock{
+			Latest: maxFile,
+			Reason: fmt.Sprintf("no migrations applied; latest on disk is %s", maxFile),
+		}, nil
 	}
 	if dirty.Valid && dirty.Bool {
-		return true, "migration state is dirty", nil
+		return &MigrationBlock{
+			Dirty:   true,
+			Version: version.String,
+			Latest:  maxFile,
+			Reason:  fmt.Sprintf("migration %s failed part-way and is marked dirty", version.String),
+		}, nil
 	}
 	if !version.Valid || numericLess(version.String, maxFile) {
-		return true, fmt.Sprintf("applied version %s is behind latest on disk %s", version.String, maxFile), nil
+		return &MigrationBlock{
+			Version: version.String,
+			Latest:  maxFile,
+			Reason:  fmt.Sprintf("applied version %s is behind latest on disk %s", version.String, maxFile),
+		}, nil
 	}
-	return false, "", nil
+	return nil, nil
 }
 
 func highestMigrationVersion(migDir string) string {

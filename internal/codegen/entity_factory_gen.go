@@ -73,6 +73,12 @@ type entityFactorySpec struct {
 	lower     string // "order" — const/var name stem (camelCase for multi-word)
 	parentSQL string // FK-ancestor INSERTs (root excluded), each ON CONFLICT DO NOTHING
 	rootSQL   string // single root INSERT with the PK literal replaced by $1
+	// appendOnly suppresses the override seam. Overrides are applied by
+	// writing the loaded row back with db.Update<Entity>, which an
+	// append-only table's trigger rejects and whose store method no longer
+	// exists — so for these entities the factory inserts and returns, and a
+	// test wanting specific values inserts them itself.
+	appendOnly bool
 }
 
 // dbEntity is the table↔Go-name mapping parsed from the generated ORM package.
@@ -183,10 +189,11 @@ func bakeEntityFactory(byName map[string]schemadef.Table, root string, ent dbEnt
 	rootParamSQL := strings.Replace(strings.TrimSpace(rootStmt), pkLit, "$1", 1)
 
 	return entityFactorySpec{
-		goName:    ent.goName,
-		lower:     lowerFirst(ent.goName),
-		parentSQL: strings.Join(parentStmts, "\n"),
-		rootSQL:   rootParamSQL,
+		goName:     ent.goName,
+		lower:      lowerFirst(ent.goName),
+		parentSQL:  strings.Join(parentStmts, "\n"),
+		rootSQL:    rootParamSQL,
+		appendOnly: byName[root].AppendOnly(),
 	}, true
 }
 
@@ -337,8 +344,10 @@ func renderEntityFactoryFile(modulePath, pkgName string, specs []entityFactorySp
 
 	for _, s := range specs {
 		fmt.Fprintf(&b, "\n// --- %s ---\n\n", s.goName)
-		fmt.Fprintf(&b, "// %sOverride mutates the *db.%s New%s is about to insert.\n", s.goName, s.goName, s.goName)
-		fmt.Fprintf(&b, "type %sOverride func(*db.%s)\n\n", s.goName, s.goName)
+		if !s.appendOnly {
+			fmt.Fprintf(&b, "// %sOverride mutates the *db.%s New%s is about to insert.\n", s.goName, s.goName, s.goName)
+			fmt.Fprintf(&b, "type %sOverride func(*db.%s)\n\n", s.goName, s.goName)
+		}
 
 		if s.parentSQL != "" {
 			fmt.Fprintf(&b, "const %sFactoryParentSQL = %s\n\n", s.lower, backquoteOrQuote(s.parentSQL))
@@ -347,15 +356,26 @@ func renderEntityFactoryFile(modulePath, pkgName string, specs []entityFactorySp
 
 		fmt.Fprintf(&b, "// New%s inserts one %s row with every NOT-NULL column and FK parent\n", s.goName, s.goName)
 		b.WriteString("// satisfied (forge's seed planner), and returns it. Each call gets a fresh\n")
-		b.WriteString("// primary key, so call it once per row you need. Override the columns your\n")
-		b.WriteString("// test asserts on; leave the rest to the seeded defaults:\n")
-		b.WriteString("//\n")
-		fmt.Fprintf(&b, "//\t%s := New%s(t, database, func(x *db.%s) { /* x.Field = … */ })\n", s.lower, s.goName, s.goName)
-		b.WriteString("//\n")
-		b.WriteString("// A single-column-unique NOT-NULL field other than the primary key keeps its\n")
-		b.WriteString("// seeded value across calls — override such a field yourself to insert more\n")
-		b.WriteString("// than one row.\n")
-		fmt.Fprintf(&b, "func New%s(t testing.TB, database orm.Context, overrides ...%sOverride) *db.%s {\n", s.goName, s.goName, s.goName)
+		b.WriteString("// primary key, so call it once per row you need.\n")
+		if s.appendOnly {
+			// No override seam: applying one means writing the loaded row
+			// back, and this table refuses UPDATE at the database.
+			b.WriteString("//\n")
+			fmt.Fprintf(&b, "// %s is APPEND-ONLY, so this factory takes no overrides — applying\n", s.goName)
+			b.WriteString("// one would mean UPDATEing the row it just inserted, which the table's\n")
+			b.WriteString("// guard rejects. A test needing particular values inserts the row itself.\n")
+			fmt.Fprintf(&b, "func New%s(t testing.TB, database orm.Context) *db.%s {\n", s.goName, s.goName)
+		} else {
+			b.WriteString("// Override the columns your\n")
+			b.WriteString("// test asserts on; leave the rest to the seeded defaults:\n")
+			b.WriteString("//\n")
+			fmt.Fprintf(&b, "//\t%s := New%s(t, database, func(x *db.%s) { /* x.Field = … */ })\n", s.lower, s.goName, s.goName)
+			b.WriteString("//\n")
+			b.WriteString("// A single-column-unique NOT-NULL field other than the primary key keeps its\n")
+			b.WriteString("// seeded value across calls — override such a field yourself to insert more\n")
+			b.WriteString("// than one row.\n")
+			fmt.Fprintf(&b, "func New%s(t testing.TB, database orm.Context, overrides ...%sOverride) *db.%s {\n", s.goName, s.goName, s.goName)
+		}
 		b.WriteString("\tt.Helper()\n")
 		if s.parentSQL != "" {
 			fmt.Fprintf(&b, "\tseedFactoryParents(t, database, %sFactoryParentSQL)\n", s.lower)
@@ -368,14 +388,16 @@ func renderEntityFactoryFile(modulePath, pkgName string, specs []entityFactorySp
 		b.WriteString("\tif err != nil {\n")
 		fmt.Fprintf(&b, "\t\tt.Fatalf(\"New%s: load inserted row: %%v\", err)\n", s.goName)
 		b.WriteString("\t}\n")
-		b.WriteString("\tif len(overrides) > 0 {\n")
-		b.WriteString("\t\tfor _, o := range overrides {\n")
-		b.WriteString("\t\t\to(row)\n")
-		b.WriteString("\t\t}\n")
-		fmt.Fprintf(&b, "\t\tif err := db.Update%s(context.Background(), database, row); err != nil {\n", s.goName)
-		fmt.Fprintf(&b, "\t\t\tt.Fatalf(\"New%s: apply overrides: %%v\", err)\n", s.goName)
-		b.WriteString("\t\t}\n")
-		b.WriteString("\t}\n")
+		if !s.appendOnly {
+			b.WriteString("\tif len(overrides) > 0 {\n")
+			b.WriteString("\t\tfor _, o := range overrides {\n")
+			b.WriteString("\t\t\to(row)\n")
+			b.WriteString("\t\t}\n")
+			fmt.Fprintf(&b, "\t\tif err := db.Update%s(context.Background(), database, row); err != nil {\n", s.goName)
+			fmt.Fprintf(&b, "\t\t\tt.Fatalf(\"New%s: apply overrides: %%v\", err)\n", s.goName)
+			b.WriteString("\t\t}\n")
+			b.WriteString("\t}\n")
+		}
 		b.WriteString("\treturn row\n")
 		b.WriteString("}\n")
 	}

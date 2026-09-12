@@ -32,7 +32,16 @@ func TestGenerateFrontendFiles_DefaultsToStandalone(t *testing.T) {
 		t.Errorf("next.config.ts must default to `output: \"standalone\"` (Dockerfile + dynamic CRUD routes); got:\n%s", s)
 	}
 	if !strings.Contains(s, `outputFileTracingRoot`) {
-		t.Errorf("next.config.ts default must contain outputFileTracingRoot so the standalone bundle lands at the path the Dockerfile expects; got:\n%s", s)
+		t.Errorf("next.config.ts default must contain outputFileTracingRoot; got:\n%s", s)
+	}
+	// It must resolve an ANCESTOR of the frontend, never the frontend
+	// itself: traced files land at <distDir>/standalone/<path relative to
+	// the root>, so a frontend-pinned root turns the hoisted workspace
+	// install of `next` into `../../node_modules/next/...` and writes a
+	// pruned copy back into frontends/<name>/node_modules, which shadows
+	// the real one on the next build.
+	if strings.Contains(s, `outputFileTracingRoot: path.join(__dirname)`) {
+		t.Errorf("next.config.ts default pins outputFileTracingRoot to the frontend dir — that makes each build poison the next; got:\n%s", s)
 	}
 	// The static-export conditional must NOT appear in the default —
 	// it fails `next build` on the generated dynamic [id] routes.

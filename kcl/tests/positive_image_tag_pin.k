@@ -13,6 +13,14 @@ Invariants:
   * An `image` that already carries `:tag` passes through verbatim — the
     env/service tag is NOT appended.
   * An `image` that carries `@sha256:` digest passes through verbatim.
+  * An `image` that names its OWN registry host (`ghcr.io/...`) keeps that
+    host: the env registry is NOT prefixed onto it. A third-party image is
+    pulled from ITS vendor's registry, and prefixing produced unpullable
+    refs like `localhost:5050/ghcr.io/acme/vendor:3.0.0` that fail at
+    runtime as ImagePullBackOff rather than at render.
+  * A tagged image with NO registry host of its own (`vendorapp:3.0.0`)
+    still takes the env registry — the passthrough keys on the host, not
+    on the presence of a tag.
   * Registry-port colon disambiguation: a bare `localhost:5050/foo`
     (port colon, no tag) still gets the tag appended — the port colon is
     not mistaken for a tag.
@@ -52,6 +60,13 @@ _digest_svc = forge.RenderedWorkload {
     deploy = _target.deploy
 }
 
+# A tagged image with NO registry host — the env registry still applies.
+_bare_tagged_svc = forge.RenderedWorkload {
+    name = "baretag"
+    image = "vendorapp:3.0.0"
+    deploy = _target.deploy
+}
+
 _pinned_cronjob = forge.CronJob {
     name = "migrate"
     image = "reliant"
@@ -68,7 +83,7 @@ _pinned_operator = forge.Operator {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [_pinned_svc, _env_tag_svc, _explicit_tag_svc, _digest_svc]
+    services = [_pinned_svc, _env_tag_svc, _explicit_tag_svc, _digest_svc, _bare_tagged_svc]
     cronjobs = [_pinned_cronjob]
     operators = [_pinned_operator]
 }
@@ -95,13 +110,23 @@ assert_pinned = _image_of("reliant") == "localhost:5050/reliant:v1.4.2"
 # Un-pinned service uses the env-wide tag.
 assert_env_tag = _image_of("api") == "localhost:5050/api:abc1234-dirty"
 
-# Image with explicit :tag passes through verbatim — registry prefixed,
-# but NO extra tag appended.
-assert_explicit_tag = _image_of("vendor") == "localhost:5050/ghcr.io/acme/vendor:3.0.0"
+# Image with explicit :tag AND its own registry host passes through fully
+# verbatim: no extra tag appended, and NO env registry prefixed. Prefixing
+# here yielded `localhost:5050/ghcr.io/acme/vendor:3.0.0`, a ref no registry
+# can serve — the failure surfaced as ImagePullBackOff in a live cluster
+# instead of at render time.
+assert_explicit_tag = _image_of("vendor") == "ghcr.io/acme/vendor:3.0.0"
 
-# Image with @sha256 digest passes through verbatim (registry prefixed).
+# Image with @sha256 digest and its own registry host — same passthrough.
 assert_digest = _image_of("pinned-digest") == \
-    "localhost:5050/ghcr.io/acme/db@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+    "ghcr.io/acme/db@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+
+# The passthrough keys on the REGISTRY HOST, not on the tag: a tagged image
+# with no host of its own is still an image THIS env builds/pushes, so it
+# keeps taking the env registry. Without this, "has a tag" and "is
+# third-party" collapse into one rule and every locally-built pinned image
+# silently loses its registry.
+assert_bare_tagged_keeps_registry = _image_of("baretag") == "localhost:5050/vendorapp:3.0.0"
 
 # Pinned cronjob (one-shot Job) uses its pin.
 assert_cronjob_pinned = _image_of("migrate") == "localhost:5050/reliant:v1.4.2"

@@ -57,7 +57,23 @@ func newDBCmd() *cobra.Command {
 Forge uses a migration-first database model:
 - Checked-in SQL migrations in db/migrations/ are the source of truth
 - golang-migrate is the canonical migration runner
-- Entity types are projections of the applied schema (forge generate)`,
+- Entity types are projections of the applied schema (forge generate)
+
+When something is wedged:
+
+  A migration failed part-way and the state is marked dirty
+    No further migration will run until the flag clears, and 'migrate up'
+    refuses too. Repair the schema by hand, then:
+      forge db migrate force <version>   # record it as applied, runs no SQL
+      forge db migrate up
+
+  The dev database is full of bad or stale rows
+    Do not drop the database by hand:
+      forge db seed reset                # delete seeded rows and re-seed (dev-only)
+
+  Seeded rows are rejected by their own schema
+    'forge db seed apply' names the constraint it could not place, and why.
+    Load the db/seeding skill for the constraint shapes forge can seed.`,
 	}
 
 	cmd.AddCommand(newDBMigrationCommand())
@@ -642,8 +658,26 @@ func newDBMigrateForceCommand() *cobra.Command {
 
 	forceCmd := &cobra.Command{
 		Use:   "force [version]",
-		Short: "Force the migration version without running SQL",
-		Args:  cobra.ExactArgs(1),
+		Short: "Clear a dirty migration state by recording a version without running SQL",
+		Long: `Record <version> as the applied migration version WITHOUT running any SQL.
+
+Reach for this when a migration failed part-way and golang-migrate marked the
+state dirty. Nothing else will run until that flag clears — including
+'forge db migrate up', which refuses on a dirty version — so this is the way
+out of that loop.
+
+Forcing asserts a fact; it does not verify one. Forge cannot know how much of
+the failed migration actually landed, so repair the schema FIRST (inspect it
+with 'forge db introspect', then finish or undo the partial migration by hand),
+and force only once the database matches what that version intended. Forcing
+past a migration whose SQL never ran leaves the schema permanently behind what
+forge believes is applied.
+
+Examples:
+  forge db introspect                    # see what actually landed
+  forge db migrate force 20240102150405  # then clear the flag
+  forge db migrate up                    # and catch up`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolved, err := resolveDSN(dsn)
 			if err != nil {

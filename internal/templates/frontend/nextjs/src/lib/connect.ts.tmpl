@@ -1,16 +1,40 @@
 import { createClient, type Transport } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
-
+{{if .HasTypedConfig}}
+import { loadConfig } from "@/lib/config_gen";
+{{end}}
 import { DEV_API_URL } from "./apiurl_gen";
 
 import type { DescService } from "@bufbuild/protobuf";
-
+{{if .HasTypedConfig}}
+// The API origin comes from the typed config module, which reads it at
+// RUNTIME from the KCL-rendered config.js. Reading NEXT_PUBLIC_API_URL here
+// instead would let the bundler inline the value at BUILD time, freezing
+// this artifact to the environment it was built against — so `forge env
+// promote` could not move the bundle without a rebuild, which is the one
+// property the runtime-config design exists to buy.
+//
+// Falls back to DEV_API_URL when the environment pins no origin —
+// regenerated on every `forge generate` from the proto descriptor + the
+// canonical dev port, so it can't drift from where the backend listens.
+//
+// A function, not a module-scope const, for the same reason
+// src/lib/auth/session-provider.ts uses one: loadConfig() throws on invalid
+// config, and evaluating that at import time turns a fixable
+// misconfiguration into a blank page whose stack trace points at an import.
+function apiBaseUrl(): string {
+  return loadConfig().API_URL || DEV_API_URL;
+}
+{{else}}
 // The API URL is read from the NEXT_PUBLIC_API_URL environment variable.
 // In development it falls back to DEV_API_URL — regenerated on every
 // `forge generate` from the proto descriptor + the canonical dev port, so
 // it can't drift from where the backend actually listens.
-const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? DEV_API_URL;
+function apiBaseUrl(): string {
+  return process.env.NEXT_PUBLIC_API_URL ?? DEV_API_URL;
+}
+{{end}}
 
 // Module-level token getter, wired up by AuthTokenBridge in providers.tsx.
 let _getToken: () => Promise<string | null> = async () => null;
@@ -30,14 +54,19 @@ const interceptors = buildRuntimeInterceptors({
 });
 
 function buildTransport(): Transport {
-  // NEXT_PUBLIC_MOCK_API has three modes:
+  // MOCK_API has three modes:
   //   "true"   — pure mock. All RPCs hit the mock transport. No backend
   //              contacted. Use for offline UI dev and CI tests.
   //   "hybrid" — scenarios overlay a real backend. Unmatched RPCs (when
   //              the active scenario has passthrough:true) forward to the
   //              real transport. Use for LLM / Chrome MCP debugging.
   //   anything else (default) — real backend, real auth.
+{{- if .HasMockAPI}}
+  const mode = loadConfig().MOCK_API;
+{{- else}}
   const mode = process.env.NEXT_PUBLIC_MOCK_API;
+{{- end}}
+  const baseUrl = apiBaseUrl();
 
   if (mode === "true") {
     // Dynamic require to avoid bundling mock data in production builds.
@@ -51,11 +80,19 @@ function buildTransport(): Transport {
   // silently pointing at a hardcoded port nobody is listening on.
   if (!baseUrl) {
     throw new Error(
+{{- if .HasTypedConfig}}
+      "connect.ts: no API base URL configured. Set api_url on this " +
+        "frontend's config instance in deploy/kcl/<env>/config.k and re-run " +
+        "`forge generate` (which also bakes the dev port into " +
+        "src/lib/apiurl_gen.ts). For UI-only development set mock_api to " +
+        '"true" the same way.',
+{{- else}}
       "connect.ts: no API base URL configured. Set NEXT_PUBLIC_API_URL " +
         "(shell env, or the forge.Frontend `config.api_url` KCL knob), or " +
         "declare a service in forge.yaml and run `forge generate` (which " +
         "bakes the dev port into src/lib/apiurl_gen.ts). For UI-only " +
         "development set NEXT_PUBLIC_MOCK_API=true.",
+{{- end}}
     );
   }
 

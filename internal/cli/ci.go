@@ -213,7 +213,7 @@ func newCIMigrationSafetyCmd() *cobra.Command {
 				return cliutil.UserErr("forge ci migration-safety",
 					fmt.Sprintf("%d migration safety violation(s) in %s", len(result.Findings), result.Dir),
 					"",
-					migrationlint.DestructiveChangeRemediation)
+					migrationlint.PrimaryRemediation(result.Findings))
 			}
 			return nil
 		},

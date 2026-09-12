@@ -20,6 +20,19 @@ RUN npm run build
 # static assets and public/ directory must be copied alongside it.
 # Production builds use distDir ".next-prod" (next.config.ts fences them
 # off from the dev server's .next), so all paths below are .next-prod.
+#
+# server.js sits directly under standalone/ here because the build context
+# is the FRONTEND directory alone: WORKDIR /app holds the frontend, with no
+# npm workspace root above it, so next.config.ts's outputFileTracingRoot walk
+# finds none and roots at /app. Traced paths are then relative to /app and
+# the bundle is flat.
+#
+# On a HOST build that root is the project's workspace root instead (that is
+# what keeps the trace from writing a partial `next` into the frontend's own
+# node_modules and poisoning the next build — see next.config.ts), so server.js
+# lands under standalone/frontends/<name>/. Nothing consumes the host-built
+# standalone tree; `forge env up` and `next start` read <distDir> directly.
+# Do not "fix" that difference by re-pinning the tracing root to the frontend.
 FROM node:22-alpine AS runner
 WORKDIR /app
 

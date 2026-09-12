@@ -29,7 +29,24 @@
 // What you get instead is an `Identity`: who is signed in, for rendering.
 // Use it to decide what to SHOW. Never to decide what is ALLOWED — the
 // server validates the real token on every request.
-
+{{if .HasTypedConfig}}
+import { loadConfig } from "@/lib/config_gen";
+{{end}}
+{{- if .HasTypedConfig}}
+/**
+ * Where the API lives. Empty means same-origin, which is the common case.
+ *
+ * Read through the generated typed config module rather than from
+ * process.env: the module already resolves window.__FORGE_CONFIG__ in the
+ * browser and the process environment during server rendering, so routing
+ * through it removes a second, hand-maintained copy of that same fallback
+ * chain — and removes the build-time-inlined env read that would freeze
+ * this bundle to the environment it was built against.
+ */
+function apiOrigin(): string {
+  return String(loadConfig().API_URL || "").replace(/\/+$/, "");
+}
+{{- else}}
 /** Where the API lives. Empty means same-origin, which is the common case. */
 function apiOrigin(): string {
   const fromRuntime =
@@ -43,6 +60,7 @@ function apiOrigin(): string {
     "";
   return String(configured).replace(/\/+$/, "");
 }
+{{- end}}
 
 /** Who is signed in. Presentation only — see the file header. */
 export interface Identity {

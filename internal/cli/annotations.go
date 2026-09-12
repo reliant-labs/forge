@@ -124,7 +124,8 @@ Use --kind to limit the dump to one annotation level, and --json for a
 machine-readable dump that tools can query instead of re-deriving the spec.
 --kind column is the forge:* markers declared as a postgres catalog COMMENT
 in a migration rather than a proto/Go comment (forge:immutable on a column,
-forge:ref on a foreign-key constraint). --kind go is the wiring/observability
+forge:ref on a foreign-key constraint); --kind table is the same mechanism one
+level up, on the table itself (forge:append-only). --kind go is the wiring/observability
 /contract vocabulary forge reads out of .go files (forge:optional-dep,
 forge:constructor, forge:no-observe, forge:exclude-contract, ...) — the
 markers you meet in scaffolded code.
@@ -139,7 +140,7 @@ Examples:
 			return runAnnotations(cmd.OutOrStdout(), kind, asJSON)
 		},
 	}
-	cmd.Flags().StringVar(&kind, "kind", "", "limit to one annotation kind: entity, field, column, service, method, or go (default: all)")
+	cmd.Flags().StringVar(&kind, "kind", "", "limit to one annotation kind: entity, field, column, table, service, method, or go (default: all)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the spec as JSON")
 	return cmd
 }
@@ -193,6 +194,10 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 		// postgres catalog COMMENTs, not proto comments, so they get their
 		// own kind rather than polluting the entity/field views.
 		return AnnotationsSpec{Markers: filterMarkers(all.Markers, "column")}, nil
+	case "table":
+		// Table-comment markers (forge:append-only) — the same catalog
+		// mechanism as --kind column, declared one level up on the TABLE.
+		return AnnotationsSpec{Markers: filterMarkers(all.Markers, "table")}, nil
 	case "go":
 		// The markers read out of .go source rather than out of proto —
 		// the wiring/observability/contract vocabulary. These have no
@@ -201,7 +206,7 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 		return AnnotationsSpec{Markers: filterMarkers(all.Markers,
 			"package", "contract", "constructor", "deps-field")}, nil
 	default:
-		return AnnotationsSpec{}, fmt.Errorf("unknown --kind %q (want entity, field, column, service, method, or go)", kind)
+		return AnnotationsSpec{}, fmt.Errorf("unknown --kind %q (want entity, field, column, table, service, method, or go)", kind)
 	}
 }
 
@@ -276,6 +281,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "// quantity_milli * unit_price_cents / 1000, maintained on write.\nint64 amount_cents = 7; // forge:computed",
 		},
 		{
+			Name:      codegen.ProtoMarkerGuards,
+			AppliesTo: "field",
+			Effect:    "Declares that THIS rpc owns the named column's writes, so the scaffolded CRUD edit page drops that column from its update_mask and renders it as a disabled row naming this rpc instead. Written on a field of a CUSTOM rpc's request message; the field it sits on is only the attachment point — the subject is the `<table>.<column>` it names, which is frequently on another message entirely. Without it the page generator reasons from the entity's column list alone, knows nothing of what your rpcs enforce, and writes the column raw: lower an invoice's amount_cents below its amount_paid_cents through the scaffolded form and the raw CHECK surfaces as a 500, with the state machine RecordPayment implements bypassed entirely. The target is EXPLICIT because it cannot be inferred — RecordPaymentRequest guards invoices.amount_paid_cents, a column its request never names, while the field it does share a name with (amount_cents) is a freely editable column on a different table. Scaffolded pages are written once and never regenerated, so `forge lint --guarded-fields` reports pages that predate the marker.",
+			Placement: "leading full-line comment above the request field, or a trailing comment on the field line. Repeat the marker, one target per line, for an rpc that guards several columns.",
+			Example:   "int64 amount_cents = 2; // forge:guards invoices.amount_paid_cents",
+		},
+		{
 			Name:      codegen.ProtoMarkerMutation,
 			AppliesTo: "method",
 			Effect:    "Forces the generated React Query hook for this rpc to be a useMutation. Classification is otherwise by leading verb — Get/List/Search/Find/Check/Has/Is/Count/Exists (whole-word) are reads, EVERYTHING else is a mutation — so this is needed only for an imperative rpc that happens to open with a read word (FindAndHoldSeat, IssueRefund). A write generated as useQuery re-fires on every component remount. Unlike the entity/field markers this one is read on every `forge generate`, not just at birth.",
@@ -325,6 +337,20 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Declares WHO fills a forge:read-only column the generated Create/Update never carries a value for — `ulid` (forge generates one at Create, the same chokepoint that ULID-generates an empty string PK; non-PK columns only) or `handler` (pure acknowledgement — no codegen behavior changes, but the create shim scaffolds an op.Entity wrapper with a FORGE_SCAFFOLD reminder naming the column). Suppresses `forge lint`'s unsatisfiable-column check, which otherwise fails the build for a NOT NULL column with no DB DEFAULT and no forge:fill declaration — that combination cannot be inserted through the generated CRUD path at all.",
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:fill=ulid'; or 'forge:fill=handler'; in a migration",
 			Example:   "COMMENT ON COLUMN customers.company_id IS 'forge:fill=handler';",
+		},
+		// ── Table-comment markers ──
+		//
+		// The same catalog-comment mechanism as the column markers above,
+		// one level up: COMMENT ON TABLE, not COMMENT ON COLUMN. Its own
+		// AppliesTo because the placement genuinely differs, and a marker
+		// documented at the wrong level is a marker the reader writes in the
+		// wrong place — which, for a catalog comment, is completely silent.
+		{
+			Name:      schemadef.TableMarkerAppendOnly,
+			AppliesTo: "table",
+			Effect:    "Declares the TABLE an immutable ledger: BOTH generated routes to a write lose Update/UpdateMasked/Delete — the <Entity>Store interface and its adapter, and the package-level delegates in <entity>_orm_gen.go — so `db.DeleteX(ctx, tx, id)` does not resolve and a call that would rewrite or erase a row is a compile error rather than a runtime rejection. (Narrowing only the interface left the exported delegates reopening the same write, which decayed the guarantee back to a SQLSTATE P0001.) Reads, Create and WithTx are untouched. The generated test factory takes no overrides (applying one means UPDATEing the row it just inserted), and an Update/Delete RPC declared against the table fails `forge generate` by name, since there is no delegate left for the op to call. This is the STORAGE half of the `forge:append-only` proto marker and the half that every post-birth pass reads — the proto marker is a birth-time instruction (it writes the trigger and omits the Update/Delete RPCs) that nothing carries forward. `forge scaffold entity --from-proto` emits this declaration alongside the guard trigger; declare it by hand on a table a hand-written migration made append-only. A table forge made append-only BEFORE this declaration existed needs no migration: its `<table>_append_only` guard trigger is read as the same declaration, matched by that exact name (an updated_at stamper is also BEFORE UPDATE and means the opposite).",
+			Placement: "COMMENT ON TABLE <table> IS 'forge:append-only'; in a migration — on the TABLE, not a column.",
+			Example:   "COMMENT ON TABLE payments IS 'forge:append-only — rows are inserted and read, never rewritten or erased.';",
 		},
 		{
 			Name:      schemadef.ColumnMarkerOwner,

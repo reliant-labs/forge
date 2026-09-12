@@ -203,10 +203,22 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 	// config is out-of-scope for the lane. See
 	// migrationlint-no-per-file-destructive-pragma in FORGE_BACKLOG.
 	allowDestructive := hasAllowDestructivePragma(content)
+	// The NOT NULL rules have their own opt-out, deliberately separate from
+	// the destructive one: the two suppress different hazards, and a single
+	// pragma would hand every migration that already carries
+	// allow-destructive a silent exemption from the NOT NULL checks too.
+	allowUnsafeNotNull := hasAllowUnsafeNotNullPragma(content)
 
 	clean := stripSQLComments(content)
 	statements := splitStatements(clean)
 	backfilledColumns := map[string]bool{}
+	// generatedColumns records every column this migration adds as
+	// GENERATED ALWAYS AS (...) STORED, so a later SET NOT NULL on one is
+	// recognized as safe. It is scoped to the file for the same reason
+	// backfilledColumns is: that is the whole extent of what the linter can
+	// see without a live schema, and guessing beyond it would be worse than
+	// the finding.
+	generatedColumns := map[string]bool{}
 	var findings []Finding
 
 	for _, stmt := range statements {
@@ -228,8 +240,12 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 		for _, column := range updatedColumns(text) {
 			backfilledColumns[strings.ToLower(column)] = true
 		}
+		for _, column := range addedGeneratedStoredColumns(text) {
+			generatedColumns[strings.ToLower(column)] = true
+		}
 
-		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" && addColumnRe.MatchString(text) && hasNotNull(text) && !hasDefault(text) {
+		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" && !allowUnsafeNotNull &&
+			addColumnRe.MatchString(text) && hasNotNull(text) && !hasDefault(text) && !hasGeneratedStored(text) {
 			findings = append(findings, Finding{
 				File:     file,
 				Line:     stmt.Line,
@@ -249,9 +265,10 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 			})
 		}
 
-		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" {
+		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" && !allowUnsafeNotNull {
 			for _, column := range setNotNullColumns(text) {
-				if !backfilledColumns[strings.ToLower(column)] {
+				key := strings.ToLower(column)
+				if !backfilledColumns[key] && !generatedColumns[key] {
 					findings = append(findings, Finding{
 						File:     file,
 						Line:     stmt.Line,
@@ -290,11 +307,66 @@ func stripSQLComments(content string) string {
 }
 
 func hasNotNull(statement string) bool {
-	return regexp.MustCompile(`(?is)\bnot\s+null\b`).MatchString(statement)
+	return notNullRe.MatchString(statement)
+}
+
+// generatedStoredRe matches a GENERATED ALWAYS AS (<expr>) STORED column
+// definition.
+//
+// Deliberately narrow on both ends. `AS (` excludes GENERATED ALWAYS AS
+// IDENTITY, which shares the leading keywords but is a sequence-backed add
+// with no expression over existing columns — a different operation the
+// exemption's reasoning does not cover. Requiring STORED excludes postgres
+// 18's VIRTUAL form, which computes on read; only STORED materializes the
+// value for every existing row during the ADD COLUMN, which is the entire
+// basis for calling the add safe.
+//
+// [^;]*? between the closing paren and STORED is lazy and stops at the
+// statement boundary, so a later statement's STORED cannot be borrowed to
+// exempt an earlier plain add.
+var (
+	notNullRe         = regexp.MustCompile(`(?is)\bnot\s+null\b`)
+	defaultRe         = regexp.MustCompile(`(?is)\bdefault\b`)
+	generatedStoredRe = regexp.MustCompile(`(?is)\bgenerated\s+always\s+as\s*\([^;]*?\)[^;]*?\bstored\b`)
+	// addGeneratedStoredRe pulls the COLUMN NAME out of such an add, so a
+	// SET NOT NULL later in the same file can be matched against it.
+	addGeneratedStoredRe = regexp.MustCompile(`(?is)\badd\s+column\s+(?:if\s+not\s+exists\s+)?(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s+[^;]*?\bgenerated\s+always\s+as\s*\([^;]*?\)[^;]*?\bstored\b`)
+)
+
+// hasGeneratedStored reports whether the statement adds a column postgres
+// computes and materializes itself.
+//
+// This is the N3 exemption. unsafe-add-not-null-column exists because a plain
+// NOT NULL add has no value for the rows already in the table and the
+// statement fails outright. A GENERATED ALWAYS ... STORED column has a value
+// for every one of them by construction — postgres evaluates the expression
+// per row as part of the add — so that failure mode does not apply.
+//
+// Without the exemption the rule had NO satisfiable spelling: its own
+// remediation ("add nullable column, backfill, then SET NOT NULL") is invalid
+// SQL against a generated column, since postgres rejects an UPDATE of one, and
+// the split form then tripped set-not-null-without-backfill instead. A
+// measured dogfood run escaped only by dropping NOT NULL, which projects the
+// Go field as a pointer and makes every consumer nil-check a value that
+// arithmetic over NOT NULL columns can never produce. A rule with no
+// satisfiable spelling is worse than no rule: it buys a weaker schema.
+func hasGeneratedStored(statement string) bool {
+	return generatedStoredRe.MatchString(statement)
+}
+
+// addedGeneratedStoredColumns returns the columns this statement adds as
+// GENERATED ALWAYS AS (...) STORED.
+func addedGeneratedStoredColumns(statement string) []string {
+	matches := addGeneratedStoredRe.FindAllStringSubmatch(statement, -1)
+	columns := make([]string, 0, len(matches))
+	for _, match := range matches {
+		columns = append(columns, firstNonEmpty(match[1], match[2]))
+	}
+	return columns
 }
 
 func hasDefault(statement string) bool {
-	return regexp.MustCompile(`(?is)\bdefault\b`).MatchString(statement)
+	return defaultRe.MatchString(statement)
 }
 
 func setNotNullColumns(statement string) []string {
@@ -355,6 +427,85 @@ var allowDestructivePragmaRe = regexp.MustCompile(`(?im)^\s*--\s*(?:forge:allow-
 func hasAllowDestructivePragma(content string) bool {
 	return allowDestructivePragmaRe.MatchString(content)
 }
+
+// UnsafeNotNullRemediation is the fix text for the two NOT NULL rules. It
+// names the generated-column spelling FIRST because that is the durable fix —
+// the column stops being something the application can get wrong — and the
+// pragma second, as the acknowledgement for cases the linter cannot see (an
+// empty table, or a column made generated in an earlier migration).
+//
+// Colocated with allowUnsafeNotNullPragmaRe so the syntax we tell users cannot
+// drift from the syntax the linter matches.
+const UnsafeNotNullRemediation = `add the column nullable, backfill it with an UPDATE, then SET NOT NULL in the same migration; for a derived column prefer making the database compute it (ADD COLUMN ... GENERATED ALWAYS AS (<expr>) STORED NOT NULL, which this rule accepts); or — if you know the table is empty — mark the migration file with a "-- forge:allow-unsafe-not-null" comment`
+
+// allowUnsafeNotNullPragmaRe matches the in-file opt-out for
+// unsafe-add-not-null-column and set-not-null-without-backfill, in the same
+// two forms the destructive pragma accepts:
+//
+//	-- forge:allow-unsafe-not-null
+//	-- forge-safety: allow-unsafe-not-null
+var allowUnsafeNotNullPragmaRe = regexp.MustCompile(`(?im)^\s*--\s*(?:forge:allow-unsafe-not-null\b|forge-safety:\s*allow-unsafe-not-null\b)`)
+
+func hasAllowUnsafeNotNullPragma(content string) bool {
+	return allowUnsafeNotNullPragmaRe.MatchString(content)
+}
+
+// RemediationFor returns the fix text for a rule ID.
+//
+// Every migration-safety failure used to be printed with the DESTRUCTIVE
+// remediation regardless of which rule fired, so an author whose NOT NULL add
+// was rejected was told to add `-- forge:allow-destructive` (which does not
+// silence it) or to glob-allowlist the file under
+// `database.migration_safety.allowed_destructive` (which does not silence it
+// either — and, before the loader fix, disabled the whole migrations feature
+// instead). Advice that does not apply to the finding it is attached to is
+// how an author ends up two layers deep in a config trap.
+//
+// An unknown rule falls back to the destructive text, which is the historical
+// behaviour and the right default for the rule that has no other hatch.
+func RemediationFor(rule string) string {
+	switch rule {
+	case "unsafe-add-not-null-column", "set-not-null-without-backfill":
+		return UnsafeNotNullRemediation
+	case "volatile-default":
+		return VolatileDefaultRemediation
+	default:
+		return DestructiveChangeRemediation
+	}
+}
+
+// VolatileDefaultRemediation is the fix text for a volatile-default finding.
+const VolatileDefaultRemediation = `add the column nullable, backfill it with an explicit UPDATE, then set the default for new rows — a volatile DEFAULT is evaluated per existing row and rewrites the whole table under an ACCESS EXCLUSIVE lock`
+
+// PrimaryRemediation returns the fix text for a set of findings: the rule's
+// own text when they all share one rule, else the generic pointer at the
+// per-finding hints. The CLI prints ONE fix line under a batch of findings,
+// and picking any single rule's text for a mixed batch is how the wrong
+// advice got attached in the first place.
+func PrimaryRemediation(findings []Finding) string {
+	rule := ""
+	for _, f := range findings {
+		if f.Severity != SeverityError {
+			continue
+		}
+		if rule == "" {
+			rule = f.Rule
+			continue
+		}
+		if rule != f.Rule {
+			return MixedRemediation
+		}
+	}
+	if rule == "" {
+		return DestructiveChangeRemediation
+	}
+	return RemediationFor(rule)
+}
+
+// MixedRemediation is what a batch spanning several rules gets: the fix
+// depends on which finding you are looking at, so say that rather than print
+// one rule's hatch over all of them.
+const MixedRemediation = `each finding above names the rule it violated; run with --json for the per-finding fix, or see the rule's remediation: destructive-change accepts "-- forge:allow-destructive", the NOT NULL rules accept "-- forge:allow-unsafe-not-null"`
 
 // isAllowedDestructive reports whether file is covered by an
 // allowed_destructive glob from forge.yaml.

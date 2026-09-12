@@ -485,4 +485,10 @@ func (p *Plan) finalize() {
 	// Diamonds are resolved LAST: the walk uses real parent assignments, and
 	// those hash-pick against the row counts settled above.
 	p.derivedRefs, p.authRefs, p.undeclared = p.resolveDiamonds()
+
+	// The ordering pass's overlay refusals are collected AFTER the row counts
+	// settle: the walk asks each planned row whether its declared pool could
+	// be honored, so it has to run against the live count rather than the
+	// target one a UNIQUE cap may since have lowered.
+	p.planWarns = append(p.planWarns, p.orderVocabWarnings()...)
 }

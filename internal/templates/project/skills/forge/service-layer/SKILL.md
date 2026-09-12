@@ -164,7 +164,7 @@ func (s *svc) DoThing(ctx context.Context, in DoThingInput) (DoThingResult, erro
         CreatedAt: s.deps.Now(),
     })
     if err != nil {
-        if db.IsUniqueViolation(err) {
+        if orm.IsUniqueViolation(err) {
             return DoThingResult{}, ErrAlreadyExists
         }
         return DoThingResult{}, fmt.Errorf("insert thing: %w", err)
@@ -184,11 +184,59 @@ Sentinels **stay exported** — the export IS the `errors.Is` seam. When `revive
 ```go
 // Convert driver errors to sentinels at the storage edge (no-rows → ErrNotFound,
 // unique-violation → ErrAlreadyExists); wrap everything else with %w.
-if errors.Is(err, db.ErrNoRows) {
+if errors.Is(err, orm.ErrNoRows) {
     return Thing{}, ErrNotFound
 }
 return Thing{}, fmt.Errorf("get thing: %w", err)
 ```
+
+On the write side the predicates are `orm.IsUniqueViolation(err)` and
+`orm.IsCheckViolation(err)`, plus `orm.ConstraintName(err)` when a table has
+more than one constraint to tell apart. All three see through a `%w` wrap, so
+they keep working after the `fmt.Errorf` above.
+
+**Classify write violations; never match the driver's prose.** A UNIQUE exists
+to close a race — `jobs.estimate_id` UNIQUE means one approved estimate sells
+exactly one job — so the loser of that race is a legitimate `ErrAlreadyExists`,
+not a fault. Without the predicate it returns a 500 carrying a raw postgres
+string, and because only the *second concurrent* call ever takes that path, the
+happy-path test passes and nothing surfaces until production. A CHECK violation
+is the caller's bad input, so it maps to the invalid-argument sentinel instead:
+
+```go
+// Constraint names are GENERATED, beside the column constants: the applied
+// schema's UNIQUE / CHECK / FOREIGN KEY constraints project to
+// db.<Entity>Constraint<Name>. Never hand-declare the string — a rename in a
+// migration must be a compile error here, not a branch that silently stops
+// matching.
+if err := s.deps.DB.CreateJob(ctx, job); err != nil {
+    switch {
+    case orm.ConstraintName(err) == db.JobConstraintEstimateIdKey:
+        return Job{}, ErrEstimateAlreadySold   // this estimate already sold a job
+    case orm.IsUniqueViolation(err):
+        return Job{}, ErrAlreadyExists
+    case orm.IsCheckViolation(err):
+        return Job{}, ValidationError{Field: orm.ConstraintName(err), Reason: "violates constraint"}
+    }
+    return Job{}, fmt.Errorf("create job: %w", err)
+}
+```
+
+The values are the names **postgres** reports, read back from the applied
+schema — including the ones postgres auto-derives for an inline declaration
+(`UNIQUE` on `jobs.estimate_id` becomes `jobs_estimate_id_key`), which appear
+nowhere in your migration text. Run `forge generate` after a migration and the
+constants follow the schema. The primary key gets no constant: `pkg/crud`
+generates the id, so no service branches on a duplicate-PK insert.
+
+Note the generated CRUD handler path classifies these too (`pkg/crud` maps
+23505 → `AlreadyExists`, 23514 → `InvalidArgument`). These predicates are for
+the case that path does not cover: a service writing through the generated
+store directly, typically inside a transaction, which never reaches the shim.
+
+Do **not** reach for `strings.Contains(err.Error(), "already exists")`. Driver
+prose is not a contract, it differs between pgx and lib/pq, and it quotes row
+values and connection details you do not want on the wire.
 
 For domain-specific structured detail (e.g., a validation failure naming the field), use a typed error AND wrap a sentinel so the handler-side mapping still works:
 

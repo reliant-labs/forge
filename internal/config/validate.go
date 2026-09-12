@@ -218,7 +218,14 @@ func LoadProject(data []byte, path string) (*ProjectConfig, error) {
 	// canonical scaffold defaults for the project kind, and attach the
 	// feature-derivation context so absent feature flags resolve from
 	// shape (see derive.go). Explicit values are never overridden.
-	ApplyDerivedDefaults(&cfg)
+	//
+	// The yaml root is threaded through so defaulting is FIELD-level: a
+	// section the user partially wrote keeps the defaults of the keys they
+	// left out. Without it, writing the `database.migration_safety`
+	// allowlist that forge's own migration-safety error recommends left
+	// Driver empty, which derived FeatureMigrations off and made `forge
+	// lint --migration-safety` exit 0 having checked nothing.
+	ApplyDerivedDefaultsFromNode(&cfg, root)
 
 	// Phase 5: feature dependency graph. Now that the feature set is
 	// fully resolved (derived defaults + explicit overrides folded in),

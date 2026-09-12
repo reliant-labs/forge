@@ -140,6 +140,16 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 	fmt.Fprintf(b, "// %s is the generated CRUD surface for %s, shaped as an\n", iface, msgName)
 	b.WriteString("// interface so a service can declare it as a Deps field and call it with\n")
 	b.WriteString("// nothing but its own arguments.\n")
+	if ent.AppendOnly {
+		b.WriteString("//\n")
+		fmt.Fprintf(b, "// %s is an APPEND-ONLY ledger (forge:append-only on the table), so\n", msgName)
+		b.WriteString("// this store has no Update, UpdateMasked or Delete: rows are inserted and\n")
+		b.WriteString("// read, never rewritten or erased. The database rejects both operations\n")
+		b.WriteString("// too — omitting them here is what makes that refusal a compile error\n")
+		b.WriteString("// instead of a runtime one.\n")
+		b.WriteString("//\n")
+		b.WriteString("// Correcting a bad row means appending its reversal, not editing it.\n")
+	}
 	fmt.Fprintf(b, "type %s interface {\n", iface)
 	fmt.Fprintf(b, "\t// Create%s inserts a new %s row (plain INSERT, never an upsert).\n", msgName, msgName)
 	fmt.Fprintf(b, "\tCreate%s(ctx context.Context, msg *%s) error\n\n", msgName, msgName)
@@ -150,12 +160,26 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 	fmt.Fprintf(b, "\tList%s(ctx context.Context, opts ...orm.QueryOption) ([]*%s, error)\n\n", msgName, msgName)
 	fmt.Fprintf(b, "\t// Count%s counts %s rows matching the given options.\n", msgName, msgName)
 	fmt.Fprintf(b, "\tCount%s(ctx context.Context, opts ...orm.QueryOption) (int64, error)\n\n", msgName)
-	fmt.Fprintf(b, "\t// Update%s writes every non-skipupdate column of msg.\n", msgName)
-	fmt.Fprintf(b, "\tUpdate%s(ctx context.Context, msg *%s) error\n\n", msgName, msgName)
-	fmt.Fprintf(b, "\t// Update%sMasked writes only the named fields.\n", msgName)
-	fmt.Fprintf(b, "\tUpdate%sMasked(ctx context.Context, msg *%s, fields []string) error\n\n", msgName, msgName)
-	fmt.Fprintf(b, "\t// Delete%s removes a %s by primary key.\n", msgName, msgName)
-	fmt.Fprintf(b, "\tDelete%s(ctx context.Context, id %s) error\n\n", msgName, pkGoType)
+
+	// forge:append-only — the mutators are OMITTED, not merely documented
+	// away. The marker already removed the Update/Delete RPCs and installed
+	// a trigger that rejects both at the database; emitting them here
+	// anyway left the ledger's immutability defended only at runtime, so
+	// `DeletePayment(ctx, id)` type-checked fine and could only fail as a
+	// 500. A generator that knows an invariant and still emits the call
+	// that breaks it has made the invariant the user's problem: the audited
+	// build ended up hand-writing `panic("payments are append-only")` into
+	// a test fake to defend it.
+	//
+	// Reads and Create stay: append-only means immutable, not invisible.
+	if !ent.AppendOnly {
+		fmt.Fprintf(b, "\t// Update%s writes every non-skipupdate column of msg.\n", msgName)
+		fmt.Fprintf(b, "\tUpdate%s(ctx context.Context, msg *%s) error\n\n", msgName, msgName)
+		fmt.Fprintf(b, "\t// Update%sMasked writes only the named fields.\n", msgName)
+		fmt.Fprintf(b, "\tUpdate%sMasked(ctx context.Context, msg *%s, fields []string) error\n\n", msgName, msgName)
+		fmt.Fprintf(b, "\t// Delete%s removes a %s by primary key.\n", msgName, msgName)
+		fmt.Fprintf(b, "\tDelete%s(ctx context.Context, id %s) error\n\n", msgName, pkGoType)
+	}
 	b.WriteString("\t// WithTx returns the same store bound to a transaction handle, so a\n")
 	b.WriteString("\t// multi-step use case runs atomically without changing any signature.\n")
 	fmt.Fprintf(b, "\tWithTx(tx orm.Context) %s\n", iface)
@@ -174,12 +198,18 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 	fmt.Fprintf(b, "\treturn List%s(ctx, s.db, opts...)\n}\n\n", msgName)
 	fmt.Fprintf(b, "func (s %s) Count%s(ctx context.Context, opts ...orm.QueryOption) (int64, error) {\n", adapter, msgName)
 	fmt.Fprintf(b, "\treturn Count%s(ctx, s.db, opts...)\n}\n\n", msgName)
-	fmt.Fprintf(b, "func (s %s) Update%s(ctx context.Context, msg *%s) error {\n", adapter, msgName, msgName)
-	fmt.Fprintf(b, "\treturn Update%s(ctx, s.db, msg)\n}\n\n", msgName)
-	fmt.Fprintf(b, "func (s %s) Update%sMasked(ctx context.Context, msg *%s, fields []string) error {\n", adapter, msgName, msgName)
-	fmt.Fprintf(b, "\treturn Update%sMasked(ctx, s.db, msg, fields)\n}\n\n", msgName)
-	fmt.Fprintf(b, "func (s %s) Delete%s(ctx context.Context, id %s) error {\n", adapter, msgName, pkGoType)
-	fmt.Fprintf(b, "\treturn Delete%s(ctx, s.db, id)\n}\n\n", msgName)
+	// The adapter loses the same three. An invariant the interface hides
+	// while the concrete type still offers it is not an invariant — a
+	// caller holding the adapter directly would compile straight through
+	// the guard.
+	if !ent.AppendOnly {
+		fmt.Fprintf(b, "func (s %s) Update%s(ctx context.Context, msg *%s) error {\n", adapter, msgName, msgName)
+		fmt.Fprintf(b, "\treturn Update%s(ctx, s.db, msg)\n}\n\n", msgName)
+		fmt.Fprintf(b, "func (s %s) Update%sMasked(ctx context.Context, msg *%s, fields []string) error {\n", adapter, msgName, msgName)
+		fmt.Fprintf(b, "\treturn Update%sMasked(ctx, s.db, msg, fields)\n}\n\n", msgName)
+		fmt.Fprintf(b, "func (s %s) Delete%s(ctx context.Context, id %s) error {\n", adapter, msgName, pkGoType)
+		fmt.Fprintf(b, "\treturn Delete%s(ctx, s.db, id)\n}\n\n", msgName)
+	}
 
 	// WithTx is what preserves the per-call-handle property the delegates
 	// were designed around. orm.Context is per-call so one method can run

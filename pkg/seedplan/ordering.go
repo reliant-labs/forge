@@ -51,17 +51,30 @@ import (
 // below, because forge's placement does not prove those.
 //
 // Each recognized comparison is an EDGE in a per-table DAG: lo -> hi, "hi must
-// sit above lo". Columns are ranked by longest path from a root, and a column
-// at rank r takes the component's root value plus r steps. The ordering then
-// holds by arithmetic rather than by luck:
+// sit above lo". Columns are ranked by longest path from a root, and the
+// component is then placed as a LADDER, lowest rank first, each rank strictly
+// above the running floor the ranks below it established (see orderLadder).
+// The ordering holds by construction rather than by luck, and non-strict (>=)
+// constraints are satisfied by the strict assignment too, so strictness is not
+// tracked. Root columns keep the value they would have had anyway, so a schema
+// with no ordering constraint seeds exactly as before.
 //
-//	value(hi) = base + rank(hi)*step, base = max(natural values of the roots)
-//	rank(hi) >= rank(lo) + 1  ⇒  value(hi) > value(lo)
+// TIME chains are the one exception: they still take base + rank * 30 days
+// directly, because a timestamp column has no value pool to honor.
 //
-// Non-strict (>=) constraints are satisfied by the strict assignment too, so
-// strictness is not tracked. Root columns keep the value they would have had
-// anyway, so a schema with no ordering constraint seeds exactly as before and
-// no existing dataset shifts.
+// The ladder exists because the placement must respect what a column is
+// ALLOWED to hold, not merely what the comparison requires. Its predecessor
+// took the root's value plus the rank number, which assumed any column can
+// hold any value — false for a column drawing from a closed pool, whether the
+// author's `{min, max, step}` in db/seeds/vocab.yaml or a numeric `IN (...)`
+// CHECK. Measured on two consecutive dogfood runs of one schema: a declared
+// [500000, 2900000] on `invoices.amount_cents` seeded a minimum of 1, because
+// the pairing CHECK pinned it to `amount_paid_cents + 1` and discarded the
+// declaration outright. A pooled column now keeps its own draw when that
+// already clears the floor and otherwise takes the lowest pool member that
+// does, which honors the CHECK and the declaration together whenever the two
+// are jointly satisfiable — and says so by name (orderVocabWarnings) when they
+// are not.
 //
 // # What is NOT satisfied, and why that is stated rather than hidden
 //
@@ -102,6 +115,14 @@ type orderSlot struct {
 	// sorted. The base value is the MAX of their natural values, which is
 	// what makes the arithmetic above a proof rather than a hope.
 	roots []string
+	// members is every column of this component, sorted. The placement is a
+	// LADDER over the whole component (see orderLadder) rather than a
+	// per-column function of rank, because a column drawing from a closed
+	// pool cannot be placed at an arbitrary arithmetic offset.
+	members []string
+	// cons names the ordering constraints governing this column, sorted, so
+	// a refusal can point at the exact line of SQL.
+	cons []string
 	// kind is the canonical type shared by every column of the component.
 	kind schemadef.CanonicalType
 }
@@ -421,6 +442,18 @@ func tableOrderChains(t schemadef.Table) (map[string]orderSlot, []string) {
 					t.Name, ck.Name, col, col))
 				continue
 			}
+			// A biconditional lifecycle rule is the other failure with a
+			// known fix, and it is the one that reaches here most often:
+			// it parses as neither a guard nor a union, so without this
+			// the author is told their status constraint is "not a
+			// two-column ordering comparison" — a sentence about a
+			// subsystem their constraint has nothing to do with.
+			if rewrite, isBiconditional := biconditionalRewrite(ck.Def); isBiconditional {
+				warns = append(warns, fmt.Sprintf(
+					"seed plan: %s constraint %q %s — until then seeded rows satisfy it only by chance",
+					t.Name, ck.Name, biconditionalAdvice(rewrite, biconditionalDiscriminator(rewrite))))
+				continue
+			}
 			refuse(ck.Name, "not a two-column ordering comparison")
 			continue
 		}
@@ -465,11 +498,14 @@ func tableOrderChains(t schemadef.Table) (map[string]orderSlot, []string) {
 
 	comps := components(rels)
 	kindOf := map[string]schemadef.CanonicalType{}
+	consOf := map[string][]string{}
 	for _, r := range rels {
 		c, _ := orderEligible(t, r.lo)
 		kindOf[r.lo] = c.Type
 		c, _ = orderEligible(t, r.hi)
 		kindOf[r.hi] = c.Type
+		consOf[r.lo] = appendDistinct(consOf[r.lo], r.constraint)
+		consOf[r.hi] = appendDistinct(consOf[r.hi], r.constraint)
 	}
 
 	slots := map[string]orderSlot{}
@@ -482,10 +518,25 @@ func tableOrderChains(t schemadef.Table) (map[string]orderSlot, []string) {
 		}
 		sort.Strings(roots)
 		for _, c := range comp {
-			slots[c] = orderSlot{rank: ranks[c], roots: roots, kind: kindOf[c]}
+			cons := append([]string(nil), consOf[c]...)
+			sort.Strings(cons)
+			slots[c] = orderSlot{
+				rank: ranks[c], roots: roots, members: comp, cons: cons, kind: kindOf[c],
+			}
 		}
 	}
 	return slots, warns
+}
+
+// appendDistinct appends s unless it is already present. The lists it builds
+// are a handful of constraint names, so a linear scan is the whole cost.
+func appendDistinct(xs []string, s string) []string {
+	for _, x := range xs {
+		if x == s {
+			return xs
+		}
+	}
+	return append(xs, s)
 }
 
 // rankColumns assigns each column the length of the longest path reaching
@@ -609,41 +660,229 @@ func (p *Plan) orderedLiteral(tp tablePlan, col schemadef.Column, i int) (string
 	if !ok || slot.rank == 0 {
 		return "", false
 	}
-	base, ok := p.chainBase(tp, slot, i)
-	if !ok {
-		return "", false
-	}
-	switch slot.kind {
-	case schemadef.TypeTime:
+	if slot.kind == schemadef.TypeTime {
+		base, ok := p.chainBase(tp, slot, i)
+		if !ok {
+			return "", false
+		}
 		at, perr := time.Parse(time.RFC3339, base)
 		if perr != nil {
 			return "", false
 		}
 		return sqlString(at.AddDate(0, 0, OrderStepDays*slot.rank).Format("2006-01-02T15:04:05Z")), true
-	case schemadef.TypeInt:
-		v, perr := strconv.ParseInt(base, 10, 64)
-		if perr != nil {
-			return "", false
-		}
-		want := v + int64(slot.rank)
-		if b, has := p.bounds.get(tp.table.Name, col.Name); has && b.clamp(want) != want {
+	}
+	placed, _ := p.orderLadder(tp, slot, i)
+	got, ok := placed[col.Name]
+	if !ok {
+		return "", false
+	}
+	if b, has := p.bounds.get(tp.table.Name, col.Name); has {
+		if (b.Min != nil && got.val < float64(*b.Min)) || (b.Max != nil && got.val > float64(*b.Max)) {
 			return "", false // the range CHECK cannot hold the ordered value
 		}
-		return strconv.FormatInt(want, 10), true
-	case schemadef.TypeFloat:
-		v, perr := strconv.ParseFloat(base, 64)
-		if perr != nil {
-			return "", false
+	}
+	return got.lit, true
+}
+
+// orderPlacement is one column's resolved position on the ladder: the literal
+// to emit, and the numeric value the NEXT rank is measured against.
+type orderPlacement struct {
+	lit string
+	val float64
+}
+
+// orderLadder places every numeric column of one ordering component for row
+// i, lowest rank first, and returns the columns whose declared value pool it
+// could not honor.
+//
+// It replaces a per-column `base + rank`, which assumed a column can hold ANY
+// value. A column drawing from a CLOSED pool cannot — the author's
+// `{min, max, step}` in db/seeds/vocab.yaml, or a numeric `IN (...)` CHECK —
+// and the arithmetic form pinned the higher column of a pair to `lower + 1`
+// and discarded the declaration outright. Measured on two consecutive dogfood
+// runs of the same schema: `invoices.amount_cents` declared [500000, 2900000]
+// and seeded a minimum of 1, so every invoice in the app carried a one-cent
+// balance.
+//
+// So each rank is placed against a running FLOOR rather than against its own
+// rank number. A pooled column keeps its own natural draw when that already
+// clears the floor and otherwise takes the smallest pool member that does,
+// which satisfies the CHECK and the declaration at once whenever the two are
+// jointly satisfiable. A column with no pool takes floor+1 exactly as before,
+// so a schema with no vocabulary seeds byte-identically.
+//
+// Every member of one rank is measured against the floor the ranks BELOW it
+// established, not against each other: two columns at the same rank are
+// unordered with respect to one another, and stacking them would invent a
+// requirement the schema never stated.
+func (p *Plan) orderLadder(tp tablePlan, slot orderSlot, i int) (map[string]orderPlacement, []string) {
+	table := tp.table.Name
+	t := p.byName[table]
+	members := append([]string(nil), slot.members...)
+	sort.Slice(members, func(a, b int) bool {
+		ra, rb := p.orderChains[table][members[a]].rank, p.orderChains[table][members[b]].rank
+		if ra != rb {
+			return ra < rb
 		}
-		want := v + float64(slot.rank)
-		if b, has := p.bounds.get(tp.table.Name, col.Name); has {
-			if (b.Min != nil && want < float64(*b.Min)) || (b.Max != nil && want > float64(*b.Max)) {
-				return "", false // the range CHECK cannot hold the ordered value
+		return members[a] < members[b]
+	})
+
+	out := make(map[string]orderPlacement, len(members))
+	var unplaceable []string
+	// floor is the highest value placed so far; rankFloor freezes it at the
+	// start of each rank so same-rank siblings do not stack on each other.
+	floor, rankFloor, haveFloor := 0.0, 0.0, false
+	curRank := -1
+	for _, name := range members {
+		col, eligible := orderEligible(t, name)
+		if !eligible {
+			return nil, nil
+		}
+		s := p.orderChains[table][name]
+		if s.rank != curRank {
+			curRank, rankFloor = s.rank, floor
+		}
+		natural, ok := decodeScalarLiteral(p.valueLiteral(table, col, i))
+		if !ok {
+			return nil, nil
+		}
+		naturalVal, perr := strconv.ParseFloat(natural, 64)
+		if perr != nil {
+			return nil, nil
+		}
+		placed := orderPlacement{lit: p.orderNaturalLiteral(table, col, natural, naturalVal), val: naturalVal}
+		if s.rank > 0 {
+			var short bool
+			placed, short = p.climb(table, col, rankFloor, naturalVal)
+			if short {
+				unplaceable = append(unplaceable, name)
 			}
 		}
-		return fmt.Sprintf("%.2f", want), true
+		out[name] = placed
+		if placed.val > floor || !haveFloor {
+			floor, haveFloor = placed.val, true
+		}
 	}
-	return "", false
+	return out, unplaceable
+}
+
+// climb places one non-root column strictly above floor. short is true when
+// the column's whole pool sits at or below the floor: the placement then
+// leaves the pool for floor+1, because a value the CHECK rejects aborts the
+// transaction and rolls back every table that already seeded, while a value
+// outside the declared pool is merely disappointing — and the caller names it
+// rather than letting the override pass silently.
+func (p *Plan) climb(table string, col schemadef.Column, floor, naturalVal float64) (orderPlacement, bool) {
+	step := floor + 1
+	pool, pooled := p.closedPool(table, col)
+	if !pooled {
+		return orderPlacement{lit: p.orderStepLiteral(col, step), val: step}, false
+	}
+	if naturalVal > floor {
+		return orderPlacement{lit: poolLiteral(col, p.orderStepLiteral(col, naturalVal)), val: naturalVal}, false
+	}
+	best, found := "", false
+	var bestVal float64
+	for _, m := range pool {
+		v, err := strconv.ParseFloat(m, 64)
+		if err != nil || v <= floor {
+			continue
+		}
+		if !found || v < bestVal {
+			best, bestVal, found = m, v, true
+		}
+	}
+	if found {
+		return orderPlacement{lit: poolLiteral(col, best), val: bestVal}, false
+	}
+	return orderPlacement{lit: p.orderStepLiteral(col, step), val: step}, true
+}
+
+// orderNaturalLiteral re-renders a column's own natural value. A pooled
+// column keeps the pool member's exact spelling (a declared `1500.00` must
+// not come back as `1500`); everything else is rendered by the column's type.
+func (p *Plan) orderNaturalLiteral(table string, col schemadef.Column, natural string, val float64) string {
+	if _, pooled := p.closedPool(table, col); pooled {
+		return poolLiteral(col, natural)
+	}
+	return p.orderStepLiteral(col, val)
+}
+
+// orderStepLiteral renders a numeric value in the column's own type — the
+// spellings the arithmetic placement always used.
+func (p *Plan) orderStepLiteral(col schemadef.Column, v float64) string {
+	if col.Type == schemadef.TypeFloat {
+		return fmt.Sprintf("%.2f", v)
+	}
+	return strconv.FormatInt(int64(v), 10)
+}
+
+// orderVocabWarnings names every column whose DECLARED value pool an ordering
+// placement had to leave.
+//
+// A CHECK is not negotiable and the overlay is a preference, so the placement
+// wins — but silently is the wrong way to win. This is the same rule, and the
+// same voice, as unionVocabWarnings: an author who wrote a range in
+// db/seeds/vocab.yaml and got values three orders of magnitude below its floor
+// has no way to see why without this line, and two measured runs went looking
+// for a seeding workaround instead.
+func (p *Plan) orderVocabWarnings() []string {
+	var out []string
+	for _, tp := range p.tables {
+		table := tp.table.Name
+		slots := p.orderChains[table]
+		if len(slots) == 0 {
+			continue
+		}
+		// Every column of a component resolves the SAME ladder, so the walk
+		// is once per component, not once per column.
+		named, walked := map[string]bool{}, map[string]bool{}
+		for _, col := range sortedKeys(slots) {
+			slot := slots[col]
+			if slot.kind == schemadef.TypeTime || walked[slot.members[0]] {
+				continue
+			}
+			walked[slot.members[0]] = true
+			for i := 0; i < tp.n; i++ {
+				_, unplaceable := p.orderLadder(tp, slot, i)
+				for _, name := range unplaceable {
+					if named[name] || len(p.vocab[table][name]) == 0 {
+						continue
+					}
+					named[name] = true
+					out = append(out, fmt.Sprintf(
+						"seed plan: db/seeds/vocab.yaml declares values for %s.%s, but constraint %s requires "+
+							"every one of them to sit above a sibling column that is already higher — "+
+							"the CHECK wins and the declared values are not used. "+
+							"Raise the range, or lower the range on the column it is compared against",
+						table, name, strings.Join(quoteAll(slots[name].cons), " / ")))
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedKeys returns a map's keys in sorted order, so a warning walk is
+// deterministic.
+func sortedKeys(m map[string]orderSlot) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// quoteAll double-quotes each name, matching how every other constraint
+// refusal in this package spells one.
+func quoteAll(names []string) []string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = strconv.Quote(n)
+	}
+	return out
 }
 
 // chainBase returns the raw value the component's ranks are measured from:

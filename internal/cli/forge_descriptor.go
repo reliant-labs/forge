@@ -398,6 +398,7 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 		fd.Validate = fieldConstraintsFromDescriptor(f.Desc)
 		fd.Secret = fieldHasSecretMarker(f)
 		fd.ReadOnly = fieldHasReadOnlyMarker(f)
+		fd.Guards = fieldGuardTargets(f)
 		fields = append(fields, fd)
 	}
 	sd.Schemas[fq] = fields
@@ -450,6 +451,21 @@ var readOnlyFieldMarkerRE = codegen.ProtoMarkerAnyCommentRE(codegen.ReadOnlyProt
 func fieldHasReadOnlyMarker(f *protogen.Field) bool {
 	return readOnlyFieldMarkerRE.MatchString(string(f.Comments.Leading)) ||
 		readOnlyFieldMarkerRE.MatchString(string(f.Comments.Trailing))
+}
+
+// fieldGuardTargets reads the `// forge:guards <table>.<column>` targets a
+// field declares, from its LEADING comment block or a TRAILING one
+// (`int64 amount_cents = 2; // forge:guards invoices.amount_paid_cents`).
+// Both positions, and both orders, because the marker is most naturally
+// written inline beside the field it rides on.
+//
+// The grammar comes from codegen.GuardTargets rather than a regex spelled
+// here, so this pass and the guarded-column lint check cannot disagree about
+// what counts as a target — the same single-vocabulary discipline the
+// read-only and secret recognizers follow. See SchemaFieldDef.Guards.
+func fieldGuardTargets(f *protogen.Field) []string {
+	targets := codegen.GuardTargets(string(f.Comments.Leading))
+	return append(targets, codegen.GuardTargets(string(f.Comments.Trailing))...)
 }
 
 // fieldConstraintsFromDescriptor reads a field's protovalidate

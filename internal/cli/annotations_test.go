@@ -44,12 +44,12 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 			t.Errorf("markers missing %q", want)
 		}
 	}
-	// Seven proto markers plus the column-comment markers plus the
+	// Eight proto markers plus the column-comment markers plus the
 	// Go-source markers. The authoritative per-marker pin is
 	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
 	// this only guards the full dump against silent loss.
-	if len(spec.Markers) != 20 {
-		t.Errorf("expected 20 markers, got %d", len(spec.Markers))
+	if len(spec.Markers) != 22 {
+		t.Errorf("expected 22 markers, got %d", len(spec.Markers))
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -236,6 +236,24 @@ func TestAnnotations_KindFilters(t *testing.T) {
 			len(column.Markers), len(schemadef.KnownColumnMarkers), column.Markers)
 	}
 
+	// table → the catalog-comment markers declared one level up, on the
+	// TABLE rather than a column. Counted from the registry for the same
+	// reason --kind column is.
+	table := dumpJSON(t, "table")
+	if len(table.FieldTypes) != 0 || len(table.ValidateRules) != 0 ||
+		len(table.MethodOptions) != 0 || len(table.ServiceOptions) != 0 {
+		t.Errorf("--kind table leaked non-marker sections: %+v", table)
+	}
+	for _, m := range table.Markers {
+		if m.AppliesTo != "table" {
+			t.Errorf("--kind table returned a %s marker: %s", m.AppliesTo, m.Name)
+		}
+	}
+	if len(table.Markers) != len(schemadef.KnownTableMarkers) {
+		t.Errorf("--kind table returned %d markers, want %d (schemadef.KnownTableMarkers)",
+			len(table.Markers), len(schemadef.KnownTableMarkers))
+	}
+
 	// bogus → error.
 	if err := runAnnotations(&bytes.Buffer{}, "bogus", true); err == nil {
 		t.Error("--kind bogus should error")
@@ -311,7 +329,7 @@ message LedgerEntity {
 	}
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
-		"forge:read-only", "forge:secret", "forge:mutation",
+		"forge:read-only", "forge:secret", "forge:guards", "forge:mutation",
 		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
 		"forge:no-observe", "forge:service", "forge:exclude-contract",
 		"forge:external-component", "forge:outbound-io",
@@ -320,8 +338,8 @@ message LedgerEntity {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 20 {
-		t.Errorf("expected 20 marker specs, got %d", len(got))
+	if len(got) != 21 {
+		t.Errorf("expected 21 marker specs, got %d", len(got))
 	}
 
 	// Proto markers are pinned against codegen.KnownProtoMarkers — the same
@@ -356,6 +374,21 @@ message LedgerEntity {
 	for _, name := range schemadef.KnownColumnMarkers {
 		if !got[name] {
 			t.Errorf("markerSpecs missing column marker %q from schemadef.KnownColumnMarkers", name)
+		}
+	}
+
+	// Table markers get the same treatment against their own registry —
+	// KnownTableMarkers is what schemadef.Table.AppendOnly reads, so a
+	// marker documented here and absent there is a marker that does
+	// nothing where it is written.
+	tableMarkers := filterMarkers(markerSpecs(), "table")
+	if len(tableMarkers) != len(schemadef.KnownTableMarkers) {
+		t.Errorf("markerSpecs has %d table markers, schemadef.KnownTableMarkers has %d — these must match exactly",
+			len(tableMarkers), len(schemadef.KnownTableMarkers))
+	}
+	for _, name := range schemadef.KnownTableMarkers {
+		if !got[name] {
+			t.Errorf("markerSpecs missing table marker %q from schemadef.KnownTableMarkers", name)
 		}
 	}
 

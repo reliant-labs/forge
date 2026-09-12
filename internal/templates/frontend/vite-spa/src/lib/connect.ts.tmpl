@@ -3,16 +3,37 @@ import { createClient, type Transport } from "@connectrpc/connect";
 import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 import type { DescService } from "@bufbuild/protobuf";
 import { createMockTransport } from "@/lib/mock-transport_gen";
-import { DEV_API_URL } from "./apiurl_gen";
-
+{{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
+{{end}}import { DEV_API_URL } from "./apiurl_gen";
+{{if .HasTypedConfig}}
+// The API origin comes from the typed config module, which reads it at
+// RUNTIME from the KCL-rendered config.js. Reading import.meta.env.VITE_API_URL
+// here instead would let Vite inline the value at BUILD time, freezing this
+// artifact to the environment it was built against — so `forge env promote`
+// could not move the bundle without a rebuild, which is the one property
+// the runtime-config design exists to buy.
+//
+// Falls back to DEV_API_URL when the environment pins no origin —
+// regenerated on every `forge generate` (src/lib/apiurl_gen.ts) so it tracks
+// the port the backend actually binds.
+//
+// A function, not a module-scope const: loadConfig() throws on invalid
+// config, and evaluating that at import time turns a fixable
+// misconfiguration into a blank page whose stack trace points at an import.
+function apiBaseUrl(): string {
+  return loadConfig().API_URL || DEV_API_URL;
+}
+{{else}}
 // The API URL is read from VITE_API_URL (Vite exposes import.meta.env vars
 // prefixed with VITE_ to client code). In dev it falls back to DEV_API_URL
 // — regenerated on every `forge generate` (src/lib/apiurl_gen.ts) so it
 // tracks the port the backend actually binds. In a deployable build the
 // per-env VITE_API_URL is injected from KCL (forge.Frontend config /
 // env_vars), so this floor is dev-only.
-const baseUrl =
-  (import.meta.env.VITE_API_URL as string | undefined) ?? DEV_API_URL;
+function apiBaseUrl(): string {
+  return (import.meta.env.VITE_API_URL as string | undefined) ?? DEV_API_URL;
+}
+{{end}}
 
 // The forge frontend runtime owns the interceptor stack: brand headers, W3C
 // traceparent propagation (so backend spans join the same trace — always on,
@@ -57,7 +78,12 @@ function buildTransport(): Transport {
   // frontend exists, which Vite's ESM pipeline requires (the older
   // try/require pattern was broken in browser ESM and silently kept mock
   // mode off).
+{{- if .HasMockAPI}}
+  const mode = loadConfig().MOCK_API;
+{{- else}}
   const mode = import.meta.env.VITE_MOCK_API;
+{{- end}}
+  const baseUrl = apiBaseUrl();
   if (mode === "true") {
     return createMockTransport();
   }

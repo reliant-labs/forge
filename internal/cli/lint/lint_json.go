@@ -168,6 +168,24 @@ func skippedFinding(msg string) lintJSONFinding {
 	return lintJSONFinding{Severity: lintSevInfo, Rule: "skipped", Message: msg}
 }
 
+// featureDisabledReport is the --json counterpart of errFeatureDisabled: a
+// targeted lint whose feature is off reports NOT OK.
+//
+// The skippedFinding form was info-severity and left "ok": true, which every
+// CI consumer reads as a clean pass for the lane it asked about — the exact
+// silent-green this whole fix is about, on the surface where it does the most
+// damage because no human reads it.
+func featureDisabledReport(flag, feature string) *lintJSONReport {
+	return buildLintJSONReport([]lintJSONFinding{{
+		Severity: lintSevError,
+		Rule:     "feature-disabled",
+		Message: fmt.Sprintf("`forge lint %s` was requested but the %s feature is disabled in forge.yaml, "+
+			"so nothing was checked", flag, feature),
+		FixHint: fmt.Sprintf("set `features.%s: true` in forge.yaml, or drop %s from this command. "+
+			"Note that %s also derives OFF when `database.driver` is empty or \"none\"", feature, flag, feature),
+	}}, true)
+}
+
 // runLintJSON is the --json counterpart of runLint. It mirrors the
 // same flag dispatch (targeted single-linter modes, else all linters)
 // but collects findings instead of printing, then writes one JSON
@@ -276,12 +294,12 @@ func collectSingleLinterJSON(
 	switch {
 	case flags.contract, flags.exportedVars:
 		if store != nil && !store.Features().ContractsEnabled() {
-			return done(buildLintJSONReport([]lintJSONFinding{skippedFinding("contracts feature is disabled in forge.yaml")}, false), nil)
+			return done(featureDisabledReport("--contract", "contracts"), nil)
 		}
 		return report(collectContractLintJSON(ctx, paths, contractExcludesFromConfig(cfg)))
 	case flags.migrationSafety:
 		if store != nil && !store.Features().MigrationsEnabled() {
-			return done(buildLintJSONReport([]lintJSONFinding{skippedFinding("migrations feature is disabled in forge.yaml")}, false), nil)
+			return done(featureDisabledReport("--migration-safety", "migrations"), nil)
 		}
 		return report(collectMigrationSafetyJSON(cfg))
 	case flags.conventions:
@@ -306,6 +324,8 @@ func collectSingleLinterJSON(
 		return reportUngated(collectColumnMarkersJSON(cfg))
 	case flags.crudFixtures:
 		return reportUngated(collectCrudFixturesJSON(cwd, cfg))
+	case flags.fixtureDrift:
+		return reportUngated(collectFixtureDriftJSON(cwd, cfg))
 	case flags.protoMarkers:
 		return reportUngated(collectProtoMarkersJSON(protoDirDefault))
 	case flags.createNullability:
@@ -444,10 +464,12 @@ func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, b
 		return nil, false, fmt.Errorf("migration safety lint failed: %w", err)
 	}
 	out := findingsToJSON(result.Findings)
-	// Migration findings share one fixed remediation (they carry no
-	// per-finding Remediation of their own).
+	// Per-RULE remediation. These findings carry no Remediation of their
+	// own, and stamping every one with the destructive text told an author
+	// whose NOT NULL add was rejected to reach for an allowlist that does
+	// not silence it.
 	for i := range out {
-		out[i].FixHint = migrationlint.DestructiveChangeRemediation
+		out[i].FixHint = migrationlint.RemediationFor(result.Findings[i].Rule)
 	}
 	return out, result.HasErrors(), nil
 }
@@ -600,6 +622,37 @@ func collectCrudFixturesJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONF
 	return out, nil
 }
 
+// collectFixtureDriftJSON maps fixture-drift findings onto the JSON
+// contract. Severity warning across the board, matching its crud-fixtures
+// sibling: the fixture is genuinely broken and its test genuinely fails,
+// but handlers_crud_test.go is the user's — forge scaffolded it once and
+// does not own it — so the finding locates the problem rather than gating
+// the build on an edit only the author can make.
+func collectFixtureDriftJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
+	return collectFixtureDriftJSONAt(cwd, migrationsDirFor(cfg))
+}
+
+// collectFixtureDriftJSONAt is the config-free half, so a test can drive the
+// JSON shape against a temp project without building a ProjectConfig.
+func collectFixtureDriftJSONAt(cwd, migrationsDir string) ([]lintJSONFinding, error) {
+	findings, err := collectFixtureDriftFindings(cwd, migrationsDir)
+	if err != nil {
+		return nil, fmt.Errorf("fixture-drift lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevWarning,
+			Rule:     f.ruleID(),
+			Message:  f.message(),
+			FixHint:  fixtureDriftFixHint(f),
+		})
+	}
+	return out, nil
+}
+
 // collectProtoMarkersJSON maps proto-markers findings onto the JSON
 // contract. Severity warning across the board, for the same reason as its
 // column-marker sibling — an unrecognized forge:* marker might be a future
@@ -676,6 +729,61 @@ func collectComputedFieldsJSON(cwd string) ([]lintJSONFinding, error) {
 			Message: fmt.Sprintf("%s.%s is marked %s but no non-generated Go file assigns %s",
 				f.Entity, f.Field, codegen.ProtoMarkerComputed, f.GoField),
 			FixHint: computedFieldFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectReadOnlyFieldsJSON maps read-only-fields findings onto the JSON
+// contract.
+//
+// Severity ERROR, unlike its computed-field twin. The fix is indeed a
+// migration or app logic only the author can write — but that argues for a
+// clear message, not a soft verdict: this defect has no symptom other than
+// a human noticing $0.00 on a screen, so a warning inside a long lint run
+// is very close to the silence the rule exists to break. See the step's
+// comment in lint_steps.go for the full asymmetry, and
+// lint_read_only_fields_gating_test.go for the false-positive cases that
+// had to be closed before it could gate.
+func collectReadOnlyFieldsJSON(cwd, migrationsDir string) ([]lintJSONFinding, error) {
+	findings, err := collectReadOnlyFieldFindings(cwd, migrationsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read-only-fields lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevError,
+			Rule:     "forgeconv-read-only-field-unwritten",
+			Message: fmt.Sprintf("%s.%s is marked %s but no non-generated Go file assigns %s, and %s.%s has no DEFAULT that populates it",
+				f.Entity, f.Field, codegen.ProtoMarkerReadOnly, f.GoField, f.Table, f.Field),
+			FixHint: readOnlyFieldFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectGuardedFieldsJSON maps guarded-fields findings onto the JSON
+// contract. Severity warning: the file is one forge scaffolded and then
+// handed over, so the fix is an edit only its owner can make — gating the
+// build on it would block a project on a change forge is forbidden to apply.
+func collectGuardedFieldsJSON(cwd string, frontendDirs []string) ([]lintJSONFinding, error) {
+	findings, err := collectGuardedFieldFindings(cwd, frontendDirs)
+	if err != nil {
+		return nil, fmt.Errorf("guarded-fields lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevWarning,
+			Rule:     "forgeconv-guarded-field-written",
+			Message: fmt.Sprintf("this page's update_mask writes %s.%s, which %s declares `%s`",
+				f.Table, f.Column, f.GuardedBy, codegen.ProtoMarkerGuards),
+			FixHint: guardedFieldFixHint(f),
 		})
 	}
 	return out, nil

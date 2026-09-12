@@ -130,7 +130,9 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 		ProtoFile:     protoFile,
 		SoftDelete:    conv.SoftDelete,
 		Timestamps:    conv.Timestamps,
+		AppendOnly:    conv.AppendOnly,
 		SearchColumns: conv.SearchColumns,
+		Constraints:   EntityConstraintsFromTable(table),
 	}
 
 	// Columns: the applied schema, verbatim.

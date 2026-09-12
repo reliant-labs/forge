@@ -178,6 +178,24 @@ type SchemaFieldDef struct {
 	// quintet from the raw scan, before the descriptor knows it).
 	// `json:",omitempty"` keeps old descriptors parseable (additive contract).
 	ReadOnly bool `json:"read_only,omitempty"`
+	// Guards are the `<table>.<column>` targets this field declares with
+	// `// forge:guards` — the columns whose writes the ENCLOSING RPC owns.
+	//
+	// Unlike every other flag here, this one is not a statement about the
+	// field it sits on. The field is the attachment point; the subject is
+	// a column on some entity, often on a different message entirely
+	// (RecordPaymentRequest.amount_cents guards
+	// invoices.amount_paid_cents). That indirection is the whole reason
+	// the marker names its target instead of being inferred — see
+	// ProtoMarkerGuards for the pair of columns that makes name-matching
+	// unsound.
+	//
+	// Read off the compiled descriptor's source-code comments. The raw
+	// proto scan does not need it: a guard changes no born schema, only
+	// which columns the scaffolded edit page is willing to write.
+	// `json:",omitempty"` keeps old descriptors parseable (additive
+	// contract).
+	Guards []string `json:"guards,omitempty"`
 }
 
 // IsInputEmpty returns true if the input type is google.protobuf.Empty.
@@ -229,6 +247,35 @@ type EntityDef struct {
 	SearchColumns []string `json:",omitempty"`
 	SoftDelete    bool     `json:",omitempty"`
 	Timestamps    bool     `json:",omitempty"`
+	// AppendOnly marks a table declared `forge:append-only` in its catalog
+	// comment (COMMENT ON TABLE): an immutable ledger. Every generator that
+	// emits a WRITE path must omit the mutating half for this entity —
+	// notably the store interface, whose UpdateX/DeleteX otherwise
+	// type-check against a table postgres will refuse at runtime.
+	AppendOnly bool `json:",omitempty"`
+	// Constraints are the table's named UNIQUE / CHECK / FOREIGN KEY
+	// constraints. They project to per-entity name constants so a service
+	// can branch on orm.ConstraintName(err) against something the
+	// compiler checks. See EntityConstraintsFromTable for why the primary
+	// key is not among them.
+	Constraints []EntityConstraint `json:",omitempty"`
+}
+
+// EntityConstraint is one named constraint on an entity's table.
+type EntityConstraint struct {
+	// Name is the identifier postgres reports in a violation's structured
+	// constraint field — auto-derived (`jobs_estimate_id_key`) for an
+	// inline declaration, explicit for a named one. It is carried verbatim
+	// from the catalog: re-deriving postgres's naming rules in Go would be
+	// forge grading its own homework against the only authority that
+	// matters.
+	Name string
+	// Kind is "unique", "check" or "foreign_key" — see config.ConstraintKind.
+	Kind string
+	// Columns are the columns the constraint spans, in key order. Empty for
+	// an expression-keyed unique index, whose key cannot be described by
+	// bare columns without describing a stricter table than exists.
+	Columns []string `json:",omitempty"`
 }
 
 // EntityColumn is one introspected column of an entity's table.

@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	buf.build/go/protovalidate v1.4.0
-	connectrpc.com/connect v1.20.0
+	connectrpc.com/connect v1.21.0
 	connectrpc.com/otelconnect v0.9.0
 	connectrpc.com/vanguard v0.4.0
 	github.com/MicahParks/keyfunc/v3 v3.8.1

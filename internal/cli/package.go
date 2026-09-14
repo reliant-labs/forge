@@ -264,16 +264,86 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// report. A `packages:` list next to it could only ever be a copy that
 	// goes stale.
 
-	fmt.Printf("\n✅ Internal package '%s' created!\n", name)
-	// Hint at the next step, and name mock_gen.go explicitly: it is emitted
-	// up front so downstream packages can import the mocks without running
-	// the whole generator, and so nobody hand-rolls a fake for an interface
-	// forge already mocked. Every interface in contract.go gets one — the
-	// Service AND each dep interface declared beside it.
-	fmt.Printf("   Next: edit internal/%s/contract.go to declare the Service interface (and any dep interfaces),\n", name)
-	fmt.Printf("         then run `forge generate` to refresh internal/%s/mock_gen.go — one mock per interface, ready for tests.\n", name)
+	// Report what was ACTUALLY written, by the noun the user asked for.
+	//
+	// The summary is the most-read documentation forge emits — every
+	// invocation ends here, and it is what decides which file the author
+	// opens next. It used to announce "Internal package created" for a
+	// `--type adapter` request (reading like a silently downgraded ask,
+	// since `scaffold package` is a different noun) and name ONE of the six
+	// files it wrote — the one that is not where the work is. An author who
+	// trusted it edited contract.go and never opened adapter.go, cache.go
+	// or observe_chain.go, which is where the scaffold's best guidance
+	// lives.
+	printScaffoldedPackageSummary(pkgDir, name, pkgType)
 
 	return nil
+}
+
+// packageFileRoles describes what each scaffolded file is for, so the
+// summary teaches rather than just lists. A file with no entry here is
+// still printed — an unexplained file beats an omitted one, and this map
+// going stale must not silently hide a new template.
+var packageFileRoles = map[string]string{
+	"adapter.go":       "Deps + concrete service + New — THE implementation seam, start here",
+	"adapter_test.go":  "httptest-backed test, already passing",
+	"cache.go":         "empty by design: where the TTL/rate-budget goes when you add one",
+	"contract.go":      "the Service interface — the boundary callers depend on",
+	"service.go":       "the implementation",
+	"contract_test.go": "contract-level test (yours after this scaffold)",
+	"mock_gen.go":      "generated: one mock per interface in contract.go",
+	"observe_chain.go": "owned observability seam (add/drop middleware, set log level)",
+	"client.go":        "HTTP client implementation",
+	"eventbus.go":      "event bus implementation",
+}
+
+// printScaffoldedPackageSummary lists every file that landed in pkgDir with
+// a one-line role, then points at the seam to open next.
+//
+// The list is read off DISK rather than from a hardcoded set, so a template
+// added to a scaffold tree shows up here automatically instead of being
+// silently under-reported — the exact failure this replaced.
+func printScaffoldedPackageSummary(pkgDir, name, pkgType string) {
+	noun := "Internal package"
+	if pkgType == "adapter" {
+		noun = "Adapter"
+	}
+	fmt.Printf("\n✅ %s '%s' created!\n", noun, name)
+
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		// Non-fatal: the files exist regardless, and a summary that cannot
+		// enumerate them should not fail the scaffold.
+		fmt.Fprintf(os.Stderr, "warning: could not list %s: %v\n", pkgDir, err)
+		return
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, file := range names {
+		if role := packageFileRoles[file]; role != "" {
+			fmt.Printf("   internal/%s/%-18s %s\n", name, file, role)
+		} else {
+			fmt.Printf("   internal/%s/%s\n", name, file)
+		}
+	}
+
+	// The next step differs by shape: an adapter arrives with a working
+	// HealthCheck to extend, so the work is in adapter.go; the default
+	// package arrives with an empty interface, so the work starts in
+	// contract.go.
+	if pkgType == "adapter" {
+		fmt.Printf("\n   Next: implement the downstream calls in internal/%s/adapter.go, declaring each\n", name)
+		fmt.Printf("         one on the Service interface in internal/%s/contract.go as you go, then run\n", name)
+		fmt.Printf("         `forge generate` to refresh internal/%s/mock_gen.go — one mock per interface.\n", name)
+		return
+	}
+	fmt.Printf("\n   Next: edit internal/%s/contract.go to declare the Service interface (and any dep interfaces),\n", name)
+	fmt.Printf("         then run `forge generate` to refresh internal/%s/mock_gen.go — one mock per interface, ready for tests.\n", name)
 }
 
 // renderPackageKindTree renders every template in the internal-package

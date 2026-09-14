@@ -9,9 +9,12 @@
 // mechanical effect is a wire-shape omission: the field is stripped from
 // the born Create and Update requests. It says nothing about who writes the
 // column instead, and forge — correctly — writes nothing. So a read-only
-// column that no app code populates takes its column DEFAULT, and for the
+// column that no app code populates takes its column DEFAULT: 0 for the
 // money columns this happens to most (`total_cents`, `balance_cents`,
-// `subtotal_cents`) that default is 0.
+// `subtotal_cents`), NULL forever for a nullable timestamp, "" for a text
+// column. The finding's consequence clause is derived from the column's
+// actual type — see lint_unwritten_outcome.go for why a fixed money
+// illustration was a trap rather than a shortcut.
 //
 // Nothing catches it, and that is the whole point of the rule:
 //
@@ -149,6 +152,11 @@ type readOnlyFieldFinding struct {
 	// than a generic warning.
 	Table   string
 	Default string
+	// SQLType is the column's declared type ("BIGINT", "TIMESTAMPTZ"),
+	// carried so the consequence clause can describe what THIS column
+	// ships as. A fixed money illustration spliced into a timestamp
+	// finding reads as a type mis-detection — see lint_unwritten_outcome.go.
+	SQLType string
 }
 
 // readOnlyFieldFixHint renders the remediation. GENERATED ALWAYS AS is
@@ -172,8 +180,8 @@ func readOnlyFieldFixHint(f readOnlyFieldFinding) string {
 	return fmt.Sprintf(
 		"%s.%s is marked `%s` but no non-generated Go file assigns %s, and %s.%s has no "+
 			"DEFAULT that populates it. The field is omitted from Create/Update, so nothing "+
-			"writes the column and every row takes %s — for a money column that ships as $0.00 "+
-			"with no error, no failing test, and no log line anywhere. Prefer making the "+
+			"writes the column and every row takes %s — %s, with no error, no failing test, "+
+			"and no log line anywhere. Prefer making the "+
 			"database compute it: `ALTER TABLE %s ADD COLUMN %s <type> GENERATED ALWAYS AS "+
 			"(<expression>) STORED NOT NULL` cannot be forgotten by any write path. If the value derives "+
 			"from OTHER ROWS (postgres cannot reach another table from a generated column), "+
@@ -181,7 +189,8 @@ func readOnlyFieldFixHint(f readOnlyFieldFinding) string {
 			"you to it. If something this check cannot see already writes it — a trigger, "+
 			"another service — declare that with `COMMENT ON COLUMN %s.%s IS '%s=handler'`.",
 		f.Entity, f.Field, codegen.ProtoMarkerReadOnly, f.GoField, f.Table, f.Field,
-		shipped, f.Table, f.Field, codegen.ProtoMarkerComputed,
+		shipped, shapeConsequence(sqlValueShape(f.SQLType, f.Field)),
+		f.Table, f.Field, codegen.ProtoMarkerComputed,
 		f.Table, f.Field, schemadef.ColumnMarkerFill)
 }
 
@@ -249,8 +258,8 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 	// them — the common case for a project whose read-only columns are
 	// GENERATED or managed.
 	type candidate struct {
-		entity, field, goField, file, table, def string
-		line                                     int
+		entity, field, goField, file, table, def, sqlType string
+		line                                              int
 	}
 	var candidates []candidate
 	for _, dir := range dirs {
@@ -280,6 +289,7 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 					line:    fieldLineIn(msg, name),
 					table:   table,
 					def:     col.Default,
+					sqlType: col.Type,
 				})
 			}
 		}
@@ -315,7 +325,7 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 		findings = append(findings, readOnlyFieldFinding{
 			File: relToProject(projectDir, c.file), Line: c.line,
 			Entity: c.entity, Field: c.field, GoField: c.goField,
-			Table: c.table, Default: c.def,
+			Table: c.table, Default: c.def, SQLType: c.sqlType,
 		})
 	}
 	sort.Slice(findings, func(i, j int) bool {
@@ -475,7 +485,12 @@ func plainReadOnlyFieldNames(msg codegen.RawProtoMessage) []string {
 // TEXT reading of the migrations, not an introspection — see the file
 // header for why, and for the silence-over-guessing rule that follows.
 type sqlColumn struct {
-	Name       string
+	Name string
+	// Type is the declared type as written, minus the constraint tail
+	// ("BIGINT", "NUMERIC(12, 2)", "TIMESTAMP WITH TIME ZONE"). It exists
+	// only so a finding's consequence clause can be true of this column
+	// rather than of the bug class in general.
+	Type       string
 	NotNull    bool
 	Default    string
 	Generated  bool
@@ -829,6 +844,7 @@ func parseColumnDef(part string) (sqlColumn, bool) {
 	}
 	col := sqlColumn{
 		Name:       name,
+		Type:       columnTypeIn(trimmed, fields),
 		NotNull:    notNullColRe.MatchString(trimmed),
 		Generated:  generatedColRe.MatchString(trimmed),
 		PrimaryKey: primaryKeyColRe.MatchString(trimmed),
@@ -842,4 +858,27 @@ func parseColumnDef(part string) (sqlColumn, bool) {
 		}
 	}
 	return col, true
+}
+
+// columnTypeIn reads the declared type out of a column definition:
+// everything between the column name and the first constraint keyword. A
+// multi-word type survives whole ("TIMESTAMP WITH TIME ZONE", "DOUBLE
+// PRECISION"), and a parenthesized precision stays attached
+// ("NUMERIC(12, 2)"), because the classifier keys on the leading word and
+// a truncated "NUMERIC" would still land correctly either way.
+//
+// Returns "" when the definition has no type it can isolate — which
+// sqlValueShape reads as "unknown", the silent answer, rather than
+// guessing.
+func columnTypeIn(trimmed string, fields []string) string {
+	if len(fields) < 2 {
+		return ""
+	}
+	// Everything after the column name, before any constraint clause.
+	rest := strings.TrimSpace(trimmed[strings.Index(trimmed, fields[1]):])
+	m := sqlTypeHeadRE.FindStringSubmatch(rest)
+	if m == nil {
+		return strings.TrimSpace(fields[1])
+	}
+	return strings.TrimSpace(m[1])
 }

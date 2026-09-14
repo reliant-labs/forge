@@ -133,6 +133,32 @@ func TestAnalyzer_GeneratedMethodsExempt(t *testing.T) {
 	analysistest.Run(t, testdata, contract.Analyzer, "seamgenerated")
 }
 
+// Worker exemption: `forge scaffold worker` emits a package under
+// internal/workers/ whose exported methods ARE the serverkit.Worker
+// lifecycle (Name/Start/Stop, plus Run on the cron variant) and no
+// contract.go. That interface is forge's own — the supervisor consumes
+// workers polymorphically through it — so a hand-written contract.go would
+// only restate it, for a package shape forge itself scaffolds.
+//
+// Before this exemption a brand-new `forge scaffold worker` left
+// `forge lint` red with a requirecontract finding in a file forge wrote,
+// which teaches users on day one that forge's own lint is noise. Zero
+// findings expected.
+func TestRequireContract_WorkerPackageSkipped(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/workers/share_expiry")
+}
+
+// The worker exemption is STRUCTURAL, not a path blacklist: a package that
+// merely lives under internal/workers/ but presents an ordinary exported
+// surface (not the Worker lifecycle) is still subject to the rule. Without
+// this half, filing any package under internal/workers/ would silently buy
+// it a permanent exemption. One finding expected.
+func TestRequireContract_NonWorkerUnderWorkersDirStillFlagged(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/workers/notaworker")
+}
+
 // Composition-seam exemption: the module's internal/app package is forge's
 // explicit composition site (compose.go/providers.go/mounts_services.go/
 // lifecycle.go). Its exported methods (DefaultClient, the lifecycle

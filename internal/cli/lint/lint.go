@@ -43,6 +43,7 @@ type lintFlags struct {
 	columnMarkers     bool
 	crudFixtures      bool
 	fixtureDrift      bool
+	timeBucketing     bool
 	protoMarkers      bool
 	protoOptions      bool
 	createNullability bool
@@ -109,6 +110,11 @@ Examples:
                                  # a column list naming a GENERATED ALWAYS
                                  # column, or one statement writing the same
                                  # value twice into a now-UNIQUE column
+  forge lint --time-bucketing    # Flag a two-argument date_trunc over a
+                                 # TIMESTAMPTZ column — it truncates in the
+                                 # SESSION timezone, so every bucketed total
+                                 # moves with the deploy host. Pin the zone:
+                                 # date_trunc('day', col, 'UTC')
   forge lint --proto-markers     # Flag a .proto comment carrying an
                                  # unrecognized forge:* marker (a misspelled
                                  # one does nothing and warns nowhere)
@@ -190,6 +196,7 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 	cmd.Flags().BoolVar(&flags.columnMarkers, "column-markers", false, "Flag COMMENT ON COLUMN/CONSTRAINT text containing forge: that matches no known column marker (warnings only)")
 	cmd.Flags().BoolVar(&flags.crudFixtures, "crud-fixtures", false, "Flag seeded foreign-key values in handlers_crud_test.go that name no seeded parent row — a foreign key added after the test was scaffolded (warnings only)")
 	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Flag a scaffolded handlers_crud_test.go seed INSERT the current schema rejects — a column list naming a column a later migration made GENERATED ALWAYS (postgres refuses it outright), or one statement writing the same value twice into a column a later migration made UNIQUE (warnings only)")
+	cmd.Flags().BoolVar(&flags.timeBucketing, "time-bucketing", false, "Flag a two-argument date_trunc over a TIMESTAMPTZ column — postgres truncates it in the SESSION timezone, which the driver sets from the client host, so every bucketed total is attributed to the wrong day by an amount that changes with the deploy host. Pin the zone: date_trunc('day', col, 'UTC') (warnings only)")
 	cmd.Flags().BoolVar(&flags.protoMarkers, "proto-markers", false, "Flag .proto comments containing forge: that match no known proto marker — a misspelled marker is inert and warns nowhere (warnings only)")
 	cmd.Flags().BoolVar(&flags.createNullability, "create-nullability", false, "Fail when a field's optional label disagrees between an entity message and its Create<Entity>Request — the flattened request drops write presence silently")
 	cmd.Flags().BoolVar(&flags.computedFields, "computed-fields", false, "Flag a forge:computed field that no non-generated Go file assigns — nothing populates it, so the insert takes the column default (warnings only)")
@@ -314,6 +321,13 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 			return err
 		}
 		return runWithCwd(func(cwd string) error { return runFixtureDriftLint(cwd, cfg) })
+	}
+	if flags.timeBucketing {
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runWithCwd(func(cwd string) error { return runTimeBucketingLint(cwd, cfg) })
 	}
 	if flags.protoMarkers {
 		return runProtoMarkersLint(protoDirDefault)

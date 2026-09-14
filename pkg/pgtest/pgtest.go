@@ -600,6 +600,62 @@ func EnsureDatabase(appDSN string) error {
 	return nil
 }
 
+// RecreateDatabase DROPs the application database named in appDSN and creates
+// it again, empty — the destructive counterpart to EnsureDatabase, and the
+// mechanism behind `forge db reset`.
+//
+// The three functions here now span the lifecycle, and the difference between
+// them is what they do to EXISTING data. NewAtURL makes a uniquely-named
+// scratch database and drops it on cleanup (generate-time introspection).
+// EnsureDatabase creates the ONE named database only when it is absent and
+// never drops it (runtime boot). RecreateDatabase drops it WHETHER OR NOT it
+// exists and creates it fresh: the post-condition is an empty database, which
+// is exactly what a caller recovering from a wedged migration state needs —
+// there is no dirty flag to clear and no offending row to repair when the
+// database itself is new.
+//
+// It reuses the same maintenance-DB mechanism as the other two: appDSN is
+// reduced to its SERVER coordinates against the maintenance database
+// "postgres" (the target is never opened, which is required — postgres will
+// not drop a database you are connected to), and the name is quoted as an
+// identifier so a project called "control-plane" is dropped verbatim rather
+// than parsed as SQL.
+//
+// Lingering backends on the target are terminated first. A connection held by
+// a running dev server makes DROP DATABASE block indefinitely, and a reset
+// that hangs with no explanation is worse than one that fails loudly.
+//
+// THIS DESTROYS DATA AND HAS NO GUARD OF ITS OWN. Deciding that the target is
+// a scratch dev database — that the environment is development, that the DSN
+// is the one that environment declares, and that a human confirmed it — is
+// the CALLER's job, and forge's CLI does all three before calling this. As
+// with everything in pgtest, this is the dumb mechanic; the policy lives
+// above it.
+func RecreateDatabase(appDSN string) error {
+	name, server, err := splitAppDSN(appDSN)
+	if err != nil {
+		return err
+	}
+	base, err := openBase(server)
+	if err != nil {
+		return fmt.Errorf("pgtest: connect to %s: %w", redactDSN(server), err)
+	}
+	defer func() { _ = base.Close() }()
+
+	if _, err := base.Exec(
+		"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()", name,
+	); err != nil {
+		return fmt.Errorf("pgtest: terminate connections to %q: %w", name, err)
+	}
+	if _, err := base.Exec("DROP DATABASE IF EXISTS " + quoteIdent(name)); err != nil {
+		return fmt.Errorf("pgtest: drop database %q: %w", name, err)
+	}
+	if _, err := base.Exec("CREATE DATABASE " + quoteIdent(name)); err != nil {
+		return fmt.Errorf("pgtest: create database %q: %w", name, err)
+	}
+	return nil
+}
+
 // splitAppDSN splits an application DSN into its database NAME and the
 // maintenance SERVER DSN (same scheme/credentials/host/port, database forced to
 // "postgres" and sslmode defaulted to disable when absent). It mirrors the

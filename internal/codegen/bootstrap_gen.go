@@ -1522,8 +1522,72 @@ func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStu
 	pkg := filepath.Base(handlerDir)
 	for i := range stubs {
 		stubs[i].StubType = "stub" + upperFirst(pkg) + stubs[i].FieldName
+		failClosedErrorOnlyMethods(&stubs[i])
 	}
 	return stubs, unresolved
+}
+
+// errorOnlyResult is the result signature this rule applies to: a method
+// whose entire return is one bare `error`. Matched on the rendered result
+// text, which is what both resolvers produce ("error" for the single-result
+// case, a parenthesized list otherwise) — so the two branches need no
+// separate handling.
+const errorOnlyResult = "error"
+
+// failClosedErrorOnlyMethods rewrites a stub's error-only methods to
+// return testkit.StubNotConfigured instead of nil.
+//
+// # The defect
+//
+// Every other stub method returns its results' zero values, which is
+// correct: the zero of a VALUE result is a legible "nothing" the caller
+// can inspect. A method returning only `error` has no value, so its zero
+// — nil — is not an empty answer but an affirmative success the stub
+// never performed. Where that method is a gate the application consults
+// before acting, nil means PERMITTED: a handler test that did not
+// override the Deps field ran with the gate disabled, and its denial
+// assertions passed vacuously.
+//
+// # Why the rule is structural, not name-based
+//
+// The tempting alternative is to detect gate-SHAPED methods by name and
+// fail closed only there. It is worse in both directions. It fails open
+// for every such seam spelled some other way (Check, Ensure, Assert,
+// Verify, Gate, Allow), which is most of them, and the failure is
+// silent — the property that made this dangerous. And it teaches that a
+// naming convention is load-bearing, so a rename quietly removes a
+// safety default.
+//
+// The result signature is the honest signal: a stub that returns only
+// `error` cannot report anything EXCEPT success or failure, and it did
+// not do the work. That is as true of Close() and Flush() as of any
+// permission check, and the answer is the same for all of them. This
+// generator stubs every interface on a handler's Deps, so the rule has
+// to hold for all of them or it is not a rule.
+//
+// # Blast radius, and why this is the right scope
+//
+// These stubs exist so a handler test can construct Deps without wiring
+// every collaborator. That purpose is preserved exactly: construction
+// never calls a method, so NewTest<Service> still builds with no
+// overrides. Only a test that CALLS an unconfigured error-only method
+// changes behavior — and it changes from silently succeeding to failing
+// with a message naming the stub and method.
+//
+// The scope is deliberately not wider. Failing closed on every method
+// (including (T, error) ones) would break legitimate tests that read
+// through a collaborator to set up, and it would be wrong on the merits:
+// those methods have a real zero-value answer. Narrower — policy names
+// only — would leave the seam failing open wherever the name did not
+// match, which is not worth shipping.
+func failClosedErrorOnlyMethods(stub *DepsAutoStub) {
+	for i, m := range stub.Methods {
+		if strings.TrimSpace(m.Results) != errorOnlyResult {
+			continue
+		}
+		stub.Methods[i].ReturnStatement = fmt.Sprintf(
+			"return testkit.StubNotConfigured(%q, %q)", stub.StubType, m.Name)
+	}
 }
 
 // computeFuncDefaults walks a service's Deps and classifies each REQUIRED

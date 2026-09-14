@@ -11,6 +11,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/devstack"
+	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -988,6 +989,19 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// unchanged. Deliberately NOT added to the manifest render in
 	// internal/cluster: those options are bound by `env up` only, and a
 	// cluster apply must render from the repo alone.
+	// Every render READS the resolve_port store, so a port allocated once
+	// stays the same port for every command that asks afterwards.
+	//
+	// Only `env up` / `env deploy` used to arm it (activateDevStack, which
+	// arms the WRITABLE store and is a no-op to re-arm here). Every other
+	// render re-probed from scratch — and a probe cannot distinguish "busy
+	// because a stranger took it" from "busy because THIS stack's own
+	// postgres is serving on it", so it stepped off the very port it had
+	// been asked about. `forge env config dev` reported one DSN while the
+	// running stack was on another, and `forge db reset` got a dead port.
+	// The store is the tie-break, and it only works if everyone reads it.
+	kclplugin.UsePortStoreReadOnly(filepath.Join(projectDir, ".forge", "ports-"+env+".json"))
+
 	dArgs := append([]string{"env=" + env}, devstack.ActiveDArgs()...)
 	dArgs = append(dArgs, activeRenderOptionDArgs()...)
 	return kclrender.Run(projectDir, kclDir, dArgs)

@@ -77,7 +77,11 @@ func (s *service) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("{{.Name}}: health request: %w", err)
 	}
-	defer resp.Body.Close()
+	// The assignment to _ is deliberate: Close returns an error that a
+	// deferred call cannot propagate, and errcheck reports the bare
+	// `defer resp.Body.Close()` form. Discarding it explicitly says "read
+	// path, nothing left to fail" rather than hiding the return.
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("{{.Name}}: downstream unhealthy (status %d)", resp.StatusCode)
 	}

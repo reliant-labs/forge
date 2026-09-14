@@ -92,6 +92,54 @@ func (s *Service) CreateEstimateLineItem() error {
 	}
 }
 
+// TestComputedFields_TimestampIsNotDescribedAsMoney is this rule's half of
+// the same defect its read-only twin carries: the consequence clause used
+// to name a money column unconditionally, so a timestamp field was told it
+// ships as $0.00. The two rules share the wording and must stay consistent.
+func TestComputedFields_TimestampIsNotDescribedAsMoney(t *testing.T) {
+	root := computedProject(t, `syntax = "proto3";
+
+package services.estimates.v1;
+
+// forge:entity
+message Estimate {
+  string id = 1;
+  // forge:computed
+  string quarantined_at = 2;
+}
+`, "package estimates\n")
+	findings, err := collectComputedFieldFindings(root)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want exactly 1 finding, got %d: %+v", len(findings), findings)
+	}
+	hint := computedFieldFixHint(findings[0])
+	for _, unwanted := range []string{"$0.00", "money"} {
+		if strings.Contains(hint, unwanted) {
+			t.Errorf("a timestamp field must not be described with %q:\n%s", unwanted, hint)
+		}
+	}
+}
+
+// TestComputedFields_MoneyKeepsTheVividConsequence pins that the motivating
+// case — an amount_cents that nothing derives — still says $0.00.
+func TestComputedFields_MoneyKeepsTheVividConsequence(t *testing.T) {
+	root := computedProject(t, lineItemProto, "package estimates\n")
+	findings, err := collectComputedFieldFindings(root)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want exactly 1 finding, got %d: %+v", len(findings), findings)
+	}
+	hint := computedFieldFixHint(findings[0])
+	if !strings.Contains(hint, "$0.00") {
+		t.Errorf("an amount_cents field must still get the vivid money consequence:\n%s", hint)
+	}
+}
+
 // TestComputedFields_SilentWhenHookWrites is the primary false-positive
 // guard: the obligation IS met, so the rule must say nothing.
 func TestComputedFields_SilentWhenHookWrites(t *testing.T) {

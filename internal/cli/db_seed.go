@@ -274,8 +274,15 @@ func envModeFromKCLConfig(projectDir, env string) (string, bool) {
 // openSeedDB resolves the DSN and opens a live connection, and (for
 // apply/reset) refuses when migrations are pending — seeds apply only against
 // a fully-migrated schema.
-func openSeedDB(ctx context.Context, dsn, migDir string, checkPending bool) (*sql.DB, error) {
-	resolved, err := resolveDSN(dsn)
+//
+// env is the environment the caller claimed. When it is non-empty the DSN is
+// resolved THROUGH it (resolveEnvDSN) rather than beside it: the dev gate used
+// to classify the environment while resolveDSN independently took --dsn or
+// $DATABASE_URL, so `--env dev --dsn postgres://prod-host/app` passed the dev
+// check and then wrote to production. `seed status` passes "" — it is
+// read-only and has no env flag to reconcile against.
+func openSeedDB(ctx context.Context, dsn, env, migDir string, checkPending bool) (*sql.DB, error) {
+	resolved, err := resolveSeedTargetDSN(ctx, dsn, env)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +304,19 @@ func openSeedDB(ctx context.Context, dsn, migDir string, checkPending bool) (*sq
 	return db, nil
 }
 
+// resolveSeedTargetDSN resolves the DSN a seed command will write through.
+//
+// With an env, the DSN is reconciled against what that env declares — see
+// db_target.go for why the two were separate and what that allowed. Without
+// one (read-only `seed status`), it falls back to the historic resolution:
+// there is no env claim to check the DSN against, and nothing is written.
+func resolveSeedTargetDSN(ctx context.Context, dsn, env string) (string, error) {
+	if env == "" {
+		return resolveDSN(dsn)
+	}
+	return resolveEnvDSN(ctx, dsn, projectDirForKCL(), env)
+}
+
 // seedBlockedMessage turns a MigrationBlock into a refusal that names the next
 // command to run.
 //
@@ -313,35 +333,42 @@ func openSeedDB(ctx context.Context, dsn, migDir string, checkPending bool) (*sq
 // for a scratch database — and it runs THIS SAME CHECK, so on a dirty database
 // it refuses identically. Naming it first would be a second dead end wearing
 // the first one's clothes, so it is named as the step after the flag clears.
+//
+// The numbered path itself lives in dirtyRecoveryMessage, shared with the
+// `forge db migrate` commands. Only the seed-specific steps and closing
+// paragraph are supplied here.
 func seedBlockedMessage(block *seedplan.MigrationBlock) string {
 	if !block.Dirty {
-		return fmt.Sprintf("refusing to seed: %s. Run `forge db migrate up` first", block.Reason)
+		// The PENDING refusal is one half of a cycle, and saying only
+		// "migrate up" is what closed it. When `migrate up` cannot apply
+		// because EXISTING rows violate the migration it is adding — a
+		// foreign key over a column seeding filled with placeholders — the
+		// two commands block each other: seeding needs the schema caught up,
+		// and catching up needs the rows gone. Naming `forge db reset` here
+		// gives the scratch-database reader the exit that needs neither.
+		return fmt.Sprintf(`refusing to seed: %s. Run `+"`forge db migrate up`"+` first.
+
+If `+"`forge db migrate up`"+` itself fails because existing rows violate the migration it is applying, the two commands are blocking each other and neither can go first. On a scratch dev database, discard the state instead of repairing it:
+
+  forge db reset        # DROP, recreate, migrate to head, and seed (dev-only)`, block.Reason)
 	}
 
-	version := block.Version
-	if version == "" {
-		version = "<version>"
-	}
-	return fmt.Sprintf(`refusing to seed: migration %s failed part-way and is marked dirty, so the schema is in an unknown state and no further migration will run until that flag is cleared.
-
-To recover:
-
-  1. Inspect what migration %s actually applied (`+"`forge db introspect`"+`), and finish or undo it by hand so the schema matches what %s intended.
-  2. Clear the flag:  forge db migrate force %s
-  3. Catch up:        forge db migrate up
-  4. Re-seed:         forge db seed apply
-
-Step 2 is the one that unwedges this: re-running `+"`forge db migrate up`"+` on its own will refuse again, because golang-migrate will not run a migration over a dirty version. Forcing records %s as applied WITHOUT running any SQL — which is why step 1 comes first: forge cannot know how much of %s landed, so you are asserting the schema is correct, not asking forge to verify it.
-
-If this is a scratch dev database whose contents do not matter, steps 1-2 are still required to clear the flag; after that `+"`forge db seed reset`"+` wipes the seeded rows and re-seeds in one step.`,
-		version, version, version, version, version, version)
+	return dirtyRecoveryMessage(
+		"refusing to seed: ",
+		block.Version,
+		[]string{
+			"Catch up:        forge db migrate up",
+			"Re-seed:         forge db seed apply",
+		},
+		"If this is a scratch dev database whose contents do not matter, you do not have to repair anything: `forge db reset` DROPs the database, recreates it, migrates to head and seeds. There is no dirty flag to clear and no schema to reconstruct when the database is new, which is why it is the one exit that cannot be refused by the state you are trying to escape. (`forge db seed reset` is the narrower tool — it keeps your schema and only replaces rows — but it runs this same check, so it needs steps 1-2 done first.)",
+	)
 }
 
 func runDBSeedApply(ctx context.Context, dsn, env, migDir string) error {
 	if err := requireDevSeedTarget(env); err != nil {
 		return err
 	}
-	db, err := openSeedDB(ctx, dsn, migDir, true)
+	db, err := openSeedDB(ctx, dsn, env, migDir, true)
 	if err != nil {
 		return err
 	}
@@ -426,7 +453,7 @@ func stripSQLComments(s string) string {
 }
 
 func runDBSeedStatus(ctx context.Context, dsn, migDir string) error {
-	db, err := openSeedDB(ctx, dsn, migDir, false)
+	db, err := openSeedDB(ctx, dsn, "", migDir, false)
 	if err != nil {
 		return err
 	}
@@ -456,7 +483,7 @@ func runDBSeedReset(ctx context.Context, dsn, env, migDir string) error {
 	if err := requireDevSeedTarget(env); err != nil {
 		return err
 	}
-	db, err := openSeedDB(ctx, dsn, migDir, true)
+	db, err := openSeedDB(ctx, dsn, env, migDir, true)
 	if err != nil {
 		return err
 	}

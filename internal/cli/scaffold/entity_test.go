@@ -269,6 +269,141 @@ message Bookmark {
 	}
 }
 
+// completeAppendOnlyQuintetIn is completeQuintetIn with the
+// `// forge:append-only` half of the contract armed: Update and Delete are
+// filtered out, so the injected text is Create/Get/List only.
+func completeAppendOnlyQuintetIn(t *testing.T, root, protoPath, entity string) {
+	t.Helper()
+	scan, err := codegen.ScanRawProtoDir(filepath.Dir(protoPath))
+	if err != nil {
+		t.Fatalf("scan authored proto: %v", err)
+	}
+	m, ok := scan.MessageByName(entity)
+	if !ok {
+		t.Fatalf("raw scan did not find the %s entity message", entity)
+	}
+	fields, _ := entityFieldsFromSchemaDefs("services.item.v1", m.Fields)
+	if _, err := completeEntityCRUDProto(root, protoPath, m.File, entity, fields, true); err != nil {
+		t.Fatalf("complete append-only quintet: %v", err)
+	}
+}
+
+// TestCompleteEntityCRUDProto_AppendOnlyOmitsUnusedImports is the
+// regression-lock for a service born failing `forge lint`.
+//
+// An append-only entity gets no Update rpc, so nothing types an
+// `update_mask` and nothing names google.protobuf.FieldMask. The injector
+// used to add field_mask.proto unconditionally anyway, and buf lint rejects
+// an unused import — so a service whose entities are ALL append-only (a
+// ledger, an audit log, a readings table: an ordinary thing to want) failed
+// the gate forge itself tells you to run, before its author wrote a line.
+//
+// The assertion is the general one, not a field_mask special case: every
+// import in the file must be named by something in it.
+func TestCompleteEntityCRUDProto_AppendOnlyOmitsUnusedImports(t *testing.T) {
+	root := scaffoldEntityProject(t)
+	protoPath := filepath.Join(root, "proto", "services", "item", "v1", "item.proto")
+	completeAppendOnlyQuintetIn(t, root, protoPath, "Bookmark")
+	got := readFileT(t, protoPath)
+
+	// The append-only contract itself still holds: three verbs, not five.
+	for _, want := range []string{
+		"rpc CreateBookmark(CreateBookmarkRequest) returns (CreateBookmarkResponse)",
+		"rpc GetBookmark(GetBookmarkRequest) returns (GetBookmarkResponse)",
+		"rpc ListBookmarks(ListBookmarksRequest) returns (ListBookmarksResponse)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("append-only quintet missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"rpc UpdateBookmark", "rpc DeleteBookmark"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("append-only entity got %q:\n%s", unwanted, got)
+		}
+	}
+
+	// Nothing references FieldMask, so the import must not be there.
+	if strings.Contains(got, "FieldMask") {
+		t.Fatalf("append-only file unexpectedly names FieldMask:\n%s", got)
+	}
+	if strings.Contains(got, `import "google/protobuf/field_mask.proto";`) {
+		t.Errorf("unused field_mask import — buf lint fails this file with "+
+			`'Import "google/protobuf/field_mask.proto" is unused':`+"\n%s", got)
+	}
+	assertNoUnusedProtoImports(t, got)
+}
+
+// TestCompleteEntityCRUDProto_MutableKeepsFieldMask pins the other half: a
+// normal entity DOES get Update, so field_mask must still be imported. The
+// fix above must not trade one broken file for another.
+func TestCompleteEntityCRUDProto_MutableKeepsFieldMask(t *testing.T) {
+	root := scaffoldEntityProject(t)
+	protoPath := filepath.Join(root, "proto", "services", "item", "v1", "item.proto")
+	completeQuintetIn(t, root, protoPath, "Bookmark")
+	got := readFileT(t, protoPath)
+
+	if !strings.Contains(got, "google.protobuf.FieldMask update_mask = 2;") {
+		t.Fatalf("mutable entity lost its update_mask:\n%s", got)
+	}
+	if !strings.Contains(got, `import "google/protobuf/field_mask.proto";`) {
+		t.Errorf("update_mask emitted without its import — buf fails with " +
+			"'unknown type google.protobuf.FieldMask'")
+	}
+	assertNoUnusedProtoImports(t, got)
+}
+
+// TestCompleteEntityCRUDProto_MixedServiceKeepsFieldMask covers the case the
+// bug hid behind: a service holding one mutable entity and one append-only
+// entity. The mutable one's Update supplies a real FieldMask use, so the
+// import belongs — and completing the append-only entity afterwards must not
+// strip an import the file still needs.
+func TestCompleteEntityCRUDProto_MixedServiceKeepsFieldMask(t *testing.T) {
+	root := scaffoldEntityProject(t)
+	protoPath := filepath.Join(root, "proto", "services", "item", "v1", "item.proto")
+	completeQuintetIn(t, root, protoPath, "Bookmark")
+
+	appended := readFileT(t, protoPath) + "\n// forge:entity\n// forge:append-only\nmessage Reading {\n  string id = 1;\n  string source = 2;\n}\n"
+	if err := os.WriteFile(protoPath, []byte(appended), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	completeAppendOnlyQuintetIn(t, root, protoPath, "Reading")
+	got := readFileT(t, protoPath)
+
+	if strings.Contains(got, "rpc UpdateReading") {
+		t.Errorf("append-only Reading got an Update rpc:\n%s", got)
+	}
+	if n := strings.Count(got, `import "google/protobuf/field_mask.proto";`); n != 1 {
+		t.Errorf("field_mask import appears %d times, want exactly 1 — Bookmark's "+
+			"update_mask still needs it:\n%s", n, got)
+	}
+	assertNoUnusedProtoImports(t, got)
+}
+
+// assertNoUnusedProtoImports is the check buf lint performs, applied to the
+// imports forge itself injects: every imported file must be named by
+// something in the text. Pinning the rule rather than one import means a
+// future verb filter cannot reintroduce this bug under a different symbol.
+func assertNoUnusedProtoImports(t *testing.T, proto string) {
+	t.Helper()
+	// The symbol each injectable import exists to provide. An import forge
+	// does not inject (the user's own, a split-proto entity file) is not
+	// forge's to judge, so it is not listed.
+	for _, imp := range []struct{ path, symbol string }{
+		{"google/protobuf/field_mask.proto", "google.protobuf.FieldMask"},
+		{"google/protobuf/timestamp.proto", "google.protobuf.Timestamp"},
+		{"buf/validate/validate.proto", "buf.validate."},
+		{"forge/v1/forge.proto", "forge.v1."},
+	} {
+		if !strings.Contains(proto, `import "`+imp.path+`";`) {
+			continue
+		}
+		if !strings.Contains(proto, imp.symbol) {
+			t.Errorf("import %q is unused (nothing names %s) — buf lint fails this file:\n%s",
+				imp.path, imp.symbol, proto)
+		}
+	}
+}
+
 func readFileT(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

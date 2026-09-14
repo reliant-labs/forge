@@ -133,6 +133,99 @@ message ArchiveOrderResponse {
 	}
 }
 
+// TestE2EComponentScaffoldsLintClean extends the fresh-scaffold-lint
+// invariant from the BARE project to the three COMPONENT scaffolds
+// TestE2EFreshScaffoldLintExitsZero never exercises: `scaffold worker`,
+// `scaffold package --type adapter` and `scaffold webhook`.
+//
+// That gap shipped. A dogfood run that deliberately targeted these three
+// seams found `forge lint` red with SEVEN findings on a project whose
+// author had written no Go at all — every one of them in a file forge
+// emitted:
+//
+//	internal/<adapter>/adapter.go             errcheck: defer resp.Body.Close()
+//	internal/handlers/<svc>/webhook_x_test.go noctx ×3: httptest.NewRequest
+//	internal/handlers/<svc>/webhook_x.go      staticcheck SA4023 ×2
+//	internal/workers/<name>/worker.go         requirecontract: no contract.go
+//
+// The first `forge lint` a user runs teaching them that forge's lint is
+// noise is the worst possible day-one lesson: it destroys the signal for
+// every real finding afterwards. It also makes the forge-one-shot
+// workflow's lint-gated scaffold phase structurally unpassable.
+//
+// This drives the REAL `forge lint` over a REAL scaffold rather than
+// asserting on template strings, which is the property that matters: the
+// analyzers' own exemptions apply, so a read that is genuinely exempt
+// stays exempt without this test restating an allowlist that would drift.
+// Unit-tier tripwires for the same defects live in
+// internal/generator/component_scaffold_lint_test.go (source shapes) and
+// internal/linter/contract/analyzer_test.go (the requirecontract lane).
+//
+// --no-fix keeps the run read-only: the emitted code must be lint-clean as
+// WRITTEN, not rescued by the auto-fix pre-pass.
+func TestE2EComponentScaffoldsLintClean(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "golangci-lint")
+	forgeBin := buildforgeBinary(t)
+	contractlintDir := buildContractlintBinary(t)
+	dir := t.TempDir()
+
+	runCmd(t, dir, forgeBin, "project", "new", "complintapp",
+		"--mod", "example.com/complintapp", "--service", "documents")
+	projectDir := filepath.Join(dir, "complintapp")
+	addCorpusForgePkgReplace(t, projectDir)
+
+	// The three nouns, each of which was independently red.
+	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "share_expiry")
+	runCmd(t, projectDir, forgeBin, "scaffold", "package", "blobstore", "--type", "adapter")
+	runCmd(t, projectDir, forgeBin, "scaffold", "webhook", "scanner", "--service", "documents")
+
+	// A full generate, then build. The generate matters for more than
+	// tidiness: it is what writes internal/<adapter>/middleware_gen.go,
+	// whose ABSENCE leaves both compose.go's
+	// blobstore.NewServiceWithForgeMiddleware call undefined and the owned
+	// observe_chain.go seam unreferenced (an `unused` finding). Both
+	// resolve here, which is why the scaffold→generate→build order is part
+	// of the assertion rather than incidental setup.
+	runCmd(t, projectDir, forgeBin, "generate")
+	runCmd(t, projectDir, "go", "build", "./...")
+
+	out, err := runLintE2E(t, projectDir, contractlintDir, forgeBin, "lint", "--no-fix")
+	if err != nil {
+		t.Fatalf("forge lint must exit 0 after `scaffold worker` + `scaffold package --type adapter` + "+
+			"`scaffold webhook` on a project with ZERO hand-written Go, got: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "❌") {
+		t.Errorf("forge lint printed error findings on freshly scaffolded components:\n%s", out)
+	}
+
+	// Each lane that was RED actually ran — a skipped lane makes exit-0
+	// vacuous.
+	for _, banned := range []string{"golangci-lint not found", "contractlint not available"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("lint lane was skipped (%q) — the exit-0 assertion is vacuous:\n%s", banned, out)
+		}
+	}
+	for _, marker := range []string{
+		"Running golangci-lint",
+		"Running contract interface enforcement linter",
+	} {
+		if !strings.Contains(out, marker) {
+			t.Errorf("lint lane %q did not run:\n%s", marker, out)
+		}
+	}
+
+	// The webhook's signature verification must still FAIL CLOSED. The
+	// SA4023 repair has an obvious wrong answer — make the verifier return
+	// nil — that would silence the linter by scaffolding a webhook which
+	// accepts unsigned payloads. Pin the rejection, not just the lint.
+	webhook := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "documents", "webhook_scanner.go"))
+	if !strings.Contains(webhook, "VerifyHMACSHA256") {
+		t.Errorf("the scaffolded webhook no longer verifies signatures — lint-clean must not have "+
+			"been bought by accepting unsigned payloads:\n%s", webhook)
+	}
+}
+
 // TestE2EFreshScaffoldFrontendLintClean extends the fresh-scaffold-lint
 // invariant to the FRONTEND lane, which TestE2EFreshScaffoldLintExitsZero
 // leaves UNCOVERED: that test never `npm install`s, so lintFrontendDir sees

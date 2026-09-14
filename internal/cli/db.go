@@ -66,10 +66,19 @@ When something is wedged:
     refuses too. Repair the schema by hand, then:
       forge db migrate force <version>   # record it as applied, runs no SQL
       forge db migrate up
+    Or, on a scratch dev database, skip the repair entirely:
+      forge db reset                     # DROP, recreate, migrate, seed (dev-only)
+
+  A migration cannot apply because existing rows violate it
+    Adding a constraint to a column seeding filled with placeholders wedges
+    both repairs against each other: 'seed reset' refuses because the schema
+    is behind, 'migrate up' refuses because of the rows. Discard the state:
+      forge db reset                     # needs no dirty-state reasoning (dev-only)
 
   The dev database is full of bad or stale rows
     Do not drop the database by hand:
       forge db seed reset                # delete seeded rows and re-seed (dev-only)
+      forge db reset                     # or rebuild the whole database (dev-only)
 
   Seeded rows are rejected by their own schema
     'forge db seed apply' names the constraint it could not place, and why.
@@ -82,6 +91,7 @@ When something is wedged:
 	cmd.AddCommand(newDBSquashCommand())
 	cmd.AddCommand(newDBSeedCommand())
 	cmd.AddCommand(newDBCheckCommand())
+	cmd.AddCommand(newDBResetCommand())
 
 	return cmdutil.StrictGroup(cmd)
 }
@@ -768,6 +778,18 @@ func requireMigrate() error {
 func runMigrateCommand(ctx context.Context, action, dsn, migDir string, extraArgs ...string) error {
 	if err := requireMigrate(); err != nil {
 		return err
+	}
+
+	// Check for an already-dirty database BEFORE running anything. golang-migrate
+	// refuses on a dirty version with "Dirty database version N. Fix and force
+	// version." — prose that names no forge command and does not say that forcing
+	// runs no SQL. Checking first also distinguishes "already wedged" from "the
+	// migration I just ran wedged it"; only the former should be pointed at
+	// `migrate force`. `force` itself is exempt: it is the way out.
+	if action != "force" {
+		if block := dirtyMigrationBlock(ctx, dsn, migDir); block != nil {
+			return fmt.Errorf("%s", dirtyMigrationMessage(block, action))
+		}
 	}
 
 	args := []string{"-path", migDir, "-database", dsn}

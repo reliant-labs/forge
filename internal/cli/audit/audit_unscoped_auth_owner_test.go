@@ -242,8 +242,23 @@ CREATE TABLE products (id TEXT PRIMARY KEY, sku TEXT);
 COMMENT ON COLUMN products.sku IS 'forge:owner-unrelated';
 `
 	got := ownerScopedTablesIn(sql)
-	if len(got) != 1 || !got["customers"] {
-		t.Fatalf("owner tables = %v, want exactly {customers} — prose mentioning ownership is not a declaration, and forge:owner-unrelated is a different marker",
+	if len(got) != 1 || got["customers"] != "company_id" {
+		t.Fatalf("owner tables = %v, want exactly {customers: company_id} — prose mentioning ownership is not a declaration, and forge:owner-unrelated is a different marker",
 			got)
+	}
+}
+
+// TestOwnerScopedTables_CarriesTheDeclaredColumn pins the column half of
+// the map. The table name alone arms the gate; the COLUMN is what the
+// remediation snippet names in its WHERE predicate, so losing it would
+// leave the gate able to refuse but not to help.
+func TestOwnerScopedTables_CarriesTheDeclaredColumn(t *testing.T) {
+	sql := `
+CREATE TABLE documents (id TEXT PRIMARY KEY, org_id TEXT NOT NULL);
+COMMENT ON COLUMN documents.org_id IS 'forge:owner';
+`
+	got := ownerScopedTablesIn(sql)
+	if got["documents"] != "org_id" {
+		t.Fatalf("owner column for documents = %q, want org_id — the predicate in the offered wrapper names this column", got["documents"])
 	}
 }

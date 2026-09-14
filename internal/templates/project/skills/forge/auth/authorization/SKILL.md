@@ -86,10 +86,42 @@ forge stops letting you ship the handler unfinished.
 
 ### Scoping a generated CRUD op
 
-**Forge already wrote this for you.** When a table declares `forge:owner` and an
-RPC is authenticated, `forge generate` scaffolds the whole scoping wrapper into
-your owned `handlers_crud.go` — the `GetUser` call, the op-seam override, the
-column named in the predicate — and leaves exactly one placeholder:
+**Where the wrapper comes from depends on when you declared the owner column,
+and on most projects it will NOT be written for you.** Read this before you go
+looking for generated code that is not there.
+
+The handler file is scaffold-once: forge writes
+`internal/handlers/<service>/handlers_crud.go` when it does not yet exist, and
+after that only ever appends blocks for RPCs the file has no method for. Its own
+header says so — *"yours: scaffolded once, never touched again"*. So there are
+two cases:
+
+- **The owner column was declared before that file was born** (the table and its
+  marker existed at the entity's first `forge generate`). Forge scaffolds the
+  whole wrapper — the `GetUser` call, the op-seam override, the column named in
+  the predicate — leaving one placeholder expression.
+- **The owner column was declared later** — which is the normal order of work,
+  because `forge:owner` is a `COMMENT ON COLUMN` in a migration and you usually
+  discover the need for scoping after the handlers exist. The wrapper is **not**
+  written, and re-running `forge generate` will not add it: the file is already
+  there, and the method is already in it. This is not a bug you can generate your
+  way out of.
+
+In the second case `forge project audit` hands you the code instead. The gating
+finding carries the whole wrapper for each failing RPC, rendered from the same
+template the scaffolder uses, and prints it under the failure:
+
+> ── DocumentsService.GetDocument — paste into internal/handlers/documents/handlers_crud.go ──
+>
+> the `GetUser` call, `owner := claims.UserID`, and the `op.Fetch` override
+> carrying `orm.WhereEq("org_id", owner)`
+
+Paste it over the existing delegation for that method. `forge project audit
+--json` carries the same text per finding under
+`details.owner_scoped_unscoped_rpcs[].remediation`, plus a
+`details.owner_scoping_hint` explaining the scaffold-once rule above.
+
+Either way the placeholder is the same, and it is the only thing left to do:
 
 ```go
 // FORGE_SCAFFOLD: `claims.UserID` is forge's placeholder for the value of
@@ -100,11 +132,16 @@ owner := claims.UserID
 
 Replace that expression with your real mapping (a direct user id, an org id read
 from a membership table, an org resolved from a subdomain) and delete the marker.
-That is the whole remediation. The marker fails `forge lint --scaffolds` and
-`forge project audit` until you do, so the gate cannot be satisfied by ignoring
-it — but satisfying it is one line, not ten.
+The marker fails `forge lint --scaffolds` and `forge project audit` until you do,
+so the gate cannot be satisfied by ignoring it — but satisfying it is one line,
+not ten.
 
-What forge scaffolds, per shape:
+One gap worth knowing: a **custom** RPC (`TransferOrder`, `ArchiveWorkspace`)
+delegates to no generated op, so there is no `Fetch`/`Filters`/`Persist` seam to
+wrap and forge offers no wrapper for it. Such an RPC is reported as a warning and
+the scoping is yours to write from scratch.
+
+What the wrapper looks like, per shape:
 
 ```go
 // List — the predicate goes in the QUERY, never on the returned page. The

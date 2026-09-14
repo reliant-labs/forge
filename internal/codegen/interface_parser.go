@@ -403,14 +403,20 @@ func zeroValueForResultType(t string, isInterface bool) string {
 	return zeroValueForType(t)
 }
 
-// zeroValueForType returns the Go literal for the zero value of the
-// given pretty-printed type expression. Mirrors the contract package's
-// zeroValue but lives here so the codegen package doesn't take an
-// import-cycle on internal/generator/contract.
+// zeroValueForType returns a Go EXPRESSION evaluating to the zero
+// value of the given pretty-printed type expression. Mirrors the
+// contract package's zeroValue but lives here so the codegen package
+// doesn't take an import-cycle on internal/generator/contract.
 //
-// Callers that can prove a result is an interface must go through
-// zeroValueForResultType instead — this function sees only rendered
-// text and cannot tell an interface from a struct.
+// The recognized cases below are emitted as their idiomatic literals
+// (`""`, `0`, `false`, `nil`) because the generated stub is read by
+// humans. Everything else — every named type — falls through to a
+// universal form rather than a guessed literal; see the comment on
+// that branch for why.
+//
+// Callers that can prove a result is an interface should still go
+// through zeroValueForResultType: `nil` is correct AND reads better
+// than the universal form, though both compile.
 func zeroValueForType(t string) string {
 	t = strings.TrimSpace(t)
 	switch t {
@@ -439,12 +445,33 @@ func zeroValueForType(t string) string {
 		strings.HasPrefix(t, "interface ") {
 		return "nil"
 	}
-	// Named type — a composite literal, which is correct and useful
-	// for the struct case this branch now exclusively serves.
-	// Interface results never reach here: they are answered by
-	// zeroValueForResultType from proven type information, because
-	// `T{}` for an interface is not valid Go.
-	return t + "{}"
+	// Anything else is a NAMED type, and from rendered text alone we
+	// cannot tell which family it belongs to — `policy.Role` reads
+	// identically whether it is a struct, a defined string, a defined
+	// int, or a named pointer. So do not guess: emit a form that is
+	// correct for every one of them.
+	//
+	// `*new(T)` is that form. new(T) is legal for any type whatsoever
+	// and yields *T; dereferencing gives T's zero value. It is an
+	// EXPRESSION, which matters here because the caller joins several
+	// of these with commas into a single `return a, b, c` — a
+	// statement form like `var zero T` would need a multi-statement
+	// body, distinct names per result, and would have to dodge
+	// collisions with the stub's own parameter names (parameters share
+	// the body's scope, so a method taking `zero string` would not
+	// compile). The expression form has none of that surface.
+	//
+	// This branch previously returned `t + "{}"`, which is a composite
+	// literal — legal ONLY for a struct, array, slice or map. That
+	// guess was wrong twice: first for interface results (fixed above
+	// via zeroValueForResultType, which still short-circuits here and
+	// keeps the more readable `nil`), and then for `type Role string`
+	// on a policy service, emitting `policy.Role{}` → "invalid
+	// composite literal type policy.Role". Named scalars, named
+	// pointers and defined func types were all in the same hole. Rather
+	// than add a third special case, the fallback no longer needs to
+	// know what the type is.
+	return "*new(" + t + ")"
 }
 
 // IsLocallyDeclaredInterface reports whether typeExpr (as printed by

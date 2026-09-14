@@ -37,6 +37,13 @@ type Vocab struct {
 	// Columns maps "table.column" to its resolved value pool (named-pool
 	// references are flattened by LoadVocab).
 	Columns map[string][]string
+	// Warnings names the entries LoadVocab could resolve but not exactly as
+	// written — today, a numeric range whose declared step is too fine to
+	// cover it within numericRangeMaxValues. These are load-time notes about
+	// the FILE, distinct from ApplyVocab's per-value validation warnings, and
+	// ApplyVocab folds them into the plan's warnings so one surface reports
+	// both.
+	Warnings []string
 }
 
 // vocabFile is the on-disk YAML shape:
@@ -59,6 +66,31 @@ type vocabEntry struct {
 	values []string
 	pool   string
 	typ    string
+	// widened records a numeric range whose AUTHOR-DECLARED step was too fine
+	// to cover it within numericRangeMaxValues, along with the step used
+	// instead. The entry cannot phrase the warning itself — it does not know
+	// which column it is — so LoadVocab names it against the key. nil means
+	// the step was honored exactly, which is every other entry shape.
+	widened *widenedStep
+}
+
+// widenedStep is one range whose declared granularity gave way to its span.
+type widenedStep struct {
+	rng      numericRange
+	usedStep int64
+}
+
+// describe renders the range and its two steps in the author's own units, so
+// a `decimals: 2` range reads back in the spelling they wrote rather than in
+// the scaled integers this file works in.
+func (w widenedStep) describe() (lo, hi, declared, used string) {
+	render := func(v int64) string {
+		if w.rng.float {
+			return strconv.FormatFloat(float64(v)/pow10(w.rng.decimals), 'f', w.rng.decimals, 64)
+		}
+		return strconv.FormatInt(v, 10)
+	}
+	return render(w.rng.min), render(w.rng.max), render(w.rng.step), render(w.usedStep)
 }
 
 // numericRange is the {min, max, step} entry shape. It exists because an
@@ -74,28 +106,79 @@ type numericRange struct {
 	decimals       int
 }
 
-// expand renders the range as pool literals, low to high. The seeder's
-// own column-local hash picks from it, so the ORDER here does not bias
-// which row gets which value.
-func (r numericRange) expand() []string {
+// expand renders the range as pool literals, low to high, STRIDING across
+// [min, max] rather than walking it. widened reports the step it actually
+// used when that is coarser than the one declared, so the caller can name it.
+//
+// The stride is the whole point. Its predecessor walked `v += step` from min
+// and stopped at numericRangeMaxValues, which silently truncated every range
+// wider than the cap AT ITS FLOOR: a declared {min: 20480, max: 52428800}
+// became [20480…20991] — 0.001% of the declared span, with the declared max
+// unreachable by construction. Measured on a dogfood run of a document
+// workspace, all 20 documents seeded at ~20KB and the GENERATED size_mb column
+// read 0.02 for every row, so any UI that buckets or sorts by size was
+// exercising nothing. It was invisible for a narrow range (view_count's 481
+// values fit under the cap and drew perfectly) and total for a wide one, which
+// is why the symptom read as magnitude-sensitive rather than as a cap.
+//
+// The cap itself is real and stays: a range wide enough to exhaust memory is
+// an authoring mistake, not a seed. What changes is which of the author's two
+// statements gives way when both cannot hold. The RANGE wins, because a pool
+// covering the declaration is the thing they asked for and a pool hugging its
+// floor is the useless dataset this exists to prevent; the step gives way, and
+// only ever to a MULTIPLE of itself, so a declared granularity is coarsened
+// but never violated.
+func (r numericRange) expand() (values []string, widened int64) {
 	step := r.step
 	if step <= 0 {
 		step = 1
 	}
-	var out []string
-	for v := r.min; v <= r.max; v += step {
-		if r.float {
-			out = append(out, strconv.FormatFloat(float64(v)/pow10(r.decimals), 'f', r.decimals, 64))
-		} else {
-			out = append(out, strconv.FormatInt(v, 10))
-		}
-		// A range wide enough to exhaust memory is an authoring mistake,
-		// not a seed: cap the expansion and let the pool repeat instead.
-		if len(out) >= numericRangeMaxValues {
-			break
+	// The coarsest the author's own step may stay while still covering the
+	// range within the cap. Solving for a stride rather than clamping the
+	// count is what puts the last pool member within one step of max.
+	if span, ok := spanOf(r.min, r.max); ok && span > 0 {
+		if want := ceilDiv(span, numericRangeMaxValues-1); want > step {
+			// Round up to a multiple of the declared step: the author asked
+			// for that granularity, and landing off-grid would honor neither
+			// statement.
+			step *= ceilDiv(want, step)
+			widened = step
 		}
 	}
-	return out
+	// The count bound is belt to the stride's braces. The stride alone makes
+	// it unreachable for every range that fits in an int64, but `v += step`
+	// on a range spanning most of the int64 domain can overflow to a negative
+	// v and loop forever, so termination must not depend on the arithmetic
+	// being well-behaved.
+	for v := r.min; v <= r.max && len(values) < numericRangeMaxValues; v += step {
+		if r.float {
+			values = append(values, strconv.FormatFloat(float64(v)/pow10(r.decimals), 'f', r.decimals, 64))
+		} else {
+			values = append(values, strconv.FormatInt(v, 10))
+		}
+		if v > r.max-step {
+			break // the next add would overflow past max
+		}
+	}
+	return values, widened
+}
+
+// spanOf returns max-min, reporting !ok when the subtraction overflows int64
+// — a range spanning most of the domain, which no stride can divide sensibly.
+func spanOf(lo, hi int64) (int64, bool) {
+	span := hi - lo
+	if (hi > 0 && lo < 0 && span < 0) || (hi < 0 && lo > 0 && span > 0) {
+		return 0, false
+	}
+	return span, true
+}
+
+// ceilDiv divides two positive integers, rounding up.
+func ceilDiv(a, b int64) int64 {
+	if b <= 0 {
+		return a
+	}
+	return (a + b - 1) / b
 }
 
 // numericRangeMaxValues bounds a {min,max,step} expansion. 512 distinct
@@ -158,15 +241,22 @@ func (e *vocabEntry) UnmarshalYAML(node *yaml.Node) error {
 				float:    decimals > 0,
 				decimals: decimals,
 			}
+			declared := false
 			if ref.Step != nil {
 				if *ref.Step <= 0 {
 					return fmt.Errorf("line %d: step must be positive", node.Line)
 				}
-				r.step = int64(*ref.Step * scale)
+				r.step, declared = int64(*ref.Step*scale), true
 			}
-			e.values = r.expand()
+			var widened int64
+			e.values, widened = r.expand()
 			if len(e.values) == 0 {
 				return fmt.Errorf("line %d: numeric range produced no values", node.Line)
+			}
+			// Only a step the AUTHOR wrote is worth reporting. Widening the
+			// implicit default is the mechanism working, not a compromise.
+			if widened > 0 && declared {
+				e.widened = &widenedStep{rng: r, usedStep: widened}
 			}
 		case ref.Pool != "":
 			e.pool = ref.Pool
@@ -245,8 +335,22 @@ func LoadVocab(path string) (*Vocab, error) {
 		if len(vals) == 0 {
 			return nil, fmt.Errorf("seed vocab %s: %s has no values", path, key)
 		}
+		if e.widened != nil {
+			// The author's range and their step cannot both hold. The range
+			// wins — a pool hugging the floor is the useless dataset the
+			// stride exists to prevent — but silently is the wrong way to
+			// win, so name which statement gave way and by how much.
+			lo, hi, declStep, usedStep := e.widened.describe()
+			v.Warnings = append(v.Warnings, fmt.Sprintf(
+				"seed vocab: %s declares step %s across [%s, %s], which would need more than the %d "+
+					"values a pool may hold. Seeding with step %s instead, so the values span the range "+
+					"you declared rather than clustering at its floor. "+
+					"Write that step to silence this, or narrow the range",
+				key, declStep, lo, hi, numericRangeMaxValues, usedStep))
+		}
 		v.Columns[key] = vals
 	}
+	sort.Strings(v.Warnings) // deterministic order, like every other warning list
 	if len(v.Columns) == 0 {
 		return nil, nil
 	}
@@ -274,7 +378,9 @@ func (p *Plan) ApplyVocab(v *Vocab) []string {
 	}
 	sort.Strings(keys) // deterministic warning order
 
-	var warns []string
+	// A load-time note (a widened step) is about the same file and belongs on
+	// the same surface as the per-value validation below, so it leads.
+	warns := append([]string(nil), v.Warnings...)
 	warnf := func(format string, args ...any) {
 		warns = append(warns, fmt.Sprintf("seed vocab: "+format, args...))
 	}

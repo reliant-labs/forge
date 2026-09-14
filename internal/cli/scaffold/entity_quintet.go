@@ -178,23 +178,44 @@ func completeEntityCRUDProto(root, serviceProtoPath, entityDeclFile, entity stri
 		return res, nil
 	}
 
-	// Imports the injected pieces rely on. forge/v1/forge.proto is
-	// load-bearing for the (forge.v1.method) options (see
-	// injectEntityCRUDProto's identical block).
-	for _, imp := range []string{
-		"forge/v1/forge.proto",
-		"google/protobuf/timestamp.proto",
-		"google/protobuf/field_mask.proto",
+	// Imports the injected pieces rely on — each keyed on whether the text
+	// about to be written actually names the symbol, because buf lint
+	// rejects an unused import and a project forge just scaffolded must
+	// pass the gate forge itself tells you to run.
+	//
+	// An unconditional list looked safe only while every entity got all
+	// five verbs. `// forge:append-only` broke that: it drops Update, so
+	// nothing types an `update_mask` and field_mask.proto is dead — and it
+	// drops Delete, whose response is the only envelope carrying a
+	// Timestamp, so in a SPLIT proto (entity declared elsewhere, its
+	// managed timestamps imported by the declaring file) timestamp.proto
+	// goes dead the same way. A service whose entities are ALL append-only
+	// therefore failed `forge lint` the moment it was born.
+	//
+	// Keying on the emitted text — the rule buf/validate already used
+	// below — is what makes this correct for any future verb filter
+	// rather than for append-only specifically.
+	// Tested against the file as it will STAND — the injected text plus what
+	// was already there — so completion can never withhold an import the
+	// user's own declarations need. Only a symbol nothing mentions is left
+	// unimported.
+	emitted := content + strings.Join(rpcTexts, "") + strings.Join(msgTexts, "")
+	for _, imp := range []struct{ symbol, path string }{
+		// forge/v1/forge.proto is load-bearing for the (forge.v1.method)
+		// options (see injectEntityCRUDProto's identical block).
+		{"forge.v1.", "forge/v1/forge.proto"},
+		{"google.protobuf.Timestamp", "google/protobuf/timestamp.proto"},
+		{"google.protobuf.FieldMask", "google/protobuf/field_mask.proto"},
+		// The Create request repeats the entity's field rules, so the
+		// SERVICE file needs buf/validate/validate.proto even when the
+		// annotated entity message is declared in another file (split
+		// protos) that already imports it. A rule-free entity never drags
+		// the import in.
+		{"buf.validate.field", "buf/validate/validate.proto"},
 	} {
-		content = ensureProtoImport(content, imp)
-	}
-	// The Create request repeats the entity's field rules, so the SERVICE
-	// file needs buf/validate/validate.proto even when the annotated entity
-	// message is declared in another file (split protos) that already
-	// imports it. Keyed on what was actually emitted — a rule-free entity
-	// never drags the import in.
-	if strings.Contains(strings.Join(msgTexts, ""), "buf.validate.field") {
-		content = ensureProtoImport(content, "buf/validate/validate.proto")
+		if strings.Contains(emitted, imp.symbol) {
+			content = ensureProtoImport(content, imp.path)
+		}
 	}
 	// Cross-file entity declaration (split protos): the service file must
 	// import the declaring file for the envelopes' entity references.

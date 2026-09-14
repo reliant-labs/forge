@@ -22,7 +22,7 @@ func TestWebhook{{.Name | pascalCase}}RejectsNonPOST(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/webhooks/{{.Name | kebabCase}}", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/webhooks/{{.Name | kebabCase}}", nil)
 	w := httptest.NewRecorder()
 	svc.handleWebhook{{.Name | pascalCase}}(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -40,7 +40,7 @@ func TestWebhook{{.Name | pascalCase}}RejectsMissingEventID(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"type":"test"}`)
-	req := httptest.NewRequest(http.MethodPost, "/webhooks/{{.Name | kebabCase}}", body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhooks/{{.Name | kebabCase}}", body)
 	w := httptest.NewRecorder()
 	svc.handleWebhook{{.Name | pascalCase}}(w, req)
 	// Signature verification runs before event ID extraction, so expect 401.
@@ -62,7 +62,7 @@ func TestWebhook{{.Name | pascalCase}}DeduplicatesEvents(t *testing.T) {
 	_ = svc.mark{{.Name | pascalCase}}WebhookProcessed(context.Background(), "evt-123")
 
 	body := strings.NewReader(`{"type":"test"}`)
-	req := httptest.NewRequest(http.MethodPost, "/webhooks/{{.Name | kebabCase}}", body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhooks/{{.Name | kebabCase}}", body)
 	req.Header.Set("X-Event-ID", "evt-123")
 	w := httptest.NewRecorder()
 	svc.handleWebhook{{.Name | pascalCase}}(w, req)

@@ -123,21 +123,47 @@ func (s *Service) mark{{.Name | pascalCase}}WebhookProcessed(_ context.Context, 
 	return nil
 }
 
-// verify{{.Name | pascalCase}}Signature verifies the webhook signature.
-// TODO: Implement provider-specific signature verification.
-func (s *Service) verify{{.Name | pascalCase}}Signature(headers http.Header, body []byte) error {
-	// Example HMAC-SHA256 verification (common pattern):
-	//
-	// signature := headers.Get("X-Signature-256")
-	// if signature == "" {
-	//     return fmt.Errorf("missing signature header")
-	// }
-	// secret := s.deps.Config.{{.Name | pascalCase}}WebhookSecret
-	// if !middleware.VerifyHMACSHA256(body, signature, secret) {
-	//     return fmt.Errorf("invalid signature")
-	// }
+// {{.Name | camelCase}}WebhookSecret is the shared secret {{.Name}} signs its
+// deliveries with. It is EMPTY on purpose: an unconfigured secret rejects
+// every delivery (see verify{{.Name | pascalCase}}Signature), so the webhook
+// fails closed until you wire this up rather than trusting unsigned payloads.
+//
+// TODO: source this from config instead of a literal. Declare the secret in
+// proto/config/v1/config.proto with the (forge.v1.config) annotation, run
+// `forge generate`, and read it off s.deps.Config — that gets you per-env
+// values and secret-manager wiring for free. See `forge skill load secrets`.
+var {{.Name | camelCase}}WebhookSecret = ""
 
-	return fmt.Errorf("TODO: implement signature verification for {{.Name}}")
+// verify{{.Name | pascalCase}}Signature checks that the delivery really came
+// from {{.Name}}, using the HMAC-SHA256 scheme most providers implement:
+// the provider signs the RAW body with a shared secret and sends the digest
+// in a header.
+//
+// It FAILS CLOSED. An unset secret, a missing header and a bad digest all
+// reject, so a webhook that has not been configured yet cannot be tricked
+// into accepting anonymous input. Adjust the header name and the scheme to
+// whatever {{.Name}} actually sends — the shape below is the common case,
+// not a universal one.
+func (s *Service) verify{{.Name | pascalCase}}Signature(headers http.Header, body []byte) error {
+	secret := {{.Name | camelCase}}WebhookSecret
+	if secret == "" {
+		return fmt.Errorf("{{.Name}} webhook secret is not configured — refusing to trust an unverified payload")
+	}
+
+	// TODO: confirm the header {{.Name}} signs with; X-Signature-256 is the
+	// most common spelling (GitHub uses X-Hub-Signature-256, Stripe uses
+	// Stripe-Signature with its own timestamped format).
+	signature := headers.Get("X-Signature-256")
+	if signature == "" {
+		return fmt.Errorf("{{.Name}} webhook: missing signature header")
+	}
+
+	// VerifyHMACSHA256 compares in constant time and tolerates the
+	// "sha256=" prefix some providers prepend.
+	if !middleware.VerifyHMACSHA256(body, signature, secret) {
+		return fmt.Errorf("{{.Name}} webhook: invalid signature")
+	}
+	return nil
 }
 
 // process{{.Name | pascalCase}}Webhook processes a verified webhook event.

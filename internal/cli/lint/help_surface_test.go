@@ -134,6 +134,17 @@ func TestLintHelpSurface(t *testing.T) {
 		"skip-frontends",
 		"strict",
 		"tests",
+		// The read-only-fields twin for REPORTING queries, and silent in
+		// the same way: a two-argument date_trunc over a TIMESTAMPTZ
+		// buckets in the session's timezone, which the driver takes from
+		// the client host, so every total is attributed to the wrong day
+		// by an amount that changes with the deploy host. Nothing fails
+		// and the chart still renders, so the only other detector is a
+		// human noticing that CI and a laptop disagree. Visible also
+		// because forge itself routes reporting screens to raw SQL — the
+		// generated ORM cannot express GROUP BY — so this is a lane
+		// forge's own guidance leads authors into.
+		"time-bucketing",
 		// Gating, and about the user's project: forge COPIES these protos
 		// in and then never tracks them, so a stale vendored forge.proto
 		// is invisible to every other command. Hiding the one check that

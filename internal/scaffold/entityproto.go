@@ -225,7 +225,7 @@ var protoSQLStructuralMappings = []ProtoSQLMapping{
 	{Proto: "string <x>_id", SQL: "TEXT NOT NULL", Notes: "no zero default (an empty reference is a bug, not a value); a stem resolving to a known entity also gets an applied REFERENCES + index"},
 	{Proto: "enum E (same package)", SQL: "TEXT NOT NULL DEFAULT '<first>' CHECK (col IN (...))", Notes: "value NAMES, minus a leading *_UNSPECIFIED zero sentinel; optional ⇒ nullable, NULL is \"unset\""},
 	{Proto: "repeated enum E", SQL: "TEXT[] NOT NULL DEFAULT '{}'", Notes: "elements take the value names"},
-	{Proto: "google.protobuf.Timestamp", SQL: "TIMESTAMPTZ", Notes: "nullable; the REPEATED form is refused — an array of instants is an event list, give it its own table"},
+	{Proto: "google.protobuf.Timestamp", SQL: "TIMESTAMPTZ", Notes: "nullable; the REPEATED form is refused — an array of instants is an event list, give it its own table. BUCKETING WARNING: two-argument `date_trunc('day', col)` truncates a TIMESTAMPTZ in the SESSION timezone, which the driver sets from the client host — so every bucketed total moves with the deploy host, silently. Pin the zone: `date_trunc('day', col, 'UTC')`. See `forge lint --time-bucketing` and the `db` skill"},
 	{Proto: "nested message (same package)", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "'[]' when repeated; plain JSONB when optional"},
 	{Proto: "map<K, scalar>", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "maps with message or enum VALUES are refused — the CRUD generator emits no conversion for them"},
 }

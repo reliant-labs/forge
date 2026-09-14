@@ -269,7 +269,7 @@ Deployed envs migrate themselves — load the `db/deploy-migrations` skill.
 ### Queries
 
 - Simple: `internal/db/<entity>_repo_ext.go` — the custom-query seam forge scaffolds beside every entity, once, and never rewrites. Its header names the tools: the generated repo delegates with `orm.QueryOption` filters, raw SQL via `db.Bun()`, and the `orm.Context` that runs a method in or out of a transaction.
-- Complex: write SQL in `db/queries/` and use sqlc. Run `forge generate` to pick up sqlc changes.
+- Complex: write SQL in `db/queries/` and use sqlc. Run `forge generate` to pick up sqlc changes. Bucketing by time has a silent timezone trap — load `db/time-buckets`.
 
 ## Forge-specific rules
 

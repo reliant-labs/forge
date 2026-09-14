@@ -326,6 +326,8 @@ func collectSingleLinterJSON(
 		return reportUngated(collectCrudFixturesJSON(cwd, cfg))
 	case flags.fixtureDrift:
 		return reportUngated(collectFixtureDriftJSON(cwd, cfg))
+	case flags.timeBucketing:
+		return reportUngated(collectTimeBucketingJSON(cwd, cfg))
 	case flags.protoMarkers:
 		return reportUngated(collectProtoMarkersJSON(protoDirDefault))
 	case flags.createNullability:
@@ -648,6 +650,37 @@ func collectFixtureDriftJSONAt(cwd, migrationsDir string) ([]lintJSONFinding, er
 			Rule:     f.ruleID(),
 			Message:  f.message(),
 			FixHint:  fixtureDriftFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectTimeBucketingJSON maps time-bucketing findings onto the JSON
+// contract. Severity warning across the board: unlike the read-only rule,
+// a local-time bucket can be exactly what the author wants for a shift
+// report or a business-day rollup, so the finding makes the choice visible
+// rather than making it.
+func collectTimeBucketingJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
+	return collectTimeBucketingJSONAt(cwd, migrationsDirFor(cfg))
+}
+
+// collectTimeBucketingJSONAt is the config-free half, so a test can drive
+// the JSON shape against a temp project without building a ProjectConfig.
+func collectTimeBucketingJSONAt(cwd, migrationsDir string) ([]lintJSONFinding, error) {
+	findings, err := collectTimeBucketFindings(cwd, migrationsDir)
+	if err != nil {
+		return nil, fmt.Errorf("time-bucketing lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Col:      f.Col,
+			Severity: lintSevWarning,
+			Rule:     timeBucketRuleID,
+			Message:  f.message(),
+			FixHint:  timeBucketFixHint(f),
 		})
 	}
 	return out, nil

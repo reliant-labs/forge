@@ -120,6 +120,67 @@ func (s *Service) CreateEstimate() error {
 	}
 }
 
+// TestReadOnlyFields_TimestampIsNotDescribedAsMoney is the dogfood report
+// this consequence clause was rewritten for. The clause used to splice a
+// fixed money illustration into every finding, so a TIMESTAMPTZ column was
+// told it "ships as $0.00" — technically an aside about the bug class, and
+// read by a careful human as forge having mis-detected the column as
+// numeric. They went looking for a proto type error that did not exist.
+//
+// The consequence must describe THIS column: a nullable timestamp stays
+// NULL forever, which is both true and just as alarming.
+func TestReadOnlyFields_TimestampIsNotDescribedAsMoney(t *testing.T) {
+	root := readOnlyProject(t, `syntax = "proto3";
+
+package services.estimates.v1;
+
+// forge:entity
+message Estimate {
+  string id = 1;
+  string quarantined_at = 2; // forge:read-only
+}
+`, `CREATE TABLE estimates (
+    id             TEXT PRIMARY KEY,
+    quarantined_at TIMESTAMPTZ
+);
+`, "package estimates\n")
+	findings, err := collectReadOnlyFieldFindings(root, filepath.Join("db", "migrations"))
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want exactly 1 finding, got %d: %+v", len(findings), findings)
+	}
+	hint := readOnlyFieldFixHint(findings[0])
+	for _, unwanted := range []string{"$0.00", "money"} {
+		if strings.Contains(hint, unwanted) {
+			t.Errorf("a TIMESTAMPTZ column must not be described with %q:\n%s", unwanted, hint)
+		}
+	}
+	if !strings.Contains(hint, "NULL") {
+		t.Errorf("the consequence for a nullable timestamp is that it stays NULL forever:\n%s", hint)
+	}
+}
+
+// TestReadOnlyFields_MoneyKeepsTheVividConsequence is the other half. The
+// money framing is why this rule caught real defects in two separate
+// dogfood runs, so making the clause type-specific must not flatten the
+// case it was written for.
+func TestReadOnlyFields_MoneyKeepsTheVividConsequence(t *testing.T) {
+	root := readOnlyProject(t, estimateProto, estimateMigration, "package estimates\n")
+	findings, err := collectReadOnlyFieldFindings(root, filepath.Join("db", "migrations"))
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want exactly 1 finding, got %d: %+v", len(findings), findings)
+	}
+	hint := readOnlyFieldFixHint(findings[0])
+	if !strings.Contains(hint, "$0.00") {
+		t.Errorf("a *_cents column must still get the vivid money consequence:\n%s", hint)
+	}
+}
+
 // TestReadOnlyFields_SilentWhenHandlerWrites is the primary false-positive
 // guard: a derivation exists, so the rule must say nothing.
 func TestReadOnlyFields_SilentWhenHandlerWrites(t *testing.T) {

@@ -187,6 +187,25 @@ type unscopedRPC struct {
 	// advisory finding — no owned table sits behind it.
 	Entity string `json:"entity,omitempty"`
 	Table  string `json:"table,omitempty"`
+	// Remediation is the owner-scoping wrapper for this RPC, as code —
+	// the caller resolution, the placeholder owner expression, and the
+	// op-seam override that puts Table's declared owner column into the
+	// query.
+	//
+	// It is carried here rather than left to the auth skill because the
+	// skill's remediation is a scaffold that CANNOT fire on an existing
+	// project. The CRUD shim writes the wrapper only at
+	// handlers_crud.go's birth, and `forge:owner` arrives in a later
+	// migration, so any project that declares ownership after scaffolding
+	// its handlers — the normal order of work — gets the refusal and no
+	// wrapper. A measured run hit exactly that and had nothing to act on.
+	//
+	// The text is rendered from the SAME template the scaffolder uses
+	// (codegen.RenderScopedCRUDShim), so pasting it produces what a
+	// greenfield project would have received. Empty when forge cannot
+	// render an honest one: an advisory finding names no column, and a
+	// non-CRUD RPC has no generated op seam to wrap.
+	Remediation string `json:"remediation,omitempty"`
 }
 
 // acknowledgedRPC is one authenticated RPC the author has explicitly
@@ -241,6 +260,12 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		acknowledged []acknowledgedRPC
 		authTotal    int
 		scopedTotal  int
+		// The two raw-SQL states. Kept apart from `unscoped` because
+		// they are a different finding with a different remedy: these
+		// RPCs DID resolve the caller, and what is missing is the
+		// predicate inside a query forge cannot read.
+		rawSQLUnscoped     []rawSQLRPC
+		rawSQLUnverifiable []rawSQLRPC
 		// declaredAuth counts authenticated RPCs the DESCRIPTOR knows
 		// about, independent of whether a handler was found for them.
 		// The gap between it and authTotal is how this category detects
@@ -262,10 +287,10 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		// Only RPCs the proto declares authenticated are in scope. A
 		// public RPC reading no claims is correct by construction, and
 		// the scaffold says so in its own PUBLIC branch.
-		authMethods := map[string]bool{}
+		authMethods := map[string]codegen.Method{}
 		for _, m := range svc.Methods {
 			if m.AuthRequired {
-				authMethods[m.Name] = true
+				authMethods[m.Name] = m
 			}
 		}
 		if len(authMethods) == 0 {
@@ -293,7 +318,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 			continue
 		}
 
-		for name := range authMethods {
+		for name, method := range authMethods {
 			h, ok := handlers[name]
 			if !ok {
 				// No handler method for this RPC in the user-owned tree —
@@ -310,19 +335,38 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 					Service: svc.Name, Method: name, File: rel, Reason: h.AckReason,
 				})
 			case h.ReadsCaller:
-				scopedTotal++
+				// Resolving the caller is the WHOLE answer only when
+				// forge can also see the query. When the query is a
+				// hand-written string over a table the project declared
+				// owned, it proves the caller was identified and nothing
+				// about whether that identity reached the rows — so the
+				// RPC is classified by what is in the SQL rather than
+				// counted as verified.
+				ev, hasOwned := classifyHandlerSQL(h.SQL, ownerTables)
+				if !hasOwned {
+					scopedTotal++
+					break
+				}
+				finding := rawSQLRPC{
+					Service: svc.Name, Method: name, File: rel,
+					Tables: ev.Tables, OwnerColumns: ev.OwnerColumns,
+					MentionsOwnerColumn: ev.MentionsOwnerColumn,
+				}
+				if ev.MentionsOwnerColumn {
+					rawSQLUnverifiable = append(rawSQLUnverifiable, finding)
+				} else {
+					rawSQLUnscoped = append(rawSQLUnscoped, finding)
+				}
 			default:
-				entity, table := ownerEntityFor(name, ownerTables)
-				unscoped = append(unscoped, unscopedRPC{
-					Service: svc.Name, Method: name, File: rel, Delegating: h.Delegating,
-					Entity: entity, Table: table,
-				})
+				unscoped = append(unscoped, newUnscopedFinding(svc.Name, method, rel, h.Delegating, ownerTables))
 			}
 		}
 	}
 
 	sortUnscoped(unscoped)
 	sortAcknowledged(acknowledged)
+	sortRawSQL(rawSQLUnscoped)
+	sortRawSQL(rawSQLUnverifiable)
 
 	// The gating subset: findings that cross a boundary the project
 	// DECLARED. Kept as its own list rather than a flag on each finding
@@ -344,6 +388,8 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		"owner_scoped_tables":        sortedKeys(ownerTables),
 		"owner_marker":               schemadef.ColumnMarkerOwner,
 		"acknowledged_rpcs":          acknowledged,
+		"raw_sql_unscoped_rpcs":      rawSQLUnscoped,
+		"raw_sql_unverifiable_rpcs":  rawSQLUnverifiable,
 		"auth_seam":                  seam,
 		"acknowledge_marker":         AuthUnscopedOKDirective,
 		"hint": fmt.Sprintf(
@@ -377,7 +423,46 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		}
 	}
 
+	// THE RAW-SQL ERROR, reported before the CRUD gate because it is the
+	// more specific claim: forge knows the table, knows the column the
+	// migration declared, and has read a query that names the table and
+	// not the column. That is a leak forge can point at, where the CRUD
+	// gate reports the absence of a step.
+	if len(rawSQLUnscoped) > 0 {
+		// The generic hint is wrong advice here — it says to resolve the
+		// caller, which these handlers already did, and following it
+		// would leave the leak exactly where it is. Replace it rather
+		// than print both.
+		details["hint"] = rawSQLScopingHint()
+		delete(details, "raw_sql_hint")
+		return audittype.Category{
+			Status: audittype.StatusError,
+			Summary: fmt.Sprintf(
+				"%d authenticated RPC(s) resolve the caller and then query %s-declared table(s) through hand-written SQL that never names the owner column — the caller was identified but the rows were not filtered by who they belong to: %s",
+				len(rawSQLUnscoped), schemadef.ColumnMarkerOwner, describeRawSQL(rawSQLUnscoped)),
+			Details: details,
+		}
+	}
+
 	if len(unscoped) == 0 {
+		// UNVERIFIABLE IS NOT CLEAN. These RPCs resolve the caller and
+		// their SQL does name the owner column, but forge cannot see
+		// that the value bound to it came from the caller's claims
+		// rather than from the request. Reporting ok here would be the
+		// same false confidence that let the measured leak ship — just
+		// with better odds. It warns rather than errors because there is
+		// no evidence of a defect, only an absence of evidence of
+		// correctness, and those two deserve different words.
+		if len(rawSQLUnverifiable) > 0 {
+			details["hint"] = rawSQLScopingHint()
+			return audittype.Category{
+				Status: audittype.StatusWarn,
+				Summary: fmt.Sprintf(
+					"%d authenticated RPC(s) query %s-declared table(s) through hand-written SQL — forge cannot see inside the query, so their scoping was NOT verified: %s",
+					len(rawSQLUnverifiable), schemadef.ColumnMarkerOwner, describeRawSQL(rawSQLUnverifiable)),
+				Details: details,
+			}
+		}
 		summary := fmt.Sprintf("all %d authenticated RPC(s) resolve the caller", authTotal)
 		if authTotal == 0 {
 			summary = "no authenticated RPCs with handlers to inspect (n/a)"
@@ -392,6 +477,11 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 	// the acknowledgement so the escape hatch is discoverable at the
 	// moment someone needs it rather than buried in a skill.
 	if len(gating) > 0 {
+		// Only on the armed branch: the hint explains where a
+		// `remediation` snippet goes, and an advisory finding carries
+		// none, so printing it there would name a field that is not
+		// present.
+		details["owner_scoping_hint"] = ownerScopingHint()
 		return audittype.Category{
 			Status: audittype.StatusError,
 			Summary: fmt.Sprintf(
@@ -426,18 +516,27 @@ var commentOnColumnOwnerRE = regexp.MustCompile(`(?is)\bcomment\s+on\s+column\s+
 // discipline internal/cli/lint's unknownMarkerFinding applies.
 var ownerMarkerTokenRE = regexp.MustCompile(regexp.QuoteMeta(schemadef.ColumnMarkerOwner) + `(?:[^\w:-]|$)`)
 
-// ownerScopedTables returns the set of table names carrying at least
-// one `forge:owner` column declaration, read from the project's
-// migrations. An unreadable or absent migrations directory yields the
-// empty set — which disarms the gate, the correct direction for a
-// filesystem problem that is not itself a security finding.
-func ownerScopedTables(cfg *config.ProjectConfig, projectDir string) map[string]bool {
+// ownerScopedTables maps each table carrying a `forge:owner` column
+// declaration to that column's name, read from the project's migrations.
+// An unreadable or absent migrations directory yields the empty map —
+// which disarms the gate, the correct direction for a filesystem problem
+// that is not itself a security finding.
+//
+// The COLUMN is carried, not merely the fact that one exists, because
+// the remediation the gate prints names it in a WHERE predicate. A gate
+// that knows a boundary exists but cannot say which column expresses it
+// can only restate the problem.
+func ownerScopedTables(cfg *config.ProjectConfig, projectDir string) map[string]string {
 	migDir := filepath.Join(projectDir, "db", "migrations")
 	if cfg != nil && cfg.Database.MigrationsDir != "" {
 		migDir = filepath.Join(projectDir, cfg.Database.MigrationsDir)
 	}
 
-	out := map[string]bool{}
+	out := map[string]string{}
+	// Migrations are walked in name order — which is timestamp order —
+	// so a later migration that moves ownership to a different column
+	// wins over the one it replaced, matching the applied schema.
+	var paths []string
 	_ = filepath.WalkDir(migDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // a missing/unreadable migration tree disarms the gate, it is not a finding
@@ -445,24 +544,28 @@ func ownerScopedTables(cfg *config.ProjectConfig, projectDir string) map[string]
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".up.sql") {
 			return nil
 		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil
-		}
-		for table := range ownerScopedTablesIn(string(data)) {
-			out[table] = true
-		}
+		paths = append(paths, path)
 		return nil
 	})
+	sort.Strings(paths)
+	for _, path := range paths {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			continue
+		}
+		for table, column := range ownerScopedTablesIn(string(data)) {
+			out[table] = column
+		}
+	}
 	return out
 }
 
-// ownerScopedTablesIn extracts the owner-declaring table names from
-// one migration's SQL text. Split out from the walk so the parsing rule
-// — which is the whole correctness surface here — is testable without a
-// filesystem.
-func ownerScopedTablesIn(sql string) map[string]bool {
-	out := map[string]bool{}
+// ownerScopedTablesIn maps the owner-declaring tables in one migration's
+// SQL text to the column each one declared. Split out from the walk so
+// the parsing rule — which is the whole correctness surface here — is
+// testable without a filesystem.
+func ownerScopedTablesIn(sql string) map[string]string {
+	out := map[string]string{}
 	for _, m := range commentOnColumnOwnerRE.FindAllStringSubmatch(sql, -1) {
 		object, body := m[1], m[2]
 		if !ownerMarkerTokenRE.MatchString(body) {
@@ -475,7 +578,14 @@ func ownerScopedTablesIn(sql string) map[string]bool {
 		if len(parts) < 2 {
 			continue
 		}
-		out[parts[len(parts)-2]] = true
+		table, column := parts[len(parts)-2], parts[len(parts)-1]
+		// First declaration within one file wins, mirroring
+		// codegen.OwnerColumn, which takes the entity's first owner
+		// column. A table declaring two is expressing a composite scope
+		// neither this gate nor the scaffold can guess at.
+		if _, seen := out[table]; !seen {
+			out[table] = column
+		}
 	}
 	return out
 }
@@ -490,22 +600,82 @@ func ownerScopedTablesIn(sql string) map[string]bool {
 // derivation rather than re-inventing one is what keeps the gate's idea
 // of "which table does this RPC touch" from drifting away from the
 // generator's.
-func ownerEntityFor(method string, ownerTables map[string]bool) (entity, table string) {
+func ownerEntityFor(method string, ownerTables map[string]string) (entity, table, column string) {
 	if len(ownerTables) == 0 {
-		return "", ""
+		return "", "", ""
 	}
 	op, name := codegen.ParseCRUDOperation(method)
 	if op == "" {
-		return "", ""
+		return "", "", ""
 	}
 	if op == "list" {
 		name = inflection.Singular(name)
 	}
 	candidate := naming.Pluralize(naming.ToSnakeCase(name))
-	if !ownerTables[candidate] {
-		return "", ""
+	col, owned := ownerTables[candidate]
+	if !owned {
+		return "", "", ""
 	}
-	return name, candidate
+	return name, candidate, col
+}
+
+// newUnscopedFinding builds one finding, resolving the owned entity
+// behind the RPC and the wrapper that would scope it.
+//
+// Both derivations live here rather than at the call site so the
+// gating fields cannot be set independently of each other: Table is what
+// arms the gate and Remediation is what the user does about it, and a
+// finding carrying one without the other is the failure this whole
+// change exists to fix.
+func newUnscopedFinding(service string, method codegen.Method, file string, delegating bool, ownerTables map[string]string) unscopedRPC {
+	entity, table, column := ownerEntityFor(method.Name, ownerTables)
+	return unscopedRPC{
+		Service:     service,
+		Method:      method.Name,
+		File:        file,
+		Delegating:  delegating,
+		Entity:      entity,
+		Table:       table,
+		Remediation: scopingRemediation(method, entity, column),
+	}
+}
+
+// scopingRemediation renders the owner-scoping wrapper this RPC needs,
+// or "" when forge cannot render an honest one.
+//
+// Empty is the correct answer in two cases, and emitting a plausible
+// block in either would re-create the dead end this carries the user out
+// of. An advisory finding (no entity/column, because no table declared
+// ownership) has no column to name in a predicate — forge would be
+// inventing a policy the project never declared. A custom RPC maps to no
+// generated op, so there is no Fetch/Filters/Persist seam to wrap;
+// RenderScopedCRUDShim reports that as an error and it is dropped here
+// rather than surfaced, since "this RPC is unscoped" is still a true and
+// useful finding on its own.
+func scopingRemediation(method codegen.Method, entity, column string) string {
+	if entity == "" || column == "" {
+		return ""
+	}
+	snippet, err := codegen.RenderScopedCRUDShim(method.Name, method.InputType, method.OutputType, entity, column)
+	if err != nil {
+		return ""
+	}
+	return snippet
+}
+
+// ownerScopingHint explains why re-running generate will not produce the
+// wrapper, and where the snippet in each finding goes instead.
+//
+// Without this sentence the reader's first move is to run `forge
+// generate` — the auth skill used to say the wrapper appears that way —
+// see nothing change, and conclude forge is broken. The claim is
+// falsifiable at their own file: handlers_crud.go opens with "yours:
+// scaffolded once, never touched again".
+func ownerScopingHint() string {
+	return "forge scaffolds this wrapper into internal/handlers/<service>/handlers_crud.go only when that file is first created, " +
+		"and a `" + schemadef.ColumnMarkerOwner + "` declaration lives in a migration written later — so on an existing project the scaffold " +
+		"cannot fire and `" + cmdutil.Name() + " generate` will not add it. Paste each finding's `remediation` into the named method in that " +
+		"file instead, replacing the placeholder owner expression with your real claims-to-column mapping."
 }
 
 // describeGating renders the gating findings as `Service.Method (table)`
@@ -527,7 +697,7 @@ func describeGating(gating []unscopedRPC) string {
 
 // sortedKeys returns a set's members in a stable order, so the emitted
 // JSON does not churn between runs on map iteration order alone.
-func sortedKeys(set map[string]bool) []string {
+func sortedKeys[V any](set map[string]V) []string {
 	out := make([]string, 0, len(set))
 	for k := range set {
 		out = append(out, k)
@@ -568,6 +738,16 @@ type handlerAuthUse struct {
 	ReadsCaller bool
 	Delegating  bool
 	AckReason   string
+	// SQL and HasSQL describe the hand-written queries this handler can
+	// reach. They are carried separately from ReadsCaller because they
+	// answer a different question: ReadsCaller says the caller was
+	// resolved, SQL says whether that resolution could possibly have
+	// reached the rows. For a delegating handler the two are the same
+	// answer; for an aggregation over a string constant they are not,
+	// and collapsing them is what let a cross-boundary read ship behind
+	// a ✓. See audit_unscoped_auth_rawsql.go.
+	SQL    []string
+	HasSQL bool
 }
 
 // scanHandlerAuthUse parses every non-test .go file in a handler package
@@ -626,6 +806,15 @@ func scanHandlerAuthUse(dir string) (map[string]handlerAuthUse, error) {
 	}
 	seamReaching := seamReachingNames(decls)
 
+	// The SQL half, computed over the SAME declaration set and the same
+	// package-local call graph, so the two analyses cannot disagree
+	// about how far a handler's body reaches.
+	astFiles := make([]*ast.File, 0, len(files))
+	for _, pf := range files {
+		astFiles = append(astFiles, pf.file)
+	}
+	sqlByName := reachableSQL(decls, sqlLiteralsByDecl(decls, packageSQLConsts(astFiles)))
+
 	out := map[string]handlerAuthUse{}
 	for _, pf := range files {
 		for _, decl := range pf.file.Decls {
@@ -643,6 +832,8 @@ func scanHandlerAuthUse(dir string) (map[string]handlerAuthUse, error) {
 			}
 			use.ReadsCaller = bodyReachesAuthSeam(fn.Body) ||
 				bodyCallsSeamReachingHelper(fn.Body, seamReaching, fn.Name.Name)
+			use.SQL = sqlByName[fn.Name.Name]
+			use.HasSQL = len(use.SQL) > 0
 			out[fn.Name.Name] = use
 		}
 	}

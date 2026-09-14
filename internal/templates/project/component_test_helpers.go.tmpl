@@ -202,10 +202,22 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 {{- $svc := . }}
 {{- range .AutoStubs}}
 
-// {{.StubType}} satisfies {{.InterfaceQualified}} with zero-value returns
-// so NewTest{{$svc.FieldName}} can construct the service even when the field
-// is required by validateDeps. Tests that need real behavior should
-// supply their own implementation via With{{$svc.FieldName}}Deps(...).
+// {{.StubType}} satisfies {{.InterfaceQualified}} so NewTest{{$svc.FieldName}} can
+// construct the service even when the field is required by validateDeps.
+// Supply a real implementation via With{{$svc.FieldName}}Deps(...) when a test
+// exercises this collaborator.
+//
+// Methods returning a VALUE return that value's zero — an empty slice, a
+// nil pointer, "" — which a caller can inspect and act on.
+//
+// Methods returning ONLY error FAIL CLOSED: they return
+// testkit.StubNotConfigured rather than nil. nil from an error-only method
+// is not an empty answer, it is a claim that the operation SUCCEEDED — and
+// for a policy check, nil means ALLOW. A stub that returned it would
+// silently disable the check in every test that did not override this
+// field, so a denial assertion would pass while asserting nothing. Calling
+// one of these methods without configuring the dependency is a test
+// failure naming the method.
 type {{.StubType}} struct{}
 {{- if .CrossPackage}}
 

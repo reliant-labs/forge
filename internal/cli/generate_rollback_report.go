@@ -1,0 +1,315 @@
+package cli
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// Root-cause attribution for the failed-generate report.
+//
+// FRICTION (third dogfood run): a generate run aborted on a typecheck
+// error in a generated test helper (`invalid composite literal type
+// tagging.Role`). The rollback rewound 71 files — correctly — but that
+// restored an OLDER handlers_crud_ops_gen.go, and the errors the user was
+// then shown were:
+//
+//	internal/handlers/documents/scoping.go:66:10: s.crudGetDocumentOp undefined
+//
+// four times, against a hand-written file that compiles standalone. The
+// user spent four turns debugging a correct file. The real fault was two
+// files away and had already been detected — forge simply did not say
+// which error was the one that mattered.
+//
+// The rollback itself is right and stays. Two things about how it REPORTS
+// are not:
+//
+//  1. Downstream errors produced AFTER a rollback restored stale files
+//     were presented as equals to the root cause. An error citing a file
+//     forge never wrote this run is an artifact of the revert, and the
+//     user must never be sent to debug it.
+//
+//  2. "your tree is back to its pre-run state" was asserted
+//     unconditionally. Reverting to pre-run state is only safe if pre-run
+//     state was CONSISTENT, and it was not: compose.go was kept from an
+//     earlier successful run while internal/blobstore/middleware_gen.go
+//     was generated this run and reverted, leaving two halves of one
+//     feature on opposite sides of the rollback boundary. The restored
+//     tree did not build, and forge said it was clean.
+//
+// The fix for (2) is deliberately verification rather than a smarter
+// rollback — see the note on goBuildRestoredTree for why.
+
+// rollbackRootCauseMarker labels the error that actually aborted the run.
+// It is the one error on screen the user should act on, and it is printed
+// under this marker whether or not anything else follows.
+const rollbackRootCauseMarker = "ROOT CAUSE (this is the error to fix)"
+
+// rollbackArtifactMarker labels errors that appeared only AFTER the
+// rollback restored older files. They describe the reverted tree, not the
+// user's code.
+const rollbackArtifactMarker = "⚠️  The errors below are ARTIFACTS OF THE ROLLBACK, not your bug"
+
+// rollbackConsistency is the verdict on the tree the rollback restored:
+// did it actually compile? Checked=false means no verdict was reachable
+// (no Go module, no toolchain), which is reported as silence rather than
+// as either claim.
+type rollbackConsistency struct {
+	Checked bool
+	Builds  bool
+	Output  string
+}
+
+// rollbackReport is everything the failure report needs, gathered before
+// any of it is printed so the whole message can be ordered by usefulness
+// rather than by the order the pipeline happened to learn things.
+type rollbackReport struct {
+	Restored    []string
+	Preserved   []string
+	StepErr     error
+	Consistency rollbackConsistency
+}
+
+// goBuildRestoredTree runs `go build ./...` against the tree the rollback
+// just restored, to check whether the "back to your pre-run state"
+// reassurance is actually true before forge offers it.
+//
+// Why verify rather than roll back more cleverly: a fully-consistent
+// rollback would have to revert files this run did NOT write (compose.go
+// was kept from an EARLIER successful run, so it is outside the journal by
+// construction), which means either snapshotting the whole working tree —
+// explicitly out of scope for the journal, and guaranteed to manufacture
+// spurious diffs from `go mod tidy` and friends — or reverting files the
+// user may have hand-edited. Both are worse than the honest report. So
+// forge keeps the bounded revert and stops CLAIMING more than it verified.
+//
+// A build failure here is not an error condition for the pipeline: the run
+// has already failed, and this only decides which message is truthful.
+// Anything that prevents a verdict returns Checked=false.
+func goBuildRestoredTree(projectDir string) rollbackConsistency {
+	if _, err := os.Stat(filepath.Join(projectDir, "go.mod")); err != nil {
+		return rollbackConsistency{}
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		return rollbackConsistency{}
+	}
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = projectDir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return rollbackConsistency{Checked: true, Builds: true}
+	}
+	return rollbackConsistency{Checked: true, Builds: false, Output: string(out)}
+}
+
+// classifyPostRollbackErrors splits post-rollback compiler output into the
+// lines that cite a file forge did NOT write this run, and everything
+// else.
+//
+// The first bucket is the dangerous one and the reason this function
+// exists. A file forge never touched is byte-identical to what the user
+// had before the run, so an error citing it is guaranteed to be a
+// consequence of some OTHER file having been reverted — scoping.go's four
+// `crudGetDocumentOp undefined` errors were exactly this. Those files are
+// correct on disk, and the report says so.
+//
+// Only lines carrying file:line coordinates are classified; `# package`
+// headers and continuation lines carry no path to judge and fall through
+// to the second bucket rather than being silently dropped.
+func classifyPostRollbackErrors(output string, touched map[string]bool) (untouched, other []string) {
+	for _, line := range strings.Split(strings.TrimRight(output, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		rel := errorLineFile(line)
+		if rel != "" && !touched[rel] {
+			untouched = append(untouched, line)
+			continue
+		}
+		other = append(other, line)
+	}
+	return untouched, other
+}
+
+// errorLineFile extracts the project-relative path from a compiler error
+// line ("internal/x/y.go:66:10: msg"). Returns "" when the line carries no
+// file:line coordinate, which is the signal to leave it unclassified.
+func errorLineFile(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "#") {
+		return ""
+	}
+	idx := strings.Index(trimmed, ".go:")
+	if idx == -1 {
+		return ""
+	}
+	path := trimmed[:idx+len(".go")]
+	// Guard against a message that merely mentions a .go file after the
+	// real coordinate; the path is the leading token.
+	if strings.ContainsAny(path, " \t") {
+		return ""
+	}
+	return filepath.ToSlash(path)
+}
+
+// writeRollbackReport renders the whole failure report in order of
+// usefulness: what to fix, what was reverted, and only then the
+// post-rollback noise — explicitly labelled as noise.
+//
+// Split from rollbackGeneratedTree (which owns the side effects) so the
+// message itself is unit-testable without a real tree, a real journal, or
+// a real failed build.
+func writeRollbackReport(w io.Writer, rep rollbackReport) {
+	// 1. The root cause, FIRST and unmistakable. This is the line whose
+	//    absence cost four turns.
+	fmt.Fprintf(w, "\n❌ %s:\n", rollbackRootCauseMarker)
+	fmt.Fprintf(w, "   %s\n", rootCauseSummary(rep.StepErr))
+	if out := rootCauseOutput(rep.StepErr); out != "" {
+		for _, line := range limitLines(out, compilerOutputTailLines) {
+			fmt.Fprintf(w, "   %s\n", line)
+		}
+	}
+
+	// 2. What the rollback did — and, crucially, only the reassurance it
+	//    actually earned.
+	switch {
+	case rep.Consistency.Checked && !rep.Consistency.Builds:
+		fmt.Fprintf(w, "\n↩️  generate failed its own validation and reverted %d file(s) it wrote this run.\n", len(rep.Restored))
+		fmt.Fprintf(w, "   ⚠️  The restored tree does NOT compile on its own. Reverting this run's writes\n")
+		fmt.Fprintf(w, "   was not sufficient to reach a consistent tree: a file kept from an EARLIER run\n")
+		fmt.Fprintf(w, "   can depend on one this run generated and just reverted. Re-running `forge generate`\n")
+		fmt.Fprintf(w, "   after fixing the root cause above restores consistency.\n")
+	case rep.Consistency.Checked:
+		fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed, verified: it compiles):\n", len(rep.Restored))
+	default:
+		fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed):\n", len(rep.Restored))
+	}
+	for _, p := range rep.Restored {
+		fmt.Fprintf(w, "   - %s\n", p)
+	}
+
+	// 3. The post-rollback errors, quarantined behind the artifact marker.
+	if rep.Consistency.Checked && !rep.Consistency.Builds && strings.TrimSpace(rep.Consistency.Output) != "" {
+		writeArtifactSection(w, rep)
+	}
+}
+
+// writeArtifactSection prints the post-rollback build errors under the
+// artifact marker, leading with the ones that cite files forge never
+// wrote — the class that sent a user to debug a correct file.
+func writeArtifactSection(w io.Writer, rep rollbackReport) {
+	touched := map[string]bool{}
+	for _, p := range rep.Restored {
+		touched[filepath.ToSlash(p)] = true
+	}
+	untouched, other := classifyPostRollbackErrors(rep.Consistency.Output, touched)
+
+	fmt.Fprintf(w, "\n%s:\n", rollbackArtifactMarker)
+	if len(untouched) > 0 {
+		files := citedFiles(untouched)
+		fmt.Fprintf(w, "   forge did not write %s this run, so %s unchanged on disk and\n",
+			pluralFiles(len(files)), pluralIs(len(files)))
+		fmt.Fprintf(w, "   correct. %s reported only because a file %s was reverted.\n",
+			pluralThey(len(files)), pluralDependsOn(len(files)))
+		fmt.Fprintf(w, "   Do not debug %s — fix the ROOT CAUSE above instead.\n", pluralThem(len(files)))
+		for _, f := range files {
+			fmt.Fprintf(w, "     · %s\n", f)
+		}
+		for _, line := range limitLines(strings.Join(untouched, "\n"), compilerOutputTailLines) {
+			fmt.Fprintf(w, "   %s\n", line)
+		}
+	}
+	if len(other) > 0 {
+		fmt.Fprintf(w, "   Other errors against the reverted tree (also post-rollback, also not the root cause):\n")
+		for _, line := range limitLines(strings.Join(other, "\n"), compilerOutputTailLines) {
+			fmt.Fprintf(w, "   %s\n", line)
+		}
+	}
+}
+
+// citedFiles returns the sorted unique file paths named by a set of
+// compiler error lines — the four identical scoping.go errors name one
+// file, and the report should say one file.
+func citedFiles(lines []string) []string {
+	seen := map[string]bool{}
+	var files []string
+	for _, line := range lines {
+		if f := errorLineFile(line); f != "" && !seen[f] {
+			seen[f] = true
+			files = append(files, f)
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+// rootCauseSummary is the failing step's user-facing message, stripped of
+// the wrapping the pipeline adds.
+func rootCauseSummary(err error) string {
+	if err == nil {
+		return "generate failed"
+	}
+	return err.Error()
+}
+
+// rootCauseOutput returns the compiler/typecheck output carried by the
+// aborting error, when it carries any.
+func rootCauseOutput(err error) string {
+	var ve *validateBuildError
+	if !errors.As(err, &ve) {
+		return ""
+	}
+	return strings.TrimRight(ve.Output, "\n")
+}
+
+// limitLines caps a block of output at n lines, appending an elision note
+// naming how much was cut.
+func limitLines(output string, n int) []string {
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) <= n {
+		return lines
+	}
+	out := append([]string{}, lines[:n]...)
+	return append(out, fmt.Sprintf("… (%d more line(s); full output in %s/%s)",
+		len(lines)-n, failedGenerateDir, failedGenerateErrorFile))
+}
+
+func pluralFiles(n int) string {
+	if n == 1 {
+		return "this file"
+	}
+	return "these files"
+}
+
+func pluralIs(n int) string {
+	if n == 1 {
+		return "it is"
+	}
+	return "they are"
+}
+
+func pluralThey(n int) string {
+	if n == 1 {
+		return "It is"
+	}
+	return "They are"
+}
+
+func pluralDependsOn(n int) string {
+	if n == 1 {
+		return "it depends on"
+	}
+	return "they depend on"
+}
+
+func pluralThem(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
+}

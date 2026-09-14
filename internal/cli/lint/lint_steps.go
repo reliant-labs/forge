@@ -614,6 +614,42 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-quinquies-bis. Crud-fixtures — the FOREIGN KEY half of
+		// scaffold-once fixture drift, and the shape that breaks suites
+		// most often. A parent/owner column is born without a constraint,
+		// the scaffolded seed block fills it with a synthetic placeholder
+		// that is legal at the time, and a later migration adds the
+		// foreign key the column always semantically had. Every seeded
+		// row now violates it, and the only signal is a raw pq error in
+		// test SETUP naming a constraint the fixture author never saw.
+		//
+		// The analyzer has always detected this. It was reachable only
+		// through the explicit `forge lint --crud-fixtures` flag and was
+		// never registered here, so an unflagged `forge lint` reported
+		// clean over fixtures the schema rejects — a green verdict is
+		// worse than no lane, because it converts "not checked" into
+		// "checked, fine". A dogfood run lost six test packages to
+		// exactly that.
+		//
+		// Warnings only, matching its fixture-drift sibling: the remedy
+		// is an edit to a file forge does not own and may legitimately be
+		// mid-edit, so gating would hold a user's file hostage.
+		{
+			name:  "crud-fixtures lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runCrudFixturesLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "⚠️  crud-fixtures lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectCrudFixturesJSON(rc.cwd, rc.cfg)
+				return fs, false, err
+			},
+		},
+
 		// 13d-sexies-bis. Fixture-drift — the sibling of crud-fixtures, for
 		// the two ways a scaffold-once seed block ages out of its schema
 		// that a foreign-key check cannot see. A column the schema later
@@ -646,6 +682,42 @@ func lintPipeline() []linterStep {
 			errFormat: "⚠️  fixture-drift lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectFixtureDriftJSON(rc.cwd, rc.cfg)
+				return fs, false, err
+			},
+		},
+
+		// 13d-sexies-ter. Time-bucketing — the reporting-query twin of
+		// read-only-fields, and the same silent-wrong-data class. forge
+		// maps google.protobuf.Timestamp to TIMESTAMPTZ, which is right,
+		// but a two-argument `date_trunc` over one truncates in the
+		// SESSION timezone — which the driver sets from the CLIENT HOST.
+		// So the same rows bucket differently on a UTC CI box and a
+		// UTC-5 laptop, and every reported total is attributed to the
+		// wrong day by a fraction of one.
+		//
+		// Nothing fails: no constraint, no type error, no failing test,
+		// no log line. The chart renders and the bars are simply wrong,
+		// which reads as flakiness rather than as a timezone bug. It is
+		// also squarely in forge's path — the generated ORM cannot
+		// express GROUP BY / SUM, so forge itself routes authors to raw
+		// SQL for any reporting screen, which is exactly where this
+		// construct lives.
+		//
+		// Warnings only, matching the fixture lanes: a local-time bucket
+		// can be deliberate for a shift report or a business-day rollup,
+		// and naming the zone explicitly is how the author says so.
+		{
+			name:  "time-bucketing lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runTimeBucketingLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "⚠️  time-bucketing lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectTimeBucketingJSON(rc.cwd, rc.cfg)
 				return fs, false, err
 			},
 		},

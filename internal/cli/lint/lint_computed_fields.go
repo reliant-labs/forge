@@ -4,9 +4,11 @@
 //
 // `// forge:read-only` says a field is not CLIENT-writable. It says nothing
 // about who writes it instead — and forge, correctly, writes nothing. So a
-// read-only column that no app code populates takes its column DEFAULT, and
+// read-only column that no app code populates takes its column DEFAULT: 0
 // for the money columns this happens to most (`amount_cents`,
-// `subtotal_cents`, `total_cents`) that default is 0.
+// `subtotal_cents`, `total_cents`), NULL forever for a timestamp, "" for
+// text. The finding's consequence clause is derived from the field's actual
+// type — see lint_unwritten_outcome.go.
 //
 // Nothing catches it. No constraint is violated: 0 is a perfectly legal
 // BIGINT. No test fails: the generated CRUD lifecycle test round-trips
@@ -102,6 +104,13 @@ type computedFieldFinding struct {
 	// actually assign rather than the proto spelling, which appears
 	// nowhere in Go.
 	GoField string
+	// Kind and TypeName are the proto field's type, carried so the
+	// consequence clause can describe what THIS field ships as. This rule
+	// has no migrations to read — unlike its read-only twin — so the proto
+	// type is the only type evidence available, and it is enough: the
+	// clause needs the shape of the empty value, not the DDL spelling.
+	Kind     string
+	TypeName string
 }
 
 // computedFieldFixHint renders the remediation. It states both legitimate
@@ -111,12 +120,14 @@ func computedFieldFixHint(f computedFieldFinding) string {
 	return fmt.Sprintf(
 		"%s.%s is marked `%s` but no non-generated Go file assigns %s. The field is omitted "+
 			"from Create/Update (as read-only), so nothing populates it and the insert takes the "+
-			"column default — for a money column that ships as $0.00 with no error anywhere. "+
+			"column default — %s, with no error anywhere. "+
 			"Either derive it (override the generated op's Entity hook in "+
 			"internal/handlers/<svc>/handlers_crud.go and set row.%s before returning), or drop "+
 			"the marker to `%s` if the value is genuinely written elsewhere (a trigger, a "+
 			"GENERATED column, a service this check cannot see).",
-		f.Entity, f.Field, codegen.ProtoMarkerComputed, f.GoField, f.GoField, codegen.ProtoMarkerReadOnly)
+		f.Entity, f.Field, codegen.ProtoMarkerComputed, f.GoField,
+		shapeConsequence(protoValueShape(f.Kind, f.TypeName, f.Field)),
+		f.GoField, codegen.ProtoMarkerReadOnly)
 }
 
 // runComputedFieldsLint is the text-mode entry point.
@@ -160,8 +171,8 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 	// scan is skipped entirely when there are none — the common case for
 	// a project that has not adopted the marker.
 	type computedField struct {
-		entity, field, goField, file string
-		line                         int
+		entity, field, goField, file, kind, typeName string
+		line                                         int
 	}
 	var declared []computedField
 	for _, dir := range dirs {
@@ -171,12 +182,15 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 		}
 		for _, msg := range scan.Messages {
 			for _, name := range computedFieldNames(msg) {
+				kind, typeName := protoFieldType(msg, name)
 				declared = append(declared, computedField{
-					entity:  msg.Name,
-					field:   name,
-					goField: naming.ToProtoPascalCase(name),
-					file:    msg.File,
-					line:    fieldLineIn(msg, name),
+					entity:   msg.Name,
+					field:    name,
+					goField:  naming.ToProtoPascalCase(name),
+					file:     msg.File,
+					line:     fieldLineIn(msg, name),
+					kind:     kind,
+					typeName: typeName,
 				})
 			}
 		}
@@ -201,6 +215,7 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 			// the reader's editor and differs between machines.
 			File: relToProject(projectDir, d.file), Line: d.line,
 			Entity: d.entity, Field: d.field, GoField: d.goField,
+			Kind: d.kind, TypeName: d.typeName,
 		})
 	}
 	sort.Slice(findings, func(i, j int) bool {
@@ -272,6 +287,19 @@ func computedFieldNames(msg codegen.RawProtoMessage) []string {
 		pending = false
 	}
 	return out
+}
+
+// protoFieldType returns the declared kind and fully-qualified type name of
+// one field of msg, from the scan the message already carries. Both are ""
+// for a field the scan did not classify, which the consequence clause reads
+// as "unknown" and answers without naming a type.
+func protoFieldType(msg codegen.RawProtoMessage, field string) (kind, typeName string) {
+	for _, f := range msg.Fields {
+		if f.Name == field {
+			return f.Kind, f.TypeName
+		}
+	}
+	return "", ""
 }
 
 // protoFieldNameOnLine extracts the field name from a proto field

@@ -77,6 +77,17 @@ type PortResolver struct {
 	claimed   map[int]bool
 	persisted map[string]int // last run's assignments (tentative; reused if still free)
 	storePath string         // when set, byName is saved here for cross-run reuse
+	readOnly  bool           // read the store, never write it (read-only renders)
+	bound     bool           // a store path has been armed (read-only or writable)
+}
+
+// Bound reports whether this resolver has been pointed at a store file. The
+// render seam uses it to arm the READ half by default without clobbering a
+// writable store a launch path already armed.
+func (r *PortResolver) Bound() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.bound
 }
 
 // scanWindow bounds the upward search from the preferred port before
@@ -95,9 +106,27 @@ func NewPortResolver() *PortResolver {
 func NewPersistentPortResolver(path string) *PortResolver {
 	r := NewPortResolver()
 	r.storePath = path
+	r.bound = true
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &r.persisted)
 	}
+	return r
+}
+
+// NewReadOnlyPortResolver READS an existing store but never writes one. It is
+// what every render that is not a launch gets, and it is the half that was
+// missing: the store's whole purpose is that a port allocated once stays put,
+// and a reporting command that re-probed from scratch reported a DIFFERENT
+// port than the stack it was describing is actually on.
+//
+// It does not write, because a read-only command must not create machine-local
+// state — and more importantly because the first resolution has to happen while
+// the port is still free to be meaningful. `forge env config` run against a
+// RUNNING stack would otherwise record the port the live service just made
+// forge step off, pinning the wrong answer permanently.
+func NewReadOnlyPortResolver(path string) *PortResolver {
+	r := NewPersistentPortResolver(path)
+	r.readOnly = true
 	return r
 }
 
@@ -160,7 +189,7 @@ func (r *PortResolver) Resolve(name string, preferred int) (int, error) {
 func (r *PortResolver) assign(name string, port int) int {
 	r.byName[name] = port
 	r.claimed[port] = true
-	if r.storePath != "" {
+	if r.storePath != "" && !r.readOnly {
 		if data, err := json.MarshalIndent(r.byName, "", "  "); err == nil {
 			_ = os.MkdirAll(filepath.Dir(r.storePath), 0o755)
 			_ = os.WriteFile(r.storePath, data, 0o644)
@@ -336,6 +365,42 @@ func devStacks() ([]string, error) {
 // REJECTED (e.g. up's already-running guard) calls restore so the rejected
 // attempt can't drift the stable assignments. Callers that commit the
 // render ignore it.
+// ResetDefaultResolverForTest returns the process-global resolver to its
+// unbound, in-memory default. Tests only: the resolver is process-global so
+// ports stay stable across the several renders one command performs, which
+// means one test's arming would otherwise leak into the next.
+func ResetDefaultResolverForTest() {
+	defaultResolver = NewPortResolver()
+}
+
+// UsePortStoreReadOnly points the resolver at path for READING only, unless a
+// writable store is already armed — in which case it does nothing, so a launch
+// path that armed the real store keeps it.
+//
+// This is what closes the gap between what the scaffolded KCL documents and
+// what forge did. `resolve_port` is documented as remembering its answer in
+// .forge/ports-<env>.json "so it is stable from then on", and the writable
+// store delivered exactly that — on `env up` and `env deploy`, the only two
+// paths that armed it. Every OTHER render (env config, env render, db reset's
+// DSN reconciliation, status, doctor, build) ran with an UNBOUND resolver, so
+// it ignored the recorded answer and re-probed from zero.
+//
+// That is worse than not persisting at all, because the re-probe's result
+// depends on whether the stack is running: the live postgres ANSWERS on its
+// port, portFree says busy, and forge hands out the next port — stepping off
+// the database it was asked to describe. `forge env config` then printed one
+// DSN while `forge env up` had launched on another, and `forge db reset` was
+// handed a port nothing listens on.
+//
+// Reading is always safe and always correct: the stored value IS the answer a
+// previous resolution already committed to.
+func UsePortStoreReadOnly(path string) {
+	if defaultResolver.Bound() {
+		return
+	}
+	defaultResolver = NewReadOnlyPortResolver(path)
+}
+
 func UsePortStore(path string) (restore func()) {
 	snapshot, readErr := os.ReadFile(path)
 	existed := readErr == nil

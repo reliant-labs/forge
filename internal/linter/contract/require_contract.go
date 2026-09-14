@@ -72,6 +72,28 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	// Skip supervised worker packages (internal/workers/<name>). `forge
+	// scaffold worker` emits a package whose exported methods ARE an
+	// interface forge's own runtime defines — serverkit.Worker
+	// (Name/Start/Stop, plus Run on the cron variant) — and which the
+	// supervisor consumes polymorphically through that interface. A
+	// contract.go here could only restate serverkit.Worker, for a package
+	// shape forge itself scaffolds, so the requirement was forge's
+	// scaffolder and forge's linter disagreeing about a fact forge
+	// recorded.
+	//
+	// Like the composition-seam exemption above, this is STRUCTURAL rather
+	// than a path blacklist: it applies only when the package actually
+	// presents the worker lifecycle (see isSupervisedWorkerPackage), so an
+	// ordinary package filed under internal/workers/ stays subject to the
+	// rule. The alternative — having the scaffold stamp
+	// `//forge:exclude-contract` — was rejected: that directive is the
+	// USER's per-package opt-out, and spending it on forge's behalf would
+	// silence the rule for any genuine contract the user later adds here.
+	if isSupervisedWorkerPackage(pass, pkgPath) {
+		return nil, nil
+	}
+
 	// Honor forge.yaml's contracts.exclude AND the per-package
 	// //forge:exclude-contract header — these packages are intentionally kept
 	// contract-free (utility packages with no behavioral interface), opted out
@@ -196,6 +218,43 @@ func isInternalPackage(pkgPath string) bool {
 func isHandlerPackage(pkgPath string) bool {
 	return strings.Contains(pkgPath, "/internal/handlers/") ||
 		strings.HasPrefix(pkgPath, "internal/handlers/")
+}
+
+// workerLifecycleMethods is the serverkit.Worker surface. A package under
+// internal/workers/ presenting Name+Start is a supervised worker: those two
+// are the interface's required methods (Stop is part of the shape too, but
+// keying on the required pair keeps the check honest for a worker that
+// legitimately has nothing to drain).
+var workerLifecycleMethods = []string{"Name", "Start"}
+
+// isSupervisedWorkerPackage reports whether the package under analysis is a
+// forge worker: it lives under internal/workers/ AND actually presents the
+// serverkit.Worker lifecycle. Both halves matter — the path anchors the
+// exemption to the directory forge's architecture reserves for workers, and
+// the method check makes it structural, so a helper package someone files
+// under internal/workers/ is an ordinary package and stays subject to the
+// require-contract rule.
+func isSupervisedWorkerPackage(pass *analysis.Pass, pkgPath string) bool {
+	if !strings.Contains(pkgPath, "/internal/workers/") &&
+		!strings.HasPrefix(pkgPath, "internal/workers/") {
+		return false
+	}
+	found := map[string]bool{}
+	for _, file := range pass.Files {
+		for _, decl := range file.Decls {
+			funcDecl, ok := decl.(*ast.FuncDecl)
+			if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+				continue
+			}
+			found[funcDecl.Name.Name] = true
+		}
+	}
+	for _, m := range workerLifecycleMethods {
+		if !found[m] {
+			return false
+		}
+	}
+	return true
 }
 
 // composeSeamFiles are the forge-defined files of the app composition seam.

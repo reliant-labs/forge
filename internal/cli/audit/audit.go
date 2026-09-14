@@ -35,6 +35,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -126,9 +127,20 @@ Audit reports forge version pin, project shape, lint roll-ups, codegen
 state, proto vs migration alignment, scaffold markers, and dep health.
 Use --json for machine-readable output (sub-agents).
 
+EXIT CODE. Audit exits non-zero when a category reports an ERROR (✗), and
+zero when the worst finding is a warning (⚠). Warnings are reported and
+never gate: a freshly-scaffolded project legitimately carries several, so
+failing on them would make forge's own output fail forge's own gate.
+
+Categories that can error are ones you armed. unscoped_auth is the
+clearest case: it warns about authenticated RPCs that never resolve the
+caller, and becomes an error only for RPCs over a table whose migration
+declares a forge:owner column — your sentence, in your schema, is what
+turns the advice into a gate.
+
 Examples:
-  forge project audit            # human-readable
-  forge project audit --json     # machine-readable`,
+  forge project audit            # human-readable; exits 1 on any ✗
+  forge project audit --json     # machine-readable (same exit code)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAudit(f, jsonOut)
 		},
@@ -145,10 +157,16 @@ func runAudit(f *factory.Factory, jsonOut bool) error {
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(report)
+		if err := enc.Encode(report); err != nil {
+			return err
+		}
+		// The gate applies to --json too: a machine reading the report
+		// through a shell still reads $?, and a JSON mode that always
+		// exited 0 would be the same silence one layer down.
+		return gateOnReport(report)
 	}
 	printAuditReport(os.Stdout, report)
-	return nil
+	return gateOnReport(report)
 }
 
 // buildAuditReport collects every category's data and rolls up the
@@ -1670,7 +1688,7 @@ func markerPrecedesMethod(src []byte, name string) bool {
 // printAuditReport renders the human-readable audit. Layout: one line
 // header, then one block per category in auditCategoryOrder, then a
 // trailing overall verdict.
-func printAuditReport(w *os.File, r *Report) {
+func printAuditReport(w io.Writer, r *Report) {
 	_, _ = fmt.Fprintf(w, "Forge audit — %s (kind=%s, binary=%s)\n", r.ProjectName, r.ProjectKind, r.BinaryVersion)
 	_, _ = fmt.Fprintf(w, "Generated at %s\n\n", r.GeneratedAt.Format(time.RFC3339))
 
@@ -1696,7 +1714,7 @@ func printAuditReport(w *os.File, r *Report) {
 	_, _ = fmt.Fprintf(w, "Overall: %s\n", strings.ToUpper(string(r.OverallStatus)))
 }
 
-func printAuditCategory(w *os.File, key string, cat audittype.Category) {
+func printAuditCategory(w io.Writer, key string, cat audittype.Category) {
 	icon := "✓"
 	switch cat.Status {
 	case audittype.StatusWarn:
@@ -1717,7 +1735,38 @@ func printAuditCategory(w *os.File, key string, cat audittype.Category) {
 			_, _ = fmt.Fprintf(w, "    %s: %s\n", k, formatDetailValue(v))
 		}
 	}
+	printScopingRemediations(w, cat)
 	_, _ = fmt.Fprintln(w)
+}
+
+// printScopingRemediations prints each gating finding's owner-scoping
+// wrapper in full, below the detail lines.
+//
+// It exists because formatDetailValue JSON-marshals a slice and truncates
+// it at 200 characters, and a scoping wrapper is an order of magnitude
+// longer — so the remediation carried in the report was present in
+// --json and invisible on the terminal where the refusal was actually
+// read. Telling that reader to re-run with --json to obtain the fix is
+// the same dead end in a smaller form: forge refuses in one place and
+// keeps the remedy in another.
+//
+// Only the gating set is printed. An advisory finding carries no
+// wrapper, so nothing is emitted and every other category renders
+// exactly as before.
+func printScopingRemediations(w io.Writer, cat audittype.Category) {
+	gating, ok := cat.Details["owner_scoped_unscoped_rpcs"].([]unscopedRPC)
+	if !ok {
+		return
+	}
+	for _, g := range gating {
+		if g.Remediation == "" {
+			continue
+		}
+		_, _ = fmt.Fprintf(w, "\n    ── %s.%s — paste into %s ──\n", g.Service, g.Method, g.File)
+		for _, line := range strings.Split(g.Remediation, "\n") {
+			_, _ = fmt.Fprintf(w, "    %s\n", line)
+		}
+	}
 }
 
 func formatDetailValue(v any) string {

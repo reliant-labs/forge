@@ -245,7 +245,16 @@ func runFixtureDriftLint(cwd string, cfg *config.ProjectConfig) error {
 // lanes: one success line when clean, one ⚠ block per finding otherwise.
 func formatFixtureDrift(w io.Writer, findings []fixtureDriftFinding) {
 	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  fixture-drift clean — no scaffolded seed block contradicts the current schema")
+		// Naming the two shapes is load-bearing, not pedantry. The
+		// previous wording — "no scaffolded seed block contradicts the
+		// current schema" — was a verdict on the WHOLE question while
+		// this lane answers two specific shapes of it. A reader took it
+		// for a foreign-key clearance and shipped five fixtures the
+		// schema rejects. A clean line that overstates its scope is worse
+		// than no line, because it converts "I did not check that" into
+		// "I checked, it is fine". Foreign keys are crud-fixtures' lane.
+		_, _ = fmt.Fprintln(w, "  fixture-drift clean — no scaffolded seed block names a GENERATED column "+
+			"or repeats a value in a UNIQUE one (foreign keys: see crud-fixtures)")
 		return
 	}
 	for _, f := range findings {

@@ -11,7 +11,12 @@
 // itself. So any db.*Store on a handler's Deps produced an
 // uncompilable test helper, and switching to narrow per-entity stores
 // did not dodge it. Both halves are pinned here: `nil` for an
-// interface result, and the still-correct `T{}` for a named struct.
+// interface result, and a compiling zero for a named struct.
+//
+// The named-struct expectation is `*new(T)` rather than `T{}` since
+// the emitter stopped guessing a literal per type family — see
+// named_type_zero_value_test.go, which covers the rest of that family
+// by type-checking the generated stub instead of matching its text.
 
 package codegen
 
@@ -95,9 +100,9 @@ func TestResolveCrossPkgInterface_SelfReturningMethodEmitsNil(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing Stats in resolved methods %v", res.Methods)
 	}
-	if stats.ReturnStatement != "return store.Snapshot{}" {
-		t.Errorf("named STRUCT result should keep its composite literal.\n got: %q\nwant: %q",
-			stats.ReturnStatement, "return store.Snapshot{}")
+	if stats.ReturnStatement != "return *new(store.Snapshot)" {
+		t.Errorf("named STRUCT result should get the universal zero form.\n got: %q\nwant: %q",
+			stats.ReturnStatement, "return *new(store.Snapshot)")
 	}
 }
 
@@ -167,8 +172,8 @@ type Deps struct {
 		t.Errorf("locally-declared self-returning method must emit nil.\n got: %q\nwant: %q",
 			got, "return nil")
 	}
-	if got := byName["Snapshot"].ReturnStatement; got != "return Stats{}" {
-		t.Errorf("named STRUCT result should keep its composite literal.\n got: %q\nwant: %q",
-			got, "return Stats{}")
+	if got := byName["Snapshot"].ReturnStatement; got != "return *new(Stats)" {
+		t.Errorf("named STRUCT result should get the universal zero form.\n got: %q\nwant: %q",
+			got, "return *new(Stats)")
 	}
 }

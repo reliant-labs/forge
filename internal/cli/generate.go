@@ -659,17 +659,32 @@ func rollbackGeneratedTree(absPath string, stepErr error) bool {
 		reprintCompilerOutput(stepErr, "")
 		return true
 	}
-	fmt.Fprintf(os.Stderr, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed):\n", len(restored))
-	for _, p := range restored {
-		fmt.Fprintf(os.Stderr, "   - %s\n", p)
-	}
+	// Verify the reassurance before offering it. "Back to your pre-run
+	// state" is only true if pre-run state was CONSISTENT, and it is not
+	// always: a file kept from an earlier successful run can depend on one
+	// this run generated and just reverted (compose.go vs the reverted
+	// blobstore/middleware_gen.go). See goBuildRestoredTree.
+	consistency := goBuildRestoredTree(absPath)
+
+	writeRollbackReport(os.Stderr, rollbackReport{
+		Restored:    restored,
+		Preserved:   preserved,
+		StepErr:     stepErr,
+		Consistency: consistency,
+	})
+
 	preservedAt := ""
 	if len(preserved) > 0 {
 		preservedAt = failedGenerateDir
 		fmt.Fprintf(os.Stderr, "\n🗂  The failing generated sources were preserved under %s/ (same relative paths, plus %s with the full error) so you can inspect the code the error points at. The next successful `forge generate` cleans that directory up.\n", failedGenerateDir, failedGenerateErrorFile)
 	}
+	// Repeat the ROOT CAUSE output last as well. The report above can run
+	// long (71 reverted files in the observed run), so a `tail -n` must
+	// still land on the error to fix rather than on bookkeeping — the
+	// tail-visibility contract from the preceding friction fix. It is the
+	// root cause that gets repeated, never the rollback artifacts.
 	reprintCompilerOutput(stepErr, preservedAt)
-	fmt.Fprintln(os.Stderr, "\n   Fix the codegen error above (the generated code did not build), then re-run `forge generate`.")
+	fmt.Fprintln(os.Stderr, "\n   Fix the ROOT CAUSE above, then re-run `forge generate`.")
 	return true
 }
 

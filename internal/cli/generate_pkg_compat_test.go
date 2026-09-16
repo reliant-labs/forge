@@ -277,6 +277,58 @@ func TestCheckPkgCompat_NamesTheRunningToolchain(t *testing.T) {
 	}
 }
 
+// TestCheckPkgCompat_PseudoVersionFixNamesTheCommitAndTheBridge: when the
+// generating binary is a pseudo-version, `go get <that version>` resolves ONLY
+// if the commit is pushed. Asserting it unconditionally would send the reader
+// to "unknown revision" — the same shape of wrong advice this check exists to
+// prevent — so the refusal names the commit and offers the source bridge.
+func TestCheckPkgCompat_PseudoVersionFixNamesTheCommitAndTheBridge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("resolves a module graph — skipped under -short")
+	}
+	dir := t.TempDir()
+	writeForgeConsumer(t, dir, "v0.1.15")
+
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	buildinfo.Set("v0.1.16-0.20260916100640-e69bb5851a27", "", "e69bb5851a27")
+
+	err := checkPkgCompat(dir)
+	if err == nil {
+		t.Fatal("expected a stale-pin error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "e69bb5851a27") {
+		t.Errorf("must name the commit the pseudo-version points at, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "PUSHED") {
+		t.Errorf("must say the ref only resolves once the commit is pushed, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "go work use") {
+		t.Errorf("must offer the source bridge as the alternative, got:\n%s", msg)
+	}
+}
+
+// A RELEASE tag carries no such caveat: it is on the proxy or it is not a
+// release. Adding the note there would be noise on the common path.
+func TestCheckPkgCompat_ReleaseVersionFixHasNoPseudoCaveat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("resolves a module graph — skipped under -short")
+	}
+	dir := t.TempDir()
+	writeForgeConsumer(t, dir, "v0.1.15")
+
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	buildinfo.Set("v0.9.9", "", "deadbeef")
+
+	err := checkPkgCompat(dir)
+	if err == nil {
+		t.Fatal("expected a stale-pin error")
+	}
+	if strings.Contains(err.Error(), "PUSHED") {
+		t.Errorf("a release tag must not carry the pseudo-version caveat, got:\n%s", err)
+	}
+}
+
 // TestCheckPkgCompat_ReportsGeneratingBuildMismatch pins the recorded-build
 // comparison: when the tree records the forge build that generated it and a
 // DIFFERENT build is now running, the refusal must say so explicitly rather

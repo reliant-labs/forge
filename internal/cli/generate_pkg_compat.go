@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -243,20 +244,45 @@ func unreleasableBuildErr(projectDir, projectVersion string) error {
 // staleForgePinErr is the ordinary skew: a released forge newer than the
 // project's pin.
 func staleForgePinErr(projectDir, projectVersion, binaryVersion string) error {
+	fix := fmt.Sprintf("if the pin is genuinely behind this binary, bring it up:"+
+		"\n    go get %s@%s && go mod tidy"+
+		"\n  (and re-run both in gen/ if the project has one). "+
+		"If the two toolchains below disagree, the pin is not the problem — re-run with the SAME "+
+		"forge that generated this tree, or reinstall both so they match",
+		forgeModuleRequirePath, binaryVersion)
+
+	// A pseudo-version names a COMMIT, and a proxy can only serve it once
+	// that commit is pushed. Telling someone to `go get` an unpushed one sends
+	// them to "unknown revision" — the same class of mistake as pinning a
+	// version that cannot satisfy the generated code, which is what this whole
+	// check exists to prevent. We cannot know from here whether it is pushed
+	// (that needs the network, or knowledge of the remote), so say so and name
+	// the alternative rather than asserting a ref that may not exist.
+	if module.IsPseudoVersion(binaryVersion) {
+		fix += fmt.Sprintf("\n  NOTE: %s is a pseudo-version — it names commit %s, and `go get` can only "+
+			"resolve it once that commit is PUSHED. If it is not, bridge to the source instead:"+
+			"\n    go work init . && go work use . <path-to-your-forge-checkout>",
+			binaryVersion, shortPseudoCommit(binaryVersion))
+	}
+
 	base := cliutil.UserErr("forge generate (forge version compatibility)",
 		fmt.Sprintf("this forge is %s but the project pins %s %s — older than the binary generating into "+
 			"it, so the generated code may call symbols that release does not have. Generating would "+
 			"rewrite the tree and then fail its own validate. No files were changed",
 			binaryVersion, forgeModuleRequirePath, projectVersion),
-		"",
-		fmt.Sprintf("if the pin is genuinely behind this binary, bring it up:"+
-			"\n    go get %s@%s && go mod tidy"+
-			"\n  (and re-run both in gen/ if the project has one). "+
-			"If the two toolchains below disagree, the pin is not the problem — re-run with the SAME "+
-			"forge that generated this tree, or reinstall both so they match",
-			forgeModuleRequirePath, binaryVersion))
+		"", fix)
 
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
+}
+
+// shortPseudoCommit pulls the commit out of a pseudo-version for the message,
+// degrading to the whole version string if the shape is unexpected — a
+// diagnostic must never be the thing that fails.
+func shortPseudoCommit(v string) string {
+	if rev, err := module.PseudoVersionRev(v); err == nil && rev != "" {
+		return rev
+	}
+	return v
 }
 
 // retiredPkgModuleErr names the pre-collapse submodule and, crucially,

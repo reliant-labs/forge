@@ -21,15 +21,15 @@ import (
 // Indirect otel deps are listed explicitly so go-mod-tidy is not needed
 // in the sandbox (which has no network access).
 //
-// Both the go directive and those indirect versions are READ from
-// pkg/go.mod rather than written here. The sandbox requires pkg and
-// copies pkg/go.sum for checksum verification, so any literal pinned in
-// this file is a second copy of a version pkg/go.mod already owns — and
-// a dependency bump lands in exactly one of the two. When they drift the
-// build fails with `missing go.sum entry`, which names the module but
-// not the stale literal in this helper that actually caused it.
+// Both the go directive and those indirect versions are READ from forge's
+// go.mod rather than written here. The sandbox requires forge and copies its
+// go.sum for checksum verification, so any literal pinned in this file is a
+// second copy of a version go.mod already owns — and a dependency bump lands
+// in exactly one of the two. When they drift the build fails with `missing
+// go.sum entry`, which names the module but not the stale literal in this
+// helper that actually caused it.
 func buildSandboxGoMod(modName string) string {
-	abs := localPkgPath()
+	abs := localForgeRoot()
 
 	indirect := []string{
 		"github.com/cespare/xxhash/v2",
@@ -49,23 +49,23 @@ func buildSandboxGoMod(modName string) string {
 
 go %s
 
-require github.com/reliant-labs/forge/pkg v0.0.0
+require github.com/reliant-labs/forge v0.0.0
 
 require (
 %s)
 
-replace github.com/reliant-labs/forge/pkg => %s
+replace github.com/reliant-labs/forge => %s
 `, modName, pkgGoDirective(), requires.String(), abs)
 }
 
-// pkgRequireVersion returns the version pkg/go.mod requires for module.
-// It panics rather than guessing: a module the sandbox needs that pkg no
+// pkgRequireVersion returns the version forge's go.mod requires for module.
+// It panics rather than guessing: a module the sandbox needs that forge no
 // longer requires is a real drift between the two, and a fabricated
 // version would surface it later as an opaque checksum error.
 func pkgRequireVersion(module string) string {
-	data, err := os.ReadFile(filepath.Join(localPkgPath(), "go.mod"))
+	data, err := os.ReadFile(filepath.Join(localForgeRoot(), "go.mod"))
 	if err != nil {
-		panic(fmt.Sprintf("read pkg/go.mod for sandbox require %q: %v", module, err))
+		panic(fmt.Sprintf("read forge go.mod for sandbox require %q: %v", module, err))
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
@@ -73,16 +73,16 @@ func pkgRequireVersion(module string) string {
 			return fields[1]
 		}
 	}
-	panic(fmt.Sprintf("pkg/go.mod does not require %q, which the contract-generator build sandbox needs", module))
+	panic(fmt.Sprintf("forge's go.mod does not require %q, which the contract-generator build sandbox needs", module))
 }
 
-// pkgGoDirective returns the `go` version pkg/go.mod declares, so the
+// pkgGoDirective returns the `go` version forge's go.mod declares, so the
 // sandbox tracks it automatically. Falling back to the running
-// toolchain's version keeps the failure legible if pkg/go.mod ever
+// toolchain's version keeps the failure legible if that go.mod ever
 // becomes unreadable: the build then fails on the real problem rather
 // than on a go.mod this helper guessed wrong.
 func pkgGoDirective() string {
-	data, err := os.ReadFile(filepath.Join(localPkgPath(), "go.mod"))
+	data, err := os.ReadFile(filepath.Join(localForgeRoot(), "go.mod"))
 	if err != nil {
 		return strings.TrimPrefix(runtime.Version(), "go")
 	}
@@ -97,20 +97,20 @@ func pkgGoDirective() string {
 // localPkgPath returns the absolute path to forge/pkg from the test's
 // source location. Exposed as a separate helper so tests can also
 // copy go.sum from it.
-func localPkgPath() string {
+func localForgeRoot() string {
 	_, thisFile, _, _ := runtime.Caller(0)
-	pkgDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "pkg")
-	abs, _ := filepath.Abs(pkgDir)
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+	abs, _ := filepath.Abs(root)
 	return abs
 }
 
-// writeSandboxGoSum copies the local pkg/go.sum into dir so that
-// `go build` in the sandbox can verify module checksums. The sandbox
-// only depends on transitive otel deps already present in pkg/go.sum,
-// so a straight copy is sufficient.
+// writeSandboxGoSum copies forge's go.sum into dir so that `go build` in
+// the sandbox can verify module checksums. The sandbox only depends on
+// transitive otel deps already present there, so a straight copy is
+// sufficient.
 func writeSandboxGoSum(t *testing.T, dir string) {
 	t.Helper()
-	src := filepath.Join(localPkgPath(), "go.sum")
+	src := filepath.Join(localForgeRoot(), "go.sum")
 	data, err := os.ReadFile(src)
 	if err != nil {
 		t.Fatalf("read pkg go.sum: %v", err)

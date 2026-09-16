@@ -42,11 +42,16 @@ func containsUse(ss []string, want string) bool {
 	return false
 }
 
-// TestWriteDevForgeGoWork_DevBuildAddsPkgUse: a dev build with a stamped
-// source root augments the starter go.work with `use <root>/pkg`, preserving
-// the existing `.` and `gen` uses. It does NOT add the main forge module (the
-// scaffold imports only forge/pkg).
-func TestWriteDevForgeGoWork_DevBuildAddsPkgUse(t *testing.T) {
+// TestWriteDevForgeGoWork_DevBuildAddsForgeUse: a dev build with a stamped
+// source root augments the starter go.work with `use <forge root>`,
+// preserving the existing `.` and `gen` uses.
+//
+// The path is the repo ROOT, not <root>/pkg. It used to be pkg/, when that
+// was its own module and the only forge module a scaffold imported; forge is
+// one module now, so the root is the only thing there is to `use` — and a
+// `use <root>/pkg` would name a directory with no go.mod, which the go
+// command rejects outright.
+func TestWriteDevForgeGoWork_DevBuildAddsForgeUse(t *testing.T) {
 	dir := t.TempDir()
 	workPath := filepath.Join(dir, "go.work")
 	if err := os.WriteFile(workPath, []byte(starterGoWork), 0o644); err != nil {
@@ -63,20 +68,19 @@ func TestWriteDevForgeGoWork_DevBuildAddsPkgUse(t *testing.T) {
 	writeDevForgeGoWork(dir)
 
 	got := usePaths(t, workPath)
-	wantPkg := filepath.Join(forgeRoot, "pkg")
-	if !containsUse(got, wantPkg) {
-		t.Errorf("go.work missing `use %s`; uses = %v", wantPkg, got)
+	if !containsUse(got, forgeRoot) {
+		t.Errorf("go.work missing `use %s`; uses = %v", forgeRoot, got)
 	}
 	if !containsUse(got, ".") || !containsUse(got, "gen") {
 		t.Errorf("dev bridge dropped the starter uses; uses = %v", got)
 	}
-	if containsUse(got, forgeRoot) {
-		t.Errorf("dev bridge added the main forge module `use %s`; only forge/pkg is imported by scaffolds. uses = %v", forgeRoot, got)
+	if stale := filepath.Join(forgeRoot, "pkg"); containsUse(got, stale) {
+		t.Errorf("dev bridge used %s — pkg/ has no go.mod, so the go command would reject it. uses = %v", stale, got)
 	}
 }
 
 // TestWriteDevForgeGoWork_Idempotent: running the bridge twice yields exactly
-// one forge/pkg use (a re-scaffold or repeated call must not duplicate lines).
+// one forge use (a re-scaffold or repeated call must not duplicate lines).
 func TestWriteDevForgeGoWork_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 	workPath := filepath.Join(dir, "go.work")
@@ -94,15 +98,14 @@ func TestWriteDevForgeGoWork_Idempotent(t *testing.T) {
 	writeDevForgeGoWork(dir)
 	writeDevForgeGoWork(dir)
 
-	wantPkg := filepath.Join(forgeRoot, "pkg")
 	count := 0
 	for _, p := range usePaths(t, workPath) {
-		if p == wantPkg {
+		if p == forgeRoot {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Errorf("expected exactly one `use %s`, got %d", wantPkg, count)
+		t.Errorf("expected exactly one `use %s`, got %d", forgeRoot, count)
 	}
 }
 
@@ -185,9 +188,8 @@ func TestWriteDevForgeGoWork_DevBuildDiscoversRoot(t *testing.T) {
 
 	writeDevForgeGoWork(dir)
 
-	want := filepath.Join(forgeRoot, "pkg")
-	if got := usePaths(t, workPath); !containsUse(got, want) {
-		t.Errorf("discovered-root bridge missing %q; go.work uses = %v", want, got)
+	if got := usePaths(t, workPath); !containsUse(got, forgeRoot) {
+		t.Errorf("discovered-root bridge missing %q; go.work uses = %v", forgeRoot, got)
 	}
 }
 

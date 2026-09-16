@@ -47,13 +47,13 @@ tasks:
       - CGO_ENABLED=1 go install -trimpath -buildvcs=true ./cmd/forge
 
   install:dev:
-    desc: "Contributor install: stamp the local forge source root so `forge project new` auto-bridges scaffolds to this checkout's forge/pkg (gitignored go.work)"
+    desc: "Contributor install: stamp the local forge source root so `forge project new` auto-bridges scaffolds to this checkout (gitignored go.work)"
     cmds:
       # Injects buildinfo.DevForgeRoot from the builder's OWN checkout
       # (git rev-parse --show-toplevel) — nothing machine-specific is
       # committed. On a binary built this way, `forge project new` writes a
-      # gitignored go.work `use`ing <root>/pkg so fresh projects build
-      # against your in-development forge/pkg with no manual replace. NOTE:
+      # gitignored go.work `use`ing <root> so fresh projects build against
+      # your in-development forge with no manual replace. NOTE:
       # no -trimpath here — the dev-vs-release discriminator (IsDevBuild)
       # relies on the embedded "(devel)" version / vcs info a plain install
       # records. Released binaries use `task install` (no stamp), so they
@@ -66,33 +66,16 @@ tasks:
   release:forge:
     desc: "Cut a full forge release (both modules, one commit): task release:forge -- vX.Y.Z (add --dry-run to validate only)"
     cmds:
-      # THE release command — prefer this over release:pkg, which tags only
-      # the pkg submodule and leaves the root module bump to you.
+      # THE release command. forge is one module, so a release is one tag:
+      # validate the version shape, a clean tree and that the tag does not
+      # exist; confirm the version was never published at another commit (the
+      # proxy is immutable); sync VERSION and internal/buildinfo/VERSION;
+      # build; then tag vX.Y.Z and push branch + tag atomically.
       #
-      # Does the whole release against ONE commit: validates the version
-      # shape, a clean tree, that neither tag exists and that pkg builds
-      # standalone (GOWORK=off); bumps the forge/pkg require; syncs all three
-      # version files (VERSION, internal/buildinfo/VERSION,
-      # defaultPublishedForgePkgVersion); resolves the forge/pkg hashes into
-      # go.sum BEFORE the tag is public (the trap an in-workspace build cannot
-      # catch, because go.work resolves pkg locally); then tags pkg/vX.Y.Z and
-      # vX.Y.Z at that single commit and pushes all three refs atomically.
-      #
-      # Two tags still exist because Go requires the directory-prefixed form
-      # for submodules — but they land on the SAME commit, so the old
-      # push-ordering hazard is gone. See docs/releasing.md.
+      # The forge/pkg submodule this used to co-release is gone, and with it
+      # the second tag, the require bump, and the go.sum resolution dance. See
+      # docs/releasing.md.
       - ./scripts/release-forge.sh {{.CLI_ARGS}}
-
-  release:pkg:
-    desc: "Tag ONLY the forge/pkg submodule (prefer release:forge): task release:pkg -- vX.Y.Z"
-    cmds:
-      # The narrow tool, kept working for the case where only the submodule
-      # needs a tag. It validates version shape, a clean pkg/ tree, no
-      # existing tag, and a standalone (GOWORK=off) build/vet before creating
-      # pkg/vX.Y.Z — but it does NOT bump the root module's require, sync the
-      # version files, or populate go.sum, so a release driven from here is
-      # only half done. release:forge above does all of it in one commit.
-      - ./scripts/release-pkg.sh {{.CLI_ARGS}}
 
   release:web-runtime:
     desc: "Tag a @reliantlabs/forge-web-runtime release: task release:web-runtime -- vX.Y.Z (add --dry-run to validate only)"
@@ -120,11 +103,9 @@ tasks:
       # hung test fails the suite quickly rather than wedging CI. Integration
       # tests use the `integration` build tag and ship their own task below.
       - go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
-      # THIS REPO ONLY: forge/pkg is a separate module, so `./...` from here
-      # does not match it, workspace or no workspace. Run it explicitly or
-      # the library that ships into every generated binary goes untested.
-      # Skipped when the run is scoped to explicit root-module packages.
-      - cmd: "{{if .CLI_ARGS}}true{{else}}cd pkg && go test {{.GOTESTRACE}} -count=1 -timeout 120s ./...{{end}}"
+      # (`./...` covers pkg/* too now — it used to be a separate module that
+      # needed its own `cd pkg && go test`, which meant the library shipping
+      # into every generated binary went untested whenever someone forgot.)
 
   test:short:
     # THIS REPO ONLY: the inner-loop tier from reliant.md. Not in the

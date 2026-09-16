@@ -187,15 +187,16 @@ func TestComputeAutoStubs_FailClosedStubCompiles(t *testing.T) {
 
 	root := t.TempDir()
 	files := map[string]string{
-		// pkg/testkit lives in the SEPARATE github.com/reliant-labs/forge/pkg
-		// module (forge/pkg has its own go.mod), which is what a scaffolded
-		// project requires. Getting this wrong is precisely the failure this
-		// test exists to catch: the emitted call is valid Go and still does
-		// not build if the module it names is not required.
+		// pkg/testkit is a package in the github.com/reliant-labs/forge
+		// module, which is what a scaffolded project requires. Getting this
+		// wrong is precisely the failure this test exists to catch: the
+		// emitted call is valid Go and still does not build if the module it
+		// names is not required. The replace targets the module ROOT — pkg/
+		// has no go.mod of its own to replace.
 		"go.mod": "module example.com/proj\n\ngo 1.24\n\n" +
-			"require github.com/reliant-labs/forge/pkg v0.0.0\n\n" +
-			"replace github.com/reliant-labs/forge/pkg => " +
-			filepath.ToSlash(filepath.Join(forgeRoot, "pkg")) + "\n",
+			"require github.com/reliant-labs/forge v0.0.0\n\n" +
+			"replace github.com/reliant-labs/forge => " +
+			filepath.ToSlash(forgeRoot) + "\n",
 		"internal/policy/policy.go": `package policy
 
 import "context"

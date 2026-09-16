@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING (one require line): `github.com/reliant-labs/forge/pkg` is no
+  longer a module.** forge is now a single module,
+  `github.com/reliant-labs/forge`, carrying both the CLI and the `pkg/*`
+  runtime libraries. **Import paths did not change** — a module at
+  `github.com/reliant-labs/forge` with a `pkg/testkit` directory serves
+  `github.com/reliant-labs/forge/pkg/testkit`, byte-identical to what the
+  submodule served. Consumers change one require line and no source:
+
+  ```sh
+  go get github.com/reliant-labs/forge@vX.Y.Z
+  go mod edit -droprequire=github.com/reliant-labs/forge/pkg
+  go mod tidy
+  ```
+
+  Dropping the retired requirement is not optional, and it does not degrade
+  gracefully: both modules can serve `forge/pkg/*` import paths, so a graph
+  holding both answers every such import with `ambiguous import: found package
+  ... in multiple modules`. `forge generate` now detects this before codegen
+  and distinguishes a requirement you own from one a dependency drags in.
+  A dependency's must be fixed in that dependency — a `replace` only hides it.
+
+  The two modules were always released in lockstep, at the same commit, with
+  the same version. Keeping that true took three hand-maintained syncs, and
+  two failed in production: the root module's `require forge/pkg` went stale
+  and made `go install .../cmd/forge@main` uninstallable, and a hand-listed
+  registry of "forge/pkg symbols the generator emits" went stale when
+  `testkit.StubNotConfigured` was added, so `forge generate` rewrote a project
+  tree and then failed its own validate. One module makes both
+  unrepresentable.
+
+- **A dev build no longer pins a version it is not.** The scaffold's forge
+  requirement comes from the binary's own build info: a release tag, or the
+  pseudo-version `go install ...@main` records. A local or dirty build — whose
+  bytes no module proxy can serve — now pins **nothing** and requires a
+  `go.work` source bridge, which `forge generate` names in its refusal. It
+  used to fall back to a hand-maintained "last published tag" constant,
+  telling projects to require a release that could not satisfy the code being
+  generated.
+
+- **`forge generate`'s compatibility gate is a version comparison.** The
+  project's forge must be `>=` the generating binary's. This replaces a probe
+  that compiled a throwaway program against a hand-listed symbol set; the
+  inequality covers every symbol ever added, cannot rot, and costs one
+  `go list` instead of a `go build`. A project resolving a NEWER forge still
+  passes — that is the ordinary upgrade order.
+
+- **`task release:forge` is one tag, one commit.** The two-tag atomic push, the
+  `go.sum` bare-clone resolution dance, and the `defaultPublishedForgePkgVersion`
+  bump all existed only because the root module required an unpushed submodule
+  version. `scripts/release-pkg.sh` and `task release:pkg` are removed.
+
+### Removed
+
+- `go.work` from forge's own repo. It existed to stitch `pkg` to the root
+  module, and it was also what hid the stale-require bug: every in-repo build
+  resolved `./pkg` locally and stayed green while `@main` was uninstallable.
+- `buildinfo.PkgVersion`/`SetPkgVersion`, `PkgModuleVersion` (already dead),
+  `Build.PkgPath` and the `forge/pkg` line in `forge version` — a second
+  version axis with nothing left to describe.
+- `docs/pkg-versioning.md`, replaced by `docs/versioning.md`.
+
 ## [0.1.11] - 2026-09-01
 
 Patch release. The root CLI (`v0.1.11`) and the runtime library

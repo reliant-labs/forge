@@ -1,13 +1,18 @@
 // File: internal/templates/gomod_pkgdep_test.go
 //
-// Pins the forge/pkg dependency block emitted by go.mod.tmpl and
-// gen-go.mod.tmpl (see internal/generator/project_pkgdep.go). forge/pkg is
-// a PUBLISHED module, so a scaffold ALWAYS pins a clean
-// `require github.com/reliant-labs/forge/pkg vX.Y.Z` with NO replace and NO
-// vendoring — the release stamp or the latest published tag. A `replace`
-// directive for forge/pkg must NEVER appear: maintainers building against
-// unpublished forge/pkg bridge with a gitignored go.work, handled outside
-// forge.
+// Pins the forge dependency block emitted by go.mod.tmpl and gen-go.mod.tmpl
+// (see internal/generator/project_pkgdep.go). A scaffold pins a clean
+// `require github.com/reliant-labs/forge vX.Y.Z` with NO replace and NO
+// vendoring — forge/pkg/* are packages inside that one module.
+//
+// A `replace` must NEVER appear: maintainers building against unreleased
+// forge bridge with a gitignored go.work, which lives outside the template.
+//
+// The empty-version case is the load-bearing one now. It no longer means
+// "this project kind doesn't use forge" — it means the generating binary has
+// no proxy-resolvable version, and emitting a require anyway is precisely
+// what used to tell projects to pin a release that could not satisfy the
+// generated code.
 package templates
 
 import (
@@ -16,10 +21,10 @@ import (
 )
 
 type goModPkgDepData struct {
-	Module          string
-	GoVersion       string
-	RESTEnabled     bool
-	ForgePkgVersion string
+	Module       string
+	GoVersion    string
+	RESTEnabled  bool
+	ForgeVersion string
 }
 
 func renderGoMod(t *testing.T, data goModPkgDepData) string {
@@ -34,13 +39,13 @@ func renderGoMod(t *testing.T, data goModPkgDepData) string {
 func TestGoModTemplate_ForgePkgCleanPin(t *testing.T) {
 	got := renderGoMod(t, goModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
-		ForgePkgVersion: "v0.3.0",
+		ForgeVersion: "v0.3.0",
 	})
-	if !strings.Contains(got, "github.com/reliant-labs/forge/pkg v0.3.0") {
+	if !strings.Contains(got, "github.com/reliant-labs/forge v0.3.0") {
 		t.Errorf("missing pinned require, got:\n%s", got)
 	}
-	if strings.Contains(got, "replace github.com/reliant-labs/forge/pkg") {
-		t.Errorf("must not emit a forge/pkg replace, got:\n%s", got)
+	if strings.Contains(got, "replace github.com/reliant-labs/forge") {
+		t.Errorf("must not emit a forge replace, got:\n%s", got)
 	}
 	// The project-local gen replace must survive untouched.
 	if !strings.Contains(got, "replace github.com/example/demo/gen => ./gen") {
@@ -48,42 +53,45 @@ func TestGoModTemplate_ForgePkgCleanPin(t *testing.T) {
 	}
 }
 
-// A default-published pin (dev builds fall back to the latest tag) is still a
-// clean require with no replace.
-func TestGoModTemplate_ForgePkgDefaultPin(t *testing.T) {
+// A pseudo-version pin — what `go install .../cmd/forge@main` produces — is
+// pinned verbatim, like any other resolvable version. It is a real ref a
+// proxy can serve, and control-plane's commit-pinning mode depends on it.
+func TestGoModTemplate_ForgePseudoVersionPin(t *testing.T) {
+	const pseudo = "v0.1.16-0.20260916085636-c01e07ec6ef2"
 	got := renderGoMod(t, goModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
-		ForgePkgVersion: "v0.0.3",
+		ForgeVersion: pseudo,
 	})
-	if !strings.Contains(got, "github.com/reliant-labs/forge/pkg v0.0.3") {
-		t.Errorf("missing pinned require, got:\n%s", got)
+	if !strings.Contains(got, "github.com/reliant-labs/forge "+pseudo) {
+		t.Errorf("missing pseudo-version require, got:\n%s", got)
 	}
-	if strings.Contains(got, "replace github.com/reliant-labs/forge/pkg") {
-		t.Errorf("must not emit a forge/pkg replace, got:\n%s", got)
+	if strings.Contains(got, "replace github.com/reliant-labs/forge") {
+		t.Errorf("must not emit a forge replace, got:\n%s", got)
 	}
-	if strings.Contains(got, "forge/pkg v0.0.0") {
-		t.Errorf("must never pin forge/pkg to the unresolvable v0.0.0 placeholder, got:\n%s", got)
+	if strings.Contains(got, "forge v0.0.0\n") {
+		t.Errorf("must never pin forge to the unresolvable v0.0.0 placeholder, got:\n%s", got)
 	}
 }
 
-// Empty version (a project kind that doesn't depend on forge/pkg): the
-// require line is simply omitted; `go mod tidy` resolves it if the code
-// imports it. Still no replace.
-func TestGoModTemplate_ForgePkgAbsent(t *testing.T) {
+// Empty version: the require is OMITTED, never invented. This is the
+// unreleasable-build path — a local or dirty forge, whose bytes no proxy can
+// serve — and the whole point is that the scaffold gets a go.work bridge to
+// that source instead of a version that contradicts the generated code.
+func TestGoModTemplate_ForgeAbsent(t *testing.T) {
 	got := renderGoMod(t, goModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
 	})
-	if strings.Contains(got, "reliant-labs/forge/pkg") {
-		t.Errorf("empty version: go.mod must not mention forge/pkg, got:\n%s", got)
+	if strings.Contains(got, "reliant-labs/forge") {
+		t.Errorf("empty version: go.mod must not mention forge at all, got:\n%s", got)
 	}
 }
 
 // --- gen/go.mod (the separate gen submodule) --------------------------------
 
 type genGoModPkgDepData struct {
-	Module          string
-	GoVersion       string
-	ForgePkgVersion string
+	Module       string
+	GoVersion    string
+	ForgeVersion string
 }
 
 func renderGenGoMod(t *testing.T, data genGoModPkgDepData) string {
@@ -95,27 +103,28 @@ func renderGenGoMod(t *testing.T, data genGoModPkgDepData) string {
 	return string(out)
 }
 
-// gen/ mirrors the root pin (same published version), no replace.
-func TestGenGoModTemplate_ForgePkgCleanPin(t *testing.T) {
+// gen/ mirrors the root pin (same version), no replace.
+func TestGenGoModTemplate_ForgeCleanPin(t *testing.T) {
 	got := renderGenGoMod(t, genGoModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
-		ForgePkgVersion: "v0.0.3",
+		ForgeVersion: "v0.0.3",
 	})
-	if !strings.Contains(got, "github.com/reliant-labs/forge/pkg v0.0.3") {
+	if !strings.Contains(got, "github.com/reliant-labs/forge v0.0.3") {
 		t.Errorf("gen pin: missing pinned require, got:\n%s", got)
 	}
-	if strings.Contains(got, "replace github.com/reliant-labs/forge/pkg") {
+	if strings.Contains(got, "replace github.com/reliant-labs/forge") {
 		t.Errorf("gen pin: must not emit a replace, got:\n%s", got)
 	}
 }
 
-// No version (root has no forge/pkg require): gen/ omits forge/pkg entirely
-// (never emit the unresolvable v0.0.0) so `go mod tidy` resolves it.
-func TestGenGoModTemplate_ForgePkgAbsent(t *testing.T) {
+// No version (root has no forge require): gen/ omits forge entirely rather
+// than emitting an unresolvable pin, so `go mod tidy` or the go.work bridge
+// resolves it.
+func TestGenGoModTemplate_ForgeAbsent(t *testing.T) {
 	got := renderGenGoMod(t, genGoModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
 	})
-	if strings.Contains(got, "reliant-labs/forge/pkg") {
-		t.Errorf("gen absent: must not mention forge/pkg (never emit unresolvable v0.0.0), got:\n%s", got)
+	if strings.Contains(got, "reliant-labs/forge") {
+		t.Errorf("gen absent: must not mention forge, got:\n%s", got)
 	}
 }

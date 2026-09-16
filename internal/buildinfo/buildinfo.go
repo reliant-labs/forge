@@ -57,15 +57,12 @@ func withDevFloorSuffix(v string) string {
 	return v + "+dev"
 }
 
-// forgeModulePath and forgePkgModulePath are the go.mod module paths that
-// together identify a genuine forge source checkout on disk: the root module
-// and its companion runtime-library submodule. Runtime source discovery
-// (DiscoverDevForgeRootFromSource) confirms BOTH before treating a directory
-// as the local forge root.
-const (
-	forgeModulePath    = "github.com/reliant-labs/forge"
-	forgePkgModulePath = "github.com/reliant-labs/forge/pkg"
-)
+// forgeModulePath is the go.mod module path identifying a genuine forge
+// source checkout on disk. Runtime source discovery
+// (DiscoverDevForgeRootFromSource) confirms it — together with the pkg/
+// directory the runtime libraries live in — before treating a directory as
+// the local forge root.
+const forgeModulePath = "github.com/reliant-labs/forge"
 
 // DevForgeRoot is the absolute path to the LOCAL forge source checkout that
 // THIS forge binary was built from. It is injected ONLY on dev builds, via
@@ -106,14 +103,14 @@ var DevForgeRoot string
 // the build machine. Contributor/dev builds are NOT built with -trimpath, so
 // that path is a real, absolute checkout path; we walk upward to the module
 // root (the go.mod declaring github.com/reliant-labs/forge) and confirm its
-// pkg/ submodule (github.com/reliant-labs/forge/pkg) exists on disk.
+// pkg/ runtime-library directory exists on disk.
 //
 // It returns "" — bridging nothing — for anything that is not a genuine,
 // present-on-disk forge checkout, which is exactly the release/shipped case:
 //   - release builds use -trimpath, so the baked path is a module-relative
 //     stub that does not exist as an absolute path;
 //   - a dev binary copied to another machine no longer finds its source tree;
-//   - any walk that fails to find both go.mod module markers.
+//   - any walk that fails to find the go.mod module marker and pkg/.
 //
 // So it is safe to call unconditionally — it self-limits to the machine that
 // built a from-source forge. Callers still gate on IsDevBuild first, so a
@@ -170,11 +167,13 @@ func forgeRootFromFile(file string) string {
 	for {
 		if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil {
 			if modfile.ModulePath(data) == forgeModulePath {
-				// Root module matches. Confirm the companion pkg submodule is
-				// present too, so we never point a go.work `use` at a tree
-				// that lacks pkg/ (the only forge module scaffolds import).
-				pd, err := os.ReadFile(filepath.Join(dir, "pkg", "go.mod"))
-				if err == nil && modfile.ModulePath(pd) == forgePkgModulePath {
+				// Module path matches. Confirm pkg/ is present too, so we
+				// never point a go.work `use` at a tree that lacks the
+				// runtime libraries a scaffold imports. pkg/ is a plain
+				// directory inside this module now, not a submodule, so
+				// there is no second go.mod to read — its presence on disk
+				// is the whole check.
+				if st, serr := os.Stat(filepath.Join(dir, "pkg")); serr == nil && st.IsDir() {
 					return dir
 				}
 				return ""
@@ -199,36 +198,7 @@ var (
 	// the release path pin it here. Pair Set/Clear in a t.Cleanup.
 	devBuildOverride    bool
 	devBuildOverrideSet bool
-
-	// pkgVersion is the published version of the companion
-	// github.com/reliant-labs/forge/pkg module that THIS forge binary
-	// scaffolds against. Empty on dev builds. Release builds stamp it
-	// via ldflags (see Taskfile `release:` notes and
-	// scripts/release-pkg.sh):
-	//
-	//	go build -ldflags "-X main.PkgVersion=v0.3.0" ./cmd/forge
-	//
-	// Consumers: the project scaffolder pins
-	// `require github.com/reliant-labs/forge/pkg <pkgVersion>` (no
-	// replace) when this is set, and falls back to the latest published
-	// pkg tag (generator.defaultPublishedForgePkgVersion) when it is not.
-	// Either way the scaffold gets a clean published-version pin.
-	pkgVersion string = ""
-
-	// pkgModuleVersionOverride is a test seam. When set (via
-	// SetPkgModuleVersion), PkgModuleVersion returns it instead of reading
-	// the ambient binary build info — build info is fixed at compile time
-	// and varies with GOWORK, so tests must be able to pin it deterministically.
-	pkgModuleVersionOverride    string
-	pkgModuleVersionOverrideSet bool
 )
-
-// pkgVersionRE accepts semver module versions, e.g. v0.3.0 or
-// v1.2.3-rc.1 (Go pseudo-versions also match — they are valid go.mod
-// require versions). Anything else is treated as "no published version"
-// so a malformed stamp degrades to the dev flow instead of emitting an
-// unresolvable require into user go.mod files.
-var pkgVersionRE = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
 
 // Set records the forge binary's version metadata. It is intended to be
 // called exactly once, from the main entrypoint. The date argument is
@@ -238,105 +208,6 @@ func Set(v, _, commit string) {
 	defer mu.Unlock()
 	version = v
 	gitCommit = commit
-}
-
-// SetPkgVersion records the published forge/pkg module version this
-// binary scaffolds against. Called from the main entrypoint when the
-// release build stamped one via ldflags. Safe to call with "" (dev).
-func SetPkgVersion(v string) {
-	mu.Lock()
-	defer mu.Unlock()
-	pkgVersion = v
-}
-
-// SetPkgModuleVersion overrides the value PkgModuleVersion returns, bypassing
-// the ambient binary build info. Test-only seam: build info is baked at
-// compile time and depends on GOWORK, so scaffolder tests pin it here to stay
-// deterministic. Pass "" to force the "no build-info version" path. Pair with
-// ClearPkgModuleVersion in a t.Cleanup.
-func SetPkgModuleVersion(v string) {
-	mu.Lock()
-	defer mu.Unlock()
-	pkgModuleVersionOverride = v
-	pkgModuleVersionOverrideSet = true
-}
-
-// ClearPkgModuleVersion removes any override set by SetPkgModuleVersion,
-// restoring the real build-info read.
-func ClearPkgModuleVersion() {
-	mu.Lock()
-	defer mu.Unlock()
-	pkgModuleVersionOverride = ""
-	pkgModuleVersionOverrideSet = false
-}
-
-// PkgVersion returns the published forge/pkg module version this binary
-// was released against, or "" when none is known (dev builds, or a
-// malformed stamp). A non-empty return is always a canonical semver
-// version (vX.Y.Z[-pre]) safe to write into a go.mod require directive.
-func PkgVersion() string {
-	mu.RLock()
-	v := pkgVersion
-	mu.RUnlock()
-	if pkgVersionRE.MatchString(v) {
-		return v
-	}
-	return ""
-}
-
-// pkgModulePath is the canonical module path of the companion forge
-// runtime-library module, matched against this binary's dependency graph
-// in PkgModuleVersion.
-const pkgModulePath = "github.com/reliant-labs/forge/pkg"
-
-// PkgModuleVersion returns the version of github.com/reliant-labs/forge/pkg
-// that THIS forge binary was actually compiled against, read from the
-// binary's own build info (runtime/debug). Unlike PkgVersion (a release
-// ldflags stamp), this is populated for ordinary `go install
-// .../cmd/forge@<ref>` builds — the binary records a real, proxy-resolvable
-// pseudo-version (e.g. v0.0.0-20260624040937-ce5dfbd929ed) that is already
-// in the build's module cache. Scaffolded projects can pin it and let
-// `go mod tidy` resolve forge/pkg offline, instead of the unresolvable
-// `v0.0.0` the templates hard-coded when no version was known.
-//
-// Returns "" when the version isn't a canonical require version — most
-// importantly for a workspace build (local `go build` under go.work, where
-// forge/pkg is replaced by the in-tree ./pkg and the dep shows as
-// "(devel)"), in which case the dev sibling/vendoring flow applies instead.
-// Robust to `forge_version: dev` binaries (the daemon): the "dev" label is
-// the forge binary's own version, orthogonal to the forge/pkg dep version
-// recorded here.
-func PkgModuleVersion() string {
-	mu.RLock()
-	ov, ovSet := pkgModuleVersionOverride, pkgModuleVersionOverrideSet
-	mu.RUnlock()
-	if ovSet {
-		if pkgVersionRE.MatchString(ov) {
-			return ov
-		}
-		return ""
-	}
-
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	for _, dep := range info.Deps {
-		d := dep
-		// Follow a replace directive to the effective module: the version
-		// that actually resolves lives on the replacement.
-		if d.Replace != nil {
-			d = d.Replace
-		}
-		if d.Path != pkgModulePath {
-			continue
-		}
-		if pkgVersionRE.MatchString(d.Version) {
-			return d.Version
-		}
-		return ""
-	}
-	return ""
 }
 
 // Version returns the forge binary's version. When the binary was produced by
@@ -371,7 +242,7 @@ func versionFromInfo(info *debug.BuildInfo, stamped string) string {
 		return versionFloor(stamped)
 	}
 
-	if info.Main.Path == forgeCmdModulePath {
+	if info.Main.Path == forgeModulePath {
 		if info.Main.Version != "" && info.Main.Version != "(devel)" {
 			return info.Main.Version
 		}
@@ -380,7 +251,7 @@ func versionFromInfo(info *debug.BuildInfo, stamped string) string {
 
 	// Embedded: forge is a dependency of some host binary.
 	for _, dep := range info.Deps {
-		if dep == nil || dep.Path != forgeCmdModulePath {
+		if dep == nil || dep.Path != forgeModulePath {
 			continue
 		}
 		if dep.Version != "" && dep.Version != "(devel)" {

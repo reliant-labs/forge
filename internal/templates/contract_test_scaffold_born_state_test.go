@@ -141,9 +141,11 @@ func TestBornContractTestSurvivesDepValidation(t *testing.T) {
 func runBornContractTest(t *testing.T, contractTest string) (string, error) {
 	t.Helper()
 
-	pkgModDir, err := filepath.Abs(filepath.Join("..", "..", "pkg"))
+	// The forge module ROOT: pkg/* are packages inside it, so a replace
+	// targeting pkg/ would name a directory with no go.mod.
+	forgeRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
-		t.Fatalf("locate forge/pkg: %v", err)
+		t.Fatalf("locate the forge module root: %v", err)
 	}
 
 	root := t.TempDir()
@@ -160,13 +162,13 @@ func runBornContractTest(t *testing.T, contractTest string) (string, error) {
 		t.Fatalf("write contract_test.go: %v", err)
 	}
 
-	// The go directive is read off forge/pkg's own go.mod: a main module
-	// below its dependency's language version does not build, and hardcoding
-	// a version here would rot the day pkg bumps.
+	// The go directive is read off forge's own go.mod: a main module below
+	// its dependency's language version does not build, and hardcoding a
+	// version here would rot the day forge bumps.
 	goMod := "module example.com/proj\n\n" +
-		"go " + goDirectiveOf(t, filepath.Join(pkgModDir, "go.mod")) + "\n\n" +
-		"require github.com/reliant-labs/forge/pkg v0.0.0\n\n" +
-		"replace github.com/reliant-labs/forge/pkg => " + pkgModDir + "\n"
+		"go " + goDirectiveOf(t, filepath.Join(forgeRoot, "go.mod")) + "\n\n" +
+		"require github.com/reliant-labs/forge v0.0.0\n\n" +
+		"replace github.com/reliant-labs/forge => " + forgeRoot + "\n"
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
@@ -174,8 +176,8 @@ func runBornContractTest(t *testing.T, contractTest string) (string, error) {
 	cmd := exec.Command("go", "test", "-v", "./internal/widgets/")
 	cmd.Dir = root
 	// -mod=mod lets the throwaway module materialise its own go.sum;
-	// GOWORK=off keeps forge's workspace out of a module that resolves
-	// forge/pkg through an explicit replace.
+	// GOWORK=off keeps any ambient workspace out of a module that resolves
+	// forge through an explicit replace.
 	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
 	out, err := cmd.CombinedOutput()
 	return string(out), err

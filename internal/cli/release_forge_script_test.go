@@ -90,24 +90,22 @@ func newForgeFixtureRepo(t *testing.T) string {
 		}
 	}
 
-	write("pkg/go.mod", "module github.com/reliant-labs/forge/pkg\n\ngo 1.24\n")
+	// ONE module, with pkg/ as a plain directory inside it — the shape a
+	// release now has to handle. No pkg/go.mod, no go.work, and no
+	// self-require, which is why the script no longer needs to resolve an
+	// unpushed version's hashes into go.sum.
+	write("go.mod", "module github.com/reliant-labs/forge\n\ngo 1.24\n")
 	write("pkg/svcerr/svcerr.go", "package svcerr\n\n// OK is a placeholder.\nconst OK = true\n")
-	write("go.mod", "module github.com/reliant-labs/forge\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge/pkg v0.1.0\n")
 	write("cmd/forge/main.go", "package main\n\nfunc main() {}\n")
-	write("internal/generator/project_pkgdep.go",
-		"package generator\n\nconst defaultPublishedForgePkgVersion = \"v0.1.0\"\n")
 	write("VERSION", "v0.1.0\n")
 	write("internal/buildinfo/VERSION", "v0.1.0\n")
-	// go.work is the point: it makes an in-workspace build succeed without
-	// any forge/pkg hashes in go.sum, which is the trap the script closes.
-	write("go.work", "go 1.24\n\nuse (\n\t.\n\tpkg\n)\n")
 
 	gitIn(t, root, "init", "-q", "-b", "main")
 	gitIn(t, root, "config", "user.email", "test@example.com")
 	gitIn(t, root, "config", "user.name", "test")
 	gitIn(t, root, "add", ".")
 	gitIn(t, root, "commit", "-q", "-m", "fixture")
-	gitIn(t, root, "tag", "-a", "pkg/v0.1.0", "-m", "pkg v0.1.0")
+	gitIn(t, root, "tag", "-a", "v0.1.0", "-m", "forge v0.1.0")
 	return root
 }
 
@@ -121,35 +119,9 @@ func runForgeScript(t *testing.T, repo string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// TestReleaseForgeScript_DryRunPopulatesGoSum is the important one. It proves
-// the script resolves the forge/pkg hashes for a version that has NOT been
-// pushed anywhere — the circularity the old flow solved by pushing the pkg
-// tag first, across two commits.
-func TestReleaseForgeScript_DryRunPopulatesGoSum(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs a real go mod download against a local clone")
-	}
-	repo := newForgeFixtureRepo(t)
-	out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0")
-	if err != nil {
-		t.Fatalf("dry-run failed: %v\n%s", err, out)
-	}
-	for _, want := range []string{
-		"go.sum: 2 entries for github.com/reliant-labs/forge/pkg v0.2.0",
-		"DRY RUN: all validations passed",
-		"would tag BOTH pkg/v0.2.0 and v0.2.0 at that one commit",
-		"git push --atomic origin main pkg/v0.2.0 v0.2.0",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
-		}
-	}
-}
-
-// TestReleaseForgeScript_DryRunLeavesNoTrace pins the restore behaviour. The
-// script edits five files in place; a dry run that left any of them modified
-// would both corrupt a shared checkout and make the NEXT run fail its own
-// clean-tree gate.
+// TestReleaseForgeScript_DryRunLeavesNoTrace: a dry run validates and edits,
+// then restores every file it touched — the checkout is shared with other
+// agents, so a dry run must be invisible.
 func TestReleaseForgeScript_DryRunLeavesNoTrace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs a real go mod download against a local clone")
@@ -173,9 +145,13 @@ func TestReleaseForgeScript_DryRunLeavesNoTrace(t *testing.T) {
 // TestReleaseForgeScript_TagsBothAtOneCommit is the whole point of the
 // command: the two tags Go forces on a multi-module repo must land on the
 // SAME commit, which is what removes the push-ordering hazard.
-func TestReleaseForgeScript_TagsBothAtOneCommit(t *testing.T) {
+// TestReleaseForgeScript_TagsOnceAtTheReleaseCommit: one module, one tag, on
+// the commit that syncs the version files. This replaced a test asserting
+// that pkg/vX.Y.Z and vX.Y.Z landed on the SAME commit — an invariant that
+// only had to be asserted because there were two tags to get wrong.
+func TestReleaseForgeScript_TagsOnceAtTheReleaseCommit(t *testing.T) {
 	if testing.Short() {
-		t.Skip("runs a real go mod download and a git push")
+		t.Skip("runs a git push")
 	}
 	repo := newForgeFixtureRepo(t)
 	// A bare remote so the script's atomic push has a destination.
@@ -189,37 +165,23 @@ func TestReleaseForgeScript_TagsBothAtOneCommit(t *testing.T) {
 	}
 
 	head := gitOut(t, repo, "rev-parse", "HEAD")
-	pkgTag := gitOut(t, repo, "rev-parse", "pkg/v0.2.0^{commit}")
-	rootTag := gitOut(t, repo, "rev-parse", "v0.2.0^{commit}")
-	if pkgTag != rootTag {
-		t.Errorf("tags landed on different commits: pkg/v0.2.0=%s v0.2.0=%s", pkgTag, rootTag)
-	}
-	if pkgTag != head {
-		t.Errorf("tags do not point at the release commit: tag=%s HEAD=%s", pkgTag, head)
+	tag := gitOut(t, repo, "rev-parse", "v0.2.0^{commit}")
+	if tag != head {
+		t.Errorf("tag does not point at the release commit: tag=%s HEAD=%s", tag, head)
 	}
 
-	// All three version files, plus go.mod/go.sum, in that ONE commit.
+	// Only the version files move now: there is no require to bump and no
+	// go.sum to populate.
 	files := gitOut(t, repo, "show", "--pretty=format:", "--name-only", "HEAD")
-	for _, want := range []string{
-		"VERSION",
-		"internal/buildinfo/VERSION",
-		"internal/generator/project_pkgdep.go",
-		"go.mod",
-		"go.sum",
-	} {
+	for _, want := range []string{"VERSION", "internal/buildinfo/VERSION"} {
 		if !strings.Contains(files, want) {
 			t.Errorf("release commit does not touch %s:\n%s", want, files)
 		}
 	}
+	if strings.Contains(files, "go.mod") {
+		t.Errorf("release commit touches go.mod — nothing in a single-module release should:\n%s", files)
+	}
 
-	// The require and every version file must agree on the new version.
-	gomod, err := os.ReadFile(filepath.Join(repo, "go.mod"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(gomod), "github.com/reliant-labs/forge/pkg v0.2.0") {
-		t.Errorf("go.mod does not require pkg v0.2.0:\n%s", gomod)
-	}
 	for _, vf := range []string{"VERSION", "internal/buildinfo/VERSION"} {
 		got, err := os.ReadFile(filepath.Join(repo, vf))
 		if err != nil {
@@ -236,20 +198,9 @@ func TestReleaseForgeScript_TagsBothAtOneCommit(t *testing.T) {
 	if string(rootV) != string(embeddedV) {
 		t.Errorf("VERSION (%q) and internal/buildinfo/VERSION (%q) diverged", rootV, embeddedV)
 	}
-	pkgdep, err := os.ReadFile(filepath.Join(repo, "internal/generator/project_pkgdep.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(pkgdep), `defaultPublishedForgePkgVersion = "v0.2.0"`) {
-		t.Errorf("defaultPublishedForgePkgVersion not bumped:\n%s", pkgdep)
-	}
-
-	// The push is atomic, so the remote must have the branch AND both tags.
-	remoteTags := gitOut(t, origin, "tag", "-l")
-	for _, want := range []string{"pkg/v0.2.0", "v0.2.0"} {
-		if !strings.Contains(remoteTags, want) {
-			t.Errorf("tag %s did not reach the remote; got:\n%s", want, remoteTags)
-		}
+	// The push is atomic, so the remote must have the branch AND the tag.
+	if remoteTags := gitOut(t, origin, "tag", "-l"); !strings.Contains(remoteTags, "v0.2.0") {
+		t.Errorf("tag v0.2.0 did not reach the remote; got:\n%s", remoteTags)
 	}
 }
 
@@ -286,59 +237,16 @@ func TestReleaseForgeScript_RejectsDirtyTree(t *testing.T) {
 // TestReleaseForgeScript_RejectsEitherExistingTag covers both tags
 // independently: a half-finished earlier release leaves exactly one of them
 // behind, and reusing it would publish immutable bytes under a used version.
-func TestReleaseForgeScript_RejectsEitherExistingTag(t *testing.T) {
-	for _, existing := range []string{"pkg/v0.2.0", "v0.2.0"} {
-		t.Run(existing, func(t *testing.T) {
-			repo := newForgeFixtureRepo(t)
-			gitIn(t, repo, "tag", existing)
-			out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0")
-			if err == nil {
-				t.Fatalf("expected rejection for existing %s, got success:\n%s", existing, out)
-			}
-			if !strings.Contains(out, "already exists") {
-				t.Errorf("unexpected error output:\n%s", out)
-			}
-		})
-	}
-}
-
-func TestReleaseForgeScript_RejectsBrokenStandaloneBuild(t *testing.T) {
+// TestReleaseForgeScript_RejectsExistingTag: versions are immutable, so a
+// tag that already exists locally is a hard stop.
+func TestReleaseForgeScript_RejectsExistingTag(t *testing.T) {
 	repo := newForgeFixtureRepo(t)
-	// Commit a compile error so the tree is clean but the standalone gate
-	// fails — the consumer's view of the module, which go.work hides.
-	if err := os.WriteFile(filepath.Join(repo, "pkg", "svcerr", "broken.go"),
-		[]byte("package svcerr\n\nfunc broken() { undefinedSymbol() }\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitIn(t, repo, "add", ".")
-	gitIn(t, repo, "commit", "-q", "-m", "break build")
-
+	gitIn(t, repo, "tag", "v0.2.0")
 	out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0")
 	if err == nil {
-		t.Fatalf("expected standalone-build rejection, got success:\n%s", out)
+		t.Fatalf("expected rejection for an existing tag, got success:\n%s", out)
 	}
-	if !strings.Contains(out, "validating pkg module builds standalone") {
-		t.Errorf("expected the build-validation banner before failure:\n%s", out)
-	}
-}
-
-// TestReleaseForgeScript_RejectsWrongSubmodulePath guards the assumption
-// behind the directory-prefixed tag: pkg/ must declare <root>/pkg, or
-// pkg/vX.Y.Z is not the tag Go would look for.
-func TestReleaseForgeScript_RejectsWrongSubmodulePath(t *testing.T) {
-	repo := newForgeFixtureRepo(t)
-	if err := os.WriteFile(filepath.Join(repo, "pkg", "go.mod"),
-		[]byte("module github.com/someone-else/pkg\n\ngo 1.24\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitIn(t, repo, "add", ".")
-	gitIn(t, repo, "commit", "-q", "-m", "wrong module path")
-
-	out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0")
-	if err == nil {
-		t.Fatalf("expected wrong-module rejection, got success:\n%s", out)
-	}
-	if !strings.Contains(out, "expected 'github.com/reliant-labs/forge/pkg'") {
+	if !strings.Contains(out, "already exists") {
 		t.Errorf("unexpected error output:\n%s", out)
 	}
 }

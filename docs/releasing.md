@@ -1,18 +1,17 @@
 # Releasing forge and propagating the bump
 
-forge ships **two** Go modules, tagged at the **same commit**:
+forge ships **one** Go module, `github.com/reliant-labs/forge`, tagged `vX.Y.Z`.
+It carries both the CLI (reliant embeds it) and the `pkg/*` runtime libraries
+generated projects import.
 
-- `github.com/reliant-labs/forge` — the CLI (reliant embeds it) → tag `vX.Y.Z`
-- `github.com/reliant-labs/forge/pkg` — the runtime lib generated projects import → tag `pkg/vX.Y.Z`
-
-Consumers today: **reliant** pins both; **control-plane** pins only `forge/pkg`. The
+Consumers: **reliant** and **control-plane** each require that one module. The
 managed workspace **daemon image** is the reliant binary cross-compiled
 (`control-plane/docker/Dockerfile.reliant.dev` COPYs it) — so its forge version
 flows transitively from reliant's `go.mod`; there is **no forge pin in any
 Dockerfile** to bump.
 
-See `docs/pkg-versioning.md` for the dev-vs-release dependency model behind the
-`pkg` module. This file is the operational checklist for cutting a version.
+See `docs/versioning.md` for the dev-vs-release dependency model. This file is
+the operational checklist for cutting a version.
 
 ## 1. Tag forge (from a clean `main`) — ONE command
 
@@ -22,94 +21,97 @@ task release:forge -- vX.Y.Z --dry-run   # optional: every validation, no side e
 task release:forge -- vX.Y.Z
 ```
 
-That is the whole step. It commits once, tags `pkg/vX.Y.Z` **and** `vX.Y.Z` at
-that single commit, and pushes the branch plus both tags atomically.
-
 What it does, in order:
 
-1. validates the version shape, a **clean tree**, that **neither** tag already
-   exists, and that `pkg/` builds and vets **standalone** (`GOWORK=off`, the
-   consumer's view);
-2. bumps `require github.com/reliant-labs/forge/pkg@vX.Y.Z`;
-3. syncs all three version files — `VERSION`, `internal/buildinfo/VERSION`
-   (which must stay byte-identical to the root one; `buildinfo` embeds a copy)
-   and `defaultPublishedForgePkgVersion` in
-   `internal/generator/project_pkgdep.go`;
-4. resolves the `forge/pkg` hashes into `go.sum` **before the tag is public**,
-   then asserts they are really there;
-5. tags both refs at the one commit, then pushes the branch and both tags in a
-   single atomic `git push`.
+1. validates the version shape, a **clean tree**, and that the tag does not
+   already exist;
+2. confirms against the module proxy that the version was never published at a
+   **different** commit (see below);
+3. syncs `VERSION` and `internal/buildinfo/VERSION` — which must stay
+   byte-identical, since `buildinfo` embeds a copy;
+4. builds the module;
+5. tags `vX.Y.Z` and pushes the branch and tag in a single atomic `git push`.
 
 `--dry-run` runs every validation and every file edit, prints the plan, then
 restores the tree — no commit, no tag, no push.
 
-### Why one commit, and what it fixes
+### The immutable-version gate
 
-The old flow was `task release:pkg` → push → `go mod edit` → a **second**
-commit → tag → push again, which left three ways to ship a broken release:
+`proxy.golang.org` is immutable. Once it has served a version, that content is
+permanent: deleting the tag and re-cutting it elsewhere does **not** change what
+consumers download, and the version is burned forever. `pkg/v0.1.12` was burned
+exactly this way — tagged, published, deleted, re-cut — and the symptom is
+maddening from inside the repo, because `git show <tag>` plainly contains your
+code while every consumer gets the old bytes.
 
-- **Push ordering.** The require bump could not resolve until `pkg/vX.Y.Z` was
-  pushed, so the steps spanned two pushes. Stopping halfway published a pkg tag
-  with no root release, or a root release requiring a pkg version nobody could
-  download.
-- **The `go.sum` trap.** `go build ./...` in this repo passes with **no**
-  `forge/pkg` hashes in `go.sum`, because `go.work` resolves `pkg` from the
-  local directory. A consumer has no `go.work`, so their `go mod download`
-  needs those hashes — and their absence is invisible here until after the
-  release is public.
-- **Three version files drifting**, each bumped by hand.
+So the script asks the proxy before a tag exists. A network failure is a hard
+stop, not a pass; `--skip-proxy-check` is the only way past it, and only when
+you have verified by hand that the version was never published.
 
-Two tags still exist — Go requires the directory-prefixed form for submodules —
-but they now land on the **same commit**, which removes the ordering hazard
-entirely: either the whole release lands or none of it does.
+### What this step used to involve
 
-How step 4 escapes the circularity (hashes normally come from the proxy, which
-cannot serve an unpushed tag): the script makes a temporary **bare clone** of
-the repo, tags it locally, and resolves with `GOPROXY=direct`. That is sound
-because a module's `h1:` hash digests the module's **file tree**, not the commit
-carrying the tag — and the release commit touches only root-module files, never
-`pkg/`. The script asserts that precondition rather than assuming it.
+forge shipped a second module — `github.com/reliant-labs/forge/pkg`, tagged
+`pkg/vX.Y.Z` — which the root module **required**. That require could not
+resolve until the pkg tag was pushed, so releasing carried three extra
+mechanisms, all of which are now gone:
 
-**The require bump is not optional.** The root module has no
-`replace ... => ./pkg`, so the require IS how a consumer resolves forge/pkg.
-Skipping it ships a root module pointing at a stale pkg — v0.0.4 shipped
-requiring `pkg v0.0.3` while `pkg/v0.0.4` existed, and no in-repo build could
-have noticed. `internal/modguard` fails the suite if the require is a
-pseudo-version or a placeholder.
+- **a two-tag atomic push**, so a pkg tag could never ship without its root
+  release (v0.0.4 shipped requiring `pkg v0.0.3` while `pkg/v0.0.4` existed, and
+  no in-repo build could have noticed);
+- **the `go.sum` trap** — an in-repo `go build ./...` passed with no `forge/pkg`
+  hashes in `go.sum`, because `go.work` resolved `pkg` from disk, so the script
+  made a temporary bare clone, tagged it locally, and resolved the not-yet-public
+  version through `GOPROXY=direct` to record real hashes;
+- **a bump of `defaultPublishedForgePkgVersion`**, the constant a dev build wrote
+  into scaffolds as the forge/pkg pin.
 
-If the standalone build fails, `pkg/`'s go.mod isn't tidied for the consumer's
-view — run `cd pkg && GOWORK=off go mod tidy`, commit, and retry. (Normal
-in-workspace CI never exercises this, so the gap only shows at release time.)
+A single module cannot require itself, so there is no unpushed version to
+resolve, no second tag to order, and no hand-maintained pin to drift.
+`scripts/release-pkg.sh` and `task release:pkg` are deleted.
 
-### `task release:pkg` — the narrow tool
-
-`scripts/release-pkg.sh` still works and still tags `pkg/vX.Y.Z` alone. Reach
-for it only when the submodule genuinely needs a tag by itself: it does **not**
-bump the root require, sync the version files, or populate `go.sum`, so a
-release driven from it is only half done. `release:forge` is the documented
-path.
-
-## 2. Bump reliant (both modules) — PR
+## 2. Bump reliant — PR
 
 ```sh
 cd reliant
 git checkout -b chore/forge-vX.Y.Z
-go get github.com/reliant-labs/forge@vX.Y.Z github.com/reliant-labs/forge/pkg@vX.Y.Z
+go get github.com/reliant-labs/forge@vX.Y.Z
+go mod edit -droprequire=github.com/reliant-labs/forge/pkg   # first bump only
 go mod tidy        # if it errors on the //go:build manual dev/fork_context_test.go
                    # (a known debug artifact with a broken import), use: go mod tidy -e
 go build ./...
 ```
 
-## 3. Bump control-plane (`forge/pkg` only) + pin its CI — PR
+The `-droprequire` matters on the FIRST bump past the merge, and only then.
+Leaving the retired module in the graph does not degrade gracefully: both it and
+the merged module serve `github.com/reliant-labs/forge/pkg/*`, so every such
+import becomes `ambiguous import: found package ... in multiple modules`.
+Confirm it is gone with `go list -m github.com/reliant-labs/forge/pkg` — it
+should report nothing.
+
+## 3. Bump control-plane + pin its CI — PR
+
+Do this AFTER reliant, which control-plane depends on: while reliant still
+requires the retired `forge/pkg`, control-plane inherits it transitively and
+nothing it does locally can resolve the resulting ambiguity.
 
 ```sh
 cd control-plane
 git checkout -b chore/forge-vX.Y.Z
-go get github.com/reliant-labs/forge/pkg@vX.Y.Z && go mod tidy && go build ./...
+go get github.com/reliant-labs/forge@vX.Y.Z
+go mod edit -droprequire=github.com/reliant-labs/forge/pkg   # first bump only
+go mod tidy && go build ./...
+# and the same two edits in gen/, which has its own go.mod
+(cd gen && go get github.com/reliant-labs/forge@vX.Y.Z && \
+  go mod edit -droprequire=github.com/reliant-labs/forge/pkg && go mod tidy)
 ```
 
 Also bump the forge-CLI install pins in `.github/workflows/ci.yml`
-(`go install github.com/reliant-labs/forge/cmd/forge@vX.Y.Z`, two occurrences).
+(`go install github.com/reliant-labs/forge/cmd/forge@vX.Y.Z`, two occurrences)
+and `forge_version` in `forge.yaml`.
+
+`forge_version` and the `go.mod` require are now necessarily the **same
+number** — one module, one version — so they should be asserted equal in CI
+rather than kept in step by hand.
 
 ### The KCL module needs no tag
 

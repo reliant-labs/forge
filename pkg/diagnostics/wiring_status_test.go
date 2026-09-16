@@ -188,8 +188,14 @@ func readDocGo(t *testing.T) string {
 	return string(raw)
 }
 
-// findRepoRoot walks up to the directory holding go.work — the workspace
-// root both modules live under.
+// findRepoRoot walks up to the forge module root — the go.mod declaring
+// github.com/reliant-labs/forge.
+//
+// It used to look for go.work, which existed only to stitch the pkg/
+// submodule to the root module. Both are one module now, so go.work is gone
+// and the module's own go.mod is the marker — and matching on the module PATH
+// rather than on any go.mod keeps this from stopping at some future nested
+// module on the way up.
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -197,7 +203,8 @@ func findRepoRoot(t *testing.T) string {
 		t.Fatalf("getwd: %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err == nil && strings.Contains(string(data), "module github.com/reliant-labs/forge\n") {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -206,6 +213,6 @@ func findRepoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
-	t.Fatal("could not locate go.work above the test directory")
+	t.Fatal("could not locate the forge module root above the test directory")
 	return ""
 }

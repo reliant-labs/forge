@@ -6,37 +6,64 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 )
 
-// A release-stamped forge binary pins the published forge/pkg version it was
-// released against — a clean require, no replace, no vendoring.
-func TestResolveForgePkgVersion_ReleasePin(t *testing.T) {
-	t.Cleanup(func() { buildinfo.SetPkgVersion("") })
-	buildinfo.SetPkgVersion("v0.3.0")
+// restoreBuildinfo puts the process-global version stamp back to its zero
+// state. buildinfo has no Clear for Set, and these tests are not parallel
+// because of it.
+func restoreBuildinfo(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+}
 
-	if got := resolveForgePkgVersion(); got != "v0.3.0" {
-		t.Errorf("resolveForgePkgVersion = %q, want v0.3.0", got)
+// TestResolveForgeVersion_ReleasePin: a released binary pins its own version,
+// which is the whole point of one module — the version that generated the
+// code and the version the code compiles against are the same number.
+func TestResolveForgeVersion_ReleasePin(t *testing.T) {
+	restoreBuildinfo(t)
+	buildinfo.Set("v0.3.0", "", "")
+
+	if got := resolveForgeVersion(); got != "v0.3.0" {
+		t.Errorf("resolveForgeVersion = %q, want v0.3.0", got)
 	}
 }
 
-// A dev forge binary (no ldflags stamp) falls back to the latest published
-// tag. There is NO replace and NO vendoring — a maintainer building against
-// unpublished forge/pkg bridges with a gitignored go.work, handled outside
-// forge.
-func TestResolveForgePkgVersion_DevFallsBackToPublished(t *testing.T) {
-	t.Cleanup(func() { buildinfo.SetPkgVersion("") })
-	buildinfo.SetPkgVersion("") // dev build
+// TestResolveForgeVersion_UntaggedCommitPinsPseudoVersion: `go install
+// .../cmd/forge@main` records a pseudo-version, which IS proxy-resolvable and
+// is what control-plane's commit-pinning mode depends on. It must be pinned
+// verbatim, not rounded to a tag.
+func TestResolveForgeVersion_UntaggedCommitPinsPseudoVersion(t *testing.T) {
+	restoreBuildinfo(t)
+	const pseudo = "v0.1.16-0.20260916085636-c01e07ec6ef2"
+	buildinfo.Set(pseudo, "", "")
 
-	if got := resolveForgePkgVersion(); got != defaultPublishedForgePkgVersion {
-		t.Errorf("resolveForgePkgVersion = %q, want %q (default published tag)", got, defaultPublishedForgePkgVersion)
+	if got := resolveForgeVersion(); got != pseudo {
+		t.Errorf("resolveForgeVersion = %q, want the pseudo-version %q", got, pseudo)
 	}
 }
 
-// The resolved version is always a canonical semver pin — never a bare
-// placeholder like v0.0.0 that would need a replace to resolve.
-func TestResolveForgePkgVersion_NeverPlaceholder(t *testing.T) {
-	t.Cleanup(func() { buildinfo.SetPkgVersion("") })
-	buildinfo.SetPkgVersion("")
+// TestResolveForgeVersion_UnreleasableBuildPinsNothing is the regression this
+// whole design exists for. A dirty local build's bytes are on no proxy, so
+// there is no honest version to require. It used to fall back to a
+// hand-maintained "last published tag" constant, which told projects to pin a
+// release that could not satisfy the code being generated —
+// `undefined: testkit.StubNotConfigured`, after the tree was already
+// rewritten.
+//
+// "" means "this build needs a source bridge". Anything else here is a bug.
+func TestResolveForgeVersion_UnreleasableBuildPinsNothing(t *testing.T) {
+	restoreBuildinfo(t)
 
-	if got := resolveForgePkgVersion(); got == "" || got == "v0.0.0" {
-		t.Errorf("resolveForgePkgVersion = %q, want a concrete published version", got)
+	for _, v := range []string{
+		"v0.1.16-0.20260916085636-c01e07ec6ef2+dirty", // dirty tree
+		"dev",         // no stamp at all
+		"(devel)",     // plain `go build`
+		"v0.1.15+dev", // the VERSION-file floor
+	} {
+		t.Run(v, func(t *testing.T) {
+			buildinfo.Set(v, "", "")
+			if got := resolveForgeVersion(); got != "" {
+				t.Errorf("resolveForgeVersion = %q for build %q, want \"\" — pinning a version "+
+					"this build is not is what produced the StubNotConfigured class of failure", got, v)
+			}
+		})
 	}
 }

@@ -35,7 +35,7 @@ import (
 // kclvendor's downgrade guard allows an equal-version overwrite, so a
 // workspace build of main (containing a fix) and a released binary (without
 // it) were indistinguishable — which is how forge#202's namespace-scoped
-// operator RBAC came within one `forge generate` of being silently reverted
+// operator ClusterRole/Binding scoping came within one `forge generate` of being reverted
 // in control-plane. A floor that fabricates an ordering is worse than no
 // version at all, because the ordering it invents is the wrong one.
 //

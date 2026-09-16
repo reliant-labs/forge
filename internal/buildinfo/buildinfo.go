@@ -292,7 +292,7 @@ func versionFromInfo(info *debug.BuildInfo, stamped string) string {
 // ahead of its last release, so that equality was false, and kclvendor's
 // downgrade guard allows an equal-version overwrite: a workspace build of
 // main carrying forge#202 and a released binary without it were
-// indistinguishable, and #202's RBAC fix came one `forge generate` away from
+// indistinguishable, and #202's ClusterRole-scoping fix came one `forge generate` away from
 // being silently reverted in control-plane. `v0.1.16-0.dev` instead orders
 // after v0.1.15 and before v0.1.16, which is the honest claim — "some commit
 // after that release" — and makes the guard refuse instead of shrug.

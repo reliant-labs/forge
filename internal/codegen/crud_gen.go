@@ -1943,8 +1943,23 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			ent.HasGet = true
 			ent.GetMethod = mtd
 		case "list":
-			ent.HasList = true
-			ent.ListMethod = mtd
+			// Only a Tier-1 list shape gets a lifecycle assertion. When the
+			// shape matcher routed this RPC to the custom read path, the
+			// response carries no repeated <Entity> field — that absence IS
+			// the classification — so `Get<Entity>s()` names a method the
+			// wire type does not have and the scaffold does not compile.
+			//
+			// Deriving the real accessor instead would be worse, not better:
+			// the wired custom body runs the query and then leaves the
+			// projection as an explicit TODO, returning an EMPTY response. A
+			// row-count assertion against it would compile and then fail on
+			// the author's first `go test`, inside a scaffold-once file they
+			// were told not to rewrite. Forge cannot assert a result it
+			// deliberately declined to populate.
+			if !mtd.ShapeMismatch {
+				ent.HasList = true
+				ent.ListMethod = mtd
+			}
 		case "update":
 			ent.HasUpdate = true
 			ent.UpdateMethod = mtd

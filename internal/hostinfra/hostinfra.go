@@ -167,10 +167,38 @@ func (s Spec) DSN() string {
 // baseDSN is the MAINTENANCE connection — the same server, the always-present
 // `postgres` database. Creating another database requires being connected to
 // one already, so this is what the ensure-database path dials.
+//
+// It carries connect_timeout, and that is not a tuning knob — it is a
+// hang fix. See [probeConnectTimeoutSeconds].
 func (s Spec) baseDSN() string {
-	return fmt.Sprintf("postgres://%s:%s@localhost:%d/postgres?sslmode=disable",
-		s.User, s.Password, s.Port)
+	return fmt.Sprintf("postgres://%s:%s@localhost:%d/postgres?sslmode=disable&connect_timeout=%d",
+		s.User, s.Password, s.Port, probeConnectTimeoutSeconds)
 }
+
+// probeConnectTimeoutSeconds bounds how long a probe waits for a postgres
+// HANDSHAKE, as distinct from how long it waits for a query.
+//
+// The two are different, and assuming otherwise hangs forge forever.
+// lib/pq documents that a zero or unspecified connect_timeout means WAIT
+// INDEFINITELY, and the deadline it sets from connect_timeout is the only
+// thing bounding the startup handshake — a context passed to
+// QueryRowContext applies to the QUERY, which never begins. So a
+// context.WithTimeout around the query does not save a connection that is
+// stuck mid-handshake.
+//
+// That is not a hypothetical. identifyHolder dials the declared port
+// whenever forge cannot find an instance of its own there, and on a shared
+// dev box that port is routinely held by something that is NOT postgres.
+// A TCP server that accepts the connection and then says nothing — any
+// non-postgres service — leaves pq blocked in recvMessage with no
+// deadline, so `forge env up` hangs with no output rather than reporting
+// the port collision it is one step away from detecting.
+//
+// Five seconds, matching the query timeout beside it: a loopback postgres
+// completes its handshake in single-digit milliseconds, so this is three
+// orders of magnitude of headroom for the legitimate case and a bounded
+// failure for the broken one.
+const probeConnectTimeoutSeconds = 5
 
 // Start brings the instance up, or confirms it is already up, and returns
 // only once it is actually SERVING — not merely spawned. It is idempotent:

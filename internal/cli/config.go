@@ -18,13 +18,14 @@ var ErrProjectConfigNotFound = cmdutil.ErrProjectConfigNotFound
 
 const defaultProjectConfigFile = "forge.yaml"
 
-// findProjectConfigFile walks upward from the current working directory
-// looking for forge.yaml, similar to how git/go locate their
-// configuration. It returns the absolute path to the config file or
+// findProjectConfigFile walks upward from the resolution root looking for
+// forge.yaml, similar to how git/go locate their configuration. The resolution
+// root is the current working directory unless --project-dir / -C overrode it
+// (cmdutil.ResolutionRoot). It returns the absolute path to the config file or
 // ErrProjectConfigNotFound if no config is found before reaching the
 // filesystem root.
 func findProjectConfigFile() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := cmdutil.ResolutionRoot()
 	if err != nil {
 		return "", fmt.Errorf("get working directory: %w", err)
 	}

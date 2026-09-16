@@ -47,6 +47,7 @@ var featureDisplayOrder = []config.FeatureName{
 	config.FeatureExternalBuilds,
 	config.FeatureOperators,
 	config.FeatureStrictWiring,
+	config.FeatureReconcile,
 }
 
 func newFeaturesCmd() *cobra.Command {

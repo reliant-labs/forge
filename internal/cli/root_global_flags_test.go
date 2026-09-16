@@ -27,7 +27,12 @@ func TestRootPersistentFlagsArePinned(t *testing.T) {
 	root.PersistentFlags().VisitAll(func(f *pflag.Flag) { got = append(got, f.Name) })
 	sort.Strings(got)
 
-	want := []string{"silence-experimental"}
+	// --project-dir / -C is deliberately global: project resolution is
+	// global. EVERY command locates forge.yaml from one directory, so every
+	// command honors it — which is exactly the bar this test sets. It exists
+	// because the process CWD was previously the only way to choose that
+	// directory, which an in-process embedder cannot safely mutate.
+	want := []string{"project-dir", "silence-experimental"}
 	if len(got) != len(want) {
 		t.Fatalf("root persistent flags = %v, want %v\n"+
 			"A global flag must be honored by EVERY command. If the new flag only "+

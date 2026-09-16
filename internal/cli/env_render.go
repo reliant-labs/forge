@@ -257,7 +257,7 @@ func runEnvRender(cmd *cobra.Command, envName string, opts envRenderOptions) err
 	}
 
 	imageTag, tagSource := renderImageTag(ctx, projectDir, envName, opts.imageTag)
-	digests, boundRelease, derr := resolveDeployDigests(projectDir, envName, opts.noDigest)
+	digests, boundRelease, derr := resolveDeployDigests(projectDir, envName, opts.noDigest, bindingStoreFor(projectDir))
 	if derr != nil {
 		// Digest pinning is an optimisation of WHICH bytes deploy ships, not
 		// of what the environment declares. A caller reading the object graph

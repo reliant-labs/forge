@@ -45,6 +45,15 @@ jobs:
   build-push:
     name: Build & Push
     runs-on: ubuntu-latest
+    {{- if .CutRelease}}
+    # The digest is published as a job output so the release-cut job below can
+    # read it. It is the IMMUTABLE digest build-push-action reported, the same
+    # value the cosign/SBOM/attestation steps bind to — never the tag, which
+    # is a mutable pointer and would void the promotion guarantee the moment
+    # anyone re-pushed it.
+    outputs:
+      digest: ${{"{{"}} steps.build.outputs.digest {{"}}"}}
+    {{- end}}
     steps:
       - uses: actions/checkout@v4
 
@@ -211,6 +220,160 @@ jobs:
           done
 {{- end}}
 
+{{- if .CutRelease}}
+
+  # ── The CI-to-promote hop ───────────────────────────────────────────
+  #
+  # This is the step between "the image is in the registry" and "an
+  # environment is running it". Two calls, in this order, and the order is
+  # the whole design:
+  #
+  #   1. CUT a release — a version label over the digest that was just
+  #      pushed. The control plane records it in an append-only ledger.
+  #   2. PROMOTE an environment to that release. Promotion re-points at
+  #      digests the release already named; it CANNOT build, because the
+  #      request carries no image field in which to name bytes to produce.
+  #
+  # WHY TWO STEPS AND NOT ONE. A single "deploy this image" call would have
+  # to accept an image reference, and a request shape that can name an image
+  # is a request shape that can rebuild. Splitting them is what makes "the
+  # bytes that passed staging are the bytes that reach prod" an invariant
+  # rather than a promise — by the time anything is promoted, the bytes are
+  # already fixed and recorded.
+  #
+  # BOTH CALLS ARE SAFE TO RETRY, and you will retry them: re-run jobs, a
+  # transient 502, a cancelled workflow. Re-cutting the same version with the
+  # same digest succeeds and creates nothing. Re-promoting to the release an
+  # environment is already running appends nothing. Neither needs a cleanup
+  # path, which is why there isn't one.
+  #
+  # IF THE PROMOTE FAILS AFTER THE CUT SUCCEEDS, the release simply exists,
+  # un-promoted. That is a legitimate state — it is what every release is
+  # before someone ships it — and the recovery is to re-run this workflow:
+  # the cut is a no-op the second time and the promote gets another go.
+  cut-release:
+    name: Cut Release & Promote
+    needs: build-push
+    runs-on: ubuntu-latest
+    # Only on the branch that produces releasable images, and never on a
+    # workflow_dispatch with a custom tag — a one-off image under a hand-typed
+    # tag is a debugging build, not a release.
+    if: github.ref == format('refs/heads/{0}', 'main') && github.event_name == 'push'
+    env:
+      # The control plane's base URL. A repository VARIABLE rather than a
+      # secret: it is not sensitive, and a variable is visible in the UI when
+      # somebody is working out why a deploy went to the wrong place.
+      CONTROL_PLANE_URL: ${{"{{"}} vars.CONTROL_PLANE_URL {{"}}"}}
+      # The bearer token this workflow authenticates with.
+      #
+      # THE SAME MECHANISM THE SERVER ALREADY VALIDATES — the control plane
+      # authenticates every RPC with a bearer token (its SetupAuth validator),
+      # and forge's own deploystate.Remote client sends one the same way. This
+      # deliberately does NOT invent a second scheme.
+      #
+      # Mint it as a machine identity scoped to your deploy org, not a
+      # person's token: a human's credential in CI stops working the day they
+      # leave, at which point deploys break for a reason nobody connects to
+      # the cause.
+      DEPLOY_TOKEN: ${{"{{"}} secrets.DEPLOY_TOKEN {{"}}"}}
+      IMAGE_DIGEST: ${{"{{"}} needs.build-push.outputs.digest {{"}}"}}
+    steps:
+      - name: Check the deploy credentials are present
+        # Fail with a sentence rather than letting curl return 401 and the
+        # job report "promotion failed" — an unset secret and a rejected
+        # token look identical from the response alone.
+        run: |
+          missing=""
+          [ -n "$CONTROL_PLANE_URL" ] || missing="$missing vars.CONTROL_PLANE_URL"
+          [ -n "$DEPLOY_TOKEN" ]      || missing="$missing secrets.DEPLOY_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "Not configured for release cutting; missing:$missing" >&2
+            echo "Set them in the repository settings, or delete the cut-release job." >&2
+            exit 1
+          fi
+
+      - name: Cut the release
+        id: cut
+        # VERSION IS DERIVED FROM THE COMMIT, and that is what makes the whole
+        # thing idempotent. The same commit always produces the same version
+        # label, so a re-run asks for a release that already exists — and the
+        # control plane's unique index on (org, version) is what turns that
+        # into a no-op rather than a duplicate. A timestamp-based version
+        # would cut a new release on every re-run and quietly fill the
+        # promote picker with identical entries.
+        run: |
+          set -euo pipefail
+          VERSION="sha-$(echo "${{"{{"}} github.sha {{"}}"}}" | cut -c1-7)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          BODY=$(jq -n \
+            --arg version   "$VERSION" \
+            --arg name      "{{.ProjectName}}" \
+            --arg digest    "$IMAGE_DIGEST" \
+            --arg gitCommit "${{"{{"}} github.sha {{"}}"}}" \
+            '{version: $version,
+              artifacts: [{name: $name, digest: $digest}],
+              gitCommit: $gitCommit}')
+
+          echo "Cutting release $VERSION pinning $IMAGE_DIGEST"
+          HTTP=$(curl -sS -o /tmp/cut.json -w '%{http_code}' \
+            -X POST "$CONTROL_PLANE_URL/controlplane.v1.DeployService/CutRelease" \
+            -H "Authorization: Bearer $DEPLOY_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "$BODY")
+          cat /tmp/cut.json
+          if [ "$HTTP" != "200" ]; then
+            echo "CutRelease failed with HTTP $HTTP" >&2
+            exit 1
+          fi
+          # `created: false` is a SUCCESS, not a warning: it means this
+          # workflow already cut this release on an earlier run.
+          if [ "$(jq -r '.created // false' /tmp/cut.json)" = "true" ]; then
+            echo "Cut release $VERSION"
+          else
+            echo "Release $VERSION was already cut — nothing to do"
+          fi
+
+      - name: Promote
+        # Separate step so a promotion failure is legible as a promotion
+        # failure. Collapsing the two into one script would report a failed
+        # promote as a failed release cut, and send whoever is debugging it to
+        # look at the wrong half.
+        env:
+          ENVIRONMENT_ID: ${{"{{"}} vars.DEPLOY_ENVIRONMENT_ID {{"}}"}}
+        run: |
+          set -euo pipefail
+          if [ -z "$ENVIRONMENT_ID" ]; then
+            echo "vars.DEPLOY_ENVIRONMENT_ID is not set — cut the release but promoted nothing."
+            echo "The release exists and can be promoted by hand; set the variable to automate it."
+            exit 0
+          fi
+
+          # NO IMAGE FIELD HERE, and there is nowhere to put one. The
+          # promotion names a VERSION; the digests come from the release that
+          # version already recorded. That is the entire reason this cannot
+          # rebuild.
+          BODY=$(jq -n \
+            --arg environmentId "$ENVIRONMENT_ID" \
+            --arg version       "${{"{{"}} steps.cut.outputs.version {{"}}"}}" \
+            '{environmentId: $environmentId,
+              version: $version,
+              promotedByActor: "ci"}')
+
+          HTTP=$(curl -sS -o /tmp/promote.json -w '%{http_code}' \
+            -X POST "$CONTROL_PLANE_URL/controlplane.v1.DeployService/Promote" \
+            -H "Authorization: Bearer $DEPLOY_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "$BODY")
+          cat /tmp/promote.json
+          if [ "$HTTP" != "200" ]; then
+            echo "Promote failed with HTTP $HTTP." >&2
+            echo "The release IS cut. Re-run this workflow to retry the promotion —" >&2
+            echo "the cut will be a no-op and nothing needs cleaning up." >&2
+            exit 1
+          fi
+{{- end}}
+
   summary:
     name: Build Summary
     needs:
@@ -220,6 +383,9 @@ jobs:
       {{- end}}
       {{- if .HasFrontends}}
       - build-push-frontends
+      {{- end}}
+      {{- if .CutRelease}}
+      - cut-release
       {{- end}}
     runs-on: ubuntu-latest
     if: always()
@@ -236,6 +402,9 @@ jobs:
           {{- end}}
           {{- if .HasFrontends}}
           echo "| frontends | ${{"{{"}} needs.build-push-frontends.result {{"}}"}} |" >> "$GITHUB_STEP_SUMMARY"
+          {{- end}}
+          {{- if .CutRelease}}
+          echo "| release cut + promote | ${{"{{"}} needs.cut-release.result {{"}}"}} |" >> "$GITHUB_STEP_SUMMARY"
           {{- end}}
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{"{{"}} github.sha {{"}}"}}\`" >> "$GITHUB_STEP_SUMMARY"

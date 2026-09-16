@@ -56,11 +56,17 @@ func TestIsFeatureEnabled_ExperimentalDefaultsFalse(t *testing.T) {
 func TestIsFeatureEnabled_ExperimentalExplicitTrue(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Features: config.FeaturesConfig{
+			// Every field must be listed: the loop below asserts over
+			// ExperimentalFeatureNames, so a field omitted here fails as
+			// "want true" rather than silently narrowing the test. That
+			// is deliberate — the failure is what tells you a new
+			// experimental feature was added without a gate entry.
 			Experimental: config.ExperimentalConfig{
 				Ingress:        true,
 				ExternalBuilds: true,
 				Operators:      true,
 				StrictWiring:   true,
+				Reconcile:      true,
 			},
 		},
 	}

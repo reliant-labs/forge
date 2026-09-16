@@ -31,6 +31,25 @@ type K8sClusterProvider struct {
 	// and let cluster.Apply default everything else", which is enough
 	// for tests but not for the real forge env deploy path.
 	ApplyOptsBuilder func(group ServiceGroup) cluster.ApplyOpts
+
+	// Runner is the os/exec indirection used by OBSERVE ONLY, to shell
+	// `kubectl get deployment -o json`. Nil falls back to the package
+	// default.
+	//
+	// Deploy and Rollback deliberately do NOT route through it: Deploy
+	// delegates to cluster.Apply (which owns its own execution, the KCL
+	// render and the rollout wait), and Rollback shells kubectl directly
+	// as it always has. Threading this field into either would change
+	// deploy behaviour, which is not what adding a read verb is for.
+	Runner commandRunner
+}
+
+// runner returns the commandRunner Observe shells kubectl through.
+func (p K8sClusterProvider) runner() commandRunner {
+	if p.Runner != nil {
+		return p.Runner
+	}
+	return defaultRunner
 }
 
 // rollbackContext resolves the kubectl context for a single rollback

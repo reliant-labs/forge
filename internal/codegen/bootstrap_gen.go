@@ -1168,18 +1168,26 @@ func removeRetiredBootstrapTesting(projectDir string, cs *checksums.FileChecksum
 	return nil
 }
 
-// filterExternalComponentPackages drops every internal package that
-// declares `//forge:external-component` from the slice. Such a package is
-// hand-built in providers.go / OpenInfra and is NOT a forge-wired component,
-// so the test harness emits no NewTest<Pkg> factory for it and it does not
-// participate in the cross-role test-factory collision count. The on-disk
-// dir is internal/<ImportPath> (PackageDataFromNames preserves the nested
-// import path). Mirrors filterExternalComponents on the Build side.
+// filterExternalComponentPackages narrows pkgs to the packages that actually
+// occupy a test-factory namespace slot: the forge-WIRED components. It drops
+// anything hand-built in providers.go / OpenInfra
+// (`//forge:external-component`) and anything with no component to construct
+// at all — a types-only package carrying `//forge:exclude-contract`, or a
+// directory with no contract.go. None of those get a NewTest<Pkg> factory, so
+// none of them participate in the cross-role collision count.
+//
+// The membership test is IsWiredComponentDir, the SAME predicate
+// ComputeTestHelperName uses to decide whether the handler service needs its
+// "Svc" prefix. Sharing it is the point: when these two derived the answer
+// from different sources, a types-only internal/deploy put NewTestDeploy in
+// testing.go and NewTestSvcDeploy in the scaffold tests. The on-disk dir is
+// internal/<ImportPath> (PackageDataFromNames preserves the nested import
+// path). Mirrors filterExternalComponents on the Build side.
 func filterExternalComponentPackages(projectDir string, pkgs []BootstrapPackageData) []BootstrapPackageData {
 	out := make([]BootstrapPackageData, 0, len(pkgs))
 	for _, p := range pkgs {
 		dir := filepath.Join(projectDir, "internal", filepath.FromSlash(p.ImportPath))
-		if HasExternalComponentDirective(dir) {
+		if !IsWiredComponentDir(dir) {
 			continue
 		}
 		out = append(out, p)

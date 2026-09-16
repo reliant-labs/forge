@@ -1790,16 +1790,28 @@ func (f FeaturesConfig) IsZero() bool {
 //     terminates the process after Bootstrap. Implies
 //     Diagnostics: true. Stays experimental because the
 //     diagnostics catalogue itself is still settling.
+//   - Reconcile:      the reconciliation loop — Provider.Observe reads
+//     back what is actually running, and desired state is
+//     pulled as a content-addressed OCI artifact rather
+//     than re-rendered. OFF means Deploy/Rollback behave
+//     exactly as they always have and NOTHING observes;
+//     the verb still exists on the interface (an interface
+//     that changed shape with a config flag would be
+//     unimplementable), it is simply never driven. Stays
+//     experimental because most providers still report
+//     unsupported, so a loop built on it today would be
+//     reconciling a minority of tiers.
 type ExperimentalConfig struct {
 	Ingress        bool `yaml:"ingress,omitempty"`
 	ExternalBuilds bool `yaml:"external_builds,omitempty"`
 	Operators      bool `yaml:"operators,omitempty"`
 	StrictWiring   bool `yaml:"strict_wiring,omitempty"`
+	Reconcile      bool `yaml:"reconcile,omitempty"`
 }
 
 // IsZero reports whether the experimental block carries nothing explicit.
 func (e ExperimentalConfig) IsZero() bool {
-	return !e.Ingress && !e.ExternalBuilds && !e.Operators && !e.StrictWiring
+	return !e.Ingress && !e.ExternalBuilds && !e.Operators && !e.StrictWiring && !e.Reconcile
 }
 
 // resolve resolves a stable feature flag by name: an explicit value wins;
@@ -1976,6 +1988,7 @@ const (
 	FeatureExternalBuilds FeatureName = "external_builds"
 	FeatureOperators      FeatureName = "operators"
 	FeatureStrictWiring   FeatureName = "strict_wiring"
+	FeatureReconcile      FeatureName = "reconcile"
 )
 
 // ExperimentalFeatureNames lists every Feature* constant that lives
@@ -1986,6 +1999,7 @@ var ExperimentalFeatureNames = []FeatureName{
 	FeatureExternalBuilds,
 	FeatureOperators,
 	FeatureStrictWiring,
+	FeatureReconcile,
 }
 
 // IsExperimentalFeature reports whether a feature name lives under the
@@ -2010,6 +2024,7 @@ func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
 		FeatureExternalBuilds: f.Experimental.ExternalBuilds,
 		FeatureOperators:      f.Experimental.Operators,
 		FeatureStrictWiring:   f.Experimental.StrictWiring,
+		FeatureReconcile:      f.Experimental.Reconcile,
 	}
 	out := make([]FeatureName, 0, len(checks))
 	for _, name := range ExperimentalFeatureNames {
@@ -2045,8 +2060,20 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 		FeatureExternalBuilds: f.ExternalBuildsEnabled(),
 		FeatureOperators:      f.OperatorsEnabled(),
 		FeatureStrictWiring:   f.StrictWiringEnabled(),
+		FeatureReconcile:      f.ReconcileEnabled(),
 	}
 }
+
+// ReconcileEnabled reports whether the reconciliation loop is wired
+// (default: OFF — opt-in under `features.experimental.reconcile: true`).
+//
+// OFF is a genuine no-op, not a degraded mode: `forge env deploy` and its
+// rollback path run exactly the code they ran before this feature
+// existed, nothing calls Provider.Observe, and no desired-state artifact
+// is fetched. The flag gates the DRIVING of the loop, not the existence
+// of Observe on the Provider interface — an interface whose method set
+// changed with a config value could not be implemented at all.
+func (f FeaturesConfig) ReconcileEnabled() bool { return f.Experimental.Reconcile }
 
 // StrictWiringEnabled reports whether the diagnostics strict-mode
 // exit is wired by bootstrap (default: OFF — opt-in under

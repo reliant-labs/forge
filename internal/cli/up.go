@@ -436,6 +436,9 @@ func upDeployNamespace(entities *KCLEntities, store metaReader, env string) stri
 			if s.Deploy.Type == "cluster" && s.Deploy.Cluster != nil && s.Deploy.Cluster.Namespace != "" {
 				return s.Deploy.Cluster.Namespace
 			}
+			if s.Deploy.Type == "simple-backend" && s.Deploy.SimpleBackend != nil && s.Deploy.SimpleBackend.Namespace != "" {
+				return s.Deploy.SimpleBackend.Namespace
+			}
 		}
 		if entities.ManifestNamespace != "" {
 			return entities.ManifestNamespace
@@ -1265,8 +1268,9 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 			// host-mode frontend (the static `output: "export"` Next.js
 			// build) right before — and pointlessly alongside — starting
 			// its `next dev` server. The build-only path exists to
-			// materialize a static frontend for a FirebaseHosting frontend
-			// to reference at DEPLOY time; it has no place in the dev loop.
+			// materialize a static frontend for a shipping frontend
+			// (FirebaseHosting or StaticSite) to reference at DEPLOY time;
+			// it has no place in the dev loop.
 			if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true, targets: opts.targets}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}
@@ -1304,7 +1308,11 @@ func targetPhaseRequirements(e *KCLEntities, targets []string) upPhaseRequiremen
 			continue
 		}
 		switch svc.Deploy.Type {
-		case "cluster":
+		case "cluster", "simple-backend":
+			// Both need the cluster phase: a SimpleBackend renders a
+			// Deployment through the same apply path, so `forge env up
+			// --target <a-simple-backend>` must reconcile the cluster or
+			// the apply has nothing to write to.
 			out.deploy = true
 			out.cluster = true
 		case "compose", "external", "host-infra":
@@ -2510,6 +2518,31 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		return fmt.Errorf("group infrastructure services: %w", err)
 	}
 	projectDir := projectDirForKCL()
+	// APPLICATION providers are deliberately absent from this map —
+	// k8s-cluster, external, firebase and static-site are all things the
+	// dev loop deploys later (or not at all), not servers it must dial
+	// first. deployInfraGroups SKIPS anything absent here, silently and by
+	// design, so read an omission as a decision rather than an oversight:
+	// adding an application provider would make `forge env up` publish a
+	// production artifact during dev bring-up.
+	//
+	// SIMPLE-BACKEND is absent too, and unlike the others it is worth
+	// stating why, because it IS a long-running server and so looks at
+	// first glance like infrastructure. Two reasons it is not:
+	//
+	//   * It is a DEPLOYED application on a hosted cluster, not a server
+	//     this project's host processes dial. Nothing in the dev loop
+	//     connects to it, which is the entire criterion for this map.
+	//   * Prewarming it would do precisely what the paragraph above
+	//     forbids — publish a production workload to a real cluster
+	//     during `forge env up`, before the deploy phase the user
+	//     actually asked for.
+	//
+	// Mechanically it needs no entry regardless: buildDeployGroups routes
+	// a SimpleBackend into a "k8s-cluster" group (see deploy_dispatch.go),
+	// which this map already omits. The point of saying so here is that
+	// the omission is a DECISION and stays correct if that routing ever
+	// changes — at which point this comment is the thing to re-read.
 	return deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
 		"host-infra": deploytarget.HostInfraProvider{ProjectDir: projectDir},
 		"compose":    deploytarget.ComposeProvider{ProjectDir: projectDir},
@@ -2518,8 +2551,14 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 
 // deployInfraGroups runs each INFRASTRUCTURE group through its provider and
 // returns every failure, joined. Groups whose provider is not in the map
-// (cluster / external / firebase) are skipped — they are applications, not
-// the servers those applications dial.
+// (cluster / external / firebase / static-site) are skipped — they are
+// applications, not the servers those applications dial.
+//
+// The skip is SILENT, which is correct here but is also the sharp edge:
+// a new provider that genuinely IS infrastructure will do nothing at all
+// until it is added to prewarmInfra's map, with no error to notice. If
+// you are adding a provider, decide deliberately which side of that line
+// it falls on.
 //
 // Split out from prewarmInfra so the attempt-everything contract is
 // testable without a project on disk. That contract is the whole point of

@@ -197,11 +197,8 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 // observe_chain.go seam is absent), so opting out by deleting the seam leaves
 // no orphan decorator behind. A missing file is not an error.
 func RemoveObservedDecorator(dir string) error {
-	path := filepath.Join(dir, observedFileName())
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove %s: %w", path, err)
-	}
-	return nil
+	// Journaled so an aborted run restores the decorator — see removeJournaled.
+	return removeJournaled(filepath.Join(dir, observedFileName()))
 }
 
 // observedFileName is the decorator's filename. It is a fixed name in the

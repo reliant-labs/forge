@@ -922,6 +922,196 @@ schema K8sCluster:
         registry, "K8sCluster.registry is required (image registry, e.g. ghcr.io/org/proj)"
         replicas > 0, "K8sCluster.replicas must be positive"
 
+schema SimpleBackend:
+    """A single container, running in a cluster forge did not create.
+
+    This is the ENTRY deploy tier: the app owner brings a built image and a
+    handful of facts about how to run it, and forge lands one Deployment
+    (plus, per `network`, a Service, and per `storage_gib`, a PVC) in a
+    namespace on a cluster it is pointed at. It is a CONSTRAINED PROFILE
+    over K8sCluster, not a parallel mechanism — `render_manifests`
+    projects it onto the same `RenderedWorkload{deploy = K8sCluster}` the
+    k8s adapter already emits (`_project_simple_backend`, render.k), so
+    apply, prune, rollout-wait, secret rendering, RBAC and the kubectl
+    -context discipline are the EXISTING ones. Nothing here re-implements
+    a deploy pipeline.
+
+    THE SCHEMA IS CLOSED, AND THAT IS THE ENFORCEMENT MECHANISM. The way
+    a hosted tier rejects configuration it must not honour is to not
+    declare the field: an absent field needs no allowlist, cannot drift
+    out of sync with one, and KCL refuses it for free with a message
+    naming the schema. So there is deliberately NO `replicas` (see
+    `storage_gib`), no `security_context`, no `cluster_rbac`, no
+    `image_pull_secrets`, no `platform`, no raw-manifest passthrough, and
+    no node placement. An app that needs any of those has outgrown this
+    tier and should declare a `forge.K8sCluster` service instead — which
+    is a different product, not a flag on this one.
+
+    Fields:
+      * `cluster` / `namespace` — the target coordinates, which forge
+                        cannot derive. Present for the same reason
+                        K8sCluster carries them: the rendered JSON
+                        contract is PER-SERVICE and the Go deploy
+                        dispatcher groups + routes each service by them.
+                        The platform fills these in; they are not a
+                        an app-facing knob.
+      * `image`      — the container image, FULLY QUALIFIED and PINNED
+                        (`ghcr.io/acme/app:v1.2.3` or `…@sha256:…`).
+                        forge does NOT build this image and does not
+                        prefix a registry onto it — see the checks, and
+                        `EffectiveBuild` on the Go side, which returns no
+                        build for this deploy type. Requiring the
+                        registry host explicitly is also what stops forge
+                        resolving a bare name against an env registry the
+                        app owner does not control.
+      * `ports`      — TCP ports the container listens on. Container
+                        ports always; Service ports when `network` is not
+                        "none".
+      * `env_vars`   — the container environment. The ORDINARY forge
+                        `EnvVar`, so all four channels (inline value,
+                        secret_ref, config_map_ref, field_ref) work here
+                        exactly as they do for a K8sCluster service, and
+                        a secret_ref gets a rendered Secret + secretKeyRef
+                        through the existing wiring. Zero new env
+                        machinery.
+      * `resources`  — compute request/limit in the neutral units
+                        (millicores / bytes). Ratio-constrained; see
+                        below. Defaults to the entry shape, 250m / 1 GiB,
+                        which is itself conformant — omitting `resources`
+                        must produce a RUNNING workload, not a check
+                        failure.
+      * `health_check` — liveness + readiness. Projected onto the
+                        agnostic `HealthProbe` the k8s renderer actually
+                        reads (the deploy block's `health_check` is the
+                        host/compose-shaped field — the same split
+                        `_project_frontend` navigates).
+      * `storage_gib` — provision a PersistentVolumeClaim of this size and
+                        mount it at /data. This is the ONE genuinely new
+                        manifest kind in this tier: forge elsewhere only
+                        REFERENCES a PVC by name (forge.Volume, type =
+                        "pvc") and never emits one.
+      * `network`    — "public" | "private" | "none"; see below.
+      * `domain`     — the hostname this backend is served on. REQUIRED
+                        for network = "public" and rejected otherwise.
+                        forge does not create DNS or a route from it: it
+                        rides the entity contract (K8sCluster.domain
+                        already does) so the platform's ingress can read
+                        it, and a project wanting a real in-cluster route
+                        declares an ordinary `forge.HTTPRoute` naming
+                        this service — the route layer already addresses
+                        backends by service name, so that needs no new
+                        schema.
+
+    NETWORK IS A MANIFEST DIFFERENCE, NOT A LABEL. The three modes differ
+    in what is actually emitted, which is what makes them checkable
+    rather than aspirational:
+
+      * "none"    — NO Service object at all. Nothing in or out of the
+                    cluster can dial this workload by name; it is a
+                    worker that reaches out and is never reached. Note
+                    this is ADDRESSABILITY, not containment: it is not a
+                    NetworkPolicy and makes no claim about egress. A
+                    deny-all policy is a different control and belongs to
+                    the namespace (lib/netpol.k), not to one workload's
+                    deploy block — conflating the two would let a reader
+                    read "none" as a security boundary it is not.
+      * "private" — a ClusterIP Service. In-cluster peers may dial it.
+                    The default.
+      * "public"  — a ClusterIP Service, plus a required `domain`. The
+                    Service is identical to "private"; what differs is
+                    that the workload asserts a public hostname, which is
+                    what the platform's ingress keys on.
+
+    REPLICAS ARE ALWAYS 1, and that is a consequence rather than a
+    limitation to route around. `storage_gib` renders a ReadWriteOnce
+    PVC, and a multi-replica Deployment mounting one RWO volume either
+    wedges on rolling update or refuses to schedule across nodes. Since
+    the tier cannot express a StatefulSet, a shared-storage class, or a
+    Recreate strategy, exposing a `replicas` knob would offer a setting
+    that silently breaks precisely the workloads that set `storage_gib`.
+    Horizontal scale is the next tier up.
+
+    THE CPU:MEMORY RATIO IS A BILLING CONTRACT, and this is why the check
+    is HERE rather than on `Resources`. `Resources` is shared by every
+    workload forge renders, and a self-hosted K8sCluster service must not
+    inherit a hosted tier's pricing rule. The platform bills the MAX of
+    (what you asked for, what the 4 GiB-per-vCPU shape band implies on
+    each axis) — control-plane's inframeter.RatioFloor. So a lopsided
+    request is not rejected by the platform, it is silently REPRICED: ask
+    for 1000m + 1 GiB and you are billed for 4 GiB; ask for 250m + 4 GiB
+    and you are billed for 1000m. Either way the invoice does not match
+    the declaration, and nothing at deploy time said so. Requiring the
+    declared shape to sit exactly ON the band is what makes the bill
+    equal the request.
+
+    The neutral ints make that a direct comparison with no unit parsing:
+    memory_request_bytes * 1000 == cpu_request_millicores * 4 GiB. The
+    conformant ladder (and the reason for the 125-millicore granularity —
+    it is the coarsest step at which the implied memory lands on a whole
+    byte):
+
+        125m  / 512Mi        1000m / 4Gi
+        250m  / 1Gi          2000m / 8Gi
+        500m  / 2Gi          4000m / 16Gi
+    """
+    type: str = "simple-backend"
+    cluster: str
+    namespace: str
+    image: str
+    ports: [int] = []
+    env_vars: [EnvVar] = []
+    # The entry shape, 250m / 1 GiB, stated explicitly rather than
+    # inherited: forge.Resources' own defaults (100m / 128Mi) are NOT
+    # ratio-conformant, so inheriting them would make `resources` a field
+    # you cannot omit — a scaffold that fails its own check.
+    resources: Resources = Resources {
+        cpu_request_millicores = 250
+        cpu_limit_millicores = 250
+        memory_request_bytes = 1073741824       # 1 GiB
+        memory_limit_bytes = 1073741824         # 1 GiB
+    }
+    health_check?: HealthCheck
+    storage_gib?: int
+    network: str = "private"
+    domain?: str
+
+    check:
+        type == "simple-backend", "SimpleBackend.type must be 'simple-backend'"
+        cluster, "SimpleBackend.cluster is required (kubectl context name)"
+        namespace, "SimpleBackend.namespace is required"
+        image, "SimpleBackend.image is required"
+        # A registry HOST must be explicit. forge does not build this image
+        # and must not resolve a bare name against an env registry the
+        # app owner does not control; mirrors lib/services.k
+        # _image_has_registry_host.
+        "/" in image and ("." in image.split("/")[0] or ":" in image.split("/")[0] or image.split("/")[0] == "localhost"), \
+            "SimpleBackend.image must name its registry host explicitly (e.g. 'ghcr.io/acme/app:v1'), because forge neither builds this image nor prefixes a registry onto it"
+        "@sha256:" in image or ":" in image.split("/")[-1], \
+            "SimpleBackend.image must be PINNED to a tag or digest (e.g. ':v1.2.3' or '@sha256:…') — an unpinned image makes a redeploy silently change what runs"
+        network in ["public", "private", "none"], \
+            "SimpleBackend.network must be 'public' | 'private' | 'none'"
+        network != "public" or domain, \
+            "SimpleBackend.network = 'public' requires a domain — a public backend with no hostname has nothing for the platform's ingress to key on"
+        network == "public" or domain == Undefined, \
+            "SimpleBackend.domain is only meaningful for network = 'public'; omit it (a hostname on a private/none backend is served by nothing)"
+        network == "none" or ports, \
+            "SimpleBackend.network = '${network}' requires at least one port — a reachable backend that listens on nothing cannot be dialed"
+        network != "none" or not ports, \
+            "SimpleBackend.network = 'none' must declare no ports: no Service object is rendered, so a port here would describe an address that does not exist"
+        storage_gib == Undefined or storage_gib > 0, \
+            "SimpleBackend.storage_gib must be positive when set; omit it for a stateless backend"
+        # ── the 4 GiB-per-vCPU shape band (see the docstring) ────────────
+        resources.cpu_request_millicores > 0, \
+            "SimpleBackend.resources.cpu_request_millicores must be positive"
+        resources.cpu_request_millicores % 125 == 0, \
+            "SimpleBackend.resources.cpu_request_millicores must be a multiple of 125 (125m/250m/500m/1000m/…) — the coarsest granularity at which the 4 GiB-per-vCPU shape band lands on a whole byte of memory"
+        resources.memory_request_bytes * 1000 == resources.cpu_request_millicores * 4294967296, \
+            "SimpleBackend.resources must sit on the 4 GiB-per-vCPU shape band (125m/512Mi, 250m/1Gi, 500m/2Gi, 1000m/4Gi, 2000m/8Gi) — the platform bills the max of what you asked for and what the band implies, so an off-band shape is repriced silently rather than rejected"
+        resources.cpu_limit_millicores >= resources.cpu_request_millicores, \
+            "SimpleBackend.resources.cpu_limit_millicores must be at least the request"
+        resources.memory_limit_bytes >= resources.memory_request_bytes, \
+            "SimpleBackend.resources.memory_limit_bytes must be at least the request"
+
 schema External:
     """Generic shell-command deploy target. Use this for any deploy
     target driven by a CLI: Fly.io (`flyctl`), Cloudflare Workers
@@ -1353,15 +1543,55 @@ schema Cluster:
 
     Fields:
       * `name`     — k3d cluster name. `.context` is `k3d-<name>`.
+      * `provider` — which ClusterProvider ensures this cluster: "k3d"
+                     (default — the local docker-nested cluster this schema
+                     has always described), "vcluster" (a virtual cluster
+                     hosted inside another Cluster), or "gke" (a managed GKE
+                     cluster). Only "k3d" is implemented; declaring
+                     "vcluster" or "gke" renders successfully (so the
+                     declaration itself is never blocked) but forge REFUSES
+                     to reconcile it with a clear "not yet implemented"
+                     error, so a project can declare its target topology
+                     ahead of the provider landing.
+
+                     This field must exist from a Cluster's FIRST
+                     declaration, not be added later: for a vcluster,
+                     whether its worker nodes are dedicated (private) or
+                     shared with the host cluster is an irreversible,
+                     day-0 decision per instance (a running vCluster cannot
+                     be converted between the two), so there is no safe
+                     later migration path the way there is for most schema
+                     fields.
       * `owner`    — reference to the OWNER Cluster instance. Set on a
                      SECONDARY cluster to join the owner's network +
                      inherit its registry (both DERIVED, see above). Unset
-                     on an owner cluster.
+                     on an owner cluster. Meaningful for `provider = "k3d"`
+                     only — `.network` and `.registry_inherit` describe a
+                     docker network and a containerd registry mirror, which
+                     have no equivalent for a `vcluster`/`gke` provider. A
+                     vcluster's host relationship is a SEPARATE `host?`
+                     edge (not yet implemented — see below), not an
+                     overload of `owner`.
       * `config`   — path to a k3d Simple-config YAML. When set, forge
                      runs `k3d cluster create --config <config>` and the
                      image/servers/agents/api_port/network flags are ignored
                      (the config file is authoritative). Relative paths
-                     resolve against the project root.
+                     resolve against the project root. `provider = "k3d"`
+                     only.
+
+    Design note — vcluster hosting (`host?`, not yet implemented): a
+    `provider = "vcluster"` Cluster will need to name the REAL cluster it
+    runs inside. That is deliberately a DIFFERENT field from `owner`, once
+    it lands — `owner` is k3d-only cross-cluster docker/registry plumbing
+    (see above), and stretching it to also mean "the k8s cluster hosting
+    my control plane" would make a single edge answer two unrelated
+    questions depending on the referencing Cluster's `provider`. A vcluster
+    instead declares `host: Cluster` (any provider, most commonly a "k3d"
+    or "gke" Cluster instance) so the vCluster provider's Ensure() knows
+    which real cluster's kubeconfig to use for the `vcluster create`
+    control-plane install. `owner` stays reserved for k3d's own nested-
+    network/registry-mirror relationship and is never read by a
+    non-"k3d" provider.
       * `image`    — k3s node image for a flag-driven cluster. Defaults to
                      the current Forge-supported Kubernetes release. Pinning
                      this keeps secondary clusters from silently inheriting
@@ -1406,6 +1636,10 @@ schema Cluster:
                      no deploy/k3d-ports.yaml fragment.
     """
     name: str
+    # Which ClusterProvider ensures this cluster. Only "k3d" is
+    # implemented today; "vcluster" / "gke" declare intent but are
+    # rejected at reconcile time. See the Fields doc above.
+    provider: str = "k3d"
     owner?: Cluster
     config?: str
     image: str = "rancher/k3s:v1.36.3-k3s1"
@@ -1416,7 +1650,8 @@ schema Cluster:
     host_ports: bool = False
     # Derived: kubectl context (k3d-<name>). Computed from `name` so
     # consumers reference `<cluster>.context` rather than re-spelling the
-    # `k3d-` prefix. Always present.
+    # `k3d-` prefix. Always present. Only "k3d"'s context convention is
+    # implemented; a future provider will need its own derivation here.
     context: str = "k3d-" + name
     # Derived: the docker network this cluster joins. `k3d-<owner.name>`
     # when `owner` is set (join the owner's auto-created network);
@@ -1432,6 +1667,8 @@ schema Cluster:
 
     check:
         name, "Cluster.name is required"
+        provider in ["k3d", "vcluster", "gke"], \
+            "Cluster.provider must be 'k3d' | 'vcluster' | 'gke'"
         image, "Cluster.image is required"
         servers > 0, "Cluster.servers must be positive"
         agents >= 0, "Cluster.agents must be non-negative"
@@ -1674,7 +1911,7 @@ schema BuildOnly:
 #
 # Build is the per-service answer to "HOW is this service's artifact
 # produced". It is a POLYMORPHIC UNION of concrete build-type schemas —
-# GoBuild | DockerBuild | ShellBuild — each inheriting the `Build` base
+# GoBuild | DockerBuild | ShellBuild | RemoteBuild — each inheriting the `Build` base
 # and discriminated by a `type` field on the subschema, IDENTICAL in
 # shape to the deploy union above. KCL emits the discriminator into the
 # rendered JSON automatically so forge's Go (build.go) dispatches on
@@ -1814,39 +2051,153 @@ schema ShellBuild(Build):
         type == "shell", "ShellBuild.type must be 'shell'"
         cmd, "ShellBuild.cmd is required"
 
+schema RemoteBuild(Build):
+    """Build this service's image on a HOSTED build service rather than on
+    the machine running `forge build`.
+
+    THE PROBLEM IT SOLVES. Every other member of this union builds
+    LOCALLY: GoBuild shells out to `go build`, DockerBuild to
+    `docker build`, ShellBuild to a command on this host. Each therefore
+    requires the toolchain, the daemon, and the source to be present
+    wherever forge runs — which is fine on a laptop and in CI, and is not
+    fine for a hosted product whose users have none of those. A
+    RemoteBuild says "that repository at that commit becomes an image",
+    and where the compilation happens stops being the caller's problem.
+
+    SOURCE IS A PIN, NOT A PATH. `source` is a `GitSource` — the same
+    repo+ref pin the frontend and image halves already use — rather than
+    a directory, and that is what makes a remote build possible at all: a
+    build service cannot read the caller's filesystem, so a source
+    declared as a path has nothing to send. It is also what makes the
+    result reproducible, which is the property `go.mod` has always given
+    the Go half and a `path = "../sibling"` never could.
+
+    ASYNCHRONOUS, UNLIKE EVERY OTHER BUILD IN FORGE. A local build blocks
+    until it finishes because a subprocess has nowhere else to be. A
+    remote build is submitted and then polled: it may queue behind other
+    work on a shared service, and it may take minutes. `forge build`
+    waits for the result by default so the common case reads like every
+    other build; `--async` submits and returns a handle instead, for a
+    caller that wants to fan several builds out and collect them.
+
+    WHAT IS DELIBERATELY NOT HERE — and the absences are the security
+    model, because a build service executes the CALLER's instructions on
+    infrastructure it shares with other callers:
+
+      * No registry, and no push credential. The service derives the
+        destination from the identity it AUTHENTICATED the submission
+        with, and pushes with a credential the build environment never
+        holds. A registry field here would be a value the build could
+        aim, which on a shared service means aiming it at somebody else.
+      * No cache reference. The layer cache is derived from that same
+        authenticated identity; a shared or nameable cache is a
+        supply-chain compromise, where one caller poisons a layer and
+        everybody building on it ships those bytes under their own name.
+      * No tag. The image is tagged with the resolved COMMIT and
+        referenced by digest, so a second build cannot re-point an
+        existing tag at different bytes — the property promotion rests
+        on.
+      * No secret build args. `build_args` are recorded in the image's
+        history and readable by anyone who can pull it, so a "secret
+        build arg" is a leak with a reassuring name. Runtime secrets
+        belong on the deploy block, which is a genuinely private channel.
+
+    `cpu_millicores` / `memory_bytes` size the build and are what it is
+    BILLED on. Builds are interruptible and run on preemptible capacity,
+    which is why build compute prices below runtime compute — a build
+    that is preempted is retried, never resumed, because resuming would
+    mean trusting a cache written by a machine that stopped mid-write."""
+    type: str = "remote"
+    # The repository and ref to build. A pin, never a local path — see
+    # the docstring: a build service cannot read the caller's disk.
+    source: GitSource
+    # Dockerfile path RELATIVE TO the build context (source.subdir, or
+    # the repository root). Must stay inside it: the paths above a build
+    # context on the build host are the layer cache and the output the
+    # trusted pusher publishes.
+    dockerfile: str = "Dockerfile"
+    # Stage to stop at, for a multi-stage Dockerfile.
+    target: str = ""
+    # A CLOSED PAIR, not a passthrough. `--platform` accepts values no
+    # build node can execute, and such a request fails as a scheduling
+    # error rather than as the unsupported request it is.
+    platform: str = "linux/amd64"
+    # `--build-arg` pairs. PUBLIC by construction — see the docstring.
+    build_args: {str: str} = {}
+    # Build pod size. Also the billing dimensions.
+    cpu_millicores: int = 2000
+    memory_bytes: int = 8589934592
+    # Layer-cache volume size, in GiB. A SIZE and never a name: an int
+    # cannot reference a cache belonging to anybody else.
+    cache_gib: int = 20
+    # Wall-clock cap in seconds. The service additionally clamps this to
+    # its own hard ceiling, so a large number here buys a large timeout
+    # up to that ceiling and never unbounded compute.
+    timeout_seconds: int = 900
+
+    check:
+        type == "remote", "RemoteBuild.type must be 'remote'"
+        source, "RemoteBuild.source is required (a GitSource repo+ref pin — a remote builder cannot read your filesystem, so a local path has nothing to send)"
+        dockerfile, "RemoteBuild.dockerfile is required"
+        not dockerfile.startswith("/"), \
+            "RemoteBuild.dockerfile must be relative to the build context, not absolute"
+        not dockerfile.startswith(".."), \
+            "RemoteBuild.dockerfile must not escape the build context"
+        platform in ["linux/amd64", "linux/arm64"], \
+            "RemoteBuild.platform must be 'linux/amd64' or 'linux/arm64' — a platform no build node can execute would fail as a scheduling error rather than as the unsupported request it is"
+        cpu_millicores > 0, "RemoteBuild.cpu_millicores must be positive"
+        memory_bytes > 0, "RemoteBuild.memory_bytes must be positive"
+        cache_gib >= 0, "RemoteBuild.cache_gib must not be negative"
+        timeout_seconds >= 60, "RemoteBuild.timeout_seconds must be at least 60"
+
 # ---------------------------------------------------------------------------
 # Frontend deploy union.
 #
 # Frontends have their own deploy discriminator (parallel to the Service
 # one) because their deploy targets differ: a static export ships to a
-# CDN / Firebase Hosting / Vercel, not a Deployment. The first variant is
-# FirebaseHosting; FirebaseHosting / (future) Vercel share the `type`
+# CDN / object store / Firebase Hosting / Vercel, not a Deployment.
+# FirebaseHosting, StaticSite and (future) Vercel share the `type`
 # discriminator so the consumer dispatches on `deploy.type`.
 # ---------------------------------------------------------------------------
 
-schema FirebaseBundleDir:
-    """An extra static directory assembled into a Firebase Hosting site
+schema BundleDir:
+    """An extra static directory assembled into a deployed site
     alongside the frontend's own build output.
 
     Use it to co-locate a sibling repo's already-built static SPA under
-    the same hosting site as the forge frontend — e.g. a Vite SPA at the
-    site root (`dest = ""`) with the forge Next.js admin export mounted
-    under `/admin` (the frontend's own `base_path`).
+    the same site as the forge frontend — e.g. a Vite SPA at the site
+    root (`dest = ""`) with the forge Next.js admin export mounted under
+    `/admin` (the frontend's own `base_path`).
 
       * `src`  — directory on disk holding the pre-built static files
                  (relative paths resolve against the project root). It is
                  NOT built by forge; the caller is expected to have run
                  the sibling build already (or to wire it via a separate
                  forge.Service `build = forge.ShellBuild {...}`).
-      * `dest` — sub-path under the hosting site's public root to copy
-                 `src` into. Empty (the default) means the site root.
-                 A leading "/" is tolerated and stripped.
+      * `dest` — sub-path under the site's public root to copy `src`
+                 into. Empty (the default) means the site root. A leading
+                 "/" is tolerated and stripped.
+
+    Target-NEUTRAL: assembling a bundle is the same operation whether the
+    tree ends up on Firebase Hosting or in an object-store bucket, so
+    both deploy variants accept this one schema.
     """
     src: str
     dest: str = ""
 
     check:
-        src, "FirebaseBundleDir.src is required"
+        src, "BundleDir.src is required"
+
+schema FirebaseBundleDir(BundleDir):
+    """Deprecated alias for BundleDir, kept so existing `main.k` files
+    that name it keep rendering. It adds nothing: a FirebaseBundleDir IS
+    a BundleDir and is accepted anywhere one is.
+
+    The concept was never Firebase-specific — it is "an extra pre-built
+    static dir to assemble into the site" — and the name became actively
+    misleading once StaticSite started consuming the same shape. Prefer
+    `forge.BundleDir` in new code; this alias will be removed.
+    """
 
 schema FirebaseHosting:
     """Deploy a frontend's static build output to Firebase Hosting.
@@ -1886,7 +2237,7 @@ schema FirebaseHosting:
     target?: str
     public_dir: str
     base_path?: str
-    bundle: [FirebaseBundleDir] = []
+    bundle: [BundleDir] = []
     rewrites: [{str: any}] = []
 
     check:
@@ -1896,6 +2247,176 @@ schema FirebaseHosting:
         public_dir, "FirebaseHosting.public_dir is required (frontend build output dir, e.g. 'out' or 'dist')"
         base_path == Undefined or base_path.startswith("/"), \
             "FirebaseHosting.base_path must start with '/' (e.g. '/admin'); omit for the site root"
+
+schema CacheRule:
+    """One Cache-Control header applied to the objects a glob matches.
+
+    Rules are evaluated IN ORDER and the FIRST match wins, so the
+    specific patterns go first and a catch-all last. An object matching
+    no rule is uploaded without an explicit Cache-Control and inherits
+    whatever the bucket/CDN default is.
+
+      * `pattern`       — glob against the object's site-relative path
+                          ("_next/static/**", "*.html", "**").
+      * `cache_control` — the header value, verbatim.
+
+    The 80/20 this exists for: a modern JS build emits content-HASHED
+    asset filenames, which are immutable and can be cached forever, plus
+    a handful of entry documents that MUST NOT be, or a deploy is
+    invisible until the old HTML expires. Two rules express it:
+
+        cache_control = [
+            forge.CacheRule { pattern = "_next/static/**", cache_control = "public, max-age=31536000, immutable" }
+            forge.CacheRule { pattern = "**",              cache_control = "public, max-age=0, must-revalidate" }
+        ]
+
+    Getting this right is also what keeps invalidation cheap — see
+    StaticSiteCDN.invalidate.
+    """
+    pattern: str
+    cache_control: str
+
+    check:
+        pattern, "CacheRule.pattern is required (a glob, e.g. '_next/static/**')"
+        cache_control, "CacheRule.cache_control is required (the header value)"
+
+schema StaticSiteCDN:
+    """Cloud CDN in front of the site's bucket, and what a deploy does to
+    the edge cache afterwards.
+
+    forge does NOT create the CDN. `url_map` names an EXISTING load
+    balancer URL map whose backend is this bucket; declaring it is what
+    tells forge where to send invalidations. Omit the whole `cdn` block
+    for a bucket served directly, and a deploy performs no invalidation
+    at all.
+
+    INVALIDATION IS RATE-LIMITED AND THIS FIELD IS WHY IT MATTERS.
+    Cloud CDN meters invalidation requests per project, and each one is a
+    global cache-purge that also costs a cold origin fetch for every
+    purged object. A team pushing to preview 50 times an hour will hit
+    the quota with a naive `/*` per deploy, and the failure arrives as a
+    deploy error on push 40-something — long after the habit formed.
+
+    So the default is `entrypoints`, not `all`:
+
+      * `entrypoints` (DEFAULT) — invalidate only the documents that
+        CANNOT be content-addressed: the site's HTML entry points and the
+        runtime config document. Content-hashed assets need no
+        invalidation ever, because a new build emits new filenames. This
+        is O(a few paths) per deploy regardless of how large the site is,
+        and it is correct for every build that hashes its asset
+        filenames — which is every modern JS build.
+      * `none` — invalidate nothing. Correct when the cache TTL is short
+        enough that waiting is fine, or when a deploy is a promotion that
+        did not change the bytes. Also the escape hatch when a project
+        has already burned its quota and would rather wait than fail.
+      * `all` — purge `/*`. Correct when a build does NOT hash its asset
+        filenames, and a deliberate choice with a real cost. forge warns
+        each time so it stays a decision rather than a default nobody
+        revisited.
+
+    `extra_invalidate_paths` adds paths to the `entrypoints` set for a
+    site whose un-hashed documents forge cannot infer (a bare `/manifest.json`,
+    a service worker). It is additive and ignored under `none`/`all`.
+    """
+    url_map: str
+    invalidate: str = "entrypoints"
+    extra_invalidate_paths: [str] = []
+
+    check:
+        url_map, "StaticSiteCDN.url_map is required (the existing LB url map fronting this bucket)"
+        invalidate in ["entrypoints", "none", "all"], \
+            "StaticSiteCDN.invalidate must be 'entrypoints' (default), 'none', or 'all'"
+        all p in extra_invalidate_paths { p.startswith("/") }, \
+            "StaticSiteCDN.extra_invalidate_paths entries must be absolute site paths starting with '/'"
+
+schema StaticSite:
+    """Deploy a frontend's static build output to an object-storage
+    bucket, optionally behind a CDN.
+
+    This is the same build-and-assemble contract as FirebaseHosting —
+    forge builds the frontend (`<dev_runner> install` + `npm run build`)
+    with the frontend's `env_vars` injected as build-time environment,
+    assembles `public_dir` plus any `bundle` dirs into one tree honoring
+    `base_path`, and writes this environment's runtime config document
+    into it last — differing only in where the assembled tree goes and
+    what happens to the edge cache afterwards.
+
+    WHAT A DEPLOY ACTUALLY WRITES. The assembled tree is uploaded TWICE,
+    to two different prefixes, and the distinction is the whole design:
+
+      * `releases/<digest>/…` — the immutable ARCHIVE. `<digest>` is a
+        content hash over the assembled tree, so identical content is
+        identical bytes at an identical path and re-deploying unchanged
+        content is a no-op. Nothing ever mutates a release prefix.
+      * `live/…` — what the CDN/bucket actually serves, synced from the
+        release. This is the only mutable prefix.
+
+    That split is what makes ROLLBACK and PROMOTION real rather than
+    aspirational. A rollback re-syncs `live/` from a release prefix that
+    is still sitting in the bucket; it does not rebuild, and it cannot
+    produce different bytes than the deploy it is undoing. A promotion is
+    the same move across environments: it re-points at an EXISTING digest
+    and never rebuilds. See `keep_releases` for the retention rule that
+    keeps those targets alive.
+
+    Fields:
+      * `bucket`        — target bucket. `gs://name` or a bare `name`.
+      * `public_dir`    — the frontend build's static output directory,
+                          relative to the frontend `path` ("out" for a
+                          Next.js static export, "dist" for Vite).
+      * `base_path`     — sub-path under the site root to mount the
+                          frontend's own output under ("/admin"). Empty
+                          means the site root. Mirrors FirebaseHosting.
+      * `bundle`        — extra pre-built static dirs assembled into the
+                          same site (see BundleDir).
+      * `cache_control` — ordered Cache-Control rules (see CacheRule).
+      * `cdn`           — the CDN in front of the bucket, and the
+                          per-deploy invalidation policy (see
+                          StaticSiteCDN). Omit for a bare bucket.
+      * `keep_releases` — how many archived releases to retain.
+
+    DELIBERATELY ABSENT, and this is a design decision rather than an
+    omission: there is no field here for bucket creation, IAM, public-ACL
+    toggles, CORS, versioning, or a raw provider-flag passthrough. A
+    hosted tier that must reject a field is a tier maintaining an
+    allowlist that drifts from the schema; a field that does not exist
+    needs no allowlist, and KCL rejects it for free with a message
+    naming the schema. forge PUBLISHES to a bucket it is pointed at; it
+    does not own that bucket's existence or its access policy.
+    """
+    type: str = "static-site"
+    bucket: str
+    public_dir: str
+    base_path?: str
+    bundle: [BundleDir] = []
+    cache_control: [CacheRule] = []
+    cdn?: StaticSiteCDN
+
+    # How many archived `releases/<digest>/` prefixes to retain, newest
+    # first. Retention runs AFTER a successful deploy and NEVER deletes
+    # the digest currently live, nor the digest recorded as the previous
+    # live one — deleting either would turn `forge env deploy --rollback`
+    # into a 404, which is the one failure mode a retention policy must
+    # not be able to cause. So the effective floor is 2 regardless of
+    # what is declared here, and the check enforces it rather than
+    # silently correcting a smaller value.
+    #
+    # 0 means "retain everything" — no deletion ever. Correct for a
+    # project that would rather pay storage than think about it, and for
+    # a bucket with its own lifecycle policy that forge should not fight.
+    keep_releases: int = 10
+
+    check:
+        type == "static-site", "StaticSite.type must be 'static-site'"
+        bucket, "StaticSite.bucket is required (gs://name or a bare bucket name)"
+        not bucket.startswith("gs://") or len(bucket) > 5, \
+            "StaticSite.bucket 'gs://' has no bucket name after the scheme"
+        public_dir, "StaticSite.public_dir is required (frontend build output dir, e.g. 'out' or 'dist')"
+        base_path == Undefined or base_path.startswith("/"), \
+            "StaticSite.base_path must start with '/' (e.g. '/admin'); omit for the site root"
+        keep_releases == 0 or keep_releases >= 2, \
+            "StaticSite.keep_releases must be 0 (retain everything) or at least 2 — retaining fewer than the live release plus its predecessor would delete the artifact a rollback needs"
 
 # ---------------------------------------------------------------------------
 # Typed entities — each captures ONE orchestration shape.
@@ -1981,9 +2502,17 @@ schema RenderedWorkload:
     # Secret/ConfigMap; per-var `env_vars` entries override same-named keys
     # (native k8s precedence). Only meaningful for a K8sCluster deploy.
     env_from: [EnvFromSource] = []
-    deploy?: HostDeploy | K8sCluster | External | Compose | HostInfra | BuildOnly
+    # SimpleBackend is a member so a Bundle may CARRY one; it is not a
+    # shape the manifest renderer consumes. render_manifests projects
+    # every SimpleBackend onto a RenderedWorkload{deploy = K8sCluster}
+    # first (_project_simple_backend, render.k) — the same move
+    # _project_frontend makes for a cluster-deployed Frontend — so by the
+    # time any manifest builder sees a workload, its deploy is a
+    # K8sCluster. Only the ENTITY contract keeps the `simple-backend`
+    # discriminator, which is what preserves audit visibility.
+    deploy?: HostDeploy | K8sCluster | SimpleBackend | External | Compose | HostInfra | BuildOnly
     # Polymorphic build declaration — HOW this service's artifact is
-    # produced. One of GoBuild | DockerBuild | ShellBuild, discriminated
+    # produced. One of GoBuild | DockerBuild | ShellBuild | RemoteBuild, discriminated
     # by `build.type` in the rendered JSON (mirrors the deploy union).
     # forge build dispatches on it; there is no hardcoded `./cmd` and no
     # auto-docker step. Per-env overridable via the deploy/kcl/<env>/
@@ -1992,7 +2521,7 @@ schema RenderedWorkload:
     # `GoBuild { cmd = "./cmd/<name>" }` default per component so a plain
     # service never has to spell it out, while a hand-authored
     # forge.Service may set it explicitly.
-    build?: GoBuild | DockerBuild | ShellBuild
+    build?: GoBuild | DockerBuild | ShellBuild | RemoteBuild
     # Extra namespaced RBAC rules appended to this Service's forge-
     # generated Role (lib/rbac.k always grants configmaps/secrets read;
     # these rules add to that). Use it when a Service runs a controller-
@@ -2011,7 +2540,7 @@ schema RenderedWorkload:
     # fields. Their PRESENCE marks this workload a Kubernetes OPERATOR:
     # `_render_cluster_service` (render.k) branches on `operator_cluster_rbac`
     # and emits a cluster-scoped ClusterRole + ClusterRoleBinding (via
-    # render_cluster_rbac, named `${name}-clusterrole`) INSTEAD OF the
+    # render_cluster_rbac, named `${name}-${namespace}-clusterrole`) INSTEAD OF the
     # namespaced Role a plain Service gets. `operator_cluster_rbac` are
     # CLUSTER-scoped PolicyRule dicts (same `{apiGroups, resources, verbs}`
     # shape as namespaced_rbac). `operator_crds` are the CRD *kind names*
@@ -2272,6 +2801,13 @@ schema Frontend:
     target the same way Service.deploy does:
 
       * FirebaseHosting — static export → Firebase Hosting (public CDN).
+      * StaticSite      — static export → an object-storage bucket,
+                          optionally behind a CDN. Same build-and-assemble
+                          contract as FirebaseHosting; differs in where
+                          the tree lands, and it archives every deploy
+                          under a content digest so rollback and
+                          promotion re-point at existing bytes rather
+                          than rebuilding.
       * K8sCluster      — ships as a container image and runs as an
                           in-cluster Deployment + Service, exactly like a
                           forge.Service. Use for a frontend that must NOT
@@ -2321,7 +2857,7 @@ schema Frontend:
     # same variable (forge warns). Additive — omit for the legacy
     # env_vars-only shape. See FrontendConfig.
     config?: FrontendConfig
-    deploy?: FirebaseHosting | K8sCluster
+    deploy?: FirebaseHosting | StaticSite | K8sCluster
 
     check:
         name, "Frontend.name is required"

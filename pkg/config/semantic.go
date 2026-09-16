@@ -232,26 +232,28 @@ func validateMessage(m protoreflect.Message) error {
 			continue
 		}
 
-		// allowed_values closed-set check (string fields only).
-		if vals := opt.GetAllowedValues(); len(vals) > 0 && fd.Kind() == protoreflect.StringKind {
-			got := m.Get(fd).String()
-			if got != "" && !containsStr(vals, got) {
-				return fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)
+		// allowed_values closed-set check. A repeated string field is a
+		// closed set PER ELEMENT — every element must be in the set.
+		if vals := opt.GetAllowedValues(); len(vals) > 0 && isStringField(fd) {
+			for _, got := range stringValues(m, fd) {
+				if got != "" && !containsStr(vals, got) {
+					return fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)
+				}
 			}
 		}
 
 		switch opt.GetRole() {
 		case forgepb.ConfigFieldRole_CONFIG_FIELD_ROLE_TLS_CERT:
-			if fd.Kind() == protoreflect.StringKind {
-				tlsCert, haveTLSCert = m.Get(fd).String(), true
+			if isStringField(fd) {
+				tlsCert, haveTLSCert = firstString(m, fd), true
 			}
 		case forgepb.ConfigFieldRole_CONFIG_FIELD_ROLE_TLS_KEY:
-			if fd.Kind() == protoreflect.StringKind {
-				tlsKey, haveTLSKey = m.Get(fd).String(), true
+			if isStringField(fd) {
+				tlsKey, haveTLSKey = firstString(m, fd), true
 			}
 		case forgepb.ConfigFieldRole_CONFIG_FIELD_ROLE_CORS_ORIGINS:
-			if fd.Kind() == protoreflect.StringKind {
-				corsOrigins, haveCORSOrigins = m.Get(fd).String(), true
+			if isStringField(fd) {
+				corsOrigins, haveCORSOrigins = strings.Join(stringValues(m, fd), ","), true
 			}
 		case forgepb.ConfigFieldRole_CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS:
 			if fd.Kind() == protoreflect.BoolKind {
@@ -275,6 +277,45 @@ func validateMessage(m protoreflect.Message) error {
 	}
 
 	return nil
+}
+
+// isStringField reports whether fd holds string data — a plain string field
+// or a repeated string. A map is excluded: its Kind() is message, but even a
+// map<string,string> is not a value these role checks can read.
+//
+// It exists because `fd.Kind() == StringKind` is true for a REPEATED string
+// too, and reading one with Value.String() does not fail loudly — it returns
+// a formatted dump of the list's internal representation. A wildcard "*" in
+// a repeated CORS-origins field therefore did not match, silently disarming
+// the wildcard+credentials guard. Every role check goes through here and
+// stringValues so the guards apply to both cardinalities.
+func isStringField(fd protoreflect.FieldDescriptor) bool {
+	return fd.Kind() == protoreflect.StringKind && !fd.IsMap()
+}
+
+// stringValues reads a string field as a slice: one element for a scalar,
+// every element for a repeated one.
+func stringValues(m protoreflect.Message, fd protoreflect.FieldDescriptor) []string {
+	if !fd.IsList() {
+		return []string{m.Get(fd).String()}
+	}
+	l := m.Get(fd).List()
+	out := make([]string, 0, l.Len())
+	for i := 0; i < l.Len(); i++ {
+		out = append(out, l.Get(i).String())
+	}
+	return out
+}
+
+// firstString reads the single value a both-or-neither role field carries.
+// For a repeated field it takes the first element, so "is it set at all"
+// stays the question being asked — which is all the TLS keypair check needs.
+func firstString(m protoreflect.Message, fd protoreflect.FieldDescriptor) string {
+	vals := stringValues(m, fd)
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
 }
 
 func containsStr(set []string, v string) bool {

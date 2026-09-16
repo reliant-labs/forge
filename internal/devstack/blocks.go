@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // registryRel is the on-disk port-block registry: a stable {key: entry} map,
@@ -49,9 +50,123 @@ const registryRel = ".forge/blocks.json"
 // for certain, rather than guessed later by pattern-matching key names. A
 // generator reads the roster through ListStacks / the fp.dev_stacks() builtin
 // and never sees a port-block key at all.
+// Origin closes the OTHER half of the same question, and it is the half that
+// leaked. Stack answers "is this key ITSELF a worktree?"; Origin answers "was
+// this key DERIVED FROM one?" — and a key can be the second without being the
+// first. prod's web port keys on `"prod-" + option("worktree")`, so
+// "prod-cp-obs" is every bit as tied to worktree cp-obs as a stack key is,
+// while being a different string from it.
+//
+// Because only Stack was recorded, Prune saw "prod-cp-obs" as indistinguishable
+// from "prod" — a standalone key tied to no worktree — and skipped it. Delete
+// the worktree and the block is held forever. Observed in control-plane: three
+// of eight blocks were stranded by dead worktrees, and since the ceiling counts
+// BLOCKS, those three were enough to make `forge env render prod` impossible in
+// any worktree.
+//
+// Origin is recorded at ALLOCATION time for the same reason Stack is: that is
+// the one moment forge holds the git fact and the key TOGETHER, so the
+// association is observed rather than guessed. Guessing it later — pattern-
+// matching "prod-cp-obs" back to a worktree name — is precisely what this field
+// exists to avoid, because a standalone key that merely LOOKS composed is
+// indistinguishable from a real one once the fact is gone, and getting that
+// wrong moves ports on a live stack.
+//
+// An empty Origin means "tied to no worktree" and is therefore NEVER
+// reclaimable. That is the safe default, and it is what a legacy entry, a key
+// allocated from the primary checkout, and a genuinely standalone key like
+// "prod" all decode to.
 type entry struct {
 	Block int  `json:"block"`
 	Stack bool `json:"stack,omitempty"`
+	// Origin is the sanitized worktree name this key was derived from, or
+	// "" when the key is tied to no worktree. See the type doc.
+	Origin string `json:"origin,omitempty"`
+}
+
+// originFor reports the worktree this key should be recorded as derived from,
+// or "" for a key tied to no worktree.
+//
+// Two conditions must BOTH hold, and each rules out a different false positive:
+//
+//  1. A worktree is active. On the primary checkout (and on any unarmed
+//     read-only render) there is no fact to attribute the key to, so nothing is
+//     recorded. This is what keeps "prod" — allocated from the primary
+//     checkout, where option("worktree") is "" — permanently unreclaimable.
+//  2. The active worktree appears in the key as a whole dash-delimited SEGMENT.
+//     A KCL author composes a derived key by interpolation, so a derived key
+//     literally contains the fact; a key that does not contain it cannot have
+//     been derived from it. Without this, a KCL that allocates a fixed shared
+//     key would be attributed to whichever worktree happened to render first,
+//     and deleting that worktree would move a port the other stacks still use.
+//
+// Segment matching rather than substring matching is what keeps the check from
+// being a heuristic about names: "cp-obs" is a segment of "prod-cp-obs" but not
+// of "prod-cp-observability", so a longer worktree name is never mistaken for a
+// shorter one it happens to start with.
+func originFor(key string) string {
+	worktree := Active().Worktree
+	if key == "" || worktree == "" {
+		return ""
+	}
+	if !keyHasSegment(key, worktree) {
+		return ""
+	}
+	return worktree
+}
+
+// keyHasSegment reports whether segment appears in key as a whole
+// dash-delimited segment (or is the entire key).
+func keyHasSegment(key, segment string) bool {
+	switch {
+	case key == segment:
+		return true
+	case strings.HasPrefix(key, segment+"-"):
+		return true
+	case strings.HasSuffix(key, "-"+segment):
+		return true
+	default:
+		return strings.Contains(key, "-"+segment+"-")
+	}
+}
+
+// reconcileOrigin updates an EXISTING entry's origin from what this allocation
+// observed, returning the entry and whether it changed.
+//
+// It moves in two directions, and they are not symmetric:
+//
+//   - LEARN. An entry with no origin gains one when the key is requested from a
+//     worktree whose name is a segment of it. This is how entries written
+//     before this field existed migrate: the next render from the key's own
+//     worktree records what forge would have recorded then. It is evidence, not
+//     inference — the fact and the key were held together at that moment.
+//   - UNLEARN. An entry loses its origin when the SAME key is requested while a
+//     DIFFERENT worktree is active. A derived key cannot be produced from
+//     another worktree (worktree W composes "prod-W" and nothing else), so this
+//     is proof the key is shared rather than derived, and the earlier
+//     attribution was wrong.
+//
+// Only a NON-EMPTY active worktree counts as contrary evidence. An empty one is
+// ambiguous — it means either the primary checkout or a render that never armed
+// the git facts (forge generate, forge ci, tests) — and treating that ambiguity
+// as proof would strip the origin off every derived key the first time an
+// unarmed render touched it. The cost of being wrong here is asymmetric: losing
+// an origin re-creates the leak this field fixes, while inventing one moves a
+// live stack's ports. So every uncertain case resolves toward "leak", never
+// toward "reclaim".
+func reconcileOrigin(key string, e entry) (entry, bool) {
+	worktree := Active().Worktree
+	switch {
+	case e.Origin == "":
+		if origin := originFor(key); origin != "" {
+			e.Origin = origin
+			return e, true
+		}
+	case worktree != "" && worktree != e.Origin:
+		e.Origin = ""
+		return e, true
+	}
+	return e, false
 }
 
 // registry is the decoded {key: entry} map.
@@ -323,7 +438,12 @@ func AllocatePortAvoidingForeign(projectDir string, base int, key string, isFree
 		if !isFree(candidate) {
 			continue
 		}
-		if err := checkCeiling(key, block); err != nil {
+		// Best-effort registry read for the ceiling message's holder list
+		// only — the ceiling DECISION is `block` vs the limit and does not
+		// depend on it, so a read failure degrades the message rather than
+		// changing the outcome.
+		reg, _ := readRegistry(projectDir)
+		if err := checkCeiling(key, block, reg); err != nil {
 			return 0, err
 		}
 		if err := setBlock(projectDir, key, block); err != nil {
@@ -373,6 +493,7 @@ func setBlock(projectDir, key string, block int) error {
 		e := reg[key]
 		e.Block = block
 		e.Stack = e.Stack || isStackKey(key)
+		e, _ = reconcileOrigin(key, e)
 		reg[key] = e
 		return writeRegistry(projectDir, reg)
 	})
@@ -435,22 +556,32 @@ func AllocateBlock(projectDir, key string) (int, error) {
 		stack := isStackKey(key)
 		if existing, ok := reg[key]; ok {
 			block = existing.Block
-			// The block is settled and must never move. Only promote the
-			// stack flag, which is how a legacy (bare-int) entry and any
-			// entry first seen through a non-devstack path get labelled the
-			// next time their own worktree brings the stack up.
+			// The block is settled and must never move. Only the LABELS
+			// move: the stack flag, which is how a legacy (bare-int) entry
+			// and any entry first seen through a non-devstack path get
+			// labelled the next time their own worktree brings the stack up,
+			// and the origin, which migrates a pre-origin entry the same way
+			// (see reconcileOrigin).
+			changed := false
 			if stack && !existing.Stack {
 				existing.Stack = true
+				changed = true
+			}
+			if reconciled, moved := reconcileOrigin(key, existing); moved {
+				existing = reconciled
+				changed = true
+			}
+			if changed {
 				reg[key] = existing
 				return writeRegistry(projectDir, reg)
 			}
 			return nil
 		}
 		block = nextFreeBlock(reg)
-		if err := checkCeiling(key, block); err != nil {
+		if err := checkCeiling(key, block, reg); err != nil {
 			return err
 		}
-		reg[key] = entry{Block: block, Stack: stack}
+		reg[key] = entry{Block: block, Stack: stack, Origin: originFor(key)}
 		return writeRegistry(projectDir, reg)
 	})
 	if err != nil {
@@ -541,6 +672,35 @@ type Block struct {
 	// a plain port-block key. See entry for why the two must not be
 	// confused.
 	Stack bool
+	// Origin is the worktree this key was DERIVED FROM ("prod-cp-obs" from
+	// worktree "cp-obs"), or "" when it is tied to no worktree and so can
+	// never be reclaimed. See entry.Origin.
+	Origin string
+}
+
+// Kind is the one-line human label for what holds this block: which of the
+// three kinds it is, and — the part that actually matters to a reader staring
+// at a full ceiling — whether prune could ever reclaim it.
+func (b Block) Kind() string {
+	switch {
+	case b.Key == "":
+		return "the primary checkout — never reclaimable"
+	case b.Stack:
+		return "dev stack (worktree; prune reclaims it once the worktree is gone)"
+	case b.Origin != "":
+		return fmt.Sprintf("port-block key derived from worktree %q (prune reclaims it once that worktree is gone)", b.Origin)
+	default:
+		return "standalone port-block key (tied to no worktree; prune will NOT reclaim)"
+	}
+}
+
+// DisplayKey is Key with the default stack's empty string rendered as
+// something a reader can see.
+func (b Block) DisplayKey() string {
+	if b.Key == "" {
+		return "(default stack)"
+	}
+	return b.Key
 }
 
 // List returns the WHOLE block registry sorted by block index — every key,
@@ -557,7 +717,7 @@ func List(projectDir string) ([]Block, error) {
 	}
 	out := make([]Block, 0, len(reg))
 	for key, e := range reg {
-		out = append(out, Block{Key: key, Index: e.Block, Stack: e.Stack})
+		out = append(out, Block{Key: key, Index: e.Block, Stack: e.Stack, Origin: e.Origin})
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Index < out[b].Index })
 	return out, nil

@@ -91,6 +91,7 @@ var featureChecks = map[string]featureCheck{
 	config.FeatureExternalBuilds: func(f config.FeaturesConfig) bool { return f.ExternalBuildsEnabled() },
 	config.FeatureOperators:      func(f config.FeaturesConfig) bool { return f.OperatorsEnabled() },
 	config.FeatureStrictWiring:   func(f config.FeaturesConfig) bool { return f.StrictWiringEnabled() },
+	config.FeatureReconcile:      func(f config.FeaturesConfig) bool { return f.ReconcileEnabled() },
 }
 
 // featureReader is the narrow slice of the project store the feature-gate

@@ -31,10 +31,15 @@ import (
 	"strings"
 )
 
-// maxNameLen bounds a sanitized git-fact value. These values feed k8s
-// namespace suffixes, DB names, and NATS subject prefixes — all of which
-// have length ceilings (a k8s namespace is 63 chars and already carries a
-// project+env prefix), so we keep the fact segment short.
+// maxNameLen bounds a sanitized GIT FACT — a worktree or branch name. These
+// values feed k8s namespace suffixes, DB names, and NATS subject prefixes —
+// all of which have length ceilings (a k8s namespace is 63 chars and already
+// carries a project+env prefix), so we keep the fact segment short.
+//
+// The bound belongs to the FACT, applied once where forge derives it
+// (Worktree, Branch), and nowhere else. It is deliberately NOT re-applied to
+// a port-block key composed FROM a fact — see validateKey in blocks.go for
+// why doing so made a 21-character worktree unable to render prod at all.
 const maxNameLen = 24
 
 var (
@@ -57,12 +62,6 @@ var (
 //
 // This function is idempotent, which is what lets a caller use equality with
 // its own output as a well-formedness test.
-func canonicalLabel(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = nonDNS.ReplaceAllString(s, "-")
-	s = dashRuns.ReplaceAllString(s, "-")
-	return leadTrailDA.ReplaceAllString(s, "")
-}
 
 // Sanitize reduces s to a DNS-safe label of bounded length: canonicalLabel
 // plus the maxNameLen truncation. This is the form a git FACT takes, and the
@@ -78,6 +77,31 @@ func Sanitize(s string) string {
 		s = leadTrailDA.ReplaceAllString(s, "")
 	}
 	return s
+}
+
+// canonicalLabel is Sanitize's SHAPE half with NO length bound: lowercased,
+// [a-z0-9-] only, dash runs collapsed, no leading or trailing dash.
+//
+// Shape and length are split apart because they are two different rules that
+// hold in two different places, and fusing them into one function made every
+// caller inherit both whether or not both applied:
+//
+//   - SHAPE is a hard requirement of every consumer. The value becomes a DNS
+//     label, a NATS subject token or a DB name, so "prod_web" or a trailing
+//     dash is malformed wherever it lands, at any length.
+//   - LENGTH is a budget, and it is a budget on a git FACT being embedded as
+//     one segment of a longer composed name. It has no meaning for a
+//     port-block key, which is looked up in a map and resolves to an integer.
+//
+// Truncation is the reason they cannot share a function: it is a legitimate
+// repair for a fact (a longer branch name still names the same branch) and an
+// unsound one for a key (two different keys can truncate to one, silently
+// merging two stacks onto one port block). Only the fact path may truncate.
+func canonicalLabel(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = nonDNS.ReplaceAllString(s, "-")
+	s = dashRuns.ReplaceAllString(s, "-")
+	return leadTrailDA.ReplaceAllString(s, "")
 }
 
 // Worktree returns the LINKED-worktree directory basename for projectDir, or

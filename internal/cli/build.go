@@ -1104,19 +1104,33 @@ func persistImageBuildStates(opts buildOptions, resolvedTag string, succeeded []
 	}
 }
 
-// writeReleaseLedger harvests the digests captured by the just-completed
-// build into a Release ledger keyed by opts.release. It is the durable
-// projection of the ephemeral build state: every image whose build recorded a
-// content-addressed digest becomes a "shared" artifact promotable to any env.
+// writeReleaseLedger harvests the artifacts of the just-completed build into a
+// Release ledger keyed by opts.release. It is the durable projection of the
+// ephemeral build state, across every kind of thing a release ships:
 //
-// Fails (does not silently no-op) when no digest was captured: a release is a
+//   - OCI images, from the build-state digests (harvestReleaseArtifacts);
+//   - npm packages, from what `npm pack` would publish;
+//   - Go modules, from the repo's own go.mod/go.sum pair;
+//   - files, from the build-only binaries this build emitted.
+//
+// Images are merged FIRST and never overwritten (see mergeReleaseArtifacts), so
+// adding the other kinds cannot perturb the digests an env deploys.
+//
+// Fails (does not silently no-op) when NOTHING was captured: a release is a
 // promise that "these exact bytes ship everywhere", and an empty promise is a
 // latent footgun (a later `forge env promote`/`deploy` would resolve nothing and
 // fall back to tags — exactly the mutable-tag failure the release model exists
 // to kill). The actionable remedy is in the error: pass --push.
+//
+// A release with SOME kinds and not others is normal and never an error — a
+// project with no npm package simply cuts a release with no npm artifacts.
 func writeReleaseLedger(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
 	projectDir := projectDirForKCL()
 	artifacts := harvestReleaseArtifacts(projectDir, opts.env)
+	images := len(artifacts)
+	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
+	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
+	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, opts.outputDir, entities))
 	if len(artifacts) == 0 {
 		return fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
 			"  A release pins immutable digests, which require a registry push — re-run with --push <registry>\n"+
@@ -1149,8 +1163,8 @@ func writeReleaseLedger(ctx context.Context, opts buildOptions, entities *KCLEnt
 	if err := WriteRelease(projectDir, rel); err != nil {
 		return fmt.Errorf("--release %s: write release ledger: %w", opts.release, err)
 	}
-	fmt.Printf("\n[build] Cut release %s (%d artifact(s)): %s\n",
-		rel.Version, len(rel.Artifacts), strings.Join(releaseImageNames(rel), ", "))
+	fmt.Printf("\n[build] Cut release %s (%d image(s), %d package(s), %d file(s)): %s\n",
+		rel.Version, images, packages, files, strings.Join(releaseImageNames(rel), ", "))
 	fmt.Printf("[build]   Ledger: %s\n", releasePath(projectDir, rel.Version))
 	fmt.Printf("[build]   Promote: forge env promote %s --to <env>\n", rel.Version)
 	return nil
@@ -2149,6 +2163,9 @@ func summarizeKCLBuildPlan(e *KCLEntities) {
 	if cluster := e.ClusterServiceNames(); len(cluster) > 0 {
 		fmt.Printf("[build]   Cluster-mode (docker):   %s\n", strings.Join(cluster, ", "))
 	}
+	if sb := e.SimpleBackendServiceNames(); len(sb) > 0 {
+		fmt.Printf("[build]   Simple-backend (skip):   %s\n", strings.Join(sb, ", "))
+	}
 	if bo := e.BuildOnlyServiceNames(); len(bo) > 0 {
 		fmt.Printf("[build]   Build-only (binary):     %s\n", strings.Join(bo, ", "))
 	}
@@ -2208,6 +2225,16 @@ func kclImageFrontends(frontends []config.FrontendConfig, e *KCLEntities) []conf
 // kclHasClusterService reports whether the entity set contains at least
 // one service with deploy.Type == "cluster". When false the project
 // docker build is skipped: there's no in-cluster Application to ship.
+//
+// simple-backend is deliberately NOT counted here, and this is the one
+// place its answer differs from every other cluster predicate. The
+// question this asks is "does forge need to BUILD an image for this
+// env", not "does this env touch a cluster". A SimpleBackend names a
+// app owner's already-built, already-pushed image — forge has no Dockerfile
+// for it and no source to compile (see ServiceEntity.EffectiveBuild,
+// which returns no build for this type). Counting it would run a project
+// docker build for an env that ships nothing forge produced, and push
+// the result under a tag no manifest references.
 func kclHasClusterService(e *KCLEntities) bool {
 	for _, s := range e.Services {
 		if s.Deploy.Type == "cluster" {
@@ -2325,11 +2352,42 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, opts buildOptions, cfgArchForDocker, resolvedTag string) []buildResult {
 	var out []buildResult
 	for _, svc := range e.Services {
-		if svc.EffectiveBuild().Type == "docker" {
+		switch svc.EffectiveBuild().Type {
+		case "docker":
 			out = append(out, buildServiceDocker(ctx, cfg, svc.Name, svc.EffectiveBuild().Docker, opts, cfgArchForDocker, resolvedTag))
+		case "remote":
+			out = append(out, buildServiceRemote(svc.Name))
 		}
 	}
 	return out
+}
+
+// buildServiceRemote handles a RemoteBuild, which forge cannot yet submit.
+//
+// IT FAILS LOUDLY RATHER THAN SKIPPING, and that choice is the point. A
+// skipped build produces no artifact, so a deploy that followed it would
+// reference an image nobody pushed — and it would surface much later as an
+// ImagePullBackOff, which reads as a registry or credentials problem rather
+// than as "this build never ran". A hard failure names the cause at the moment
+// it applies.
+//
+// This is the one place in the build dispatcher that is a stub, and it is
+// scoped deliberately: the RemoteBuild SCHEMA is what a hosted build service
+// needs in order to be declarable at all, and landing it separately from the
+// submitting client is what lets the service's own contract settle first. The
+// client belongs with the API it calls.
+func buildServiceRemote(svcName string) buildResult {
+	return buildResult{
+		name: svcName,
+		err: fmt.Errorf(
+			"service %q declares build = forge.RemoteBuild, which this forge cannot submit yet: "+
+				"the hosted build service client is not wired into `forge build`. "+
+				"Refusing rather than skipping, because a skipped build leaves a following deploy "+
+				"pointing at an image nothing pushed — which surfaces later as an ImagePullBackOff "+
+				"and reads like a registry problem. "+
+				"Use a DockerBuild or a ShellBuild to build this service locally in the meantime",
+			svcName),
+	}
 }
 
 // serviceDockerBuildArgs assembles the full `docker build …` argument vector

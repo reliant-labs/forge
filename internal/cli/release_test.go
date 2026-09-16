@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -143,13 +144,71 @@ func TestHarvestReleaseArtifacts(t *testing.T) {
 
 	// Empty env harvests the "default" records (buildStateLookupEnvs("") == ["default"]).
 	got := harvestReleaseArtifacts(dir, "")
+	// Kind is stamped explicitly on every harvested artifact: a build captures
+	// container images, and a ledger cut today says so rather than relying on
+	// the empty-means-OCI default that exists only for pre-kind files.
 	want := map[string]ReleaseArtifact{
-		"control-plane":  {Mode: "shared", Digests: map[string]string{"*": sha("a")}, Platforms: []string{"linux/amd64"}},
-		"reliant":        {Mode: "shared", Digests: map[string]string{"*": sha("b")}},
-		"workspace-base": {Mode: "shared", Digests: map[string]string{"*": sha("d")}},
+		"control-plane":  {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("a")}, Platforms: []string{"linux/amd64"}},
+		"reliant":        {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("b")}},
+		"workspace-base": {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("d")}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("harvest mismatch:\n  want %+v\n  got  %+v", want, got)
+	}
+}
+
+// TestHarvestReleaseArtifacts_RecordsRegistry pins the coordinate that makes
+// an OCI artifact VERIFIABLE rather than merely named.
+//
+// A digest says what the bytes are; it does not say which host serves them. A
+// ledger that records `sha256:…` against a bare image name therefore names an
+// image nobody can look up, and `forge release verify` can only report it
+// UNVERIFIABLE — the same "claim nothing checks" shape that let v0.1.12 ship a
+// package that was never published. The registry the build pushed to is
+// already in the build state; carrying it into the ledger is what closes that.
+//
+// An EMPTY registry is preserved as empty (not defaulted): a local or compose
+// build genuinely pushed nowhere, and inventing a host would turn an honest
+// "cannot check this" into a spurious failure against a registry that was
+// never involved.
+func TestHarvestReleaseArtifacts_RecordsRegistry(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteBuildState(dir, "default", BuildState{
+		Image: "control-plane", Tag: "v1.4.0", Registry: "ghcr.io/reliant-labs",
+		Pushed: true, PushedAt: nowRFC3339(), Digest: sha("a"),
+	}); err != nil {
+		t.Fatalf("write aggregate: %v", err)
+	}
+	// An external build pushed to a DIFFERENT registry — each artifact must
+	// carry its own, not one borrowed from a sibling.
+	if err := buildtarget.WriteState(dir, "default", buildtarget.State{
+		Service: "reliant", Image: "reliant", Tag: "v1.4.0",
+		Registry: "us-central1-docker.pkg.dev/proj/repo", PushedAt: nowRFC3339(), Digest: sha("b"),
+	}); err != nil {
+		t.Fatalf("write per-service: %v", err)
+	}
+	// A local build that pushed nowhere: no registry to record.
+	if err := buildtarget.WriteState(dir, "default", buildtarget.State{
+		Service: "local-only", Image: "local-only", Tag: "dev",
+		PushedAt: nowRFC3339(), Digest: sha("c"),
+	}); err != nil {
+		t.Fatalf("write local-only: %v", err)
+	}
+
+	got := harvestReleaseArtifacts(dir, "")
+
+	for image, wantURI := range map[string]string{
+		"control-plane": "ghcr.io/reliant-labs",
+		"reliant":       "us-central1-docker.pkg.dev/proj/repo",
+		"local-only":    "",
+	} {
+		art, ok := got[image]
+		if !ok {
+			t.Fatalf("%s missing from harvest", image)
+		}
+		if art.URI != wantURI {
+			t.Errorf("%s URI = %q, want %q", image, art.URI, wantURI)
+		}
 	}
 }
 
@@ -256,7 +315,7 @@ func TestRunPromote_EmptyReleaseSurfacesActionableError(t *testing.T) {
 		t.Fatalf("write release: %v", err)
 	}
 
-	err := runPromote("v3.1.0", "staging")
+	err := runPromote(context.Background(), "v3.1.0", "staging", promoteOptions{})
 	if err == nil {
 		t.Fatal("want error promoting an empty release, got nil")
 	}
@@ -265,7 +324,7 @@ func TestRunPromote_EmptyReleaseSurfacesActionableError(t *testing.T) {
 	}
 
 	// No binding should have been written for a release that pins nothing.
-	if _, bound, berr := boundReleaseForEnv(dir, "staging"); berr != nil {
+	if _, bound, berr := newFileBindingStore(dir).Binding("staging"); berr != nil {
 		t.Fatalf("read binding: %v", berr)
 	} else if bound {
 		t.Error("staging must NOT be bound when the release pins no digests")
@@ -322,7 +381,7 @@ func TestResolveDeployDigests_BoundEnvUsesRelease(t *testing.T) {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(dir, "prod", false)
+	digests, boundRel, err := resolveDeployDigests(dir, "prod", false, newFileBindingStore(dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -349,7 +408,7 @@ func TestResolveDeployDigests_UnboundEnvFallsBack(t *testing.T) {
 		t.Fatalf("write build state: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(dir, "staging", false)
+	digests, boundRel, err := resolveDeployDigests(dir, "staging", false, newFileBindingStore(dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -371,7 +430,7 @@ func TestResolveDeployDigests_NoDigestSkipsRelease(t *testing.T) {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(dir, "prod", true /* noDigest */)
+	digests, boundRel, err := resolveDeployDigests(dir, "prod", true /* noDigest */, newFileBindingStore(dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -399,11 +458,11 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 		t.Fatalf("write release: %v", err)
 	}
 
-	if err := runPromote("v1.4.0", "staging"); err != nil {
+	if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{}); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 
-	binding, bound, err := boundReleaseForEnv(dir, "staging")
+	binding, bound, err := newFileBindingStore(dir).Binding("staging")
 	if err != nil {
 		t.Fatalf("read binding: %v", err)
 	}
@@ -424,7 +483,104 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 func TestRunPromote_UnknownReleaseErrors(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	if err := runPromote("v9.9.9", "staging"); err == nil {
+	if err := runPromote(context.Background(), "v9.9.9", "staging", promoteOptions{}); err == nil {
 		t.Fatal("want error promoting a non-existent release, got nil")
+	}
+}
+
+// TestReleaseArtifact_PreKindLedgersAreOCI is the backward-compatibility
+// guarantee. A release ledger is IMMUTABLE, so files cut before `kind` existed
+// can never be rewritten to add one — they must keep resolving, unchanged,
+// forever. Before kinds, an artifact could only be a container image, so an
+// absent kind means OCI and a pre-kind ledger must still pin its digests.
+//
+// If this test fails, every release cut before multi-kind artifacts became
+// undeployable, which is the one outcome the immutability property forbids.
+func TestReleaseArtifact_PreKindLedgersAreOCI(t *testing.T) {
+	preKind := ReleaseArtifact{
+		// No Kind field, exactly as an older forge wrote it.
+		Mode:    "shared",
+		Digests: map[string]string{"*": sha("a")},
+	}
+	if got := preKind.EffectiveKind(); got != ArtifactKindOCI {
+		t.Errorf("EffectiveKind() on a pre-kind artifact = %q, want %q", got, ArtifactKindOCI)
+	}
+	d, ok := preKind.SharedDigest()
+	if !ok || d != sha("a") {
+		t.Errorf("SharedDigest() on a pre-kind artifact = (%q, %v), want (%q, true)", d, ok, sha("a"))
+	}
+
+	rel := Release{Version: "v1.0.0", Artifacts: map[string]ReleaseArtifact{"control-plane": preKind}}
+	resolved, err := resolveReleaseDigests(rel)
+	if err != nil {
+		t.Fatalf("a pre-kind release must still resolve: %v", err)
+	}
+	if resolved["control-plane"] != sha("a") {
+		t.Errorf("resolved[control-plane] = %q, want %q", resolved["control-plane"], sha("a"))
+	}
+}
+
+// TestReleaseArtifact_NonOCIDoesNotPinImages is the guard that keeps the new
+// kinds from corrupting the deploy path. An npm package has no container
+// digest, so asking one for a digest must answer "no" rather than an empty
+// string a caller might write into a pod spec.
+//
+// This is why the Kind check lives in SharedDigest rather than at each call
+// site: the image-pinning paths get the exclusion for free and cannot forget it.
+func TestReleaseArtifact_NonOCIDoesNotPinImages(t *testing.T) {
+	// The Digests map is populated ON PURPOSE, and it is what gives this test
+	// teeth. A non-OCI artifact with no digest would be excluded by the map
+	// lookup alone, so the test would pass with or without the Kind guard and
+	// prove nothing. A published file legitimately carries a sha256, so this
+	// shape is real — and only the Kind check keeps it out of the image path.
+	npm := ReleaseArtifact{
+		Kind:      ArtifactKindNPM,
+		Version:   "0.3.1",
+		Integrity: "sha512-abc",
+		Digests:   map[string]string{"*": sha("f")},
+	}
+	if d, ok := npm.SharedDigest(); ok || d != "" {
+		t.Errorf("SharedDigest() on an npm artifact = (%q, %v), want (\"\", false)", d, ok)
+	}
+
+	// A mixed release pins ONLY its images, and the npm entry rides along in
+	// the ledger without ever reaching a container spec.
+	rel := Release{
+		Version: "v1.0.0",
+		Artifacts: map[string]ReleaseArtifact{
+			"control-plane":            {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("a")}},
+			"@reliantlabs/web-runtime": npm,
+		},
+	}
+	resolved, err := resolveReleaseDigests(rel)
+	if err != nil {
+		t.Fatalf("a mixed release must resolve its images: %v", err)
+	}
+	if len(resolved) != 1 || resolved["control-plane"] != sha("a") {
+		t.Errorf("resolved = %+v, want only control-plane pinned", resolved)
+	}
+}
+
+// TestResolveReleaseDigests_PackageOnlyReleaseSaysSo covers the release that
+// motivated multi-kind artifacts: forge's own v0.1.12 shipped an npm package
+// and no images. "carries only variant-mode artifacts" would send a reader
+// hunting for a feature flag, when the truth is there is simply nothing for an
+// environment to run.
+func TestResolveReleaseDigests_PackageOnlyReleaseSaysSo(t *testing.T) {
+	rel := Release{
+		Version: "v0.1.12",
+		Artifacts: map[string]ReleaseArtifact{
+			"@reliantlabs/forge-web-runtime": {Kind: ArtifactKindNPM, Version: "0.3.1", Integrity: "sha512-abc"},
+		},
+	}
+	_, err := resolveReleaseDigests(rel)
+	if err == nil {
+		t.Fatal("want an error for a package-only release, got nil")
+	}
+	if !strings.Contains(err.Error(), "no container images") {
+		t.Errorf("error should say the release has no images, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "variant-mode") {
+		t.Errorf("error must not blame variant mode for a package-only release, got: %v", err)
 	}
 }

@@ -247,7 +247,10 @@ schema OperatorSpec:
                          `Operator.cluster_rbac.rules`). The k8s adapter
                          routes these into a `ClusterRole` +
                          `ClusterRoleBinding` (via `render_cluster_rbac`),
-                         named `<service>-clusterrole` — NOT the
+                         named `<service>-<namespace>-clusterrole` (the
+                         namespace is required: the object is
+                         cluster-scoped but its binding's subject is
+                         per-env) — NOT the
                          namespaced `Role` a plain Service gets. Forge
                          still auto-adds the default config-read rule, so
                          authors supply only the CRD / lease / coordination
@@ -676,7 +679,7 @@ schema Service:
     ports?: [int]
     replicas?: int = 1
     resources?: Resources
-    build?: GoBuild | DockerBuild | ShellBuild
+    build?: GoBuild | DockerBuild | ShellBuild | RemoteBuild
     volumes?: [Volume]
     health?: HealthProbe
     security?: SecurityOverrides

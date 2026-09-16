@@ -113,16 +113,21 @@ func secretRefsFromEntities(e *KCLEntities) []secrets.SecretRef {
 }
 
 // secretRefsForK8sServices is like secretRefsFromEntities but ONLY for
-// services whose deploy target is k8s cluster (Deploy.Type=="cluster") —
-// these are the refs that need rendered Secret objects. Host/compose/
-// external refs are injected as env values, not k8s Secrets.
+// services that land IN a cluster — Deploy.Type "cluster" or
+// "simple-backend" — since those are the refs that need rendered Secret
+// objects. Host/compose/external refs are injected as env values, not
+// k8s Secrets.
+//
+// simple-backend counts because it is a cluster workload: KCL projects it
+// onto the same Deployment shape (_project_simple_backend), so its
+// secret_ref env vars become secretKeyRefs that need a Secret to exist.
 func secretRefsForK8sServices(e *KCLEntities) []secrets.SecretRef {
 	if e == nil {
 		return nil
 	}
 	var refs []secrets.SecretRef
 	for i := range e.Services {
-		if e.Services[i].Deploy.Type != "cluster" {
+		if t := e.Services[i].Deploy.Type; t != "cluster" && t != "simple-backend" {
 			continue
 		}
 		refs = append(refs, secretRefsForService(&e.Services[i])...)
@@ -161,6 +166,15 @@ func serviceEnvVars(s *ServiceEntity) []KCLEnvVar {
 		out = append(out, s.Deploy.Host.EnvVars...)
 	case s.Deploy.Cluster != nil:
 		out = append(out, s.Deploy.Cluster.EnvVars...)
+	case s.Deploy.SimpleBackend != nil:
+		// A SimpleBackend's env is an ordinary []EnvVar carrying the same
+		// secret_ref channel, and it lands in a cluster — so it needs
+		// rendered Secret objects exactly as a K8sCluster service does.
+		// Omitting it here would not fail loudly: the deploy would apply
+		// a pod whose secretKeyRef names a Secret nothing created, and
+		// the pod would sit in CreateContainerConfigError with the
+		// declaration looking correct.
+		out = append(out, s.Deploy.SimpleBackend.EnvVars...)
 	}
 	return out
 }

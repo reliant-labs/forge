@@ -76,7 +76,6 @@ func TestReleaseForgeScript_RefusesVersionPublishedAtDifferentCommit(t *testing.
 	// can burn either one alone, and either is fatal.
 	for _, mod := range []string{
 		"/github.com/reliant-labs/forge/@v/v0.2.0.info",
-		"/github.com/reliant-labs/forge/pkg/@v/v0.2.0.info",
 	} {
 		t.Run(mod, func(t *testing.T) {
 			repo := newForgeFixtureRepo(t)
@@ -118,8 +117,7 @@ func TestReleaseForgeScript_AllowsRepublishAtSameCommit(t *testing.T) {
 	repo := newForgeFixtureRepo(t)
 	head := gitOut(t, repo, "rev-parse", "HEAD")
 	proxy := fixtureProxy(t, map[string]string{
-		"/github.com/reliant-labs/forge/@v/v0.2.0.info":     infoJSON("v0.2.0", head),
-		"/github.com/reliant-labs/forge/pkg/@v/v0.2.0.info": infoJSON("v0.2.0", head),
+		"/github.com/reliant-labs/forge/@v/v0.2.0.info": infoJSON("v0.2.0", head),
 	})
 
 	out, err := runForgeScriptWithProxy(t, repo, proxy, "--dry-run", "v0.2.0")
@@ -146,7 +144,7 @@ func TestReleaseForgeScript_UnpublishedVersionPassesGate(t *testing.T) {
 	}
 	for _, want := range []string{
 		"github.com/reliant-labs/forge@v0.2.0: not published — free to use",
-		"github.com/reliant-labs/forge/pkg@v0.2.0: not published — free to use",
+
 		"DRY RUN: all validations passed",
 	} {
 		if !strings.Contains(out, want) {

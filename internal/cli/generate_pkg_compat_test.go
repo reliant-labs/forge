@@ -66,10 +66,14 @@ func TestCheckPkgCompat_NoForgeDependency(t *testing.T) {
 	}
 }
 
-// TestCheckPkgCompat_LegacyPkgPinExplainsTheMigration: a project still
-// requiring the retired forge/pkg submodule gets an actionable error, not the
-// proxy's "no matching versions".
-func TestCheckPkgCompat_LegacyPkgPinExplainsTheMigration(t *testing.T) {
+// TestCheckPkgCompat_RetiredPkgModuleExplainsTheAmbiguity: the retired
+// forge/pkg submodule is not merely absent, it CONFLICTS — both it and the
+// merged forge provide github.com/reliant-labs/forge/pkg/*, so a graph
+// holding both answers every such import with "ambiguous import: found
+// package ... in multiple modules", once per import, naming no cause and no
+// fix. This is the single most confusing state the migration can produce, so
+// the refusal has to name it.
+func TestCheckPkgCompat_RetiredPkgModuleExplainsTheAmbiguity(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "go.mod"), strings.Join([]string{
 		"module example.com/app",
@@ -82,18 +86,91 @@ func TestCheckPkgCompat_LegacyPkgPinExplainsTheMigration(t *testing.T) {
 
 	err := checkPkgCompat(dir)
 	if err == nil {
-		t.Fatal("expected an error for a project pinned to the retired forge/pkg module")
+		t.Fatal("expected an error for a project still requiring the retired forge/pkg module")
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"no longer exists",     // says what happened
-		"-droprequire",         // the literal fix
+		"ambiguous",            // the error the user would otherwise face
+		"-droprequire",         // the literal fix for a DIRECT requirement
 		"Import paths did NOT", // the reassurance that matters most
 		"No files were changed",
 	} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("legacy-pin error must contain %q, got:\n%s", want, msg)
+			t.Errorf("retired-module error must contain %q, got:\n%s", want, msg)
 		}
+	}
+}
+
+// TestCheckPkgCompat_RetiredPkgModuleViaDependencySaysSo: the same conflict
+// reached through a DEPENDENCY needs the opposite advice. `go mod edit
+// -droprequire` does nothing for a requirement this project does not own, and
+// a `replace` would hide the ambiguity rather than resolve it — the
+// dependency has to move first. Giving the direct-fix command here would send
+// someone in a circle.
+func TestCheckPkgCompat_RetiredPkgModuleViaDependencySaysSo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("resolves a module graph — skipped under -short")
+	}
+	root := t.TempDir()
+
+	// Local stubs for both forge modules, so the whole graph resolves offline
+	// with no go.sum. The forge/pkg replace is also the thing a cornered user
+	// reaches for — and the error has to say that it hides the ambiguity
+	// rather than resolving it.
+	forgeStub := filepath.Join(root, "forge")
+	mustMkdirAllT(t, filepath.Join(forgeStub, "pkg", "orm"))
+	mustWrite(t, filepath.Join(forgeStub, "go.mod"), "module github.com/reliant-labs/forge\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(forgeStub, "pkg", "orm", "orm.go"), "package orm\n")
+
+	pkgStub := filepath.Join(root, "forgepkg")
+	mustMkdirAllT(t, filepath.Join(pkgStub, "orm"))
+	mustWrite(t, filepath.Join(pkgStub, "go.mod"), "module github.com/reliant-labs/forge/pkg\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(pkgStub, "orm", "orm.go"), "package orm\n")
+
+	// A dependency that itself requires the retired submodule.
+	dep := filepath.Join(root, "dep")
+	mustMkdirAllT(t, dep)
+	mustWrite(t, filepath.Join(dep, "go.mod"), strings.Join([]string{
+		"module example.com/dep",
+		"",
+		"go 1.24",
+		"",
+		"require github.com/reliant-labs/forge/pkg v0.1.15",
+		"",
+	}, "\n"))
+	mustWrite(t, filepath.Join(dep, "doc.go"), "package dep\n")
+
+	project := filepath.Join(root, "app")
+	mustMkdirAllT(t, project)
+	mustWrite(t, filepath.Join(project, "go.mod"), strings.Join([]string{
+		"module example.com/app",
+		"",
+		"go 1.24",
+		"",
+		"require github.com/reliant-labs/forge v0.1.16",
+		"",
+		"require example.com/dep v0.0.0",
+		"",
+		"replace example.com/dep => ../dep",
+		"",
+		"replace github.com/reliant-labs/forge => ../forge",
+		"",
+		"replace github.com/reliant-labs/forge/pkg => ../forgepkg",
+		"",
+	}, "\n"))
+	mustWrite(t, filepath.Join(project, "doc.go"), "package app\n")
+
+	err := checkPkgCompat(project)
+	if err == nil {
+		t.Fatal("expected an error: the retired module is in the graph via a dependency")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "go mod why") {
+		t.Errorf("transitive case must point at `go mod why` to find the culprit, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "-droprequire") {
+		t.Errorf("transitive case must NOT suggest -droprequire — this project does not own the "+
+			"requirement, so that command is a no-op that sends the reader in a circle. got:\n%s", msg)
 	}
 }
 

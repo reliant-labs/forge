@@ -108,6 +108,7 @@ require (
 	github.com/containers/libtrust v0.0.0-20230121012942-c1716e8a8d01 // indirect
 	github.com/containers/ocicrypt v1.3.2 // indirect
 	github.com/containers/storage v1.59.1 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/cyphar/filepath-securejoin v0.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dchest/siphash v1.2.3 // indirect
@@ -246,18 +247,34 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
-// The CLI and the app-runtime library are separate modules on purpose: apps
-// import forge/pkg and must not inherit the CLI's tree (kcl, docker, delve,
-// aws, gcp).
+// ONE MODULE. The CLI (cmd/, internal/) and the app-runtime libraries
+// (pkg/*: serverkit, appkit, orm, crud, testkit, ...) ship as a single module.
+// pkg/ used to be its own module, github.com/reliant-labs/forge/pkg, released
+// in lockstep with this one by `task release:forge` — which is to say the
+// split bought nothing a single module does not give for free, while costing
+// three hand-maintained syncs that kept rotting: this file's require on it
+// went stale and made `go install .../cmd/forge@main` uninstallable, and the
+// generator's list of forge/pkg symbols it emits went stale and let `forge
+// generate` rewrite a project tree before failing. Merging them makes both
+// classes unrepresentable: the generator and the runtime it generates calls
+// into are now the same version by construction.
 //
-// There is deliberately NO `replace ... => ./pkg` here. Go refuses
-// `go install <module>/cmd/...@version` for any module whose go.mod carries a
-// replace, so one makes every published tag uninstallable — v0.0.3 installs,
-// v0.0.4 and v0.0.5 did not, and control-plane's CI pinned itself to v0.0.3 as
-// a result. internal/modguard guards it.
+// Import paths did NOT change. A module at github.com/reliant-labs/forge with
+// a pkg/testkit directory serves github.com/reliant-labs/forge/pkg/testkit —
+// byte-identical to what the submodule served. Consumers changed one require
+// line and no source.
 //
-// In-repo development resolves ./pkg through the gitignored go.work
-// (`go work init . ./pkg`), which bridges locally without following the module
-// into the published artifact.
+// The cost, accepted deliberately: consumers inherit kcl-go, kpm, delve,
+// esbuild and x/tools in their module GRAPH. Module-graph pruning means they
+// never compile any of it and `go mod tidy` never adds it to their own
+// requires; the weight is go.sum entries and MVS floors on deps already
+// shared through pkg/. If that ever stops being worth it, the split can come
+// back — but only with all three syncs DERIVED rather than hand-kept.
 //
-// Release order: tag pkg/vX.Y.Z, bump the require above, tag root.
+// There is deliberately NO `replace` here, for anything. Go refuses
+// `go install <module>/cmd/...@version` for any module whose go.mod carries
+// one, so a replace makes every published tag uninstallable — v0.0.3
+// installed, v0.0.4 and v0.0.5 did not, and control-plane's CI pinned itself
+// to v0.0.3 as a result. internal/modguard guards it.
+//
+// Release: `task release:forge -- vX.Y.Z` — one tag, one commit.

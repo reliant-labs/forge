@@ -12,11 +12,14 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-// addforgeReplaceMain adds a `replace github.com/reliant-labs/forge/pkg => <repo>/pkg`
-// directive to the project go.mod so `go mod tidy` resolves the in-repo
-// pkg (auth, crud, orm, etc.). Used in tests where the generated project
-// references a forge/pkg subpackage not yet present in the latest published
-// forge/pkg snapshot.
+// addforgeReplaceMain points the project's go.mod at the in-repo forge with a
+// `require`+`replace` pair, so `go mod tidy` resolves pkg/* (auth, crud, orm,
+// ...) from this checkout. Used in tests where the generated project
+// references a forge/pkg subpackage not present in the latest published forge.
+//
+// The target is the repo ROOT, not <repo>/pkg: pkg/* are packages in the one
+// forge module. A replace at <repo>/pkg names a directory with no go.mod,
+// which the go command rejects with "no such file or directory".
 func addforgeReplaceMain(t *testing.T, projectDir string) {
 	t.Helper()
 	repoRoot := findForgeRepoRoot(t)
@@ -26,10 +29,23 @@ func addforgeReplaceMain(t *testing.T, projectDir string) {
 		t.Fatalf("read project go.mod: %v", err)
 	}
 	content := string(data)
-	if strings.Contains(content, "replace github.com/reliant-labs/forge/pkg") {
+	if strings.Contains(content, "replace github.com/reliant-labs/forge ") {
 		return
 	}
-	content += fmt.Sprintf("\nreplace github.com/reliant-labs/forge/pkg => %s/pkg\n", repoRoot)
+	// A directory replace still needs a require to hang off: the scaffold
+	// omits one whenever the generating binary has no proxy-resolvable
+	// version, which is always true under `go test`.
+	if !strings.Contains(content, "require github.com/reliant-labs/forge ") {
+		content += "\nrequire github.com/reliant-labs/forge v0.0.0\n"
+	}
+	// And the RETIRED submodule must be excluded, not merely unrequired.
+	// `go mod tidy` resolves a forge/pkg/* import by picking any module that
+	// can provide it, and the published forge/pkg still can — leaving a graph
+	// with both, where every forge/pkg/* import is "ambiguous import: found
+	// package ... in multiple modules". An exclude keeps tidy off it so the
+	// local forge is the only provider.
+	content += "\nexclude github.com/reliant-labs/forge/pkg v0.1.15\n"
+	content += fmt.Sprintf("\nreplace github.com/reliant-labs/forge => %s\n", repoRoot)
 	if err := os.WriteFile(goModPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write project go.mod: %v", err)
 	}

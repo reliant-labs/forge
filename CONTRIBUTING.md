@@ -65,13 +65,19 @@ export PATH="$HOME/go/bin:$PATH"   # so the freshly-installed forge is found
 build time from your own tree — nothing machine-specific is ever committed to
 forge's source.
 
-Why it matters: `forge/pkg` is a published module, so a plain
-`forge project new` pins the last published tag with no `replace`. A binary
-installed with `make dev` instead writes a **gitignored `go.work`** into each
-new project that `use`s `<this-checkout>/pkg`, so scaffolds build against your
-in-development `forge/pkg` with no manual `go mod edit -replace`. A released
-`forge` (installed via `task install` or `go install …@vX.Y.Z`) omits the
-stamp and never writes that `go.work`.
+Why it matters: a released `forge project new` pins forge at the binary's own
+published version, with no `replace`. A `make dev` binary has NO such version —
+its bytes are on no module proxy — so instead of inventing one it writes a
+**gitignored `go.work`** into each new project that `use`s `<this-checkout>`,
+and scaffolds build against your in-development forge with no manual
+`go mod edit -replace`. A released `forge` (installed via `task install` or
+`go install …@vX.Y.Z`) omits the stamp and never writes that `go.work`.
+
+The same rule applies to an EXISTING project: running a `make dev` forge's
+`forge generate` against a project pinned to a published forge is refused
+before codegen touches the tree, with the `go work use` command to run. Pinning
+the last release instead is how a generated tree came to call
+`testkit.StubNotConfigured` against a forge that did not have it.
 
 ## Before opening a PR
 

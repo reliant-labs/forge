@@ -18,15 +18,17 @@ import (
 	"testing"
 )
 
-// repoPkgDir is the forge/pkg module in this checkout.
+// repoPkgDir is the pkg/ library tree in this checkout. It is a directory in
+// the forge module, not a module of its own, so there is no go.mod to look
+// for — the directory's presence is the marker.
 func repoPkgDir(t *testing.T) string {
 	t.Helper()
 	dir, err := filepath.Abs(filepath.Join("..", "..", "pkg"))
 	if err != nil {
 		t.Fatalf("resolve pkg dir: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
-		t.Fatalf("forge/pkg module not found at %s: %v", dir, err)
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Fatalf("forge pkg/ library tree not found at %s: %v", dir, err)
 	}
 	return dir
 }
@@ -301,20 +303,23 @@ func TestDetectLibraryDivergence_NoDivergenceWhenResolvedInsideModuleCache(t *te
 	}
 }
 
-// TestDetectLibraryDivergence_DetectsGoWorkOverrideInThisRepo is the
-// positive case, exercised against this repo's own go.work (which `use`s
-// ./pkg): the resolved directory sits outside GOMODCACHE, so the
-// divergence must be reported with the go.mod-pinned version and
+// TestDetectLibraryDivergence_DetectsGoWorkOverrideInAConsumerProject is the
+// positive case: a project that pins a published forge but bridges to a local
+// checkout with a go.work. The resolved directory sits outside GOMODCACHE, so
+// the divergence must be reported with the go.mod-pinned version and
 // Source == "go.work".
-func TestDetectLibraryDivergence_DetectsGoWorkOverrideInThisRepo(t *testing.T) {
-	dir, _, err := resolveForgePkgDir(context.Background())
-	if err != nil {
-		t.Fatalf("resolveForgePkgDir: %v", err)
-	}
+//
+// This used to run against forge's OWN go.work, which `use`d ./pkg. The
+// single-module collapse deleted that file, and inside forge the question is
+// meaningless anyway — you are not a project consuming forge, you are forge,
+// and the main module has no version to diverge from. A fixture consumer is
+// what the detector is actually for.
+func TestDetectLibraryDivergence_DetectsGoWorkOverrideInAConsumerProject(t *testing.T) {
+	dir := bridgedConsumerProject(t)
 
 	got := detectLibraryDivergence(context.Background(), dir)
 	if got == nil {
-		t.Fatal("expected a divergence in this repo (go.work uses ./pkg), got nil")
+		t.Fatal("expected a divergence for a project whose go.work bridges to local forge, got nil")
 	}
 	if got.Source != "go.work" {
 		t.Errorf("Source = %q, want \"go.work\"", got.Source)
@@ -331,19 +336,77 @@ func TestDetectLibraryDivergence_DetectsGoWorkOverrideInThisRepo(t *testing.T) {
 	}
 }
 
-// TestBuildLibrariesSpec_PopulatesDivergenceInThisRepo asserts the field
-// is wired all the way through buildLibrariesSpec, not just reachable via
-// the helper directly.
-func TestBuildLibrariesSpec_PopulatesDivergenceInThisRepo(t *testing.T) {
+// TestBuildLibrariesSpec_PopulatesDivergenceForABridgedProject asserts the
+// field is wired all the way through buildLibrariesSpec, not just reachable
+// via the helper directly.
+func TestBuildLibrariesSpec_PopulatesDivergenceForABridgedProject(t *testing.T) {
+	bridgedConsumerProject(t)
+
 	spec, err := buildLibrariesSpec(context.Background())
 	if err != nil {
 		t.Fatalf("buildLibrariesSpec: %v", err)
 	}
 	if spec.Divergence == nil {
-		t.Fatal("expected spec.Divergence to be populated in this repo (go.work uses ./pkg)")
+		t.Fatal("expected spec.Divergence to be populated for a go.work-bridged project")
 	}
 	if spec.Divergence.Source != "go.work" {
 		t.Errorf("Source = %q, want \"go.work\"", spec.Divergence.Source)
+	}
+}
+
+// bridgedConsumerProject builds a consumer module that REQUIRES a published
+// forge but resolves it through a go.work `use` of a local forge stub, chdirs
+// the test into it, and returns the pkg/ directory forge resolves to.
+//
+// The stub carries a pkg/ tree with one documented package, which is the
+// minimum buildLibrariesSpec accepts (it refuses to report an empty library
+// list rather than print a confident nothing).
+func bridgedConsumerProject(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	forgeStub := filepath.Join(root, "forge")
+	libDir := filepath.Join(forgeStub, "pkg", "svcerr")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFileT(t, filepath.Join(forgeStub, "go.mod"),
+		"module github.com/reliant-labs/forge\n\ngo 1.24\n")
+	writeFileT(t, filepath.Join(libDir, "doc.go"),
+		"// Package svcerr maps errors to Connect codes.\npackage svcerr\n")
+
+	project := filepath.Join(root, "app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFileT(t, filepath.Join(project, "go.mod"), strings.Join([]string{
+		"module example.com/app",
+		"",
+		"go 1.24",
+		"",
+		"require github.com/reliant-labs/forge v0.1.15",
+		"",
+	}, "\n"))
+	writeFileT(t, filepath.Join(project, "doc.go"), "package app\n")
+	// The bridge: resolve forge from the stub instead of the proxy.
+	writeFileT(t, filepath.Join(project, "go.work"), strings.Join([]string{
+		"go 1.24",
+		"",
+		"use (",
+		"\t.",
+		"\t../forge",
+		")",
+		"",
+	}, "\n"))
+
+	t.Chdir(project)
+	return filepath.Join(forgeStub, "pkg")
+}
+
+func writeFileT(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

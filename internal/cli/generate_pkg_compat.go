@@ -49,9 +49,12 @@ import (
 // runtime libraries. `forge/pkg` is a package prefix inside it, not a module.
 const forgeModuleRequirePath = "github.com/reliant-labs/forge"
 
-// legacyForgePkgRequireRE matches a require on the RETIRED forge/pkg
-// submodule, which no longer exists as a module. A project still pinning it
-// predates the single-module collapse and cannot resolve at all.
+// legacyForgePkgModulePath is the RETIRED submodule. It is not merely absent
+// now — it actively CONFLICTS with the merged module, since both provide
+// github.com/reliant-labs/forge/pkg/* import paths.
+const legacyForgePkgModulePath = "github.com/reliant-labs/forge/pkg"
+
+// legacyForgePkgRequireRE matches a direct require on that module.
 var legacyForgePkgRequireRE = regexp.MustCompile(
 	`(?m)^[\t ]*(?:require[\t ]+)?github\.com/reliant-labs/forge/pkg[\t ]+(v[^\s]+)[\t ]*$`)
 
@@ -69,11 +72,21 @@ func checkPkgCompat(projectDir string) error {
 	}
 	gomod := string(data)
 
-	// A project still pinning the retired submodule cannot build at all, and
-	// the module proxy's error for it is opaque. Say what happened.
-	if m := legacyForgePkgRequireRE.FindStringSubmatch(gomod); m != nil &&
-		!strings.Contains(gomod, forgeModuleRequirePath+" v") {
-		return legacyPkgPinErr(projectDir, m[1])
+	// THE RETIRED SUBMODULE, anywhere in the graph, is fatal and produces the
+	// least legible error in Go: both github.com/reliant-labs/forge (which
+	// now contains pkg/) and github.com/reliant-labs/forge/pkg provide the
+	// import path github.com/reliant-labs/forge/pkg/<x>, so a graph holding
+	// both answers every such import with
+	//
+	//	ambiguous import: found package github.com/reliant-labs/forge/pkg/orm
+	//	in multiple modules
+	//
+	// repeated once per import, naming no cause and no fix. It does not
+	// matter whether the requirement is direct or dragged in by another
+	// dependency — and transitive is the likelier case during a migration,
+	// which is why this asks the module GRAPH and not just this go.mod.
+	if version, direct, ok := forgePkgInGraph(projectDir, gomod); ok {
+		return retiredPkgModuleErr(projectDir, version, direct)
 	}
 	if !strings.Contains(gomod, forgeModuleRequirePath) {
 		return nil // project doesn't consume forge's libraries
@@ -133,6 +146,31 @@ func decideForgeCompat(binaryVersion, projectVersion string, local bool) compatV
 		return compatStalePin
 	}
 	return compatOK
+}
+
+// forgePkgInGraph reports whether the retired forge/pkg module is still in
+// this project's module graph, and whether the requirement is direct.
+//
+// The go.mod text answers the direct case without a subprocess. For the
+// transitive case only the toolchain knows, and a toolchain that cannot
+// answer is treated as "not present": the build-list query fails for plenty
+// of reasons that are not this problem, and generate's validate step still
+// catches the ambiguity (just less legibly) rather than losing it.
+func forgePkgInGraph(projectDir, gomod string) (version string, direct, present bool) {
+	if m := legacyForgePkgRequireRE.FindStringSubmatch(gomod); m != nil {
+		return m[1], true, true
+	}
+	cmd := exec.Command("go", "list", "-m", "-f", "{{.Version}}", legacyForgePkgModulePath)
+	cmd.Dir = projectDir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false, false
+	}
+	v := strings.TrimSpace(string(out))
+	if v == "" {
+		return "", false, false
+	}
+	return v, false, true
 }
 
 // resolveProjectForge asks the go toolchain how forge ACTUALLY resolves for
@@ -221,23 +259,37 @@ func staleForgePinErr(projectDir, projectVersion, binaryVersion string) error {
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }
 
-// legacyPkgPinErr names the pre-collapse two-module pin, whose proxy error
-// ("module github.com/reliant-labs/forge/pkg: no matching versions") says
-// nothing about what to do.
-func legacyPkgPinErr(projectDir, pinnedVersion string) error {
+// retiredPkgModuleErr names the pre-collapse submodule and, crucially,
+// distinguishes a requirement this project owns from one a dependency drags
+// in — because the fixes are completely different and the Go error that
+// follows ("ambiguous import ... in multiple modules", once per import) tells
+// you neither.
+func retiredPkgModuleErr(projectDir, version string, direct bool) error {
 	target := buildinfo.InstallableVersion()
 	if target == "" {
 		target = "latest"
 	}
-	base := cliutil.UserErr("forge generate (forge version compatibility)",
-		fmt.Sprintf("the project requires github.com/reliant-labs/forge/pkg %s, a module that no longer "+
-			"exists: forge/pkg was merged into github.com/reliant-labs/forge, so the CLI and the runtime "+
-			"libraries can never disagree about a version again. Import paths did NOT change — only the "+
-			"require line. No files were changed", pinnedVersion),
-		"",
-		fmt.Sprintf("swap the requirement (in the root module and in gen/ if the project has one):"+
-			"\n    go mod edit -droprequire=github.com/reliant-labs/forge/pkg"+
-			"\n    go get github.com/reliant-labs/forge@%s && go mod tidy", target))
 
+	what := fmt.Sprintf("the retired module github.com/reliant-labs/forge/pkg %s is still in this "+
+		"project's module graph. It was merged into github.com/reliant-labs/forge, and BOTH modules "+
+		"provide the import path github.com/reliant-labs/forge/pkg/* — so every such import is "+
+		"ambiguous and nothing in the project compiles. Import paths did NOT change; only the require "+
+		"line did. No files were changed", version)
+
+	var fix string
+	if direct {
+		fix = fmt.Sprintf("this project requires it directly — swap the requirement, in the root module "+
+			"and in gen/ if there is one:"+
+			"\n    go mod edit -droprequire=github.com/reliant-labs/forge/pkg"+
+			"\n    go get github.com/reliant-labs/forge@%s && go mod tidy", target)
+	} else {
+		fix = fmt.Sprintf("this project does NOT require it directly — a dependency does, and it has to "+
+			"move to the merged module before this project can build. Find the culprit:"+
+			"\n    go mod why -m github.com/reliant-labs/forge/pkg"+
+			"\n  then update that dependency to a version built against forge %s. Until it ships, "+
+			"nothing here can resolve the ambiguity — a `replace` would only hide it.", target)
+	}
+
+	base := cliutil.UserErr("forge generate (forge version compatibility)", what, "", fix)
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }

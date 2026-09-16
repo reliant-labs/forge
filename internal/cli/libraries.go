@@ -40,7 +40,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// forgePkgModule is the module path of forge's public runtime libraries.
+// forgePkgModule is the IMPORT PATH PREFIX of forge's public runtime
+// libraries. It is no longer a module path: pkg/ is a directory inside the
+// forge module (forgeModulePath, declared in skill.go), so the toolchain is
+// asked about forge and the pkg/ subdirectory is joined on afterwards. The
+// import paths themselves are unchanged, which is why this constant is.
 const forgePkgModule = "github.com/reliant-labs/forge/pkg"
 
 // LibrarySpec is one forge/pkg subpackage: what to import, where its source
@@ -252,8 +256,9 @@ func projectRootDir() (string, error) {
 	}
 }
 
-// resolveForgePkgDir asks the go toolchain where the forge/pkg module lives
-// for the module in the current directory.
+// resolveForgePkgDir asks the go toolchain where forge's runtime libraries
+// live for the module in the current directory: it resolves the forge MODULE
+// and returns its pkg/ subdirectory.
 //
 // `go list -m` is the right question to ask because it is the SAME
 // resolution the compiler performs: a `replace` or a go.work `use` pointing
@@ -261,26 +266,33 @@ func projectRootDir() (string, error) {
 // resolves into the module cache. Reimplementing either lookup here would
 // be a second answer that can disagree with the build.
 func resolveForgePkgDir(ctx context.Context) (dir, version string, err error) {
-	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Dir}}\t{{.Version}}", forgePkgModule)
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Dir}}\t{{.Version}}", forgeModulePath)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, runErr := cmd.Output()
 	if runErr != nil {
 		return "", "", fmt.Errorf(
 			"could not resolve %s from %s: %w\n%s\n"+
-				"Run this from inside a forge project (the module that requires forge/pkg)",
-			forgePkgModule, currentDirForMessage(), runErr, strings.TrimSpace(stderr.String()))
+				"Run this from inside a forge project (the module that requires forge)",
+			forgeModulePath, currentDirForMessage(), runErr, strings.TrimSpace(stderr.String()))
 	}
 
-	dir, version, _ = strings.Cut(strings.TrimSpace(string(out)), "\t")
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
+	moduleDir, version, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
+	moduleDir = strings.TrimSpace(moduleDir)
+	if moduleDir == "" {
 		// `go list -m` answers with an empty Dir when the module is in the
 		// build list but not extracted locally. Naming the fix matters more
 		// than the diagnosis.
 		return "", "", fmt.Errorf(
 			"%s is required but its source is not on disk yet — run `go mod download %s` first",
-			forgePkgModule, forgePkgModule)
+			forgeModulePath, forgeModulePath)
+	}
+	// The libraries live under pkg/ inside that module.
+	dir = filepath.Join(moduleDir, "pkg")
+	if st, statErr := os.Stat(dir); statErr != nil || !st.IsDir() {
+		return "", "", fmt.Errorf(
+			"%s resolved to %s, which has no pkg/ directory — that is not a forge module tree",
+			forgeModulePath, moduleDir)
 	}
 	return dir, strings.TrimSpace(version), nil
 }
@@ -360,7 +372,7 @@ func goEnv(ctx context.Context, name string) (string, error) {
 // pin is still the version a `go doc` run from a directory outside
 // this checkout would show.
 func forgePkgVersionInGoMod(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", forgePkgModule)
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", forgeModulePath)
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	out, err := cmd.Output()
 	if err != nil {

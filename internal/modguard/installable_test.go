@@ -4,7 +4,6 @@ package modguard_test
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -64,41 +63,6 @@ func TestRootGoModHasNoReplace(t *testing.T) {
 			"installs, v0.0.4 and v0.0.5 do not.\n"+
 			"For local development against ./pkg use the gitignored go.work instead:\n"+
 			"    go work init . ./pkg", i+1, trimmed)
-	}
-}
-
-// TestPkgRequireIsPublished pins the other half of the release order the root
-// go.mod documents: tag pkg/vX.Y.Z, bump this require, tag root.
-//
-// v0.0.4 skipped the middle step and shipped requiring pkg v0.0.3 while
-// pkg/v0.0.4 existed. In-repo builds could not notice — the replace won
-// locally — so the staleness was visible only to a consumer resolving the root
-// module from the proxy. With the replace gone the require IS the resolution,
-// which makes a pseudo-version or a `v0.0.0` placeholder a shipping defect.
-func TestPkgRequireIsPublished(t *testing.T) {
-	t.Parallel()
-
-	root := repoRoot(t)
-	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
-	if err != nil {
-		t.Fatalf("read go.mod: %v", err)
-	}
-
-	re := regexp.MustCompile(`(?m)^\s*github\.com/reliant-labs/forge/pkg\s+(\S+)`)
-	m := re.FindSubmatch(data)
-	if m == nil {
-		t.Fatal("go.mod does not require github.com/reliant-labs/forge/pkg — with no replace " +
-			"to resolve it, the root module cannot build for a consumer")
-	}
-	version := string(m[1])
-
-	if strings.Contains(version, "-0.") && strings.Count(version, "-") >= 2 {
-		t.Errorf("forge/pkg is required at the pseudo-version %q — an untagged commit. "+
-			"Tag pkg/vX.Y.Z and require that, so the published root module points at a "+
-			"published pkg", version)
-	}
-	if version == "v0.0.0" {
-		t.Errorf("forge/pkg is required at the placeholder %q", version)
 	}
 }
 

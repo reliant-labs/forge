@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
@@ -60,7 +61,7 @@ func TestAddPeerPinsToTsconfig_LegacyProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !addPeerPinsToTsconfig(path, false) {
+	if !addPeerPinsToTsconfig(path, knownLayout(false)) {
 		t.Fatal("addPeerPinsToTsconfig reported no change on a tsconfig with no peer pins")
 	}
 
@@ -105,10 +106,10 @@ func TestAddPeerPinsToTsconfig_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	addPeerPinsToTsconfig(path, false)
+	addPeerPinsToTsconfig(path, knownLayout(false))
 	first := mustReadTsconfig(t, path)
 
-	if addPeerPinsToTsconfig(path, false) {
+	if addPeerPinsToTsconfig(path, knownLayout(false)) {
 		t.Error("second pass reported a change; the reconcile must be idempotent")
 	}
 	if second := mustReadTsconfig(t, path); second != first {
@@ -129,7 +130,7 @@ func TestAddPeerPinsToTsconfig_NoPathsBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if addPeerPinsToTsconfig(path, false) {
+	if addPeerPinsToTsconfig(path, knownLayout(false)) {
 		t.Error("changed a tsconfig with no paths block; forge must leave it alone")
 	}
 	if got := mustReadTsconfig(t, path); got != noPaths {
@@ -153,7 +154,7 @@ func TestAddPeerPinsToTsconfig_PartialPins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !addPeerPinsToTsconfig(path, false) {
+	if !addPeerPinsToTsconfig(path, knownLayout(false)) {
 		t.Fatal("reported no change though several pins were missing")
 	}
 
@@ -188,11 +189,11 @@ func TestAddPeerPinsToTsconfig_RetargetsStaleLayout(t *testing.T) {
 	}
 
 	// Born standalone…
-	if !addPeerPinsToTsconfig(path, false) {
+	if !addPeerPinsToTsconfig(path, knownLayout(false)) {
 		t.Fatal("first pass reported no change")
 	}
 	// …then the tree became a workspace and npm hoisted.
-	if !addPeerPinsToTsconfig(path, true) {
+	if !addPeerPinsToTsconfig(path, knownLayout(true)) {
 		t.Fatal("layout changed to hoisted but the reconcile reported no change — " +
 			"the pins still name a directory that does not exist, and tsc silently " +
 			"resolves the linked runtime's copy instead (TS2322)")
@@ -222,7 +223,7 @@ func TestAddPeerPinsToTsconfig_RetargetsStaleLayout(t *testing.T) {
 
 	// Re-running against the SAME layout is a no-op, so `forge generate`
 	// twice in a row still reports no changes.
-	if addPeerPinsToTsconfig(path, true) {
+	if addPeerPinsToTsconfig(path, knownLayout(true)) {
 		t.Error("second pass at the same layout reported a change; the reconcile must be idempotent")
 	}
 }
@@ -244,7 +245,7 @@ func TestAddPeerPinsToTsconfig_EmitsExactlyOneCandidate(t *testing.T) {
 		if err := os.WriteFile(path, []byte(legacyTsconfig), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		addPeerPinsToTsconfig(path, hoisted)
+		addPeerPinsToTsconfig(path, knownLayout(hoisted))
 
 		for pkg, got := range parseTsconfig(t, mustReadTsconfig(t, path)) {
 			if pkg == "@/*" {
@@ -265,4 +266,11 @@ func mustReadTsconfig(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// knownLayout is the test spelling of "forge identified this layout". These
+// tests exercise the RETARGET behaviour, which only applies to an identified
+// layout — the unknown case is covered in the determinism test file.
+func knownLayout(hoisted bool) generator.PinLayout {
+	return generator.PinLayout{Hoisted: hoisted, Known: true}
 }

@@ -2,14 +2,13 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
@@ -92,13 +91,14 @@ func reconcileFrontendTsconfigPeers(cfg *config.ProjectConfig, projectDir string
 			continue
 		}
 		rel := filepath.Join(feDir, "tsconfig.json")
-		// Which node_modules this frontend's deps actually live in is a
-		// property of the tree on disk, not of the config: an npm workspace
-		// (forge's dev bridge writes one) hoists them to the project root and
-		// leaves the frontend-local directory absent. Read it per frontend,
-		// because a project can mix layouts.
-		hoisted := frontendDepsAreHoisted(projectDir, filepath.Join(projectDir, feDir))
-		if addPeerPinsToTsconfig(filepath.Join(projectDir, rel), hoisted) {
+		// Which node_modules this frontend's deps resolve from is a property
+		// of the project, not of forge.yaml, and it is read per frontend
+		// because a project can mix layouts. It may also be UNKNOWABLE here —
+		// see generator.DetectFrontendPinLayout for why a fresh clone cannot
+		// tell a bridged project from a standalone one, and why guessing is
+		// what turned Verify Generated Code red on an untouched file.
+		layout := generator.DetectFrontendPinLayout(projectDir, filepath.Join(projectDir, feDir))
+		if addPeerPinsToTsconfig(filepath.Join(projectDir, rel), layout) {
 			touched = append(touched, filepath.ToSlash(rel))
 		}
 	}
@@ -111,132 +111,6 @@ func reconcileFrontendTsconfigPeers(cfg *config.ProjectConfig, projectDir string
 	}
 }
 
-// frontendDepsAreHoisted reports whether feDir's dependencies resolve from the
-// PROJECT ROOT's node_modules rather than the frontend's own — the npm
-// workspace layout, which is what forge's dev bridge creates.
-//
-// The question is answered from the DECLARATION first and the installed tree
-// only second, and that ordering is the point. A workspace root says npm WILL
-// hoist; whether it has done so yet depends on when someone last ran an
-// install, which is not something generate can order. Reading the tree alone
-// made the pin correct or stale depending on that timing — a scaffold whose
-// `npm install` ran after the last generate kept frontend-local pins that no
-// longer resolved, and failed tsc with the TS2322 this pass exists to prevent.
-//
-// A nested install still wins when one genuinely exists: node resolution
-// prefers the nearest node_modules, so the pin must too.
-func frontendDepsAreHoisted(projectDir, feDir string) bool {
-	// Probe a specific PACKAGE, not the node_modules directory. An npm
-	// workspace routinely leaves a frontend with a partial node_modules
-	// holding only what could not be hoisted (a vite-spa frontend keeps
-	// esbuild and vite locally while the peers live at the root), so "the
-	// directory exists" does not mean "the peer is here" — and pinning at a
-	// directory that lacks the package resolves to nothing, which tsc answers
-	// by binding the linked runtime's copy instead.
-	// ── DETERMINISM FIRST ────────────────────────────────────────────────
-	// tsconfig.json is GENERATED AND COMMITTED, and CI re-runs `forge
-	// generate` and fails on any diff. So this decision must depend only on
-	// TRACKED FILES — never on whether node_modules happens to be installed,
-	// which differs between a developer's machine and a CI checkout and would
-	// make committed output unreproducible by construction.
-	//
-	// Measured, and the reason this ordering exists: control-plane's root
-	// package.json is forge's own dev web-runtime bridge and is GITIGNORED
-	// (see its .gitignore "Dev web-runtime bridge" block). A developer's tree
-	// therefore has both a workspace root AND hoisted node_modules, so the old
-	// probe answered "hoisted" and wrote "../../node_modules/…". CI checks out
-	// neither the manifest nor the modules, answered "not hoisted", rewrote
-	// all 14 pins to "./node_modules/…", and failed Verify Generated Code —
-	// on a file nobody had touched.
-	//
-	// A frontend's OWN package.json is tracked, so it is a legitimate input.
-	// Its parent workspace manifest may not be, so the filesystem probes below
-	// are a last resort, consulted only when the tracked evidence is silent.
-	if projectDeclaresFrontendWorkspace(projectDir) {
-		return true
-	}
-	if frontendDeclaresWorkspaceMember(projectDir, feDir) {
-		return true
-	}
-
-	// No tracked declaration either way. Fall back to the tree, which at least
-	// describes THIS machine correctly — a project with no workspace root and
-	// a real nested install is the plain non-workspace layout.
-	//
-	// A nested install wins when one genuinely exists: node resolution prefers
-	// the nearest node_modules, so the pin must too.
-	probe := filepath.FromSlash(pinLayoutProbePackage)
-	if dirExists(filepath.Join(feDir, "node_modules", probe)) {
-		return false // really installed here — nearest wins
-	}
-	return dirExists(filepath.Join(projectDir, "node_modules", probe))
-}
-
-// frontendDeclaresWorkspaceMember reports whether the frontend's own (TRACKED)
-// package.json shows it is a member of a parent npm workspace, by carrying the
-// web-runtime as a `workspace:`-protocol or `file:`-linked dependency.
-//
-// This is the tracked signal that survives when the workspace ROOT manifest is
-// gitignored — as forge's own dev bridge root is. Without it, a project using
-// that bridge has no reproducible way to answer the hoisting question.
-func frontendDeclaresWorkspaceMember(projectDir, feDir string) bool {
-	body, err := os.ReadFile(filepath.Join(feDir, "package.json"))
-	if err != nil {
-		return false
-	}
-	var manifest struct {
-		Dependencies    map[string]string `json:"dependencies"`
-		DevDependencies map[string]string `json:"devDependencies"`
-	}
-	if err := json.Unmarshal(body, &manifest); err != nil {
-		return false
-	}
-	for _, deps := range []map[string]string{manifest.Dependencies, manifest.DevDependencies} {
-		for name, constraint := range deps {
-			if name != webRuntimePackage {
-				continue
-			}
-			// `workspace:*` and `file:../..` both mean "resolved from a parent
-			// workspace", which is exactly the hoisted layout.
-			if strings.HasPrefix(constraint, "workspace:") || strings.HasPrefix(constraint, "file:") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// pinLayoutProbePackage is the package the layout decision is probed against —
-// a required (non-optional) peer of the runtime, so it is present in every
-// real install.
-const pinLayoutProbePackage = "@connectrpc/connect"
-
-// projectDeclaresFrontendWorkspace reports whether the project root's
-// package.json is an npm workspace root covering frontends/*. Forge's dev
-// bridge writes exactly that (gitignored) manifest; a user may equally have
-// one of their own, and both hoist identically.
-func projectDeclaresFrontendWorkspace(projectDir string) bool {
-	body, err := os.ReadFile(filepath.Join(projectDir, "package.json"))
-	if err != nil {
-		return false
-	}
-	var manifest struct {
-		Workspaces []string `json:"workspaces"`
-	}
-	if err := json.Unmarshal(body, &manifest); err != nil {
-		// A workspaces OBJECT form ({"packages": [...]}) fails this decode.
-		// Fall back to the tree rather than guessing at a shape forge did not
-		// write.
-		return false
-	}
-	for _, pattern := range manifest.Workspaces {
-		if strings.HasPrefix(pattern, "frontends/") {
-			return true
-		}
-	}
-	return false
-}
-
 // addPeerPinsToTsconfig reconciles one tsconfig's `paths` peer pins: it adds
 // any that are missing and RETARGETS any that name the wrong node_modules for
 // this project's layout. Returns true when the file changed.
@@ -247,7 +121,7 @@ func projectDeclaresFrontendWorkspace(projectDir string) bool {
 // no longer exists. tsc does not report a pin that resolves to nothing; it
 // silently falls back to the ordinary walk and finds the linked runtime's own
 // copy, which is the TS2322 this pass exists to prevent.
-func addPeerPinsToTsconfig(path string, hoisted bool) bool {
+func addPeerPinsToTsconfig(path string, layout generator.PinLayout) bool {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return false // no tsconfig here — nothing to reconcile
@@ -255,19 +129,29 @@ func addPeerPinsToTsconfig(path string, hoisted bool) bool {
 
 	// First pass: retarget pins that are present but aimed at the other
 	// layout. Done before the insert so `missing` below sees the final shape.
+	//
+	// Skipped entirely when the layout is unknown. A committed pin is itself a
+	// reviewed declaration of this project's layout, and it is better evidence
+	// than anything forge can infer from a tree that has not been installed —
+	// so when forge cannot identify the layout it defers to the file rather
+	// than rewriting it to a guess. Adding a MISSING pin below still happens:
+	// a key that is absent says nothing, so writing the default there costs
+	// nothing that was not already lost.
 	retargeted := false
-	for _, pkg := range tsconfigPeerPins() {
-		want := webruntimepeers.TypePinPath(pkg, hoisted)
-		re := pathsEntryRe(pkg)
-		loc := re.FindSubmatchIndex(body)
-		if loc == nil {
-			continue // absent, or a shape this does not own — leave it
+	if layout.Known {
+		for _, pkg := range tsconfigPeerPins() {
+			want := webruntimepeers.TypePinPath(pkg, layout.Hoisted)
+			re := pathsEntryRe(pkg)
+			loc := re.FindSubmatchIndex(body)
+			if loc == nil {
+				continue // absent, or a shape this does not own — leave it
+			}
+			if string(body[loc[4]:loc[5]]) == want {
+				continue // already correct
+			}
+			body = re.ReplaceAll(body, []byte(`${1}"`+want+`"${3}`))
+			retargeted = true
 		}
-		if string(body[loc[4]:loc[5]]) == want {
-			continue // already correct
-		}
-		body = re.ReplaceAll(body, []byte(`${1}"`+want+`"${3}`))
-		retargeted = true
 	}
 
 	missing := make([]string, 0, len(tsconfigPeerPins()))
@@ -315,7 +199,7 @@ func addPeerPinsToTsconfig(path string, hoisted bool) bool {
 		// value for a non-wildcard key, so the pin names the one layout this
 		// project has rather than listing both. See
 		// webruntimepeers.TypePinPath.
-		fmt.Fprintf(&out, "\n%s  %q: [%q],", indent, pkg, webruntimepeers.TypePinPath(pkg, hoisted))
+		fmt.Fprintf(&out, "\n%s  %q: [%q],", indent, pkg, webruntimepeers.TypePinPath(pkg, layout.Hoisted || !layout.Known))
 	}
 	out.Write(body[insertAt:])
 

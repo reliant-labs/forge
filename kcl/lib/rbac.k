@@ -120,8 +120,39 @@ render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: a
 # image-pull Secrets attached to the generated ServiceAccount so the
 # operator's pods (and any Jobs it spawns under this SA) can pull from a
 # private registry. Defaults to empty for backward-compatible callers.
+#
+# THE NAMES CARRY THE NAMESPACE, and that is a correctness requirement rather
+# than a cosmetic convention. A ClusterRole and a ClusterRoleBinding are
+# cluster-scoped: they have exactly ONE name per cluster. The BINDING's
+# `subjects[0].namespace`, however, is the deploying ENV's namespace — so with
+# an env-invariant name every env in a shared cluster writes the same two
+# objects, and whichever deploys last silently repoints the binding at its own
+# namespace. The loser's operator SA keeps its Deployment, its pods and its
+# ServiceAccount, and loses every cluster-scoped grant: leader-election leases
+# and CR watches start returning `is forbidden` on each tick.
+#
+# It is a genuinely invisible failure. Each env renders correctly in isolation,
+# every manifest is valid, and `kubectl apply` overwrites a same-named object
+# without a word — so it surfaces only downstream as one env's controller
+# inexplicably losing permissions it plainly declares. Measured twice in
+# control-plane's k3d cluster, where dev / dev-k8s / e2e share one cluster: e2e
+# broke while the live binding's subject pointed at control-plane-dev, and the
+# workspace-proxy variant of the same collision stalled a resolver informer
+# until every request hit a 15s cache-sync wait and Envoy returned 504.
+#
+# Suffixing means each env fully OWNS its pair, so applies are independent and
+# tearing one env down cannot delete another's grants. `forge doctor`'s
+# CheckObjectCollision reports the shape this prevents; it warns rather than
+# fails, because a deliberately-shared singleton is legitimate at cluster
+# scope — but an operator's binding is never one, since its subject is
+# per-env by construction.
 render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets: [str] = [], part_of: str = "" -> [any] {
     _labels = _managed_labels(name, part_of)
+    # Scoped to the namespace for the last-writer-wins reason above. The
+    # ServiceAccount is NOT suffixed: it is namespaced already, so its
+    # (namespace, name) address is unique without help, and workloads
+    # reference it by bare name.
+    _cluster_role = "${name}-${namespace}-clusterrole"
     [
         {
             apiVersion = "v1"
@@ -133,20 +164,20 @@ render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets:
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
             kind = "ClusterRole"
-            metadata = {name = "${name}-clusterrole", labels = _labels}
+            metadata = {name = _cluster_role, labels = _labels}
             rules = _default_rules + rbac.rules
         }
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
             kind = "ClusterRoleBinding"
-            metadata = {name = "${name}-clusterrolebinding", labels = _labels}
+            metadata = {name = "${name}-${namespace}-clusterrolebinding", labels = _labels}
             subjects = [
                 {kind = "ServiceAccount", name = name, namespace = namespace}
             ]
             roleRef = {
                 apiGroup = "rbac.authorization.k8s.io"
                 kind = "ClusterRole"
-                name = "${name}-clusterrole"
+                name = _cluster_role
             }
         }
     ]

@@ -128,6 +128,15 @@ func projectChecks() []namedCheck {
 		{"covdata", CheckCovdata},
 		{"Disowned Files", CheckDisownedFiles},
 		{"Auth Issuer Parity", CheckAuthParity},
+		// Deliberately NOT in deployabilityChecks: that set is contracted
+		// to answer on a bare checkout with nothing running, and this one
+		// reads a live cluster. It still belongs to `forge doctor`, because
+		// the question it answers — "what did forge leave behind that no
+		// env will ever reclaim?" — is a project-ownership question, and
+		// nothing else in forge asks it. On a machine whose kubeconfig does
+		// not know the declared contexts it SKIPs, so a CI runner with no
+		// cluster stays quiet rather than yellow.
+		{orphanedClusterCheckName, CheckOrphanedClusterObjects},
 	}
 	return append(base, deployabilityChecks()...)
 }

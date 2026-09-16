@@ -141,13 +141,33 @@ func deriveGitVersion(root string) string {
 		// Refuse to emit something that only looks like a version.
 		return ""
 	}
-	// A dirty tree is not the commit it claims to be. The suffix keeps
-	// IsDevVersion and InstallableVersion honest about that (both key on
-	// "+"), while semver still orders it with the commit.
+
+	// ALWAYS build metadata, and this is the load-bearing line in the file.
+	//
+	// A derived version is for ORDERING and IDENTITY — that is the entire
+	// reason it replaced the VERSION-file floor, which compared EQUAL to the
+	// release it named. It is NOT a pinnable reference: this function only
+	// runs for a build whose own build info says "(devel)", meaning a local
+	// source build or a workspace-embedded one, and neither exists on any
+	// module proxy. The commit it names may not even be pushed.
+	//
+	// Emitting it bare made InstallableVersion() hand it back, and a scaffold
+	// then wrote `require github.com/reliant-labs/forge v0.0.0-...-abefea71`
+	// into its go.mod — a commit nothing could resolve. In CI that is
+	// guaranteed: the checkout is a tagless shallow clone (hence the v0.0.0
+	// base) sitting on an ephemeral merge commit that exists on no remote.
+	// Every scaffold-and-build job failed with `invalid version: unknown
+	// revision`.
+	//
+	// The "+" keeps InstallableVersion and IsDevVersion honest (both key on
+	// it) while semver IGNORES build metadata, so the ordering this function
+	// exists to get right is untouched. A source build therefore pins nothing
+	// and is bridged with go.work, which is what it always should have done.
 	if run("status", "--porcelain") != "" {
-		v += "+dirty"
+		// Dirty is a stronger claim than dev: the bytes are not the commit.
+		return v + "+dirty"
 	}
-	return v
+	return v + "+dev"
 }
 
 // nextPatch turns vX.Y.Z into vX.Y.(Z+1) — the base a pseudo-version for a

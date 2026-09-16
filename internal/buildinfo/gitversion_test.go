@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/mod/module"
@@ -73,8 +74,8 @@ func TestDeriveGitVersion_TaggedSortsBetweenReleases(t *testing.T) {
 	if got == "" {
 		t.Fatal("deriveGitVersion returned empty for a clean tagged repo")
 	}
-	if !module.IsPseudoVersion(got) {
-		t.Fatalf("deriveGitVersion = %q, want a Go pseudo-version", got)
+	if !module.IsPseudoVersion(semver.Canonical(got)) && !module.IsPseudoVersion(trimBuild(got)) {
+		t.Fatalf("deriveGitVersion = %q, want a Go pseudo-version plus build metadata", got)
 	}
 	if semver.Compare(got, "v0.1.15") <= 0 {
 		t.Errorf("%q must sort AFTER v0.1.15", got)
@@ -82,9 +83,50 @@ func TestDeriveGitVersion_TaggedSortsBetweenReleases(t *testing.T) {
 	if semver.Compare(got, "v0.1.16") >= 0 {
 		t.Errorf("%q must sort BEFORE v0.1.16", got)
 	}
-	if IsDevVersion(got) != true {
-		t.Errorf("%q should read as a dev version (it is a pseudo-version)", got)
+	if !IsDevVersion(got) {
+		t.Errorf("%q should read as a dev version", got)
 	}
+}
+
+// TestDeriveGitVersion_IsNeverInstallable is the regression for a CI outage.
+//
+// A derived version exists for ORDERING and IDENTITY. It is not a pinnable
+// reference: this function only runs when build info says "(devel)" — a local
+// source build or a workspace-embedded one — and neither is on any module
+// proxy. The commit it names may not even be pushed.
+//
+// Emitted bare, InstallableVersion() handed it back and scaffolds wrote
+// `require github.com/reliant-labs/forge v0.0.0-...-abefea71` into go.mod, a
+// commit nothing could resolve. In CI it was guaranteed: a tagless shallow
+// clone (hence the v0.0.0 base) on an ephemeral merge commit that exists on no
+// remote. Every scaffold-and-build job failed with "invalid version: unknown
+// revision".
+func TestDeriveGitVersion_IsNeverInstallable(t *testing.T) {
+	for name, tag := range map[string]string{"tagged": "v0.1.15", "untagged": ""} {
+		t.Run(name, func(t *testing.T) {
+			got := deriveGitVersion(fixtureRepo(t, tag))
+			if got == "" {
+				t.Fatal("deriveGitVersion returned empty")
+			}
+			if installableVersionRE.MatchString(got) {
+				t.Errorf("deriveGitVersion = %q matches the installable-ref pattern — a scaffold "+
+					"would pin a commit no proxy can resolve", got)
+			}
+			if !strings.Contains(got, "+") {
+				t.Errorf("deriveGitVersion = %q carries no build metadata; the \"+\" is what keeps "+
+					"InstallableVersion and IsDevVersion honest about an unpublishable build", got)
+			}
+		})
+	}
+}
+
+// trimBuild drops semver build metadata, so the pseudo-version SHAPE can be
+// checked independently of the "+dev"/"+dirty" marking.
+func trimBuild(v string) string {
+	if i := strings.Index(v, "+"); i >= 0 {
+		return v[:i]
+	}
+	return v
 }
 
 // An untagged repo has no release to be "after", so v0.0.0 is the base — the
@@ -94,10 +136,10 @@ func TestDeriveGitVersion_UntaggedUsesZeroBase(t *testing.T) {
 	if got == "" {
 		t.Fatal("deriveGitVersion returned empty for a clean untagged repo")
 	}
-	if !module.IsPseudoVersion(got) {
-		t.Fatalf("deriveGitVersion = %q, want a Go pseudo-version", got)
+	if !module.IsPseudoVersion(trimBuild(got)) {
+		t.Fatalf("deriveGitVersion = %q, want a Go pseudo-version plus build metadata", got)
 	}
-	if semver.Major(got)+"."+semver.MajorMinor(got) == "" || semver.Compare(got, "v0.0.1") >= 0 {
+	if semver.Compare(got, "v0.0.1") >= 0 {
 		t.Errorf("deriveGitVersion = %q, want a v0.0.0-based pseudo-version", got)
 	}
 }

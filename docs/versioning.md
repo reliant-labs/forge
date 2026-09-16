@@ -22,7 +22,7 @@ same commit, with the same version — and keeping that true took three
 hand-maintained syncs, two of which failed in production:
 
 - the root module's `require forge/pkg` went stale, so `go install
-  .../cmd/forge@main` fetched an older pkg than main's code needed and forge's
+.../cmd/forge@main` fetched an older pkg than main's code needed and forge's
   main branch was uninstallable;
 - a hand-listed registry of "forge/pkg symbols the generator emits" went stale
   when `testkit.StubNotConfigured` was added, so `forge generate` rewrote a
@@ -37,12 +37,12 @@ nothing left to keep in sync. Import paths did not change.
 Whatever the running binary can honestly name as itself, and only when a module
 proxy can serve it. That is exactly `buildinfo.InstallableVersion()`:
 
-| How forge was built | What the project requires |
-|---|---|
-| `go install .../cmd/forge@v0.1.16` (a release) | `require github.com/reliant-labs/forge v0.1.16` |
-| `go install .../cmd/forge@main` or `@<sha>` | the pseudo-version, verbatim — it is proxy-resolvable, and this is what a consumer in commit-pinning mode depends on |
-| `go build ./cmd/forge` (local tree) | **nothing** |
-| a dirty working tree | **nothing** |
+| How forge was built                            | What the project requires                                                                                            |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `go install .../cmd/forge@v0.1.16` (a release) | `require github.com/reliant-labs/forge v0.1.16`                                                                      |
+| `go install .../cmd/forge@main` or `@<sha>`    | the pseudo-version, verbatim — it is proxy-resolvable, and this is what a consumer in commit-pinning mode depends on |
+| `go build ./cmd/forge` (local tree)            | **nothing**                                                                                                          |
+| a dirty working tree                           | **nothing**                                                                                                          |
 
 The last two rows are the important ones. A local or dirty build exists nowhere
 a consumer could fetch it, so there is no version that describes it. forge used
@@ -65,7 +65,7 @@ With that path, a dev forge:
 - **scaffolding a new project** writes a gitignored `go.work` into it that
   `use`s the forge checkout, so the project compiles against your source;
 - **generating into an existing project** that resolves forge from a proxy
-  refuses *before* codegen touches the tree, and prints the `go work use`
+  refuses _before_ codegen touches the tree, and prints the `go work use`
   command to run.
 
 A released binary never carries the stamp and never writes a `go.work`.
@@ -87,7 +87,7 @@ compiles against can satisfy the code about to be generated:
   the sharpest migration failure: both `github.com/reliant-labs/forge` and
   `github.com/reliant-labs/forge/pkg` can serve `forge/pkg/*` import paths, so a
   graph holding both answers every such import with `ambiguous import: found
-  package ... in multiple modules`, once per import, naming no cause and no fix.
+package ... in multiple modules`, once per import, naming no cause and no fix.
   The gate distinguishes a direct requirement (drop it) from one a dependency
   drags in (that dependency has to move first; a `replace` only hides it).
 

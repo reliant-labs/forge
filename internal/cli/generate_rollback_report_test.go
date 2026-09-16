@@ -22,10 +22,15 @@
 //   - The report ALWAYS names the root cause — the error that aborted the
 //     run — under an unmistakable marker, so the user knows which error to
 //     act on.
-//   - forge VERIFIES the tree it restored compiles. When it does not, the
-//     "back to its pre-run state" claim is WITHHELD (it was false), the
-//     reverted files are named, and the post-rollback errors are labelled
-//     as artifacts rather than presented as the user's bug.
+//   - forge VERIFIES the tree it restored compiles, and reports that
+//     verdict SEPARATELY from the fidelity of the revert. The revert is
+//     byte-faithful by construction, so "back to its pre-run state" is
+//     always true and is always stated; a tree that does not build is
+//     reported as a fact about the PRE-RUN tree, never as damage the
+//     rollback caused. Conflating the two told every user with staged,
+//     not-yet-generated work that their tree had been stranded.
+//   - Post-rollback errors are labelled as artifacts rather than
+//     presented as the user's bug.
 //   - A post-rollback error citing a file forge never wrote this run is
 //     called out explicitly as correct-on-disk. That is the scoping.go
 //     case, and it is the one that must never send a user debugging.
@@ -78,7 +83,7 @@ func TestRollbackReport_NamesRootCauseWhenRestoredTreeBuilds(t *testing.T) {
 	}
 }
 
-func TestRollbackReport_NonCompilingTreeWithholdsPreRunClaim(t *testing.T) {
+func TestRollbackReport_NonCompilingTreeStillReportsFaithfulRevert(t *testing.T) {
 	var sb strings.Builder
 	writeRollbackReport(&sb, rollbackReport{
 		Restored: []string{"internal/blobstore/middleware_gen.go", "internal/tagging/helpers_gen_test.go"},
@@ -91,12 +96,22 @@ func TestRollbackReport_NonCompilingTreeWithholdsPreRunClaim(t *testing.T) {
 	})
 	out := sb.String()
 
-	// THE false claim. It must not appear when the tree does not build.
-	if strings.Contains(out, "back to its pre-run state") {
-		t.Errorf("must NOT claim a clean pre-run tree when the restored tree does not compile:\n%s", out)
+	// The revert IS byte-faithful whatever the tree then does under a
+	// compiler, so the fidelity claim must be stated, not suppressed.
+	if !strings.Contains(out, "back to its pre-run state") {
+		t.Errorf("the revert restored the captured bytes; that fact must be reported even when the tree does not build:\n%s", out)
 	}
+	// The build verdict is still reported — as a fact about the PRE-RUN
+	// tree, not as damage the rollback did.
 	if !strings.Contains(out, "does NOT compile") {
 		t.Errorf("a non-compiling restored tree must be stated plainly:\n%s", out)
+	}
+	if !strings.Contains(out, "did not before this run") {
+		t.Errorf("the non-compiling verdict must be attributed to the pre-run tree, not to the rollback:\n%s", out)
+	}
+	// And it must never claim a compile it did not get.
+	if strings.Contains(out, "verified: it compiles") {
+		t.Errorf("must not claim a verified compile for a tree that failed to build:\n%s", out)
 	}
 	// The root cause still has to be identifiable among the noise.
 	if !strings.Contains(out, rollbackRootCauseMarker) ||
@@ -227,12 +242,16 @@ func TestRollbackGeneratedTree_DogfoodScenarioEndToEnd(t *testing.T) {
 		t.Errorf("root cause must be named:\n%s", out)
 	}
 
-	// (b) The false claim is gone — this tree genuinely does not compile.
-	if strings.Contains(out, "back to its pre-run state") {
-		t.Errorf("tree does not compile; the pre-run-state claim must be withheld:\n%s", out)
+	// (b) The revert is byte-faithful, so that claim stands; the build
+	//     verdict is reported alongside it and blamed on the pre-run tree.
+	if !strings.Contains(out, "back to its pre-run state") {
+		t.Errorf("a faithful revert must say so, whatever the tree then does under a compiler:\n%s", out)
 	}
 	if !strings.Contains(out, "does NOT compile") {
 		t.Errorf("the non-compiling restored tree must be stated:\n%s", out)
+	}
+	if !strings.Contains(out, "did not before this run") {
+		t.Errorf("the verdict must be attributed to the pre-run tree:\n%s", out)
 	}
 
 	// (c) THE regression: scoping.go is correct on disk and must be
@@ -278,5 +297,60 @@ func TestRollbackBuildCheck_SkipsWhenNoGoModule(t *testing.T) {
 	out := sb.String()
 	if strings.Contains(out, "does NOT compile") {
 		t.Errorf("unchecked tree must not be reported as non-compiling:\n%s", out)
+	}
+}
+
+// TestRollbackReport_StagedScaffoldTreeIsNotReportedAsDamage is the
+// regression this file exists for after the second correction.
+//
+// The Fixture Corpus's kalshi- and cp-forge-shaped projects both reach a
+// refusal with a pre-run tree that does not compile, and they reach it on
+// purpose: `forge scaffold worker <name> --no-generate` writes
+// cmd/<bin>/cmd/workers/<name>.go, which calls c.Worker<Name>() — an
+// accessor that does not exist until a generate emits it. Staging several
+// components and generating once is the workflow --no-generate was added
+// for, so this is a normal state, not a broken one.
+//
+// A generate that refuses in that state reverts only what it wrote, and
+// the revert is byte-faithful. Forge must therefore still report the tree
+// as back to its pre-run state. Suppressing that claim told the user the
+// rollback had stranded them and sent them to debug a revert that had
+// worked perfectly.
+func TestRollbackReport_StagedScaffoldTreeIsNotReportedAsDamage(t *testing.T) {
+	var sb strings.Builder
+	writeRollbackReport(&sb, rollbackReport{
+		Restored: []string{"pkg/config/config_gen.go", "internal/marketfeed/mock_gen.go"},
+		StepErr: errors.New("internal/app composition generation failed: the explicit component " +
+			"construction site (internal/app/compose.go) has Deps fields with no provider"),
+		Consistency: rollbackConsistency{
+			Checked: true,
+			Builds:  false,
+			Output: "cmd/kalshishape/cmd/workers/book_snapshotter.go:40:87: c.WorkerBookSnapshotter undefined " +
+				"(type *app.Components has no field or method WorkerBookSnapshotter)\n",
+		},
+	})
+	out := sb.String()
+
+	// THE regression: the fidelity claim must survive a non-compiling tree.
+	if !strings.Contains(out, "back to its pre-run state") {
+		t.Errorf("a byte-faithful revert must be reported as such; staged --no-generate work "+
+			"legitimately leaves a non-compiling pre-run tree:\n%s", out)
+	}
+	// The verdict is still delivered, and pinned to the right cause.
+	if !strings.Contains(out, "did not before this run") {
+		t.Errorf("the build failure must be attributed to the pre-run tree:\n%s", out)
+	}
+	// The remedy must name the workflow that produced the state.
+	if !strings.Contains(out, "--no-generate") {
+		t.Errorf("the note must name the staged-scaffold workflow that legitimately produces "+
+			"a non-compiling pre-run tree:\n%s", out)
+	}
+	// The undefined-accessor error is an artifact of a file forge never
+	// wrote this run, and must be quarantined as one.
+	if !strings.Contains(out, rollbackArtifactMarker) {
+		t.Errorf("post-rollback errors must be marked as artifacts:\n%s", out)
+	}
+	if !strings.Contains(out, "Do not debug") {
+		t.Errorf("the user must be steered away from the artifact errors:\n%s", out)
 	}
 }

@@ -34,16 +34,29 @@ import (
 //     forge never wrote this run is an artifact of the revert, and the
 //     user must never be sent to debug it.
 //
-//  2. "your tree is back to its pre-run state" was asserted
-//     unconditionally. Reverting to pre-run state is only safe if pre-run
-//     state was CONSISTENT, and it was not: compose.go was kept from an
-//     earlier successful run while internal/blobstore/middleware_gen.go
-//     was generated this run and reverted, leaving two halves of one
-//     feature on opposite sides of the rollback boundary. The restored
-//     tree did not build, and forge said it was clean.
+//  2. The build verdict on the restored tree was conflated with the
+//     FIDELITY of the revert. Both claims were collapsed into one
+//     sentence, so a non-compiling tree suppressed "back to its pre-run
+//     state" — as though the rollback had failed to restore it.
 //
-// The fix for (2) is deliberately verification rather than a smarter
-// rollback — see the note on goBuildRestoredTree for why.
+// (2) was over-corrected and is now stated as two independent facts.
+// The revert IS byte-faithful: it rewrites every journaled path from the
+// bytes captured before the run, so "back to its pre-run state" is true
+// whenever the journal restored cleanly, whatever the tree then does
+// under a compiler. Whether that tree BUILDS is a separate question, and
+// a "no" is usually a statement about where the user already was, not
+// about the rollback.
+//
+// That distinction is load-bearing, because a pre-run tree that does not
+// compile is a supported, deliberate state. `forge scaffold worker x
+// --no-generate` exists to stage a component without running the
+// pipeline — it writes cmd/<bin>/cmd/workers/x.go referencing an accessor
+// that only a later generate emits. Every project mid-stage is in exactly
+// this state, and telling those users the restored tree "does NOT
+// compile" as if the revert had stranded them sends them to debug a
+// rollback that did its job perfectly. Forge now reports the revert's
+// fidelity unconditionally, and the compile verdict beside it, attributed
+// to the pre-run tree where it belongs.
 
 // rollbackRootCauseMarker labels the error that actually aborted the run.
 // It is the one error on screen the user should act on, and it is printed
@@ -175,28 +188,55 @@ func writeRollbackReport(w io.Writer, rep rollbackReport) {
 		}
 	}
 
-	// 2. What the rollback did — and, crucially, only the reassurance it
-	//    actually earned.
-	switch {
-	case rep.Consistency.Checked && !rep.Consistency.Builds:
-		fmt.Fprintf(w, "\n↩️  generate failed its own validation and reverted %d file(s) it wrote this run.\n", len(rep.Restored))
-		fmt.Fprintf(w, "   ⚠️  The restored tree does NOT compile on its own. Reverting this run's writes\n")
-		fmt.Fprintf(w, "   was not sufficient to reach a consistent tree: a file kept from an EARLIER run\n")
-		fmt.Fprintf(w, "   can depend on one this run generated and just reverted. Re-running `forge generate`\n")
-		fmt.Fprintf(w, "   after fixing the root cause above restores consistency.\n")
-	case rep.Consistency.Checked:
-		fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed, verified: it compiles):\n", len(rep.Restored))
-	default:
-		fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed):\n", len(rep.Restored))
-	}
+	// 2. What the rollback did. Two INDEPENDENT facts, reported
+	//    separately: the revert put every listed file back to its exact
+	//    pre-run bytes, and — separately — whether that tree compiles.
+	//    Conflating them is what made this report lie; see the note above.
+	fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed%s):\n",
+		len(rep.Restored), compileVerdictSuffix(rep.Consistency))
 	for _, p := range rep.Restored {
 		fmt.Fprintf(w, "   - %s\n", p)
+	}
+	if rep.Consistency.Checked && !rep.Consistency.Builds {
+		writePreRunDoesNotCompileNote(w)
 	}
 
 	// 3. The post-rollback errors, quarantined behind the artifact marker.
 	if rep.Consistency.Checked && !rep.Consistency.Builds && strings.TrimSpace(rep.Consistency.Output) != "" {
 		writeArtifactSection(w, rep)
 	}
+}
+
+// compileVerdictSuffix adds the "and it compiles" reassurance ONLY when a
+// build actually proved it. Silence when unchecked or when the tree does
+// not build: the non-compiling case gets the fuller note below, and an
+// unchecked tree has earned neither claim.
+func compileVerdictSuffix(c rollbackConsistency) string {
+	if c.Checked && c.Builds {
+		return ", verified: it compiles"
+	}
+	return ""
+}
+
+// writePreRunDoesNotCompileNote states the build verdict WITHOUT implying
+// the rollback caused it.
+//
+// The distinction is the whole fix. A restored tree that does not compile
+// is, far more often than not, a pre-run tree that did not compile — and
+// the revert is what proves it, because the revert is byte-faithful. The
+// staged-scaffold workflow reaches this state on purpose: `forge scaffold
+// worker x --no-generate` writes cmd/<bin>/cmd/workers/x.go, which
+// references an accessor that only exists after a generate. Between those
+// two commands the tree does not build, by design, and a generate that
+// refuses in between must not tell the user their tree was damaged.
+func writePreRunDoesNotCompileNote(w io.Writer) {
+	fmt.Fprintf(w, "\n   ⚠️  That tree does NOT compile on its own — and it did not before this run\n")
+	fmt.Fprintf(w, "   either. The revert restored every file above byte for byte, so this is the\n")
+	fmt.Fprintf(w, "   state you started in, not damage the rollback caused.\n")
+	fmt.Fprintf(w, "   The usual reason is work STAGED but not yet generated (`forge scaffold ...\n")
+	fmt.Fprintf(w, "   --no-generate` writes a component whose accessor appears only once generate\n")
+	fmt.Fprintf(w, "   runs). Fix the ROOT CAUSE above and re-run `forge generate`: that emits the\n")
+	fmt.Fprintf(w, "   missing halves and the tree builds.\n")
 }
 
 // writeArtifactSection prints the post-rollback build errors under the

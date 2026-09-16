@@ -5,112 +5,196 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
 )
 
-// TestExtractMissingPkgSymbols pins the parse of `undefined: X` lines a
-// probe build emits into the symbol list surfaced in the error message.
-func TestExtractMissingPkgSymbols(t *testing.T) {
-	out := `# example.com/app/.forge-pkgcompat-123
-./probe.go:10:5: undefined: orm.UnknownFieldError
-./probe.go:11:9: c.Dialect undefined (type orm.Context has no field or method Dialect)
-./probe.go:12:5: undefined: orm.UnknownFieldError
-`
-	got := extractMissingPkgSymbols(out)
-	if len(got) != 1 || got[0] != "orm.UnknownFieldError" {
-		t.Fatalf("expected [orm.UnknownFieldError] (deduped), got %v", got)
+// TestDecideForgeCompat is the decision table. It is a pure function, so
+// every row is deterministic — no module graph, no network, no toolchain.
+func TestDecideForgeCompat(t *testing.T) {
+	const binary = "v0.1.16"
+	cases := []struct {
+		name    string
+		binary  string
+		project string
+		local   bool
+		want    compatVerdict
+	}{
+		{"pin equals binary", binary, "v0.1.16", false, compatOK},
+		{"pin newer than binary", binary, "v0.1.17", false, compatOK},
+		{"pin older than binary", binary, "v0.1.15", false, compatStalePin},
+		{"pin older by patch", binary, "v0.1.16-rc.1", false, compatStalePin},
+
+		// A pseudo-version from `go install ...@main` is a real, orderable
+		// version: it sorts after the tag it builds on and before the next
+		// one, which is exactly what commit-pinning mode needs.
+		{"binary is a pseudo-version, pin is the tag it follows",
+			"v0.1.16-0.20260916085636-c01e07ec6ef2", "v0.1.15", false, compatStalePin},
+		{"binary is a pseudo-version, pin is the next tag",
+			"v0.1.16-0.20260916085636-c01e07ec6ef2", "v0.1.16", false, compatOK},
+
+		// The regression this design exists for: an unreleasable binary
+		// (dirty tree, plain `go build`) against a published pin.
+		{"unreleasable binary, published pin", "", "v0.1.15", false, compatUnreleasableNoBridge},
+		{"unreleasable binary, newer published pin", "", "v9.9.9", false, compatUnreleasableNoBridge},
+
+		// A local resolution is the supported pairing for an unreleasable
+		// binary, and is fine for a released one too.
+		{"unreleasable binary, bridged", "", "", true, compatOK},
+		{"released binary, bridged", binary, "", true, compatOK},
+
+		// Unknown beats guessing.
+		{"unknown project version", binary, "", false, compatOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := decideForgeCompat(c.binary, c.project, c.local); got != c.want {
+				t.Errorf("decideForgeCompat(%q, %q, %v) = %v, want %v",
+					c.binary, c.project, c.local, got, c.want)
+			}
+		})
 	}
 }
 
-// TestCheckPkgCompat_NoForgePkgDependency is a no-op (nil) when the project
-// doesn't depend on forge/pkg — nothing to probe, not our error to raise.
-func TestCheckPkgCompat_NoForgePkgDependency(t *testing.T) {
+// TestCheckPkgCompat_NoForgeDependency is a no-op (nil) when the project
+// doesn't depend on forge at all — nothing to check, not our error to raise.
+func TestCheckPkgCompat_NoForgeDependency(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.24\n")
 	if err := checkPkgCompat(dir); err != nil {
-		t.Fatalf("expected nil for a project without forge/pkg, got %v", err)
+		t.Fatalf("expected nil for a project without forge, got %v", err)
 	}
 }
 
-// TestCheckPkgCompat_MissingSymbolsFailFast builds a self-contained module
-// whose forge/pkg replace points at a STUB orm/crud that LACKS the symbols
-// the generator emits (orm.Context.Dialect, orm.UnknownFieldError). The
-// handshake must fail fast (before any codegen) and name the fix — the
-// kalshi fr-ac69216583 scenario.
-func TestCheckPkgCompat_MissingSymbolsFailFast(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds a module — skipped under -short")
-	}
+// TestCheckPkgCompat_LegacyPkgPinExplainsTheMigration: a project still
+// requiring the retired forge/pkg submodule gets an actionable error, not the
+// proxy's "no matching versions".
+func TestCheckPkgCompat_LegacyPkgPinExplainsTheMigration(t *testing.T) {
 	dir := t.TempDir()
-	writeStubForgePkg(t, dir, false /* withCompatSymbols */)
+	mustWrite(t, filepath.Join(dir, "go.mod"), strings.Join([]string{
+		"module example.com/app",
+		"",
+		"go 1.24",
+		"",
+		"require github.com/reliant-labs/forge/pkg v0.1.15",
+		"",
+	}, "\n"))
 
 	err := checkPkgCompat(dir)
 	if err == nil {
-		t.Fatal("expected a compat error when forge/pkg lacks the emitted symbols")
+		t.Fatal("expected an error for a project pinned to the retired forge/pkg module")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "forge/pkg") || !strings.Contains(msg, "go get") {
-		t.Errorf("error should name forge/pkg and the bump fix, got: %s", msg)
-	}
-	if !strings.Contains(msg, "No files were changed") {
-		t.Errorf("error should reassure the tree is untouched, got: %s", msg)
+	for _, want := range []string{
+		"no longer exists",     // says what happened
+		"-droprequire",         // the literal fix
+		"Import paths did NOT", // the reassurance that matters most
+		"No files were changed",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("legacy-pin error must contain %q, got:\n%s", want, msg)
+		}
 	}
 }
 
-// TestCheckPkgCompat_PresentSymbolsPass is the mirror: a forge/pkg stub that
-// DOES provide every emitted symbol passes the handshake.
-func TestCheckPkgCompat_PresentSymbolsPass(t *testing.T) {
+// TestCheckPkgCompat_UnreleasableBuildNamesTheBridge is the exact failure a
+// control-plane `forge generate` hit: a forge built from a dirty local tree,
+// generating into a project pinned to a published forge. The old code let it
+// through and died in validate with `undefined: testkit.StubNotConfigured`.
+//
+// The refusal must name the go.work bridge, because that is the supported way
+// to generate with an unreleased forge — and it is what forge's own
+// project_pkgdep.go documents.
+func TestCheckPkgCompat_UnreleasableBuildNamesTheBridge(t *testing.T) {
 	if testing.Short() {
-		t.Skip("builds a module — skipped under -short")
+		t.Skip("resolves a module graph — skipped under -short")
 	}
 	dir := t.TempDir()
-	writeStubForgePkg(t, dir, true /* withCompatSymbols */)
+	writeForgeConsumer(t, dir, "v0.1.15")
+
+	// A dirty local build: no proxy-resolvable version.
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	buildinfo.Set("v0.1.16-0.20260916085636-c01e07ec6ef2+dirty", "", "c01e07ec6ef2")
+
+	err := checkPkgCompat(dir)
+	if err == nil {
+		t.Fatal("expected an error: an unreleasable forge generating into a proxy-pinned project")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"go work use",           // the literal fix
+		"No files were changed", // the tree is intact
+		"v0.1.15",               // what the project resolves
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("unreleasable-build error must contain %q, got:\n%s", want, msg)
+		}
+	}
+}
+
+// TestCheckPkgCompat_BridgedProjectPasses is the mirror: the same
+// unreleasable binary is fine once the project resolves forge from source,
+// because then there is no published version for the generated code to
+// outrun.
+func TestCheckPkgCompat_BridgedProjectPasses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("resolves a module graph — skipped under -short")
+	}
+	dir := t.TempDir()
+	writeForgeConsumer(t, dir, "v0.1.15")
+	// Replace forge with a local stub: the "bridged" resolution.
+	stub := filepath.Join(dir, "forge-stub")
+	mustMkdirAllT(t, stub)
+	mustWrite(t, filepath.Join(stub, "go.mod"), "module github.com/reliant-labs/forge\n\ngo 1.24\n")
+	appendTo(t, filepath.Join(dir, "go.mod"),
+		"\nreplace github.com/reliant-labs/forge => ./forge-stub\n")
+
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	buildinfo.Set("v0.1.16-0.20260916085636-c01e07ec6ef2+dirty", "", "c01e07ec6ef2")
 
 	if err := checkPkgCompat(dir); err != nil {
-		t.Fatalf("expected nil when forge/pkg provides every emitted symbol, got %v", err)
+		t.Fatalf("expected nil for a project bridged to local forge source, got %v", err)
 	}
 }
 
 // TestCheckPkgCompat_NamesTheRunningToolchain is the toolchain-mismatch
-// reproduction.
+// reproduction, carried over from the symbol-probe era because the diagnosis
+// it protects is unchanged.
 //
-// Two forge builds can sit on one PATH — `forge` (standalone) and
-// `reliant forge` (compiled into reliant, and only rebuilt when reliant is).
-// They can disagree about the same tree: `forge generate` SUCCEEDS while
-// `reliant forge generate` FAILS this very handshake. The old error named
-// only the missing symbol and told the user to bump forge/pkg, which is the
-// wrong fix when the real cause is that a DIFFERENT forge build generated
+// Two forge builds can sit on one PATH — `forge` (standalone) and `reliant
+// forge` (compiled into reliant, and only rebuilt when reliant is). They can
+// disagree about the same tree: one `generate` succeeds while the other
+// fails. An error naming only the version and telling the user to bump it is
+// the WRONG fix when the real cause is that a different forge build generated
 // the tree — the agent that hit this concluded the project was unfixable and
 // rebuilt it from scratch.
 //
-// The refusal must therefore be a runbook: which forge build is running, the
-// forge/pkg it resolved, and the literal command to fix it.
+// The refusal must therefore be a runbook: which forge build is running, how
+// it was invoked, and the literal command to fix it.
 func TestCheckPkgCompat_NamesTheRunningToolchain(t *testing.T) {
 	if testing.Short() {
-		t.Skip("builds a module — skipped under -short")
+		t.Skip("resolves a module graph — skipped under -short")
 	}
 	dir := t.TempDir()
-	writeStubForgePkg(t, dir, false /* withCompatSymbols */)
+	writeForgeConsumer(t, dir, "v0.1.15")
+
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	buildinfo.Set("v0.9.9", "", "deadbeef") // a released build, newer than the pin
 
 	err := checkPkgCompat(dir)
 	if err == nil {
-		t.Fatal("expected a compat error when forge/pkg lacks the emitted symbols")
+		t.Fatal("expected a stale-pin error")
 	}
 	msg := err.Error()
-
-	// Which forge is running. Without this the user cannot tell that the
-	// binary they just ran is not the binary that generated the tree.
 	if !strings.Contains(msg, "forge build:") {
 		t.Errorf("error must name the running forge build, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "invoked as:") {
 		t.Errorf("error must say how forge was invoked (standalone vs embedded), got:\n%s", msg)
 	}
-	// The other toolchain must be named as a suspect, since "a different
-	// forge build generated this tree" is the actual diagnosis.
 	if !strings.Contains(msg, "reliant forge") || !strings.Contains(msg, "toolchain") {
 		t.Errorf("error must raise the two-toolchain possibility, got:\n%s", msg)
 	}
-	// And it must still carry a literal fix command.
 	if !strings.Contains(msg, "go get") {
 		t.Errorf("error must give the literal fix command, got:\n%s", msg)
 	}
@@ -119,15 +203,17 @@ func TestCheckPkgCompat_NamesTheRunningToolchain(t *testing.T) {
 // TestCheckPkgCompat_ReportsGeneratingBuildMismatch pins the recorded-build
 // comparison: when the tree records the forge build that generated it and a
 // DIFFERENT build is now running, the refusal must say so explicitly rather
-// than blaming the forge/pkg pin.
+// than blaming the version pin alone.
 func TestCheckPkgCompat_ReportsGeneratingBuildMismatch(t *testing.T) {
 	if testing.Short() {
-		t.Skip("builds a module — skipped under -short")
+		t.Skip("resolves a module graph — skipped under -short")
 	}
 	dir := t.TempDir()
-	writeStubForgePkg(t, dir, false /* withCompatSymbols */)
-	// The tree says it was generated by a build that is not this one.
+	writeForgeConsumer(t, dir, "v0.1.15")
 	writeGeneratingBuild(t, dir, "v0.0.1 (embedded in github.com/reliant-labs/reliant v1.5.1)")
+
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	buildinfo.Set("v0.9.9", "", "deadbeef")
 
 	err := checkPkgCompat(dir)
 	if err == nil {
@@ -147,60 +233,38 @@ func TestCheckPkgCompat_ReportsGeneratingBuildMismatch(t *testing.T) {
 func writeGeneratingBuild(t *testing.T, dir, identity string) {
 	t.Helper()
 	path := generatingBuildPath(dir)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mustMkdirAllT(t, filepath.Dir(path))
 	mustWrite(t, path, identity+"\n")
 }
 
-// writeStubForgePkg lays down a minimal project module that requires
-// forge/pkg via a local replace pointing at a hand-written stub providing
-// (or omitting) the compat symbols. No network, no real forge/pkg.
-func writeStubForgePkg(t *testing.T, dir string, withCompatSymbols bool) {
+// writeForgeConsumer lays down a module requiring forge at the given version,
+// with a go.sum-free graph: `go list -m` reports the requirement from go.mod
+// without fetching anything, which is all the check reads.
+func writeForgeConsumer(t *testing.T, dir, forgeVersion string) {
 	t.Helper()
-
-	for _, d := range []string{"forge-pkg-stub/orm", "forge-pkg-stub/crud"} {
-		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Project module.
 	mustWrite(t, filepath.Join(dir, "go.mod"), strings.Join([]string{
 		"module example.com/app",
 		"",
 		"go 1.24",
 		"",
-		"require github.com/reliant-labs/forge/pkg v0.0.0",
-		"",
-		"replace github.com/reliant-labs/forge/pkg => ./forge-pkg-stub",
+		"require github.com/reliant-labs/forge " + forgeVersion,
 		"",
 	}, "\n"))
-	// A trivial root package so `go build ./<probe>` has a module to resolve in.
 	mustWrite(t, filepath.Join(dir, "doc.go"), "package app\n")
+}
 
-	stub := filepath.Join(dir, "forge-pkg-stub")
-	mustWrite(t, filepath.Join(stub, "go.mod"), "module github.com/reliant-labs/forge/pkg\n\ngo 1.24\n")
-
-	// orm package: Context + Dialect type. The compat build references
-	// orm.Context.Dialect() and orm.UnknownFieldError{}.
-	ormSrc := "package orm\n\ntype Dialect interface{ Placeholder(i int) string }\n\ntype Context interface{ Bun() any }\n"
-	if withCompatSymbols {
-		ormSrc = "package orm\n\n" +
-			"type Dialect interface{ Placeholder(i int) string }\n\n" +
-			"type Context interface {\n\tBun() any\n\tDialect() Dialect\n}\n\n" +
-			"type UnknownFieldError struct{ Field string }\n\n" +
-			"func (e *UnknownFieldError) Error() string { return e.Field }\n"
+func mustMkdirAllT(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(stub, "orm", "orm.go"), ormSrc)
+}
 
-	// crud package: the no-argument NewRepo the generator emits. The
-	// incompatible variant models a pkg predating that change, where NewRepo
-	// still took a per-entity Spec — an arity mismatch the probe must catch
-	// before codegen rewrites the tree.
-	crudSrc := "package crud\n\ntype Spec struct{}\n\nfunc NewRepo[M any](spec Spec) *Repo[M] { return nil }\n\ntype Repo[M any] struct{}\n"
-	if withCompatSymbols {
-		crudSrc = "package crud\n\ntype Repo[M any] struct{}\n\nfunc NewRepo[M any]() *Repo[M] { return nil }\n"
+func appendTo(t *testing.T, path, extra string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(stub, "crud", "crud.go"), crudSrc)
+	mustWrite(t, path, string(data)+extra)
 }

@@ -19,7 +19,7 @@ type goModPkgDepData struct {
 	Module          string
 	GoVersion       string
 	RESTEnabled     bool
-	ForgePkgVersion string
+	ForgeVersion string
 }
 
 func renderGoMod(t *testing.T, data goModPkgDepData) string {
@@ -34,7 +34,7 @@ func renderGoMod(t *testing.T, data goModPkgDepData) string {
 func TestGoModTemplate_ForgePkgCleanPin(t *testing.T) {
 	got := renderGoMod(t, goModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
-		ForgePkgVersion: "v0.3.0",
+		ForgeVersion: "v0.3.0",
 	})
 	if !strings.Contains(got, "github.com/reliant-labs/forge/pkg v0.3.0") {
 		t.Errorf("missing pinned require, got:\n%s", got)
@@ -53,7 +53,7 @@ func TestGoModTemplate_ForgePkgCleanPin(t *testing.T) {
 func TestGoModTemplate_ForgePkgDefaultPin(t *testing.T) {
 	got := renderGoMod(t, goModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
-		ForgePkgVersion: "v0.0.3",
+		ForgeVersion: "v0.0.3",
 	})
 	if !strings.Contains(got, "github.com/reliant-labs/forge/pkg v0.0.3") {
 		t.Errorf("missing pinned require, got:\n%s", got)
@@ -83,7 +83,7 @@ func TestGoModTemplate_ForgePkgAbsent(t *testing.T) {
 type genGoModPkgDepData struct {
 	Module          string
 	GoVersion       string
-	ForgePkgVersion string
+	ForgeVersion string
 }
 
 func renderGenGoMod(t *testing.T, data genGoModPkgDepData) string {
@@ -99,7 +99,7 @@ func renderGenGoMod(t *testing.T, data genGoModPkgDepData) string {
 func TestGenGoModTemplate_ForgePkgCleanPin(t *testing.T) {
 	got := renderGenGoMod(t, genGoModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
-		ForgePkgVersion: "v0.0.3",
+		ForgeVersion: "v0.0.3",
 	})
 	if !strings.Contains(got, "github.com/reliant-labs/forge/pkg v0.0.3") {
 		t.Errorf("gen pin: missing pinned require, got:\n%s", got)

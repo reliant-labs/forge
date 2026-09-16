@@ -199,13 +199,3 @@ func TestVersionFromInfo_StandaloneUsesMainModule(t *testing.T) {
 		t.Errorf("Version() = %q, want the main module version", got)
 	}
 }
-
-// TestBuildFrom_ResolvesPkgPath: the resolved forge/pkg is the library half
-// of the binary↔library contract the compat probe checks. A local replace is
-// exactly the skew that made one build succeed and the other fail, so the
-// identity must surface where forge/pkg actually came from.
-func TestBuildFrom_ResolvesPkgPath(t *testing.T) {
-	if got := buildFrom(embeddedInfo(), "", "").PkgPath; got != "../forge/pkg" {
-		t.Errorf("PkgPath = %q, want the replace target ../forge/pkg", got)
-	}
-}

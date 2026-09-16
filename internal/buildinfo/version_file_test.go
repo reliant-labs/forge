@@ -16,7 +16,7 @@ import (
 func workspaceEmbeddedInfo() *debug.BuildInfo {
 	return &debug.BuildInfo{
 		Main: debug.Module{Path: "github.com/reliant-labs/reliant", Version: "v1.7.1+dirty"},
-		Deps: []*debug.Module{{Path: forgeCmdModulePath, Version: "(devel)"}},
+		Deps: []*debug.Module{{Path: forgeModulePath, Version: "(devel)"}},
 	}
 }
 
@@ -51,7 +51,7 @@ func TestVersionFromInfo_LdflagsStillWinsOverVersionFile(t *testing.T) {
 func TestVersionFromInfo_RealDepVersionStillWinsOverVersionFile(t *testing.T) {
 	info := &debug.BuildInfo{
 		Main: debug.Module{Path: "github.com/reliant-labs/reliant", Version: "v1.7.1"},
-		Deps: []*debug.Module{{Path: forgeCmdModulePath, Version: "v0.0.3"}},
+		Deps: []*debug.Module{{Path: forgeModulePath, Version: "v0.0.3"}},
 	}
 	got := versionFromInfo(info, "dev")
 	if got != "v0.0.3" {

@@ -36,8 +36,8 @@ import (
 // offline claim by breaking git for its own duration.
 func TestReleaseBuildScaffoldResolvesAndRenders(t *testing.T) {
 	// Build the project the way a released forge binary does.
-	buildinfo.SetPkgVersion("v9.9.9")
-	defer buildinfo.SetPkgVersion("")
+	buildinfo.SetDevBuild(false)
+	defer buildinfo.ClearDevBuild()
 
 	// Offline, air-gapped, no credentials. A git-tag dependency needs the
 	// network and git auth at render time; the vendored copy needs

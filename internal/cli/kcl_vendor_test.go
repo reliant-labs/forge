@@ -99,8 +99,8 @@ func TestSyncForgeKCL_ReleaseBuildDoesNotBreakAWorkingProject(t *testing.T) {
 	}
 	working, _ := os.ReadFile(deployMod)
 
-	buildinfo.SetPkgVersion("v9.9.9")
-	defer buildinfo.SetPkgVersion("")
+	buildinfo.SetDevBuild(false)
+	defer buildinfo.ClearDevBuild()
 	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("release sync: %v", err)
 	}
@@ -127,8 +127,8 @@ func TestSyncForgeKCL_ReleaseBuildVendorsAFreshProject(t *testing.T) {
 	dir := t.TempDir()
 	deployMod := writeProjectKclMod(t, dir, "deploy/kcl/kcl.mod", kclLegacyGitTagMod)
 
-	buildinfo.SetPkgVersion("v9.9.9")
-	defer buildinfo.SetPkgVersion("")
+	buildinfo.SetDevBuild(false)
+	defer buildinfo.ClearDevBuild()
 	if err := syncForgeKCL(dir, false); err != nil {
 		t.Fatalf("release sync: %v", err)
 	}

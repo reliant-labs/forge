@@ -832,9 +832,10 @@ plugins:
 	return os.WriteFile(path, []byte(remote), 0o644)
 }
 
-// forgePkgModulePath is the module path of forge's published runtime library.
+// forgeModulePathForBridge is forge's module path — the single module that
+// carries both the CLI and the pkg/* runtime libraries a scaffold imports.
 // The dev bridge resolves it from the local checkout's ./pkg submodule.
-const forgePkgModulePath = "github.com/reliant-labs/forge/pkg"
+const forgeModulePathForBridge = "github.com/reliant-labs/forge"
 
 // writeDevForgeGoWork bridges a freshly-scaffolded project to the LOCAL forge
 // source when the scaffolding binary is a DEV build that stamped its own
@@ -874,10 +875,10 @@ func writeDevForgeGoWork(targetPath string) {
 		// ldflag nor discover on disk (e.g. a dev binary shipped to another
 		// machine): we must NOT guess a path. Emit one hint.
 		fmt.Fprintf(os.Stderr,
-			"ℹ️  dev forge build without a discoverable source root: the scaffold pins the published forge/pkg (%s). "+
+			"ℹ️  dev forge build without a discoverable source root: the scaffold pins forge %s. "+
 				"To auto-link this project against your local forge, rebuild forge with `make dev` "+
-				"(injects DevForgeRoot), or add a `use <path-to-forge>/pkg` to a local go.work yourself.\n",
-			resolveForgePkgVersionForHint())
+				"(injects DevForgeRoot), or add a `use <path-to-forge>` to a local go.work yourself.\n",
+			resolveForgeVersionForHint())
 		return
 	}
 
@@ -897,16 +898,15 @@ func writeDevForgeGoWork(targetPath string) {
 		return
 	}
 
-	// forge/pkg is a SEPARATE module (its own go.mod at <root>/pkg), and it
-	// is the only forge module scaffolded projects import — the root/gen
-	// go.mod require only github.com/reliant-labs/forge/pkg, never the main
-	// module. So one `use <root>/pkg` overrides the published require with
-	// the local copy; the main module is intentionally NOT added (it would
-	// pull forge's entire dependency tree into the project's build for no
-	// benefit). AddUse tags the entry with the module path so a re-run is
-	// idempotent.
-	pkgDir := filepath.Join(root, "pkg")
-	if err := wf.AddUse(pkgDir, forgePkgModulePath); err != nil {
+	// forge is ONE module: pkg/* are packages inside it, not a submodule, so
+	// the workspace `use`s the forge repo ROOT. (It used to `use <root>/pkg`
+	// and deliberately skip the main module to keep forge's dependency tree
+	// out of the project's build; with a single module that choice no longer
+	// exists, and the graph weight is the accepted cost of generator and
+	// runtime never being able to disagree about a version.)
+	//
+	// AddUse tags the entry with the module path so a re-run is idempotent.
+	if err := wf.AddUse(root, forgeModulePathForBridge); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not add dev forge use directive: %v\n", err)
 		return
 	}
@@ -915,17 +915,21 @@ func writeDevForgeGoWork(targetPath string) {
 		fmt.Fprintf(os.Stderr, "warning: could not write dev forge go.work: %v\n", err)
 		return
 	}
-	fmt.Printf("🔗 Dev forge build: wrote go.work bridging this project to %s (gitignored, machine-local)\n", pkgDir)
+	fmt.Printf("🔗 Dev forge build: wrote go.work bridging this project to %s (gitignored, machine-local)\n", root)
 }
 
-// resolveForgePkgVersionForHint returns the published forge/pkg version this
-// binary would otherwise pin, for the no-DevForgeRoot hint message. Kept
-// trivial and pure so the hint never fails.
-func resolveForgePkgVersionForHint() string {
-	if v := buildinfo.PkgVersion(); v != "" {
+// resolveForgeVersionForHint describes what the scaffold's go.mod will
+// require, for the no-DevForgeRoot hint message. Kept trivial and pure so the
+// hint never fails.
+//
+// A dev build that cannot be named by a proxy-resolvable version pins NOTHING
+// (see generator.resolveForgeVersion), so say that rather than naming a tag
+// this binary is not.
+func resolveForgeVersionForHint() string {
+	if v := buildinfo.InstallableVersion(); v != "" {
 		return v
 	}
-	return "published tag"
+	return "nothing (no proxy-resolvable version for this build)"
 }
 
 // initGitRepository initializes a git repository and makes initial commit

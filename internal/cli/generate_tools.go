@@ -173,16 +173,16 @@ func ensureGenGoMod(projectDir string) error {
 	data := struct {
 		Module    string
 		GoVersion string
-		// ForgePkgVersion mirrors the root module's forge/pkg pin so both
-		// submodules resolve the SAME published forge/pkg from the proxy.
-		// Empty when the root has no forge/pkg require (the template then
-		// omits the line and `go mod tidy` resolves it if the generated
-		// code imports it).
-		ForgePkgVersion string
+		// ForgeVersion mirrors the root module's forge pin so both of the
+		// project's modules resolve the SAME published forge from the proxy.
+		// Empty when the root has no forge require (the template then omits
+		// the line and `go mod tidy` resolves it if the generated code
+		// imports it).
+		ForgeVersion string
 	}{
-		Module:          modulePath,
-		GoVersion:       goVersion,
-		ForgePkgVersion: rootForgePkgVersion(projectDir),
+		Module:       modulePath,
+		GoVersion:    goVersion,
+		ForgeVersion: rootForgeVersion(projectDir),
 	}
 	if err := assets.WriteTemplateWithData("gen-go.mod.tmpl", goMod, data); err != nil {
 		return fmt.Errorf("render gen/go.mod: %w", err)
@@ -191,23 +191,27 @@ func ensureGenGoMod(projectDir string) error {
 	return nil
 }
 
-// forgePkgRequireRE matches the forge/pkg `require` line in a go.mod —
-// either the block form (`\tgithub.com/reliant-labs/forge/pkg vX.Y.Z`) or
-// the single-line form (`require github.com/... vX.Y.Z`). It does NOT match
-// a `replace` line (module path is not the first token there).
-var forgePkgRequireRE = regexp.MustCompile(
-	`(?m)^[\t ]*(?:require[\t ]+)?github\.com/reliant-labs/forge/pkg[\t ]+(v[^\s]+)[\t ]*$`)
+// forgeRequireRE matches the forge `require` line in a go.mod — either the
+// block form (`\tgithub.com/reliant-labs/forge vX.Y.Z`) or the single-line
+// form (`require github.com/... vX.Y.Z`). It does NOT match a `replace` line
+// (the module path is not the first token there), nor a `forge/pkg` line from
+// a project still on the pre-collapse two-module pin: the trailing `[\t ]+`
+// requires whitespace straight after the module path, which `/pkg` breaks.
+// Such a project is stale by definition and handled by the compatibility
+// check in generate_pkg_compat.go, not silently mirrored into gen/.
+var forgeRequireRE = regexp.MustCompile(
+	`(?m)^[\t ]*(?:require[\t ]+)?github\.com/reliant-labs/forge[\t ]+(v[^\s]+)[\t ]*$`)
 
-// rootForgePkgVersion returns the forge/pkg version pinned in the project's
-// root go.mod, or "" when the root has no forge/pkg require (or no go.mod).
-// Used to mirror the root pin into a freshly bootstrapped gen/go.mod so the
-// two submodules resolve forge/pkg to the same published version.
-func rootForgePkgVersion(projectDir string) string {
+// rootForgeVersion returns the forge version pinned in the project's root
+// go.mod, or "" when the root has no forge require (or no go.mod). Used to
+// mirror the root pin into a freshly bootstrapped gen/go.mod so both of the
+// project's modules resolve forge to the same published version.
+func rootForgeVersion(projectDir string) string {
 	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
 		return ""
 	}
-	m := forgePkgRequireRE.FindSubmatch(data)
+	m := forgeRequireRE.FindSubmatch(data)
 	if m == nil {
 		return ""
 	}

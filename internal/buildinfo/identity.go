@@ -18,9 +18,9 @@ import (
 //
 // Install one and not the other and a single PATH carries two forge builds
 // that can disagree about the same project tree — most sharply at the
-// forge/pkg compatibility handshake, which one build passes and the other
-// fails. Nothing in that failure used to say "a different forge build
-// generated this tree."
+// version compatibility check in internal/cli/generate_pkg_compat.go, which
+// one build passes and the other fails. Nothing in that failure used to say
+// "a different forge build generated this tree."
 //
 
 // Build is the identity that makes the two distinguishable. It is derived
@@ -52,34 +52,6 @@ type Build struct {
 	// through, when there is one ("../forge"). A local replace is exactly
 	// the skew that makes two builds differ while reporting one version.
 	ReplacedBy string
-	// PkgPath identifies the resolved github.com/reliant-labs/forge/pkg —
-	// the library half of the binary<->library contract the compat probe
-	// enforces. Either a local replace target or "<module>@<version>".
-	PkgPath string
-}
-
-const forgeCmdModulePath = "github.com/reliant-labs/forge"
-
-// pkgPathFrom describes how forge/pkg resolved for this binary: a replace
-// target, a published version, or an in-tree workspace copy.
-//
-// The workspace case is named explicitly rather than left as "(devel)" —
-// a workspace build is one of the ways two forge builds come to differ, and
-// that is exactly what this identity exists to make visible.
-func pkgPathFrom(info *debug.BuildInfo) string {
-	for _, dep := range info.Deps {
-		if dep == nil || dep.Path != pkgModulePath {
-			continue
-		}
-		if dep.Replace != nil && dep.Replace.Path != "" {
-			return dep.Replace.Path
-		}
-		if dep.Version != "" && dep.Version != "(devel)" {
-			return dep.Path + "@" + dep.Version
-		}
-		return dep.Path + " (local workspace build)"
-	}
-	return ""
 }
 
 // applyEmbeddedForgeIdentity fills in the embedded-build fields: forge is a
@@ -92,7 +64,7 @@ func pkgPathFrom(info *debug.BuildInfo) string {
 // fall back on.
 func applyEmbeddedForgeIdentity(b *Build, info *debug.BuildInfo) {
 	for _, dep := range info.Deps {
-		if dep == nil || dep.Path != forgeCmdModulePath {
+		if dep == nil || dep.Path != forgeModulePath {
 			continue
 		}
 		b.Embedded = true
@@ -117,7 +89,7 @@ func buildFrom(info *debug.BuildInfo, ldflagsVersion, ldflagsCommit string) Buil
 	var b Build
 
 	if info != nil {
-		if info.Main.Path == forgeCmdModulePath {
+		if info.Main.Path == forgeModulePath {
 			// forge IS the main module: standalone.
 			b.Version = info.Main.Version
 			if b.Version == "" || b.Version == "(devel)" {
@@ -126,8 +98,6 @@ func buildFrom(info *debug.BuildInfo, ldflagsVersion, ldflagsCommit string) Buil
 		} else {
 			applyEmbeddedForgeIdentity(&b, info)
 		}
-
-		b.PkgPath = pkgPathFrom(info)
 
 		for _, s := range info.Settings {
 			switch s.Key {
@@ -213,9 +183,6 @@ func (b Build) String() string {
 	}
 	if b.ReplacedBy != "" {
 		parts = append(parts, "forge => "+b.ReplacedBy)
-	}
-	if b.PkgPath != "" {
-		parts = append(parts, "forge/pkg "+b.PkgPath)
 	}
 	if len(parts) > 0 {
 		sb.WriteString(" (")
@@ -327,9 +294,6 @@ func Describe() string {
 	}
 	if b.ReplacedBy != "" {
 		fmt.Fprintf(&sb, "  forge module:   replaced by %s\n", b.ReplacedBy)
-	}
-	if b.PkgPath != "" {
-		fmt.Fprintf(&sb, "  forge/pkg:      %s\n", b.PkgPath)
 	}
 	return sb.String()
 }

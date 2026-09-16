@@ -39,7 +39,7 @@ func guardTemplateMode(g config.ConfigGuardConfig) string {
 // managed templates that render in BOTH lanes never branch on a
 // lane-specific field:
 //
-//   - ServicePackage / ForgePkgVersion — scaffold-only.
+//   - ServicePackage / ForgeVersion — scaffold-only.
 //     Consumed by scaffold-only templates (config.proto.tmpl, go.mod.tmpl)
 //     that the upgrade lane never renders.
 //   - Services — upgrade-only. Consumed by alloy-config.alloy.tmpl, which
@@ -76,12 +76,14 @@ type projectTemplateData struct {
 	// but the field is declared here so buf.yaml's dep gate has a known
 	// input shape; the upgrade lane reads the live forge.yaml api.rest value.
 	RESTEnabled bool
-	// ForgePkgVersion is the published forge/pkg version go.mod.tmpl and
-	// gen-go.mod.tmpl pin (`require github.com/reliant-labs/forge/pkg
-	// <version>`, no replace). See resolveForgePkgVersion in
-	// project_pkgdep.go for the release-stamp-vs-default resolution.
+	// ForgeVersion is the forge version go.mod.tmpl and gen-go.mod.tmpl pin
+	// (`require github.com/reliant-labs/forge <version>`, no replace). EMPTY
+	// when this binary is not proxy-resolvable (a local or dirty build); both
+	// templates then omit the require entirely rather than pin a version that
+	// cannot satisfy the code being generated — see resolveForgeVersion in
+	// project_pkgdep.go.
 	// Populated by forScaffold only (go.mod is not an upgrade-managed file).
-	ForgePkgVersion string
+	ForgeVersion string
 	// VersionVar mirrors forge.yaml build.version_var. The Dockerfile
 	// template stamps an extra `-X <VersionVar>=${FORGE_VERSION}` when set;
 	// empty (the default) renders nothing, preserving main.version-only
@@ -231,9 +233,9 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
 		ConfigFields:           codegen.DefaultConfigFieldNames(),
 		// forge/pkg is a published module — pin its version, no replace, no
-		// vendoring. resolveForgePkgVersion uses this binary's release stamp
+		// vendoring. resolveForgeVersion uses this binary's release stamp
 		// or the latest published tag.
-		ForgePkgVersion: resolveForgePkgVersion(),
+		ForgeVersion: resolveForgeVersion(),
 		// REST is off at scaffold time; users opt-in post-scaffold by
 		// editing forge.yaml's `api.rest:` and re-running `forge generate`
 		// (RegenerateInfraFiles re-renders buf.yaml from the live value).

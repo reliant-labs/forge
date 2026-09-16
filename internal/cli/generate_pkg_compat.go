@@ -5,196 +5,239 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
+	"golang.org/x/mod/semver"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cliutil"
 )
 
-// forge/pkg compatibility handshake (kalshi fr-ac69216583).
+// forge↔project compatibility check (kalshi fr-ac69216583).
 //
-// The generator's ORM/CRUD emitters reference a fixed set of symbols from
-// the project's resolved forge/pkg module: orm.Context.Dialect(),
-// orm.UnknownFieldError, and the no-argument crud.NewRepo[M]().
-// A project that pins a forge/pkg OLDER than this binary can lack those
-// symbols. Without a handshake, `forge generate` rewrites the whole tree
-// and only THEN fails its own `go build` validate with `undefined:
-// orm.UnknownFieldError`, leaving the repo mid-regen. This is more likely
-// now that every project pins a PUBLISHED forge/pkg version: a binary newer
-// than the pinned pkg release is exactly the skew this catches early.
+// The generator emits code that calls into forge/pkg/* — orm, crud, testkit,
+// serverkit. Those are packages in the SINGLE forge module, so the library
+// that code compiles against is whatever version the project requires, and
+// the symbols it may call are the ones that existed as of THIS binary's
+// version. A project pinning a forge OLDER than this binary can therefore
+// lack symbols the generated code names. Without this check, `forge generate`
+// rewrites the whole tree and only THEN fails its own `go build` validate
+// with `undefined: ...`, leaving the repo mid-regen.
 //
-// pkgCompatProbe compiles a tiny throwaway program against the project's
-// resolved forge/pkg BEFORE any codegen mutates the tree. If a required
-// symbol is missing, generate aborts loudly with the version mismatch and
-// the one-line fix, and the tree is untouched.
+// WHY THIS IS A VERSION COMPARISON AND NOT A SYMBOL PROBE. It used to compile
+// a throwaway program against the project's forge/pkg, exercising a
+// hand-maintained list of symbols (`requiredPkgSymbols`) that whoever taught
+// an emitter to call something new was expected to extend. That list is
+// exactly as good as the memory of the person editing the emitter, and it
+// rotted: forge grew `testkit.StubNotConfigured`, nobody added the entry, and
+// a control-plane `forge generate` failed in validate with the tree already
+// rewritten — the precise outcome the probe existed to prevent.
 //
-// The probe is the single source of truth for the binary↔library contract:
-// when the generator starts emitting a new forge/pkg symbol, add it to
-// requiredPkgSymbols and projects on a too-old pin fail fast here instead
-// of deep in validate.
+// Generator and runtime ship as one module now, so their versions are one
+// number and the honest check is an inequality over it: the project's forge
+// must be >= the forge doing the generating. That covers every symbol ever
+// added, with no registry to forget, and costs one `go list` instead of a
+// `go build`.
+//
+// A project resolving forge NEWER than this binary is allowed through: older
+// templates calling into a newer library is the ordinary upgrade order, and
+// only a symbol REMOVAL breaks it — which semver is the right place to
+// signal, not a pre-codegen gate.
 
-// pkgSymbolProbe is one symbol the generated code depends on, plus the
-// snippet that exercises it in the probe program. exprFmt is a Go
-// statement that references the symbol; it must compile iff the symbol
-// exists in the resolved forge/pkg.
-type pkgSymbolProbe struct {
-	// imports the probe needs (import path → local alias; alias "" means
-	// the default package name).
-	imports map[string]string
-	// stmt is a statement placed in the probe's func body. It must
-	// reference the symbol such that a missing symbol yields `undefined:`.
-	stmt string
-}
+// forgeModuleRequirePath is the module a project requires to get forge's
+// runtime libraries. `forge/pkg` is a package prefix inside it, not a module.
+const forgeModuleRequirePath = "github.com/reliant-labs/forge"
 
-// requiredPkgSymbols is the set of forge/pkg symbols THIS binary's
-// generator emits into a project. Each must exist in the project's
-// resolved forge/pkg or the generated code won't compile. Keep this in
-// lockstep with the ORM/CRUD emitters (internal/generator/plan_orm_gen.go,
-// pkg/crud).
-func requiredPkgSymbols() []pkgSymbolProbe {
-	orm := map[string]string{"github.com/reliant-labs/forge/pkg/orm": ""}
-	crud := map[string]string{"github.com/reliant-labs/forge/pkg/crud": ""}
-	return []pkgSymbolProbe{
-		// orm.Context.Dialect() — the raw-SQL escape hatch in user-owned
-		// *_repo_ext.go handlers (kalshi fr-3c3f470f2c).
-		{imports: orm, stmt: "var c orm.Context; _ = func() orm.Dialect { return c.Dialect() }"},
-		// orm.UnknownFieldError — emitted in the Update<Entity>Masked
-		// doc-comment + returned by crud.UpdateMasked (kalshi fr-ac69216583).
-		{imports: orm, stmt: "_ = orm.UnknownFieldError{}"},
-		// crud.NewRepo[M]() — the per-entity repo the generator constructs.
-		// It takes NO argument: every fact it needs is derived from the
-		// model's Bun tags. A pkg predating that still requires a Spec, and
-		// the arity mismatch is exactly the skew this probe catches before
-		// codegen touches the tree.
-		{imports: crud, stmt: "_ = crud.NewRepo[struct{}]()"},
-	}
-}
+// legacyForgePkgRequireRE matches a require on the RETIRED forge/pkg
+// submodule, which no longer exists as a module. A project still pinning it
+// predates the single-module collapse and cannot resolve at all.
+var legacyForgePkgRequireRE = regexp.MustCompile(
+	`(?m)^[\t ]*(?:require[\t ]+)?github\.com/reliant-labs/forge/pkg[\t ]+(v[^\s]+)[\t ]*$`)
 
-// checkPkgCompat probes the project's resolved forge/pkg for the symbols
-// the generator emits. Returns a user-facing error (tree untouched) when a
-// symbol is missing, nil when the handshake passes or can't be performed
-// (no forge/pkg dependency, or the toolchain is unavailable — generate's
-// existing validate step is the backstop in that case).
+// checkPkgCompat verifies, BEFORE codegen mutates the tree, that the forge
+// this project compiles against can satisfy the code this binary generates.
+//
+// Returns a user-facing error (tree untouched) on a genuine mismatch, and nil
+// whenever the question doesn't apply or can't be answered — no go.mod, no
+// forge requirement, or a toolchain that won't tell us how forge resolved.
+// generate's existing validate step remains the backstop for those.
 func checkPkgCompat(projectDir string) error {
-	// Only meaningful when the project depends on forge/pkg at all. A
-	// project with no go.mod, or one that doesn't require forge/pkg, emits
-	// no code that references these symbols.
-	gomod := filepath.Join(projectDir, "go.mod")
-	data, err := os.ReadFile(gomod)
+	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
-		return nil // no module → nothing to probe; not our error to raise
+		return nil // no module → nothing to check; not our error to raise
 	}
-	if !strings.Contains(string(data), "github.com/reliant-labs/forge/pkg") {
-		return nil
+	gomod := string(data)
+
+	// A project still pinning the retired submodule cannot build at all, and
+	// the module proxy's error for it is opaque. Say what happened.
+	if m := legacyForgePkgRequireRE.FindStringSubmatch(gomod); m != nil &&
+		!strings.Contains(gomod, forgeModuleRequirePath+" v") {
+		return legacyPkgPinErr(projectDir, m[1])
+	}
+	if !strings.Contains(gomod, forgeModuleRequirePath) {
+		return nil // project doesn't consume forge's libraries
 	}
 
-	probes := requiredPkgSymbols()
-
-	// One probe file referencing every required symbol — a single missing
-	// symbol fails the build and we surface the version mismatch. Building
-	// them together keeps the probe to one `go build` invocation.
-	allImports := map[string]string{}
-	var stmts []string
-	for _, p := range probes {
-		for path, alias := range p.imports {
-			allImports[path] = alias
-		}
-		stmts = append(stmts, "\t"+p.stmt)
+	projectVersion, local, ok := resolveProjectForge(projectDir)
+	if !ok {
+		return nil // can't ask the toolchain → defer to the validate backstop
 	}
 
-	var b strings.Builder
-	b.WriteString("//go:build forgepkgcompat\n\n")
-	b.WriteString("package forgepkgcompat\n\n")
-	b.WriteString("import (\n")
-	for path, alias := range allImports {
-		if alias == "" {
-			fmt.Fprintf(&b, "\t%q\n", path)
-		} else {
-			fmt.Fprintf(&b, "\t%s %q\n", alias, path)
-		}
+	binaryVersion := buildinfo.InstallableVersion()
+	switch decideForgeCompat(binaryVersion, projectVersion, local) {
+	case compatUnreleasableNoBridge:
+		return unreleasableBuildErr(projectDir, projectVersion)
+	case compatStalePin:
+		return staleForgePinErr(projectDir, projectVersion, binaryVersion)
 	}
-	b.WriteString(")\n\n")
-	b.WriteString("func forgePkgCompatProbe() {\n")
-	for _, s := range stmts {
-		b.WriteString(s + "\n")
-	}
-	b.WriteString("}\n")
+	return nil
+}
 
-	// Land the probe in a temp package dir INSIDE the project so it
-	// resolves forge/pkg through the project's module graph (its require,
-	// plus any go.work bridge a maintainer added). The build tag keeps it
-	// out of the normal package's compilation and `go build ./...`.
-	probeDir, err := os.MkdirTemp(projectDir, ".forge-pkgcompat-")
-	if err != nil {
-		return nil // can't probe → defer to the validate backstop
-	}
-	// Best-effort cleanup of a temp probe dir inside the project. A
-	// failure leaves a stray .forge-pkgcompat-* dir, not a broken build.
-	defer func() { _ = os.RemoveAll(probeDir) }()
-	probeFile := filepath.Join(probeDir, "probe.go")
-	if err := os.WriteFile(probeFile, []byte(b.String()), 0o644); err != nil {
-		return nil
-	}
+// compatVerdict is the outcome of the version comparison, split from both the
+// toolchain query and the error prose so the decision table can be tested
+// without a module graph (mirroring isDevBuildFrom / forgeRootFromFile).
+type compatVerdict int
 
-	cmd := exec.Command("go", "build", "-tags", "forgepkgcompat", "./"+filepath.Base(probeDir))
+const (
+	compatOK compatVerdict = iota
+	// compatUnreleasableNoBridge: this binary exists on no module proxy and
+	// the project resolves forge to a published version — the pairing that
+	// produced `undefined: testkit.StubNotConfigured`.
+	compatUnreleasableNoBridge
+	// compatStalePin: the project's forge is older than the binary generating
+	// into it.
+	compatStalePin
+)
+
+// decideForgeCompat is the pure decision.
+//
+// binaryVersion is buildinfo.InstallableVersion() — "" for a build no proxy
+// can serve. projectVersion/local describe how forge resolves IN the project.
+//
+// A local resolution always passes: the project compiles against source, so
+// there is no version to be behind, and whoever wired the bridge owns keeping
+// that checkout coherent. An unknown projectVersion also passes — guessing
+// is worse than letting validate speak.
+func decideForgeCompat(binaryVersion, projectVersion string, local bool) compatVerdict {
+	if local {
+		return compatOK
+	}
+	if binaryVersion == "" {
+		return compatUnreleasableNoBridge
+	}
+	if projectVersion == "" {
+		return compatOK
+	}
+	if semver.Compare(projectVersion, binaryVersion) < 0 {
+		return compatStalePin
+	}
+	return compatOK
+}
+
+// resolveProjectForge asks the go toolchain how forge ACTUALLY resolves for
+// this project — which is not necessarily what go.mod says, because a go.work
+// or a replace can override it.
+//
+// local is true when forge resolves to a directory on disk (a workspace `use`
+// or a directory `replace`) rather than a published version: a module in a
+// workspace has no version, which is the signal. ok is false when the
+// toolchain could not answer at all.
+func resolveProjectForge(projectDir string) (version string, local, ok bool) {
+	cmd := exec.Command("go", "list", "-m",
+		"-f", "{{.Version}}|{{with .Replace}}{{.Version}}|{{.Path}}{{end}}",
+		forgeModuleRequirePath)
 	cmd.Dir = projectDir
-	out, buildErr := cmd.CombinedOutput()
-	if buildErr == nil {
-		return nil // handshake passed
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false, false
+	}
+	fields := strings.Split(strings.TrimSpace(string(out)), "|")
+	version = strings.TrimSpace(fields[0])
+	// A replace wins: its version (empty for a directory target) is what the
+	// build actually compiles.
+	if len(fields) >= 3 {
+		replaceVersion, replacePath := strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])
+		if replaceVersion == "" && replacePath != "" {
+			return "", true, true // replaced by a directory
+		}
+		if replaceVersion != "" {
+			version = replaceVersion
+		}
+	}
+	if version == "" {
+		return "", true, true // in the workspace: no version at all
+	}
+	if !semver.IsValid(version) {
+		return "", false, false
+	}
+	return version, false, true
+}
+
+// unreleasableBuildErr is the error for the case that used to produce
+// `undefined: testkit.StubNotConfigured` deep in validate: an unreleased
+// forge generating into a project pinned to a published one.
+func unreleasableBuildErr(projectDir, projectVersion string) error {
+	root := buildinfo.DevForgeRoot
+	if root == "" {
+		root = buildinfo.DiscoverDevForgeRootFromSource()
+	}
+	bridge := "go work init . && go work use . <path-to-your-forge-checkout>"
+	if root != "" {
+		bridge = fmt.Sprintf("go work init . && go work use . %s", root)
 	}
 
-	// Only an `undefined:`/missing-symbol failure is a compat problem. A
-	// build error from a broken module graph, missing go.sum entries, etc.
-	// is not the binary↔library contract — let the normal pipeline (and
-	// its richer diagnostics) handle those rather than mis-attributing.
-	outStr := string(out)
-	if !strings.Contains(outStr, "undefined:") &&
-		!strings.Contains(outStr, "not a type") &&
-		!strings.Contains(outStr, "unknown field") &&
-		!strings.Contains(outStr, "too many arguments") &&
-		!strings.Contains(outStr, "has no field or method") {
-		return nil
-	}
-
-	missing := extractMissingPkgSymbols(outStr)
-	detail := "the resolved forge/pkg is missing symbol(s) this forge binary's generated code requires"
-	if len(missing) > 0 {
-		detail = fmt.Sprintf("the resolved forge/pkg is missing: %s", strings.Join(missing, ", "))
-	}
-	// The diagnosis block is appended AFTER the Fix clause rather than
-	// folded into `what`: formatUserErr joins the two with ". Fix: ", which
-	// reads correctly only when `what` is a single line.
-	base := cliutil.UserErr("forge generate (forge/pkg compatibility handshake)",
-		detail+" — generating would rewrite the tree and then fail its own validate. No files were changed",
+	base := cliutil.UserErr("forge generate (forge version compatibility)",
+		fmt.Sprintf("this forge is %s — an unreleased build no module proxy can serve — but the project "+
+			"resolves %s to the published %s. The generated code would call into a forge this project "+
+			"cannot fetch, so generating would rewrite the tree and then fail its own validate. "+
+			"No files were changed",
+			buildinfo.Version(), forgeModuleRequirePath, projectVersion),
 		"",
-		"if the forge/pkg pin is genuinely behind this binary, run "+
-			"`go get github.com/reliant-labs/forge/pkg@latest && go mod tidy` "+
-			"(and re-tidy gen/ if present), then re-run '"+Name()+" generate'. "+
-			"If the two toolchains below disagree, re-run with the SAME forge "+
-			"that generated this tree, or reinstall both so they match")
+		"bridge the project to this forge's source, which is the supported way to generate with an "+
+			"unreleased forge:\n    "+bridge+
+			"\n  (go.work is machine-local — keep it out of version control.) "+
+			"Or install a released forge and use that instead")
 
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }
 
-// extractMissingPkgSymbols pulls the forge/pkg symbols a probe build
-// reported as undefined, for an actionable error message. Best-effort —
-// returns nil if nothing recognizable was found.
-func extractMissingPkgSymbols(buildOutput string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, line := range strings.Split(buildOutput, "\n") {
-		idx := strings.Index(line, "undefined: ")
-		if idx < 0 {
-			continue
-		}
-		sym := strings.TrimSpace(line[idx+len("undefined: "):])
-		// Trim a trailing parenthesized note the compiler sometimes adds.
-		if sp := strings.IndexAny(sym, " \t("); sp >= 0 {
-			sym = sym[:sp]
-		}
-		if sym != "" && !seen[sym] {
-			seen[sym] = true
-			out = append(out, sym)
-		}
+// staleForgePinErr is the ordinary skew: a released forge newer than the
+// project's pin.
+func staleForgePinErr(projectDir, projectVersion, binaryVersion string) error {
+	base := cliutil.UserErr("forge generate (forge version compatibility)",
+		fmt.Sprintf("this forge is %s but the project pins %s %s — older than the binary generating into "+
+			"it, so the generated code may call symbols that release does not have. Generating would "+
+			"rewrite the tree and then fail its own validate. No files were changed",
+			binaryVersion, forgeModuleRequirePath, projectVersion),
+		"",
+		fmt.Sprintf("if the pin is genuinely behind this binary, bring it up:"+
+			"\n    go get %s@%s && go mod tidy"+
+			"\n  (and re-run both in gen/ if the project has one). "+
+			"If the two toolchains below disagree, the pin is not the problem — re-run with the SAME "+
+			"forge that generated this tree, or reinstall both so they match",
+			forgeModuleRequirePath, binaryVersion))
+
+	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
+}
+
+// legacyPkgPinErr names the pre-collapse two-module pin, whose proxy error
+// ("module github.com/reliant-labs/forge/pkg: no matching versions") says
+// nothing about what to do.
+func legacyPkgPinErr(projectDir, pinnedVersion string) error {
+	target := buildinfo.InstallableVersion()
+	if target == "" {
+		target = "latest"
 	}
-	return out
+	base := cliutil.UserErr("forge generate (forge version compatibility)",
+		fmt.Sprintf("the project requires github.com/reliant-labs/forge/pkg %s, a module that no longer "+
+			"exists: forge/pkg was merged into github.com/reliant-labs/forge, so the CLI and the runtime "+
+			"libraries can never disagree about a version again. Import paths did NOT change — only the "+
+			"require line. No files were changed", pinnedVersion),
+		"",
+		fmt.Sprintf("swap the requirement (in the root module and in gen/ if the project has one):"+
+			"\n    go mod edit -droprequire=github.com/reliant-labs/forge/pkg"+
+			"\n    go get github.com/reliant-labs/forge@%s && go mod tidy", target))
+
+	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }

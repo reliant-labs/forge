@@ -127,32 +127,43 @@ func trimBuild(v string) string {
 	return v
 }
 
-// TestDeriveGitVersion_UntaggedUsesTheZeroForm pins the OTHER pseudo-version
-// form, and it is not cosmetic.
+// TestDeriveGitVersion_UntaggedFallsBackToTheEmbeddedVersion covers the shape
+// CI actually has, and the two wrong answers it produced before.
 //
-// After a tag the form is `vX.Y.(Z+1)-0.<ts>-<sha>` — the `-0.` making it a
-// prerelease of the next patch. With no tag there is nothing to be "after",
-// and reusing that form yields `v0.0.0-0.<ts>-<sha>`, which claims to precede
-// v0.0.0. The go command rejects it:
+// A SHALLOW CLONE fetches no tags, so `git describe` finds nothing. Every
+// developer machine has tags and never takes this path, which is why both
+// mistakes shipped:
 //
-//	invalid pseudo-version: version before v0.0.0 would have negative patch
+//  1. basing on v0.0.0 with the after-a-tag form gave
+//     `v0.0.0-0.<ts>-<sha>` — a version claiming to precede v0.0.0, which the
+//     go command refuses outright;
+//  2. spelling that validly as `v0.0.0-<ts>-<sha>` then sorted BEFORE the
+//     release the source is ahead of, losing the ordering guarantee this
+//     function exists for.
 //
-// A tagless SHALLOW CLONE is the ordinary way to reach this, so CI hit it on
-// every run while every developer machine took the tagged branch. The first
-// version of this test asserted module.IsPseudoVersion, which only checks
-// SHAPE — and the invalid form is shaped correctly. Hence assertUsableVersion.
-func TestDeriveGitVersion_UntaggedUsesTheZeroForm(t *testing.T) {
+// The embedded VERSION file always ships in the binary and always names the
+// last release, so it answers precisely when git cannot.
+func TestDeriveGitVersion_UntaggedFallsBackToTheEmbeddedVersion(t *testing.T) {
 	got := deriveGitVersion(fixtureRepo(t, ""))
 	if got == "" {
 		t.Fatal("deriveGitVersion returned empty for a clean untagged repo")
 	}
 	assertUsableVersion(t, got)
+
 	if strings.HasPrefix(trimBuild(got), "v0.0.0-0.") {
-		t.Errorf("deriveGitVersion = %q uses the after-a-tag form with no tag; "+
-			"v0.0.0-0.… claims to precede v0.0.0 and the go command refuses it", got)
+		t.Errorf("deriveGitVersion = %q uses the after-a-tag form on a v0.0.0 base; "+
+			"that claims to precede v0.0.0 and the go command refuses it", got)
 	}
-	if semver.Compare(got, "v0.0.1") >= 0 {
-		t.Errorf("deriveGitVersion = %q, want a v0.0.0-based pseudo-version", got)
+
+	// The ordering guarantee, in the environment that kept losing it.
+	release := versionFromFile(embeddedVersionFile)
+	if release == "" {
+		t.Skip("no usable embedded VERSION to compare against")
+	}
+	if semver.Compare(got, release) <= 0 {
+		t.Errorf("deriveGitVersion = %q does not sort after the last release %q — "+
+			"a tagless clone of source ahead of a release must not read as older than it",
+			got, release)
 	}
 }
 

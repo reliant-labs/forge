@@ -231,20 +231,9 @@ jobs:
           go install ./cmd/forge
           forge tools install
 
-      # `forge db reset`/`migrate up` shell out to the golang-migrate CLI
-      # (internal/cli/db.go: exec.LookPath("migrate")), so the shard that
-      # exercises them needs it on PATH. Without it
-      # TestDBReset_ExitsTheDeadlockAndRebuilds failed 20 minutes into the run
-      # with "golang-migrate CLI not found" — and it failed that way on main
-      # too, not just on a PR.
-      #
-      # The version tracks go.mod's golang-migrate/migrate/v4 so the CLI and
-      # the library forge links cannot disagree about migration semantics.
-      # The postgres build tag is required: the CLI ships with NO database
-      # drivers compiled in, and without it every command dies on "unknown
-      # driver postgres" — which reads like a DSN problem, not a build one.
+      # TestDBReset_* shell out to the golang-migrate CLI.
       - name: Install golang-migrate CLI
-        run: go install -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
+        uses: ./.github/actions/install-migrate
 
       - name: Verify every required tool resolves
         # Fail here, in five seconds, with the tool named — rather than 20

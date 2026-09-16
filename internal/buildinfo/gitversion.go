@@ -129,25 +129,33 @@ func deriveGitVersion(root string) string {
 		return ""
 	}
 
-	// TWO FORMS, and using the wrong one produces a version the go command
-	// rejects outright.
+	// THE BASE decides whether this version orders correctly, and there are
+	// two independent ways to learn it.
 	//
-	// After a tag, a pseudo-version is `vX.Y.(Z+1)-0.<ts>-<sha>`: the `-0.`
-	// prefix makes it a PRE-release of the next patch, i.e. "after vX.Y.Z and
-	// before vX.Y.(Z+1)".
+	// Preferred: the nearest reachable tag. Accurate, and it moves on its own.
 	//
-	// With no tag to build on, the form is `v0.0.0-<ts>-<sha>` with NO `-0.`
-	// — because `v0.0.0-0.…` claims to precede v0.0.0, and there is no such
-	// version:
+	// Fallback: the embedded VERSION file. A SHALLOW CLONE fetches no tags, so
+	// `git describe` finds nothing — which is the normal CI shape, while every
+	// developer machine has tags and never sees this path. Basing on v0.0.0
+	// there was wrong twice over: it produced `v0.0.0-0.<ts>-<sha>`, a version
+	// claiming to precede v0.0.0 that the go command rejects outright, and
+	// once spelled validly as `v0.0.0-<ts>-<sha>` it sorted BEFORE the release
+	// the source is ahead of — losing the ordering guarantee this whole
+	// function exists to provide. VERSION always ships in the binary and
+	// always names the last release, so it answers exactly when git cannot.
 	//
-	//	invalid pseudo-version: version before v0.0.0 would have negative
-	//	patch number
-	//
-	// A tagless SHALLOW CLONE is the common way to land here, so CI hits it
-	// while every developer machine takes the tagged branch.
+	// v0.0.0 remains only for the case where neither is available, and then
+	// the form must drop the `-0.` prefix: there is no version before v0.0.0.
+	base := nextPatch(run("describe", "--tags", "--abbrev=0", "--match", "v*"))
+	if base == "" {
+		base = nextPatch(versionFromFile(embeddedVersionFile))
+	}
+
 	var v string
-	if next := nextPatch(run("describe", "--tags", "--abbrev=0", "--match", "v*")); next != "" {
-		v = fmt.Sprintf("%s-0.%s-%s", next, ts, sha)
+	if base != "" {
+		// After a tag: `vX.Y.(Z+1)-0.<ts>-<sha>`. The `-0.` makes it a
+		// PRE-release of the next patch — after vX.Y.Z, before vX.Y.(Z+1).
+		v = fmt.Sprintf("%s-0.%s-%s", base, ts, sha)
 	} else {
 		v = fmt.Sprintf("v0.0.0-%s-%s", ts, sha)
 	}

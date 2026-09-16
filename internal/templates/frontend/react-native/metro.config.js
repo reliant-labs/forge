@@ -68,7 +68,9 @@ const workspaceRoot = (() => {
 })();
 
 if (workspaceRoot) {
-  config.resolver.nodeModulesPaths.push(path.join(workspaceRoot, "node_modules"));
+  config.resolver.nodeModulesPaths.push(
+    path.join(workspaceRoot, "node_modules"),
+  );
   // Metro must also WATCH the root, or a hoisted package it can now resolve
   // still fails to transform: resolution and the file crawler are separate
   // concerns, and satisfying only the first yields a confusing partial fix.

@@ -229,6 +229,11 @@ type acknowledgedRPC struct {
 // Connect services, no descriptor, or no handler tree — a worker-only
 // project, a CLI, a library. Those are not "clean", they are not subject,
 // and the summary says which.
+// length is the number of unscoped-auth patterns recognized, and each arm
+// is a few lines; extracting them would add indirection without removing
+// anything a reader has to follow.
+//
+//nolint:funlen // One pass over the AST collecting one finding shape. The
 func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	services, err := codegen.ParseServicesFromProtos("", projectDir)
 	if err != nil {

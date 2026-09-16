@@ -235,6 +235,11 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 	return cmd
 }
 
+// run each check, aggregate. The statements ARE the pipeline, and hiding
+// segments behind helpers would make the order of operations — which is
+// the thing that matters here — harder to see, not easier.
+//
+//nolint:funlen // The lint command's top-level sequence: gather config,
 func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.suggestExcludes {

@@ -11,7 +11,8 @@ import (
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
-// Deciding WHICH node_modules a frontend's tsconfig peer pins must name.
+// PinLayout names WHICH node_modules a frontend's tsconfig peer pins resolve
+// against.
 //
 // A `paths` value for a non-wildcard key must hold EXACTLY ONE element — SWC
 // asserts that rule and panics `next build` on anything longer (measured; see

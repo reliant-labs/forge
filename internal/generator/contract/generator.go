@@ -228,6 +228,10 @@ func removeLegacyWrappers(dir string) error {
 // emit "nil" for interface-typed returns whose declaration lives outside
 // contract.go (e.g. internal/debug defines Service in contract.go and
 // Debugger in debugger.go).
+// of the contract file in order. Splitting a sequential parse into helpers
+// trades a long function for hidden state passed between them.
+//
+//nolint:funlen // A single-pass parser: each statement consumes one part
 func ParseContract(path string) (*File, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)

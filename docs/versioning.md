@@ -83,13 +83,17 @@ compiles against can satisfy the code about to be generated:
   source, so there is no version to be behind;
 - an unreleasable binary against a proxy-pinned project is refused, with the
   bridge command;
-- the **retired `forge/pkg` module anywhere in the graph** is refused. This is
-  the sharpest migration failure: both `github.com/reliant-labs/forge` and
-  `github.com/reliant-labs/forge/pkg` can serve `forge/pkg/*` import paths, so a
-  graph holding both answers every such import with `ambiguous import: found
-package ... in multiple modules`, once per import, naming no cause and no fix.
-  The gate distinguishes a direct requirement (drop it) from one a dependency
-  drags in (that dependency has to move first; a `replace` only hides it).
+- a DIRECT require on the retired `forge/pkg` module is refused. Both
+  `github.com/reliant-labs/forge` and `github.com/reliant-labs/forge/pkg`
+  provide `forge/pkg/*` import paths, so requiring both makes every one of
+  them ambiguous and nothing compiles. Only the project's own go.mod is read:
+  forge does NOT inspect the dependency graph looking for it. It used to, and
+  that failed a project's generate because one of its DEPENDENCIES had not
+  bumped — a graph forge does not own, and advice the reader could not act on.
+  `go.mod` resolution is sufficient: MVS selects one version of forge for the
+  whole build, so the library side is coherent whatever individual pins say,
+  and a genuine binary/library mismatch is an ordinary compile error that
+  emit-validate-rollback already catches empirically.
 
 This replaced a probe that compiled a throwaway program against a hand-listed
 set of symbols. The inequality covers every symbol ever added, needs no registry

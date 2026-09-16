@@ -74,9 +74,7 @@ func TestDeriveGitVersion_TaggedSortsBetweenReleases(t *testing.T) {
 	if got == "" {
 		t.Fatal("deriveGitVersion returned empty for a clean tagged repo")
 	}
-	if !module.IsPseudoVersion(semver.Canonical(got)) && !module.IsPseudoVersion(trimBuild(got)) {
-		t.Fatalf("deriveGitVersion = %q, want a Go pseudo-version plus build metadata", got)
-	}
+	assertUsableVersion(t, got)
 	if semver.Compare(got, "v0.1.15") <= 0 {
 		t.Errorf("%q must sort AFTER v0.1.15", got)
 	}
@@ -129,18 +127,51 @@ func trimBuild(v string) string {
 	return v
 }
 
-// An untagged repo has no release to be "after", so v0.0.0 is the base — the
-// same choice the go command makes.
-func TestDeriveGitVersion_UntaggedUsesZeroBase(t *testing.T) {
+// TestDeriveGitVersion_UntaggedUsesTheZeroForm pins the OTHER pseudo-version
+// form, and it is not cosmetic.
+//
+// After a tag the form is `vX.Y.(Z+1)-0.<ts>-<sha>` — the `-0.` making it a
+// prerelease of the next patch. With no tag there is nothing to be "after",
+// and reusing that form yields `v0.0.0-0.<ts>-<sha>`, which claims to precede
+// v0.0.0. The go command rejects it:
+//
+//	invalid pseudo-version: version before v0.0.0 would have negative patch
+//
+// A tagless SHALLOW CLONE is the ordinary way to reach this, so CI hit it on
+// every run while every developer machine took the tagged branch. The first
+// version of this test asserted module.IsPseudoVersion, which only checks
+// SHAPE — and the invalid form is shaped correctly. Hence assertUsableVersion.
+func TestDeriveGitVersion_UntaggedUsesTheZeroForm(t *testing.T) {
 	got := deriveGitVersion(fixtureRepo(t, ""))
 	if got == "" {
 		t.Fatal("deriveGitVersion returned empty for a clean untagged repo")
 	}
-	if !module.IsPseudoVersion(trimBuild(got)) {
-		t.Fatalf("deriveGitVersion = %q, want a Go pseudo-version plus build metadata", got)
+	assertUsableVersion(t, got)
+	if strings.HasPrefix(trimBuild(got), "v0.0.0-0.") {
+		t.Errorf("deriveGitVersion = %q uses the after-a-tag form with no tag; "+
+			"v0.0.0-0.… claims to precede v0.0.0 and the go command refuses it", got)
 	}
 	if semver.Compare(got, "v0.0.1") >= 0 {
 		t.Errorf("deriveGitVersion = %q, want a v0.0.0-based pseudo-version", got)
+	}
+}
+
+// assertUsableVersion checks what the go command checks, not merely that the
+// string is pseudo-version-SHAPED.
+//
+// Finding the right gate took two tries, which is the point: both
+// module.IsPseudoVersion AND module.Check ACCEPT the invalid
+// v0.0.0-0.<ts>-<sha> form. module.PseudoVersionBase is the one that refuses
+// it, and it reports the same words the go command does — "version before
+// v0.0.0 would have negative patch number".
+func assertUsableVersion(t *testing.T, v string) {
+	t.Helper()
+	base := trimBuild(v)
+	if !module.IsPseudoVersion(base) {
+		t.Fatalf("%q is not a Go pseudo-version", v)
+	}
+	if _, err := module.PseudoVersionBase(base); err != nil {
+		t.Fatalf("%q is not a version the go command accepts: %v", v, err)
 	}
 }
 

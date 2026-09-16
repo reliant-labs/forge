@@ -129,16 +129,41 @@ func deriveGitVersion(root string) string {
 		return ""
 	}
 
-	base := "v0.0.0"
-	if tag := run("describe", "--tags", "--abbrev=0", "--match", "v*"); tag != "" {
-		if next := nextPatch(tag); next != "" {
-			base = next
-		}
+	// TWO FORMS, and using the wrong one produces a version the go command
+	// rejects outright.
+	//
+	// After a tag, a pseudo-version is `vX.Y.(Z+1)-0.<ts>-<sha>`: the `-0.`
+	// prefix makes it a PRE-release of the next patch, i.e. "after vX.Y.Z and
+	// before vX.Y.(Z+1)".
+	//
+	// With no tag to build on, the form is `v0.0.0-<ts>-<sha>` with NO `-0.`
+	// — because `v0.0.0-0.…` claims to precede v0.0.0, and there is no such
+	// version:
+	//
+	//	invalid pseudo-version: version before v0.0.0 would have negative
+	//	patch number
+	//
+	// A tagless SHALLOW CLONE is the common way to land here, so CI hits it
+	// while every developer machine takes the tagged branch.
+	var v string
+	if next := nextPatch(run("describe", "--tags", "--abbrev=0", "--match", "v*")); next != "" {
+		v = fmt.Sprintf("%s-0.%s-%s", next, ts, sha)
+	} else {
+		v = fmt.Sprintf("v0.0.0-%s-%s", ts, sha)
 	}
-
-	v := fmt.Sprintf("%s-0.%s-%s", base, ts, sha)
+	// IsPseudoVersion only checks SHAPE, and shape is what let the invalid
+	// v0.0.0-0.… form through — it parses as a pseudo-version, and
+	// module.Check accepts it too. PseudoVersionBase is the function that
+	// actually refuses it, with the exact wording the go command reports:
+	//
+	//	pseudo-version "v0.0.0-0.2026…" invalid: version before v0.0.0
+	//	would have negative patch number
+	//
+	// So validate with that, not with something merely adjacent to it.
 	if !module.IsPseudoVersion(v) {
-		// Refuse to emit something that only looks like a version.
+		return "" // refuse to emit something that only looks like a version
+	}
+	if _, err := module.PseudoVersionBase(v); err != nil {
 		return ""
 	}
 

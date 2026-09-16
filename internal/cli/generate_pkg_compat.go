@@ -50,11 +50,6 @@ import (
 // runtime libraries. `forge/pkg` is a package prefix inside it, not a module.
 const forgeModuleRequirePath = "github.com/reliant-labs/forge"
 
-// legacyForgePkgModulePath is the RETIRED submodule. It is not merely absent
-// now — it actively CONFLICTS with the merged module, since both provide
-// github.com/reliant-labs/forge/pkg/* import paths.
-const legacyForgePkgModulePath = "github.com/reliant-labs/forge/pkg"
-
 // legacyForgePkgRequireRE matches a direct require on that module.
 var legacyForgePkgRequireRE = regexp.MustCompile(
 	`(?m)^[\t ]*(?:require[\t ]+)?github\.com/reliant-labs/forge/pkg[\t ]+(v[^\s]+)[\t ]*$`)
@@ -73,21 +68,21 @@ func checkPkgCompat(projectDir string) error {
 	}
 	gomod := string(data)
 
-	// THE RETIRED SUBMODULE, anywhere in the graph, is fatal and produces the
+	// A DIRECT require on the retired submodule is fatal and produces the
 	// least legible error in Go: both github.com/reliant-labs/forge (which
 	// now contains pkg/) and github.com/reliant-labs/forge/pkg provide the
-	// import path github.com/reliant-labs/forge/pkg/<x>, so a graph holding
-	// both answers every such import with
+	// import path github.com/reliant-labs/forge/pkg/<x>, so requiring both
+	// answers every such import with
 	//
 	//	ambiguous import: found package github.com/reliant-labs/forge/pkg/orm
 	//	in multiple modules
 	//
-	// repeated once per import, naming no cause and no fix. It does not
-	// matter whether the requirement is direct or dragged in by another
-	// dependency — and transitive is the likelier case during a migration,
-	// which is why this asks the module GRAPH and not just this go.mod.
-	if version, direct, ok := forgePkgInGraph(projectDir, gomod); ok {
-		return retiredPkgModuleErr(projectDir, version, direct)
+	// repeated once per import, naming no cause and no fix. Reading this
+	// project's OWN go.mod is in scope; going looking for the same module
+	// elsewhere in the dependency graph is not — see
+	// directRetiredPkgRequire.
+	if version, found := directRetiredPkgRequire(gomod); found {
+		return retiredPkgModuleErr(projectDir, version)
 	}
 	if !strings.Contains(gomod, forgeModuleRequirePath) {
 		return nil // project doesn't consume forge's libraries
@@ -149,29 +144,38 @@ func decideForgeCompat(binaryVersion, projectVersion string, local bool) compatV
 	return compatOK
 }
 
-// forgePkgInGraph reports whether the retired forge/pkg module is still in
-// this project's module graph, and whether the requirement is direct.
+// directRetiredPkgRequire returns the version of the retired forge/pkg module
+// if THIS PROJECT requires it directly, reading only its go.mod.
 //
-// The go.mod text answers the direct case without a subprocess. For the
-// transitive case only the toolchain knows, and a toolchain that cannot
-// answer is treated as "not present": the build-list query fails for plenty
-// of reasons that are not this problem, and generate's validate step still
-// catches the ambiguity (just less legibly) rather than losing it.
-func forgePkgInGraph(projectDir, gomod string) (version string, direct, present bool) {
+// IT DELIBERATELY DOES NOT LOOK AT THE DEPENDENCY GRAPH. It used to: it ran
+// `go list -m github.com/reliant-labs/forge/pkg`, which resolves the whole
+// build list, and refused to generate when the retired module appeared
+// anywhere — then told the user to run `go mod why` and go fix a dependency.
+//
+// That is not forge's call to make. control-plane imports reliant, which
+// imports forge, so that probe failed control-plane's generate because
+// RELIANT had not bumped, while control-plane's own code and pins were
+// correct. For anyone outside this org it is worse: "a dependency of yours
+// requires forge/pkg, go fix that dependency" is advice they cannot act on,
+// from a tool claiming authority over a graph it does not own — to cover a
+// migration window that ages out.
+//
+// go.mod resolution is sufficient here, and MVS is why: Go selects ONE
+// maximum version of forge for the whole build, so the library side is
+// coherent no matter what a project and somebody else's library each pin. A
+// real mismatch between the generating binary and that selected library is an
+// ordinary compile error, and forge already answers that EMPIRICALLY by
+// emitting, validating, and rolling back — which beats predicting it from
+// version strings.
+//
+// A DIRECT require stays in scope: it is the project's own declaration, it
+// makes every forge/pkg/* import ambiguous so nothing can build, and
+// `go mod edit -droprequire` is something the reader can actually run.
+func directRetiredPkgRequire(gomod string) (version string, found bool) {
 	if m := legacyForgePkgRequireRE.FindStringSubmatch(gomod); m != nil {
-		return m[1], true, true
+		return m[1], true
 	}
-	cmd := exec.Command("go", "list", "-m", "-f", "{{.Version}}", legacyForgePkgModulePath)
-	cmd.Dir = projectDir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", false, false
-	}
-	v := strings.TrimSpace(string(out))
-	if v == "" {
-		return "", false, false
-	}
-	return v, false, true
+	return "", false
 }
 
 // resolveProjectForge asks the go toolchain how forge ACTUALLY resolves for
@@ -285,36 +289,25 @@ func shortPseudoCommit(v string) string {
 	return v
 }
 
-// retiredPkgModuleErr names the pre-collapse submodule and, crucially,
-// distinguishes a requirement this project owns from one a dependency drags
-// in — because the fixes are completely different and the Go error that
-// follows ("ambiguous import ... in multiple modules", once per import) tells
-// you neither.
-func retiredPkgModuleErr(projectDir, version string, direct bool) error {
+// retiredPkgModuleErr names the pre-collapse submodule. Only the DIRECT case
+// reaches here — see directRetiredPkgRequire for why forge does not go looking
+// for it in the graph.
+func retiredPkgModuleErr(projectDir, version string) error {
 	target := buildinfo.InstallableVersion()
 	if target == "" {
 		target = "latest"
 	}
 
-	what := fmt.Sprintf("the retired module github.com/reliant-labs/forge/pkg %s is still in this "+
-		"project's module graph. It was merged into github.com/reliant-labs/forge, and BOTH modules "+
-		"provide the import path github.com/reliant-labs/forge/pkg/* — so every such import is "+
-		"ambiguous and nothing in the project compiles. Import paths did NOT change; only the require "+
-		"line did. No files were changed", version)
+	what := fmt.Sprintf("this project's go.mod requires the retired module "+
+		"github.com/reliant-labs/forge/pkg %s. It was merged into "+
+		"github.com/reliant-labs/forge, and BOTH modules provide the import path "+
+		"github.com/reliant-labs/forge/pkg/* — so every such import is ambiguous and nothing in the "+
+		"project compiles. Import paths did NOT change; only the require line did. No files were "+
+		"changed", version)
 
-	var fix string
-	if direct {
-		fix = fmt.Sprintf("this project requires it directly — swap the requirement, in the root module "+
-			"and in gen/ if there is one:"+
-			"\n    go mod edit -droprequire=github.com/reliant-labs/forge/pkg"+
-			"\n    go get github.com/reliant-labs/forge@%s && go mod tidy", target)
-	} else {
-		fix = fmt.Sprintf("this project does NOT require it directly — a dependency does, and it has to "+
-			"move to the merged module before this project can build. Find the culprit:"+
-			"\n    go mod why -m github.com/reliant-labs/forge/pkg"+
-			"\n  then update that dependency to a version built against forge %s. Until it ships, "+
-			"nothing here can resolve the ambiguity — a `replace` would only hide it.", target)
-	}
+	fix := fmt.Sprintf("swap the requirement, in the root module and in gen/ if there is one:"+
+		"\n    go mod edit -droprequire=github.com/reliant-labs/forge/pkg"+
+		"\n    go get github.com/reliant-labs/forge@%s && go mod tidy", target)
 
 	base := cliutil.UserErr("forge generate (forge version compatibility)", what, "", fix)
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))

@@ -343,18 +343,20 @@ func New(d Deps) Service { return &service{deps: d} }
 }
 
 // TestLintDepsAreInterfaces_DataStructsAreNotCollaborators pins the
-// discriminator between a dep and a data bag.
+// discriminator between a dep and a data bag, in its simplest form: a
+// struct with no methods at all.
 //
 // The rule's remedy is "declare a narrow interface naming the methods you
-// call". A concrete type that declares NO methods has none to name — an
-// interface over it is the empty interface, which asserts nothing and mocks
-// nothing — so firing there demands a change that cannot be made. This was
-// the last finding standing on control-plane after the real ones were
-// fixed: `*config.WorkspaceConfig`, a YAML-deserialized bag of storage
-// defaults and probe shapes with zero methods, against
-// `*db.PostgresRepository` with 173. Config-on-Deps is a real design
-// question and forge-config-deps owns it; this rule is about behaviour you
-// cannot fake.
+// call". A type with no methods has none to name — an interface over it is
+// the empty interface, which asserts nothing and mocks nothing — so firing
+// there demands a change that cannot be made. Config-on-Deps is a real
+// design question and forge-config-deps owns it; this rule is about
+// behaviour you cannot fake.
+//
+// A zero-method struct is the VACUOUS case of the general test (every
+// method is a pure accessor); the method-carrying config that motivated
+// the general form is pinned by
+// TestLintDepsAreInterfaces_ConfigWithPureAccessorsIsData.
 //
 // The escape is closed on the side that matters: an embedded field promotes
 // the embedded type's entire method set, so a wrapper that declares nothing
@@ -417,5 +419,234 @@ func New(d Deps) Service { return &service{deps: d} }
 	}
 	if strings.Contains(got[0].Message, "Limits") {
 		t.Errorf("a zero-method data struct must not fire — there is no interface to extract; got: %s", got[0].Message)
+	}
+}
+
+// TestLintDepsAreInterfaces_ConfigWithPureAccessorsIsData is the
+// regression for the bug this discriminator was rewritten to fix.
+//
+// The exemption used to be "zero declared methods", and its own comment
+// named the case it existed for: control-plane's `*config.WorkspaceConfig`,
+// a YAML-deserialized bag of storage defaults and probe shapes. That config
+// later grew two tier-lookup accessors — `StorageSizeForTier(tier string)
+// string` and `DockerStorageSizeForTier`, each a lookup in the struct's own
+// map with a fallback to its own default field — and the exemption stopped
+// covering the case it was written for. `forge lint` failed control-plane's
+// gate on a struct the rule's author had already decided was data.
+//
+// A method COUNT was never the distinction. A config that grows two
+// convenience accessors over its OWN fields is still data: there is nothing
+// behind it for a test to fake, and the remedy the finding prescribes
+// produces an interface wrapping a map index. What actually separates the
+// two is whether the methods reach anything — so the test is purity, and a
+// zero-method struct passes it vacuously.
+//
+// The fixture is a faithful reduction of the real type: the same two-ladder
+// shape, the same fallback-to-own-field, the same package-level const and
+// map defaults, and a `time.Duration(...)` conversion — which is
+// syntactically a call and must not be read as one, or the exemption breaks
+// again the first time a config renders a duration.
+func TestLintDepsAreInterfaces_ConfigWithPureAccessorsIsData(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/app\n\ngo 1.24\n"))
+
+	cfgDir := filepath.Join(tmp, "internal", "config")
+	must(t, mkdirAll(cfgDir))
+	must(t, writeFile(filepath.Join(cfgDir, "workspace_config.go"), `package config
+
+import "time"
+
+const defaultStorageSize = "20Gi"
+
+var defaultDaemonStorageSizes = map[string]string{"small": "20Gi", "large": "80Gi"}
+
+// WorkspaceConfig is DATA: deserialized from YAML, with two accessors that
+// index its own maps and fall back to its own default fields.
+type WorkspaceConfig struct {
+	DefaultStorageSize string            `+"`"+`yaml:"defaultStorageSize"`+"`"+`
+	DaemonStorageSizes map[string]string `+"`"+`yaml:"daemonStorageSizes"`+"`"+`
+	IdleSeconds        int               `+"`"+`yaml:"idleSeconds"`+"`"+`
+}
+
+// StorageSizeForTier is the real shape: own map, own default field.
+func (c *WorkspaceConfig) StorageSizeForTier(tier string) string {
+	if size, ok := c.DaemonStorageSizes[tier]; ok && size != "" {
+		return size
+	}
+	return c.DefaultStorageSize
+}
+
+// TierCount uses a builtin over its own field.
+func (c *WorkspaceConfig) TierCount() int { return len(c.DaemonStorageSizes) }
+
+// IdleTimeout performs a CONVERSION, which is syntactically a call. Reading
+// it as a call would make this config a collaborator and re-break the rule.
+func (c *WorkspaceConfig) IdleTimeout() time.Duration {
+	return time.Duration(c.IdleSeconds) * time.Second
+}
+
+// DefaultWorkspaceConfig is a package-level FUNC, not a method. Its
+// presence must not make the type a collaborator.
+func DefaultWorkspaceConfig() *WorkspaceConfig {
+	return &WorkspaceConfig{
+		DefaultStorageSize: defaultStorageSize,
+		DaemonStorageSizes: defaultDaemonStorageSizes,
+	}
+}
+`))
+
+	opDir := filepath.Join(tmp, "internal", "workspaceop")
+	must(t, mkdirAll(opDir))
+	must(t, writeFile(filepath.Join(opDir, "contract.go"), `package workspaceop
+
+type Service interface{ Do() error }
+`))
+	must(t, writeFile(filepath.Join(opDir, "operator.go"), `package workspaceop
+
+import "example.com/app/internal/config"
+
+type Deps struct {
+	WorkspaceConfig *config.WorkspaceConfig // pure-accessor config data — silent
+}
+
+type service struct{ deps Deps }
+
+func New(d Deps) Service { return &service{deps: d} }
+`))
+
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleDepsAreInterfaces}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got := findingsForRule(fs, string(RuleDepsAreInterfaces)); len(got) != 0 {
+		t.Fatalf("a config whose every method is a pure accessor over its own fields is DATA "+
+			"and must not fire — an interface over StorageSizeForTier asserts nothing. got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
+	}
+}
+
+// TestLintDepsAreInterfaces_CollaboratorsDoNotEscapeAsData is the other
+// half, and the one that decides whether the exemption is a discriminator
+// or a loophole.
+//
+// Widening "zero methods" to "pure methods" is only safe if a genuine
+// collaborator cannot reach the widened shape. Each fixture type below is
+// a way one might TRY to, and every one must still fire:
+//
+//   - Repo — named like config, in a package named config, few methods.
+//     Neither the name nor the path is consulted, which is the property
+//     the rule's own header insists on: a repository must not escape by
+//     being called Settings.
+//   - Cache — one method, no context, no error, returns a value. It passes
+//     every SIGNATURE test and fails on the body, because it calls through
+//     a field. A call is where I/O hides, and no attempt is made to guess
+//     whether the field behind it holds data or a database.
+//   - Client — has a genuinely pure accessor (BaseURL). Data is a property
+//     of the WHOLE type, so one honest getter cannot vouch for the type
+//     that also has Do(ctx) (…, error).
+//   - Closer — a STUB: `func (c *Closer) Close() {}`, a body that is
+//     syntactically pure. Purity of body alone would wave it through; it
+//     fires on the signature, because a method that returns nothing did
+//     not compute anything.
+//   - Registry — every method is pure, but it reaches a package-level VAR.
+//     That is mutable shared state, which is how a method reaches a
+//     singleton. (Package-level CONSTs are allowed, and the data fixture
+//     above uses one.)
+func TestLintDepsAreInterfaces_CollaboratorsDoNotEscapeAsData(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/app\n\ngo 1.24\n"))
+
+	// Deliberately the most config-looking location available: package
+	// `config`, under internal/config, with a type named like settings.
+	cfgDir := filepath.Join(tmp, "internal", "config")
+	must(t, mkdirAll(cfgDir))
+	must(t, writeFile(filepath.Join(cfgDir, "config.go"), `package config
+
+import "context"
+
+var sharedPool = map[string]string{}
+
+// Repo is a repository wearing config's clothes: config-shaped name, in
+// the config package. It must still fire.
+type Repo struct{ dsn string }
+
+func (r *Repo) Save(ctx context.Context, id string) error { return nil }
+
+// Cache passes every signature test — a value in, a value out, no ctx, no
+// error — and fails on the body: it calls through one of its own fields.
+type Cache struct{ backing *Repo }
+
+func (c *Cache) Lookup(key string) string {
+	_ = c.backing.Save(context.Background(), key)
+	return key
+}
+
+// Client mixes a genuinely pure accessor with a real operation. Data is a
+// property of the whole type, so BaseURL cannot vouch for Do.
+type Client struct{ base string }
+
+func (c *Client) BaseURL() string                        { return c.base }
+func (c *Client) Do(ctx context.Context, p string) error { return nil }
+
+// Closer is a STUB. Its body is syntactically pure; it is plainly a
+// collaborator's method, and the signature is what says so.
+type Closer struct{ name string }
+
+func (c *Closer) Close() {}
+
+// Registry's methods are pure in body shape but read package-level VAR
+// state — how a method reaches a shared singleton.
+type Registry struct{ prefix string }
+
+func (r *Registry) Resolve(k string) string { return sharedPool[r.prefix+k] }
+`))
+
+	appDir := filepath.Join(tmp, "internal", "orders")
+	must(t, mkdirAll(appDir))
+	must(t, writeFile(filepath.Join(appDir, "contract.go"), `package orders
+
+type Service interface{ Do() error }
+`))
+	must(t, writeFile(filepath.Join(appDir, "service.go"), `package orders
+
+import "example.com/app/internal/config"
+
+type Deps struct {
+	Repo     *config.Repo     // config-shaped name and path — still fires
+	Cache    *config.Cache    // accessor-shaped signature, calls through a field
+	Client   *config.Client   // one pure getter cannot vouch for the type
+	Closer   *config.Closer   // pure BODY, but returns nothing
+	Registry *config.Registry // reads package-level var state
+}
+
+type service struct{ deps Deps }
+
+func New(d Deps) Service { return &service{deps: d} }
+`))
+
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleDepsAreInterfaces}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleDepsAreInterfaces))
+	if len(got) != 5 {
+		t.Fatalf("every collaborator shape must still fire — the data exemption is a "+
+			"discriminator, not an escape hatch. expected 5, got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
+	}
+	var joined string
+	for _, f := range got {
+		joined += f.Message + "\n"
+	}
+	for _, want := range []string{`"Repo"`, `"Cache"`, `"Client"`, `"Closer"`, `"Registry"`} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expected a finding for %s; got:\n%s", want, joined)
+		}
 	}
 }

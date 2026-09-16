@@ -44,17 +44,32 @@ func versionFromFile(raw string) string {
 	return v
 }
 
-// withDevFloorSuffix marks a VERSION-file-derived floor as identifying a dev
-// build AT that version rather than the clean release tag itself — a
-// workspace/devel build is source somewhere at or after the release VERSION
-// names, never the exact release. Mirrors markDirty's "+dirty" convention:
-// build metadata, not a pre-release, so semver ordering still treats it as
-// this release while IsDevVersion's "+" check flags it as non-tag identity.
-func withDevFloorSuffix(v string) string {
-	if v == "" || strings.Contains(v, "+") {
+// unknownDevAfter renders "an unidentified build of some commit after release
+// v" — the last-resort floor, used only when the git derivation could not run.
+//
+// It is a PRE-RELEASE of the next patch (`v0.1.15` -> `v0.1.16-0.dev`), not
+// build metadata on the release itself. That is the whole point: semver
+// ignores build metadata, so the old `v0.1.15+dev` spelling compared equal to
+// the release and let an older binary overwrite a newer build's vendored
+// output. This spelling sorts strictly after v0.1.15 and strictly before
+// v0.1.16, which is exactly what is known about it.
+//
+// The `+unknown` build metadata is load-bearing, not decoration. Without it
+// the string is `v0.1.16-0.dev`, a perfectly valid semver prerelease that
+// installableVersionRE MATCHES — so InstallableVersion would hand it back and
+// a scaffold would pin a version no proxy can resolve. With it, that regex
+// rejects it (it allows no "+") and IsDevVersion reports true (it keys on
+// "+"), while semver.Compare ignores build metadata entirely and so still
+// orders it strictly after v0.1.15 and strictly before v0.1.16.
+func unknownDevAfter(v string) string {
+	if v == "" || strings.Contains(v, "+") || strings.Contains(v, "-") {
 		return v
 	}
-	return v + "+dev"
+	next := nextPatch(v)
+	if next == "" {
+		return v
+	}
+	return next + "-0.dev+unknown"
 }
 
 // forgeModulePath is the go.mod module path identifying a genuine forge
@@ -262,19 +277,34 @@ func versionFromInfo(info *debug.BuildInfo, stamped string) string {
 	return versionFloor(stamped)
 }
 
-// versionFloor supplies the VERSION-file tier: when neither ldflags nor build
-// info could name a real version, fall back to the last released tag rather
-// than the bare "dev" sentinel — this is the go.work embedded case (forge
-// dep reads "(devel)", no module-cache version to read at all). The floor is
-// marked "+dev" so it never masquerades as the clean release tag itself:
-// IsDevVersion and IsDevBuild must keep calling this a dev build, and
-// InstallableVersion must keep returning "" for it — the file states a
-// RELEASED version, but a workspace build is source at or after it, not
-// that exact release. A missing/malformed VERSION file degrades to
-// returning stamped unchanged, never panics.
+// versionFloor answers "what version is this build?" when neither ldflags nor
+// build info could say — in practice only the go.work embedded case, where
+// forge is a dep of a host binary at "(devel)" and the vcs.* settings
+// describe the HOST's tree.
+//
+// Tier 1 is the truth: derive the real pseudo-version from the forge checkout
+// this binary was compiled from (see gitversion.go).
+//
+// Tier 2 is the embedded VERSION file, and it is now a LAST resort that
+// deliberately sorts AFTER the release it names. It used to be tier 1 and to
+// read `v0.1.15+dev` — the last released version plus build metadata — which
+// semver compares EQUAL to a released v0.1.15. Source is arbitrarily far
+// ahead of its last release, so that equality was false, and kclvendor's
+// downgrade guard allows an equal-version overwrite: a workspace build of
+// main carrying forge#202 and a released binary without it were
+// indistinguishable, and #202's RBAC fix came one `forge generate` away from
+// being silently reverted in control-plane. `v0.1.16-0.dev` instead orders
+// after v0.1.15 and before v0.1.16, which is the honest claim — "some commit
+// after that release" — and makes the guard refuse instead of shrug.
+//
+// A missing or malformed VERSION file degrades to returning stamped
+// unchanged, never panics.
 func versionFloor(stamped string) string {
+	if v := gitVersion(); v != "" {
+		return v
+	}
 	if v := versionFromFile(embeddedVersionFile); v != "" {
-		return withDevFloorSuffix(v)
+		return unknownDevAfter(v)
 	}
 	return stamped
 }

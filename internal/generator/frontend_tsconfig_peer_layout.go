@@ -11,27 +11,73 @@ import (
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
-// Retargeting a frontend's tsconfig peer pins at the node_modules layout the
-// project ACTUALLY has, after an install has decided that layout.
+// Deciding WHICH node_modules a frontend's tsconfig peer pins must name.
 //
-// WHY THIS LIVES HERE AND NOT ONLY IN THE GENERATE PIPELINE. `forge generate`
-// runs the same reconcile, but the `forge scaffold frontend` verb finishes
-// with an `npm install` — and that install is what decides the layout. The
-// tsconfig it wrote moments earlier had to guess. When the project is an npm
-// workspace (forge's dev bridge makes it one) npm hoists the dependencies to
-// the project root and creates no frontends/<name>/node_modules at all, so the
-// pins name a directory that does not exist.
+// A `paths` value for a non-wildcard key must hold EXACTLY ONE element — SWC
+// asserts that rule and panics `next build` on anything longer (measured; see
+// webruntimepeers). So forge cannot list both layouts and let the toolchain
+// choose: it has to name the one this project actually has, which makes this a
+// decision procedure rather than a lookup.
 //
-// A pin that resolves to nothing is not an error tsc reports. It silently
-// no-ops, resolution falls back to the ordinary upward walk, and that finds
-// the LINKED runtime's own private copy of @connectrpc/connect first:
+// # The two layouts, and what each pin does in each
 //
-//	src/lib/mock-transport_gen.ts(54,3): error TS2322: Type
+// Measured end-to-end against control-plane's internal-console, both `tsc
+// --noEmit` and `next build`:
+//
+//	layout                     "./node_modules/…"   "../../node_modules/…"
+//	standalone (npm ci here)   green                green (pin dangles, inert)
+//	workspace (hoisted root)   TS2322               green
+//
+// The asymmetry is the whole design. A pin that names a directory holding the
+// package is right; a pin that names a directory that does not exist is not an
+// error tsc reports — it silently no-ops and resolution falls back to the
+// ordinary upward walk. In a standalone project that walk finds the one real
+// copy and nothing is harmed. In a BRIDGED project it finds the linked
+// runtime's own private copy first, and two physically distinct installs are
+// two distinct types:
+//
+//	src/lib/mock-transport_gen.ts(158,5): error TS2322: Type
 //	'…/forge/web-runtime/node_modules/@connectrpc/connect/…'.Transport is not
 //	assignable to type '…/<project>/node_modules/@connectrpc/connect/…'.Transport
 //
-// So a freshly added frontend failed its very first `tsc --noEmit`, before the
-// user had a chance to run generate again.
+// So "hoisted" is the answer that is merely redundant when wrong, and "local"
+// is the answer that breaks a build when wrong.
+//
+// # Why this returns a KNOWN flag instead of just a bool
+//
+// tsconfig.json is generated AND COMMITTED, and consumers re-run `forge
+// generate` in CI and fail the build on any diff. A decision that reads
+// untracked state therefore generates one file on a developer's machine and a
+// different one on a runner, from the same commit.
+//
+// That is not hypothetical, and forge shipped it: control-plane's root
+// package.json IS forge's own dev web-runtime bridge (frontend_webruntime_devlink.go)
+// and is GITIGNORED by construction, while node_modules is a build artifact
+// absent from a fresh checkout. A maintainer's tree has both, so the probe
+// answered "hoisted" and the committed pins say "../../node_modules/…". A CI
+// checkout has NEITHER, so the same probe answered "local" and rewrote all 14
+// pins to "./node_modules/…" — turning Verify Generated Code red on a file
+// nobody had touched, on a clean clone of main.
+//
+// Reading only tracked files does not rescue it either, and this is the part
+// worth stating plainly: from tracked files alone a bridged project is
+// INDISTINGUISHABLE from a standalone one. control-plane's tracked evidence —
+// a per-frontend package.json naming the registry range "^0.3.1", a
+// per-frontend package-lock.json, no root manifest — is exactly what a plain
+// standalone project looks like. The signal that says otherwise is ignored on
+// purpose, so no amount of preferring tracked inputs can recover it.
+//
+// The resolution is to stop forcing an answer. When the evidence identifies a
+// layout, forge retargets and heals a stale pin. When it does not, forge
+// leaves the committed value alone: that value is itself a tracked, reviewed
+// declaration of the layout, and respecting it makes generate a fixed point in
+// every environment. Silence is a third state, not a vote for the default.
+type PinLayout struct {
+	// Hoisted is meaningful only when Known; false otherwise.
+	Hoisted bool
+	// Known reports whether the evidence identified a layout at all.
+	Known bool
+}
 
 // tsconfigPinEntryRe matches a single-element `paths` mapping for pkg,
 // capturing the key-and-bracket prefix, the bare path value, and the closing
@@ -41,9 +87,10 @@ func tsconfigPinEntryRe(pkg string) *regexp.Regexp {
 }
 
 // ReconcileFrontendTsconfigPeers retargets every frontend's tsconfig peer pins
-// to the node_modules layout now on disk. Best-effort and non-fatal: a missing
-// or unrecognised tsconfig is skipped rather than failed, and a file already
-// correct is left byte-identical so a re-run reports nothing.
+// to the node_modules layout this project is known to have. Best-effort and
+// non-fatal: a missing or unrecognised tsconfig is skipped rather than failed,
+// a project whose layout cannot be identified is left untouched, and a file
+// already correct is left byte-identical so a re-run reports nothing.
 func ReconcileFrontendTsconfigPeers(projectDir string) {
 	entries, err := os.ReadDir(filepath.Join(projectDir, "frontends"))
 	if err != nil {
@@ -55,8 +102,13 @@ func ReconcileFrontendTsconfigPeers(projectDir string) {
 			continue
 		}
 		feDir := filepath.Join(projectDir, "frontends", entry.Name())
-		path := filepath.Join(feDir, "tsconfig.json")
-		if retargetTsconfigPins(path, frontendPinsAreHoisted(projectDir, feDir)) {
+		layout := DetectFrontendPinLayout(projectDir, feDir)
+		if !layout.Known {
+			// Nothing here identifies a layout. The committed pins are the
+			// only statement of one that exists, so they stand.
+			continue
+		}
+		if retargetTsconfigPins(filepath.Join(feDir, "tsconfig.json"), layout.Hoisted) {
 			touched = append(touched, entry.Name())
 		}
 	}
@@ -71,32 +123,51 @@ func ReconcileFrontendTsconfigPeers(projectDir string) {
 // runtime, so it is present in every real install.
 const pinLayoutProbe = "@connectrpc/connect"
 
-// frontendPinsAreHoisted reports whether feDir's PEER dependencies resolve
-// from the project root rather than the frontend's own node_modules.
+// DetectFrontendPinLayout reports which node_modules feDir's PEER dependencies
+// resolve from, and whether that could be determined at all.
 //
-// The question is asked about a specific package, not about the existence of a
-// node_modules DIRECTORY, and that distinction is the whole fix. An npm
-// workspace routinely leaves a frontend with a partial node_modules holding
-// only the packages that could not be hoisted — a vite-spa frontend gets
-// esbuild and vite locally while @connectrpc/connect and @bufbuild/protobuf
-// live at the root. Treating "the directory exists" as "the deps are here"
-// pinned those peers at a directory that does not contain them; the pin then
-// resolved to nothing, tsc fell back to the ordinary walk, and it bound the
-// linked runtime's own copy — TS2322, in a frontend that had just been added.
+// The signals are consulted strongest-first, and every one of them is a
+// POSITIVE identification — none of them is a default. Running out of signals
+// yields Known=false, which callers must treat as "leave the committed pins
+// alone", never as "local".
 //
-// A genuine nested copy still wins, because node resolution prefers the
-// nearest.
-func frontendPinsAreHoisted(projectDir, feDir string) bool {
+// A real nested copy is consulted FIRST because it is not an opinion about
+// what npm will do, it is where the module resolver will actually land. After
+// that a workspace declaration outranks a hoisted install, because it states
+// what npm WILL do regardless of when anybody last ran an install.
+func DetectFrontendPinLayout(projectDir, feDir string) PinLayout {
 	probe := filepath.FromSlash(pinLayoutProbe)
+
+	// A genuine nested copy of the PACKAGE outranks everything, including a
+	// workspace declaration: node resolution prefers the nearest node_modules,
+	// so whatever the root says, this is the copy that wins at runtime and the
+	// pin must name it.
+	//
+	// Probed for the package rather than for a node_modules DIRECTORY. npm
+	// hoists what it can and leaves behind only what it cannot, so a workspace
+	// frontend routinely holds vite and esbuild locally while the peers live
+	// at the root; "the directory exists" is true there and "the peers are
+	// here" is false, and pinning at a directory that lacks the package is the
+	// dangling pin that resolves to nothing.
 	if isDir(filepath.Join(feDir, "node_modules", probe)) {
-		return false // really installed here — nearest wins
+		return PinLayout{Hoisted: false, Known: true}
+	}
+	// An npm workspace root covering frontends/* — forge's own dev bridge
+	// writes one, and a user may have their own. Either way npm hoists.
+	if rootDeclaresFrontendWorkspace(projectDir) {
+		return PinLayout{Hoisted: true, Known: true}
+	}
+	// The frontend's own manifest resolving the runtime through a parent
+	// workspace says the same thing from the other side.
+	if frontendDeclaresWorkspaceMember(feDir) {
+		return PinLayout{Hoisted: true, Known: true}
 	}
 	if isDir(filepath.Join(projectDir, "node_modules", probe)) {
-		return true // hoisted to the root, where the pin must point
+		return PinLayout{Hoisted: true, Known: true}
 	}
-	// Nothing installed yet either way: believe the declaration, since a
-	// workspace root means npm WILL hoist once someone installs.
-	return rootDeclaresFrontendWorkspace(projectDir)
+	// Nothing installed and nothing declared — most commonly a fresh clone on
+	// a CI runner, which is precisely where a guess does the damage.
+	return PinLayout{}
 }
 
 // rootDeclaresFrontendWorkspace reports whether the project root's
@@ -110,10 +181,45 @@ func rootDeclaresFrontendWorkspace(projectDir string) bool {
 		Workspaces []string `json:"workspaces"`
 	}
 	if err := json.Unmarshal(body, &manifest); err != nil {
+		// The object form ({"packages": [...]}) fails this decode. Fall
+		// through rather than guess at a shape forge did not write.
 		return false
 	}
 	for _, pattern := range manifest.Workspaces {
 		if strings.HasPrefix(pattern, "frontends/") {
+			return true
+		}
+	}
+	return false
+}
+
+// frontendDeclaresWorkspaceMember reports whether the frontend's own
+// package.json shows it resolving the web runtime through a parent workspace,
+// by carrying it as a `workspace:`-protocol or `file:`-linked dependency.
+//
+// Both spellings mean "supplied by something above me", which is the hoisted
+// layout. A plain semver range means the opposite and is deliberately not
+// matched: that is what control-plane's tracked manifest carries while its
+// workspace root sits gitignored beside it, and reading it as evidence either
+// way is what made the answer differ between a developer's tree and CI.
+func frontendDeclaresWorkspaceMember(feDir string) bool {
+	body, err := os.ReadFile(filepath.Join(feDir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var manifest struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return false
+	}
+	for _, deps := range []map[string]string{manifest.Dependencies, manifest.DevDependencies} {
+		constraint, ok := deps[WebRuntimePackage]
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(constraint, "workspace:") || strings.HasPrefix(constraint, "file:") {
 			return true
 		}
 	}

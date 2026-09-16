@@ -384,21 +384,53 @@ func TestMaterialize_RefusesDowngrade(t *testing.T) {
 		}
 	})
 
-	// Unorderable versions are a coin flip, and a guard that fires on a
-	// coin flip gets disabled by everyone. Equal versions are the normal
-	// refresh. Neither may refuse.
+	// An EQUAL version is the normal refresh and must never refuse.
+	t.Run("same version is not refused", func(t *testing.T) {
+		dir := stampedNewer(t, buildinfo.Version())
+		if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
+			t.Fatalf("drift a source file: %v", err)
+		}
+		if _, err := Materialize(dir, false); err != nil {
+			t.Fatalf("Materialize() = %v, want nil for an equal-version refresh", err)
+		}
+	})
+
+	// UNORDERABLE now refuses. This reverses a previous decision, so the
+	// reasoning belongs here: the old rule was "a guard that fires on a coin
+	// flip gets disabled by everyone", which held while unorderable meant the
+	// bare "dev" sentinel that every contributor build produced. buildinfo
+	// now derives a real pseudo-version for dev and workspace builds, so
+	// unorderable means something genuinely unexpected — a hand-edited stamp,
+	// or a forge predating derivation — and proceeding on "I cannot tell" is
+	// how a project's deploy-tier KCL schemas were deleted by a routine
+	// generate, surfacing much later as an unknown-schema render error.
 	for name, stamp := range map[string]string{
 		"unorderable stamp": "(devel)",
 		"hand-edited stamp": "not-a-version",
-		"same version":      buildinfo.Version(),
 	} {
-		t.Run(name+" is not refused", func(t *testing.T) {
+		t.Run(name+" is refused", func(t *testing.T) {
 			dir := stampedNewer(t, stamp)
 			if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
 				t.Fatalf("drift a source file: %v", err)
 			}
-			if _, err := Materialize(dir, false); err != nil {
-				t.Fatalf("Materialize() = %v, want nil (stamp %q must not trigger a refusal)", err, stamp)
+			_, err := Materialize(dir, false)
+			if err == nil {
+				t.Fatalf("Materialize() = nil, want a refusal for unorderable stamp %q", stamp)
+			}
+			var de *DowngradeError
+			if !errors.As(err, &de) {
+				t.Fatalf("error is %T, want *DowngradeError: %v", err, err)
+			}
+			if !de.Unorderable {
+				t.Error("refusal must be marked Unorderable — the prose differs, since there is nothing to upgrade TO")
+			}
+			if !strings.Contains(err.Error(), "--allow-kcl-downgrade") {
+				t.Errorf("refusal must name the escape hatch, got:\n%v", err)
+			}
+
+			// And the escape hatch must actually work, or the guard is a wall.
+			if _, err := Materialize(dir, true); err != nil {
+				t.Fatalf("Materialize(allowDowngrade=true) = %v, want nil", err)
 			}
 		})
 	}

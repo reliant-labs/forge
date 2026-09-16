@@ -325,9 +325,27 @@ type DowngradeError struct {
 	Running string
 	// ProjectDir is the project whose vendor dir was protected.
 	ProjectDir string
+	// Unorderable marks the refusal as "could not compare" rather than
+	// "provably older" — the two need different prose, because in the
+	// unorderable case there is nothing to upgrade TO.
+	Unorderable bool
 }
 
 func (e *DowngradeError) Error() string {
+	if e.Unorderable {
+		return fmt.Sprintf(
+			"refusing to overwrite %s/ — cannot tell which forge is newer.\n"+
+				"    on disk:  %s  (wrote %s/)\n"+
+				"    running:  %s  (this binary)\n"+
+				"  One of these is not a comparable version, so refreshing might replace the\n"+
+				"  project's KCL schemas with an older or unrelated copy. Overwriting on\n"+
+				"  \"cannot tell\" is how a project's deploy-tier schemas were silently deleted\n"+
+				"  by a routine generate, with the failure surfacing later as an unknown-schema\n"+
+				"  error in `env render`.\n"+
+				"  Fix: run the forge that vendored it, or if replacing it is deliberate:\n"+
+				"    forge generate --allow-kcl-downgrade",
+			VendorDirName, e.Stamped, VendorDirName, e.Running)
+	}
 	upgrade := "go install github.com/reliant-labs/forge/cmd/forge@" + e.Stamped
 	if buildinfo.IsDevVersion(e.Stamped) {
 		// A `+dirty`/workspace stamp names no ref any proxy can serve,
@@ -356,10 +374,19 @@ func (e *DowngradeError) Error() string {
 //
 //   - no vendor dir, or no stamp: nothing to protect (and an unstamped
 //     copy predates stamping entirely, so a refresh is the whole point).
-//   - either version unorderable by semver (the "dev" sentinel,
-//     "(devel)", a hand-edited stamp): comparison would be a coin flip,
-//     and a guard that fires on a coin flip gets disabled by everyone.
 //   - equal or newer: the normal refresh path.
+//
+// NOT on the nil list any more: a version that cannot be ordered. That used
+// to return nil — "comparison would be a coin flip, and a guard that fires on
+// a coin flip gets disabled by everyone" — and the reasoning was sound while
+// unorderable meant the bare "dev" sentinel. It no longer does: buildinfo now
+// derives a real pseudo-version for dev and workspace builds, so an
+// unorderable version means something genuinely unexpected (a hand-edited
+// stamp, a version from a forge that predates derivation). Allowing an
+// overwrite on "I cannot tell" is how ~880 lines of a project'"'"'s deploy-tier
+// KCL got deleted by a routine generate. It now refuses and names
+// --allow-kcl-downgrade, which is the same escape hatch a deliberate
+// downgrade already uses.
 //
 // Build metadata is stripped before comparing: `v0.1.12+dirty` and
 // `v0.1.12` are the same source vintage, and semver.Compare already
@@ -380,7 +407,8 @@ func checkDowngrade(projectDir string) error {
 		return nil
 	}
 	if !semver.IsValid(stamped) || !semver.IsValid(running) {
-		return nil
+		// Cannot order them: fail closed. See the nil-list note above.
+		return &DowngradeError{Stamped: stamped, Running: running, ProjectDir: projectDir, Unorderable: true}
 	}
 	if semver.Compare(running, stamped) >= 0 {
 		return nil

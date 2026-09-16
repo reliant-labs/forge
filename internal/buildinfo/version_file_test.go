@@ -2,6 +2,7 @@ package buildinfo
 
 import (
 	"bytes"
+	"golang.org/x/mod/semver"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -20,17 +21,46 @@ func workspaceEmbeddedInfo() *debug.BuildInfo {
 	}
 }
 
-// TestVersionFromInfo_WorkspaceEmbeddedFallsBackToVersionFileFloor pins the
-// fix for the go.work embedding defect. Before the fix this fell all the way
-// through to the bare "dev" sentinel, which upgrade.go then used as a
-// meaningless upgrade target and bumpForgeVersion refused to pin.
-func TestVersionFromInfo_WorkspaceEmbeddedFallsBackToVersionFileFloor(t *testing.T) {
+// TestVersionFromInfo_WorkspaceEmbeddedPrefersTheGitDerivedVersion: in the
+// go.work embedded shape (forge is a dep at "(devel)"), the answer comes from
+// the forge checkout this binary was compiled from — a real pseudo-version
+// naming a real commit.
+//
+// The ordering assertion is the point. The VERSION file states the last
+// RELEASE; source is arbitrarily far ahead of it, so a truthful version must
+// sort strictly AFTER that release. The floor this replaced sorted EQUAL to
+// it, which is what let a released binary overwrite a newer build's vendored
+// KCL (see versionFloor's comment).
+func TestVersionFromInfo_WorkspaceEmbeddedPrefersTheGitDerivedVersion(t *testing.T) {
+	got := versionFromInfo(workspaceEmbeddedInfo(), "dev")
+
+	if got == "dev" || got == "(devel)" {
+		t.Fatalf("versionFromInfo = %q, want a derived version, not a sentinel", got)
+	}
+	release := versionFromFile(embeddedVersionFile)
+	if release != "" && semver.Compare(got, release) <= 0 {
+		t.Errorf("versionFromInfo = %q, which does not sort after the last release %q — "+
+			"a build of source ahead of a release must not compare equal or older to it",
+			got, release)
+	}
+	if !IsDevVersion(got) {
+		t.Errorf("versionFromInfo = %q must still read as a dev version", got)
+	}
+}
+
+// TestVersionFromInfo_WorkspaceEmbeddedFallsBackToFloorWithoutGit: when the
+// checkout cannot be reached, the last-resort floor still has to order
+// correctly rather than claim the release itself.
+func TestVersionFromInfo_WorkspaceEmbeddedFallsBackToFloorWithoutGit(t *testing.T) {
+	SetGitVersion("")
+	t.Cleanup(ClearGitVersion)
+
 	got := versionFromInfo(workspaceEmbeddedInfo(), "dev")
 
 	if got == "dev" {
 		t.Fatalf("versionFromInfo = %q, want the VERSION file floor, not the bare dev sentinel", got)
 	}
-	want := withDevFloorSuffix(versionFromFile(embeddedVersionFile))
+	want := unknownDevAfter(versionFromFile(embeddedVersionFile))
 	if got != want {
 		t.Errorf("versionFromInfo = %q, want the embedded VERSION file marked as a dev build: %q", got, want)
 	}
@@ -90,12 +120,15 @@ func TestInstallableVersion_WorkspaceFloorStaysUninstallable(t *testing.T) {
 // Build.String()/Describe() path (identity.go's buildFrom), the other
 // consumer of the same "(devel)" dep shape.
 func TestBuildFrom_WorkspaceEmbeddedUsesVersionFloorAndStaysHonest(t *testing.T) {
+	SetGitVersion("")
+	t.Cleanup(ClearGitVersion)
+
 	b := buildFrom(workspaceEmbeddedInfo(), "", "")
 
 	if b.Version == "(devel)" {
 		t.Fatalf("Build.Version = %q, want the VERSION file floor, not the raw (devel) marker", b.Version)
 	}
-	want := withDevFloorSuffix(versionFromFile(embeddedVersionFile))
+	want := unknownDevAfter(versionFromFile(embeddedVersionFile))
 	if b.Version != want {
 		t.Errorf("Build.Version = %q, want %q", b.Version, want)
 	}
@@ -132,17 +165,45 @@ func TestVersionFromFile(t *testing.T) {
 	}
 }
 
-// TestWithDevFloorSuffix pins the "+dev" marking convention: it must never
-// double up on existing build metadata, and must leave "" alone.
-func TestWithDevFloorSuffix(t *testing.T) {
+// TestUnknownDevAfter pins the last-resort floor's THREE required properties,
+// each of which a previous spelling got wrong:
+//
+//  1. it sorts strictly AFTER the release it is derived from. `v0.1.1+dev`
+//     did not — semver ignores build metadata, so it compared EQUAL, and an
+//     older released binary was therefore allowed to overwrite a newer
+//     workspace build's vendored KCL.
+//  2. it sorts strictly BEFORE the next release, since that is all that is
+//     known: "some commit after v0.1.1".
+//  3. it is NOT installable. `v0.1.16-0.dev` alone is a valid semver
+//     prerelease that installableVersionRE matches, which would put an
+//     unresolvable version into a scaffold's go.mod — hence `+unknown`.
+func TestUnknownDevAfter(t *testing.T) {
+	got := unknownDevAfter("v0.1.1")
+	if got != "v0.1.2-0.dev+unknown" {
+		t.Fatalf("unknownDevAfter(v0.1.1) = %q, want v0.1.2-0.dev+unknown", got)
+	}
+	if semver.Compare(got, "v0.1.1") <= 0 {
+		t.Errorf("%q must sort AFTER v0.1.1", got)
+	}
+	if semver.Compare(got, "v0.1.2") >= 0 {
+		t.Errorf("%q must sort BEFORE v0.1.2", got)
+	}
+	if installableVersionRE.MatchString(got) {
+		t.Errorf("%q must not match the installable-ref pattern", got)
+	}
+	if !IsDevVersion(got) {
+		t.Errorf("%q must read as a dev version", got)
+	}
+
+	// Idempotent / defensive: already-marked or non-plain inputs pass through.
 	cases := []struct{ in, want string }{
-		{"v0.1.1", "v0.1.1+dev"},
 		{"", ""},
 		{"v0.1.1+dirty", "v0.1.1+dirty"},
+		{"v0.1.2-0.dev+unknown", "v0.1.2-0.dev+unknown"},
 	}
 	for _, c := range cases {
-		if got := withDevFloorSuffix(c.in); got != c.want {
-			t.Errorf("withDevFloorSuffix(%q) = %q, want %q", c.in, got, c.want)
+		if got := unknownDevAfter(c.in); got != c.want {
+			t.Errorf("unknownDevAfter(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

@@ -71,8 +71,10 @@ assert_cron_schedule = _cron.spec.schedule == "@hourly"
 # which rendered an unscheduled Deployment nobody ever addressed.
 assert_tool_no_deployment = len([m for m in manifests if m.metadata.name == "proxy"]) == 0
 
-# operator -> manager Deployment + cluster-scoped RBAC (ClusterRole).
-assert_operator_clusterrole = len([m for m in manifests if m.kind == "ClusterRole" and m.metadata.name == "controller-clusterrole"]) == 1
+# operator -> manager Deployment + cluster-scoped RBAC (ClusterRole). The name
+# carries the namespace because the object is cluster-scoped while its
+# binding's subject is per-env — see render_cluster_rbac in lib/rbac.k.
+assert_operator_clusterrole = len([m for m in manifests if m.kind == "ClusterRole" and m.metadata.name == "controller-demo-dev-clusterrole"]) == 1
 _op_deploy = [m for m in manifests if m.kind == "Deployment" and m.metadata.name == "controller"][0]
 assert_operator_service_account = _op_deploy.spec.template.spec.serviceAccountName == "controller"
 
@@ -93,7 +95,7 @@ assert_no_token_automount = len(_workload_sas) > 0 and \
 # ...and none of them ships a Role granting blanket access to Secrets.
 # A Role that reads every Secret in the namespace, bound to a workload
 # that never calls the API, is pure blast radius dressed as security.
-_workload_roles = [m for m in manifests if m.kind in ["Role", "ClusterRole"] and m.metadata.name != "controller-clusterrole"]
+_workload_roles = [m for m in manifests if m.kind in ["Role", "ClusterRole"] and m.metadata.name != "controller-demo-dev-clusterrole"]
 _secret_grants = [m for m in _workload_roles if len([r for r in m.rules if "secrets" in r.resources]) > 0]
 assert_no_blanket_secret_reads = len(_secret_grants) == 0
 

@@ -121,10 +121,14 @@ _svc_ports = _svcs["workspace-controller"].spec.ports
 assert_svc_port_9191 = _svc_ports[0].port == 9191 and _svc_ports[0].targetPort == 9191
 
 # ── (c) cluster RBAC: ClusterRole + ClusterRoleBinding, right name ──
-# The name MUST be `workspace-controller-clusterrole` — control-plane's
-# admin-server rebind (lib/rbac.k) binds that exact name to the admin SA.
-assert_clusterrole_exists = "workspace-controller-clusterrole" in _cluster_roles
-_cr = _cluster_roles["workspace-controller-clusterrole"]
+# The name CARRIES THE NAMESPACE, and that is load-bearing: these two objects
+# are cluster-scoped (one name per cluster) while the binding's subject is the
+# deploying env's namespace, so an env-invariant name makes every env in a
+# shared cluster write the same object and the last one wins. See the rationale
+# on render_cluster_rbac in lib/rbac.k — this exact collision was observed
+# twice in control-plane's k3d cluster.
+assert_clusterrole_exists = "workspace-controller-control-plane-prod-clusterrole" in _cluster_roles
+_cr = _cluster_roles["workspace-controller-control-plane-prod-clusterrole"]
 # Rules = forge's default config-read rule + the two supplied rules.
 assert_clusterrole_rule_count = len(_cr.rules) == 3
 assert_clusterrole_default_first = _cr.rules[0] == {
@@ -135,10 +139,15 @@ assert_clusterrole_default_first = _cr.rules[0] == {
 assert_clusterrole_crd_rule = _cr.rules[1].apiGroups == ["reliant.dev"] and _cr.rules[1].resources == ["workspaces", "workspaces/status", "workspaces/finalizers"]
 assert_clusterrole_leases_rule = _cr.rules[2].apiGroups == ["coordination.k8s.io"] and _cr.rules[2].resources == ["leases"]
 
-# ClusterRoleBinding binds that ClusterRole to the operator's SA.
-assert_crb_exists = "workspace-controller-clusterrolebinding" in _cluster_role_bindings
-_crb = _cluster_role_bindings["workspace-controller-clusterrolebinding"]
-assert_crb_roleref = _crb.roleRef.kind == "ClusterRole" and _crb.roleRef.name == "workspace-controller-clusterrole"
+# ClusterRoleBinding binds that ClusterRole to the operator's SA. The roleRef
+# must resolve to the SUFFIXED role: a binding pointing at an unsuffixed name
+# would reintroduce the shared singleton through the reference instead of the
+# object, which is the same defect one level down.
+assert_crb_exists = "workspace-controller-control-plane-prod-clusterrolebinding" in _cluster_role_bindings
+_crb = _cluster_role_bindings["workspace-controller-control-plane-prod-clusterrolebinding"]
+assert_crb_roleref = _crb.roleRef.kind == "ClusterRole" and _crb.roleRef.name == "workspace-controller-control-plane-prod-clusterrole"
+# The SERVICE ACCOUNT is deliberately NOT suffixed — it is namespaced already,
+# so (namespace, name) is unique without help and workloads reference it bare.
 assert_crb_subject = _crb.subjects[0] == {kind = "ServiceAccount", name = "workspace-controller", namespace = "control-plane-prod"}
 
 # The operator gets cluster RBAC INSTEAD OF a namespaced Role — the two

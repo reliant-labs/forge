@@ -337,7 +337,78 @@ func InstallableVersion() string {
 	if !installableVersionRE.MatchString(v) {
 		return ""
 	}
+	// SHAPE IS NOT AVAILABILITY. A pseudo-version can be perfectly formed and
+	// name a commit no module proxy will ever serve, and the Go toolchain
+	// hands us exactly that for any build made from a local checkout: since
+	// Go started stamping VCS info, `go build`/`go install ./cmd/forge`
+	// records a pseudo-version for whatever commit is checked out, clean
+	// shape and all.
+	//
+	// This broke every PULL REQUEST build. GitHub checks out an ephemeral
+	// merge commit (refs/pull/N/merge) that exists on no branch, so forge
+	// built in a PR job reported e.g.
+	// v0.0.0-20260916183946-6fbaa5b262be, the scaffolder wrote it into the
+	// test project's go.mod, and `go mod tidy` failed with `invalid version:
+	// unknown revision`. Pushes to main passed, because there the commit is
+	// real and fetchable — which is why this sat unnoticed while the two
+	// scaffold jobs failed on #207, #208, #210 and #213 alike.
+	//
+	// The discriminator is PROVENANCE, not spelling:
+	//
+	//   - an ldflags stamp is a release build asserting its own tag: trust it;
+	//   - build info with NO vcs.* settings means the module came from the
+	//     proxy (`go install ...@version`), so the proxy demonstrably has it;
+	//   - build info WITH vcs.* settings means it was compiled from a working
+	//     tree, and nothing in that tree can prove the commit was pushed.
+	//
+	// The last case is the one to refuse. A build that cannot prove its
+	// availability must pin nothing and be bridged with go.work instead —
+	// which is what unreleasableBuildErr already tells people to do.
+	if !versionCameFromStamp() && builtFromLocalCheckout() {
+		return ""
+	}
 	return v
+}
+
+// versionCameFromStamp reports whether Version() is answering from the
+// ldflags stamp rather than from build info. It mirrors versionFromInfo's
+// first branch, which is the one authority on that precedence.
+func versionCameFromStamp() bool {
+	mu.RLock()
+	v := version
+	mu.RUnlock()
+	return v != "" && v != "dev"
+}
+
+// builtFromLocalCheckout reports whether this binary was compiled from a VCS
+// working tree rather than from a module the proxy served.
+//
+// Any vcs.* setting is sufficient: the go command stamps them only when
+// building from a repository, and a module extracted from the module cache
+// carries none.
+func builtFromLocalCheckout() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	return hasVCSStamps(info)
+}
+
+// hasVCSStamps is the pure decision behind builtFromLocalCheckout, split out
+// because the ambient build info cannot exercise it: `go test` binaries carry
+// no vcs.* settings, so a test reading the real thing can only skip. A `go
+// build`/`go install ./cmd/forge` binary — what CI runs — does carry them:
+//
+//	build vcs.revision=18f7a3511aec136620c1bd598bf661d2ba14a614
+//	build vcs.time=2026-09-16T18:45:07Z
+//	build vcs.modified=true
+func hasVCSStamps(info *debug.BuildInfo) bool {
+	for _, s := range info.Settings {
+		if strings.HasPrefix(s.Key, "vcs.") {
+			return true
+		}
+	}
+	return false
 }
 
 // releaseTagRE matches a clean release tag: vX.Y.Z with an optional

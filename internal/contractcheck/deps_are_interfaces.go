@@ -32,6 +32,7 @@
 //      func(...) ...  (any signature)                                   → ok
 //      interface{}, named interfaces                                    → ok
 //      Logger / Config singletons by field name                         → ok
+//      a struct whose every method is a pure field accessor (DATA)      → ok
 // 3. The `*slog.Logger`-style logger is the one allowed concrete
 //    pointer (loggers are pre-configured singletons; mocking is rare
 //    and hand-rolled). We allow it by matching the field name
@@ -317,17 +318,19 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		if isGeneratedConfigType(field.Type, fileImports) {
 			continue
 		}
-		// A concrete type that declares NO METHODS is data, not a
-		// collaborator, and there is no interface to extract from it —
-		// an interface over zero methods is the empty interface, which
-		// asserts nothing and mocks nothing. This is the same judgement
+		// A concrete type whose every declared method is a PURE ACCESSOR
+		// over its own fields is DATA, not a collaborator. There is
+		// nothing behind it to fake, so the rule's remedy ("declare a
+		// narrow interface naming the methods you call") produces a
+		// wrapper around a map lookup. This is the same judgement
 		// isPrimitiveConfigShape makes about `[]string`, applied to the
 		// struct form: control-plane's `*config.WorkspaceConfig` is a
-		// YAML-deserialized bag of storage defaults and probe shapes with
-		// 173-to-0 odds against it being a repository. Config-on-Deps is a
-		// real design question, and forge-config-deps owns it — this rule
-		// is about behavior you cannot fake.
-		if l.concreteTypeHasNoMethods(field.Type, fileImports) {
+		// YAML-deserialized bag of storage defaults and probe shapes whose
+		// two methods index its own maps, against `*db.PostgresRepository`
+		// with 173 that reach a database. See concreteTypeIsData for what
+		// the syntactic purity test can and cannot see, and which way it
+		// errs when it cannot see.
+		if l.concreteTypeIsData(field.Type, fileImports) {
 			continue
 		}
 		// Report each concrete field separately so users see every
@@ -446,7 +449,7 @@ func isLikelyInterfaceType(expr ast.Expr) bool {
 // mint — one method, one call site — is a wrapper around a value a test
 // replaces in one line with a literal and no mock. That is the same
 // judgement isPrimitiveConfigShape makes about `[]string` and
-// concreteTypeHasNoMethods makes about a data struct: the field is not
+// concreteTypeIsData makes about a data struct: the field is not
 // behaviour you cannot fake.
 //
 // It is also the shape forge itself wires. The Clock/IDGen seam
@@ -644,16 +647,50 @@ func (l *depsLinter) dirForQualifier(qualifier string, imports map[string]string
 	return ""
 }
 
-// concreteTypeHasNoMethods reports whether expr names a type — through an
-// optional pointer — that its own package declares with zero methods.
+// concreteTypeIsData reports whether expr names a type — through an
+// optional pointer — that its own package declares as DATA rather than as a
+// collaborator.
 //
-// Such a type is DATA. There is nothing to put in an interface, so the
-// rule's remedy ("declare a narrow interface naming the methods you call")
-// has no methods to name, and firing would demand a change that cannot be
-// made. It resolves the type for real rather than guessing from the field
-// name, so a `Config`-shaped name over something with 173 methods still
-// fires and a repository never escapes by being called `Settings`.
-func (l *depsLinter) concreteTypeHasNoMethods(expr ast.Expr, imports map[string]string) bool {
+// # Why purity and not a method count
+//
+// The question this rule actually needs answered is not "how many methods"
+// but "is there anything here a test would have to fake". A struct parsed
+// out of YAML that grows two convenience accessors over its OWN fields is
+// still data: an interface over `StorageSizeForTier(string) string` asserts
+// nothing and mocks nothing, and the remedy the finding prescribes produces
+// a wrapper around a map index. Conversely a type with ONE method that
+// opens a connection is a collaborator whatever it is named, and a count
+// threshold would wave it through.
+//
+// The predecessor of this function tested for zero methods, and named
+// control-plane's `*config.WorkspaceConfig` in its own comment as the case
+// it existed to cover. That config then grew two tier-lookup accessors and
+// the exemption stopped covering the case it was written for — which is the
+// evidence that a count was never the distinction.
+//
+// So: T is data when it embeds nothing (an embedded field promotes a whole
+// foreign method set that no declaration in this package can see) and EVERY
+// method it declares is a pure value accessor — accessor-shaped in its
+// signature and pure in its body, see methodIsPureAccessor. A zero-method
+// struct satisfies that vacuously, so the case the old test covered is
+// still covered.
+//
+// # What the syntactic test CANNOT see, and which way it errs
+//
+// It has no type information. It cannot tell that `c.Store.Get(k)` reads a
+// map rather than a database, so it sees a call and refuses. It cannot
+// follow a call into a helper to prove the helper is pure, so it refuses
+// there too. Both answer "collaborator" for something that may be data,
+// and that is the SAFE direction: the author sees a finding on a config
+// struct — the status quo before this exemption existed — rather than a
+// repository slipping past the rule.
+//
+// The unsafe direction, vouching for a real collaborator, requires a type
+// whose every method reads its own fields and calls nothing at all. That is
+// the definition of data, so there is no shape to spoof: a repository
+// cannot escape by being named `Settings`, by declaring few methods, or by
+// living in a package called `config`.
+func (l *depsLinter) concreteTypeIsData(expr ast.Expr, imports map[string]string) bool {
 	if star, ok := expr.(*ast.StarExpr); ok {
 		expr = star.X
 	}
@@ -675,13 +712,224 @@ func (l *depsLinter) concreteTypeHasNoMethods(expr ast.Expr, imports map[string]
 	}
 	// An embedded field PROMOTES the embedded type's whole method set, so
 	// `type Wrapper struct{ *sql.DB }` declares no methods and carries
-	// hundreds. Counting only declarations would wave through exactly the
-	// dep this rule exists to catch, so a struct that embeds anything is
-	// never treated as data.
+	// hundreds. No purity check over this package's own declarations can
+	// see them, so a struct that embeds anything is never data.
 	if decls.embeds[sel.Sel.Name] {
 		return false
 	}
-	return decls.methods[sel.Sel.Name] == 0
+	for _, m := range decls.methods[sel.Sel.Name] {
+		if !l.methodIsPureAccessor(m, decls) {
+			return false
+		}
+	}
+	return true
+}
+
+// methodIsPureAccessor reports whether m is a pure value accessor: a
+// function of the receiver's own fields and its arguments, and nothing
+// else. Both halves must hold — the SIGNATURE says what kind of method
+// this is, the BODY says what it actually does — and either alone has a
+// hole the other closes.
+//
+// The signature alone would vouch for `func (c *Client) BaseURL() string`
+// on a type that also dials; the conjunction over every method on the type
+// (in concreteTypeIsData) is what handles that, since the same Client's
+// `Do(ctx, req) (*Response, error)` fails the signature test.
+//
+// The body alone would vouch for a STUB — `func (c *Conn) Close() {}` is
+// syntactically pure and is plainly a collaborator's method. Nothing in the
+// body distinguishes a method that does no work yet from one that never
+// will, so the signature has to carry that, and it does: Close returns
+// nothing, and a method that computes a value from its own fields and
+// returns none has no purpose but to mutate or to do I/O.
+func (l *depsLinter) methodIsPureAccessor(m methodDecl, decls typeDecls) bool {
+	return methodSignatureIsAccessorShaped(m, decls) && l.methodBodyIsPure(m, decls)
+}
+
+// methodSignatureIsAccessorShaped applies the three signature tests that
+// separate a value lookup from an operation. All must hold:
+//
+//  1. It RETURNS at least one value. A pure computation over the
+//     receiver's fields that yields nothing did nothing; the method is
+//     there to mutate state or to perform an effect. This is the clause
+//     that keeps a stubbed-out `Close()` on the collaborator side.
+//  2. It takes no context.Context. A context is the marker of an
+//     operation that can block or be cancelled — the defining property
+//     of the I/O this rule exists to keep behind an interface.
+//  3. It returns no error. A lookup over your own fields cannot fail: the
+//     miss case returns a default, as both of control-plane's tier
+//     accessors do. An error result means there was something out there
+//     to go wrong with.
+//
+// Each is individually easy to satisfy by accident; the AND of the three,
+// applied to EVERY method on the type, is not. A repository cannot reach
+// this shape while remaining a repository.
+func methodSignatureIsAccessorShaped(m methodDecl, decls typeDecls) bool {
+	if m.sig == nil || m.sig.Results == nil || len(m.sig.Results.List) == 0 {
+		return false
+	}
+	if m.sig.Params != nil {
+		for _, p := range m.sig.Params.List {
+			if isContextType(p.Type, m.imports) {
+				return false
+			}
+		}
+	}
+	for _, r := range m.sig.Results.List {
+		if isErrorType(r.Type, decls) {
+			return false
+		}
+	}
+	return true
+}
+
+// isContextType reports whether expr names context.Context, resolved
+// through the file's import aliases so an aliased import still matches and
+// a local package that happens to be called `context` does not.
+func isContextType(expr ast.Expr, imports map[string]string) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Context" {
+		return false
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return imports[pkgIdent.Name] == "context"
+}
+
+// isErrorType reports whether expr is the universe `error`, or a named
+// type the declaring package itself declares that is not shadowing it.
+// A custom error type is usually returned as `error`; the bare-ident test
+// is what matters, and anything ambiguous is left to the body check.
+func isErrorType(expr ast.Expr, decls typeDecls) bool {
+	id, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return id.Name == "error" && !decls.declared["error"]
+}
+
+// methodBodyIsPure reports whether m's body computes from the receiver's
+// own fields and nothing else.
+//
+// Impure is the default for anything the walk cannot account for. The
+// rejected constructs are the ones that mean "this method does work":
+//
+//   - no body at all (assembly, or //go:linkname) — nothing to inspect
+//   - go / defer / select / channel send or receive
+//   - a call that is neither a builtin nor a type conversion
+//   - a reference to a package-level func or var of the declaring package
+//
+// The CALL is the load-bearing one. `c.pool.Query(q)` and `c.Sizes[tier]`
+// are both rooted at the receiver, and only the call can reach a database,
+// so no attempt is made to distinguish a field that holds data from a field
+// that holds a collaborator — any call through one is impure.
+//
+// A CONVERSION is syntactically a call (`time.Duration(n)`, `string(b)`)
+// and is not one, so callIsPure resolves it: a qualified callee is a
+// conversion when the package it names declares that identifier as a type.
+// Without this, a config that renders a duration would be judged a
+// collaborator — the same false positive this exemption exists to prevent,
+// one refactor later.
+//
+// Package-level CONSTS are allowed; vars are not. A config method's
+// fallback is usually a const in its own package (`return
+// defaultStorageSize`), and a const is a compile-time value with no state
+// to fake. A package-level var is mutable shared state, and reading one is
+// how a method reaches a singleton client.
+func (l *depsLinter) methodBodyIsPure(m methodDecl, decls typeDecls) bool {
+	if m.body == nil {
+		return false
+	}
+	pure := true
+	ast.Inspect(m.body, func(n ast.Node) bool {
+		if !pure {
+			return false
+		}
+		switch t := n.(type) {
+		case *ast.GoStmt, *ast.DeferStmt, *ast.SelectStmt, *ast.SendStmt:
+			pure = false
+		case *ast.UnaryExpr:
+			if t.Op == token.ARROW { // <-ch
+				pure = false
+			}
+		case *ast.CallExpr:
+			if !l.callIsPure(t.Fun, m.imports, decls) {
+				pure = false
+			}
+		case *ast.Ident:
+			// A bare name the declaring package binds to a func or a var
+			// is package state. Locals, params, fields, consts and type
+			// names are not — and a local that SHADOWS a package-level
+			// name is misread as state, which errs toward "collaborator".
+			if decls.funcs[t.Name] || decls.vars[t.Name] {
+				pure = false
+			}
+		}
+		return pure
+	})
+	return pure
+}
+
+// callIsPure reports whether a call expression's callee is something with
+// no behaviour behind it: a Go builtin, or a type conversion.
+func (l *depsLinter) callIsPure(fun ast.Expr, imports map[string]string, decls typeDecls) bool {
+	switch t := fun.(type) {
+	case *ast.ParenExpr:
+		return l.callIsPure(t.X, imports, decls)
+	case *ast.ArrayType, *ast.MapType, *ast.StarExpr, *ast.InterfaceType, *ast.StructType, *ast.ChanType, *ast.FuncType:
+		// `[]byte(s)`, `map[string]string(m)`, `(*T)(p)` — a type literal
+		// in callee position is always a conversion.
+		return true
+	case *ast.Ident:
+		if pureBuiltins[t.Name] || isPredeclaredTypeName(t.Name) {
+			return true
+		}
+		// A type declared by the package under inspection: a conversion.
+		// A func declared there is not, and is rejected by the Ident arm
+		// of methodIsPureFieldAccess as well.
+		return decls.declared[t.Name] && !decls.funcs[t.Name]
+	case *ast.SelectorExpr:
+		// `pkg.X(v)` is a conversion when pkg declares X as a TYPE
+		// (`time.Duration(n)`) and a call when it declares it as a func
+		// (`time.Now()`). Resolve the package and ask — the same
+		// resolution selectorResolvesToInterface already does for `pkg.T`.
+		pkgIdent, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false // a method call on a value: never a conversion
+		}
+		dir := l.dirForQualifier(pkgIdent.Name, imports)
+		if dir == "" {
+			return false // unresolvable, or a method on a local: conservative
+		}
+		other := l.packageTypeDecls(dir)
+		return other.declared[t.Sel.Name] && !other.funcs[t.Sel.Name]
+	}
+	return false
+}
+
+// pureBuiltins are the Go builtins a data accessor may use. Each computes
+// over values already in hand and reaches nothing outside the call.
+var pureBuiltins = map[string]bool{
+	"len": true, "cap": true, "append": true, "copy": true,
+	"make": true, "new": true, "delete": true, "clear": true,
+	"min": true, "max": true,
+	"complex": true, "real": true, "imag": true,
+}
+
+// isPredeclaredTypeName reports whether name is a universe-block type, so
+// `string(b)` / `int64(n)` in callee position read as conversions rather
+// than as calls.
+func isPredeclaredTypeName(name string) bool {
+	switch name {
+	case "string", "bool", "error", "any",
+		"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte", "rune",
+		"float32", "float64", "complex64", "complex128":
+		return true
+	}
+	return false
 }
 
 // packageName returns the package clause of dir's first parseable non-test
@@ -768,15 +1016,35 @@ func (l *depsLinter) packageInterfaces(dir string) map[string]bool {
 }
 
 // typeDecls is what one package directory tells the rule about its own
-// type names: which are interfaces, which it declares at all, and how many
+// type names: which are interfaces, which it declares at all, and the
 // methods each declared type carries.
 type typeDecls struct {
 	interfaces map[string]bool
 	declared   map[string]bool
-	methods    map[string]int
+	// methods maps a declared type name to the methods declared on it here,
+	// each carrying enough context to judge its purity.
+	methods map[string][]methodDecl
 	// embeds marks struct types with at least one anonymous field, whose
-	// promoted method set no declaration count can see.
+	// promoted method set no declaration in this package can see.
 	embeds map[string]bool
+	// funcs and vars are the package's top-level function and variable
+	// names. A method body that names one is reaching beyond its own
+	// fields. Consts are deliberately absent: a const is a compile-time
+	// value with no state to fake, and a config accessor's fallback is
+	// routinely one.
+	funcs map[string]bool
+	vars  map[string]bool
+}
+
+// methodDecl is one method declared on a type, carried with the import
+// aliases of the FILE it was declared in so a qualified name in its body
+// resolves against the right import set. Methods on one type can be spread
+// across files with different imports.
+type methodDecl struct {
+	name    string
+	sig     *ast.FuncType
+	body    *ast.BlockStmt
+	imports map[string]string
 }
 
 // packageTypeDecls parses dir's non-test .go files once and memoizes the
@@ -791,8 +1059,10 @@ func (l *depsLinter) packageTypeDecls(dir string) typeDecls {
 	out := typeDecls{
 		interfaces: map[string]bool{},
 		declared:   map[string]bool{},
-		methods:    map[string]int{},
+		methods:    map[string][]methodDecl{},
 		embeds:     map[string]bool{},
+		funcs:      map[string]bool{},
+		vars:       map[string]bool{},
 	}
 	l.declCache[dir] = out
 
@@ -809,29 +1079,47 @@ func (l *depsLinter) packageTypeDecls(dir string) typeDecls {
 		if parseErr != nil {
 			continue
 		}
+		fileImports := importAliases(f)
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
 			case *ast.GenDecl:
-				if d.Tok != token.TYPE {
-					continue
-				}
-				for _, spec := range d.Specs {
-					ts, ok := spec.(*ast.TypeSpec)
-					if !ok {
-						continue
+				switch d.Tok {
+				case token.TYPE:
+					for _, spec := range d.Specs {
+						ts, ok := spec.(*ast.TypeSpec)
+						if !ok {
+							continue
+						}
+						out.declared[ts.Name.Name] = true
+						if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
+							out.interfaces[ts.Name.Name] = true
+						}
+						if st, isStruct := ts.Type.(*ast.StructType); isStruct && hasEmbeddedField(st) {
+							out.embeds[ts.Name.Name] = true
+						}
 					}
-					out.declared[ts.Name.Name] = true
-					if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
-						out.interfaces[ts.Name.Name] = true
-					}
-					if st, isStruct := ts.Type.(*ast.StructType); isStruct && hasEmbeddedField(st) {
-						out.embeds[ts.Name.Name] = true
+				case token.VAR:
+					for _, spec := range d.Specs {
+						vs, ok := spec.(*ast.ValueSpec)
+						if !ok {
+							continue
+						}
+						for _, n := range vs.Names {
+							out.vars[n.Name] = true
+						}
 					}
 				}
 			case *ast.FuncDecl:
 				if name := receiverTypeName(d); name != "" {
-					out.methods[name]++
+					out.methods[name] = append(out.methods[name], methodDecl{
+						name:    d.Name.Name,
+						sig:     d.Type,
+						body:    d.Body,
+						imports: fileImports,
+					})
+					continue
 				}
+				out.funcs[d.Name.Name] = true
 			}
 		}
 	}

@@ -240,17 +240,17 @@ func TestPartialUniqueIndex_SoftDeletePredicateStillBinds(t *testing.T) {
 func TestPartialIndexBinds_Fallbacks(t *testing.T) {
 	base := func(pred string) (schemadef.Table, schemadef.Index) {
 		return schemadef.Table{
-				Name: "t", PKCols: []string{"id"},
-				Columns: []schemadef.Column{
-					idCol(), textCol("email"),
-					{Name: "revoked_at", DeclType: "TIMESTAMPTZ", Type: schemadef.TypeTime},
-					{Name: "deleted_at", DeclType: "TIMESTAMPTZ", Type: schemadef.TypeTime},
-					{Name: "created_at", DeclType: "TIMESTAMPTZ", Type: schemadef.TypeTime, NotNull: true},
-					{Name: "updated_at", DeclType: "TIMESTAMPTZ", Type: schemadef.TypeTime, NotNull: true},
-				},
-			}, schemadef.Index{
-				Name: "ix", Columns: []string{"email"}, Unique: true, Predicate: pred,
-			}
+			Name: "t", PKCols: []string{"id"},
+			Columns: []schemadef.Column{
+				idCol(), textCol("email"),
+				{Name: "revoked_at", DeclType: "TIMESTAMPTZ", Type: schemadef.TypeTime},
+				{Name: "deleted_at", DeclType: "TIMESTAMPTZ", Type: schemadef.TypeTime},
+				{Name: "created_at", DeclType: "TIMESTAMPTZ", Type: schemadef.TypeTime, NotNull: true},
+				{Name: "updated_at", DeclType: "TIMESTAMPTZ", Type: schemadef.TypeTime, NotNull: true},
+			},
+		}, schemadef.Index{
+			Name: "ix", Columns: []string{"email"}, Unique: true, Predicate: pred,
+		}
 	}
 	cases := []struct {
 		name string

@@ -105,13 +105,17 @@ go mod tidy && go build ./...
   go mod edit -droprequire=github.com/reliant-labs/forge/pkg && go mod tidy)
 ```
 
-Also bump the forge-CLI install pins in `.github/workflows/ci.yml`
-(`go install github.com/reliant-labs/forge/cmd/forge@vX.Y.Z`, two occurrences)
-and `forge_version` in `forge.yaml`.
+Also bump `forge_version` in `forge.yaml`. That is the only other edit:
+control-plane's workflows install forge through `.github/actions/setup-forge`,
+which reads `forge_version` out of `forge.yaml` at run time, so there are no
+per-workflow `go install ...@vX.Y.Z` pins to chase. (An earlier revision of
+this document said there were two — there are none.)
 
 `forge_version` and the `go.mod` require are now necessarily the **same
-number** — one module, one version — so they should be asserted equal in CI
-rather than kept in step by hand.
+number** — one module, one version — and control-plane's `setup-forge` hard-fails
+when they disagree. It used to only warn, on the reasoning that the CLI could
+legitimately lead the last published `forge/pkg`; that cannot happen with one
+module.
 
 ### The KCL module needs no tag
 

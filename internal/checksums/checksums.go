@@ -953,8 +953,13 @@ type MarkerInfo struct {
 // skipping it would blind the scan to any future forge-certified
 // output there.
 var scanSkipDirs = map[string]bool{
-	".git":         true,
-	".forge":       true,
+	".git":   true,
+	".forge": true,
+	// Nested git worktrees, excluded via .git/info/exclude. A worktree is a
+	// whole second copy of the repo that can sit on any commit, so scanning
+	// one reports certification failures for files that are not in this tree
+	// — and reports them by a path nobody can act on.
+	".kilo":        true,
 	"node_modules": true,
 	"vendor":       true,
 	".next":        true,

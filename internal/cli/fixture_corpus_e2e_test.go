@@ -1228,56 +1228,105 @@ func addCorpusForgePkgReplace(t *testing.T, projectDir string) {
 	t.Helper()
 	repoRoot := findRepoRoot(t)
 
-	// Copy forge/pkg into <project>/.forge-pkg as this test's OWN local
-	// bridge to the unpublished in-tree pkg (the maintainer dev-loop, done
-	// in-test — forge itself no longer vendors; it pins a published
-	// version). A relative replace keeps the workspace off any absolute
-	// path and keeps generate run 1 vs run 2 byte-identical for the
-	// tree-hash idempotency assertion.
-	vendorCorpusForgePkg(t, repoRoot, projectDir)
+	// Copy the in-tree forge MODULE into <project>/.forge-pkg as this test's
+	// OWN local bridge to unpublished forge (the maintainer dev-loop, done
+	// in-test — forge itself no longer vendors; it pins a published version).
+	// A relative replace keeps the workspace off any absolute path and keeps
+	// generate run 1 vs run 2 byte-identical for the tree-hash idempotency
+	// assertion.
+	//
+	// It is the MODULE, not pkg/. forge/pkg stopped being a module, so the
+	// old shape — copy pkg/ and `replace github.com/reliant-labs/forge/pkg`
+	// — replaced a module path that no longer exists. The scaffold's real
+	// requirement went unsatisfied, so nothing populated its go.sum and every
+	// e2e shard died on `missing go.sum entry` for ordinary third-party deps
+	// (connect, protobuf, pgx). The replace target must be a directory
+	// holding forge's own go.mod.
+	vendorCorpusForgeModule(t, repoRoot, projectDir)
 
-	// Root module: vendored pkg replace (relative to project root).
-	addReplaceLines(t, filepath.Join(projectDir, "go.mod"),
-		"replace github.com/reliant-labs/forge/pkg => ./.forge-pkg",
+	// The scaffold may pin no forge version at all: a forge built from a
+	// working tree is not proxy-resolvable, so InstallableVersion() returns ""
+	// and the templates omit the require. A directory replace still needs a
+	// requirement to attach to, hence the explicit require alongside it.
+	//
+	// The exclude is not optional. `go mod tidy` will happily satisfy a
+	// forge/pkg/* import from the still-published forge/pkg module, and a
+	// graph holding both answers every such import with "ambiguous import:
+	// found package ... in multiple modules".
+	addModuleLines(t, filepath.Join(projectDir, "go.mod"),
+		"require github.com/reliant-labs/forge v0.0.0",
+		"replace github.com/reliant-labs/forge => ./.forge-pkg",
+		"exclude github.com/reliant-labs/forge/pkg v0.1.15",
 	)
 	// gen module: the generated proto/config Go blank-imports
-	// forge/pkg/forgepb, so it needs the same pkg replace — relative to
-	// gen/, the vendored dir is one level up.
+	// forge/pkg/forgepb, so it needs the same bridge — relative to gen/, the
+	// vendored dir is one level up.
 	if _, err := os.Stat(filepath.Join(projectDir, "gen", "go.mod")); err == nil {
-		addReplaceLines(t, filepath.Join(projectDir, "gen", "go.mod"),
-			"replace github.com/reliant-labs/forge/pkg => ../.forge-pkg",
+		addModuleLines(t, filepath.Join(projectDir, "gen", "go.mod"),
+			"require github.com/reliant-labs/forge v0.0.0",
+			"replace github.com/reliant-labs/forge => ../.forge-pkg",
+			"exclude github.com/reliant-labs/forge/pkg v0.1.15",
 		)
 	}
 }
 
-// addReplaceLines appends each replace directive to the go.mod at path
-// unless a replace for the same module is already present.
-func addReplaceLines(t *testing.T, path string, lines ...string) {
+// addModuleLines appends each directive to the go.mod at path unless a
+// directive naming the same module and verb is already present.
+//
+// It replaced an append-only `replace` helper: the single-module bridge needs
+// require and exclude as well.
+func addModuleLines(t *testing.T, path string, lines ...string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	content := string(data)
+	out := string(data)
 	for _, line := range lines {
-		modPath := strings.Fields(line)[1]
-		if strings.Contains(content, "replace "+modPath+" ") {
+		verb, rest, ok := strings.Cut(line, " ")
+		if !ok {
+			t.Fatalf("malformed directive %q", line)
+		}
+		mod, _, _ := strings.Cut(rest, " ")
+		// Already declared with this verb? Leave it alone.
+		if strings.Contains(out, verb+" "+mod+" ") || strings.Contains(out, verb+" "+mod+"\n") {
 			continue
 		}
-		content += "\n" + line + "\n"
+		out += "\n" + line + "\n"
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
-// vendorCorpusForgePkg copies <repo>/pkg into <project>/.forge-pkg as this
-// test's in-tree bridge to the unpublished forge/pkg (skips .git/ and
-// testdata/). This is the TEST's local dev-loop, not a forge feature.
-func vendorCorpusForgePkg(t *testing.T, repoRoot, projectDir string) {
+// vendorCorpusForgeModule assembles <project>/.forge-pkg as a MODULE
+// declaring github.com/reliant-labs/forge — forge's own go.mod and go.sum,
+// plus a copy of <repo>/pkg (skipping .git/ and testdata/). This is the
+// TEST's in-tree bridge to unpublished forge, not a forge feature.
+func vendorCorpusForgeModule(t *testing.T, repoRoot, projectDir string) {
 	t.Helper()
-	src := filepath.Join(repoRoot, "pkg")
 	dst := filepath.Join(projectDir, ".forge-pkg")
+
+	// forge's own go.mod/go.sum make this directory a MODULE declaring
+	// github.com/reliant-labs/forge. Without them a directory replace has
+	// nothing to resolve, which is the whole defect this replaced.
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("create %s: %v", dst, err)
+	}
+	for _, name := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, name))
+		if err != nil {
+			t.Fatalf("read forge %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, name), data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", filepath.Join(dst, name), err)
+		}
+	}
+
+	// Only pkg/ is copied, not the whole repo: pkg/* is all a scaffold
+	// imports, and copying internal/ and cmd/ would multiply every e2e
+	// fixture by forge's entire source tree for no added coverage.
+	src := filepath.Join(repoRoot, "pkg")
 	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -1290,7 +1339,7 @@ func vendorCorpusForgePkg(t *testing.T, repoRoot, projectDir string) {
 			if d.Name() == ".git" || d.Name() == "testdata" {
 				return filepath.SkipDir
 			}
-			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+			return os.MkdirAll(filepath.Join(dst, "pkg", rel), 0o755)
 		}
 		if !d.Type().IsRegular() {
 			return nil
@@ -1299,10 +1348,10 @@ func vendorCorpusForgePkg(t *testing.T, repoRoot, projectDir string) {
 		if rerr != nil {
 			return rerr
 		}
-		return os.WriteFile(filepath.Join(dst, rel), data, 0o644)
+		return os.WriteFile(filepath.Join(dst, "pkg", rel), data, 0o644)
 	})
 	if err != nil {
-		t.Fatalf("vendor forge/pkg into %s: %v", dst, err)
+		t.Fatalf("vendor the forge module into %s: %v", dst, err)
 	}
 }
 

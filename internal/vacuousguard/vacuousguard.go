@@ -40,6 +40,11 @@ var skipDirs = map[string]bool{
 	".git": true, "node_modules": true, "vendor": true, "dist": true,
 	"bin": true, ".next": true, ".turbo": true, "coverage": true,
 	"tmp": true, ".forge": true, "testdata": true,
+	// .kilo holds nested git worktrees, excluded via .git/info/exclude. They
+	// are whole second copies of the repo, so scanning one makes every finding
+	// appear twice and — because a worktree can sit on any commit — reports
+	// defects that are not in this tree at all.
+	".kilo": true,
 }
 
 // walkGo returns every .go file under root, repo-relative and sorted, that

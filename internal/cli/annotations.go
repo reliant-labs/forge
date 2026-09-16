@@ -243,6 +243,10 @@ func filterMarkers(in []MarkerSpec, appliesTo ...string) []MarkerSpec {
 // because each is read by a single recognizer in its own package rather than
 // by a vocabulary shared across passes. TestAnnotations_MarkerNames pins
 // every one of them against its real recognizer.
+// the number of markers forge supports, and splitting it across helpers
+// would scatter one inventory for no reduction in what a reader must hold.
+//
+//nolint:funlen // One flat table of marker specs, no branching: length is
 func markerSpecs() []MarkerSpec {
 	return []MarkerSpec{
 		{

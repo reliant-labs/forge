@@ -1,6 +1,9 @@
 package buildinfo
 
-import "testing"
+import (
+	"runtime/debug"
+	"testing"
+)
 
 // TestIsDevBuildClassification pins the release-vs-dev discriminator the
 // scaffolder relies on before ever writing a local-forge go.work. Only a
@@ -130,5 +133,74 @@ func TestIsDevVersion(t *testing.T) {
 		if got := IsDevVersion(tt.version); got != tt.want {
 			t.Errorf("IsDevVersion(%q) = %v, want %v", tt.version, got, tt.want)
 		}
+	}
+}
+
+// TestInstallableVersion_RefusesALocalCheckoutBuild is the regression for a
+// failure that hit EVERY pull request.
+//
+// A pseudo-version can be perfectly formed and name a commit no proxy will
+// serve. Since Go began stamping VCS info, that is exactly what a build from a
+// working tree reports — and on a pull_request event the checked-out commit is
+// GitHub's ephemeral refs/pull/N/merge, which exists on no branch. forge built
+// there reported e.g. v0.0.0-20260916183946-6fbaa5b262be, the scaffolder wrote
+// it into the test project's go.mod, and tidy failed with "invalid version:
+// unknown revision". Pushes to main passed, because there the commit is real —
+// which is why the two scaffold jobs failed on #207, #208, #210 and #213 alike
+// while main stayed green.
+//
+// Under `go test` the ambient build info IS a local-checkout build, so this
+// asserts the real condition rather than a simulation of it.
+func TestInstallableVersion_RefusesALocalCheckoutBuild(t *testing.T) {
+	if !builtFromLocalCheckout() {
+		t.Skip("test binary carries no vcs.* settings (e.g. -buildvcs=false); nothing to assert")
+	}
+	t.Cleanup(func() { Set("dev", "unknown", "unknown") })
+
+	// A clean, well-formed pseudo-version — the shape that slipped through.
+	// Set() makes it look stamped, so clear that first: an ldflags stamp is a
+	// release build asserting its own tag and is trusted on purpose.
+	Set("", "unknown", "unknown")
+	if got := InstallableVersion(); got != "" {
+		t.Errorf("InstallableVersion() = %q for a build compiled from a working tree. "+
+			"Nothing in that tree can prove the commit was pushed, and pinning it puts an "+
+			"unresolvable require into a scaffold's go.mod.", got)
+	}
+
+	// An ldflags-stamped release is still installable: the build is asserting
+	// a tag it was cut from, and refusing that would make releases unpinnable.
+	Set("v1.2.3", "unknown", "deadbeef")
+	if got := InstallableVersion(); got != "v1.2.3" {
+		t.Errorf("InstallableVersion() = %q for an ldflags-stamped release, want v1.2.3", got)
+	}
+}
+
+// TestHasVCSStamps is the runnable half of the pull-request regression above:
+// the ambient build info under `go test` carries no vcs.* settings, so only an
+// injected one can exercise both branches.
+func TestHasVCSStamps(t *testing.T) {
+	proxyInstalled := &debug.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "-buildmode", Value: "exe"},
+		{Key: "GOARCH", Value: "arm64"},
+	}}
+	if hasVCSStamps(proxyInstalled) {
+		t.Error("a module served by the proxy carries no vcs.* settings; its version IS resolvable")
+	}
+
+	localBuild := &debug.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "-buildmode", Value: "exe"},
+		{Key: "vcs", Value: "git"},
+		{Key: "vcs.revision", Value: "6fbaa5b262be00000000000000000000000000"},
+		{Key: "vcs.modified", Value: "false"},
+	}}
+	if !hasVCSStamps(localBuild) {
+		t.Error("a build from a working tree stamps vcs.*; nothing there proves the commit was pushed")
+	}
+
+	// vcs.modified=false is the CI case exactly: a CLEAN checkout of an
+	// ephemeral merge commit. Clean is not the same as published, which is the
+	// distinction the old shape-only check could not make.
+	if !hasVCSStamps(localBuild) {
+		t.Error("a clean working tree is still a working tree")
 	}
 }

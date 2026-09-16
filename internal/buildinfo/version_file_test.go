@@ -2,12 +2,13 @@ package buildinfo
 
 import (
 	"bytes"
-	"golang.org/x/mod/semver"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"testing"
+
+	"golang.org/x/mod/semver"
 )
 
 // workspaceEmbeddedInfo reproduces the exact shape from the briefing: a host

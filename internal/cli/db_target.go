@@ -88,6 +88,14 @@ func reconcileClaimedDSN(claimed, declared, env string) error {
 	}
 
 	if declared == "" {
+		// revive's error-strings rule wants a lowercase fragment with no
+		// terminal punctuation, which is right for an error that will be
+		// WRAPPED — the reader sees "doing x: <fragment>". This one is
+		// terminal and operator-facing: multiple paragraphs that explain the
+		// refusal and name the fix, printed as-is. Stripping its punctuation
+		// would damage prose a person reads, to satisfy a convention for
+		// strings a program concatenates.
+		//nolint:revive,staticcheck // terminal operator-facing prose; see above
 		return fmt.Errorf(`refusing to act on %s: environment %q declares no database of its own, so forge cannot confirm this connection string belongs to it.
 
 This check exists because the environment gate and the connection string used to be resolved separately — %q could be confirmed as a dev environment while the DSN pointed somewhere else entirely.
@@ -106,6 +114,7 @@ Give the environment a database to be reconciled against: declare DATABASE_URL i
 		return nil
 	}
 
+	//nolint:revive,staticcheck // terminal operator-facing prose; see the note above
 	return fmt.Errorf(`refusing to act on a database that is not environment %q's.
 
   you asked for:   %s
@@ -129,24 +138,6 @@ func redactDSNForMessage(dsn string) string {
 		if _, hasPassword := u.User.Password(); hasPassword {
 			u.User = url.UserPassword(u.User.Username(), "xxxxx")
 		}
-	}
-	return u.String()
-}
-
-// toMaintenanceDSN reduces a DSN to the maintenance database "postgres" on
-// the same server, keeping scheme, credentials, host and port. This is the
-// connection a DROP/CREATE DATABASE must be issued from, because postgres
-// will not drop the database you are connected to.
-func toMaintenanceDSN(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil || u.Host == "" {
-		return ""
-	}
-	u.Path = "/postgres"
-	q := u.Query()
-	if q.Get("sslmode") == "" {
-		q.Set("sslmode", "disable")
-		u.RawQuery = q.Encode()
 	}
 	return u.String()
 }

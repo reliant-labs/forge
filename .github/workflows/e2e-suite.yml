@@ -231,6 +231,10 @@ jobs:
           go install ./cmd/forge
           forge tools install
 
+      # TestDBReset_* shell out to the golang-migrate CLI.
+      - name: Install golang-migrate CLI
+        uses: ./.github/actions/install-migrate
+
       - name: Verify every required tool resolves
         # Fail here, in five seconds, with the tool named — rather than 20
         # minutes in when the test that needs it does. This list must stay
@@ -238,7 +242,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for tool in go node npm npx kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go git; do
+          for tool in go node npm npx kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go git migrate; do
             if command -v "$tool" >/dev/null 2>&1; then
               printf '  ok       %-24s %s\n' "$tool" "$(command -v "$tool")"
             else

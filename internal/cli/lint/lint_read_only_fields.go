@@ -875,7 +875,17 @@ func columnTypeIn(trimmed string, fields []string) string {
 		return ""
 	}
 	// Everything after the column name, before any constraint clause.
-	rest := strings.TrimSpace(trimmed[strings.Index(trimmed, fields[1]):])
+	//
+	// The guard is not currently reachable: the only caller builds fields with
+	// strings.Fields(trimmed), so fields[1] is always a substring. But that
+	// invariant lives in parseColumnDef, one function away, and Index returning
+	// -1 here would be a slice-bounds PANIC rather than a wrong answer — too
+	// sharp an edge to leave resting on a caller's implementation detail.
+	at := strings.Index(trimmed, fields[1])
+	if at < 0 {
+		return strings.TrimSpace(fields[1])
+	}
+	rest := strings.TrimSpace(trimmed[at:])
 	m := sqlTypeHeadRE.FindStringSubmatch(rest)
 	if m == nil {
 		return strings.TrimSpace(fields[1])

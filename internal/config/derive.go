@@ -22,8 +22,6 @@
 package config
 
 import (
-	"bytes"
-
 	"go.yaml.in/yaml/v3"
 )
 
@@ -260,25 +258,4 @@ func normalizeFeatures(f FeaturesConfig, d map[FeatureName]bool) FeaturesConfig 
 	f.Diagnostics = drop(f.Diagnostics, false)
 	f.derived = d
 	return f
-}
-
-// sectionIsZero reports whether a section block is entirely absent from
-// the file (zero value). Marshal-based so semantically-empty shapes
-// (nil vs empty slice) compare equal without per-section reflection.
-func sectionIsZero[T any](section T) bool {
-	var zero T
-	return sectionsEquivalent(section, zero)
-}
-
-// sectionsEquivalent compares two section values by their canonical YAML
-// rendering — the representation that actually round-trips through
-// forge.yaml. This sidesteps nil-vs-empty slice and pointer-identity
-// noise that reflect.DeepEqual would surface.
-func sectionsEquivalent[T any](a, b T) bool {
-	ab, errA := yaml.Marshal(a)
-	bb, errB := yaml.Marshal(b)
-	if errA != nil || errB != nil {
-		return false
-	}
-	return bytes.Equal(ab, bb)
 }

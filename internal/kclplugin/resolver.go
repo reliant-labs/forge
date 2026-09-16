@@ -347,6 +347,9 @@ func devStacks() ([]string, error) {
 	return fn()
 }
 
+// ResetDefaultResolverForTest restores the package-level resolver to its
+// default, so a test that swapped it cannot leak that swap into the next one.
+//
 // UsePortStore swaps the global resolver for one that persists assignments
 // to path (cross-run port stability), making that file the SINGLE SOURCE
 // OF TRUTH for resolve_port: once allocated (availability-checked), a
@@ -401,6 +404,10 @@ func UsePortStoreReadOnly(path string) {
 	defaultResolver = NewReadOnlyPortResolver(path)
 }
 
+// UsePortStore swaps the global resolver for one backed by a file at path,
+// and returns a restore func that puts the previous resolver back. See the
+// note above ResetDefaultResolverForTest for why the file is the single
+// source of truth for resolve_port.
 func UsePortStore(path string) (restore func()) {
 	snapshot, readErr := os.ReadFile(path)
 	existed := readErr == nil

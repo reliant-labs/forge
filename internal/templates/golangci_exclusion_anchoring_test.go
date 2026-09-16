@@ -96,6 +96,21 @@ func TestGolangciExclusionsLeaveMostOfTheRepoLinted(t *testing.T) {
 	// find what started matching.
 	const maxExcludedFraction = 0.10
 
+	// pkg/ is DISCOUNTED, not exempted. This guard asks "what fraction of the
+	// repo does no linter read?", and pkg/ is read — by pkg/.golangci.yml in
+	// its own CI job. Counting it as excluded would measure the wrong thing:
+	// it is a fifth of the repo, so it would blow the cap while nothing had
+	// actually stopped being linted.
+	//
+	// The discount is only honest while that second config exists, so require
+	// it. Delete pkg/.golangci.yml and this fails rather than silently
+	// certifying a fifth of the repo as covered by a config that is gone.
+	if _, err := os.Stat(filepath.Join("..", "..", "pkg", ".golangci.yml")); err != nil {
+		t.Fatalf("pkg/.golangci.yml is missing (%v), but .golangci.yml excludes pkg/ on the "+
+			"understanding that it is linted there. Either restore it or drop the pkg/ exclusion — "+
+			"as it stands a fifth of the repo is linted by nothing.", err)
+	}
+
 	own, err := os.ReadFile(filepath.Join("..", "..", ".golangci.yml"))
 	if err != nil {
 		t.Fatalf("read forge's own .golangci.yml: %v", err)
@@ -110,7 +125,14 @@ func TestGolangciExclusionsLeaveMostOfTheRepoLinted(t *testing.T) {
 		patterns = append(patterns, re)
 	}
 
-	files := repoGoFiles(t)
+	all := repoGoFiles(t)
+	var files []string
+	for _, f := range all {
+		if strings.HasPrefix(f, "pkg/") {
+			continue // linted by pkg/.golangci.yml; see the discount above
+		}
+		files = append(files, f)
+	}
 	// A vacuous pass here would be the exact failure this repo guards against
 	// elsewhere: zero discovered files makes every assertion below trivially
 	// true.

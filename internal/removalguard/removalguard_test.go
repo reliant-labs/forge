@@ -1223,6 +1223,7 @@ var skipDirs = map[string]bool{
 	"coverage":     true, // coverage report output
 	"tmp":          true, // scratch output
 	".forge":       true, // per-developer forge runtime state (gitignored)
+	".kilo":        true, // nested git worktrees (excluded via .git/info/exclude)
 }
 
 // skipExts are binary formats. Matching bytes inside them would be noise, and

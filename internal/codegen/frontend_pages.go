@@ -1375,14 +1375,6 @@ func listColumnExcluded(fieldName string) bool {
 	return listColumnIdentityFields[strings.ToLower(fieldName)]
 }
 
-// AttachEntityMeta enriches a PageTemplateData with typed field metadata
-// from the matched proto entity definition. The page generator calls this
-// after pairing a CRUD RPC group with its EntityDef — the same pairing
-// that gates page emission — so templates can emit fully typed columns,
-// search fields, and detail rows. svc supplies the deep type graph needed to
-// resolve enum COLUMNS to their protobuf-es TS type (which the badge cell
-// passes to StatusBadge); an unresolvable enum column degrades to the
-// enum-like string path (String(item.field)).
 // GuardedPageField is one column the scaffolded edit page refuses to write
 // because a custom RPC owns it (`// forge:guards <table>.<column>`), plus
 // the name of that RPC.
@@ -1482,6 +1474,14 @@ func attachGuardedFields(page *PageTemplateData, tableName string, guards map[st
 	}
 }
 
+// AttachEntityMeta enriches a PageTemplateData with typed field metadata
+// from the matched proto entity definition. The page generator calls this
+// after pairing a CRUD RPC group with its EntityDef — the same pairing
+// that gates page emission — so templates can emit fully typed columns,
+// search fields, and detail rows. svc supplies the deep type graph needed to
+// resolve enum COLUMNS to their protobuf-es TS type (which the badge cell
+// passes to StatusBadge); an unresolvable enum column degrades to the
+// enum-like string path (String(item.field)).
 func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) {
 	// Columns a custom RPC owns come off the edit form BEFORE the detail
 	// metadata below is derived, so the guarded rows are already parked on

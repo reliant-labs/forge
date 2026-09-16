@@ -35,7 +35,7 @@ import (
 // kclvendor's downgrade guard allows an equal-version overwrite, so a
 // workspace build of main (containing a fix) and a released binary (without
 // it) were indistinguishable — which is how forge#202's namespace-scoped
-// operator RBAC came within one `forge generate` of being silently reverted
+// operator ClusterRole/Binding scoping came within one `forge generate` of being reverted
 // in control-plane. A floor that fabricates an ordering is worse than no
 // version at all, because the ordering it invents is the wrong one.
 //
@@ -129,25 +129,78 @@ func deriveGitVersion(root string) string {
 		return ""
 	}
 
-	base := "v0.0.0"
-	if tag := run("describe", "--tags", "--abbrev=0", "--match", "v*"); tag != "" {
-		if next := nextPatch(tag); next != "" {
-			base = next
-		}
+	// THE BASE decides whether this version orders correctly, and there are
+	// two independent ways to learn it.
+	//
+	// Preferred: the nearest reachable tag. Accurate, and it moves on its own.
+	//
+	// Fallback: the embedded VERSION file. A SHALLOW CLONE fetches no tags, so
+	// `git describe` finds nothing — which is the normal CI shape, while every
+	// developer machine has tags and never sees this path. Basing on v0.0.0
+	// there was wrong twice over: it produced `v0.0.0-0.<ts>-<sha>`, a version
+	// claiming to precede v0.0.0 that the go command rejects outright, and
+	// once spelled validly as `v0.0.0-<ts>-<sha>` it sorted BEFORE the release
+	// the source is ahead of — losing the ordering guarantee this whole
+	// function exists to provide. VERSION always ships in the binary and
+	// always names the last release, so it answers exactly when git cannot.
+	//
+	// v0.0.0 remains only for the case where neither is available, and then
+	// the form must drop the `-0.` prefix: there is no version before v0.0.0.
+	base := nextPatch(run("describe", "--tags", "--abbrev=0", "--match", "v*"))
+	if base == "" {
+		base = nextPatch(versionFromFile(embeddedVersionFile))
 	}
 
-	v := fmt.Sprintf("%s-0.%s-%s", base, ts, sha)
+	var v string
+	if base != "" {
+		// After a tag: `vX.Y.(Z+1)-0.<ts>-<sha>`. The `-0.` makes it a
+		// PRE-release of the next patch — after vX.Y.Z, before vX.Y.(Z+1).
+		v = fmt.Sprintf("%s-0.%s-%s", base, ts, sha)
+	} else {
+		v = fmt.Sprintf("v0.0.0-%s-%s", ts, sha)
+	}
+	// IsPseudoVersion only checks SHAPE, and shape is what let the invalid
+	// v0.0.0-0.… form through — it parses as a pseudo-version, and
+	// module.Check accepts it too. PseudoVersionBase is the function that
+	// actually refuses it, with the exact wording the go command reports:
+	//
+	//	pseudo-version "v0.0.0-0.2026…" invalid: version before v0.0.0
+	//	would have negative patch number
+	//
+	// So validate with that, not with something merely adjacent to it.
 	if !module.IsPseudoVersion(v) {
-		// Refuse to emit something that only looks like a version.
+		return "" // refuse to emit something that only looks like a version
+	}
+	if _, err := module.PseudoVersionBase(v); err != nil {
 		return ""
 	}
-	// A dirty tree is not the commit it claims to be. The suffix keeps
-	// IsDevVersion and InstallableVersion honest about that (both key on
-	// "+"), while semver still orders it with the commit.
+
+	// ALWAYS build metadata, and this is the load-bearing line in the file.
+	//
+	// A derived version is for ORDERING and IDENTITY — that is the entire
+	// reason it replaced the VERSION-file floor, which compared EQUAL to the
+	// release it named. It is NOT a pinnable reference: this function only
+	// runs for a build whose own build info says "(devel)", meaning a local
+	// source build or a workspace-embedded one, and neither exists on any
+	// module proxy. The commit it names may not even be pushed.
+	//
+	// Emitting it bare made InstallableVersion() hand it back, and a scaffold
+	// then wrote `require github.com/reliant-labs/forge v0.0.0-...-abefea71`
+	// into its go.mod — a commit nothing could resolve. In CI that is
+	// guaranteed: the checkout is a tagless shallow clone (hence the v0.0.0
+	// base) sitting on an ephemeral merge commit that exists on no remote.
+	// Every scaffold-and-build job failed with `invalid version: unknown
+	// revision`.
+	//
+	// The "+" keeps InstallableVersion and IsDevVersion honest (both key on
+	// it) while semver IGNORES build metadata, so the ordering this function
+	// exists to get right is untouched. A source build therefore pins nothing
+	// and is bridged with go.work, which is what it always should have done.
 	if run("status", "--porcelain") != "" {
-		v += "+dirty"
+		// Dirty is a stronger claim than dev: the bytes are not the commit.
+		return v + "+dirty"
 	}
-	return v
+	return v + "+dev"
 }
 
 // nextPatch turns vX.Y.Z into vX.Y.(Z+1) — the base a pseudo-version for a

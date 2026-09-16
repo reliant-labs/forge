@@ -31,6 +31,7 @@
 package config
 
 import (
+	"bytes"
 	"reflect"
 	"strings"
 
@@ -163,7 +164,7 @@ func valuesEquivalent(a, b reflect.Value) bool {
 	if errA != nil || errB != nil {
 		return false
 	}
-	return string(ab) == string(bb)
+	return bytes.Equal(ab, bb)
 }
 
 // yamlFieldName returns the forge.yaml key a struct field marshals to, and

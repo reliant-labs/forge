@@ -549,16 +549,6 @@ func importRefs(file *ast.File) map[string]importRef {
 	return out
 }
 
-// importMap builds local name → import path for one file.
-func importMap(file *ast.File) map[string]string {
-	refs := importRefs(file)
-	out := make(map[string]string, len(refs))
-	for name, ref := range refs {
-		out[name] = ref.path
-	}
-	return out
-}
-
 // findModule walks up from dir to the nearest go.mod and returns its
 // directory and declared module path.
 func findModule(dir string) (string, string) {

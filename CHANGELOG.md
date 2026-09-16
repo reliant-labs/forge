@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dropping the retired requirement is not optional, and it does not degrade
   gracefully: both modules can serve `forge/pkg/*` import paths, so a graph
   holding both answers every such import with `ambiguous import: found package
-  ... in multiple modules`. `forge generate` now detects this before codegen
+... in multiple modules`. `forge generate` now detects this before codegen
   and distinguishes a requirement you own from one a dependency drags in.
   A dependency's must be fixed in that dependency — a `replace` only hides it.
 

@@ -818,6 +818,25 @@ func runGoBuildValidate(projectDir string) error {
 // PATH, a transient module-cache fault) proves nothing about the
 // generated code, and turning that into a failed generate would be the
 // same class of false positive as the vet findings above.
+//
+// ONLY A FORGE-OWNED TEST FILE FAILS THE RUN. The paragraph above names
+// the subject exactly — a file forge regenerates and stamps, which "the
+// user cannot edit their way out" of. A user-owned _test.go is the
+// opposite case in every respect: forge will not rewrite it, the author
+// CAN fix it, and failing generate over it blocks the one command that
+// would refresh the code the file is failing against. That is a
+// deadlock, not a gate — the tree cannot be regenerated until the user
+// edits a file by hand, and `forge generate` is what they would
+// reasonably reach for to fix it.
+//
+// It is also the same false-positive class as the vet findings: a
+// half-finished test a user is mid-way through writing has nothing to do
+// with whether forge's output is correct.
+//
+// Ownership is read from forge's own certification marker rather than a
+// filename list, so it stays true as emitters are added or renamed, and
+// a `forge project disown` (which strips the marker) correctly moves a
+// file from fail to warn along with the ownership it transferred.
 func validateTestFilesTypecheck(projectDir string) error {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedTypes |
@@ -836,11 +855,17 @@ func validateTestFilesTypecheck(projectDir string) error {
 	// non-test error here is either a duplicate of something already
 	// reported or an artifact of the loader's wider view — repeating it
 	// would bury the actionable line.
-	var lines []string
+	//
+	// Split by OWNERSHIP, because the two halves warrant opposite
+	// responses: forge's own output failing to compile is forge's bug and
+	// fails the run, while a user-owned test is the user's to fix and must
+	// never block the generate that would refresh what it compiles against.
+	var owned, theirs []string
 	seen := map[string]bool{}
 	for _, p := range pkgs {
 		for _, e := range p.Errors {
-			if !strings.Contains(e.Pos, "_test.go") {
+			file, _, ok := strings.Cut(e.Pos, ":")
+			if !ok || !strings.HasSuffix(file, "_test.go") {
 				continue
 			}
 			line := e.Error()
@@ -848,23 +873,61 @@ func validateTestFilesTypecheck(projectDir string) error {
 				continue
 			}
 			seen[line] = true
-			lines = append(lines, line)
+			if isForgeOwnedFile(file) {
+				owned = append(owned, line)
+			} else {
+				theirs = append(theirs, line)
+			}
 		}
 	}
-	if len(lines) == 0 {
+
+	// User-owned breakage is reported and moved past. Naming the file and
+	// saying plainly that it is theirs is the whole remedy: the previous
+	// behavior said "this is a forge codegen bug worth reporting" about a
+	// file forge did not write.
+	if len(theirs) > 0 {
+		sort.Strings(theirs)
+		fmt.Fprintf(os.Stderr, "\n⚠️  These _test.go files do not compile. They are YOURS — forge will not "+
+			"regenerate them, so update or delete them (generate itself succeeded):\n%s\n",
+			strings.Join(theirs, "\n"))
+	}
+
+	if len(owned) == 0 {
 		return nil
 	}
 
-	sort.Strings(lines)
-	output := strings.Join(lines, "\n") + "\n"
+	sort.Strings(owned)
+	output := strings.Join(owned, "\n") + "\n"
 	fmt.Fprintf(os.Stderr, "\n%s", output)
 	return &validateBuildError{
 		Output: output,
 		err: cliutil.WrapUserErr("forge generate (validate generated code)",
 			"generated test files do not compile", "",
-			"a _test.go file in this tree fails to typecheck — if it is a forge-generated helper (helpers_gen_test.go), this is a forge codegen bug worth reporting; if it is your own test, fix the reference it cites",
+			"a forge-generated _test.go file in this tree fails to typecheck — this is a forge codegen bug worth reporting",
 			errors.New("test-file typecheck failed")),
 	}
+}
+
+// isForgeOwnedFile reports whether path is a file forge generates and
+// certifies — i.e. one carrying the embedded `forge:hash` marker that
+// every Tier-1 writer stamps on.
+//
+// The marker is the authority rather than the filename because it tracks
+// ownership as it actually MOVES: `forge project disown` strips the
+// marker, and from that moment the file genuinely is the user's, so it
+// should stop failing their generate. A hardcoded list of emitted
+// basenames would keep failing on a file forge had already handed over,
+// and would silently omit the next emitter someone adds.
+//
+// Unreadable reads as NOT forge-owned. The conservative answer here is
+// the one that does not fail the user's run on a file we could not even
+// open, which proves nothing about forge's output.
+func isForgeOwnedFile(path string) bool {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return checksums.Verify(content) != checksums.NoMarker
 }
 
 // goBuildValidateFixHint inspects the `go build ./...` stderr captured

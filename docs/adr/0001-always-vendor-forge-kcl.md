@@ -1,6 +1,14 @@
 # ADR 0001: Always vendor the forge KCL module
 
-**Status:** accepted
+**Status:** superseded by [ADR 0002](0002-declare-forge-kcl-as-an-oci-dependency.md)
+
+The decision below was correct for the problem it solved — an unpublished git
+tag that made every scaffolded project unresolvable. What it did not
+anticipate is that a vendored copy which is ALSO a generated artifact gets
+rewritten by whatever binary runs next, with only a version string recording
+which forge produced it. ADR 0002 keeps this ADR's central rule (one
+mechanism on every build, no dev-vs-release branch) and its central lesson
+(assert that the dependency RESOLVES, never that kcl.mod contains a string).
 
 ## Context
 

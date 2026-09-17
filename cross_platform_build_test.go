@@ -43,7 +43,33 @@ func TestCrossPlatformBuild(t *testing.T) {
 		t.Run(target.goos+"/"+target.goarch, func(t *testing.T) {
 			t.Parallel()
 
-			args := append([]string{"build"}, crossPlatformTargets(t)...)
+			// `exp.winarm64` is a DELVE build tag, and on windows/arm64 it is
+			// what makes the build work at all.
+			//
+			// forge/cli registers the debug commands, which pull
+			// internal/cli/debug -> delve/service/debugger, so anything
+			// linking forge links Delve on every target. Delve supports
+			// windows/amd64 natively; for windows/arm64 it compiles a
+			// sentinel package whose whole job is to break the build. In
+			// v1.26.3 that sentinel was `windows && !amd64 && !arm64`, so
+			// arm64 slipped through; v1.27.1 retightened it to
+			// `windows && !amd64 && !(arm64 && exp.winarm64)`, which is what
+			// produces "found packages native and
+			// your_windows_architecture_is_not_supported_by_delve".
+			//
+			// The tag selects delve's own experimental winarm64 backend
+			// instead of the sentinel. It is compile-only: nothing in a
+			// released binary ever starts a debugger.
+			//
+			// This mirrors what reliant's release build already passes (see
+			// .github/workflows/release.yml in that repo). Building WITHOUT
+			// it here meant this guard tested a configuration nobody ships,
+			// and failed on one nobody builds. It is a no-op on every other
+			// target, so it stays on one shared command line.
+			//
+			// The durable fix is for forge/cli not to link a debugger into
+			// consumers at all; that is a larger change than this guard.
+			args := append([]string{"build", "-tags", "exp.winarm64"}, crossPlatformTargets(t)...)
 			cmd := exec.Command("go", args...)
 			cmd.Env = append(cmd.Environ(),
 				"GOOS="+target.goos,

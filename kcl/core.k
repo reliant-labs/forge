@@ -533,6 +533,26 @@ schema Container:
       * `ports`   — TCP ports the container listens on. Omit for none. (These
                     are containerPorts only — sidecars are not auto-exposed as
                     a k8s Service; declare Service.ports for that.)
+      * `resources` — CPU/memory requests + limits, the same neutral
+                    `Resources` the primary container takes. Omitted, the
+                    container DEFAULTS to the same `_default_resources` the
+                    primary and CronJob paths already use — it does not render
+                    an empty block.
+
+                    That default is the fix rather than a convenience. A
+                    container with no requests is BestEffort: no CPU guarantee,
+                    and first evicted under node pressure. Because k8s computes
+                    pod QoS across ALL containers, ONE request-less sidecar
+                    demotes the whole pod even when the primary is sized
+                    properly — so sizing the primary looked like it worked and
+                    silently did nothing. That is rarely what you want for a
+                    sidecar on a request path; a cloud-sql-proxy IS the
+                    database path, and an evicted proxy takes the database with
+                    it exactly when the node is busiest.
+
+                    Set it explicitly whenever the default is wrong for the
+                    workload. The default exists so that omitting it is safe,
+                    not so that it is right.
     """
     name: str
     image: str
@@ -540,6 +560,7 @@ schema Container:
     args?: [str]
     env: {str: EnvSource} = {}
     ports?: [int]
+    resources?: Resources
 
     check:
         name, "Container.name is required"
@@ -697,6 +718,7 @@ _project_container = lambda c: Container -> {str: any} {
         args = c.args if c.args else []
         env_vars = env_project(c.env)
         ports = c.ports if c.ports else []
+        resources = c.resources
     }
 }
 

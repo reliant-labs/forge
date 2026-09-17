@@ -1606,6 +1606,21 @@ func resolveDeployImageDigests(projectDir, envName string, noDigest bool) (map[s
 		if err != nil || st == nil {
 			continue
 		}
+		// The filename alone cannot settle which env this file belongs to:
+		// both segments may contain "-", so build-dev-k8s-gateway.json reads
+		// equally as (dev, k8s-gateway) and (dev-k8s, gateway). Globbing
+		// "build-dev-*.json" therefore also matches every env whose name
+		// EXTENDS "dev", and when two of them declare the same image the
+		// later match overwrites the earlier digest — glob order is
+		// alphabetical, so the sibling env usually wins and the deploy ships
+		// an image the current env never built.
+		//
+		// The state names its own env and its own service, either of which
+		// settles the split the filename cannot. Checking it here is what
+		// keeps a sibling env's stale digest out of this deploy.
+		if !buildtarget.StateBelongsTo(st, envName, service) {
+			continue
+		}
 		if st.Image != "" && st.Digest != "" {
 			out[st.Image] = st.Digest
 		}

@@ -43,14 +43,36 @@ var (
 	leadTrailDA = regexp.MustCompile(`^-+|-+$`)
 )
 
-// Sanitize lowercases s and reduces it to a DNS-safe label: [a-z0-9-],
-// collapsed dash runs, no leading/trailing dash, bounded length. Returns
-// "" when nothing survives (e.g. an all-symbol branch name).
-func Sanitize(s string) string {
+// canonicalLabel reduces s to a DNS-safe label — [a-z0-9-], collapsed dash
+// runs, no leading/trailing dash — and applies NO length bound. Returns ""
+// when nothing survives (e.g. an all-symbol branch name).
+//
+// Shape and length are separated because they are answers to different
+// questions, and conflating them was a real defect. A caller asking "is this
+// string a well-formed name?" must not also be told "…and short enough to be
+// a k8s namespace segment", because the two have different remedies: a bad
+// shape is a fragment to be refused, while an over-long name is well-formed
+// and merely needs a budget. validateKey wants only the first; Sanitize wants
+// both. See validateKey in blocks.go for what the conflation cost.
+//
+// This function is idempotent, which is what lets a caller use equality with
+// its own output as a well-formedness test.
+func canonicalLabel(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = nonDNS.ReplaceAllString(s, "-")
 	s = dashRuns.ReplaceAllString(s, "-")
-	s = leadTrailDA.ReplaceAllString(s, "")
+	return leadTrailDA.ReplaceAllString(s, "")
+}
+
+// Sanitize reduces s to a DNS-safe label of bounded length: canonicalLabel
+// plus the maxNameLen truncation. This is the form a git FACT takes, and the
+// truncation is load-bearing there — see maxNameLen.
+//
+// Note Sanitize is NOT usable as a well-formedness test, because truncation
+// makes it disagree with a perfectly well-formed input purely by length.
+// Callers testing shape must use canonicalLabel.
+func Sanitize(s string) string {
+	s = canonicalLabel(s)
 	if len(s) > maxNameLen {
 		s = s[:maxNameLen]
 		s = leadTrailDA.ReplaceAllString(s, "")

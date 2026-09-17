@@ -337,7 +337,16 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 // PushedAt is RFC3339 wall-clock. The state file is informational
 // across forge invocations, so real time is fine.
 type State struct {
-	Service  string `json:"service"`
+	Service string `json:"service"`
+	// Env is the deploy env this build belongs to. It is recorded because the
+	// FILENAME cannot be parsed back into (env, service): both segments may
+	// contain "-", so build-dev-k8s-gateway.json is equally readable as
+	// (dev, k8s-gateway) and (dev-k8s, gateway). A reader that globs
+	// "build-<env>-*.json" therefore also matches every sibling env whose name
+	// extends this one, and when both declare the same image the later file
+	// silently overwrites the earlier digest. Written by WriteState; verified
+	// on read, so a mismatched file is skipped rather than believed.
+	Env      string `json:"env,omitempty"`
 	Image    string `json:"image"`
 	Tag      string `json:"tag"`
 	Registry string `json:"registry,omitempty"`
@@ -389,7 +398,49 @@ func statePath(projectDir, env, service string) string {
 // external-build path never grow .forge/state/build-*-*.json files.
 // File mode is 0o644 to match the project-docker state file.
 func WriteState(projectDir, env string, state State) error {
+	// Stamp the env so a later reader can tell which env this file belongs to
+	// without parsing the ambiguous filename. Set here rather than at every
+	// call site so no writer can forget it.
+	if state.Env == "" {
+		state.Env = env
+		if state.Env == "" {
+			state.Env = "default"
+		}
+	}
 	return statefile.Write(statePath(projectDir, env, state.Service), "build state", state)
+}
+
+// StateBelongsTo reports whether a state loaded from build-<env>-<service>.json
+// was really written for (env, service), or whether the filename was split at
+// the wrong hyphen.
+//
+// The filename cannot answer this on its own: both segments may contain "-",
+// so build-dev-k8s-gateway.json reads equally as (dev, k8s-gateway) and
+// (dev-k8s, gateway). But the FILE names its own service, so the split can be
+// checked against it — if a caller globbing env "dev" derived the service
+// "k8s-daemon-gateway" from a file whose Service is "daemon-gateway", that
+// file belongs to env "dev-k8s" and not to this deploy.
+//
+// This works on state written by older forge versions too, because Service has
+// always been recorded. Env is checked first when present, as the direct
+// answer; the Service cross-check is what covers everything already on disk.
+// A file carrying neither is accepted — the caller's filename filter is all it
+// ever had.
+func StateBelongsTo(st *State, env, derivedService string) bool {
+	if st == nil {
+		return false
+	}
+	if st.Env != "" {
+		want := env
+		if want == "" {
+			want = "default"
+		}
+		return st.Env == want
+	}
+	if st.Service != "" && derivedService != "" {
+		return st.Service == derivedService
+	}
+	return true
 }
 
 // ReadState loads the per-service build-state file. Returns

@@ -2033,7 +2033,12 @@ schema RenderedWorkload:
     # `service_account` overrides the pod's serviceAccountName (default:
     # the workload name — the forge-generated per-service SA). Use it to
     # bind an EXISTING out-of-band SA (e.g. one with a cloud IAM
-    # workload-identity annotation). `pod_annotations` are stamped on the
+    # workload-identity annotation). When set, forge emits NO
+    # ServiceAccount object for this workload and points the generated
+    # Role/RoleBinding's subject at the override, so the ROLE, the
+    # BINDING and the POD all name one identity; image pull secrets move
+    # to the pod spec because there is no generated SA to hold them.
+    # `pod_annotations` are stamped on the
     # pod template metadata (GKE / mesh / prometheus hints).
     # `node_selector` + `tolerations` pin the pod to a node pool (the
     # control-plane kata daemon-pool pinning case). Only meaningful for a

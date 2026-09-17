@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -1321,6 +1322,32 @@ func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
 // was the one that failed to render. [renderScope.fold] turns that into
 // UNDETERMINED — a security-shaped check must never say "does not apply"
 // on the strength of facts it could not obtain.
+// unboundReason explains why the rendered ServiceAccount `name` has no
+// pods, distinguishing the two states this check used to conflate.
+//
+// It tested whether any pod named THAT SA, and then attributed every miss
+// to "no pod spec sets serviceAccountName" — a cause it never checked.
+// When a pod sets the field to a DIFFERENT SA the old wording was simply
+// false, and it sent the reader hunting for a missing field that was not
+// missing. Measured against control-plane's prod render: three pods each
+// set serviceAccountName to `reliant-cloudsql` while the report claimed
+// none set it at all.
+//
+// `others` is every OTHER identity pods in this namespace bind. Empty
+// means the original claim holds and is worth keeping — an unbound SA
+// with no competing binder really does leave its workload on `default`.
+// Non-empty is the strictly more useful form: it names the identity that
+// actually runs, which localizes the fault instead of describing it.
+func unboundReason(name string, others []string) string {
+	if len(others) == 0 {
+		return fmt.Sprintf("ServiceAccount %s is rendered but no pod spec sets serviceAccountName"+
+			" — the workload runs as the namespace `default` SA", name)
+	}
+	return fmt.Sprintf("ServiceAccount %s is rendered but no pod binds it; pods in this namespace run as %s"+
+		" — any Role/RoleBinding granted to %s is inert, and the grant should follow the identity that runs",
+		name, strings.Join(others, ", "), name)
+}
+
 func CheckDeployServiceAccount(_ context.Context, env *Environment) CheckResult {
 	return examineRendered(env, "service accounts", func(renders []envRender) CheckResult {
 		var unbound []string
@@ -1336,6 +1363,10 @@ func CheckDeployServiceAccount(_ context.Context, env *Environment) CheckResult 
 			if len(accounts) == 0 {
 				continue
 			}
+			// Every OTHER identity a pod in this namespace binds. Without
+			// it the check can say an SA is unbound but not why, which is
+			// how it came to report a cause it never tested.
+			boundElsewhere := map[string][]string{}
 			for _, o := range r.objects {
 				podSpec, containers := containersOf(o)
 				if len(containers) == 0 {
@@ -1348,6 +1379,11 @@ func CheckDeployServiceAccount(_ context.Context, env *Environment) CheckResult 
 				key := o.Metadata.Namespace + "/" + sa
 				if _, known := accounts[key]; known {
 					accounts[key] = true
+					continue
+				}
+				ns := o.Metadata.Namespace
+				if !slices.Contains(boundElsewhere[ns], sa) {
+					boundElsewhere[ns] = append(boundElsewhere[ns], sa)
 				}
 			}
 			names := make([]string, 0, len(accounts))
@@ -1358,8 +1394,10 @@ func CheckDeployServiceAccount(_ context.Context, env *Environment) CheckResult 
 			}
 			sort.Strings(names)
 			for _, n := range names {
-				unbound = append(unbound, fmt.Sprintf("%s: ServiceAccount %s is rendered but no pod spec sets "+
-					"serviceAccountName — the workload runs as the namespace `default` SA", r.env, n))
+				ns, _, _ := strings.Cut(n, "/")
+				others := boundElsewhere[ns]
+				sort.Strings(others)
+				unbound = append(unbound, fmt.Sprintf("%s: %s", r.env, unboundReason(n, others)))
 			}
 		}
 

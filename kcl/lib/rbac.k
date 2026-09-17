@@ -76,9 +76,48 @@ render_service_account = lambda name: str, namespace: str, part_of: str = "", pu
 # ServiceAccount so every pod/Job that binds it can pull from a private
 # registry. Both default to empty — callers that don't need them keep
 # the original two-arg behavior and emit identical manifests.
-render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: any}] = [], pull_secrets: [str] = [], part_of: str = "" -> [any] {
+#
+# `service_account` is the workload's `K8sOverrides.service_account`: an
+# EXISTING out-of-band SA (typically carrying a cloud IAM
+# workload-identity annotation) that the POD binds instead of the
+# forge-generated one. Empty (the common case) => byte-identical to
+# before: forge generates the SA and binds the Role to it.
+#
+# When it IS set, two things change together, and they have to change
+# together or the grant is inert:
+#
+#   * The RoleBinding's SUBJECT becomes the override. The Role exists to
+#     grant permission to the identity that actually runs; binding it to
+#     a name no pod uses produces manifests that read as scoped RBAC and
+#     grant nothing. That was the defect this argument fixes — the pod
+#     bound `reliant-cloudsql` while `daemon-gateway-rolebinding` named
+#     `daemon-gateway`, an identity with no pods, which is what `forge
+#     doctor`'s Deploy SA Binding reported.
+#   * The ServiceAccount object is NOT emitted. forge does not own an SA
+#     it was explicitly told already exists, and emitting one is worse
+#     than redundant: several workloads may legitimately share ONE
+#     override (control-plane points three at `reliant-cloudsql`), so
+#     forge would render the same SA repeatedly, each copy WITHOUT the
+#     workload-identity annotation the real one carries — an apply would
+#     strip it and break the auth the override existed to provide.
+#
+# The ROLE keeps the workload's name rather than the SA's, deliberately.
+# The rule set belongs to the workload, not to the identity: two services
+# sharing one SA legitimately declare different rules, and naming the
+# Role after the SA would make the second render clobber the first's
+# grants — the same last-writer-wins failure render_cluster_rbac
+# documents below at cluster scope. Sharing an SA therefore yields
+# several Roles and several RoleBindings with one subject, which is
+# redundant but correct: RBAC grants union.
+#
+# The imagePullSecrets consequence is handled at the POD, in
+# lib/services.k — see the `_pull_secrets_on_pod` note there.
+render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: any}] = [], pull_secrets: [str] = [], part_of: str = "", service_account: str = "" -> [any] {
     _labels = _managed_labels(name, part_of)
-    [
+    # The identity the Role is granted TO: the override when the pod
+    # binds one, else the SA forge generates below.
+    _subject = service_account if service_account else name
+    ([] if service_account else [
         {
             apiVersion = "v1"
             kind = "ServiceAccount"
@@ -86,6 +125,7 @@ render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: a
             if pull_secrets:
                 imagePullSecrets = [{name = s} for s in pull_secrets]
         }
+    ]) + [
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
             kind = "Role"
@@ -105,7 +145,7 @@ render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: a
                 labels = _labels
             }
             subjects = [
-                {kind = "ServiceAccount", name = name, namespace = namespace}
+                {kind = "ServiceAccount", name = _subject, namespace = namespace}
             ]
             roleRef = {
                 apiGroup = "rbac.authorization.k8s.io"
@@ -146,14 +186,22 @@ render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: a
 # fails, because a deliberately-shared singleton is legitimate at cluster
 # scope — but an operator's binding is never one, since its subject is
 # per-env by construction.
-render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets: [str] = [], part_of: str = "" -> [any] {
+#
+# `service_account` behaves exactly as it does in render_namespaced_rbac
+# above: an operator authored as a Service may carry the same override,
+# so the ClusterRoleBinding's subject follows the identity the pod binds
+# and forge stops emitting an SA it does not own. The failure it prevents
+# is worse at this tier than at the namespaced one — a controller-runtime
+# manager that cannot read its leases or watch its CRs does not start.
+render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets: [str] = [], part_of: str = "", service_account: str = "" -> [any] {
     _labels = _managed_labels(name, part_of)
     # Scoped to the namespace for the last-writer-wins reason above. The
     # ServiceAccount is NOT suffixed: it is namespaced already, so its
     # (namespace, name) address is unique without help, and workloads
     # reference it by bare name.
     _cluster_role = "${name}-${namespace}-clusterrole"
-    [
+    _subject = service_account if service_account else name
+    ([] if service_account else [
         {
             apiVersion = "v1"
             kind = "ServiceAccount"
@@ -161,6 +209,7 @@ render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets:
             if pull_secrets:
                 imagePullSecrets = [{name = s} for s in pull_secrets]
         }
+    ]) + [
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
             kind = "ClusterRole"
@@ -172,7 +221,7 @@ render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets:
             kind = "ClusterRoleBinding"
             metadata = {name = "${name}-${namespace}-clusterrolebinding", labels = _labels}
             subjects = [
-                {kind = "ServiceAccount", name = name, namespace = namespace}
+                {kind = "ServiceAccount", name = _subject, namespace = namespace}
             ]
             roleRef = {
                 apiGroup = "rbac.authorization.k8s.io"

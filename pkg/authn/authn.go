@@ -12,8 +12,9 @@
 //     decided once at construction, never per-request;
 //   - the exact-match unauthenticated-procedure allow-list gate;
 //   - Bearer-token extraction and the CodeUnauthenticated error
-//     envelope (a missing Authorization header is a 401, never a
-//     silent pass-through);
+//     envelope (a missing credential is a 401, never a silent
+//     pass-through) — reading the Authorization header by default, or
+//     whatever channel [Policy.ExtractToken] names;
 //   - claims plumbing: validate → enrich → stash on the context;
 //   - the claims stash itself — [Claims], [ContextWithClaims],
 //     [ClaimsFromContext] and the [GetUser] handler helper, over a
@@ -25,7 +26,10 @@
 //
 //   - the token validator (and when it gets installed),
 //   - the identity enricher hook (e.g. hydrate claims from the user
-//     table after signature validation), and
+//     table after signature validation),
+//   - where the credential is read from ([Policy.ExtractToken] — the
+//     Authorization header by default, a cookie or bespoke header when
+//     the project's session lives somewhere else), and
 //   - the allow-list contents.
 //
 // A project may still stash claims under a context key it owns by
@@ -92,6 +96,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -196,6 +201,41 @@ type Policy struct {
 	// identity entirely.
 	Decorate func(ctx context.Context, claims *auth.Claims, authorization string) context.Context
 
+	// ExtractToken, when non-nil, reads the caller's raw credential out of
+	// the request headers, replacing the default "Bearer token in the
+	// Authorization header" channel.
+	//
+	// WHY THIS EXISTS. The Authorization header is the right default, but it
+	// is not the only place a credential legitimately lives. The case that
+	// forced this seam: a browser console whose session is an HttpOnly
+	// cookie. The token is deliberately unreadable to scripts (that is what
+	// keeps an XSS from stealing it), so no client code CAN attach an
+	// Authorization header — and every RPC failed with "missing
+	// Authorization header" while the identical token authenticated fine as
+	// a Bearer. The credential was valid and present; it just arrived in a
+	// header this package did not read. Without a seam the only fixes were
+	// to fork the interceptor or to have a proxy synthesize the header,
+	// which puts credential handling in a transport layer that should not
+	// have any.
+	//
+	// It returns the RAW token — no "Bearer " prefix, which the library does
+	// not strip from an extractor's result. Returning "" means NO CREDENTIAL
+	// WAS PRESENTED and is treated exactly like a missing Authorization
+	// header: CodeUnauthenticated, or a claim-less pass when AnonymousOK is
+	// set. An extractor cannot itself reject a request; a malformed
+	// credential should come back as "" (missing) or as a token that fails
+	// Validate.
+	//
+	// This changes only WHERE the credential is read from. Validation, the
+	// claims stash, Enrich, Decorate, MapError and the allow-list gate are
+	// unchanged, so a custom channel cannot weaken authentication — a token
+	// found by an extractor goes through exactly the same validator as one
+	// found in the Authorization header.
+	//
+	// nil (the default) reads "Authorization: Bearer <token>", so existing
+	// services are unaffected.
+	ExtractToken func(header http.Header) string
+
 	// MapError, when non-nil, maps a token-validation failure into the
 	// connect error returned to the caller. It receives the raw error
 	// from Validate and the connect.Error the library would return by
@@ -287,7 +327,7 @@ func (a *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if a.allowUnauthenticated(req.Spec().Procedure) {
 			return next(ctx, req)
 		}
-		ctx, err := a.authenticate(ctx, req.Header().Get("Authorization"))
+		ctx, err := a.authenticate(ctx, a.policy.authorization(req.Header()))
 		if err != nil {
 			return nil, err
 		}
@@ -304,12 +344,35 @@ func (a *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 		if a.allowUnauthenticated(conn.Spec().Procedure) {
 			return next(ctx, conn)
 		}
-		ctx, err := a.authenticate(ctx, conn.RequestHeader().Get("Authorization"))
+		ctx, err := a.authenticate(ctx, a.policy.authorization(conn.RequestHeader()))
 		if err != nil {
 			return err
 		}
 		return next(ctx, conn)
 	}
+}
+
+// authorization returns the caller's credential in Authorization-header
+// form ("Bearer <token>"), from whichever channel this policy reads.
+//
+// Normalizing to the header form here — rather than teaching authenticate
+// about two shapes — keeps ONE credential path below this point. Everything
+// downstream (the Bearer parse, Validate, Enrich, the claims stash, and the
+// raw authorization string handed to Decorate for outbound propagation)
+// stays identical whether the token arrived in a header or a cookie, so a
+// custom channel cannot drift into a second, less-tested code path.
+//
+// An extractor that finds nothing yields "", which authenticate treats as a
+// missing credential — fail-closed, and still subject to AnonymousOK.
+func (p Policy) authorization(header http.Header) string {
+	if p.ExtractToken == nil {
+		return header.Get("Authorization")
+	}
+	token := p.ExtractToken(header)
+	if token == "" {
+		return ""
+	}
+	return "Bearer " + token
 }
 
 // allowUnauthenticated reports whether the procedure is on the explicit

@@ -10,6 +10,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/kclvendor"
+	"github.com/reliant-labs/forge/kcl"
 )
 
 // `forge project shapes` — the symbol index an agent needs for recon, derived
@@ -50,9 +53,10 @@ import (
 //	store    EstimateStore                 internal/db/store_gen.go:214  go doc ./internal/db EstimateStore
 //	handler  roofops.RecalculateEstimate   internal/handlers/roofops/rpc_recalculate_estimate.go:24  unwired-stub
 //	hook     useListEstimates              frontends/dashboard/src/hooks/roofops-service-hooks_gen.ts:212
+//	deploy-target FirebaseHosting          .forge-kcl/schema.k:1851  on=Frontend  required=project,site,public_dir  …
 
 type shape struct {
-	Kind   string // rpc | message | enum | table | store | handler | hook
+	Kind   string // rpc | message | enum | table | store | handler | hook | deploy-target
 	Name   string
 	File   string
 	Line   int
@@ -97,7 +101,8 @@ Examples:
   forge project shapes                          # everything
   forge project shapes --grep Estimate          # one entity across all layers
   forge project shapes --grep 'Invoice|Payment' # SEVERAL entities in one call
-  forge project shapes --kind rpc,handler       # what is declared vs implemented`,
+  forge project shapes --kind rpc,handler       # what is declared vs implemented
+  forge project shapes --kind deploy-target     # what a workload's deploy= accepts`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectDir, err := os.Getwd()
 			if err != nil {
@@ -180,7 +185,7 @@ Examples:
 		},
 	}
 	cmd.Flags().StringVar(&grepPat, "grep", "", "case-insensitive regex filter over name and detail")
-	cmd.Flags().StringVar(&kinds, "kind", "", "comma-separated kinds: rpc,message,enum,table,store,handler,hook")
+	cmd.Flags().StringVar(&kinds, "kind", "", "comma-separated kinds: rpc,message,enum,table,store,handler,hook,deploy-target")
 	return cmd
 }
 
@@ -193,6 +198,7 @@ func collectShapes(projectDir string) []shape {
 	out = append(out, scanStores(filepath.Join(projectDir, "internal", "db"))...)
 	out = append(out, scanHandlers(filepath.Join(projectDir, "internal", "handlers"))...)
 	out = append(out, scanHooks(filepath.Join(projectDir, "frontends"))...)
+	out = append(out, scanDeployTargets(projectDir)...)
 
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Kind != out[j].Kind {
@@ -219,8 +225,10 @@ func kindRank(k string) int {
 		return 5
 	case "hook":
 		return 6
+	case "deploy-target":
+		return 7
 	}
-	return 7
+	return 8
 }
 
 // eachLine runs fn over every line of every file under root matching ext.
@@ -348,6 +356,91 @@ func scanStores(root string) []shape {
 			out = append(out, shape{"store", m[1], rel, n, "go doc ./internal/db " + m[1]})
 		}
 	})
+	return out
+}
+
+// scanDeployTargets reports what a workload's `deploy` field may be SET TO —
+// the schemas behind `deploy = forge.FirebaseHosting { … }`.
+//
+// It is here because this is the one capability with no generated file to
+// live in. Scaffold a frontend and exactly one `forge.Frontend` block is
+// emitted, in dev/main.k; staging and prod declare no frontend workload at
+// all, so a user reading prod config to work out how to ship their frontend
+// finds nothing, and `forge env deploy prod` quietly ships the Go services
+// and not the app. Meanwhile schema.k has supported
+// `Frontend.deploy?: FirebaseHosting | K8sCluster` all along, with a good
+// docstring. The capability was built and then made invisible.
+//
+// `forge project capabilities` does not close this: it lists VERBS, and what
+// is missing here is a SCHEMA — "what can a Frontend *be*".
+//
+// The set is reflected out of the embedded kcl module (kcl.DeployTargets),
+// not listed here. See kcl/targets.go for why that is the whole point: a
+// literal list in this file would be a second source of truth that rots on
+// the next commit adding a target.
+//
+// Unlike every other scanner this one does not read projectDir — the schemas
+// ride inside the binary, so it answers in a non-project directory too. The
+// parameter is kept for signature symmetry with the rest of collectShapes.
+func scanDeployTargets(_ string) []shape {
+	targets, err := kcl.DeployTargets()
+	if err != nil {
+		return nil //nolint:nilerr // partial output beats no output
+	}
+	out := make([]shape, 0, len(targets))
+	for _, t := range targets {
+		// Which workload kind accepts this target is load-bearing and is
+		// part of what users are missing: Service-side and Frontend-side
+		// unions differ, so "K8sCluster" alone does not tell you whether
+		// you may write it on a frontend. It leads the detail column.
+		detail := "on=" + strings.Join(t.Workloads, ",")
+		if req := requiredFieldNames(t.Fields); len(req) > 0 {
+			detail += "  required=" + strings.Join(req, ",")
+		}
+		if opt := optionalFieldNames(t.Fields); len(opt) > 0 {
+			detail += "  optional=" + strings.Join(opt, ",")
+		}
+		if t.Doc != "" {
+			detail += "  " + t.Doc
+		}
+		file := t.File
+		if file != "" {
+			// Locate it where a reader can actually open it: the module is
+			// vendored into the project at .forge-kcl/ on every generate.
+			file = filepath.Join(kclvendor.VendorDirName, file)
+		}
+		out = append(out, shape{"deploy-target", t.Name, file, t.Line, detail})
+	}
+	return out
+}
+
+// requiredFieldNames returns the fields that MUST be supplied — the ones a
+// user has to write to make the block valid. Separating them from the
+// optional set is the difference between "here is a wall of 15 fields" and
+// "write these three".
+func requiredFieldNames(fields []kcl.SchemaField) []string {
+	var out []string
+	for _, f := range fields {
+		// `type` is the union discriminator and is always defaulted by the
+		// schema; it is never something a user writes.
+		if f.Name == "type" {
+			continue
+		}
+		if f.Required() {
+			out = append(out, f.Name)
+		}
+	}
+	return out
+}
+
+func optionalFieldNames(fields []kcl.SchemaField) []string {
+	var out []string
+	for _, f := range fields {
+		if f.Name == "type" || f.Required() {
+			continue
+		}
+		out = append(out, f.Name)
+	}
 	return out
 }
 

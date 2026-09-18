@@ -248,31 +248,17 @@ func BinaryConfigsFromMessages(messages []ConfigMessage) []BinaryConfig {
 // This is what makes a workload's Deployment carry only ITS binary's env
 // vars: the projection for a binary is emitted from exactly this set.
 func ConfigFieldsForBinary(messages []ConfigMessage, binary string) []ConfigField {
-	byName := make(map[string]*ConfigMessage, len(messages))
-	for i := range messages {
-		byName[messages[i].Name] = &messages[i]
-	}
 	for i := range messages {
 		m := &messages[i]
 		if m.Binary != binary {
 			continue
 		}
-		var out []ConfigField
-		for _, f := range m.Fields {
-			if f.ProtoType == "message" && f.MessageType != "" {
-				if bm, known := byName[f.MessageType]; known {
-					for _, bf := range bm.Fields {
-						if bf.ProtoType == "message" && bf.MessageType != "" {
-							continue
-						}
-						out = append(out, bf)
-					}
-				}
-				continue
-			}
-			out = append(out, f)
-		}
-		return out
+		// Shared flattener, so a leaf name claimed by two composed blocks is
+		// qualified instead of declared twice in this binary's schema. See
+		// config_block_flatten.go — the bare-name version made a config
+		// failure that `forge generate` only warns about, which left the
+		// previous config_gen.k on disk missing both blocks entirely.
+		return FlattenFieldsWithBlocks(m.Fields, messages)
 	}
 	return nil
 }

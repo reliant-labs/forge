@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 	"github.com/reliant-labs/forge/internal/statefile"
+	"github.com/reliant-labs/forge/kcl"
 )
 
 func newDeployCmd() *cobra.Command {
@@ -597,8 +599,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		if hasFirebaseFrontend(entities) {
 			fmt.Println("\nSkipping frontend deploy (--skip-frontend).")
 		}
-	} else if err := dispatchFrontendDeploys(ctx, entities, projectDir, envName, envCfgKV, dryRun); err != nil {
-		return err
+	} else {
+		// Say so when a declared frontend will not ship. The dispatch below
+		// is a silent no-op for a frontend this env never declared, and
+		// that silence is the whole reported bug — see the helper.
+		warnUndeployedFrontends(os.Stdout, cfg, entities, envName, targets)
+		if err := dispatchFrontendDeploys(ctx, entities, projectDir, envName, envCfgKV, dryRun); err != nil {
+			return err
+		}
 	}
 
 	if dryRun {
@@ -999,6 +1007,95 @@ func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) e
 		requiredSecrets: requiredSecretsForPreflight(in.entities),
 		secretSupply:    secretSupplyForPreflight(in.entities),
 	})
+}
+
+// warnUndeployedFrontends reports each frontend the PROJECT declares that
+// this ENV will not ship, and tells the user what to write to fix it.
+//
+// ── Why this warns at all ────────────────────────────────────────────────
+//
+// forge is fail-closed nearly everywhere; this is the one place an entire
+// workload goes missing without comment. Scaffold a project with a frontend
+// and `forge.Frontend` is emitted in exactly ONE env — dev. Staging and prod
+// get the frontend's config projection (config.k) but declare no frontend
+// workload, so `forge env deploy prod` ships the Go services, says nothing
+// about the frontend, and exits 0. The user's app is simply not deployed.
+//
+// Two distinct shapes both produce that silence, and both are checked here:
+//
+//   - the frontend is ABSENT from the env's rendered bundle (the scaffolded
+//     staging/prod case — nothing to iterate over, so the dispatch loop
+//     never sees it); and
+//   - the frontend is PRESENT with no deploy block, which dispatch treats
+//     as build-only.
+//
+// ── Why it warns rather than errors ──────────────────────────────────────
+//
+// Deploying a frontend out-of-band is legitimate — Vercel, a separate
+// pipeline, a static host outside forge. Those users are correctly
+// configured and erroring would break them, which is worse than the silence
+// this fixes. A frontend named by --target is likewise not a surprise.
+//
+// The targets named in the hint are REFLECTED from the embedded schema
+// (kcl.DeployTargetsFor("Frontend")), so this text cannot name a target the
+// schema doesn't accept, and it picks up a newly added one for free. That is
+// also why it asks the Frontend union specifically rather than the whole
+// target set: the service-side union is different, and offering a user a
+// service-only target here would be advice that fails to compile.
+func warnUndeployedFrontends(w io.Writer, cfg *config.ProjectConfig, entities *KCLEntities, envName string, targets []string) {
+	if cfg == nil || len(cfg.Frontends) == 0 {
+		return
+	}
+	// --target names the apps to deploy; a frontend not named was excluded
+	// on purpose and its absence is not a surprise worth reporting.
+	if len(targets) > 0 {
+		return
+	}
+	// dev NEVER deploys a frontend artifact: `forge env up` dev-serves
+	// frontends in its own phase (`npm run dev`) and passes skipFrontend to
+	// the deploy phase precisely so the prod build path stays out of the dev
+	// loop (see up.go). A dev frontend with no deploy target is therefore the
+	// CORRECT configuration, and warning about it would train users to
+	// ignore the warning in the envs where it means something.
+	if envName == "dev" {
+		return
+	}
+
+	rendered := map[string]*FrontendEntity{}
+	if entities != nil {
+		for i, f := range entities.Frontends {
+			rendered[f.Name] = &entities.Frontends[i]
+		}
+	}
+
+	var undeployed []string
+	for _, fe := range cfg.Frontends {
+		r, inEnv := rendered[fe.Name]
+		if inEnv && r.Deploy != nil {
+			continue
+		}
+		undeployed = append(undeployed, fe.Name)
+	}
+	if len(undeployed) == 0 {
+		return
+	}
+
+	hint := "add a `deploy = forge.<target> { … }` block to the frontend"
+	if avail, err := kcl.DeployTargetsFor("Frontend"); err == nil && len(avail) > 0 {
+		hint = fmt.Sprintf("add `deploy = forge.%s { … }` (or %s) to the frontend",
+			avail[0], strings.Join(avail[1:], " / "))
+		if len(avail) == 1 {
+			hint = fmt.Sprintf("add `deploy = forge.%s { … }` to the frontend", avail[0])
+		}
+	}
+
+	fmt.Fprintln(w)
+	for _, name := range undeployed {
+		fmt.Fprintf(w, "warning: frontend %q is declared but has no deploy target for env %q — it will NOT be deployed\n", name, envName)
+		fmt.Fprintf(w, "  %s in deploy/kcl/%s/main.k\n", hint, envName)
+		fmt.Fprintln(w, "  see: forge project shapes --kind deploy-target")
+		fmt.Fprintln(w, "  (ignore this if the frontend ships out-of-band — Vercel, a separate pipeline, a static host outside forge)")
+	}
 }
 
 // dispatchFrontendDeploys ships every frontend declaring a first-class

@@ -115,11 +115,71 @@ func (r *registry) UnmarshalJSON(data []byte) error {
 // baked-in `iss` claim. Every key forge itself supplies (Worktree, Branch) is
 // already canonical, so a non-canonical key can only come from a composed KCL
 // expression, and naming it is what makes that expression findable.
+//
+// WHAT THIS CHECKS IS SHAPE, NOT LENGTH — and that distinction is the whole
+// defect this function used to have. It compared the key against Sanitize,
+// which does two unrelated jobs: it fixes SHAPE and it TRUNCATES at
+// maxNameLen. So a perfectly well-formed key differed from its own sanitized
+// form purely by being long, and was refused as "not canonical". Since prod's
+// key is "prod-" + the worktree name, any worktree whose name exceeded 19
+// characters could not render prod AT ALL — and `forge-deploy-882e308d`, at
+// 21, is an utterly ordinary name of exactly the shape reliant's own tooling
+// generates (~/.reliant/worktrees/<org>/<name>-<hash>).
+//
+// The message made it materially worse. It attributed the failure to an EMPTY
+// INTERPOLATION and printed the `_wt = option("worktree") or ""` guard — which
+// was already present and correct three lines above the failing call. The
+// error therefore pointed AWAY from the cause, and following it literally led
+// to nothing to change. The two conditions have unrelated fixes, so they now
+// get separate branches and separate messages.
+//
+// WHY THE LONG KEY IS ACCEPTED RATHER THAN TRUNCATED OR HASHED. The choice is
+// between three options, and it turns on what a port-block key actually IS:
+//
+//   - TRUNCATE to 24 (what the old message tantalizingly computed and printed
+//     before refusing). Unsound, because truncation is not injective.
+//     "prod-implement-billing-webhooks-a" and "prod-implement-billing-webhooks-b"
+//     both cut to "prod-implement-billing-w", so two prod stacks would SILENTLY
+//     share one port block and then fight over the same host ports with no
+//     error anywhere. That is strictly worse than refusing: it converts a loud
+//     failure into a silent one. Pinned by
+//     TestLongKeysThatTruncateAlikeStayDistinct.
+//   - HASH-SUFFIX (truncate to 24 with a discriminator appended). Sound on
+//     collisions, but it buys that soundness by MANGLING the key, and the key
+//     is the registry's primary key. A user reading .forge/blocks.json or
+//     `forge env devstack list` would see a name they never typed, and the
+//     mapping back to their KCL expression is gone. It also cannot be
+//     introduced without moving already-issued blocks for any key that is
+//     currently long — and a moved port invalidates a k3d host mapping and an
+//     issuer's baked-in `iss` claim.
+//   - ACCEPT THE KEY VERBATIM (chosen). Collisions become impossible rather
+//     than merely detected, because distinct keys stay distinct strings, and
+//     the registry keeps the exact name the KCL composed.
+//
+// The third is available because the 24-char budget was never this function's
+// to enforce. maxNameLen budgets a git FACT that gets embedded as ONE SEGMENT
+// of a longer composed name (a k8s namespace, a DB name, a NATS subject); it
+// is applied once, in Worktree/Branch, where truncating is sound because the
+// fact is not a unique identifier of anything. A port-block key is a map
+// lookup that resolves to an integer offset — it is never itself a namespace
+// or a DB name. The only key kind that reaches a name-shaped consumer is a
+// STACK key (ListStacks), and that one is byte-equal to the already-bounded
+// worktree fact by construction (see isStackKey), so it is bounded by the fact
+// budget without this function doing anything.
+//
+// Verified against the actual consumers: dev's KCL keys on option("worktree")
+// directly, which is Sanitize's own output and so already ≤ 24 and idempotent
+// under the shape check — dev could never have tripped this, at any worktree
+// name length. Only a COMPOSED key ("prod-" + fact) can exceed the fact
+// budget, and composition is exactly the case that must not be bounded by it.
 func validateKey(key string) error {
 	if key == "" { // the default stack, block 0
 		return nil
 	}
-	if canonical := Sanitize(key); canonical != key {
+	// SHAPE: the DNS-label rules, with no length bound. A key failing this is
+	// a fragment — a trailing dash from an empty interpolation, an underscore,
+	// a capital — and is refused, never repaired.
+	if canonical := canonicalLabel(key); canonical != key {
 		return fmt.Errorf(
 			"port-block key %q is not a canonical name (canonical form: %q).\n"+
 				"This is almost always an EMPTY INTERPOLATION in a KCL key expression — e.g.\n"+
@@ -134,8 +194,34 @@ func validateKey(key string) error {
 				"  _key = \"prod-\" + _wt if _wt else \"prod\"",
 			key, canonical)
 	}
+	// LENGTH: a well-shaped key is accepted at ANY plausible length. The
+	// ceiling below is a sanity bound on something pathological — a key built
+	// from a file path or a commit message — not the git-fact budget.
+	if len(key) > maxKeyLen {
+		return fmt.Errorf(
+			"port-block key %q is %d characters, which exceeds the %d-character limit.\n"+
+				"This is a LENGTH problem, not a malformed name — the key's shape is fine,\n"+
+				"so the empty-interpolation guard is NOT what you are looking for.\n"+
+				"A key is normally composed as a literal prefix plus a git fact, e.g.\n"+
+				"  fp.allocate_port(3000, \"prod-\" + option(\"worktree\"))\n"+
+				"and forge already bounds the fact itself to %d characters, so a key this long\n"+
+				"means the KCL is composing something other than a worktree or branch name.\n"+
+				"Shorten the literal prefix, or key on option(\"worktree\") directly",
+			key, len(key), maxKeyLen, maxNameLen)
+	}
 	return nil
 }
+
+// maxKeyLen bounds a whole port-block key. It is deliberately far above
+// maxNameLen rather than equal to it: a key is a literal PREFIX PLUS a git
+// fact, so budgeting the composed key at the fact's own ceiling is precisely
+// what made a 21-character worktree unable to render prod (see validateKey).
+//
+// It exists only to stop something pathological — a key accidentally built
+// from a file path or a commit message — from being memoized into the registry
+// forever, since nothing downstream would ever complain. Any plausible
+// "<env>-<worktree>" composition is comfortably inside it.
+const maxKeyLen = 128
 
 // AllocatePort is the engine behind the forge.allocate_port(base, key) KCL
 // builtin. It returns base + block(key)*100, where block(key) is the small

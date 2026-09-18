@@ -17,40 +17,53 @@ func TestDecideForgeCompat(t *testing.T) {
 		name    string
 		binary  string
 		project string
+		raw     string // buildinfo.Version(): what the binary calls itself
 		local   bool
 		want    compatVerdict
 	}{
-		{"pin equals binary", binary, "v0.1.16", false, compatOK},
-		{"pin newer than binary", binary, "v0.1.17", false, compatOK},
-		{"pin older than binary", binary, "v0.1.15", false, compatStalePin},
-		{"pin older by patch", binary, "v0.1.16-rc.1", false, compatStalePin},
+		{"pin equals binary", binary, "v0.1.16", "", false, compatOK},
+		{"pin newer than binary", binary, "v0.1.17", "", false, compatOK},
+		{"pin older than binary", binary, "v0.1.15", "", false, compatStalePin},
+		{"pin older by patch", binary, "v0.1.16-rc.1", "", false, compatStalePin},
 
 		// A pseudo-version from `go install ...@main` is a real, orderable
 		// version: it sorts after the tag it builds on and before the next
 		// one, which is exactly what commit-pinning mode needs.
 		{"binary is a pseudo-version, pin is the tag it follows",
-			"v0.1.16-0.20260916085636-c01e07ec6ef2", "v0.1.15", false, compatStalePin},
+			"v0.1.16-0.20260916085636-c01e07ec6ef2", "v0.1.15", "", false, compatStalePin},
 		{"binary is a pseudo-version, pin is the next tag",
-			"v0.1.16-0.20260916085636-c01e07ec6ef2", "v0.1.16", false, compatOK},
+			"v0.1.16-0.20260916085636-c01e07ec6ef2", "v0.1.16", "", false, compatOK},
 
 		// The regression this design exists for: an unreleasable binary
 		// (dirty tree, plain `go build`) against a published pin.
-		{"unreleasable binary, published pin", "", "v0.1.15", false, compatUnreleasableNoBridge},
-		{"unreleasable binary, newer published pin", "", "v9.9.9", false, compatUnreleasableNoBridge},
+		{"unreleasable binary, published pin", "", "v0.1.15", "", false, compatUnreleasableNoBridge},
+		{"unreleasable binary, newer published pin", "", "v9.9.9", "", false, compatUnreleasableNoBridge},
 
 		// A local resolution is the supported pairing for an unreleasable
 		// binary, and is fine for a released one too.
-		{"unreleasable binary, bridged", "", "", true, compatOK},
-		{"released binary, bridged", binary, "", true, compatOK},
+		{"unreleasable binary, bridged", "", "", "", true, compatOK},
+		{"released binary, bridged", binary, "", "", true, compatOK},
+
+		// A BUILD THAT CANNOT VOUCH FOR ITSELF, against a project that
+		// already resolves to exactly it. InstallableVersion() is "" for any
+		// working-tree build, but the project's own `go list -m` answering
+		// with this version proves the proxy served it — so refusing would be
+		// a false positive whose message names one version as both "what this
+		// forge is" and "the published version" it conflicts with.
+		{"unreleasable binary, project resolves to this very build",
+			"", "v0.1.17-0.20260918232310-3cfebb459c15", "v0.1.17-0.20260918232310-3cfebb459c15", false, compatOK},
+		// Same shape, DIFFERENT commit: no proof, so the refusal stands.
+		{"unreleasable binary, project resolves to a different build",
+			"", "v0.1.17-0.20260918232310-3cfebb459c15", "v0.1.17-0.20260918144654-6b3a0a0050cd", false, compatUnreleasableNoBridge},
 
 		// Unknown beats guessing.
-		{"unknown project version", binary, "", false, compatOK},
+		{"unknown project version", binary, "", "", false, compatOK},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := decideForgeCompat(c.binary, c.project, c.local); got != c.want {
-				t.Errorf("decideForgeCompat(%q, %q, %v) = %v, want %v",
-					c.binary, c.project, c.local, got, c.want)
+			if got := decideForgeCompat(c.binary, c.raw, c.project, c.local); got != c.want {
+				t.Errorf("decideForgeCompat(%q, %q, %q, %v) = %v, want %v",
+					c.binary, c.raw, c.project, c.local, got, c.want)
 			}
 		})
 	}

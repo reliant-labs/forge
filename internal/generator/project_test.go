@@ -216,8 +216,23 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	}
 
 	fePackageContents := readFile(t, filepath.Join(root, "frontends", "web", "package.json"))
-	if !strings.Contains(fePackageContents, `"build": "NODE_ENV=production next build"`) {
+	if !strings.Contains(fePackageContents, `"build": "NODE_ENV=production next build --webpack"`) {
 		t.Fatalf("expected frontend package.json build script to force production NODE_ENV, got:\n%s", fePackageContents)
+	}
+	// --webpack is load-bearing on Next.js 16, not a leftover. Turbopack is
+	// the default bundler there and REFUSES to run against a config carrying
+	// a `webpack` key ("This build is using Turbopack, with a `webpack`
+	// config and no `turbopack` config", exit 1). next.config.ts carries one
+	// in all three output branches, for an extensionAlias mapping and a
+	// per-module resolve override that Turbopack cannot express — so every
+	// script that boots Next has to pick the bundler explicitly.
+	for _, script := range []string{
+		`"dev": "next dev --webpack"`,
+		`"analyze": "ANALYZE=true next build --webpack"`,
+	} {
+		if !strings.Contains(fePackageContents, script) {
+			t.Fatalf("frontend package.json must pin the bundler with --webpack (%s) — Next.js 16 defaults to Turbopack and hard-fails on next.config.ts's webpack key; got:\n%s", script, fePackageContents)
+		}
 	}
 
 	// A6/A7: the project keeps ONE thin middleware file wiring auth

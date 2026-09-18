@@ -1,31 +1,17 @@
 // ESLint v9 flat config. Replaces the deprecated `next lint` + .eslintrc.json
 // combo that was removed in Next.js 16. The shape of this file is
-// intentionally compact: one config array entry per concern, composed via
-// FlatCompat for plugins that still ship legacy ("eslintrc-style") configs.
+// intentionally compact: one config array entry per concern.
 //
 // Keep this file checked in (not generated) so users can extend it without
 // fighting the scaffold.
 
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-import { FlatCompat } from "@eslint/eslintrc";
 import js from "@eslint/js";
+import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
+import nextTypeScript from "eslint-config-next/typescript";
 import importPlugin from "eslint-plugin-import";
 import react from "eslint-plugin-react";
 import unicorn from "eslint-plugin-unicorn";
 import tseslint from "typescript-eslint";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// FlatCompat translates legacy "extends" entries (e.g. next/core-web-vitals)
-// into flat-config objects. eslint-config-next has not yet shipped a native
-// flat config; the Next.js maintainers' recommended workaround is exactly
-// this compat shim. Remove once eslint-config-next ships flat config.
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-});
 
 // ── Accessibility (jsx-a11y) ───────────────────────────────────────────
 //
@@ -264,7 +250,14 @@ const config = [
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  // eslint-config-next 16 ships a NATIVE flat config, so these are imported
+  // and spread directly. Through 15 it was eslintrc-only and had to come in
+  // via FlatCompat (`compat.extends("next/core-web-vitals", …)`); on 16 that
+  // shim throws "Converting circular structure to JSON" inside
+  // @eslint/eslintrc, because it tries to validate an already-flat config
+  // against the legacy schema. Keep these as direct imports.
+  ...nextCoreWebVitals,
+  ...nextTypeScript,
   {
     plugins: {
       react,
@@ -405,6 +398,38 @@ const config = [
     files: ["src/lib/theme/theme-provider.tsx"],
     rules: {
       "react/forbid-dom-props": "off",
+    },
+  },
+  {
+    // eslint-config-next 16 pulls eslint-plugin-react-hooks v7 (15 pinned
+    // v5), whose `recommended` set turns the React Compiler diagnostics into
+    // ERRORS. Two of them fire on scaffold code that is correct as written:
+    //
+    //   - set-state-in-effect: the scaffold's mount-only effects
+    //     (`useEffect(() => setHydrated(true), [])` in route-guard.tsx and
+    //     session_nav.tsx, the stored-theme read in use-theme.ts, the session
+    //     restore in auth/context.tsx, the highlight reset in
+    //     entity-picker.tsx). These exist BECAUSE the value is not knowable
+    //     during SSR — reading localStorage or a session cookie in render
+    //     would produce a hydration mismatch, which is the bug this rule's
+    //     own suggested fix would introduce here.
+    //   - refs: event-context.tsx assigns `handlerRef.current = handler`
+    //     during render, the standard latest-handler idiom that keeps the
+    //     bus subscription from re-subscribing on every render.
+    //
+    // Downgraded to "warn" rather than "off": the rules are genuinely useful
+    // on app code written later, and the scaffold should not silence a class
+    // of real bug for the life of the project. They are not errors because a
+    // freshly scaffolded project must pass `npm run lint` clean.
+    //
+    // Declared project-wide rather than per-file because five of the six
+    // files ship byte-identical into the Vite SPA tree as well; a
+    // path-scoped list here would drift from that copy the moment either
+    // moves. Revisit if the React Compiler is adopted (`reactCompiler: true`
+    // in next.config.ts), which changes the calculus on these patterns.
+    rules: {
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/refs": "warn",
     },
   },
 ];

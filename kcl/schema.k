@@ -2101,7 +2101,8 @@ schema RenderedWorkload:
     # ── sidecar / init containers (projection targets of Service.sidecars /
     # Service.init) ──
     # Each entry is the neutral dict `_project_container` emits: {name, image,
-    # command (folded argv), env_vars: [EnvVar], ports: [int]}.
+    # command (folded argv), env_vars: [EnvVar], ports: [int],
+    # resources: Resources?}.
     # render_k8s_service (`_render_extra_container`) resolves each image ref +
     # pull policy + the restricted-PSA container securityContext, appends
     # `sidecars` to the pod's `containers` AFTER the primary, and emits `init`

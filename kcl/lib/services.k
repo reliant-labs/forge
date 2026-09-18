@@ -238,6 +238,15 @@ _probe = lambda p: any, default_port: int -> any {
 # Sidecars/init do NOT take the workload's `security_override` — that governs
 # the primary/pod posture; extra containers keep the secure default (override
 # per-sidecar is out of scope for the 80/20 shape).
+#
+# `resources` DOES default, exactly as the primary container's does: an unset
+# sidecar takes `_default_resources` rather than rendering no resources block.
+# A container with no requests is BestEffort — no CPU guarantee, first evicted
+# under node pressure — and because k8s computes pod QoS across ALL containers,
+# one request-less sidecar demoted the whole pod even when the primary was
+# sized properly. Rendering nothing was never a deliberate default; it was the
+# primary's defaulting simply not reaching here, and it silently made every
+# multi-container workload forge renders worse than its single-container one.
 _render_extra_container = lambda c: any, image_registry: str, image_tag: str, image_digests: {str:str} -> any {
     _img = _image_ref(c.image, image_registry, image_tag, image_digests)
     {
@@ -255,6 +264,7 @@ _render_extra_container = lambda c: any, image_registry: str, image_tag: str, im
             ]
         if c.env_vars:
             env = [_env_source(e) for e in _dedup_env_vars(c.env_vars)]
+        resources = _resource_block(c.resources if c.resources else _default_resources)
         securityContext = _default_container_security_context
     }
 }

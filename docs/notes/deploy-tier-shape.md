@@ -59,18 +59,75 @@ Firebase into `StaticSite` as one provider behind a neutral shape, leaving
 That also stops the next vendor (S3, R2, Netlify) from adding a fourth
 near-identical schema.
 
-## 2. SimpleBackend — it is already the right thing, and it is not a provider
+## 2. SimpleBackend — it IS a provider, and the earlier draft got this wrong
 
-The spike's own docstring has the answer:
+An earlier version of this note argued `SimpleBackend` is "a capability tier
+over `K8sCluster`, not a provider", reasoning that both run in a cluster and
+differ only in how much of the pod spec is reachable.
 
-> "It is a CONSTRAINED PROFILE over K8sCluster, not a parallel mechanism —
-> `render_manifests` projects it onto the same `RenderedWorkload{deploy =
-> K8sCluster}` the k8s adapter already emits."
+**That reasoning was wrong, and it was wrong because it reasoned from the
+rendering rather than from the user.** Corrected after being pointed at
+control-plane's `forge-deploy-product` branch.
 
-That is correct and should not be turned into a provider. A provider answers
-*where it runs*; `SimpleBackend` and `K8sCluster` run in the **same place** —
-a cluster — and differ only in how much of the pod spec the user may touch. It
-is a **capability tier over one provider**, not a second provider.
+The user of `SimpleBackend` does not know a cluster is involved, and that is
+the entire point. `K8sCluster` requires `cluster`, `namespace` and `registry` —
+coordinates of infrastructure the user brought. `SimpleBackend`'s own summary
+is "a single container, running in a cluster forge did not create." The answer
+to *where does this run* is **"on Reliant's infrastructure"**, which is a
+different answer from "in the cluster you named", and *where it runs* is
+precisely what a provider is.
+
+That it happens to *render* onto `RenderedWorkload{deploy = K8sCluster}` is an
+implementation detail of the lowering, and reusing the k8s adapter is good
+engineering. But a shared lowering is not a shared provider, any more than two
+languages compiling to the same IR are the same language. The earlier draft
+mistook the IR for the abstraction.
+
+### This is not speculative — it is built
+
+`control-plane`'s `forge-deploy-product` branch (`a7dd8541`) already ships the
+managed side of exactly this:
+
+- `api/v1alpha1/simplebackend_types.go` (492 lines) — the CRD
+- `internal/operators/simplebackend/controller.go` (681 lines) + `database.go`
+- `internal/operators/shared/namespace.go` — per-tenant namespaces with Pod
+  Security Admission enforce/audit/warn labels, patched on drift so a
+  runtime-class change (gVisor → Kata) takes effect without recreating the
+  namespace
+- `internal/buildservice/tenant_limits.go`, tenant RPCs, and cross-tenant
+  isolation tests that compose across tiers
+- Four deploy tiers total: `StaticSite`, `SimpleBackend`, `ManagedDatabase` on
+  Cloud SQL, and a hosted `ImageBuild` service
+
+So the tenant cluster, the scoping and the lockdown are real today. The whole
+product is deliberately inert — every reconciler registers only when its
+provider is non-nil, each provider builds only when its own on-switch config is
+set, the reconcile worker is not in `AllWorkers`, and 11 of 17 deploy RPCs are
+`ScaffoldStub` — but inert-by-gate is a shipping decision, not an absence.
+
+### What follows for the forge side
+
+If `SimpleBackend` is a provider, it should look like one in forge:
+
+- It wants its own **provider id** in `internal/deploytarget` — alongside
+  `k8s-cluster`, `external`, `compose`, `host-infra`, `firebase`,
+  `static-site` — rather than being folded into `k8s-cluster` dispatch on the
+  grounds that it renders that way. The observe/deploy path for "Reliant runs
+  it" is genuinely different from "your kubectl context runs it": the user has
+  no cluster to point at and no context to be guarded against.
+- The `cluster` / `namespace` fields it carries are **platform-filled
+  coordinates, not app-facing knobs** — the schema docstring already says
+  exactly this. A provider whose coordinates the platform supplies is the
+  correct shape; it is what makes `forge env deploy prod` work on a machine
+  that has never run `gcloud container clusters get-credentials`.
+- The **closed schema stays the enforcement mechanism**, and is *more*
+  important under this reading, not less. If the user is on someone else's
+  infrastructure, the fields they must not reach are a tenancy boundary rather
+  than a style guide.
+
+The name is worth revisiting under this framing too. `SimpleBackend` describes
+a capability level, which is what the earlier draft latched onto; if the
+distinguishing fact is *whose infrastructure*, the name could say so.
 
 The enforcement mechanism is the part worth keeping verbatim:
 
@@ -83,33 +140,30 @@ passthrough. The closed schema *is* the policy. An allowlist would be a second
 copy of the rules, which is the same class of mistake as a hand-written list of
 deploy targets.
 
-Where this leaves the naming: `SimpleBackend` describes a *tier*, and reads
-like it describes a *workload type*. If it acquires siblings it will want a
-shape like `tier = "simple" | "advanced"` on one schema rather than
-`SimpleBackend` / `ComplicatedBackend`. Not urgent, but the name will shape how
-people reach for it.
+## 3. The competitive gap — mostly closed already, on the control-plane side
 
-## 3. What is missing — a forge-operated place to deploy to
+An earlier draft of this note claimed forge's problem was that "every path ends
+at a destination someone else owns" and that a forge-operated destination was
+the missing hard half. That is **half wrong**, for the same reason as §2: the
+managed destination exists on `forge-deploy-product`, with tenant namespaces,
+PSA enforcement, per-org registry paths with retention, CI-to-promote and an
+at-rest keyring. Four tiers, gated off.
 
-The competitive gap is not schema coverage. Between `K8sCluster`,
-`SimpleBackend`, `StaticSite`, `Compose`, `HostInfra` and `External`, forge can
-*describe* nearly anything.
+What is genuinely missing is narrower and more tractable: **the two halves do
+not meet yet.** forge's `kcl/schema.k` (on `forge-deploy`) declares
+`SimpleBackend` and `StaticSite`; control-plane implements the operators that
+reconcile them. Both are on unmerged branches, one of which vendors the other's
+KCL into `.forge-kcl/` — which is how ~180 files of the forge-side spike came
+to exist in only one uncommitted working tree until it was preserved.
 
-What every path has in common today is that the **destination belongs to
-someone else** — the user's cluster, their GCS bucket, their Firebase project,
-or a competitor's platform via `External`. `SimpleBackend`'s own summary is "a
-single container, running in a cluster forge did not create."
+So the sequencing question in §4 is not "when do we build the managed tier" but
+"in what order do two already-built halves land so they meet". That is a
+smaller and much better problem to have than the earlier draft assumed.
 
-Deploying a marketing site currently means: bring a cluster, or bring a bucket,
-or shell out to Vercel. A user who wants none of those has no forge answer.
-
-If the goal is competing with Vercel, the schema is the easy half and it is
-already done. The hard half is a default destination that forge operates, so
-that `forge env deploy prod` on a fresh project does something without the user
-first provisioning infrastructure elsewhere. `StaticSite`'s release-digest
-model is the right substrate for it — immutable `releases/<digest>/`, mutable
-`live/`, promotion as a re-point — and that design survives whoever owns the
-bucket.
+For the record, the piece that remains true from the earlier draft: `StaticSite`'s
+immutable `releases/<digest>/` against a mutable `live/` is the right substrate
+for promotion whoever owns the bucket, and it survives the user bringing their
+own.
 
 ## 4. Whether to work in the spike's worktree
 
@@ -146,3 +200,24 @@ whether the `static-site` provider actually executes — the schema is declarabl
 on that branch, and `shapes` will list it on merge regardless. Declarable and
 executable are tracked separately today, which is the open seam noted at the end
 of `71abfe39`.
+
+### The coordination hazard, now that both halves are known
+
+The two branches are coupled and neither repo's CI can see it:
+
+| | branch | carries |
+|---|---|---|
+| `forge` | `forge-deploy` | `SimpleBackend` + `StaticSite` KCL schemas, `static-site` provider, deploy-state layer |
+| `control-plane` | `forge-deploy-product` | the CRDs and operators that reconcile them, tenancy, registry, keyring |
+
+`forge-deploy-product` **vendors forge's KCL into `.forge-kcl/`**, so the schema
+is duplicated across repos by copy. That is the mechanism by which the forge
+spike survived only as a vendored copy in another repo — the preservation commit
+says so explicitly. Any schema change to `SimpleBackend` or `StaticSite` now has
+to land in forge and be re-vendored, and nothing fails loudly if it is not.
+
+Practical consequence for ordering: **land the forge side first.** A schema that
+control-plane vendors should not be changing underneath it, and the forge side
+is the smaller, more reviewable half. Then re-vendor, then land the product
+side. Doing it the other way round means re-vendoring twice and reviewing the
+operators against a schema that is still moving.

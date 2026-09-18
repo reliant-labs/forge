@@ -566,10 +566,6 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 //     through the root's own message-typed field; walking the block message
 //     again as a top-level entry would duplicate them.
 func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.ConfigField {
-	byName := make(map[string]*codegen.ConfigMessage, len(messages))
-	for i := range messages {
-		byName[messages[i].Name] = &messages[i]
-	}
 	composed := map[string]bool{}
 	for _, m := range messages {
 		for _, f := range m.Fields {
@@ -578,7 +574,7 @@ func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.C
 			}
 		}
 	}
-	var out []codegen.ConfigField
+	var selected []codegen.ConfigField
 	for _, m := range messages {
 		// Frontend configs are excluded for the same reason as in the
 		// single-config path above: they are emitted as their own module,
@@ -586,22 +582,16 @@ func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.C
 		if m.Binary != "" || m.Frontend != "" || composed[m.Name] {
 			continue
 		}
-		for _, f := range m.Fields {
-			if f.MessageType != "" {
-				if bm, known := byName[f.MessageType]; known {
-					for _, bf := range bm.Fields {
-						if bf.MessageType != "" {
-							continue // one nesting level, as elsewhere
-						}
-						out = append(out, bf)
-					}
-				}
-				continue
-			}
-			out = append(out, f)
-		}
+		selected = append(selected, m.Fields...)
 	}
-	return out
+	// Block expansion goes through the shared flattener so a leaf name claimed
+	// by two different blocks (two tiers each declaring `base_domain`) is
+	// qualified rather than emitted twice. Two bare declarations reach
+	// CheckDuplicateConfigFields as one shadowed field, and since a config
+	// failure is only a WARNING, the refusal silently left the PREVIOUS
+	// config_gen.k in place with every leaf of both blocks missing. See
+	// config_block_flatten.go.
+	return codegen.FlattenFieldsWithBlocks(selected, messages)
 }
 
 func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums) error {

@@ -75,9 +75,9 @@ func TestComposedBlocksWithCollidingLeafNamesStillProject(t *testing.T) {
 // twice — which would compile, render, and make the static-site and
 // simple-backend domains permanently equal. For this tier that is not a
 // cosmetic bug: the proto requires simple-backend's domain to be SEPARATE
-// from the api host's, because tenant apps run untrusted code and a shared
-// parent domain puts the api's cookies in their reach. So the two must be
-// independently settable, and this test fails if they are ever fused.
+// from the api host's, because customer-deployed apps run untrusted code and
+// a shared parent domain puts the api's cookies in their reach. So the two
+// must be independently settable, and this test fails if they are ever fused.
 func TestCollidingLeavesAreDistinctSchemaFields(t *testing.T) {
 	fields := FlattenBlockLeaves(blockCollisionMessages(), "AppConfig")
 

@@ -104,6 +104,37 @@ const nextConfig: NextConfig = {
   // them through its own compiler instead of treating node_modules as
   // pre-built JavaScript.
   transpilePackages: ["@reliantlabs/forge-web-runtime"],
+  // WEBPACK, NOT TURBOPACK — and that is a deliberate pin, not lag.
+  //
+  // Next.js 16 makes Turbopack the default bundler for `next dev` and
+  // `next build`. A config carrying a `webpack` key under that default does
+  // NOT silently lose it: Next refuses to start, on both dev and build, with
+  //   "ERROR: This build is using Turbopack, with a `webpack` config and no
+  //    `turbopack` config."
+  // and exits 1 (next/dist/lib/turbopack-warning.js, guarded by
+  // `process.env.TURBOPACK === 'auto'` — i.e. only when the bundler was
+  // defaulted rather than chosen). That loudness is the good case; the
+  // dangerous one would have been a silent drop, because the second block
+  // below fixes a bug that "typechecks and builds perfectly green".
+  //
+  // So the bundler is chosen EXPLICITLY, via `--webpack` on the `dev`,
+  // `build` and `analyze` scripts in package.json. The two customisations
+  // below are why, and neither is expressible in Turbopack today:
+  //
+  //   1. `resolve.extensionAlias` — Turbopack offers `turbopack.resolveExtensions`,
+  //      but that is a flat list of extensions to TRY, not a mapping from a
+  //      requested `.js` specifier onto `.ts`/`.tsx` sources. protobuf-es emits
+  //      `./foo_pb.js` against files that only exist as `.ts`, which is exactly
+  //      the mapping form.
+  //   2. the module-rules redirect — `turbopack.rules` entries carry
+  //      `loaders`/`as`/`condition`/`type` and have NO `resolve` key at all
+  //      (see TurbopackRuleConfigItem in next/dist/server/config-shared.d.ts),
+  //      so a per-module resolution override cannot be written for Turbopack.
+  //
+  // Revisit if Turbopack grows a per-module resolve override; until then
+  // `--webpack` is the supported opt-out and keeps both protections real.
+  // Note `@next/bundle-analyzer` also no-ops under Turbopack (it warns and
+  // returns the config untouched), which `--webpack` likewise keeps working.
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
@@ -242,6 +273,37 @@ const nextConfig: NextConfig = {
   // them through its own compiler instead of treating node_modules as
   // pre-built JavaScript.
   transpilePackages: ["@reliantlabs/forge-web-runtime"],
+  // WEBPACK, NOT TURBOPACK — and that is a deliberate pin, not lag.
+  //
+  // Next.js 16 makes Turbopack the default bundler for `next dev` and
+  // `next build`. A config carrying a `webpack` key under that default does
+  // NOT silently lose it: Next refuses to start, on both dev and build, with
+  //   "ERROR: This build is using Turbopack, with a `webpack` config and no
+  //    `turbopack` config."
+  // and exits 1 (next/dist/lib/turbopack-warning.js, guarded by
+  // `process.env.TURBOPACK === 'auto'` — i.e. only when the bundler was
+  // defaulted rather than chosen). That loudness is the good case; the
+  // dangerous one would have been a silent drop, because the second block
+  // below fixes a bug that "typechecks and builds perfectly green".
+  //
+  // So the bundler is chosen EXPLICITLY, via `--webpack` on the `dev`,
+  // `build` and `analyze` scripts in package.json. The two customisations
+  // below are why, and neither is expressible in Turbopack today:
+  //
+  //   1. `resolve.extensionAlias` — Turbopack offers `turbopack.resolveExtensions`,
+  //      but that is a flat list of extensions to TRY, not a mapping from a
+  //      requested `.js` specifier onto `.ts`/`.tsx` sources. protobuf-es emits
+  //      `./foo_pb.js` against files that only exist as `.ts`, which is exactly
+  //      the mapping form.
+  //   2. the module-rules redirect — `turbopack.rules` entries carry
+  //      `loaders`/`as`/`condition`/`type` and have NO `resolve` key at all
+  //      (see TurbopackRuleConfigItem in next/dist/server/config-shared.d.ts),
+  //      so a per-module resolution override cannot be written for Turbopack.
+  //
+  // Revisit if Turbopack grows a per-module resolve override; until then
+  // `--webpack` is the supported opt-out and keeps both protections real.
+  // Note `@next/bundle-analyzer` also no-ops under Turbopack (it warns and
+  // returns the config untouched), which `--webpack` likewise keeps working.
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
@@ -439,6 +501,37 @@ const nextConfig: NextConfig = {
   // them through its own compiler instead of treating node_modules as
   // pre-built JavaScript.
   transpilePackages: ["@reliantlabs/forge-web-runtime"],
+  // WEBPACK, NOT TURBOPACK — and that is a deliberate pin, not lag.
+  //
+  // Next.js 16 makes Turbopack the default bundler for `next dev` and
+  // `next build`. A config carrying a `webpack` key under that default does
+  // NOT silently lose it: Next refuses to start, on both dev and build, with
+  //   "ERROR: This build is using Turbopack, with a `webpack` config and no
+  //    `turbopack` config."
+  // and exits 1 (next/dist/lib/turbopack-warning.js, guarded by
+  // `process.env.TURBOPACK === 'auto'` — i.e. only when the bundler was
+  // defaulted rather than chosen). That loudness is the good case; the
+  // dangerous one would have been a silent drop, because the second block
+  // below fixes a bug that "typechecks and builds perfectly green".
+  //
+  // So the bundler is chosen EXPLICITLY, via `--webpack` on the `dev`,
+  // `build` and `analyze` scripts in package.json. The two customisations
+  // below are why, and neither is expressible in Turbopack today:
+  //
+  //   1. `resolve.extensionAlias` — Turbopack offers `turbopack.resolveExtensions`,
+  //      but that is a flat list of extensions to TRY, not a mapping from a
+  //      requested `.js` specifier onto `.ts`/`.tsx` sources. protobuf-es emits
+  //      `./foo_pb.js` against files that only exist as `.ts`, which is exactly
+  //      the mapping form.
+  //   2. the module-rules redirect — `turbopack.rules` entries carry
+  //      `loaders`/`as`/`condition`/`type` and have NO `resolve` key at all
+  //      (see TurbopackRuleConfigItem in next/dist/server/config-shared.d.ts),
+  //      so a per-module resolution override cannot be written for Turbopack.
+  //
+  // Revisit if Turbopack grows a per-module resolve override; until then
+  // `--webpack` is the supported opt-out and keeps both protections real.
+  // Note `@next/bundle-analyzer` also no-ops under Turbopack (it warns and
+  // returns the config untouched), which `--webpack` likewise keeps working.
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files

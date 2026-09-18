@@ -137,6 +137,32 @@ func enrichClaims(_ context.Context, claims *Claims) (*Claims, error) {
 	return claims, nil
 }
 
+// ─── Policy hook 3: where the credential is read from ────────────────
+//
+// By default the interceptor reads "Authorization: Bearer <token>". That is
+// the right default and most services never change it.
+//
+// Change it when your session does not live in that header — the common case
+// being a browser app whose session is an HttpOnly cookie. There the token is
+// deliberately unreadable to scripts (which is what stops an XSS from
+// stealing it), so no client code CAN attach an Authorization header, and
+// every RPC 401s with "missing Authorization header" even though a valid
+// credential was sent on every request. Set authn.Policy.ExtractToken and
+// point it at the channel your app actually uses:
+//
+//	ExtractToken: func(h http.Header) string {
+//	    c, err := (&http.Request{Header: h}).Cookie("my_session")
+//	    if err != nil {
+//	        return ""
+//	    }
+//	    return c.Value  // the RAW token — no "Bearer " prefix
+//	},
+//
+// Return "" for "no credential presented"; it is treated exactly like a
+// missing Authorization header. This changes only WHERE the token is read —
+// it still goes through the same validator, so a custom channel cannot
+// weaken authentication.
+//
 // ─── Interceptor construction ────────────────────────────────────────
 
 // NewAuthInterceptor resolves this file's policy into the forge authn

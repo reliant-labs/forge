@@ -111,6 +111,26 @@ var removals = []removal{
 					"pkg/seedplan/diamond.go",
 				},
 			},
+			{
+				Name: "a design note surveying control-plane's managed deploy product",
+				Reason: "docs/notes/deploy-tier-shape.md is a survey of what already exists on " +
+					"control-plane's forge-deploy-product branch, written to decide what forge " +
+					"itself should build. That product is a MANAGED HOSTING SERVICE, and a " +
+					"hosting service that runs other people's workloads necessarily has " +
+					"tenants: the note inventories per-tenant namespaces, Pod Security " +
+					"Admission labels, tenant_limits.go and cross-tenant isolation tests, and " +
+					"names tenancy as the boundary a closed schema enforces.\n" +
+					"This is a DIFFERENT codebase's domain concept, recorded in prose so the " +
+					"forge-side decision is made against what is actually there. forge ships " +
+					"no tenant column, header, context key or helper on the strength of it — " +
+					"the note is the reason forge can decide NOT to build this. Scoped to the " +
+					"one file, so a tenant_id column or an X-Tenant-Id header anywhere in " +
+					"forge's own source still fails.",
+				Token: regexp.MustCompile(`(?i)\btenan[tc]`),
+				Paths: []string{
+					"docs/notes/deploy-tier-shape.md",
+				},
+			},
 		},
 	},
 	{

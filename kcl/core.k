@@ -296,7 +296,14 @@ schema K8sOverrides:
       * `service_account` — bind an EXISTING out-of-band ServiceAccount
                             (e.g. one with a cloud IAM workload-identity
                             annotation) instead of the forge-generated
-                            per-service SA.
+                            per-service SA. forge then does NOT emit a
+                            ServiceAccount object (it does not own an
+                            identity it was told already exists), and the
+                            generated Role/RoleBinding binds THAT SA — the
+                            grant follows the identity that actually runs.
+                            Any `image_pull_secrets` ride the pod spec
+                            instead of the SA, since there is no generated
+                            SA to carry them.
       * `namespaced_rbac` — extra namespaced PolicyRule dicts appended to
                             the service's generated Role (same shape as
                             Operator.cluster_rbac.rules): controller-runtime

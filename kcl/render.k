@@ -928,19 +928,28 @@ _render_namespace = lambda namespace: str -> any {
 # two tiers are mutually exclusive — no duplicate SA.
 _render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str], part_of: str = "" -> [any] {
     _is_operator = s.operator_cluster_rbac != Undefined
-    svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests, part_of) \
+    # The pod's `service_account` override is threaded into the RBAC so the
+    # BINDING's subject follows the identity the pod actually runs as, and so
+    # forge does not emit a ServiceAccount it was told already exists. Passing
+    # `s.name` here instead is the defect this argument closes: the trio was
+    # named after the SERVICE while the pod bound a different SA, so the grant
+    # attached to an identity with no pods. Unset => "" => byte-identical.
+    _sa_override = s.service_account if s.service_account else ""
+    svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests, part_of, pull_secrets) \
         + (rbac_lib.render_cluster_rbac(
             s.name,
             namespace,
             {rules = s.operator_cluster_rbac},
             pull_secrets,
             part_of,
+            _sa_override,
         ) if _is_operator else rbac_lib.render_namespaced_rbac(
             s.name,
             namespace,
             s.namespaced_rbac if s.namespaced_rbac else [],
             pull_secrets,
             part_of,
+            _sa_override,
         ))
 }
 

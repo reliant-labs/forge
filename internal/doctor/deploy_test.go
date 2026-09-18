@@ -362,6 +362,11 @@ func TestCheckDeployServiceAccount(t *testing.T) {
 		body     string
 		want     Status
 		evidence string
+		// absent is wording the evidence must NOT contain. The old check
+		// was wrong by ASSERTING a cause rather than by omitting one, so
+		// "mentions the right thing" alone would still pass while it also
+		// mentioned the wrong thing.
+		absent string
 	}{
 		{
 			name: "bound service account passes",
@@ -379,6 +384,30 @@ func TestCheckDeployServiceAccount(t *testing.T) {
 			body: `{"manifests":[` + deployWith("") + `]}`,
 			want: StatusSkip,
 		},
+		// The two states the check used to conflate. Both fail, but the
+		// REASON has to differ, because only one of them is about a
+		// missing field. Reporting "no pod spec sets serviceAccountName"
+		// for the second case is false, and it sends the reader looking
+		// for a field that is present.
+		{
+			name:     "unbound with no other binder blames the default SA",
+			body:     `{"manifests":[` + sa + `,` + deployWith("") + `]}`,
+			want:     StatusFail,
+			evidence: "runs as the namespace `default` SA",
+		},
+		{
+			name:     "unbound while pods run as another SA names that SA",
+			body:     `{"manifests":[` + sa + `,` + deployWith(`"serviceAccountName":"reliant-cloudsql",`) + `]}`,
+			want:     StatusFail,
+			evidence: "pods in this namespace run as reliant-cloudsql",
+		},
+		{
+			name:     "unbound while pods run as another SA does not blame the default SA",
+			body:     `{"manifests":[` + sa + `,` + deployWith(`"serviceAccountName":"reliant-cloudsql",`) + `]}`,
+			want:     StatusFail,
+			absent:   "`default` SA",
+			evidence: "is inert",
+		},
 	}
 
 	for _, tt := range tests {
@@ -390,6 +419,9 @@ func TestCheckDeployServiceAccount(t *testing.T) {
 			}
 			if tt.evidence != "" && !strings.Contains(got.Evidence, tt.evidence) {
 				t.Errorf("evidence %q does not mention %q", got.Evidence, tt.evidence)
+			}
+			if tt.absent != "" && strings.Contains(got.Evidence, tt.absent) {
+				t.Errorf("evidence %q must not mention %q — pods DO set serviceAccountName here", got.Evidence, tt.absent)
 			}
 		})
 	}

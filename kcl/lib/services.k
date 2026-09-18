@@ -440,7 +440,7 @@ _default_resources = {
 # [Deployment, Service]. Ingress is no longer rendered here — see
 # kcl/lib/gateway.k for Gateway API resources owned by the project's
 # top-level `deploy/kcl/ingress.k` file.
-render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str}, part_of: str = "" -> [any] {
+render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str}, part_of: str = "", pull_secrets: [str] = [] -> [any] {
     _name = svc.name
     _labels = _managed_labels(_name, part_of)
     _deploy = svc.deploy
@@ -460,6 +460,21 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     # renders byte-identically. `service_account` overrides the default
     # per-service SA name; the rest are conditionally emitted.
     _sa = svc.service_account if svc.service_account else _name
+    # imagePullSecrets normally ride the SA forge generates (the durable
+    # spot — it covers Jobs the workload spawns too, and keeps the pod
+    # spec minimal). An OVERRIDDEN service_account has no generated SA to
+    # carry them: forge does not own that object, so it can neither add
+    # the secrets to it nor assume whoever provisioned it did. Left alone
+    # the secrets would simply vanish, surfacing as ImagePullBackOff on a
+    # private registry — a symptom about images, arbitrarily far from the
+    # SA field that caused it.
+    #
+    # So on the override path ONLY, they go on the POD. That is a
+    # first-class k8s mechanism, needs no write to an object forge does
+    # not own, and k8s unions it with whatever the real SA already
+    # carries. The default path is untouched, which is where
+    # `assert_pull_not_on_pod` was aimed.
+    _pull_secrets_on_pod = pull_secrets if (svc.service_account and pull_secrets) else []
     _pod_annotations = svc.pod_annotations if svc.pod_annotations else {}
     _node_selector = svc.node_selector if svc.node_selector else {}
     _tolerations = svc.tolerations if svc.tolerations else []
@@ -508,6 +523,11 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                     # plus any imagePullSecrets on the SA — grant it
                     # nothing. Mirrors render_operator (~line 280).
                     serviceAccountName = _sa
+                    # Only on the service_account override path — see
+                    # _pull_secrets_on_pod above. Omitted entirely otherwise,
+                    # so the default render is byte-identical.
+                    if _pull_secrets_on_pod:
+                        imagePullSecrets = [{name = s} for s in _pull_secrets_on_pod]
                     # Node-pool pinning (the control-plane kata daemon-pool
                     # case) — nodeSelector + tolerations, each omitted when
                     # unset.

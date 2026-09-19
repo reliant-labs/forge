@@ -592,11 +592,19 @@ func secretProviderPathForEnv(ctx context.Context, envName string) string {
 }
 
 // declaredSecretNames is the sorted, de-duplicated set of env-var names
-// every service in the env declares via secret_ref.
+// every service in the env declares via secret_ref AND must have a value for.
+//
+// OPTIONAL refs are excluded, so `forge secret ensure` agrees with the env-up
+// pre-flight (secrets.ValidateDeclaredRefs). The two are separate code paths
+// over the same entities, and a disagreement is worse than either being wrong
+// alone: `ensure` exists to tell an operator whether `up` will succeed, so an
+// `ensure` that demands a value `up` does not want sends them to invent a
+// placeholder credential — which is a real-looking secret in the store, and
+// defeats the check for every genuinely-missing one after it.
 func declaredSecretNames(e *KCLEntities) []string {
 	seen := map[string]struct{}{}
 	for _, r := range secretRefsFromEntities(e) {
-		if r.EnvName != "" {
+		if r.EnvName != "" && !r.Optional {
 			seen[r.EnvName] = struct{}{}
 		}
 	}

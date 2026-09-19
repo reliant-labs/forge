@@ -941,6 +941,11 @@ type KCLEnvVar struct {
 	SecretKey    string `json:"secret_key,omitempty"`
 	ConfigMapRef string `json:"config_map_ref,omitempty"`
 	ConfigMapKey string `json:"config_map_key,omitempty"`
+
+	// SecretOptional exempts this var's secret_ref from the store
+	// pre-flight. Set by config codegen from `optional: true` on a
+	// `sensitive` proto field — never hand-authored.
+	SecretOptional bool `json:"secret_optional,omitempty"`
 }
 
 // kclRenderRaw is the JSON shape emitted by `kcl run deploy/kcl/<env>/

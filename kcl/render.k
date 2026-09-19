@@ -58,6 +58,12 @@ _render_env_var = lambda ev: EnvVar -> any {
         "secret_key": ev.secret_key if ev.secret_key else None
         "config_map_ref": ev.config_map_ref if ev.config_map_ref else None
         "config_map_key": ev.config_map_key if ev.config_map_key else None
+        # Carried for the SECRET PRE-FLIGHT, which reads these entities and
+        # has no proto in hand. Emitted only when true so the JSON contract is
+        # unchanged for every var that does not set it. Without this the
+        # annotation dies here — the flag survives proto -> codegen -> KCL and
+        # then silently fails to reach the one consumer that acts on it.
+        "secret_optional": True if ev.secret_optional else None
     }
 }
 

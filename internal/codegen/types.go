@@ -395,6 +395,14 @@ type ConfigField struct {
 	Sensitive    bool   // From config_field.sensitive — projects to a Secret in deploy
 	Category     string // From config_field.category — groups fields in deploy gen
 
+	// Optional is (forge.v1.config).optional: the application tolerates this
+	// field being unset. For a SENSITIVE field it is the only way to say so —
+	// a declared secret_ref with no value in the store is an error by
+	// default, because discovering a missing credential at runtime is the
+	// failure that check exists to prevent. `json:",omitempty"` keeps old
+	// descriptors readable (additive contract).
+	Optional bool `json:",omitempty"`
+
 	// Role is the (forge.v1.config).role annotation as the bare enum spelling
 	// (e.g. "CONFIG_FIELD_ROLE_MODE"; "" for UNSPECIFIED). Config codegen
 	// keys semantic behavior (Mode()) on THIS, never on the

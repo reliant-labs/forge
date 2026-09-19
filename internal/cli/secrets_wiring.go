@@ -280,6 +280,7 @@ func secretRefsForService(s *ServiceEntity) []secrets.SecretRef {
 			EnvName:    ev.Name,
 			SecretName: ev.SecretRef,
 			SecretKey:  key,
+			Optional:   ev.SecretOptional,
 		})
 	}
 	return refs

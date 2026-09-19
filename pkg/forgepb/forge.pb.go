@@ -7,14 +7,13 @@
 package forgepb
 
 import (
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
-
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	descriptorpb "google.golang.org/protobuf/types/descriptorpb"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
 )
 
 const (
@@ -914,6 +913,36 @@ type ConfigFieldOptions struct {
 	// domain. Renaming the field changes nothing; the set follows the
 	// annotation.
 	AllowedValues []string `protobuf:"bytes,9,rep,name=allowed_values,json=allowedValues,proto3" json:"allowed_values,omitempty"`
+	// Optional marks a field the application TOLERATES being unset, and it is
+	// the only way a `sensitive` field is allowed to have no value.
+	//
+	// WHY sensitive IMPLIES REQUIRED BY DEFAULT. A sensitive field projects to
+	// a secret_ref, and forge validates every declared ref against the env's
+	// store before anything starts (secrets.ValidateDeclaredRefs). That check
+	// exists because the alternative — discovering a missing production
+	// credential at runtime — is the failure it was built to prevent, so
+	// "declared but absent" must be an error by default.
+	//
+	// But an OPTIONAL-BY-DESIGN credential is a real thing, and forge had no
+	// way to say so. The case that forced this: a config block whose
+	// admin_user + admin_password are documented as the tier's ON SWITCH —
+	// with either unset the reconciler is deliberately not registered. Every
+	// non-sensitive field in that block projects as `str = ""` and unset is
+	// fine; only the sensitive one became a hard startup requirement, so an
+	// environment that had deliberately not enabled the tier could not start
+	// at all. The operator's only recourse was to invent a fake value, which
+	// puts a real-looking credential in the store and defeats the check for
+	// everyone.
+	//
+	// So: `optional: true` says the absence is intended. The secret-store
+	// validation skips the field, and the runtime required-check skips it too.
+	// It is deliberately an OPT-IN — the safe default stays "a declared secret
+	// must have a value", and an author has to state the exception.
+	//
+	// It is an ERROR to set both `required: true` and `optional: true`; they
+	// are direct contradictions and forge rejects the pair rather than
+	// silently picking one.
+	Optional      bool `protobuf:"varint,10,opt,name=optional,proto3" json:"optional,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1009,6 +1038,13 @@ func (x *ConfigFieldOptions) GetAllowedValues() []string {
 		return x.AllowedValues
 	}
 	return nil
+}
+
+func (x *ConfigFieldOptions) GetOptional() bool {
+	if x != nil {
+		return x.Optional
+	}
+	return false
 }
 
 // BinaryConfigOptions binds a config message to the BINARY that loads it,
@@ -1332,7 +1368,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKey\x12\x16\n" +
 	"\x06errors\x18\x06 \x03(\tR\x06errorsB\x10\n" +
 	"\x0e_auth_requiredJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
-	"\"\xb4\x02\n" +
+	"\"\xd0\x02\n" +
 	"\x12ConfigFieldOptions\x12\x17\n" +
 	"\aenv_var\x18\x01 \x01(\tR\x06envVar\x12\x12\n" +
 	"\x04flag\x18\x02 \x01(\tR\x04flag\x12#\n" +
@@ -1342,7 +1378,9 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\tsensitive\x18\x06 \x01(\bR\tsensitive\x12\x1a\n" +
 	"\bcategory\x18\a \x01(\tR\bcategory\x12-\n" +
 	"\x04role\x18\b \x01(\x0e2\x19.forge.v1.ConfigFieldRoleR\x04role\x12%\n" +
-	"\x0eallowed_values\x18\t \x03(\tR\rallowedValues\"-\n" +
+	"\x0eallowed_values\x18\t \x03(\tR\rallowedValues\x12\x1a\n" +
+	"\boptional\x18\n" +
+	" \x01(\bR\boptional\"-\n" +
 	"\x13BinaryConfigOptions\x12\x16\n" +
 	"\x06binary\x18\x01 \x01(\tR\x06binary\"3\n" +
 	"\x15FrontendConfigOptions\x12\x1a\n" +

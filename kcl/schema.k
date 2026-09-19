@@ -122,9 +122,29 @@ schema EnvVar:
     # `valueFrom.fieldRef.fieldPath`. Empty => not a fieldRef var. This is
     # the k8s-adapter target of the agnostic `EnvSource.from_field`.
     field_ref: str = ""
+    # secret_optional marks a `secret_ref` whose value is allowed to be
+    # ABSENT from the environment's secret store.
+    #
+    # The default is False, and that is the whole point of the pre-flight:
+    # `forge env up` / `forge env deploy` check every declared secret_ref
+    # against the store BEFORE anything starts, because the alternative is
+    # discovering a missing production credential from a runtime stack trace.
+    #
+    # Set only by config codegen, from `optional: true` on a `sensitive`
+    # proto field — an unset credential and a deliberately-absent one are
+    # indistinguishable in the store, so the annotation is the only thing
+    # that can tell them apart. The canonical case is a tier's OFF-SWITCH:
+    # a config block documented as "with either unset the reconciler is not
+    # registered", where every non-sensitive field projects as `""` and
+    # unset is fine, but the sensitive one would otherwise be a hard
+    # start-up requirement in every environment that deliberately left the
+    # tier off.
+    secret_optional: bool = False
 
     check:
         name, "EnvVar.name is required"
+        not secret_optional or secret_ref, \
+            "EnvVar.secret_optional is only meaningful with secret_ref — it exempts a DECLARED secret from the store pre-flight, and there is nothing to exempt without one"
         value != Undefined or secret_ref or config_map_ref or field_ref, \
             "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, or field_ref"
         # EXACTLY one channel. k8s rejects an env entry carrying both

@@ -54,6 +54,13 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"# every pod. Declare what a workload reads in its `config_secrets` instead.\n" +
 		"APP_CONFIG_SENSITIVE_ENV: [str] = [\"DATABASE_URL\"]\n" +
 		"\n" +
+		"# Every ENV_VAR AppConfig declares BOTH `sensitive: true` and\n" +
+		"# `optional: true` for. The secret pre-flight skips these: a declared\n" +
+		"# secret with no value is an error by default, and this is the author\n" +
+		"# stating that THIS one's absence is intended (a tier's off-switch, a\n" +
+		"# credential only some environments own).\n" +
+		"APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = []\n" +
+		"\n" +
 		"# appConfigEnvMap projects a typed AppConfig into the agnostic-core env\n" +
 		"# MAP — one forge.EnvSource per field that declares an env_var, keyed by\n" +
 		"# ENV_VAR name.\n" +

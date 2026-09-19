@@ -342,6 +342,37 @@ message ConfigFieldOptions {
   // domain. Renaming the field changes nothing; the set follows the
   // annotation.
   repeated string allowed_values = 9;
+
+  // Optional marks a field the application TOLERATES being unset, and it is
+  // the only way a `sensitive` field is allowed to have no value.
+  //
+  // WHY sensitive IMPLIES REQUIRED BY DEFAULT. A sensitive field projects to
+  // a secret_ref, and forge validates every declared ref against the env's
+  // store before anything starts (secrets.ValidateDeclaredRefs). That check
+  // exists because the alternative — discovering a missing production
+  // credential at runtime — is the failure it was built to prevent, so
+  // "declared but absent" must be an error by default.
+  //
+  // But an OPTIONAL-BY-DESIGN credential is a real thing, and forge had no
+  // way to say so. The case that forced this: a config block whose
+  // admin_user + admin_password are documented as the tier's ON SWITCH —
+  // with either unset the reconciler is deliberately not registered. Every
+  // non-sensitive field in that block projects as `str = ""` and unset is
+  // fine; only the sensitive one became a hard startup requirement, so an
+  // environment that had deliberately not enabled the tier could not start
+  // at all. The operator's only recourse was to invent a fake value, which
+  // puts a real-looking credential in the store and defeats the check for
+  // everyone.
+  //
+  // So: `optional: true` says the absence is intended. The secret-store
+  // validation skips the field, and the runtime required-check skips it too.
+  // It is deliberately an OPT-IN — the safe default stays "a declared secret
+  // must have a value", and an author has to state the exception.
+  //
+  // It is an ERROR to set both `required: true` and `optional: true`; they
+  // are direct contradictions and forge rejects the pair rather than
+  // silently picking one.
+  bool optional = 10;
 }
 
 // BinaryConfigOptions binds a config message to the BINARY that loads it,

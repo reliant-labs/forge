@@ -727,6 +727,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			Flag:         cf.GetFlag(),
 			DefaultValue: cf.GetDefaultValue(),
 			Required:     cf.GetRequired(),
+			Optional:     cf.GetOptional(),
 			Description:  cf.GetDescription(),
 			Sensitive:    cf.GetSensitive(),
 			Category:     cf.GetCategory(),

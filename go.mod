@@ -9,7 +9,7 @@ require (
 	connectrpc.com/otelconnect v0.9.0
 	connectrpc.com/vanguard v0.4.0
 	github.com/MicahParks/keyfunc/v3 v3.8.2
-	github.com/brianvoe/gofakeit/v7 v7.16.0
+	github.com/brianvoe/gofakeit/v7 v7.17.0
 	github.com/evanw/esbuild v0.28.2
 	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/fsnotify/fsnotify v1.10.1

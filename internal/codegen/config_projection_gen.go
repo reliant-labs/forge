@@ -139,6 +139,33 @@ func KCLAllSensitiveName(schemaName string) string {
 	return strings.ToUpper(b.String()) + "_SENSITIVE_ENV"
 }
 
+// KCLOptionalSecretsName maps a config SCHEMA name to the generated constant
+// listing every sensitive ENV_VAR that schema marks `optional: true`:
+// `AppConfig` -> `APP_CONFIG_OPTIONAL_SECRET_ENV`.
+//
+// It is the seam the secret PRE-FLIGHT reads. `forge env up` validates every
+// declared secret_ref against the store before anything starts, and it works
+// from the rendered entities — it has no proto and no descriptor in hand. So
+// the proto's `optional` annotation is projected to KCL here and travels with
+// the render, which keeps the dependency running one way: the secrets package
+// never learns what a config message is.
+//
+// Emitted even when empty so a reference resolves in a project that marks
+// nothing optional.
+func KCLOptionalSecretsName(schemaName string) string {
+	if schemaName == "" {
+		schemaName = "AppConfig"
+	}
+	var b strings.Builder
+	for i, r := range schemaName {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(r)
+	}
+	return strings.ToUpper(b.String()) + "_OPTIONAL_SECRET_ENV"
+}
+
 // GenerateConfigKCLPerBinary emits the config module for a project that
 // declares PER-BINARY configs: one typed schema plus one env-projection
 // lambda per binary, all in the single generated config_gen.k.
@@ -288,7 +315,10 @@ func renderAppConfigEnvMap(fields []ConfigField) string {
 // story again, one layer up. The assert names the unknown entry and lists
 // every sensitive var this config actually has.
 func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string) string {
-	type kv struct{ key, expr string }
+	type kv struct {
+		key, expr string
+		optional  bool
+	}
 	var inline, secrets []kv
 	for _, f := range fields {
 		// Empty env_var == no env binding (block-reference messages and any
@@ -303,9 +333,20 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 			// SCHEMA DEFAULT supplies the default backend (<project>-secrets /
 			// lower(env_var)); an author who set a ConfigSecretRef override
 			// (the ${NAME#KEY} case) flows through here unchanged.
+			// secret_optional rides ON the EnvSource so it survives the
+			// projection into EnvVar and reaches the store pre-flight, which
+			// reads rendered entities and has no proto in hand. Emitted only
+			// when true: an explicit `secret_optional = False` on every
+			// credential would be noise in the generated module and says
+			// nothing the schema default does not.
+			expr := fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}}`, f.Name, f.Name)
+			if f.Optional {
+				expr = fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}, secret_optional = True}`, f.Name, f.Name)
+			}
 			secrets = append(secrets, kv{
-				key:  f.EnvVar,
-				expr: fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}}`, f.Name, f.Name),
+				key:      f.EnvVar,
+				expr:     expr,
+				optional: f.Optional,
 			})
 			continue
 		}
@@ -338,6 +379,31 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 			b.WriteString(", ")
 		}
 		fmt.Fprintf(&b, "%q", e.key)
+	}
+	b.WriteString("]\n\n")
+
+	// The OPTIONAL subset of the above. Read by forge's secret pre-flight to
+	// tell a credential this environment deliberately leaves unset from one
+	// nobody has configured yet — the two are indistinguishable in the store,
+	// so the annotation is the only thing that can say which.
+	fmt.Fprintf(&b, "# Every ENV_VAR %s declares BOTH `sensitive: true` and\n", schemaName)
+	b.WriteString("# `optional: true` for. The secret pre-flight skips these: a declared\n")
+	b.WriteString("# secret with no value is an error by default, and this is the author\n")
+	b.WriteString("# stating that THIS one's absence is intended (a tier's off-switch, a\n")
+	b.WriteString("# credential only some environments own).\n")
+	fmt.Fprintf(&b, "%s: [str] = [", KCLOptionalSecretsName(schemaName))
+	{
+		first := true
+		for _, e := range secrets {
+			if !e.optional {
+				continue
+			}
+			if !first {
+				b.WriteString(", ")
+			}
+			first = false
+			fmt.Fprintf(&b, "%q", e.key)
+		}
 	}
 	b.WriteString("]\n\n")
 

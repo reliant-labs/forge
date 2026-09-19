@@ -295,9 +295,10 @@ type renderedSource struct {
 	Repo string `json:"repo"`
 }
 
-// renderedFrontendDeploy carries only the discriminator. "firebase" and
-// "cluster" are today's variants; an unknown one still reads as "this
-// claims to ship", which is the question being asked.
+// renderedFrontendDeploy carries only the discriminator. "firebase",
+// "static-site" and "cluster" are today's variants; an unknown one still
+// reads as "this claims to ship", which is the question being asked —
+// which is why this check needs no update when a variant is added.
 type renderedFrontendDeploy struct {
 	Type string `json:"type"`
 }

@@ -362,6 +362,38 @@ type ApplyOpts struct {
 	// pre-scoping behaviour). See ScopeManifestsToGroup for the ownership
 	// rule.
 	ClusterScope *GroupScope
+
+	// OnStream, when non-nil, is handed the FINAL manifest stream — after
+	// the --target filter and the multi-cluster scope, with every rendered
+	// chart folded in — immediately before it is either applied or printed
+	// as a dry run.
+	//
+	// This is the only place that stream exists. A caller cannot reproduce
+	// it by re-rendering: it would have to re-apply both filters and
+	// re-template every chart, and a second implementation of that is free
+	// to disagree with this one about what ships. Reporting it from here
+	// means a `--dry-run` preview and a real apply describe the same bytes
+	// by construction.
+	//
+	// Called for dry runs too, BEFORE the early return — previewing what
+	// would be applied is the primary use. Purely observational: the
+	// callback's result is ignored and it cannot affect the apply.
+	OnStream func(manifests string)
+
+	// OnRollout, when non-nil, receives one observation per resource whose
+	// readiness was awaited, as each verdict arrives.
+	//
+	// Apply's own return value stays the aggregate error, which is what
+	// fails the deploy; this reports the per-resource detail that the
+	// aggregate necessarily loses — in particular WHICH resource, and
+	// whether its budget expired rather than a failure being observed. See
+	// rollout_observer.go for why that third state cannot be reconstructed
+	// from the outside.
+	//
+	// Not called under RolloutSkip: forge asks the cluster nothing in that
+	// mode, so it has nothing to report, and inventing "not waited" entries
+	// here would mean synthesizing observations Apply never made.
+	OnRollout func(RolloutObservation)
 }
 
 // GroupScope describes how to filter the env's rendered manifest stream
@@ -453,7 +485,8 @@ func waitForDeploymentRollouts(
 		awaited = append(awaited, dep)
 	}
 	for _, dep := range policy.orderDeployments(awaited) {
-		err := WaitRolloutTimeout(ctx, opts.Context, dep, opts.Namespace, policy.Timeout)
+		state, err := WaitRolloutObserved(ctx, opts.Context, dep, opts.Namespace, policy.Timeout)
+		observeRollout(opts, "Deployment", dep, state, err)
 		if err == nil {
 			fmt.Printf("  %s: ready\n", dep)
 			continue
@@ -505,6 +538,19 @@ func printDryRunManifests(manifests string, charts []renderedChart, framed bool)
 	fmt.Println(all)
 	fmt.Println("--- End Manifests ---")
 	fmt.Println("\nDry run complete. No changes applied.")
+}
+
+// chartStreams flattens each rendered chart's three parts — its CRDs, its
+// templated manifests, and any consumer-declared riding manifests — in the same
+// order printDryRunManifests folds them. Sharing the order is the point: the
+// human dry run and an observing caller must be shown the same stream, not two
+// arrangements of the same documents.
+func chartStreams(charts []renderedChart) []string {
+	out := make([]string, 0, len(charts)*3)
+	for _, rc := range charts {
+		out = append(out, rc.crds, rc.manifests, rc.extra)
+	}
+	return out
 }
 
 // renderSelectedCharts helm-templates each selected platform dep into the
@@ -621,6 +667,14 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	renderedCharts, err := renderSelectedCharts(ctx, selectedCharts)
 	if err != nil {
 		return err
+	}
+
+	// Report the final stream — filtered, scoped, charts folded in — to an
+	// observing caller. Placed BEFORE the dry-run return so a preview and a
+	// real apply report identical bytes; this is what makes `--dry-run
+	// --json` a trustworthy preview of `--json`.
+	if opts.OnStream != nil {
+		opts.OnStream(joinNonEmpty(append([]string{manifests}, chartStreams(renderedCharts)...)...))
 	}
 
 	if opts.DryRun {
@@ -764,7 +818,9 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// list is not unioned in any more.
 	for _, name := range oneShotWaitSet(manifests) {
 		fmt.Printf("Waiting for one-shot Job %q to complete...\n", name)
-		if err := WaitJobCompleteTimeout(ctx, opts.Context, name, opts.Namespace, policy.Timeout); err != nil {
+		state, jerr := WaitJobCompleteObserved(ctx, opts.Context, name, opts.Namespace, policy.Timeout)
+		observeRollout(opts, "Job", name, state, jerr)
+		if err := jerr; err != nil {
 			// A failed one-shot Job is if anything MORE serious than a
 			// failed Deployment: it is the migration that did not run,
 			// and every workload above it is now talking to a schema

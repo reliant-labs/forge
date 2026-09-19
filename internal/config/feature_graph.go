@@ -96,6 +96,13 @@ var featureDeps = map[FeatureName][]featureRequirement{
 	FeatureIngress: {
 		{Feature: FeatureDeploy, fix: "enable deploy, or disable experimental.ingress"},
 	},
+	// reconcile → deploy: the loop observes DEPLOY TARGETS through
+	// deploytarget.Provider, which only exist for a project with a deploy
+	// pipeline. Reconciling with deploy off would have nothing to read
+	// and nowhere to converge.
+	FeatureReconcile: {
+		{Feature: FeatureDeploy, fix: "enable deploy, or disable experimental.reconcile"},
+	},
 	// FeatureExternalBuilds is a RETIRED, inert gate (see config.go's
 	// ExperimentalConfig docs): the build path no longer consults it, so it
 	// carries no dependency edge. Listing one here would gate a no-op flag.

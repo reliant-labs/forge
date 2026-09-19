@@ -236,6 +236,38 @@ func TestDispatchServiceBuild(t *testing.T) {
 			},
 		},
 		{
+			name:     "remote",
+			raw:      `{"type":"remote","source":{"repo":"github.com/acme/api","ref":"v1.2.3","subdir":"svc"},"dockerfile":"docker/Dockerfile","platform":"linux/arm64","cpu_millicores":4000,"memory_bytes":17179869184,"cache_gib":50,"timeout_seconds":1800}`,
+			wantType: "remote",
+			check: func(t *testing.T, b BuildConfigEntity) {
+				if b.Remote == nil {
+					t.Fatal("remote build = nil")
+				}
+				// The SOURCE PIN is the field that makes a remote build
+				// possible at all: a build service cannot read the caller's
+				// filesystem, so losing repo/ref in decode would produce a
+				// submission with nothing to build.
+				if b.Remote.Source.Repo != "github.com/acme/api" || b.Remote.Source.Ref != "v1.2.3" {
+					t.Errorf("remote source = %+v", b.Remote.Source)
+				}
+				if b.Remote.Source.Subdir != "svc" {
+					t.Errorf("remote subdir = %q", b.Remote.Source.Subdir)
+				}
+				if b.Remote.Dockerfile != "docker/Dockerfile" || b.Remote.Platform != "linux/arm64" {
+					t.Errorf("remote build = %+v", b.Remote)
+				}
+				// The size fields are the BILLING dimensions, so a decode
+				// that dropped them would silently bill a schema default
+				// rather than what was declared.
+				if b.Remote.CPUMillicores != 4000 || b.Remote.MemoryBytes != 17179869184 {
+					t.Errorf("remote resources = %dm / %d bytes", b.Remote.CPUMillicores, b.Remote.MemoryBytes)
+				}
+				if b.Remote.CacheGiB != 50 || b.Remote.TimeoutSeconds != 1800 {
+					t.Errorf("remote cache/timeout = %d / %d", b.Remote.CacheGiB, b.Remote.TimeoutSeconds)
+				}
+			},
+		},
+		{
 			name:     "null is absent",
 			raw:      `null`,
 			wantType: "",

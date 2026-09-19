@@ -94,7 +94,7 @@ func checkPkgCompat(projectDir string) error {
 	}
 
 	binaryVersion := buildinfo.InstallableVersion()
-	switch decideForgeCompat(binaryVersion, projectVersion, local) {
+	switch decideForgeCompat(binaryVersion, buildinfo.Version(), projectVersion, local) {
 	case compatUnreleasableNoBridge:
 		return unreleasableBuildErr(projectDir, projectVersion)
 	case compatStalePin:
@@ -128,11 +128,32 @@ const (
 // there is no version to be behind, and whoever wired the bridge owns keeping
 // that checkout coherent. An unknown projectVersion also passes — guessing
 // is worse than letting validate speak.
-func decideForgeCompat(binaryVersion, projectVersion string, local bool) compatVerdict {
+func decideForgeCompat(binaryVersion, rawBuildVersion, projectVersion string, local bool) compatVerdict {
 	if local {
 		return compatOK
 	}
 	if binaryVersion == "" {
+		// THE PROJECT'S OWN RESOLUTION IS PROOF OF AVAILABILITY, and it beats
+		// this binary's inability to vouch for itself.
+		//
+		// InstallableVersion() returns "" for anything built from a working
+		// tree, because a local checkout cannot prove its commit was pushed.
+		// That is the right default and it stays. But when the project
+		// ALREADY resolves forge to the very version this binary reports,
+		// the proof exists: `go list -m` answered from the module graph, so
+		// the proxy served it. Refusing there is a false positive with a
+		// self-contradicting message — it names one version as both "what
+		// this forge is" and "the published version the project resolves to"
+		// and then calls them incompatible.
+		//
+		// Hit in practice pinning control-plane to a pushed forge BRANCH
+		// commit: `task pin:forge` resolved the pseudo-version, go.mod,
+		// forge.yaml and .forge-kcl all agreed, and generate still refused —
+		// telling the user to bridge with go.work when nothing needed
+		// bridging.
+		if projectVersion != "" && projectVersion == rawBuildVersion {
+			return compatOK
+		}
 		return compatUnreleasableNoBridge
 	}
 	if projectVersion == "" {

@@ -105,6 +105,15 @@ func checkNamespaceReferences(entities *KCLEntities, projectName, resolvedNamesp
 			if s.Deploy.Cluster != nil {
 				collect(owner+" (cluster deploy)", s.Deploy.Cluster.EnvVars)
 			}
+		case "simple-backend":
+			// In scope for the same reason "cluster" is: a SimpleBackend
+			// runs in a namespace, so a hardcoded
+			// `*.svc.cluster.local` in its env that names a DIFFERENT
+			// namespace produces exactly the silent CrashLoop this guard
+			// exists to catch.
+			if s.Deploy.SimpleBackend != nil {
+				collect(owner+" (simple-backend deploy)", s.Deploy.SimpleBackend.EnvVars)
+			}
 		}
 		// External and build-only deploys are intentionally out of scope.
 		// External targets a non-k8s runner so in-cluster DNS doesn't

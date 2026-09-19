@@ -74,6 +74,12 @@ schema EnvSource:
     from_secret?: {str: str}
     from_config?: {str: str}
     from_field?: str
+    # Marks a `from_secret` whose value may be ABSENT from the environment's
+    # secret store. Default False — a declared secret with no value is an
+    # error, which is the point of the pre-flight. Set only by config codegen
+    # from `optional: true` on a `sensitive` proto field; see
+    # EnvVar.secret_optional for the full reasoning.
+    secret_optional?: bool
 
     check:
         # EXACTLY ONE channel. `value != Undefined` (not `value`) so an
@@ -85,6 +91,8 @@ schema EnvSource:
             "EnvSource.from_secret must carry both 'name' and 'key' (e.g. {name = \"my-secret\", key = \"password\"})"
         from_config == Undefined or ("name" in from_config and "key" in from_config), \
             "EnvSource.from_config must carry both 'name' and 'key' (e.g. {name = \"my-config\", key = \"log-level\"})"
+        secret_optional == Undefined or secret_optional == False or from_secret != Undefined, \
+            "EnvSource.secret_optional is only meaningful with from_secret — it exempts a DECLARED secret from the store pre-flight, and there is nothing to exempt without one"
 
 # Alias for lambda-body schema instantiation (see schema.k header — KCL
 # v0.11 accepts BARE-identifier schema literals inside lambda bodies).
@@ -130,6 +138,11 @@ env_project = lambda m: {str: EnvSource} -> [EnvVar] {
             if m[_k].from_secret != Undefined:
                 secret_ref = m[_k].from_secret.name
                 secret_key = m[_k].from_secret.key
+                # Carried, not dropped: the pre-flight reads the PROJECTED
+                # EnvVar, so an optional flag that stopped at the agnostic
+                # core would be silently lost exactly where it is consumed.
+                if m[_k].secret_optional != Undefined:
+                    secret_optional = m[_k].secret_optional
             if m[_k].from_config != Undefined:
                 config_map_ref = m[_k].from_config.name
                 config_map_key = m[_k].from_config.key
@@ -247,7 +260,10 @@ schema OperatorSpec:
                          `Operator.cluster_rbac.rules`). The k8s adapter
                          routes these into a `ClusterRole` +
                          `ClusterRoleBinding` (via `render_cluster_rbac`),
-                         named `<service>-clusterrole` — NOT the
+                         named `<service>-<namespace>-clusterrole` (the
+                         namespace is required: the object is
+                         cluster-scoped but its binding's subject is
+                         per-env) — NOT the
                          namespaced `Role` a plain Service gets. Forge
                          still auto-adds the default config-read rule, so
                          authors supply only the CRD / lease / coordination
@@ -676,7 +692,7 @@ schema Service:
     ports?: [int]
     replicas?: int = 1
     resources?: Resources
-    build?: GoBuild | DockerBuild | ShellBuild
+    build?: GoBuild | DockerBuild | ShellBuild | RemoteBuild
     volumes?: [Volume]
     health?: HealthProbe
     security?: SecurityOverrides

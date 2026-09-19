@@ -86,8 +86,10 @@ type frontendDrift struct {
 	// Non-empty promotes the finding to an error.
 	deployEnvs []string
 	// deployTypes are the distinct deploy discriminators seen
-	// ("firebase", "cluster"), sorted — named in the evidence so the
-	// reader knows what the project believes it is shipping.
+	// ("firebase", "static-site", "cluster"), sorted — named in the
+	// evidence so the reader knows what the project believes it is
+	// shipping. Collected generically from the discriminator, so a new
+	// variant flows through without a change here.
 	deployTypes []string
 }
 

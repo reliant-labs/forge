@@ -53,8 +53,57 @@ const envReleasesRel = ".forge/env-releases.json"
 // name ("staging", "prod"); the map shape is forward-compatible.
 const sharedVariantKey = "*"
 
-// Artifact modes. An artifact's mode says what KIND of content-addressed
-// identity pins it, which is what decides how a deploy consumes it.
+// Artifact kinds. A release spans more than container images, and the kind is
+// what lets a verifier know HOW to check a given entry exists.
+//
+// WHY THIS EXISTS. Until this field, a Release could only describe OCI images,
+// so every other artifact a release actually ships was invisible to it. That
+// is not a theoretical gap: forge's own v0.1.12 release tagged
+// `web-runtime/v0.3.1`, never published it to npm, and nothing noticed until a
+// scaffolded project failed to install — because the release model had no way
+// to say "this release also contains an npm package, at this version, with
+// this integrity hash". A ledger that cannot NAME an artifact cannot verify it,
+// and an unverifiable artifact is one that silently drifts.
+//
+// The kinds are open by design: an unknown kind round-trips through the ledger
+// untouched, so an older forge reading a newer release does not corrupt it.
+const (
+	// ArtifactKindOCI is a container image in a registry, addressed by digest.
+	ArtifactKindOCI = "oci"
+	// ArtifactKindNPM is a package on an npm registry, addressed by version
+	// plus the registry's integrity hash.
+	ArtifactKindNPM = "npm"
+	// ArtifactKindGoModule is a module on a Go module proxy, addressed by
+	// version plus the go.sum hash.
+	ArtifactKindGoModule = "gomod"
+	// ArtifactKindFile is a file published to object storage or a CDN,
+	// addressed by URL plus a content hash.
+	ArtifactKindFile = "file"
+)
+
+// ReleaseArtifact is one artifact's resolved identity within a release.
+//
+// Two addressing shapes live here, discriminated by Kind, because the things a
+// release ships are not all content-addressed the same way:
+//
+//   - OCI images are addressed by DIGEST alone — the digest IS the name, so
+//     Digests carries it and Version/Integrity stay empty.
+//   - Everything else (npm, Go modules, published files) is addressed by a
+//     COORDINATE plus a hash: the version is how a consumer asks for it, and
+//     the hash is how they know they got the right bytes.
+//
+// Kind is empty on ledgers written before kinds existed. Those are OCI by
+// construction — it was the only thing a release could hold — so EffectiveKind
+// reports them as such rather than forcing a migration of files on disk.
+//
+// MODE IS A SEPARATE AXIS FROM KIND and both are load-bearing. Kind says WHAT
+// the artifact is (an image, an npm package, a file); Mode says how its
+// identity is pinned — "shared" (one registry digest promoted byte-identical
+// to every env) or "source" (a frontend built from a pinned COMMIT at deploy
+// time, with no registry digest because there is no registry). An OCI artifact
+// is Mode shared; a GitSource frontend is Mode source. Collapsing the two
+// would make a source-built frontend unrepresentable, which is exactly how one
+// gets left behind while every image around it advances.
 const (
 	// artifactModeShared is a container image: one registry digest,
 	// promoted byte-identical to every env. Consumed by the deploy path
@@ -65,30 +114,18 @@ const (
 	// via forge.GitSource. There is no registry digest to pin because
 	// there is no registry: the artifact's content-addressed identity is
 	// the COMMIT the declared ref resolved to.
-	//
-	// Recording it is what puts a source-built frontend in the release at
-	// all. Without this mode a release ledger silently covers only the
-	// containerized half of an environment, and the frontend rides on a
-	// hand-edited ref in KCL that nothing verifies, promotes, or reports
-	// as stale — which is exactly how a frontend gets left behind while
-	// every image around it advances.
 	artifactModeSource = "source"
 )
 
-// ReleaseArtifact is one image's resolved content-addressed identity within a
-// release. For the MVP every artifact is Mode "shared": Digests has exactly
-// one entry under sharedVariantKey, promoted to every env. The map shape (not
-// a bare string) is the seam for the deferred `variant` mode, where each env's
-// variant_key maps to its own digest.
 type ReleaseArtifact struct {
-	// Mode is "shared" (a container image: build once, one digest, all
-	// envs) or "source" (a frontend built from a pinned commit — see
-	// artifactModeSource). "variant" (per-env digests) is a documented
-	// follow-up, not yet produced.
+	// Kind is one of the ArtifactKind* constants. Empty means OCI, for
+	// ledgers cut before this field existed.
+	Kind string `json:"kind,omitempty"`
+	// Mode is "shared" (build once, one digest, all envs) for the MVP.
+	// "variant" (per-env digests) is a documented follow-up, not yet produced.
 	Mode string `json:"mode"`
 	// Digests maps a variant key → canonical `sha256:...` digest. For a
-	// shared artifact the only key is sharedVariantKey ("*"). Empty for a
-	// source artifact, which is pinned by Source instead.
+	// shared artifact the only key is sharedVariantKey ("*"). OCI only.
 	Digests map[string]string `json:"digests,omitempty"`
 	// Platforms is the OS/arch set the captured manifest advertises
 	// (e.g. ["linux/amd64"]). Informational for the MVP (single-arch amd64);
@@ -104,6 +141,21 @@ type ReleaseArtifact struct {
 	// not content-addressed — a moved tag silently changes what a release
 	// means — so the commit is the half that makes the release auditable.
 	Source *ReleaseSource `json:"source,omitempty"`
+
+	// ── Non-OCI coordinates ──────────────────────────────────────────────
+	// Version is how a consumer ASKS for this artifact: an npm version
+	// ("0.3.1"), a Go module version ("v0.1.15"), a release label.
+	Version string `json:"version,omitempty"`
+	// Integrity is how a consumer KNOWS they got the right bytes, in the
+	// hash format native to that ecosystem — npm's "sha512-…" integrity
+	// string, a go.sum "h1:…" hash, or "sha256:…" for a published file.
+	// Stored verbatim rather than normalised: a verifier compares it against
+	// what the registry reports, and re-encoding it would break that compare.
+	Integrity string `json:"integrity,omitempty"`
+	// URI is the artifact's location when it is not implied by name+version:
+	// a download URL for a file, or a non-default registry. Empty means the
+	// ecosystem's default registry.
+	URI string `json:"uri,omitempty"`
 }
 
 // ReleaseSource is the content-addressed identity of a source-built
@@ -128,7 +180,36 @@ type ReleaseSource struct {
 // pinned by commit, not by registry digest, and has no image reference for a
 // manifest to carry. A variant artifact (deferred) returns ("", false) too;
 // its resolution is keyed by the target's variant_key, a follow-up.
+
+// EffectiveKind reports the artifact's kind, treating an empty Kind as OCI.
+//
+// The default is not a guess: before Kind existed a Release could only hold
+// image digests, so every artifact in a pre-kind ledger IS an OCI image. This
+// keeps those files readable without rewriting them, which matters because a
+// release ledger is immutable — migrating one in place would violate the
+// property the whole model rests on.
+func (a ReleaseArtifact) EffectiveKind() string {
+	if a.Kind == "" {
+		return ArtifactKindOCI
+	}
+	return a.Kind
+}
+
+// SharedDigest returns the digest of a shared OCI artifact (the only mode the
+// MVP produces) and whether it was present. A variant artifact (deferred)
+// returns ("", false) here — its resolution is keyed by the target's
+// variant_key, a follow-up.
+//
+// A NON-OCI artifact always returns ("", false), and that is the guard that
+// keeps kinds from leaking into the image path: an npm package has no digest
+// to pin a container spec with, so a caller asking for one must get "no"
+// rather than an empty string it might write into a pod. Callers pinning
+// images therefore skip non-OCI artifacts for free, without every call site
+// having to remember to check Kind.
 func (a ReleaseArtifact) SharedDigest() (string, bool) {
+	if a.EffectiveKind() != ArtifactKindOCI {
+		return "", false
+	}
 	d, ok := a.Digests[sharedVariantKey]
 	return d, ok && d != ""
 }
@@ -293,6 +374,14 @@ func boundReleaseForEnv(projectDir, envName string) (EnvBinding, bool, error) {
 	return b, ok, nil
 }
 
+// The env→release lookup that used to live here (boundReleaseForEnv) is now
+// bindingStore.Binding — see binding_store.go. Consumers ask a store, not a
+// project directory, so the ledger's backing can change without touching them.
+//
+// ReadEnvReleases/WriteEnvReleases remain as the FILE backend's encoding: they
+// are the frozen on-disk contract for .forge/env-releases.json, and
+// fileBindingStore is their only production caller.
+
 // harvestReleaseArtifacts collects the per-image digests captured by the build
 // that just ran, from the SAME build-state sources resolveDeployImageDigests
 // reads at deploy time:
@@ -314,13 +403,25 @@ func boundReleaseForEnv(projectDir, envName string) (EnvBinding, bool, error) {
 func harvestReleaseArtifacts(projectDir, envName string) map[string]ReleaseArtifact {
 	out := map[string]ReleaseArtifact{}
 
-	add := func(image, digest string, platforms []string) {
+	add := func(image, digest, registry string, platforms []string) {
 		if image == "" || digest == "" {
 			return
 		}
 		out[image] = ReleaseArtifact{
-			Mode:      artifactModeShared,
-			Digests:   map[string]string{sharedVariantKey: digest},
+			// Stamped explicitly rather than left to EffectiveKind's default:
+			// a ledger cut today should SAY what it holds, so a reader never
+			// has to know that an absent kind once meant OCI.
+			Kind:    ArtifactKindOCI,
+			Mode:    "shared",
+			Digests: map[string]string{sharedVariantKey: digest},
+			// The registry the build pushed to. Recorded because a digest
+			// alone is not an ADDRESS: `sha256:…` says what the bytes are
+			// but not which host serves them, so a ledger without this can
+			// name an image it cannot prove exists. `forge release verify`
+			// reads it to fetch the manifest. Empty for a local/compose
+			// build that pushed nowhere, which verification then reports as
+			// unverifiable rather than passing it silently.
+			URI:       registry,
 			Platforms: platforms,
 		}
 	}
@@ -332,7 +433,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]ReleaseArtif
 		if err != nil || st == nil {
 			continue
 		}
-		add(st.Image, st.Digest, st.Platforms)
+		add(st.Image, st.Digest, st.Registry, st.Platforms)
 	}
 
 	// Per-service external-build states: build-<env>-<service>.json. Glob the
@@ -356,7 +457,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]ReleaseArtif
 			if err != nil || st == nil {
 				continue
 			}
-			add(st.Image, st.Digest, st.Platforms)
+			add(st.Image, st.Digest, st.Registry, st.Platforms)
 		}
 	}
 
@@ -551,6 +652,36 @@ func resolveReleaseSources(r Release) map[string]ReleaseSource {
 	return out
 }
 
+// countOCIArtifacts returns how many of a release's artifacts are container
+// images. Used to tell "this release ships no images" apart from "this
+// release's images are all variant-mode", which are different problems with
+// different answers.
+func countOCIArtifacts(r Release) int {
+	n := 0
+	for _, art := range r.Artifacts {
+		if art.EffectiveKind() == ArtifactKindOCI {
+			n++
+		}
+	}
+	return n
+}
+
+// releaseArtifactKinds returns the sorted distinct kinds present in a release,
+// for error messages that name what a release actually holds rather than what
+// it lacks.
+func releaseArtifactKinds(r Release) []string {
+	seen := map[string]bool{}
+	for _, art := range r.Artifacts {
+		seen[art.EffectiveKind()] = true
+	}
+	kinds := make([]string, 0, len(seen))
+	for k := range seen {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	return kinds
+}
+
 // releaseImageNames returns the sorted image names in a release, for legible
 // summary/log output.
 func releaseImageNames(r Release) []string {
@@ -595,8 +726,16 @@ func resolveReleaseDigests(r Release) (map[string]string, error) {
 					"Inspect the release file with `forge project audit` to see what was recorded",
 				r.Version)
 		}
-		// Artifacts exist but none resolved a shared digest — every artifact is
-		// variant-mode (deferred), so there is nothing the MVP can pin yet.
+		// Artifacts exist but none resolved a shared OCI digest. Two very
+		// different causes, and saying "variant-mode" for both would send a
+		// reader looking for a feature flag when the real answer is that this
+		// release ships no images at all.
+		if n := countOCIArtifacts(r); n == 0 {
+			return nil, fmt.Errorf(
+				"release %q contains no container images to deploy — it has %d artifact(s), all non-OCI (%s). "+
+					"A release of only packages or files can be verified with `forge release verify`, but there is nothing for an environment to run",
+				r.Version, len(r.Artifacts), strings.Join(releaseArtifactKinds(r), ", "))
+		}
 		return nil, fmt.Errorf("release %q carries only variant-mode artifacts; shared image digests are required to promote/deploy (variant promotion is not yet supported)", r.Version)
 	}
 	return out, nil

@@ -1,5 +1,12 @@
 //go:build ignore
 
+// +groupName supplies the API group to controller-gen. controller-gen does not
+// read the GroupVersion var below — it is Go, not a marker — so without this
+// line `controller-gen crd` emits a CRD with an empty spec.group and a
+// malformed metadata.name ("<plurals>."), which the API server rejects.
+//
+// +groupName={{.Group}}
+// +kubebuilder:object:generate=true
 package {{.Package}}
 
 import (

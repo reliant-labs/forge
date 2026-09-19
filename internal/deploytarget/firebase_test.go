@@ -25,7 +25,7 @@ func fakeFirebaseFrontend(projectDir, staging string) FirebaseFrontend {
 			Target:    "reliant-staging",
 			PublicDir: "out",
 			BasePath:  "/admin",
-			Bundle: []FirebaseBundleSpec{
+			Bundle: []BundleDirSpec{
 				{Src: "../reliant-web/dist", Dest: ""},
 			},
 			Rewrites: []map[string]any{

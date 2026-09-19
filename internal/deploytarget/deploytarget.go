@@ -87,6 +87,21 @@ type Provider interface {
 	// Best-effort: per-service failures are logged and accumulated
 	// into the returned error rather than aborting the loop.
 	Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error
+
+	// Observe reports what this provider currently sees deployed, so a
+	// caller can compare it against what was declared.
+	//
+	// A READ with no side effects: it may run against a target forge has
+	// never deployed to, and it must never mutate one. Deploy and
+	// Rollback describe transitions; this is the only verb that answers
+	// "what is actually running right now", which is what a reconciler
+	// is built around.
+	//
+	// A provider that cannot read its target back returns
+	// ErrObservationUnsupported (via the unsupported helper) — never a
+	// green Observed. See observe.go for why unknown is the zero value
+	// on every field that could otherwise default to "fine".
+	Observe(ctx context.Context, group ServiceGroup) (Observed, error)
 }
 
 // ServiceGroup is a set of services that share a deploy target —
@@ -112,13 +127,21 @@ type ServiceGroup struct {
 	// the dispatched view of the rendered KCL — see ResolvedService.
 	Services []ResolvedService
 
-	// Frontends carries the frontends a frontend-target provider ships
-	// (today: the "firebase" provider). It's the frontend analogue of
-	// Services — empty for the service-shaped providers (k8s-cluster /
-	// external / compose), which read Services instead. The Firebase
-	// provider reads Frontends + DryRun off the group so it dispatches
-	// through the registry like every other provider.
+	// Frontends carries the frontends the "firebase" provider ships.
+	// It's the frontend analogue of Services — empty for the
+	// service-shaped providers (k8s-cluster / external / compose), which
+	// read Services instead. The Firebase provider reads Frontends +
+	// DryRun off the group so it dispatches through the registry like
+	// every other provider.
 	Frontends []FirebaseFrontend
+
+	// StaticSites carries the frontends the "static-site" provider
+	// ships. A separate field rather than a shared one because the two
+	// frontend providers consume genuinely different specs (a hosting
+	// site id vs. a bucket + CDN + retention policy), and a group only
+	// ever routes to ONE provider — so a union type here would buy a
+	// type assertion in both providers and nothing else.
+	StaticSites []StaticSiteFrontend
 
 	// ImageTag is the tag forge built (or is about to build) for
 	// these services. Passed through to the provider so it can stamp
@@ -179,6 +202,29 @@ type K8sClusterSpec struct {
 	Replicas int
 	Platform string
 	Ports    []int
+
+	// OwnedClaims names the PersistentVolumeClaims forge ITSELF emits
+	// for this workload, so an observation can be accountable for them.
+	//
+	// The distinction is ownership, not usage. A forge.Volume of type
+	// "pvc" REFERENCES a claim by name and leaves its existence to
+	// whoever provisioned it — forge has no standing to report on a
+	// claim it did not create. SimpleBackend's `storage_gib` is the one
+	// case where forge emits the PVC (_render_simple_backend_pvc in
+	// kcl/render.k), and a thing forge creates is a thing forge must be
+	// able to read back.
+	//
+	// It matters because an unbound claim is invisible in the half of
+	// the state this observation otherwise reads. A Deployment whose PVC
+	// never binds reports "0/1 ready" — true, and it names the symptom
+	// while the cause (no default StorageClass on this cluster, or a
+	// storage_gib change the class refused) sits one object away.
+	//
+	// Empty for an ordinary cluster service, which is why this is a
+	// nil-able slice rather than a bool plus a naming convention: the
+	// observer asks the group what forge owns instead of re-deriving
+	// "<name>-data" and hoping the render still agrees.
+	OwnedClaims []string
 }
 
 // ExternalSpec is the per-service shell-command deploy spec. Mirrors
@@ -291,6 +337,7 @@ func NewRegistry() *Registry {
 	r.Register(ComposeProvider{})
 	r.Register(HostInfraProvider{})
 	r.Register(FirebaseProvider{})
+	r.Register(StaticSiteProvider{})
 	return r
 }
 
@@ -310,6 +357,24 @@ func (r *Registry) Register(p Provider) {
 // type" and emit a friendly error pointing at the migration skill.
 func (r *Registry) Lookup(id string) Provider {
 	return r.providers[id]
+}
+
+// IDs returns every registered provider id, sorted.
+//
+// It exists so a test can ENUMERATE the registry rather than restate it.
+// A hand-written list of providers in a test is a second declaration of
+// the same fact, and the failure mode is silence: a provider added to
+// NewRegistry and not to the list is simply never checked, which is the
+// exact shape — a clean board for something nobody measured — that the
+// observation contract exists to prevent. See TestEveryRegisteredProvider
+// ObservesOrDeclares in observe_audit_test.go.
+func (r *Registry) IDs() []string {
+	out := make([]string, 0, len(r.providers))
+	for id := range r.providers {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GroupServices walks a rendered service list and returns the deploy
@@ -475,11 +540,14 @@ type RawK8sCluster struct {
 //
 //	[<provider>] <target>: <svc-1>, <svc-2>, ...
 func FormatGroupSummary(g ServiceGroup) string {
-	names := make([]string, 0, len(g.Services)+len(g.Frontends))
+	names := make([]string, 0, len(g.Services)+len(g.Frontends)+len(g.StaticSites))
 	for _, s := range g.Services {
 		names = append(names, s.Name)
 	}
 	for _, f := range g.Frontends {
+		names = append(names, f.Name)
+	}
+	for _, f := range g.StaticSites {
 		names = append(names, f.Name)
 	}
 	target := groupTarget(g)
@@ -507,6 +575,11 @@ func groupTarget(g ServiceGroup) string {
 			return "site=" + g.Frontends[0].Spec.resolvedTarget()
 		}
 		return "site=?"
+	case "static-site":
+		if len(g.StaticSites) > 0 {
+			return "bucket=" + g.StaticSites[0].Spec.normalizedBucket()
+		}
+		return "bucket=?"
 	default:
 		return ""
 	}

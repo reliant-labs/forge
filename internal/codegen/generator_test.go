@@ -1467,10 +1467,19 @@ func TestGenerateMissingHandlerStubs_IgnoresGeneratedStubsWhenDetectingMissing(t
 // The scaffolded per-RPC test must reference the same identifier.
 func TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper(t *testing.T) {
 	projectDir := t.TempDir()
-	// Simulate the colliding internal package — its presence is what flips
-	// the disambiguation in ComputeTestHelperName / GenerateBootstrapTesting.
+	// Simulate the colliding internal package — a WIRED component (the
+	// Service/Deps/New triple in contract.go) is what flips the
+	// disambiguation in ComputeTestHelperName / GenerateBootstrapTesting.
+	// The fixture used to be a bare empty directory, which the old
+	// existence-based rule accepted; that shorthand is what let a types-only
+	// package masquerade as a component. The assertion below is unchanged —
+	// only the fixture now actually is the thing the comment claims.
 	if err := os.MkdirAll(filepath.Join(projectDir, "internal", "billing"), 0755); err != nil {
 		t.Fatalf("setup internal/billing: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "internal", "billing", "contract.go"),
+		[]byte("package billing\n\ntype Service interface{ Charge() error }\n\ntype Deps struct{}\n\nfunc New(d Deps) Service { return nil }\n"), 0644); err != nil {
+		t.Fatalf("setup internal/billing contract: %v", err)
 	}
 	targetDir := filepath.Join(projectDir, "internal", "handlers", "billing")
 
@@ -1535,8 +1544,16 @@ func TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper(t *testin
 
 func TestComputeTestHelperName(t *testing.T) {
 	projectDir := t.TempDir()
+	// internal/billing is a WIRED component: contract.go with the
+	// Service/Deps/New triple. That — not the bare existence of a directory —
+	// is what makes it occupy a test-factory slot and collide with the
+	// handler service of the same name. See IsWiredComponentDir.
 	if err := os.MkdirAll(filepath.Join(projectDir, "internal", "billing"), 0755); err != nil {
 		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "internal", "billing", "contract.go"),
+		[]byte("package billing\n\ntype Service interface{ Charge() error }\n\ntype Deps struct{}\n\nfunc New(d Deps) Service { return nil }\n"), 0644); err != nil {
+		t.Fatalf("setup billing contract: %v", err)
 	}
 
 	// An external-component domain dir must NOT trigger the Svc prefix: it
@@ -1550,14 +1567,33 @@ func TestComputeTestHelperName(t *testing.T) {
 		t.Fatalf("setup user contract: %v", err)
 	}
 
+	// A types-only package: real code, no component to construct, opted out
+	// with //forge:exclude-contract. It holds no test-factory slot, so it must
+	// not drive a Svc-prefix on a same-named handler service. This shape
+	// (internal/db, internal/deploy) is what the existence-based rule broke.
+	if err := os.MkdirAll(filepath.Join(projectDir, "internal", "deploy"), 0755); err != nil {
+		t.Fatalf("setup deploy: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "internal", "deploy", "types.go"),
+		[]byte("//forge:exclude-contract\npackage deploy\n\ntype Target struct{ Name string }\n"), 0644); err != nil {
+		t.Fatalf("setup deploy types: %v", err)
+	}
+
+	// A directory with no Go component at all — existence alone proves nothing.
+	if err := os.MkdirAll(filepath.Join(projectDir, "internal", "assets"), 0755); err != nil {
+		t.Fatalf("setup assets: %v", err)
+	}
+
 	cases := []struct {
 		pkg, project, want string
 	}{
 		{"billing", projectDir, "SvcBilling"}, // plain internal/billing dir -> collision
 		{"users", projectDir, "Users"},
 		{"admin_server", projectDir, "AdminServer"},
-		{"billing", "", "Billing"},   // no project context -> no-collision form
-		{"user", projectDir, "User"}, // external-component domain dir -> NOT a collision
+		{"billing", "", "Billing"},       // no project context -> no-collision form
+		{"user", projectDir, "User"},     // external-component domain dir -> NOT a collision
+		{"deploy", projectDir, "Deploy"}, // types-only (exclude-contract) dir -> NOT a collision
+		{"assets", projectDir, "Assets"}, // bare dir, no contract.go -> NOT a collision
 	}
 	for _, c := range cases {
 		if got := ComputeTestHelperName(c.pkg, c.project); got != c.want {

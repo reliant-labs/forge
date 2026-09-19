@@ -1185,7 +1185,7 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.HotReload = f
 		case "deploy":
 			gen.Features.Deploy = f
-		case "ingress", "external_builds", "operators", "strict_wiring":
+		case "ingress", "external_builds", "operators", "strict_wiring", "reconcile":
 			return cliutil.UserErr("forge project new --disable",
 				fmt.Sprintf("feature %q is experimental (opt-in only); cannot be --disable'd because it's already off by default", name),
 				"",

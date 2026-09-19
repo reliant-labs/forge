@@ -310,7 +310,8 @@ func gcRetiredAgentSkills(ctx *pipelineContext, skillsDir string, expected map[s
 				continue
 			}
 		}
-		if err := os.Remove(full); err != nil {
+		// Journaled: an aborted run restores the retired skill file.
+		if err := checksums.RemoveJournaled(full); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: retired-skill cleanup: could not remove %s: %v\n", full, err)
 			continue
 		}

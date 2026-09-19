@@ -437,6 +437,94 @@ func TestKCLModule_NegativeChecks(t *testing.T) {
 // TestKCLModule_JSONContractShape pins the JSON contract that the
 // forge CLI consumes. Adding new top-level buckets to render() is
 // backward-compatible; removing one IS a breaking change and trips
+// TestKCLModule_StaticSiteSchemaIsClosed pins that StaticSite refuses a
+// field it does not declare.
+//
+// This is the mechanism the hosted tier relies on to reject
+// configuration it must not honour: rather than maintaining an allowlist
+// of forbidden fields — which drifts from the schema the moment either
+// changes — the field simply is not on the schema, and KCL refuses it
+// with a message naming the schema. `public_access` is the canonical
+// case: who may read the bucket is the bucket owner's policy, not
+// something a `forge.StaticSite` deploy block asserts.
+//
+// It needs its own test rather than a negative_*.k fixture because KCL
+// rejects an undeclared member at COMPILE time, and
+// TestKCLModule_NegativeChecks deliberately refuses to accept a
+// CompileError as a pass (otherwise a fixture with a typo would satisfy
+// it while validating nothing). So this asserts the compile-time shape
+// explicitly instead of blunting that guard.
+func TestKCLModule_StaticSiteSchemaIsClosed(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("kcl"); err != nil {
+		t.Skip("kcl not on PATH; skipping StaticSite closed-schema test")
+	}
+
+	root := kclModuleRoot(t)
+	fixture := filepath.Join(root, "tests", "closedschema_static_site_unknown_field.k")
+
+	out, err := runKCL(t, fixture)
+	if err == nil {
+		t.Fatalf("expected kcl to reject an undeclared StaticSite field, but it succeeded:\n%s", out)
+	}
+	got := string(out) + "\n" + err.Error()
+	// The rejection must name the offending member AND the schema — that
+	// exact message is what makes the closed schema usable rather than
+	// merely strict, because it tells the author what forge will not
+	// accept and where.
+	for _, want := range []string{"public_access", "StaticSite"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rejection should name %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// TestKCLModule_SimpleBackendSchemaIsClosed pins that SimpleBackend
+// refuses a field it does not declare — the same closed-schema property
+// TestKCLModule_StaticSiteSchemaIsClosed pins for StaticSite, and for the
+// same reason: the way a hosted tier rejects configuration it must not
+// honour is to not declare the field, so there is no allowlist to
+// maintain and none to drift from the schema.
+//
+// `replicas` is the case worth pinning here rather than an obviously
+// absurd one. Unlike StaticSite's `public_access`, it is a field a reader
+// would REASONABLY expect on a deploy block, which is exactly why its
+// absence has to be asserted instead of assumed. SimpleBackend renders a
+// ReadWriteOnce PVC for `storage_gib`, and a multi-replica Deployment
+// mounting one RWO volume either wedges on rolling update or refuses to
+// schedule across nodes — so a `replicas` knob would offer a setting that
+// silently breaks precisely the workloads that set `storage_gib`.
+//
+// Needs its own test rather than a negative_*.k fixture for the same
+// reason StaticSite's does: KCL rejects an undeclared member at COMPILE
+// time, and TestKCLModule_NegativeChecks deliberately refuses to accept a
+// CompileError as a pass, so that a fixture with a typo cannot satisfy it
+// while validating nothing.
+func TestKCLModule_SimpleBackendSchemaIsClosed(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("kcl"); err != nil {
+		t.Skip("kcl not on PATH; skipping SimpleBackend closed-schema test")
+	}
+
+	root := kclModuleRoot(t)
+	fixture := filepath.Join(root, "tests", "closedschema_simple_backend_unknown_field.k")
+
+	out, err := runKCL(t, fixture)
+	if err == nil {
+		t.Fatalf("expected kcl to reject an undeclared SimpleBackend field, but it succeeded:\n%s", out)
+	}
+	got := string(out) + "\n" + err.Error()
+	// The rejection must name the member AND the schema — that message is
+	// what makes the closed schema usable rather than merely strict.
+	for _, want := range []string{"replicas", "SimpleBackend"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rejection should name %q; got:\n%s", want, got)
+		}
+	}
+}
+
 // this test.
 func TestKCLModule_JSONContractShape(t *testing.T) {
 	if _, err := exec.LookPath("kcl"); err != nil {
@@ -476,8 +564,10 @@ func TestKCLModule_JSONContractShape(t *testing.T) {
 			continue
 		}
 		typ, _ := dep["type"].(string)
-		if typ != "host" && typ != "cluster" && typ != "build-only" {
-			t.Errorf("services[%d].deploy.type = %q, want one of host|cluster|build-only", i, typ)
+		switch typ {
+		case "host", "cluster", "simple-backend", "build-only":
+		default:
+			t.Errorf("services[%d].deploy.type = %q, want one of host|cluster|simple-backend|build-only", i, typ)
 		}
 	}
 }

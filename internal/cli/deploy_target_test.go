@@ -115,7 +115,7 @@ func TestFilterEntitiesToFrontendsOnly(t *testing.T) {
 	// The exact predicate runDeploy uses to skip the cluster pipeline. With
 	// the CronJob (and everything else) stripped, it now evaluates true —
 	// the regression this fix closes.
-	frontendOnly := !kclEntitiesHaveK8sCluster(got) && hasFirebaseFrontend(got) &&
+	frontendOnly := !kclEntitiesHaveK8sCluster(got) && hasShippableFrontend(got) &&
 		len(got.Operators) == 0 && len(got.CronJobs) == 0
 	if !frontendOnly {
 		t.Errorf("frontendOnly guard should engage after the filter; got false")

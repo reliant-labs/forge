@@ -15,6 +15,12 @@ import (
 // path: the FirebaseHosting schema, _render_firebase_hosting emitting it,
 // and FrontendDeployEntity.UnmarshalJSON dispatching it. Needs CGO for
 // the KCL plugin.
+//
+// It doubles as the guard for the deprecated `forge.FirebaseBundleDir`
+// alias: the fixture below still names it (rather than the current
+// `forge.BundleDir`) precisely so an existing project's main.k that does
+// the same keeps rendering. If the alias is ever removed, this test is
+// where it surfaces.
 func TestFrontendFirebaseDeployRoundTrip(t *testing.T) {
 	forgeKcl, err := filepath.Abs("../../kcl")
 	if err != nil {

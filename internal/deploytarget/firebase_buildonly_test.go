@@ -147,7 +147,7 @@ func TestBuildOnlyThenFirebaseAssembles(t *testing.T) {
 			Project:   "reliant-nonprod-490701",
 			Site:      "reliant-staging",
 			PublicDir: "dist",
-			Bundle: []FirebaseBundleSpec{
+			Bundle: []BundleDirSpec{
 				// Bundle the build-only frontend's output under /admin.
 				{Src: "admin-web/out", Dest: "admin"},
 			},

@@ -5,12 +5,21 @@
 // `Bundle.clusters = [forge.Cluster {...}, ...]` and forge ensures each
 // exists at the head of `forge env up` (create-if-absent, no-op if present).
 //
+// This file IS the k3d ClusterProvider's implementation (see
+// cluster_provider.go for the registry that dispatches to it per-entity by
+// Cluster.provider). Everything below — ensureDeclaredCluster, the
+// create/start/heal seams, the node-level docker shell-outs — is k3d-
+// specific; a "vcluster" or "gke" provider is a SEPARATE ClusterProvider
+// implementation with its own file, not a branch added here.
+//
 // Multi-cluster ownership is a REFERENCE. There is no "primary" cluster:
 // a secondary cluster names its `owner` Cluster, and the KCL render layer
 // DERIVES the joined docker network (Cluster.Network = `k3d-<owner.name>`)
 // and the registry-inherit flag (Cluster.RegistryInherit = true) from
 // that one edge. The owner cluster projects neither — k3d creates its own
-// network/registry. There is no most-X heuristic.
+// network/registry. There is no most-X heuristic. `owner` is meaningful
+// for k3d only — see the Cluster schema doc (kcl/schema.k) for why a
+// vcluster's host relationship is a distinct `host?` edge instead.
 package cli
 
 import (
@@ -33,6 +42,11 @@ import (
 // cluster must be declared BEFORE any secondary that inherits its network/registry —
 // declaration order is the contract (a secondary references the owner's
 // network by name, which only exists once the owner is created).
+//
+// Each declared cluster is dispatched through clusterProviderRegistry by
+// its own Cluster.provider ("k3d" by default) — see cluster_provider.go.
+// Looked up per-entity, not once for the whole call, so a mixed-provider
+// env never collides two clusters on shared dispatch state.
 //
 // A nil/empty list is a no-op: an env that declares no clusters keeps
 // today's behavior (`forge env up e2e` ensures nothing; the legacy
@@ -60,7 +74,14 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 		return err
 	}
 	for i := range clusters {
-		if err := ensureDeclaredCluster(ctx, clusters[i], clusters, projectDir, env); err != nil {
+		// Resolved PER-ENTITY (not once for the whole call), so a mixed
+		// env dispatches each declared cluster to its own provider rather
+		// than colliding on shared registry state. See lookupClusterProvider.
+		provider, err := lookupClusterProvider(clusters[i].Provider)
+		if err != nil {
+			return fmt.Errorf("cluster %q: %w", clusters[i].Name, err)
+		}
+		if err := provider.Ensure(ctx, clusters[i], clusters, projectDir, env); err != nil {
 			return fmt.Errorf("ensure cluster %q: %w", clusters[i].Name, err)
 		}
 	}

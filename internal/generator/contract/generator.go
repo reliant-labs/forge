@@ -211,12 +211,40 @@ func GenerateWithOptions(contractPath string, opts Options) error {
 // forge versions; they're now replaced by observe.* libraries. Missing
 // files are not an error — the function is safe to call on freshly
 // scaffolded packages.
+//
+// Each delete is journaled first (RecordPreWriteAbs) so a run that aborts
+// later rewinds the file back. A delete that skipped the journal recorded
+// the path as "absent pre-run" at the NEXT write, which made the rewind
+// delete it — see removeJournaled.
 func removeLegacyWrappers(dir string) error {
 	for _, name := range []string{"middleware_gen.go", "tracing_gen.go", "metrics_gen.go"} {
-		path := filepath.Join(dir, name)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", path, err)
+		if err := removeJournaled(filepath.Join(dir, name)); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// removeJournaled deletes a forge-owned path after capturing its pre-run
+// bytes in the rollback journal, so an aborted `forge generate` restores it.
+//
+// This is the delete-side twin of the WriteGeneratedFile chokepoint. The
+// journal is first-write-wins and keyed on the path, so capturing here is
+// correct whether the file is only deleted this run or deleted and then
+// rewritten: the capture at the delete holds the TRUE pre-run bytes, and the
+// rewrite's own capture is a no-op.
+//
+// Without it the ordering silently inverts the rewind's meaning. Deleting
+// first left the path uncaptured; the subsequent write captured it as
+// existed=false ("absent before this run"), which RestoreRollback honours by
+// DELETING. A validation failure in an unrelated proto therefore removed a
+// package's middleware_gen.go and broke `go build ./...` across the whole
+// checkout, attributing the damage to a package that had nothing to do with
+// the failure. A missing file is not an error.
+func removeJournaled(path string) error {
+	checksums.RecordPreWriteAbs(path)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove %s: %w", path, err)
 	}
 	return nil
 }

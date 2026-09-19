@@ -389,6 +389,37 @@ type BuildImagesWorkflowData struct {
 	Registry     string // "ghcr", "gar"
 	HasFrontends bool
 	VulnDocker   bool // trivy scanning
+
+	// CutRelease emits the job that records a release against a control
+	// plane and promotes an environment to it — the step between "the image
+	// is pushed" and "something is running it".
+	//
+	// OFF BY DEFAULT, because it is the one job in this workflow that talks
+	// to a server forge did not scaffold. A project with no control plane
+	// would get a job that fails on every push to main, and a CI file that is
+	// red by default is a CI file people stop reading.
+	CutRelease bool
+}
+
+// ReconcileWorkflowData holds data for the scheduled reconcile workflow.
+//
+// The workflow is emitted ONLY when features.experimental.reconcile is on —
+// the generator gates it, not this struct. Everything in forge is opt-in and à
+// la carte, and a scheduled job that runs `forge reconcile` in a project whose
+// reconcile loop is not wired would fail hourly, forever, for a feature the
+// user never asked for.
+type ReconcileWorkflowData struct {
+	ProjectName string
+	// Environments the matrix sweeps. Reconcile is per-environment because
+	// the POLICY is per-environment: one may be converging while another is
+	// pinned during an incident.
+	Environments []DeployEnv
+	// ForgeVersion / ForgeGitCommit pin the `go install` the same way the
+	// verify-generated job does, so a scheduled run a month from now
+	// reconciles with the forge that wrote the project rather than whatever
+	// is newest.
+	ForgeVersion   string
+	ForgeGitCommit string
 }
 
 // E2EWorkflowData holds data for the standalone E2E test workflow template.

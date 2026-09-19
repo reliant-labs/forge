@@ -37,6 +37,17 @@ func (f *fakeProvider) Rollback(_ context.Context, g deploytarget.ServiceGroup, 
 	return f.rollbackErr
 }
 
+// Observe satisfies the Provider interface. These tests exercise the
+// DEPLOY and ROLLBACK dispatchers, which never call it — so it declines
+// rather than returning a fabricated green observation that a future
+// test could accidentally assert against.
+func (f *fakeProvider) Observe(_ context.Context, _ deploytarget.ServiceGroup) (deploytarget.Observed, error) {
+	return deploytarget.Observed{ProviderID: f.id}, deploytarget.ObservationUnsupportedError{
+		Provider: f.id,
+		Reason:   "test double for the deploy/rollback dispatch; observation is not part of these tests",
+	}
+}
+
 // TestRollbackDeployGroups_CallsRollback confirms the rollback
 // dispatcher invokes the provider's Rollback (not Deploy) for each
 // group, and only after the per-service state file is on disk.

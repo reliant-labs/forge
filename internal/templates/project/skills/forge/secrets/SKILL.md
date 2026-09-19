@@ -207,6 +207,31 @@ bundle provider is the single-source model now — prefer it.
 - **Fail-fast on missing refs.** A declared `secret_ref` with no value
   in the store aborts `forge env up` / `forge env deploy` — no more silent
   feature-disable.
+- **`optional: true` is the ONE exemption.** Some credentials are
+  optional by design — the classic case is a tier's off-switch, where a
+  config block is documented as "with either unset the reconciler is not
+  registered". Every non-sensitive field in such a block projects as `""`
+  and unset is fine; without this annotation the sensitive one would be a
+  hard start-up requirement in every environment that deliberately left
+  the tier off.
+
+  ```proto
+  string admin_password = 99 [(forge.v1.config) = {
+    optional: true          // absence is intended; skip the pre-flight
+    sensitive: true,
+    env_var: "MANAGED_DATABASE_ADMIN_PASSWORD"
+  }];
+  ```
+
+  It is opt-in, and deliberately so: an unset credential and a
+  deliberately-absent one are indistinguishable in the store, so forge
+  cannot infer which it is looking at. Reach for it ONLY when the app
+  genuinely tolerates the absence — the alternative people invent is a
+  placeholder value, which puts a real-looking credential in the store
+  and defeats the check for every genuinely-missing secret after it.
+
+  `required: true` and `optional: true` together are refused at generate
+  time rather than resolved by precedence.
 - **The store is keyed by env-var NAME.** The YAML KEY must match
   `EnvVar.name` (not `secret_ref` / `secret_key`), and must be a valid
   env-var name — forge refuses to load a store containing a key that

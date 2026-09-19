@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -32,18 +31,15 @@ const FrontendConfigJSName = "config.js"
 //
 // The pipeline, per frontend:
 //
-//  1. Build — run `<dev_runner> install` then `npm run build` in the
-//     frontend dir, with the frontend's env_vars injected as build-time
-//     env (NEXT_PUBLIC_* / VITE_*). The build emits PublicDir (e.g.
-//     "out" for a Next.js static export, "dist" for Vite).
-//  2. Assemble — copy PublicDir into a staging tree under BasePath
-//     (e.g. <staging>/admin for base_path "/admin"), then copy each
-//     Bundle.Src into <staging>/<Bundle.Dest>. The result is one public
-//     root: a root SPA with the forge frontend mounted under its prefix.
-//  3. Configure — write a firebase.json (hosting.public = staging,
+//  1. Build + assemble — the SHARED static staging step (staticstage.go):
+//     install, `npm run build` with the frontend's env injected, copy
+//     public_dir under base_path plus every bundle dir, then write the
+//     environment's runtime config document last. StaticSiteProvider runs
+//     the identical step, which is why it lives there and not here.
+//  2. Configure — write a firebase.json (hosting.public = staging,
 //     hosting.site = Site, plus any Rewrites) and a .firebaserc mapping
 //     the hosting Target to Site for the Project.
-//  4. Deploy — run `firebase deploy --project <project> --only
+//  3. Deploy — run `firebase deploy --project <project> --only
 //     hosting:<target> --non-interactive` from the staging parent.
 //
 // --dry-run prints the resolved plan (build command, assembled layout,
@@ -110,15 +106,8 @@ type FirebaseHostingSpec struct {
 	Target    string
 	PublicDir string
 	BasePath  string
-	Bundle    []FirebaseBundleSpec
+	Bundle    []BundleDirSpec
 	Rewrites  []map[string]any
-}
-
-// FirebaseBundleSpec is one extra pre-built static dir assembled into
-// the hosting site. Dest empty means the site root.
-type FirebaseBundleSpec struct {
-	Src  string
-	Dest string
 }
 
 // Name returns the provider identifier.
@@ -129,13 +118,6 @@ func (p FirebaseProvider) runner() commandRunner {
 		return p.Runner
 	}
 	return defaultRunner
-}
-
-func (p FirebaseProvider) projectDir() string {
-	if p.ProjectDir != "" {
-		return p.ProjectDir
-	}
-	return "."
 }
 
 // resolvedTarget returns the hosting selector for `--only hosting:<x>`.
@@ -176,6 +158,12 @@ func (p FirebaseProvider) Deploy(ctx context.Context, group ServiceGroup) error 
 // recovery surface. We return ErrProviderNotImplemented so the
 // dispatcher records "rollback not supported" rather than silently
 // claiming success.
+//
+// (StaticSiteProvider, by contrast, DOES support rollback: it archives
+// every deploy's tree under a content digest in the bucket, so a previous
+// artifact is still there to re-point at. Firebase owns its own release
+// history, so duplicating that here would be forge second-guessing the
+// target's native affordance.)
 func (FirebaseProvider) Rollback(_ context.Context, _ ServiceGroup, _ string) error {
 	return fmt.Errorf("firebase: rollback not supported (use `firebase hosting:rollback`): %w", ErrProviderNotImplemented)
 }
@@ -193,93 +181,46 @@ func (p FirebaseProvider) deployFrontends(ctx context.Context, fes []FirebaseFro
 }
 
 // firebasePlan is the resolved, side-effect-free description of one
-// frontend's Firebase deploy. It's computed first so --dry-run can print
-// it without touching the filesystem or shelling out, and the real
-// deploy path executes against the same plan.
+// frontend's Firebase deploy: the shared build-and-assemble StagePlan
+// plus the Firebase-specific configure and deploy steps.
 type firebasePlan struct {
-	Name        string
-	FrontendDir string // absolute frontend source dir
-	InstallCmd  []string
-	BuildCmd    []string
-	BuildEnv    map[string]string
-	StagingDir  string // absolute assembled public root
-	// Copies is the ordered list of (absoluteSrc → relativeDestUnderStaging)
-	// the assembler will perform. The first entry is always the frontend's
-	// own public_dir (mounted under base_path); the rest are Bundle dirs.
-	Copies []firebaseCopy
-	// RuntimeConfigJS is the environment's runtime config document, and
-	// RuntimeConfigRel is where it lands relative to the staging root —
-	// inside the base-path subtree, because that is where the document
-	// head's <script src="<basePath>/config.js"> resolves it. Empty
-	// RuntimeConfigJS means the frontend declares no typed config and no
-	// document is written.
-	RuntimeConfigJS  string
-	RuntimeConfigRel string
-	FirebaseJSON     string   // marshaled firebase.json contents
-	FirebaseRC       string   // marshaled .firebaserc contents
-	DeployCmd        []string // argv for the firebase deploy invocation
-	DeployWorkdir    string   // dir the firebase command runs from (StagingDir's parent)
+	Stage         StagePlan
+	FirebaseJSON  string   // marshaled firebase.json contents
+	FirebaseRC    string   // marshaled .firebaserc contents
+	DeployCmd     []string // argv for the firebase deploy invocation
+	DeployWorkdir string   // dir the firebase command runs from (StagingDir's parent)
 }
 
-type firebaseCopy struct {
-	// Src is the absolute source directory.
-	Src string
-	// DestRel is the destination path RELATIVE to the staging root
-	// (".", "admin", "docs/v2"). Empty / "." means the staging root.
-	DestRel string
-	// Label identifies the source in plan output ("public_dir" / a
-	// bundle src).
-	Label string
+// stageInput projects a FirebaseFrontend onto the target-neutral
+// StageInput the shared build-and-assemble step consumes.
+func (p FirebaseProvider) stageInput(fe FirebaseFrontend) StageInput {
+	staging := p.StagingRoot
+	if staging == "" {
+		staging = filepath.Join(os.TempDir(), "forge-firebase-"+fe.Name)
+	}
+	return StageInput{
+		Name:            fe.Name,
+		Path:            fe.Path,
+		DevRunner:       fe.DevRunner,
+		BuildEnv:        fe.BuildEnv,
+		PublicDir:       fe.Spec.PublicDir,
+		BasePath:        fe.Spec.BasePath,
+		Bundle:          fe.Spec.Bundle,
+		RuntimeConfigJS: fe.RuntimeConfigJS,
+		ProjectDir:      p.ProjectDir,
+		StagingRoot:     staging,
+	}
 }
 
 // buildPlan resolves a frontend into its firebasePlan. Pure aside from
 // path resolution (filepath.Abs) — no build, no copy, no firebase call.
 func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
-	projDir, err := filepath.Abs(p.projectDir())
+	stage, err := buildStagePlan(p.stageInput(fe))
 	if err != nil {
-		return firebasePlan{}, fmt.Errorf("firebase %s: resolve project dir: %w", fe.Name, err)
-	}
-	frontendDir := fe.Path
-	if !filepath.IsAbs(frontendDir) {
-		frontendDir = filepath.Join(projDir, fe.Path)
+		return firebasePlan{}, fmt.Errorf("firebase %s: %w", fe.Name, err)
 	}
 
-	staging := p.StagingRoot
-	if staging == "" {
-		staging = filepath.Join(os.TempDir(), "forge-firebase-"+fe.Name)
-	}
-	staging, err = filepath.Abs(staging)
-	if err != nil {
-		return firebasePlan{}, fmt.Errorf("firebase %s: resolve staging dir: %w", fe.Name, err)
-	}
-
-	// public_dir resolves against the frontend source dir.
-	publicSrc := fe.Spec.PublicDir
-	if !filepath.IsAbs(publicSrc) {
-		publicSrc = filepath.Join(frontendDir, fe.Spec.PublicDir)
-	}
-
-	copies := []firebaseCopy{{
-		Src:     publicSrc,
-		DestRel: basePathToDestRel(fe.Spec.BasePath),
-		Label:   "public_dir",
-	}}
-	for _, b := range fe.Spec.Bundle {
-		src := b.Src
-		if !filepath.IsAbs(src) {
-			src = filepath.Join(projDir, b.Src)
-		}
-		copies = append(copies, firebaseCopy{
-			Src:     src,
-			DestRel: cleanDestRel(b.Dest),
-			Label:   "bundle:" + b.Src,
-		})
-	}
-
-	installCmd := firebaseInstallCmd(fe.DevRunner)
-	buildCmd := []string{"npm", "run", "build"}
-
-	fbJSON, err := renderFirebaseJSON(staging, fe.Spec)
+	fbJSON, err := renderFirebaseJSON(stage.StagingDir, fe.Spec)
 	if err != nil {
 		return firebasePlan{}, fmt.Errorf("firebase %s: render firebase.json: %w", fe.Name, err)
 	}
@@ -288,36 +229,17 @@ func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
 		return firebasePlan{}, fmt.Errorf("firebase %s: render .firebaserc: %w", fe.Name, err)
 	}
 
-	deployWorkdir := filepath.Dir(staging)
-	deployCmd := []string{
-		"firebase", "deploy",
-		"--project", fe.Spec.Project,
-		"--only", "hosting:" + fe.Spec.resolvedTarget(),
-		"--non-interactive",
-	}
-
-	// The runtime document lands beside the frontend's own public_dir
-	// content — under base_path when it has one — so the blocking
-	// <script src> in the document head resolves it.
-	runtimeConfigRel := ""
-	if fe.RuntimeConfigJS != "" {
-		runtimeConfigRel = filepath.Join(basePathToDestRel(fe.Spec.BasePath), FrontendConfigJSName)
-	}
-
 	return firebasePlan{
-		Name:             fe.Name,
-		FrontendDir:      frontendDir,
-		InstallCmd:       installCmd,
-		BuildCmd:         buildCmd,
-		BuildEnv:         fe.BuildEnv,
-		StagingDir:       staging,
-		Copies:           copies,
-		RuntimeConfigJS:  fe.RuntimeConfigJS,
-		RuntimeConfigRel: runtimeConfigRel,
-		FirebaseJSON:     fbJSON,
-		FirebaseRC:       fbRC,
-		DeployCmd:        deployCmd,
-		DeployWorkdir:    deployWorkdir,
+		Stage:        stage,
+		FirebaseJSON: fbJSON,
+		FirebaseRC:   fbRC,
+		DeployCmd: []string{
+			"firebase", "deploy",
+			"--project", fe.Spec.Project,
+			"--only", "hosting:" + fe.Spec.resolvedTarget(),
+			"--non-interactive",
+		},
+		DeployWorkdir: filepath.Dir(stage.StagingDir),
 	}, nil
 }
 
@@ -333,92 +255,38 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 	}
 
 	runner := p.runner()
-	fmt.Printf("  [firebase] %s: building (%s) in %s...\n", plan.Name, strings.Join(plan.BuildCmd, " "), plan.FrontendDir)
+	fmt.Printf("  [firebase] %s: building (%s) in %s...\n",
+		plan.Stage.Name, strings.Join(plan.Stage.BuildCmd, " "), plan.Stage.FrontendDir)
 
-	if err := runFrontendBuild(ctx, runner, plan.Name, plan.FrontendDir, plan.InstallCmd, plan.BuildCmd, plan.BuildEnv); err != nil {
+	// Build + assemble — the shared static staging step.
+	if err := runStagePlan(ctx, runner, plan.Stage); err != nil {
 		return err
-	}
-
-	// Assemble phase — fresh staging tree, then copy public_dir + bundles.
-	if err := assembleFirebaseStaging(plan); err != nil {
-		return fmt.Errorf("firebase %s: assemble: %w", plan.Name, err)
 	}
 
 	// Configure phase — firebase.json + .firebaserc next to the staging
 	// tree (in its parent, which is the firebase deploy workdir).
 	if err := os.WriteFile(filepath.Join(plan.DeployWorkdir, "firebase.json"), []byte(plan.FirebaseJSON), 0o644); err != nil {
-		return fmt.Errorf("firebase %s: write firebase.json: %w", plan.Name, err)
+		return fmt.Errorf("firebase %s: write firebase.json: %w", plan.Stage.Name, err)
 	}
 	if err := os.WriteFile(filepath.Join(plan.DeployWorkdir, ".firebaserc"), []byte(plan.FirebaseRC), 0o644); err != nil {
-		return fmt.Errorf("firebase %s: write .firebaserc: %w", plan.Name, err)
+		return fmt.Errorf("firebase %s: write .firebaserc: %w", plan.Stage.Name, err)
 	}
 
 	// Deploy phase — firebase deploy from the workdir so it picks up the
 	// generated firebase.json + .firebaserc.
 	fmt.Printf("  [firebase] %s: deploying to project=%s site=%s target=%s...\n",
-		plan.Name, fe.Spec.Project, fe.Spec.Site, fe.Spec.resolvedTarget())
+		plan.Stage.Name, fe.Spec.Project, fe.Spec.Site, fe.Spec.resolvedTarget())
 	if err := runInDir(ctx, runner, plan.DeployWorkdir, nil, plan.DeployCmd); err != nil {
-		return fmt.Errorf("firebase %s: deploy: %w", plan.Name, err)
+		return fmt.Errorf("firebase %s: deploy: %w", plan.Stage.Name, err)
 	}
-	fmt.Printf("  [firebase] %s: deployed.\n", plan.Name)
+	fmt.Printf("  [firebase] %s: deployed.\n", plan.Stage.Name)
 	return nil
-}
-
-// runFrontendBuild runs the install + build phase for a frontend in
-// frontendDir. The two phases get DELIBERATELY DIFFERENT env:
-//
-//   - INSTALL runs under NODE_ENV=development (installEnv) so the package
-//     manager pulls the FULL dependency set, devDependencies included.
-//     The build toolchain (typescript, bundlers, next's config loader)
-//     lives in devDependencies — under NODE_ENV=production, `npm install`
-//     SKIPS them and the subsequent build dies with "Cannot find module
-//     'typescript'" (Next.js needs typescript to load next.config.ts).
-//     The frontend's inline env_vars are NOT injected here: they're
-//     build-time values (NEXT_PUBLIC_* / VITE_*), irrelevant to install.
-//   - BUILD runs under NODE_ENV=production with the inline env_vars
-//     layered on (buildTimeEnv), so the static-export path (Next.js
-//     `output: "export"` gated on NODE_ENV) and Vite's production mode
-//     both engage and NEXT_PUBLIC_*/VITE_* are baked in.
-//
-// Shared by the Firebase deploy path (deployOne) and the build-only path
-// (BuildOnly) so the two never drift on install command, build command,
-// or env semantics.
-func runFrontendBuild(ctx context.Context, runner commandRunner, name, frontendDir string, installCmd, buildCmd []string, extraEnv map[string]string) error {
-	if err := runInDir(ctx, runner, frontendDir, installEnv(), installCmd); err != nil {
-		return fmt.Errorf("frontend %s: install: %w", name, err)
-	}
-	if err := runInDir(ctx, runner, frontendDir, buildTimeEnv(extraEnv), buildCmd); err != nil {
-		return fmt.Errorf("frontend %s: build: %w", name, err)
-	}
-	return nil
-}
-
-// installEnv is the env overlay for the dependency-install phase. It
-// forces NODE_ENV=development so devDependencies are installed even when
-// the ambient/inherited NODE_ENV is "production" (the package manager
-// skips devDeps under production). Set explicitly rather than left empty:
-// runInDir inherits the parent process env when the overlay is empty, so
-// an inherited NODE_ENV=production would otherwise leak through and strip
-// the build toolchain (typescript, bundlers) the build phase needs.
-func installEnv() map[string]string {
-	return map[string]string{"NODE_ENV": "development"}
-}
-
-// buildTimeEnv layers a frontend's inline env_vars over a forced
-// NODE_ENV=production. Extracted so the deploy path and the build-only
-// path produce byte-identical build env.
-func buildTimeEnv(extraEnv map[string]string) map[string]string {
-	env := map[string]string{"NODE_ENV": "production"}
-	for k, v := range extraEnv {
-		env[k] = v
-	}
-	return env
 }
 
 // BuildOnlyFrontend is a frontend that forge must BUILD (env-injected)
 // but NOT deploy — a `deploy = None` frontend. Its build output (e.g. a
 // Next.js static export under PublicDir) becomes available on disk so a
-// sibling FirebaseHosting frontend can assemble it into its hosting
+// sibling FirebaseHosting / StaticSite frontend can assemble it into its
 // bundle. Mirrors the build inputs of FirebaseFrontend minus any deploy
 // spec.
 type BuildOnlyFrontend struct {
@@ -458,7 +326,11 @@ type buildOnlyPlan struct {
 // buildOnlyPlanFor resolves a BuildOnlyFrontend into its buildOnlyPlan.
 // Pure aside from path resolution (filepath.Abs).
 func (p FirebaseProvider) buildOnlyPlanFor(fe BuildOnlyFrontend) (buildOnlyPlan, error) {
-	projDir, err := filepath.Abs(p.projectDir())
+	projDir := p.ProjectDir
+	if projDir == "" {
+		projDir = "."
+	}
+	projDir, err := filepath.Abs(projDir)
 	if err != nil {
 		return buildOnlyPlan{}, fmt.Errorf("build-only %s: resolve project dir: %w", fe.Name, err)
 	}
@@ -473,7 +345,7 @@ func (p FirebaseProvider) buildOnlyPlanFor(fe BuildOnlyFrontend) (buildOnlyPlan,
 	return buildOnlyPlan{
 		Name:        fe.Name,
 		FrontendDir: frontendDir,
-		InstallCmd:  firebaseInstallCmd(fe.DevRunner),
+		InstallCmd:  frontendInstallCmd(fe.DevRunner),
 		BuildCmd:    []string{"npm", "run", "build"},
 		BuildEnv:    buildTimeEnv(fe.BuildEnv),
 		EmittedDir:  emitted,
@@ -482,7 +354,7 @@ func (p FirebaseProvider) buildOnlyPlanFor(fe BuildOnlyFrontend) (buildOnlyPlan,
 
 // BuildOnly builds each build-only frontend (install + `npm run build`
 // with its env_vars injected) so its output exists on disk before any
-// FirebaseHosting frontend assembles a bundle that references it. dryRun
+// deploying frontend assembles a bundle that references it. dryRun
 // prints the build plan and performs no side effects, mirroring the
 // Firebase deploy dry-run.
 func (p FirebaseProvider) BuildOnly(ctx context.Context, fes []BuildOnlyFrontend, dryRun bool) error {
@@ -523,80 +395,6 @@ func printBuildOnlyPlan(w io.Writer, plan buildOnlyPlan) {
 	if plan.EmittedDir != "" {
 		_, _ = fmt.Fprintf(w, "    emits dir:    %s\n", plan.EmittedDir)
 	}
-}
-
-// runInDir runs a command in dir with an optional env overlay. The
-// commandRunner abstraction doesn't carry a working dir, so we shell via
-// `sh -c 'cd <dir> && <cmd>'` to keep the seam (and the test double)
-// unchanged. dir is quoted to tolerate spaces.
-func runInDir(ctx context.Context, runner commandRunner, dir string, env map[string]string, argv []string) error {
-	if len(argv) == 0 {
-		return nil
-	}
-	script := fmt.Sprintf("cd %s && %s", shellQuote(dir), strings.Join(quoteArgv(argv), " "))
-	if len(env) > 0 {
-		return runner.RunWithEnv(ctx, env, "sh", "-c", script)
-	}
-	return runner.Run(ctx, "sh", "-c", script)
-}
-
-// quoteArgv shell-quotes each token so an argv slice round-trips through
-// `sh -c`. Cheap single-quote escaping; sufficient for npm / firebase /
-// flag tokens.
-func quoteArgv(argv []string) []string {
-	out := make([]string, len(argv))
-	for i, a := range argv {
-		out[i] = shellQuote(a)
-	}
-	return out
-}
-
-// shellQuote wraps s in single quotes, escaping any embedded single
-// quotes. Empty string becomes ”.
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if !strings.ContainsAny(s, " \t\n'\"\\$`&|;<>(){}*?[]#~") {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// firebaseInstallCmd returns the dependency-install command for a dev
-// runner. npm uses `npm ci` when a lockfile is present at runtime — but
-// to keep the plan deterministic (and not stat the lockfile during
-// planning) we use `npm install`, which works with or without a
-// lockfile. pnpm/yarn use their `install` verb.
-func firebaseInstallCmd(devRunner string) []string {
-	switch devRunner {
-	case "pnpm":
-		return []string{"pnpm", "install"}
-	case "yarn":
-		return []string{"yarn", "install"}
-	default:
-		return []string{"npm", "install"}
-	}
-}
-
-// basePathToDestRel maps a frontend base_path ("/admin", "") to the
-// staging-relative destination ("admin", "."). A root mount (empty
-// base_path) lands at the staging root.
-func basePathToDestRel(basePath string) string {
-	return cleanDestRel(basePath)
-}
-
-// cleanDestRel normalises a dest path (base_path or bundle.dest) into a
-// staging-relative directory: leading/trailing slashes stripped, empty
-// becomes ".". Defends against absolute / "./" / trailing-slash inputs
-// so the assembled layout is predictable.
-func cleanDestRel(dest string) string {
-	d := strings.Trim(strings.TrimSpace(dest), "/")
-	d = filepath.Clean(d)
-	if d == "" || d == "." || d == "/" {
-		return "."
-	}
-	return d
 }
 
 // renderFirebaseJSON builds the firebase.json contents. `hosting.public`
@@ -659,135 +457,17 @@ func renderFirebaseRC(spec FirebaseHostingSpec) (string, error) {
 	return string(b) + "\n", nil
 }
 
-// assembleFirebaseStaging realises plan.Copies into a fresh staging tree.
-// It removes any prior staging dir first so a re-deploy doesn't inherit
-// stale files, then copies each source into its destination under the
-// staging root.
-func assembleFirebaseStaging(plan firebasePlan) error {
-	if err := os.RemoveAll(plan.StagingDir); err != nil {
-		return fmt.Errorf("clean staging: %w", err)
-	}
-	if err := os.MkdirAll(plan.StagingDir, 0o755); err != nil {
-		return fmt.Errorf("create staging: %w", err)
-	}
-	for _, c := range plan.Copies {
-		dst := plan.StagingDir
-		if c.DestRel != "." {
-			dst = filepath.Join(plan.StagingDir, c.DestRel)
-		}
-		if _, err := os.Stat(c.Src); err != nil {
-			return fmt.Errorf("source %s (%s): %w", c.Src, c.Label, err)
-		}
-		if err := copyDir(c.Src, dst); err != nil {
-			return fmt.Errorf("copy %s -> %s: %w", c.Src, dst, err)
-		}
-	}
-
-	// The environment's runtime config document, written LAST — after
-	// every copy — so it overwrites any config.js that travelled inside
-	// the built bundle (the dev copy `forge generate` checks in, which is
-	// under the frontend's static-asset root and therefore gets built into
-	// public_dir). Writing it before the copies would let dev's values
-	// silently ship to production.
-	//
-	// This is the step that makes promotion real: the bundle is
-	// environment-agnostic, and this one file is the only part of the
-	// deployed artifact that differs between environments.
-	if plan.RuntimeConfigJS != "" {
-		dst := filepath.Join(plan.StagingDir, plan.RuntimeConfigRel)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return fmt.Errorf("create runtime config dir: %w", err)
-		}
-		if err := os.WriteFile(dst, []byte(plan.RuntimeConfigJS), 0o644); err != nil {
-			return fmt.Errorf("write runtime config %s: %w", dst, err)
-		}
-	}
-	return nil
-}
-
-// copyDir recursively copies src into dst, creating dst (and parents).
-// Plain file copy — symlinks are dereferenced (static export output is
-// regular files). Sufficient for assembling a static hosting tree.
-func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, rerr := filepath.Rel(src, path)
-		if rerr != nil {
-			return rerr
-		}
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		return copyFile(path, target, info.Mode())
-	})
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
-}
-
 // printFirebasePlan renders the dry-run plan for one frontend. Output is
 // stable + greppable: the build command, the assembled layout (one line
 // per copy, with the destination mount), and the exact firebase deploy
 // command. Mirrors the External provider's "[DRY-RUN] would exec" style.
 func printFirebasePlan(w io.Writer, plan firebasePlan) {
-	_, _ = fmt.Fprintf(w, "  [DRY-RUN] firebase deploy plan for frontend %q:\n", plan.Name)
-	_, _ = fmt.Fprintf(w, "    build dir:    %s\n", plan.FrontendDir)
-	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec: %s\n", strings.Join(plan.InstallCmd, " "))
-	if len(plan.BuildEnv) > 0 {
-		_, _ = fmt.Fprintf(w, "    build env:    %s\n", formatBuildEnv(plan.BuildEnv))
-	}
-	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec: %s (NODE_ENV=production)\n", strings.Join(plan.BuildCmd, " "))
-	_, _ = fmt.Fprintf(w, "    assemble into %s:\n", plan.StagingDir)
-	for _, c := range plan.Copies {
-		mount := "/"
-		if c.DestRel != "." {
-			mount = "/" + c.DestRel
-		}
-		_, _ = fmt.Fprintf(w, "      %-18s -> %s   (%s)\n", c.Src, mount, c.Label)
-	}
-	if plan.RuntimeConfigJS != "" {
-		_, _ = fmt.Fprintf(w, "      %-18s -> /%s   (runtime config for this environment)\n",
-			"<rendered KCL>", filepath.ToSlash(plan.RuntimeConfigRel))
-	}
-	_, _ = fmt.Fprintf(w, "    firebase.json (hosting.public=%s):\n", filepath.Base(plan.StagingDir))
+	_, _ = fmt.Fprintf(w, "  [DRY-RUN] firebase deploy plan for frontend %q:\n", plan.Stage.Name)
+	printStagePlanBuild(w, plan.Stage)
+	_, _ = fmt.Fprintf(w, "    firebase.json (hosting.public=%s):\n", filepath.Base(plan.Stage.StagingDir))
 	for _, line := range strings.Split(strings.TrimRight(plan.FirebaseJSON, "\n"), "\n") {
 		_, _ = fmt.Fprintf(w, "      %s\n", line)
 	}
 	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec (cwd %s): %s\n",
 		plan.DeployWorkdir, strings.Join(plan.DeployCmd, " "))
-}
-
-// formatBuildEnv renders the build-time env map as a stable, sorted
-// KEY=VALUE list for the dry-run plan.
-func formatBuildEnv(env map[string]string) string {
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, k+"="+env[k])
-	}
-	return strings.Join(parts, " ")
 }

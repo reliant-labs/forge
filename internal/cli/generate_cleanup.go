@@ -137,7 +137,8 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 			continue
 		}
 
-		if removeErr := os.Remove(full); removeErr != nil && !os.IsNotExist(removeErr) {
+		// Journaled: the --force-cleanup sweep must rewind with an aborted run.
+		if removeErr := checksums.RemoveJournaled(full); removeErr != nil && !os.IsNotExist(removeErr) {
 			// Permission-denied and friends: surface a warning rather
 			// than aborting — a single locked file shouldn't tank the
 			// sweep.

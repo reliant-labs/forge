@@ -88,11 +88,12 @@ func Name() string {
 // internal/cli's config.ErrProjectConfigNotFound aliases this.
 var ErrProjectConfigNotFound = errors.New("forge.yaml not found in current directory (run 'forge project new' to create a project)")
 
-// ProjectRoot finds the project root by looking for forge.yaml in the cwd
-// (NOT a walk-up — see FindProjectRoot for that). Returns a user-facing error
-// when forge.yaml is absent from the current directory.
+// ProjectRoot finds the project root by looking for forge.yaml in the
+// resolution root — --project-dir when set, else the cwd (NOT a walk-up; see
+// FindProjectRoot for that). Returns a user-facing error when forge.yaml is
+// absent from that directory.
 func ProjectRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := ResolutionRoot()
 	if err != nil {
 		return "", err
 	}
@@ -106,11 +107,12 @@ func ProjectRoot() (string, error) {
 	return cwd, nil
 }
 
-// FindProjectRoot walks upward from the cwd looking for a forge.yaml. Returns
-// the directory or "" when no project is found. Mirrors the loadProjectConfig
-// walk-up behavior in config.go.
+// FindProjectRoot walks upward from the resolution root (--project-dir when
+// set, else the cwd) looking for a forge.yaml. Returns the directory or "" when
+// no project is found. Mirrors the loadProjectConfig walk-up behavior in
+// config.go.
 func FindProjectRoot() (string, error) {
-	dir, err := os.Getwd()
+	dir, err := ResolutionRoot()
 	if err != nil {
 		return "", err
 	}

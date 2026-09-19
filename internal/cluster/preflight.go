@@ -794,11 +794,35 @@ const wholeSecretMarker = "(the Secret does not exist)"
 // ImageExists per DISTINCT image, in parallel, so the happy path adds one
 // round-trip's latency rather than one-per-ref.
 func Preflight(ctx context.Context, opts PreflightOpts) error {
+	_, err := PreflightReport(ctx, opts)
+	return err
+}
+
+// PreflightReport is Preflight that also returns the STRUCTURED result.
+//
+// WHY BOTH EXIST. The findings are computed structurally and then, on a
+// failure, formatted into one error string — so from outside this package the
+// only machine-readable thing about a blocked deploy was "it blocked". A
+// consumer that wants to render "these two Secret keys are missing" as a list
+// would have to parse FormatPreflightReport's prose, and the moment that prose
+// is reworded the consumer silently starts reporting nothing.
+//
+// The error is byte-identical to Preflight's — it is the SAME value, from the
+// same run — so a caller can report the structure and still fail exactly as
+// before. Preflight now delegates here, which is what keeps the two from
+// disagreeing: there is one implementation, and the error-only signature is a
+// projection of it.
+//
+// The result is populated whether or not the run blocks. A clean preflight
+// returns a zero-finding result and a nil error, and that is deliberately
+// distinguishable from a preflight that never ran (which produces no result at
+// all) — "nothing wrong" and "nobody looked" must not present identically.
+func PreflightReport(ctx context.Context, opts PreflightOpts) (PreflightResult, error) {
 	refs := CollectManifestRefs(opts.Manifests)
 
 	result, err := runPreflightChecks(ctx, opts, refs)
 	if err != nil {
-		return err
+		return result, err
 	}
 	// Inconclusive image checks are advisory — surface them whether the
 	// run blocks or proceeds, so the user knows the gate couldn't vouch
@@ -813,9 +837,9 @@ func Preflight(ctx context.Context, opts PreflightOpts) error {
 		fmt.Printf("preflight: %s\n", w)
 	}
 	if result.OK() {
-		return nil
+		return result, nil
 	}
-	return fmt.Errorf("%s", FormatPreflightReport(result))
+	return result, fmt.Errorf("%s", FormatPreflightReport(result))
 }
 
 // runPreflightChecks performs the secret + image lookups concurrently and

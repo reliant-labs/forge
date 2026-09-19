@@ -88,13 +88,19 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 		ForgeGitCommit: buildinfo.GitCommit(),
 	}
 
+	// The deploy environments, shared by the deploy workflow and the
+	// reconcile matrix. ONE declaration rather than two literals: the two
+	// workflows must agree about which environments exist, and two lists
+	// would be free to drift into reconciling an environment nothing deploys.
+	deployEnvs := []templates.DeployEnv{
+		{Name: "staging", Auto: true, Protection: false},
+		{Name: "prod", Auto: false, Protection: true},
+	}
+
 	// Deploy and build-images use their own spec-driven data types
 	deployData := templates.DeployWorkflowData{
-		ProjectName: g.Name,
-		Environments: []templates.DeployEnv{
-			{Name: "staging", Auto: true, Protection: false},
-			{Name: "prod", Auto: false, Protection: true},
-		},
+		ProjectName:  g.Name,
+		Environments: deployEnvs,
 		Registry:         "ghcr",
 		HasFrontends:     hasFrontends,
 		FrontendDeploy:   "none",
@@ -108,6 +114,18 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 		Registry:     "ghcr",
 		HasFrontends: hasFrontends,
 		VulnDocker:   true,
+		// The cut-release + promote job rides the same gate as the reconcile
+		// workflow. Both talk to a control plane, and a project that has not
+		// opted into that machinery must not get CI steps that fail on every
+		// push to main against a server it does not have.
+		CutRelease: g.Features.ReconcileEnabled(),
+	}
+
+	reconcileData := templates.ReconcileWorkflowData{
+		ProjectName:    g.Name,
+		Environments:   deployEnvs,
+		ForgeVersion:   buildinfo.InstallableVersion(),
+		ForgeGitCommit: buildinfo.GitCommit(),
 	}
 
 	var e2eFrontendPath string
@@ -142,6 +160,18 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 			{"e2e.yml.tmpl", ".github/workflows/e2e.yml", e2eData},
 			{"proto-breaking.yml.tmpl", ".github/workflows/proto-breaking.yml", data},
 			{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
+		}
+		// OPT-IN, OFF BY DEFAULT — the same à la carte rule every other
+		// forge feature follows. `forge reconcile` only exists for a project
+		// whose reconcile loop is wired, so scaffolding a scheduled workflow
+		// that calls it unconditionally would hand every project an hourly
+		// failing job for a feature it never enabled.
+		if g.Features.ReconcileEnabled() {
+			templatedFiles = append(templatedFiles, struct {
+				templateName string
+				dest         string
+				data         interface{}
+			}{"reconcile.yml.tmpl", ".github/workflows/reconcile.yml", reconcileData})
 		}
 	} else {
 		// CLI/library: lint + test + vuln scan still apply, but skip

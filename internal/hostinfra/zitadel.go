@@ -692,8 +692,8 @@ func (s Spec) zitadelEnv(patPath string) []string {
 // IdP's database lives on — the always-present `postgres` database, which
 // is what creating another database requires being connected to.
 func (s Spec) zitadelDSNBase() string {
-	return fmt.Sprintf("postgres://%s:%s@localhost:%d/postgres?sslmode=disable",
-		s.User, s.Password, s.IDPDatabasePort)
+	return fmt.Sprintf("postgres://%s:%s@localhost:%d/postgres?sslmode=disable&connect_timeout=%d",
+		s.User, s.Password, s.IDPDatabasePort, probeConnectTimeoutSeconds)
 }
 
 // idpStepsPath resolves the declarative bootstrap file against the project

@@ -35,8 +35,23 @@ export function useEvent<K extends keyof EventMap>(
   handler: (payload: EventMap[K]) => void,
 ): void {
   const bus = useEventBus();
+
+  // The ref holds the LATEST handler so the subscription below does not have
+  // to depend on it. A caller almost always passes an inline arrow, which is
+  // a new function identity every render; depending on it directly would
+  // unsubscribe and resubscribe the bus on every single render.
+  //
+  // The assignment lives in an effect rather than in the render body because
+  // writing a ref during render is a side effect in the render phase — React
+  // is entitled to render without committing (it does, when a render is
+  // thrown away or replayed), which would publish a handler that never went
+  // live. This effect has no dependency array on purpose: it runs after every
+  // committed render, which is exactly when "latest" changes.
   const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+  useEffect(() => {
+    handlerRef.current = handler;
+  });
+
   useEffect(() => {
     return bus.on(event, ((payload: EventMap[K]) => handlerRef.current(payload)) as (payload: EventMap[K]) => void);
   }, [bus, event]);

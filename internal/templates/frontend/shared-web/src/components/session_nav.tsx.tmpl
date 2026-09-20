@@ -26,18 +26,33 @@
  *
  * Built from forge's base UI primitives (`Avatar`, `Button`).
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import Avatar from "@/components/ui/avatar";
 import Button from "@/components/ui/button";
 import { useAuth } from "@/lib/auth/context";
 
+/**
+ * A store that never changes, for the hydration flag below.
+ *
+ * Module scope, not inline: `useSyncExternalStore` re-subscribes whenever
+ * `subscribe` changes identity, so a fresh arrow per render would tear down
+ * and re-establish the subscription on every render.
+ */
+const subscribeToNothing = () => () => {};
+
 export function SessionNav() {
   const { identity, isAuthenticated, isLoading, logout } = useAuth();
 
-  // See the isLoading branch below.
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => setHydrated(true), []);
+  // See the isLoading branch below. `useSyncExternalStore` answers "am I on
+  // the client yet?" without a state update: the server snapshot is false,
+  // the client snapshot is true, and React swaps them on mount. The older
+  // useState + useEffect pair expressed the same thing by rendering twice.
+  const hydrated = useSyncExternalStore(
+    subscribeToNothing,
+    () => true,
+    () => false,
+  );
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 

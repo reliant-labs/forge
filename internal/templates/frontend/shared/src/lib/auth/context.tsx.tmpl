@@ -121,8 +121,16 @@ export function AuthContextProvider({ children }: { children: ReactNode }) {
   // iframe that sat on a five-second timeout whenever there was no session
   // to restore.
 {{- end}}
+  //
+  // Awaited inside an async IIFE rather than called bare. `refresh` sets
+  // state, and an effect body that updates state synchronously forces a
+  // second render pass before the browser paints. Awaiting first moves both
+  // setState calls into a continuation — the effect body itself only starts
+  // the work, which is what an effect is for.
   useEffect(() => {
-    void refresh();
+    void (async () => {
+      await refresh();
+    })();
   }, [refresh]);
 
   const logout = useCallback(async () => {

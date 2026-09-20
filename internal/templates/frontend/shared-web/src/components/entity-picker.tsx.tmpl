@@ -165,7 +165,19 @@ export function EntityPicker<TItem, TReq, TRes>({
   const hasMore = query.data !== undefined && hasMoreOf !== undefined && hasMoreOf(query.data);
 
   // A new page of rows invalidates the highlight — never leave it past the end.
-  useEffect(() => setActiveIndex(0), [query.data]);
+  //
+  // Adjusted DURING render, comparing against the data this component last
+  // rendered, rather than reset from an effect. React supports this directly
+  // for derived state: a setState while rendering re-runs this component
+  // immediately, before the DOM is touched and before children render, so
+  // nothing ever sees the stale index. Resetting from an effect instead
+  // commits the stale highlight first and corrects it in a second render
+  // pass, which is a visible flash of the wrong row on every search.
+  const [lastData, setLastData] = useState(query.data);
+  if (lastData !== query.data) {
+    setLastData(query.data);
+    setActiveIndex(0);
+  }
 
   // Close on an outside click.
   useEffect(() => {

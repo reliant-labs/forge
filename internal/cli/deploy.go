@@ -1611,7 +1611,7 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 		// otherwise (see resolveFreshnessAnchor); envName is what selects
 		// between them. Refuse by default and point at the two escape
 		// hatches (rebuild, or --tag to deploy the recorded tag anyway).
-		if serr := checkBuildStateFreshness(ctx, projectDir, envName, st); serr != nil {
+		if serr := checkBuildStateFreshness(ctx, projectDir, envName, key, st); serr != nil {
 			return "", "", "", serr
 		}
 		warnIfNonReproducible(st)
@@ -1917,7 +1917,7 @@ func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (fr
 //
 // Escape hatch: pass `--tag <tag>` to deploy a specific tag directly — that
 // path bypasses build-state (and therefore this check) entirely.
-func checkBuildStateFreshness(ctx context.Context, projectDir, envName string, st *BuildState) error {
+func checkBuildStateFreshness(ctx context.Context, projectDir, envName, stateKey string, st *BuildState) error {
 	if st == nil || st.Commit == "" {
 		return nil
 	}
@@ -1925,11 +1925,66 @@ func checkBuildStateFreshness(ctx context.Context, projectDir, envName string, s
 	if !enforce || anchor.Commit == st.Commit {
 		return nil
 	}
+	if buildStateIsForeignToEnv(projectDir, envName, stateKey, st) {
+		return nil
+	}
 	return fmt.Errorf(
 		"refusing to deploy stale image: tag %q was built from %s, but %s.\n"+
 			"  The recorded build does not match the commit this env should be running — deploying it would ship the wrong code.\n"+
 			"  Fix: %s; or pass --tag %s to deploy the recorded image anyway",
 		st.Tag, shortSHA(st.Commit), anchor.describe(), anchor.remedy(envName), st.Tag)
+}
+
+// buildStateIsForeignToEnv reports whether this build state describes a build
+// that has nothing to do with the env being deployed — in which case its
+// commit says nothing about that env's freshness and must not refuse it.
+//
+// WHAT THIS FIXES. The guard compares st.Commit against the env's anchor with
+// no regard for whether the record is even ABOUT this env. The `default`
+// record a plain `forge build` writes is the common case: it is the shared
+// fallback for every env (buildStateLookupEnvs), so one local dev build
+// poisons every future release deploy until someone deletes the file.
+//
+// Measured: the v1.5.18 control-plane release was refused three times by an
+// Aug-25 `.forge/state/build-default.json` recording a `forge build` against
+// a localhost:5051 dev registry. All four images deployed from release-ledger
+// digests in a prod GAR that record had no part in, and its digest appeared
+// nowhere in the release. The only ways forward were hand-deleting local
+// state or passing --tag, which disarms the guard wholesale.
+//
+// The registry is the discriminator, and it is the honest one: a record whose
+// registry is not the registry this deploy pushes/pulls from cannot be the
+// build that ships here, whatever its commit says. That covers the dev-
+// registry case above without weakening the guard for a real stale build,
+// which by construction carries the env's own registry.
+//
+// NOT sufficient: "the bound release pins this image". The K8s path renders a
+// digest for a pinned image and ignores the tag, but plainTag still feeds
+// External/Compose ${TAG} substitution (buildDeployGroupsForEnv), so a stale
+// tag can genuinely ship there. TestResolveDeployImageTag_ReleaseCommitStill
+// RefusesOlderImage pins exactly that, and it is right to.
+//
+// Two conditions, and BOTH are required:
+//
+//   - The record is the env-AGNOSTIC `default`. A build-<env>.json names this
+//     env, so its commit is evidence about this env and is measured as before.
+//     `default` is the shared fallback every env reads, so it is the only one
+//     whose commit can be about somewhere else entirely.
+//   - The record is of a DIRTY tree. A release is cut from a clean checkout
+//     (the release scripts refuse otherwise), so a dirty build is by
+//     construction not the artifact a release-bound env deploys — it is
+//     someone's local iteration. A CLEAN `default` build could genuinely be
+//     the thing that ships, so it keeps refusing.
+//
+// Best-effort by construction: it returns false unless it can positively
+// justify standing down, so it never widens a refusal — only withdraws one
+// that rests on a record which cannot be what ships.
+func buildStateIsForeignToEnv(projectDir, envName, stateKey string, st *BuildState) bool {
+	if st == nil || stateKey != "default" || !st.Dirty {
+		return false
+	}
+	_, bound, err := boundReleaseForEnv(projectDir, envName)
+	return err == nil && bound
 }
 
 // gitHEADAndClean returns the current HEAD commit, whether the working

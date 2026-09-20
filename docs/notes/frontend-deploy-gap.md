@@ -15,8 +15,8 @@ from reading code alone.
 >   `cache_control` + `cdn`, with `releases/<digest>/` immutable archive and a
 >   mutable `live/` prefix, so rollback and promotion re-point at an existing
 >   digest instead of rebuilding.
-> - `schema SimpleBackend` — one container, explicitly a *constrained profile
->   over* `K8sCluster` rather than a parallel mechanism; `render.k` projects it
+> - `schema SimpleBackend` — one container, explicitly a _constrained profile
+>   over_ `K8sCluster` rather than a parallel mechanism; `render.k` projects it
 >   onto the same `RenderedWorkload` the k8s adapter already emits.
 > - `Frontend.deploy?: FirebaseHosting | StaticSite | K8sCluster` and
 >   `Service.deploy?: … | SimpleBackend | …`
@@ -48,7 +48,7 @@ from reading code alone.
 >
 > The recommendation at the end of this document therefore stands, and its
 > ordering changes: items 1 and 2 (emit the capability at the decision point,
-> warn on the silent no-op) are *scaffold* work that is independent of the
+> warn on the silent no-op) are _scaffold_ work that is independent of the
 > spike, unblocked today, and would have prevented this entire detour. Item 3
 > (generalise `FirebaseHosting`) is superseded — `StaticSite` already did it
 > better.
@@ -77,7 +77,7 @@ their Go services and does not deploy their frontend.
 
 **Scope note, to be accurate about what I actually observed:** on the probe,
 `forge env deploy prod --dry-run` exits 1 at the declared-cluster guard before
-frontend dispatch is reached, so I did *not* directly witness a silent
+frontend dispatch is reached, so I did _not_ directly witness a silent
 frontend no-op end to end. What is directly verified is the cause: staging and
 prod render no frontend workload, and the frontend's name appears nowhere in
 the deploy output. Whether that surfaces as silence or as an unrelated error
@@ -98,7 +98,7 @@ scaffold just never emits it, so it is invisible unless you read `kcl/schema.k`.
 
 External works — I verified `deploy_cmd = "vercel deploy --prod --yes"`
 dispatching correctly with zero k8s objects rendered. But reaching for it to
-deploy a *frontend* means forge is shelling out to a competitor to do the thing
+deploy a _frontend_ means forge is shelling out to a competitor to do the thing
 forge claims to do. It should be the escape hatch for a target forge does not
 model, not the path of least resistance for the most common frontend in the
 world.
@@ -106,12 +106,12 @@ world.
 It also gives up everything forge is for. Under External, forge does not inject
 config or secrets (the external command's own platform does), and promotion is
 bookkeeping rather than a byte reference, because the external platform is
-git-driven. The user gets forge's *vocabulary* and none of its *guarantees*.
+git-driven. The user gets forge's _vocabulary_ and none of its _guarantees_.
 
 ## The static-first question
 
 **Should static be the default for `type = "nextjs"`?** No — but a static target
-should exist and be the default *where it applies*.
+should exist and be the default _where it applies_.
 
 The blocker is concrete and already documented in the scaffold: `output:
 "export"` requires `generateStaticParams()` on every dynamic segment, and
@@ -129,26 +129,26 @@ marketing site and wrong for the thing forge optimises for.
 
 The honest split:
 
-| Frontend shape | Right default |
-|---|---|
-| `type = "vite"` | static — it already is a static SPA |
-| `type = "nextjs"` with no dynamic routes | static |
-| `type = "nextjs"` with generated CRUD | standalone container |
+| Frontend shape                           | Right default                       |
+| ---------------------------------------- | ----------------------------------- |
+| `type = "vite"`                          | static — it already is a static SPA |
+| `type = "nextjs"` with no dynamic routes | static                              |
+| `type = "nextjs"` with generated CRUD    | standalone container                |
 
-That is a decision forge can *make for the user* by inspecting whether any
+That is a decision forge can _make for the user_ by inspecting whether any
 dynamic route exists, rather than a flag the user has to understand.
 
 ## `SimpleBackend` — a better mechanism than a new schema
 
 The instinct behind `forge.SimpleBackend` is right: most apps are one process
 and a database, and making that easy is the competitive move. But adding a
-schema per deployment *shape* multiplies: SimpleBackend, then SimpleFrontend,
+schema per deployment _shape_ multiplies: SimpleBackend, then SimpleFrontend,
 then SimpleWorker, each with its own fields and its own lowering.
 
 The generalisation already present in the codebase is the **provider id**.
 `deploytarget.go` dispatches on `g.ProviderID` over `k8s-cluster`, `external`,
 `compose`, `host-infra`, `firebase`. Providers are the axis that is already
-working. What is missing is not a new workload schema — it is more *providers*,
+working. What is missing is not a new workload schema — it is more _providers_,
 and a generic static one in particular:
 
 ```kcl
@@ -172,7 +172,7 @@ does not route through someone else's platform. The schema is the easy half.
 ## Making features discoverable — the actual problem
 
 `forge project capabilities` is genuinely excellent and lists every verb. But it
-lists *commands*, and the thing users miss here is a *schema field*. Grepping it
+lists _commands_, and the thing users miss here is a _schema field_. Grepping it
 for the deploy targets returns one incidental hit.
 
 Discoverability is not a docs problem, it is a **placement** problem. Three
@@ -187,14 +187,14 @@ mechanisms, cheapest first:
 
 2. **Warn on the silent no-op.** `forge env deploy <env>` should say
    `frontend "web" declared but has no deploy target for this env — it will not
-   ship` rather than succeeding quietly. Forge is otherwise excellent at
+ship` rather than succeeding quietly. Forge is otherwise excellent at
    fail-closed; this is the one place it fails silent.
 
 3. **`forge project shapes` for schemas.** `capabilities` covers verbs; there is
-   no equivalent that answers "what can a Frontend *be*". The schemas carry good
+   no equivalent that answers "what can a Frontend _be_". The schemas carry good
    docstrings already — surface them.
 
-The pattern across all three: forge teaches well *in the files it generates*,
+The pattern across all three: forge teaches well _in the files it generates_,
 and the gap is wherever a capability has no generated file to live in.
 
 ## Recommended order
@@ -204,7 +204,7 @@ that does not depend on the spike landing and could ship against `main` now.
 
 1. **Emit the frontend deploy options, commented, into the staging/prod
    `main.k` templates.** Cheap, highest value, unblocked. Today the only
-   template carrying `forge.Frontend` is `dev/main.k.tmpl` — on `main` *and* on
+   template carrying `forge.Frontend` is `dev/main.k.tmpl` — on `main` _and_ on
    `forge-deploy`.
 2. **Warn when a declared frontend has no deploy target for the env being
    deployed.** Forge is fail-closed nearly everywhere else; this is the one

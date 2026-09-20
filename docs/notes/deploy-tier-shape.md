@@ -10,9 +10,9 @@ The framing that resolves all three questions:
 
 > **The type is WHAT is being run. The provider is WHERE it runs.**
 
-A workload schema (`Frontend`, `Service`) says what the thing *is* — where its
+A workload schema (`Frontend`, `Service`) says what the thing _is_ — where its
 source lives, how to build it, what config it needs. A deploy target says where
-the built artifact *goes*. They are different questions and neither one is a
+the built artifact _goes_. They are different questions and neither one is a
 special case of the other.
 
 k8s is not the centre of this model. It is the escape hatch for workloads whose
@@ -22,15 +22,15 @@ shape genuinely needs a pod spec.
 
 They overlap on two field names and that is all:
 
-| | Frontend | StaticSite |
-|---|---|---|
-| `name`, `type`, `path`/`source`, `dev_runner`, `port`, `env_file`, `env_vars`, `config` | ✓ | — |
-| `bucket`, `cache_control`, `cdn`, `keep_releases` | — | ✓ |
-| `public_dir`, `base_path` | — | ✓ |
+|                                                                                         | Frontend | StaticSite |
+| --------------------------------------------------------------------------------------- | -------- | ---------- |
+| `name`, `type`, `path`/`source`, `dev_runner`, `port`, `env_file`, `env_vars`, `config` | ✓        | —          |
+| `bucket`, `cache_control`, `cdn`, `keep_releases`                                       | —        | ✓          |
+| `public_dir`, `base_path`                                                               | —        | ✓          |
 
-`Frontend` answers *what is this app and how do I build and dev-serve it*.
-`StaticSite` answers *where do the built bytes land and how is the edge cache
-handled*. The relationship is already correct on `forge-deploy`:
+`Frontend` answers _what is this app and how do I build and dev-serve it_.
+`StaticSite` answers _where do the built bytes land and how is the edge cache
+handled_. The relationship is already correct on `forge-deploy`:
 
 ```kcl
 deploy?: FirebaseHosting | StaticSite | K8sCluster
@@ -43,12 +43,12 @@ only the `deploy` block, which is exactly the property you want.
 **So: do not reconcile them.** The genuine redundancy is elsewhere —
 `FirebaseHosting` and `StaticSite` are two schemas for one concept:
 
-| | FirebaseHosting | StaticSite |
-|---|---|---|
-| `public_dir`, `base_path`, `bundle` | ✓ | ✓ |
-| `rewrites` | ✓ | — |
-| `cache_control`, `cdn`, `keep_releases` | — | ✓ |
-| vendor coordinates | `project`, `site`, `target` | `bucket` |
+|                                         | FirebaseHosting             | StaticSite |
+| --------------------------------------- | --------------------------- | ---------- |
+| `public_dir`, `base_path`, `bundle`     | ✓                           | ✓          |
+| `rewrites`                              | ✓                           | —          |
+| `cache_control`, `cdn`, `keep_releases` | —                           | ✓          |
+| vendor coordinates                      | `project`, `site`, `target` | `bucket`   |
 
 Everything except the last row is vendor-neutral. `StaticSite` is the better
 schema — it has the `releases/<digest>/` archive and the invalidation policy —
@@ -73,11 +73,11 @@ The user of `SimpleBackend` does not know a cluster is involved, and that is
 the entire point. `K8sCluster` requires `cluster`, `namespace` and `registry` —
 coordinates of infrastructure the user brought. `SimpleBackend`'s own summary
 is "a single container, running in a cluster forge did not create." The answer
-to *where does this run* is **"on Reliant's infrastructure"**, which is a
-different answer from "in the cluster you named", and *where it runs* is
+to _where does this run_ is **"on Reliant's infrastructure"**, which is a
+different answer from "in the cluster you named", and _where it runs_ is
 precisely what a provider is.
 
-That it happens to *render* onto `RenderedWorkload{deploy = K8sCluster}` is an
+That it happens to _render_ onto `RenderedWorkload{deploy = K8sCluster}` is an
 implementation detail of the lowering, and reusing the k8s adapter is good
 engineering. But a shared lowering is not a shared provider, any more than two
 languages compiling to the same IR are the same language. The earlier draft
@@ -120,14 +120,14 @@ If `SimpleBackend` is a provider, it should look like one in forge:
   exactly this. A provider whose coordinates the platform supplies is the
   correct shape; it is what makes `forge env deploy prod` work on a machine
   that has never run `gcloud container clusters get-credentials`.
-- The **closed schema stays the enforcement mechanism**, and is *more*
+- The **closed schema stays the enforcement mechanism**, and is _more_
   important under this reading, not less. If the user is on someone else's
   infrastructure, the fields they must not reach are a tenancy boundary rather
   than a style guide.
 
 The name is worth revisiting under this framing too. `SimpleBackend` describes
 a capability level, which is what the earlier draft latched onto; if the
-distinguishing fact is *whose infrastructure*, the name could say so.
+distinguishing fact is _whose infrastructure_, the name could say so.
 
 The enforcement mechanism is the part worth keeping verbatim:
 
@@ -136,7 +136,7 @@ The enforcement mechanism is the part worth keeping verbatim:
 > and KCL rejects it for free with a message naming the schema."
 
 That is why `SimpleBackend` has no `replicas`, no `security_context`, no raw
-passthrough. The closed schema *is* the policy. An allowlist would be a second
+passthrough. The closed schema _is_ the policy. An allowlist would be a second
 copy of the rules, which is the same class of mistake as a hand-written list of
 deploy targets.
 
@@ -195,7 +195,7 @@ built to be spike-agnostic:
 - The undeployed-frontend warning names valid targets from that same reflection,
   so its hint text picks them up for free too.
 
-The one thing worth doing in the worktree *before* the rebase is answering
+The one thing worth doing in the worktree _before_ the rebase is answering
 whether the `static-site` provider actually executes — the schema is declarable
 on that branch, and `shapes` will list it on merge regardless. Declarable and
 executable are tracked separately today, which is the open seam noted at the end
@@ -205,10 +205,10 @@ of `71abfe39`.
 
 The two branches are coupled and neither repo's CI can see it:
 
-| | branch | carries |
-|---|---|---|
-| `forge` | `forge-deploy` | `SimpleBackend` + `StaticSite` KCL schemas, `static-site` provider, deploy-state layer |
-| `control-plane` | `forge-deploy-product` | the CRDs and operators that reconcile them, tenancy, registry, keyring |
+|                 | branch                 | carries                                                                                |
+| --------------- | ---------------------- | -------------------------------------------------------------------------------------- |
+| `forge`         | `forge-deploy`         | `SimpleBackend` + `StaticSite` KCL schemas, `static-site` provider, deploy-state layer |
+| `control-plane` | `forge-deploy-product` | the CRDs and operators that reconcile them, tenancy, registry, keyring                 |
 
 `forge-deploy-product` **vendors forge's KCL into `.forge-kcl/`**, so the schema
 is duplicated across repos by copy. That is the mechanism by which the forge

@@ -1907,12 +1907,50 @@ schema ClusterClient:
     # drop straight into the CLUSTER_CONFIGS EnvVar value.
     config_json: str = json.encode([config_entry])
 
+    # ── THE HOST PROJECTION ──────────────────────────────────────────────
+    #
+    # Everything above assumes the consumer is a POD: `_kubeconfig_path` is
+    # `mount_path + key`, a path that exists only inside a container because
+    # it is where `.volume` mounts `.secret`.
+    #
+    # A HOST process reading the same CLUSTER_CONFIGS needs a path on the
+    # DEVELOPER'S DISK, and there is no volume to derive one from. That is
+    # not hypothetical: forge's own HostDeploy runs services on the host in
+    # dev, so a dev stack whose host service must reach a second cluster had
+    # NO declarative way to say where its kubeconfig lives. The alternative
+    # people reach for is a hardcoded `~/.kube/config` literal in an env's
+    # main.k — which works on one machine, enters version control, and
+    # bypasses the very drift-prevention this schema exists for, because the
+    # id/context/path stop being derived from one place.
+    #
+    # `host_kubeconfig_path` closes that. Set it and `.host_config_json`
+    # projects the SAME id and context against a host path, so the pod and
+    # host forms cannot disagree about which cluster they name — only about
+    # where the file is, which is the one thing that genuinely differs.
+    #
+    # It is OPTIONAL and empty by default, and `.host_config_json` is
+    # Undefined when unset rather than falling back to the pod path. A
+    # fallback would hand a host process `/etc/<x>/kubeconfig`, which does
+    # not exist there, and the failure would surface as an unhelpful "no
+    # configuration has been provided" from client-go rather than as the
+    # missing declaration it is.
+    host_kubeconfig_path?: str
+    host_config_entry?: {str: str} = {
+        id = id
+        kubeconfigPath = host_kubeconfig_path
+        context = id
+    } if host_kubeconfig_path else Undefined
+    host_config_json?: str = json.encode([host_config_entry]) if host_kubeconfig_path else Undefined
+
     check:
         id, "ClusterClient.id is required"
         mount_path, "ClusterClient.mount_path is required"
         mount_path.startswith("/"), "ClusterClient.mount_path must be absolute (start with '/')"
         reachability in ["in-network", "endpoint"], \
             "ClusterClient.reachability must be 'in-network' or 'endpoint'"
+        not host_kubeconfig_path or host_kubeconfig_path.startswith("/"), \
+            "ClusterClient.host_kubeconfig_path must be absolute (start with '/') — a host " \
+            "process resolves it from its own working directory, which forge does not control"
 
 schema BuildOnly:
     """Service is built but not auto-orchestrated.

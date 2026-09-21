@@ -1934,11 +1934,31 @@ schema ClusterClient:
     # not exist there, and the failure would surface as an unhelpful "no
     # configuration has been provided" from client-go rather than as the
     # missing declaration it is.
+    # THE CONTEXT DIFFERS BETWEEN THE TWO FORMS, and this is the one place
+    # they legitimately disagree.
+    #
+    # The POD form's context is `id`, because forge MINTS that kubeconfig and
+    # renames the context to the id as it does so — which is what makes the
+    # pod's context provably equal to the CLUSTER_CONFIGS entry id.
+    #
+    # A HOST process reads a kubeconfig forge did NOT mint: the developer's
+    # own, where the context is whatever the tool that created the cluster
+    # called it (k3d writes `k3d-<name>`, GKE writes a long generated string).
+    # Defaulting the host context to `id` would name a context that does not
+    # exist in that file, and client-go reports that as "context does not
+    # exist" — naming the context but not the file it looked in, nor that the
+    # value came from a projection that assumed a rename.
+    #
+    # So it defaults to the referenced Cluster's OWN context, which is the
+    # name that file actually contains, and is overridable for a kubeconfig
+    # that uses neither convention.
     host_kubeconfig_path?: str
+    host_context?: str
+    _host_context: str = host_context if host_context else cluster.context
     host_config_entry?: {str: str} = {
         id = id
         kubeconfigPath = host_kubeconfig_path
-        context = id
+        context = _host_context
     } if host_kubeconfig_path else Undefined
     host_config_json?: str = json.encode([host_config_entry]) if host_kubeconfig_path else Undefined
 

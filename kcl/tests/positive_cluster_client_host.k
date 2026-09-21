@@ -60,8 +60,30 @@ assert_host_path = _host_cfg[0].kubeconfigPath == "/Users/dev/.kube/cp-daemon.ya
 # were addressing the same cluster while naming different contexts.
 _pod_cfg = json.decode(_host_link.config_json)
 assert_same_id = _host_cfg[0].id == _pod_cfg[0].id
-assert_same_context = _host_cfg[0].context == _pod_cfg[0].context
 assert_paths_differ = _host_cfg[0].kubeconfigPath != _pod_cfg[0].kubeconfigPath
+
+# THE CONTEXT LEGITIMATELY DIFFERS, and getting this wrong was a real bug
+# caught by rendering it. The POD form's context is the id, because forge
+# MINTS that kubeconfig and renames the context as it does so. A HOST process
+# reads a kubeconfig forge did NOT mint — the developer's own — where the
+# context is whatever created the cluster called it. k3d writes `k3d-<name>`.
+# Defaulting the host context to the id names a context that file does not
+# contain, and client-go reports "context does not exist" without saying which
+# file it looked in or that the name came from a projection.
+assert_pod_context_is_id = _pod_cfg[0].context == "cp-daemon"
+assert_host_context_is_real = _host_cfg[0].context == "k3d-cp-daemon"
+assert_host_context_matches_cluster = _host_cfg[0].context == _daemon.context
+
+# Overridable, for a kubeconfig that follows neither convention.
+_override = forge.ClusterClient {
+    id = "cp-daemon"
+    cluster = _daemon
+    in_cluster = _cp
+    mount_path = "/etc/daemon-cluster"
+    host_kubeconfig_path = "/Users/dev/.kube/config"
+    host_context = "my-custom-context"
+}
+assert_host_context_override = json.decode(_override.host_config_json)[0].context == "my-custom-context"
 
 # The pod projection is untouched by the new field — existing consumers
 # render exactly as before.

@@ -243,6 +243,49 @@ _bundle = forge.Bundle {
         before = c.before
         env_vars = c.env_vars
     } for c in _job_workloads]
+{{- if .HasFrontend}}
+    # THIS FRONTEND SHIPS NOWHERE UNTIL YOU CHOOSE A `deploy` TARGET, and
+    # that is why the block is here rather than absent.
+    #
+    # An earlier scaffold declared frontends in the DEV env only. The
+    # capability was real — `Frontend.deploy` accepts FirebaseHosting,
+    # StaticSite or K8sCluster — but it was reachable only by reading
+    # kcl/schema.k, so a user who never opened it shipped a backend to prod
+    # and served the frontend by hand, never learning forge could do it.
+    # A capability nobody can find is one that does not exist.
+    #
+    # Declared with NO `deploy` block, deliberately. forge does not guess
+    # where your frontend belongs: a wrong default is worse than an absent
+    # one, because it deploys somewhere plausible and costs money there.
+    # Uncomment the target you want.
+    #
+    #   * StaticSite — built assets to an object-store bucket, with an
+    #     immutable `releases/<digest>/` archive and a mutable `live/`
+    #     prefix, so a rollback re-points at a digest that already exists
+    #     instead of rebuilding it.
+    #
+    #         deploy = forge.StaticSite {
+    #             bucket = "{{.ProjectName}}-prod-web"
+    #             public_dir = "out"
+    #         }
+    #
+    #   * FirebaseHosting — the same shape against Firebase.
+    #
+    #         deploy = forge.FirebaseHosting {
+    #             project = "{{.ProjectName}}-prod"
+    #         }
+    #
+    #   * K8sCluster — serve it from a pod, for a frontend that needs a
+    #     server at runtime (SSR, middleware, streaming) rather than a
+    #     bucket of files.
+    #
+    # `forge env deploy prod --frontends-only` ships just this, skipping
+    # the entire k8s apply.
+    frontends = [forge.Frontend {
+        name = "{{.FrontendName}}"
+        path = "frontends/{{.FrontendName}}"
+    }]
+{{- end}}
     config_maps = []
     # SECRET VALUES for this env come from OUTSIDE forge. Every config field
     # marked `sensitive: true` in proto/config/v1/config.proto projects into

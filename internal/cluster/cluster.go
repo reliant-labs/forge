@@ -52,7 +52,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -605,13 +604,27 @@ func renderSelectedCharts(ctx context.Context, specs []HelmChartSpec) ([]rendere
 // to drive.
 func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChart, quiet bool) error {
 	for _, rc := range charts {
+		// A chart may declare its OWN cluster (HelmChartSpec.Cluster), which
+		// overrides the env's primary context for THIS chart alone. Resolved
+		// once here and used for every kubectl in the chart's sequence: the
+		// applies, the CRD-Established wait, the controller-Available wait and
+		// the riding-manifest applies. They must all agree — waiting for
+		// Established against the PRIMARY apiserver would report a CRD the
+		// target cluster does not have, which is exactly the "installed
+		// nowhere useful and reported success" failure this closes.
+		chartCtx := chartContext(kctx, rc.spec)
 		if !quiet {
-			fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
+			if rc.spec.Cluster != "" {
+				fmt.Printf("Applying platform dependency %q (helm-rendered) to cluster %q...\n",
+					rc.spec.Name, chartCtx)
+			} else {
+				fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
+			}
 		}
 		// rc.spec.Namespace is the chart's DECLARED namespace, threaded into
 		// the apply as `-n` so a chart object with no `metadata.namespace`
 		// lands there instead of in `default` (see KubectlApplyNamespaced).
-		if err := applyCRDsThenRest(ctx, kctx, rc.spec.Namespace, rc.crds, rc.manifests); err != nil {
+		if err := applyCRDsThenRest(ctx, chartCtx, rc.spec.Namespace, rc.crds, rc.manifests); err != nil {
 			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
 		}
 		// Consumer-declared manifests riding this chart's --target
@@ -633,7 +646,7 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 			if !quiet {
 				fmt.Printf("Waiting for %q controller Deployments to be Available...\n", rc.spec.Name)
 			}
-			if err := waitChartDeploymentsAvailable(ctx, kctx, rc.spec.Namespace, 180*time.Second); err != nil {
+			if err := waitChartDeploymentsAvailable(ctx, chartCtx, rc.spec.Namespace, 180*time.Second); err != nil {
 				return fmt.Errorf("platform dependency %q: wait controllers Available: %w", rc.spec.Name, err)
 			}
 		}
@@ -642,7 +655,7 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 		}
 		// Bounded retry: the webhook Service's endpoints can lag a few
 		// seconds after the Deployment reports Available.
-		if err := applyRidingManifestsWithRetry(ctx, kctx, rc.spec.Namespace, rc.extra); err != nil {
+		if err := applyRidingManifestsWithRetry(ctx, chartCtx, rc.spec.Namespace, rc.extra); err != nil {
 			return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
 		}
 	}
@@ -977,12 +990,12 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, im
 	for _, k := range keys {
 		dArgs = append(dArgs, k+"="+envCfgKV[k])
 	}
-	// Push the active git facts into the manifest render: option("worktree")
-	// + option("branch"). nil on the primary checkout, so a plain deploy
-	// renders byte-identically. The entity render (renderKCLRaw) adds the
-	// SAME bindings — both render paths see one set of facts, so the
-	// allocate_port'd ports / namespace can't drift between up and deploy.
-	dArgs = append(dArgs, devstack.ActiveDArgs()...)
+	// option("worktree") / option("branch") are NOT added here. They are
+	// bound for EVERY render inside kclrender.Run (withDevStackDArgs),
+	// because a project keys its namespace on them and a render that omits
+	// them resolves a different namespace than the deploy that applied the
+	// objects. Binding them per-caller is what let the doctor's cluster
+	// render drift from this one and report running workloads as "NO PODS".
 	return dArgs
 }
 

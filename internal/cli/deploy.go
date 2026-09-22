@@ -1233,7 +1233,10 @@ func resolveDeployHelmSpecs(ctx context.Context, entities *KCLEntities, targets 
 	if len(selected) == 0 {
 		return nil, nil
 	}
-	return helmChartSpecsFromEntities(ctx, selected)
+	// The env's declared clusters are passed so a chart naming a cluster this
+	// env does not declare is REFUSED here rather than silently applied to the
+	// primary. See validateChartCluster.
+	return helmChartSpecsFromEntities(ctx, selected, entities.Clusters)
 }
 
 // deployPreflightEnvInput carries the env-derived inputs runDeployPreflightForEnv

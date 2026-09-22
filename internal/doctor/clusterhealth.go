@@ -262,10 +262,23 @@ type podLister func(ctx context.Context, kctx, namespace string) ([]podView, err
 func CheckClusterWorkloads(ctx context.Context, env *Environment) CheckResult {
 	render, early := renderEnvForCluster(ctx, env)
 	if early != nil {
+		// Even an early exit carries an inventory: a consumer must be able
+		// to tell "the render failed, so the workload set is unknown" from
+		// "this env deploys none", and both from a real empty cluster.
+		early.Cluster = inventoryStub(strings.TrimSpace(env.Env), early.Status, early.Message)
 		return *early
 	}
-	return clusterWorkloadReport(ctx, render, kubectlPods)
+	return clusterWorkloadReport(ctx, render, clusterPodLister)
 }
+
+// clusterPodLister is the seam at the OUTER entry point. clusterWorkloadReport
+// already takes a podLister, but that seam is downstream of the render — so a
+// test using it cannot observe the one thing that was wrong here: which
+// namespace the render resolved, and therefore which namespace the probe asks
+// kubectl about. Substituting here puts the render inside the test's reach, so
+// the assertion can be on the namespace that reaches the k8s call rather than
+// on a helper's return value.
+var clusterPodLister podLister = kubectlPods
 
 // renderEnvForCluster renders THIS environment — and only this one.
 //
@@ -364,6 +377,7 @@ func clusterWorkloadReport(ctx context.Context, r envRender, list podLister) Che
 		return CheckResult{
 			Status:  StatusSkip,
 			Message: fmt.Sprintf("env %q deploys no Kubernetes workloads", r.env),
+			Cluster: inventoryStub(r.env, StatusSkip, ""),
 		}
 	}
 
@@ -392,11 +406,16 @@ func clusterWorkloadReport(ctx context.Context, r envRender, list podLister) Che
 			continue
 		}
 		var found []workloadFinding
-		found, tr.matched, tr.healthy = judgeTarget(tr.target, tr.pods, now)
+		found, tr.matched, tr.healthy, tr.states = judgeTarget(tr.target, tr.pods, now)
 		findings = append(findings, found...)
 	}
 
-	return summarise(targets, results, findings, undetermined)
+	res := summarise(targets, results, findings, undetermined)
+	// The structured twin of Evidence, built from the SAME results rather
+	// than re-queried or re-judged — see clusterinventory.go for why the
+	// prose blob alone was not an answer.
+	res.Cluster = buildInventory(r.env, res.Status, results, findings, unrouted)
+	return res
 }
 
 // clusterWorkloadsOf turns a render into the workload set to report on, and
@@ -499,6 +518,11 @@ type targetResult struct {
 	// verbose report that lists only complaints leaves the reader with the
 	// same "did it even check?" doubt this check exists to remove.
 	healthy []string
+	// states is the STRUCTURED twin of healthy + findings: the matched pods
+	// per workload, reduced to what a consumer reads. Produced by the same
+	// pass that produces the prose, which is what stops the two from
+	// disagreeing. Nil when the probe failed — see buildInventory.
+	states map[*clusterWorkload][]PodState
 }
 
 // probeTargets lists pods for every target CONCURRENTLY. Serial probes
@@ -538,9 +562,10 @@ type workloadFinding struct {
 
 // judgeTarget matches the target's pods to its workloads and judges each.
 // The second return is how many pods matched — the count the report uses,
-// because the unmatched ones are not this env's to speak for — and the third
-// is an evidence line per clean workload.
-func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFinding, int, []string) {
+// because the unmatched ones are not this env's to speak for — the third
+// is an evidence line per clean workload, and the fourth is the same
+// matched pods as structured [PodState]s for the JSON inventory.
+func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFinding, int, []string, map[*clusterWorkload][]PodState) {
 	byName := map[string]*clusterWorkload{}
 	byApp := map[string][]*clusterWorkload{}
 	for _, w := range t.workloads {
@@ -584,7 +609,44 @@ func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFindin
 				w.name, strings.ToLower(w.kind), podRoster(mine)))
 		}
 	}
-	return findings, matched, healthy
+	states := make(map[*clusterWorkload][]PodState, len(t.workloads))
+	for _, w := range t.workloads {
+		states[w] = podStates(owned[w])
+	}
+	return findings, matched, healthy, states
+}
+
+// podStates is podRoster's structured twin: the same readiness, phase and
+// restart facts, as data rather than a formatted line. Both read the same
+// fields in the same way, deliberately — a consumer and a human looking at
+// one status must never be told different things.
+func podStates(pods []podView) []PodState {
+	out := make([]PodState, 0, len(pods))
+	for _, p := range pods {
+		st := PodState{Name: p.Metadata.Name, Phase: p.Status.Phase, Ready: conditionTrue(p, "Ready")}
+		if st.Phase == "" {
+			st.Phase = "?"
+		}
+		for _, c := range p.Status.ContainerStatuses {
+			st.Containers++
+			if c.Ready {
+				st.ContainersReady++
+			}
+			if c.RestartCount > st.Restarts {
+				st.Restarts = c.RestartCount
+			}
+		}
+		// Init containers restart too, and an init container stuck in a
+		// crash loop is exactly the shape that leaves a pod at 0/1 with a
+		// container restart count of zero.
+		for _, c := range p.Status.InitContainerStatuses {
+			if c.RestartCount > st.Restarts {
+				st.Restarts = c.RestartCount
+			}
+		}
+		out = append(out, st)
+	}
+	return out
 }
 
 // podRoster names the pods behind a healthy workload, with their readiness

@@ -227,6 +227,8 @@ authored protos, in one call.`,
 	rootCmd.AddCommand(newPackageCmd())
 	// `debug` migrated to the internal/cli/debug group (factory registry).
 	rootCmd.AddCommand(newSecretCmd())
+	rootCmd.AddCommand(newLoginCmd())
+	rootCmd.AddCommand(newCloudCmd())
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newVersionCmd())

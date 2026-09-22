@@ -91,12 +91,15 @@ func selectedHelmChartEntities(charts []HelmChartEntity, targets []string) []Hel
 //     chart's bundled (skipped) experimental CRDs the wrong source.
 //   - "cert-manager" — cert-manager's CRDs at the chart's OWN Version
 //     (the chart and its CRDs move in lockstep).
-func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity) ([]cluster.HelmChartSpec, error) {
+func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, declaredClusters []ClusterEntity) ([]cluster.HelmChartSpec, error) {
 	if len(charts) == 0 {
 		return nil, nil
 	}
 	specs := make([]cluster.HelmChartSpec, 0, len(charts))
 	for _, c := range charts {
+		if err := validateChartCluster(c, declaredClusters); err != nil {
+			return nil, err
+		}
 		crds, err := fetchHelmChartCRDs(ctx, c)
 		if err != nil {
 			return nil, fmt.Errorf("platform dependency %q: %w", c.Name, err)
@@ -119,9 +122,51 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity) (
 			Values:    c.Values,
 			CRDs:      crds,
 			Manifests: extra,
+			Cluster:   c.Cluster,
 		})
 	}
 	return specs, nil
+}
+
+// validateChartCluster REFUSES a chart whose declared `cluster` is not one of
+// the env's declared clusters. A chart with no `cluster` passes unconditionally
+// — that is the primary-cluster default every existing declaration uses.
+//
+// This is a hard error rather than a fallback to the primary cluster, and the
+// direction matters. The whole point of re-targeting a chart is that an
+// operator has to be installed where its custom resources land; silently
+// installing it on the primary instead produces a cluster that looks healthy
+// (controller 1/1 Ready, CRDs Established) while the CRs it exists to
+// reconcile go to an apiserver with no such kind. That failure surfaces much
+// later, as an unrelated-looking `no matches for kind` on the tier that renders
+// the CRs. Refusing at deploy time names the actual mistake — a typo'd or
+// undeclared cluster — at the moment it can still be fixed.
+//
+// The comparison is against each Cluster's derived kubectl CONTEXT, because
+// that is what the render projects and what forge applies with; matching on the
+// bare `name` would accept `cp-daemon` for a context that is really
+// `k3d-cp-daemon`, reintroducing exactly the drift the reference-typed schema
+// field exists to prevent.
+func validateChartCluster(c HelmChartEntity, declaredClusters []ClusterEntity) error {
+	if c.Cluster == "" {
+		return nil
+	}
+	var known []string
+	for _, dc := range declaredClusters {
+		if dc.Context == c.Cluster {
+			return nil
+		}
+		if dc.Context != "" {
+			known = append(known, dc.Context)
+		}
+	}
+	if len(known) == 0 {
+		return fmt.Errorf("platform dependency %q targets cluster %q, but this env declares no clusters "+
+			"(add it to the Bundle's `clusters` and reference the forge.Cluster instance as the chart's `cluster`)",
+			c.Name, c.Cluster)
+	}
+	return fmt.Errorf("platform dependency %q targets cluster %q, which this env does not declare "+
+		"(declared: %s)", c.Name, c.Cluster, strings.Join(known, ", "))
 }
 
 // fetchHelmChartCRDs returns the forge-supplied CRD manifest YAML for a

@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
@@ -56,6 +55,11 @@ type KCLEntities struct {
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// ControlPlane is the bundle-level hosted control-plane declaration
+	// (WHICH endpoint this env talks to, and the env var NAME its
+	// credential is read from). Nil when the bundle declares none —
+	// the default, and the case where no forge behaviour changes.
+	ControlPlane *ControlPlaneEntity `json:"control_plane,omitempty"`
 
 	// RequiredSecrets are the env's declared external Secret prerequisites
 	// (forge.ExternalSecret) — out-of-band Secrets the deploy depends on but
@@ -119,6 +123,20 @@ type SecretProviderEntity struct {
 	// declarations (name + per-key source) forge renders + applies per
 	// cluster. Empty for dotenv/external.
 	Secrets []RenderedSecretEntity `json:"secrets,omitempty"`
+}
+
+// ControlPlaneEntity is the parsed bundle-level hosted control-plane
+// declaration (kcl/schema.k ControlPlane): WHICH endpoint this env talks
+// to, and the NAME of the env var its bearer credential is read from.
+//
+// It carries no credential and never will. The token VALUE is resolved
+// Go-side by internal/cloud from the flag / env var / login file, exactly
+// as secret VALUES are resolved by internal/secrets rather than KCL.
+type ControlPlaneEntity struct {
+	Type         string `json:"type"`
+	Endpoint     string `json:"endpoint"`
+	TokenEnv     string `json:"token_env,omitempty"`
+	Organization string `json:"organization,omitempty"`
 }
 
 // RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s
@@ -347,6 +365,18 @@ type HelmChartEntity struct {
 	// "gateway-api", or "cert-manager". The chart is rendered --skip-crds,
 	// so forge owns the CRD surface.
 	CRDs string `json:"crds,omitempty"`
+	// Cluster is the kubectl CONTEXT this chart installs into, overriding
+	// the env's primary cluster for this chart alone. The KCL `cluster`
+	// field is a forge.Cluster REFERENCE and the render projects its
+	// derived `.context` (`k3d-<name>`) here, so the value is always the
+	// context forge applies with and can never drift from the cluster the
+	// declaration names. Empty => the env's primary cluster.
+	//
+	// This is what lets an operator be installed where its custom
+	// resources land: control-plane's dev renders `postgresql.cnpg.io/v1
+	// Cluster` objects into cp-daemon, so CNPG must be installed there and
+	// not in the env's primary control-plane cluster.
+	Cluster string `json:"cluster,omitempty"`
 	// Manifests are consumer-declared raw k8s manifest dicts that ride this
 	// chart's `--target` (the `eg` GatewayClass, cert-manager ClusterIssuers)
 	// — the cluster-scoped instances the chart's controller reconciles but
@@ -990,6 +1020,9 @@ type kclRenderRaw struct {
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// ControlPlane rides alongside secret_provider in the entity output;
+	// nil when the bundle declares none (KCL omits the key entirely).
+	ControlPlane *ControlPlaneEntity `json:"control_plane,omitempty"`
 	// RequiredSecrets / RequiredDNS are the declared external prerequisites
 	// (forge.ExternalSecret / forge.DNSRecord). render() always emits these
 	// buckets (empty lists when none).
@@ -1075,9 +1108,10 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// seam (no external `kcl` binary). `-D env=<env>` drives the per-env
 	// conditionals in the deploy module. workDir = projectDir so the
 	// deploy-as-data main.k's `file.read("deploy/kcl/...")` resolves.
-	// devstack.ActiveDArgs() pushes option("worktree")/option("branch") when
-	// a parallel dev stack is active (nil → byte-identical default render),
-	// so the entity render sees the same git facts the manifest render does.
+	// option("worktree")/option("branch") are bound inside kclrender.Run for
+	// EVERY render (withDevStackDArgs), not here — a project keys its
+	// namespace on them, so a render that omits them looks in a different
+	// namespace than the deploy that applied the objects.
 	// activeRenderOptionDArgs() adds the project's own `-D name=value` options
 	// (`forge env up -D …`) — opaque to forge, meaningful only to this env's
 	// KCL. nil unless the caller passed one, so every other render is
@@ -1097,8 +1131,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// The store is the tie-break, and it only works if everyone reads it.
 	kclplugin.UsePortStoreReadOnly(filepath.Join(projectDir, ".forge", "ports-"+env+".json"))
 
-	dArgs := append([]string{"env=" + env}, devstack.ActiveDArgs()...)
-	dArgs = append(dArgs, activeRenderOptionDArgs()...)
+	dArgs := append([]string{"env=" + env}, activeRenderOptionDArgs()...)
 	return kclrender.Run(projectDir, kclDir, dArgs)
 }
 
@@ -1159,6 +1192,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		GRPCRoutes:           raw.GRPCRoutes,
 		HelmCharts:           raw.HelmCharts,
 		SecretProvider:       raw.SecretProvider,
+		ControlPlane:         raw.ControlPlane,
 		RequiredSecrets:      raw.RequiredSecrets,
 		RequiredDNS:          raw.RequiredDNS,
 		ManifestNamespace:    manifestNS,

@@ -972,6 +972,21 @@ _render_cluster = lambda c: Cluster -> any {
         "api_port": c.api_port if c.api_port else None
         "ingress": c.ingress if c.ingress else None
         "host_ports": c.host_ports if c.host_ports else None
+        # The pod / Service CIDRs, emitted ONLY when declared. A CONDITIONAL
+        # KEY, not a `None` value like the fields above: the Go side turns a
+        # present key into a `--cluster-cidr` k3s arg, so a projected null
+        # would be a new key in every existing cluster's JSON for a capability
+        # it never asked for. Unset must be indistinguishable from before.
+        if c.cluster_cidr:
+            "cluster_cidr": c.cluster_cidr
+        if c.service_cidr:
+            "service_cidr": c.service_cidr
+        # NOTE: `kubeconfig` is deliberately NOT projected. It is a HOST fact
+        # resolved per-render for KCL consumers to reference
+        # (ClusterClient.host_kubeconfig_path); the Go reconcile that reads
+        # this entity already knows the machine's kubeconfig without being
+        # told, and projecting it would put a machine-specific absolute path
+        # into the rendered contract that `forge env render` prints.
     }
 }
 
@@ -1002,6 +1017,11 @@ _render_helm_chart = lambda h: HelmChart -> any {
         # app deploy. The CLI stamps the chart's app-label and applies
         # them after the chart's controllers.
         "manifests": h.manifests if h.manifests else None
+        # cluster is a forge.Cluster REFERENCE; the machine-facing JSON
+        # carries the DENORMALIZED kubectl context (k3d-<name>) the apply
+        # runs `kubectl --context` with — never the bare name. Null =>
+        # the env's primary cluster (every pre-existing declaration).
+        "cluster": h.cluster.context if h.cluster else None
     }
 }
 
@@ -1167,6 +1187,12 @@ render = lambda bundle: Bundle -> any {
         # only the declaration (type + path). NOT in render_manifests.
         if bundle.secret_provider:
             "secret_provider": bundle.secret_provider
+        # The hosted control plane declaration (endpoint + the env var NAME
+        # the credential is read from). Absent when the env declares none.
+        # Like secret_provider this is a DECLARATION only — no credential
+        # value ever enters KCL render output. NOT in render_manifests.
+        if bundle.control_plane:
+            "control_plane": bundle.control_plane
     }
 }
 

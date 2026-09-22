@@ -337,7 +337,14 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 		if checkErr != nil {
 			return checkErr // a mistyped --signal is a usage error, not a stack state
 		}
-		rep := upServicesReport{Env: env, Services: rows, Checks: checks.Checks}
+		rep := upServicesReport{
+			Env: env, Services: rows, Checks: checks.Checks,
+			// Lifted out of the Cluster Workloads check to the top level:
+			// it sits beside `services` because it is the other half of
+			// the same question, and a consumer should not have to know
+			// which check happens to carry it.
+			Workloads: doctor.InventoryOf(checks),
+		}
 		// DATABASE_URL is the other half of the discovery contract: an agent
 		// or script gets this worktree's API port (per-service `port`) AND its
 		// DSN from one call. Sourced from the launch-time persist; empty (and
@@ -1451,8 +1458,22 @@ type upServicesReport struct {
 	// predates it is flagged stale. Empty when the project dir is not a git
 	// repo / git is unavailable. Omitted so a consumer pinned to the old shape
 	// is unaffected.
-	HeadCommitAt string         `json:"head_commit_at,omitempty"`
-	Services     []upServiceRow `json:"services"`
+	HeadCommitAt string `json:"head_commit_at,omitempty"`
+	// Services is the HOST-PROCESS list — local dev servers and frontends
+	// running on this machine. It is NOT an inventory of the environment:
+	// for a cloud env it is routinely near-empty while a dozen workloads
+	// run in the cluster. That was the whole defect — `services` was the
+	// only structured key, so a consumer asking "what is running in prod?"
+	// got two local dev servers as data and the real answer only as prose
+	// inside a check's evidence string. Read it with Workloads below.
+	Services []upServiceRow `json:"services"`
+	// Workloads is the CLUSTER half: every pod-owning object this env's
+	// render deploys, with the cluster and namespace it was read from. It
+	// is a document rather than a bare array because an empty list and "we
+	// could not reach the cluster" are different facts — see
+	// doctor.ClusterInventory. Nil (omitted) when the Cluster Workloads
+	// check did not run at all, e.g. a --signal arm that excludes it.
+	Workloads *doctor.ClusterInventory `json:"workloads,omitempty"`
 	// Checks are the env-runtime health checks (compose infra, app
 	// /healthz, pprof, telemetry backends, Delve) — the set that moved off
 	// `forge doctor` when doctor stopped answering runtime questions.

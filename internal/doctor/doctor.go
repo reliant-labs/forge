@@ -46,6 +46,12 @@ type CheckResult struct {
 	Message  string        `json:"message"`
 	Evidence string        `json:"evidence,omitempty"`
 	Duration time.Duration `json:"duration_ms"`
+	// Cluster is the structured cluster inventory, set only by the Cluster
+	// Workloads check. Message and Evidence are prose for a human; this is
+	// the same facts as data, so a consumer never has to parse them. It is
+	// omitted (nil) by every other check, which is a third answer distinct
+	// from an unknown inventory and an empty one: forge was not asked.
+	Cluster *ClusterInventory `json:"cluster,omitempty"`
 }
 
 // MarshalJSON customises the JSON output so duration is in milliseconds.

@@ -1393,6 +1393,76 @@ schema ExternalSecrets:
     check:
         type == "external", "ExternalSecrets.type must be 'external'"
 
+schema ControlPlane:
+    """The hosted control plane THIS environment talks to: an endpoint URL
+    and how forge finds the bearer credential for it.
+
+    Modelled on ExternalSecrets, which is the closest existing analogue:
+    it declares WHERE something comes from without forge ever holding the
+    thing itself. This schema names the endpoint (non-sensitive, belongs
+    in git) and the NAME of an env var that may carry the token — never a
+    token value. A `token` field here would be a credential in version
+    control, so there deliberately isn't one, and the check below rejects
+    anything that looks like one.
+
+    PER-ENVIRONMENT BY CONSTRUCTION. The endpoint is a fact about an
+    environment in exactly the way `cluster`, `namespace` and `registry`
+    are, so it is declared beside them:
+
+        # deploy/kcl/staging/main.k
+        control_plane = forge.ControlPlane {
+            endpoint = "https://api.staging.example.com"
+        }
+
+        # deploy/kcl/prod/main.k
+        control_plane = forge.ControlPlane {
+            endpoint  = "https://api.example.com"
+            token_env = "ACME_DEPLOY_TOKEN"
+        }
+
+    There is NO `forge context use` and no stateful "current endpoint".
+    Switching environments is `forge env deploy staging` — the endpoint
+    follows from the env argument, so two envs cannot be confused by a
+    machine-local setting that is invisible in a diff.
+
+    `token_env` names the environment variable forge reads the credential
+    from, and defaults to FORGE_CONTROL_PLANE_TOKEN. Override it when a CI
+    system already injects a differently-named secret, or when two
+    environments must not share one variable in the same pipeline.
+
+    Absent => this environment has no hosted control plane. That is the
+    overwhelmingly common case and it costs nothing: no forge command
+    changes behaviour, and no credential is ever looked for.
+
+    forge is NOT coupled to any particular hosted service by this. The
+    endpoint is an arbitrary URL, the credential an opaque bearer string —
+    the same relationship `External` has with flyctl, which needs
+    FLY_API_TOKEN without forge linking Fly's SDK."""
+    type: str = "control_plane"
+    endpoint: str
+    # Env var forge reads the bearer credential from. The NAME is
+    # non-sensitive and belongs in git; the VALUE never does.
+    token_env: str = "FORGE_CONTROL_PLANE_TOKEN"
+    # Optional organization hint forwarded to the endpoint. Non-sensitive.
+    #
+    # It is a HINT, not a scoping mechanism: forge does not interpret it and
+    # holds no notion of one. Which organization a credential acts for is
+    # decided by the endpoint, from the credential itself — see
+    # internal/removalguard, which is why the word that used to be here is
+    # not.
+    organization?: str
+
+    check:
+        type == "control_plane", "ControlPlane.type must be 'control_plane'"
+        endpoint, "ControlPlane.endpoint is required (the hosted control plane's base URL)"
+        endpoint.startswith("http://") or endpoint.startswith("https://"), \
+            "ControlPlane.endpoint must be an absolute http(s) URL"
+        token_env, "ControlPlane.token_env is required (the env var NAME holding the credential)"
+        # A declaration holding the credential itself would put it in git.
+        # Reject the shape that invites it rather than documenting against it.
+        not token_env.startswith("rlnt"), \
+            "ControlPlane.token_env is an env var NAME, not a token value — declare e.g. token_env = \"FORGE_CONTROL_PLANE_TOKEN\" and set that variable, or run `forge login`"
+
 schema RenderedSecretKey:
     """One key within a RenderedSecrets Secret.
 
@@ -1985,12 +2055,57 @@ schema ClusterClient:
         source = _secret_name
         read_only = True
     }
+    # ── THE IN-NETWORK API-SERVER ADDRESS ────────────────────────────────
+    #
+    # A kubeconfig's `server` is an address that must be reachable FROM THE
+    # PROCESS THAT DIALS IT, and the two consumers of a ClusterClient do not
+    # dial from the same place. A HOST kubeconfig written by k3d says
+    # `https://0.0.0.0:<api_port>`, because forge creates k3d clusters with
+    # `--api-port 0.0.0.0:<port>` — a BIND address, which resolves to
+    # localhost on the host and means "this pod" inside a container.
+    #
+    # That is fine as long as the host kubeconfig is only ever read by a host
+    # process. It stops being fine the moment a host process PROJECTS that
+    # kubeconfig into something a POD will dial — which is exactly what the
+    # Flux deploy path does when it writes a destination cluster's credential
+    # into a Secret that kustomize-controller mounts. The pod then dials
+    # 0.0.0.0 and gets "connection refused", attributed to the destination
+    # cluster, whose API server is perfectly healthy.
+    #
+    # `in_cluster_server` is the address that reaches `cluster`'s API server
+    # FROM A POD, and for a k3d cluster on a shared docker network forge can
+    # DERIVE it rather than have each project spell it: k3d names the
+    # load-balancer container `k3d-<name>-serverlb`, docker's embedded DNS
+    # resolves that name on the shared network, and — this is the part worth
+    # stating — that name IS in the API server's certificate SANs, so the CA
+    # in the kubeconfig still verifies. The derived address therefore keeps
+    # TLS verification intact, unlike the container-IP rewrite the minted
+    # Secret uses (an IP is not in the SANs, which is why that path has to
+    # disable verification).
+    #
+    # DERIVED FROM cluster.name, NOT FROM AN IP, and that is the durability
+    # argument: k3d hands the serverlb a fresh docker-network IP on every
+    # `k3d cluster create`, so an IP literal in a committed file is correct
+    # until the next cluster recreate and then silently wrong. The container
+    # NAME is stable for the life of the declaration.
+    #
+    # Empty for `reachability = "endpoint"` (prod / external): there the
+    # kubeconfig's own endpoint is a real routable address with a valid cert,
+    # reachable from host and pod alike, so there is nothing to substitute
+    # and the entry renders exactly as it did before this field existed.
+    in_cluster_server?: str
+    _derived_in_cluster_server: str = "https://k3d-" + cluster.name + "-serverlb:6443" \
+        if reachability == "in-network" and cluster.provider == "k3d" else ""
+    _in_cluster_server: str = in_cluster_server if in_cluster_server else _derived_in_cluster_server
     # The CLUSTER_CONFIGS entry the workload reads — id + the derived
-    # kubeconfig path + the context the kubeconfig was renamed to.
+    # kubeconfig path + the context the kubeconfig was renamed to, plus the
+    # pod-reachable API-server address when one applies (omitted entirely
+    # when it does not, so an endpoint-reachable entry is unchanged).
     config_entry: {str: str} = {
         id = id
         kubeconfigPath = _kubeconfig_path
         context = id
+        inClusterServer = _in_cluster_server if _in_cluster_server else Undefined
     }
     # The single-element JSON array form for the common one-client case;
     # drop straight into the CLUSTER_CONFIGS EnvVar value.
@@ -2052,10 +2167,23 @@ schema ClusterClient:
     host_kubeconfig_path?: str
     host_context?: str
     _host_context: str = host_context if host_context else cluster.context
+    # THE HOST ENTRY CARRIES THE IN-NETWORK SERVER TOO, and this is the case
+    # that motivated the field rather than an afterthought.
+    #
+    # A host process reads the DEVELOPER'S kubeconfig, whose server is
+    # `https://0.0.0.0:<api_port>` — correct for that process, which dials
+    # from the host. But a host process on the deploy path does not only
+    # DIAL that cluster; it also PROJECTS the credential into a Secret a pod
+    # will dial. The host path and the pod path need different addresses for
+    # the same cluster, which is why both forms carry this and why it is the
+    # HOST entry that cannot do without it: the pod form's kubeconfig was
+    # minted by forge and already had its server rewritten, while the host
+    # form's was written by k3d and never touched.
     host_config_entry?: {str: str} = {
         id = id
         kubeconfigPath = host_kubeconfig_path
         context = _host_context
+        inClusterServer = _in_cluster_server if _in_cluster_server else Undefined
     } if host_kubeconfig_path else Undefined
     host_config_json?: str = json.encode([host_config_entry]) if host_kubeconfig_path else Undefined
 
@@ -3219,6 +3347,36 @@ schema HelmChart:
                         "gateway-api" — the pinned standard-channel Gateway
                           API CRDs (Envoy Gateway).
                         "cert-manager" — cert-manager's CRDs at `version`.
+      * `cluster`   — which cluster to install this chart into, in a
+                      multi-cluster env. See below.
+
+    CLUSTER TARGETING. An operator must be installed where the custom
+    resources it reconciles actually land. In a multi-cluster env those
+    are not the same cluster: control-plane's dev runs its control plane
+    on `k3d-control-plane` but renders every `postgresql.cnpg.io/v1
+    Cluster` into `k3d-cp-daemon`, so installing the CNPG operator into
+    the env's primary cluster leaves the CRs targeting an apiserver that
+    has never heard of the kind:
+
+        error: resource mapping not found ... no matches for kind
+        "Cluster" in version "postgresql.cnpg.io/v1"
+
+    `cluster` re-targets ONE chart, exactly as `forge.ClusterTarget`
+    re-targets one service's `deploy` block. It is a REFERENCE to the
+    `forge.Cluster` instance — NOT a bare name — for the same reason
+    `Gateway.cluster` is: forge applies with `kubectl --context`, and the
+    context is the Cluster's derived `.context` (`k3d-<name>`), so a
+    string would let the declaration drift from the cluster it names.
+    Passing the object means the context is DERIVED and cannot disagree.
+
+    When set, the chart's manifests, its CRD-Established wait, and its
+    riding `manifests` all run against THAT cluster's context. Unset (the
+    default, and every existing declaration) means the env's primary
+    cluster, so those renders and applies are unchanged.
+
+    A `cluster` naming a Cluster the env does not declare is an ERROR at
+    deploy time, not a fallback to the primary — the failure this closes
+    is a chart that installs nowhere useful and reports success.
     """
     name: str
     chart: str = ""
@@ -3228,6 +3386,10 @@ schema HelmChart:
     namespace: str
     values: {str: any} = {}
     crds: "" | "gateway-api" | "cert-manager" = ""
+    # Which cluster to install this chart into (a forge.Cluster REFERENCE;
+    # the render denormalizes its `.context`). Unset => the env's primary
+    # cluster. See the CLUSTER TARGETING block above.
+    cluster?: Cluster
     # Raw k8s manifests that ride WITH this platform dep: applied (and
     # excluded from a bare `forge env deploy <env>`) on the SAME `--target=<name>`
     # axis as the chart, stamped with the chart's `app.kubernetes.io/name` and
@@ -3484,6 +3646,12 @@ schema Bundle:
     # sees values — k8s references pre-existing Secrets.
     # KCL only emits this DECLARATION; secret VALUES never enter KCL.
     secret_provider?: FileSecrets | ExternalSecrets | RenderedSecrets
+    # The hosted control plane THIS env talks to (endpoint + where the
+    # credential is found). Absent => no hosted control plane for this
+    # env, which is the default and changes no behaviour. Declared
+    # per-env so staging and prod differ in their KCL rather than in
+    # machine-local CLI state. See ControlPlane.
+    control_plane?: ControlPlane
     # Cluster-scoped node.k8s.io/v1 RuntimeClass declarations. Used to
     # bind a workload-facing name ("gvisor", "kata-qemu") to a
     # node-installed handler, OR to declare a dev-cluster alias that

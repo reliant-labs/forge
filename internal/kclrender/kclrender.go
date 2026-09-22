@@ -20,6 +20,7 @@ import (
 	"kcl-lang.io/kpm/pkg/client"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/internal/kubeconfig"
@@ -139,6 +140,63 @@ func withKubeconfigDArg(dArgs []string) []string {
 	return append(out, "kubeconfig="+strconv.Quote(path))
 }
 
+// withDevStackDArgs appends the ACTIVE parallel-dev-stack git facts —
+// `worktree=` and `branch=` — to the render's `-D` bindings, for the same
+// reason and at the same seam as withKubeconfigDArg.
+//
+// These bindings are not cosmetic: a project keys its NAMESPACE on them.
+// control-plane's deploy/kcl/dev/main.k computes
+// `_namespace = option("namespace") or identity.namespace(option("worktree"))`,
+// so a render that omits `worktree=` resolves to the unsuffixed namespace
+// while the deploy that applied the objects resolved to the suffixed one.
+//
+// That is exactly the defect this centralization removes. `forge env deploy`
+// (internal/cluster.renderDArgs) and `forge env up`'s entity render
+// (internal/cli.renderKCLRaw) both passed these bindings; the doctor's
+// cluster-health render (internal/doctor.renderEnvForCluster) did not. So
+// `forge env status dev` listed pods in `control-plane-dev`, found none —
+// they were all in `control-plane-dev-<worktree>`, running — and reported
+// four healthy workloads as "NO PODS", failing the check and the `forge env
+// up` exit code with it.
+//
+// Applying it here rather than at each caller is what makes the omission
+// unrepresentable: there is one place a render can be constructed, so a
+// render cannot be constructed without the facts that decide where its
+// objects live. A caller that already bound a key wins, matching
+// withKubeconfigDArg — an explicit binding is never overridden by a derived
+// one.
+//
+// devstack.ActiveDArgs() is the zero value (no args) in any process that
+// never called devstack.SetActive — `forge ci`, `forge project audit`, the
+// tests — so every render outside the up/deploy path stays byte-identical.
+func withDevStackDArgs(dArgs []string) []string {
+	add := devstack.ActiveDArgs()
+	if len(add) == 0 {
+		return dArgs
+	}
+	// Copy rather than append in place, for the reason withKubeconfigDArg
+	// copies: callers build a slice up and reuse it across renders.
+	out := make([]string, 0, len(dArgs)+len(add))
+	out = append(out, dArgs...)
+	for _, a := range add {
+		key, _, ok := strings.Cut(a, "=")
+		if !ok {
+			continue
+		}
+		bound := false
+		for _, existing := range dArgs {
+			if strings.HasPrefix(existing, key+"=") {
+				bound = true
+				break
+			}
+		}
+		if !bound {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // Run renders the KCL at source — a package directory or a single .k
 // file — and returns the raw JSON result.
 //
@@ -147,7 +205,8 @@ func withKubeconfigDArg(dArgs []string) []string {
 // the relative `.forge-kcl/` vendor path forge points every project at), so
 // it is part of the contract.
 // dArgs are `-D key=value` top-level option assignments (e.g. "env=dev").
-// `kubeconfig` is appended here for every render — see withKubeconfigDArg.
+// `kubeconfig` is appended here for every render — see withKubeconfigDArg —
+// as are the active dev-stack git facts, see withDevStackDArgs.
 // kpm progress/diagnostics go to stderr.
 func Run(workDir, source string, dArgs []string) ([]byte, error) {
 	// Make kcl_plugin.forge (resolve_port, …) available. Idempotent;
@@ -169,7 +228,7 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 	res, err := c.Run(
 		client.WithRunSourceUrl(source),
 		client.WithWorkDir(workDir),
-		client.WithArguments(withKubeconfigDArg(dArgs)),
+		client.WithArguments(withKubeconfigDArg(withDevStackDArgs(dArgs))),
 		client.WithLogger(os.Stderr),
 	)
 	if err != nil {

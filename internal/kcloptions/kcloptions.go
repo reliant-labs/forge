@@ -65,6 +65,7 @@ var Reserved = map[string]string{
 	"image_digests": "the built images' content digests — captured by `forge env deploy`",
 	"worktree":      "the git worktree basename — resolved by the parallel-dev-stack primitives",
 	"branch":        "the git branch — resolved by the parallel-dev-stack primitives",
+	"kubeconfig":    "the default kubeconfig path on this machine — resolved by forge, read via `<cluster>.kubeconfig`",
 }
 
 // Option is one render option a project's KCL declares. Type/Default/Help are

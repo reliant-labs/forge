@@ -36,6 +36,39 @@ func newCmd(f *factory.Factory) *cobra.Command {
 
 // detectComponentsDir looks for a frontends/*/src/components/ui/ directory
 // relative to the current working directory.
+// resolveInstallDir turns a user-supplied --dir into the directory components
+// are actually written to.
+//
+// The command's contract is "install into your project's src/components/ui/",
+// and auto-detect has always appended that suffix. --dir used to be taken
+// literally, so `--dir .` from a frontend root scattered 74 loose .tsx files
+// next to package.json instead — same command, same documented promise, two
+// different layouts depending on whether a flag was passed.
+//
+// So --dir now names the FRONTEND, matching how the flag reads at a call site
+// (`--dir web`), and the suffix is appended for it. A caller who wants a
+// literal directory still gets one: if the path already ends in components/ui,
+// or does not look like a frontend root, it is used verbatim. That keeps the
+// escape hatch open for installing into a scratch dir.
+func resolveInstallDir(dir string) string {
+	cleaned := filepath.Clean(dir)
+
+	// Already pointed at a components/ui directory — use it as given.
+	if filepath.Base(cleaned) == "ui" && filepath.Base(filepath.Dir(cleaned)) == "components" {
+		return cleaned
+	}
+
+	// A frontend root is identified by the things every frontend has. Checking
+	// for these rather than assuming keeps `--dir /tmp/scratch` literal.
+	for _, marker := range []string{"package.json", "src"} {
+		if _, err := os.Stat(filepath.Join(cleaned, marker)); err == nil {
+			return filepath.Join(cleaned, "src", "components", "ui")
+		}
+	}
+
+	return cleaned
+}
+
 func detectComponentsDir() string {
 	cwd, err := os.Getwd()
 	if err != nil {

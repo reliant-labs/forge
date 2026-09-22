@@ -398,6 +398,14 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 	// namespace (helm template -n), so a single apply against any one of the
 	// env's group contexts is correct for the cloud single-cluster case;
 	// the once-only guard avoids re-applying cert-manager per service group.
+	//
+	// A chart that re-targets a SECOND cluster (HelmChartSpec.Cluster) still
+	// rides this one group, and still installs into its own cluster: the
+	// context is resolved PER CHART inside applyRenderedCharts, not taken from
+	// the group. Keeping the attachment here group-agnostic is deliberate — a
+	// re-targeted chart must be applied once whether or not the env happens to
+	// declare a service group on that cluster, and an operator cluster
+	// frequently has no forge-deployed service at all.
 	primaryHelmContext := ""
 	if len(p.HelmCharts) > 0 {
 		for _, g := range p.Groups {

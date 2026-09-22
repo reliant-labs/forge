@@ -173,4 +173,22 @@ features:
 	if strings.Contains(out, "[devstack]") {
 		t.Errorf("the devstack diagnostic is on stdout, inside the JSON stream:\n%s", out)
 	}
+	// `services` is the HOST-process list, and for a long time it was the
+	// only structured thing in this document — so `forge env status prod
+	// --json` answered "what is running?" with two local dev servers while
+	// fourteen deployments ran in the cluster, reachable only by parsing a
+	// check's prose evidence. `workloads` is the cluster half, and it must
+	// be present even when there is nothing to report, carrying the REASON
+	// in its status rather than being absent.
+	if rep.Workloads == nil {
+		t.Fatalf("the JSON envelope has no `workloads` key — the cluster's state would again "+
+			"be reachable only by parsing evidence prose:\n%s", out)
+	}
+	if rep.Workloads.Status == "" {
+		t.Error("`workloads.status` is empty — it is what distinguishes an env that deploys " +
+			"nothing from a cluster forge could not read")
+	}
+	if rep.Workloads.Workloads == nil {
+		t.Errorf("`workloads.workloads` serialised as null rather than []:\n%s", out)
+	}
 }

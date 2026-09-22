@@ -30,6 +30,8 @@ auto-detects the nearest frontend directory.`,
 					return fmt.Errorf("could not auto-detect components directory; use --dir to specify")
 				}
 				dir = detected
+			} else {
+				dir = resolveInstallDir(dir)
 			}
 
 			if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -52,8 +54,9 @@ auto-detects the nearest frontend directory.`,
 				fmt.Printf("  Installed %s -> %s\n", name, dest)
 			}
 
-			// Navigating components (page_header, row_actions_menu) import
-			// the "./link" primitive. Make sure it exists so a manual
+			// Navigating components (page_header, row_actions_menu,
+			// sidebar_layout) import the "./link" primitive. Make sure it
+			// exists so a manual
 			// install into a bare directory still compiles; never
 			// overwrite — scaffolds place a framework-aware version there.
 			linkDest := filepath.Join(dir, "link.tsx")

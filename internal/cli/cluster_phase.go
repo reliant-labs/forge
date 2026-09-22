@@ -149,7 +149,31 @@ func clusterCreateFlags(c ClusterEntity) []string {
 		// network can reach this API server by host IP if needed.
 		flags = append(flags, "--api-port", fmt.Sprintf("0.0.0.0:%d", c.APIPort))
 	}
+	flags = append(flags, k3sCIDRArgs(c)...)
 	return flags
+}
+
+// k3sCIDRArgs projects the declared pod / Service CIDRs onto the `k3d cluster
+// create --k3s-arg` flags that carry them.
+//
+// k3d has no first-class flag for either: they are k3s SERVER args, passed
+// through with the `<arg>@<nodefilter>` syntax k3d's own docs use
+// (`--k3s-arg "--disable=traefik@server:*"`). The `server:*` filter — rather
+// than `server:0` — applies the setting to every control-plane node, which
+// matters for a multi-server cluster where a CIDR set on only the first server
+// is a split-brain allocator rather than a partial configuration.
+//
+// Returns nil when neither is declared, so a cluster that does not use this
+// capability produces the exact flag list it produced before.
+func k3sCIDRArgs(c ClusterEntity) []string {
+	var args []string
+	if c.ClusterCIDR != "" {
+		args = append(args, "--k3s-arg", "--cluster-cidr="+c.ClusterCIDR+"@server:*")
+	}
+	if c.ServiceCIDR != "" {
+		args = append(args, "--k3s-arg", "--service-cidr="+c.ServiceCIDR+"@server:*")
+	}
+	return args
 }
 
 // reconcileExistingCluster brings an ALREADY-CREATED cluster up to what the
@@ -207,6 +231,17 @@ func reconcileExistingCluster(ctx context.Context, c ClusterEntity, state k3dClu
 			return err
 		}
 	}
+
+	// CIDR DRIFT GUARD, the same shape one level down the stack. k3s fixes
+	// the pod and Service address blocks at create time too, so a
+	// `cluster_cidr` / `service_cidr` declared against an already-running
+	// cluster is completely inert. Unguarded that is worse than the port
+	// case: the cluster comes up green, and the operator debugs the
+	// cross-cluster routing their declaration was meant to fix rather than
+	// the declaration never having taken effect. See cluster_cidr_drift.go.
+	if err := checkClusterCIDRDrift(ctx, c, declared, env); err != nil {
+		return err
+	}
 	if isNestedSecondary(c) {
 		if err := setupSecondaryClusterNodeFn(ctx, c); err != nil {
 			return err
@@ -252,9 +287,14 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []Clus
 			return fmt.Errorf("ensure standalone registry for cluster %q: %w", c.Name, err)
 		}
 
-		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.HostPorts, c.APIPort)
+		cfgPath, cleanup, err := mergeK3dConfig(c.Config, k3dConfigOverlay{
+			HostPorts:   c.HostPorts,
+			APIPort:     c.APIPort,
+			ClusterCIDR: c.ClusterCIDR,
+			ServiceCIDR: c.ServiceCIDR,
+		})
 		if err != nil {
-			return fmt.Errorf("merge k3d ports for cluster %q: %w", c.Name, err)
+			return fmt.Errorf("merge k3d config for cluster %q: %w", c.Name, err)
 		}
 		defer cleanup()
 		if cfgPath.temporary {

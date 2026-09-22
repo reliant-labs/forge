@@ -190,6 +190,24 @@ type ClusterEntity struct {
 	// declaratively (Ingress=false) but the cluster still hosts a Gateway
 	// whose listeners must be host-mapped at create time.
 	HostPorts bool `json:"host_ports,omitempty"`
+	// ClusterCIDR / ServiceCIDR are the pod and Service address blocks k3s
+	// allocates from, reaching `k3d cluster create` as the k3s server args
+	// --cluster-cidr / --service-cidr. Empty (the default, and every cluster
+	// that does not declare them) leaves k3s on its own defaults —
+	// 10.42.0.0/16 pods, 10.43.0.0/16 services — so no argument is added and
+	// the created cluster is identical to before.
+	//
+	// They exist because two k3d clusters on ONE docker network both default
+	// to the SAME pod CIDR, so the same pod IP exists in both and a local
+	// route always wins: a workload in one cluster cannot dial a pod IP in the
+	// other. Disjoint blocks are what make that cross-cluster pod dialing
+	// possible, which is how the equivalent cloud topology (several clusters
+	// in one VPC, on disjoint blocks) already works.
+	//
+	// Validated KCL-side (shape, and that a cluster's two blocks do not
+	// overlap each other) — see kcl/schema.k's Cluster check block.
+	ClusterCIDR string `json:"cluster_cidr,omitempty"`
+	ServiceCIDR string `json:"service_cidr,omitempty"`
 }
 
 // KubeconfigSecretEntity mirrors the kcl/schema.k KubeconfigSecret — a

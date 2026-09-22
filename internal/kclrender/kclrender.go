@@ -13,6 +13,8 @@ package kclrender
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"kcl-lang.io/kpm/pkg/client"
@@ -20,6 +22,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclvendor"
+	"github.com/reliant-labs/forge/internal/kubeconfig"
 )
 
 // staleWarnOnce keeps the vendored-module drift notice to one line per
@@ -96,6 +99,46 @@ func pluginPreflight(available bool, version string) error {
 		version, version)
 }
 
+// withKubeconfigDArg appends `kubeconfig=<quoted path>` — the machine's
+// default kubeconfig — to the render's `-D` bindings. It backs
+// `forge.default_kubeconfig()`, and through it `Cluster.kubeconfig`, which is
+// how a HOST process declares where a cluster's kubeconfig lives.
+//
+// It is applied HERE, in the one seam every render passes through, rather than
+// at each caller. There are a dozen call sites (env up, env deploy, doctor,
+// new-env validation, the config probes, the tests), and a binding that only
+// some of them passed would make `<cluster>.kubeconfig` resolve under `forge
+// env up` and come back empty under `forge env render` — a difference between
+// two renders of the same file, which is the failure this field exists to
+// remove.
+//
+// Quoted with strconv.Quote so KCL types it as `str`, for the same reason
+// image_tag is quoted (internal/cluster.renderDArgs): an unquoted value is
+// type-inferred, and a path is not reliably a string to KCL.
+//
+// A caller that already supplied its own `kubeconfig=` wins — nothing does
+// today, but an explicit binding should not be silently overridden by a
+// derived one. An unresolvable path (no KUBECONFIG, no home directory) appends
+// nothing, leaving `option("kubeconfig")` as None and the accessor's "" —
+// forge does not guess a path it cannot derive.
+func withKubeconfigDArg(dArgs []string) []string {
+	for _, a := range dArgs {
+		if strings.HasPrefix(a, "kubeconfig=") {
+			return dArgs
+		}
+	}
+	path := kubeconfig.DefaultPath()
+	if path == "" {
+		return dArgs
+	}
+	// Copy rather than append in place: callers hand us slices they build up
+	// and reuse across renders, and appending to a shared backing array would
+	// let one render's binding leak into another's.
+	out := make([]string, 0, len(dArgs)+1)
+	out = append(out, dArgs...)
+	return append(out, "kubeconfig="+strconv.Quote(path))
+}
+
 // Run renders the KCL at source — a package directory or a single .k
 // file — and returns the raw JSON result.
 //
@@ -104,6 +147,7 @@ func pluginPreflight(available bool, version string) error {
 // the relative `.forge-kcl/` vendor path forge points every project at), so
 // it is part of the contract.
 // dArgs are `-D key=value` top-level option assignments (e.g. "env=dev").
+// `kubeconfig` is appended here for every render — see withKubeconfigDArg.
 // kpm progress/diagnostics go to stderr.
 func Run(workDir, source string, dArgs []string) ([]byte, error) {
 	// Make kcl_plugin.forge (resolve_port, …) available. Idempotent;
@@ -125,7 +169,7 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 	res, err := c.Run(
 		client.WithRunSourceUrl(source),
 		client.WithWorkDir(workDir),
-		client.WithArguments(dArgs),
+		client.WithArguments(withKubeconfigDArg(dArgs)),
 		client.WithLogger(os.Stderr),
 	)
 	if err != nil {

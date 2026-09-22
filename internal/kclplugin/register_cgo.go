@@ -59,39 +59,28 @@ func Register() {
 						return &plugin.MethodResult{V: p}, nil
 					},
 				},
-				// host_path(rel) -> str. An absolute path under the
-				// developer's HOME, for a HOST process's config.
+				// REMOVED: host_path(rel) -> str, an absolute path under the
+				// developer's HOME.
 				//
-				// IT EXISTS TO KEEP A HOST PATH DECLARATIVE. forge runs
-				// services on the host in dev (HostDeploy), and such a
-				// service sometimes needs a file that lives on the
-				// developer's disk rather than in a container — a
-				// kubeconfig being the case that forced this. KCL cannot
-				// read the environment, so the alternative is a literal
-				// "/Users/someone/..." in an env's main.k: correct on one
-				// machine, wrong in version control, and invisible until
-				// a teammate renders it.
+				// It existed to serve exactly one case — telling a HOST
+				// process where a cluster's kubeconfig lives — and it served
+				// it by GUESSING: `host_path(".kube/config")` is wrong on any
+				// machine that sets $KUBECONFIG, and a guess that is usually
+				// right fails on one teammate's machine, reported by client-go
+				// as "context does not exist" rather than as the wrong file.
 				//
-				// Resolved at RENDER time by the forge process, which is
-				// the one component that legitimately knows whose machine
-				// this is. The rendered value is still a plain absolute
-				// path, so nothing downstream has to understand it.
+				// The path is now DERIVED from the cluster that owns it —
+				// `<cluster>.kubeconfig`, backed by the reserved `-D
+				// kubeconfig=` binding forge resolves per-render (see
+				// internal/kubeconfig and kclrender.withKubeconfigDArg). It is
+				// not replaced by a general home-anchoring escape hatch,
+				// because a general version of "resolve a path against this
+				// developer's home" invites exactly the class of declaration
+				// that motivated removing it: a machine-shaped literal, in
+				// version control, that renders differently per machine with
+				// nothing saying so. A future host fact should likewise be
+				// derived from the forge concept that owns it.
 				//
-				// It refuses an absolute argument rather than passing it
-				// through: `host_path("/etc/x")` would silently ignore
-				// the home-dir anchoring the caller asked for, and a
-				// helper that sometimes anchors is worse than one that
-				// always does.
-				"host_path": {
-					Body: func(args *plugin.MethodArgs) (*plugin.MethodResult, error) {
-						rel := args.StrArg(0)
-						p, err := hostPath(rel)
-						if err != nil {
-							return nil, err
-						}
-						return &plugin.MethodResult{V: p}, nil
-					},
-				},
 				// dev_stacks() -> [str]. The registered DEV-STACK keys (git
 				// worktrees), for a module that generates one config block
 				// per running stack. Excludes plain port-block keys, which

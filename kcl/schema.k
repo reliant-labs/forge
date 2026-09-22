@@ -1654,6 +1654,37 @@ schema Cluster:
                      still hosts a Gateway whose listeners must be host-mapped.
                      Default False. No-op when the cluster has no `config` or
                      no deploy/k3d-ports.yaml fragment.
+      * `cluster_cidr` / `service_cidr` — the pod and Service address blocks
+                     k3s allocates from, passed to `k3d cluster create` as the
+                     k3s server args `--cluster-cidr` / `--service-cidr`. Both
+                     OPTIONAL: unset leaves k3s on its own defaults
+                     (10.42.0.0/16 pods, 10.43.0.0/16 services), so every
+                     cluster that does not declare them renders and creates
+                     exactly as before.
+
+                     WHY THIS IS A FIELD AND NOT A DETAIL. Two clusters on ONE
+                     docker network — the `owner` topology above — both default
+                     to the SAME pod CIDR, so the same pod IP exists in both
+                     and a local route always wins. A workload in one cluster
+                     therefore CANNOT dial a pod IP in the other, even though
+                     their nodes are mutually reachable. Cloud multi-cluster
+                     topologies solve this by placing each cluster on a
+                     disjoint block inside one VPC (pod IPs are then directly
+                     routable between clusters); without these fields a local
+                     k3d topology cannot model that, and the workaround is to
+                     relocate the workload into the other cluster — which
+                     changes the topology under test and makes dev stop
+                     modelling prod.
+
+                     A `cluster_cidr` that OVERLAPS its own `service_cidr` is
+                     rejected at load. k3s accepts that configuration and comes
+                     up, after which Service IPs collide with pod IPs and the
+                     symptom is intermittently unreachable Services rather than
+                     anything that names a CIDR.
+      * `kubeconfig` — DERIVED, not declared: the path on the developer's disk
+                     where this cluster's kubeconfig lives. See the field's own
+                     comment below for how it is derived and why it is not a
+                     home-relative guess.
     """
     name: str
     # Which ClusterProvider ensures this cluster. Only "k3d" is
@@ -1668,6 +1699,13 @@ schema Cluster:
     api_port?: int
     ingress: bool = False
     host_ports: bool = False
+    # The pod / Service address blocks k3s allocates from. Passed to
+    # `k3d cluster create` as the k3s server args --cluster-cidr /
+    # --service-cidr. Unset (the default) leaves k3s on its own defaults, so
+    # an existing declaration is byte-identical: the render omits the keys
+    # entirely rather than projecting a null or a default string.
+    cluster_cidr?: str
+    service_cidr?: str
     # Derived: kubectl context (k3d-<name>). Computed from `name` so
     # consumers reference `<cluster>.context` rather than re-spelling the
     # `k3d-` prefix. Always present. Only "k3d"'s context convention is
@@ -1684,6 +1722,41 @@ schema Cluster:
     # the stringly `registry_mirror = "inherit"` used to request). False
     # for an owner cluster.
     registry_inherit: bool = True if owner else False
+    # ── THE HOST KUBECONFIG PATH, DERIVED ────────────────────────────────
+    #
+    # Where THIS cluster's kubeconfig lives on the developer's disk. A HOST
+    # process (forge.HostDeploy — forge runs services on the host in dev) that
+    # must reach a cluster needs a real host path; a pod gets one from the
+    # Volume that mounts the minted Secret, and a host process has no volume to
+    # derive one from.
+    #
+    # This is DERIVED FROM WHAT FORGE ACTUALLY DOES, not from a convention
+    # invented here. forge creates a k3d cluster with `k3d cluster create` and
+    # then runs `k3d kubeconfig merge <name> --kubeconfig-merge-default`
+    # (internal/cli/dev_cluster.go: createK3dCluster → mergeK3dKubeconfig), so
+    # the cluster's entry is written into the DEFAULT kubeconfig — `$KUBECONFIG`'s
+    # first entry when set, else `~/.kube/config`. forge resolves that path
+    # host-side and binds it as `-D kubeconfig=<path>` on every render, exactly
+    # the way it binds `env` and `namespace`.
+    #
+    # So the honest derivation is "the default kubeconfig, plus this cluster's
+    # own `.context` to select the entry inside it" — and `.context` is already
+    # a field above, which is why this is a path and not a path+context pair.
+    #
+    # WHY NOT A HOME-RELATIVE LITERAL. The predecessor of this field was a
+    # `host_path(".kube/config")` plugin call in an env's main.k. It guessed:
+    # `~/.kube/config` is wrong on any machine that sets `$KUBECONFIG`, and a
+    # guess that is usually right is the worst kind, because it fails only on
+    # the one teammate's machine and reports it as "context does not exist".
+    # Deriving from the cluster means the path is whatever forge will really
+    # have written, on whichever machine is rendering.
+    #
+    # Empty string when forge did not bind the option (a plain `kcl run`), so a
+    # module renders outside forge without erroring. A consumer that needs the
+    # path should reference it rather than test it — an empty host path becomes
+    # an empty `host_kubeconfig_path`, which ClusterClient rejects by its own
+    # absolute-path check.
+    kubeconfig: str = default_kubeconfig()
 
     check:
         name, "Cluster.name is required"
@@ -1692,6 +1765,22 @@ schema Cluster:
         image, "Cluster.image is required"
         servers > 0, "Cluster.servers must be positive"
         agents >= 0, "Cluster.agents must be non-negative"
+        not cluster_cidr or is_ipv4_cidr(cluster_cidr), \
+            "Cluster.cluster_cidr must be an IPv4 CIDR like '10.52.0.0/16' — it is passed " \
+            "verbatim to k3s as --cluster-cidr, which rejects a malformed value only when " \
+            "the server starts, inside a container, in a log nobody is tailing"
+        not service_cidr or is_ipv4_cidr(service_cidr), \
+            "Cluster.service_cidr must be an IPv4 CIDR like '10.53.0.0/16' — it is passed " \
+            "verbatim to k3s as --service-cidr"
+        # k3s ACCEPTS an overlapping pair and comes up, after which Service IPs
+        # are allocated from a range that also holds pod IPs. The symptom is
+        # intermittently unreachable Services with nothing anywhere naming a
+        # CIDR, so it is caught here instead.
+        not cluster_cidr or not service_cidr or not cidrs_overlap(cluster_cidr, service_cidr), \
+            "Cluster.cluster_cidr overlaps its own service_cidr — every Service IP would be " \
+            "drawn from a range that also holds pod IPs. k3s accepts this and starts; the " \
+            "failure appears later as unroutable Services. Give them disjoint blocks " \
+            "(k3s's own defaults are 10.42.0.0/16 pods, 10.43.0.0/16 services)"
 
 schema KubeconfigSecret:
     """A cross-cluster kubeconfig, minted FRESH each `forge env up` and
@@ -1917,16 +2006,24 @@ schema ClusterClient:
     # DEVELOPER'S DISK, and there is no volume to derive one from. That is
     # not hypothetical: forge's own HostDeploy runs services on the host in
     # dev, so a dev stack whose host service must reach a second cluster had
-    # NO declarative way to say where its kubeconfig lives. The alternative
-    # people reach for is a hardcoded `~/.kube/config` literal in an env's
-    # main.k — which works on one machine, enters version control, and
-    # bypasses the very drift-prevention this schema exists for, because the
-    # id/context/path stop being derived from one place.
+    # NO declarative way to say where its kubeconfig lives.
     #
     # `host_kubeconfig_path` closes that. Set it and `.host_config_json`
     # projects the SAME id and context against a host path, so the pod and
     # host forms cannot disagree about which cluster they name — only about
     # where the file is, which is the one thing that genuinely differs.
+    #
+    # SET IT FROM THE CLUSTER, NOT FROM A LITERAL:
+    #
+    #     host_kubeconfig_path = <cluster>.kubeconfig
+    #
+    # `Cluster.kubeconfig` is derived from where forge ACTUALLY writes that
+    # cluster's kubeconfig (see its comment), so the path is correct on
+    # whichever machine renders. A hand-written `~/.kube/config`-style literal
+    # — or a helper that anchors one at the home directory — is a guess: wrong
+    # wherever `$KUBECONFIG` is set, right often enough that it fails on
+    # exactly one teammate's machine, and reported there as client-go's
+    # "context does not exist" rather than as the wrong file.
     #
     # It is OPTIONAL and empty by default, and `.host_config_json` is
     # Undefined when unset rather than falling back to the pod path. A

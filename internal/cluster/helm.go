@@ -645,7 +645,16 @@ func stampDocAppLabel(doc, name string) string {
 //
 // When there are no CRDs in either source this degenerates to a single
 // apply of `rest`, byte-identical to a plain apply.
-func applyCRDsThenRest(ctx context.Context, kctx, extraCRDs, manifests string) error {
+//
+// namespace is the chart's DECLARED namespace (HelmChartSpec.Namespace),
+// passed to kubectl as `-n` so a chart object that does not stamp
+// `metadata.namespace` lands where the chart declared instead of in
+// `default`. EVERY pass below takes it — the early CRD/Namespace batch and
+// both halves of the config-then-rest second pass — because the objects are
+// split across those passes by KIND, so threading one and not another
+// reproduces the bug for whichever half was missed. See
+// KubectlApplyNamespaced for the chart-by-chart evidence.
+func applyCRDsThenRest(ctx context.Context, kctx, namespace, extraCRDs, manifests string) error {
 	streamCRDs, streamNS, rest := partitionEarlyBatch(manifests)
 
 	// Early batch: CRDs + Namespaces. The chart's namespaced resources target
@@ -657,7 +666,7 @@ func applyCRDsThenRest(ctx context.Context, kctx, extraCRDs, manifests string) e
 	crds := joinNonEmpty(extraCRDs, streamCRDs)
 	early := joinNonEmpty(crds, streamNS)
 	if strings.TrimSpace(early) != "" {
-		if err := KubectlApply(ctx, kctx, early); err != nil {
+		if err := KubectlApplyNamespaced(ctx, kctx, namespace, early); err != nil {
 			return fmt.Errorf("apply CRDs/Namespaces: %w", err)
 		}
 		names := crdNames(crds)
@@ -675,11 +684,11 @@ func applyCRDsThenRest(ctx context.Context, kctx, extraCRDs, manifests string) e
 		// before the controller pods that reference them.
 		config, workloads := PartitionConfigManifests(rest)
 		if strings.TrimSpace(config) != "" {
-			if err := KubectlApply(ctx, kctx, config); err != nil {
+			if err := KubectlApplyNamespaced(ctx, kctx, namespace, config); err != nil {
 				return fmt.Errorf("apply config: %w", err)
 			}
 		}
-		if err := KubectlApply(ctx, kctx, workloads); err != nil {
+		if err := KubectlApplyNamespaced(ctx, kctx, namespace, workloads); err != nil {
 			return fmt.Errorf("apply: %w", err)
 		}
 	}
@@ -771,12 +780,12 @@ func waitChartDeploymentsAvailable(ctx context.Context, kctx, namespace string, 
 // hits `no endpoints available` / `connection refused` for the webhook is
 // retried rather than failing the deploy. A non-webhook error surfaces
 // immediately (no point retrying a genuine manifest error).
-func applyRidingManifestsWithRetry(ctx context.Context, kctx, manifests string) error {
+func applyRidingManifestsWithRetry(ctx context.Context, kctx, namespace, manifests string) error {
 	const attempts = 6
 	const delay = 5 * time.Second
 	var err error
 	for i := 0; i < attempts; i++ {
-		if err = applyCRDsThenRest(ctx, kctx, "", manifests); err == nil {
+		if err = applyCRDsThenRest(ctx, kctx, namespace, "", manifests); err == nil {
 			return nil
 		}
 		if !isWebhookNotReadyError(err) {

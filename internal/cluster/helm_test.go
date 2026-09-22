@@ -233,7 +233,7 @@ metadata:
   namespace: cert-manager
 spec: {}`
 
-	if err := applyCRDsThenRest(context.Background(), "k3d-test", "", manifests); err != nil {
+	if err := applyCRDsThenRest(context.Background(), "k3d-test", "", "", manifests); err != nil {
 		t.Fatalf("applyCRDsThenRest: %v", err)
 	}
 	data, _ := os.ReadFile(logPath)
@@ -442,7 +442,7 @@ metadata:
   namespace: envoy-gateway-system
 spec: {}`
 
-	if err := applyCRDsThenRest(context.Background(), "k3d-test", extraCRDs, rest); err != nil {
+	if err := applyCRDsThenRest(context.Background(), "k3d-test", "", extraCRDs, rest); err != nil {
 		t.Fatalf("applyCRDsThenRest: %v", err)
 	}
 
@@ -517,7 +517,7 @@ kind: ClusterIssuer
 metadata:
   name: letsencrypt-prod
 spec: {}`
-	if err := applyRidingManifestsWithRetry(context.Background(), "k3d-test", manifests); err != nil {
+	if err := applyRidingManifestsWithRetry(context.Background(), "k3d-test", "", manifests); err != nil {
 		t.Fatalf("applyRidingManifestsWithRetry: %v", err)
 	}
 	data, _ := os.ReadFile(logPath)
@@ -539,7 +539,7 @@ metadata:
   namespace: app
 spec: {}`
 
-	if err := applyCRDsThenRest(context.Background(), "k3d-test", "", rest); err != nil {
+	if err := applyCRDsThenRest(context.Background(), "k3d-test", "", "", rest); err != nil {
 		t.Fatalf("applyCRDsThenRest: %v", err)
 	}
 	data, _ := os.ReadFile(logPath)

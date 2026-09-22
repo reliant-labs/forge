@@ -592,6 +592,63 @@ func renderSelectedCharts(ctx context.Context, specs []HelmChartSpec) ([]rendere
 	return out, nil
 }
 
+// applyRenderedCharts applies each rendered platform dep in CRD-first order,
+// then its riding manifests once its controllers are Available.
+//
+// Split out of Apply so the CHART-NAMESPACE WIRING is testable without a KCL
+// render or a helm pull. That matters more than it looks: the
+// `default`-namespace bug was not a broken helper, it was a namespace that
+// existed in the spec and never reached the apply. A test that calls
+// applyCRDsThenRest directly cannot see that — it passes the namespace in
+// itself — so it would stay green with the wiring severed. This is the seam
+// where `rc.spec.Namespace` is read, so it is the seam a regression test has
+// to drive.
+func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChart, quiet bool) error {
+	for _, rc := range charts {
+		if !quiet {
+			fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
+		}
+		// rc.spec.Namespace is the chart's DECLARED namespace, threaded into
+		// the apply as `-n` so a chart object with no `metadata.namespace`
+		// lands there instead of in `default` (see KubectlApplyNamespaced).
+		if err := applyCRDsThenRest(ctx, kctx, rc.spec.Namespace, rc.crds, rc.manifests); err != nil {
+			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
+		}
+		// Consumer-declared manifests riding this chart's --target
+		// (GatewayClass / ClusterIssuers) — applied AFTER the chart's
+		// controllers so the controller (envoy-gateway / cert-manager) is up
+		// before the instances it reconciles. applyCRDsThenRest two-passes
+		// any CRD-then-rest within them too (harmless: these carry none).
+		if strings.TrimSpace(rc.extra) == "" {
+			continue
+		}
+		// WAIT for the chart's Deployments to be Available before applying
+		// its riding manifests. cert-manager ships a ValidatingWebhook
+		// (failurePolicy: Fail) that REJECTS ClusterIssuers until the
+		// webhook Deployment is Ready + cainjector has injected the
+		// caBundle — without this gate the issuer apply fails `failed
+		// calling webhook ... no endpoints available`. A namespace with no
+		// Deployments returns immediately.
+		if rc.spec.Namespace != "" {
+			if !quiet {
+				fmt.Printf("Waiting for %q controller Deployments to be Available...\n", rc.spec.Name)
+			}
+			if err := waitChartDeploymentsAvailable(ctx, kctx, rc.spec.Namespace, 180*time.Second); err != nil {
+				return fmt.Errorf("platform dependency %q: wait controllers Available: %w", rc.spec.Name, err)
+			}
+		}
+		if !quiet {
+			fmt.Printf("Applying platform dependency %q owned manifests...\n", rc.spec.Name)
+		}
+		// Bounded retry: the webhook Service's endpoints can lag a few
+		// seconds after the Deployment reports Available.
+		if err := applyRidingManifestsWithRetry(ctx, kctx, rc.spec.Namespace, rc.extra); err != nil {
+			return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
+		}
+	}
+	return nil
+}
+
 // renderApplyManifests renders the env's KCL bundle, wrapping a failure in the
 // phrasing that call site expects.
 //
@@ -688,43 +745,8 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// chart applies in CRD-first order (forge-supplied CRDs → wait
 	// Established → the --skip-crds controllers). When this apply also
 	// carries app manifests (a mixed --target), the charts land before them.
-	for _, rc := range renderedCharts {
-		if !opts.Quiet {
-			fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
-		}
-		if err := applyCRDsThenRest(ctx, opts.Context, rc.crds, rc.manifests); err != nil {
-			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
-		}
-		// Consumer-declared manifests riding this chart's --target
-		// (GatewayClass / ClusterIssuers) — applied AFTER the chart's
-		// controllers so the controller (envoy-gateway / cert-manager) is up
-		// before the instances it reconciles. applyCRDsThenRest two-passes
-		// any CRD-then-rest within them too (harmless: these carry none).
-		if strings.TrimSpace(rc.extra) != "" {
-			// WAIT for the chart's Deployments to be Available before applying
-			// its riding manifests. cert-manager ships a ValidatingWebhook
-			// (failurePolicy: Fail) that REJECTS ClusterIssuers until the
-			// webhook Deployment is Ready + cainjector has injected the
-			// caBundle — without this gate the issuer apply fails `failed
-			// calling webhook ... no endpoints available`. A namespace with no
-			// Deployments returns immediately.
-			if rc.spec.Namespace != "" {
-				if !opts.Quiet {
-					fmt.Printf("Waiting for %q controller Deployments to be Available...\n", rc.spec.Name)
-				}
-				if err := waitChartDeploymentsAvailable(ctx, opts.Context, rc.spec.Namespace, 180*time.Second); err != nil {
-					return fmt.Errorf("platform dependency %q: wait controllers Available: %w", rc.spec.Name, err)
-				}
-			}
-			if !opts.Quiet {
-				fmt.Printf("Applying platform dependency %q owned manifests...\n", rc.spec.Name)
-			}
-			// Bounded retry: the webhook Service's endpoints can lag a few
-			// seconds after the Deployment reports Available.
-			if err := applyRidingManifestsWithRetry(ctx, opts.Context, rc.extra); err != nil {
-				return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
-			}
-		}
+	if err := applyRenderedCharts(ctx, opts.Context, renderedCharts, opts.Quiet); err != nil {
+		return err
 	}
 
 	// A platform-only apply (every --target named a chart) is done once the
@@ -1095,16 +1117,102 @@ func kubectlCmd(ctx context.Context, kctx string, args ...string) *exec.Cmd {
 // /waits via KubectlArgs may still default; only the destructive apply is
 // gated here.)
 func KubectlApply(ctx context.Context, kctx, manifests string) error {
+	return KubectlApplyNamespaced(ctx, kctx, "", manifests)
+}
+
+// KubectlApplyNamespaced is KubectlApply with an explicit DEFAULT namespace
+// for the objects in the stream that do not name one themselves: it passes
+// `-n <namespace>` to kubectl, which is the namespace kubectl assigns to any
+// namespaced object whose `metadata.namespace` is absent.
+//
+// WHY THIS EXISTS — the `default`-namespace bug. `helm template -n <ns>`
+// renders a chart FOR a namespace, but a chart is not obliged to stamp
+// `metadata.namespace` onto its output, and many do not: Helm's own install
+// path supplies the namespace from the client at apply time, so the field is
+// redundant there and charts legitimately omit it. Rendering such a chart and
+// applying it with NO namespace flag sends every namespace-less object to
+// kubectl's default namespace — `default` — regardless of what the chart
+// declared.
+//
+// That is not hypothetical, and it is chart-specific rather than universal:
+//
+//	fluxcd-community/flux2 2.19.1   40 objects rendered, 0 carry metadata.namespace
+//	envoyproxy/gateway-helm v1.7.2  18 objects rendered, 12 carry it; the 6 that
+//	                                do not are all cluster-scoped, so they need none
+//
+// So Flux's six controllers landed in `default` while `flux-system` sat empty,
+// and Envoy — declared the same way, in the same bundle, for months — was
+// unaffected the whole time, because its templates stamp the field. A chart
+// "working" therefore proved nothing about the next one; the namespace has to
+// come from forge's declaration, not from the chart's generosity.
+//
+// An empty namespace reproduces the old behaviour exactly (no flag passed),
+// which is what every non-chart caller wants: forge's own KCL render stamps
+// `metadata.namespace` on everything it emits.
+//
+// WHY `-n` AND NOT STAMPING `metadata.namespace` DURING RENDER. Stamping
+// produces a self-describing manifest, which is genuinely nicer, but it
+// requires knowing each object's SCOPE — stamping a namespace onto a
+// cluster-scoped object is an error, not a no-op. That scope is not in the
+// manifest and cannot be derived from a static kind list, because a chart's
+// own CRDs DEFINE new cluster-scoped kinds: on this cluster GatewayClass,
+// XMesh and ETCDSnapshotFile are all cluster-scoped, and forge cannot know
+// that for a CRD it is applying in the same batch. Only the apiserver knows,
+// and `-n` is precisely how kubectl asks it: measured, the flag is applied to
+// namespaced objects and IGNORED for cluster-scoped ones (a bare ClusterRole
+// applied with `-n` comes back with `metadata.namespace` empty). So `-n`
+// delegates the scope decision to the one component that can make it
+// correctly, and no forge-side kind table can drift out of date.
+//
+// A doc that DECLARES its own namespace keeps it: kubectl refuses to relocate
+// it — `the namespace from the provided object "kube-system" does not match
+// the namespace "flux-system"` — and it fails the whole stream rather than
+// applying some of it. So those docs are separated out and applied WITHOUT
+// the flag (see splitByTargetNamespace), which both honours the chart's
+// intent and keeps the mismatch from breaking the deploy.
+func KubectlApplyNamespaced(ctx context.Context, kctx, namespace, manifests string) error {
 	if strings.TrimSpace(kctx) == "" {
 		return fmt.Errorf("refusing to apply manifests without an explicit kubectl context: " +
 			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
 			"forge never falls back to the current context for a write")
 	}
+	// Docs that name a DIFFERENT namespace than the target cannot ride the
+	// `-n` flag (kubectl rejects the whole stream), so they apply separately
+	// with no flag and keep the namespace they declared. In the common case
+	// (every doc either declares the target namespace or declares none) this
+	// is empty and there is exactly ONE apply, as before.
+	onTarget, elsewhere := splitByTargetNamespace(manifests, namespace)
+	if strings.TrimSpace(elsewhere) != "" {
+		if err := applyStreamInNamespace(ctx, kctx, "", elsewhere); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(onTarget) == "" {
+		return nil
+	}
+	return applyStreamInNamespace(ctx, kctx, namespace, onTarget)
+}
+
+// applyStreamInNamespace runs ONE server-side apply of a manifest stream with
+// an optional default namespace, including the immutable-field recovery and
+// the apply-completeness verification every forge apply is gated on.
+func applyStreamInNamespace(ctx context.Context, kctx, namespace, manifests string) error {
+	// The recovery's delete/get must be scoped the SAME way the apply was.
+	// immutableTarget.Namespace comes from the offending doc's
+	// `metadata.namespace`, which is empty for exactly the charts this fix is
+	// about (flux renders a namespace-less `flux-flux-check` Job) — and an
+	// unscoped delete resolves to `default`, i.e. it would look for the
+	// object in the wrong namespace and silently recover nothing. Defaulting
+	// the target to the apply's namespace keeps the two in agreement.
 	applyStdout, err := applyWithImmutableRecovery(
 		manifests,
-		func() (string, string, error) { return applyOnce(ctx, kctx, manifests) },
-		func(t immutableTarget) error { return kubectlDeleteResource(ctx, kctx, t) },
-		func(t immutableTarget) error { return kubectlWaitResourceGone(ctx, kctx, t) },
+		func() (string, string, error) { return applyOnce(ctx, kctx, namespace, manifests) },
+		func(t immutableTarget) error {
+			return kubectlDeleteResource(ctx, kctx, withDefaultNamespace(t, namespace))
+		},
+		func(t immutableTarget) error {
+			return kubectlWaitResourceGone(ctx, kctx, withDefaultNamespace(t, namespace))
+		},
 	)
 	if err != nil {
 		return err
@@ -1252,8 +1360,24 @@ func applyWithImmutableRecovery(
 // immutable-field recovery, and stdout drives the apply-completeness
 // check (see apply_completeness.go — a server-side apply can reject one
 // object and still exit 0, and the rejected object simply has no line).
-func applyOnce(ctx context.Context, kctx, manifests string) (applyStdout, applyStderr string, err error) {
-	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "--force-conflicts", "-f", "-")
+// kubectlApplyArgs builds the argv (after the `--context` pair KubectlArgs
+// prepends) for a server-side apply, threading `-n <namespace>` when a default
+// namespace was supplied.
+//
+// A separate function so the argv is assertable without exec'ing kubectl, and
+// so EVERY apply pass shares one construction point — the bug this closes was
+// a namespace present at render time and absent at apply time, which is
+// exactly what two independent argv builders produce.
+func kubectlApplyArgs(namespace string) []string {
+	args := []string{"apply", "--server-side", "--force-conflicts"}
+	if strings.TrimSpace(namespace) != "" {
+		args = append(args, "-n", namespace)
+	}
+	return append(args, "-f", "-")
+}
+
+func applyOnce(ctx context.Context, kctx, namespace, manifests string) (applyStdout, applyStderr string, err error) {
+	cmd := kubectlCmd(ctx, kctx, kubectlApplyArgs(namespace)...)
 	cmd.Stdin = strings.NewReader(manifests)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = io.MultiWriter(os.Stdout, &outBuf)
@@ -1269,6 +1393,21 @@ type immutableTarget struct {
 	Kind      string
 	Name      string
 	Namespace string // empty = cluster-scoped or unknown; delete omits -n
+}
+
+// withDefaultNamespace fills in an immutableTarget's Namespace from the
+// apply's default namespace when the manifest did not declare one, so the
+// recovery's `kubectl delete` / `kubectl get` are scoped exactly as the apply
+// that failed was. A target that already names a namespace is unchanged, and
+// an empty default leaves it empty (kubectl then omits `-n`, which is correct
+// for a cluster-scoped object and ignored for one — measured: `kubectl delete
+// clusterrole -n <ns>` warns "not scoped to the provided namespace" and
+// deletes the right object).
+func withDefaultNamespace(t immutableTarget, namespace string) immutableTarget {
+	if t.Namespace == "" {
+		t.Namespace = strings.TrimSpace(namespace)
+	}
+	return t
 }
 
 // immutableResource decides whether an apply failure is the recoverable
@@ -1777,8 +1916,9 @@ func splitDocs(manifests string) []string {
 type parsedDoc struct {
 	Kind     string `yaml:"kind"`
 	Metadata struct {
-		Name   string            `yaml:"name"`
-		Labels map[string]string `yaml:"labels"`
+		Name      string            `yaml:"name"`
+		Namespace string            `yaml:"namespace"`
+		Labels    map[string]string `yaml:"labels"`
 	} `yaml:"metadata"`
 }
 
@@ -1978,6 +2118,42 @@ var configFirstKinds = map[string]struct{}{
 	"Namespace": {},
 	"ConfigMap": {},
 	"Secret":    {},
+}
+
+// splitByTargetNamespace splits a stream into (onTarget, elsewhere) for an
+// apply that will pass `-n target`:
+//
+//   - onTarget — docs with NO `metadata.namespace` (the ones that need the
+//     flag; this is the whole point) and docs that already declare exactly
+//     the target namespace (the flag is a no-op for them).
+//   - elsewhere — docs that declare a DIFFERENT namespace. They must not
+//     ride the flag: kubectl refuses the mismatch and fails the ENTIRE
+//     stream, not just that doc. Applied without the flag, they keep the
+//     namespace they declared.
+//
+// A chart that deliberately places something outside its own namespace is
+// therefore honoured rather than relocated, and cannot break the deploy for
+// everything applied alongside it.
+//
+// An empty target means no flag will be passed, so nothing needs separating
+// and everything is onTarget. A doc that does not parse is also left
+// onTarget: it is passed through to kubectl either way, and kubectl is the
+// right thing to report on a malformed manifest.
+func splitByTargetNamespace(manifests, target string) (onTarget, elsewhere string) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return manifests, ""
+	}
+	var on, other []string
+	for _, doc := range splitDocs(manifests) {
+		m, ok := parseDoc(doc)
+		if ok && m.Metadata.Namespace != "" && m.Metadata.Namespace != target {
+			other = append(other, doc)
+			continue
+		}
+		on = append(on, doc)
+	}
+	return strings.Join(on, docDelimiter), strings.Join(other, docDelimiter)
 }
 
 // PartitionConfigManifests splits a `---`-separated multi-doc YAML

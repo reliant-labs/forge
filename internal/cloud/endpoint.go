@@ -57,7 +57,7 @@ func ResolveEndpoint(env string, decl *Declaration) (Endpoint, error) {
 				"        endpoint = \"https://api.example.com\"\n"+
 				"    }\n"+
 				"The endpoint is declared per environment, so staging and prod differ "+
-				"in their KCL rather than in machine-local CLI state.",
+				"in their KCL rather than in machine-local CLI state",
 			env, env)
 	}
 	tokenEnv := strings.TrimSpace(decl.TokenEnv)

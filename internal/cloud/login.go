@@ -56,7 +56,13 @@ func (b BrowserLogin) Run(ctx context.Context) (StoredLogin, error) {
 	if err != nil {
 		return StoredLogin{}, fmt.Errorf("start callback listener: %w", err)
 	}
-	defer listener.Close()
+	// Discarded deliberately, and it is normally non-nil. Defers run LIFO,
+	// so the srv.Shutdown below runs FIRST and closes the listener as part
+	// of shutting the server down; this close is the safety net for the
+	// paths that return before the server is ever started, and on the
+	// common path it reports "use of closed network connection". Surfacing
+	// that would mean failing a login that already succeeded.
+	defer func() { _ = listener.Close() }()
 
 	port := listener.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)

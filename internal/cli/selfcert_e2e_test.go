@@ -40,9 +40,13 @@ import (
 	"testing"
 )
 
-// sha256Hex returns the lowercase hex sha256 of content — the digest
-// shape the legacy manifest recorded.
-func sha256Hex(content []byte) string {
+// sha256HexE2E returns the lowercase hex sha256 of content — the digest
+// shape the legacy manifest recorded. The E2E suffix is the package's
+// convention for a helper that exists only behind the e2e build tag
+// (see gitE2E, freePortE2E): package cli already has an untagged
+// sha256Hex in release_artifacts_test.go with a different signature, and
+// an untagged build cannot see this file to notice the collision.
+func sha256HexE2E(content []byte) string {
 	h := sha256.Sum256(content)
 	return hex.EncodeToString(h[:])
 }
@@ -445,7 +449,7 @@ func synthesizeLegacyManifest(t *testing.T, projectDir string) {
 		if rerr != nil {
 			return rerr
 		}
-		entries[filepath.ToSlash(rel)] = sha256Hex([]byte(stripped))
+		entries[filepath.ToSlash(rel)] = sha256HexE2E([]byte(stripped))
 		return nil
 	})
 	if err != nil {

@@ -13,9 +13,10 @@ import (
 
 	"golang.org/x/mod/semver"
 
+	"github.com/spf13/cobra"
+
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/statefile"
-	"github.com/spf13/cobra"
 )
 
 // `forge env topology` — the whole release/environment picture in ONE read.

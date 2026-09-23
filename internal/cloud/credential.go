@@ -43,6 +43,11 @@ const DefaultTokenEnv = "FORGE_CONTROL_PLANE_TOKEN"
 // the single most common confusion when a CI run and a laptop disagree.
 type CredentialSource string
 
+// The three places a credential can come from, in the precedence order
+// resolution tries them: an explicit flag beats the environment, and the
+// environment beats the login file on disk. That order is what makes a CI
+// run overridable and a laptop's stored login the fallback rather than a
+// thing that silently wins.
 const (
 	SourceFlag  CredentialSource = "flag"       // --token
 	SourceEnv   CredentialSource = "env"        // the declared token_env

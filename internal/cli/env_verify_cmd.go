@@ -365,6 +365,27 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 
 	fmt.Println()
 
+	printEnvVerifyImages(results)
+
+	fmt.Printf("\n%d match, %d drifted, %d missing, %d untagged, %d unreachable\n",
+		tally.Match, tally.Drift, tally.Missing, tally.Untagged, tally.Unreachable)
+
+	if failure != nil {
+		return failure
+	}
+
+	if tally.Untagged > 0 {
+		fmt.Printf("\nNote: %d image(s) run by mutable tag and could not be digest-checked. Deploy without --no-digest to pin them.\n", tally.Untagged)
+	}
+	return nil
+}
+
+// printEnvVerifyImages renders the per-image block of the text report — the
+// human-readable twin of the Images array --json emits. It is the whole of
+// what text mode says about individual images, so it carries no verdict and
+// returns nothing: runEnvVerify decides pass/fail once, before either renderer
+// runs, and this only describes what was found.
+func printEnvVerifyImages(results []imageVerification) {
 	for _, r := range results {
 		fmt.Printf("  %-12s %s\n", r.State, r.Image)
 		// Drift prints both digests on their own labelled lines. This is
@@ -384,18 +405,6 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 			fmt.Printf("      %s\n", r.Detail)
 		}
 	}
-
-	fmt.Printf("\n%d match, %d drifted, %d missing, %d untagged, %d unreachable\n",
-		tally.Match, tally.Drift, tally.Missing, tally.Untagged, tally.Unreachable)
-
-	if failure != nil {
-		return failure
-	}
-
-	if tally.Untagged > 0 {
-		fmt.Printf("\nNote: %d image(s) run by mutable tag and could not be digest-checked. Deploy without --no-digest to pin them.\n", tally.Untagged)
-	}
-	return nil
 }
 
 // writeEnvVerifyJSON emits the report to stdout, indented, per the house

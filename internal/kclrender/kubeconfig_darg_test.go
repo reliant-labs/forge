@@ -64,8 +64,15 @@ func TestWithKubeconfigDArg_DoesNotMutateTheCallersSlice(t *testing.T) {
 		t.Fatalf("result = %v; want the caller's arg plus the binding", out)
 	}
 	// Same backing array would mean a second call over a different slice could
-	// stomp this result.
+	// stomp this result. `in` has spare capacity, so this append writes into
+	// index 1 of its backing array — the very slot out[1] occupies if the two
+	// share one. Assert the probe landed there, otherwise the check below
+	// could pass because nothing was written rather than because the arrays
+	// are distinct.
 	in = append(in, "sentinel")
+	if in[1] != "sentinel" {
+		t.Fatalf("probe did not write the slot under test: in = %v", in)
+	}
 	if strings.HasPrefix(out[1], "sentinel") {
 		t.Fatal("result shares a backing array with the caller's slice")
 	}

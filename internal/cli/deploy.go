@@ -633,24 +633,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// reminder is never lost. No-op when the env declares no prereqs.
 	printPrerequisiteChecklist(entities)
 
-	// kubectl-context guard: only meaningful when at least one service
-	// in the bundle targets K8sCluster. External-only / compose-only
-	// projects don't touch kubectl, so the guard would surface a wrong-
-	// context error that has no bearing on what's about to ship.
-	if hasK8sServices {
-		// The guard verdict is computed as DATA first so the report carries
-		// it whichever way this goes — including the refusal, where naming
-		// the cluster forge declined to touch is the whole value. The
-		// enforcement below is unchanged and remains authoritative: this
-		// records the decision, it does not make it.
-		report.setGuard(computeDeployGuard(ctx, cfg, envName))
-		// Runs under --dry-run too: dry-run is for surfacing mistakes
-		// (wrong context!) before they ship, not for papering over
-		// them. The context is purely declarative (forge.K8sCluster.cluster)
-		// — there is no CLI escape hatch, so the guard always runs.
-		if err := verifyKubectlContext(ctx, cfg, envName); err != nil {
-			return err
-		}
+	if err := guardDeployCluster(ctx, cfg, envName, hasK8sServices, report); err != nil {
+		return err
 	}
 
 	start := time.Now()
@@ -778,7 +762,11 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// skip both live in the helper so a caller cannot get one without the
 	// other; warnUndeployedFrontends is what stops a declared-but-undeployed
 	// frontend failing silently, which was the reported bug.
-	if err := dispatchFrontendsOrSkip(ctx, cfg, entities, projectDir, envName, envCfgKV, targets, dryRun, opts.skipFrontend); err != nil {
+	if err := dispatchFrontendsOrSkip(ctx, deployFrontendInput{
+		cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
+		envCfgKV: envCfgKV, targets: targets, dryRun: dryRun,
+		skipFrontend: opts.skipFrontend,
+	}); err != nil {
 		return err
 	}
 
@@ -803,6 +791,53 @@ func resolveDeployNamespace(ctx context.Context, override, envName, projectName 
 	return projectName + "-" + envName
 }
 
+// guardDeployCluster runs the kubectl-context guard and records its verdict on
+// the report.
+//
+// Only meaningful when at least one service in the bundle targets K8sCluster.
+// External-only / compose-only projects don't touch kubectl, so the guard would
+// surface a wrong-context error that has no bearing on what's about to ship —
+// hence the hasK8sServices gate rather than an unconditional check.
+func guardDeployCluster(
+	ctx context.Context,
+	cfg *config.ProjectConfig,
+	envName string,
+	hasK8sServices bool,
+	report *deployReport,
+) error {
+	if !hasK8sServices {
+		return nil
+	}
+	// The guard verdict is computed as DATA first so the report carries it
+	// whichever way this goes — including the refusal, where naming the
+	// cluster forge declined to touch is the whole value. The enforcement
+	// below remains authoritative: this records the decision, it does not
+	// make it.
+	report.setGuard(computeDeployGuard(ctx, cfg, envName))
+	// Runs under --dry-run too: dry-run is for surfacing mistakes (wrong
+	// context!) before they ship, not for papering over them. The context is
+	// purely declarative (forge.K8sCluster.cluster) — there is no CLI escape
+	// hatch, so the guard always runs.
+	return verifyKubectlContext(ctx, cfg, envName)
+}
+
+// deployFrontendInput carries what dispatchFrontendsOrSkip needs to warn about
+// and then ship the env's frontends. Grouped for the same reason as
+// deployApplyInput and deployClusterInput: the fields travel together through
+// one stage of the deploy pipeline, and naming them at the call site keeps a
+// long positional list from being mis-ordered silently — projectDir and
+// envName are both strings, so a transposition would compile.
+type deployFrontendInput struct {
+	cfg          *config.ProjectConfig
+	entities     *KCLEntities
+	projectDir   string
+	envName      string
+	envCfgKV     map[string]string
+	targets      []string
+	dryRun       bool
+	skipFrontend bool
+}
+
 // dispatchFrontendsOrSkip ships every frontend declaring a first-class deploy
 // target (today: forge.FirebaseHosting / forge.StaticSite), or reports that the
 // dispatch was skipped.
@@ -816,28 +851,21 @@ func resolveDeployNamespace(ctx context.Context, override, envName, projectName 
 // Naming only backend apps via --target also excludes frontends, because the
 // target filter empties entities.Frontends; --skip-frontend is the "whole
 // backend, no frontend" variant that does not require listing every service.
-func dispatchFrontendsOrSkip(
-	ctx context.Context,
-	cfg *config.ProjectConfig,
-	entities *KCLEntities,
-	projectDir, envName string,
-	envCfgKV map[string]string,
-	targets []string,
-	dryRun, skipFrontend bool,
-) error {
-	if skipFrontend {
-		if hasShippableFrontend(entities) {
+func dispatchFrontendsOrSkip(ctx context.Context, in deployFrontendInput) error {
+	if in.skipFrontend {
+		if hasShippableFrontend(in.entities) {
 			fmt.Println("\nSkipping frontend deploy (--skip-frontend).")
 		}
 		return nil
 	}
+
 	// BEFORE the dispatch, because the dispatch is a silent no-op for a
 	// frontend this env never declared — and that silence is the whole
 	// reported bug. Warn rather than error: deploying a frontend out-of-band
 	// (Vercel, a separate pipeline) is legitimate, and erroring would break
 	// correctly-configured users to fix a reporting gap.
-	warnUndeployedFrontends(os.Stdout, cfg, entities, envName, targets)
-	return dispatchFrontendDeploys(ctx, entities, projectDir, envName, envCfgKV, dryRun)
+	warnUndeployedFrontends(os.Stdout, in.cfg, in.entities, in.envName, in.targets)
+	return dispatchFrontendDeploys(ctx, in.entities, in.projectDir, in.envName, in.envCfgKV, in.dryRun)
 }
 
 // recordDeployInvocation stamps the facts that are known from the FLAGS ALONE,

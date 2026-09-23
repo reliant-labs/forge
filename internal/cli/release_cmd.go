@@ -8,8 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
 // `forge release` is the release-ledger noun. `forge build --release <v>` CUTS

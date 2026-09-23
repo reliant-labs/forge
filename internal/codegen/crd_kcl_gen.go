@@ -2,7 +2,7 @@
 // types (api/<version>/*_types.go) into the KCL manifest module that actually
 // installs those CRDs on a cluster, deploy/kcl/lib/crd_gen.k.
 //
-// WHY THIS EXISTS, AND WHAT IT REPLACES
+// # WHY THIS EXISTS, AND WHAT IT REPLACES
 //
 // A CRD used to be declared twice in a forge project: once as the Go types the
 // controller reads and writes, and once as a hand-authored KCL dict that is
@@ -23,7 +23,7 @@
 // Generating the KCL from the Go types removes the second declaration, so
 // there is nothing left to drift and no gate to maintain.
 //
-// WHY controller-tools, RATHER THAN OUR OWN AST WALK
+// # WHY controller-tools, RATHER THAN OUR OWN AST WALK
 //
 // The schema semantics here are not ours to invent: which fields are required
 // (the omitempty/+optional rule), how a pointer differs from a value, how

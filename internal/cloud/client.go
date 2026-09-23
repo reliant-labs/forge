@@ -80,7 +80,9 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 	if err != nil {
 		return fmt.Errorf("call %s at %s: %w", procedure, c.Endpoint.URL, err)
 	}
-	defer resp.Body.Close()
+	// Nothing was written, so a close error carries no data loss — it can
+	// only report a connection this call is already finished with.
+	defer func() { _ = resp.Body.Close() }()
 
 	// Bounded read: a misconfigured endpoint that returns a huge HTML
 	// error page should not be streamed into memory in full.

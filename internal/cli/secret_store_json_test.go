@@ -265,7 +265,7 @@ func TestSecretListReportHasNoValueCarryingField(t *testing.T) {
 // jsonFieldNames walks a struct type graph and returns every JSON field name
 // it can emit, following slices, maps, pointers and nested structs.
 func jsonFieldNames(t reflect.Type, seen map[reflect.Type]bool) []string {
-	for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct || seen[t] {

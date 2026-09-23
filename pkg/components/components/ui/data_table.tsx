@@ -202,43 +202,43 @@ export default function DataTable<T extends Record<string, unknown>>({
 
       {/* Pagination — only when the caller can actually page. */}
       {showPagination && (
-      <div className="flex items-center justify-between border-t border-border bg-surface px-4 py-3">
-        <div className="flex items-center gap-2 text-sm text-ink-muted">
-          <span>Rows per page:</span>
-          <select
-            value={pageSize}
-            onChange={(e) => onPageSizeChange?.(Number(e.target.value))}
-            className="rounded border border-border-strong bg-surface px-2 py-1 text-sm focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            {[10, 25, 50, 100].map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-ink-muted">
-            Page {page} of {totalPages}
-          </span>
-          <div className="flex gap-1">
-            <button
-              onClick={() => onPageChange?.(page - 1)}
-              disabled={page <= 1}
-              className="rounded-lg border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
+        <div className="flex items-center justify-between border-t border-border bg-surface px-4 py-3">
+          <div className="flex items-center gap-2 text-sm text-ink-muted">
+            <span>Rows per page:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => onPageSizeChange?.(Number(e.target.value))}
+              className="rounded border border-border-strong bg-surface px-2 py-1 text-sm focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
             >
-              Previous
-            </button>
-            <button
-              onClick={() => onPageChange?.(page + 1)}
-              disabled={page >= totalPages}
-              className="rounded-lg border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Next
-            </button>
+              {[10, 25, 50, 100].map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-ink-muted">
+              Page {page} of {totalPages}
+            </span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => onPageChange?.(page - 1)}
+                disabled={page <= 1}
+                className="rounded-lg border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <button
+                onClick={() => onPageChange?.(page + 1)}
+                disabled={page >= totalPages}
+                className="rounded-lg border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
           </div>
         </div>
-      </div>
       )}
     </div>
   );

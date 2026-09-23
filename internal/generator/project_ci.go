@@ -99,8 +99,8 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 
 	// Deploy and build-images use their own spec-driven data types
 	deployData := templates.DeployWorkflowData{
-		ProjectName:  g.Name,
-		Environments: deployEnvs,
+		ProjectName:      g.Name,
+		Environments:     deployEnvs,
 		Registry:         "ghcr",
 		HasFrontends:     hasFrontends,
 		FrontendDeploy:   "none",

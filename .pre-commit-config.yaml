@@ -32,10 +32,20 @@ repos:
       # malformed fixtures (off-module imports, phantom packages) that the
       # linter tests assert on, and goimports "fixes" them into passing —
       # silently deleting the very import a test expects it to flag.
+      #
+      # *.pb.go is excluded for the same reason .golangci.yml and the
+      # prettier hook below already exclude it: protoc-gen-go emits its
+      # imports in one block, all name-qualified (`reflect "reflect"`), and
+      # goimports regroups them into stdlib-then-third-party. Neither
+      # spelling is wrong, and the file says DO NOT EDIT — so the hook and
+      # the generator disagree permanently, and the hook loses on the very
+      # next `buf generate`. Reformatting generated output means every
+      # regeneration shows up as a spurious diff, and the reformat is
+      # reverted by the tool that owns the file.
       - id: go-fmt
-        exclude: (^|/)testdata/
+        exclude: (^|/)testdata/|\.pb\.go$
       - id: go-imports
-        exclude: (^|/)testdata/
+        exclude: (^|/)testdata/|\.pb\.go$
 
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v3.1.0

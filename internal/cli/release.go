@@ -117,6 +117,16 @@ const (
 	artifactModeSource = "source"
 )
 
+// ReleaseArtifact is ONE thing a release froze, in the form the ledger
+// records it on disk. It is the unit promotion moves: `forge env promote`
+// copies these verbatim into an env binding, so whatever identity is
+// captured here is exactly what that env deploys — nothing re-resolves a
+// tag or a ref later.
+//
+// The identity lives in a different field per Kind, which is why Digests,
+// Version/Integrity and Source coexist and are each individually optional.
+// See the Kind and Mode doc blocks above for which axis means what; the
+// per-field comments below say which kinds populate them.
 type ReleaseArtifact struct {
 	// Kind is one of the ArtifactKind* constants. Empty means OCI, for
 	// ledgers cut before this field existed.

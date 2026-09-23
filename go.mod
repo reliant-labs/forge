@@ -19,7 +19,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jinzhu/inflection v1.0.0
 	github.com/lib/pq v1.12.3
-	github.com/mattn/go-sqlite3 v1.14.28
+	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1

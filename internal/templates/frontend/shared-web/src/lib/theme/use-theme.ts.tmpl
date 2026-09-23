@@ -25,7 +25,7 @@
 // already uses the semantic tokens (`bg-surface`, `text-ink`) which flip on
 // their own. This hook exists for the TOGGLE UI, not for styling.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 /** What the user chose. "system" defers to the OS. */
 export type ThemePreference = "light" | "dark" | "system";
@@ -81,6 +81,34 @@ export function applyTheme(pref: ThemePreference): void {
   }
 }
 
+// ── The preference is an EXTERNAL store, not React state ──────────────
+//
+// It lives in localStorage, which React does not own: the pre-paint script
+// reads it before React exists, another tab can change it, and the toggle
+// writes it. `useSyncExternalStore` is the hook for exactly that shape, and
+// it is what keeps SSR honest — it takes a SERVER snapshot separately from
+// the client one, so the server and the hydrating client agree by
+// construction rather than by a correction after mount.
+//
+// `storage` only fires in OTHER tabs, so a same-tab write has to announce
+// itself; that is what this listener set is for.
+const themeListeners = new Set<() => void>();
+
+function subscribeToStoredTheme(onStoreChange: () => void): () => void {
+  themeListeners.add(onStoreChange);
+  window.addEventListener("storage", onStoreChange);
+  return () => {
+    themeListeners.delete(onStoreChange);
+    window.removeEventListener("storage", onStoreChange);
+  };
+}
+
+function subscribeToSystemTheme(onStoreChange: () => void): () => void {
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mq.addEventListener("change", onStoreChange);
+  return () => mq.removeEventListener("change", onStoreChange);
+}
+
 /**
  * useTheme — the toggle's state.
  *
@@ -88,42 +116,46 @@ export function applyTheme(pref: ThemePreference): void {
  * value actually painted, because a toggle UI needs both: which option is
  * selected, and which icon to show.
  *
- * The initial state is "system" rather than `readStoredTheme()`, and is
- * corrected in an effect. That is deliberate for the Next.js scaffold: this
- * component tree is server-rendered, and seeding state from localStorage
- * during render makes the server's HTML and the client's first render
- * disagree, which React reports as a hydration error. The visible palette
- * is NOT waiting on that effect — the pre-paint script in the HTML shell has
- * already set data-theme — so the correction is invisible.
+ * SERVER SNAPSHOTS ARE THE HYDRATION CONTRACT. The third argument to each
+ * `useSyncExternalStore` below is what renders on the server AND on the
+ * client's first, hydrating render: "system" and light. Neither one touches
+ * localStorage or matchMedia, so the two renders cannot disagree — reading
+ * either during render is precisely what would reintroduce the hydration
+ * mismatch. React swaps in the real client snapshot immediately after
+ * mount, and the visible palette is NOT waiting on that: the pre-paint
+ * script in the HTML shell has already set data-theme, so the correction is
+ * invisible.
+ *
+ * This replaced a `useState("system")` seeded from an effect. Same three
+ * states, same hydration property, same invisible correction — but the
+ * preference is now READ from where it actually lives instead of being
+ * copied into React state that a second tab could silently make stale.
  */
 export function useTheme(): {
   theme: ThemePreference;
   resolved: ResolvedTheme;
   setTheme: (next: ThemePreference) => void;
 } {
-  const [theme, setThemeState] = useState<ThemePreference>("system");
-  const [resolved, setResolved] = useState<ResolvedTheme>("light");
+  const theme = useSyncExternalStore(
+    subscribeToStoredTheme,
+    readStoredTheme,
+    () => "system" as ThemePreference,
+  );
 
-  useEffect(() => {
-    const stored = readStoredTheme();
-    setThemeState(stored);
-    setResolved(resolveTheme(stored));
-  }, []);
+  // Follow the OS while the preference is "system" — including a change that
+  // happens with the tab open. Subscribed unconditionally and ignored below
+  // when the user has picked a side: the media query is cheap, and gating the
+  // subscription on `theme` is what a hook cannot do anyway.
+  const systemDark = useSyncExternalStore(
+    subscribeToSystemTheme,
+    prefersDark,
+    () => false,
+  );
 
-  // Follow the OS while the preference is "system" — including a change
-  // that happens with the tab open. Re-subscribed when `theme` changes so
-  // the listener is torn down as soon as the user picks an explicit side.
-  useEffect(() => {
-    if (theme !== "system") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => setResolved(prefersDark() ? "dark" : "light");
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [theme]);
+  const resolved: ResolvedTheme =
+    theme === "system" ? (systemDark ? "dark" : "light") : theme;
 
   const setTheme = useCallback((next: ThemePreference) => {
-    setThemeState(next);
-    setResolved(resolveTheme(next));
     applyTheme(next);
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, next);
@@ -131,6 +163,9 @@ export function useTheme(): {
       // Non-fatal: the theme still applies for this page, it just will not
       // survive a reload. Better than breaking the click.
     }
+    // Same-tab writes do not fire `storage`, so tell the subscribers here or
+    // the toggle would not re-render until something else did.
+    for (const listener of themeListeners) listener();
   }, []);
 
   return { theme, resolved, setTheme };

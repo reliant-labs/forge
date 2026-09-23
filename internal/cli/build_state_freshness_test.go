@@ -373,6 +373,111 @@ func TestResolveDeployImageTag_ReleaseWithoutCommitSkipsCheck(t *testing.T) {
 	}
 }
 
+// TestResolveDeployImageTag_DirtyDefaultRecordDoesNotBlockReleaseDeploy is
+// the v1.5.18 regression. A release-bound env must not be refused because of
+// a DIRTY `default` record — the env-agnostic file a plain local
+// `forge build` drops, which every env reads as its fallback.
+//
+// Measured, and the reason this exists: `forge env deploy prod` was refused
+// three times during the v1.5.18 control-plane release by an Aug-25
+// `.forge/state/build-default.json` recording a dirty build pushed to a
+// localhost:5051 dev registry. All four images deployed from release-ledger
+// digests in prod GAR that the record had no part in — its digest appeared
+// nowhere in the release. The only ways forward were hand-deleting local
+// state files or passing --tag, which disarms the guard wholesale.
+//
+// A release is cut from a clean checkout, so a dirty build is by construction
+// not the artifact a release-bound env ships.
+func TestResolveDeployImageTag_DirtyDefaultRecordDoesNotBlockReleaseDeploy(t *testing.T) {
+	dir := newGitRepo(t)
+	gitignoreForgeState(t, dir)
+	builtCommit := gitHeadSHA(t, dir)
+	gitCommitEmpty(t, dir, "chore: release v1.4.0")
+
+	bindEnvToRelease(t, dir, "prod", "v1.4.0", gitHeadSHA(t, dir))
+
+	// The env-agnostic `default` record from someone's local dirty build.
+	if err := WriteBuildState(dir, "default", BuildState{
+		Tag:      "v0.1.0-50-gabcdef12-dirty",
+		Image:    "app",
+		Registry: "localhost:5051",
+		Commit:   builtCommit,
+		Dirty:    true,
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err != nil {
+		t.Fatalf("a dirty local `default` build cannot be what a release-bound env ships; "+
+			"the guard must stand down, got: %v", err)
+	}
+}
+
+// TestResolveDeployImageTag_CleanDefaultRecordStillRefuses is the other half,
+// and the reason the exemption requires BOTH conditions rather than just
+// "the record is `default`". A clean `default` build could genuinely be the
+// image that ships — `forge build --docker && forge env deploy prod` is a
+// supported flow — so a stale one is exactly the footgun the guard exists
+// for and must still refuse.
+func TestResolveDeployImageTag_CleanDefaultRecordStillRefuses(t *testing.T) {
+	dir := newGitRepo(t)
+	gitignoreForgeState(t, dir)
+	builtCommit := gitHeadSHA(t, dir)
+	gitCommitEmpty(t, dir, "chore: release v1.4.0")
+
+	bindEnvToRelease(t, dir, "prod", "v1.4.0", gitHeadSHA(t, dir))
+
+	if err := WriteBuildState(dir, "default", BuildState{
+		Tag:      "v0.1.0",
+		Image:    "app",
+		Registry: "ghcr.io",
+		Commit:   builtCommit,
+		GitTag:   "v0.1.0",
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err == nil {
+		t.Fatal("a clean `default` build can genuinely ship; a stale one must still refuse")
+	}
+	if !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("expected a staleness refusal, got: %v", err)
+	}
+}
+
+// TestResolveDeployImageTag_DirtyPerEnvRecordStillRefuses pins the other
+// half of the `default` scoping: a dirty build-<env>.json NAMES this env, so
+// its commit is evidence about this env and the guard still applies. Only
+// the env-agnostic `default` record is ambiguous about which env it describes.
+func TestResolveDeployImageTag_DirtyPerEnvRecordStillRefuses(t *testing.T) {
+	dir := newGitRepo(t)
+	gitignoreForgeState(t, dir)
+	builtCommit := gitHeadSHA(t, dir)
+	gitCommitEmpty(t, dir, "chore: release v1.4.0")
+
+	bindEnvToRelease(t, dir, "prod", "v1.4.0", gitHeadSHA(t, dir))
+
+	if err := WriteBuildState(dir, "prod", BuildState{
+		Tag:      "prod-dirty-build",
+		Image:    "app",
+		Registry: "ghcr.io",
+		Commit:   builtCommit,
+		Dirty:    true,
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err == nil {
+		t.Fatal("a record naming THIS env is evidence about this env; expected refusal")
+	}
+	if !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("expected a staleness refusal, got: %v", err)
+	}
+}
+
 // TestResolveDeployImageTag_UnboundEnvStillUsesHEAD: an env with no release
 // binding keeps the original HEAD-anchored behaviour, and its message names
 // HEAD as what it compared against.

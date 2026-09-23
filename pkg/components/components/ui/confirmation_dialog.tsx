@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useId, useRef } from "react";
 
 interface ConfirmationDialogProps {
   open: boolean;
@@ -37,6 +37,32 @@ export default function ConfirmationDialog({
   variant = "danger",
   loading = false,
 }: ConfirmationDialogProps) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
+  // Escape cancels. A modal that traps a user in front of an irreversible
+  // action with no keyboard way out is the worst place to omit this, and
+  // Escape is the gesture every other dialog on the platform honours.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || loading) return;
+      event.preventDefault();
+      onCancel();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, loading, onCancel]);
+
+  // Move focus into the dialog when it opens. Without this, focus stays on the
+  // element that triggered it, so a screen-reader user is never told the
+  // dialog appeared and a keyboard user tabs through the page behind it.
+  useEffect(() => {
+    if (!open) return;
+    confirmRef.current?.focus();
+  }, [open]);
+
   if (!open) return null;
 
   const styles = variantStyles[variant];
@@ -51,8 +77,19 @@ export default function ConfirmationDialog({
         onClick={onCancel}
       />
 
-      {/* Dialog */}
-      <div className="relative w-full max-w-md rounded-xl bg-surface p-6 shadow-xl">
+      {/*
+       * Dialog. role + aria-modal + a labelled title are what make assistive
+       * technology announce this as a modal and read the consequence aloud —
+       * on a component whose entire purpose is confirming a destructive
+       * action, that is correctness, not polish.
+       */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
+        className="relative w-full max-w-md rounded-xl bg-surface p-6 shadow-xl"
+      >
         <div className="flex gap-4">
           {/* Icon */}
           <div
@@ -75,9 +112,13 @@ export default function ConfirmationDialog({
 
           {/* Content */}
           <div className="min-w-0">
-            <h3 className="text-base font-semibold text-ink">{title}</h3>
+            <h3 id={titleId} className="text-base font-semibold text-ink">
+              {title}
+            </h3>
             {description && (
-              <p className="mt-2 text-sm text-ink-muted">{description}</p>
+              <p id={descriptionId} className="mt-2 text-sm text-ink-muted">
+                {description}
+              </p>
             )}
           </div>
         </div>
@@ -93,6 +134,7 @@ export default function ConfirmationDialog({
             {cancelLabel}
           </button>
           <button
+            ref={confirmRef}
             type="button"
             onClick={onConfirm}
             disabled={loading}

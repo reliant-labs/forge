@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -89,7 +90,8 @@ func newSecretUnsetCmd() *cobra.Command {
 }
 
 func newSecretListCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:   "list <environment>",
 		Short: "List declared secrets and whether each has a value",
 		Args:  cobra.ExactArgs(1),
@@ -98,11 +100,19 @@ holds a value for it. Values are NEVER printed.
 
 Also reports keys in the store that no service declares — those are inert
 (nothing injects them) and are usually either a typo or config that belongs
-in deploy/kcl/<env>/config.k.`,
+in deploy/kcl/<env>/config.k.
+
+--json emits the same facts as a machine-readable document, and holds the
+same promise: the report has no field capable of carrying a value.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if jsonOut {
+				return runSecretListJSON(cmd.Context(), args[0], cmd.OutOrStdout())
+			}
 			return runSecretList(cmd.Context(), args[0], cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (names/presence/declaring workloads/inert keys — never values)")
+	return cmd
 }
 
 func newSecretEnsureCmd() *cobra.Command {
@@ -259,45 +269,194 @@ func runSecretUnset(ctx context.Context, envName, key string, out io.Writer) err
 	return nil
 }
 
-func runSecretList(ctx context.Context, envName string, out io.Writer) error {
+// secretDeclaration attributes one declared secret to the workload that
+// references it, and to the Secret/key the reference resolves through.
+//
+// There is deliberately no value field here, nor anywhere below it — see
+// [secretListReport].
+type secretDeclaration struct {
+	Workload   string `json:"workload"`
+	Kind       string `json:"kind"`
+	SecretName string `json:"secret_name,omitempty"`
+	SecretKey  string `json:"secret_key,omitempty"`
+}
+
+// secretListEntry is one declared secret: its name, whether the store holds
+// a value, and who declares it. Present is a BOOLEAN, not a redacted or
+// truncated value — the distinction is the whole point of the type.
+type secretListEntry struct {
+	Name       string              `json:"name"`
+	Present    bool                `json:"present"`
+	DeclaredBy []secretDeclaration `json:"declared_by,omitempty"`
+}
+
+// secretListReport is the `forge secret list --json` document.
+//
+// NO FIELD IN THIS TYPE, OR IN ANY TYPE IT CONTAINS, CAN CARRY A SECRET
+// VALUE. That is a property of the struct definitions, not of the code that
+// fills them in: [collectSecretListFacts] is the only constructor, it is the
+// only place that reads the store, and it returns this report rather than
+// the value map — so no renderer downstream of it holds a value to leak,
+// even by accident. Adding a `Value string` here would defeat that, and
+// TestSecretListReportHasNoValueCarryingField fails on any new field name
+// that has not been deliberately vetted.
+//
+// The same reasoning is why `forge secret set` reads values from stdin
+// rather than argv: a value that never enters a place it can be observed
+// cannot be observed.
+//
+// Output contract (stable; extensions are additive, per the same policy
+// documented in internal/cli/lint/lint_json.go):
+//
+//	{
+//	  "env": "dev",
+//	  "provider": "file",              // file | none | external
+//	  "store_path": "/abs/secrets/dev.yaml",
+//	  "store_exists": true,            // distinguishes "no secrets set yet"
+//	                                   // from "no store file at all"
+//	  "secrets": [
+//	    {"name": "STRIPE_SECRET_KEY", "present": true,
+//	     "declared_by": [{"workload": "api", "kind": "service",
+//	                      "secret_name": "app-secrets",
+//	                      "secret_key": "stripe_secret_key"}]}
+//	  ],
+//	  "inert": ["OLD_KEY"],            // store keys nothing declares
+//	  "missing": ["JWT_SECRET"],       // what `forge secret ensure` gates on
+//	  "missing_count": 1,
+//	  "ok": false                      // false iff a declared secret has no value
+//	}
+//
+// `ok` mirrors `forge secret ensure`'s gate, NOT this command's exit code:
+// `secret list` reports rather than gates, so it exits 0 with missing
+// secrets in both modes. Exit codes are identical between text and --json.
+type secretListReport struct {
+	Env          string            `json:"env"`
+	Provider     string            `json:"provider"`
+	StorePath    string            `json:"store_path"`
+	StoreExists  bool              `json:"store_exists"`
+	Secrets      []secretListEntry `json:"secrets"`
+	Inert        []string          `json:"inert"`
+	Missing      []string          `json:"missing"`
+	MissingCount int               `json:"missing_count"`
+	OK           bool              `json:"ok"`
+}
+
+// collectSecretListFacts is the single declared-vs-present computation both
+// output modes render from. It reads the store and returns only derived
+// facts — the value map does not escape this function.
+func collectSecretListFacts(ctx context.Context, envName string) (secretListReport, error) {
 	path, entities, err := secretStorePath(ctx, envName)
 	if err != nil {
-		return err
+		return secretListReport{}, err
 	}
-	present, err := loadStore(path)
+	values, err := loadStore(path)
 	if err != nil {
-		return err
+		return secretListReport{}, err
 	}
-	declared := declaredSecretNames(entities)
+	_, statErr := os.Stat(path)
 
-	fmt.Fprintf(out, "secret store: %s\n\n", path)
-	if len(declared) == 0 {
-		fmt.Fprintln(out, "no secrets declared in KCL (nothing to resolve)")
+	provider := ""
+	if entities != nil && entities.SecretProvider != nil {
+		provider = entities.SecretProvider.Type
 	}
+	report := secretListReport{
+		Env:         envName,
+		Provider:    provider,
+		StorePath:   path,
+		StoreExists: statErr == nil,
+		Secrets:     []secretListEntry{},
+		Inert:       []string{},
+		Missing:     []string{},
+	}
+
+	declared := declaredSecretNames(entities)
+	attribution := secretDeclarationsByEnvName(entities)
 	for _, name := range declared {
-		mark := "MISSING"
-		if _, ok := present[name]; ok {
-			mark = "set"
+		_, present := values[name]
+		if !present {
+			report.Missing = append(report.Missing, name)
 		}
-		fmt.Fprintf(out, "  %-34s %s\n", name, mark)
+		report.Secrets = append(report.Secrets, secretListEntry{
+			Name:       name,
+			Present:    present,
+			DeclaredBy: attribution[name],
+		})
 	}
+	report.MissingCount = len(report.Missing)
+	report.OK = report.MissingCount == 0
 
 	// Keys nobody declares are inert under declaration-scoped injection.
 	// Surfacing them is what keeps the store from silently accumulating
 	// config that belongs in KCL.
-	var orphans []string
-	for k := range present {
+	for k := range values {
 		if !containsString(declared, k) {
-			orphans = append(orphans, k)
+			report.Inert = append(report.Inert, k)
 		}
 	}
-	if len(orphans) > 0 {
-		sort.Strings(orphans)
-		fmt.Fprintf(out, "\n%d key(s) in the store that no service declares (inert — nothing injects them):\n", len(orphans))
-		for _, o := range orphans {
+	sort.Strings(report.Inert)
+	return report, nil
+}
+
+// secretDeclarationsByEnvName maps each declared env-var name to the
+// workloads that reference it, walking the same services
+// [declaredSecretNames] does so the two can never disagree about what is
+// declared.
+func secretDeclarationsByEnvName(e *KCLEntities) map[string][]secretDeclaration {
+	if e == nil {
+		return nil
+	}
+	byName := map[string][]secretDeclaration{}
+	for i := range e.Services {
+		svc := &e.Services[i]
+		for _, ref := range secretRefsForService(svc) {
+			if ref.EnvName == "" {
+				continue
+			}
+			byName[ref.EnvName] = append(byName[ref.EnvName], secretDeclaration{
+				Workload:   svc.Name,
+				Kind:       "service",
+				SecretName: ref.SecretName,
+				SecretKey:  ref.SecretKey,
+			})
+		}
+	}
+	return byName
+}
+
+func runSecretListJSON(ctx context.Context, envName string, out io.Writer) error {
+	report, err := collectSecretListFacts(ctx, envName)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
+}
+
+func runSecretList(ctx context.Context, envName string, out io.Writer) error {
+	report, err := collectSecretListFacts(ctx, envName)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "secret store: %s\n\n", report.StorePath)
+	if len(report.Secrets) == 0 {
+		fmt.Fprintln(out, "no secrets declared in KCL (nothing to resolve)")
+	}
+	for _, s := range report.Secrets {
+		mark := "MISSING"
+		if s.Present {
+			mark = "set"
+		}
+		fmt.Fprintf(out, "  %-34s %s\n", s.Name, mark)
+	}
+
+	if len(report.Inert) > 0 {
+		fmt.Fprintf(out, "\n%d key(s) in the store that no service declares (inert — nothing injects them):\n", len(report.Inert))
+		for _, o := range report.Inert {
 			fmt.Fprintf(out, "  %s\n", o)
 		}
-		fmt.Fprintf(out, "fix: declare it with `forge.EnvVar {name = \"%s\", secret_ref = \"...\"}`,\n", orphans[0])
+		fmt.Fprintf(out, "fix: declare it with `forge.EnvVar {name = \"%s\", secret_ref = \"...\"}`,\n", report.Inert[0])
 		fmt.Fprintln(out, "     move it to deploy/kcl/<env>/config.k if it is not a credential, or remove it.")
 	}
 	return nil
@@ -433,11 +592,19 @@ func secretProviderPathForEnv(ctx context.Context, envName string) string {
 }
 
 // declaredSecretNames is the sorted, de-duplicated set of env-var names
-// every service in the env declares via secret_ref.
+// every service in the env declares via secret_ref AND must have a value for.
+//
+// OPTIONAL refs are excluded, so `forge secret ensure` agrees with the env-up
+// pre-flight (secrets.ValidateDeclaredRefs). The two are separate code paths
+// over the same entities, and a disagreement is worse than either being wrong
+// alone: `ensure` exists to tell an operator whether `up` will succeed, so an
+// `ensure` that demands a value `up` does not want sends them to invent a
+// placeholder credential — which is a real-looking secret in the store, and
+// defeats the check for every genuinely-missing one after it.
 func declaredSecretNames(e *KCLEntities) []string {
 	seen := map[string]struct{}{}
 	for _, r := range secretRefsFromEntities(e) {
-		if r.EnvName != "" {
+		if r.EnvName != "" && !r.Optional {
 			seen[r.EnvName] = struct{}{}
 		}
 	}

@@ -1,0 +1,121 @@
+# yours: scaffolded once, never touched again — forge will not overwrite this file.
+# This CI workflow is a starting point you own — add jobs, secrets, and steps freely.
+# `forge generate` re-creates it only if you delete it first.
+#
+# CONTINUOUS RECONCILIATION WITH NO INFRASTRUCTURE TO OPERATE.
+#
+# Drift detection normally arrives as a controller you install, run, upgrade,
+# monitor and get paged by — a second system to operate before you learn
+# anything about the first. This workflow is the same loop on a schedule: a
+# runner you already have, on a cron you can read, writing its findings to the
+# job summary. There is nothing to keep alive, and when it breaks it breaks
+# where you already look.
+#
+# WHAT DRIFT IS. `forge reconcile` asks each deploy target what it currently
+# has, compares that against what the environment DECLARES, and reports the
+# difference. The usual finding is a digest: something re-pointed a tag, or a
+# hand-run kubectl put a build in prod that no release ever named.
+#
+# IT ONLY REPORTS, BY DEFAULT. The reconcile POLICY is per-environment and
+# defaults to `observe` — report, change nothing. `converge` is opt-in per
+# environment and is not something this workflow decides. That default is
+# deliberate: silently correcting an environment while an engineer is
+# deliberately holding it by hand, mid-incident, is the single behaviour that
+# makes people rip these systems out.
+#
+# A TARGET THAT CANNOT BE OBSERVED REPORTS UNKNOWN, NEVER GREEN. An External
+# target runs an opaque command, so there is genuinely nothing to read back,
+# and claiming convergence we cannot see would be worse than admitting the gap.
+name: Reconcile
+
+on:
+  schedule:
+    # Hourly. Frequent enough that drift is caught in the same working day it
+    # appeared; infrequent enough not to be a cost. Note GitHub does not
+    # guarantee the minute — a scheduled run can be delayed under load, which
+    # is fine for drift detection and would NOT be fine for anything that
+    # needed to happen at a particular time.
+    - cron: "17 * * * *"
+  # Always available by hand, which is how you use this during an incident:
+  # "what is actually running right now?"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to reconcile"
+        required: true
+        type: choice
+        options:
+          {{- range .Environments}}
+          - {{.Name}}
+          {{- end}}
+
+# Read-only. This workflow inspects; the converge path, where enabled, acts
+# through the deploy credentials below rather than through repository writes.
+permissions:
+  contents: read
+
+concurrency:
+  # One reconcile at a time. Two passes observing the same environment
+  # concurrently would race to write the same state records, and the later
+  # writer would win with no reason to think it was more recent.
+  group: reconcile-${{"{{"}} github.event.inputs.environment || 'all' {{"}}"}}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile {{"{{"}} matrix.environment {{"}}"}}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # fail-fast off: each environment is an independent question, and one
+      # unreachable cluster must not cancel the report for every other.
+      fail-fast: false
+      matrix:
+        {{- if .Environments}}
+        environment:
+          {{- range .Environments}}
+          - {{.Name}}
+          {{- end}}
+        {{- end}}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install forge
+        {{- if .ForgeVersion}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeVersion}}
+        {{- else if .ForgeGitCommit}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeGitCommit}}
+        {{- else}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@latest
+        {{- end}}
+
+      # Credentials for whatever this environment's targets actually are.
+      # Observing a Kubernetes target needs cluster read access; observing a
+      # registry digest needs registry read access. Add what yours require —
+      # a reconcile that cannot reach its target reports UNKNOWN, which is
+      # honest but not useful.
+
+      - name: Reconcile
+        id: reconcile
+        # Skipped for any environment other than the dispatched one, so a
+        # manual run answers the question that was asked rather than sweeping
+        # the fleet.
+        if: >-
+          github.event_name != 'workflow_dispatch' ||
+          github.event.inputs.environment == matrix.environment
+        run: forge reconcile {{"{{"}} matrix.environment {{"}}"}} | tee /tmp/reconcile.txt
+
+      - name: Report
+        if: always() && steps.reconcile.outcome != 'skipped'
+        run: |
+          {
+            echo "## Reconcile — {{"{{"}} matrix.environment {{"}}"}}"
+            echo
+            echo '```'
+            cat /tmp/reconcile.txt 2>/dev/null || echo "(no output — the reconcile step did not run to completion)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

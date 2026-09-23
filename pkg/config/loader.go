@@ -20,7 +20,16 @@ package config
 //     loudly on a missing/invalid explicit path. See LoadInto.
 //   - Empty-env handling: a string field treats an explicitly-empty env
 //     var ("") as SET; every non-string scalar treats "" as unset, because
-//     parsing "" would always error. See allowEmptyEnv.
+//     parsing "" would always error. A repeated field also treats "" as set,
+//     meaning the EMPTY LIST — the only way to clear a defaulted list. See
+//     allowEmptyEnv.
+//   - Cardinality: a repeated field is carried by env/flag as ONE
+//     comma-separated string, each element parsed with the field's element
+//     kind, with surrounding whitespace trimmed and blank elements dropped.
+//     Each layer REPLACES the whole list; there is no append. An element
+//     containing a comma cannot be expressed and belongs in the config file.
+//     Map fields are rejected with a diagnostic naming the field. See
+//     parseValue/parseList.
 //   - A malformed value is an error that aborts loading — never a silent
 //     fallback to the default.
 //   - Durations: a Go duration is recognized ONLY when the proto field is a
@@ -32,6 +41,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -106,10 +116,22 @@ func isConfigBlock(fd protoreflect.FieldDescriptor) bool {
 }
 
 // allowEmptyEnv mirrors the generated AllowEmptyEnv: an explicitly-empty
-// env var counts as "set" only for plain string scalars. Every other kind
-// (numeric, bool, duration message) treats "" as unset because parsing ""
-// would always error.
+// env var counts as "set" only for plain string scalars. Every other scalar
+// kind (numeric, bool, duration message) treats "" as unset because parsing
+// "" would always error.
+//
+// A REPEATED field of any element kind also allows it, and means something
+// different by it: "" is the empty list, which is the only way a deployment
+// can CLEAR a list that has a compiled-in default. Parsing "" never errors
+// for a list (it yields zero elements), so the reason the scalar kinds are
+// excluded does not apply.
 func allowEmptyEnv(fd protoreflect.FieldDescriptor) bool {
+	if fd.IsMap() {
+		return false // rejected outright by parseValue; never "set" from env
+	}
+	if fd.IsList() {
+		return true
+	}
 	return fd.Kind() == protoreflect.StringKind
 }
 
@@ -224,7 +246,19 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 		def := opt.GetDefaultValue()
 		desc := opt.GetDescription()
 
-		if isDurationField(fd) {
+		if fd.IsMap() {
+			return fmt.Errorf(
+				"config field %s: map fields cannot be bound to a flag — set it in the config file layer instead (--%s / %s)",
+				fd.Name(), ConfigFlag, ConfigPathEnv)
+		}
+		// A repeated field registers as a STRING flag carrying the same
+		// comma-separated form the env layer uses, whatever its element kind
+		// — LoadInto parses it back through parseList. Typing it by element
+		// kind would be wrong twice over: an Int32 flag cannot accept
+		// "8080,9090" at all, and pflag's StringSlice does not round-trip
+		// here, because its Value.String() renders "[a,b]" and the loader
+		// would then read the brackets as data.
+		if fd.IsList() || isDurationField(fd) {
 			flags.String(name, def, desc)
 			continue
 		}
@@ -358,7 +392,7 @@ func applyDefaults(m protoreflect.Message) error {
 		if opt == nil || opt.GetSensitive() || opt.GetDefaultValue() == "" {
 			continue
 		}
-		val, err := parseValue(fd, opt.GetDefaultValue())
+		val, err := parseValue(m, fd, opt.GetDefaultValue())
 		if err != nil {
 			return fmt.Errorf("invalid default %q for config field %s: %w", opt.GetDefaultValue(), fd.Name(), err)
 		}
@@ -402,7 +436,7 @@ func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.Fi
 	// Env layer.
 	if envVar := opt.GetEnvVar(); envVar != "" {
 		if v, present := os.LookupEnv(envVar); present && (allowEmptyEnv(fd) || v != "") {
-			val, err := parseValue(fd, v)
+			val, err := parseValue(m, fd, v)
 			if err != nil {
 				return fmt.Errorf("invalid value %q for config field %s (from env %s): %w", v, fd.Name(), envVar, err)
 			}
@@ -417,7 +451,7 @@ func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.Fi
 	}
 	if cmd != nil && flagName != "" && cmd.Flags().Changed(flagName) {
 		if f := cmd.Flags().Lookup(flagName); f != nil {
-			val, err := parseValue(fd, f.Value.String())
+			val, err := parseValue(m, fd, f.Value.String())
 			if err != nil {
 				return fmt.Errorf("invalid value %q for config field %s (from flag --%s): %w", f.Value.String(), fd.Name(), flagName, err)
 			}
@@ -455,11 +489,23 @@ func checkRequired(m protoreflect.Message) error {
 	return nil
 }
 
-// fieldIsEmpty reports whether a scalar/duration field still holds its zero
-// value after loading. For a Duration message, an unpopulated message is
-// empty; for scalars, the kind's zero is empty. This is the post-load required
-// check — a required field must be non-zero from SOME layer.
+// fieldIsEmpty reports whether a field still holds its zero value after
+// loading. For a list or map, empty means zero entries; for a Duration
+// message, an unpopulated message; for scalars, the kind's zero. This is the
+// post-load required check — a required field must be non-zero from SOME
+// layer.
+//
+// Cardinality is checked before kind for the same reason it is in parseValue:
+// a repeated string reports StringKind, and Value.String() on a list formats
+// as "[]" — text that is not empty — so a kind-only check would silently
+// accept an unset required list.
 func fieldIsEmpty(m protoreflect.Message, fd protoreflect.FieldDescriptor) bool {
+	if fd.IsMap() {
+		return m.Get(fd).Map().Len() == 0
+	}
+	if fd.IsList() {
+		return m.Get(fd).List().Len() == 0
+	}
 	if isDurationField(fd) {
 		return !m.Has(fd)
 	}
@@ -483,11 +529,99 @@ func fieldIsEmpty(m protoreflect.Message, fd protoreflect.FieldDescriptor) bool 
 	}
 }
 
-// parseValue converts a raw string to the protoreflect.Value for fd's
-// kind, mirroring the generated parse helpers (parseInt32, parseInt64,
-// parseBool, parseFloat32/64, parseGoDuration, parseString). Duration
-// messages parse a Go duration string into a google.protobuf.Duration.
-func parseValue(fd protoreflect.FieldDescriptor, raw string) (protoreflect.Value, error) {
+// listSeparator is the character that separates the elements of a repeated
+// field inside the single string an env var or a flag can carry. A comma is
+// the convention env vars already use for lists everywhere else (PATH-style
+// colons lose to it because a colon is ordinary data in a URL or host:port).
+const listSeparator = ","
+
+// parseValue converts a raw string to the protoreflect.Value for fd,
+// dispatching on the field's CARDINALITY before its kind.
+//
+// The cardinality check has to come first, and getting that wrong is what
+// this function is shaped around: a `repeated string` field still reports
+// protoreflect.StringKind, so a kind-only switch returns a scalar string for
+// it and the caller's m.Set then panics with "assigning invalid type string",
+// naming neither the field nor its cardinality. Every shape now resolves to
+// either a value of the RIGHT cardinality or a named error, so m.Set can no
+// longer be handed a mismatch.
+//
+// The message is needed because a list value must be allocated from it
+// (m.NewField gives a new empty mutable list of the field's element type).
+func parseValue(m protoreflect.Message, fd protoreflect.FieldDescriptor, raw string) (protoreflect.Value, error) {
+	if fd.IsMap() {
+		return protoreflect.Value{}, errMapField
+	}
+	if fd.IsList() {
+		return parseList(m, fd, raw)
+	}
+	return parseElement(fd, raw)
+}
+
+// errMapField is the diagnostic for a config-bound map field. A map has no
+// unambiguous single-string spelling (the key, the value, and the entry
+// separator would all need escaping), so rather than invent one that breaks
+// on the first key containing a comma, the loader refuses and points at the
+// layer that CAN express it natively.
+var errMapField = fmt.Errorf(
+	"map fields cannot be set from an env var or flag — set it in the config file layer instead (--%s / %s)",
+	ConfigFlag, ConfigPathEnv)
+
+// parseList builds a repeated field's value from the single string an env var
+// or flag carries: elements are comma-separated and each is parsed with the
+// field's ELEMENT kind, so a `repeated int32` gets three parsed ints rather
+// than one raw string.
+//
+// Three deliberate decisions about the wire format:
+//
+//   - Surrounding whitespace is stripped from every element. "a, b" in a YAML
+//     env block means two elements; the space is formatting, not data.
+//   - Blank elements are dropped, so a trailing comma ("a,b,") is a
+//     two-element list and not a list with an empty tail. This also makes an
+//     explicitly-empty env var an EMPTY list rather than a list holding one
+//     empty string — see allowEmptyEnv for why clearing a defaulted list has
+//     to be expressible.
+//   - There is no escape syntax. An element that legitimately contains a
+//     comma, or one whose leading/trailing whitespace is significant, cannot
+//     be expressed here and belongs in the config file, which carries a real
+//     list and needs no encoding. A half-escape ("\," but not "\\,") would
+//     read as support while still losing data on the values people actually
+//     hit, which is worse than a limitation stated up front.
+//
+// Every layer REPLACES the whole list; there is no append. An env var that
+// could only add to a compiled-in default would leave no way to remove an
+// entry, which for a field like allowed_registries is a security-relevant
+// difference — a deployment must be able to narrow the list, not just widen it.
+func parseList(m protoreflect.Message, fd protoreflect.FieldDescriptor, raw string) (protoreflect.Value, error) {
+	val := m.NewField(fd) // a new, empty, mutable list of fd's element type
+	list := val.List()
+	for i, part := range strings.Split(raw, listSeparator) {
+		elem := strings.TrimSpace(part)
+		if elem == "" {
+			continue
+		}
+		ev, err := parseElement(fd, elem)
+		if err != nil {
+			// Name the offending ELEMENT. The caller names the field and the
+			// env var, but with a list it quotes the whole raw value, and in
+			// a twenty-registry string that leaves the reader to find which
+			// one failed. The index counts position in the RAW string, so it
+			// lines up with what the reader is looking at even though blanks
+			// were dropped.
+			return protoreflect.Value{}, fmt.Errorf("element %d (%q): %w", i+1, elem, err)
+		}
+		list.Append(ev)
+	}
+	return val, nil
+}
+
+// parseElement converts a raw string to a single value of fd's kind — the
+// whole value for a scalar field, one element for a repeated one. It mirrors
+// the generated parse helpers (parseInt32, parseInt64, parseBool,
+// parseFloat32/64, parseGoDuration, parseString). Duration messages parse a
+// Go duration string into a google.protobuf.Duration; the check is on the
+// field's message TYPE, so it covers a repeated Duration element too.
+func parseElement(fd protoreflect.FieldDescriptor, raw string) (protoreflect.Value, error) {
 	if isDurationField(fd) {
 		d, err := time.ParseDuration(raw)
 		if err != nil {
@@ -544,7 +678,12 @@ func parseValue(fd protoreflect.FieldDescriptor, raw string) (protoreflect.Value
 		}
 		return protoreflect.ValueOfFloat64(v), nil
 	default:
-		return protoreflect.Value{}, fmt.Errorf("unsupported field kind %s", fd.Kind())
+		// The caller wraps this with the field name and the source layer, so
+		// it states only what the caller cannot know: the shape, and where a
+		// field of this shape CAN be set.
+		return protoreflect.Value{}, fmt.Errorf(
+			"unsupported field kind %s — a field this shape cannot be spelled in an env var or flag; set it in the config file layer instead (--%s / %s)",
+			fd.Kind(), ConfigFlag, ConfigPathEnv)
 	}
 }
 

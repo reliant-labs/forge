@@ -1,3 +1,35 @@
+// MAX-PUBLIC-STRUCTS IS SUPPRESSED HERE, AND IT IS RECORDED DEBT, NOT A NIT.
+//
+// revive counts exported structs per PACKAGE and reports them on whichever
+// file it reaches first, which is this one. So the finding is not about the
+// types below in particular: package cli declared 68 exported structs against
+// a ceiling of 40 before this branch existed, and it has been over the line
+// for a long time. Nothing added here could bring it under 40 — the 13 types
+// this branch adds would have to become -28 — so a suppression is the only
+// thing that makes the gate report the truth rather than attribute 28
+// pre-existing declarations to the commit that happened to touch the file.
+//
+// The types are exported for ONE reason: they are encoding/json unmarshal
+// targets for the JSON the sibling KCL deploy module emits, and json.Unmarshal
+// can only populate exported FIELDS. Go requires no exported type for that, but
+// the fields must be exported, and the house convention here keeps the type and
+// its fields at the same visibility so a reader is not left wondering why a
+// lowercase type has uppercase members. Verified before suppressing: none of
+// the types this branch adds (SimpleBackendSpec, SimpleBackendResources,
+// HealthCheck, RemoteBuild, RemoteBuildSource, ControlPlaneEntity,
+// StaticSiteDeploy, StaticSiteCDN, CacheRule, BundleDir,
+// FirebaseHostingDeploy, FrontendDeployEntity) is referenced outside package
+// cli, so every one of them is package-private in practice.
+//
+// THE REAL FIX IS A PACKAGE SPLIT, and this comment is the note that says so.
+// The KCL entity schema — every *Entity, every deploy/build variant, roughly
+// 50 of the 68 — is a self-contained JSON contract with no dependency on
+// cobra or on any command, and it belongs in its own package (internal/kclentity
+// or similar) that owns it. That lands package cli under the ceiling honestly
+// and lets this directive be deleted. It is a mechanical but wide move that
+// would bury this branch's diff, so it is deliberately not done here.
+//
+//nolint:revive // max-public-structs: 68 of these predate this branch; the honest fix is extracting the KCL entity schema into its own package, described above.
 package cli
 
 import (
@@ -10,7 +42,6 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
@@ -56,6 +87,11 @@ type KCLEntities struct {
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// ControlPlane is the bundle-level hosted control-plane declaration
+	// (WHICH endpoint this env talks to, and the env var NAME its
+	// credential is read from). Nil when the bundle declares none —
+	// the default, and the case where no forge behaviour changes.
+	ControlPlane *ControlPlaneEntity `json:"control_plane,omitempty"`
 
 	// RequiredSecrets are the env's declared external Secret prerequisites
 	// (forge.ExternalSecret) — out-of-band Secrets the deploy depends on but
@@ -121,6 +157,20 @@ type SecretProviderEntity struct {
 	Secrets []RenderedSecretEntity `json:"secrets,omitempty"`
 }
 
+// ControlPlaneEntity is the parsed bundle-level hosted control-plane
+// declaration (kcl/schema.k ControlPlane): WHICH endpoint this env talks
+// to, and the NAME of the env var its bearer credential is read from.
+//
+// It carries no credential and never will. The token VALUE is resolved
+// Go-side by internal/cloud from the flag / env var / login file, exactly
+// as secret VALUES are resolved by internal/secrets rather than KCL.
+type ControlPlaneEntity struct {
+	Type         string `json:"type"`
+	Endpoint     string `json:"endpoint"`
+	TokenEnv     string `json:"token_env,omitempty"`
+	Organization string `json:"organization,omitempty"`
+}
+
 // RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s
 // Secret forge renders from declared sources. Keys maps each in-Secret
 // key to its value source.
@@ -151,6 +201,10 @@ type RenderedSecretKeyEntity struct {
 // "primary" field and no most-X heuristic.
 type ClusterEntity struct {
 	Name string `json:"name"`
+	// Provider selects which ClusterProvider (see cluster_provider.go)
+	// ensures this cluster: "k3d" (default), "vcluster", or "gke". Only
+	// "k3d" is implemented — see clusterProviderRegistry.
+	Provider string `json:"provider,omitempty"`
 	// Context is the derived kubectl context (`k3d-<name>`), projected so
 	// the reconcile / kubeconfig mint can target the cluster without
 	// re-deriving the prefix.
@@ -186,6 +240,24 @@ type ClusterEntity struct {
 	// declaratively (Ingress=false) but the cluster still hosts a Gateway
 	// whose listeners must be host-mapped at create time.
 	HostPorts bool `json:"host_ports,omitempty"`
+	// ClusterCIDR / ServiceCIDR are the pod and Service address blocks k3s
+	// allocates from, reaching `k3d cluster create` as the k3s server args
+	// --cluster-cidr / --service-cidr. Empty (the default, and every cluster
+	// that does not declare them) leaves k3s on its own defaults —
+	// 10.42.0.0/16 pods, 10.43.0.0/16 services — so no argument is added and
+	// the created cluster is identical to before.
+	//
+	// They exist because two k3d clusters on ONE docker network both default
+	// to the SAME pod CIDR, so the same pod IP exists in both and a local
+	// route always wins: a workload in one cluster cannot dial a pod IP in the
+	// other. Disjoint blocks are what make that cross-cluster pod dialing
+	// possible, which is how the equivalent cloud topology (several clusters
+	// in one VPC, on disjoint blocks) already works.
+	//
+	// Validated KCL-side (shape, and that a cluster's two blocks do not
+	// overlap each other) — see kcl/schema.k's Cluster check block.
+	ClusterCIDR string `json:"cluster_cidr,omitempty"`
+	ServiceCIDR string `json:"service_cidr,omitempty"`
 }
 
 // KubeconfigSecretEntity mirrors the kcl/schema.k KubeconfigSecret — a
@@ -325,6 +397,18 @@ type HelmChartEntity struct {
 	// "gateway-api", or "cert-manager". The chart is rendered --skip-crds,
 	// so forge owns the CRD surface.
 	CRDs string `json:"crds,omitempty"`
+	// Cluster is the kubectl CONTEXT this chart installs into, overriding
+	// the env's primary cluster for this chart alone. The KCL `cluster`
+	// field is a forge.Cluster REFERENCE and the render projects its
+	// derived `.context` (`k3d-<name>`) here, so the value is always the
+	// context forge applies with and can never drift from the cluster the
+	// declaration names. Empty => the env's primary cluster.
+	//
+	// This is what lets an operator be installed where its custom
+	// resources land: control-plane's dev renders `postgresql.cnpg.io/v1
+	// Cluster` objects into cp-daemon, so CNPG must be installed there and
+	// not in the env's primary control-plane cluster.
+	Cluster string `json:"cluster,omitempty"`
 	// Manifests are consumer-declared raw k8s manifest dicts that ride this
 	// chart's `--target` (the `eg` GatewayClass, cert-manager ClusterIssuers)
 	// — the cluster-scoped instances the chart's controller reconciles but
@@ -417,15 +501,16 @@ type JobEntity struct {
 
 // BuildConfigEntity is the dispatched-by-type view of a service's build
 // block — the build-side analogue of [DeployConfigEntity]. The raw JSON
-// is a tagged union; Type carries the tag; exactly one of Go/Docker/Shell
-// is non-nil after [dispatchServiceBuild] runs. Type=="" means the KCL
-// `build` block was absent (null) — callers fall back to the synthesized
-// GoBuild default.
+// is a tagged union; Type carries the tag; exactly one of
+// Go/Docker/Shell/Remote is non-nil after [dispatchServiceBuild] runs.
+// Type=="" means the KCL `build` block was absent (null) — callers fall
+// back to the synthesized GoBuild default.
 type BuildConfigEntity struct {
-	Type   string       // "go" | "docker" | "shell" | "" (absent)
+	Type   string       // "go" | "docker" | "shell" | "remote" | "" (absent)
 	Go     *GoBuild     // populated when Type=="go"
 	Docker *DockerBuild // populated when Type=="docker"
 	Shell  *ShellBuild  // populated when Type=="shell"
+	Remote *RemoteBuild // populated when Type=="remote"
 }
 
 // GoBuild mirrors the kcl/schema.k GoBuild. Cmd is the go-build target
@@ -500,18 +585,160 @@ type ShellBuild struct {
 	Env        map[string]string `json:"env,omitempty"`
 }
 
+// RemoteBuildSource mirrors the kcl/schema.k GitSource as it appears
+// inside a RemoteBuild — the repo+ref pin the build is performed against.
+//
+// Ref is REQUIRED and Commit is absent on purpose: KCL declares the pin a
+// human writes (a tag, a branch, a sha), and resolving it to an immutable
+// commit is the submitting client's job, not the schema's. A KCL field
+// holding a resolved sha would go stale the moment the branch moved,
+// while looking authoritative.
+type RemoteBuildSource struct {
+	Repo   string `json:"repo"`
+	Ref    string `json:"ref"`
+	Subdir string `json:"subdir,omitempty"`
+}
+
+// RemoteBuild mirrors the kcl/schema.k RemoteBuild — an image built by a
+// HOSTED build service rather than on the machine running `forge build`.
+//
+// It is the only member of this union that does NOT build locally, and
+// every other difference follows from that. Source is a repo+ref PIN
+// rather than a path, because a build service cannot read the caller's
+// filesystem. The build is ASYNCHRONOUS, because it may queue behind
+// other work — every other build in forge is synchronous, which is worth
+// knowing before wiring one into a pipeline that assumes otherwise.
+//
+// What is absent is the security model, and it is absent by design
+// because a hosted service executes the caller's instructions on shared
+// infrastructure: no registry, no push credential, no cache reference,
+// no tag, and no secret build args. The service derives the destination
+// and the cache from the identity it AUTHENTICATED the submission with,
+// tags by resolved commit, and holds the registry credential where the
+// build never reaches it. See the schema docstring for the argument
+// behind each omission.
+type RemoteBuild struct {
+	OutputName     string            `json:"output_name,omitempty"`
+	Source         RemoteBuildSource `json:"source"`
+	Dockerfile     string            `json:"dockerfile,omitempty"`
+	Target         string            `json:"target,omitempty"`
+	Platform       string            `json:"platform,omitempty"`
+	BuildArgs      map[string]string `json:"build_args,omitempty"`
+	CPUMillicores  int64             `json:"cpu_millicores,omitempty"`
+	MemoryBytes    int64             `json:"memory_bytes,omitempty"`
+	CacheGiB       int32             `json:"cache_gib,omitempty"`
+	TimeoutSeconds int32             `json:"timeout_seconds,omitempty"`
+}
+
 // DeployConfigEntity is the dispatched-by-type view of a service's
 // deploy block. The raw JSON shape is a tagged union — Type carries
-// the tag; exactly one of Host/Cluster/External/Compose/HostInfra/
-// BuildOnly is non-nil after [dispatchServiceDeploy] runs.
+// the tag; exactly one of Host/Cluster/SimpleBackend/External/Compose/
+// HostInfra/BuildOnly is non-nil after [dispatchServiceDeploy] runs.
 type DeployConfigEntity struct {
-	Type      string           // "host" | "cluster" | "external" | "compose" | "host-infra" | "build-only"
-	Host      *HostDeploy      // populated when Type=="host"
-	Cluster   *K8sCluster      // populated when Type=="cluster"
-	External  *ExternalDeploy  // populated when Type=="external"
-	Compose   *ComposeDeploy   // populated when Type=="compose"
-	HostInfra *HostInfraDeploy // populated when Type=="host-infra"
-	BuildOnly *BuildOnlyDeploy // populated when Type=="build-only"
+	Type          string             // "host" | "cluster" | "simple-backend" | "external" | "compose" | "host-infra" | "build-only"
+	Host          *HostDeploy        // populated when Type=="host"
+	Cluster       *K8sCluster        // populated when Type=="cluster"
+	SimpleBackend *SimpleBackendSpec // populated when Type=="simple-backend"
+	External      *ExternalDeploy    // populated when Type=="external"
+	Compose       *ComposeDeploy     // populated when Type=="compose"
+	HostInfra     *HostInfraDeploy   // populated when Type=="host-infra"
+	BuildOnly     *BuildOnlyDeploy   // populated when Type=="build-only"
+}
+
+// SimpleBackendSpec mirrors the kcl/schema.k SimpleBackend schema — the
+// hosted ENTRY deploy tier: one container in a cluster forge did not
+// create.
+//
+// It is a CONSTRAINED PROFILE over K8sCluster, and the constraint lives
+// in the schema's SHAPE rather than in any validation here. There is no
+// Replicas, SecurityContext, ClusterRBAC, ImagePullSecrets, Platform or
+// node placement, because the KCL schema does not declare them and
+// refuses them at compile time (see
+// kcl/tests/closedschema_simple_backend_unknown_field.k). A Go-side
+// allowlist would be a second copy of that decision, free to drift from
+// the first.
+//
+// WHY THE MANIFESTS ARE NOT THIS PACKAGE'S PROBLEM. render_manifests
+// projects every SimpleBackend onto a RenderedWorkload{deploy =
+// K8sCluster} before emitting anything (_project_simple_backend,
+// kcl/render.k), so the YAML that reaches `kubectl apply` came out of
+// the SAME builders every forge.Service uses. This struct is the ENTITY
+// contract only: what `forge env render`, `forge project audit` and the
+// deploy dispatcher read. Keeping the discriminator here while the
+// manifests take the cluster path is deliberate — a tier that flattened
+// to "cluster" in the entity output would be invisible to exactly the
+// tooling that needs to see it.
+type SimpleBackendSpec struct {
+	// Target coordinates. Per-service (not env-wide) because the
+	// platform places each hosted workload itself; the deploy
+	// dispatcher groups and routes by them exactly as it does for a
+	// K8sCluster service.
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+
+	// Image is fully qualified and PINNED — the KCL check requires an
+	// explicit registry host and a tag or digest. forge does not build
+	// it (see [ServiceEntity.EffectiveBuild]) and does not prefix a
+	// registry onto it.
+	Image string `json:"image,omitempty"`
+
+	Ports   []int       `json:"ports,omitempty"`
+	EnvVars []KCLEnvVar `json:"env_vars,omitempty"`
+
+	// Resources carries the NEUTRAL units (millicores / bytes) rather
+	// than k8s quantity strings, because they are a metering input: the
+	// platform's shape rule is arithmetic on them, and a "2Gi" here
+	// would force it to re-parse a k8s dialect — which is where a
+	// billing input silently acquires a rounding rule nobody chose.
+	Resources SimpleBackendResources `json:"resources"`
+
+	HealthCheck *HealthCheck `json:"health_check,omitempty"`
+
+	// StorageGiB, when set, provisions a ReadWriteOnce PVC mounted at
+	// /data. This is the one manifest kind forge EMITS only for this
+	// tier; elsewhere a PVC is referenced by name and never created.
+	StorageGiB int `json:"storage_gib,omitempty"`
+
+	// Network is "public" | "private" | "none" — a manifest difference,
+	// not a label: "none" renders no Service object at all. It is
+	// addressability, not containment, and emits no NetworkPolicy.
+	Network string `json:"network,omitempty"`
+
+	// Domain is required for Network=="public" and rejected otherwise.
+	// forge creates no DNS and synthesizes no route from it; it rides
+	// this contract for the platform's ingress to key on.
+	Domain string `json:"domain,omitempty"`
+}
+
+// SimpleBackendResources is the compute request/limit in the same
+// target-neutral units the KCL Resources schema uses: CPU in millicores,
+// memory in bytes.
+//
+// The KCL schema constrains the REQUEST pair to sit exactly on the 4
+// GiB-per-vCPU shape band, because the platform bills the max of what
+// was asked for and what the band implies (control-plane's
+// inframeter.RatioFloor) — so an off-band shape is not rejected by the
+// platform, it is repriced silently. There is no Go-side re-check: KCL
+// has already refused a non-conformant shape before any of this is
+// unmarshalled, and a second implementation of the same arithmetic is a
+// second thing to keep in step with the rate.
+type SimpleBackendResources struct {
+	CPURequestMillicores int   `json:"cpu_request_millicores"`
+	CPULimitMillicores   int   `json:"cpu_limit_millicores"`
+	MemoryRequestBytes   int64 `json:"memory_request_bytes"`
+	MemoryLimitBytes     int64 `json:"memory_limit_bytes"`
+}
+
+// HealthCheck mirrors the kcl/schema.k HealthCheck schema.
+type HealthCheck struct {
+	LivenessPath     string   `json:"liveness_path,omitempty"`
+	ReadinessPath    string   `json:"readiness_path,omitempty"`
+	HTTPPort         int      `json:"http_port,omitempty"`
+	ExecCommand      []string `json:"exec_command,omitempty"`
+	InitialDelay     int      `json:"initial_delay,omitempty"`
+	Period           int      `json:"period,omitempty"`
+	Timeout          int      `json:"timeout,omitempty"`
+	FailureThreshold int      `json:"failure_threshold,omitempty"`
 }
 
 // ExternalDeploy is the deploy block for a generic shell-command
@@ -759,81 +986,6 @@ func (f FrontendEntity) EffectiveEnvVars() []KCLEnvVar {
 	return out
 }
 
-// FrontendDeployEntity carries the deploy discriminator for a frontend.
-// Two variants are populated today: FirebaseHosting (Type=="firebase")
-// and K8sCluster (Type=="cluster"); the matching pointer field is non-nil
-// exactly when its Type matches. The Type discriminator drives the build
-// skip-list; the embedded variant blocks carry the per-target config the
-// deploy dispatch needs. Adding new dispatch keys (e.g. a Vercel variant)
-// later is a pure additive change — a new pointer field + a new Type
-// string.
-//
-// The two variants take DIFFERENT paths after the build:
-//
-//   - "firebase" ships out-of-band via dispatchFrontendDeploys (build the
-//     static export, assemble it, `firebase deploy`). It never appears in
-//     the k8s manifest stream.
-//   - "cluster" is projected in KCL (render.k `_project_frontend`) onto the
-//     same RenderedWorkload a forge.Service produces, so it renders a real
-//     Deployment + Service and rides the normal apply / rollout / prune
-//     path. Nothing in the Go deploy dispatch special-cases it — by the
-//     time the manifests exist it is indistinguishable from any other
-//     cluster workload, which is the point.
-type FrontendDeployEntity struct {
-	Type string `json:"type"` // "firebase" | "cluster" (host/external/compose reserved for future frontend targets)
-
-	// Firebase is populated when Type=="firebase". The Firebase Hosting
-	// deploy spec — build output dir, target site/project, base-path
-	// mount, and any extra static dirs to assemble into the same site.
-	Firebase *FirebaseHostingDeploy `json:"-"`
-}
-
-// FirebaseHostingDeploy mirrors the kcl/schema.k FirebaseHosting schema.
-// The forge-side FirebaseProvider builds the frontend, assembles
-// public_dir + Bundle dirs into a staging tree honoring BasePath, writes
-// a firebase.json + .firebaserc, and runs `firebase deploy`.
-type FirebaseHostingDeploy struct {
-	Project   string              `json:"project"`
-	Site      string              `json:"site"`
-	Target    string              `json:"target,omitempty"`
-	PublicDir string              `json:"public_dir"`
-	BasePath  string              `json:"base_path,omitempty"`
-	Bundle    []FirebaseBundleDir `json:"bundle,omitempty"`
-	Rewrites  []map[string]any    `json:"rewrites,omitempty"`
-}
-
-// FirebaseBundleDir is one extra pre-built static directory assembled
-// into the hosting site alongside the frontend's own build output.
-// Dest empty means the site root.
-type FirebaseBundleDir struct {
-	Src  string `json:"src"`
-	Dest string `json:"dest,omitempty"`
-}
-
-// UnmarshalJSON dispatches the frontend deploy block by its `type`
-// discriminator. An absent / null deploy leaves the zero value (Type=="").
-// Today only "firebase" carries a typed body; unknown types are retained
-// as the bare Type string so a forward-compatible KCL render (a deploy
-// variant this binary predates) degrades to "skip build / no dispatch"
-// rather than erroring the whole render.
-func (d *FrontendDeployEntity) UnmarshalJSON(data []byte) error {
-	var probe struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return err
-	}
-	d.Type = probe.Type
-	if probe.Type == "firebase" {
-		var fb FirebaseHostingDeploy
-		if err := json.Unmarshal(data, &fb); err != nil {
-			return fmt.Errorf("parse firebase frontend deploy: %w", err)
-		}
-		d.Firebase = &fb
-	}
-	return nil
-}
-
 // CronJobEntity is one cron-shaped binary from rendered KCL. Empty
 // Schedule means "one-shot Job" (deploy waits for `condition=complete`);
 // non-empty Schedule means "CronJob" (deploy doesn't wait).
@@ -869,6 +1021,11 @@ type KCLEnvVar struct {
 	SecretKey    string `json:"secret_key,omitempty"`
 	ConfigMapRef string `json:"config_map_ref,omitempty"`
 	ConfigMapKey string `json:"config_map_key,omitempty"`
+
+	// SecretOptional exempts this var's secret_ref from the store
+	// pre-flight. Set by config codegen from `optional: true` on a
+	// `sensitive` proto field — never hand-authored.
+	SecretOptional bool `json:"secret_optional,omitempty"`
 }
 
 // kclRenderRaw is the JSON shape emitted by `kcl run deploy/kcl/<env>/
@@ -895,6 +1052,9 @@ type kclRenderRaw struct {
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// ControlPlane rides alongside secret_provider in the entity output;
+	// nil when the bundle declares none (KCL omits the key entirely).
+	ControlPlane *ControlPlaneEntity `json:"control_plane,omitempty"`
 	// RequiredSecrets / RequiredDNS are the declared external prerequisites
 	// (forge.ExternalSecret / forge.DNSRecord). render() always emits these
 	// buckets (empty lists when none).
@@ -980,9 +1140,10 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// seam (no external `kcl` binary). `-D env=<env>` drives the per-env
 	// conditionals in the deploy module. workDir = projectDir so the
 	// deploy-as-data main.k's `file.read("deploy/kcl/...")` resolves.
-	// devstack.ActiveDArgs() pushes option("worktree")/option("branch") when
-	// a parallel dev stack is active (nil → byte-identical default render),
-	// so the entity render sees the same git facts the manifest render does.
+	// option("worktree")/option("branch") are bound inside kclrender.Run for
+	// EVERY render (withDevStackDArgs), not here — a project keys its
+	// namespace on them, so a render that omits them looks in a different
+	// namespace than the deploy that applied the objects.
 	// activeRenderOptionDArgs() adds the project's own `-D name=value` options
 	// (`forge env up -D …`) — opaque to forge, meaningful only to this env's
 	// KCL. nil unless the caller passed one, so every other render is
@@ -1002,8 +1163,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// The store is the tie-break, and it only works if everyone reads it.
 	kclplugin.UsePortStoreReadOnly(filepath.Join(projectDir, ".forge", "ports-"+env+".json"))
 
-	dArgs := append([]string{"env=" + env}, devstack.ActiveDArgs()...)
-	dArgs = append(dArgs, activeRenderOptionDArgs()...)
+	dArgs := append([]string{"env=" + env}, activeRenderOptionDArgs()...)
 	return kclrender.Run(projectDir, kclDir, dArgs)
 }
 
@@ -1064,6 +1224,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		GRPCRoutes:           raw.GRPCRoutes,
 		HelmCharts:           raw.HelmCharts,
 		SecretProvider:       raw.SecretProvider,
+		ControlPlane:         raw.ControlPlane,
 		RequiredSecrets:      raw.RequiredSecrets,
 		RequiredDNS:          raw.RequiredDNS,
 		ManifestNamespace:    manifestNS,
@@ -1271,6 +1432,12 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 			return DeployConfigEntity{}, fmt.Errorf("service %q: parse cluster deploy: %w", svcName, err)
 		}
 		return DeployConfigEntity{Type: "cluster", Cluster: &c}, nil
+	case "simple-backend":
+		var sb SimpleBackendSpec
+		if err := json.Unmarshal(raw, &sb); err != nil {
+			return DeployConfigEntity{}, fmt.Errorf("service %q: parse simple-backend deploy: %w", svcName, err)
+		}
+		return DeployConfigEntity{Type: "simple-backend", SimpleBackend: &sb}, nil
 	case "external":
 		var e ExternalDeploy
 		if err := json.Unmarshal(raw, &e); err != nil {
@@ -1339,10 +1506,16 @@ func dispatchServiceBuild(svcName string, raw json.RawMessage) (BuildConfigEntit
 			return BuildConfigEntity{}, fmt.Errorf("service %q: parse shell build: %w", svcName, err)
 		}
 		return BuildConfigEntity{Type: "shell", Shell: &sh}, nil
+	case "remote":
+		var rb RemoteBuild
+		if err := json.Unmarshal(raw, &rb); err != nil {
+			return BuildConfigEntity{}, fmt.Errorf("service %q: parse remote build: %w", svcName, err)
+		}
+		return BuildConfigEntity{Type: "remote", Remote: &rb}, nil
 	case "":
-		return BuildConfigEntity{}, fmt.Errorf("service %q: build.type missing (expected go/docker/shell)", svcName)
+		return BuildConfigEntity{}, fmt.Errorf("service %q: build.type missing (expected go/docker/shell/remote)", svcName)
 	default:
-		return BuildConfigEntity{}, fmt.Errorf("service %q: unrecognised build.type %q (expected go/docker/shell)", svcName, probe.Type)
+		return BuildConfigEntity{}, fmt.Errorf("service %q: unrecognised build.type %q (expected go/docker/shell/remote)", svcName, probe.Type)
 	}
 }
 
@@ -1370,11 +1543,14 @@ func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
 	}
 	switch s.Deploy.Type {
 	// Nothing here is built from THIS module's source. A compose or
-	// external service ships an image someone else produced, and a
-	// host-infra instance is a third-party server binary forge downloads —
-	// synthesizing a GoBuild default for any of them would send `forge
-	// build` at a ./cmd/<name> package that does not exist.
-	case "compose", "external", "host-infra":
+	// external service ships an image someone else produced, a
+	// host-infra instance is a third-party server binary forge downloads,
+	// and a simple-backend names the APP OWNER's already-built, already-pushed
+	// image (its KCL schema requires an explicit registry host and a
+	// tag/digest for exactly that reason) — synthesizing a GoBuild default
+	// for any of them would send `forge build` at a ./cmd/<name> package
+	// that does not exist.
+	case "compose", "external", "host-infra", "simple-backend":
 		return BuildConfigEntity{}
 	}
 	return BuildConfigEntity{
@@ -1478,6 +1654,27 @@ func (e *KCLEntities) ClusterServiceNames() []string {
 	var out []string
 	for _, s := range e.Services {
 		if s.Deploy.Type == "cluster" {
+			out = append(out, s.Name)
+		}
+	}
+	return out
+}
+
+// SimpleBackendServiceNames returns the names of every service with
+// Deploy.Type == "simple-backend" — the hosted entry tier. forge deploys
+// these (they render a Deployment through the cluster path) but never
+// BUILDS them: the image is the app owner's own, pinned reference.
+//
+// Kept separate from ClusterServiceNames rather than folded into it
+// precisely because the two answer different questions. Callers asking
+// "what lands in a cluster" want both; callers asking "what does forge
+// build an image for" want only the former. Merging them would silently
+// give one of those callers the wrong answer, and the build path is the
+// one where that is expensive.
+func (e *KCLEntities) SimpleBackendServiceNames() []string {
+	var out []string
+	for _, s := range e.Services {
+		if s.Deploy.Type == "simple-backend" {
 			out = append(out, s.Name)
 		}
 	}

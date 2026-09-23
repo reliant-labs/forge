@@ -266,17 +266,40 @@ type k3dConfigPath struct {
 // printed and both entries survive into the merged config — k3d may
 // then reject the config, but the warning gives the user a starting
 // point).
-func mergeK3dConfig(userPath string, ingressOn bool, apiPort int) (k3dConfigPath, func(), error) {
+// k3dConfigOverlay is the set of DECLARED Cluster facts that must be projected
+// onto a config-file cluster, because `k3d cluster create --config` accepts no
+// per-flag settings and would otherwise drop them silently.
+//
+// Grouped into a struct rather than passed as positional parameters: they are
+// all "the declared cluster, projected onto its config file", and the flag
+// path's counterpart (clusterCreateFlags) likewise takes the whole entity. It
+// also keeps the next projected field from being a fifth bool nobody can read
+// at the call site.
+type k3dConfigOverlay struct {
+	HostPorts   bool
+	APIPort     int
+	ClusterCIDR string
+	ServiceCIDR string
+}
+
+// empty reports whether there is nothing to project, in which case the user's
+// own config file is handed back untouched (no temp file, formatting and
+// comments preserved).
+func (o k3dConfigOverlay) empty() bool {
+	return !o.HostPorts && o.APIPort <= 0 && o.ClusterCIDR == "" && o.ServiceCIDR == ""
+}
+
+func mergeK3dConfig(userPath string, overlay k3dConfigOverlay) (k3dConfigPath, func(), error) {
 	cleanup := func() {}
 	projectDir := filepath.Dir(userPath) // userPath is typically deploy/k3d.yaml; sibling is deploy/k3d-ports.yaml
 	fragPath := filepath.Join(projectDir, "k3d-ports.yaml")
-	spliceFragment := ingressOn
+	spliceFragment := overlay.HostPorts
 	if spliceFragment {
 		if _, err := os.Stat(fragPath); errors.Is(err, os.ErrNotExist) {
 			spliceFragment = false
 		}
 	}
-	if !spliceFragment && apiPort <= 0 {
+	if !spliceFragment && overlay.APIPort <= 0 && overlay.ClusterCIDR == "" && overlay.ServiceCIDR == "" {
 		return k3dConfigPath{path: userPath}, cleanup, nil
 	}
 
@@ -295,7 +318,10 @@ func mergeK3dConfig(userPath string, ingressOn bool, apiPort int) (k3dConfigPath
 			return k3dConfigPath{}, cleanup, fmt.Errorf("merge k3d config: %w", err)
 		}
 	}
-	if merged, err = spliceK3dAPIPort(merged, apiPort); err != nil {
+	if merged, err = spliceK3dAPIPort(merged, overlay.APIPort); err != nil {
+		return k3dConfigPath{}, cleanup, err
+	}
+	if merged, err = spliceK3dCIDRs(merged, overlay.ClusterCIDR, overlay.ServiceCIDR); err != nil {
 		return k3dConfigPath{}, cleanup, err
 	}
 	// Nothing to project: hand back the user's own file so its formatting and
@@ -368,6 +394,115 @@ func spliceK3dAPIPort(userYAML []byte, apiPort int) ([]byte, error) {
 		return nil, fmt.Errorf("re-encode k3d config with the declared api_port: %w", err)
 	}
 	return out, nil
+}
+
+// spliceK3dCIDRs projects the DECLARED pod / Service CIDRs onto a cluster that
+// also names a k3d config file, as k3s server args under
+// `options.k3s.extraArgs`.
+//
+// Same reasoning as spliceK3dAPIPort: `k3d cluster create --config` takes none
+// of the per-flag settings, so without this a config-file cluster would parse
+// and validate a `cluster_cidr` and then silently create a cluster on k3s's
+// default block. A declaration that is inert is worse than an unsupported one
+// — nothing tells the author it had no effect, and the symptom (two clusters
+// that still cannot reach each other's pods) looks exactly like the problem
+// they were trying to fix.
+//
+// The `extraArgs` shape is k3d's own: a list of `{arg, nodeFilters}` entries.
+// This APPENDS to whatever the file already declares (a config commonly
+// carries `--disable=traefik` there) rather than replacing the list.
+//
+// The config file stays authoritative where it actually speaks: if it already
+// sets the same k3s arg, forge accepts a value that AGREES and REFUSES one
+// that disagrees, rather than picking a winner between two sources of truth.
+func spliceK3dCIDRs(userYAML []byte, clusterCIDR, serviceCIDR string) ([]byte, error) {
+	if clusterCIDR == "" && serviceCIDR == "" {
+		return userYAML, nil
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(userYAML, &doc); err != nil {
+		return nil, fmt.Errorf("parse k3d config to set the declared CIDRs: %w", err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+
+	options, _ := doc["options"].(map[string]any)
+	if options == nil {
+		options = map[string]any{}
+		doc["options"] = options
+	}
+	k3s, _ := options["k3s"].(map[string]any)
+	if k3s == nil {
+		k3s = map[string]any{}
+		options["k3s"] = k3s
+	}
+	existing, _ := k3s["extraArgs"].([]any)
+
+	changed := false
+	for _, want := range []struct{ flag, value string }{
+		{"--cluster-cidr", clusterCIDR},
+		{"--service-cidr", serviceCIDR},
+	} {
+		if want.value == "" {
+			continue
+		}
+		declared, found := k3sExtraArgValue(existing, want.flag)
+		if found {
+			if declared != want.value {
+				return nil, fmt.Errorf(
+					"cluster declares %s = %s but its k3d config already sets %s=%s in "+
+						"options.k3s.extraArgs — remove one of them so the CIDR has a single "+
+						"source of truth",
+					strings.TrimPrefix(want.flag, "--"), want.value, want.flag, declared)
+			}
+			continue // already says exactly this; nothing to add
+		}
+		existing = append(existing, map[string]any{
+			"arg":         want.flag + "=" + want.value,
+			"nodeFilters": []any{"server:*"},
+		})
+		changed = true
+	}
+	if !changed {
+		// Every declared CIDR was already present and agreed. Hand back the
+		// user's own bytes so no temp file is written and their formatting and
+		// comments survive.
+		return userYAML, nil
+	}
+	k3s["extraArgs"] = existing
+
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("re-encode k3d config with the declared CIDRs: %w", err)
+	}
+	return out, nil
+}
+
+// k3sExtraArgValue looks for `flag=<value>` among an options.k3s.extraArgs
+// list and returns its value. The second result distinguishes "declared as
+// empty" from "not declared", which the caller's agree/disagree check needs.
+//
+// Entries whose shape it does not recognise are skipped rather than treated as
+// an error: extraArgs is a list of dicts with an `arg` key, and an entry that
+// is not one is either a k3d form forge does not model or a user mistake k3d
+// itself will report — neither is a reason to fail the merge here.
+func k3sExtraArgValue(entries []any, flag string) (string, bool) {
+	for _, e := range entries {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		arg, ok := m["arg"].(string)
+		if !ok {
+			continue
+		}
+		value, found := strings.CutPrefix(strings.TrimSpace(arg), flag+"=")
+		if found {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 // spliceK3dPorts is the pure YAML-merging half — exposed for tests

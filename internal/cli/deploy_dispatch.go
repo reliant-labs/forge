@@ -82,6 +82,71 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 					},
 				},
 			})
+		case "simple-backend":
+			sb := svc.Deploy.SimpleBackend
+			if sb == nil {
+				continue
+			}
+			namespace := sb.Namespace
+			if namespace == "" {
+				namespace = fallbackNamespace
+			}
+			// A SimpleBackend deploys through the k8s-cluster PROVIDER,
+			// not one of its own — and that is the whole design, not a
+			// shortcut. Its manifests were already projected onto the
+			// cluster shape inside KCL (_project_simple_backend), so what
+			// reaches `kubectl apply` is an ordinary Deployment+Service.
+			// Routing it to a second provider would mean a second
+			// implementation of apply, prune, rollout-wait, the
+			// per-group --context discipline and multi-cluster scoping,
+			// all of which K8sClusterProvider already does correctly
+			// against clusters forge did not create.
+			//
+			// The tier stays VISIBLE where visibility matters: the entity
+			// contract keeps the `simple-backend` discriminator, so
+			// `forge env render` and `forge project audit` report it.
+			// What is shared here is the deploy MECHANISM, which is
+			// genuinely the same mechanism.
+			//
+			// Registry is deliberately empty: a SimpleBackend's image is
+			// the app owner's own, fully qualified and pinned, and the
+			// group key is (cluster, namespace, registry) — so these group
+			// by their own namespace rather than joining an ordinary
+			// cluster group that happens to share one.
+			raw = append(raw, deploytarget.RawService{
+				Name: svc.Name,
+				K8sCluster: &deploytarget.RawK8sCluster{
+					Cluster:   sb.Cluster,
+					Namespace: namespace,
+					Domain:    sb.Domain,
+					Spec: &deploytarget.K8sClusterSpec{
+						// Always 1 — the schema declares no replicas
+						// field, because storage_gib renders a
+						// ReadWriteOnce PVC that a multi-replica
+						// Deployment cannot roll over. See the
+						// SimpleBackend docstring in kcl/schema.k.
+						Replicas: 1,
+						Ports:    sb.Ports,
+						// The PVC forge emits for this tier, named for
+						// the observer's benefit. `storage_gib` is the
+						// one place forge CREATES a claim rather than
+						// referencing one (_render_simple_backend_pvc in
+						// kcl/render.k), and a claim forge creates is one
+						// it must be able to read back — an unbound PVC
+						// shows up on the Deployment only as "0/1 ready",
+						// which names the symptom and not the cause.
+						//
+						// The name is derived here, at the one place that
+						// already knows this service is a SimpleBackend,
+						// rather than in the provider: the provider sees
+						// an ordinary cluster group by design, and
+						// teaching it to re-derive "<name>-data" would
+						// give forge a second opinion about a name the
+						// render owns.
+						OwnedClaims: simpleBackendOwnedClaims(svc.Name, sb),
+					},
+				},
+			})
 		case "external":
 			e := svc.Deploy.External
 			if e == nil {
@@ -152,6 +217,23 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 		}
 	}
 	return deploytarget.GroupServices(envName, raw)
+}
+
+// simpleBackendOwnedClaims names the PersistentVolumeClaims forge emits
+// for one SimpleBackend service — one, "<name>-data", when the service
+// declares storage_gib, and none otherwise.
+//
+// It mirrors _render_simple_backend_pvc in kcl/render.k, and the mirror
+// is the point of pinning it in a named function rather than inlining
+// the sprintf: the render decides the name and this has to agree with
+// it, so the duplication is worth being visible and testable rather than
+// buried in a struct literal. TestSimpleBackendOwnedClaims_MatchTheKCLRender
+// asserts the two still agree against the real rendered manifests.
+func simpleBackendOwnedClaims(svcName string, sb *SimpleBackendSpec) []string {
+	if sb == nil || sb.StorageGiB <= 0 {
+		return nil
+	}
+	return []string{svcName + "-data"}
 }
 
 // dispatchDeployGroups runs every group through its provider. Per-
@@ -280,6 +362,12 @@ type applyOptsContext struct {
 	ImageDigests      map[string]string
 	HelmCharts        []cluster.HelmChartSpec
 	Rollout           cluster.RolloutPolicy
+	// OnStream and OnRollout are the optional observation callbacks the
+	// --json report installs (nil in text mode). Threaded through the builder
+	// so a multi-group dispatch reports every group's stream and every
+	// group's rollout outcomes into ONE document.
+	OnStream  func(string)
+	OnRollout func(cluster.RolloutObservation)
 }
 
 // applyOptsBuilderFromContext returns an ApplyOptsBuilder closure
@@ -310,6 +398,14 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 	// namespace (helm template -n), so a single apply against any one of the
 	// env's group contexts is correct for the cloud single-cluster case;
 	// the once-only guard avoids re-applying cert-manager per service group.
+	//
+	// A chart that re-targets a SECOND cluster (HelmChartSpec.Cluster) still
+	// rides this one group, and still installs into its own cluster: the
+	// context is resolved PER CHART inside applyRenderedCharts, not taken from
+	// the group. Keeping the attachment here group-agnostic is deliberate — a
+	// re-targeted chart must be applied once whether or not the env happens to
+	// declare a service group on that cluster, and an operator cluster
+	// frequently has no forge-deployed service at all.
 	primaryHelmContext := ""
 	if len(p.HelmCharts) > 0 {
 		for _, g := range p.Groups {
@@ -346,6 +442,8 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			ClusterScope: scopeFor(group),
 			HelmCharts:   charts,
 			Rollout:      p.Rollout,
+			OnStream:     p.OnStream,
+			OnRollout:    p.OnRollout,
 		}
 	}
 }
@@ -466,6 +564,12 @@ func mainClusterForEntities(entities *KCLEntities, groups []deploytarget.Service
 		for _, s := range entities.Services {
 			if s.Deploy.Type == "cluster" && s.Deploy.Cluster != nil && s.Deploy.Cluster.Cluster != "" {
 				return s.Deploy.Cluster.Cluster
+			}
+			// A SimpleBackend declares its own cluster, so an env made
+			// only of them still has a main cluster for operators and
+			// cronjobs to attribute to.
+			if s.Deploy.Type == "simple-backend" && s.Deploy.SimpleBackend != nil && s.Deploy.SimpleBackend.Cluster != "" {
+				return s.Deploy.SimpleBackend.Cluster
 			}
 		}
 	}

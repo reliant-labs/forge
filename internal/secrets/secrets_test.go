@@ -356,3 +356,46 @@ func TestRenderDeclaredSecrets_Empty(t *testing.T) {
 		t.Errorf("empty declared => (nil, nil), got (%v, %v)", mans, err)
 	}
 }
+
+// An OPTIONAL ref is exempt from the missing-value check.
+//
+// The default must stay strict: a declared secret with no value is an error,
+// because the alternative is discovering a missing production credential from
+// a runtime stack trace. Optional is the author's explicit statement that THIS
+// one's absence is intended — a tier's off-switch, a credential only some
+// environments own — which forge cannot infer, since an unset credential and a
+// deliberately-absent one look identical in the store.
+func TestValidateDeclaredRefs_OptionalRefIsExempt(t *testing.T) {
+	path := writeDotenv(t, "PRESENT=1\n")
+	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})
+	refs := []SecretRef{
+		{EnvName: "PRESENT", SecretName: "s", SecretKey: "k"},
+		{EnvName: "OPTIONAL_ABSENT", SecretName: "s", SecretKey: "opt", Optional: true},
+	}
+
+	if err := ValidateDeclaredRefs(p, refs, path); err != nil {
+		t.Errorf("an optional ref with no value must not fail the pre-flight: %v", err)
+	}
+}
+
+// The exemption is per-ref and must not leak: a non-optional ref missing from
+// the store still fails even when an optional one sits beside it.
+func TestValidateDeclaredRefs_OptionalDoesNotExemptItsNeighbours(t *testing.T) {
+	path := writeDotenv(t, "PRESENT=1\n")
+	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})
+	refs := []SecretRef{
+		{EnvName: "OPTIONAL_ABSENT", SecretName: "s", SecretKey: "opt", Optional: true},
+		{EnvName: "REQUIRED_ABSENT", SecretName: "s", SecretKey: "req"},
+	}
+
+	err := ValidateDeclaredRefs(p, refs, path)
+	if err == nil {
+		t.Fatal("a missing NON-optional secret was accepted")
+	}
+	if !strings.Contains(err.Error(), "REQUIRED_ABSENT") {
+		t.Errorf("error must name the genuinely-missing secret: %v", err)
+	}
+	if strings.Contains(err.Error(), "OPTIONAL_ABSENT") {
+		t.Errorf("the optional secret was reported as missing: %v", err)
+	}
+}

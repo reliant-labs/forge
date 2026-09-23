@@ -5,12 +5,21 @@
 // `Bundle.clusters = [forge.Cluster {...}, ...]` and forge ensures each
 // exists at the head of `forge env up` (create-if-absent, no-op if present).
 //
+// This file IS the k3d ClusterProvider's implementation (see
+// cluster_provider.go for the registry that dispatches to it per-entity by
+// Cluster.provider). Everything below — ensureDeclaredCluster, the
+// create/start/heal seams, the node-level docker shell-outs — is k3d-
+// specific; a "vcluster" or "gke" provider is a SEPARATE ClusterProvider
+// implementation with its own file, not a branch added here.
+//
 // Multi-cluster ownership is a REFERENCE. There is no "primary" cluster:
 // a secondary cluster names its `owner` Cluster, and the KCL render layer
 // DERIVES the joined docker network (Cluster.Network = `k3d-<owner.name>`)
 // and the registry-inherit flag (Cluster.RegistryInherit = true) from
 // that one edge. The owner cluster projects neither — k3d creates its own
-// network/registry. There is no most-X heuristic.
+// network/registry. There is no most-X heuristic. `owner` is meaningful
+// for k3d only — see the Cluster schema doc (kcl/schema.k) for why a
+// vcluster's host relationship is a distinct `host?` edge instead.
 package cli
 
 import (
@@ -33,6 +42,11 @@ import (
 // cluster must be declared BEFORE any secondary that inherits its network/registry —
 // declaration order is the contract (a secondary references the owner's
 // network by name, which only exists once the owner is created).
+//
+// Each declared cluster is dispatched through clusterProviderRegistry by
+// its own Cluster.provider ("k3d" by default) — see cluster_provider.go.
+// Looked up per-entity, not once for the whole call, so a mixed-provider
+// env never collides two clusters on shared dispatch state.
 //
 // A nil/empty list is a no-op: an env that declares no clusters keeps
 // today's behavior (`forge env up e2e` ensures nothing; the legacy
@@ -60,7 +74,14 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 		return err
 	}
 	for i := range clusters {
-		if err := ensureDeclaredCluster(ctx, clusters[i], clusters, projectDir, env); err != nil {
+		// Resolved PER-ENTITY (not once for the whole call), so a mixed
+		// env dispatches each declared cluster to its own provider rather
+		// than colliding on shared registry state. See lookupClusterProvider.
+		provider, err := lookupClusterProvider(clusters[i].Provider)
+		if err != nil {
+			return fmt.Errorf("cluster %q: %w", clusters[i].Name, err)
+		}
+		if err := provider.Ensure(ctx, clusters[i], clusters, projectDir, env); err != nil {
 			return fmt.Errorf("ensure cluster %q: %w", clusters[i].Name, err)
 		}
 	}
@@ -128,7 +149,31 @@ func clusterCreateFlags(c ClusterEntity) []string {
 		// network can reach this API server by host IP if needed.
 		flags = append(flags, "--api-port", fmt.Sprintf("0.0.0.0:%d", c.APIPort))
 	}
+	flags = append(flags, k3sCIDRArgs(c)...)
 	return flags
+}
+
+// k3sCIDRArgs projects the declared pod / Service CIDRs onto the `k3d cluster
+// create --k3s-arg` flags that carry them.
+//
+// k3d has no first-class flag for either: they are k3s SERVER args, passed
+// through with the `<arg>@<nodefilter>` syntax k3d's own docs use
+// (`--k3s-arg "--disable=traefik@server:*"`). The `server:*` filter — rather
+// than `server:0` — applies the setting to every control-plane node, which
+// matters for a multi-server cluster where a CIDR set on only the first server
+// is a split-brain allocator rather than a partial configuration.
+//
+// Returns nil when neither is declared, so a cluster that does not use this
+// capability produces the exact flag list it produced before.
+func k3sCIDRArgs(c ClusterEntity) []string {
+	var args []string
+	if c.ClusterCIDR != "" {
+		args = append(args, "--k3s-arg", "--cluster-cidr="+c.ClusterCIDR+"@server:*")
+	}
+	if c.ServiceCIDR != "" {
+		args = append(args, "--k3s-arg", "--service-cidr="+c.ServiceCIDR+"@server:*")
+	}
+	return args
 }
 
 // reconcileExistingCluster brings an ALREADY-CREATED cluster up to what the
@@ -186,6 +231,17 @@ func reconcileExistingCluster(ctx context.Context, c ClusterEntity, state k3dClu
 			return err
 		}
 	}
+
+	// CIDR DRIFT GUARD, the same shape one level down the stack. k3s fixes
+	// the pod and Service address blocks at create time too, so a
+	// `cluster_cidr` / `service_cidr` declared against an already-running
+	// cluster is completely inert. Unguarded that is worse than the port
+	// case: the cluster comes up green, and the operator debugs the
+	// cross-cluster routing their declaration was meant to fix rather than
+	// the declaration never having taken effect. See cluster_cidr_drift.go.
+	if err := checkClusterCIDRDrift(ctx, c, declared, env); err != nil {
+		return err
+	}
 	if isNestedSecondary(c) {
 		if err := setupSecondaryClusterNodeFn(ctx, c); err != nil {
 			return err
@@ -231,9 +287,14 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []Clus
 			return fmt.Errorf("ensure standalone registry for cluster %q: %w", c.Name, err)
 		}
 
-		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.HostPorts, c.APIPort)
+		cfgPath, cleanup, err := mergeK3dConfig(c.Config, k3dConfigOverlay{
+			HostPorts:   c.HostPorts,
+			APIPort:     c.APIPort,
+			ClusterCIDR: c.ClusterCIDR,
+			ServiceCIDR: c.ServiceCIDR,
+		})
 		if err != nil {
-			return fmt.Errorf("merge k3d ports for cluster %q: %w", c.Name, err)
+			return fmt.Errorf("merge k3d config for cluster %q: %w", c.Name, err)
 		}
 		defer cleanup()
 		if cfgPath.temporary {

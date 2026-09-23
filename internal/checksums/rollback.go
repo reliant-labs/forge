@@ -166,6 +166,38 @@ func RecordPreWriteAbs(path string) {
 	recordPreWrite(rollbackRoot, rel)
 }
 
+// RemoveJournaled deletes a forge-owned path after capturing its pre-run
+// bytes, so a `forge generate` that aborts later restores it. It is the
+// DELETE-side twin of the WriteGeneratedFile chokepoint, and every forge
+// deletion of a tracked file should go through it.
+//
+// WHY A DELETE NEEDS JOURNALING AT ALL. The journal is populated lazily, at
+// the first write that targets a path. A raw os.Remove is invisible to it, and
+// the consequence is worse than "not restored" — it INVERTS the rewind:
+//
+//  1. a step deletes internal/<pkg>/middleware_gen.go   (unjournaled)
+//  2. a later step rewrites it, and recordPreWrite — running for the first
+//     time, seeing no file — records existed=false, "absent before this run"
+//  3. the run fails, and RestoreRollback honours existed=false by DELETING
+//
+// So the rewind whose entire purpose is to hand the tree back clean is what
+// removes the file. Observed in a shared checkout: a proto validation error
+// left internal/coupon with no middleware_gen.go, and `go build ./...` failed
+// for every agent with `undefined: couponsvc.NewServiceWithForgeMiddleware` —
+// an error naming a package that had nothing to do with the failure.
+//
+// Capture-then-delete fixes both halves at once, because recordPreWrite is
+// first-write-wins: the capture here holds the TRUE pre-run bytes, and a
+// later rewrite's capture is a no-op. A missing file is not an error, and
+// journaling never itself fails a delete.
+func RemoveJournaled(path string) error {
+	RecordPreWriteAbs(path)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // SnapshotJournalTargets copies the CURRENT on-disk content of every
 // journaled path — i.e. the failed run's output — into preserveDir,
 // mirroring each file's project-relative path. Called BEFORE

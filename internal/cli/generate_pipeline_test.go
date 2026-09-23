@@ -86,6 +86,9 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		// both emitted by the step above — must exist first.
 		"frontend typed config",
 		"ingress k3d ports fragment",
+		// Gated on features.deploy — absent from a project that declares no
+		// CRDs, present here because the guard drives the full plan.
+		"CRD KCL manifests (api/ Go types)",
 		"Grafana dashboards",
 		"entity-aware seed data",
 		"frontend mocks + transport",

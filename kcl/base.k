@@ -226,6 +226,27 @@ registry = lambda default: str -> str {
     option("registry") or default
 }
 
+# default_kubeconfig() — the path to the DEFAULT kubeconfig on the machine
+# doing the render (the `-D kubeconfig=<path>` binding the forge CLI passes on
+# every render).
+#
+# This is the file `k3d cluster create` + `k3d kubeconfig merge
+# --kubeconfig-merge-default` write a cluster's entry into, which is what makes
+# it the right answer for "where does this cluster's kubeconfig live": forge
+# resolves `$KUBECONFIG`'s first entry when set, else `~/.kube/config`, the
+# same precedence kubectl itself uses.
+#
+# It is not meant to be called directly in an env's main.k — reference
+# `<cluster>.kubeconfig` instead, which is this value attached to the cluster
+# whose context you actually want. The accessor exists so the schema's own
+# default has something to read.
+#
+# "" for a plain `kcl run` with no binding, so a module still renders outside
+# forge. See Cluster.kubeconfig for why that is not filled in with a guess.
+default_kubeconfig = lambda -> str {
+    option("kubeconfig") or ""
+}
+
 # Per-env default image tags. Kept centrally so the forge CLI's
 # `-D image_tag=...` override has ONE fallback table to consult; the
 # scaffold templates no longer re-declare a per-env literal.
@@ -286,4 +307,53 @@ image_ref_for = lambda registry: str, image: str, tag: str -> str {
     _d = image_digests()
     _digest = _d[image] if (image in _d) else ""
     "${registry}/${image}@${_digest}" if _digest else "${registry}/${image}:${tag}"
+}
+
+# ---------------------------------------------------------------------------
+# IPv4 CIDR predicates — used by Cluster's cluster_cidr / service_cidr checks.
+# ---------------------------------------------------------------------------
+#
+# These exist so a mistyped or overlapping CIDR fails at KCL LOAD time rather
+# than as an unroutable cluster hours later. k3s accepts both mistakes: a
+# malformed `--cluster-cidr` is rejected only when the server starts (inside a
+# container, in a log nobody is tailing), and a cluster_cidr that CONTAINS its
+# own service_cidr is accepted outright — the cluster then comes up and
+# service IPs collide with pod IPs, which surfaces as intermittently
+# unreachable Services, not as a configuration error.
+#
+# The helpers live in base.k (not inline in the check block) because a `check:`
+# expression cannot declare intermediate names, and the overlap test needs
+# several.
+
+# is_ipv4_cidr(c) — True when `c` is a well-formed IPv4 CIDR: four octets in
+# 0-255, and a prefix length in 0-32. The regex alone is not sufficient —
+# it happily matches "300.0.0.0/33" — so the bounds are checked too.
+is_ipv4_cidr = lambda c: str -> bool {
+    bool(regex.match(c, r"^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$")) and \
+    all o in [int(p) for p in c.split("/")[0].split(".")] { o <= 255 } and \
+    int(c.split("/")[1]) <= 32
+}
+
+# _ipv4_to_int(ip) — dotted-quad to its 32-bit integer value.
+_ipv4_to_int = lambda ip: str -> int {
+    _o = [int(p) for p in ip.split(".")]
+    _o[0] * 16777216 + _o[1] * 65536 + _o[2] * 256 + _o[3]
+}
+
+# cidrs_overlap(a, b) — True when the two CIDR blocks share any address.
+#
+# Two blocks overlap exactly when one contains the other, which is true when
+# their addresses agree on the SHORTER of the two prefixes. Comparing at the
+# shorter prefix is what makes this correct for unequal prefix lengths:
+# 10.16.0.0/14 and 10.20.0.0/20 are disjoint (prod's real GKE layout), while
+# 10.42.0.0/16 and 10.42.128.0/20 are not.
+#
+# Both arguments must already satisfy is_ipv4_cidr — the caller's check block
+# validates shape first, and KCL evaluates check conditions in order.
+cidrs_overlap = lambda a: str, b: str -> bool {
+    _pa = int(a.split("/")[1])
+    _pb = int(b.split("/")[1])
+    _p = _pa if _pa < _pb else _pb
+    _shift = 32 - _p
+    (_ipv4_to_int(a.split("/")[0]) >> _shift) == (_ipv4_to_int(b.split("/")[0]) >> _shift)
 }

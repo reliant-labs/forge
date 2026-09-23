@@ -94,6 +94,7 @@ func SetVersion(v, date, commit string) {
 // NewRootCmd builds and returns the fully assembled root command.
 func NewRootCmd() *cobra.Command {
 	var silenceExperimental bool
+	var projectDir string
 
 	var rootCmd *cobra.Command
 	rootCmd = &cobra.Command{
@@ -127,7 +128,17 @@ authored protos, in one call.`,
 		// --silence-experimental (or FORGE_SILENCE_EXPERIMENTAL=1 in
 		// CI). Errors loading config are swallowed — a missing
 		// forge.yaml is the normal "outside-a-project" path.
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// Install (or clear) the project resolution root before
+			// anything below can resolve a project. Clearing on the
+			// empty value matters for in-process embedders, which
+			// call NewRootCmd repeatedly in one process: without it
+			// a -C from an earlier invocation would leak into the
+			// next one and silently target the wrong project.
+			if err := cmdutil.SetProjectDir(projectDir); err != nil {
+				return err
+			}
+
 			// Usage-dump suppression for RUNTIME errors only. This
 			// hook runs after flag parsing and arg validation succeed,
 			// so genuine usage mistakes (unknown flag, wrong arg
@@ -153,13 +164,14 @@ authored protos, in one call.`,
 			}
 
 			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
-				return
+				return nil
 			}
 			store, err := loadProjectStore()
 			if err != nil || store == nil {
-				return
+				return nil
 			}
 			emitExperimentalWarning(cmd.ErrOrStderr(), store.Features().EnabledExperimentalFeatures())
+			return nil
 		},
 	}
 
@@ -172,6 +184,15 @@ authored protos, in one call.`,
 	// `forge generate -v`, so the one place a user would most expect it
 	// silently produced ordinary output. Commands that want it register it.
 	rootCmd.PersistentFlags().BoolVar(&silenceExperimental, "silence-experimental", false, "suppress the experimental-features warning (also: FORGE_SILENCE_EXPERIMENTAL=1)")
+
+	// --project-dir / -C is global because project resolution is global:
+	// every command locates forge.yaml from one directory, and before this
+	// flag the only way to choose that directory was the process CWD. That
+	// is unusable for the in-process embedding this package exists to
+	// support (see NewRootCmd's doc and cmdutil.SetProjectDir) — os.Chdir is
+	// process-global and unsafe under concurrency. Short form -C matches
+	// make and git.
+	rootCmd.PersistentFlags().StringVarP(&projectDir, "project-dir", "C", "", "resolve the project from this directory instead of the current one")
 
 	// Add all commands
 	// `forge start` prints the greenfield brief. It is a top-level verb
@@ -206,6 +227,8 @@ authored protos, in one call.`,
 	rootCmd.AddCommand(newPackageCmd())
 	// `debug` migrated to the internal/cli/debug group (factory registry).
 	rootCmd.AddCommand(newSecretCmd())
+	rootCmd.AddCommand(newLoginCmd())
+	rootCmd.AddCommand(newCloudCmd())
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newVersionCmd())
@@ -222,6 +245,13 @@ authored protos, in one call.`,
 	// lives under it with the env as a positional argument. Commands where
 	// env is an optional modifier (e.g. `forge build [env]`) stay at root.
 	rootCmd.AddCommand(newEnvCmd())
+	// `release` is the release-ledger noun. Cutting a ledger stays on
+	// `forge build --release` and advancing one stays on `forge env
+	// promote` — both act on the thing that owns them. What lives here is
+	// the verb that acts on a LEDGER itself, with no environment involved:
+	// `forge release verify` proves every artifact the ledger names really
+	// exists in its public registry and matches the recorded bytes.
+	rootCmd.AddCommand(newReleaseCmd())
 	// `project` is the project-structure noun: the commands that create,
 	// retire, or INSPECT a project as a whole (new/delete/disown/migrate/
 	// upgrade/map/graph/introspect/features/annotations). The flat members

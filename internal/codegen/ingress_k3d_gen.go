@@ -33,6 +33,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // K3dListener is the minimal slice of a Gateway listener that the
@@ -180,7 +182,8 @@ func GenerateK3dPorts(in K3dPortsGenInput) error {
 // otherwise become a stale port-mapping the user might forget about.
 func RemoveK3dPorts(projectDir string) error {
 	outPath := filepath.Join(projectDir, "deploy", "k3d-ports.yaml")
-	if err := os.Remove(outPath); err != nil && !os.IsNotExist(err) {
+	// Journaled so an aborted run restores it.
+	if err := checksums.RemoveJournaled(outPath); err != nil {
 		return fmt.Errorf("remove %s: %w", outPath, err)
 	}
 	return nil

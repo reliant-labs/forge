@@ -98,6 +98,24 @@ type HelmChartSpec struct {
 	// filter (selected iff no targets, or the chart's Name ∈ targets — the
 	// same rule as the chart itself). Empty when the chart carries none.
 	Manifests string
+	// Cluster, when non-empty, is the kubectl CONTEXT this chart installs
+	// into, overriding the env's primary cluster for this chart alone. It
+	// is the denormalized `.context` of the `forge.Cluster` the chart's KCL
+	// `cluster` field references (the CLI resolves the reference and
+	// validates it against the env's declared clusters before building this
+	// spec — see cli.helmChartSpecsFromEntities).
+	//
+	// THE GAP THIS CLOSES. An operator must be installed where the custom
+	// resources it reconciles land, and in a multi-cluster env that is not
+	// the primary cluster. control-plane's dev installs CNPG while its
+	// managed-database tier renders `postgresql.cnpg.io/v1 Cluster` objects
+	// into the cp-daemon cluster; with the operator on the control-plane
+	// cluster the CR apply fails `no matches for kind "Cluster" in version
+	// "postgresql.cnpg.io/v1"`.
+	//
+	// Empty => the env's primary cluster, so every pre-existing chart
+	// declaration applies through the identical argv it did before.
+	Cluster string
 }
 
 // renderedChart pairs a chart spec with its rendered (stamped,
@@ -117,6 +135,29 @@ type renderedChart struct {
 	// Manifests), stamped with the chart's app-label, applied AFTER the
 	// chart's controllers. Empty when the chart carries none.
 	extra string
+}
+
+// chartContext resolves which kubectl context ONE chart's whole apply
+// sequence runs against: the chart's own declared cluster when it names one
+// (HelmChartSpec.Cluster, the denormalized `.context` of the referenced
+// forge.Cluster), else the env's primary context the caller passed in.
+//
+// This is the single resolution point on purpose. The chart's sequence makes
+// four kinds of kubectl call — the CRD/Namespace apply, the
+// `wait --for=condition=Established` on those CRDs, the
+// `wait --for=condition=Available` on the controllers, and the riding-manifest
+// applies — and a context threaded into some but not all of them is worse than
+// no re-targeting at all: an Established wait against the primary apiserver
+// reports a CRD the TARGET cluster does not have, so the deploy would install
+// the operator nowhere useful and still report success.
+//
+// Empty Cluster returns envContext unchanged, which is what keeps every
+// existing chart declaration on byte-identical argv.
+func chartContext(envContext string, spec HelmChartSpec) string {
+	if c := strings.TrimSpace(spec.Cluster); c != "" {
+		return c
+	}
+	return envContext
 }
 
 // selectHelmChartsByGroup applies the ONE uniform exclusive `--target`
@@ -645,7 +686,16 @@ func stampDocAppLabel(doc, name string) string {
 //
 // When there are no CRDs in either source this degenerates to a single
 // apply of `rest`, byte-identical to a plain apply.
-func applyCRDsThenRest(ctx context.Context, kctx, extraCRDs, manifests string) error {
+//
+// namespace is the chart's DECLARED namespace (HelmChartSpec.Namespace),
+// passed to kubectl as `-n` so a chart object that does not stamp
+// `metadata.namespace` lands where the chart declared instead of in
+// `default`. EVERY pass below takes it — the early CRD/Namespace batch and
+// both halves of the config-then-rest second pass — because the objects are
+// split across those passes by KIND, so threading one and not another
+// reproduces the bug for whichever half was missed. See
+// KubectlApplyNamespaced for the chart-by-chart evidence.
+func applyCRDsThenRest(ctx context.Context, kctx, namespace, extraCRDs, manifests string) error {
 	streamCRDs, streamNS, rest := partitionEarlyBatch(manifests)
 
 	// Early batch: CRDs + Namespaces. The chart's namespaced resources target
@@ -657,7 +707,7 @@ func applyCRDsThenRest(ctx context.Context, kctx, extraCRDs, manifests string) e
 	crds := joinNonEmpty(extraCRDs, streamCRDs)
 	early := joinNonEmpty(crds, streamNS)
 	if strings.TrimSpace(early) != "" {
-		if err := KubectlApply(ctx, kctx, early); err != nil {
+		if err := KubectlApplyNamespaced(ctx, kctx, namespace, early); err != nil {
 			return fmt.Errorf("apply CRDs/Namespaces: %w", err)
 		}
 		names := crdNames(crds)
@@ -675,11 +725,11 @@ func applyCRDsThenRest(ctx context.Context, kctx, extraCRDs, manifests string) e
 		// before the controller pods that reference them.
 		config, workloads := PartitionConfigManifests(rest)
 		if strings.TrimSpace(config) != "" {
-			if err := KubectlApply(ctx, kctx, config); err != nil {
+			if err := KubectlApplyNamespaced(ctx, kctx, namespace, config); err != nil {
 				return fmt.Errorf("apply config: %w", err)
 			}
 		}
-		if err := KubectlApply(ctx, kctx, workloads); err != nil {
+		if err := KubectlApplyNamespaced(ctx, kctx, namespace, workloads); err != nil {
 			return fmt.Errorf("apply: %w", err)
 		}
 	}
@@ -771,12 +821,12 @@ func waitChartDeploymentsAvailable(ctx context.Context, kctx, namespace string, 
 // hits `no endpoints available` / `connection refused` for the webhook is
 // retried rather than failing the deploy. A non-webhook error surfaces
 // immediately (no point retrying a genuine manifest error).
-func applyRidingManifestsWithRetry(ctx context.Context, kctx, manifests string) error {
+func applyRidingManifestsWithRetry(ctx context.Context, kctx, namespace, manifests string) error {
 	const attempts = 6
 	const delay = 5 * time.Second
 	var err error
 	for i := 0; i < attempts; i++ {
-		if err = applyCRDsThenRest(ctx, kctx, "", manifests); err == nil {
+		if err = applyCRDsThenRest(ctx, kctx, namespace, "", manifests); err == nil {
 			return nil
 		}
 		if !isWebhookNotReadyError(err) {

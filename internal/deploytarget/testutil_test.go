@@ -96,22 +96,28 @@ func (f *fakeRunner) RunWithEnv(_ context.Context, env map[string]string, name s
 	return f.lookupErr(full)
 }
 
+// Output and OutputWithEnv return the canned blob ALONGSIDE any canned
+// error, because that is what the production execRunner does: its
+// implementation returns `buf.Bytes(), fmt.Errorf(...)` on a non-zero
+// exit, so a caller that inspects output on the error path is exercising
+// a real shape.
+//
+// The double previously returned (nil, err), which made that path
+// untestable and, worse, made a test of it pass against a provider that
+// ignored the output entirely. K8sClusterProvider.Observe depends on the
+// real behaviour: kubectl exits 1 for every failure and distinguishes
+// "not found" from "cannot connect" only in the message it writes to
+// stderr — which execRunner captures into the same buffer it returns.
 func (f *fakeRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	full := f.record(name, args)
 	f.envCalls = append(f.envCalls, nil)
-	if err := f.lookupErr(full); err != nil {
-		return nil, err
-	}
-	return []byte(f.lookupOutput(full)), nil
+	return []byte(f.lookupOutput(full)), f.lookupErr(full)
 }
 
 func (f *fakeRunner) OutputWithEnv(_ context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
 	full := f.record(name, args)
 	f.envCalls = append(f.envCalls, copyEnvMap(env))
-	if err := f.lookupErr(full); err != nil {
-		return nil, err
-	}
-	return []byte(f.lookupOutput(full)), nil
+	return []byte(f.lookupOutput(full)), f.lookupErr(full)
 }
 
 // copyEnvMap snapshots a call's env overlay so a test mutating f.envCalls

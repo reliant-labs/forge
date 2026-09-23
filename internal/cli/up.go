@@ -337,7 +337,14 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 		if checkErr != nil {
 			return checkErr // a mistyped --signal is a usage error, not a stack state
 		}
-		rep := upServicesReport{Env: env, Services: rows, Checks: checks.Checks}
+		rep := upServicesReport{
+			Env: env, Services: rows, Checks: checks.Checks,
+			// Lifted out of the Cluster Workloads check to the top level:
+			// it sits beside `services` because it is the other half of
+			// the same question, and a consumer should not have to know
+			// which check happens to carry it.
+			Workloads: doctor.InventoryOf(checks),
+		}
 		// DATABASE_URL is the other half of the discovery contract: an agent
 		// or script gets this worktree's API port (per-service `port`) AND its
 		// DSN from one call. Sourced from the launch-time persist; empty (and
@@ -435,6 +442,9 @@ func upDeployNamespace(entities *KCLEntities, store metaReader, env string) stri
 			s := &entities.Services[i]
 			if s.Deploy.Type == "cluster" && s.Deploy.Cluster != nil && s.Deploy.Cluster.Namespace != "" {
 				return s.Deploy.Cluster.Namespace
+			}
+			if s.Deploy.Type == "simple-backend" && s.Deploy.SimpleBackend != nil && s.Deploy.SimpleBackend.Namespace != "" {
+				return s.Deploy.SimpleBackend.Namespace
 			}
 		}
 		if entities.ManifestNamespace != "" {
@@ -1265,8 +1275,9 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 			// host-mode frontend (the static `output: "export"` Next.js
 			// build) right before — and pointlessly alongside — starting
 			// its `next dev` server. The build-only path exists to
-			// materialize a static frontend for a FirebaseHosting frontend
-			// to reference at DEPLOY time; it has no place in the dev loop.
+			// materialize a static frontend for a shipping frontend
+			// (FirebaseHosting or StaticSite) to reference at DEPLOY time;
+			// it has no place in the dev loop.
 			if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true, targets: opts.targets}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}
@@ -1304,7 +1315,11 @@ func targetPhaseRequirements(e *KCLEntities, targets []string) upPhaseRequiremen
 			continue
 		}
 		switch svc.Deploy.Type {
-		case "cluster":
+		case "cluster", "simple-backend":
+			// Both need the cluster phase: a SimpleBackend renders a
+			// Deployment through the same apply path, so `forge env up
+			// --target <a-simple-backend>` must reconcile the cluster or
+			// the apply has nothing to write to.
 			out.deploy = true
 			out.cluster = true
 		case "compose", "external", "host-infra":
@@ -1443,8 +1458,22 @@ type upServicesReport struct {
 	// predates it is flagged stale. Empty when the project dir is not a git
 	// repo / git is unavailable. Omitted so a consumer pinned to the old shape
 	// is unaffected.
-	HeadCommitAt string         `json:"head_commit_at,omitempty"`
-	Services     []upServiceRow `json:"services"`
+	HeadCommitAt string `json:"head_commit_at,omitempty"`
+	// Services is the HOST-PROCESS list — local dev servers and frontends
+	// running on this machine. It is NOT an inventory of the environment:
+	// for a cloud env it is routinely near-empty while a dozen workloads
+	// run in the cluster. That was the whole defect — `services` was the
+	// only structured key, so a consumer asking "what is running in prod?"
+	// got two local dev servers as data and the real answer only as prose
+	// inside a check's evidence string. Read it with Workloads below.
+	Services []upServiceRow `json:"services"`
+	// Workloads is the CLUSTER half: every pod-owning object this env's
+	// render deploys, with the cluster and namespace it was read from. It
+	// is a document rather than a bare array because an empty list and "we
+	// could not reach the cluster" are different facts — see
+	// doctor.ClusterInventory. Nil (omitted) when the Cluster Workloads
+	// check did not run at all, e.g. a --signal arm that excludes it.
+	Workloads *doctor.ClusterInventory `json:"workloads,omitempty"`
 	// Checks are the env-runtime health checks (compose infra, app
 	// /healthz, pprof, telemetry backends, Delve) — the set that moved off
 	// `forge doctor` when doctor stopped answering runtime questions.
@@ -2510,6 +2539,31 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		return fmt.Errorf("group infrastructure services: %w", err)
 	}
 	projectDir := projectDirForKCL()
+	// APPLICATION providers are deliberately absent from this map —
+	// k8s-cluster, external, firebase and static-site are all things the
+	// dev loop deploys later (or not at all), not servers it must dial
+	// first. deployInfraGroups SKIPS anything absent here, silently and by
+	// design, so read an omission as a decision rather than an oversight:
+	// adding an application provider would make `forge env up` publish a
+	// production artifact during dev bring-up.
+	//
+	// SIMPLE-BACKEND is absent too, and unlike the others it is worth
+	// stating why, because it IS a long-running server and so looks at
+	// first glance like infrastructure. Two reasons it is not:
+	//
+	//   * It is a DEPLOYED application on a hosted cluster, not a server
+	//     this project's host processes dial. Nothing in the dev loop
+	//     connects to it, which is the entire criterion for this map.
+	//   * Prewarming it would do precisely what the paragraph above
+	//     forbids — publish a production workload to a real cluster
+	//     during `forge env up`, before the deploy phase the user
+	//     actually asked for.
+	//
+	// Mechanically it needs no entry regardless: buildDeployGroups routes
+	// a SimpleBackend into a "k8s-cluster" group (see deploy_dispatch.go),
+	// which this map already omits. The point of saying so here is that
+	// the omission is a DECISION and stays correct if that routing ever
+	// changes — at which point this comment is the thing to re-read.
 	return deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
 		"host-infra": deploytarget.HostInfraProvider{ProjectDir: projectDir},
 		"compose":    deploytarget.ComposeProvider{ProjectDir: projectDir},
@@ -2518,8 +2572,14 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 
 // deployInfraGroups runs each INFRASTRUCTURE group through its provider and
 // returns every failure, joined. Groups whose provider is not in the map
-// (cluster / external / firebase) are skipped — they are applications, not
-// the servers those applications dial.
+// (cluster / external / firebase / static-site) are skipped — they are
+// applications, not the servers those applications dial.
+//
+// The skip is SILENT, which is correct here but is also the sharp edge:
+// a new provider that genuinely IS infrastructure will do nothing at all
+// until it is added to prewarmInfra's map, with no error to notice. If
+// you are adding a provider, decide deliberately which side of that line
+// it falls on.
 //
 // Split out from prewarmInfra so the attempt-everything contract is
 // testable without a project on disk. That contract is the whole point of

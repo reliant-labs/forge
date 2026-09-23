@@ -21,6 +21,21 @@ interface DataTableProps<T extends Record<string, unknown>> {
   loading?: boolean;
   emptyMessage?: string;
   selectable?: boolean;
+  /**
+   * Whether to render the pagination footer.
+   *
+   * Defaults to whether the caller wired EITHER paging handler, because a
+   * footer without one is not merely decorative — it actively misinforms. The
+   * footer previously rendered unconditionally, so a table showing a complete
+   * finite set (every workload in a cluster; every member of a team) displayed
+   * "Rows per page: 10" above sixteen rows, with dead Previous/Next buttons. A
+   * reader who believes that chrome concludes the list is truncated and goes
+   * looking for page two.
+   *
+   * Pass it explicitly to override in either direction: `false` to suppress the
+   * footer on a paged table, `true` to keep it on an uncontrolled one.
+   */
+  paginated?: boolean;
 }
 
 function SkeletonRow({ cols }: { cols: number }) {
@@ -54,6 +69,7 @@ export default function DataTable<T extends Record<string, unknown>>({
   loading = false,
   emptyMessage = "No data available",
   selectable = false,
+  paginated,
 }: DataTableProps<T>) {
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -92,6 +108,10 @@ export default function DataTable<T extends Record<string, unknown>>({
   }
 
   const allCols = selectable ? columns.length + 1 : columns.length;
+
+  // A footer the caller cannot act on is a claim about paging that is not
+  // true. Default to showing it only when paging is actually wired up.
+  const showPagination = paginated ?? (!!onPageChange || !!onPageSizeChange);
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-surface">
@@ -180,44 +200,46 @@ export default function DataTable<T extends Record<string, unknown>>({
         </table>
       </div>
 
-      {/* Pagination */}
-      <div className="flex items-center justify-between border-t border-border bg-surface px-4 py-3">
-        <div className="flex items-center gap-2 text-sm text-ink-muted">
-          <span>Rows per page:</span>
-          <select
-            value={pageSize}
-            onChange={(e) => onPageSizeChange?.(Number(e.target.value))}
-            className="rounded border border-border-strong bg-surface px-2 py-1 text-sm focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            {[10, 25, 50, 100].map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-ink-muted">
-            Page {page} of {totalPages}
-          </span>
-          <div className="flex gap-1">
-            <button
-              onClick={() => onPageChange?.(page - 1)}
-              disabled={page <= 1}
-              className="rounded-lg border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
+      {/* Pagination — only when the caller can actually page. */}
+      {showPagination && (
+        <div className="flex items-center justify-between border-t border-border bg-surface px-4 py-3">
+          <div className="flex items-center gap-2 text-sm text-ink-muted">
+            <span>Rows per page:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => onPageSizeChange?.(Number(e.target.value))}
+              className="rounded border border-border-strong bg-surface px-2 py-1 text-sm focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
             >
-              Previous
-            </button>
-            <button
-              onClick={() => onPageChange?.(page + 1)}
-              disabled={page >= totalPages}
-              className="rounded-lg border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Next
-            </button>
+              {[10, 25, 50, 100].map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-ink-muted">
+              Page {page} of {totalPages}
+            </span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => onPageChange?.(page - 1)}
+                disabled={page <= 1}
+                className="rounded-lg border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <button
+                onClick={() => onPageChange?.(page + 1)}
+                disabled={page >= totalPages}
+                className="rounded-lg border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

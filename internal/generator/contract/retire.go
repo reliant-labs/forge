@@ -142,6 +142,9 @@ func RetireExcludedArtifacts(dir string, opts Options) (Retirement, error) {
 			out.Kept = append(out.Kept, rel)
 			continue
 		}
+		// Journaled: retirement is correct on a run that SUCCEEDS, but an
+		// aborted run must hand the tree back exactly as it found it.
+		checksums.RecordPreWriteAbs(full)
 		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
 			return out, fmt.Errorf("retire %s: %w", full, err)
 		}

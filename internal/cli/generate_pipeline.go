@@ -398,6 +398,11 @@ func generateSteps() []GenStep {
 		// features.ingress is explicitly false OR features.deploy is off
 		// (no cluster, no k3d, no ingress to wire up).
 		{Name: "ingress k3d ports fragment", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.DeployEnabled), feature(config.FeaturesConfig.IngressEnabled)), GateReason: "features.ingress=false or features.deploy=false", Run: stepIngressK3dPorts, Tag: "deploy"},
+		// CRD manifests, projected from the operator's Go types. Gated on
+		// features.deploy alone (not on operators being configured): the
+		// emitter is a function of what is on disk, and a project with no
+		// api/ directory — most of them — does nothing here.
+		{Name: "CRD KCL manifests (api/ Go types)", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepCRDKCL, Tag: "deploy"},
 		{Name: "Grafana dashboards", Gate: and(feature(config.FeaturesConfig.ObservabilityEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.observability=false", Run: stepGrafanaDashboards, Tag: "deploy"},
 		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasDBOrServices), GateReason: "no proto/db or proto/services or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
@@ -2051,6 +2056,18 @@ func stepDiscoverComponents(ctx *pipelineContext) error {
 // entries; drift between the tree and this file is REPORTED by `forge lint`
 // (with the exact stanza to paste) rather than silently repaired, because
 // forge cannot tell an oversight from a deliberate omission.
+// stepCRDKCL projects the project's CRD Go types into
+// deploy/kcl/lib/crd_gen.k. See generateCRDKCL for why the Go types are the
+// single source and what the hand-authored alternative silently costs.
+func stepCRDKCL(ctx *pipelineContext) error {
+	kclDir := ctx.Cfg.K8s.KCLDir
+	if kclDir == "" {
+		kclDir = "deploy/kcl"
+	}
+	return ctx.warnOrFail("CRD KCL manifest generation",
+		generateCRDKCL(ctx.AbsPath, filepath.Join(ctx.AbsPath, kclDir), ctx.Checksums))
+}
+
 func stepWorkloadsKCL(ctx *pipelineContext) error {
 	return ctx.warnOrFail("workloads.k scaffold",
 		generator.ScaffoldWorkloadsKCL(ctx.AbsPath, ctx.Cfg.Name, ctx.Components, len(ctx.Cfg.Frontends) > 0))

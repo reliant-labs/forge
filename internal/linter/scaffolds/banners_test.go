@@ -92,6 +92,7 @@ func TestClassifyTemplate(t *testing.T) {
 		// forge:hash marker), not Tier-1 regenerated files.
 		{"internal/templates/ci/github/ci.yml.tmpl", tier2Scaffold},
 		{"internal/templates/ci/github/deploy.yml.tmpl", tier2Scaffold},
+		{"internal/templates/ci/github/reconcile.yml.tmpl", tier2Scaffold},
 		{"internal/templates/ci/github/dependabot.yml.tmpl", tier2Scaffold},
 		{"internal/templates/internal-package/contract.go.tmpl", tier2Scaffold},
 		{"internal/templates/frontend/pages/list-page.tsx.tmpl", tier2Scaffold},

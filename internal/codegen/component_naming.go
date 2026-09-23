@@ -10,32 +10,71 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
+// IsWiredComponentDir reports whether dir is a forge-WIRED component — the
+// single predicate that decides whether a package occupies a slot in the
+// generated test-factory namespace (`app.NewTest<X>`).
+//
+// A wired component is a package forge itself constructs, which means all
+// three of:
+//
+//   - it declares a contract.go (the Service/Deps/New triple lives there);
+//   - it is not opted out with `//forge:exclude-contract` — a types-only
+//     package (internal/db, internal/deploy) carries this precisely because
+//     there is nothing to construct;
+//   - it is not `//forge:external-component` — hand-built in providers.go /
+//     OpenInfra, so forge emits no factory for it either.
+//
+// WHY THIS EXISTS AS ONE FUNCTION. The name is derived by two generators —
+// the helpers generator (which builds its namespace from real components) and
+// ComputeTestHelperName (which drives the scaffold tests). They used to ask
+// DIFFERENT questions: the helpers generator asked "is this a component",
+// ComputeTestHelperName asked only `os.Stat(internal/<pkg>)`, "does a
+// directory exist". A types-only internal/deploy answered no to the first and
+// yes to the second, so testing.go declared NewTestDeploy while sixteen
+// scaffold tests referenced NewTestSvcDeploy, and the package did not compile.
+// Routing both through this predicate is what makes that disagreement
+// unrepresentable rather than merely fixed once.
+//
+// The forge.yaml `contracts.exclude` list is deliberately NOT consulted here:
+// it is a whole-subtree opt-out read by DiscoverInternalPackages, which
+// removes those packages from the inventory before either generator sees
+// them. A path that never reaches the namespace cannot collide with it.
+func IsWiredComponentDir(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, "contract.go")); err != nil {
+		return false // no contract.go: nothing declares a component here
+	}
+	if HasExcludeContractDirective(dir) {
+		return false // types-only / library shape, opted out by its own source
+	}
+	return !HasExternalComponentDirective(dir)
+}
+
 // ComputeTestHelperName returns the suffix used by the `app.NewTest<X>` and
 // `app.NewTest<X>Server` factories generated into pkg/app/testing.go. When
-// the service's Go-package name collides with an internal package directory
-// of the same name (e.g. service `billing` + `internal/billing/`), the
+// the service's Go-package name collides with a WIRED internal component of
+// the same name (e.g. service `billing` + component `internal/billing/`), the
 // bootstrap testing generator disambiguates by prefixing "Svc"
 // (NewTestSvcBilling). This helper mirrors that rule so test scaffolds emit
 // the same identifier the factory actually has.
 //
+// The collision test is IsWiredComponentDir — "does this package occupy a
+// factory-namespace slot" — not "does a directory of this name exist". Those
+// are different questions, and answering the second one made this function
+// disagree with the generator it is supposed to mirror; see IsWiredComponentDir.
+//
 // projectDir may be empty (no project context); in that case there's no
 // collision detection possible and the result is the no-collision form.
-// The collision rule matches GenerateBootstrapTesting's pkgCount logic.
 func ComputeTestHelperName(servicePkg, projectDir string) string {
 	pascal := naming.ToPascalCase(servicePkg)
 	if projectDir == "" {
 		return pascal
 	}
-	internalDir := filepath.Join(projectDir, "internal", servicePkg)
-	if info, err := os.Stat(internalDir); err == nil && info.IsDir() {
-		// An `//forge:external-component` domain pkg is NOT a forge-wired
-		// component, so the test harness drops it from the factory namespace
-		// (see filterExternalComponentPackages). It must therefore NOT drive
-		// a Svc-prefix on the HANDLER service's factory name — the service
-		// keeps the plain NewTest<Pascal> the scaffold test references.
-		if !HasExternalComponentDirective(internalDir) {
-			return "Svc" + pascal
-		}
+	if IsWiredComponentDir(filepath.Join(projectDir, "internal", servicePkg)) {
+		return "Svc" + pascal
 	}
 	return pascal
 }

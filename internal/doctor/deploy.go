@@ -295,9 +295,10 @@ type renderedSource struct {
 	Repo string `json:"repo"`
 }
 
-// renderedFrontendDeploy carries only the discriminator. "firebase" and
-// "cluster" are today's variants; an unknown one still reads as "this
-// claims to ship", which is the question being asked.
+// renderedFrontendDeploy carries only the discriminator. "firebase",
+// "static-site" and "cluster" are today's variants; an unknown one still
+// reads as "this claims to ship", which is the question being asked —
+// which is why this check needs no update when a variant is added.
 type renderedFrontendDeploy struct {
 	Type string `json:"type"`
 }
@@ -1308,20 +1309,6 @@ func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
 	})
 }
 
-// CheckDeployServiceAccount verifies that a rendered ServiceAccount is
-// actually bound to the workloads in its namespace.
-//
-// Emitting a ServiceAccount + Role + RoleBinding trio and then leaving
-// serviceAccountName off the pod spec is worse than emitting nothing:
-// the manifests read as if RBAC is scoped, while every pod runs as the
-// namespace `default` SA with whatever that account can do.
-//
-// The `declared == 0` arm below is why this check needed the scope
-// contract most: it answers StatusSkip, "not applicable", and it used to
-// reach that answer when the ONLY environment declaring a ServiceAccount
-// was the one that failed to render. [renderScope.fold] turns that into
-// UNDETERMINED — a security-shaped check must never say "does not apply"
-// on the strength of facts it could not obtain.
 // unboundReason explains why the rendered ServiceAccount `name` has no
 // pods, distinguishing the two states this check used to conflate.
 //
@@ -1348,6 +1335,20 @@ func unboundReason(name string, others []string) string {
 		name, strings.Join(others, ", "), name)
 }
 
+// CheckDeployServiceAccount verifies that a rendered ServiceAccount is
+// actually bound to the workloads in its namespace.
+//
+// Emitting a ServiceAccount + Role + RoleBinding trio and then leaving
+// serviceAccountName off the pod spec is worse than emitting nothing:
+// the manifests read as if RBAC is scoped, while every pod runs as the
+// namespace `default` SA with whatever that account can do.
+//
+// The `declared == 0` arm below is why this check needed the scope
+// contract most: it answers StatusSkip, "not applicable", and it used to
+// reach that answer when the ONLY environment declaring a ServiceAccount
+// was the one that failed to render. [renderScope.fold] turns that into
+// UNDETERMINED — a security-shaped check must never say "does not apply"
+// on the strength of facts it could not obtain.
 func CheckDeployServiceAccount(_ context.Context, env *Environment) CheckResult {
 	return examineRendered(env, "service accounts", func(renders []envRender) CheckResult {
 		var unbound []string

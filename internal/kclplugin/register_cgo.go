@@ -59,6 +59,28 @@ func Register() {
 						return &plugin.MethodResult{V: p}, nil
 					},
 				},
+				// REMOVED: host_path(rel) -> str, an absolute path under the
+				// developer's HOME.
+				//
+				// It existed to serve exactly one case — telling a HOST
+				// process where a cluster's kubeconfig lives — and it served
+				// it by GUESSING: `host_path(".kube/config")` is wrong on any
+				// machine that sets $KUBECONFIG, and a guess that is usually
+				// right fails on one teammate's machine, reported by client-go
+				// as "context does not exist" rather than as the wrong file.
+				//
+				// The path is now DERIVED from the cluster that owns it —
+				// `<cluster>.kubeconfig`, backed by the reserved `-D
+				// kubeconfig=` binding forge resolves per-render (see
+				// internal/kubeconfig and kclrender.withKubeconfigDArg). It is
+				// not replaced by a general home-anchoring escape hatch,
+				// because a general version of "resolve a path against this
+				// developer's home" invites exactly the class of declaration
+				// that motivated removing it: a machine-shaped literal, in
+				// version control, that renders differently per machine with
+				// nothing saying so. A future host fact should likewise be
+				// derived from the forge concept that owns it.
+				//
 				// dev_stacks() -> [str]. The registered DEV-STACK keys (git
 				// worktrees), for a module that generates one config block
 				// per running stack. Excludes plain port-block keys, which

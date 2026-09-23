@@ -1,8 +1,8 @@
 package cli
 
 import (
+	"context"
 	"fmt"
-	"sort"
 
 	"github.com/spf13/cobra"
 )
@@ -14,7 +14,11 @@ import (
 // ledger (.forge/env-releases.json). No build runs; the bytes that were cut as
 // <version> are, by construction, the bytes the env will deploy.
 func newPromoteCmd() *cobra.Command {
-	var toEnv string
+	var (
+		toEnv   string
+		dryRun  bool
+		jsonOut bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "promote <version> --to <env>",
@@ -32,95 +36,137 @@ per-image digests snapshotted) in .forge/env-releases.json. No image is rebuilt
 to the same release deploys byte-identical images. This eliminates the per-env
 rebuild that re-cross-compiles (and can drift arch/tag) for every environment.
 
+SEE THE CHANGE BEFORE IT IS WRITTEN. --plan computes the ENTIRE change set and
+writes nothing: the release the env runs now versus the one it would move to,
+every image classified as unchanged / changed / added / removed (with both
+digests where they differ), the git commits between the two releases, and —
+the fact most worth reading twice — the DIRECTION. A promote to an older
+release is a legitimate rollback, and it is reported as one rather than left
+for you to infer from version numbers.
+
+The plan and the real promote are computed by the SAME function, so the
+preview cannot disagree with the write. --json emits it machine-readably, in
+one document shape for both modes, with an ` + "`applied`" + ` field saying which one you
+got.
+
+PROMOTE SHIPS NOTHING. It moves a pointer. No image reaches any cluster until
+` + "`forge env deploy <env>`" + ` runs, and ` + "`forge env verify <env>`" + ` is how you prove it
+arrived. The plan says so on every invocation.
+
 Examples:
   forge build --release v1.4.0 --push ghcr.io/acme   # build once, cut the release
+  forge env promote v1.4.0 --to staging --plan            # what WOULD change (writes nothing)
+  forge env promote v1.4.0 --to staging --plan --json     # the same, machine-readable
   forge env promote v1.4.0 --to staging                  # bind staging → v1.4.0
   forge env deploy staging                               # ships v1.4.0's digests
   forge env promote v1.4.0 --to prod                     # same digests advance to prod
-  forge env deploy prod                                  # the bytes that passed staging`,
+  forge env deploy prod                                  # the bytes that passed staging
+  forge env promote v1.3.0 --to prod --plan | grep -i rollback   # catch a backwards move`,
 		Args: cobra.ExactArgs(1),
+		// The change set IS the output; a cobra usage dump would bury it
+		// under the flag list.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if toEnv == "" {
 				return fmt.Errorf("--to <env> is required: name the environment to bind to release %q", args[0])
 			}
-			return runPromote(args[0], toEnv)
+			// The checkout and its releases are resolved HERE, once, and
+			// passed down. runPromote and computePromotePlan both still
+			// fall back when these are empty — that is what lets a test
+			// state them — but the production path states them too, so
+			// the fields carry a real value rather than only ever the
+			// zero one a test overwrites.
+			projectDir := projectDirForKCL()
+			return runPromote(cmd.Context(), args[0], toEnv, promoteOptions{
+				DryRun:     dryRun,
+				JSON:       jsonOut,
+				ProjectDir: projectDir,
+				Releases:   readReleaseLedgers(projectDir),
+			})
 		},
 	}
 
 	cmd.Flags().StringVar(&toEnv, "to", "", "Environment to bind to the release (required)")
+	cmd.Flags().BoolVar(&dryRun, "plan", false, "Compute and print the full change set WITHOUT writing the binding")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (same exit codes as text mode)")
 
 	return cmd
 }
 
-// runPromote resolves the release ledger for version and records the env→release
-// binding. Resolving the digests at promote time (and snapshotting them into the
-// binding) is deliberate: it makes "the bytes that passed staging ARE the bytes
-// in prod" a checkable invariant — the digests are frozen the moment the env is
-// promoted, independent of any later edit/move of the release file.
-func runPromote(version, env string) error {
-	projectDir := projectDirForKCL()
+// promoteOptions carries the flags and the seams into runPromote.
+//
+// The three seams (Bindings, Releases, Git) are injected for the same reason
+// env verify injects its three: a test asserting that --plan writes nothing,
+// or that a rollback is reported as one, should be able to STATE the ledger
+// and the git history rather than staging a project and a repository to imply
+// them. Production leaves them nil and gets the real ones.
+type promoteOptions struct {
+	// DryRun computes the plan and stops. Nothing is written, exit 0.
+	DryRun bool
+	// JSON switches the RENDERING only. The plan is computed before either
+	// renderer runs, so the two modes cannot disagree about what was found.
+	JSON bool
+	// ProjectDir is the checkout read from. Empty falls back to discovery.
+	ProjectDir string
+	Bindings   bindingStore
+	Releases   []Release
+	Git        promoteGitReader
+}
 
-	rel, err := ReadRelease(projectDir, version)
-	if err != nil {
-		return fmt.Errorf("read release %q: %w", version, err)
+// runPromote computes the change set and — unless --plan was passed — applies
+// it.
+//
+// PLAN THEN APPLY, ALWAYS, EVEN WITHOUT --plan. The real promote takes the
+// identical path a dry run does and then writes; it does not have a second,
+// leaner implementation. That is what makes the preview trustworthy: there is
+// no code the write executes that the plan did not describe. It also means the
+// success output is the change set rather than a digest dump, so the operator
+// who skipped the preview still sees what moved.
+//
+// Resolving the digests at promote time (and snapshotting them into the
+// binding) is unchanged and still deliberate: it makes "the bytes that passed
+// staging ARE the bytes in prod" a checkable invariant — the digests are
+// frozen the moment the env is promoted, independent of any later edit or move
+// of the release file.
+func runPromote(ctx context.Context, version, env string, opts promoteOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if rel == nil {
-		return fmt.Errorf("release %q not found at %s.\n"+
-			"  Cut it first with: forge build --release %s --push <registry>",
-			version, releasePath(projectDir, version), version)
+	projectDir := opts.ProjectDir
+	if projectDir == "" {
+		projectDir = projectDirForKCL()
+	}
+	bindings := opts.Bindings
+	if bindings == nil {
+		bindings = bindingStoreFor(projectDir)
 	}
 
-	resolved, err := resolveReleaseDigests(*rel)
+	plan, err := computePromotePlan(ctx, promotePlanOptions{
+		Env:        env,
+		Version:    version,
+		ProjectDir: projectDir,
+		Bindings:   bindings,
+		Releases:   opts.Releases,
+		Git:        opts.Git,
+	})
 	if err != nil {
 		return err
 	}
+	plan.DryRun = opts.DryRun
 
-	er, err := ReadEnvReleases(projectDir)
-	if err != nil {
-		return fmt.Errorf("read env-release bindings: %w", err)
-	}
-	sources := resolveReleaseSources(*rel)
-	prev, hadPrev := er.Bindings[env]
-	er.Bindings[env] = EnvBinding{
-		Release:    version,
-		Resolved:   resolved,
-		Sources:    sources,
-		PromotedAt: nowRFC3339(),
-	}
-	if err := WriteEnvReleases(projectDir, *er); err != nil {
-		return fmt.Errorf("write env-release bindings: %w", err)
-	}
-
-	if hadPrev && prev.Release != version {
-		fmt.Printf("Promoted env %q: %s → %s\n", env, prev.Release, version)
-	} else {
-		fmt.Printf("Promoted env %q → release %s\n", env, version)
-	}
-	images := make([]string, 0, len(resolved))
-	for name := range resolved {
-		images = append(images, name)
-	}
-	sort.Strings(images)
-	for _, name := range images {
-		fmt.Printf("  %-20s %s\n", name, resolved[name])
-	}
-	// Source-built frontends print alongside the images: a promotion that
-	// listed only digests read as though the frontend were not part of the
-	// release, which is precisely the impression that let one drift.
-	feNames := make([]string, 0, len(sources))
-	for name := range sources {
-		feNames = append(feNames, name)
-	}
-	sort.Strings(feNames)
-	for _, name := range feNames {
-		src := sources[name]
-		pin := src.Ref
-		if src.Commit != "" {
-			pin = fmt.Sprintf("%s (%s)", src.Ref, shortSHA(src.Commit))
+	// THE ONLY WRITE IN THIS COMMAND, and it is downstream of the plan. A
+	// dry run simply skips it; everything rendered below is the same value
+	// either way, which is why --plan cannot describe a different change
+	// than the one that gets made.
+	if !opts.DryRun {
+		if err := applyPromotePlan(bindings, &plan); err != nil {
+			return err
 		}
-		fmt.Printf("  %-20s %s @ %s\n", name, src.Repo, pin)
 	}
-	fmt.Printf("  Binding: %s\n", envReleasesPath(projectDir))
-	fmt.Printf("  Deploy:  forge env deploy %s\n", env)
+
+	if opts.JSON {
+		return writePromotePlanJSON(plan)
+	}
+	renderPromotePlanText(plan)
 	return nil
 }

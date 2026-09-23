@@ -26,6 +26,7 @@ import (
 	"github.com/reliant-labs/forge/internal/secrets"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/kcl"
+	"github.com/reliant-labs/forge/pkg/deploystate"
 )
 
 func newDeployCmd() *cobra.Command {
@@ -42,6 +43,7 @@ func newDeployCmd() *cobra.Command {
 		frontendsOnly bool
 		skipPreflight bool
 		noDigest      bool
+		jsonOut       bool
 
 		rolloutMode     string
 		rolloutTimeout  time.Duration
@@ -81,6 +83,21 @@ to fix your kubeconfig or the KCL forge.K8sCluster.cluster.
 Use --explain to print the declared context, whether it exists in your
 kubeconfig, and the verdict without applying.
 
+Machine-readable output: --json emits ONE JSON document covering the whole
+invocation, with the same exit code text mode produces. It reports the MODE
+actually performed (explain / dry_run / apply / rollback) so a consumer never
+has to infer whether bytes moved; the guard verdict, the target cluster +
+namespace (every declared context, for a multi-cluster env); whether the
+preflight ran and its findings as structured entries; per-image digest-vs-tag
+pinning, so a deploy shipping a MUTABLE reference is visible rather than
+implied; the resource identities applied (kind/name — a diffable list, not a
+YAML dump); and the per-resource rollout outcome as three distinct states:
+ready, failed, and timed_out / not_waited. A timeout is neither a success nor a
+failure — it is the absence of an answer — and the document keeps all three
+apart. The human output moves to stderr so stdout carries exactly one document.
+Works with --explain and --dry-run, which is how a UI previews a deploy before
+asking anyone to confirm it.
+
 Deployability preflight: before the first apply (remote/cloud clusters),
 forge verifies against the LIVE target that every Secret KEY the rendered
 manifests reference is provisioned and every container image: resolves in
@@ -117,55 +134,13 @@ Examples:
   forge env deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rollout := cluster.RolloutPolicy{
-				Mode:     cluster.RolloutMode(rolloutMode),
-				Timeout:  rolloutTimeout,
-				FailFast: rolloutFailFast,
-				Order:    rolloutOrder,
-			}
-			// Validated BEFORE --explain short-circuits: a typo'd
-			// --rollout is a typo whether or not the command goes on to
-			// do anything, and reporting it only on the real run means
-			// discovering it at the worst moment.
-			if err := rollout.Validate(); err != nil {
-				return err
-			}
-			if explain {
-				return runDeployExplain(cmd.Context(), args[0])
-			}
-			// --rollback is mutually exclusive with --tag. Rollback's
-			// whole purpose is to ship the previously-recorded last-good
-			// tag from .forge/state; accepting a caller-supplied tag
-			// alongside it would either override the recorded value
-			// (defeating the rollback) or be silently ignored (worse: the
-			// user thinks they pinned a tag and they didn't).
-			if rollback && tag != "" {
-				return errors.New("--rollback and --tag are mutually exclusive")
-			}
-			// --frontends-only is the inverse of --skip-frontend: ship ONLY
-			// the env's Firebase frontend(s) and nothing else. The two are
-			// mutually exclusive — one says "everything but the frontend",
-			// the other "the frontend and nothing else"; combining them
-			// would deploy nothing.
-			if frontendsOnly && skipFrontend {
-				return errors.New("--frontends-only and --skip-frontend are mutually exclusive")
-			}
-			if frontendsOnly && len(targets) > 0 {
-				return errors.New("--frontends-only and --target are mutually exclusive (--frontends-only already scopes to every frontend)")
-			}
-			return runDeploy(cmd.Context(), args[0], deployOptions{
-				imageTag:      tag,
-				dryRun:        dryRun,
-				namespace:     namespace,
-				targetArch:    targetArch,
-				prune:         prune,
-				rollback:      rollback,
-				targets:       targets,
-				skipFrontend:  skipFrontend,
-				frontendsOnly: frontendsOnly,
-				skipPreflight: skipPreflight,
-				noDigest:      noDigest,
-				rollout:       rollout,
+			return dispatchDeployCmd(cmd.Context(), args[0], deployCmdFlags{
+				tag: tag, dryRun: dryRun, namespace: namespace, explain: explain,
+				targetArch: targetArch, prune: prune, rollback: rollback, targets: targets,
+				skipFrontend: skipFrontend, frontendsOnly: frontendsOnly,
+				skipPreflight: skipPreflight, noDigest: noDigest, jsonOut: jsonOut,
+				rolloutMode: rolloutMode, rolloutTimeout: rolloutTimeout,
+				rolloutFailFast: rolloutFailFast, rolloutOrder: rolloutOrder,
 			})
 		},
 	}
@@ -179,9 +154,10 @@ Examples:
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back the env to the last successfully deployed tag (per service, from .forge/state).")
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
-	cmd.Flags().BoolVar(&frontendsOnly, "frontends-only", false, "Deploy ONLY the env's Firebase frontend(s) — build + Firebase deploy, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
+	cmd.Flags().BoolVar(&frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to Firebase Hosting or a static-site bucket, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
 	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON describing the whole invocation — mode (explain/dry_run/apply/rollback), the declared-cluster guard verdict, the target cluster + namespace, the preflight findings, per-image digest-vs-tag pinning, the resource identities applied, and the per-resource rollout outcome (ready / failed / timed_out / not_waited). Works with --explain and --dry-run, which is how a UI previews a deploy. Same exit codes as text mode; the human output moves to stderr so stdout carries exactly one JSON document.")
 	cmd.Flags().StringVar(&rolloutMode, "rollout", "wait", "What to do after the manifests land: 'wait' (wait for every Deployment/Job and FAIL if any does not become ready — the default), 'warn' (wait and report, but exit 0), or 'skip' (apply and return immediately).")
 	cmd.Flags().DurationVar(&rolloutTimeout, "rollout-timeout", 0, "Per-resource readiness budget (e.g. 90s, 10m). Applies to EACH Deployment and one-shot Job, not the set. Default 5m.")
 	cmd.Flags().BoolVar(&rolloutFailFast, "rollout-fail-fast", false, "Stop at the FIRST resource that fails instead of waiting for the rest. Default reports every failure, which is usually what you want when diagnosing a bad deploy.")
@@ -190,45 +166,192 @@ Examples:
 	return cmd
 }
 
+// deployCmdFlags is the raw flag set `forge env deploy` parses, before it is
+// validated and folded into a deployOptions. Kept as its own type so the
+// command declaration stays a declaration and the flag SEMANTICS (the mutual
+// exclusions, the rollout-policy assembly) live in a function that can be read
+// and tested on its own.
+type deployCmdFlags struct {
+	tag           string
+	dryRun        bool
+	namespace     string
+	explain       bool
+	targetArch    string
+	prune         bool
+	rollback      bool
+	targets       []string
+	skipFrontend  bool
+	frontendsOnly bool
+	skipPreflight bool
+	noDigest      bool
+	jsonOut       bool
+
+	rolloutMode     string
+	rolloutTimeout  time.Duration
+	rolloutFailFast bool
+	rolloutOrder    []string
+}
+
+// dispatchDeployCmd validates the flag combination and routes to the explain,
+// deploy or rollback path.
+//
+// The report is constructed HERE, before the explain branch, because --json has
+// to work for --explain and --dry-run too: those are exactly what a UI calls to
+// preview a deploy, and a flag that only worked on the real thing would make
+// the preview the one case a consumer could not use.
+func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) error {
+	rollout := cluster.RolloutPolicy{
+		Mode:     cluster.RolloutMode(f.rolloutMode),
+		Timeout:  f.rolloutTimeout,
+		FailFast: f.rolloutFailFast,
+		Order:    f.rolloutOrder,
+	}
+	// Validated BEFORE --explain short-circuits: a typo'd --rollout is a typo
+	// whether or not the command goes on to do anything, and reporting it only
+	// on the real run means discovering it at the worst moment.
+	if err := rollout.Validate(); err != nil {
+		return err
+	}
+	report := newDeployReport(envName, f.jsonOut)
+	if f.explain {
+		return runDeployExplain(ctx, envName, report)
+	}
+	// --rollback is mutually exclusive with --tag. Rollback's whole purpose is
+	// to ship the previously-recorded last-good tag from .forge/state;
+	// accepting a caller-supplied tag alongside it would either override the
+	// recorded value (defeating the rollback) or be silently ignored (worse:
+	// the user thinks they pinned a tag and they didn't).
+	if f.rollback && f.tag != "" {
+		return errors.New("--rollback and --tag are mutually exclusive")
+	}
+	// --frontends-only is the inverse of --skip-frontend: ship ONLY the env's
+	// shippable frontend(s) and nothing else. The two are mutually exclusive —
+	// one says "everything but the frontend", the other "the frontend and
+	// nothing else"; combining them would deploy nothing.
+	if f.frontendsOnly && f.skipFrontend {
+		return errors.New("--frontends-only and --skip-frontend are mutually exclusive")
+	}
+	if f.frontendsOnly && len(f.targets) > 0 {
+		return errors.New("--frontends-only and --target are mutually exclusive (--frontends-only already scopes to every frontend)")
+	}
+	return runDeployReported(ctx, envName, report, deployOptions{
+		imageTag:      f.tag,
+		dryRun:        f.dryRun,
+		namespace:     f.namespace,
+		targetArch:    f.targetArch,
+		prune:         f.prune,
+		rollback:      f.rollback,
+		targets:       f.targets,
+		skipFrontend:  f.skipFrontend,
+		frontendsOnly: f.frontendsOnly,
+		skipPreflight: f.skipPreflight,
+		noDigest:      f.noDigest,
+		rollout:       rollout,
+		report:        report,
+	})
+}
+
 // runDeployExplain prints the resolved kubectl-context guard decision
 // for an environment without doing anything destructive. Useful when
 // debugging why `forge env deploy staging` refuses to apply or what context
 // staging is expected to live in.
-func runDeployExplain(ctx context.Context, envName string) error {
+func runDeployExplain(ctx context.Context, envName string, report *deployReport) error {
 	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
 	cfg := store.Config()
-	expected := expectedClusterForEnv(ctx, cfg, envName)
-	current := strings.TrimSpace(currentKubectlContext(ctx))
 
-	fmt.Printf("forge env deploy %s — declared-cluster guard\n", envName)
-	fmt.Printf("  declared context: %s\n", emptyAs(expected, "(not declared)"))
-	fmt.Printf("  current context:  %s  (purely informational — NEVER used; the deploy always applies to the DECLARED context)\n", emptyAs(current, "(none — kubectl not configured)"))
+	guard := computeDeployGuard(ctx, cfg, envName)
+	report.setMode(deployModeExplain)
+	report.setGuard(guard)
+	// The namespace is part of "which cluster am I about to touch", and a UI
+	// previewing a deploy needs it before the user confirms — so --explain
+	// resolves it too rather than leaving the target half-populated.
+	report.setTarget(guard.DeclaredContext, k8sClusterNamespaceForEnv(ctx, envName))
 
-	if expected == "" {
-		fmt.Printf("  hint:             declare `forge.K8sCluster.cluster` in deploy/kcl/%s/main.k to enable the guard\n", envName)
-		fmt.Println("  verdict: ALLOW (no cluster declared — guard skipped, current context used)")
-		return printDeployExplainHostSkip(cfg, envName)
+	if report.Enabled() {
+		// An --explain that REFUSES is still a successful explain: it did
+		// exactly what it was asked to do. Text mode returns nil here, so
+		// the report says ok, and the exit codes match.
+		report.finish(nil, 0)
+		return report.emit()
 	}
-	// Declarative model: the deploy applies to the declared context
-	// regardless of the active one. The only failure is a declared
-	// context that doesn't exist in the kubeconfig.
+
+	renderDeployGuardText(envName, guard)
+	if guard.Verdict == deployGuardVerdictRefuse {
+		return nil
+	}
+	return printDeployExplainHostSkip(cfg, envName)
+}
+
+// computeDeployGuard evaluates the declared-context guard and returns the
+// verdict AS DATA.
+//
+// This is the same decision the text explain always made, lifted out of the
+// printing so both renderers read one value. Two code paths — one that prints a
+// verdict and one that reports it — would be free to disagree, and a UI told
+// "allow" by a document while the CLI refuses is the worst available outcome
+// for a command whose entire purpose is preventing a wrong-cluster deploy.
+//
+// The model is declarative: the deploy applies to the context the env's KCL
+// declares, and the ONLY failure is that context being absent from the
+// kubeconfig. The ambient current-context is read purely to report it.
+func computeDeployGuard(ctx context.Context, cfg *config.ProjectConfig, envName string) deployJSONGuard {
+	declared := expectedClusterForEnv(ctx, cfg, envName)
+	guard := deployJSONGuard{
+		DeclaredContext: declared,
+		CurrentContext:  strings.TrimSpace(currentKubectlContext(ctx)),
+	}
+
+	if declared == "" {
+		guard.Verdict = deployGuardVerdictAllow
+		guard.Reason = deployGuardReasonNoClusterDeclared
+		guard.Fix = fmt.Sprintf("declare `forge.K8sCluster.cluster` in deploy/kcl/%s/main.k to enable the guard", envName)
+		return guard
+	}
+
 	available, aerr := kubectlContextNames(ctx)
 	if aerr != nil {
-		fmt.Printf("  fix:              %v\n", aerr)
+		guard.Verdict = deployGuardVerdictRefuse
+		guard.Reason = deployGuardReasonKubectlUnavailable
+		guard.Fix = aerr.Error()
+		return guard
+	}
+	if verr := declaredContextExistsVerdict(envName, declared, available); verr != nil {
+		guard.Verdict = deployGuardVerdictRefuse
+		guard.Reason = deployGuardReasonDeclaredContextMissing
+		guard.AvailableContexts = available
+		guard.Fix = "add the context to your kubeconfig, or correct forge.K8sCluster.cluster in the env's KCL"
+		return guard
+	}
+	guard.Verdict = deployGuardVerdictAllow
+	guard.Reason = deployGuardReasonContextDeclared
+	return guard
+}
+
+// renderDeployGuardText prints the human explain report from the same guard
+// value the JSON carries.
+func renderDeployGuardText(envName string, guard deployJSONGuard) {
+	fmt.Printf("forge env deploy %s — declared-cluster guard\n", envName)
+	fmt.Printf("  declared context: %s\n", emptyAs(guard.DeclaredContext, "(not declared)"))
+	fmt.Printf("  current context:  %s  (purely informational — NEVER used; the deploy always applies to the DECLARED context)\n",
+		emptyAs(guard.CurrentContext, "(none — kubectl not configured)"))
+
+	switch guard.Reason {
+	case deployGuardReasonNoClusterDeclared:
+		fmt.Printf("  hint:             %s\n", guard.Fix)
+		fmt.Println("  verdict: ALLOW (no cluster declared — guard skipped, current context used)")
+	case deployGuardReasonKubectlUnavailable:
+		fmt.Printf("  fix:              %s\n", guard.Fix)
 		fmt.Println("  verdict: REFUSE (kubectl not configured)")
-		return nil
-	}
-	if verr := declaredContextExistsVerdict(envName, expected, available); verr != nil {
-		fmt.Printf("  available:        %s\n", emptyAs(strings.Join(available, ", "), "(none)"))
-		fmt.Printf("  fix:              add the context to your kubeconfig, or correct forge.K8sCluster.cluster in the env's KCL\n")
+	case deployGuardReasonDeclaredContextMissing:
+		fmt.Printf("  available:        %s\n", emptyAs(strings.Join(guard.AvailableContexts, ", "), "(none)"))
+		fmt.Printf("  fix:              %s\n", guard.Fix)
 		fmt.Println("  verdict: REFUSE (declared context not in kubeconfig)")
-		return nil
+	default:
+		fmt.Println("  verdict: ALLOW (declared context exists; deploy applies there regardless of current)")
 	}
-	fmt.Println("  verdict: ALLOW (declared context exists; deploy applies there regardless of current)")
-	return printDeployExplainHostSkip(cfg, envName)
 }
 
 // printDeployExplainHostSkip is a placeholder for the post-orchestration
@@ -343,6 +466,47 @@ type deployOptions struct {
 	// normalizes to wait-and-fail, which is the only safe default for a
 	// real environment — see cluster.RolloutPolicy.
 	rollout cluster.RolloutPolicy
+
+	// report, when non-nil, accumulates the machine-readable document
+	// (--json). It is threaded THROUGH the deploy rather than computed
+	// beside it: every method on it is nil-safe, so text mode passes nil and
+	// runs the identical code path. That is what makes the JSON a record of
+	// what happened instead of a second opinion about it.
+	report *deployReport
+}
+
+// runDeployReported runs the deploy and, in --json mode, emits the report.
+//
+// STDOUT IS DIVERTED TO STDERR for the deploy's duration when reporting. The
+// deploy body makes 51 fmt.Print calls and drives kubectl with inherited
+// stdout; leaving any of that on stdout would interleave prose with the
+// document and there would be no JSON to parse. Redirecting rather than
+// suppressing is deliberate — a `--json` deploy that fails must still show the
+// operator kubectl's own diagnostics, and stderr is where a machine consumer
+// expects to find them.
+//
+// The report is emitted whether the deploy SUCCEEDED OR FAILED, and the
+// deploy's own error is returned afterwards untouched. A consumer of a failed
+// deploy needs the document most of all — which resource, which state — and
+// swallowing it on failure would leave the UI with nothing but an exit code.
+func runDeployReported(ctx context.Context, envName string, report *deployReport, opts deployOptions) error {
+	if !report.Enabled() {
+		return runDeploy(ctx, envName, opts)
+	}
+
+	realStdout := os.Stdout
+	os.Stdout = os.Stderr
+	start := time.Now()
+	deployErr := runDeploy(ctx, envName, opts)
+	os.Stdout = realStdout
+
+	report.finish(deployErr, time.Since(start))
+	// A failure writing the document must not mask the deploy's own verdict:
+	// the deploy result is what the caller acted on, so it wins.
+	if emitErr := report.emit(); emitErr != nil && deployErr == nil {
+		return emitErr
+	}
+	return deployErr
 }
 
 // resolveEnvMainK locates an environment's KCL entrypoint and proves it
@@ -371,6 +535,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	prune := opts.prune
 	rollback := opts.rollback
 	targets := opts.targets
+	report := opts.report
+
+	recordDeployInvocation(report, opts)
+
 	store, err := loadProjectStore()
 	if err != nil {
 		return err
@@ -413,15 +581,9 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	plainTag := tagRes.plainTag
 	imageDigests := tagRes.imageDigests
 	tagSource := tagRes.tagSource
+	report.setTags(imageTag, tagSource, tagRes.boundRelease, opts.noDigest)
 
-	// Resolve namespace.
-	if namespace == "" {
-		if ns := k8sClusterNamespaceForEnv(ctx, envName); ns != "" {
-			namespace = ns
-		} else {
-			namespace = store.Meta().Name + "-" + envName
-		}
-	}
+	namespace = resolveDeployNamespace(ctx, namespace, envName, store.Meta().Name)
 
 	entities, err := renderAndScopeEntities(ctx, projectDir, envName, targets, opts.frontendsOnly)
 	if err != nil {
@@ -445,6 +607,20 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		}
 	}
 
+	// Reconcile-policy gate. Read HERE, from disk, on every deploy — a
+	// pinned environment refuses writes from the very next invocation,
+	// with no restart and no re-render. Placed before the banner so a
+	// refused deploy says why instead of printing a plan it will not
+	// carry out. A dry run is exempt: it writes nothing, and an operator
+	// inspecting what WOULD ship during a freeze is exactly the person a
+	// freeze should help.
+	if !dryRun {
+		policyStore := deploystate.NewLocal(projectDir)
+		if err := gateDeployOnPolicy(ctx, policyStore, envName, policyStore.PolicyPath(envName)); err != nil {
+			return err
+		}
+	}
+
 	printDeployBanner(store.Meta().Name, envName, imageTag, tagSource, namespace, rollback, dryRun, hasK8sServices)
 
 	// Declared external-prerequisite CHECKLIST: print the out-of-band facts
@@ -457,18 +633,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// reminder is never lost. No-op when the env declares no prereqs.
 	printPrerequisiteChecklist(entities)
 
-	// kubectl-context guard: only meaningful when at least one service
-	// in the bundle targets K8sCluster. External-only / compose-only
-	// projects don't touch kubectl, so the guard would surface a wrong-
-	// context error that has no bearing on what's about to ship.
-	if hasK8sServices {
-		// Runs under --dry-run too: dry-run is for surfacing mistakes
-		// (wrong context!) before they ship, not for papering over
-		// them. The context is purely declarative (forge.K8sCluster.cluster)
-		// — there is no CLI escape hatch, so the guard always runs.
-		if err := verifyKubectlContext(ctx, cfg, envName); err != nil {
-			return err
-		}
+	if err := guardDeployCluster(ctx, cfg, envName, hasK8sServices, report); err != nil {
+		return err
 	}
 
 	start := time.Now()
@@ -499,6 +665,12 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	if err != nil {
 		return err
 	}
+	// The resolved target, recorded once the context and namespace are both
+	// final. declaredClusterContexts is the FULL declared set — this env may
+	// span more than one cluster (control-plane's own dev env does), and a
+	// confirmation dialog shown only the env-wide context would omit a cluster
+	// the deploy is about to write to.
+	report.setTarget(deployContext, namespace, declaredClusterContexts(entities, deployContext)...)
 
 	// Env's declared platform deps (forge.HelmChart) rendered into
 	// cluster.HelmChartSpec values. See resolveDeployHelmSpecs.
@@ -530,14 +702,12 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// local-registry images are skipped (they live in the in-cluster
 	// registry the checker can't reach). Runs under --dry-run too (pure
 	// read-only check). --skip-preflight bypasses it.
-	if hasK8sServices && !rollback && !opts.skipPreflight {
-		if err := runDeployPreflightForEnv(ctx, deployPreflightEnvInput{
-			entities: entities, mainK: mainK, imageTag: imageTag, namespace: namespace,
-			envName: envName, envCfgKV: envCfgKV, deployContext: deployContext,
-			targets: targets, imageDigests: imageDigests,
-		}); err != nil {
-			return err
-		}
+	if err := gateDeployOnPreflight(ctx, deployPreflightEnvInput{
+		entities: entities, mainK: mainK, imageTag: imageTag, namespace: namespace,
+		envName: envName, envCfgKV: envCfgKV, deployContext: deployContext,
+		targets: targets, imageDigests: imageDigests, report: report,
+	}, hasK8sServices, rollback, opts.skipPreflight); err != nil {
+		return err
 	}
 
 	// k8s Secret projection: for a dotenv secret_provider, render the
@@ -556,7 +726,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 			mainK: mainK, imageTag: imageTag, namespace: namespace, envName: envName,
 			envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, targets: targets,
 			groups: groups, entities: entities, imageDigests: imageDigests,
-			cfg: cfg, projectDir: projectDir, start: start,
+			cfg: cfg, projectDir: projectDir, start: start, report: report,
 		})
 	}
 
@@ -576,37 +746,28 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		namespace: namespace, envName: envName, deployContext: deployContext,
 		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
 		targets: targets, helmSpecs: helmSpecs,
-		rollout: opts.rollout,
+		rollout: opts.rollout, report: report,
 	}); err != nil {
 		return err
 	}
+	// Under rollout mode skip forge applied the manifests and waited for
+	// nothing, so no observation arrived for any resource. Their readiness is
+	// genuinely unknown rather than fine, and the document says so explicitly
+	// — a consumer must never read silence as health.
+	report.markWorkloadsNotWaited()
 
 	// Frontend deploy dispatch — frontends declaring a first-class deploy
-	// target (today: forge.FirebaseHosting) are built + shipped after the
-	// service groups. Runs under --dry-run too so the assemble/firebase
-	// plan surfaces before any side effect. No-op when no frontend
-	// declares a deploy target — the unchanged default for k8s/host/none
-	// frontends.
-	//
-	// --skip-frontend short-circuits the dispatch entirely: the k8s apply
-	// above already ran, and the user explicitly asked to leave the
-	// frontend (and its ../web/dist rebuild) untouched. (Naming only
-	// backend apps via --target also excludes frontends, because the
-	// target filter empties entities.Frontends; --skip-frontend is the
-	// "whole backend, no frontend" variant that doesn't require listing
-	// every service.)
-	if opts.skipFrontend {
-		if hasFirebaseFrontend(entities) {
-			fmt.Println("\nSkipping frontend deploy (--skip-frontend).")
-		}
-	} else {
-		// Say so when a declared frontend will not ship. The dispatch below
-		// is a silent no-op for a frontend this env never declared, and
-		// that silence is the whole reported bug — see the helper.
-		warnUndeployedFrontends(os.Stdout, cfg, entities, envName, targets)
-		if err := dispatchFrontendDeploys(ctx, entities, projectDir, envName, envCfgKV, dryRun); err != nil {
-			return err
-		}
+	// target are built + shipped after the service groups, under --dry-run
+	// too so the plan surfaces before any side effect. The warning and the
+	// skip both live in the helper so a caller cannot get one without the
+	// other; warnUndeployedFrontends is what stops a declared-but-undeployed
+	// frontend failing silently, which was the reported bug.
+	if err := dispatchFrontendsOrSkip(ctx, deployFrontendInput{
+		cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
+		envCfgKV: envCfgKV, targets: targets, dryRun: dryRun,
+		skipFrontend: opts.skipFrontend,
+	}); err != nil {
+		return err
 	}
 
 	if dryRun {
@@ -615,6 +776,116 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
+}
+
+// resolveDeployNamespace resolves the target namespace by the established
+// precedence: an explicit --namespace override, else the env's declared
+// forge.K8sCluster.namespace, else the <project>-<env> default.
+func resolveDeployNamespace(ctx context.Context, override, envName, projectName string) string {
+	if override != "" {
+		return override
+	}
+	if declared := k8sClusterNamespaceForEnv(ctx, envName); declared != "" {
+		return declared
+	}
+	return projectName + "-" + envName
+}
+
+// guardDeployCluster runs the kubectl-context guard and records its verdict on
+// the report.
+//
+// Only meaningful when at least one service in the bundle targets K8sCluster.
+// External-only / compose-only projects don't touch kubectl, so the guard would
+// surface a wrong-context error that has no bearing on what's about to ship —
+// hence the hasK8sServices gate rather than an unconditional check.
+func guardDeployCluster(
+	ctx context.Context,
+	cfg *config.ProjectConfig,
+	envName string,
+	hasK8sServices bool,
+	report *deployReport,
+) error {
+	if !hasK8sServices {
+		return nil
+	}
+	// The guard verdict is computed as DATA first so the report carries it
+	// whichever way this goes — including the refusal, where naming the
+	// cluster forge declined to touch is the whole value. The enforcement
+	// below remains authoritative: this records the decision, it does not
+	// make it.
+	report.setGuard(computeDeployGuard(ctx, cfg, envName))
+	// Runs under --dry-run too: dry-run is for surfacing mistakes (wrong
+	// context!) before they ship, not for papering over them. The context is
+	// purely declarative (forge.K8sCluster.cluster) — there is no CLI escape
+	// hatch, so the guard always runs.
+	return verifyKubectlContext(ctx, cfg, envName)
+}
+
+// deployFrontendInput carries what dispatchFrontendsOrSkip needs to warn about
+// and then ship the env's frontends. Grouped for the same reason as
+// deployApplyInput and deployClusterInput: the fields travel together through
+// one stage of the deploy pipeline, and naming them at the call site keeps a
+// long positional list from being mis-ordered silently — projectDir and
+// envName are both strings, so a transposition would compile.
+type deployFrontendInput struct {
+	cfg          *config.ProjectConfig
+	entities     *KCLEntities
+	projectDir   string
+	envName      string
+	envCfgKV     map[string]string
+	targets      []string
+	dryRun       bool
+	skipFrontend bool
+}
+
+// dispatchFrontendsOrSkip ships every frontend declaring a first-class deploy
+// target (today: forge.FirebaseHosting / forge.StaticSite), or reports that the
+// dispatch was skipped.
+//
+// Runs under --dry-run too, so the assemble/firebase plan surfaces before any
+// side effect. A no-op when no frontend declares a deploy target — the unchanged
+// default for k8s/host/none frontends.
+//
+// --skip-frontend short-circuits it entirely: the k8s apply already ran and the
+// user explicitly asked to leave the frontend (and its web/dist rebuild) alone.
+// Naming only backend apps via --target also excludes frontends, because the
+// target filter empties entities.Frontends; --skip-frontend is the "whole
+// backend, no frontend" variant that does not require listing every service.
+func dispatchFrontendsOrSkip(ctx context.Context, in deployFrontendInput) error {
+	if in.skipFrontend {
+		if hasShippableFrontend(in.entities) {
+			fmt.Println("\nSkipping frontend deploy (--skip-frontend).")
+		}
+		return nil
+	}
+
+	// BEFORE the dispatch, because the dispatch is a silent no-op for a
+	// frontend this env never declared — and that silence is the whole
+	// reported bug. Warn rather than error: deploying a frontend out-of-band
+	// (Vercel, a separate pipeline) is legitimate, and erroring would break
+	// correctly-configured users to fix a reporting gap.
+	warnUndeployedFrontends(os.Stdout, in.cfg, in.entities, in.envName, in.targets)
+	return dispatchFrontendDeploys(ctx, in.entities, in.projectDir, in.envName, in.envCfgKV, in.dryRun)
+}
+
+// recordDeployInvocation stamps the facts that are known from the FLAGS ALONE,
+// before anything can fail.
+//
+// The mode especially: a document that reported it only on success would leave a
+// consumer of a FAILED invocation unable to tell whether bytes moved, which is
+// the one question the report must always be able to answer. Nil-safe, so text
+// mode calls it and nothing happens.
+func recordDeployInvocation(report *deployReport, opts deployOptions) {
+	switch {
+	case opts.rollback:
+		report.setMode(deployModeRollback)
+	case opts.dryRun:
+		report.setMode(deployModeDryRun)
+	default:
+		report.setMode(deployModeApply)
+	}
+	report.setScope(opts.targets, opts.skipFrontend, opts.frontendsOnly, opts.prune)
+	report.setRolloutPolicy(opts.rollout)
 }
 
 // deployTagResolution is the resolved image-reference set runDeploy threads
@@ -626,6 +897,11 @@ type deployTagResolution struct {
 	plainTag     string
 	tagSource    string
 	imageDigests map[string]string
+	// boundRelease is the release this env is promoted to, when it has a
+	// binding — the release whose captured digests are being pinned. Already
+	// named in tagSource's prose; carried structurally so the report does not
+	// have to parse it back out of a sentence.
+	boundRelease string
 }
 
 // resolveDeployTags resolves the image tag (three-tier precedence chain) and
@@ -663,11 +939,12 @@ func resolveDeployTags(ctx context.Context, projectDir, envName string, opts dep
 	res.imageTag = ref
 	res.plainTag = pt
 	res.tagSource = src
-	digests, boundRel, derr := resolveDeployDigests(projectDir, envName, opts.noDigest)
+	digests, boundRel, derr := resolveDeployDigests(projectDir, envName, opts.noDigest, bindingStoreFor(projectDir))
 	if derr != nil {
 		return deployTagResolution{}, derr
 	}
 	res.imageDigests = digests
+	res.boundRelease = boundRel
 	if boundRel != "" {
 		res.tagSource = fmt.Sprintf("release %s (promoted; .forge/env-releases.json)", boundRel)
 		fmt.Printf("  Release:     %s  (env %q is promoted to it — pinning its digests)\n", boundRel, envName)
@@ -692,6 +969,9 @@ type deployRollbackInput struct {
 	cfg          *config.ProjectConfig
 	projectDir   string
 	start        time.Time
+	// report, when non-nil, receives the rollback's stream and rollout
+	// outcomes. Nil-safe.
+	report *deployReport
 }
 
 // runDeployRollback dispatches each group to its provider's Rollback. The
@@ -711,13 +991,23 @@ func runDeployRollback(ctx context.Context, in deployRollbackInput) error {
 		EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
 		Targets: in.targets, Groups: in.groups, Entities: in.entities,
 		ImageDigests: in.imageDigests, HelmCharts: nil,
+		OnStream: in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
 	})
 	registry := deploytarget.NewRegistry()
 	// Rollback's per-group context is resolved by the provider purely from each
 	// group's declared cluster (forge.K8sCluster.cluster) — no override, no
 	// current-context fallback.
 	registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
-	if err := rollbackDeployGroups(ctx, registry, in.groups, in.projectDir); err != nil {
+	// StaticSiteProvider genuinely supports rollback (it re-points live/ at an
+	// archived release prefix), so it is registered ProjectDir-configured: it
+	// reads the recorded predecessor digest out of .forge/state.
+	registry.Register(deploytarget.StaticSiteProvider{ProjectDir: in.projectDir})
+
+	groups := in.groups
+	if frontendGroups := staticSiteRollbackGroups(in.entities, in.envName, in.dryRun); len(frontendGroups) > 0 {
+		groups = append(append([]deploytarget.ServiceGroup{}, groups...), frontendGroups...)
+	}
+	if err := rollbackDeployGroups(ctx, registry, groups, in.projectDir); err != nil {
 		return err
 	}
 	fmt.Printf("\nRollback completed in %s.\n", time.Since(in.start).Truncate(time.Millisecond))
@@ -743,6 +1033,9 @@ type deployApplyInput struct {
 	targets        []string
 	helmSpecs      []cluster.HelmChartSpec
 	rollout        cluster.RolloutPolicy
+	// report, when non-nil, receives the applied manifest stream and the
+	// per-resource rollout outcomes. Nil-safe.
+	report *deployReport
 }
 
 // applyDeployGroups applies the rendered deploy groups. With no groups (and not
@@ -754,7 +1047,7 @@ type deployApplyInput struct {
 // pipeline, so both branches are skipped and the frontend dispatch does the
 // real work.
 func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
-	frontendOnly := len(in.groups) == 0 && !in.hasK8sServices && hasFirebaseFrontend(in.entities) &&
+	frontendOnly := len(in.groups) == 0 && !in.hasK8sServices && hasShippableFrontend(in.entities) &&
 		in.entities != nil && len(in.entities.Operators) == 0 && len(in.entities.CronJobs) == 0
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{
@@ -772,6 +1065,8 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			Targets:      in.targets,
 			HelmCharts:   in.helmSpecs,
 			Rollout:      in.rollout,
+			OnStream:     in.report.streamObserver(),
+			OnRollout:    in.report.rolloutObserver(),
 		})
 	}
 	if len(in.groups) > 0 {
@@ -781,7 +1076,8 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
 			Targets: in.targets, Groups: in.groups, Entities: in.entities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
-			Rollout: in.rollout,
+			Rollout:  in.rollout,
+			OnStream: in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
@@ -823,10 +1119,10 @@ func buildDeployGroupsForEnv(envName string, entities *KCLEntities, namespace, p
 //
 // --target: an empty filter is a no-op (every app). A typo'd target is caught
 // here (with the list of available app names) rather than producing a silent
-// no-op deploy. --frontends-only: narrow the set to its Firebase frontend(s)
+// no-op deploy. --frontends-only: narrow the set to its shippable frontend(s)
 // and DROP every other kind, so the frontend-only cluster-skip guard engages
 // even for a project that declares backend CronJobs; refuse fast when the env
-// declares no Firebase frontend rather than silently no-op'ing.
+// declares no shippable frontend rather than silently no-op'ing.
 func renderAndScopeEntities(ctx context.Context, projectDir, envName string, targets []string, frontendsOnly bool) (*KCLEntities, error) {
 	entities, kerr := RenderKCL(ctx, projectDir, envName)
 	if kerr != nil {
@@ -839,8 +1135,8 @@ func renderAndScopeEntities(ctx context.Context, projectDir, envName string, tar
 		entities = filterEntitiesByTarget(entities, targets)
 	}
 	if frontendsOnly {
-		if entities == nil || !hasFirebaseFrontend(entities) {
-			return nil, fmt.Errorf("--frontends-only: environment %q declares no Firebase Hosting frontend to deploy", envName)
+		if entities == nil || !hasShippableFrontend(entities) {
+			return nil, fmt.Errorf("--frontends-only: environment %q declares no shippable frontend to deploy (a forge.FirebaseHosting or forge.StaticSite deploy block)", envName)
 		}
 		entities = filterEntitiesToFrontendsOnly(entities)
 	}
@@ -965,7 +1261,10 @@ func resolveDeployHelmSpecs(ctx context.Context, entities *KCLEntities, targets 
 	if len(selected) == 0 {
 		return nil, nil
 	}
-	return helmChartSpecsFromEntities(ctx, selected)
+	// The env's declared clusters are passed so a chart naming a cluster this
+	// env does not declare is REFUSED here rather than silently applied to the
+	// primary. See validateChartCluster.
+	return helmChartSpecsFromEntities(ctx, selected, entities.Clusters)
 }
 
 // deployPreflightEnvInput carries the env-derived inputs runDeployPreflightForEnv
@@ -981,6 +1280,31 @@ type deployPreflightEnvInput struct {
 	deployContext string
 	targets       []string
 	imageDigests  map[string]string
+	// report, when non-nil, receives the structured findings. Nil-safe.
+	report *deployReport
+}
+
+// gateDeployOnPreflight runs the deployability preflight when it applies, and
+// otherwise records WHY it did not.
+//
+// The skip reason is recorded as precisely as a finding, because "no findings"
+// and "nobody looked" are different claims and a consumer that cannot tell them
+// apart will present an unchecked deploy as a clean one. The three skips are the
+// pre-existing conditions, unchanged: no cluster to check against, a rollback
+// (which reuses the tag and Secrets already in the cluster), and the explicit
+// --skip-preflight bypass.
+func gateDeployOnPreflight(ctx context.Context, in deployPreflightEnvInput, hasK8sServices, rollback, skipPreflight bool) error {
+	switch {
+	case !hasK8sServices:
+		in.report.setPreflightStatus(deployPreflightSkippedNoCluster)
+	case rollback:
+		in.report.setPreflightStatus(deployPreflightSkippedRollback)
+	case skipPreflight:
+		in.report.setPreflightStatus(deployPreflightSkippedFlag)
+	default:
+		return runDeployPreflightForEnv(ctx, in)
+	}
+	return nil
 }
 
 // runDeployPreflightForEnv runs the deployability preflight against the live
@@ -1006,6 +1330,7 @@ func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) e
 		imageDigests:    in.imageDigests,
 		requiredSecrets: requiredSecretsForPreflight(in.entities),
 		secretSupply:    secretSupplyForPreflight(in.entities),
+		report:          in.report,
 	})
 }
 
@@ -1136,14 +1461,15 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	}
 
 	var fes []deploytarget.FirebaseFrontend
+	var sites []deploytarget.StaticSiteFrontend
 	var buildOnly []deploytarget.BuildOnlyFrontend
 	var builtDirs []string
 	for _, f := range entities.Frontends {
 		if f.Deploy == nil {
 			// `deploy = None`: build-only. forge builds it (env-injected)
-			// so its output exists on disk before any FirebaseHosting
-			// frontend assembles a bundle that references it. Non-firebase
-			// deploy targets remain a no-op (skipped below).
+			// so its output exists on disk before any shipping frontend
+			// assembles a bundle that references it. Non-static deploy
+			// targets remain a no-op (skipped below).
 			if err := checkDeployableFrontendMock(f); err != nil {
 				return err
 			}
@@ -1151,16 +1477,25 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			buildOnly = append(buildOnly, frontendToBuildOnly(f))
 			continue
 		}
-		if f.Deploy.Type != "firebase" || f.Deploy.Firebase == nil {
-			continue
+		switch {
+		case f.Deploy.Type == "firebase" && f.Deploy.Firebase != nil:
+			if err := checkDeployableFrontendMock(f); err != nil {
+				return err
+			}
+			builtDirs = append(builtDirs, f.Path)
+			fb := frontendToFirebase(f)
+			fb.RuntimeConfigJS = runtimeConfigs[f.Name]
+			fes = append(fes, fb)
+
+		case f.Deploy.Type == frontendDeployStaticSite && f.Deploy.StaticSite != nil:
+			if err := checkDeployableFrontendMock(f); err != nil {
+				return err
+			}
+			builtDirs = append(builtDirs, f.Path)
+			ss := frontendToStaticSite(f)
+			ss.RuntimeConfigJS = runtimeConfigs[f.Name]
+			sites = append(sites, ss)
 		}
-		if err := checkDeployableFrontendMock(f); err != nil {
-			return err
-		}
-		builtDirs = append(builtDirs, f.Path)
-		fb := frontendToFirebase(f)
-		fb.RuntimeConfigJS = runtimeConfigs[f.Name]
-		fes = append(fes, fb)
 	}
 
 	// Build/deploy-path forge-owned dotenv gate: a committed .env.local /
@@ -1187,37 +1522,59 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 		}
 	}
 
-	if len(fes) == 0 {
+	if len(fes) == 0 && len(sites) == 0 {
 		return nil
 	}
 
-	fmt.Printf("\nDeploying %d frontend(s) to Firebase Hosting...\n", len(fes))
-	// Dispatch the Firebase frontends through the registry like every
-	// other deploy target: build a frontend-bearing group and route it
-	// via the provider's Name(). The registry re-registers a
-	// ProjectDir-configured FirebaseProvider (the K8sClusterProvider
-	// ApplyOptsBuilder pattern) so the provider resolves frontend paths
-	// against the project root.
+	// Dispatch each frontend target through the registry like every
+	// other deploy target: build a frontend-bearing group per provider
+	// and route it via the provider's Name(). The registry re-registers
+	// ProjectDir-configured providers (the K8sClusterProvider
+	// ApplyOptsBuilder pattern) so they resolve frontend paths against
+	// the project root.
 	registry := deploytarget.NewRegistry()
 	registry.Register(deploytarget.FirebaseProvider{ProjectDir: projectDir})
-	group := deploytarget.ServiceGroup{
-		Env:        envName,
-		ProviderID: deploytarget.FirebaseProvider{}.Name(),
-		Frontends:  fes,
-		DryRun:     dryRun,
+	registry.Register(deploytarget.StaticSiteProvider{ProjectDir: projectDir})
+
+	var groups []deploytarget.ServiceGroup
+	if len(fes) > 0 {
+		fmt.Printf("\nDeploying %d frontend(s) to Firebase Hosting...\n", len(fes))
+		groups = append(groups, deploytarget.ServiceGroup{
+			Env:        envName,
+			ProviderID: deploytarget.FirebaseProvider{}.Name(),
+			Frontends:  fes,
+			DryRun:     dryRun,
+		})
 	}
-	return dispatchDeployGroups(ctx, registry, []deploytarget.ServiceGroup{group}, "")
+	if len(sites) > 0 {
+		fmt.Printf("\nDeploying %d frontend(s) to object storage...\n", len(sites))
+		groups = append(groups, deploytarget.ServiceGroup{
+			Env:         envName,
+			ProviderID:  deploytarget.StaticSiteProvider{}.Name(),
+			StaticSites: sites,
+			DryRun:      dryRun,
+		})
+	}
+	return dispatchDeployGroups(ctx, registry, groups, "")
 }
 
-// hasFirebaseFrontend reports whether any rendered frontend declares a
-// Firebase Hosting deploy target. Used to recognise a frontend-only env
-// (skip the cluster pipeline) and gates nothing else.
-func hasFirebaseFrontend(e *KCLEntities) bool {
+// hasShippableFrontend reports whether any rendered frontend declares a
+// deploy target forge ships OUT OF BAND — Firebase Hosting or a static
+// site. Used to recognise a frontend-only env (skip the cluster
+// pipeline) and gates nothing else.
+//
+// Deliberately excludes a "cluster" frontend: that one renders a real
+// Deployment and rides the normal k8s apply path, so an env containing
+// one is NOT frontend-only and must not skip the cluster pipeline.
+func hasShippableFrontend(e *KCLEntities) bool {
 	if e == nil {
 		return false
 	}
 	for _, f := range e.Frontends {
-		if f.Deploy != nil && f.Deploy.Type == "firebase" {
+		if f.Deploy == nil {
+			continue
+		}
+		if f.Deploy.Type == "firebase" || f.Deploy.Type == frontendDeployStaticSite {
 			return true
 		}
 	}
@@ -1233,9 +1590,9 @@ func hasFirebaseFrontend(e *KCLEntities) bool {
 func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 	fb := f.Deploy.Firebase
 	buildEnv := frontendBuildEnv(f)
-	bundles := make([]deploytarget.FirebaseBundleSpec, 0, len(fb.Bundle))
+	bundles := make([]deploytarget.BundleDirSpec, 0, len(fb.Bundle))
 	for _, b := range fb.Bundle {
-		bundles = append(bundles, deploytarget.FirebaseBundleSpec{Src: b.Src, Dest: b.Dest})
+		bundles = append(bundles, deploytarget.BundleDirSpec{Src: b.Src, Dest: b.Dest})
 	}
 	return deploytarget.FirebaseFrontend{
 		Name:      f.Name,
@@ -1250,6 +1607,83 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 			BasePath:  fb.BasePath,
 			Bundle:    bundles,
 			Rewrites:  fb.Rewrites,
+		},
+	}
+}
+
+// staticSiteRollbackGroups builds the rollback groups for an env's
+// static-site frontends.
+//
+// Rollback deliberately does NOT go through dispatchFrontendDeploys:
+// that path builds (install + `npm run build`), and a rollback must not
+// build anything — the whole point is to serve the bytes already
+// archived in the bucket. So the group carries the specs and nothing
+// else, and the provider's Rollback resolves the target digest from the
+// recorded predecessor.
+//
+// Firebase frontends are excluded because FirebaseProvider.Rollback
+// returns ErrProviderNotImplemented (Firebase owns its own release
+// history via `firebase hosting:rollback`); including them would turn a
+// mixed env's rollback into a hard failure over a target that has a
+// perfectly good native recovery path.
+func staticSiteRollbackGroups(entities *KCLEntities, envName string, dryRun bool) []deploytarget.ServiceGroup {
+	if entities == nil {
+		return nil
+	}
+	var sites []deploytarget.StaticSiteFrontend
+	for _, f := range entities.Frontends {
+		if f.Deploy == nil || f.Deploy.Type != frontendDeployStaticSite || f.Deploy.StaticSite == nil {
+			continue
+		}
+		sites = append(sites, frontendToStaticSite(f))
+	}
+	if len(sites) == 0 {
+		return nil
+	}
+	return []deploytarget.ServiceGroup{{
+		Env:         envName,
+		ProviderID:  deploytarget.StaticSiteProvider{}.Name(),
+		StaticSites: sites,
+		DryRun:      dryRun,
+	}}
+}
+
+// frontendToStaticSite maps a rendered FrontendEntity (with a StaticSite
+// deploy block) onto the deploytarget.StaticSiteFrontend the provider
+// consumes. The build half is IDENTICAL to frontendToFirebase — same
+// path, same dev runner, same frontendBuildEnv — because the two targets
+// share the whole build-and-assemble step; only the Spec differs.
+func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
+	ss := f.Deploy.StaticSite
+	bundles := make([]deploytarget.BundleDirSpec, 0, len(ss.Bundle))
+	for _, b := range ss.Bundle {
+		bundles = append(bundles, deploytarget.BundleDirSpec{Src: b.Src, Dest: b.Dest})
+	}
+	rules := make([]deploytarget.CacheRuleSpec, 0, len(ss.CacheControl))
+	for _, r := range ss.CacheControl {
+		rules = append(rules, deploytarget.CacheRuleSpec{Pattern: r.Pattern, CacheControl: r.CacheControl})
+	}
+	var cdn *deploytarget.StaticSiteCDNSpec
+	if ss.CDN != nil {
+		cdn = &deploytarget.StaticSiteCDNSpec{
+			URLMap:               ss.CDN.URLMap,
+			Invalidate:           ss.CDN.Invalidate,
+			ExtraInvalidatePaths: ss.CDN.ExtraInvalidatePaths,
+		}
+	}
+	return deploytarget.StaticSiteFrontend{
+		Name:      f.Name,
+		Path:      f.Path,
+		DevRunner: f.DevRunner,
+		BuildEnv:  frontendBuildEnv(f),
+		Spec: deploytarget.StaticSiteSpec{
+			Bucket:       ss.Bucket,
+			PublicDir:    ss.PublicDir,
+			BasePath:     ss.BasePath,
+			Bundle:       bundles,
+			CacheControl: rules,
+			CDN:          cdn,
+			KeepReleases: ss.KeepReleases,
 		},
 	}
 }
@@ -1512,7 +1946,13 @@ func kclEntitiesHaveK8sCluster(entities *KCLEntities) bool {
 		return false
 	}
 	for _, svc := range entities.Services {
-		if svc.Deploy.Type == "cluster" {
+		// simple-backend counts: it renders a Deployment + Service into a
+		// cluster through the same apply path, so every guard this
+		// predicate gates — the namespace-mismatch check, the rendered
+		// Secret wiring, the declared-context verification — applies to
+		// it. Answering false for an env whose only workloads are
+		// SimpleBackends would skip all three and deploy anyway.
+		if svc.Deploy.Type == "cluster" || svc.Deploy.Type == "simple-backend" {
 			return true
 		}
 	}
@@ -1752,7 +2192,10 @@ func resolveDeployImageDigests(projectDir, envName string, noDigest bool) (map[s
 // the release layer existed. The current cloud + e2e flow binds no release, so
 // it is unaffected. noDigest disables both digest paths (the tag-only escape
 // hatch) AND the release lookup.
-func resolveDeployDigests(projectDir, envName string, noDigest bool) (digests map[string]string, boundRelease string, err error) {
+// bindings is the binding ledger to consult. projectDir remains for the
+// build-state half, which IS a file concept (.forge/state/build-<env>.json);
+// the release half no longer knows where — or whether — bindings are files.
+func resolveDeployDigests(projectDir, envName string, noDigest bool, bindings bindingStore) (digests map[string]string, boundRelease string, err error) {
 	base, err := resolveDeployImageDigests(projectDir, envName, noDigest)
 	if err != nil {
 		return nil, "", err
@@ -1760,7 +2203,7 @@ func resolveDeployDigests(projectDir, envName string, noDigest bool) (digests ma
 	if noDigest {
 		return base, "", nil
 	}
-	binding, bound, berr := boundReleaseForEnv(projectDir, envName)
+	binding, bound, berr := bindings.Binding(envName)
 	if berr != nil {
 		return nil, "", fmt.Errorf("read env-release binding for %q: %w", envName, berr)
 	}
@@ -2269,6 +2712,9 @@ type deployPreflightInput struct {
 	envCfgKV  map[string]string
 	deployCtx string
 	targets   []string
+	// report, when non-nil, receives the structured preflight findings.
+	// Nil-safe, so text mode threads nil through this identical path.
+	report *deployReport
 	// imageDigests is the per-image name→digest map (image NAME →
 	// "sha256:..."). Threaded into the manifest render so the preflight
 	// checks the SAME `<image>@<digest>` refs the apply will ship — a
@@ -2521,7 +2967,14 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 			opts.Secrets = cluster.KubectlSecretGetter{}
 		}
 	}
-	return cluster.Preflight(ctx, opts)
+	// PreflightReport returns the SAME error Preflight would (it is the one
+	// implementation; Preflight is a projection of it), plus the structured
+	// findings the error string would otherwise be the only record of. The
+	// result is recorded whether or not it blocks, so a clean preflight is
+	// distinguishable from one that never ran.
+	result, err := cluster.PreflightReport(ctx, opts)
+	in.report.setPreflightResult(result)
+	return err
 }
 
 // expectedClusterForEnv returns the expected kubectl context name for
@@ -2571,6 +3024,30 @@ func k8sClusterFieldFromEntities(entities *KCLEntities, field string) string {
 		return ""
 	}
 	for _, svc := range entities.Services {
+		// A SimpleBackend carries cluster / namespace / domain of its own
+		// and answers for them here, so an env whose only workloads are
+		// SimpleBackends still resolves a kubectl context — without which
+		// the apply chokepoint refuses the write. It has NO registry: its
+		// image is fully qualified and forge pushes nothing for it, so
+		// the "registry" field falls through to a later service rather
+		// than returning an empty string that reads like a declared one.
+		if sb := svc.Deploy.SimpleBackend; svc.Deploy.Type == "simple-backend" && sb != nil {
+			switch field {
+			case "cluster":
+				if sb.Cluster != "" {
+					return sb.Cluster
+				}
+			case "namespace":
+				if sb.Namespace != "" {
+					return sb.Namespace
+				}
+			case "domain":
+				if sb.Domain != "" {
+					return sb.Domain
+				}
+			}
+			continue
+		}
 		if svc.Deploy.Type != "cluster" || svc.Deploy.Cluster == nil {
 			continue
 		}

@@ -124,10 +124,16 @@ func TestRootCmdPrintsErrorsOnce(t *testing.T) {
 	if root.SilenceUsage {
 		t.Error("root command must NOT set SilenceUsage statically: usage mistakes (unknown flag, wrong arg count) should keep the help block; runtime suppression belongs in PersistentPreRun")
 	}
-	if root.PersistentPreRun == nil {
-		t.Fatal("root command must install PersistentPreRun: it scopes SilenceUsage to runtime errors")
+	// PersistentPreRunE, not PersistentPreRun: the hook also installs the
+	// --project-dir resolution root, which can fail (a -C that is missing or
+	// is a file), and that must surface as a command error rather than a
+	// panic or a silent fallback to the CWD.
+	if root.PersistentPreRunE == nil {
+		t.Fatal("root command must install PersistentPreRunE: it scopes SilenceUsage to runtime errors")
 	}
-	root.PersistentPreRun(root, nil)
+	if err := root.PersistentPreRunE(root, nil); err != nil {
+		t.Fatalf("PersistentPreRunE with no flags set must succeed, got %v", err)
+	}
 	if !root.SilenceUsage {
 		t.Error("PersistentPreRun must set SilenceUsage: runtime errors (e.g. the Tier-1 stomp-guard report) must not be buried under a usage dump")
 	}

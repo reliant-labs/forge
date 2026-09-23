@@ -445,7 +445,7 @@ func isKnownTier2(rel, noTmpl string) bool {
 		switch noTmpl {
 		case "CODEOWNERS",
 			"ci.yml", "deploy.yml", "build-images.yml", "e2e.yml",
-			"proto-breaking.yml", "dependabot.yml":
+			"proto-breaking.yml", "dependabot.yml", "reconcile.yml":
 			return true
 		}
 	}

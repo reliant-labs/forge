@@ -35,6 +35,16 @@ func (p recordingProvider) Rollback(_ context.Context, _ deploytarget.ServiceGro
 	return nil
 }
 
+// Observe satisfies the Provider interface. This double stands in for
+// compose/host-infra in the DEPLOY dispatch contract, which never
+// observes; it declines rather than reporting a health nothing measured.
+func (p recordingProvider) Observe(_ context.Context, _ deploytarget.ServiceGroup) (deploytarget.Observed, error) {
+	return deploytarget.Observed{ProviderID: p.id}, deploytarget.ObservationUnsupportedError{
+		Provider: p.id,
+		Reason:   "test double for the deploy dispatch; observation is not part of these tests",
+	}
+}
+
 // TestDeployInfraGroups_AttemptsEveryGroupAfterAFailure is the regression
 // test for the bug where infra bring-up abandoned every remaining group the
 // moment one failed.

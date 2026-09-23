@@ -2,6 +2,8 @@
 
 import React, { useState } from "react";
 
+import Link from "./link";
+
 interface NavItem {
   label: string;
   href?: string;
@@ -105,8 +107,9 @@ export default function SidebarLayout({
               <ul className="space-y-1">
                 {items.map((item, i) => (
                   <li key={i}>
-                    <a
+                    <Link
                       href={item.href ?? "#"}
+                      aria-current={item.active ? "page" : undefined}
                       className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
                         item.active
                           ? "bg-accent-surface text-accent-ink"
@@ -120,7 +123,7 @@ export default function SidebarLayout({
                       {!collapsed && (
                         <span className="truncate">{item.label}</span>
                       )}
-                    </a>
+                    </Link>
                   </li>
                 ))}
               </ul>

@@ -355,6 +355,16 @@ type SecretRef struct {
 	EnvName    string
 	SecretName string
 	SecretKey  string
+
+	// Optional exempts this ref from the missing-value check, and it is set
+	// ONLY from the proto's `optional: true` on a sensitive config field.
+	//
+	// The default — a declared secret must have a value — is the whole point
+	// of the pre-flight, so this is deliberately not inferrable from anything
+	// forge can observe about the environment. An unset credential and a
+	// deliberately-absent one look identical in the store; the annotation is
+	// the author saying which it is.
+	Optional bool
 }
 
 // key returns the in-Secret key, defaulting to EnvName when unset.
@@ -388,7 +398,7 @@ func ValidateDeclaredRefs(p Provider, refs []SecretRef, storePath string) error 
 	var missing []SecretRef
 	seen := map[string]bool{}
 	for _, r := range refs {
-		if r.EnvName == "" || seen[r.EnvName] {
+		if r.EnvName == "" || seen[r.EnvName] || r.Optional {
 			continue
 		}
 		if _, ok := values[r.EnvName]; !ok {

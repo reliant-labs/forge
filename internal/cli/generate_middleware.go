@@ -504,6 +504,13 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 		return nil, err
 	}
 
+	// Refused at GENERATE time, not at env-up: a field claiming to be both
+	// required and optional has no correct projection, so every artifact
+	// downstream of here would be built on a decision forge invented.
+	if err := codegen.ValidateConfigOptionality(messages); err != nil {
+		return nil, err
+	}
+
 	if err := codegen.GenerateConfigLoader(messages, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to generate config loader: %w", err)
 	}

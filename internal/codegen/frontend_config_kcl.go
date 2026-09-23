@@ -34,7 +34,8 @@ func GenerateFrontendConfigNative(configs []FrontendConfig, projectName, project
 	if len(configs) == 0 {
 		// Nothing annotated: withdraw a module from a previous run so a
 		// removed annotation cannot leave a schema nothing projects into.
-		if err := os.Remove(outPath); err != nil && !os.IsNotExist(err) {
+		// Journaled so an aborted run restores it.
+		if err := checksums.RemoveJournaled(outPath); err != nil {
 			return fmt.Errorf("remove %s: %w", outPath, err)
 		}
 		return nil

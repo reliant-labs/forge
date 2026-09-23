@@ -11,7 +11,8 @@ Invariants:
   * A service WITHOUT `image_tag` uses the env-wide tag (single-image
     envs unchanged).
   * An `image` that already carries `:tag` passes through verbatim — the
-    env/service tag is NOT appended.
+    env/service tag is NOT appended, and when the ref also names its own
+    registry host the env registry is NOT prefixed.
   * An `image` that carries `@sha256:` digest passes through verbatim.
   * An `image` that names its OWN registry host (`ghcr.io/...`) keeps that
     host: the env registry is NOT prefixed onto it. A third-party image is

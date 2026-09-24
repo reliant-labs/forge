@@ -33,7 +33,7 @@
 //
 // A workspace root ABOVE the frontends, both parts of it gitignored:
 //
-//	<project>/package.json      { "workspaces": ["frontends/*", ".forge-link/*"] }
+//	<project>/package.json      { "workspaces": ["frontends/web", …, ".forge-link/*"] }
 //	<project>/.forge-link/web-runtime -> ../../forge/web-runtime   (symlink)
 //
 // npm reads the root, sees a workspace member whose package.json declares the
@@ -71,10 +71,12 @@
 package generator
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -84,12 +86,27 @@ import (
 // symlinks. Dot-prefixed because it is machine-local scaffolding, not source.
 const devLinkDir = ".forge-link"
 
-// devWorkspaceRootManifest is the gitignored root package.json. It is a
-// workspace root and nothing else: no dependencies of its own, private so it
-// can never be published, and carrying an explanation for whoever finds an
-// untracked package.json at their project root and wonders what wrote it.
-const devWorkspaceRootManifest = `{
-  "name": "forge-dev-workspace-root",
+// devWorkspaceRootName is the name the bridge's root manifest carries. It is
+// how forge recognises a root package.json as its OWN (and so safe to
+// reconcile) rather than one a user wrote, which forge never touches.
+const devWorkspaceRootName = "forge-dev-workspace-root"
+
+// devWorkspaceRootManifest renders the gitignored root package.json for the
+// given workspace members. It is a workspace root and nothing else: no
+// dependencies of its own, private so it can never be published, and carrying
+// an explanation for whoever finds an untracked package.json at their project
+// root and wonders what wrote it.
+//
+// The members are ENUMERATED, never a `frontends/*` glob. A glob made every
+// frontend a member of ONE hoisted tree, Expo apps included, and that tree is
+// not one an Expo app can bundle from: see bridgeMembers.
+func devWorkspaceRootManifest(members []string) string {
+	var ws strings.Builder
+	for _, m := range append(append([]string(nil), members...), devLinkDir+"/*") {
+		ws.WriteString("\n    \"" + m + "\",")
+	}
+	return `{
+  "name": "` + devWorkspaceRootName + `",
   "private": true,
   "//": [
     "GITIGNORED, machine-local, written by a DEV build of forge. Not part of your project.",
@@ -97,14 +114,14 @@ const devWorkspaceRootManifest = `{
     "local @reliantlabs/forge-web-runtime checkout (symlinked under .forge-link/) so edits in",
     "that checkout are live here, with nothing published and nothing reinstalled.",
     "The frontends' own package.json files keep their published semver range and stay clean.",
+    "React Native / Expo apps are deliberately NOT members: they install standalone.",
     "Delete this file and .forge-link/ to go back to the registry copy; run npm install after."
   ],
-  "workspaces": [
-    "frontends/*",
-    "` + devLinkDir + `/*"
+  "workspaces": [` + strings.TrimSuffix(ws.String(), ",") + `
   ]
 }
 `
+}
 
 // devBridgeIgnoreEntries are the paths forge must ensure are ignored before it
 // writes any of them. Ensuring rather than assuming matters: the bridge is
@@ -133,8 +150,10 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 	if !ok {
 		return
 	}
-	if !hasFrontends(projectDir) {
-		return // nothing to bridge
+	members := bridgeMembers(projectDir)
+	rootPath := filepath.Join(projectDir, "package.json")
+	if len(members) == 0 && !isForgeOwnedWorkspaceRoot(rootPath) {
+		return // nothing to bridge (no frontends, or only native apps)
 	}
 
 	if err := ensureGitignoreEntries(filepath.Join(projectDir, ".gitignore"), devBridgeIgnoreEntries); err != nil {
@@ -145,7 +164,7 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 		return
 	}
 
-	if err := writeIfMissing(filepath.Join(projectDir, "package.json"), devWorkspaceRootManifest); err != nil {
+	if err := reconcileWorkspaceRoot(rootPath, devWorkspaceRootManifest(members)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write the dev workspace root in %s: %v\n", projectDir, err)
 		return
 	}
@@ -192,19 +211,104 @@ func devWebRuntimeCheckout() (string, bool) {
 	return target, true
 }
 
-// hasFrontends reports whether the project has a frontends/ directory with at
-// least one entry — the only shape where a web-runtime bridge means anything.
-func hasFrontends(projectDir string) bool {
+// bridgeMembers returns the project-relative frontends the workspace root
+// should adopt, sorted so the rendered manifest is deterministic.
+//
+// Every frontend with a package.json is a member EXCEPT a React Native / Expo
+// app, which stays a standalone install with its own node_modules. The reason
+// is measured, not taste. One workspace means one hoisted tree, and the web
+// kinds (React 19) and an Expo app (React 18) cannot share one: whichever
+// installs first claims the root, and in the usual order — web, then mobile —
+// npm nests the Expo app's react, expo and expo-router under
+// frontends/<app>/node_modules while hoisting babel-preset-expo to the root.
+// babel-preset-expo then does require('expo/config') WITHOUT declaring expo,
+// finds nothing from the root, and every bundle fails:
+//
+//	[BABEL]: Cannot find module 'expo/config'
+//
+// Install the other way round and it works, which is why this read as a flake.
+// Expo's own toolchain assumes it sits beside its own expo; a standalone
+// install is the only layout that holds in every order. The price is that a
+// native app resolves the REGISTRY web-runtime rather than the live checkout —
+// the same thing CI and every released-forge user already get.
+func bridgeMembers(projectDir string) []string {
 	entries, err := os.ReadDir(filepath.Join(projectDir, "frontends"))
+	if err != nil {
+		return nil
+	}
+	var members []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		manifest := filepath.Join(projectDir, "frontends", e.Name(), "package.json")
+		if _, err := os.Stat(manifest); err != nil {
+			continue // not an npm package, so not something npm can adopt
+		}
+		if isNativeFrontend(manifest) {
+			continue
+		}
+		members = append(members, "frontends/"+e.Name())
+	}
+	sort.Strings(members)
+	return members
+}
+
+// isNativeFrontend reports whether the package.json at manifest belongs to a
+// React Native app (bare or Expo). The manifest is the evidence rather than
+// forge.yaml's frontend type because the question is how npm will lay the
+// package out, and a hand-added frontend has a manifest but no config entry.
+func isNativeFrontend(manifest string) bool {
+	body, err := os.ReadFile(manifest)
 	if err != nil {
 		return false
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			return true
+	var pkg struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(body, &pkg); err != nil {
+		return false
+	}
+	for _, deps := range []map[string]string{pkg.Dependencies, pkg.DevDependencies} {
+		for _, native := range []string{"expo", "react-native"} {
+			if _, ok := deps[native]; ok {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// isForgeOwnedWorkspaceRoot reports whether path is a root manifest this
+// bridge wrote. Anything else — absent, unreadable, or a user's own root — is
+// not forge's to rewrite.
+func isForgeOwnedWorkspaceRoot(path string) bool {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Name string `json:"name"`
+	}
+	return json.Unmarshal(body, &pkg) == nil && pkg.Name == devWorkspaceRootName
+}
+
+// reconcileWorkspaceRoot writes want to path when there is no root manifest,
+// or when the existing one is forge's own and has drifted (a frontend was
+// added, or it predates the enumerated member list). A user's own root
+// package.json is left exactly as it is.
+func reconcileWorkspaceRoot(path, want string) error {
+	existing, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return os.WriteFile(path, []byte(want), 0o644)
+	case err != nil:
+		return err
+	case string(existing) == want || !isForgeOwnedWorkspaceRoot(path):
+		return nil
+	}
+	return os.WriteFile(path, []byte(want), 0o644)
 }
 
 // ensureRelativeSymlink makes linkPath a symlink to targetDir, expressed

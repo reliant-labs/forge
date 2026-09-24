@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -155,7 +156,7 @@ func DetectFrontendPinLayout(projectDir, feDir string) PinLayout {
 	}
 	// An npm workspace root covering frontends/* — forge's own dev bridge
 	// writes one, and a user may have their own. Either way npm hoists.
-	if rootDeclaresFrontendWorkspace(projectDir) {
+	if rootWorkspaceCovers(projectDir, feDir) {
 		return PinLayout{Hoisted: true, Known: true}
 	}
 	// The frontend's own manifest resolving the runtime through a parent
@@ -171,9 +172,13 @@ func DetectFrontendPinLayout(projectDir, feDir string) PinLayout {
 	return PinLayout{}
 }
 
-// rootDeclaresFrontendWorkspace reports whether the project root's
-// package.json is an npm workspace root covering frontends/*.
-func rootDeclaresFrontendWorkspace(projectDir string) bool {
+// rootWorkspaceCovers reports whether the project root's package.json is an
+// npm workspace root that adopts THIS frontend.
+//
+// Membership is per frontend, not per project: forge's dev bridge enumerates
+// its members and deliberately leaves React Native apps standalone, so a root
+// that covers frontends/web says nothing about frontends/mobile.
+func rootWorkspaceCovers(projectDir, feDir string) bool {
 	body, err := os.ReadFile(filepath.Join(projectDir, "package.json"))
 	if err != nil {
 		return false
@@ -186,8 +191,13 @@ func rootDeclaresFrontendWorkspace(projectDir string) bool {
 		// through rather than guess at a shape forge did not write.
 		return false
 	}
+	rel, err := filepath.Rel(projectDir, feDir)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
 	for _, pattern := range manifest.Workspaces {
-		if strings.HasPrefix(pattern, "frontends/") {
+		if matched, _ := path.Match(strings.TrimSuffix(strings.TrimPrefix(pattern, "./"), "/"), rel); matched {
 			return true
 		}
 	}

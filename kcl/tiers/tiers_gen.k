@@ -251,4 +251,3 @@ static_site_cdn_json = lambda v: StaticSiteCDN -> {str:} {
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
-

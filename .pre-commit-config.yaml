@@ -42,10 +42,15 @@ repos:
       # next `buf generate`. Reformatting generated output means every
       # regeneration shows up as a spurious diff, and the reformat is
       # reverted by the tool that owns the file.
+      #
+      # zz_generated.deepcopy.go is the same case from controller-tools: its
+      # deepcopy generator writes `"k8s.io/apimachinery/pkg/apis/meta/v1"`
+      # unaliased, goimports adds a `v1` alias, and
+      # TestDeployTierDeepCopyIsCurrent pins the generator's exact bytes.
       - id: go-fmt
-        exclude: (^|/)testdata/|\.pb\.go$
+        exclude: (^|/)testdata/|\.pb\.go$|(^|/)zz_generated\.deepcopy\.go$
       - id: go-imports
-        exclude: (^|/)testdata/|\.pb\.go$
+        exclude: (^|/)testdata/|\.pb\.go$|(^|/)zz_generated\.deepcopy\.go$
 
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v3.1.0
@@ -60,8 +65,13 @@ repos:
         # rewrites the very table headers TestSkillsAuditCategoryDocsMatchEmittedSet
         # asserts on. These files are size- and structure-checked by tests;
         # a formatter cannot own them.
+        #
+        # testdata/ is excluded for the reason the whitespace fixers above
+        # exclude it: fixtures are captured tool output (e.g. the KCL
+        # projection goldens forge render emits), and reformatting one
+        # rewrites the capture rather than anything a human authored.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ^(gen/|.*\.pb\.go$|.*/skills/.*\.md$)
+        exclude: ^(gen/|.*\.pb\.go$|.*/skills/.*\.md$)|(^|/)testdata/
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.

@@ -270,7 +270,11 @@ import regex
 			return "", fmt.Errorf("%s: %w", goName, err)
 		}
 	}
-	return b.String(), nil
+	// Each schema ends with a blank separator line, so the last one would
+	// leave the file ending in "\n\n". End it with exactly one newline — what
+	// end-of-file-fixer (and every editor) writes — so the committed file is
+	// never "fixed" into something the generator does not produce.
+	return strings.TrimRight(b.String(), "\n") + "\n", nil
 }
 
 func writeTierSchema(b *strings.Builder, goName string, s apiext.JSONSchemaProps, doc, pkgPath string, all map[string]apiext.JSONSchemaProps) error {

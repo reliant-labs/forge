@@ -96,7 +96,8 @@
   --shadow-lg: 0 12px 28px -6px oklch(22% 0.02 265deg / 12%),
     0 4px 8px -4px oklch(22% 0.02 265deg / 6%); /* popovers, dropdowns */
   --color-surface: oklch(99% 0.002 265deg); /* page / card background */
-  --color-surface-sunken: oklch(96% 0.006 265deg); /* an inset INSIDE a surface — below it in light AND dark; see ui/card.tsx */
+  /* an inset INSIDE a surface — below it in light AND dark; see ui/card.tsx */
+  --color-surface-sunken: oklch(96% 0.006 265deg);
   --color-surface-muted: oklch(97% 0.005 265deg); /* subtle fills: table head, hovers */
   --color-border: oklch(92% 0.008 265deg);
   --color-border-strong: oklch(86% 0.012 265deg);

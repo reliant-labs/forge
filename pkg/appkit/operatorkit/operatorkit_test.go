@@ -5,6 +5,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -172,5 +173,30 @@ func TestCacheByObject(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWithLabelScopes pins that a label scope reaches the cache row for its
+// type: merged into an existing namespace row, or added as a new row, and
+// dropped when nil. A dropped selector would leave the type cluster-wide —
+// the cross-stack reconcile the option exists to prevent.
+func TestWithLabelScopes(t *testing.T) {
+	pod := &corev1.Pod{}
+	cm := &corev1.ConfigMap{}
+	sel := labels.SelectorFromSet(labels.Set{"forge.dev/stack": "dev"})
+
+	rows := withLabelScopes(cacheByObject(map[client.Object][]string{pod: {"ns-a"}}),
+		map[client.Object]labels.Selector{pod: sel, cm: sel})
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2: %v", len(rows), rows)
+	}
+	if rows[pod].Label == nil || rows[pod].Label.String() != sel.String() || len(rows[pod].Namespaces) != 1 {
+		t.Errorf("pod row = %+v, want namespace ns-a AND the label selector", rows[pod])
+	}
+	if rows[cm].Label == nil || rows[cm].Label.String() != sel.String() {
+		t.Errorf("configmap row = %+v, want the label selector", rows[cm])
+	}
+	if got := withLabelScopes(nil, map[client.Object]labels.Selector{pod: nil}); got != nil {
+		t.Errorf("a nil selector must not create a row, got %v", got)
 	}
 }

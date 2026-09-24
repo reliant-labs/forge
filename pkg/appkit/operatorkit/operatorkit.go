@@ -49,6 +49,7 @@ import (
 	"os"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -177,6 +178,23 @@ type Options struct {
 	// type MUST be registered by one of the controllers' AddToScheme hooks
 	// (Run registers them all before creating the manager).
 	ByObjectNamespaces map[client.Object][]string
+
+	// ByObjectLabels scopes the manager cache PER OBJECT TYPE by LABEL: the
+	// informers for that type see ONLY objects matching the selector, in
+	// every namespace (controller-runtime cache.ByObject.Label).
+	//
+	// This is the scoping primitive for CRs whose namespaces are not known up
+	// front — one per deploy environment, created at runtime — where a
+	// namespace list cannot be written down. A publisher stamps an ownership
+	// label (e.g. forge.dev/stack=<id>) and each stack's operator watches only
+	// its own value, so two stacks sharing a cluster cannot reconcile each
+	// other's CRs.
+	//
+	// A type may appear in BOTH maps; the cache then intersects them. A nil
+	// selector is dropped. UNLIKE ByObjectNamespaces there is no "empty means
+	// cluster-wide" fallback to worry about here: the caller passes a real
+	// selector or nothing, and refusing an empty scope is the caller's job.
+	ByObjectLabels map[client.Object]labels.Selector
 }
 
 // Run creates a controller manager, registers every controller's
@@ -267,7 +285,7 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 		HealthProbeBindAddress: probeAddr,
 		// Per-object namespace scoping (nil ByObject leaves every informer
 		// cluster-wide — the legacy shape). See Options.ByObjectNamespaces.
-		Cache: cache.Options{ByObject: cacheByObject(opts.ByObjectNamespaces)},
+		Cache: cache.Options{ByObject: withLabelScopes(cacheByObject(opts.ByObjectNamespaces), opts.ByObjectLabels)},
 	})
 	if err != nil {
 		return fmt.Errorf("creating controller manager: %w", err)
@@ -329,6 +347,27 @@ func cacheByObject(scopes map[client.Object][]string) map[client.Object]cache.By
 		return nil
 	}
 	return byObject
+}
+
+// withLabelScopes folds Options.ByObjectLabels into the ByObject rows
+// cacheByObject produced, adding a row for a type that had no namespace scope.
+// Map keys are the caller's object pointers, so a type scoped in both maps must
+// be passed the SAME pointer in both to merge into one row; two pointers of one
+// type would be two rows for one GVK, which controller-runtime rejects at
+// manager construction rather than silently picking one.
+func withLabelScopes(rows map[client.Object]cache.ByObject, scopes map[client.Object]labels.Selector) map[client.Object]cache.ByObject {
+	for obj, sel := range scopes {
+		if sel == nil {
+			continue
+		}
+		if rows == nil {
+			rows = make(map[client.Object]cache.ByObject, len(scopes))
+		}
+		row := rows[obj]
+		row.Label = sel
+		rows[obj] = row
+	}
+	return rows
 }
 
 // orDefault* apply a declared value when the caller set one, and the

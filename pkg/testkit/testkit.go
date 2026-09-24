@@ -288,15 +288,72 @@ func ApplyOptions[C any, O ~func(*C)](cfg *C, opts ...O) *C {
 // The server is returned alongside the client for tests that need its URL or
 // want to close it early; it is already registered for cleanup.
 // register matches the generated service's own Register method, which takes
-// variadic connect.HandlerOption alongside the mux.
+// variadic connect.HandlerOption alongside the mux; handlerOpts are forwarded
+// to it verbatim (e.g. [ServerPrincipal]).
 func NewConnectClient[C any](
 	t *testing.T,
 	register func(mux *http.ServeMux, opts ...connect.HandlerOption),
 	newClient func(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) C,
+	handlerOpts ...connect.HandlerOption,
 ) (*httptest.Server, C) {
 	t.Helper()
-	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux) })
+	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux, handlerOpts...) })
 	return srv, newClient(http.DefaultClient, srv.URL)
+}
+
+// ServerPrincipal returns a handler option that installs a test principal in
+// the HANDLER's context on every call — unary and streaming alike — through
+// the project's own claims setter (middleware.ContextWithClaims), the same
+// function the production auth interceptor calls.
+//
+// This is the over-the-wire twin of [AuthedContext], and it exists because
+// AuthedContext cannot do this job: it puts claims on a context the TEST
+// holds, and a context does not cross HTTP. A test that drives a service
+// through its typed Connect client therefore needs the principal installed
+// where the handler runs, or every auth-gated RPC answers Unauthenticated
+// before reaching the logic under test.
+//
+// It stands in for the production authentication step only — whatever the
+// handler does with the principal (its own role checks, org scoping) still
+// runs, so a test exercises denials by passing claims that lack the role:
+//
+//	testkit.ServerPrincipal(middleware.ContextWithClaims, testkit.WithRoles("viewer"))
+//
+// Defaults are AuthedContext's (UserID "test-user", Role/Roles "admin"), so
+// an in-process row and an over-the-wire row agree on who is calling.
+func ServerPrincipal(withClaims func(context.Context, *auth.Claims) context.Context, opts ...ClaimsOption) connect.HandlerOption {
+	return connect.WithInterceptors(serverPrincipal{install: func(ctx context.Context) context.Context {
+		claims := defaultTestClaims()
+		for _, opt := range opts {
+			opt(claims)
+		}
+		return withClaims(ctx, claims)
+	}})
+}
+
+// serverPrincipal is the interceptor behind [ServerPrincipal]. Claims are
+// rebuilt per call so a handler that mutates the principal it receives cannot
+// leak that change into the next call.
+type serverPrincipal struct {
+	install func(context.Context) context.Context
+}
+
+func (p serverPrincipal) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		return next(p.install(ctx), req)
+	}
+}
+
+// WrapStreamingClient is a pass-through: this option is for handlers, and a
+// server never originates a client stream.
+func (serverPrincipal) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (p serverPrincipal) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		return next(p.install(ctx), conn)
+	}
 }
 
 // ClaimsOption mutates the default test claims built by [AuthedContext].
@@ -357,14 +414,20 @@ func WithClaims(claims auth.Claims) ClaimsOption {
 // Override via ClaimsOption values.
 func AuthedContext(t *testing.T, withClaims func(context.Context, *auth.Claims) context.Context, opts ...ClaimsOption) context.Context {
 	t.Helper()
-	claims := &auth.Claims{
+	claims := defaultTestClaims()
+	for _, opt := range opts {
+		opt(claims)
+	}
+	return withClaims(context.Background(), claims)
+}
+
+// defaultTestClaims is the one default test principal, shared by
+// [AuthedContext] (in-process) and [ServerPrincipal] (over the wire).
+func defaultTestClaims() *auth.Claims {
+	return &auth.Claims{
 		UserID: "test-user",
 		Email:  "test-user@example.test",
 		Role:   "admin",
 		Roles:  []string{"admin"},
 	}
-	for _, opt := range opts {
-		opt(claims)
-	}
-	return withClaims(context.Background(), claims)
 }

@@ -34,10 +34,7 @@
 // wires Runner.Build into internal/cli/build.go and persists per-
 // service state. Phase 3 adds audit + doctor surfaces.
 //
-// forge:exclude-contract
-// buildtarget is an outbound build-dispatch adapter (the `sh -c` shell-build
-// escape hatch for out-of-module sources), not a contract-shaped service. Opt
-// out of the require-contract rule.
+//forge:exclude-contract: the `sh -c` shell-build escape hatch the CLI dispatches for out-of-module sources; no Service/Deps/New to bind and no I/O client to fake
 package buildtarget
 
 import (

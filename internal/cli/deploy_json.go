@@ -223,6 +223,12 @@ const (
 	// whose kubectl context is NOT in the kubeconfig. The one true failure of
 	// the declarative model, and the only thing that refuses a deploy here.
 	deployGuardReasonDeclaredContextMissing
+	// deployGuardReasonControlPlaneDeclared: the env is HOSTED (its Bundle
+	// declares control_plane). There is no kubectl context; the declared
+	// destination is the control plane's endpoint, carried in
+	// DeclaredContext so a confirmation keyed on "where do bytes land" keeps
+	// working. An allow.
+	deployGuardReasonControlPlaneDeclared
 )
 
 func (r deployJSONGuardReason) String() string {
@@ -235,6 +241,8 @@ func (r deployJSONGuardReason) String() string {
 		return "kubectl_unavailable"
 	case deployGuardReasonDeclaredContextMissing:
 		return "declared_context_missing"
+	case deployGuardReasonControlPlaneDeclared:
+		return "control_plane_declared"
 	default:
 		return "unknown"
 	}
@@ -260,6 +268,8 @@ func (r *deployJSONGuardReason) UnmarshalJSON(data []byte) error {
 		*r = deployGuardReasonKubectlUnavailable
 	case "declared_context_missing":
 		*r = deployGuardReasonDeclaredContextMissing
+	case "control_plane_declared":
+		*r = deployGuardReasonControlPlaneDeclared
 	default:
 		return fmt.Errorf("unknown deploy guard reason %q — "+
 			"refusing to decode it as a default, which would misattribute why a deploy was refused", name)
@@ -328,6 +338,18 @@ type deployJSONTarget struct {
 	// Has one entry for the ordinary single-cluster env, and is empty for a
 	// host-only / compose / frontend-only env that declares none.
 	AllKubeContexts []string `json:"all_kube_contexts,omitempty"`
+
+	// Destination is where this env's workloads land: "hosted" for an env
+	// whose Bundle declares control_plane, "cluster" otherwise. Additive; a
+	// hosted deploy leaves KubeContext / Namespace / AllKubeContexts EMPTY,
+	// because forge applies nothing to a cluster for it.
+	Destination string `json:"destination,omitempty"`
+	// Endpoint is the control plane's normalized base URL. Hosted only.
+	Endpoint string `json:"endpoint,omitempty"`
+	// EnvironmentID is the control plane's id for this env. Hosted only;
+	// empty when the env has never been ensured (a dry run of a first
+	// deploy). Never fabricated.
+	EnvironmentID string `json:"environment_id,omitempty"`
 }
 
 // ─── Image pinning ────────────────────────────────────────────────────────────
@@ -1375,4 +1397,32 @@ func deployFindingsFromPreflight(res cluster.PreflightResult) []deployJSONFindin
 		return out[i].Subject < out[j].Subject
 	})
 	return out
+}
+
+// setHostedTarget records a hosted env's destination. The kube-context fields
+// stay empty: nothing is applied to any cluster forge addresses.
+func (r *deployReport) setHostedTarget(endpoint, environmentID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.doc.Target.Destination = "hosted"
+	r.doc.Target.Endpoint = endpoint
+	if environmentID != "" {
+		r.doc.Target.EnvironmentID = environmentID
+	}
+}
+
+// clearKubeContexts drops any kube context recorded so far. A hosted deploy
+// addresses no cluster, and a context left over from the guard seeding would
+// make a confirmation dialog name a cluster the deploy never touches.
+func (r *deployReport) clearKubeContexts() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.doc.Target.KubeContext = ""
+	r.doc.Target.AllKubeContexts = nil
 }

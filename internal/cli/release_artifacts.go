@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Non-OCI artifact harvesting.
@@ -111,7 +113,7 @@ type npmPackEntry struct {
 }
 
 // harvestNPMArtifacts records every publishable npm package in the project as
-// an ArtifactKindNPM artifact, keyed by package name.
+// an release.KindNPM artifact, keyed by package name.
 //
 // SOURCE: `npm pack --dry-run --ignore-scripts --json`, run in each package
 // directory. The `integrity` it reports is the sha512 of the tarball npm would
@@ -144,8 +146,8 @@ type npmPackEntry struct {
 // Unauthenticated by construction: `npm pack` on a local directory touches no
 // registry and needs no token. Best-effort throughout — no npm on PATH, a
 // malformed manifest, or a non-zero exit from npm yields no artifact.
-func harvestNPMArtifacts(ctx context.Context, projectDir string) map[string]ReleaseArtifact {
-	out := map[string]ReleaseArtifact{}
+func harvestNPMArtifacts(ctx context.Context, projectDir string) map[string]release.Artifact {
+	out := map[string]release.Artifact{}
 	if _, err := exec.LookPath("npm"); err != nil {
 		return out
 	}
@@ -170,9 +172,9 @@ func harvestNPMArtifacts(ctx context.Context, projectDir string) map[string]Rele
 		if name == "" || version == "" {
 			continue
 		}
-		out[name] = ReleaseArtifact{
-			Kind:      ArtifactKindNPM,
-			Mode:      "shared",
+		out[name] = release.Artifact{
+			Kind:      release.KindNPM,
+			Mode:      release.ModeShared,
 			Version:   version,
 			Integrity: entry.Integrity,
 		}
@@ -227,7 +229,7 @@ func npmPackMetadata(ctx context.Context, dir string) (npmPackEntry, bool) {
 }
 
 // harvestGoModuleArtifacts records every NESTED Go module in the project whose
-// version the root module pins, as an ArtifactKindGoModule artifact keyed by
+// version the root module pins, as an release.KindGoModule artifact keyed by
 // module path.
 //
 // SOURCE: the repo's own go.mod and go.sum. The root module's `require` line
@@ -248,8 +250,8 @@ func npmPackMetadata(ctx context.Context, dir string) (npmPackEntry, bool) {
 //
 // The ROOT module itself is deliberately not recorded: its version IS the
 // release label, and it has no self-referential go.sum entry to verify against.
-func harvestGoModuleArtifacts(projectDir string) map[string]ReleaseArtifact {
-	out := map[string]ReleaseArtifact{}
+func harvestGoModuleArtifacts(projectDir string) map[string]release.Artifact {
+	out := map[string]release.Artifact{}
 
 	rootData, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
@@ -287,9 +289,9 @@ func harvestGoModuleArtifacts(projectDir string) map[string]ReleaseArtifact {
 		if !ok {
 			continue
 		}
-		out[modPath] = ReleaseArtifact{
-			Kind:      ArtifactKindGoModule,
-			Mode:      "shared",
+		out[modPath] = release.Artifact{
+			Kind:      release.KindGoModule,
+			Mode:      release.ModeShared,
 			Version:   version,
 			Integrity: integrity,
 		}
@@ -339,7 +341,7 @@ func goSumHashes(path string) map[string]string {
 }
 
 // harvestFileArtifacts records the binaries produced by build-only service
-// variants as ArtifactKindFile artifacts, keyed by the binary's output name.
+// variants as release.KindFile artifacts, keyed by the binary's output name.
 //
 // SOURCE: the KCL entities the build already rendered, plus the binaries on
 // disk in outputDir. A build-only service is forge's declared shape for "an
@@ -364,8 +366,8 @@ func goSumHashes(path string) map[string]string {
 // something it did not derive. Naming the artifact and its hash is strictly
 // better than not naming it at all; closing the gap needs a publish
 // destination declared in KCL, which is a separate change.
-func harvestFileArtifacts(projectDir, outputDir string, entities *KCLEntities) map[string]ReleaseArtifact {
-	out := map[string]ReleaseArtifact{}
+func harvestFileArtifacts(projectDir, outputDir string, entities *KCLEntities) map[string]release.Artifact {
+	out := map[string]release.Artifact{}
 	if entities == nil {
 		return out
 	}
@@ -394,9 +396,9 @@ func harvestFileArtifacts(projectDir, outputDir string, entities *KCLEntities) m
 				// release records only bytes that exist.
 				continue
 			}
-			out[name] = ReleaseArtifact{
-				Kind:      ArtifactKindFile,
-				Mode:      "shared",
+			out[name] = release.Artifact{
+				Kind:      release.KindFile,
+				Mode:      release.ModeShared,
 				Version:   v.Name,
 				Integrity: sum,
 			}
@@ -425,7 +427,7 @@ func sha256File(path string) (string, bool) {
 // braces on top of SharedDigest's kind guard — that guard already stops a
 // non-OCI artifact from being read AS a digest, and this stops one from
 // evicting a real digest in the first place.
-func mergeReleaseArtifacts(dst, src map[string]ReleaseArtifact) int {
+func mergeReleaseArtifacts(dst, src map[string]release.Artifact) int {
 	added := 0
 	for name, art := range src {
 		if _, exists := dst[name]; exists {

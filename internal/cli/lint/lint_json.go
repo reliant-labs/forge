@@ -1063,18 +1063,28 @@ func collectContractLintJSON(ctx context.Context, paths []string, excludes []str
 		return nil, false, nil
 	}
 	fs := make([]lintJSONFinding, 0, len(diags))
+	gated := false
 	for _, d := range diags {
+		sev, hint := lintSevError, d.FixHint
+		if d.Warning {
+			sev = lintSevWarning
+		} else {
+			gated = true
+		}
+		if hint == "" {
+			hint = "either declare the exported method in the contract interface, or unexport it (lowercase) if it's helper-only"
+		}
 		fs = append(fs, lintJSONFinding{
 			File:     d.Pos.Filename,
 			Line:     d.Pos.Line,
 			Col:      d.Pos.Column,
-			Severity: lintSevError,
+			Severity: sev,
 			Rule:     "contract",
 			Message:  fmt.Sprintf("%s (%s)", d.Message, d.Analyzer),
-			FixHint:  "either declare the exported method in the contract interface, or unexport it (lowercase) if it's helper-only",
+			FixHint:  hint,
 		})
 	}
-	return fs, true, nil
+	return fs, gated, nil
 }
 
 // collectBufLintJSON runs `buf lint` with captured output. Missing

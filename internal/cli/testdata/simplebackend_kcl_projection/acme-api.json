@@ -1,0 +1,268 @@
+[
+ {
+  "apiVersion": "v1",
+  "kind": "Namespace",
+  "metadata": {
+   "labels": {
+    "app.kubernetes.io/managed-by": "forge",
+    "pod-security.kubernetes.io/audit": "restricted",
+    "pod-security.kubernetes.io/enforce": "restricted",
+    "pod-security.kubernetes.io/warn": "restricted"
+   },
+   "name": "acme-prod"
+  }
+ },
+ {
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+   "labels": {
+    "app.kubernetes.io/managed-by": "forge",
+    "app.kubernetes.io/name": "acme-api",
+    "app.kubernetes.io/part-of": "proj"
+   },
+   "name": "acme-api",
+   "namespace": "acme-prod"
+  },
+  "spec": {
+   "replicas": 1,
+   "selector": {
+    "matchLabels": {
+     "app.kubernetes.io/name": "acme-api"
+    }
+   },
+   "template": {
+    "metadata": {
+     "labels": {
+      "app.kubernetes.io/managed-by": "forge",
+      "app.kubernetes.io/name": "acme-api",
+      "app.kubernetes.io/part-of": "proj"
+     }
+    },
+    "spec": {
+     "containers": [
+      {
+       "env": [
+        {
+         "name": "LOG_LEVEL",
+         "value": "info"
+        },
+        {
+         "name": "DB_PASSWORD",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "password",
+           "name": "acme-prod-db"
+          }
+         }
+        }
+       ],
+       "image": "ghcr.io/acme/api:v1.4.2",
+       "imagePullPolicy": "IfNotPresent",
+       "livenessProbe": {
+        "failureThreshold": 3,
+        "httpGet": {
+         "path": "/healthz",
+         "port": 8080
+        },
+        "initialDelaySeconds": 7,
+        "periodSeconds": 10,
+        "timeoutSeconds": 3
+       },
+       "name": "acme-api",
+       "ports": [
+        {
+         "containerPort": 8080,
+         "name": "port-8080",
+         "protocol": "TCP"
+        },
+        {
+         "containerPort": 9090,
+         "name": "port-9090",
+         "protocol": "TCP"
+        }
+       ],
+       "readinessProbe": {
+        "failureThreshold": 3,
+        "httpGet": {
+         "path": "/healthz",
+         "port": 8080
+        },
+        "initialDelaySeconds": 7,
+        "periodSeconds": 10,
+        "timeoutSeconds": 3
+       },
+       "resources": {
+        "limits": {
+         "cpu": "1",
+         "memory": "2Gi"
+        },
+        "requests": {
+         "cpu": "500m",
+         "memory": "2Gi"
+        }
+       },
+       "securityContext": {
+        "allowPrivilegeEscalation": false,
+        "capabilities": {
+         "drop": [
+          "ALL"
+         ]
+        },
+        "readOnlyRootFilesystem": true,
+        "runAsGroup": 65532,
+        "runAsNonRoot": true,
+        "runAsUser": 65532
+       },
+       "volumeMounts": [
+        {
+         "mountPath": "/data",
+         "name": "data"
+        }
+       ]
+      }
+     ],
+     "securityContext": {
+      "runAsGroup": 65532,
+      "runAsNonRoot": true,
+      "runAsUser": 65532,
+      "seccompProfile": {
+       "type": "RuntimeDefault"
+      }
+     },
+     "serviceAccountName": "acme-api",
+     "volumes": [
+      {
+       "name": "data",
+       "persistentVolumeClaim": {
+        "claimName": "acme-api-data"
+       }
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+   "labels": {
+    "app.kubernetes.io/managed-by": "forge",
+    "app.kubernetes.io/name": "acme-api",
+    "app.kubernetes.io/part-of": "proj"
+   },
+   "name": "acme-api",
+   "namespace": "acme-prod"
+  },
+  "spec": {
+   "ports": [
+    {
+     "name": "port-8080",
+     "port": 8080,
+     "protocol": "TCP",
+     "targetPort": 8080
+    },
+    {
+     "name": "port-9090",
+     "port": 9090,
+     "protocol": "TCP",
+     "targetPort": 9090
+    }
+   ],
+   "selector": {
+    "app.kubernetes.io/name": "acme-api"
+   }
+  }
+ },
+ {
+  "apiVersion": "v1",
+  "kind": "ServiceAccount",
+  "metadata": {
+   "labels": {
+    "app.kubernetes.io/managed-by": "forge",
+    "app.kubernetes.io/name": "acme-api",
+    "app.kubernetes.io/part-of": "proj"
+   },
+   "name": "acme-api",
+   "namespace": "acme-prod"
+  }
+ },
+ {
+  "apiVersion": "rbac.authorization.k8s.io/v1",
+  "kind": "Role",
+  "metadata": {
+   "labels": {
+    "app.kubernetes.io/managed-by": "forge",
+    "app.kubernetes.io/name": "acme-api",
+    "app.kubernetes.io/part-of": "proj"
+   },
+   "name": "acme-api-role",
+   "namespace": "acme-prod"
+  },
+  "rules": [
+   {
+    "apiGroups": [
+     ""
+    ],
+    "resources": [
+     "configmaps",
+     "secrets"
+    ],
+    "verbs": [
+     "get",
+     "list",
+     "watch"
+    ]
+   }
+  ]
+ },
+ {
+  "apiVersion": "rbac.authorization.k8s.io/v1",
+  "kind": "RoleBinding",
+  "metadata": {
+   "labels": {
+    "app.kubernetes.io/managed-by": "forge",
+    "app.kubernetes.io/name": "acme-api",
+    "app.kubernetes.io/part-of": "proj"
+   },
+   "name": "acme-api-rolebinding",
+   "namespace": "acme-prod"
+  },
+  "roleRef": {
+   "apiGroup": "rbac.authorization.k8s.io",
+   "kind": "Role",
+   "name": "acme-api-role"
+  },
+  "subjects": [
+   {
+    "kind": "ServiceAccount",
+    "name": "acme-api",
+    "namespace": "acme-prod"
+   }
+  ]
+ },
+ {
+  "apiVersion": "v1",
+  "kind": "PersistentVolumeClaim",
+  "metadata": {
+   "labels": {
+    "app.kubernetes.io/managed-by": "forge",
+    "app.kubernetes.io/name": "acme-api",
+    "app.kubernetes.io/part-of": "proj"
+   },
+   "name": "acme-api-data",
+   "namespace": "acme-prod"
+  },
+  "spec": {
+   "accessModes": [
+    "ReadWriteOnce"
+   ],
+   "resources": {
+    "requests": {
+     "storage": "20Gi"
+    }
+   }
+  }
+ }
+]

@@ -122,6 +122,16 @@ _bundle = forge.Bundle {
   forge rejects it in any other env. This is what the scaffold emits.
 - `forge.ExternalSecrets {}` — `type="external"`; a pure marker, **no
   other fields**. PROD / STAGING.
+- `forge.HostedSecrets {}` — `type="hosted"`; values live in the env's
+  hosted control plane and are materialized IN-CLUSTER by it into the
+  `forge-managed-secrets` Secret every `managedSecret` env var reads. Requires
+  `control_plane = forge.ControlPlane {...}` on the same Bundle (load-time
+  check). forge never sees a value — the API is write-only — but
+  `forge secret set/list/unset <env>` work: they write/list through that
+  control plane (endpoint + credential from `control_plane`, i.e. `--token` /
+  `$FORGE_CONTROL_PLANE_TOKEN` / `forge login`), scoped to the control-plane
+  environment with this env's NAME. A machine token needs `secret:write` to
+  set, `secret:read` to list. A changed value rolls the pods that read it.
 - `forge.DotenvSecrets { path = ... }` — **DEPRECATED**. Still resolved
   so existing projects run; `forge lint` fails on the file and
   `forge secret migrate <env>` converts it.

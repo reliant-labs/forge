@@ -582,6 +582,55 @@ func Materialize(projectDir string, allowDowngrade bool) (changed bool, err erro
 	return changed, nil
 }
 
+// EnsurePresent materializes <projectDir>/.forge-kcl when it is ABSENT and
+// a forge-managed kcl.mod (deploy/kcl/kcl.mod or the legacy root kcl.mod)
+// already points its `forge` dependency at exactly that directory. It
+// returns true when it wrote the copy.
+//
+// This is the render-time half of vendoring. Without it a fresh checkout
+// (or any project that has not run `forge generate` yet) could not
+// `forge env render` at all: kpm failed with a raw `CannotFindModule`
+// and suggested `kcl mod add forge`, a command that is wrong for a forge
+// project. The copy is a pure function of this binary, so producing it on
+// demand is what `forge generate` would have done anyway.
+//
+// Deliberately narrow, so a render can never do what generate's guards
+// exist to prevent:
+//   - an EXISTING copy is never touched — refreshing (and the downgrade
+//     guard that protects it) stays with `forge generate`;
+//   - kcl.mod is never edited — a dependency in any other shape is left
+//     for generate's surgery, and nothing is materialized;
+//   - a dependency path that resolves anywhere other than
+//     <projectDir>/.forge-kcl materializes nothing (no orphan dirs).
+func EnsurePresent(projectDir string) (bool, error) {
+	if Present(projectDir) {
+		return false, nil
+	}
+	want := filepath.Join(projectDir, VendorDirName)
+	for _, modPath := range []string{
+		filepath.Join(projectDir, "deploy", "kcl", "kcl.mod"),
+		filepath.Join(projectDir, "kcl.mod"),
+	} {
+		data, err := os.ReadFile(modPath)
+		if err != nil {
+			continue
+		}
+		kind, _, target := classifyDep(strings.Split(string(data), "\n"))
+		if kind != DepVendored {
+			continue
+		}
+		resolved := filepath.Join(filepath.Dir(modPath), filepath.FromSlash(target))
+		if filepath.Clean(resolved) != filepath.Clean(want) {
+			continue
+		}
+		if _, err := Materialize(projectDir, false); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // Stale reports whether <projectDir>/.forge-kcl was materialized by a
 // DIFFERENT forge version than the one running now, returning the
 // recorded version for the message. A vendor dir that is absent, or one

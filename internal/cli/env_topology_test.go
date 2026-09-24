@@ -3,11 +3,15 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // `forge env topology` tests.
@@ -22,40 +26,43 @@ import (
 // is needed. The one thing staged on disk is the release ledger directory,
 // because reading it IS the behaviour under test.
 
-// stubBindings is an in-memory bindingStore. It exists so a test can STATE the
-// ledger rather than write files to imply it, and so the "ledger read failed"
-// path is reachable at all, which a real file backend makes awkward.
-type stubBindings struct {
-	bindings map[string]EnvBinding
-	err      error
-}
-
-func (s stubBindings) Binding(env string) (EnvBinding, bool, error) {
-	if s.err != nil {
-		return EnvBinding{}, false, s.err
+// dg turns a short fixture label ("aaa3") into a canonical sha256 digest, so
+// fixtures stay legible while every release and promotion still satisfies
+// release.Validate — which now refuses a non-canonical digest.
+func dg(label string) string {
+	hex := ""
+	for _, c := range label {
+		hex += fmt.Sprintf("%02x", c)
 	}
-	b, ok := s.bindings[env]
-	return b, ok, nil
+	return "sha256:" + (hex + strings.Repeat("0", 64))[:64]
 }
 
-func (s stubBindings) SetBinding(string, EnvBinding) error { return nil }
-func (s stubBindings) Location() string                    { return "stub://bindings" }
+// topologyBindings wires opts to STATE each env's ledger: bindings from the
+// given store, releases from the project's files. An in-memory store makes
+// the "ledger read failed" path reachable, which a file backend makes awkward.
+func topologyBindings(opts envTopologyOptions, store bindingStore) envTopologyOptions {
+	dir := opts.ProjectDir
+	opts.Ledgers = func(context.Context, string) (envLedger, error) {
+		return envLedger{Bindings: store, Releases: fileReleaseLedger{projectDir: dir}}, nil
+	}
+	return opts
+}
 
 // stageReleaseLedger stages one release ledger on disk.
 func stageReleaseLedger(t *testing.T, dir, version, createdAt string, dirty bool, images map[string]string) {
 	t.Helper()
-	artifacts := map[string]ReleaseArtifact{}
+	artifacts := map[string]release.Artifact{}
 	for name, digest := range images {
-		artifacts[name] = ReleaseArtifact{
-			Kind:    ArtifactKindOCI,
-			Mode:    "shared",
-			Digests: map[string]string{sharedVariantKey: digest},
+		artifacts[name] = release.Artifact{
+			Kind:    release.KindOCI,
+			Mode:    release.ModeShared,
+			Digests: map[string]string{release.SharedVariant: digest},
 		}
 	}
-	rel := Release{
+	rel := release.Release{
 		Version:   version,
-		Git:       ReleaseGit{Commit: "commit-" + version, Dirty: dirty},
-		CreatedAt: createdAt,
+		Git:       release.Git{Commit: "commit-" + version, Dirty: dirty},
+		CreatedAt: mustTime(t, createdAt),
 		Artifacts: artifacts,
 	}
 	if err := WriteRelease(dir, rel); err != nil {
@@ -103,14 +110,14 @@ func realisticTopologyOpts(t *testing.T) envTopologyOptions {
 	dir := t.TempDir()
 
 	stageReleaseLedger(t, dir, "v1.3.0", "2026-07-01T00:25:07Z", true, map[string]string{
-		"control-plane": "sha256:aaa3", "reliant": "sha256:bbb3",
+		"control-plane": dg("aaa3"), "reliant": dg("bbb3"),
 	})
 	// Intermediate cuts nobody is bound to. They are what makes
 	// "releases behind" a count rather than a boolean.
-	stageReleaseLedger(t, dir, "v1.4.0", "2026-07-20T00:00:00Z", false, map[string]string{"control-plane": "sha256:aaa4"})
-	stageReleaseLedger(t, dir, "v1.5.0", "2026-08-01T00:00:00Z", false, map[string]string{"control-plane": "sha256:aaa5"})
+	stageReleaseLedger(t, dir, "v1.4.0", "2026-07-20T00:00:00Z", false, map[string]string{"control-plane": dg("aaa4")})
+	stageReleaseLedger(t, dir, "v1.5.0", "2026-08-01T00:00:00Z", false, map[string]string{"control-plane": dg("aaa5")})
 	stageReleaseLedger(t, dir, "v1.5.15", "2026-09-10T13:53:22Z", false, map[string]string{
-		"control-plane": "sha256:aaa15", "reliant": "sha256:bbb15", "internal-console": "sha256:ccc15",
+		"control-plane": dg("aaa15"), "reliant": dg("bbb15"), "internal-console": dg("ccc15"),
 	})
 
 	// Declare the three envs the way a real project does — one
@@ -121,28 +128,25 @@ func realisticTopologyOpts(t *testing.T) envTopologyOptions {
 		declareEnvDir(t, dir, env)
 	}
 
-	return envTopologyOptions{
-		ProjectDir: dir,
-		Bindings: stubBindings{bindings: map[string]EnvBinding{
-			"prod": {
-				Release:    "v1.5.15",
-				PromotedAt: "2026-09-10T13:53:22Z",
-				Resolved: map[string]string{
-					"control-plane": "sha256:aaa15", "reliant": "sha256:bbb15", "internal-console": "sha256:ccc15",
-				},
+	return topologyBindings(envTopologyOptions{ProjectDir: dir}, newMemBindingStore(map[string]release.Promotion{
+		"prod": {
+			Release:    "v1.5.15",
+			PromotedAt: mustTime(t, "2026-09-10T13:53:22Z"),
+			Resolved: map[string]string{
+				"control-plane": dg("aaa15"), "reliant": dg("bbb15"), "internal-console": dg("ccc15"),
 			},
-			"staging": {
-				Release:    "v1.3.0",
-				PromotedAt: "2026-07-01T00:25:15Z",
-				Resolved:   map[string]string{"control-plane": "sha256:aaa3", "reliant": "sha256:bbb3"},
-			},
-			"preprod": {
-				Release:    "v1.3.0",
-				PromotedAt: "2026-07-01T00:28:00Z",
-				Resolved:   map[string]string{"control-plane": "sha256:aaa3", "reliant": "sha256:bbb3"},
-			},
-		}},
-	}
+		},
+		"staging": {
+			Release:    "v1.3.0",
+			PromotedAt: mustTime(t, "2026-07-01T00:25:15Z"),
+			Resolved:   map[string]string{"control-plane": dg("aaa3"), "reliant": dg("bbb3")},
+		},
+		"preprod": {
+			Release:    "v1.3.0",
+			PromotedAt: mustTime(t, "2026-07-01T00:28:00Z"),
+			Resolved:   map[string]string{"control-plane": dg("aaa3"), "reliant": dg("bbb3")},
+		},
+	}))
 }
 
 // TestTopology_MultiEnvDifferingReleases is the headline case: three envs, two
@@ -339,8 +343,8 @@ func TestTopology_VerifyReconciles(t *testing.T) {
 	opts.Lister = &recordingLister{images: []cluster.WorkloadImage{
 		// control-plane matches; reliant runs something else entirely;
 		// internal-console is deployed nowhere.
-		deployImage("control-plane", "ghcr.io/acme/control-plane@sha256:aaa15"),
-		deployImage("reliant", "ghcr.io/acme/reliant@sha256:wrong"),
+		deployImage("control-plane", "ghcr.io/acme/control-plane@"+dg("aaa15")),
+		deployImage("reliant", "ghcr.io/acme/reliant@"+dg("wrong")),
 	}}
 
 	report, code, out := runTopologyJSON(t, []string{"prod"}, opts)
@@ -432,13 +436,13 @@ func TestTopology_UnboundEnv(t *testing.T) {
 // omitted rather than guessed.
 func TestTopology_BindingWithMissingReleaseLedger(t *testing.T) {
 	opts := realisticTopologyOpts(t)
-	opts.Bindings = stubBindings{bindings: map[string]EnvBinding{
+	opts = topologyBindings(opts, newMemBindingStore(map[string]release.Promotion{
 		"prod": {
 			Release:    "v9.9.9-branch",
-			PromotedAt: "2026-10-01T00:00:00Z",
-			Resolved:   map[string]string{"control-plane": "sha256:branchy"},
+			PromotedAt: mustTime(t, "2026-10-01T00:00:00Z"),
+			Resolved:   map[string]string{"control-plane": dg("branchy")},
 		},
-	}}
+	}))
 
 	report, code, out := runTopologyJSON(t, []string{"prod"}, opts)
 
@@ -460,7 +464,7 @@ func TestTopology_BindingWithMissingReleaseLedger(t *testing.T) {
 	}
 	// The digests the binding froze are still the env's declaration and
 	// must survive — they are what a deploy would pin.
-	if len(prod.Images) != 1 || prod.Images[0].Digest != "sha256:branchy" {
+	if len(prod.Images) != 1 || prod.Images[0].Digest != dg("branchy") {
 		t.Errorf("the binding's resolved digests must still be reported; got %+v", prod.Images)
 	}
 	if prod.Note == "" {
@@ -474,13 +478,13 @@ func TestTopology_BindingWithMissingReleaseLedger(t *testing.T) {
 // declared:false with no cluster resolved, rather than dropped or errored.
 func TestTopology_UndeclaredEnvIsReported(t *testing.T) {
 	opts := realisticTopologyOpts(t)
-	opts.Bindings = stubBindings{bindings: map[string]EnvBinding{
+	opts = topologyBindings(opts, newMemBindingStore(map[string]release.Promotion{
 		"hotfix": {
 			Release:    "v1.3.0",
-			PromotedAt: "2026-07-02T00:00:00Z",
-			Resolved:   map[string]string{"control-plane": "sha256:aaa3"},
+			PromotedAt: mustTime(t, "2026-07-02T00:00:00Z"),
+			Resolved:   map[string]string{"control-plane": dg("aaa3")},
 		},
-	}}
+	}))
 
 	report, code, _ := runTopologyJSON(t, []string{"hotfix"}, opts)
 
@@ -531,10 +535,10 @@ func TestTopology_DefaultsToDeclaredEnvs(t *testing.T) {
 // "releases behind" count wrong; a timestamp sort trusts whichever machine's
 // clock cut the release.
 func TestSortReleasesNewestFirst(t *testing.T) {
-	releases := []Release{
-		{Version: "v1.5.9", CreatedAt: "2026-08-01T00:00:00Z"},
-		{Version: "v1.5.15", CreatedAt: "2026-07-01T00:00:00Z"}, // skewed clock
-		{Version: "v1.3.0", CreatedAt: "2026-06-01T00:00:00Z"},
+	releases := []release.Release{
+		{Version: "v1.5.9", CreatedAt: mustTime(t, "2026-08-01T00:00:00Z")},
+		{Version: "v1.5.15", CreatedAt: mustTime(t, "2026-07-01T00:00:00Z")}, // skewed clock
+		{Version: "v1.3.0", CreatedAt: mustTime(t, "2026-06-01T00:00:00Z")},
 	}
 	sortReleasesNewestFirst(releases)
 
@@ -581,7 +585,7 @@ func TestTopologyImageState_RejectsUnknown(t *testing.T) {
 // blank the whole screen.
 func TestTopology_LedgerReadFailureIsPerRow(t *testing.T) {
 	opts := realisticTopologyOpts(t)
-	opts.Bindings = stubBindings{err: context.DeadlineExceeded}
+	opts = topologyBindings(opts, &memBindingStore{err: context.DeadlineExceeded})
 
 	report, code, out := runTopologyJSON(t, []string{"prod"}, opts)
 	if code != 0 {

@@ -1,7 +1,4 @@
-// forge:exclude-contract
-// devstack is CLI-internal dev-stack orchestration glue (dev-block wiring,
-// git-facts, lockfile) for `forge env up`, not a contract-shaped service the
-// bootstrap wires. Opt out of the require-contract rule.
+//forge:exclude-contract: CLI-internal dev-stack orchestration glue (dev-block wiring, git facts, lockfile) for `forge env up`
 package devstack
 
 import (

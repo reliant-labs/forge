@@ -263,6 +263,74 @@ func forgeKCLModuleRoot(t *testing.T) string {
 // This exercises the generator OUTPUT end-to-end through the forge kcl module,
 // with no dependency on control-plane's (blocked) `forge generate`. Skips when
 // kcl is not on PATH.
+// TestGenerateConfigProjectionKCL_OptionalInlineOmittedAtDefault pins the
+// projection of an OPTIONAL non-sensitive field, evaluated by real KCL: absent
+// from the env map while it holds its schema default, present once an env sets
+// it. A required/unannotated field keeps projecting unconditionally.
+//
+// Why it matters: every non-sensitive field is broadcast to every workload, so
+// before this an e2e-only knob put `value: ""` into every Deployment of every
+// env. Absent == default is lossless because the loader resolves a missing env
+// var to the same default.
+func TestGenerateConfigProjectionKCL_OptionalInlineOmittedAtDefault(t *testing.T) {
+	if _, err := exec.LookPath("kcl"); err != nil {
+		t.Skip("kcl not on PATH")
+	}
+	fields := []ConfigField{
+		{Name: "log_level", ProtoType: "string", GoType: "string", EnvVar: "LOG_LEVEL", DefaultValue: "info"},
+		{Name: "storage_endpoint", ProtoType: "string", GoType: "string", EnvVar: "STORAGE_ENDPOINT", Optional: true},
+		{Name: "anonymous", ProtoType: "bool", GoType: "bool", EnvVar: "ANONYMOUS", Optional: true},
+		{Name: "replicas", ProtoType: "int32", GoType: "int32", EnvVar: "REPLICAS", DefaultValue: "2", Optional: true},
+		{Name: "plain", ProtoType: "string", GoType: "string", EnvVar: "PLAIN"},
+	}
+	module, err := GenerateConfigKCL(fields, "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("kcl.mod", "[package]\nname = \"optional_proof\"\nedition = \"v0.11.0\"\nversion = \"0.1.0\"\n\n[dependencies]\nforge = { path = \""+forgeKCLModuleRoot(t)+"\" }\n")
+	write(ConfigSchemaModule+".k", module)
+	write("main.k", fmt.Sprintf(`import %[1]s as cg
+
+_unset = cg.appConfigEnvMap(cg.AppConfig {}, [])
+_set = cg.appConfigEnvMap(cg.AppConfig {storage_endpoint = "http://fake:4443", anonymous = True, replicas = 3}, [])
+unset_keys = sorted([k for k in _unset])
+set_keys = sorted([k for k in _set])
+set_endpoint = _set["STORAGE_ENDPOINT"].value
+set_anonymous = _set["ANONYMOUS"].value
+set_replicas = _set["REPLICAS"].value
+`, ConfigSchemaModule))
+
+	out, err := kcltest.Run(t.Context(), dir, "run", ".", "--format", "json")
+	if err != nil {
+		t.Fatalf("kcl run: %v\n%s", err, out)
+	}
+	var got struct {
+		UnsetKeys    []string `json:"unset_keys"`
+		SetKeys      []string `json:"set_keys"`
+		SetEndpoint  string   `json:"set_endpoint"`
+		SetAnonymous string   `json:"set_anonymous"`
+		SetReplicas  string   `json:"set_replicas"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	if strings.Join(got.UnsetKeys, ",") != "LOG_LEVEL,PLAIN" {
+		t.Errorf("at defaults the env map is %v; optional fields must be absent and unannotated ones present", got.UnsetKeys)
+	}
+	if strings.Join(got.SetKeys, ",") != "ANONYMOUS,LOG_LEVEL,PLAIN,REPLICAS,STORAGE_ENDPOINT" {
+		t.Errorf("with values set the env map is %v; every set optional field must project", got.SetKeys)
+	}
+	if got.SetEndpoint != "http://fake:4443" || got.SetAnonymous != "true" || got.SetReplicas != "3" {
+		t.Errorf("projected values = %+v", got)
+	}
+}
+
 func TestGenerateConfigProjectionKCL_EndToEndEnvMap(t *testing.T) {
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping env-map e2e proof")

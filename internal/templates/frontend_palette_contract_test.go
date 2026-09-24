@@ -525,3 +525,57 @@ func TestThemeStorageKeyAgreesAcrossTheBootScripts(t *testing.T) {
 		}
 	}
 }
+
+// TestScaffoldedPaletteHasARecessThatRecessesInBothModes pins the elevation
+// ladder the card primitive documents (components/ui/card.tsx):
+//
+//	page / card     surface
+//	inset (a well)  surface-sunken — BELOW surface, in light AND dark
+//
+// `surface-muted` cannot serve as the inset. It is an interaction/subtle
+// fill, and in the dark palette it sits ABOVE `surface` (lighter), so an
+// inset painted with it recesses in light mode and LIFTS in dark — a well on
+// one theme, a floating slab on the other. That exact inversion shipped in a
+// downstream app (reliant's billing surfaces) before being measured, so the
+// ordering is asserted rather than trusted to review.
+func TestScaffoldedPaletteHasARecessThatRecessesInBothModes(t *testing.T) {
+	t.Parallel()
+
+	for kind, rel := range paletteFiles {
+		css := renderPalette(t, kind)
+		blocks := map[string]*regexp.Regexp{"light": themeAtBlock, "dark": darkRootBlock}
+		for mode, re := range blocks {
+			m := re.FindStringSubmatch(css)
+			if m == nil {
+				t.Fatalf("%s: no %s palette block", rel, mode)
+			}
+			tokens := parsePaletteBlock(t, rel, m[1])
+			lightness := func(name string) (float64, bool) {
+				raw, ok := tokens[name]
+				if !ok {
+					return 0, false
+				}
+				if i := strings.Index(raw, "/*"); i >= 0 {
+					raw = strings.TrimSpace(raw[:i])
+				}
+				om := oklchValue.FindStringSubmatch(raw)
+				if om == nil {
+					return 0, false
+				}
+				l, _ := strconv.ParseFloat(om[1], 64)
+				return l, true
+			}
+			surface, okS := lightness("surface")
+			sunken, okK := lightness("surface-sunken")
+			if !okS || !okK {
+				t.Errorf("%s (%s): --color-surface-sunken must be declared as oklch — it is the one token an inset "+
+					"may use, and it must recess below --color-surface in every palette", rel, mode)
+				continue
+			}
+			if sunken >= surface {
+				t.Errorf("%s (%s): --color-surface-sunken (L=%.1f%%) must be DARKER than --color-surface (L=%.1f%%). "+
+					"An inset that is lighter than its card lifts instead of recessing.", rel, mode, sunken, surface)
+			}
+		}
+	}
+}

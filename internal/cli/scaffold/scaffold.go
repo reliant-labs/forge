@@ -1263,6 +1263,20 @@ func runCRD(name, group, version, shape, operator string) error {
 		return fmt.Errorf("generate CRD files: %w", err)
 	}
 
+	// The new api/<version>/<lower>_types.go declares a root type whose
+	// runtime.Object methods live in the GENERATED zz_generated.deepcopy.go —
+	// the scaffold deliberately does not hand-write them (a second declaration
+	// would collide with generate's). So project the deepcopy now, with the
+	// same function `forge generate` runs, or the tree this verb just wrote
+	// does not compile until the user thinks to run generate.
+	wrote, err := codegen.GenerateAPIDeepCopy(root)
+	if err != nil {
+		return fmt.Errorf("generate api deepcopy for CRD %q: %w", name, err)
+	}
+	for _, rel := range wrote {
+		fmt.Printf("  ✅ Generated %s\n", rel)
+	}
+
 	// Nothing is written back: the emitted <lower>_controller.go IS the CRD's
 	// declaration, and that is what the duplicate check above reads.
 	fmt.Printf("\n✅ CRD '%s' added to operator '%s'!\n", name, operator)

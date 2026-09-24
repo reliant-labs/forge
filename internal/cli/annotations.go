@@ -409,9 +409,9 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:exclude-contract",
 			AppliesTo: "package",
-			Effect:    "Opts the package out of contract codegen entirely — no canonical-shape check, no wiring, and NO generated mock. The per-package equivalent of listing it in forge.yaml `contracts.exclude`. For packages that are genuinely not contract-shaped; the trade is that you hand-roll any test double yourself.",
+			Effect:    "Opts the package out of contract codegen entirely — no canonical-shape check, no wiring, and NO generated mock. The per-package equivalent of listing it in forge.yaml `contracts.exclude`. REQUIRES a reason (`forge:exclude-contract: <why>`); a bare marker is a `forge lint` error. Refused outright on a package that does outbound I/O (make it an adapter) or owns a multi-implementation interface (that interface is the contract). Legitimate for pure functions, test-support, API/CRD types, a strategy registry.",
 			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
-			Example:   "// forge:exclude-contract\npackage strategyregistry",
+			Example:   "//forge:exclude-contract: strategy registry — one constructor per algorithm\npackage strategyregistry",
 		},
 		{
 			Name:      "forge:external-component",

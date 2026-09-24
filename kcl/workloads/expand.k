@@ -602,6 +602,9 @@ render_cron = lambda c: any, namespace: str, env_registry: str, image_tag: str, 
                 "forge.dev/job-name" = _name
                 "forge.dev/spec-hash" = crypto.sha256(str(_pod_spec))[:10]
             }
+            # A one-shot is pre-rollout (see Workload.deploy_phase). A cron
+            # cannot declare a phase, so this states the default outright.
+            annotations = {"forge.dev/deploy-phase" = "pre-rollout"}
         }
         spec = {
             ttlSecondsAfterFinished = 86400
@@ -704,6 +707,11 @@ render_job = lambda c: any, namespace: str, env_registry: str, image_tag: str, p
                 "forge.dev/job-name" = _name
                 "forge.dev/spec-hash" = _spec_hash
             }
+            # WHEN this Job runs relative to the deploy's workloads — see
+            # Workload.deploy_phase. Always stated, so the manifest says what
+            # the deploy will do. On metadata, not the pod template, so it
+            # never moves the spec hash above.
+            annotations = {"forge.dev/deploy-phase" = c.deploy_phase or "pre-rollout"}
             # Collect superseded Jobs rather than accumulating one per spec
             # change forever. 24h keeps a failed run inspectable for a day.
             # Overridable the same way the name is.

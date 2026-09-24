@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Tests for the promote change set: `forge env promote --plan` / `--json`.
@@ -58,20 +60,32 @@ func allCommitsPresent(commits ...string) *fakeGit {
 	return &fakeGit{have: have, commits: map[string][]string{}}
 }
 
+// parseFixtureTime parses an RFC3339 fixture literal ("" is the zero time).
+func parseFixtureTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic(err)
+	}
+	return ts
+}
+
 // rel builds a release ledger with one shared OCI digest per named image.
-func rel(version, createdAt, commit string, dirty bool, images map[string]string) Release {
-	arts := map[string]ReleaseArtifact{}
+func rel(version, createdAt, commit string, dirty bool, images map[string]string) release.Release {
+	arts := map[string]release.Artifact{}
 	for name, digest := range images {
-		arts[name] = ReleaseArtifact{
-			Kind:    ArtifactKindOCI,
-			Mode:    "shared",
-			Digests: map[string]string{sharedVariantKey: digest},
+		arts[name] = release.Artifact{
+			Kind:    release.KindOCI,
+			Mode:    release.ModeShared,
+			Digests: map[string]string{release.SharedVariant: digest},
 		}
 	}
-	return Release{
+	return release.Release{
 		Version:   version,
-		CreatedAt: createdAt,
-		Git:       ReleaseGit{Commit: commit, Dirty: dirty},
+		CreatedAt: parseFixtureTime(createdAt),
+		Git:       release.Git{Commit: commit, Dirty: dirty},
 		Artifacts: arts,
 	}
 }
@@ -99,7 +113,7 @@ func changeFor(t *testing.T, plan promotePlan, image string) promoteImageChange 
 // `internal-console` and the staging line does not — so promoting between
 // those lines changes the image SET, not just the digests.
 func TestPromotePlan_ClassifiesEveryImageChange(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{
 			"control-plane":    sha("same"),  // unchanged
 			"reliant":          sha("new"),   // changed
@@ -111,10 +125,10 @@ func TestPromotePlan_ClassifiesEveryImageChange(t *testing.T) {
 			"daemon-gateway": sha("gone"), // removed: current has it, target does not
 		}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"staging": {
 			Release:    "v1.3.0",
-			PromotedAt: "2026-01-02T00:00:00Z",
+			PromotedAt: parseFixtureTime("2026-01-02T00:00:00Z"),
 			Resolved: map[string]string{
 				"control-plane":  sha("same"),
 				"reliant":        sha("old"),
@@ -125,7 +139,7 @@ func TestPromotePlan_ClassifiesEveryImageChange(t *testing.T) {
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v1.5.15", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases,
+		Bindings: store, Releases: newMemReleaseLedger(releases...),
 		Git: allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc"),
 	})
 	if err != nil {
@@ -176,12 +190,12 @@ func TestPromotePlan_ClassifiesEveryImageChange(t *testing.T) {
 // (there is nothing to compare against), the direction is `initial`, and the
 // commit range says first-promote rather than pretending to be empty.
 func TestPromotePlan_FirstPromote(t *testing.T) {
-	releases := []Release{rel("v1.4.0", "2026-02-01T00:00:00Z", "bbbbbbbbbbbb", false,
+	releases := []release.Release{rel("v1.4.0", "2026-02-01T00:00:00Z", "bbbbbbbbbbbb", false,
 		map[string]string{"control-plane": sha("a")})}
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v1.4.0", ProjectDir: t.TempDir(),
-		Bindings: newMemBindingStore(nil), Releases: releases,
+		Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger(releases...),
 		Git: allCommitsPresent("bbbbbbbbbbbb"),
 	})
 	if err != nil {
@@ -213,12 +227,12 @@ func TestPromotePlan_FirstPromote(t *testing.T) {
 // a rollback is spelled — but a reviewer who reads it as a forward move has
 // misread the whole screen.
 func TestPromotePlan_BackwardsPromoteReportsRollback(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{"reliant": sha("new")}),
 		rel("v1.4.0", "2026-02-01T00:00:00Z", "bbbbbbbbbbbb", false, map[string]string{"reliant": sha("mid")}),
 		rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("old")}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"prod": {Release: "v1.5.15", Resolved: map[string]string{"reliant": sha("new")}},
 	})
 	git := allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc")
@@ -227,7 +241,7 @@ func TestPromotePlan_BackwardsPromoteReportsRollback(t *testing.T) {
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "prod", Version: "v1.3.0", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: git,
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
 	})
 	if err != nil {
 		t.Fatalf("a rollback must not be an error: %v", err)
@@ -261,11 +275,11 @@ func TestPromotePlan_BackwardsPromoteReportsRollback(t *testing.T) {
 // TestPromotePlan_ForwardPromoteReportsAhead is the other half. Without it a
 // direction function hardcoded to "behind" would pass the rollback test.
 func TestPromotePlan_ForwardPromoteReportsAhead(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{"reliant": sha("new")}),
 		rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("old")}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"staging": {Release: "v1.3.0", Resolved: map[string]string{"reliant": sha("old")}},
 	})
 	git := allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc")
@@ -273,7 +287,7 @@ func TestPromotePlan_ForwardPromoteReportsAhead(t *testing.T) {
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v1.5.15", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: git,
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
 	})
 	if err != nil {
 		t.Fatalf("compute plan: %v", err)
@@ -293,15 +307,15 @@ func TestPromotePlan_ForwardPromoteReportsAhead(t *testing.T) {
 // direction is `same` and the range is empty BY DEFINITION, which is a
 // different claim from a measured zero.
 func TestPromotePlan_SameReleaseIsNoMove(t *testing.T) {
-	releases := []Release{rel("v1.4.0", "2026-02-01T00:00:00Z", "bbbbbbbbbbbb", false,
+	releases := []release.Release{rel("v1.4.0", "2026-02-01T00:00:00Z", "bbbbbbbbbbbb", false,
 		map[string]string{"reliant": sha("a")})}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"prod": {Release: "v1.4.0", Resolved: map[string]string{"reliant": sha("a")}},
 	})
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "prod", Version: "v1.4.0", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: allCommitsPresent("bbbbbbbbbbbb"),
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: allCommitsPresent("bbbbbbbbbbbb"),
 	})
 	if err != nil {
 		t.Fatalf("compute plan: %v", err)
@@ -324,15 +338,15 @@ func TestPromotePlan_SameReleaseIsNoMove(t *testing.T) {
 // binding is still real and still says what the env runs, so the plan stands —
 // only the provenance and the range are unavailable.
 func TestPromotePlan_CurrentLedgerMissingDoesNotFail(t *testing.T) {
-	releases := []Release{rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false,
+	releases := []release.Release{rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false,
 		map[string]string{"reliant": sha("new")})}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"prod": {Release: "v9.9.9-branchonly", Resolved: map[string]string{"reliant": sha("old")}},
 	})
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "prod", Version: "v1.5.15", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: allCommitsPresent("cccccccccccc"),
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: allCommitsPresent("cccccccccccc"),
 	})
 	if err != nil {
 		t.Fatalf("a missing CURRENT ledger must not fail the plan: %v", err)
@@ -370,7 +384,7 @@ func TestPromotePlan_TargetLedgerMissingIsAnError(t *testing.T) {
 	dir := t.TempDir()
 	_, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v9.9.9", ProjectDir: dir,
-		Bindings: newMemBindingStore(nil), Releases: []Release{}, Git: allCommitsPresent(),
+		Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger(), Git: allCommitsPresent(),
 	})
 	if err == nil {
 		t.Fatal("a missing TARGET release must be an error — there are no digests to preview")
@@ -382,9 +396,9 @@ func TestPromotePlan_TargetLedgerMissingIsAnError(t *testing.T) {
 	// And the same is true through the command, in BOTH modes: the exit
 	// behaviour must not depend on --plan or --json.
 	for _, opts := range []promoteOptions{
-		{ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: []Release{}, Git: allCommitsPresent()},
-		{DryRun: true, ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: []Release{}, Git: allCommitsPresent()},
-		{DryRun: true, JSON: true, ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: []Release{}, Git: allCommitsPresent()},
+		{ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger(), Git: allCommitsPresent()},
+		{DryRun: true, ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger(), Git: allCommitsPresent()},
+		{DryRun: true, JSON: true, ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger(), Git: allCommitsPresent()},
 	} {
 		if err := runPromote(context.Background(), "v9.9.9", "staging", opts); err == nil {
 			t.Errorf("runPromote(%+v) must fail on a missing target release", opts)
@@ -400,11 +414,11 @@ func TestPromotePlan_TargetLedgerMissingIsAnError(t *testing.T) {
 // is not. It must be refused and labelled, and — asserted here — git must not
 // even be consulted, since any answer it gave would be misleading.
 func TestPromotePlan_DirtyTargetRangeIsLabelledMeaningless(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.1", "2026-03-01T00:00:00Z", "cccccccccccc", true, map[string]string{"reliant": sha("dirty")}),
 		rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("old")}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"staging": {Release: "v1.3.0", Resolved: map[string]string{"reliant": sha("old")}},
 	})
 	git := allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc")
@@ -413,7 +427,7 @@ func TestPromotePlan_DirtyTargetRangeIsLabelledMeaningless(t *testing.T) {
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v1.5.1", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: git,
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
 	})
 	if err != nil {
 		t.Fatalf("a dirty release must not fail the plan: %v", err)
@@ -443,11 +457,11 @@ func TestPromotePlan_DirtyTargetRangeIsLabelledMeaningless(t *testing.T) {
 // machine that only tracks main. The digests, the image set and the direction
 // are all still exactly right, so the plan stands and only the range is out.
 func TestPromotePlan_CommitAbsentFromCheckoutDoesNotFail(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "deadbeefdead", false, map[string]string{"reliant": sha("new")}),
 		rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("old")}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"staging": {Release: "v1.3.0", Resolved: map[string]string{"reliant": sha("old")}},
 	})
 	// Only the OLD commit is in the checkout; the target's is not.
@@ -455,7 +469,7 @@ func TestPromotePlan_CommitAbsentFromCheckoutDoesNotFail(t *testing.T) {
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v1.5.15", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: git,
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
 	})
 	if err != nil {
 		t.Fatalf("a commit absent from the checkout must NOT fail the plan: %v", err)
@@ -487,17 +501,17 @@ func TestPromotePlan_CommitAbsentFromCheckoutDoesNotFail(t *testing.T) {
 // because the fixes differ — one is a fetch, the other is unfixable after the
 // fact.
 func TestPromotePlan_NoCommitRecorded(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "", false, map[string]string{"reliant": sha("new")}),
 		rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("old")}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"staging": {Release: "v1.3.0", Resolved: map[string]string{"reliant": sha("old")}},
 	})
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v1.5.15", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: allCommitsPresent("aaaaaaaaaaaa"),
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: allCommitsPresent("aaaaaaaaaaaa"),
 	})
 	if err != nil {
 		t.Fatalf("a ledger with no commit must not fail the plan: %v", err)
@@ -509,11 +523,11 @@ func TestPromotePlan_NoCommitRecorded(t *testing.T) {
 
 // TestPromotePlan_GitUnavailableDoesNotFail: git itself could not be read.
 func TestPromotePlan_GitUnavailableDoesNotFail(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{"reliant": sha("new")}),
 		rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("old")}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"staging": {Release: "v1.3.0", Resolved: map[string]string{"reliant": sha("old")}},
 	})
 	git := allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc")
@@ -521,7 +535,7 @@ func TestPromotePlan_GitUnavailableDoesNotFail(t *testing.T) {
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v1.5.15", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: git,
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
 	})
 	if err != nil {
 		t.Fatalf("an unreadable git must not fail the plan: %v", err)
@@ -536,11 +550,11 @@ func TestPromotePlan_GitUnavailableDoesNotFail(t *testing.T) {
 // document that grew without bound is one a UI cannot render. The COUNT stays
 // exact so the truncation never understates the change.
 func TestPromotePlan_LongRangeIsTruncatedButCountedExactly(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{"reliant": sha("new")}),
 		rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("old")}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
+	store := newMemBindingStore(map[string]release.Promotion{
 		"staging": {Release: "v1.3.0", Resolved: map[string]string{"reliant": sha("old")}},
 	})
 	git := allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc")
@@ -553,7 +567,7 @@ func TestPromotePlan_LongRangeIsTruncatedButCountedExactly(t *testing.T) {
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
 		Env: "staging", Version: "v1.5.15", ProjectDir: t.TempDir(),
-		Bindings: store, Releases: releases, Git: git,
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
 	})
 	if err != nil {
 		t.Fatalf("compute plan: %v", err)
@@ -595,16 +609,15 @@ func TestRunPromotePlan_WritesNothing(t *testing.T) {
 		map[string]string{"reliant": sha("new"), "internal-console": sha("added")})); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
-	// Seed a real binding so there is something to overwrite.
-	if err := newFileBindingStore(dir).SetBinding("staging", EnvBinding{
-		Release:    "v1.3.0",
-		Resolved:   map[string]string{"reliant": sha("old")},
-		PromotedAt: "2026-01-02T00:00:00Z",
+	// Seed a real binding so there is something a write would append to.
+	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+		Env: "staging", Release: "v1.3.0", Kind: release.KindPromote,
+		Resolved: map[string]string{"reliant": sha("old")},
 	}); err != nil {
 		t.Fatalf("seed binding: %v", err)
 	}
 
-	ledger := filepath.Join(dir, ".forge", "env-releases.json")
+	ledger := promotionLogPath(dir, "staging")
 	before, err := os.ReadFile(ledger)
 	if err != nil {
 		t.Fatalf("read ledger: %v", err)
@@ -660,14 +673,14 @@ func TestRunPromote_AppliesAndSaysSo(t *testing.T) {
 		}
 	})
 
-	binding, bound, err := newFileBindingStore(dir).Binding("staging")
+	binding, bound, err := newFileBindingStore(dir).Current(context.Background(), "staging")
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
 	if !bound || binding.Release != "v1.4.0" || binding.Resolved["reliant"] != sha("a") {
 		t.Fatalf("a real promote must write the binding, got bound=%v %+v", bound, binding)
 	}
-	if binding.PromotedAt == "" {
+	if binding.PromotedAt.IsZero() {
 		t.Error("promoted_at must be stamped at the time of the WRITE")
 	}
 	if !strings.Contains(out, "Promoted env") {
@@ -687,7 +700,7 @@ func TestRunPromote_AppliesAndSaysSo(t *testing.T) {
 // that gave the real promote its own faster path would have to make that path
 // produce an identical change set, or this fails.
 func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{
 			"reliant":          sha("new"),
 			"internal-console": sha("added"),
@@ -699,10 +712,10 @@ func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
 		}),
 	}
 	seed := func() *memBindingStore {
-		return newMemBindingStore(map[string]EnvBinding{
+		return newMemBindingStore(map[string]release.Promotion{
 			"staging": {
 				Release:    "v1.3.0",
-				PromotedAt: "2026-01-02T00:00:00Z",
+				PromotedAt: parseFixtureTime("2026-01-02T00:00:00Z"),
 				Resolved:   map[string]string{"reliant": sha("old"), "control-plane": sha("same"), "daemon-gateway": sha("gone")},
 			},
 		})
@@ -719,7 +732,7 @@ func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
 	planJSON := captureStdout(t, func() {
 		if err := runPromote(context.Background(), "v1.5.15", "staging", promoteOptions{
 			DryRun: true, JSON: true, ProjectDir: t.TempDir(),
-			Bindings: planStore, Releases: releases, Git: newGit(),
+			Bindings: planStore, Releases: newMemReleaseLedger(releases...), Git: newGit(),
 		}); err != nil {
 			t.Fatalf("plan: %v", err)
 		}
@@ -727,7 +740,7 @@ func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
 	applyJSON := captureStdout(t, func() {
 		if err := runPromote(context.Background(), "v1.5.15", "staging", promoteOptions{
 			JSON: true, ProjectDir: t.TempDir(),
-			Bindings: applyStore, Releases: releases, Git: newGit(),
+			Bindings: applyStore, Releases: newMemReleaseLedger(releases...), Git: newGit(),
 		}); err != nil {
 			t.Fatalf("apply: %v", err)
 		}
@@ -755,6 +768,11 @@ func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
 	planned.Applied, applied.Applied = false, false
 	planned.DryRun, applied.DryRun = false, false
 	planned.GeneratedAt, applied.GeneratedAt = "", ""
+	// Recorded is the entry the write produced, so only the apply has one.
+	if planned.Recorded != nil || applied.Recorded == nil {
+		t.Errorf("recorded must be absent under --plan and present after apply, got %v / %v", planned.Recorded, applied.Recorded)
+	}
+	planned.Recorded, applied.Recorded = nil, nil
 	a, err := json.Marshal(planned)
 	if err != nil {
 		t.Fatalf("re-encode: %v", err)
@@ -773,10 +791,10 @@ func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
 		t.Errorf("tally = %+v, want %+v — the agreement test must cover a real diff", planned.Tally, want)
 	}
 	// And the write really happened on the apply side only.
-	if planStore.bindings["staging"].Release != "v1.3.0" {
+	if cur, _, _ := planStore.Current(context.Background(), "staging"); cur.Release != "v1.3.0" {
 		t.Error("--plan must leave the store's binding untouched")
 	}
-	if applyStore.bindings["staging"].Release != "v1.5.15" {
+	if cur, _, _ := applyStore.Current(context.Background(), "staging"); cur.Release != "v1.5.15" {
 		t.Error("a real promote must move the store's binding")
 	}
 }
@@ -786,12 +804,12 @@ func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
 // TestPromotePlanJSON_ShapeAndFollowThrough pins the parts of the document a
 // UI depends on, including the follow-through fact: promote ships nothing.
 func TestPromotePlanJSON_ShapeAndFollowThrough(t *testing.T) {
-	releases := []Release{
+	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{"reliant": sha("new")}),
 		rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("old")}),
 	}
-	store := newMemBindingStore(map[string]EnvBinding{
-		"staging": {Release: "v1.3.0", PromotedAt: "2026-01-02T00:00:00Z", Resolved: map[string]string{"reliant": sha("old")}},
+	store := newMemBindingStore(map[string]release.Promotion{
+		"staging": {Release: "v1.3.0", PromotedAt: parseFixtureTime("2026-01-02T00:00:00Z"), Resolved: map[string]string{"reliant": sha("old")}},
 	})
 	git := allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc")
 	git.commits["aaaaaaaaaaaa..cccccccccccc"] = []string{"ccc1 work"}
@@ -799,7 +817,7 @@ func TestPromotePlanJSON_ShapeAndFollowThrough(t *testing.T) {
 	out := captureStdout(t, func() {
 		if err := runPromote(context.Background(), "v1.5.15", "staging", promoteOptions{
 			DryRun: true, JSON: true, ProjectDir: t.TempDir(),
-			Bindings: store, Releases: releases, Git: git,
+			Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
 		}); err != nil {
 			t.Fatalf("plan --json: %v", err)
 		}

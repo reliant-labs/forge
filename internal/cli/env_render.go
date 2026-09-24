@@ -63,6 +63,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // renderedObject is one document of the env's rendered manifest stream,
@@ -200,7 +201,39 @@ type envRenderOptions struct {
 	noWriteCheck bool
 }
 
+// runEnvRender prints the render with a hard guarantee: STDOUT CARRIES ONLY
+// THE MANIFESTS (or the --list table). Every diagnostic goes to stderr.
+//
+// The documented use is `forge env render prod | kubectl diff -f -`, and a
+// single prose line on stdout breaks it: kubectl reads it as the first YAML
+// document and refuses the whole stream. That is not hypothetical. The
+// render shares resolveDeployDigests with deploy, which announces a release
+// overriding a fresher build with a `Note:` on stdout; with prod bound to a
+// release, the render's first line was that Note, and
+// `forge env render prod | kubectl apply --dry-run=client -f -` failed with
+// "mapping values are not allowed in this context".
+//
+// So os.Stdout is DIVERTED to stderr for the whole render, and the stream is
+// written to the writer captured before the divert. That makes the
+// guarantee structural rather than a property of every callee: the render
+// reaches into the deploy, KCL and ledger paths, which print with
+// fmt.Printf in dozens of places, and a later Printf added anywhere on that
+// path lands on stderr by construction instead of silently corrupting the
+// stream. Diverting rather than suppressing keeps the Note visible — it is
+// still true, and still worth reading — just not where kubectl reads.
+// (`forge env deploy --json` guards its document the same way; see
+// runDeployReported.)
 func runEnvRender(cmd *cobra.Command, envName string, opts envRenderOptions) error {
+	out := cmd.OutOrStdout()
+	realStdout := os.Stdout
+	os.Stdout = os.Stderr
+	defer func() { os.Stdout = realStdout }()
+	return renderEnvTo(cmd, out, envName, opts)
+}
+
+// renderEnvTo is the render itself. out receives the manifest stream (or the
+// --list table) and nothing else; see runEnvRender.
+func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRenderOptions) error {
 	ctx := cmd.Context()
 	errOut := cmd.ErrOrStderr()
 
@@ -232,6 +265,13 @@ func runEnvRender(cmd *cobra.Command, envName string, opts envRenderOptions) err
 	activateDevStack(projectDir, envName)
 	unpin := pinFile(filepath.Join(projectDir, ".forge", "ports-"+envName+".json"))
 
+	// Vendor a missing .forge-kcl/ BEFORE the write check's before-picture.
+	// It is forge's own announced step, not a KCL file.write, and counting
+	// it would make `--fail-on-write` fail on a fresh checkout's first
+	// render for a reason the report blames on the project.
+	if err := kclrender.EnsureVendor(projectDir); err != nil {
+		return err
+	}
 	scan := newRenderWriteScan(projectDir, opts.noWriteCheck)
 
 	// Report what the render touched no matter how it ends: a render that
@@ -257,7 +297,14 @@ func runEnvRender(cmd *cobra.Command, envName string, opts envRenderOptions) err
 	}
 
 	imageTag, tagSource := renderImageTag(ctx, projectDir, envName, opts.imageTag)
-	digests, boundRelease, derr := resolveDeployDigests(projectDir, envName, opts.noDigest, bindingStoreFor(projectDir))
+	var (
+		digests      map[string]string
+		boundRelease string
+	)
+	bindings, derr := bindingStoreFor(ctx, projectDir, envName)
+	if derr == nil {
+		digests, boundRelease, derr = resolveDeployDigests(ctx, projectDir, envName, opts.noDigest, bindings)
+	}
 	if derr != nil {
 		// Digest pinning is an optimisation of WHICH bytes deploy ships, not
 		// of what the environment declares. A caller reading the object graph
@@ -302,7 +349,6 @@ func runEnvRender(cmd *cobra.Command, envName string, opts envRenderOptions) err
 		fmt.Fprintf(errOut, "no objects matched (environment %q rendered %d)\n", envName, totalRendered)
 	}
 
-	out := cmd.OutOrStdout()
 	if opts.list {
 		if werr := writeRenderedTable(out, objects); werr != nil {
 			return werr

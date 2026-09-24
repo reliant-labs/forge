@@ -157,6 +157,12 @@ tmp/
 #                     travel with the repo: a teammate's fresh clone has
 #                     to inherit "we removed that file", not re-acquire
 #                     it on their first generate.
+#   releases/       — the release ledger (`forge build --release`,
+#   promotions/       `forge env promote`): what each version IS and which
+#                     version each environment runs, as an append-only log
+#                     per env. Only for envs that keep their ledger in the
+#                     repo; an env declaring forge.ControlPlane keeps it on
+#                     the control plane instead.
 # Everything else under .forge/ is per-developer state and intentionally
 # excluded by the broad children rule below.
 #
@@ -169,6 +175,10 @@ tmp/
 !.forge/disowned.json
 !.forge/hashes.json
 !.forge/scaffolded.json
+!.forge/releases/
+!.forge/releases/*.json
+!.forge/promotions/
+!.forge/promotions/*.jsonl
 
 # ── What NOT to ignore ──
 #

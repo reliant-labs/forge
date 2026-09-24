@@ -16,12 +16,7 @@
 // this guard on the next run, and a rule deleted from it stops being
 // enforced loudly rather than silently.
 
-// forge:exclude-contract
-// pkgguard is an analyzer-shaped guard, the same shape as the
-// internal/linter/* packages already excluded in forge.yaml: its entry
-// points are package-level funcs over a directory tree, and
-// ForbidigoPolicy.Exempted is a predicate on a value parsed from
-// pkg/.golangci.yml. The test IS the consumer; there is nothing to mock.
+//forge:exclude-contract: analyzer-shaped guard: package-level funcs over a directory tree plus a predicate on a parsed value; the test IS the consumer
 package pkgguard
 
 import (

@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -261,6 +262,26 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 		return err
 	}
 	cfg := store.Config()
+
+	// A hosted env's "declared context" is its control plane's endpoint:
+	// there is no kubectl context to guard.
+	if decl, derr := controlPlaneDeclaration(ctx, envName); derr == nil && decl != nil {
+		ep, eerr := cloud.ResolveEndpoint(envName, decl)
+		if eerr != nil {
+			return eerr
+		}
+		guard := deployJSONGuard{DeclaredContext: ep.URL, Verdict: deployGuardVerdictAllow, Reason: deployGuardReasonControlPlaneDeclared}
+		report.setMode(deployModeExplain)
+		report.setGuard(guard)
+		report.clearKubeContexts()
+		report.setHostedTarget(ep.URL, "")
+		if report.Enabled() {
+			report.finish(nil, 0)
+			return report.emit()
+		}
+		fmt.Printf("forge env deploy %s — hosted\n  control plane: %s\n  verdict: ALLOW (no kubectl context is used; the control plane owns the cluster)\n", envName, ep.URL)
+		return nil
+	}
 
 	guard := computeDeployGuard(ctx, cfg, envName)
 	report.setMode(deployModeExplain)
@@ -528,7 +549,7 @@ func resolveEnvMainK(store *projectstore.Store, envName string) (string, error) 
 	return mainK, nil
 }
 
-func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
+func runDeploy(ctx context.Context, envName string, opts deployOptions) error { //nolint:funlen // the `forge env deploy` lifecycle in order: resolve, dispatch hosted, render, guard, apply, verify. The sequence is the contract, as in runUp.
 	dryRun := opts.dryRun
 	namespace := opts.namespace
 	targetArchFlag := opts.targetArch
@@ -564,6 +585,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// kill-the-up-vs-deploy-port-drift fix. Deploy commits its render, so the
 	// restore hook is unused (an applied render's ports are the truth).
 	activateDevStack(projectDir, envName)
+
+	if hosted, err := dispatchHostedDeploy(ctx, projectDir, envName, opts); hosted {
+		return err
+	}
 
 	// imageTag is the env-wide mutable tag bound to KCL's `image_tag` (the
 	// per-image fallback for vendored / no-digest images and the
@@ -939,15 +964,19 @@ func resolveDeployTags(ctx context.Context, projectDir, envName string, opts dep
 	res.imageTag = ref
 	res.plainTag = pt
 	res.tagSource = src
-	digests, boundRel, derr := resolveDeployDigests(projectDir, envName, opts.noDigest, bindingStoreFor(projectDir))
+	bindings, berr := bindingStoreFor(ctx, projectDir, envName)
+	if berr != nil {
+		return deployTagResolution{}, berr
+	}
+	digests, boundRel, derr := resolveDeployDigests(ctx, projectDir, envName, opts.noDigest, bindings)
 	if derr != nil {
 		return deployTagResolution{}, derr
 	}
 	res.imageDigests = digests
 	res.boundRelease = boundRel
 	if boundRel != "" {
-		res.tagSource = fmt.Sprintf("release %s (promoted; .forge/env-releases.json)", boundRel)
-		fmt.Printf("  Release:     %s  (env %q is promoted to it — pinning its digests)\n", boundRel, envName)
+		res.tagSource = fmt.Sprintf("release %s (promoted; %s)", boundRel, bindings.Location())
+		fmt.Printf("  Release:     %s  (env %q is promoted to it — pinning its digests from %s)\n", boundRel, envName, bindings.Location())
 	}
 	return res, nil
 }
@@ -2195,7 +2224,7 @@ func resolveDeployImageDigests(projectDir, envName string, noDigest bool) (map[s
 // bindings is the binding ledger to consult. projectDir remains for the
 // build-state half, which IS a file concept (.forge/state/build-<env>.json);
 // the release half no longer knows where — or whether — bindings are files.
-func resolveDeployDigests(projectDir, envName string, noDigest bool, bindings bindingStore) (digests map[string]string, boundRelease string, err error) {
+func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDigest bool, bindings bindingStore) (digests map[string]string, boundRelease string, err error) {
 	base, err := resolveDeployImageDigests(projectDir, envName, noDigest)
 	if err != nil {
 		return nil, "", err
@@ -2203,9 +2232,9 @@ func resolveDeployDigests(projectDir, envName string, noDigest bool, bindings bi
 	if noDigest {
 		return base, "", nil
 	}
-	binding, bound, berr := bindings.Binding(envName)
+	binding, bound, berr := bindings.Current(ctx, envName)
 	if berr != nil {
-		return nil, "", fmt.Errorf("read env-release binding for %q: %w", envName, berr)
+		return nil, "", fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, bindings.Location(), berr)
 	}
 	if !bound {
 		return base, "", nil
@@ -2322,14 +2351,18 @@ func (a freshnessAnchor) remedy(envName string) string {
 // A release-anchored comparison needs no git at all: it is ledger-vs-ledger,
 // so it stays correct in a dirty tree, in CI, and on a detached checkout.
 func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (freshnessAnchor, bool) {
-	binding, bound, err := boundReleaseForEnv(projectDir, envName)
+	ledger, err := ledgerFor(ctx, projectDir, envName)
 	if err != nil {
-		// Unreadable binding ledger — can't prove anything. The real error
+		// Unresolvable ledger — can't prove anything. The real error
 		// surfaces from resolveDeployDigests with a better message.
 		return freshnessAnchor{}, false
 	}
+	binding, bound, err := ledger.Bindings.Current(ctx, envName)
+	if err != nil {
+		return freshnessAnchor{}, false
+	}
 	if bound && binding.Release != "" {
-		rel, rerr := ReadRelease(projectDir, binding.Release)
+		rel, rerr := ledger.Releases.Get(ctx, binding.Release)
 		if rerr != nil || rel == nil || rel.Git.Commit == "" {
 			return freshnessAnchor{}, false
 		}
@@ -2368,7 +2401,7 @@ func checkBuildStateFreshness(ctx context.Context, projectDir, envName, stateKey
 	if !enforce || anchor.Commit == st.Commit {
 		return nil
 	}
-	if buildStateIsForeignToEnv(projectDir, envName, stateKey, st) {
+	if buildStateIsForeignToEnv(ctx, projectDir, envName, stateKey, st) {
 		return nil
 	}
 	return fmt.Errorf(
@@ -2422,11 +2455,15 @@ func checkBuildStateFreshness(ctx context.Context, projectDir, envName, stateKey
 // Best-effort by construction: it returns false unless it can positively
 // justify standing down, so it never widens a refusal — only withdraws one
 // that rests on a record which cannot be what ships.
-func buildStateIsForeignToEnv(projectDir, envName, stateKey string, st *BuildState) bool {
+func buildStateIsForeignToEnv(ctx context.Context, projectDir, envName, stateKey string, st *BuildState) bool {
 	if st == nil || stateKey != "default" || !st.Dirty {
 		return false
 	}
-	_, bound, err := boundReleaseForEnv(projectDir, envName)
+	bindings, err := bindingStoreFor(ctx, projectDir, envName)
+	if err != nil {
+		return false
+	}
+	_, bound, err := bindings.Current(ctx, envName)
 	return err == nil && bound
 }
 
@@ -3042,8 +3079,11 @@ func k8sClusterFieldFromEntities(entities *KCLEntities, field string) string {
 					return sb.Namespace
 				}
 			case "domain":
-				if sb.Domain != "" {
-					return sb.Domain
+				// The FIRST custom domain. A public backend with none has
+				// an allocated or gateway-derived hostname instead, which
+				// is observed status, not something this declaration knows.
+				if len(sb.Spec.Domains) > 0 {
+					return sb.Spec.Domains[0]
 				}
 			}
 			continue

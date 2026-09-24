@@ -28,11 +28,7 @@
 // entry point and the kubectl/KCL helpers exported for callers that
 // need them piecewise.
 //
-// forge:exclude-contract
-// cluster is CLI-internal deploy-pipeline glue (render KCL → kubectl apply →
-// wait rollouts), not a contract-shaped service the bootstrap wires. Its
-// exported methods are the pipeline's own API, so opt out of the
-// require-contract rule.
+//forge:exclude-contract: CLI-internal deploy-pipeline glue (render KCL → kubectl apply → wait rollouts); its exported methods are the pipeline's own API, not a bootstrap-wired Service
 package cluster
 
 import (
@@ -51,8 +47,11 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/reliant-labs/forge/internal/kclrender"
+	"github.com/reliant-labs/forge/pkg/deploy"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // RolloutMode is what Apply does after the manifests land.
@@ -690,7 +689,16 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	if err != nil {
 		return err
 	}
+	return applyRendered(ctx, opts, manifests)
+}
 
+// applyRendered is Apply after the KCL render: select, scope, apply and wait.
+//
+// Split out so the apply ORDERING — the part a production deploy's safety
+// rests on — is testable against a recorded kubectl without a KCL toolchain.
+// A test that could only reach it through a render would be testing the
+// renderer too, and would be skipped wherever KCL is unavailable.
+func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error {
 	// Exclusive --target selection — ONE uniform mechanical filter over the
 	// KCL-declared service GROUP (`app.kubernetes.io/name`).
 	//
@@ -727,6 +735,16 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// to the right cluster.
 	if opts.ClusterScope != nil {
 		manifests = ScopeManifestsToGroup(manifests, *opts.ClusterScope)
+	}
+
+	// Split the stream into its apply passes NOW, before the dry-run return
+	// and before any chart is fetched: an unknown deploy-phase declaration
+	// is refused for a preview exactly as for a real apply, and before
+	// anything has touched the cluster. See prerollout.go.
+	config, rest := PartitionConfigManifests(manifests)
+	phases, err := partitionRolloutPhases(rest)
+	if err != nil {
+		return err
 	}
 
 	// Render the selected platform deps (helm-as-a-RENDERER). Each chart's
@@ -791,7 +809,6 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// governed by the same policy as a failed rollout (see
 	// classifyApplyResult).
 	policy := opts.Rollout.Normalize()
-	config, rest := PartitionConfigManifests(manifests)
 	if strings.TrimSpace(config) != "" {
 		if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, config)); err != nil {
 			if opts.Quiet {
@@ -800,13 +817,35 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 			return fmt.Errorf("kubectl apply failed (config): %w", err)
 		}
 	}
-	if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, rest)); err != nil {
-		// Reload uses the shorter "kubectl apply:" wrap; the framed
-		// deploy/up path uses the longer "kubectl apply failed:" form.
-		if opts.Quiet {
-			return fmt.Errorf("kubectl apply: %w", err)
+	// The pre-rollout gate. When the stream carries a pre-rollout Job (a
+	// migration, by default every one-shot Job), the support objects and the
+	// Jobs are applied and the Jobs must COMPLETE before a single workload is
+	// sent. A Job that fails or times out returns here, and the workloads
+	// are never applied — the previous release keeps serving. It holds in
+	// every rollout mode; see prerollout.go for why skip is no exemption.
+	//
+	// A stream with no pre-rollout Job skips all of this and is applied in
+	// the one pass it always was.
+	if phases.gated() {
+		if err := applyPreRolloutGate(ctx, opts, policy, phases); err != nil {
+			return err
 		}
-		return fmt.Errorf("kubectl apply failed: %w", err)
+		// Everything but the held-back workloads has landed. A stream that
+		// was only support objects and pre-rollout Jobs has nothing left.
+		rest = phases.workloads
+		if strings.TrimSpace(rest) != "" && !opts.Quiet {
+			fmt.Println("Pre-rollout Jobs complete; applying workloads...")
+		}
+	}
+	if !phases.gated() || strings.TrimSpace(rest) != "" {
+		if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, rest)); err != nil {
+			// Reload uses the shorter "kubectl apply:" wrap; the framed
+			// deploy/up path uses the longer "kubectl apply failed:" form.
+			if opts.Quiet {
+				return fmt.Errorf("kubectl apply: %w", err)
+			}
+			return fmt.Errorf("kubectl apply failed: %w", err)
+		}
 	}
 
 	if opts.Prune {
@@ -850,8 +889,13 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 
 	// Wait set = every `kind: Job` in the stream this apply just sent,
 	// and nothing else. See oneShotWaitSet for why a caller-supplied
-	// list is not unioned in any more.
+	// list is not unioned in any more. A pre-rollout Job already completed
+	// at the gate — the workloads would not have been applied otherwise —
+	// so only the post-rollout Jobs are left to wait on here.
 	for _, name := range oneShotWaitSet(manifests) {
+		if phases.awaited(name) {
+			continue
+		}
 		fmt.Printf("Waiting for one-shot Job %q to complete...\n", name)
 		state, jerr := WaitJobCompleteObserved(ctx, opts.Context, name, opts.Namespace, policy.Timeout)
 		observeRollout(opts, "Job", name, state, jerr)
@@ -1041,6 +1085,15 @@ func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, 
 // pipeline itself produces just trains users to ignore warnings. Any
 // OTHER unexpected top-level var still warns.
 func extractManifests(kclOutput []byte) (string, error) {
+	return ExtractManifests(kclOutput)
+}
+
+// ExtractManifests is the manifest stream a render's KCL output becomes on
+// its way to kubectl: the `manifests` list, with every forge.dev deploy-tier
+// declaration expanded through pkg/deploy.Render, as `---`-separated YAML.
+// It is exported so tests and tooling can assert against exactly what is
+// applied, not against an intermediate.
+func ExtractManifests(kclOutput []byte) (string, error) {
 	var doc map[string]any
 	if err := yaml.Unmarshal(kclOutput, &doc); err != nil {
 		return "", fmt.Errorf("parse kcl output: %w", err)
@@ -1062,6 +1115,11 @@ func extractManifests(kclOutput []byte) (string, error) {
 		fmt.Fprintf(os.Stderr, "warning: ignoring extra top-level KCL var %q (mark as private with `_%s = ...` to suppress)\n", k, k)
 	}
 
+	items, err := expandTierDeclarations(items)
+	if err != nil {
+		return "", err
+	}
+
 	var sb strings.Builder
 	for i, it := range items {
 		if i > 0 {
@@ -1074,6 +1132,92 @@ func extractManifests(kclOutput []byte) (string, error) {
 		sb.Write(b)
 	}
 	return sb.String(), nil
+}
+
+// expandTierDeclarations replaces every forge.dev deploy-tier declaration
+// record in the stream with the Kubernetes objects pkg/deploy.Render produces
+// for it, in place, so the stream's order is preserved.
+//
+// This is how a self-hosted deploy tier reaches the cluster. The KCL layer
+// emits the declaration (the same forge.dev/v1alpha1 object the hosted path
+// publishes as a CR), and the ONE Go renderer, shared with the control
+// plane's operator, decides what it becomes. A self-hosted cluster never
+// sees the declaration itself: no CRD is installed and no controller runs
+// there.
+//
+// The record's metadata.labels (the managed set plus the env gate's
+// forge.dev/env stamp) are copied onto every rendered object. The KCL env
+// gate stamped the RECORD, and the objects replacing it must carry the same
+// stamp, or env-scoped prune and status queries would miss them.
+func expandTierDeclarations(items []any) ([]any, error) {
+	out := make([]any, 0, len(items))
+	for i, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok || m["apiVersion"] != deployv1alpha1.GroupVersion.String() {
+			out = append(out, it)
+			continue
+		}
+		obj, err := decodeTierDeclaration(m)
+		if err != nil {
+			return nil, fmt.Errorf("manifest item %d: %w", i, err)
+		}
+		md, _ := m["metadata"].(map[string]any)
+		namespace, _ := md["namespace"].(string)
+		labels, _ := md["labels"].(map[string]any)
+		partOf, _ := labels[deploy.LabelPartOf].(string)
+		rendered, err := deploy.Render(obj, deploy.Context{Namespace: namespace, PartOf: partOf})
+		if err != nil {
+			return nil, fmt.Errorf("render %s: %w", describeManifest(m), err)
+		}
+		for _, r := range rendered {
+			objLabels := r.GetLabels()
+			if objLabels == nil {
+				objLabels = map[string]string{}
+			}
+			for k, v := range labels {
+				if s, ok := v.(string); ok {
+					objLabels[k] = s
+				}
+			}
+			r.SetLabels(objLabels)
+			out = append(out, r.Object)
+		}
+	}
+	return out, nil
+}
+
+// decodeTierDeclaration decodes one declaration record into its typed tier
+// object, STRICTLY. A key the Go type does not know is an error rather than
+// silently dropped, because a dropped field is exactly the drift this whole
+// design exists to make impossible.
+func decodeTierDeclaration(m map[string]any) (runtime.Object, error) {
+	kind, _ := m["kind"].(string)
+	var obj runtime.Object
+	switch kind {
+	case "SimpleBackend":
+		obj = &deployv1alpha1.SimpleBackend{}
+	case "StaticSite":
+		obj = &deployv1alpha1.StaticSite{}
+	case "ManagedDatabase":
+		obj = &deployv1alpha1.ManagedDatabase{}
+	default:
+		return nil, fmt.Errorf("%s is not a forge.dev deploy tier kind", describeManifest(m))
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(obj); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", describeManifest(m), err)
+	}
+	return obj, nil
+}
+
+func describeManifest(m map[string]any) string {
+	md, _ := m["metadata"].(map[string]any)
+	return fmt.Sprintf("%v %v/%v", m["kind"], md["namespace"], md["name"])
 }
 
 // KubectlArgs prepends `--context <kctx>` to a kubectl argument list
@@ -1855,7 +1999,20 @@ func WaitJobCompleteTimeout(ctx context.Context, kctx, name, namespace string, t
 				"-n", namespace,
 				"--timeout="+timeout.String(),
 			)
-			done <- result{cond: cond, err: cmd.Run()}
+			// kubectl's own words are the only thing that tells an expired
+			// budget ("timed out waiting for the condition") from any other
+			// wait error, and it writes them to stderr. Discarded, a Job
+			// still running at the deadline was graded as a FAILED Job with
+			// the message "exit status 1" — wrong verdict, no diagnosis.
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			if err != nil {
+				if msg := strings.TrimSpace(stderr.String()); msg != "" {
+					err = fmt.Errorf("%w: %s", err, msg)
+				}
+			}
+			done <- result{cond: cond, err: err}
 		}(cond)
 	}
 
@@ -1929,9 +2086,10 @@ func splitDocs(manifests string) []string {
 type parsedDoc struct {
 	Kind     string `yaml:"kind"`
 	Metadata struct {
-		Name      string            `yaml:"name"`
-		Namespace string            `yaml:"namespace"`
-		Labels    map[string]string `yaml:"labels"`
+		Name        string            `yaml:"name"`
+		Namespace   string            `yaml:"namespace"`
+		Labels      map[string]string `yaml:"labels"`
+		Annotations map[string]string `yaml:"annotations"`
 	} `yaml:"metadata"`
 }
 

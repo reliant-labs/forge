@@ -25,11 +25,7 @@
 // had zero callers. The store therefore exposes only the accessors that are
 // actually read; add a method when a consumer needs it, not before.
 //
-// forge:exclude-contract
-// projectstore is the project-state persistence store (a concrete *Store
-// over a *config.ProjectConfig), not a bootstrap-wired Connect service. It
-// has no Service/Deps/New contract shape, so opt out of the require-contract
-// rule.
+//forge:exclude-contract: the project-state store: a concrete *Store over a *config.ProjectConfig read from local files, with one implementation and no Service/Deps/New shape
 package projectstore
 
 import "github.com/reliant-labs/forge/internal/config"

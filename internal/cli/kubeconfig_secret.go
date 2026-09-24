@@ -9,11 +9,12 @@
 //
 // The "in-network" reachability seam is the dev/e2e path: the target's
 // API server is only reachable by its serverlb container IP on the shared
-// docker network, and that IP isn't in the serverlb cert SANs, so the
-// minted kubeconfig points at https://<ip>:6443 with TLS verification
-// disabled. "endpoint" (prod) uses the kubeconfig's own endpoint verbatim
-// — a stable reachable address with a valid cert — and needs none of the
-// insecure rewrite.
+// docker network. That IP isn't in the serving cert's SANs, but the
+// container's NAME is, so the minted kubeconfig dials https://<ip>:6443 and
+// verifies the certificate against the cluster CA as tls-server-name
+// k3d-<name>-serverlb (see rewriteInNetworkKubeconfig — verification is
+// never skipped). "endpoint" (prod) uses the kubeconfig's own endpoint
+// verbatim — a stable reachable address with a valid cert.
 package cli
 
 import (
@@ -23,6 +24,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 )
@@ -93,21 +96,25 @@ func mintOneKubeconfigSecret(ctx context.Context, k KubeconfigSecretEntity, owne
 		// 2a. Resolve the target's API endpoint FRESH from docker — the
 		//     serverlb container's IP on the owner network (with a
 		//     server-0 fallback). Never persisted to a committed file.
-		ip, ierr := resolveInNetworkAPIServerIP(ctx, k.TargetCluster, ownerNetwork)
+		_, container, ierr := resolveInNetworkAPIServerIP(ctx, k.TargetCluster, ownerNetwork)
 		if ierr != nil {
 			return ierr
 		}
-		server := fmt.Sprintf("https://%s:6443", ip)
-		// Rewrite cluster.server, drop the CA (the serverlb cert doesn't
-		// cover the container IP), and skip TLS verify.
-		if err := kubectlConfigSetCluster(ctx, tmpPath, clusterEntry, server); err != nil {
-			return err
+		// Dial the container by its NAME, never its IP. Docker reassigns
+		// container IPs whenever the network is re-established (a host
+		// sleep did it here), and a minted IP then silently points at a
+		// DIFFERENT cluster's API server — live, the "hub" kubeconfig was
+		// reaching cp-daemon. The name is stable, resolves from any pod
+		// on the shared network (docker DNS via CoreDNS's forward), and is
+		// in the serving cert's SANs, so the cert verifies against the
+		// kubeconfig's own CA with nothing overridden.
+		rewritten, rerr := rewriteInNetworkKubeconfig(rawKubeconfig, clusterEntry,
+			inNetworkServer(container), container)
+		if rerr != nil {
+			return rerr
 		}
-		if err := kubectlConfigUnsetCA(ctx, tmpPath, clusterEntry); err != nil {
-			return err
-		}
-		if err := kubectlConfigSetInsecure(ctx, tmpPath, clusterEntry); err != nil {
-			return err
+		if err := os.WriteFile(tmpPath, rewritten, 0o600); err != nil {
+			return fmt.Errorf("write rewritten kubeconfig: %w", err)
 		}
 	}
 	// 2b. "endpoint": leave the kubeconfig's own server/CA verbatim.
@@ -156,24 +163,71 @@ func k3dKubeconfigGet(ctx context.Context, target string) ([]byte, error) {
 // created with --no-lb (no serverlb). The IP is read from docker every
 // run and never written to a committed file — that's the whole point
 // (the IP drifts each `k3d cluster create`).
-func resolveInNetworkAPIServerIP(ctx context.Context, target, ownerNetwork string) (string, error) {
+//
+// It also returns the NAME of the container it matched: k3s puts
+// k3d-<name>-serverlb and k3d-<name>-server-0 into the API server
+// certificate's SANs (and not the container IP), so the name is what the
+// minted kubeconfig verifies the certificate against.
+func resolveInNetworkAPIServerIP(ctx context.Context, target, ownerNetwork string) (ip, container string, err error) {
 	if ownerNetwork == "" {
-		return "", fmt.Errorf(
+		return "", "", fmt.Errorf(
 			"cannot resolve in-network IP for %q: no owner network "+
 				"(the clusters must share a docker network — declare Cluster.network)", target)
 	}
 	format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, ownerNetwork)
-	// serverlb first.
-	if ip := dockerInspectIP(ctx, "k3d-"+target+"-serverlb", format); ip != "" {
-		return ip, nil
+	// serverlb first, then server-0 (--no-lb clusters).
+	for _, name := range []string{"k3d-" + target + "-serverlb", "k3d-" + target + "-server-0"} {
+		if ip := dockerInspectIP(ctx, name, format); ip != "" {
+			return ip, name, nil
+		}
 	}
-	// server-0 fallback (--no-lb clusters).
-	if ip := dockerInspectIP(ctx, "k3d-"+target+"-server-0", format); ip != "" {
-		return ip, nil
-	}
-	return "", fmt.Errorf(
+	return "", "", fmt.Errorf(
 		"could not resolve API-server IP for cluster %q on network %q "+
 			"(tried k3d-%s-serverlb and k3d-%s-server-0)", target, ownerNetwork, target, target)
+}
+
+// inNetworkServer is the API server URL an in-network kubeconfig dials: the
+// k3d container's NAME on the shared docker network. See the call site for
+// why never the IP.
+func inNetworkServer(container string) string {
+	return "https://" + container + ":6443"
+}
+
+// rewriteInNetworkKubeconfig points clusterEntry at server (the target's
+// container address on the shared docker network) and VERIFIES the API
+// server's certificate against the kubeconfig's own CA under serverName.
+//
+// NEVER insecure-skip-tls-verify. That was the previous policy, on the
+// premise that the serving certificate does not cover the container IP. The
+// premise holds for the IP and not for the NAME — k3s stamps
+// k3d-<name>-serverlb and k3d-<name>-server-0 into the SANs — and the policy
+// was not merely weaker, it was BROKEN for the most important consumer: Flux's
+// kustomize-controller ignores insecure-skip-tls-verify in a Kustomization's
+// spec.kubeConfig Secret by design, so every apply through a minted hub edge
+// failed with "x509: certificate signed by unknown authority".
+// tls-server-name is the standard kubeconfig field for exactly this shape:
+// dial one address, verify another name. Every client-go consumer honours it.
+func rewriteInNetworkKubeconfig(raw []byte, clusterEntry, server, serverName string) ([]byte, error) {
+	cfg, err := clientcmd.Load(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse kubeconfig: %w", err)
+	}
+	c, ok := cfg.Clusters[clusterEntry]
+	if !ok || c == nil {
+		return nil, fmt.Errorf("kubeconfig has no cluster entry %q", clusterEntry)
+	}
+	if len(c.CertificateAuthorityData) == 0 && c.CertificateAuthority == "" {
+		return nil, fmt.Errorf("kubeconfig cluster %q carries no CA: the in-network mint verifies the API server "+
+			"by name against the cluster CA, and will not fall back to skipping verification", clusterEntry)
+	}
+	c.Server = server
+	c.TLSServerName = serverName
+	c.InsecureSkipTLSVerify = false
+	out, err := clientcmd.Write(*cfg)
+	if err != nil {
+		return nil, fmt.Errorf("write kubeconfig: %w", err)
+	}
+	return out, nil
 }
 
 // dockerInspectIP returns the inspected IP for a container, or "" when
@@ -195,27 +249,6 @@ func dockerInspectIP(ctx context.Context, container, format string) string {
 
 // kubectlConfig* helpers operate on an explicit kubeconfig file (never
 // the user's default config) via `kubectl config --kubeconfig=<path>`.
-
-func kubectlConfigSetCluster(ctx context.Context, kubeconfigPath, clusterEntry, server string) error {
-	return runKubectlConfig(ctx, kubeconfigPath,
-		"set-cluster", clusterEntry, "--server="+server)
-}
-
-func kubectlConfigUnsetCA(ctx context.Context, kubeconfigPath, clusterEntry string) error {
-	// Unset both the embedded CA data and any CA file path so the insecure
-	// flag is the sole TLS policy.
-	if err := runKubectlConfig(ctx, kubeconfigPath,
-		"unset", "clusters."+clusterEntry+".certificate-authority-data"); err != nil {
-		return err
-	}
-	return runKubectlConfig(ctx, kubeconfigPath,
-		"unset", "clusters."+clusterEntry+".certificate-authority")
-}
-
-func kubectlConfigSetInsecure(ctx context.Context, kubeconfigPath, clusterEntry string) error {
-	return runKubectlConfig(ctx, kubeconfigPath,
-		"set-cluster", clusterEntry, "--insecure-skip-tls-verify=true")
-}
 
 func kubectlConfigRenameContext(ctx context.Context, kubeconfigPath, from, to string) error {
 	return runKubectlConfig(ctx, kubeconfigPath, "rename-context", from, to)

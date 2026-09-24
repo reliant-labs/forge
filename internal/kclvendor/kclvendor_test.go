@@ -548,3 +548,67 @@ func TestScaffoldTemplateEmitsTheVendoredDep(t *testing.T) {
 		t.Fatalf("patcher does not recognize the scaffold template output: %+v", res)
 	}
 }
+
+// fixtureKclMod is the minimal-project kcl.mod shape: the vendored path is
+// declared, but nothing has materialized .forge-kcl/ yet (F4).
+const fixtureKclMod = "[package]\nname = \"e2eh\"\n\n[dependencies]\nforge = { path = \"../../.forge-kcl\" }\n"
+
+// TestEnsurePresent_MaterializesAbsentVendorDir is the F4 regression at the
+// kclvendor seam: a kcl.mod that points at an absent .forge-kcl/ gets the
+// copy, stamped, without kcl.mod being touched.
+func TestEnsurePresent_MaterializesAbsentVendorDir(t *testing.T) {
+	dir := t.TempDir()
+	modPath := writeKclMod(t, dir, "deploy/kcl/kcl.mod", fixtureKclMod)
+
+	wrote, err := EnsurePresent(dir)
+	if err != nil {
+		t.Fatalf("EnsurePresent: %v", err)
+	}
+	if !wrote || !Present(dir) {
+		t.Fatalf("wrote=%v present=%v; an absent vendor dir the kcl.mod points at must be materialized", wrote, Present(dir))
+	}
+	if stale, _ := Stale(dir); stale {
+		t.Error("an on-demand copy must carry this forge's stamp")
+	}
+	if got := readFile(t, modPath); got != fixtureKclMod {
+		t.Errorf("render-time vendoring must never edit kcl.mod; got:\n%s", got)
+	}
+	// Second call: present → no-op.
+	if wrote, err := EnsurePresent(dir); err != nil || wrote {
+		t.Errorf("second EnsurePresent = (%v, %v); want (false, nil)", wrote, err)
+	}
+}
+
+// TestEnsurePresent_NeverTouchesExistingOrForeignShapes pins the narrow
+// scope: an existing copy (even a stale one) is generate's to refresh, and
+// a kcl.mod in any non-vendored shape — or pointing elsewhere — gets no
+// orphan directory.
+func TestEnsurePresent_NeverTouchesExistingOrForeignShapes(t *testing.T) {
+	t.Run("existing copy untouched", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKclMod(t, dir, "deploy/kcl/kcl.mod", fixtureKclMod)
+		marker := writeKclMod(t, dir, VendorDirName+"/kcl.mod", "old\n")
+		if wrote, err := EnsurePresent(dir); err != nil || wrote {
+			t.Fatalf("EnsurePresent = (%v, %v); want (false, nil)", wrote, err)
+		}
+		if readFile(t, marker) != "old\n" {
+			t.Error("an existing vendor copy must never be rewritten at render time")
+		}
+	})
+	for name, mod := range map[string]string{
+		"git tag":      legacyGitTagKclMod,
+		"no forge dep": "[package]\nname = \"x\"\n",
+		"elsewhere":    "[dependencies]\nforge = { path = \"../.forge-kcl\" }\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeKclMod(t, dir, "deploy/kcl/kcl.mod", mod)
+			if wrote, err := EnsurePresent(dir); err != nil || wrote {
+				t.Fatalf("EnsurePresent = (%v, %v); want (false, nil)", wrote, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, VendorDirName)); !os.IsNotExist(err) {
+				t.Errorf("no vendor dir may be created for a %s kcl.mod (stat err %v)", name, err)
+			}
+		})
+	}
+}

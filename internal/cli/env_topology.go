@@ -16,7 +16,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/statefile"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // `forge env topology` — the whole release/environment picture in ONE read.
@@ -216,6 +219,18 @@ type topologyEnv struct {
 	// does not — and that is a real, reportable state rather than an
 	// error. When false, KubeContext and Namespace cannot be resolved.
 	Declared bool `json:"declared"`
+	// Ledger is where THIS env's promotions are recorded: the endpoint URL
+	// of the control plane its KCL declares (forge.ControlPlane), or the
+	// project's promotion log. Opaque — for display only.
+	Ledger string `json:"ledger,omitempty"`
+	// Hosted is true when Ledger is a control plane. It drives the text
+	// renderer only and is NOT part of the JSON contract: consumers read
+	// `destination == "hosted"`, and a second spelling of the same fact is
+	// a second place for the two to disagree.
+	Hosted bool `json:"-"`
+	// Kind is the current entry's kind: "promote" or "rollback". A
+	// rollback is the fact on this screen most worth seeing.
+	Kind release.PromotionKind `json:"kind,omitempty"`
 	// Bound is false for an env that has never been promoted. Not a
 	// failure: it has declared nothing, so there is nothing to be wrong
 	// about. A separate field from an empty Release so a consumer can tell
@@ -239,7 +254,7 @@ type topologyEnv struct {
 	// release cut from a tree with uncommitted changes ships bytes that
 	// correspond to no reviewable commit, and this is the only place on
 	// this screen that fact surfaces. Nil when the ledger is absent.
-	Git *ReleaseGit `json:"git,omitempty"`
+	Git *release.Git `json:"git,omitempty"`
 	// ReleaseCreatedAt is RFC3339 for when the bound release was CUT, as
 	// distinct from when this env was promoted to it. The gap between the
 	// two is how long the release sat before this env took it.
@@ -260,6 +275,17 @@ type topologyEnv struct {
 	// an unbound env, a binding whose release ledger is absent, an env
 	// with no cluster declared.
 	Note string `json:"note,omitempty"`
+
+	// Destination / Endpoint / EnvironmentID / Verdict / Workloads are the
+	// console's "where does this env run" contract. See env_destination.go
+	// for the vocabulary. Destination is set for every DECLARED env; the
+	// rest are hosted-only, and EnvironmentID is empty (never fabricated)
+	// for a hosted env that has not been deployed.
+	Destination   string                              `json:"destination,omitempty"`
+	Endpoint      string                              `json:"endpoint,omitempty"`
+	EnvironmentID string                              `json:"environment_id,omitempty"`
+	Verdict       string                              `json:"verdict,omitempty"`
+	Workloads     []deploytarget.HostedWorkloadStatus `json:"workloads,omitempty"`
 }
 
 // topologyTally counts image cells by state across every environment, so a
@@ -390,7 +416,6 @@ Examples:
 				ProjectDir: projectDir,
 				Lister:     kubectlImageLister{},
 				Resolver:   kclTargetResolver{},
-				Bindings:   bindingStoreFor(projectDir),
 			})
 		},
 	}
@@ -423,7 +448,14 @@ type envTopologyOptions struct {
 	ProjectDir string
 	Lister     clusterImageLister
 	Resolver   envTargetResolver
-	Bindings   bindingStore
+	// Ledgers resolves each env's ledger. Nil uses ledgerFor — the env's
+	// declared backend. Per ENV, not per report: one project can keep
+	// prod's promotions on a control plane and dev's in its own files.
+	Ledgers func(ctx context.Context, env string) (envLedger, error)
+	// Destinations resolves where each DECLARED env runs (the console
+	// contract). Nil renders the env's KCL and, for a hosted env, reads its
+	// status from the control plane.
+	Destinations func(ctx context.Context, projectDir, env string) envDestination
 }
 
 // runEnvTopology assembles the report and renders it.
@@ -445,8 +477,19 @@ func runEnvTopology(ctx context.Context, envArgs []string, opts envTopologyOptio
 	if projectDir == "" {
 		projectDir = projectDirForKCL()
 	}
-	if opts.Bindings == nil {
-		opts.Bindings = bindingStoreFor(projectDir)
+	if opts.Ledgers == nil {
+		opts.Ledgers = func(ctx context.Context, env string) (envLedger, error) {
+			return ledgerFor(ctx, projectDir, env)
+		}
+	}
+	if opts.Destinations == nil {
+		opts.Destinations = func(ctx context.Context, projectDir, env string) envDestination {
+			e, err := RenderKCL(ctx, projectDir, env)
+			if err != nil {
+				return envDestination{Note: "could not render this environment to resolve where it runs: " + err.Error()}
+			}
+			return resolveEnvDestination(ctx, env, e, readHostedStatusFromDeclaration)
+		}
 	}
 
 	declared := declaredEnvNames(projectDir)
@@ -486,11 +529,11 @@ func buildEnvTopology(
 	projectDir string,
 	envs []string,
 	isDeclared map[string]bool,
-	releases []Release,
+	releases []release.Release,
 	opts envTopologyOptions,
 ) (envTopologyReport, error) {
 	report := envTopologyReport{
-		Ledger:       opts.Bindings.Location(),
+		Ledger:       filepath.Join(projectDir, promotionsDirRel),
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		Releases:     []string{},
 		Images:       []string{},
@@ -502,14 +545,14 @@ func buildEnvTopology(
 		report.Project = cfg.Name
 	}
 
-	byVersion := map[string]Release{}
+	byVersion := map[string]release.Release{}
 	for _, rel := range releases {
 		report.Releases = append(report.Releases, rel.Version)
 		byVersion[rel.Version] = rel
 	}
 	if len(releases) > 0 {
 		report.LatestRelease = releases[0].Version
-		report.LatestReleaseCreatedAt = releases[0].CreatedAt
+		report.LatestReleaseCreatedAt = formatLedgerTime(releases[0].CreatedAt)
 	}
 
 	names := append([]string(nil), envs...)
@@ -586,8 +629,8 @@ func buildTopologyEnvRow(
 	ctx context.Context,
 	projectDir, envName string,
 	declared bool,
-	byVersion map[string]Release,
-	releases []Release,
+	byVersion map[string]release.Release,
+	releases []release.Release,
 	opts envTopologyOptions,
 ) topologyEnv {
 	row := topologyEnv{
@@ -598,15 +641,47 @@ func buildTopologyEnvRow(
 	if !declared {
 		row.Note = fmt.Sprintf("not declared in this checkout (%s does not exist) — it may be declared on another branch",
 			filepath.Join(projectDir, "deploy", "kcl", envName, "main.k"))
+	} else if opts.Destinations != nil {
+		// Resolved FIRST and independently of the ledger: where an env runs
+		// is a fact of its declaration, and a ledger that cannot be read
+		// must not also blank the destination badge.
+		dest := opts.Destinations(ctx, projectDir, envName)
+		row.Destination, row.Endpoint, row.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
+		row.Verdict, row.Workloads = dest.Verdict, dest.Workloads
+		if dest.Note != "" {
+			row.Note = dest.Note
+		}
 	}
 
-	binding, bound, err := opts.Bindings.Binding(envName)
+	ledger, err := opts.Ledgers(ctx, envName)
+	if err != nil {
+		// Reported on the row rather than aborting the whole screen: the
+		// other environments' answers are still worth having.
+		row.Note = fmt.Sprintf("could not resolve this environment's release ledger: %v", err)
+		return row
+	}
+	row.Hosted = ledger.Hosted
+	row.Ledger = ledger.Bindings.Location()
+	if ledger.Hosted {
+		// A hosted env's releases live on its control plane, not in this
+		// checkout, so provenance and lag are measured against THAT set.
+		// A failed listing degrades to "provenance unknown", not a blank row.
+		if hosted, lerr := ledger.Releases.List(ctx); lerr == nil {
+			releases = hosted
+			byVersion = map[string]release.Release{}
+			for _, rel := range hosted {
+				byVersion[rel.Version] = rel
+			}
+		}
+	}
+
+	binding, bound, err := ledger.Bindings.Current(ctx, envName)
 	if err != nil {
 		// A ledger that cannot be read is reported on the row rather
 		// than aborting the whole screen: the other environments'
 		// answers are still worth having, and a single failed read
 		// should not blank a dashboard.
-		row.Note = fmt.Sprintf("could not read the binding ledger: %v", err)
+		row.Note = fmt.Sprintf("could not read the promotion ledger: %v", err)
 		return row
 	}
 	row.Bound = bound
@@ -617,13 +692,14 @@ func buildTopologyEnvRow(
 		return row
 	}
 	row.Release = binding.Release
-	row.PromotedAt = binding.PromotedAt
+	row.Kind = binding.Kind
+	row.PromotedAt = formatLedgerTime(binding.PromotedAt)
 
 	if rel, ok := byVersion[binding.Release]; ok {
 		row.ReleaseKnown = true
 		git := rel.Git
 		row.Git = &git
-		row.ReleaseCreatedAt = rel.CreatedAt
+		row.ReleaseCreatedAt = formatLedgerTime(rel.CreatedAt)
 		row.Lag = computePromotionLag(releases, rel)
 	} else if row.Note == "" {
 		// A FIRST-CLASS STATE, NOT AN ERROR. The binding is real and
@@ -633,8 +709,8 @@ func buildTopologyEnvRow(
 		// omitted rather than guessed at — a lag computed against a
 		// release set that does not contain the env's own release
 		// would be a number with no meaning.
-		row.Note = fmt.Sprintf("release %s has no ledger in this checkout (%s) — it was cut on another branch, so its provenance and promotion lag are unknown",
-			binding.Release, releasePath(projectDir, binding.Release))
+		row.Note = fmt.Sprintf("release %s is not in %s — it was cut elsewhere, so its provenance and promotion lag are unknown",
+			binding.Release, ledger.Releases.Location())
 	}
 
 	images := make([]string, 0, len(binding.Resolved))
@@ -653,7 +729,7 @@ func buildTopologyEnvRow(
 	// Where the env runs is resolved declaratively from its KCL. An env
 	// not declared in this checkout has no KCL to read, so skip it rather
 	// than paying for a render that is certain to fail.
-	if declared {
+	if declared && row.Destination != destinationHosted {
 		target := opts.Resolver.Resolve(ctx, projectDir, envName)
 		row.KubeContext = target.KubeContext
 		row.Namespace = target.Namespace
@@ -726,7 +802,7 @@ func applyTopologyVerification(ctx context.Context, row *topologyEnv, opts envTo
 // order: the ordering was already decided once, in sortReleasesNewestFirst,
 // and re-deriving it here is how two answers about the same project start to
 // disagree.
-func computePromotionLag(releases []Release, bound Release) *promotionLag {
+func computePromotionLag(releases []release.Release, bound release.Release) *promotionLag {
 	if len(releases) == 0 {
 		return nil
 	}
@@ -750,9 +826,8 @@ func computePromotionLag(releases []Release, bound Release) *promotionLag {
 	// the seconds and the rendered string empty, so a consumer sees "not
 	// known" rather than "zero" — a release with a broken created_at is
 	// not a release that shipped today.
-	newest, err1 := time.Parse(time.RFC3339, latest.CreatedAt)
-	cut, err2 := time.Parse(time.RFC3339, bound.CreatedAt)
-	if err1 == nil && err2 == nil && newest.After(cut) {
+	newest, cut := latest.CreatedAt, bound.CreatedAt
+	if !newest.IsZero() && !cut.IsZero() && newest.After(cut) {
 		d := newest.Sub(cut)
 		lag.BehindSeconds = int64(d.Seconds())
 		lag.Behind = humanizeLag(d)
@@ -819,15 +894,15 @@ func declaredEnvNames(projectDir string) []string {
 // An unreadable or malformed ledger is SKIPPED, not fatal. This command's job
 // is to show the shape of a project's releases; refusing to show any of them
 // because one file on disk is corrupt trades a complete answer for no answer.
-func readReleaseLedgers(projectDir string) []Release {
+func readReleaseLedgers(projectDir string) []release.Release {
 	matches, err := filepath.Glob(filepath.Join(projectDir, releasesDirRel, "*.json"))
 	if err != nil {
 		return nil
 	}
-	out := make([]Release, 0, len(matches))
+	out := make([]release.Release, 0, len(matches))
 	for _, path := range matches {
-		rel, rerr := statefile.Read[Release](path, "release")
-		if rerr != nil || rel == nil || rel.Version == "" {
+		rel, rerr := statefile.Read[release.Release](path, "release")
+		if rerr != nil || rel == nil || rel.Version == "" || rel.Validate() != nil {
 			continue
 		}
 		out = append(out, *rel)
@@ -846,7 +921,7 @@ func readReleaseLedgers(projectDir string) []Release {
 // semver cannot order (a date stamp, a build name) falls back to the
 // timestamp, and finally to the label itself so the order is at least stable
 // across runs rather than dependent on directory iteration.
-func sortReleasesNewestFirst(releases []Release) {
+func sortReleasesNewestFirst(releases []release.Release) {
 	sort.SliceStable(releases, func(i, j int) bool {
 		vi, vj := semverKey(releases[i].Version), semverKey(releases[j].Version)
 		if vi != "" && vj != "" && semver.Compare(vi, vj) != 0 {
@@ -858,9 +933,8 @@ func sortReleasesNewestFirst(releases []Release) {
 		if vi == "" && vj != "" {
 			return false
 		}
-		ti, ei := time.Parse(time.RFC3339, releases[i].CreatedAt)
-		tj, ej := time.Parse(time.RFC3339, releases[j].CreatedAt)
-		if ei == nil && ej == nil && !ti.Equal(tj) {
+		ti, tj := releases[i].CreatedAt, releases[j].CreatedAt
+		if !ti.IsZero() && !tj.IsZero() && !ti.Equal(tj) {
 			return ti.After(tj)
 		}
 		return releases[i].Version > releases[j].Version
@@ -875,7 +949,7 @@ func renderEnvTopologyText(report envTopologyReport) {
 		name = "project"
 	}
 	fmt.Printf("Release topology for %s\n", name)
-	fmt.Printf("  bindings  %s\n", report.Ledger)
+	fmt.Printf("  ledger    %s (per-env override: an env declaring forge.ControlPlane records on its control plane)\n", report.Ledger)
 	if report.LatestRelease != "" {
 		fmt.Printf("  latest    %s (cut %s, %d release(s) on record)\n",
 			report.LatestRelease, report.LatestReleaseCreatedAt, len(report.Releases))
@@ -898,11 +972,17 @@ func renderEnvTopologyText(report envTopologyReport) {
 
 	for _, env := range report.Environments {
 		fmt.Printf("%s\n", env.Env)
+		if env.Hosted {
+			fmt.Printf("  ledger    %s (hosted)\n", env.Ledger)
+		}
 		switch {
 		case !env.Bound:
 			fmt.Printf("  release   (unbound)\n")
 		default:
 			line := fmt.Sprintf("  release   %s", env.Release)
+			if env.Kind == release.KindRollback {
+				line += "  [ROLLED BACK]"
+			}
 			if env.Lag != nil {
 				if env.Lag.Current {
 					line += "  [current]"

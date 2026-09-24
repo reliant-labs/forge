@@ -1,6 +1,7 @@
 """
-Negative test — TestJWKS.alg must be 'ES256' (the only supported
-test-JWKS algorithm today). Any other value should fail the check block.
+Negative test — TestJWKS.alg must be an ASYMMETRIC signing algorithm forge
+can derive a public JWK for ('ES256' or 'RS256'). A symmetric algorithm has no
+public half to publish, so a JWKS for it is meaningless and must be refused.
 """
 
 import forge
@@ -8,6 +9,6 @@ import forge
 _j = forge.TestJWKS {
     name = "test-jwks"
     kid = "k1"
-    alg = "RS256"  # unsupported
+    alg = "HS256"  # symmetric: nothing to publish
     private_key = forge.StoreRef { key = "TEST_JWKS_PEM" }
 }

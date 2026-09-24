@@ -168,3 +168,44 @@ func (stubStore) WithTx() Store { return Store{} }
 			"command that would refresh what it compiles against. got: %v", err)
 	}
 }
+
+// TestRunGoBuildValidate_LoneMainPackageInSubdir is the F3 regression. With
+// exactly one main package, bare `go build ./...` WRITES a binary named
+// after its directory; for a main at ./echo that collides with the
+// directory itself ("build output "echo" already exists and is a
+// directory") and generate refused a valid project. Validation must be a
+// pure compile check that writes nothing into the project.
+func TestRunGoBuildValidate_LoneMainPackageInSubdir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real go build over a temp module; full mode only")
+	}
+	// ./echo must be the ONLY package: go writes a binary only when the
+	// pattern matches exactly one, so writeValidateFixture's root lib.go
+	// would mask the bug.
+	dir := t.TempDir()
+	for rel, body := range map[string]string{
+		"go.mod":       "module example.com/e2eh\n\ngo 1.22\n",
+		"echo/main.go": "package main\n\nfunc main() {}\n",
+	} {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, _ := os.ReadDir(dir)
+
+	_, restore := captureStderr(t)
+	err := runGoBuildValidate(dir)
+	restore()
+
+	if err != nil {
+		t.Fatalf("a project whose only main package is ./echo must validate; got: %v\n%s", err, errOutputOf(err))
+	}
+	after, _ := os.ReadDir(dir)
+	if len(after) != len(before) {
+		t.Errorf("validation wrote into the project: %d entries before, %d after", len(before), len(after))
+	}
+}

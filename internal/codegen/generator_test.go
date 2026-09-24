@@ -744,6 +744,13 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 				// middleware.ContextWithClaims setter.
 				"func AuthedContext(t *testing.T, opts ...testkit.ClaimsOption) context.Context",
 				"testkit.AuthedContext(t, middleware.ContextWithClaims, opts...)",
+				// The server factory installs the principal SERVER-side: a
+				// client-side AuthedContext never crosses HTTP, so without
+				// this every auth-gated RPC called through the typed client
+				// answers Unauthenticated before reaching the handler.
+				"testkit.ServerPrincipal(middleware.ContextWithClaims, cfg.principal...)",
+				"func WithPrincipal(opts ...testkit.ClaimsOption) TestOption",
+				"func WithoutPrincipal() TestOption",
 			},
 		},
 		{

@@ -12,8 +12,13 @@
 package codegen
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,16 +42,115 @@ const ControllerToolsVersion = "v0.20.1"
 // CRDAPIDir is the conventional location of a forge project's CRD Go types.
 const CRDAPIDir = "api"
 
-// LoadCRDsFromGoTypes projects every CRD declared under <projectDir>/api/...
-// into its apiextensions form, using controller-tools' own marker collection
-// and schema derivation.
+// ForgeTierAPIPackage is forge's own deploy-tier API package (group
+// forge.dev). A project that imports it RUNS those kinds (the control plane's
+// operators do), so its CRDs must be installed from forge's types rather than
+// re-declared under the project's api/.
+const ForgeTierAPIPackage = "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+
+// CRDSourceRoots returns the package patterns whose CRD types a project
+// installs:
+//
+//   - "./api/..." when the project has an api/ directory (its own kinds);
+//   - ForgeTierAPIPackage when the project REGISTERS forge's tier kinds, i.e.
+//     it references that package's AddToScheme.
+//
+// The second source is derived from the code rather than configured. That is
+// deliberate: registering the kinds in a scheme is exactly what a process
+// that reconciles them must do, so a separate opt-in could only disagree with
+// it. A reconciler whose CRD is never installed fails only at runtime, with
+// "no matches for kind". A plain IMPORT is not the signal. A package that
+// only uses a constant or Validate() from the tier types (the secret
+// materializer does) does not reconcile anything, and treating that as
+// "install the CRDs" collided with a project's own same-named kinds.
+func CRDSourceRoots(projectDir string) ([]string, error) {
+	var roots []string
+	if info, err := os.Stat(filepath.Join(projectDir, CRDAPIDir)); err == nil && info.IsDir() {
+		roots = append(roots, "./"+CRDAPIDir+"/...")
+	}
+	registers, err := projectRegistersScheme(projectDir, ForgeTierAPIPackage)
+	if err != nil {
+		return nil, err
+	}
+	if registers {
+		roots = append(roots, ForgeTierAPIPackage)
+	}
+	return roots, nil
+}
+
+// projectRegistersScheme reports whether any non-test .go file under
+// projectDir (skipping vendor/, node_modules/, testdata/ and dot-directories)
+// references pkg's AddToScheme through its import name. The check is exact:
+// it parses each file's imports and selector expressions, so an alias, a
+// comment, or a string that merely mentions the path cannot fool it.
+func projectRegistersScheme(projectDir, pkg string) (bool, error) {
+	quoted := []byte(`"` + pkg + `"`)
+	defaultName := pkg[strings.LastIndex(pkg, "/")+1:]
+	found := false
+	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || found {
+			return err
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != projectDir && (strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if !bytes.Contains(src, quoted) {
+			return nil // cheap pre-filter: most files never import it
+		}
+		file, perr := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
+		if perr != nil {
+			return nil // a file that does not parse cannot register anything
+		}
+		local := ""
+		for _, imp := range file.Imports {
+			if strings.Trim(imp.Path.Value, `"`) != pkg {
+				continue
+			}
+			local = defaultName
+			if imp.Name != nil {
+				local = imp.Name.Name
+			}
+		}
+		if local == "" || local == "_" {
+			return nil
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "AddToScheme" {
+				if id, ok := sel.X.(*ast.Ident); ok && id.Name == local {
+					found = true
+				}
+			}
+			return !found
+		})
+		return nil
+	})
+	return found, err
+}
+
+// LoadCRDsFromGoTypes projects every CRD the project installs (see
+// CRDSourceRoots) into its apiextensions form, using controller-tools' own
+// marker collection and schema derivation.
 //
 // It returns nil (no error) when the project declares no CRD types at all:
 // most forge projects have no operator, and their `forge generate` must not
 // fail or emit an empty module.
 func LoadCRDsFromGoTypes(projectDir string) ([]CRDDoc, error) {
-	apiDir := filepath.Join(projectDir, CRDAPIDir)
-	if info, err := os.Stat(apiDir); err != nil || !info.IsDir() {
+	sources, err := CRDSourceRoots(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve CRD sources: %w", err)
+	}
+	if len(sources) == 0 {
 		return nil, nil
 	}
 
@@ -61,6 +165,13 @@ func LoadCRDsFromGoTypes(projectDir string) ([]CRDDoc, error) {
 	}
 	defer restore()
 
+	return loadCRDDocs(sources)
+}
+
+// loadCRDDocs projects the CRDs declared by the given package patterns. The
+// caller has already made the project the working directory.
+func loadCRDDocs(sources []string) ([]CRDDoc, error) {
+	apiDir := strings.Join(sources, ", ")
 	gen := crd.Generator{
 		// 0 == drop descriptions entirely. A CRD's descriptions are the Go
 		// doc comments, and carrying them would multiply this manifest's size
@@ -71,7 +182,7 @@ func LoadCRDsFromGoTypes(projectDir string) ([]CRDDoc, error) {
 	}
 
 	var asGen genall.Generator = gen
-	roots, err := genall.Generators{&asGen}.ForRoots("./" + CRDAPIDir + "/...")
+	roots, err := genall.Generators{&asGen}.ForRoots(sources...)
 	if err != nil {
 		return nil, fmt.Errorf("load api packages: %w", err)
 	}
@@ -117,6 +228,15 @@ func LoadCRDsFromGoTypes(projectDir string) ([]CRDDoc, error) {
 		})
 	}
 
+	// One lambda per KIND. Two groups declaring the same kind (a project's
+	// own reliant.dev SimpleBackend alongside forge.dev's, mid-migration)
+	// would emit two identically-named lambdas. KCL would keep the last one
+	// silently, and one of the CRDs would vanish from the cluster, pruning
+	// every live CR of that group. Refuse instead, and name both.
+	if err := checkOneSourcePerKind(docs); err != nil {
+		return nil, err
+	}
+
 	// A project that HAS CRD types but from which we projected NONE is the
 	// dangerous outcome, and it is the one worth failing on: emitting a module
 	// with no lambdas removes every CRD from the render, which uninstalls them
@@ -152,6 +272,19 @@ func LoadCRDsFromGoTypes(projectDir string) ([]CRDDoc, error) {
 
 	sort.Slice(docs, func(i, j int) bool { return docs[i].Kind < docs[j].Kind })
 	return docs, nil
+}
+
+// checkOneSourcePerKind refuses two CRDs that would render to the same lambda.
+func checkOneSourcePerKind(docs []CRDDoc) error {
+	byLambda := map[string]string{}
+	for _, d := range docs {
+		if prev, dup := byLambda[d.Lambda]; dup {
+			return fmt.Errorf("kind %s is declared by both %s and %s; a CRD kind must have one source. If the project is moving to forge's deploy-tier types, delete its own %s type in the same change",
+				d.Kind, prev, d.CRD.Spec.Group, d.Kind)
+		}
+		byLambda[d.Lambda] = d.CRD.Spec.Group
+	}
+	return nil
 }
 
 // CRDLambdaName maps a CR kind to its generated KCL lambda name:

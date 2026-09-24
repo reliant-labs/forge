@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // The promote CHANGE SET — computed once, rendered twice, applied optionally.
@@ -387,7 +389,7 @@ type promotePlanBinding struct {
 	ReleaseKnown bool `json:"release_known"`
 	// Git is the current release's provenance. Nil when the ledger is
 	// absent.
-	Git *ReleaseGit `json:"git,omitempty"`
+	Git *release.Git `json:"git,omitempty"`
 	// ReleaseCreatedAt is RFC3339 for when the current release was CUT.
 	ReleaseCreatedAt string `json:"release_created_at,omitempty"`
 	// Note explains a state that would otherwise look like missing data.
@@ -403,7 +405,7 @@ type promotePlanTarget struct {
 	// Git is its provenance. Read `dirty`: a release cut from a tree with
 	// uncommitted changes ships bytes matching no reviewable commit, and
 	// promoting one means nobody can say what is in it.
-	Git *ReleaseGit `json:"git,omitempty"`
+	Git *release.Git `json:"git,omitempty"`
 	// Images is how many images the release resolves digests for.
 	Images int `json:"images"`
 }
@@ -416,6 +418,10 @@ type promotePlanTarget struct {
 type promotePlan struct {
 	// Env is the environment being promoted.
 	Env string `json:"env"`
+	// Kind is what this entry records: "promote", or "rollback" when
+	// --rollback was passed. A rollback must name a release the env has
+	// already run; the ledger refuses one that does not.
+	Kind release.PromotionKind `json:"kind"`
 	// Ledger names where the binding is recorded, as the binding store
 	// reports it — a path today, a URL for a hosted backend. Opaque, for
 	// DISPLAY only; do not join it or open it.
@@ -467,14 +473,18 @@ type promotePlan struct {
 	// applying a plan either succeeds (true) or returns an error, so a
 	// rendered plan is always true — a rollback is not a failure.
 	OK bool `json:"ok"`
+	// Recorded is the ledger entry the env now resolves to, after an
+	// apply: the new entry, or — for a retry of the env's current state —
+	// the existing one, unchanged. Nil under --plan.
+	Recorded *release.Promotion `json:"recorded,omitempty"`
 
 	// targetSources is the source-built frontend snapshot the binding will be
 	// written with, the non-container half of targetResolved. Carried on the
 	// plan for the same reason the digests are: the value APPLIED must be the
 	// value PREVIEWED, and resolving it a second time at write would let the
 	// two drift. Without it a promotion records only images and a frontend
-	// silently stays on whatever ref is in KCL — see EnvBinding.Sources.
-	targetSources map[string]ReleaseSource
+	// silently stays on whatever ref is in KCL — see release.Promotion.Sources.
+	targetSources map[string]release.Source
 
 	// targetResolved is the digest map the binding will be written with.
 	// Unexported so it cannot leak into the JSON contract as a second,
@@ -557,13 +567,15 @@ type promotePlanOptions struct {
 	// ProjectDir is the checkout the ledgers and the git history are read
 	// from. Empty falls back to projectDirForKCL().
 	ProjectDir string
-	// Bindings is the binding ledger. Nil falls back to the project's
+	// Kind is promote (the default) or rollback.
+	Kind release.PromotionKind
+	// Bindings is the promotion ledger. Nil falls back to the env's
 	// store. Injected so a test can STATE the env's current binding
 	// instead of staging a file to imply it.
 	Bindings bindingStore
-	// Releases is the project's releases, NEWEST FIRST. Nil reads them
-	// from ProjectDir. Injected for the same reason as Bindings.
-	Releases []Release
+	// Releases is the release ledger the target is read from. Nil falls
+	// back to the env's.
+	Releases releaseLedger
 	// Git reads the commit range. Nil uses real git.
 	Git promoteGitReader
 }
@@ -589,31 +601,43 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 	if projectDir == "" {
 		projectDir = projectDirForKCL()
 	}
-	bindings := opts.Bindings
-	if bindings == nil {
-		bindings = bindingStoreFor(projectDir)
+	bindings, releaseStore := opts.Bindings, opts.Releases
+	if bindings == nil || releaseStore == nil {
+		l, err := ledgerFor(ctx, projectDir, opts.Env)
+		if err != nil {
+			return promotePlan{}, err
+		}
+		if bindings == nil {
+			bindings = l.Bindings
+		}
+		if releaseStore == nil {
+			releaseStore = l.Releases
+		}
+	}
+	kind := opts.Kind
+	if kind == "" {
+		kind = release.KindPromote
 	}
 	git := opts.Git
 	if git == nil {
 		git = gitCommitReader{}
 	}
-	releases := opts.Releases
-	if releases == nil {
-		// Read from inside each ledger, newest-first, with the ordering
-		// env topology already established (semver first, created_at as
-		// the tie-break so a skewed CI clock cannot reorder history).
-		// Reused rather than re-derived: two orderings for one project
-		// is how two commands start disagreeing about which release is
-		// newer, and the direction of a promote depends on the answer.
-		releases = readReleaseLedgers(projectDir)
+	// Newest-first, with the ordering env topology already established
+	// (semver first, created_at as the tie-break so a skewed CI clock
+	// cannot reorder history). Both backends return this ordering, so a
+	// promote's DIRECTION has one answer whichever holds the ledger.
+	releases, err := releaseStore.List(ctx)
+	if err != nil {
+		return promotePlan{}, fmt.Errorf("list releases from %s: %w", releaseStore.Location(), err)
 	}
-	byVersion := map[string]Release{}
+	byVersion := map[string]release.Release{}
 	for _, rel := range releases {
 		byVersion[rel.Version] = rel
 	}
 
 	plan := promotePlan{
 		Env:          opts.Env,
+		Kind:         kind,
 		Ledger:       bindings.Location(),
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		Images:       []promoteImageChange{},
@@ -633,20 +657,18 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 	// which is the one property this design is holding onto.
 	target, ok := byVersion[opts.Version]
 	if !ok {
-		// Fall back to the direct by-filename read, so a ledger the glob
-		// skipped (an empty `release` field) still produces the familiar
-		// error rather than a confusing "not found".
-		rel, err := ReadRelease(projectDir, opts.Version)
+		// Fall back to the direct read: a list is bounded, and a release
+		// older than the page is still a legitimate promote target.
+		rel, err := releaseStore.Get(ctx, opts.Version)
 		if err != nil {
 			return promotePlan{}, fmt.Errorf("read release %q: %w", opts.Version, err)
 		}
 		if rel == nil {
-			return promotePlan{}, fmt.Errorf("release %q not found at %s.\n"+
+			return promotePlan{}, fmt.Errorf("release %q not found in %s.\n"+
 				"  Cut it first with: forge build --release %s --push <registry>",
-				opts.Version, releasePath(projectDir, opts.Version), opts.Version)
+				opts.Version, releaseStore.Location(), opts.Version)
 		}
 		target = *rel
-		target.Version = opts.Version
 	}
 
 	resolved, err := resolveReleaseDigests(target)
@@ -654,35 +676,35 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		return promotePlan{}, err
 	}
 	plan.targetResolved = resolved
-	plan.targetSources = resolveReleaseSources(target)
+	plan.targetSources = target.Sources()
 	plan.Target = promotePlanTarget{
 		Release:   opts.Version,
-		CreatedAt: target.CreatedAt,
+		CreatedAt: formatLedgerTime(target.CreatedAt),
 		Images:    len(resolved),
 	}
 	targetGit := target.Git
 	plan.Target.Git = &targetGit
 
-	prev, hadPrev, err := bindings.Binding(opts.Env)
+	prev, hadPrev, err := bindings.Current(ctx, opts.Env)
 	if err != nil {
-		return promotePlan{}, fmt.Errorf("read env-release bindings: %w", err)
+		return promotePlan{}, fmt.Errorf("read the promotion ledger for %s: %w", opts.Env, err)
 	}
 	plan.Current = promotePlanBinding{Bound: hadPrev}
-	var currentRel Release
+	var currentRel release.Release
 	var currentKnown bool
 	if hadPrev {
 		plan.Current.Release = prev.Release
-		plan.Current.PromotedAt = prev.PromotedAt
+		plan.Current.PromotedAt = formatLedgerTime(prev.PromotedAt)
 		if rel, found := byVersion[prev.Release]; found {
 			currentRel, currentKnown = rel, true
 			plan.Current.ReleaseKnown = true
 			g := rel.Git
 			plan.Current.Git = &g
-			plan.Current.ReleaseCreatedAt = rel.CreatedAt
+			plan.Current.ReleaseCreatedAt = formatLedgerTime(rel.CreatedAt)
 		} else {
 			plan.Current.Note = fmt.Sprintf(
-				"release %s has no ledger in this checkout (%s) — it was cut on another branch, so its provenance and the commit range are unknown",
-				prev.Release, releasePath(projectDir, prev.Release))
+				"release %s is not in %s — its provenance and the commit range are unknown",
+				prev.Release, releaseStore.Location())
 		}
 	} else {
 		plan.Current.Note = fmt.Sprintf("never promoted — no release is bound to %s, so this is its first promote", opts.Env)
@@ -717,17 +739,37 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 // which is the one field a plan cannot predict — it is the time of the WRITE,
 // and a plan that pre-stamped it would be claiming a promote happened at the
 // moment it was previewed.
-func applyPromotePlan(bindings bindingStore, plan *promotePlan) error {
-	if err := bindings.SetBinding(plan.Env, EnvBinding{
+//
+// It APPENDS. The ledger decides (release.Decide) whether the entry is a real
+// move, a retry of the state the env is already in (nothing is written, and
+// the existing entry comes back), or a rollback to a release the env never
+// ran (refused). Applied reports whether a NEW entry was written.
+func applyPromotePlan(ctx context.Context, bindings bindingStore, plan *promotePlan, by release.Actor, note string) error {
+	p := release.Promotion{
+		Env:        plan.Env,
 		Release:    plan.Target.Release,
+		Kind:       plan.Kind,
 		Resolved:   plan.targetResolved,
 		Sources:    plan.targetSources,
-		PromotedAt: nowRFC3339(),
-	}); err != nil {
-		return fmt.Errorf("write env-release bindings: %w", err)
+		PromotedBy: by,
+		Note:       note,
 	}
+	got, err := bindings.Append(ctx, p)
+	if err != nil {
+		return fmt.Errorf("record %s of %s → %s in %s: %w", plan.Kind, plan.Env, plan.Target.Release, bindings.Location(), err)
+	}
+	plan.Recorded = &got
 	plan.Applied = true
 	return nil
+}
+
+// formatLedgerTime renders a ledger timestamp for the plan and topology
+// documents, whose JSON contract is RFC3339 strings. The zero time is "".
+func formatLedgerTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // classifyPromoteImages diffs the two digest maps into an explicit
@@ -799,7 +841,7 @@ func tallyPromoteImages(images []promoteImageChange) promoteImageTally {
 // function would eventually disagree with `forge env topology` about which of
 // two releases is newer. The direction of a promote is precisely the fact that
 // must not have two answers.
-func promoteDirectionFor(releases []Release, hadPrev bool, currentVersion, targetVersion string) (promoteDirection, int, string) {
+func promoteDirectionFor(releases []release.Release, hadPrev bool, currentVersion, targetVersion string) (promoteDirection, int, string) {
 	if !hadPrev {
 		return promoteDirectionInitial, 0,
 			"FIRST PROMOTE — this environment has never been bound to a release, so there is nothing to move from"
@@ -844,10 +886,10 @@ func promoteDirectionFor(releases []Release, hadPrev bool, currentVersion, targe
 // the function reads as a classification rather than a parameter list.
 type promoteRangeInput struct {
 	HadPrev      bool
-	CurrentRel   Release
+	CurrentRel   release.Release
 	CurrentKnown bool
 	CurrentName  string
-	Target       Release
+	Target       release.Release
 	TargetName   string
 	Reverts      bool
 }

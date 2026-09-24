@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Verification tests run entirely against a stubbed transport.
@@ -92,8 +94,8 @@ func TestVerifyNPM_Verified(t *testing.T) {
 		body:   npmPackumentJSON(map[string]string{"0.3.0": "sha512-old", "0.3.1": integrity}),
 	}}}
 
-	got := verifyNPMArtifact(context.Background(), f, "@reliantlabs/forge-web-runtime", ReleaseArtifact{
-		Kind: ArtifactKindNPM, Version: "0.3.1", Integrity: integrity,
+	got := verifyNPMArtifact(context.Background(), f, "@reliantlabs/forge-web-runtime", release.Artifact{
+		Kind: release.KindNPM, Version: "0.3.1", Integrity: integrity,
 	})
 
 	if got.Status != verifyVerified {
@@ -121,8 +123,8 @@ func TestVerifyNPM_VersionNeverPublished(t *testing.T) {
 		body: npmPackumentJSON(map[string]string{"0.3.0": "sha512-theOnlyOneThatShipped"}),
 	}}}
 
-	got := verifyNPMArtifact(context.Background(), f, "@reliantlabs/forge-web-runtime", ReleaseArtifact{
-		Kind:      ArtifactKindNPM,
+	got := verifyNPMArtifact(context.Background(), f, "@reliantlabs/forge-web-runtime", release.Artifact{
+		Kind:      release.KindNPM,
 		Version:   "0.3.1",
 		Integrity: "sha512-hashOfBytesThatOnlyExistedOnTheBuildMachine",
 	})
@@ -148,8 +150,8 @@ func TestVerifyNPM_IntegrityMismatch(t *testing.T) {
 		body:   npmPackumentJSON(map[string]string{"1.0.0": "sha512-whatTheRegistryActuallyServes"}),
 	}}}
 
-	got := verifyNPMArtifact(context.Background(), f, "widget", ReleaseArtifact{
-		Kind: ArtifactKindNPM, Version: "1.0.0", Integrity: "sha512-whatTheLedgerRecorded",
+	got := verifyNPMArtifact(context.Background(), f, "widget", release.Artifact{
+		Kind: release.KindNPM, Version: "1.0.0", Integrity: "sha512-whatTheLedgerRecorded",
 	})
 
 	if got.Status != verifyFailed {
@@ -172,8 +174,8 @@ func TestVerifyNPM_PackageAbsent(t *testing.T) {
 		match: "ghost", status: http.StatusNotFound, body: `{"error":"Not found"}`,
 	}}}
 
-	got := verifyNPMArtifact(context.Background(), f, "ghost", ReleaseArtifact{
-		Kind: ArtifactKindNPM, Version: "1.0.0", Integrity: "sha512-x",
+	got := verifyNPMArtifact(context.Background(), f, "ghost", release.Artifact{
+		Kind: release.KindNPM, Version: "1.0.0", Integrity: "sha512-x",
 	})
 	if got.Status != verifyFailed {
 		t.Fatalf("status = %v (%s), want FAILED", got.Status, got.Detail)
@@ -189,8 +191,8 @@ func TestVerifyNPM_NetworkErrorIsUnreachable(t *testing.T) {
 		match: "widget", err: errors.New("dial tcp: i/o timeout"),
 	}}}
 
-	got := verifyNPMArtifact(context.Background(), f, "widget", ReleaseArtifact{
-		Kind: ArtifactKindNPM, Version: "1.0.0", Integrity: "sha512-x",
+	got := verifyNPMArtifact(context.Background(), f, "widget", release.Artifact{
+		Kind: release.KindNPM, Version: "1.0.0", Integrity: "sha512-x",
 	})
 	if got.Status != verifyUnreachable {
 		t.Fatalf("a timeout must be UNREACHABLE, not a verdict on the artifact; got %v (%s)", got.Status, got.Detail)
@@ -204,8 +206,8 @@ func TestVerifyNPM_ServerErrorIsUnreachable(t *testing.T) {
 		match: "widget", status: http.StatusServiceUnavailable, body: "upstream down",
 	}}}
 
-	got := verifyNPMArtifact(context.Background(), f, "widget", ReleaseArtifact{
-		Kind: ArtifactKindNPM, Version: "1.0.0", Integrity: "sha512-x",
+	got := verifyNPMArtifact(context.Background(), f, "widget", release.Artifact{
+		Kind: release.KindNPM, Version: "1.0.0", Integrity: "sha512-x",
 	})
 	if got.Status != verifyUnreachable {
 		t.Fatalf("status = %v (%s), want UNREACHABLE", got.Status, got.Detail)
@@ -221,8 +223,8 @@ func TestVerifyNPM_NoIntegrityIsUnverifiable(t *testing.T) {
 		body: npmPackumentJSON(map[string]string{"1.0.0": "sha512-real"}),
 	}}}
 
-	got := verifyNPMArtifact(context.Background(), f, "widget", ReleaseArtifact{
-		Kind: ArtifactKindNPM, Version: "1.0.0", // no Integrity
+	got := verifyNPMArtifact(context.Background(), f, "widget", release.Artifact{
+		Kind: release.KindNPM, Version: "1.0.0", // no Integrity
 	})
 	if got.Status != verifyUnverifiable {
 		t.Fatalf("status = %v (%s), want UNVERIFIABLE", got.Status, got.Detail)
@@ -238,8 +240,8 @@ func TestVerifyNPM_ScopedNameIsEscaped(t *testing.T) {
 		body: npmPackumentJSON(map[string]string{"0.3.1": "sha512-x"}),
 	}}}
 
-	verifyNPMArtifact(context.Background(), f, "@reliantlabs/forge-web-runtime", ReleaseArtifact{
-		Kind: ArtifactKindNPM, Version: "0.3.1", Integrity: "sha512-x",
+	verifyNPMArtifact(context.Background(), f, "@reliantlabs/forge-web-runtime", release.Artifact{
+		Kind: release.KindNPM, Version: "0.3.1", Integrity: "sha512-x",
 	})
 
 	if !f.requested("%2F") {
@@ -284,8 +286,8 @@ func TestVerifyGoModule_Verified(t *testing.T) {
 		body: goSumLookupBody(mod, "v0.1.14", zipHash, "h1:sfx6mK8xPMq8RqvfpkNa3mj4mBp7CDOKaNyTZLmX1QE="),
 	}}}
 
-	got := verifyGoModuleArtifact(context.Background(), f, mod, ReleaseArtifact{
-		Kind: ArtifactKindGoModule, Version: "v0.1.14", Integrity: zipHash,
+	got := verifyGoModuleArtifact(context.Background(), f, mod, release.Artifact{
+		Kind: release.KindGoModule, Version: "v0.1.14", Integrity: zipHash,
 	})
 	if got.Status != verifyVerified {
 		t.Fatalf("status = %v (%s), want VERIFIED", got.Status, got.Detail)
@@ -314,8 +316,8 @@ func TestVerifyGoModule_ComparesZipHashNotGoModHash(t *testing.T) {
 		body: goSumLookupBody(mod, "v1.2.3", zipHash, goModHash),
 	}}}
 
-	got := verifyGoModuleArtifact(context.Background(), f, mod, ReleaseArtifact{
-		Kind: ArtifactKindGoModule, Version: "v1.2.3", Integrity: zipHash,
+	got := verifyGoModuleArtifact(context.Background(), f, mod, release.Artifact{
+		Kind: release.KindGoModule, Version: "v1.2.3", Integrity: zipHash,
 	})
 	if got.Status != verifyVerified {
 		t.Fatalf("the ZIP hash line must be the one compared; got %v (%s)", got.Status, got.Detail)
@@ -323,8 +325,8 @@ func TestVerifyGoModule_ComparesZipHashNotGoModHash(t *testing.T) {
 
 	// And the converse: a ledger carrying the go.mod hash where the ZIP hash
 	// belongs is a real mismatch and must fail.
-	wrong := verifyGoModuleArtifact(context.Background(), f, mod, ReleaseArtifact{
-		Kind: ArtifactKindGoModule, Version: "v1.2.3", Integrity: goModHash,
+	wrong := verifyGoModuleArtifact(context.Background(), f, mod, release.Artifact{
+		Kind: release.KindGoModule, Version: "v1.2.3", Integrity: goModHash,
 	})
 	if wrong.Status != verifyFailed {
 		t.Fatalf("a go.mod hash recorded as the module hash must FAIL; got %v (%s)", wrong.Status, wrong.Detail)
@@ -345,8 +347,8 @@ func TestVerifyGoModule_ComparesZipHashNotGoModHash(t *testing.T) {
 		body: fmt.Sprintf("62791850\n%s %s/go.mod %s\n%s %s %s\n\ngo.sum database tree\n",
 			mod, "v1.2.3", goModHash, mod, "v1.2.3", zipHash),
 	}}}
-	ordered := verifyGoModuleArtifact(context.Background(), reversed, mod, ReleaseArtifact{
-		Kind: ArtifactKindGoModule, Version: "v1.2.3", Integrity: zipHash,
+	ordered := verifyGoModuleArtifact(context.Background(), reversed, mod, release.Artifact{
+		Kind: release.KindGoModule, Version: "v1.2.3", Integrity: zipHash,
 	})
 	if ordered.Status != verifyVerified {
 		t.Fatalf("the ZIP hash must be selected by an EXACT \"<path> <version>\" match, not by position; got %v (%s)",
@@ -368,8 +370,8 @@ func TestVerifyGoModule_UsesChecksumDBNotCacheableInfo(t *testing.T) {
 		body: goSumLookupBody(mod, "v1.0.0", "h1:zip=", "h1:mod="),
 	}}}
 
-	verifyGoModuleArtifact(context.Background(), f, mod, ReleaseArtifact{
-		Kind: ArtifactKindGoModule, Version: "v1.0.0", Integrity: "h1:zip=",
+	verifyGoModuleArtifact(context.Background(), f, mod, release.Artifact{
+		Kind: release.KindGoModule, Version: "v1.0.0", Integrity: "h1:zip=",
 	})
 
 	if !f.requested("sum.golang.org") {
@@ -388,8 +390,8 @@ func TestVerifyGoModule_VersionAbsent(t *testing.T) {
 		match: "sum.golang.org", status: http.StatusNotFound, body: "not found",
 	}}}
 
-	got := verifyGoModuleArtifact(context.Background(), f, "example.com/thing", ReleaseArtifact{
-		Kind: ArtifactKindGoModule, Version: "v9.9.9", Integrity: "h1:x=",
+	got := verifyGoModuleArtifact(context.Background(), f, "example.com/thing", release.Artifact{
+		Kind: release.KindGoModule, Version: "v9.9.9", Integrity: "h1:x=",
 	})
 	if got.Status != verifyFailed {
 		t.Fatalf("status = %v (%s), want FAILED", got.Status, got.Detail)
@@ -404,8 +406,8 @@ func TestVerifyGoModule_PrivateIsUnverifiable(t *testing.T) {
 	// The fetcher would 404 if consulted — the point is that it is NOT.
 	f := &stubFetcher{}
 
-	got := verifyGoModuleArtifact(context.Background(), f, "corp.internal/secret", ReleaseArtifact{
-		Kind: ArtifactKindGoModule, Version: "v1.0.0", Integrity: "h1:x=",
+	got := verifyGoModuleArtifact(context.Background(), f, "corp.internal/secret", release.Artifact{
+		Kind: release.KindGoModule, Version: "v1.0.0", Integrity: "h1:x=",
 	})
 	if got.Status != verifyUnverifiable {
 		t.Fatalf("a GOPRIVATE module must be UNVERIFIABLE, not FAILED; got %v (%s)", got.Status, got.Detail)
@@ -461,8 +463,8 @@ func TestVerifyGoModule_NetworkErrorIsUnreachable(t *testing.T) {
 		match: "sum.golang.org", err: errors.New("no such host"),
 	}}}
 
-	got := verifyGoModuleArtifact(context.Background(), f, "example.com/thing", ReleaseArtifact{
-		Kind: ArtifactKindGoModule, Version: "v1.0.0", Integrity: "h1:x=",
+	got := verifyGoModuleArtifact(context.Background(), f, "example.com/thing", release.Artifact{
+		Kind: release.KindGoModule, Version: "v1.0.0", Integrity: "h1:x=",
 	})
 	if got.Status != verifyUnreachable {
 		t.Fatalf("status = %v (%s), want UNREACHABLE", got.Status, got.Detail)
@@ -478,9 +480,9 @@ func TestVerifyOCI_Verified(t *testing.T) {
 		match: "/manifests/sha256:", status: http.StatusOK, body: `{"schemaVersion":2}`,
 	}}}
 
-	got := verifyOCIArtifact(context.Background(), f, "control-plane", ReleaseArtifact{
-		Kind: ArtifactKindOCI, Mode: "shared", URI: "ghcr.io/reliant-labs",
-		Digests: map[string]string{sharedVariantKey: sha("a")},
+	got := verifyOCIArtifact(context.Background(), f, "control-plane", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/reliant-labs",
+		Digests: map[string]string{release.SharedVariant: sha("a")},
 	})
 	if got.Status != verifyVerified {
 		t.Fatalf("status = %v (%s), want VERIFIED", got.Status, got.Detail)
@@ -497,9 +499,9 @@ func TestVerifyOCI_DigestAbsent(t *testing.T) {
 		match: "/manifests/", status: http.StatusNotFound, body: `{"errors":[{"code":"MANIFEST_UNKNOWN"}]}`,
 	}}}
 
-	got := verifyOCIArtifact(context.Background(), f, "control-plane", ReleaseArtifact{
-		Kind: ArtifactKindOCI, Mode: "shared", URI: "ghcr.io/reliant-labs",
-		Digests: map[string]string{sharedVariantKey: sha("b")},
+	got := verifyOCIArtifact(context.Background(), f, "control-plane", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/reliant-labs",
+		Digests: map[string]string{release.SharedVariant: sha("b")},
 	})
 	if got.Status != verifyFailed {
 		t.Fatalf("status = %v (%s), want FAILED", got.Status, got.Detail)
@@ -533,9 +535,9 @@ func TestVerifyOCI_AnonymousTokenDance(t *testing.T) {
 		return f.Fetch(ctx, req)
 	})
 
-	got := verifyOCIArtifact(context.Background(), wrapped, "control-plane", ReleaseArtifact{
-		Kind: ArtifactKindOCI, Mode: "shared", URI: "ghcr.io/reliant-labs",
-		Digests: map[string]string{sharedVariantKey: digest},
+	got := verifyOCIArtifact(context.Background(), wrapped, "control-plane", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/reliant-labs",
+		Digests: map[string]string{release.SharedVariant: digest},
 	})
 	if got.Status != verifyVerified {
 		t.Fatalf("status = %v (%s), want VERIFIED after the anonymous token dance", got.Status, got.Detail)
@@ -555,9 +557,9 @@ func TestVerifyOCI_PrivateRegistryIsUnreachable(t *testing.T) {
 		}()},
 	}}
 
-	got := verifyOCIArtifact(context.Background(), f, "secret", ReleaseArtifact{
-		Kind: ArtifactKindOCI, Mode: "shared", URI: "private.example",
-		Digests: map[string]string{sharedVariantKey: sha("d")},
+	got := verifyOCIArtifact(context.Background(), f, "secret", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared, URI: "private.example",
+		Digests: map[string]string{release.SharedVariant: sha("d")},
 	})
 	if got.Status != verifyUnreachable {
 		t.Fatalf("a credential-demanding registry must be UNREACHABLE, not FAILED; got %v (%s)", got.Status, got.Detail)
@@ -569,9 +571,9 @@ func TestVerifyOCI_PrivateRegistryIsUnreachable(t *testing.T) {
 // something never contacted.
 func TestVerifyOCI_NoRegistryIsUnverifiable(t *testing.T) {
 	f := &stubFetcher{}
-	got := verifyOCIArtifact(context.Background(), f, "control-plane", ReleaseArtifact{
-		Kind: ArtifactKindOCI, Mode: "shared",
-		Digests: map[string]string{sharedVariantKey: sha("e")}, // no URI
+	got := verifyOCIArtifact(context.Background(), f, "control-plane", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared,
+		Digests: map[string]string{release.SharedVariant: sha("e")}, // no URI
 	})
 	if got.Status != verifyUnverifiable {
 		t.Fatalf("status = %v (%s), want UNVERIFIABLE", got.Status, got.Detail)
@@ -628,8 +630,8 @@ func TestParseAuthChallenge(t *testing.T) {
 // that never left the build machine would recreate the exact defect this
 // command exists to catch.
 func TestVerifyFile_AlwaysUnverifiable(t *testing.T) {
-	got := verifyFileArtifact("forge-darwin-arm64", ReleaseArtifact{
-		Kind: ArtifactKindFile, Version: "darwin-arm64", Integrity: sha("f"), // URI empty, as harvest writes it
+	got := verifyFileArtifact("forge-darwin-arm64", release.Artifact{
+		Kind: release.KindFile, Version: "darwin-arm64", Integrity: sha("f"), // URI empty, as harvest writes it
 	})
 	if got.Status != verifyUnverifiable {
 		t.Fatalf("status = %v (%s), want UNVERIFIABLE", got.Status, got.Detail)
@@ -645,29 +647,11 @@ func TestVerifyFile_AlwaysUnverifiable(t *testing.T) {
 // forge's ledger round-trips through an older binary. Meeting an unknown kind
 // teaches an old binary nothing, so it must not claim a verdict.
 func TestVerifyOneArtifact_UnknownKindIsUnverifiable(t *testing.T) {
-	got := verifyOneArtifact(context.Background(), &stubFetcher{}, "thing", ReleaseArtifact{
+	got := verifyOneArtifact(context.Background(), &stubFetcher{}, "thing", release.Artifact{
 		Kind: "cargo", Version: "1.0.0", Integrity: "x",
 	})
 	if got.Status != verifyUnverifiable {
 		t.Fatalf("status = %v (%s), want UNVERIFIABLE", got.Status, got.Detail)
-	}
-}
-
-// TestVerifyOneArtifact_EmptyKindIsOCI: a pre-kind ledger is immutable and
-// must keep verifying as what it always was.
-func TestVerifyOneArtifact_EmptyKindIsOCI(t *testing.T) {
-	f := &stubFetcher{responses: []stubResponse{{
-		match: "/manifests/", status: http.StatusOK, body: `{"schemaVersion":2}`,
-	}}}
-	got := verifyOneArtifact(context.Background(), f, "legacy", ReleaseArtifact{
-		Mode: "shared", URI: "ghcr.io/acme", // Kind deliberately empty
-		Digests: map[string]string{sharedVariantKey: sha("a")},
-	})
-	if got.Kind != ArtifactKindOCI {
-		t.Errorf("kind = %q, want oci for a pre-kind ledger entry", got.Kind)
-	}
-	if got.Status != verifyVerified {
-		t.Fatalf("status = %v (%s), want VERIFIED", got.Status, got.Detail)
 	}
 }
 
@@ -678,14 +662,14 @@ func TestVerifyOneArtifact_EmptyKindIsOCI(t *testing.T) {
 // defeat the command.
 func TestVerifyReleaseArtifacts_MixedLedgerSortedAndPerArtifact(t *testing.T) {
 	const goodIntegrity = "sha512-good"
-	rel := Release{
+	rel := release.Release{
 		Version: "v1.4.0",
-		Artifacts: map[string]ReleaseArtifact{
-			"zz-image": {Kind: ArtifactKindOCI, Mode: "shared", URI: "ghcr.io/acme",
-				Digests: map[string]string{sharedVariantKey: sha("a")}},
-			"aa-package":     {Kind: ArtifactKindNPM, Version: "1.0.0", Integrity: goodIntegrity},
-			"mm-unpublished": {Kind: ArtifactKindNPM, Version: "2.0.0", Integrity: "sha512-never-shipped"},
-			"bb-binary":      {Kind: ArtifactKindFile, Version: "darwin-arm64", Integrity: sha("f")},
+		Artifacts: map[string]release.Artifact{
+			"zz-image": {Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/acme",
+				Digests: map[string]string{release.SharedVariant: sha("a")}},
+			"aa-package":     {Kind: release.KindNPM, Version: "1.0.0", Integrity: goodIntegrity},
+			"mm-unpublished": {Kind: release.KindNPM, Version: "2.0.0", Integrity: "sha512-never-shipped"},
+			"bb-binary":      {Kind: release.KindFile, Version: "darwin-arm64", Integrity: sha("f")},
 		},
 	}
 
@@ -738,9 +722,9 @@ func TestVerifyReleaseArtifacts_MixedLedgerSortedAndPerArtifact(t *testing.T) {
 // ledger repeatedly: concurrency must never reach the report, or the command
 // is not diffable in CI.
 func TestVerifyReleaseArtifacts_DeterministicUnderConcurrency(t *testing.T) {
-	rel := Release{Version: "v1", Artifacts: map[string]ReleaseArtifact{}}
+	rel := release.Release{Version: "v1", Artifacts: map[string]release.Artifact{}}
 	for _, n := range []string{"e", "c", "a", "d", "b", "f", "g", "h"} {
-		rel.Artifacts[n] = ReleaseArtifact{Kind: ArtifactKindFile, Integrity: sha("a")}
+		rel.Artifacts[n] = release.Artifact{Kind: release.KindFile, Integrity: sha("a")}
 	}
 
 	var first []string

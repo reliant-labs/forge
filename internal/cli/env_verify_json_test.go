@@ -74,8 +74,9 @@ func TestEnvVerifyJSON_Match(t *testing.T) {
 		t.Errorf("env/release = %q/%q, want prod/v1.5.15", report.Env, report.Release)
 	}
 	// The promote-time caveat is only useful if the value actually ships.
-	if report.PromotedAt != "2026-09-10T13:53:22Z" {
-		t.Errorf("promoted_at = %q, want the binding's promote timestamp", report.PromotedAt)
+	cur, _, _ := newFileBindingStore(dir).Current(context.Background(), "prod")
+	if report.PromotedAt == "" || report.PromotedAt != formatLedgerTime(cur.PromotedAt) {
+		t.Errorf("promoted_at = %q, want the ledger entry's promote timestamp %s", report.PromotedAt, cur.PromotedAt)
 	}
 	if report.KubeContext != "test-context" || report.Namespace != "test-ns" {
 		t.Errorf("target = %q/%q, want test-context/test-ns", report.KubeContext, report.Namespace)

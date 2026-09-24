@@ -269,6 +269,18 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			if mw.OpSegment != "" {
 				opNamespace += "." + mw.OpSegment
 			}
+			// The decorator calls the OWNED seam newObserveChain. A package
+			// opted in by `// forge:constructor` alone — a hand-written
+			// component, or one converted from an exclusion — has no seam, and
+			// emitting the decorator without it made generate's own build
+			// fail on `undefined: newObserveChain`. Scaffold the seam once,
+			// exactly as `forge scaffold package` does; after that it is yours.
+			if !codegen.DetectObserveChainSeam(path) {
+				if seamErr := scaffoldObserveChainSeam(projectDir, path, rel, cfg); seamErr != nil {
+					return fmt.Errorf("scaffold observe_chain.go for %s: %w", rel, seamErr)
+				}
+				fmt.Printf("  ✅ Scaffolded %s/observe_chain.go (the owned observability seam `// forge:constructor` opted into — yours to edit)\n", rel)
+			}
 			if _, decErr := contract.WriteObservedDecorator(obsCF, path, ifaceName, mw.Constructor, mw.Struct, opNamespace, contractOpts); decErr != nil {
 				return fmt.Errorf("generate observability decorator for %s: %w", rel, decErr)
 			}
@@ -752,4 +764,42 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 	fmt.Printf("  ✅ Generated deploy/kcl/%s.k (scaffolded %d new config.k)\n", codegen.ConfigSchemaModule, scaffolded)
 	return nil
+}
+
+// scaffoldObserveChainSeam writes the owned observe_chain.go into a component
+// package that opted into the generated decorator with `// forge:constructor`
+// but has no newObserveChain of its own. Write-if-absent: the caller checks
+// DetectObserveChainSeam first, and an existing observe_chain.go (a seam under
+// another shape, or one the user is mid-edit on) is never overwritten.
+func scaffoldObserveChainSeam(projectDir, pkgDir, rel string, cfg *config.ProjectConfig) error {
+	target := filepath.Join(pkgDir, "observe_chain.go")
+	if _, err := os.Stat(target); err == nil {
+		return fmt.Errorf("%s/observe_chain.go exists but declares no newObserveChain; "+
+			"add `func newObserveChain() *observe.ComponentChain` to it (see `forge skill load observability`)", rel)
+	}
+	modPath, err := codegen.GetModulePath(projectDir)
+	if err != nil {
+		return err
+	}
+	logLevel := config.ObservabilityConfig{}.SlogLevelExpr()
+	if cfg != nil {
+		logLevel = cfg.Observability.SlogLevelExpr()
+	}
+	data := struct {
+		Name       string
+		ImportPath string
+		Module     string
+		Flavor     string
+		LogLevel   string
+	}{
+		Name:       filepath.Base(pkgDir),
+		ImportPath: strings.TrimPrefix(rel, "internal/"),
+		Module:     modPath,
+		LogLevel:   logLevel,
+	}
+	content, err := templates.InternalPkgTemplates().Render("observe_chain.go.tmpl", data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(target, content, 0o644)
 }

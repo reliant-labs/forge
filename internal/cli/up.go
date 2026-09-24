@@ -355,6 +355,9 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 		if !headCommit.IsZero() {
 			rep.HeadCommitAt = headCommit.UTC().Format(time.RFC3339)
 		}
+		dest := resolveEnvDestination(ctx, env, entities, readHostedStatusFromDeclaration)
+		rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
+		rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(rep)
@@ -1480,6 +1483,19 @@ type upServicesReport struct {
 	// Additive: a consumer reading only `services` is unaffected. A check
 	// whose status is "unknown" is UNDETERMINED, not a pass.
 	Checks []doctor.CheckResult `json:"checks,omitempty"`
+
+	// Destination / Endpoint / EnvironmentID / Verdict / Workloads: where
+	// this env runs — the same contract `forge env topology --json` carries
+	// per env (see env_destination.go). Destination is always set; the rest
+	// are hosted-only. HostedNote explains a hosted status that could not
+	// be read (credentials, network), in which case the other hosted fields
+	// are empty rather than guessed.
+	Destination     string                              `json:"destination,omitempty"`
+	Endpoint        string                              `json:"endpoint,omitempty"`
+	EnvironmentID   string                              `json:"environment_id,omitempty"`
+	Verdict         string                              `json:"verdict,omitempty"`
+	HostedWorkloads []deploytarget.HostedWorkloadStatus `json:"hosted_workloads,omitempty"`
+	HostedNote      string                              `json:"hosted_note,omitempty"`
 }
 
 // collectUpServices builds the ordered host-then-frontend rows for env,

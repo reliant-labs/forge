@@ -30,6 +30,7 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/reliant-labs/forge/internal/linter/contract"
+	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
 // contractAnalyzers is the analyzer set `forge lint --contract` runs —
@@ -48,10 +49,20 @@ type contractDiagnostic struct {
 	Analyzer string
 	Pos      token.Position
 	Message  string
+	// FixHint is the remediation, when the diagnostic carries its own (the
+	// exclusion gate's findings do; the analyzers' share one generic hint).
+	FixHint string
+	// Warning marks a non-gating diagnostic (a reasonless suppression of an
+	// exclusion-gate rule). Everything else gates.
+	Warning bool
 }
 
 func (d contractDiagnostic) String() string {
-	return fmt.Sprintf("%s: %s (%s)", d.Pos, d.Message, d.Analyzer)
+	s := fmt.Sprintf("%s: %s (%s)", d.Pos, d.Message, d.Analyzer)
+	if d.FixHint != "" {
+		s += "\n    ↳ " + d.FixHint
+	}
+	return s
 }
 
 // runContractAnalysisInProcess loads the requested packages and runs
@@ -140,6 +151,25 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string)
 			seen[key] = true
 			out = append(out, contractDiagnostic{Analyzer: act.Analyzer.Name, Pos: pos, Message: d.Message})
 		}
+	}
+
+	// The exclusion gate: what `//forge:exclude-contract` costs (a reason,
+	// and not being an outbound boundary or a multi-impl contract). A module
+	// pass over the same loaded packages — see
+	// internal/linter/contract/exclude_directive.go for why it is not an
+	// analyzer. The forge.yaml contracts.exclude list does not silence it: that
+	// list excludes paths, and the gate is about a marker in the source.
+	for _, f := range contract.CheckExcludeDirectives(pkgs) {
+		pos := token.Position{Filename: f.File, Line: f.Line}
+		if cwd != "" {
+			if rel, rerr := filepath.Rel(cwd, pos.Filename); rerr == nil && !strings.HasPrefix(rel, "..") {
+				pos.Filename = rel
+			}
+		}
+		out = append(out, contractDiagnostic{
+			Analyzer: f.Rule, Pos: pos, Message: f.Message, FixHint: f.FixHint,
+			Warning: f.Severity != "" && f.Severity != finding.SeverityError,
+		})
 	}
 
 	sort.Slice(out, func(i, j int) bool {

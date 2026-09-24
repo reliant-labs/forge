@@ -52,22 +52,37 @@ func newDevClusterUpCmd() *cobra.Command {
 		wait       bool
 	)
 	cmd := &cobra.Command{
-		Use:   "up",
+		Use:   "up [environment]",
+		Args:  cobra.MaximumNArgs(1),
 		Short: "Create the k3d cluster from deploy/k3d.yaml",
 		Long: `Create the k3d cluster from deploy/k3d.yaml.
 
 If the cluster already exists, this is a no-op success. With --wait,
 blocks until the cluster's nodes report ready.
 
+Given an environment, the clusters come from that environment's KCL instead
+of a k3d config file: every forge.Cluster the env's bundle declares is ensured exactly
+as ` + "`forge env up <env>`" + ` ensures it — the declared pod/Service CIDRs, API port,
+owner network and registry-inherit included, none of which a k3d YAML carries.
+Use it whenever the env declares its clusters: a cluster created from the bare
+config file lacks those fields, and the env's own deploy then refuses it.
+
 Examples:
   forge cluster up
   forge cluster up --wait
-  forge cluster up --config deploy/k3d.custom.yaml`,
+  forge cluster up --config deploy/k3d.custom.yaml
+  forge cluster up dev-k8s --wait`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if cmd.Flags().Changed("config") {
+					return fmt.Errorf("an environment and --config are mutually exclusive: the environment's KCL names its clusters (and their config files)")
+				}
+				return runEnvClustersUp(cmd.Context(), args[0], wait)
+			}
 			return runDevClusterUp(cmd.Context(), configPath, wait)
 		},
 	}
-	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
+	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file (ignored when an environment is given)")
 	cmd.Flags().BoolVar(&wait, "wait", false, "Wait until cluster nodes are ready")
 	return cmd
 }
@@ -75,13 +90,40 @@ Examples:
 func newDevClusterDownCmd() *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
-		Use:   "down",
+		Use:   "down [environment]",
+		Args:  cobra.MaximumNArgs(1),
 		Short: "Delete the k3d cluster",
+		Long: `Delete the k3d cluster named by --config's metadata.name, and FIRST every
+cluster nested on its docker network (declared with ` + "`owner`" + `, so it has no
+config file of its own and cannot outlive its owner's network).
+
+Given an environment, delete every k3d cluster its KCL declares instead —
+including secondaries declared with ` + "`owner`" + ` and no config file, which
+--config cannot name. Secondaries are deleted before their owner: k3d cannot
+remove a docker network a secondary is still attached to.
+
+This deletes whole clusters, and with them every namespace on them — including
+other environments' and other worktrees' stacks sharing the cluster.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if cmd.Flags().Changed("config") {
+					return fmt.Errorf("an environment and --config are mutually exclusive: the environment's KCL names its clusters")
+				}
+				return runEnvClustersDown(cmd.Context(), args[0])
+			}
+			// An EXPLICIT --config that does not exist is an error, never a
+			// fallback. resolveClusterName otherwise falls back to the
+			// forge.yaml project name — for a project named like its
+			// cluster, a typo'd path deletes the wrong cluster.
+			if cmd.Flags().Changed("config") {
+				if _, err := os.Stat(configPath); err != nil {
+					return fmt.Errorf("--config %s: %w (refusing to guess which cluster to delete)", configPath, err)
+				}
+			}
 			return runDevClusterDown(cmd.Context(), configPath)
 		},
 	}
-	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
+	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file (ignored when an environment is given)")
 	return cmd
 }
 
@@ -653,21 +695,182 @@ func runDevClusterDown(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	exists, err := clusterExists(ctx, clusterName)
+	// Through the same seams as the env-scoped path, so no unit test of this
+	// command can ever reach a real `k3d cluster delete`.
+	state, err := lookupClusterStateForUpFn(ctx, clusterName)
 	if err != nil {
 		return err
 	}
-	if !exists {
+	if !state.Exists {
 		fmt.Printf("k3d cluster %q not found — no-op\n", clusterName)
 		return nil
 	}
 
+	// A cluster declared with `owner` joins its owner's docker network and
+	// inherits its registry mirror, and it has no config file of its own —
+	// so --config can never name it, and deleting the owner alone strands it
+	// on a network whose owner is gone. Discover those secondaries from the
+	// live docker labels and delete them FIRST, the same order
+	// `forge cluster down <env>` uses.
+	dependents, err := nestedSecondariesOfFn(ctx, clusterName)
+	if err != nil {
+		return fmt.Errorf("find clusters nested on %q's network: %w", clusterName, err)
+	}
+	for _, dep := range dependents {
+		fmt.Printf("Deleting k3d cluster %q (nested on %q's network — it cannot outlive it)...\n", dep, clusterName)
+		if err := deleteK3dClusterFn(ctx, dep); err != nil {
+			return err
+		}
+	}
 	fmt.Printf("Deleting k3d cluster %q...\n", clusterName)
-	del := exec.CommandContext(ctx, "k3d", "cluster", "delete", clusterName)
-	del.Stdout = os.Stdout
-	del.Stderr = os.Stderr
-	if err := del.Run(); err != nil {
-		return fmt.Errorf("k3d cluster delete: %w", err)
+	return deleteK3dClusterFn(ctx, clusterName)
+}
+
+// nestedSecondariesOfFn names the k3d clusters whose nodes sit on owner's
+// docker network (k3d-<owner>) but belong to a different cluster — the
+// secondaries forge created with an `owner` reference. Seamed for tests.
+var nestedSecondariesOfFn = nestedSecondariesOf
+
+func nestedSecondariesOf(ctx context.Context, owner string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "ps", "-a",
+		"--filter", "label=app=k3d",
+		"--filter", "label=k3d.cluster.network=k3d-"+owner,
+		"--format", `{{.Label "k3d.cluster"}}`)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w%s", err, formatCommandStderr(stderr.String()))
+	}
+	return parseNestedSecondaries(string(out), owner), nil
+}
+
+// parseNestedSecondaries dedupes the per-node cluster labels `docker ps`
+// prints, dropping the owner itself and the empty label a standalone registry
+// container carries (it is on the network but belongs to no cluster).
+func parseNestedSecondaries(out, owner string) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" || name == owner || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// renderEnvClustersFn renders an env's declared clusters. Seamed so the
+// env-scoped lifecycle paths are unit-testable without a KCL toolchain.
+var renderEnvClustersFn = func(ctx context.Context, env string) ([]ClusterEntity, string, error) {
+	projectDir := projectDirForKCL()
+	_, restore := activateDevStack(projectDir, env)
+	entities, err := RenderKCL(ctx, projectDir, env)
+	restore() // a cluster lifecycle render must not drift resolve_port state
+	if err != nil {
+		return nil, "", fmt.Errorf("render env %q: %w", env, err)
+	}
+	if entities == nil || len(entities.Clusters) == 0 {
+		return nil, "", fmt.Errorf("env %q declares no clusters (Bundle.clusters is empty) — nothing to manage; use --config for a bare k3d config file", env)
+	}
+	return entities.Clusters, projectDir, nil
+}
+
+// reconcileEnvClustersFn / deleteK3dClusterFn are the seams for the
+// env-scoped paths' side effects.
+var (
+	reconcileEnvClustersFn = reconcileDeclaredClusters
+	deleteK3dClusterFn     = func(ctx context.Context, name string) error {
+		del := exec.CommandContext(ctx, "k3d", "cluster", "delete", name)
+		del.Stdout = os.Stdout
+		del.Stderr = os.Stderr
+		if err := del.Run(); err != nil {
+			return fmt.Errorf("k3d cluster delete %s: %w", name, err)
+		}
+		return nil
+	}
+)
+
+// runEnvClustersUp is `forge cluster up <env>`: ensure every cluster the
+// env's KCL declares through the SAME reconcile `forge env up` runs, so the
+// declared CIDRs / API port / owner edge are applied at create time.
+//
+// This exists because `forge cluster up --config <file>` cannot express them:
+// they live on the forge.Cluster, not in the k3d YAML, and k3s fixes CIDRs at
+// create. A cluster created from the bare file therefore comes up on k3s's
+// default blocks, and the env's next `forge env deploy` correctly refuses it on
+// the CIDR drift guard — the create step and the deploy step disagreeing about
+// a cluster both claim to own. CI creates clusters ahead of the deploy (so the
+// kubectl steps in between have a target), which is exactly that split.
+func runEnvClustersUp(ctx context.Context, env string, wait bool) error {
+	if store, err := loadProjectStore(); err == nil && !store.Features().DeployEnabled() {
+		return config.DisabledFeatureError(config.FeatureDeploy)
+	}
+	clusters, projectDir, err := renderEnvClustersFn(ctx, env)
+	if err != nil {
+		return err
+	}
+	if err := reconcileEnvClustersFn(ctx, clusters, projectDir, env); err != nil {
+		return err
+	}
+	if wait {
+		for _, c := range clusters {
+			fmt.Printf("Waiting for cluster %q nodes to report Ready...\n", c.Name)
+			if err := waitDeclaredClusterReadyFn(ctx, c.Name); err != nil {
+				return fmt.Errorf("wait for cluster %q nodes: %w", c.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// envClusterDeleteOrder orders an env's declared clusters for deletion:
+// nested secondaries first, owners last. k3d cannot remove a docker network a
+// secondary is still attached to, so deleting an owner first fails (or, worse,
+// half-succeeds and strands the secondary on a network whose registry is gone).
+func envClusterDeleteOrder(clusters []ClusterEntity) []string {
+	var secondaries, owners []string
+	for _, c := range clusters {
+		if isNestedSecondary(c) {
+			secondaries = append(secondaries, c.Name)
+		} else {
+			owners = append(owners, c.Name)
+		}
+	}
+	return append(secondaries, owners...)
+}
+
+// runEnvClustersDown is `forge cluster down <env>`: delete every k3d
+// cluster the env declares, secondaries first. A cluster declared with `owner`
+// and no config file has no other way to be named through forge.
+func runEnvClustersDown(ctx context.Context, env string) error {
+	if store, err := loadProjectStore(); err == nil && !store.Features().DeployEnabled() {
+		return config.DisabledFeatureError(config.FeatureDeploy)
+	}
+	clusters, _, err := renderEnvClustersFn(ctx, env)
+	if err != nil {
+		return err
+	}
+	for _, c := range clusters {
+		if c.Provider != "" && c.Provider != "k3d" {
+			return fmt.Errorf("env %q declares cluster %q with provider=%q; forge cluster down only deletes k3d clusters", env, c.Name, c.Provider)
+		}
+	}
+	for _, name := range envClusterDeleteOrder(clusters) {
+		state, err := lookupClusterStateForUpFn(ctx, name)
+		if err != nil {
+			return err
+		}
+		if !state.Exists {
+			fmt.Printf("k3d cluster %q not found — no-op\n", name)
+			continue
+		}
+		fmt.Printf("Deleting k3d cluster %q...\n", name)
+		if err := deleteK3dClusterFn(ctx, name); err != nil {
+			return err
+		}
 	}
 	return nil
 }

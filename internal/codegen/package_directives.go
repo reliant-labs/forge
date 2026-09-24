@@ -289,11 +289,99 @@ func DetectServiceInterfaceName(dir string) string {
 }
 
 // HasExcludeContractDirective reports whether the package rooted at dir
-// declares `//forge:exclude-contract` in any of its non-test .go files.
-// A package carrying this directive opts OUT of contract codegen — the
+// declares `//forge:exclude-contract` in any of its non-test .go files, in
+// either the reasoned form (`//forge:exclude-contract: <why>`) or the bare
+// one. A package carrying this directive opts OUT of contract codegen — the
 // per-package equivalent of forge.yaml `contracts.exclude`.
+//
+// The bare form still EXCLUDES here, deliberately: codegen must never break a
+// project over the spelling of an opt-out. It is `forge lint` that refuses a
+// bare marker (see internal/linter/contract/exclude_directive.go), because a
+// reason is what turns the cheapest way to silence the contract rules into a
+// decision a reviewer can evaluate.
 func HasExcludeContractDirective(dir string) bool {
-	return packageHasDirective(dir, directiveExcludeContract)
+	_, ok := FindExcludeContractMarker(dir)
+	return ok
+}
+
+// ExcludeContractMarker is one `//forge:exclude-contract` occurrence.
+type ExcludeContractMarker struct {
+	// File is the absolute path of the file carrying the marker.
+	File string
+	// Line is the marker's 1-indexed line.
+	Line int
+	// Reason is the text after `forge:exclude-contract:`; "" for a bare
+	// marker.
+	Reason string
+}
+
+// FindExcludeContractMarker returns the package's `//forge:exclude-contract`
+// marker, scanning non-test, non-generated files in name order so the answer
+// is deterministic. When a package carries several, the first REASONED one
+// wins — a package that already says why is not made to say it twice.
+func FindExcludeContractMarker(dir string) (ExcludeContractMarker, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ExcludeContractMarker{}, false
+	}
+	var names []string
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") ||
+			strings.HasSuffix(n, "_test.go") || strings.HasSuffix(n, "_gen.go") {
+			continue
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var first ExcludeContractMarker
+	found := false
+	fset := token.NewFileSet()
+	for _, n := range names {
+		path := filepath.Join(dir, n)
+		file, perr := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, cg := range file.Comments {
+			for _, c := range cg.List {
+				reason, ok := ParseExcludeContractComment(c.Text)
+				if !ok {
+					continue
+				}
+				m := ExcludeContractMarker{File: path, Line: fset.Position(c.Pos()).Line, Reason: reason}
+				if reason != "" {
+					return m, true
+				}
+				if !found {
+					first, found = m, true
+				}
+			}
+		}
+	}
+	return first, found
+}
+
+// ParseExcludeContractComment reports whether one raw comment IS the
+// exclude-contract directive, and its reason. Accepted, spaced or not:
+//
+//	//forge:exclude-contract: <why>   → ok, reason "<why>"
+//	//forge:exclude-contract          → ok, reason "" (bare — lint refuses it)
+//
+// Anything else — prose that mentions the directive, `forge:exclude-contract,
+// forge:outbound-io, …` lists, a different separator — is not the directive,
+// matching every other forge marker's whole-line rule.
+func ParseExcludeContractComment(raw string) (reason string, ok bool) {
+	text := trimCommentMarkers(raw)
+	if text == directiveExcludeContract {
+		return "", true
+	}
+	rest, has := strings.CutPrefix(text, directiveExcludeContract+":")
+	if !has {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
 }
 
 // HasOutboundIODirective reports whether the package rooted at dir declares

@@ -55,9 +55,8 @@
 // Both differences point the same way — this is infrastructure with a
 // lifecycle a human manages, not a fixture with a lifecycle a test manages.
 //
-// forge:exclude-contract
-// hostinfra is an outbound process-supervision adapter for third-party server
-// binaries, not a contract-shaped service the bootstrap wires.
+//forge:lint-disable-next-line forge-exclude-contract-outbound-io: the database/sql and TCP calls are readiness probes of the process hostinfra itself started; a contract.go split of the probe is tracked as CONTRACTS follow-up F2
+//forge:exclude-contract: supervision of third-party server binaries forge fetches (a human-managed lifecycle, not an injected component)
 package hostinfra
 
 import (

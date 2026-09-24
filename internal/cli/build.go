@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +18,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // sortedKeys returns map keys in deterministic order. Used so docker
@@ -646,10 +650,8 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// that can't pin anything is useless and almost always means the user
 	// forgot --push (or built against a registry that didn't return a
 	// digest). See writeReleaseLedger.
-	if opts.release != "" {
-		if err := writeReleaseLedger(ctx, opts, entities); err != nil {
-			return err
-		}
+	if err := finishReleaseArtifacts(ctx, opts, entities); err != nil {
+		return err
 	}
 
 	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
@@ -694,15 +696,11 @@ type buildTargetSet struct {
 func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions) (*KCLEntities, error) {
 	var entities *KCLEntities
 	if opts.env != "" {
-		// A missing KCL render is logged and treated as "no env filter",
-		// so projects that haven't migrated to the deploy module keep
-		// working unchanged.
-		ents, kerr := RenderKCL(ctx, projectDirForKCL(), opts.env)
-		if kerr != nil {
-			fmt.Printf("[build]   Note: skipping KCL filter (%v)\n", kerr)
-		} else {
-			entities = ents
+		ents, err := renderBuildKCL(ctx, projectDirForKCL(), opts.env)
+		if err != nil {
+			return nil, err
 		}
+		entities = ents
 	}
 
 	// --target narrows the entity set BEFORE any build decision reads it.
@@ -779,6 +777,34 @@ func bindBuildRenderOptions(opts buildOptions) error {
 	}
 	setRenderOptions(renderDArgs)
 	return nil
+}
+
+// renderBuildKCL renders env's KCL for a build. An env with NO KCL
+// directory is the one tolerated miss — a project that never adopted the
+// deploy module builds unfiltered, with a note — and it returns nil
+// entities.
+//
+// Any other render error is returned verbatim. It used to be downgraded
+// to the same "skipping KCL filter" note, and the build carried on with
+// no entity set: `forge build <env> --target external` then reported "no
+// service declares build_cmd" for an env whose services DID declare one,
+// because the real cause (a failed `cluster_target.platform is required`
+// check) had been printed as a note and discarded. A declared env whose
+// KCL does not render cannot be built correctly — the skip sets, platform
+// and build_cmd services all come from that render.
+func renderBuildKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
+	if os.Getenv("FORGE_KCL_RENDER_FIXTURE") == "" {
+		kclDir := filepath.Join(projectDir, "deploy", "kcl", env)
+		if _, err := os.Stat(kclDir); errors.Is(err, fs.ErrNotExist) {
+			fmt.Printf("[build]   Note: skipping KCL filter (no %s)\n", projectRelPath(projectDir, kclDir))
+			return nil, nil
+		}
+	}
+	ents, err := RenderKCL(ctx, projectDir, env)
+	if err != nil {
+		return nil, fmt.Errorf("render env %q KCL: %w", env, err)
+	}
+	return ents, nil
 }
 
 // validateExternalBuildTarget checks the preconditions for `--target
@@ -1104,6 +1130,20 @@ func persistImageBuildStates(opts buildOptions, resolvedTag string, succeeded []
 	}
 }
 
+// finishReleaseArtifacts is the build's last artifact step: it builds and
+// pushes a hosted env's StaticSite frontends (they ship as OCI release
+// artifacts), then cuts the release ledger when --release is set, so the cut
+// records those digests too.
+func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
+	if err := buildHostedStaticSites(ctx, projectDirForKCL(), entities, opts); err != nil {
+		return err
+	}
+	if opts.release == "" {
+		return nil
+	}
+	return writeReleaseLedger(ctx, opts, entities)
+}
+
 // writeReleaseLedger harvests the artifacts of the just-completed build into a
 // Release ledger keyed by opts.release. It is the durable projection of the
 // ephemeral build state, across every kind of thing a release ships:
@@ -1125,16 +1165,32 @@ func persistImageBuildStates(opts buildOptions, resolvedTag string, succeeded []
 // A release with SOME kinds and not others is normal and never an error — a
 // project with no npm package simply cuts a release with no npm artifacts.
 func writeReleaseLedger(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
-	projectDir := projectDirForKCL()
-	artifacts := harvestReleaseArtifacts(projectDir, opts.env)
-	images := len(artifacts)
+	_, err := cutReleaseFromBuildState(ctx, projectDirForKCL(), opts.env, opts.release, opts.outputDir, entities, opts)
+	return err
+}
+
+// cutReleaseFromBuildState is the one CUT path: harvest what the last build
+// captured for env, check it covers everything env declares, and record it in
+// env's release ledger — the project's files, or the control plane env's KCL
+// declares. `forge build --release` calls it after building; `forge release
+// cut` calls it on its own, for the CI shape where images were built and
+// pushed by an earlier step.
+func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, outputDir string, entities *KCLEntities, opts buildOptions) (release.Release, error) {
+	artifacts := harvestReleaseArtifacts(projectDir, env)
 	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
 	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
-	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, opts.outputDir, entities))
+	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, outputDir, entities))
+	// A hosted env's backends name images the build state may not hold (CI
+	// pushed them). Record each declared image so the release covers what
+	// the hosted deploy ships.
+	if err := harvestHostedBackendArtifacts(ctx, entities, artifacts); err != nil {
+		return release.Release{}, fmt.Errorf("--release %s: %w", version, err)
+	}
+	images := countOCIArtifacts(release.Release{Artifacts: artifacts})
 	if len(artifacts) == 0 {
-		return fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
+		return release.Release{}, fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
 			"  A release pins immutable digests, which require a registry push — re-run with --push <registry>\n"+
-			"  (a release built without --push has only a local tag, which can't be promoted across envs)", opts.release)
+			"  (a release built without --push has only a local tag, which can't be promoted across envs)", version)
 	}
 
 	// Source-pinned frontends (Firebase SPAs fetched via forge.GitSource)
@@ -1142,32 +1198,42 @@ func writeReleaseLedger(ctx context.Context, opts buildOptions, entities *KCLEnt
 	// resolved commit so the release covers the whole environment, not just
 	// the half that ships as containers.
 	if err := addFrontendSourceArtifacts(ctx, projectDir, entities, artifacts); err != nil {
-		return fmt.Errorf("--release %s: %w", opts.release, err)
+		return release.Release{}, fmt.Errorf("--release %s: %w", version, err)
 	}
 
 	// Completeness gate. Every image the env DECLARES must be in the ledger.
 	// A release that silently omits a declared artifact is the failure this
 	// whole model exists to prevent: it looks like a full release, promotes
 	// like one, and ships an environment with a hole in it.
+	opts.env, opts.release = env, version
 	if err := checkReleaseCoversEnv(entities, artifacts, opts); err != nil {
-		return err
+		return release.Release{}, err
 	}
 
 	commit, gitTag, dirty := gitBuildProvenance(ctx)
-	rel := Release{
-		Version:   opts.release,
-		Git:       ReleaseGit{Commit: commit, Tag: gitTag, Dirty: dirty},
-		CreatedAt: nowRFC3339(),
+	rel := release.Release{
+		Version:   version,
+		Git:       release.Git{Commit: commit, Tag: gitTag, Dirty: dirty},
+		CreatedAt: time.Now().UTC().Truncate(time.Second),
 		Artifacts: artifacts,
 	}
-	if err := WriteRelease(projectDir, rel); err != nil {
-		return fmt.Errorf("--release %s: write release ledger: %w", opts.release, err)
+	ledger, err := ledgerFor(ctx, projectDir, env)
+	if err != nil {
+		return release.Release{}, err
 	}
-	fmt.Printf("\n[build] Cut release %s (%d image(s), %d package(s), %d file(s)): %s\n",
-		rel.Version, images, packages, files, strings.Join(releaseImageNames(rel), ", "))
-	fmt.Printf("[build]   Ledger: %s\n", releasePath(projectDir, rel.Version))
+	created, err := ledger.Releases.Cut(ctx, rel)
+	if err != nil {
+		return release.Release{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
+	}
+	verb := "Cut"
+	if !created {
+		verb = "Release already recorded (identical artifacts — nothing written):"
+	}
+	fmt.Printf("\n[build] %s release %s (%d image(s), %d package(s), %d file(s)): %s\n",
+		verb, rel.Version, images, packages, files, strings.Join(releaseImageNames(rel), ", "))
+	fmt.Printf("[build]   Ledger: %s\n", ledger.Releases.Location())
 	fmt.Printf("[build]   Promote: forge env promote %s --to <env>\n", rel.Version)
-	return nil
+	return rel, nil
 }
 
 // buildPlan carries the resolved inputs shared by buildParallel and
@@ -2111,6 +2177,11 @@ func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEnt
 		mode := frontendDeployMode(entities, fe.Name)
 		if mode == "host" {
 			fmt.Printf("[build] skipping prod build for %s (host-mode deploy)\n", fe.Name)
+			continue
+		}
+		if mode == frontendDeployStaticSite && entities.ControlPlane != nil {
+			// Built by buildHostedStaticSites, with the env's runtime config
+			// assembled in — a plain `npm run build` here would only repeat it.
 			continue
 		}
 		kept = append(kept, fe)

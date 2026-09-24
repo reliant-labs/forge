@@ -40,6 +40,7 @@ import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
 import .lib.quantity as qty_lib
 import .lib.labels as labels_lib
+import .tiers
 
 # ---------------------------------------------------------------------------
 # JSON contract render — typed Bundle -> stable dict shape.
@@ -140,53 +141,19 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
     }
 }
 
-# Entity projection for a SimpleBackend deploy block. Like every other
-# _render_* lambda this is a WHITELIST — a field absent from this dict
-# never reaches the Go consumer, however correctly it was declared. The
-# key set here is exactly the SimpleBackend schema's field set.
-#
-# The discriminator stays "simple-backend" rather than being flattened to
-# "cluster". Manifests take the cluster path (_project_simple_backend
-# below), but the entity contract is what `forge project audit` and
-# `forge env render` read, and a tier that vanished into "cluster" there
-# would be invisible to exactly the tooling that needs to see it.
-#
-# `storage_gib` / `domain` / `health_check` project as null when unset so
-# the consumer sees a stable key shape. `resources` projects
-# UNCONDITIONALLY — the schema defaults it (250m / 1Gi) rather than
-# leaving it optional, so there is no "absent" case, and the consumer
-# must never have to re-derive a default whose value is a billing input.
-#
-# Resources project in the NEUTRAL units (millicores / bytes), NOT through
-# `_render_resources`, which formats them as k8s quantity STRINGS ("500m",
-# "2Gi"). That formatter is right for its callers and wrong here: this
-# tier's resources are a metering input, the platform's shape rule
-# (control-plane's inframeter.RatioFloor) is arithmetic on millicores and
-# MiB, and handing it "2Gi" would force it to re-parse a k8s dialect that
-# the neutral ints exist specifically to avoid. Re-parsing is also where a
-# billing input silently acquires a rounding rule nobody chose.
-_render_simple_backend_resources = lambda r: Resources -> any {
-    {
-        "cpu_request_millicores": r.cpu_request_millicores
-        "cpu_limit_millicores": r.cpu_limit_millicores
-        "memory_request_bytes": r.memory_request_bytes
-        "memory_limit_bytes": r.memory_limit_bytes
-    }
-}
-
+# Entity projection for a SimpleBackend deploy block: the target coordinates
+# plus the spec as its CR JSON (the generated tiers.simple_backend_json, so
+# the key set is exactly the Go type's). The discriminator stays
+# "simple-backend" rather than being flattened to "cluster", because the
+# entity contract is what `forge project audit` and `forge env render` read,
+# and a tier that vanished into "cluster" there would be invisible to exactly
+# the tooling that needs to see it.
 _render_simple_backend = lambda d: SimpleBackend -> any {
     {
         "type": "simple-backend"
         "cluster": d.cluster
         "namespace": d.namespace
-        "image": d.image
-        "ports": d.ports
-        "env_vars": [_render_env_var(e) for e in d.env_vars]
-        "resources": _render_simple_backend_resources(d.resources)
-        "health_check": d.health_check if d.health_check else None
-        "storage_gib": d.storage_gib if d.storage_gib else None
-        "network": d.network
-        "domain": d.domain if d.domain else None
+        "spec": tiers.simple_backend_json(d.spec)
     }
 }
 
@@ -494,7 +461,8 @@ _render_static_site_cdn = lambda c: StaticSiteCDN -> any {
 _render_static_site = lambda d: StaticSite -> any {
     {
         "type": "static-site"
-        "bucket": d.bucket
+        # Empty on a hosted env: the platform owns the bucket there.
+        "bucket": d.bucket if d.bucket else ""
         "public_dir": d.public_dir
         "base_path": d.base_path if d.base_path else None
         "bundle": [_render_bundle_dir(b) for b in d.bundle]
@@ -594,158 +562,43 @@ _project_frontend = lambda f: Frontend, bundle: Bundle -> RenderedWorkload {
     }
 }
 
-# Project a SimpleBackend service onto the RenderedWorkload the k8s
-# manifest renderer already consumes — the same move _project_frontend
-# makes for a cluster-deployed Frontend, and for the same reason: a
-# SimpleBackend IS a cluster workload, so it belongs in the ONE manifest
-# stream with one apply path, one prune, one rollout wait. Giving the
-# entry tier a parallel renderer would mean a second definition of what a
-# Deployment looks like, and the two would drift.
+# A SimpleBackend renders as ONE declaration record: the forge.dev/v1alpha1
+# CR the hosted path publishes, carrying the generated spec verbatim. forge's
+# manifest extraction (internal/cluster) expands every such record through the
+# Go renderer, pkg/deploy.Render, into its Deployment, Service,
+# ServiceAccount, PVC and NetworkPolicy. So there is ONE definition of what a
+# SimpleBackend becomes, in Go, shared with the control plane's operator, and
+# no second projection here that could drift from it.
 #
-#   SimpleBackend.image        -> workload image. Passed through VERBATIM:
-#                                 the schema requires an explicit registry
-#                                 host and a tag/digest, so _image_ref's
-#                                 pinned-image branch returns it untouched
-#                                 and neither the env registry nor the
-#                                 env-wide image_tag can rewrite a
-#                                 declared reference.
-#   .env_vars                  -> the CONTAINER env (RenderedWorkload
-#                                 .env_vars is what render_k8s_service
-#                                 reads), so secret_ref / config_map_ref /
-#                                 field_ref work through the existing
-#                                 wiring with no new machinery.
-#   .health_check              -> RenderedWorkload.health_probe, NOT the
-#                                 deploy block's health_check. Same split
-#                                 _project_frontend documents: the deploy
-#                                 block's field is the host/compose-shaped
-#                                 one and the k8s renderer does not read
-#                                 it. Getting this backwards yields a
-#                                 workload with silently no probes.
-#   .storage_gib               -> a `pvc` Volume mounted at /data,
-#                                 referencing the PVC _render_simple_backend
-#                                 _pvc emits (named <service>-data). This
-#                                 is the one place forge both EMITS a PVC
-#                                 and references it.
-#   .ports                     -> the deploy block's ports, so container
-#                                 ports and Service ports come out right.
-#                                 network = "none" declares none (the
-#                                 schema requires that), which is what
-#                                 makes the Service object empty-portable
-#                                 — see _render_simple_backend_manifests.
-#
-# NOT projected, because the schema does not declare them: replicas
-# (always 1 — see the schema docstring on RWO storage), security_context,
-# cluster_rbac, image_pull_secrets, platform, node placement, owned
-# manifests.
-#
-# `registry` is the env-wide one, and it is INERT here by construction
-# rather than by luck. K8sCluster requires a non-empty registry (its own
-# check), so the projection cannot leave it blank — but SimpleBackend's
-# schema requires the image to name its own registry host, and
-# `_image_ref` returns such an image VERBATIM, ignoring whatever registry
-# it was handed (lib/services.k, `_own_registry`). So the two checks
-# compose: the app owner's pinned reference can never be rewritten against
-# an env registry they do not own. positive_simple_backend.k pins this with
-# a cluster_target registry deliberately different from the image's.
-_project_simple_backend = lambda s: RenderedWorkload, registry: str -> RenderedWorkload {
-    _d = s.deploy
-    RenderedWorkload {
-        name = s.name
-        image = _d.image
-        env_vars = _d.env_vars
-        if _d.health_check:
-            health_probe = HealthProbe {
-                http_path = _d.health_check.liveness_path
-                port = _d.health_check.http_port
-                initial_delay_seconds = _d.health_check.initial_delay
-                period_seconds = _d.health_check.period
-                timeout_seconds = _d.health_check.timeout
-                failure_threshold = _d.health_check.failure_threshold
-            }
-        if _d.storage_gib:
-            volumes = [Volume {
-                name = "data"
-                type = "pvc"
-                source = "${s.name}-data"
-                mount_path = "/data"
-            }]
-        deploy = K8sCluster {
-            cluster = _d.cluster
-            namespace = _d.namespace
-            registry = registry
-            if _d.domain:
-                domain = _d.domain
-            replicas = 1
-            resources = _d.resources
-            ports = _d.ports
+# The record is namespaced to the backend's own target namespace, and it
+# carries the managed labels. The env gate (labels_lib.stamp_env_all) stamps
+# it like every other object, and the expansion copies the record's labels
+# onto everything it renders, so forge.dev/env and part-of survive the
+# expansion.
+_render_managed_database_record = lambda db: ManagedDatabase, part_of: str -> any {
+    {
+        apiVersion = "forge.dev/v1alpha1"
+        kind = "ManagedDatabase"
+        metadata = {
+            name = db.name
+            namespace = db.namespace
+            labels = labels_lib.managed_labels(db.name, part_of)
         }
+        spec = tiers.managed_database_json(db.spec)
     }
 }
 
-# Emit every manifest a SimpleBackend service owns: its Deployment (+
-# Service, per `network`), its RBAC, and its PVC when it declares storage.
-#
-# The projection to a K8sCluster workload happens FIRST and everything
-# after it is the ordinary cluster path — `_render_cluster_service`, the
-# same builder every forge.Service goes through. Two SimpleBackend-only
-# adjustments ride on top:
-#
-#  1. network = "none" DROPS the Service object. The filter is here, on
-#     the assembled list, rather than inside render_k8s_service, because
-#     "does this workload get a Service" is a property of the SimpleBackend
-#     tier and the k8s builder has no business learning about it. The
-#     schema guarantees a "none" backend declares no ports, so what is
-#     dropped is a Service with an empty port list — an object that would
-#     be legal, addressable by name, and misleading.
-#  2. The PVC is appended.
-#
-# `registry` / `image_tag` / `image_digests` thread through so the call
-# shape matches every other manifest lambda, but none of the three can
-# affect the image: SimpleBackend requires a self-registered, pinned
-# reference, and `_image_ref` returns such an image verbatim. Passing
-# them keeps this on the ordinary path rather than making it a special
-# case someone has to remember.
-_render_simple_backend_manifests = lambda s: RenderedWorkload, registry: str, image_tag: str, image_digests: {str:str}, part_of: str -> [any] {
-    _w = _project_simple_backend(s, registry)
-    _ns = s.deploy.namespace
-    _all = _render_cluster_service(_w, _ns, registry, image_tag, image_digests, [], part_of)
-    _kept = _all if s.deploy.network != "none" else [_m for _m in _all if _m.kind != "Service"]
-    _kept + _render_simple_backend_pvc(s, _ns, part_of)
-}
-
-# The PersistentVolumeClaim backing a SimpleBackend's `storage_gib`.
-#
-# This is the ONE manifest kind this work adds to forge. Everywhere else
-# forge only REFERENCES a PVC by name (forge.Volume, type = "pvc") and
-# leaves its existence to whoever provisioned it — correct when the
-# author owns the cluster, and impossible for a hosted tier where the
-# app owner has no access to create one.
-#
-# ReadWriteOnce with no storageClassName: the cluster's default class
-# decides the backing disk, which is the platform's call and not a knob
-# this tier exposes. RWO is also why the projection above pins replicas
-# to 1 — see the schema docstring.
-#
-# A PVC's `resources.requests.storage` is IMMUTABLE for shrink and
-# frequently immutable entirely depending on the storage class, so a
-# later `storage_gib` change may be rejected by the API server on apply
-# rather than silently resizing. That is the correct failure: a
-# server-side rejection names the field, where a forge-side "expand"
-# would be forge guessing at a class's capabilities.
-_render_simple_backend_pvc = lambda s: RenderedWorkload, namespace: str, part_of: str -> [any] {
-    [{
-        apiVersion = "v1"
-        kind = "PersistentVolumeClaim"
+_render_simple_backend_record = lambda s: RenderedWorkload, part_of: str -> any {
+    {
+        apiVersion = "forge.dev/v1alpha1"
+        kind = "SimpleBackend"
         metadata = {
-            name = "${s.name}-data"
-            namespace = namespace
+            name = s.name
+            namespace = s.deploy.namespace
             labels = labels_lib.managed_labels(s.name, part_of)
         }
-        spec = {
-            accessModes = ["ReadWriteOnce"]
-            resources = {requests = {storage = "${s.deploy.storage_gib}Gi"}}
-        }
-    }] if s.deploy.storage_gib else []
+        spec = tiers.simple_backend_json(s.deploy.spec)
+    }
 }
 
 # Frontend deploy dispatcher. Dispatches on the discriminator exactly like
@@ -1170,6 +1023,8 @@ render = lambda bundle: Bundle -> any {
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]
         "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
         "runtime_classes": [_render_runtime_class(rc) for rc in bundle.runtime_classes]
+        # Managed databases: name + namespace + the spec as its CR JSON.
+        "databases": [{"name": db.name, "namespace": db.namespace, "spec": tiers.managed_database_json(db.spec)} for db in bundle.databases]
         # Platform deps (helm-as-RENDERER). The CLI expands each via
         # `helm template --skip-crds` and folds the manifests into the apply
         # stream, selected by `--target <name>`. NOT in render_manifests.
@@ -1374,6 +1229,14 @@ _render_config_map_manifest = lambda cm: ConfigMap, namespace: str, part_of: str
 # cluster-scoped (no namespace) so they survive namespace deletes —
 # `forge env deploy <env>` is the right owner.
 render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_digests: {str:str} = {}, network_policies: bool = True -> [any] {
+    # A HOSTED env (control_plane declared) has no local manifest stream at
+    # all: its tiers are published to the control plane as specs, and the
+    # platform renders and applies them. Emitting anything here would be a
+    # second, kubectl-shaped path to the same workloads.
+    _render_manifests_self_hosted(bundle, image_tag, image_digests, network_policies) if not bundle.control_plane else []
+}
+
+_render_manifests_self_hosted = lambda bundle: Bundle, image_tag: str, image_digests: {str:str}, network_policies: bool -> [any] {
     _ct = bundle.cluster_target
     _ns = _ct.namespace
     _registry = _ct.registry
@@ -1405,16 +1268,11 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"] \
         + [w for w in _projected if w.deploy.type == "cluster"] \
         + _cluster_frontends
-    # SimpleBackend services are cluster workloads too, but they are held
-    # SEPARATE from `_cluster_services` rather than folded in, because they
-    # differ from it in exactly the two ways below and folding them in
-    # would mean teaching the shared path about both:
-    #   * their coordinates live on their OWN deploy block (cluster and
-    #     namespace are per-workload, not the env-wide cluster_target's), and
-    #   * network = "none" drops the Service object.
-    # A Bundle may therefore carry SimpleBackends and ordinary cluster
-    # services at once; each renders through its own lowering and both
-    # land in the one stamped stream.
+    # SimpleBackend services are held SEPARATE from `_cluster_services`:
+    # they are not expanded by any KCL builder at all. Each one becomes a
+    # single forge.dev declaration record in the stamped stream, and the Go
+    # renderer (pkg/deploy.Render) expands it at extraction time. A Bundle
+    # may carry SimpleBackends and ordinary cluster services at once.
     _simple_backends = [s for s in bundle.services if s.deploy and s.deploy.type == "simple-backend"]
     # Only a service with an `image` renders a workload (Deployment +
     # Service + RBAC). An image-less cluster service is an INFRA service:
@@ -1448,7 +1306,8 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
         + [_render_config_map_manifest(cm, _ns, _project) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
         + [item for s in _workload_services for item in _render_cluster_service(s, s.deploy.namespace, s.deploy.registry, image_tag, image_digests, s.deploy.image_pull_secrets if s.deploy.image_pull_secrets else _pull_secrets, _project)] \
-        + [item for s in _simple_backends for item in _render_simple_backend_manifests(s, _registry, image_tag, image_digests, _project)] \
+        + [_render_simple_backend_record(s, _project) for s in _simple_backends] \
+        + [_render_managed_database_record(db, _project) for db in bundle.databases] \
         + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s, _project)] \
         + [item for o in bundle.operators for item in _render_operator_manifests(o, _ns, _registry, image_tag, image_digests, _pull_secrets, _project)] \
         + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, _ns, _registry, image_tag, image_digests, _pull_secrets, _project)] \

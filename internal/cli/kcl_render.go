@@ -44,6 +44,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // KCLEntities is the typed, dispatched view of the JSON the sibling
@@ -83,6 +84,10 @@ type KCLEntities struct {
 	// expands them via helm-as-a-RENDERER and folds the manifests into the
 	// apply stream. Empty => no platform deps. See HelmChartEntity.
 	HelmCharts []HelmChartEntity `json:"helm_charts,omitempty"`
+	// Databases are the env's managed databases (forge.ManagedDatabase). Each
+	// renders, through pkg/deploy.Render, as a CloudNativePG Cluster. The
+	// spec is forge's Go tier type, decoded directly.
+	Databases []DatabaseEntity `json:"databases,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
@@ -645,88 +650,64 @@ type DeployConfigEntity struct {
 	BuildOnly     *BuildOnlyDeploy   // populated when Type=="build-only"
 }
 
-// SimpleBackendSpec mirrors the kcl/schema.k SimpleBackend schema — the
-// hosted ENTRY deploy tier: one container in a cluster forge did not
-// create.
+// SimpleBackendSpec is the entity contract for a SimpleBackend deploy block:
+// the TARGET (cluster, namespace) plus the app's declaration, which IS forge's
+// Go tier type pkg/deploy/v1alpha1.SimpleBackendSpec (the control plane's
+// CRD spec too). There is no second Go mirror of the fields to drift. KCL
+// emits the spec through the generated tiers.simple_backend_json, and it
+// decodes straight into the tier type.
 //
-// It is a CONSTRAINED PROFILE over K8sCluster, and the constraint lives
-// in the schema's SHAPE rather than in any validation here. There is no
-// Replicas, SecurityContext, ClusterRBAC, ImagePullSecrets, Platform or
-// node placement, because the KCL schema does not declare them and
-// refuses them at compile time (see
-// kcl/tests/closedschema_simple_backend_unknown_field.k). A Go-side
-// allowlist would be a second copy of that decision, free to drift from
-// the first.
-//
-// WHY THE MANIFESTS ARE NOT THIS PACKAGE'S PROBLEM. render_manifests
-// projects every SimpleBackend onto a RenderedWorkload{deploy =
-// K8sCluster} before emitting anything (_project_simple_backend,
-// kcl/render.k), so the YAML that reaches `kubectl apply` came out of
-// the SAME builders every forge.Service uses. This struct is the ENTITY
-// contract only: what `forge env render`, `forge project audit` and the
-// deploy dispatcher read. Keeping the discriminator here while the
-// manifests take the cluster path is deliberate — a tier that flattened
-// to "cluster" in the entity output would be invisible to exactly the
-// tooling that needs to see it.
+// The manifests are not this struct's concern. render_manifests emits a
+// forge.dev declaration record that internal/cluster expands through
+// pkg/deploy.Render. This struct is what `forge env render`, `forge project
+// audit` and the deploy dispatcher read. Keeping the `simple-backend`
+// discriminator on the entity (rather than flattening it to "cluster") is
+// what keeps the tier visible to that tooling.
 type SimpleBackendSpec struct {
-	// Target coordinates. Per-service (not env-wide) because the
-	// platform places each hosted workload itself; the deploy
-	// dispatcher groups and routes by them exactly as it does for a
-	// K8sCluster service.
+	// Target coordinates. Per-service, not env-wide: the deploy dispatcher
+	// groups and routes by them exactly as it does for a K8sCluster service.
 	Cluster   string `json:"cluster,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 
-	// Image is fully qualified and PINNED — the KCL check requires an
-	// explicit registry host and a tag or digest. forge does not build
-	// it (see [ServiceEntity.EffectiveBuild]) and does not prefix a
-	// registry onto it.
-	Image string `json:"image,omitempty"`
-
-	Ports   []int       `json:"ports,omitempty"`
-	EnvVars []KCLEnvVar `json:"env_vars,omitempty"`
-
-	// Resources carries the NEUTRAL units (millicores / bytes) rather
-	// than k8s quantity strings, because they are a metering input: the
-	// platform's shape rule is arithmetic on them, and a "2Gi" here
-	// would force it to re-parse a k8s dialect — which is where a
-	// billing input silently acquires a rounding rule nobody chose.
-	Resources SimpleBackendResources `json:"resources"`
-
-	HealthCheck *HealthCheck `json:"health_check,omitempty"`
-
-	// StorageGiB, when set, provisions a ReadWriteOnce PVC mounted at
-	// /data. This is the one manifest kind forge EMITS only for this
-	// tier; elsewhere a PVC is referenced by name and never created.
-	StorageGiB int `json:"storage_gib,omitempty"`
-
-	// Network is "public" | "private" | "none" — a manifest difference,
-	// not a label: "none" renders no Service object at all. It is
-	// addressability, not containment, and emits no NetworkPolicy.
-	Network string `json:"network,omitempty"`
-
-	// Domain is required for Network=="public" and rejected otherwise.
-	// forge creates no DNS and synthesizes no route from it; it rides
-	// this contract for the platform's ingress to key on.
-	Domain string `json:"domain,omitempty"`
+	// Spec is the app's declaration. forge does not build Spec.Image (see
+	// [ServiceEntity.EffectiveBuild]) and never prefixes a registry onto it.
+	Spec deployv1alpha1.SimpleBackendSpec `json:"spec"`
 }
 
-// SimpleBackendResources is the compute request/limit in the same
-// target-neutral units the KCL Resources schema uses: CPU in millicores,
-// memory in bytes.
+// DatabaseEntity is one managed database: its name (the CloudNativePG Cluster
+// name), target namespace, and spec, which is forge's Go tier type.
+type DatabaseEntity struct {
+	Name      string                             `json:"name"`
+	Namespace string                             `json:"namespace"`
+	Spec      deployv1alpha1.ManagedDatabaseSpec `json:"spec"`
+}
+
+// EnvVars projects the tier's env onto forge's KCLEnvVar channels, so the
+// existing secret pre-flight and namespace guards cover a SimpleBackend
+// exactly as they cover a K8sCluster service. A value maps to value, and a
+// SecretRef maps to secret_ref/secret_key (the same "one key of a Secret in
+// the pod's namespace" channel).
 //
-// The KCL schema constrains the REQUEST pair to sit exactly on the 4
-// GiB-per-vCPU shape band, because the platform bills the max of what
-// was asked for and what the band implies (control-plane's
-// inframeter.RatioFloor) — so an off-band shape is not rejected by the
-// platform, it is repriced silently. There is no Go-side re-check: KCL
-// has already refused a non-conformant shape before any of this is
-// unmarshalled, and a second implementation of the same arithmetic is a
-// second thing to keep in step with the rate.
-type SimpleBackendResources struct {
-	CPURequestMillicores int   `json:"cpu_request_millicores"`
-	CPULimitMillicores   int   `json:"cpu_limit_millicores"`
-	MemoryRequestBytes   int64 `json:"memory_request_bytes"`
-	MemoryLimitBytes     int64 `json:"memory_limit_bytes"`
+// ManagedSecret and DatabaseRef are NOT projected, and this is deliberate.
+// Their Secrets are not ones the env's secret store renders by name:
+// forge-managed-secrets is materialized from the environment's managed
+// store, and "<db>-app" is published by CloudNativePG for the database.
+// Pre-flighting them as store keys would report every one of them as
+// missing.
+func (s *SimpleBackendSpec) EnvVars() []KCLEnvVar {
+	if s == nil {
+		return nil
+	}
+	var out []KCLEnvVar
+	for _, e := range s.Spec.Env {
+		switch {
+		case e.SecretRef != nil:
+			out = append(out, KCLEnvVar{Name: e.Name, SecretRef: e.SecretRef.Name, SecretKey: e.SecretRef.Key})
+		case e.ManagedSecret == "" && e.DatabaseRef == nil:
+			out = append(out, KCLEnvVar{Name: e.Name, Value: e.Value})
+		}
+	}
+	return out
 }
 
 // HealthCheck mirrors the kcl/schema.k HealthCheck schema.
@@ -1048,6 +1029,7 @@ type kclRenderRaw struct {
 	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
 	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
 	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+	Databases  []DatabaseEntity  `json:"databases,omitempty"`
 	HelmCharts []HelmChartEntity `json:"helm_charts,omitempty"`
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
@@ -1223,6 +1205,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		HTTPRoutes:           raw.HTTPRoutes,
 		GRPCRoutes:           raw.GRPCRoutes,
 		HelmCharts:           raw.HelmCharts,
+		Databases:            raw.Databases,
 		SecretProvider:       raw.SecretProvider,
 		ControlPlane:         raw.ControlPlane,
 		RequiredSecrets:      raw.RequiredSecrets,

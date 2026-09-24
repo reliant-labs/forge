@@ -318,6 +318,10 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	type kv struct {
 		key, expr string
 		optional  bool
+		// omitWhen, on an inline entry, is the KCL condition under which the
+		// entry is projected at all ("" = always). See the Optional branch
+		// below.
+		omitWhen string
 	}
 	var inline, secrets []kv
 	for _, f := range fields {
@@ -354,10 +358,27 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 		// `c` and converted to a string via kclConfigValueExpr (the SAME
 		// value-formatting that previously fed the ConfigMap data), lowered
 		// directly as `{value = ...}` — no ConfigMap object, no reference.
-		inline = append(inline, kv{
+		//
+		// An OPTIONAL non-sensitive field is projected only when its value
+		// differs from its schema default. This is lossless — the runtime
+		// loader resolves an absent env var to that same default — and it is
+		// what lets a project add a knob that only some environments set
+		// without touching every other environment's manifests. Before this,
+		// adding one tier-specific string (say, an e2e-only storage endpoint)
+		// put `value: ""` into every Deployment of every env, so an env that
+		// never heard of the feature still churned on each field added. A
+		// REQUIRED or unannotated field keeps the old always-projected shape:
+		// its presence in the manifest is part of what an operator audits.
+		entry := kv{
 			key:  f.EnvVar,
 			expr: fmt.Sprintf(`{value = %s}`, kclConfigValueExpr(f, "c")),
-		})
+		}
+		if f.Optional {
+			if def, ok := kclConfigDefaultLiteral(f); ok {
+				entry.omitWhen = fmt.Sprintf("c.%s != %s", f.Name, def)
+			}
+		}
+		inline = append(inline, entry)
 	}
 
 	var b strings.Builder
@@ -447,6 +468,11 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	} else {
 		b.WriteString("    {\n")
 		for _, e := range inline {
+			if e.omitWhen != "" {
+				fmt.Fprintf(&b, "        if %s:\n", e.omitWhen)
+				fmt.Fprintf(&b, "            %q = %s\n", e.key, e.expr)
+				continue
+			}
 			fmt.Fprintf(&b, "        %q = %s\n", e.key, e.expr)
 		}
 		b.WriteString("    } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n")

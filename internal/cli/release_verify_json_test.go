@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // `forge release verify --json` tests.
@@ -17,7 +19,7 @@ import (
 
 // decodeVerifyReport runs the JSON path over a scripted fetcher and returns
 // the parsed document alongside the error the command would have returned.
-func decodeVerifyReport(t *testing.T, rel Release, f httpFetcher, strict bool) (releaseVerifyReport, error) {
+func decodeVerifyReport(t *testing.T, rel release.Release, f httpFetcher, strict bool) (releaseVerifyReport, error) {
 	t.Helper()
 	results := verifyReleaseArtifacts(context.Background(), f, rel, 4)
 
@@ -37,11 +39,11 @@ func decodeVerifyReport(t *testing.T, rel Release, f httpFetcher, strict bool) (
 // out, `ok` is true, and the command returns no error (exit 0).
 func TestReleaseVerifyJSON_Verified(t *testing.T) {
 	const integrity = "sha512-good"
-	rel := Release{
+	rel := release.Release{
 		Version: "v1.4.0",
-		Git:     ReleaseGit{Commit: "abc1234", Tag: "v1.4.0"},
-		Artifacts: map[string]ReleaseArtifact{
-			"web-runtime": {Kind: ArtifactKindNPM, Version: "1.0.0", Integrity: integrity},
+		Git:     release.Git{Commit: "abc1234", Tag: "v1.4.0"},
+		Artifacts: map[string]release.Artifact{
+			"web-runtime": {Kind: release.KindNPM, Version: "1.0.0", Integrity: integrity},
 		},
 	}
 	f := &stubFetcher{responses: []stubResponse{
@@ -114,10 +116,10 @@ func TestReleaseVerifyJSON_StatusIsLowercaseString(t *testing.T) {
 // `ok` false and returns exit 1, with the failure individually visible rather
 // than only aggregated into the summary.
 func TestReleaseVerifyJSON_Failed(t *testing.T) {
-	rel := Release{
+	rel := release.Release{
 		Version: "v1.4.0",
-		Artifacts: map[string]ReleaseArtifact{
-			"unpublished": {Kind: ArtifactKindNPM, Version: "2.0.0", Integrity: "sha512-never-shipped"},
+		Artifacts: map[string]release.Artifact{
+			"unpublished": {Kind: release.KindNPM, Version: "2.0.0", Integrity: "sha512-never-shipped"},
 		},
 	}
 	f := &stubFetcher{responses: []stubResponse{
@@ -158,10 +160,10 @@ func TestReleaseVerifyJSON_Failed(t *testing.T) {
 func TestReleaseVerifyJSON_StrictFlipsOKForUnverifiable(t *testing.T) {
 	// A file artifact has no publish URL recorded, so it is structurally
 	// uncheckable.
-	rel := Release{
+	rel := release.Release{
 		Version: "v1.4.0",
-		Artifacts: map[string]ReleaseArtifact{
-			"cli-darwin-arm64": {Kind: ArtifactKindFile, Version: "darwin-arm64", Integrity: sha("f")},
+		Artifacts: map[string]release.Artifact{
+			"cli-darwin-arm64": {Kind: release.KindFile, Version: "darwin-arm64", Integrity: sha("f")},
 		},
 	}
 
@@ -209,11 +211,11 @@ func TestReleaseVerifyJSON_StrictFlipsOKForUnverifiable(t *testing.T) {
 // the two.
 func TestReleaseVerifyJSON_CarriesGitProvenance(t *testing.T) {
 	const integrity = "sha512-good"
-	rel := Release{
+	rel := release.Release{
 		Version: "v1.5.1",
-		Git:     ReleaseGit{Commit: "deadbeef", Tag: "v1.5.1", Dirty: true},
-		Artifacts: map[string]ReleaseArtifact{
-			"pkg": {Kind: ArtifactKindNPM, Version: "1.0.0", Integrity: integrity},
+		Git:     release.Git{Commit: "deadbeef", Tag: "v1.5.1", Dirty: true},
+		Artifacts: map[string]release.Artifact{
+			"pkg": {Kind: release.KindNPM, Version: "1.0.0", Integrity: integrity},
 		},
 	}
 	f := &stubFetcher{responses: []stubResponse{

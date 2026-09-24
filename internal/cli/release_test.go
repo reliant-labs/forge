@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // TestReleaseFileStem_PreservesDots pins Fix 3: a semver version's literal
@@ -46,11 +51,10 @@ func TestReleasePath_VersionMappingRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	const version = "v1.0.0"
 
-	rel := Release{
-		Version:   version,
-		CreatedAt: nowRFC3339(),
-		Artifacts: map[string]ReleaseArtifact{
-			"control-plane": {Mode: "shared", Digests: map[string]string{"*": sha("a")}},
+	rel := release.Release{
+		Version: version,
+		Artifacts: map[string]release.Artifact{
+			"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}},
 		},
 	}
 	// build writes...
@@ -75,20 +79,28 @@ func TestReleasePath_VersionMappingRoundTrips(t *testing.T) {
 	}
 }
 
-func sha(c string) string { return "sha256:" + strings.Repeat(c, 64) }
+// sha is a canonical fixture digest. A single hex character repeats (sha("a")
+// is sha256:aaaa…); any other label is hashed, so sha("same") and sha("new")
+// are distinct, stable and — which release.Validate now requires — canonical.
+func sha(c string) string {
+	if len(c) == 1 && strings.Contains("0123456789abcdef", c) {
+		return "sha256:" + strings.Repeat(c, 64)
+	}
+	sum := sha256.Sum256([]byte(c))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
 
 // TestRelease_LedgerRoundTrip locks the on-disk contract: a Release written by
 // `forge build --release` reads back intact, including the per-image shared
 // digest map and platforms.
 func TestRelease_LedgerRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	want := Release{
-		Version:   "v1.4.0",
-		Git:       ReleaseGit{Commit: "8a7be2b", Tag: "v1.4.0", Dirty: false},
-		CreatedAt: nowRFC3339(),
-		Artifacts: map[string]ReleaseArtifact{
-			"control-plane": {Mode: "shared", Digests: map[string]string{"*": sha("a")}, Platforms: []string{"linux/amd64"}},
-			"reliant":       {Mode: "shared", Digests: map[string]string{"*": sha("b")}},
+	want := release.Release{
+		Version: "v1.4.0",
+		Git:     release.Git{Commit: "8a7be2b", Tag: "v1.4.0", Dirty: false},
+		Artifacts: map[string]release.Artifact{
+			"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}, Platforms: []string{"linux/amd64"}},
+			"reliant":       {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("b")}},
 		},
 	}
 	if err := WriteRelease(dir, want); err != nil {
@@ -147,10 +159,10 @@ func TestHarvestReleaseArtifacts(t *testing.T) {
 	// Kind is stamped explicitly on every harvested artifact: a build captures
 	// container images, and a ledger cut today says so rather than relying on
 	// the empty-means-OCI default that exists only for pre-kind files.
-	want := map[string]ReleaseArtifact{
-		"control-plane":  {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("a")}, Platforms: []string{"linux/amd64"}},
-		"reliant":        {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("b")}},
-		"workspace-base": {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("d")}},
+	want := map[string]release.Artifact{
+		"control-plane":  {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}, Platforms: []string{"linux/amd64"}},
+		"reliant":        {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("b")}},
+		"workspace-base": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("d")}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("harvest mismatch:\n  want %+v\n  got  %+v", want, got)
@@ -229,11 +241,11 @@ func TestHarvestReleaseArtifacts_SkipsDigestless(t *testing.T) {
 // TestResolveReleaseDigests flattens shared artifacts to the image→digest map
 // the deploy/promote paths consume, and errors when a release pins nothing.
 func TestResolveReleaseDigests(t *testing.T) {
-	rel := Release{
+	rel := release.Release{
 		Version: "v1.4.0",
-		Artifacts: map[string]ReleaseArtifact{
-			"control-plane": {Mode: "shared", Digests: map[string]string{"*": sha("a")}},
-			"reliant":       {Mode: "shared", Digests: map[string]string{"*": sha("b")}},
+		Artifacts: map[string]release.Artifact{
+			"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}},
+			"reliant":       {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("b")}},
 		},
 	}
 	got, err := resolveReleaseDigests(rel)
@@ -245,7 +257,7 @@ func TestResolveReleaseDigests(t *testing.T) {
 		t.Errorf("resolve mismatch:\n  want %+v\n  got  %+v", want, got)
 	}
 
-	if _, err := resolveReleaseDigests(Release{Version: "v0", Artifacts: map[string]ReleaseArtifact{}}); err == nil {
+	if _, err := resolveReleaseDigests(release.Release{Version: "v0", Artifacts: map[string]release.Artifact{}}); err == nil {
 		t.Error("want error for a release with no shared digests, got nil")
 	}
 }
@@ -256,7 +268,7 @@ func TestResolveReleaseDigests(t *testing.T) {
 // names the version, the likely causes, and `forge project audit` — not the old vague
 // "carries no shared image digests to pin" that read like an internal invariant.
 func TestResolveReleaseDigests_EmptyArtifactsActionableError(t *testing.T) {
-	_, err := resolveReleaseDigests(Release{Version: "v1.4.0", Artifacts: map[string]ReleaseArtifact{}})
+	_, err := resolveReleaseDigests(release.Release{Version: "v1.4.0", Artifacts: map[string]release.Artifact{}})
 	if err == nil {
 		t.Fatal("want error for a release with no artifacts, got nil")
 	}
@@ -280,12 +292,12 @@ func TestResolveReleaseDigests_EmptyArtifactsActionableError(t *testing.T) {
 // isn't told to re-run --push when the real situation is "variant promotion
 // isn't supported yet".
 func TestResolveReleaseDigests_VariantOnlyError(t *testing.T) {
-	_, err := resolveReleaseDigests(Release{
+	_, err := resolveReleaseDigests(release.Release{
 		Version: "v2.0.0",
-		Artifacts: map[string]ReleaseArtifact{
-			// variant-mode: a digest keyed by an env variant, NOT sharedVariantKey,
+		Artifacts: map[string]release.Artifact{
+			// variant-mode: a digest keyed by an env variant, NOT release.SharedVariant,
 			// so SharedDigest() returns ("", false).
-			"control-plane": {Mode: "variant", Digests: map[string]string{"prod": sha("a")}},
+			"control-plane": {Kind: release.KindOCI, Mode: release.ModeVariant, Digests: map[string]string{"prod": sha("a")}},
 		},
 	})
 	if err == nil {
@@ -300,60 +312,42 @@ func TestResolveReleaseDigests_VariantOnlyError(t *testing.T) {
 	}
 }
 
-// TestRunPromote_EmptyReleaseSurfacesActionableError proves the friction fix
-// reaches the user through the actual `forge env promote` entrypoint: promoting a
-// release that was cut with no digests fails (no binding written) with the
-// actionable guidance, not a silent/confusing dead end.
-func TestRunPromote_EmptyReleaseSurfacesActionableError(t *testing.T) {
+// TestRunPromote_NoImagesReleaseSurfacesActionableError proves a release that
+// pins no container image fails at promote (no binding written) with guidance
+// that names what the release actually holds. An EMPTY release can no longer
+// be cut at all — release.Validate refuses it — so the reachable shape is a
+// release of only packages.
+func TestRunPromote_NoImagesReleaseSurfacesActionableError(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	if err := WriteRelease(dir, Release{
-		Version:   "v3.1.0",
-		CreatedAt: nowRFC3339(),
-		Artifacts: map[string]ReleaseArtifact{}, // cut with no digests
+	if err := WriteRelease(dir, release.Release{
+		Version: "v3.1.0",
+		Artifacts: map[string]release.Artifact{
+			"@acme/ui": {Kind: release.KindNPM, Mode: release.ModeShared, Version: "1.0.0"},
+		},
 	}); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
 
 	err := runPromote(context.Background(), "v3.1.0", "staging", promoteOptions{})
 	if err == nil {
-		t.Fatal("want error promoting an empty release, got nil")
+		t.Fatal("want error promoting a release with no images, got nil")
 	}
-	if !strings.Contains(err.Error(), "forge project audit") {
-		t.Errorf("promote error should carry the actionable guidance\n  got: %s", err.Error())
+	if !strings.Contains(err.Error(), "no container images") {
+		t.Errorf("promote error should say the release has no images\n  got: %s", err.Error())
 	}
-
-	// No binding should have been written for a release that pins nothing.
-	if _, bound, berr := newFileBindingStore(dir).Binding("staging"); berr != nil {
+	if _, bound, berr := newFileBindingStore(dir).Current(context.Background(), "staging"); berr != nil {
 		t.Fatalf("read binding: %v", berr)
 	} else if bound {
 		t.Error("staging must NOT be bound when the release pins no digests")
 	}
 }
 
-// TestEnvReleases_RoundTrip + MissingDefaultsEmpty lock the binding ledger
-// contract: a missing file is a usable empty ledger, not an error.
-func TestEnvReleases_RoundTripAndMissing(t *testing.T) {
-	dir := t.TempDir()
-
-	er, err := ReadEnvReleases(dir)
-	if err != nil {
-		t.Fatalf("read missing: %v", err)
-	}
-	if er == nil || er.Bindings == nil || len(er.Bindings) != 0 {
-		t.Fatalf("missing ledger should be empty-but-usable, got %+v", er)
-	}
-
-	er.Bindings["prod"] = EnvBinding{Release: "v1.4.0", Resolved: map[string]string{"control-plane": sha("a")}, PromotedAt: nowRFC3339()}
-	if err := WriteEnvReleases(dir, *er); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	got, err := ReadEnvReleases(dir)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if !reflect.DeepEqual(got.Bindings, er.Bindings) {
-		t.Errorf("binding round-trip mismatch:\n  want %+v\n  got  %+v", er.Bindings, got.Bindings)
+// TestWriteRelease_EmptyIsRefused: a release naming nothing cannot be cut.
+func TestWriteRelease_EmptyIsRefused(t *testing.T) {
+	err := WriteRelease(t.TempDir(), release.Release{Version: "v3.1.0", Artifacts: map[string]release.Artifact{}})
+	if !errors.Is(err, release.ErrInvalid) {
+		t.Fatalf("an empty release must be refused as invalid, got %v", err)
 	}
 }
 
@@ -371,17 +365,14 @@ func TestResolveDeployDigests_BoundEnvUsesRelease(t *testing.T) {
 		t.Fatalf("write build state: %v", err)
 	}
 	// prod is promoted to v1.4.0, whose control-plane digest is sha(a).
-	er, _ := ReadEnvReleases(dir)
-	er.Bindings["prod"] = EnvBinding{
-		Release:    "v1.4.0",
-		Resolved:   map[string]string{"control-plane": sha("a"), "reliant": sha("b")},
-		PromotedAt: nowRFC3339(),
-	}
-	if err := WriteEnvReleases(dir, *er); err != nil {
+	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote,
+		Resolved: map[string]string{"control-plane": sha("a"), "reliant": sha("b")},
+	}); err != nil {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(dir, "prod", false, newFileBindingStore(dir))
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, newFileBindingStore(dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -408,7 +399,7 @@ func TestResolveDeployDigests_UnboundEnvFallsBack(t *testing.T) {
 		t.Fatalf("write build state: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(dir, "staging", false, newFileBindingStore(dir))
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "staging", false, newFileBindingStore(dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -424,13 +415,13 @@ func TestResolveDeployDigests_UnboundEnvFallsBack(t *testing.T) {
 // the release lookup too (the tag-only escape hatch overrides everything).
 func TestResolveDeployDigests_NoDigestSkipsRelease(t *testing.T) {
 	dir := t.TempDir()
-	er, _ := ReadEnvReleases(dir)
-	er.Bindings["prod"] = EnvBinding{Release: "v1.4.0", Resolved: map[string]string{"control-plane": sha("a")}, PromotedAt: nowRFC3339()}
-	if err := WriteEnvReleases(dir, *er); err != nil {
+	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote, Resolved: map[string]string{"control-plane": sha("a")},
+	}); err != nil {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(dir, "prod", true /* noDigest */, newFileBindingStore(dir))
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", true /* noDigest */, newFileBindingStore(dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -447,12 +438,11 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 	t.Chdir(dir)
 
 	// A release ledger exists (as `forge build --release` would have written).
-	if err := WriteRelease(dir, Release{
-		Version:   "v1.4.0",
-		CreatedAt: nowRFC3339(),
-		Artifacts: map[string]ReleaseArtifact{
-			"control-plane": {Mode: "shared", Digests: map[string]string{"*": sha("a")}},
-			"reliant":       {Mode: "shared", Digests: map[string]string{"*": sha("b")}},
+	if err := WriteRelease(dir, release.Release{
+		Version: "v1.4.0",
+		Artifacts: map[string]release.Artifact{
+			"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}},
+			"reliant":       {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("b")}},
 		},
 	}); err != nil {
 		t.Fatalf("write release: %v", err)
@@ -462,7 +452,7 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 		t.Fatalf("promote: %v", err)
 	}
 
-	binding, bound, err := newFileBindingStore(dir).Binding("staging")
+	binding, bound, err := newFileBindingStore(dir).Current(context.Background(), "staging")
 	if err != nil {
 		t.Fatalf("read binding: %v", err)
 	}
@@ -488,35 +478,18 @@ func TestRunPromote_UnknownReleaseErrors(t *testing.T) {
 	}
 }
 
-// TestReleaseArtifact_PreKindLedgersAreOCI is the backward-compatibility
-// guarantee. A release ledger is IMMUTABLE, so files cut before `kind` existed
-// can never be rewritten to add one — they must keep resolving, unchanged,
-// forever. Before kinds, an artifact could only be a container image, so an
-// absent kind means OCI and a pre-kind ledger must still pin its digests.
-//
-// If this test fails, every release cut before multi-kind artifacts became
-// undeployable, which is the one outcome the immutability property forbids.
-func TestReleaseArtifact_PreKindLedgersAreOCI(t *testing.T) {
-	preKind := ReleaseArtifact{
-		// No Kind field, exactly as an older forge wrote it.
-		Mode:    "shared",
-		Digests: map[string]string{"*": sha("a")},
-	}
-	if got := preKind.EffectiveKind(); got != ArtifactKindOCI {
-		t.Errorf("EffectiveKind() on a pre-kind artifact = %q, want %q", got, ArtifactKindOCI)
-	}
-	d, ok := preKind.SharedDigest()
-	if !ok || d != sha("a") {
-		t.Errorf("SharedDigest() on a pre-kind artifact = (%q, %v), want (%q, true)", d, ok, sha("a"))
-	}
-
-	rel := Release{Version: "v1.0.0", Artifacts: map[string]ReleaseArtifact{"control-plane": preKind}}
-	resolved, err := resolveReleaseDigests(rel)
-	if err != nil {
-		t.Fatalf("a pre-kind release must still resolve: %v", err)
-	}
-	if resolved["control-plane"] != sha("a") {
-		t.Errorf("resolved[control-plane] = %q, want %q", resolved["control-plane"], sha("a"))
+// TestReleaseLedger_KindlessArtifactIsRefused: an artifact with no kind is no
+// longer read as an image. The retired "empty kind means OCI" default is how a
+// ledger nobody can classify could have been deployed; now it fails to read,
+// and `forge release convert-ledger` is the one-time fix.
+func TestReleaseLedger_KindlessArtifactIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := releasePath(dir, "v1.0.0")
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = os.WriteFile(path, []byte(`{"release":"v1.0.0","created_at":"2026-01-01T00:00:00Z",
+		"artifacts":{"control-plane":{"mode":"shared","digests":{"*":"`+sha("a")+`"}}}}`), 0o644)
+	if _, err := ReadRelease(dir, "v1.0.0"); !errors.Is(err, release.ErrInvalid) {
+		t.Fatalf("a kindless artifact must fail to read with ErrInvalid, got %v", err)
 	}
 }
 
@@ -533,8 +506,9 @@ func TestReleaseArtifact_NonOCIDoesNotPinImages(t *testing.T) {
 	// lookup alone, so the test would pass with or without the Kind guard and
 	// prove nothing. A published file legitimately carries a sha256, so this
 	// shape is real — and only the Kind check keeps it out of the image path.
-	npm := ReleaseArtifact{
-		Kind:      ArtifactKindNPM,
+	npm := release.Artifact{
+		Kind:      release.KindNPM,
+		Mode:      release.ModeShared,
 		Version:   "0.3.1",
 		Integrity: "sha512-abc",
 		Digests:   map[string]string{"*": sha("f")},
@@ -545,10 +519,10 @@ func TestReleaseArtifact_NonOCIDoesNotPinImages(t *testing.T) {
 
 	// A mixed release pins ONLY its images, and the npm entry rides along in
 	// the ledger without ever reaching a container spec.
-	rel := Release{
+	rel := release.Release{
 		Version: "v1.0.0",
-		Artifacts: map[string]ReleaseArtifact{
-			"control-plane":            {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("a")}},
+		Artifacts: map[string]release.Artifact{
+			"control-plane":            {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}},
 			"@reliantlabs/web-runtime": npm,
 		},
 	}
@@ -567,10 +541,10 @@ func TestReleaseArtifact_NonOCIDoesNotPinImages(t *testing.T) {
 // hunting for a feature flag, when the truth is there is simply nothing for an
 // environment to run.
 func TestResolveReleaseDigests_PackageOnlyReleaseSaysSo(t *testing.T) {
-	rel := Release{
+	rel := release.Release{
 		Version: "v0.1.12",
-		Artifacts: map[string]ReleaseArtifact{
-			"@reliantlabs/forge-web-runtime": {Kind: ArtifactKindNPM, Version: "0.3.1", Integrity: "sha512-abc"},
+		Artifacts: map[string]release.Artifact{
+			"@reliantlabs/forge-web-runtime": {Kind: release.KindNPM, Mode: release.ModeShared, Version: "0.3.1", Integrity: "sha512-abc"},
 		},
 	}
 	_, err := resolveReleaseDigests(rel)

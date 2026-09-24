@@ -113,6 +113,14 @@ func auditGroupFor(id string) (ServiceGroup, bool) {
 			Env:         "prod",
 			StaticSites: []StaticSiteFrontend{{Name: "web"}},
 		}, true
+	case HostedProviderID:
+		// The zero-value provider has no client, so it must report unknown
+		// with a reason rather than inventing a verdict.
+		return ServiceGroup{
+			Env:      "prod",
+			Hosted:   &HostedTarget{Endpoint: "https://cp.example"},
+			Services: []ResolvedService{{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierBackend}}},
+		}, true
 	default:
 		return ServiceGroup{}, false
 	}
@@ -308,6 +316,7 @@ func TestAuditEnumeratesEveryRegisteredProvider(t *testing.T) {
 	for _, p := range []Provider{
 		K8sClusterProvider{}, ExternalProvider{}, ComposeProvider{},
 		HostInfraProvider{}, FirebaseProvider{}, StaticSiteProvider{},
+		HostedProvider{},
 	} {
 		if !enumerated[p.Name()] {
 			t.Errorf("provider %q is registered by NewRegistry but Registry.IDs did not "+

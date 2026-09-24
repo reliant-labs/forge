@@ -775,7 +775,13 @@ func (e *validateBuildError) Unwrap() error { return e.err }
 // can invoke it directly without spinning up the full GenStep loop.
 func runGoBuildValidate(projectDir string) error {
 	fmt.Println("\n🔨 Validating generated code...")
-	validateCmd := exec.Command("go", "build", "./...")
+	// `-o os.DevNull` makes this a pure compile check. Bare `go build ./...`
+	// WRITES a binary when the pattern matches exactly one main package,
+	// named after its directory — so a project whose only main is `./echo`
+	// failed validation with `build output "echo" already exists and is a
+	// directory`, and one whose main sits elsewhere got a stray binary
+	// dropped in its root.
+	validateCmd := exec.Command("go", "build", "-o", os.DevNull, "./...")
 	validateCmd.Dir = projectDir
 	var buildStderr strings.Builder
 	validateCmd.Stdout = os.Stdout

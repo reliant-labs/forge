@@ -464,7 +464,18 @@ func runContractLinter(ctx context.Context, paths []string, excludes []string) e
 			"ensure the project builds (`go build ./...`) and go.mod is tidy", err)
 	}
 
-	if len(diags) > 0 {
+	gating := 0
+	for _, d := range diags {
+		if !d.Warning {
+			gating++
+		}
+	}
+	if gating == 0 {
+		for _, d := range diags {
+			fmt.Println("⚠️  " + d.String())
+		}
+	}
+	if gating > 0 {
 		for _, d := range diags {
 			fmt.Println(d)
 		}

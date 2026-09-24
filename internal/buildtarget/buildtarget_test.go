@@ -170,15 +170,17 @@ func TestExpand_CPForgeShape(t *testing.T) {
 	}
 }
 
-// TestExpand_UnknownTokensEmpty pins the "unknown ${X} substitutes to
-// empty string" behaviour. A typo in the user's build_cmd surfaces as
-// a missing flag rather than a leaked literal landing on the shell —
-// the safer of the two failure modes.
-func TestExpand_UnknownTokensEmpty(t *testing.T) {
+// TestExpand_UnknownTokensLeftForTheShell pins that only the documented
+// tokens (plus build_env keys) are substituted. Everything else is the
+// script's own shell syntax and must reach `sh -c` untouched — the F2
+// fixture's `W=$(mktemp -d); … "$W/root"` silently lost $W under the old
+// os.Expand semantics.
+func TestExpand_UnknownTokensLeftForTheShell(t *testing.T) {
 	spec := Spec{Service: "x", Image: "x", Tag: "v1"}
-	got := Expand("echo ${TYPO} done", spec)
-	if got != "echo  done" {
-		t.Errorf("unknown ${X}: want %q, got %q", "echo  done", got)
+	got := Expand(`W=$(mktemp -d); echo ${TYPO} "$W/root" ${TAG}`, spec)
+	want := `W=$(mktemp -d); echo ${TYPO} "$W/root" v1`
+	if got != want {
+		t.Errorf("want %q, got %q", want, got)
 	}
 }
 

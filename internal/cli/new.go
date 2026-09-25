@@ -209,6 +209,9 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	if err != nil {
 		return err
 	}
+	if err := checkScaffoldCanResolveForge(kindNormalized); err != nil {
+		return err
+	}
 
 	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
 	if err != nil {
@@ -861,15 +864,7 @@ func writeDevForgeGoWork(targetPath string) {
 	if !buildinfo.IsDevBuild() {
 		return
 	}
-	// Prefer the explicitly stamped ldflag; otherwise recover the source root
-	// dynamically from this binary's own compiled file paths. The dynamic path
-	// is what makes the bridge work when forge runs EMBEDDED (e.g. `reliant
-	// forge project new`), where the host binary's build never stamped forge's
-	// DevForgeRoot — see buildinfo.DiscoverDevForgeRootFromSource.
-	root := buildinfo.DevForgeRoot
-	if root == "" {
-		root = buildinfo.DiscoverDevForgeRootFromSource()
-	}
+	root := devForgeBridgeRoot()
 	if root == "" {
 		// Dev build whose local forge source we can neither read from an
 		// ldflag nor discover on disk (e.g. a dev binary shipped to another
@@ -916,6 +911,65 @@ func writeDevForgeGoWork(targetPath string) {
 		return
 	}
 	fmt.Printf("🔗 Dev forge build: wrote go.work bridging this project to %s (gitignored, machine-local)\n", root)
+}
+
+// devForgeBridgeRoot is the local forge checkout a dev build bridges a
+// scaffold to, or "" when there is none.
+//
+// Prefer the explicitly stamped ldflag; otherwise recover the source root
+// dynamically from this binary's own compiled file paths. The dynamic path is
+// what makes the bridge work when forge runs EMBEDDED (e.g. `reliant forge
+// project new`), where the host binary's build never stamped forge's
+// DevForgeRoot — see buildinfo.DiscoverDevForgeRootFromSource.
+func devForgeBridgeRoot() string {
+	if root := buildinfo.DevForgeRoot; root != "" {
+		return root
+	}
+	return buildinfo.DiscoverDevForgeRootFromSource()
+}
+
+// checkScaffoldCanResolveForge refuses a service scaffold, BEFORE anything is
+// written, when this binary can neither pin forge in go.mod nor bridge the
+// project to forge's source with go.work. See scaffoldForgeResolution.
+func checkScaffoldCanResolveForge(kind string) error {
+	bridgeRoot := ""
+	if buildinfo.IsDevBuild() {
+		bridgeRoot = devForgeBridgeRoot()
+	}
+	return scaffoldForgeResolution(kind, buildinfo.InstallableVersion(), bridgeRoot)
+}
+
+// scaffoldForgeResolution is the pure decision behind
+// checkScaffoldCanResolveForge.
+//
+// A service scaffold imports github.com/reliant-labs/forge/pkg/*, so its
+// go.mod must get forge from SOMEWHERE: a `require` at a version a proxy can
+// serve (pinnedVersion), or a go.work `use` of a local checkout (bridgeRoot).
+// With neither, the scaffold used to proceed anyway and `go mod tidy` filled
+// the gap itself — resolving github.com/reliant-labs/forge/pkg/forgepb to the
+// longest module path that provides it, the RETIRED module
+// github.com/reliant-labs/forge/pkg v0.1.15. The project then failed its very
+// first `forge generate` with "requires the retired module", for a require
+// forge had written. A plain `task install` (-trimpath, so no discoverable
+// source) produced exactly that.
+//
+// Refusing up front is the honest outcome: nothing is written, and the error
+// names the two ways to get a binary that can resolve forge. CLI and library
+// kinds import no forge package, so they are unaffected.
+func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot string) error {
+	if kind != config.ProjectKindService || pinnedVersion != "" || bridgeRoot != "" {
+		return nil
+	}
+	return cliutil.UserErr(Name()+" project new (forge version)",
+		fmt.Sprintf("this forge (%s) cannot tell a new project where to get forge: it is not a version a "+
+			"module proxy can serve, so go.mod cannot require it, and it cannot find the forge source it "+
+			"was built from, so go.work cannot bridge to it. Scaffolding anyway would let `go mod tidy` "+
+			"pick the retired github.com/reliant-labs/forge/pkg module and the project would fail its "+
+			"first generate. Nothing was written", buildinfo.Version()),
+		"",
+		"use a forge that can resolve itself: install a published one "+
+			"(`go install github.com/reliant-labs/forge/cmd/forge@<version>`), or, from a forge checkout, "+
+			"`task install:dev` / `make dev`, which records the checkout so new projects bridge to it")
 }
 
 // resolveForgeVersionForHint describes what the scaffold's go.mod will

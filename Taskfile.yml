@@ -37,14 +37,25 @@ tasks:
       # correct --version and passes generate/lint/build, then fails EVERY
       # `forge run` / `env up` / `env render`. Do not drop this to make a
       # static binary without also solving plugin registration.
-      - CGO_ENABLED=1 go build -trimpath -buildvcs=true -o bin/forge ./cmd/forge
+      #
+      # DevForgeRoot is stamped here too, not only in install:dev. A binary
+      # built from a checkout is on no module proxy, so a scaffold cannot
+      # `require` it; -trimpath also erases the compile paths
+      # DiscoverDevForgeRootFromSource would otherwise find the checkout from.
+      # Without the stamp such a binary could neither pin nor bridge forge,
+      # and `go mod tidy` used to fill the gap with the retired
+      # github.com/reliant-labs/forge/pkg v0.1.15. `forge project new` now
+      # refuses that case outright; the stamp is what makes this target
+      # produce a binary that can scaffold at all.
+      - CGO_ENABLED=1 go build -trimpath -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" -o bin/forge ./cmd/forge
 
   install:
     desc: Install the CLI binary to $GOBIN (or $GOPATH/bin)
     cmds:
       # CGO_ENABLED=1: see the note on `build` above — without it the
-      # installed binary cannot render any environment.
-      - CGO_ENABLED=1 go install -trimpath -buildvcs=true ./cmd/forge
+      # installed binary cannot render any environment. DevForgeRoot: same
+      # note — a checkout build must know its checkout to scaffold.
+      - CGO_ENABLED=1 go install -trimpath -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
   install:dev:
     desc: "Contributor install: stamp the local forge source root so `forge project new` auto-bridges scaffolds to this checkout (gitignored go.work)"

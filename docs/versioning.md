@@ -45,7 +45,19 @@ proxy can serve it. That is exactly `buildinfo.InstallableVersion()`:
 | a dirty working tree                           | **nothing**                                                                                                          |
 
 The last two rows are the important ones. A local or dirty build exists nowhere
-a consumer could fetch it, so there is no version that describes it. forge used
+a consumer could fetch it, so there is no version that describes it.
+
+An EMBEDDED forge (`reliant forge …`) is judged by forge's own dependency entry,
+never by the host's build stamps: a host built from a checkout that got forge
+from the proxy (a go.sum hash, no `replace`) pins that forge version. Reading the
+host's `vcs.*` stamps instead made every released reliant pin nothing.
+
+A binary that can neither pin nor bridge (below) is refused by
+`forge project new` before anything is written. It used to scaffold anyway, and
+`go mod tidy` — with nothing requiring forge — resolved
+`github.com/reliant-labs/forge/pkg/*` to the retired `forge/pkg` module, so the
+project failed its first `forge generate`. `task build` and `task install`
+stamp the source root for exactly this reason. forge used
 to fall back to a `defaultPublishedForgePkgVersion` constant naming the last
 release — which told projects to require a version that could not satisfy the
 code being generated. That constant is gone, and an empty version now means

@@ -370,6 +370,50 @@ func InstallableVersion() string {
 	return v
 }
 
+// builtFromLocalCheckout reports whether FORGE'S OWN bytes in this binary
+// were compiled from a local working tree rather than served by a proxy.
+func builtFromLocalCheckout() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	return forgeBytesFromCheckout(info)
+}
+
+// forgeBytesFromCheckout is the pure decision behind builtFromLocalCheckout.
+//
+// STANDALONE (forge is the main module): any vcs.* setting means it was built
+// from a repository — the go command stamps them only then, and a module
+// extracted from the module cache carries none.
+//
+// EMBEDDED (forge is a dependency of a host binary, e.g. `reliant forge`): the
+// vcs.* settings describe the HOST's tree and say nothing about forge. Reading
+// them here was the bug — a released reliant is built from a checkout, so
+// every scaffold it made pinned no forge, and `go mod tidy` filled the gap
+// with the retired github.com/reliant-labs/forge/pkg v0.1.15. What decides it
+// is forge's own dep entry, the same rule IsDevBuild follows:
+//
+//   - a Replace (directory or otherwise) or a "(devel)" / empty version is a
+//     local checkout;
+//   - a real version WITH a go.sum hash (Sum) came from the module cache,
+//     which a proxy filled — so the proxy has it;
+//   - a real version with NO Sum has no evidence either way, and is treated
+//     as local: refusing to pin is recoverable (go.work), pinning an
+//     unfetchable version is not.
+func forgeBytesFromCheckout(info *debug.BuildInfo) bool {
+	dep, embedded := forgeModuleDep(info)
+	if !embedded {
+		return hasVCSStamps(info)
+	}
+	if dep.Replace != nil {
+		return true
+	}
+	if dep.Version == "" || dep.Version == "(devel)" {
+		return true
+	}
+	return dep.Sum == ""
+}
+
 // versionCameFromStamp reports whether Version() is answering from the
 // ldflags stamp rather than from build info. It mirrors versionFromInfo's
 // first branch, which is the one authority on that precedence.
@@ -378,20 +422,6 @@ func versionCameFromStamp() bool {
 	v := version
 	mu.RUnlock()
 	return v != "" && v != "dev"
-}
-
-// builtFromLocalCheckout reports whether this binary was compiled from a VCS
-// working tree rather than from a module the proxy served.
-//
-// Any vcs.* setting is sufficient: the go command stamps them only when
-// building from a repository, and a module extracted from the module cache
-// carries none.
-func builtFromLocalCheckout() bool {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return false
-	}
-	return hasVCSStamps(info)
 }
 
 // hasVCSStamps is the pure decision behind builtFromLocalCheckout, split out

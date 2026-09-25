@@ -61,10 +61,6 @@
 // digest names bytes, so a cache hit needs no freshness check beyond
 // confirming the tag still resolves to the digest already held.
 //
-// forge:exclude-contract
-// deployartifact is an inbound registry adapter (fetch + verify + unpack
-// an OCI artifact), the same shape as the outbound internal/deploytarget
-// providers that are already excluded. Its entry points are package-level
-// funcs over a Fetcher interface declared at the consumer; there is no
-// contract-shaped service here.
+//forge:lint-disable-next-line forge-exclude-contract-outbound-io: registry.go's oras client is the one outbound call; splitting it into a contract.go adapter behind Fetcher is tracked as CONTRACTS follow-up F2
+//forge:exclude-contract: fetch + verify + unpack of an OCI artifact over a consumer-declared Fetcher; entry points are package-level funcs
 package deployartifact

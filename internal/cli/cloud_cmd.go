@@ -13,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/pkg/credentials"
 )
 
 // controlPlaneDeclaration reads one environment's hosted control-plane
@@ -56,7 +57,7 @@ func declarationFromEntities(entities *KCLEntities) *cloud.Declaration {
 
 // resolveCloudTarget is the one path every hosted command takes: resolve
 // the endpoint from the ENV's declaration, then the credential by
-// precedence (flag > env var > login file).
+// precedence (flag > env var > credentials file entry for the endpoint).
 //
 // Order matters here. The endpoint resolves FIRST so that an env with no
 // declaration gets "this env declares no hosted control plane" rather
@@ -71,7 +72,7 @@ func resolveCloudTarget(ctx context.Context, envName, flagToken string) (cloud.E
 	if err != nil {
 		return cloud.Endpoint{}, cloud.Credential{}, err
 	}
-	cred, err := cloud.ResolveCredential(flagToken, ep.TokenEnv)
+	cred, err := cloud.ResolveCredential(flagToken, ep)
 	if err != nil {
 		return cloud.Endpoint{}, cloud.Credential{}, err
 	}
@@ -84,104 +85,136 @@ func resolveCloudTarget(ctx context.Context, envName, flagToken string) (cloud.E
 // fails with the --token hint instead of hanging the terminal.
 const loginCallbackTimeout = 5 * time.Minute
 
+// openLoginBrowser launches the browser for `forge login`. A seam so the
+// command's test drives the real flow against an httptest control plane
+// without opening anything.
+var openLoginBrowser = cloud.OpenBrowser
+
+// loginTarget resolves which control plane `forge login` / `forge logout`
+// act on: an env's KCL declaration, or an explicit --endpoint. Exactly one.
+// There is no default and no "current" server — a login lands in the file
+// under the endpoint it was made against, and a command finds it by the
+// endpoint ITS env declares.
+func loginTarget(ctx context.Context, args []string, endpoint string) (cloud.Endpoint, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	switch {
+	case len(args) == 1 && endpoint != "":
+		return cloud.Endpoint{}, fmt.Errorf("pass an env OR --endpoint, not both")
+	case len(args) == 1:
+		decl, err := controlPlaneDeclaration(ctx, args[0])
+		if err != nil {
+			return cloud.Endpoint{}, err
+		}
+		return cloud.ResolveEndpoint(args[0], decl)
+	case endpoint != "":
+		if _, err := credentials.Normalize(endpoint); err != nil {
+			return cloud.Endpoint{}, err
+		}
+		return cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: endpoint})
+	default:
+		return cloud.Endpoint{}, fmt.Errorf("name the control plane: `forge login <env>` (reads deploy/kcl/<env>/main.k's " +
+			"forge.ControlPlane) or `forge login --endpoint https://…`")
+	}
+}
+
 // newLoginCmd is `forge login`: obtain a credential for a hosted control
-// plane and store it locally.
+// plane and store it in the shared credentials file, keyed by endpoint.
 //
 // It STANDS ALONE. A user who wants to deploy to hosted infrastructure
-// without the reliant harness runs this and nothing else — forge shares
-// no code and no binary dependency with reliant's CLI, so `reliant auth
-// login` is never a prerequisite.
+// without the reliant harness runs this and nothing else — forge depends on
+// no reliant code, so `reliant auth login` is never a prerequisite. The two
+// CLIs share the FILE (forge/pkg/credentials), which forge owns.
 func newLoginCmd() *cobra.Command {
 	var (
-		envName  string
+		endpoint string
 		token    string
 		noVerify bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "login",
+		Use:   "login [env]",
 		Short: "Authenticate to a hosted control plane",
-		Long: `Obtain a credential for the hosted control plane an environment declares,
-and store it in ~/.forge/login.json (0600).
+		Long: `Obtain a credential for a hosted control plane and store it in the shared
+credentials file (` + credentialsPathForHelp() + `, 0600), keyed by the endpoint.
 
-INTERACTIVE (a human): opens your browser and starts a temporary HTTP
-server on a loopback port to receive the callback. The port is chosen by
-the OS, so two logins can run at once.
-
-NON-INTERACTIVE (CI): pass --token, or set the environment variable the
-environment declares (FORGE_CONTROL_PLANE_TOKEN by default). A pipeline
-has no browser, which is what machine tokens are for.
-
-The endpoint comes from the ENVIRONMENT's KCL, not from CLI state:
+The control plane is named by an ENVIRONMENT, whose KCL declares it:
 
     control_plane = forge.ControlPlane {
-        endpoint = "https://api.example.com"
+        endpoint = "https://admin.example.com"
     }
 
-so --env selects which declaration to read. There is no "current
-context" to get out of sync with the repository.
+or directly with --endpoint. There is no "current" server: every forge
+command finds its credential by the endpoint its own env declares, so a
+staging login is never presented to prod.
+
+INTERACTIVE (a human): the OAuth authorization-code flow with PKCE. forge
+opens your browser at <endpoint>/oauth/authorize, you sign in and approve,
+and the browser returns a one-time code to a temporary listener on a
+loopback port (chosen by the OS, so two logins can run at once). forge
+redeems it at <endpoint>/oauth/token for an access token (rlat_…, 90 days).
+
+NON-INTERACTIVE (CI): pass --token, or set the environment variable the
+environment declares (FORGE_CONTROL_PLANE_TOKEN by default) and skip login
+entirely. A pipeline has no browser, which is what org tokens are for.
 
 CREDENTIAL PRECEDENCE, when any forge command talks to the control plane:
 
     1. --token           explicit, beats everything
     2. $<token_env>      the env var the environment declares — CI
-    3. ~/.forge/login.json   what this command stored — a human's default
-
-Most explicit wins. The login file is last deliberately: it is the most
-ambient of the three, so a stale one must never shadow the credential CI
-just injected.`,
+    3. the credentials file entry for that env's endpoint — a human's default`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
-
-			decl, err := controlPlaneDeclaration(ctx, envName)
-			if err != nil {
-				return err
-			}
-			ep, err := cloud.ResolveEndpoint(envName, decl)
+			ep, err := loginTarget(ctx, args, endpoint)
 			if err != nil {
 				return err
 			}
 
-			var stored cloud.StoredLogin
-			if strings.TrimSpace(token) != "" {
-				stored = cloud.StoredLogin{Token: strings.TrimSpace(token), Endpoint: ep.URL}
+			var stored credentials.Credential
+			if t := strings.TrimSpace(token); t != "" {
+				// Verify a pasted token before storing, so a bad one fails
+				// HERE rather than at the first real command. A browser login
+				// needs no check: the server minted it seconds ago.
+				if !noVerify {
+					verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					defer cancel()
+					cred := cloud.Credential{Token: t, Source: cloud.SourceFlag, From: "--token"}
+					if err := cloud.VerifyToken(verifyCtx, ep, cred); err != nil {
+						return fmt.Errorf("the token was not accepted by %s: %w\n"+
+							"(pass --no-verify to store it anyway)", ep.URL, err)
+					}
+				}
+				stored = credentials.Credential{Token: t, CreatedAt: time.Now().UTC()}
 			} else {
 				stored, err = cloud.BrowserLogin{
 					Endpoint: ep,
 					Out:      out,
 					Timeout:  loginCallbackTimeout,
+					OpenURL:  openLoginBrowser,
 				}.Run(ctx)
 				if err != nil {
 					return err
 				}
 			}
 
-			// Verify before storing, so a bad token fails HERE rather
-			// than at the first real command — where it would look like
-			// a problem with that command instead of with the login.
-			if !noVerify {
-				verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				defer cancel()
-				cred := cloud.Credential{Token: stored.Token, Source: cloud.SourceFlag, From: "the credential just obtained"}
-				if err := cloud.VerifyToken(verifyCtx, ep, cred); err != nil {
-					return fmt.Errorf("the credential was not accepted by %s: %w\n"+
-						"(pass --no-verify to store it anyway)", ep.URL, err)
-				}
-			}
-
-			path, err := cloud.LoginFilePath()
+			path, err := cloud.CredentialsPath()
 			if err != nil {
 				return err
 			}
-			if err := cloud.WriteLogin(path, stored); err != nil {
+			if err := credentials.Store(path, ep.URL, cloud.ClientID, stored); err != nil {
 				return fmt.Errorf("store credential: %w", err)
 			}
-
-			fmt.Fprintf(out, "Logged in to %s\n", ep.URL)
-			fmt.Fprintf(out, "  Declared by: env %q\n", ep.Env)
-			if stored.Account != "" {
-				fmt.Fprintf(out, "  Account:     %s\n", stored.Account)
+			key, _ := credentials.Normalize(ep.URL)
+			fmt.Fprintf(out, "Logged in to %s\n", key)
+			if ep.Env != "" {
+				fmt.Fprintf(out, "  Declared by: env %q\n", ep.Env)
+			}
+			if len(stored.Scopes) > 0 {
+				fmt.Fprintf(out, "  Scopes:      %s\n", strings.Join(stored.Scopes, " "))
+			}
+			if stored.ExpiresAt != nil {
+				fmt.Fprintf(out, "  Expires:     %s\n", stored.ExpiresAt.Format(time.RFC3339))
 			}
 			fmt.Fprintf(out, "  Credential:  %s\n", path)
 			fmt.Fprintf(out, "\nIn CI, set %s instead — it takes precedence over this file.\n", ep.TokenEnv)
@@ -189,10 +222,56 @@ just injected.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&envName, "env", "prod", "Environment whose control_plane declaration names the endpoint")
-	cmd.Flags().StringVar(&token, "token", "", "Use this token instead of a browser flow (for CI)")
-	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "Store the credential without checking it against the endpoint")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Control plane URL, instead of reading an env's declaration")
+	cmd.Flags().StringVar(&token, "token", "", "Store this token instead of running the browser flow")
+	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "With --token: store it without checking it against the endpoint")
 	return cmd
+}
+
+// newLogoutCmd is `forge logout`: drop ONE endpoint's entry from the shared
+// credentials file. Every other endpoint's entry — including reliant's — is
+// untouched. The token itself stays valid server-side until it expires or is
+// revoked in the web UI; logout forgets it locally, which is all a CLI can
+// honestly promise.
+func newLogoutCmd() *cobra.Command {
+	var endpoint string
+	cmd := &cobra.Command{
+		Use:   "logout [env]",
+		Short: "Forget the stored credential for one control plane",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ep, err := loginTarget(cmd.Context(), args, endpoint)
+			if err != nil {
+				return err
+			}
+			path, err := cloud.CredentialsPath()
+			if err != nil {
+				return err
+			}
+			existed, err := credentials.Remove(path, ep.URL, cloud.ClientID)
+			if err != nil {
+				return err
+			}
+			key, _ := credentials.Normalize(ep.URL)
+			if !existed {
+				fmt.Fprintf(cmd.OutOrStdout(), "Not logged in to %s (nothing in %s)\n", key, path)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Logged out of %s (removed from %s)\n", key, path)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Control plane URL, instead of reading an env's declaration")
+	return cmd
+}
+
+// credentialsPathForHelp renders the file location for --help without
+// failing help when HOME is unset.
+func credentialsPathForHelp() string {
+	if p, err := cloud.CredentialsPath(); err == nil {
+		return p
+	}
+	return "~/.config/forge/credentials.json"
 }
 
 // newCloudCmd is `forge cloud`: commands that talk to the hosted control
@@ -257,7 +336,7 @@ func newCloudStatusCmd() *cobra.Command {
 				fmt.Fprintf(out, "  org:       %s\n", ep.Organization)
 			}
 
-			cred, err := cloud.ResolveCredential(token, ep.TokenEnv)
+			cred, err := cloud.ResolveCredential(token, ep)
 			if err != nil {
 				fmt.Fprintf(out, "  credential: NONE\n")
 				return err
@@ -268,7 +347,7 @@ func newCloudStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the login file")
+	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
 	return cmd
 }
 
@@ -300,7 +379,8 @@ func newCloudReleasesCmd() *cobra.Command {
 		Long: `List the releases the hosted control plane holds for your organization.
 
 The endpoint comes from <env>'s forge.ControlPlane declaration; the
-credential from --token, then the declared env var, then ~/.forge/login.json.
+credential from --token, then the declared env var, then the credentials file entry for
+that endpoint (` + "`forge login <env>`" + `).
 
 Scope is always the caller's own organization — the request carries no
 organization field, so there is nothing to widen.`,
@@ -313,7 +393,7 @@ organization field, so there is nothing to widen.`,
 			return runCloudReleases(cmd.Context(), cloud.NewClient(ep, cred), limit, jsonOutput, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the login file")
+	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
 	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum releases to return")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit the raw response as JSON")
 	return cmd

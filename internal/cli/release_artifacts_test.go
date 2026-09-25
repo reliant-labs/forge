@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // writeArtifactFixture writes content at path, creating parents. Fails the
@@ -63,8 +65,8 @@ func TestHarvestNPMArtifacts_RecordsNameVersionAndIntegrity(t *testing.T) {
 	if !ok {
 		t.Fatalf("no artifact for @acme/runtime; got %+v", got)
 	}
-	if art.EffectiveKind() != ArtifactKindNPM {
-		t.Errorf("kind = %q, want %q", art.EffectiveKind(), ArtifactKindNPM)
+	if art.Kind != release.KindNPM {
+		t.Errorf("kind = %q, want %q", art.Kind, release.KindNPM)
 	}
 	if art.Version != "0.3.1" {
 		t.Errorf("version = %q, want 0.3.1", art.Version)
@@ -174,8 +176,8 @@ func TestHarvestGoModuleArtifacts_RecordsVersionAndSum(t *testing.T) {
 	if !ok {
 		t.Fatalf("no artifact for the nested module; got %+v", harvestGoModuleArtifacts(dir))
 	}
-	if art.EffectiveKind() != ArtifactKindGoModule {
-		t.Errorf("kind = %q, want %q", art.EffectiveKind(), ArtifactKindGoModule)
+	if art.Kind != release.KindGoModule {
+		t.Errorf("kind = %q, want %q", art.Kind, release.KindGoModule)
 	}
 	if art.Version != "v0.1.14" {
 		t.Errorf("version = %q, want v0.1.14", art.Version)
@@ -247,8 +249,8 @@ func TestHarvestFileArtifacts_HashesDeclaredBinaries(t *testing.T) {
 	if !ok {
 		t.Fatalf("no artifact for reliant-daemon-prod; got %+v", got)
 	}
-	if art.EffectiveKind() != ArtifactKindFile {
-		t.Errorf("kind = %q, want %q", art.EffectiveKind(), ArtifactKindFile)
+	if art.Kind != release.KindFile {
+		t.Errorf("kind = %q, want %q", art.Kind, release.KindFile)
 	}
 	// The canonical sha256 of "prod-binary-bytes". Pinning the literal hash
 	// (rather than merely "some sha256:-shaped string") is what proves the
@@ -348,19 +350,19 @@ func TestHarvestFileArtifacts_NilEntitiesIsEmpty(t *testing.T) {
 // non-OCI artifact from being READ as a digest, this stops one from evicting a
 // real digest in the first place.
 func TestMergeReleaseArtifacts_NeverDisplacesImages(t *testing.T) {
-	dst := map[string]ReleaseArtifact{
-		"reliant": {Kind: ArtifactKindOCI, Mode: "shared", Digests: map[string]string{"*": sha("a")}},
+	dst := map[string]release.Artifact{
+		"reliant": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}},
 	}
-	added := mergeReleaseArtifacts(dst, map[string]ReleaseArtifact{
-		"reliant":  {Kind: ArtifactKindNPM, Mode: "shared", Version: "1.0.0", Integrity: "sha512-x"},
-		"@acme/ui": {Kind: ArtifactKindNPM, Mode: "shared", Version: "2.0.0", Integrity: "sha512-y"},
+	added := mergeReleaseArtifacts(dst, map[string]release.Artifact{
+		"reliant":  {Kind: release.KindNPM, Mode: release.ModeShared, Version: "1.0.0", Integrity: "sha512-x"},
+		"@acme/ui": {Kind: release.KindNPM, Mode: release.ModeShared, Version: "2.0.0", Integrity: "sha512-y"},
 	})
 	if added != 1 {
 		t.Errorf("added = %d, want 1 (the colliding name must not count)", added)
 	}
 	art := dst["reliant"]
-	if art.EffectiveKind() != ArtifactKindOCI {
-		t.Fatalf("image artifact was displaced: kind = %q", art.EffectiveKind())
+	if art.Kind != release.KindOCI {
+		t.Fatalf("image artifact was displaced: kind = %q", art.Kind)
 	}
 	if d, ok := art.SharedDigest(); !ok || d != sha("a") {
 		t.Errorf("image digest lost: got (%q, %v), want (%q, true)", d, ok, sha("a"))
@@ -395,8 +397,8 @@ func TestHarvestReleaseArtifacts_UnaffectedByNonOCIKinds(t *testing.T) {
 	if !ok {
 		t.Fatalf("image missing after adding package state: %+v", after)
 	}
-	if art.EffectiveKind() != ArtifactKindOCI {
-		t.Errorf("kind = %q, want %q", art.EffectiveKind(), ArtifactKindOCI)
+	if art.Kind != release.KindOCI {
+		t.Errorf("kind = %q, want %q", art.Kind, release.KindOCI)
 	}
 	if d, _ := art.SharedDigest(); d != sha("a") {
 		t.Errorf("digest = %q, want %q", d, sha("a"))

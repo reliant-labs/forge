@@ -546,15 +546,42 @@ func TestExternal_EnvFileVar_StillExposed(t *testing.T) {
 }
 
 // TestExpandVars_Basic confirms the substitution helper handles the
-// documented ${X} tokens and leaves unknown keys empty.
+// documented ${X} tokens and leaves every key it was not given intact.
 func TestExpandVars_Basic(t *testing.T) {
 	got := expandVars("a=${A} b=${B} unknown=${X}", map[string]string{
 		"A": "alpha",
 		"B": "beta",
 	})
-	want := "a=alpha b=beta unknown="
+	want := "a=alpha b=beta unknown=${X}"
 	if got != want {
 		t.Errorf("expand: want %q, got %q", want, got)
+	}
+}
+
+// TestExpandVars_LeavesShellVariablesIntact is the F2 regression. A
+// deploy/build command is a shell program with a few forge tokens in it;
+// with os.Expand semantics the script's OWN variables were substituted to
+// "" before `sh -c` ever saw them, so `"$W/root"` became `"/root"`.
+func TestExpandVars_LeavesShellVariablesIntact(t *testing.T) {
+	vars := map[string]string{"IMAGE": "img", "TAG": "v1", "LAST_TAG": ""}
+	cases := []struct{ in, want string }{
+		{`W=$(mktemp -d); cp bin "$W/root"; tar -C "$W" .`, `W=$(mktemp -d); cp bin "$W/root"; tar -C "$W" .`},
+		{`echo ${HOME} $PATH`, `echo ${HOME} $PATH`},
+		{`push $IMAGE:$TAG`, `push img:v1`},
+		{`push ${IMAGE}:${TAG}`, `push img:v1`},
+		// Longest-identifier rule, as sh reads it: $IMAGE_NAME is the
+		// script's variable, never ${IMAGE} followed by "_NAME".
+		{`echo $IMAGE_NAME`, `echo $IMAGE_NAME`},
+		// A present-but-empty forge token is still forge's.
+		{`prev=${LAST_TAG}.`, `prev=.`},
+		// Shell syntax forge never owns.
+		{`echo $$ $1 $@ $? $(date) $`, `echo $$ $1 $@ $? $(date) $`},
+		{`echo ${UNCLOSED`, `echo ${UNCLOSED`},
+	}
+	for _, c := range cases {
+		if got := ExpandVars(c.in, vars); got != c.want {
+			t.Errorf("ExpandVars(%q):\n want %q\n  got %q", c.in, c.want, got)
+		}
 	}
 }
 

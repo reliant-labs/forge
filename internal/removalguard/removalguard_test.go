@@ -182,12 +182,14 @@ var removals = []removal{
 					"do with the removed `Authorize` policy hook, role checks or RBAC.\n" +
 					"The `Authorize[A-Z]` pattern above was written for AuthorizeHook / " +
 					"AuthorizeFunc / AuthorizeOptions — a POLICY callback deciding what a caller " +
-					"may do. Scoped by path to the two OAuth clients (the Go pkg/oauth2 and the " +
-					"scaffolded browser flow) and by token to the endpoint spellings, so an " +
+					"may do. Scoped by path to the OAuth clients (the Go pkg/oauth2, forge " +
+					"login's driver of it in internal/cloud/login.go, and the scaffolded " +
+					"browser flow) and by token to the endpoint spellings, so an " +
 					"`AuthorizeHook` or a role check appearing in these same files still fails.",
 				Token: regexp.MustCompile(`Authorize(?:Request|Url|URL|Endpoint|Params?)\b`),
 				Paths: []string{
 					"pkg/oauth2/",
+					"internal/cloud/login.go",
 					"internal/templates/frontend/shared-web/src/lib/auth/",
 				},
 			},

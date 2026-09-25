@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // gitHeadSHA reads the HEAD commit of a repo dir. Test helper for the
@@ -220,27 +222,20 @@ func TestResolveDeployImageTag_NoCommitSkipsFreshnessCheck(t *testing.T) {
 // `forge env promote` pair leaves behind.
 func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
 	t.Helper()
-	if err := WriteRelease(dir, Release{
-		Version:   version,
-		Git:       ReleaseGit{Commit: builtCommit, Tag: version},
-		CreatedAt: nowRFC3339(),
-		Artifacts: map[string]ReleaseArtifact{
-			"app": {Mode: "shared", Digests: map[string]string{sharedVariantKey: sha("a")}},
+	if err := WriteRelease(dir, release.Release{
+		Version: version,
+		Git:     release.Git{Commit: builtCommit, Tag: version},
+		Artifacts: map[string]release.Artifact{
+			"app": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: sha("a")}},
 		},
 	}); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
-	er, err := ReadEnvReleases(dir)
-	if err != nil {
-		t.Fatalf("read env releases: %v", err)
-	}
-	er.Bindings[envName] = EnvBinding{
-		Release:    version,
-		Resolved:   map[string]string{"app": sha("a")},
-		PromotedAt: nowRFC3339(),
-	}
-	if err := WriteEnvReleases(dir, *er); err != nil {
-		t.Fatalf("write env releases: %v", err)
+	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+		Env: envName, Release: version, Kind: release.KindPromote,
+		Resolved: map[string]string{"app": sha("a")},
+	}); err != nil {
+		t.Fatalf("promote: %v", err)
 	}
 }
 

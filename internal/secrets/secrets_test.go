@@ -399,3 +399,33 @@ func TestValidateDeclaredRefs_OptionalDoesNotExemptItsNeighbours(t *testing.T) {
 		t.Errorf("the optional secret was reported as missing: %v", err)
 	}
 }
+
+// TestNewProvider_Hosted_NeverResolves pins the hosted provider's defining
+// property: values live in the control plane and are materialized in-cluster,
+// so forge — on a laptop or in CI — can never produce one. Nothing it returns
+// may be a value, and it renders no plaintext Secret.
+func TestNewProvider_Hosted_NeverResolves(t *testing.T) {
+	// A path that DOES hold values, so a hosted provider that fell through to
+	// the file behaviour would be caught returning them.
+	path := writeDotenv(t, "STRIPE_KEY=sk_live_canary\n")
+	p, err := NewProvider(&ProviderConfig{Type: "hosted", Path: path})
+	if err != nil {
+		t.Fatalf("NewProvider hosted: %v", err)
+	}
+	if p.Kind() != "hosted" {
+		t.Errorf("Kind: got %q, want hosted", p.Kind())
+	}
+	if v, ok := p.Resolve("STRIPE_KEY"); ok || v != "" {
+		t.Error("hosted Resolve returned a value")
+	}
+	if p.All() != nil {
+		t.Error("hosted All returned values")
+	}
+	refs := []SecretRef{{EnvName: "STRIPE_KEY", SecretName: "s", SecretKey: "k"}}
+	if got := RenderK8sSecrets(p, refs, "prod"); got != nil {
+		t.Errorf("hosted rendered %d plaintext Secret(s); values must only be materialized in-cluster", len(got))
+	}
+	if err := ValidateDeclaredRefs(p, refs, ""); err != nil {
+		t.Errorf("hosted validate should be nil (forge cannot see hosted values): %v", err)
+	}
+}

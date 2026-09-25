@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/deploy"
+	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // buildDeployGroups walks the rendered entities and produces the
@@ -41,6 +44,13 @@ func buildDeployGroupsWithOpts(envName string, entities *KCLEntities, fallbackNa
 func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace string) ([]deploytarget.ServiceGroup, error) {
 	if entities == nil {
 		return nil, nil
+	}
+	// A Bundle that declares a control plane deploys THROUGH it — every
+	// workload, as one hosted group. This is the single selection point, and
+	// it is declarative: the same KCL chooses the same destination on every
+	// machine, with no flag that could route a hosted env to a kubeconfig.
+	if entities.ControlPlane != nil {
+		return buildHostedGroups(envName, entities)
 	}
 
 	// Resolve the bundle's secret provider once. For a dotenv provider,
@@ -92,57 +102,49 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 				namespace = fallbackNamespace
 			}
 			// A SimpleBackend deploys through the k8s-cluster PROVIDER,
-			// not one of its own — and that is the whole design, not a
-			// shortcut. Its manifests were already projected onto the
-			// cluster shape inside KCL (_project_simple_backend), so what
-			// reaches `kubectl apply` is an ordinary Deployment+Service.
-			// Routing it to a second provider would mean a second
-			// implementation of apply, prune, rollout-wait, the
-			// per-group --context discipline and multi-cluster scoping,
-			// all of which K8sClusterProvider already does correctly
-			// against clusters forge did not create.
+			// not one of its own, and that is the design rather than a
+			// shortcut. Its objects come from pkg/deploy.Render (expanded
+			// from the forge.dev declaration record at manifest
+			// extraction), and they are ordinary Deployment/Service/PVC
+			// objects. So apply, prune, rollout-wait, the per-group
+			// --context discipline and multi-cluster scoping are the ones
+			// K8sClusterProvider already implements against clusters forge
+			// did not create.
 			//
 			// The tier stays VISIBLE where visibility matters: the entity
-			// contract keeps the `simple-backend` discriminator, so
-			// `forge env render` and `forge project audit` report it.
-			// What is shared here is the deploy MECHANISM, which is
-			// genuinely the same mechanism.
+			// contract keeps the `simple-backend` discriminator, so `forge
+			// env render` and `forge project audit` report it.
 			//
-			// Registry is deliberately empty: a SimpleBackend's image is
-			// the app owner's own, fully qualified and pinned, and the
-			// group key is (cluster, namespace, registry) — so these group
-			// by their own namespace rather than joining an ordinary
-			// cluster group that happens to share one.
+			// Registry is deliberately empty. The image is the app owner's
+			// own, fully qualified and pinned, and the group key is
+			// (cluster, namespace, registry), so these group by their own
+			// namespace rather than joining an ordinary cluster group that
+			// happens to share one.
+			domain := ""
+			if len(sb.Spec.Domains) > 0 {
+				domain = sb.Spec.Domains[0]
+			}
+			var ports []int
+			for _, p := range sb.Spec.Ports {
+				ports = append(ports, int(p))
+			}
 			raw = append(raw, deploytarget.RawService{
 				Name: svc.Name,
 				K8sCluster: &deploytarget.RawK8sCluster{
 					Cluster:   sb.Cluster,
 					Namespace: namespace,
-					Domain:    sb.Domain,
+					Domain:    domain,
 					Spec: &deploytarget.K8sClusterSpec{
-						// Always 1 — the schema declares no replicas
-						// field, because storage_gib renders a
-						// ReadWriteOnce PVC that a multi-replica
-						// Deployment cannot roll over. See the
-						// SimpleBackend docstring in kcl/schema.k.
+						// Always 1. The spec declares no replicas: storageGiB
+						// renders a ReadWriteOnce PVC that a multi-replica
+						// Deployment cannot roll over.
 						Replicas: 1,
-						Ports:    sb.Ports,
-						// The PVC forge emits for this tier, named for
-						// the observer's benefit. `storage_gib` is the
-						// one place forge CREATES a claim rather than
-						// referencing one (_render_simple_backend_pvc in
-						// kcl/render.k), and a claim forge creates is one
-						// it must be able to read back — an unbound PVC
-						// shows up on the Deployment only as "0/1 ready",
-						// which names the symptom and not the cause.
-						//
-						// The name is derived here, at the one place that
-						// already knows this service is a SimpleBackend,
-						// rather than in the provider: the provider sees
-						// an ordinary cluster group by design, and
-						// teaching it to re-derive "<name>-data" would
-						// give forge a second opinion about a name the
-						// render owns.
+						Ports:    ports,
+						// The PVC this tier CREATES, named for the
+						// observer. A claim forge creates is one it must be
+						// able to read back, because an unbound PVC shows up
+						// on the Deployment only as "0/1 ready", which names
+						// the symptom and not the cause.
 						OwnedClaims: simpleBackendOwnedClaims(svc.Name, sb),
 					},
 				},
@@ -220,20 +222,18 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 }
 
 // simpleBackendOwnedClaims names the PersistentVolumeClaims forge emits
-// for one SimpleBackend service — one, "<name>-data", when the service
-// declares storage_gib, and none otherwise.
+// for one SimpleBackend service: one, the renderer's own PVC name, when the
+// service declares storage, and none otherwise.
 //
-// It mirrors _render_simple_backend_pvc in kcl/render.k, and the mirror
-// is the point of pinning it in a named function rather than inlining
-// the sprintf: the render decides the name and this has to agree with
-// it, so the duplication is worth being visible and testable rather than
-// buried in a struct literal. TestSimpleBackendOwnedClaims_MatchTheKCLRender
-// asserts the two still agree against the real rendered manifests.
+// The name comes from pkg/deploy.PVCName, the SAME function Render names the
+// claim with, so the observer and the renderer cannot disagree about it. The
+// KCL-era version re-derived "<name>-data" by hand and needed a test to keep
+// the two copies in step.
 func simpleBackendOwnedClaims(svcName string, sb *SimpleBackendSpec) []string {
-	if sb == nil || sb.StorageGiB <= 0 {
+	if sb == nil || sb.Spec.StorageGiB <= 0 {
 		return nil
 	}
-	return []string{svcName + "-data"}
+	return []string{deploy.PVCName(svcName)}
 }
 
 // dispatchDeployGroups runs every group through its provider. Per-
@@ -611,4 +611,114 @@ func declaredEnvContext(groups []deploytarget.ServiceGroup) string {
 		}
 	}
 	return ""
+}
+
+// hostedTierNames is the refusal's vocabulary: the three deploy tiers a
+// control plane runs.
+const hostedTierNames = "forge.SimpleBackend (backend), forge.ManagedDatabase (database, on Bundle.databases) or forge.StaticSite (static)"
+
+// buildHostedGroups turns a hosted env's entities into ONE "hosted" group.
+//
+// Every service must be a tier. A service with no deploy block, or a
+// build-only one, is allowed through untouched: it deploys nothing (it may
+// only BUILD the image a backend names). Anything else — a K8sCluster, an
+// External command, compose, a host process — has no meaning on a control
+// plane, and is refused with the tiers named rather than silently dropped: a
+// hosted deploy that quietly skipped half the env would report success for an
+// environment that is not running.
+//
+// The group's Hosted target (endpoint, release, digests) is filled in by the
+// caller, which owns the credential and the ledger read.
+func buildHostedGroups(envName string, entities *KCLEntities) ([]deploytarget.ServiceGroup, error) {
+	var (
+		services []deploytarget.ResolvedService
+		refused  []string
+	)
+	for _, svc := range entities.Services {
+		switch svc.Deploy.Type {
+		case "simple-backend":
+			if svc.Deploy.SimpleBackend == nil {
+				continue
+			}
+			spec := svc.Deploy.SimpleBackend.Spec
+			services = append(services, deploytarget.ResolvedService{
+				Name: svc.Name,
+				Hosted: &deploytarget.HostedWorkload{
+					Tier: deploytarget.HostedTierBackend, Backend: &spec, Artifact: hostedArtifactKey(svc),
+				},
+			})
+		case "", "build-only":
+			// Deploys nothing; see the doc comment.
+		default:
+			refused = append(refused, fmt.Sprintf("%s (deploy type %q)", svc.Name, svc.Deploy.Type))
+		}
+	}
+	for _, o := range entities.Operators {
+		refused = append(refused, fmt.Sprintf("%s (operator)", o.Name))
+	}
+	for _, c := range entities.CronJobs {
+		refused = append(refused, fmt.Sprintf("%s (cronjob)", c.Name))
+	}
+	for _, f := range entities.Frontends {
+		switch {
+		case f.Deploy == nil || f.Deploy.Type == "":
+		case f.Deploy.Type == "static-site" && f.Deploy.StaticSite != nil:
+			services = append(services, deploytarget.ResolvedService{
+				Name:   f.Name,
+				Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f.Deploy.StaticSite), Artifact: f.Name},
+			})
+		default:
+			refused = append(refused, fmt.Sprintf("%s (frontend deploy type %q)", f.Name, f.Deploy.Type))
+		}
+	}
+	if len(refused) > 0 {
+		return nil, fmt.Errorf("env %q is hosted (its Bundle declares control_plane), so every workload must be a deploy tier: %s.\n"+
+			"  Not a tier: %s\n"+
+			"  fix: redeclare each as a tier, or move it to an env without control_plane",
+			envName, hostedTierNames, strings.Join(refused, ", "))
+	}
+	for _, db := range entities.Databases {
+		spec := db.Spec
+		services = append(services, deploytarget.ResolvedService{
+			Name:   db.Name,
+			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierDatabase, Database: &spec},
+		})
+	}
+	if len(services) == 0 {
+		return nil, nil
+	}
+	return []deploytarget.ServiceGroup{{
+		Env:        envName,
+		ProviderID: deploytarget.HostedProviderID,
+		Services:   services,
+	}}, nil
+}
+
+// hostedStaticSpec projects a StaticSite frontend onto the DEPLOYED half of
+// forge's StaticSiteSpec. Build inputs (public_dir, bundle) are consumed by
+// `forge build` and are not part of the deployed spec; bucket and cdn are
+// refused on a hosted env by the Bundle check, so none reaches here. The
+// liveDigest is pinned later, from the bound release.
+func hostedStaticSpec(ss *StaticSiteDeploy) *v1alpha1.StaticSiteSpec {
+	keep := int32(ss.KeepReleases)
+	return &v1alpha1.StaticSiteSpec{BasePath: ss.BasePath, KeepReleases: &keep}
+}
+
+// hostedArtifactKey is the ONE rule for which release artifact a hosted
+// backend's digest is bound under, shared by `forge release cut` (which
+// records it) and the hosted deploy (which pins by it):
+//
+//   - the service's own `image`, when declared — that is the key forge's
+//     build state records a pushed image under, so a backend whose image
+//     this project builds resolves to the digest the build captured;
+//   - otherwise the spec image's last path segment
+//     (deploytarget.HostedArtifactName), for an image built elsewhere.
+func hostedArtifactKey(svc ServiceEntity) string {
+	if svc.Image != "" {
+		return svc.Image
+	}
+	if svc.Deploy.SimpleBackend == nil {
+		return ""
+	}
+	return deploytarget.HostedArtifactName(svc.Deploy.SimpleBackend.Spec.Image)
 }

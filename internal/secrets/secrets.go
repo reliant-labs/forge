@@ -22,6 +22,9 @@
 //   - "dotenv": REMOVED. It injected the whole file into every host
 //     service, so values never had to be declared. NewProvider returns a
 //     hard error naming `forge secret migrate`.
+//   - "hosted": values live in the env's hosted control plane (write-only
+//     API) and are materialized in-cluster by it. forge never sees them;
+//     `forge secret set/list/unset` write/list through the control plane.
 //   - "external" (prod/staging): forge never sees values. k8s references
 //     pre-existing Secrets (External Secrets Operator / sealed); host &
 //     external runtimes obtain secrets via workload identity / ambient
@@ -32,10 +35,8 @@
 // import cycle (cli depends on secrets, not the reverse). It reuses
 // only the stdlib for its own file reads — no cycle risk.
 //
-// forge:exclude-contract
-// secrets is a secret-reference→value resolution utility (per-env dir /
-// external providers), not a contract-shaped service. Opt out of the
-// require-contract rule.
+//forge:lint-disable-next-line forge-exclude-contract-multi-impl: Provider (file/external/hosted/layered/noop, chosen by NewProvider) IS a strategy contract; moving it to contract.go is tracked as CONTRACTS follow-up F2
+//forge:exclude-contract: secret-reference → value resolution for the CLI
 package secrets
 
 import (
@@ -51,7 +52,7 @@ import (
 
 // Provider resolves declared secret references to values for one env.
 type Provider interface {
-	Kind() string // "file" | "external" | "none"
+	Kind() string // "file" | "external" | "hosted" | "none"
 	// Resolve returns the value for an env var by NAME (the key in the
 	// store == the EnvVar.name). ok=false
 	// when this provider has no value for name.
@@ -88,6 +89,8 @@ func NewProvider(cfg *ProviderConfig) (Provider, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
 	case "external":
 		return externalProvider{}, nil
+	case "hosted":
+		return hostedProvider{}, nil
 	case "file":
 		local, err := readStoreAllowingMissing(cfg.Path)
 		if err != nil {
@@ -116,7 +119,7 @@ func NewProvider(cfg *ProviderConfig) (Provider, error) {
 				"     then declare `secret_provider = forge.FileSecrets {path = \"secrets/<env>.yaml\"}`",
 			cfg.Path)
 	default:
-		return nil, fmt.Errorf("unknown secret provider type %q (expected \"file\" or \"external\")", cfg.Type)
+		return nil, fmt.Errorf("unknown secret provider type %q (expected \"file\", \"external\" or \"hosted\")", cfg.Type)
 	}
 }
 
@@ -134,6 +137,22 @@ type externalProvider struct{}
 func (externalProvider) Kind() string                  { return "external" }
 func (externalProvider) Resolve(string) (string, bool) { return "", false }
 func (externalProvider) All() map[string]string        { return nil }
+
+// hostedProvider declares that values live in the hosted control plane's
+// secret store (the env's forge.ControlPlane) and are MATERIALIZED IN-CLUSTER
+// by that control plane, into the Secret every managedSecret env var reads.
+//
+// It resolves NOTHING, exactly like externalProvider, and that is the design
+// rather than an unfinished feature: the store's API is write-only (no RPC
+// returns a value), so no forge process — a developer laptop, a CI runner —
+// ever holds a hosted value. Writes (`forge secret set <hosted-env>`) go through
+// a separate writer the CLI declares at its call site; this type is only the
+// resolve half, and it must stay value-free.
+type hostedProvider struct{}
+
+func (hostedProvider) Kind() string                  { return "hosted" }
+func (hostedProvider) Resolve(string) (string, bool) { return "", false }
+func (hostedProvider) All() map[string]string        { return nil }
 
 // fileProvider resolves values from a single gitignored YAML file: a flat
 // map of env-var NAME -> value.

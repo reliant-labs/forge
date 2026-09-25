@@ -697,6 +697,13 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
                 "forge.dev/job-name" = _name
                 "forge.dev/spec-hash" = crypto.sha256(str(_pod_spec))[:10]
             }
+            # WHEN this Job runs relative to the deploy's workloads — see
+            # CronJob.deploy_phase. Always stated, so the rendered manifest
+            # says what the deploy will do rather than leaving it to a
+            # default a reader has to know. On the Job's metadata, NOT its
+            # pod template: the name hashes the pod spec, and declaring a
+            # phase must not rename (and so re-run) a completed Job.
+            annotations = {"forge.dev/deploy-phase" = cj.deploy_phase or "pre-rollout"}
         }
         spec = {
             ttlSecondsAfterFinished = 86400

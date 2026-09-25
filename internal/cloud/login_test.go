@@ -2,86 +2,84 @@ package cloud
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestBrowserLogin_RoundTripsTheCallback drives the whole interactive
-// flow with a fake "browser": OpenURL is handed the authorize URL and,
-// instead of rendering it, extracts the redirect_uri and state and hits
-// the callback the way a real browser would after the user approves.
-//
-// This exercises the listener, the state check and the credential
-// hand-back without opening anything.
-func TestBrowserLogin_RoundTripsTheCallback(t *testing.T) {
-	ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: "https://api.example.com"})
-	if err != nil {
-		t.Fatal(err)
-	}
+// fakeControlPlane plays the control plane's /oauth/authorize (approving
+// immediately, as if the user had) and /oauth/token (checking the verifier
+// against the recorded challenge).
+func fakeControlPlane(t *testing.T) (*httptest.Server, *url.Values) {
+	t.Helper()
+	var req url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/authorize":
+			req = r.URL.Query()
+			back, _ := url.Parse(req.Get("redirect_uri"))
+			back.RawQuery = url.Values{"code": {"c1"}, "state": {req.Get("state")}}.Encode()
+			http.Redirect(w, r, back.String(), http.StatusFound)
+		case "/oauth/token":
+			_ = r.ParseForm()
+			sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
+			if base64.RawURLEncoding.EncodeToString(sum[:]) != req.Get("code_challenge") ||
+				r.PostForm.Get("client_id") != ClientID {
+				w.WriteHeader(400)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "rlat_ABCDEFGHijklmnop", "token_type": "Bearer",
+				"expires_in": 3600, "scope": "deploy:read deploy:write",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &req
+}
 
-	login := BrowserLogin{
-		Endpoint: ep,
-		Timeout:  10 * time.Second,
-		Out:      io.Discard,
-		OpenURL: func(authorizeURL string) error {
-			redirect, state := redirectAndState(t, authorizeURL)
-			go func() {
-				resp, err := http.Get(redirect + "?state=" + state + "&token=browser-issued&account=dev@example.com")
-				if err == nil {
-					_ = resp.Body.Close()
-				}
-			}()
-			return nil
-		},
-	}
+func followBrowser(u string) error {
+	go func() {
+		if resp, err := http.Get(u); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	return nil
+}
 
-	stored, err := login.Run(context.Background())
+// TestBrowserLogin_PKCECodeFlow drives the whole interactive flow against
+// the control plane's two endpoints, with a fake "browser" that follows the
+// redirects the way a real one would.
+func TestBrowserLogin_PKCECodeFlow(t *testing.T) {
+	cp, req := fakeControlPlane(t)
+	ep, _ := ResolveEndpoint("prod", &Declaration{Endpoint: cp.URL})
+
+	cred, err := BrowserLogin{Endpoint: ep, Timeout: 10 * time.Second, Out: io.Discard, OpenURL: followBrowser}.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if stored.Token != "browser-issued" {
-		t.Errorf("token from callback: got %q", stored.Token)
+	if cred.Token != "rlat_ABCDEFGHijklmnop" || cred.TokenPrefix != "rlat_ABCDEFGH" {
+		t.Errorf("credential: %+v", cred)
 	}
-	if stored.Account != "dev@example.com" {
-		t.Errorf("account from callback: got %q", stored.Account)
+	if strings.Join(cred.Scopes, " ") != "deploy:read deploy:write" {
+		t.Errorf("scopes must be what the server GRANTED; got %v", cred.Scopes)
 	}
-	if stored.Endpoint != ep.URL {
-		t.Errorf("stored login should record which endpoint it is for; got %q", stored.Endpoint)
+	if cred.ExpiresAt == nil || time.Until(*cred.ExpiresAt) < 50*time.Minute {
+		t.Errorf("expiry from expires_in: %v", cred.ExpiresAt)
 	}
-}
-
-// TestBrowserLogin_RejectsStateMismatch: without the state check, any
-// local process could push a credential of its choosing into the
-// listener and forge would store it.
-func TestBrowserLogin_RejectsStateMismatch(t *testing.T) {
-	ep, _ := ResolveEndpoint("prod", &Declaration{Endpoint: "https://api.example.com"})
-
-	login := BrowserLogin{
-		Endpoint: ep,
-		Timeout:  10 * time.Second,
-		Out:      io.Discard,
-		OpenURL: func(authorizeURL string) error {
-			redirect, _ := redirectAndState(t, authorizeURL)
-			go func() {
-				resp, err := http.Get(redirect + "?state=attacker&token=injected")
-				if err == nil {
-					_ = resp.Body.Close()
-				}
-			}()
-			return nil
-		},
-	}
-
-	_, err := login.Run(context.Background())
-	if err == nil {
-		t.Fatal("a callback with the wrong state must be rejected")
-	}
-	if !strings.Contains(err.Error(), "state mismatch") {
-		t.Errorf("want a state-mismatch error; got %v", err)
+	if req.Get("client_id") != ClientID || req.Get("code_challenge_method") != "S256" || req.Get("device") == "" {
+		t.Errorf("authorize request: %v", *req)
 	}
 }
 
@@ -90,42 +88,11 @@ func TestBrowserLogin_RejectsStateMismatch(t *testing.T) {
 // headless machine is --token.
 func TestBrowserLogin_TimesOutWithTheCITip(t *testing.T) {
 	ep, _ := ResolveEndpoint("prod", &Declaration{Endpoint: "https://api.example.com"})
-
-	login := BrowserLogin{
-		Endpoint: ep,
-		Timeout:  50 * time.Millisecond,
-		Out:      io.Discard,
-		OpenURL:  func(string) error { return nil }, // nobody ever completes the flow
+	_, err := BrowserLogin{
+		Endpoint: ep, Timeout: 50 * time.Millisecond, Out: io.Discard,
+		OpenURL: func(string) error { return nil },
+	}.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "--token") {
+		t.Fatalf("the timeout should point at the non-interactive path; got %v", err)
 	}
-
-	_, err := login.Run(context.Background())
-	if err == nil {
-		t.Fatal("expected a timeout")
-	}
-	if !strings.Contains(err.Error(), "--token") {
-		t.Errorf("the timeout should point at the non-interactive path; got %v", err)
-	}
-}
-
-// redirectAndState pulls the loopback redirect URI and the state nonce
-// back out of the authorize URL, the way a real IdP would.
-func redirectAndState(t *testing.T, authorizeURL string) (redirect, state string) {
-	t.Helper()
-	idx := strings.Index(authorizeURL, "?")
-	if idx < 0 {
-		t.Fatalf("authorize URL has no query: %s", authorizeURL)
-	}
-	values, err := url.ParseQuery(authorizeURL[idx+1:])
-	if err != nil {
-		t.Fatalf("parse authorize URL query: %v", err)
-	}
-	redirect = values.Get("redirect_uri")
-	state = values.Get("state")
-	if redirect == "" || state == "" {
-		t.Fatalf("authorize URL missing redirect_uri/state: %s", authorizeURL)
-	}
-	if !strings.HasPrefix(redirect, "http://127.0.0.1:") {
-		t.Errorf("callback must bind loopback only; got %q", redirect)
-	}
-	return redirect, state
 }

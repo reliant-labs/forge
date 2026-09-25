@@ -48,10 +48,8 @@
 // single "runs on the host" target would have to guess which it was
 // looking at.
 //
-// forge:exclude-contract
-// deploytarget is an outbound deploy-dispatch adapter (per-service deploy
-// providers: k8s cluster / external / compose), not a contract-shaped service.
-// Opt out of the require-contract rule.
+//forge:lint-disable-next-line forge-exclude-contract-outbound-io: each registered Provider is its own outbound adapter (kubectl, compose, oras for StaticSite, the hosted API); the registry dispatches, and a per-provider package split is CONTRACTS follow-up F2
+//forge:exclude-contract: a deploy-provider strategy registry — every target registers itself with (*Registry).Register, and each Provider is its own adapter
 package deploytarget
 
 import (
@@ -143,6 +141,11 @@ type ServiceGroup struct {
 	// type assertion in both providers and nothing else.
 	StaticSites []StaticSiteFrontend
 
+	// Hosted is the env-level half of a "hosted" group: the control plane's
+	// endpoint and the bound release's digests. Nil for every other
+	// provider. Services carry the per-workload tier specs.
+	Hosted *HostedTarget
+
 	// ImageTag is the tag forge built (or is about to build) for
 	// these services. Passed through to the provider so it can stamp
 	// the image references correctly.
@@ -180,6 +183,7 @@ type ResolvedService struct {
 	External   *ExternalSpec
 	Compose    *ComposeSpec
 	HostInfra  *HostInfraSpec
+	Hosted     *HostedWorkload
 
 	// Secrets carries resolved secret values to inject into the runtime
 	// env (compose / external). Populated by the deploy dispatch from a
@@ -338,6 +342,7 @@ func NewRegistry() *Registry {
 	r.Register(HostInfraProvider{})
 	r.Register(FirebaseProvider{})
 	r.Register(StaticSiteProvider{})
+	r.Register(HostedProvider{})
 	return r
 }
 
@@ -575,6 +580,11 @@ func groupTarget(g ServiceGroup) string {
 			return "site=" + g.Frontends[0].Spec.resolvedTarget()
 		}
 		return "site=?"
+	case HostedProviderID:
+		if g.Hosted != nil {
+			return "control-plane=" + g.Hosted.Endpoint
+		}
+		return "control-plane=?"
 	case "static-site":
 		if len(g.StaticSites) > 0 {
 			return "bucket=" + g.StaticSites[0].Spec.normalizedBucket()

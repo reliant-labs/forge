@@ -71,8 +71,19 @@ type {{.TypeName}}List struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []{{.TypeName}} `json:"items"`
 }
+{{- if .SplitAPI }}
+
+// DeepCopy / DeepCopyInto / DeepCopyObject for both types above are GENERATED:
+// these types live under api/, and `forge generate` writes this package's
+// zz_generated.deepcopy.go from the +kubebuilder:object:root markers. Do not
+// hand-write them here — a second declaration stops the package compiling.
+{{- else }}
 
 // DeepCopyObject implements runtime.Object.
+//
+// Hand-written because these types live beside the controller, outside api/,
+// where forge generates no deepcopy. Move them under api/<version>/ (scaffold
+// with --api-package) to get a generated, field-complete deepcopy instead.
 func (in *{{.TypeName}}) DeepCopyObject() runtime.Object {
 	if in == nil {
 		return nil
@@ -98,3 +109,4 @@ func (in *{{.TypeName}}List) DeepCopyObject() runtime.Object {
 	}
 	return out
 }
+{{- end }}

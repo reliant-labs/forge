@@ -1147,24 +1147,17 @@ func extraImportsExcluding(in []ExtraImport, ownPkg string) []ExtraImport {
 // the drift hint for this path now says outright.
 func removeRetiredBootstrapTesting(projectDir string, cs *checksums.FileChecksums) error {
 	rel := filepath.Join("pkg", "app", "testing.go")
-	abs := filepath.Join(projectDir, rel)
-	body, err := os.ReadFile(abs)
-	if err != nil {
-		return nil // absent (the common case: a project scaffolded post-split)
-	}
-	if cs.IsDisowned(filepath.ToSlash(rel)) {
-		return nil
-	}
-	// Only reclaim a file that still self-verifies as forge's own render.
-	// A hand-edited copy is the user's now, and deleting it would destroy
-	// work forge did not write.
-	if checksums.Verify(body) != checksums.Pristine {
-		return nil
-	}
-	checksums.RecordPreWriteAbs(abs)
-	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove retired %s: %w", rel, err)
-	}
+	// The shared retire rule: a pristine forge render is reclaimed, a
+	// hand-edited one is kept, and a PRE-MARKER file (no forge:hash) is
+	// reclaimed only when it self-identifies as forge output.
+	//
+	// This used to reclaim Pristine only, which silently kept every
+	// pre-marker testing.go forever. That file imports every service's
+	// handler package, so deleting one proto service left it referencing a
+	// package that no longer exists; generate's own build validation then
+	// failed on it and rolled back — and the file that needed retiring was
+	// never retired. See retired_bootstrap_testing_test.go.
+	removeRetiredForgeFileAt(projectDir, rel, cs)
 	return nil
 }
 

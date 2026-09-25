@@ -103,7 +103,7 @@ func TestRunCloudReleases_AuthenticatesAndRendersRealData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred, err := cloud.ResolveCredential("", ep.TokenEnv)
+	cred, err := cloud.ResolveCredential("", ep)
 	if err != nil {
 		t.Fatal(err)
 	}

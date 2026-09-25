@@ -134,7 +134,6 @@ Examples:
 				JSON:     jsonOut,
 				Lister:   kubectlImageLister{},
 				Resolver: kclTargetResolver{},
-				Bindings: bindingStoreFor(projectDirForKCL()),
 			})
 		},
 	}
@@ -222,11 +221,15 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 
 	projectDir := projectDirForKCL()
 	if opts.Bindings == nil {
-		opts.Bindings = bindingStoreFor(projectDir)
+		store, err := bindingStoreFor(ctx, projectDir, envName)
+		if err != nil {
+			return err
+		}
+		opts.Bindings = store
 	}
-	binding, bound, err := opts.Bindings.Binding(envName)
+	binding, bound, err := opts.Bindings.Current(ctx, envName)
 	if err != nil {
-		return fmt.Errorf("read env binding ledger: %w", err)
+		return fmt.Errorf("read the promotion ledger for %s (%s): %w", envName, opts.Bindings.Location(), err)
 	}
 
 	// NO BINDING IS NOT A FAILURE. An env that has never been promoted has
@@ -265,12 +268,12 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 
 	if !opts.JSON {
 		fmt.Printf("Verifying environment %s against release %s (%d image(s))\n", envName, binding.Release, len(binding.Resolved))
-		if binding.PromotedAt != "" {
+		if !binding.PromotedAt.IsZero() {
 			// Printed with the caveat attached. The timestamp is the single
 			// most misread field in the ledger — it looks like a deploy time
 			// and is not — so the report states what it actually means rather
 			// than leaving the reader to assume.
-			fmt.Printf("  promoted %s (promote time, NOT deploy time — that gap is what this command checks)\n", binding.PromotedAt)
+			fmt.Printf("  promoted %s (promote time, NOT deploy time — that gap is what this command checks)\n", formatLedgerTime(binding.PromotedAt))
 		}
 	}
 
@@ -342,7 +345,7 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 			Env:         envName,
 			Bound:       true,
 			Release:     binding.Release,
-			PromotedAt:  binding.PromotedAt,
+			PromotedAt:  formatLedgerTime(binding.PromotedAt),
 			KubeContext: kubeContext,
 			Namespace:   namespace,
 			Images:      results,

@@ -30,6 +30,16 @@ func generateCRDKCL(projectDir string, kclDirAbs string, cs *checksums.FileCheck
 		return fmt.Errorf("resolve project dir: %w", err)
 	}
 
+	// Deepcopy FIRST: a deleted type leaves a deepcopy file that no longer
+	// compiles, and the CRD projection below loads the same packages.
+	wrote, err := codegen.GenerateAPIDeepCopy(absProject)
+	if err != nil {
+		return fmt.Errorf("api deepcopy: %w", err)
+	}
+	for _, rel := range wrote {
+		fmt.Printf("  ✅ Generated %s\n", rel)
+	}
+
 	docs, err := codegen.LoadCRDsFromGoTypes(absProject)
 	if err != nil {
 		return fmt.Errorf("project CRD types: %w", err)

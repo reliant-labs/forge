@@ -19,6 +19,9 @@ provider exec's `deploy_cmd` via `sh -c` after substituting:
 | `${PROJECT_DIR}` | absolute project root on the deploy machine          |
 | `${YOURS}`       | any key you declare in the `env` map                 |
 
+Only these tokens are substituted. Any other `$X` / `${X}` (your script's
+own variables, `$HOME`, `$(…)`) is passed to the shell untouched.
+
 `rollback_cmd` is optional. When unset, `forge env deploy --rollback` errors
 loudly — forge can't synthesise a rollback for an arbitrary CLI. Set it
 explicitly (or skip rollback for that service).

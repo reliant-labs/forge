@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/mod/module"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Release verification: proving a ledger's claims against the public world.
@@ -264,7 +266,7 @@ const (
 // each result into its own slot, so concurrency never reaches the report: two
 // runs over the same ledger produce byte-identical output, which is what makes
 // the command diffable in CI.
-func verifyReleaseArtifacts(ctx context.Context, f httpFetcher, rel Release, concurrency int) []artifactVerification {
+func verifyReleaseArtifacts(ctx context.Context, f httpFetcher, rel release.Release, concurrency int) []artifactVerification {
 	names := make([]string, 0, len(rel.Artifacts))
 	for name := range rel.Artifacts {
 		names = append(names, name)
@@ -295,17 +297,25 @@ func verifyReleaseArtifacts(ctx context.Context, f httpFetcher, rel Release, con
 // than failed: kinds are open by design so a newer forge's ledger round-trips
 // through an older one, and an older binary meeting a kind it has never heard
 // of has learned nothing about whether that artifact is valid.
-func verifyOneArtifact(ctx context.Context, f httpFetcher, name string, art ReleaseArtifact) artifactVerification {
-	kind := art.EffectiveKind()
-	switch kind {
-	case ArtifactKindNPM:
+func verifyOneArtifact(ctx context.Context, f httpFetcher, name string, art release.Artifact) artifactVerification {
+	kind := string(art.Kind)
+	switch art.Kind {
+	case release.KindNPM:
 		return verifyNPMArtifact(ctx, f, name, art)
-	case ArtifactKindGoModule:
+	case release.KindGoModule:
 		return verifyGoModuleArtifact(ctx, f, name, art)
-	case ArtifactKindOCI:
+	case release.KindOCI:
 		return verifyOCIArtifact(ctx, f, name, art)
-	case ArtifactKindFile:
+	case release.KindFile:
 		return verifyFileArtifact(name, art)
+	case release.KindGit:
+		// A source pin names a commit in a repository, not bytes in a
+		// registry. There is no public artifact to fetch, so the honest
+		// verdict is UNVERIFIABLE rather than a pass.
+		return artifactVerification{
+			Name: name, Kind: kind, Status: verifyUnverifiable,
+			Detail: "a source-pinned artifact is built at deploy time from its commit; there is no published artifact to check",
+		}
 	default:
 		return artifactVerification{
 			Name: name, Kind: kind, Status: verifyUnverifiable,
@@ -341,8 +351,8 @@ type npmPackument struct {
 // permanently taken. npm forbids republishing a version, so this is not
 // self-correcting — it requires a new version, and knowing that immediately is
 // the difference between one bad version and a cascade.
-func verifyNPMArtifact(ctx context.Context, f httpFetcher, name string, art ReleaseArtifact) artifactVerification {
-	res := artifactVerification{Name: name, Kind: ArtifactKindNPM}
+func verifyNPMArtifact(ctx context.Context, f httpFetcher, name string, art release.Artifact) artifactVerification {
+	res := artifactVerification{Name: name, Kind: string(release.KindNPM)}
 
 	if art.Version == "" {
 		res.Status = verifyUnverifiable
@@ -450,8 +460,8 @@ func summarizeVersions[T any](versions map[string]T) string {
 // DB has no record of it BY DESIGN, so its 404 means "not my department", not
 // "does not exist" — and treating that as failure would make this command
 // unusable for anyone with a private module in their release.
-func verifyGoModuleArtifact(ctx context.Context, f httpFetcher, name string, art ReleaseArtifact) artifactVerification {
-	res := artifactVerification{Name: name, Kind: ArtifactKindGoModule}
+func verifyGoModuleArtifact(ctx context.Context, f httpFetcher, name string, art release.Artifact) artifactVerification {
+	res := artifactVerification{Name: name, Kind: string(release.KindGoModule)}
 
 	if art.Version == "" {
 		res.Status = verifyUnverifiable
@@ -611,8 +621,8 @@ func goModuleIsPrivate(modPath string) (string, bool) {
 // this command exists to have — that anyone can check a release without our
 // permission — so a private registry is honestly out of scope rather than
 // quietly half-checked.
-func verifyOCIArtifact(ctx context.Context, f httpFetcher, name string, art ReleaseArtifact) artifactVerification {
-	res := artifactVerification{Name: name, Kind: ArtifactKindOCI}
+func verifyOCIArtifact(ctx context.Context, f httpFetcher, name string, art release.Artifact) artifactVerification {
+	res := artifactVerification{Name: name, Kind: string(release.KindOCI)}
 
 	digest, ok := art.SharedDigest()
 	if !ok {
@@ -825,8 +835,8 @@ func parseAuthChallenge(s string) map[string]string {
 // A third state costs a line of output and keeps the report honest until a
 // publish destination is declared, at which point this function fetches the
 // URI and compares.
-func verifyFileArtifact(name string, art ReleaseArtifact) artifactVerification {
-	res := artifactVerification{Name: name, Kind: ArtifactKindFile, Status: verifyUnverifiable}
+func verifyFileArtifact(name string, art release.Artifact) artifactVerification {
+	res := artifactVerification{Name: name, Kind: string(release.KindFile), Status: verifyUnverifiable}
 	switch {
 	case art.URI == "" && art.Integrity == "":
 		res.Detail = "ledger records neither a publish destination nor a hash — nothing to check"

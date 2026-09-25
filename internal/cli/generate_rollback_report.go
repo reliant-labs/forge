@@ -111,7 +111,9 @@ func goBuildRestoredTree(projectDir string) rollbackConsistency {
 	if _, err := exec.LookPath("go"); err != nil {
 		return rollbackConsistency{}
 	}
-	cmd := exec.Command("go", "build", "./...")
+	// -o os.DevNull: a compile check must never write a binary into the
+	// project (see runGoBuildValidate).
+	cmd := exec.Command("go", "build", "-o", os.DevNull, "./...")
 	cmd.Dir = projectDir
 	out, err := cmd.CombinedOutput()
 	if err == nil {

@@ -97,31 +97,8 @@ type {{.TypeName}}List struct {
 	Items           []{{.TypeName}} `json:"items"`
 }
 
-// DeepCopyObject implements runtime.Object.
-func (in *{{.TypeName}}) DeepCopyObject() runtime.Object {
-	if in == nil {
-		return nil
-	}
-	out := new({{.TypeName}})
-	*out = *in
-	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	if in.Status.Conditions != nil {
-		out.Status.Conditions = make([]metav1.Condition, len(in.Status.Conditions))
-		copy(out.Status.Conditions, in.Status.Conditions)
-	}
-	return out
-}
-
-// DeepCopyObject implements runtime.Object.
-func (in *{{.TypeName}}List) DeepCopyObject() runtime.Object {
-	if in == nil {
-		return nil
-	}
-	out := new({{.TypeName}}List)
-	*out = *in
-	out.Items = make([]{{.TypeName}}, len(in.Items))
-	for i := range in.Items {
-		out.Items[i] = *in.Items[i].DeepCopyObject().(*{{.TypeName}})
-	}
-	return out
-}
+// DeepCopy / DeepCopyInto / DeepCopyObject for both types above are GENERATED:
+// `forge generate` writes this package's zz_generated.deepcopy.go from the
+// +kubebuilder:object:root markers. Do not hand-write them here — a second
+// declaration stops the package compiling, and a hand-written copy goes
+// shallow the moment a pointer, map or slice field is added to the spec.

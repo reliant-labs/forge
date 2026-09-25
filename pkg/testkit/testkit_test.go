@@ -2,6 +2,7 @@ package testkit_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing/fstest"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -320,6 +322,86 @@ func TestApplyOptions_EmptySliceReturnsTheDefaults(t *testing.T) {
 	var none []harnessOption
 	if got := testkit.ApplyOptions(&harnessConfig{n: 7}, none...); got.n != 7 {
 		t.Fatalf("with no options the config must come back untouched, got %d", got.n)
+	}
+}
+
+// principalProcedure is a real Connect unary endpoint whose handler echoes the
+// principal it SEES — the server-side view a handler calling
+// middleware.GetUser gets, which is the only view an over-the-wire test can
+// exercise.
+const principalProcedure = "/testkit.test.v1.PrincipalService/WhoAmI"
+
+func principalRegister(mux *http.ServeMux, opts ...connect.HandlerOption) {
+	mux.Handle(principalProcedure, connect.NewUnaryHandler(
+		principalProcedure,
+		func(ctx context.Context, _ *connect.Request[structpb.Struct]) (*connect.Response[structpb.Struct], error) {
+			claims, ok := localClaimsFrom(ctx)
+			if !ok || claims == nil {
+				return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no principal"))
+			}
+			return connect.NewResponse(&structpb.Struct{Fields: map[string]*structpb.Value{
+				"user_id": structpb.NewStringValue(claims.UserID),
+				"role":    structpb.NewStringValue(claims.Role),
+			}}), nil
+		},
+		opts...,
+	))
+}
+
+type principalClient struct {
+	call *connect.Client[structpb.Struct, structpb.Struct]
+}
+
+func newPrincipalClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) principalClient {
+	return principalClient{call: connect.NewClient[structpb.Struct, structpb.Struct](httpClient, baseURL+principalProcedure, opts...)}
+}
+
+// TestServerPrincipal_ReachesTheHandlerOverTheWire is the reason
+// ServerPrincipal exists. AuthedContext installs claims on a CLIENT-side
+// context, and a context does not cross HTTP — so a test that calls a
+// NewTest<Svc>Server through its typed client can never reach an auth-gated
+// handler that way. The principal has to be installed where the handler runs.
+func TestServerPrincipal_ReachesTheHandlerOverTheWire(t *testing.T) {
+	t.Parallel()
+
+	_, bare := testkit.NewConnectClient(t, principalRegister, newPrincipalClient)
+	// A client-side AuthedContext is exactly what the generated doc comment
+	// used to recommend; pin that it does NOT authenticate the wire call.
+	if _, err := bare.call.CallUnary(testkit.AuthedContext(t, localWithClaims), connect.NewRequest(&structpb.Struct{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("a bare server must not see a client-side principal; got err=%v", err)
+	}
+
+	_, authed := testkit.NewConnectClient(t, principalRegister, newPrincipalClient,
+		testkit.ServerPrincipal(localWithClaims, testkit.WithUserID("u-42"), testkit.WithRoles("viewer")))
+	resp, err := authed.call.CallUnary(context.Background(), connect.NewRequest(&structpb.Struct{}))
+	if err != nil {
+		t.Fatalf("handler behind ServerPrincipal saw no principal: %v", err)
+	}
+	if got := resp.Msg.GetFields()["user_id"].GetStringValue(); got != "u-42" {
+		t.Fatalf("user_id = %q, want the ClaimsOption override %q", got, "u-42")
+	}
+	if got := resp.Msg.GetFields()["role"].GetStringValue(); got != "viewer" {
+		t.Fatalf("role = %q, want %q", got, "viewer")
+	}
+}
+
+// TestServerPrincipal_DefaultsMatchAuthedContext: one default principal for
+// both halves of the harness, so an in-process row and an over-the-wire row
+// of the same test agree on who is calling.
+func TestServerPrincipal_DefaultsMatchAuthedContext(t *testing.T) {
+	t.Parallel()
+	_, client := testkit.NewConnectClient(t, principalRegister, newPrincipalClient,
+		testkit.ServerPrincipal(localWithClaims))
+	resp, err := client.call.CallUnary(context.Background(), connect.NewRequest(&structpb.Struct{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := localClaimsFrom(testkit.AuthedContext(t, localWithClaims))
+	if got := resp.Msg.GetFields()["user_id"].GetStringValue(); got != want.UserID {
+		t.Fatalf("user_id = %q, want AuthedContext's default %q", got, want.UserID)
+	}
+	if got := resp.Msg.GetFields()["role"].GetStringValue(); got != want.Role {
+		t.Fatalf("role = %q, want AuthedContext's default %q", got, want.Role)
 	}
 }
 

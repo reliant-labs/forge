@@ -327,7 +327,7 @@ func missingContractFinding(rootDir, pkgDir string, facts contractShapeFacts) fo
 				"mock_gen.go) and refuses to overwrite an existing directory — move %[2]s/ aside, run the verb, "+
 				"then move your code into the service.go it writes. If this package is deliberately NOT a "+
 				"component (a helper, a constants package, a catalogue of narrow interfaces consumed elsewhere), "+
-				"put `//forge:exclude-contract` at the top of one of its .go files — the same directive that "+
+				"put `//forge:exclude-contract: <why>` at the top of one of its .go files — the same directive that "+
 				"takes a package out of bootstrap wiring and mock generation.",
 			name, relDir),
 	}

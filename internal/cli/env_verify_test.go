@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+
+	releasepkg "github.com/reliant-labs/forge/pkg/release"
 )
 
 // Environment verification tests run entirely against a stubbed cluster read.
@@ -351,13 +353,12 @@ type stubResolver struct {
 
 func (s stubResolver) Resolve(_ context.Context, _, _ string) envTarget { return s.target }
 
-// writeBinding writes an env-releases ledger binding envName → one image.
+// writeBinding appends one promotion of envName to the file ledger.
 func writeBinding(t *testing.T, dir, envName, release string, resolved map[string]string) {
 	t.Helper()
-	er := EnvReleases{Bindings: map[string]EnvBinding{
-		envName: {Release: release, Resolved: resolved, PromotedAt: "2026-09-10T13:53:22Z"},
-	}}
-	if err := WriteEnvReleases(dir, er); err != nil {
+	if _, err := newFileBindingStore(dir).Append(context.Background(), releasepkg.Promotion{
+		Env: envName, Release: release, Kind: releasepkg.KindPromote, Resolved: resolved,
+	}); err != nil {
 		t.Fatalf("write binding ledger: %v", err)
 	}
 }

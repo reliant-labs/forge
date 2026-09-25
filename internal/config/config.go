@@ -7,8 +7,6 @@
 // max-public-structs revive rule is therefore suppressed at the
 // package-doc line below.
 
-// forge:exclude-contract
-//
 // internal/config is a pure schema/data/constants package: it declares the
 // canonical forge.yaml types plus package-level lookup tables (e.g.
 // ExperimentalFeatureNames — the stable display order shared by `forge project audit`,
@@ -26,6 +24,7 @@
 // config — but it is the whole cost, so weigh it before adding the
 // directive to a package whose mock anyone compiles against.
 //
+//forge:exclude-contract: pure forge.yaml schema/data/constants package, including package-level lookup tables
 //nolint:revive // max-public-structs: see package doc above.
 package config
 

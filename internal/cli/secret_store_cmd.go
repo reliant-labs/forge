@@ -28,9 +28,15 @@ import (
 func newSecretCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "secret",
-		Short: "Manage an environment's local secret store",
-		Long: `Manage the gitignored YAML secret store a dev/e2e environment declares
-via forge.FileSecrets — a flat map of env-var NAME to value.
+		Short: "Manage an environment's secret store (local file or hosted control plane)",
+		Long: `Manage the secret store an environment's secret_provider declares:
+
+  forge.FileSecrets    the gitignored YAML store (dev/e2e) — a flat map of
+                       env-var NAME to value.
+  forge.HostedSecrets  the env's hosted control plane (control_plane). set /
+                       unset / list go through its write-only API; values are
+                       materialized in-cluster and are never read back or
+                       cached on this machine.
 
 A secret is declared ONCE in KCL as a reference (EnvVar.secret_ref); its
 value lives here and never enters git or KCL render output. A value only
@@ -207,28 +213,76 @@ func loadStore(path string) (map[string]string, error) {
 	return values, nil
 }
 
+// hostedEntitiesFor renders the env's KCL and returns it when the env declares
+// forge.HostedSecrets, or nil when it does not. A render failure is returned
+// so the caller does not silently fall through to the file path.
+//
+// renderEntitiesForSecrets is a seam: tests substitute entities instead of
+// rendering a real project.
+var renderEntitiesForSecrets = func(ctx context.Context, envName string) (*KCLEntities, error) {
+	return RenderKCL(ctx, projectDirForKCL(), envName)
+}
+
+func hostedEntitiesFor(ctx context.Context, envName string) (*KCLEntities, error) {
+	entities, err := renderEntitiesForSecrets(ctx, envName)
+	if err != nil {
+		return nil, fmt.Errorf("render KCL: %w", err)
+	}
+	if isHostedSecretEnv(entities) {
+		return entities, nil
+	}
+	return nil, nil
+}
+
+func readSecretValue(fromFile string, stdin io.Reader) (string, error) {
+	var (
+		raw []byte
+		err error
+	)
+	if fromFile != "" {
+		raw, err = os.ReadFile(fromFile)
+		if err != nil {
+			return "", fmt.Errorf("read --from-file: %w", err)
+		}
+	} else {
+		raw, err = io.ReadAll(stdin)
+		if err != nil {
+			return "", fmt.Errorf("read value from stdin: %w", err)
+		}
+	}
+	return strings.TrimRight(string(raw), "\r\n"), nil
+}
+
 func runSecretSet(ctx context.Context, envName, key, fromFile string, stdin io.Reader, out io.Writer) error {
 	if !secrets.ValidSecretKey(key) {
 		return fmt.Errorf("%q is not a valid env-var name (want [A-Za-z_][A-Za-z0-9_]*)", key)
+	}
+	hosted, err := hostedEntitiesFor(ctx, envName)
+	if err != nil {
+		return err
+	}
+	if hosted != nil {
+		value, err := readSecretValue(fromFile, stdin)
+		if err != nil {
+			return err
+		}
+		if value == "" {
+			return fmt.Errorf(
+				"refusing to write an empty value for %s\n"+
+					"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge secret set %s %s",
+				key, envName, key)
+		}
+		return runHostedSecretSet(ctx, envName, key, hosted, value, out)
 	}
 	path, _, err := secretStorePath(ctx, envName)
 	if err != nil {
 		return err
 	}
 
-	var raw []byte
-	if fromFile != "" {
-		raw, err = os.ReadFile(fromFile)
-		if err != nil {
-			return fmt.Errorf("read --from-file: %w", err)
-		}
-	} else {
-		raw, err = io.ReadAll(stdin)
-		if err != nil {
-			return fmt.Errorf("read value from stdin: %w", err)
-		}
+	value, err := readSecretValue(fromFile, stdin)
+	if err != nil {
+		return err
 	}
-	value := strings.TrimRight(string(raw), "\r\n")
 	if value == "" {
 		return fmt.Errorf(
 			"refusing to write an empty value for %s\n"+
@@ -250,6 +304,13 @@ func runSecretSet(ctx context.Context, envName, key, fromFile string, stdin io.R
 }
 
 func runSecretUnset(ctx context.Context, envName, key string, out io.Writer) error {
+	hosted, err := hostedEntitiesFor(ctx, envName)
+	if err != nil {
+		return err
+	}
+	if hosted != nil {
+		return runHostedSecretUnset(ctx, envName, key, hosted, out)
+	}
 	path, _, err := secretStorePath(ctx, envName)
 	if err != nil {
 		return err
@@ -310,8 +371,8 @@ type secretListEntry struct {
 //
 //	{
 //	  "env": "dev",
-//	  "provider": "file",              // file | none | external
-//	  "store_path": "/abs/secrets/dev.yaml",
+//	  "provider": "file",              // file | none | external | hosted
+//	  "store_path": "/abs/secrets/dev.yaml", // hosted: the control-plane URL
 //	  "store_exists": true,            // distinguishes "no secrets set yet"
 //	                                   // from "no store file at all"
 //	  "secrets": [
@@ -345,6 +406,13 @@ type secretListReport struct {
 // output modes render from. It reads the store and returns only derived
 // facts — the value map does not escape this function.
 func collectSecretListFacts(ctx context.Context, envName string) (secretListReport, error) {
+	hosted, err := hostedEntitiesFor(ctx, envName)
+	if err != nil {
+		return secretListReport{}, err
+	}
+	if hosted != nil {
+		return collectHostedSecretListFacts(ctx, envName, hosted)
+	}
 	path, entities, err := secretStorePath(ctx, envName)
 	if err != nil {
 		return secretListReport{}, err

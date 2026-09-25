@@ -53,6 +53,10 @@ import (
 {{- if .NeedsTime}}
 	"time"
 {{- end}}
+{{- if .IsService}}
+
+	"connectrpc.com/connect"
+{{- end}}
 {{- if .NeedsULID}}
 	"github.com/oklog/ulid/v2"
 {{- end}}
@@ -95,6 +99,12 @@ type testConfig struct {
 	db     orm.Context
 {{- end}}
 	deps   *Deps
+{{- if .IsService}}
+	// principal is the claims NewTest{{.FieldName}}Server installs server-side
+	// on every call; anonymous skips it. Only the server factory reads these.
+	principal []testkit.ClaimsOption
+	anonymous bool
+{{- end}}
 }
 
 // WithLogger overrides the default test logger.
@@ -119,6 +129,21 @@ func WithDB(db orm.Context) TestOption {
 func With{{.FieldName}}Deps(deps Deps) TestOption {
 	return func(c *testConfig) { c.deps = &deps }
 }
+{{- if .IsService}}
+
+// WithPrincipal adjusts the principal NewTest{{.FieldName}}Server installs for
+// every call (default: AuthedContext's — UserID "test-user", role "admin").
+// Exercise a role denial with WithPrincipal(testkit.WithRoles("viewer")).
+func WithPrincipal(opts ...testkit.ClaimsOption) TestOption {
+	return func(c *testConfig) { c.principal = append(c.principal, opts...) }
+}
+
+// WithoutPrincipal makes NewTest{{.FieldName}}Server serve anonymous callers, for
+// asserting that an RPC refuses an unauthenticated request.
+func WithoutPrincipal() TestOption {
+	return func(c *testConfig) { c.anonymous = true }
+}
+{{- end}}
 {{if .IsService}}
 // NewTest{{.FieldName}} creates a test instance of the {{.FieldName}} service with
 // test defaults. By default, deps are minimal (discard logger).
@@ -239,10 +264,14 @@ func ({{$stub}}) {{.Name}}({{.Params}}){{if .Results}} {{.Results}}{{end}} { {{i
 // NewTest{{.FieldName}}Server creates an httptest.Server with the {{.FieldName}} service registered.
 // Returns the server and a typed Connect client.
 //
-// Access control is HANDLER LOGIC now (GetUser + your own checks), not a
-// generated interceptor — so the test server mounts the service bare.
-// Install a principal for handlers that call GetUser via AuthedContext
-// (below); exercise role denials by passing claims without the required role.
+// Access control is HANDLER LOGIC (GetUser + your own checks), not a
+// generated interceptor, so the only thing standing in for production here
+// is AUTHENTICATION: every call reaches the handler carrying the default test
+// principal, installed server-side through middleware.ContextWithClaims.
+// Server-side is the point — AuthedContext puts claims on a context the TEST
+// holds, and a context does not cross HTTP, so passing it to a client call
+// authenticates nothing. Adjust the principal with WithPrincipal, or drop it
+// with WithoutPrincipal to assert an RPC refuses anonymous callers.
 func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Server, {{.ProtoConnectPkg}}.{{.ProtoServiceName}}Client) {
 	t.Helper()
 	cfg := testkit.ApplyOptions(defaultTestConfig(t), opts...)
@@ -250,7 +279,11 @@ func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Se
 	if err != nil {
 		t.Fatalf("creating {{.Name}} service: %v", err)
 	}
-	return testkit.NewConnectClient(t, svc.{{if .MountMethod}}{{.MountMethod}}{{else}}Register{{end}}, {{.ProtoConnectPkg}}.New{{.ProtoServiceName}}Client)
+	var handlerOpts []connect.HandlerOption
+	if !cfg.anonymous {
+		handlerOpts = append(handlerOpts, testkit.ServerPrincipal(middleware.ContextWithClaims, cfg.principal...))
+	}
+	return testkit.NewConnectClient(t, svc.{{if .MountMethod}}{{.MountMethod}}{{else}}Register{{end}}, {{.ProtoConnectPkg}}.New{{.ProtoServiceName}}Client, handlerOpts...)
 }
 {{- else}}
 // NewTest{{.FieldName}} creates a test instance of the {{.FieldName}} package with

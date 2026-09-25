@@ -19,10 +19,7 @@
 // type. FindingsToJSON (in the cli package) is then a single mapper over
 // this one type instead of four near-identical copies.
 //
-// forge:exclude-contract
-// finding is a pure data-vocabulary package (Severity/Finding/Result shared by
-// every internal linter), not a contract-shaped service. Opt out of the
-// require-contract rule.
+//forge:exclude-contract: pure data vocabulary (Severity/Finding/Result) shared by every internal linter
 package finding
 
 import "strings"

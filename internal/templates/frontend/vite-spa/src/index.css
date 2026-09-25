@@ -104,6 +104,8 @@
   --shadow-lg: 0 12px 28px -6px oklch(22% 0.02 265deg / 12%),
     0 4px 8px -4px oklch(22% 0.02 265deg / 6%); /* popovers, dropdowns */
   --color-surface: oklch(99% 0.002 265deg); /* page / card background */
+  /* an inset INSIDE a surface — below it in light AND dark; see ui/card.tsx */
+  --color-surface-sunken: oklch(96% 0.006 265deg);
   --color-surface-muted: oklch(
     97% 0.005 265deg
   ); /* subtle fills: table head, hovers */
@@ -159,6 +161,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --color-surface: oklch(17% 0.012 265deg);
+    --color-surface-sunken: oklch(13% 0.01 265deg);
     --color-surface-muted: oklch(22% 0.015 265deg);
     --color-border: oklch(29% 0.018 265deg);
     --color-border-strong: oklch(38% 0.02 265deg);
@@ -192,6 +195,7 @@
 /* Explicit opt-in dark (theme toggle), regardless of OS preference. */
 :root[data-theme="dark"] {
   --color-surface: oklch(17% 0.012 265deg);
+  --color-surface-sunken: oklch(13% 0.01 265deg);
   --color-surface-muted: oklch(22% 0.015 265deg);
   --color-border: oklch(29% 0.018 265deg);
   --color-border-strong: oklch(38% 0.02 265deg);

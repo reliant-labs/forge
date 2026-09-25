@@ -51,15 +51,14 @@ The contract analyzer scans **both** `internal/` and `pkg/` by default. The conc
 
 Repeatedly adding `pkg/<X>` to `contracts.exclude` is a signal: either the package belongs in `internal/` (real business state → follow the contract pattern), or it's genuinely library code and the exclusion is correct. Don't reflexively exclude every `pkg/*` package.
 
-### Packages forge should not manage: `//forge:exclude-contract`
+### Packages forge should not manage: `//forge:exclude-contract: <why>`
 
-There is ONE header directive for "forge does not manage this package", and it covers every reason you might need it. Put it on the package declaration:
+There is ONE header directive for "forge does not manage this package". It takes a **reason**, on the same line:
 
 ```go
-// Strategy-registry package: each algorithm has its own constructor,
-// so there is no single New(Deps) Service the injector could bind.
+// Package algos is a strategy registry.
 //
-//forge:exclude-contract
+//forge:exclude-contract: strategy registry — one constructor per algorithm, no single New(Deps) to bind
 package algos
 
 type Strategy interface {
@@ -67,14 +66,39 @@ type Strategy interface {
     Run(ctx context.Context, input []float64) (float64, error)
 }
 
-var Registry = map[string]Strategy{}
+var registry = map[string]Strategy{}
 
-func Register(s Strategy) { Registry[s.Name()] = s }
+func Register(s Strategy) { registry[s.Name()] = s }
 ```
 
-It is the per-package equivalent of a `contracts.exclude` entry in `forge.yaml`: the package is skipped by the canonical-shape check, by bootstrap wiring, and by mock generation together — which is what "not managed here" has to mean for the three to stay consistent. Reach for it when there is genuinely no single `New(Deps) Service` to bind: a strategy registry, an analyzer sub-package, an embed-only package. Note the trade — no wiring means no generated mocks either.
+It is the per-package equivalent of a `contracts.exclude` entry in `forge.yaml`: the package is skipped by the canonical-shape check, by bootstrap wiring, and by mock generation together. The trade is real — **no contract means no generated mock, no observability decorator and no seam** — so the marker costs something at lint time:
 
-You do **not** need it for a package with no interfaces at all (constants, structs, top-level funcs). Those are skipped automatically: a package that declares no interface cannot declare `Service`, and the rule works that out for itself. Other lint rules still apply either way.
+- **A bare marker is a lint error** (`forge-exclude-contract-reason`). Write why, the same way a suppressed error-severity rule needs a reason. Codegen still honours a bare marker, so a missing reason never breaks `forge generate`; it fails `forge lint`.
+- **The marker is refused outright on two shapes, whatever the reason says**:
+  - `forge-exclude-contract-outbound-io`: the package calls an outbound-I/O entry point — an HTTP client, `database/sql`/pgx, a controller-runtime or client-go client, a gRPC/Connect client, NATS, Redis, an OCI registry client, or a cloud SDK. (Naming those types in a struct is fine; *calling* them is the signal. Local file I/O is not a signal.) **Fix:** make it an adapter — `contract.go` with `// forge:outbound-io` and a narrow `Service`, and `// forge:constructor` on `New(Deps)` (see `adapter`).
+  - `forge-exclude-contract-multi-impl`: the package declares an exported interface with two or more implementations in the module, at least one of them in the package itself. An interface with interchangeable implementations IS the contract. **Fix:** move it to `contract.go` (mark it `//forge:contract` if it is not named `Service`).
+
+**The only legitimate reasons**, and they are few:
+
+| Reason | Example |
+|---|---|
+| Pure functions / data vocabulary: no I/O, time, randomness or state | string-case helpers, a finding/severity enum, a strict decode+validate of a spec |
+| Test-support code (its non-test source imports `testing`) | an `httptest` fake of a vendor, a policy-enforcing test server |
+| API / CRD type packages | `api/v1alpha1` with deepcopy and `Validate()` |
+| A strategy registry (an exported `Register…(I)` taking the interface) | pluggable algorithms, each with its own constructor |
+| Analyzer / embed-only packages whose shape a framework dictates | a `go/analysis` sub-package, an `//go:embed` wrapper |
+
+Packages whose kind forge already exempts structurally — the `internal/app` composition seam, supervised workers under `internal/workers/`, controller-runtime reconciler packages (they have `SetupWithManager`) — are not refused for doing I/O: their shape is a forge runtime interface, not a `Service`.
+
+A genuinely-justified exception to a refusal (a conversion that is its own project) uses the ordinary suppression mechanism on the line above the marker, so it is visible, reasoned, and reported by `--show-suppressed`:
+
+```go
+//forge:lint-disable-next-line forge-exclude-contract-outbound-io: 40-method DB layer; per-aggregate split tracked in #123
+//forge:exclude-contract: sqlc-style data layer, split pending
+package db
+```
+
+You do **not** need the marker for a package with no interfaces at all (constants, structs, top-level funcs). Those are skipped automatically: a package that declares no interface cannot declare `Service`, and the rule works that out for itself. Other lint rules still apply either way.
 
 ## Prefer narrow per-aggregate interfaces over wide facades
 

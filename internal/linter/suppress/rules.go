@@ -16,13 +16,7 @@
 // what lets a project adopt a new opinionated rule incrementally
 // instead of choosing between "fails the build today" and "off".
 
-// forge:exclude-contract
-// suppress is a pure data/policy package: RuleSeverities is a
-// `map[string]string` read from forge.yaml, and Override/ApplyAll are
-// methods ON that map value, not behavior behind an injectable seam.
-// There is no constructor, no dependency and nothing to fake — a caller
-// that wants different behavior passes a different map. A contract.go
-// here would be an interface over a map literal.
+//forge:exclude-contract: pure data/policy package — RuleSeverities is a map read from forge.yaml and its methods are ON that value; nothing to fake
 package suppress
 
 import (

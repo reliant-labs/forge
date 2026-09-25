@@ -61,6 +61,8 @@ needs the alias trick.
 """
 
 import json
+import regex
+import .tiers
 
 # ---------------------------------------------------------------------------
 # Shared sub-structures.
@@ -943,194 +945,80 @@ schema K8sCluster:
         replicas > 0, "K8sCluster.replicas must be positive"
 
 schema SimpleBackend:
-    """A single container, running in a cluster forge did not create.
+    """A single container — the entry deploy tier — as a Service's deploy target.
 
-    This is the ENTRY deploy tier: the app owner brings a built image and a
-    handful of facts about how to run it, and forge lands one Deployment
-    (plus, per `network`, a Service, and per `storage_gib`, a PVC) in a
-    namespace on a cluster it is pointed at. It is a CONSTRAINED PROFILE
-    over K8sCluster, not a parallel mechanism — `render_manifests`
-    projects it onto the same `RenderedWorkload{deploy = K8sCluster}` the
-    k8s adapter already emits (`_project_simple_backend`, render.k), so
-    apply, prune, rollout-wait, secret rendering, RBAC and the kubectl
-    -context discipline are the EXISTING ones. Nothing here re-implements
-    a deploy pipeline.
+    THE SPEC IS GENERATED. Everything an app author declares about the
+    backend lives in `spec`, whose schema (`tiers.SimpleBackend`) is
+    generated from forge's Go type pkg/deploy/v1alpha1.SimpleBackendSpec. That
+    Go type is also the control plane's forge.dev CRD, so one declaration
+    deploys to either destination unchanged. Every rule about the spec
+    (pinned, registry-qualified image; ports vs network; one env channel;
+    request <= limit) is enforced in Go by SimpleBackendSpec.Validate, which
+    every path runs. See the Go type's doc for the full reasoning, including
+    why there is no replicas field and why custom `domains` are optional (a
+    public backend's default hostname is allocated, not authored).
 
-    THE SCHEMA IS CLOSED, AND THAT IS THE ENFORCEMENT MECHANISM. The way
-    a hosted tier rejects configuration it must not honour is to not
-    declare the field: an absent field needs no allowlist, cannot drift
-    out of sync with one, and KCL refuses it for free with a message
-    naming the schema. So there is deliberately NO `replicas` (see
-    `storage_gib`), no `security_context`, no `cluster_rbac`, no
-    `image_pull_secrets`, no `platform`, no raw-manifest passthrough, and
-    no node placement. An app that needs any of those has outgrown this
-    tier and should declare a `forge.K8sCluster` service instead — which
-    is a different product, not a flag on this one.
+    This wrapper adds only the TARGET: `cluster` (the kubectl context) and
+    `namespace`. Those describe where the declaration lands, not the app, so
+    they are deliberately not part of the spec.
 
-    Fields:
-      * `cluster` / `namespace` — the target coordinates, which forge
-                        cannot derive. Present for the same reason
-                        K8sCluster carries them: the rendered JSON
-                        contract is PER-SERVICE and the Go deploy
-                        dispatcher groups + routes each service by them.
-                        The platform fills these in; they are not a
-                        an app-facing knob.
-      * `image`      — the container image, FULLY QUALIFIED and PINNED
-                        (`ghcr.io/acme/app:v1.2.3` or `…@sha256:…`).
-                        forge does NOT build this image and does not
-                        prefix a registry onto it — see the checks, and
-                        `EffectiveBuild` on the Go side, which returns no
-                        build for this deploy type. Requiring the
-                        registry host explicitly is also what stops forge
-                        resolving a bare name against an env registry the
-                        app owner does not control.
-      * `ports`      — TCP ports the container listens on. Container
-                        ports always; Service ports when `network` is not
-                        "none".
-      * `env_vars`   — the container environment. The ORDINARY forge
-                        `EnvVar`, so all four channels (inline value,
-                        secret_ref, config_map_ref, field_ref) work here
-                        exactly as they do for a K8sCluster service, and
-                        a secret_ref gets a rendered Secret + secretKeyRef
-                        through the existing wiring. Zero new env
-                        machinery.
-      * `resources`  — compute request/limit in the neutral units
-                        (millicores / bytes). Ratio-constrained; see
-                        below. Defaults to the entry shape, 250m / 1 GiB,
-                        which is itself conformant — omitting `resources`
-                        must produce a RUNNING workload, not a check
-                        failure.
-      * `health_check` — liveness + readiness. Projected onto the
-                        agnostic `HealthProbe` the k8s renderer actually
-                        reads (the deploy block's `health_check` is the
-                        host/compose-shaped field — the same split
-                        `_project_frontend` navigates).
-      * `storage_gib` — provision a PersistentVolumeClaim of this size and
-                        mount it at /data. This is the ONE genuinely new
-                        manifest kind in this tier: forge elsewhere only
-                        REFERENCES a PVC by name (forge.Volume, type =
-                        "pvc") and never emits one.
-      * `network`    — "public" | "private" | "none"; see below.
-      * `domain`     — the hostname this backend is served on. REQUIRED
-                        for network = "public" and rejected otherwise.
-                        forge does not create DNS or a route from it: it
-                        rides the entity contract (K8sCluster.domain
-                        already does) so the platform's ingress can read
-                        it, and a project wanting a real in-cluster route
-                        declares an ordinary `forge.HTTPRoute` naming
-                        this service — the route layer already addresses
-                        backends by service name, so that needs no new
-                        schema.
+    ON A HOSTED ENV (the Bundle declares `control_plane`) BOTH ARE ABSENT, and
+    the Bundle refuses them if set. The control plane allocates the namespace
+    and owns the cluster; a coordinate the author wrote could only disagree
+    with the one the platform assigns. Self-hosted, both are required — the
+    Bundle check enforces that too, so one schema serves both destinations and
+    the rule lives in one place.
 
-    NETWORK IS A MANIFEST DIFFERENCE, NOT A LABEL. The three modes differ
-    in what is actually emitted, which is what makes them checkable
-    rather than aspirational:
+    HOW IT RENDERS. render_manifests emits the backend as ONE declaration
+    record, `forge.dev/v1alpha1 SimpleBackend { metadata, spec }`, which is
+    exactly the CR the hosted path publishes. forge's manifest extraction
+    expands that record through the Go renderer (pkg/deploy.Render) into its
+    Deployment, Service, ServiceAccount, PVC and NetworkPolicy. So self-hosted
+    and hosted run the same declaration through the same renderer.
 
-      * "none"    — NO Service object at all. Nothing in or out of the
-                    cluster can dial this workload by name; it is a
-                    worker that reaches out and is never reached. Note
-                    this is ADDRESSABILITY, not containment: it is not a
-                    NetworkPolicy and makes no claim about egress. A
-                    deny-all policy is a different control and belongs to
-                    the namespace (lib/netpol.k), not to one workload's
-                    deploy block — conflating the two would let a reader
-                    read "none" as a security boundary it is not.
-      * "private" — a ClusterIP Service. In-cluster peers may dial it.
-                    The default.
-      * "public"  — a ClusterIP Service, plus a required `domain`. The
-                    Service is identical to "private"; what differs is
-                    that the workload asserts a public hostname, which is
-                    what the platform's ingress keys on.
-
-    REPLICAS ARE ALWAYS 1, and that is a consequence rather than a
-    limitation to route around. `storage_gib` renders a ReadWriteOnce
-    PVC, and a multi-replica Deployment mounting one RWO volume either
-    wedges on rolling update or refuses to schedule across nodes. Since
-    the tier cannot express a StatefulSet, a shared-storage class, or a
-    Recreate strategy, exposing a `replicas` knob would offer a setting
-    that silently breaks precisely the workloads that set `storage_gib`.
-    Horizontal scale is the next tier up.
-
-    THE CPU:MEMORY RATIO IS A BILLING CONTRACT, and this is why the check
-    is HERE rather than on `Resources`. `Resources` is shared by every
-    workload forge renders, and a self-hosted K8sCluster service must not
-    inherit a hosted tier's pricing rule. The platform bills the MAX of
-    (what you asked for, what the 4 GiB-per-vCPU shape band implies on
-    each axis) — control-plane's inframeter.RatioFloor. So a lopsided
-    request is not rejected by the platform, it is silently REPRICED: ask
-    for 1000m + 1 GiB and you are billed for 4 GiB; ask for 250m + 4 GiB
-    and you are billed for 1000m. Either way the invoice does not match
-    the declaration, and nothing at deploy time said so. Requiring the
-    declared shape to sit exactly ON the band is what makes the bill
-    equal the request.
-
-    The neutral ints make that a direct comparison with no unit parsing:
-    memory_request_bytes * 1000 == cpu_request_millicores * 4 GiB. The
-    conformant ladder (and the reason for the 125-millicore granularity —
-    it is the coarsest step at which the implied memory lands on a whole
-    byte):
-
-        125m  / 512Mi        1000m / 4Gi
-        250m  / 1Gi          2000m / 8Gi
-        500m  / 2Gi          4000m / 16Gi
+    The 4 GiB-per-vCPU shape band is NOT checked here. It is a hosted
+    billing rule (pkg/deploy.CheckShapeBand), run by the hosted path only.
     """
     type: str = "simple-backend"
-    cluster: str
-    namespace: str
-    image: str
-    ports: [int] = []
-    env_vars: [EnvVar] = []
-    # The entry shape, 250m / 1 GiB, stated explicitly rather than
-    # inherited: forge.Resources' own defaults (100m / 128Mi) are NOT
-    # ratio-conformant, so inheriting them would make `resources` a field
-    # you cannot omit — a scaffold that fails its own check.
-    resources: Resources = Resources {
-        cpu_request_millicores = 250
-        cpu_limit_millicores = 250
-        memory_request_bytes = 1073741824       # 1 GiB
-        memory_limit_bytes = 1073741824         # 1 GiB
-    }
-    health_check?: HealthCheck
-    storage_gib?: int
-    network: str = "private"
-    domain?: str
+    cluster?: str
+    namespace?: str
+    spec: tiers.SimpleBackend
 
     check:
         type == "simple-backend", "SimpleBackend.type must be 'simple-backend'"
-        cluster, "SimpleBackend.cluster is required (kubectl context name)"
-        namespace, "SimpleBackend.namespace is required"
-        image, "SimpleBackend.image is required"
-        # A registry HOST must be explicit. forge does not build this image
-        # and must not resolve a bare name against an env registry the
-        # app owner does not control; mirrors lib/services.k
-        # _image_has_registry_host.
-        "/" in image and ("." in image.split("/")[0] or ":" in image.split("/")[0] or image.split("/")[0] == "localhost"), \
-            "SimpleBackend.image must name its registry host explicitly (e.g. 'ghcr.io/acme/app:v1'), because forge neither builds this image nor prefixes a registry onto it"
-        "@sha256:" in image or ":" in image.split("/")[-1], \
-            "SimpleBackend.image must be PINNED to a tag or digest (e.g. ':v1.2.3' or '@sha256:…') — an unpinned image makes a redeploy silently change what runs"
-        network in ["public", "private", "none"], \
-            "SimpleBackend.network must be 'public' | 'private' | 'none'"
-        network != "public" or domain, \
-            "SimpleBackend.network = 'public' requires a domain — a public backend with no hostname has nothing for the platform's ingress to key on"
-        network == "public" or domain == Undefined, \
-            "SimpleBackend.domain is only meaningful for network = 'public'; omit it (a hostname on a private/none backend is served by nothing)"
-        network == "none" or ports, \
-            "SimpleBackend.network = '${network}' requires at least one port — a reachable backend that listens on nothing cannot be dialed"
-        network != "none" or not ports, \
-            "SimpleBackend.network = 'none' must declare no ports: no Service object is rendered, so a port here would describe an address that does not exist"
-        storage_gib == Undefined or storage_gib > 0, \
-            "SimpleBackend.storage_gib must be positive when set; omit it for a stateless backend"
-        # ── the 4 GiB-per-vCPU shape band (see the docstring) ────────────
-        resources.cpu_request_millicores > 0, \
-            "SimpleBackend.resources.cpu_request_millicores must be positive"
-        resources.cpu_request_millicores % 125 == 0, \
-            "SimpleBackend.resources.cpu_request_millicores must be a multiple of 125 (125m/250m/500m/1000m/…) — the coarsest granularity at which the 4 GiB-per-vCPU shape band lands on a whole byte of memory"
-        resources.memory_request_bytes * 1000 == resources.cpu_request_millicores * 4294967296, \
-            "SimpleBackend.resources must sit on the 4 GiB-per-vCPU shape band (125m/512Mi, 250m/1Gi, 500m/2Gi, 1000m/4Gi, 2000m/8Gi) — the platform bills the max of what you asked for and what the band implies, so an off-band shape is repriced silently rather than rejected"
-        resources.cpu_limit_millicores >= resources.cpu_request_millicores, \
-            "SimpleBackend.resources.cpu_limit_millicores must be at least the request"
-        resources.memory_limit_bytes >= resources.memory_request_bytes, \
-            "SimpleBackend.resources.memory_limit_bytes must be at least the request"
+
+schema ManagedDatabase:
+    """A dedicated Postgres: the managed-database tier, as a Bundle entry.
+
+    THE SPEC IS GENERATED. `spec` is tiers.ManagedDatabase, generated from
+    forge's Go type pkg/deploy/v1alpha1.ManagedDatabaseSpec: engine, instances,
+    storageGiB and deletionPolicy. deletionPolicy defaults to RETAIN, because
+    deleting a declaration is not a statement about whether the data should
+    exist. This wrapper adds the name (which becomes the CloudNativePG Cluster
+    name and, hyphens folded, the Postgres database) and the target
+    namespace.
+
+    It is a Bundle entry rather than a Service deploy variant, because a
+    database is not a service: it has no image, no build and no ports. A
+    SimpleBackend reaches it with an env var
+    `databaseRef = tiers.DatabaseRef { name = "<this name>" }`, which reads the
+    credential CloudNativePG publishes as "<name>-app" in the same namespace.
+
+    HOW IT RENDERS. render_manifests emits ONE forge.dev/v1alpha1
+    ManagedDatabase record. forge's manifest extraction expands it through the
+    Go renderer (pkg/deploy.Render) into a postgresql.cnpg.io/v1 Cluster. The
+    target cluster must run the CloudNativePG operator. The render never
+    installs it.
+    """
+    name: str
+    # Required self-hosted, REFUSED on a hosted env (the control plane
+    # allocates it). Both halves are enforced by the Bundle check.
+    namespace?: str
+    spec: tiers.ManagedDatabase = tiers.ManagedDatabase {}
+
+    check:
+        regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 40, \
+            "ManagedDatabase.name '${name}' must be an RFC-1123 label of at most 40 characters: it becomes the Cluster name and, hyphens folded, the Postgres database name, which Postgres would silently truncate past 63 bytes"
 
 schema External:
     """Generic shell-command deploy target. Use this for any deploy
@@ -1393,6 +1281,28 @@ schema ExternalSecrets:
     check:
         type == "external", "ExternalSecrets.type must be 'external'"
 
+schema HostedSecrets:
+    """Hosted secret provider: values live in the env's HOSTED CONTROL PLANE
+    (the same `control_plane` this Bundle declares) and are materialized
+    IN-CLUSTER by it — into the Secret every `managedSecret` env var reads.
+
+    forge NEVER sees a value, exactly as with ExternalSecrets: the control
+    plane's secret API is write-only, so no laptop or CI runner ever holds
+    one. `forge secret set/list/unset <env>` write and list through that
+    control plane (endpoint + credential from `control_plane`), scoped to
+    the control-plane environment with this env's NAME.
+
+        control_plane   = forge.ControlPlane {endpoint = "https://api.example.com"}
+        secret_provider = forge.HostedSecrets {}
+
+    There is nothing to configure: WHERE the values live is the env's
+    control_plane, and a second endpoint field here could only disagree
+    with it. A Bundle declaring HostedSecrets without a control_plane is
+    rejected at load (see Bundle's check)."""
+    type: str = "hosted"
+    check:
+        type == "hosted", "HostedSecrets.type must be 'hosted'"
+
 schema ControlPlane:
     """The hosted control plane THIS environment talks to: an endpoint URL
     and how forge finds the bearer credential for it.
@@ -1569,8 +1479,12 @@ schema TestJWKS:
     Fields:
       * `name`        — base name for the ConfigMap / Deployment / Service.
       * `kid`         — the JWK key id (matches the signer's kid).
-      * `alg`         — JWK algorithm (default "ES256").
-      * `private_key` — StoreRef to the ES256 private-key PEM in
+      * `alg`         — JWK algorithm: "ES256" (default; an EC P-256 key)
+                        or "RS256" (an RSA key — what Zitadel, Auth0, Okta
+                        and Keycloak sign with, so a verifier configured
+                        for one of them can be pointed at this JWKS).
+                        `derive_jwk` refuses an alg the key cannot sign.
+      * `private_key` — StoreRef to the ES256/RS256 private-key PEM in
                         `.env.<env>`. Read at render time to derive the
                         public JWK; never published.
     """
@@ -1582,7 +1496,7 @@ schema TestJWKS:
     check:
         name, "TestJWKS.name is required"
         kid, "TestJWKS.kid is required (the JWK key id; must match the signer's kid)"
-        alg == "ES256", "TestJWKS.alg must be 'ES256' (the only supported test-JWKS algorithm today)"
+        alg in ["ES256", "RS256"], "TestJWKS.alg must be 'ES256' (an EC P-256 key) or 'RS256' (an RSA key) — an asymmetric algorithm with a public half to publish"
 
 schema Cluster:
     """A k3d cluster forge ensures exists before deploying into it.
@@ -2689,7 +2603,9 @@ schema StaticSite:
     does not own that bucket's existence or its access policy.
     """
     type: str = "static-site"
-    bucket: str
+    # Self-hosted: REQUIRED, your own bucket. Hosted (the Bundle declares
+    # control_plane): REFUSED — the platform owns the bucket and the prefix.
+    bucket?: str
     public_dir: str
     base_path?: str
     bundle: [BundleDir] = []
@@ -2712,8 +2628,7 @@ schema StaticSite:
 
     check:
         type == "static-site", "StaticSite.type must be 'static-site'"
-        bucket, "StaticSite.bucket is required (gs://name or a bare bucket name)"
-        not bucket.startswith("gs://") or len(bucket) > 5, \
+        not bucket or not bucket.startswith("gs://") or len(bucket) > 5, \
             "StaticSite.bucket 'gs://' has no bucket name after the scheme"
         public_dir, "StaticSite.public_dir is required (frontend build output dir, e.g. 'out' or 'dist')"
         base_path == Undefined or base_path.startswith("/"), \
@@ -2805,14 +2720,10 @@ schema RenderedWorkload:
     # Secret/ConfigMap; per-var `env_vars` entries override same-named keys
     # (native k8s precedence). Only meaningful for a K8sCluster deploy.
     env_from: [EnvFromSource] = []
-    # SimpleBackend is a member so a Bundle may CARRY one; it is not a
-    # shape the manifest renderer consumes. render_manifests projects
-    # every SimpleBackend onto a RenderedWorkload{deploy = K8sCluster}
-    # first (_project_simple_backend, render.k) — the same move
-    # _project_frontend makes for a cluster-deployed Frontend — so by the
-    # time any manifest builder sees a workload, its deploy is a
-    # K8sCluster. Only the ENTITY contract keeps the `simple-backend`
-    # discriminator, which is what preserves audit visibility.
+    # SimpleBackend is a member so a Bundle may CARRY one; no KCL manifest
+    # builder expands it. render_manifests emits it as one forge.dev
+    # declaration record, which forge's Go renderer (pkg/deploy.Render)
+    # expands at extraction time. See SimpleBackend.
     deploy?: HostDeploy | K8sCluster | SimpleBackend | External | Compose | HostInfra | BuildOnly
     # Polymorphic build declaration — HOW this service's artifact is
     # produced. One of GoBuild | DockerBuild | ShellBuild | RemoteBuild, discriminated
@@ -3272,6 +3183,29 @@ schema CronJob:
     # anything beyond the config-read default. Unset => exactly that default,
     # byte-identical to before this field existed.
     namespaced_rbac?: [{str: any}]
+    # WHEN a one-shot Job (schedule = "") runs relative to the workloads
+    # deployed beside it. `forge env deploy` reads it from the Job's
+    # `forge.dev/deploy-phase` annotation.
+    #
+    #   "pre-rollout" (the default) — applied, and required to COMPLETE,
+    #     before any Deployment / StatefulSet / CronJob in the same deploy is
+    #     applied. A Job that fails or times out aborts the deploy with no
+    #     workload changed, so the previous release keeps serving. This is
+    #     what a schema migration needs: new code never serves against a
+    #     schema it does not have.
+    #   "post-rollout" — applied with the workloads and awaited after they
+    #     roll out. For a Job that needs THIS release's workloads running,
+    #     e.g. a provisioner that configures an identity provider deployed in
+    #     the same env. Declared pre-rollout, such a Job would wait on a
+    #     workload the gate is holding back, and the deploy would abort.
+    #
+    # Pre-rollout is the default because the two mistakes are not equal: a
+    # Job wrongly held back stops the deploy loudly with nothing changed; a
+    # Job wrongly let through ships code ahead of its migration, silently.
+    #
+    # Meaningless on a scheduled CronJob (nothing waits for a schedule), so
+    # setting it there is refused rather than ignored.
+    deploy_phase?: "pre-rollout" | "post-rollout"
 
     check:
         name, "CronJob.name is required"
@@ -3279,6 +3213,8 @@ schema CronJob:
         schedule == "" or schedule in ["@hourly", "@daily", "@weekly", "@monthly", "@yearly"] or \
             len(schedule.split(" ")) == 5, \
             "CronJob.schedule must be '' (one-shot Job), a named expression ('@hourly', ...), or a 5-field cron expression"
+        not deploy_phase or schedule == "", \
+            "CronJob.deploy_phase orders a ONE-SHOT Job (schedule = \"\") against the deploy's workloads; a scheduled CronJob '${name}' runs on its own cadence and nothing waits for it — remove deploy_phase"
 
 # ---------------------------------------------------------------------------
 # Platform dependency — a helm chart rendered (NOT installed) by forge.
@@ -3645,7 +3581,7 @@ schema Bundle:
     # Secret objects CLI-side; "external" (prod/staging) means forge never
     # sees values — k8s references pre-existing Secrets.
     # KCL only emits this DECLARATION; secret VALUES never enter KCL.
-    secret_provider?: FileSecrets | ExternalSecrets | RenderedSecrets
+    secret_provider?: FileSecrets | ExternalSecrets | RenderedSecrets | HostedSecrets
     # The hosted control plane THIS env talks to (endpoint + where the
     # credential is found). Absent => no hosted control plane for this
     # env, which is the default and changes no behaviour. Declared
@@ -3659,6 +3595,10 @@ schema Bundle:
     # handler so Pods stay schedulable when the real runtime isn't
     # installed. See RuntimeClass docstring for the full rationale.
     runtime_classes: [RuntimeClass] = []
+    # Managed databases (the ManagedDatabase tier). Each renders, through the
+    # Go renderer, as a CloudNativePG Cluster in its own namespace. See
+    # ManagedDatabase.
+    databases: [ManagedDatabase] = []
     # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
     # `helm template --skip-crds` → manifests folded into the normal apply
     # pipeline; NO `helm install`). Each is a renderable with a NAME the
@@ -3681,6 +3621,36 @@ schema Bundle:
     required_dns: [DNSRecord] = []
 
     check:
+        # HOSTED vs SELF-HOSTED TARGET COORDINATES. A Bundle that declares
+        # `control_plane` deploys its tiers THROUGH that control plane, which
+        # allocates the namespace and owns the cluster. A coordinate written
+        # here would be a second, unverified opinion about where the workload
+        # lands, so it is refused rather than ignored. Self-hosted there is no
+        # platform to allocate one, so both are required. One rule, stated
+        # once, for both destinations.
+        not control_plane or all s in services { not (s.deploy and s.deploy.type == "simple-backend") or (not s.deploy.cluster and not s.deploy.namespace) }, \
+            "SimpleBackend.cluster/namespace must NOT be set on a hosted env (this Bundle declares control_plane): the control plane allocates the namespace and owns the cluster. Remove them"
+        control_plane or all s in services { not (s.deploy and s.deploy.type == "simple-backend") or (s.deploy.cluster and s.deploy.namespace) }, \
+            "SimpleBackend.cluster (kubectl context name) and SimpleBackend.namespace are required on a self-hosted env (no control_plane declared)"
+        not control_plane or all db in databases { not db.namespace }, \
+            "ManagedDatabase.namespace must NOT be set on a hosted env (this Bundle declares control_plane): the control plane allocates it. Remove it"
+        control_plane or all db in databases { db.namespace }, \
+            "ManagedDatabase.namespace is required on a self-hosted env (no control_plane declared)"
+        # A hosted StaticSite is published INTO the platform's bucket, behind
+        # the platform's CDN: naming a bucket or a URL map would be a user
+        # choosing where the platform's credential writes or what it purges.
+        # cache_control has no carrier on the hosted path yet (the release
+        # artifact holds bytes only), so it is refused rather than ignored.
+        not control_plane or all f in frontends { not (f.deploy and f.deploy.type == "static-site") or (not f.deploy.bucket and not f.deploy.cdn and not f.deploy.cache_control) }, \
+            "StaticSite.bucket, .cdn and .cache_control must NOT be set on a hosted env (this Bundle declares control_plane): the platform owns the bucket and the CDN, and the hosted release carries no cache rules yet. Remove them"
+        control_plane or all f in frontends { not (f.deploy and f.deploy.type == "static-site") or f.deploy.bucket }, \
+            "StaticSite.bucket is required on a self-hosted env (no control_plane declared): gs://name or a bare bucket name"
+        not control_plane or not cluster_target, \
+            "Bundle.cluster_target must NOT be set on a hosted env (this Bundle declares control_plane): hosted tiers run on the control plane's infrastructure, and forge applies nothing to a cluster of its own"
+        # HostedSecrets names no endpoint of its own — the values live in THIS
+        # env's control plane — so without one there is nowhere to put them.
+        not (secret_provider and secret_provider.type == "hosted") or control_plane, \
+            "secret_provider = forge.HostedSecrets {} requires control_plane = forge.ControlPlane {endpoint = ...} on the same Bundle: hosted secret values live in that control plane"
         # A cluster_target is required iff at least one workload resolves to
         # the k8s target — i.e. any workload WITHOUT a `host` block (target
         # polymorphism, docs/design/FORGE_TARGET_POLYMORPHISM.md §1.4). The k8s adapter

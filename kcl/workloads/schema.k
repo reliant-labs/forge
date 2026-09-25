@@ -215,6 +215,15 @@ schema Workload:
     # and other, non-broadcast jobs. See BROADCAST_GATED_KINDS in
     # expand.k for what it deliberately does NOT gate, and why.
     before: [str] = []
+    # kind="job" rendered as a standalone Job (no `before`): WHEN it runs
+    # relative to the deploy's workloads. "pre-rollout" (the default) must
+    # COMPLETE before `forge env deploy` applies any workload, and a failure
+    # aborts the deploy with nothing changed; "post-rollout" rides with the
+    # workloads and is awaited after they roll out. See forge.CronJob's field
+    # of the same name for the full rationale — it is the same declaration
+    # on the bundle path. A gating job (`before` set) is an initContainer, so
+    # the pod ordering already IS its phase and this field is refused there.
+    deploy_phase?: "pre-rollout" | "post-rollout"
 
     # --- Operator-specific ---
     group: str = ""
@@ -365,6 +374,8 @@ schema Workload:
         # pick a winner.
         expand.BEFORE_ALL not in before or len(before) == 1, \
             "Workload.before = ['${expand.BEFORE_ALL}'] already gates every workload — remove the other names (got ${before}), or drop the wildcard and enumerate."
+        not deploy_phase or (kind == "job" and len(before) == 0), \
+            "Workload.deploy_phase places a standalone one-shot Job (kind='job', no `before`) in the deploy; '${name}' is a '${kind}'${' with `before`' if before else ''} — remove deploy_phase"
 
         # --- operator ---
         kind != "operator" or len(crds) > 0, \

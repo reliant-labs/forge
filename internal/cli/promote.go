@@ -3,21 +3,28 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os/user"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // newPromoteCmd is `forge env promote <version> --to <env>`: bind an env to a
-// release. This is the "promote, don't rebuild" half of the build-once model —
-// a pure pointer move. It reads the release ledger `forge build --release`
-// wrote, resolves each image's digest, and records env→release in the binding
-// ledger (.forge/env-releases.json). No build runs; the bytes that were cut as
-// <version> are, by construction, the bytes the env will deploy.
+// release. This is the "promote, don't rebuild" half of the build-once model.
+// It reads the release `forge build --release` cut, freezes each image's
+// digest, and APPENDS one entry to the env's promotion ledger — the project's
+// .forge/promotions/<env>.jsonl, or the control plane the env's KCL declares.
+// No build runs; the bytes that were cut as <version> are, by construction,
+// the bytes the env will deploy.
 func newPromoteCmd() *cobra.Command {
 	var (
-		toEnv   string
-		dryRun  bool
-		jsonOut bool
+		toEnv    string
+		dryRun   bool
+		jsonOut  bool
+		rollback bool
+		note     string
+		actor    string
 	)
 
 	cmd := &cobra.Command{
@@ -26,11 +33,21 @@ func newPromoteCmd() *cobra.Command {
 		Long: `Bind an environment to an already-built release.
 
 ` + "`forge build --release <version>`" + ` builds the env-agnostic images ONCE,
-captures their content-addressed digests, and writes a release ledger at
-.forge/releases/<version>.json. ` + "`forge env promote`" + ` advances that release to
-an environment BY REFERENCE: it records env → release (with the resolved
-per-image digests snapshotted) in .forge/env-releases.json. No image is rebuilt
-— the exact bytes cut as <version> are what the env ships.
+captures their content-addressed digests, and cuts a release. ` + "`forge env promote`" + `
+advances that release to an environment BY REFERENCE: it appends one entry —
+env, release, and the per-image digests frozen at this moment — to the env's
+append-only promotion ledger. No image is rebuilt — the exact bytes cut as
+<version> are what the env ships.
+
+WHERE THE LEDGER LIVES is declared by the environment, not chosen by a flag:
+an env whose KCL declares forge.ControlPlane records promotions on that control
+plane; every other env records them in .forge/promotions/<env>.jsonl.
+
+ROLLBACK IS A NEW ENTRY, NOT AN EDIT. --rollback records the entry as a
+rollback, and the ledger refuses it unless the env has run that release
+before — rolling "back" to something that never ran is a promotion, and must
+be recorded as one. Re-promoting the release an env already runs appends
+nothing; a CI retry is safe.
 
 ` + "`forge env deploy <env>`" + ` then pins those SAME digests, so every env promoted
 to the same release deploys byte-identical images. This eliminates the per-env
@@ -61,7 +78,8 @@ Examples:
   forge env deploy staging                               # ships v1.4.0's digests
   forge env promote v1.4.0 --to prod                     # same digests advance to prod
   forge env deploy prod                                  # the bytes that passed staging
-  forge env promote v1.3.0 --to prod --plan | grep -i rollback   # catch a backwards move`,
+  forge env promote v1.3.0 --to prod --plan | grep -i rollback   # catch a backwards move
+  forge env promote v1.3.0 --to prod --rollback --note "5xx spike" # record a rollback`,
 		Args: cobra.ExactArgs(1),
 		// The change set IS the output; a cobra usage dump would bury it
 		// under the flag list.
@@ -76,12 +94,17 @@ Examples:
 			// state them — but the production path states them too, so
 			// the fields carry a real value rather than only ever the
 			// zero one a test overwrites.
-			projectDir := projectDirForKCL()
+			kind := release.KindPromote
+			if rollback {
+				kind = release.KindRollback
+			}
 			return runPromote(cmd.Context(), args[0], toEnv, promoteOptions{
 				DryRun:     dryRun,
 				JSON:       jsonOut,
-				ProjectDir: projectDir,
-				Releases:   readReleaseLedgers(projectDir),
+				ProjectDir: projectDirForKCL(),
+				Kind:       kind,
+				Note:       note,
+				Actor:      actor,
 			})
 		},
 	}
@@ -89,6 +112,9 @@ Examples:
 	cmd.Flags().StringVar(&toEnv, "to", "", "Environment to bind to the release (required)")
 	cmd.Flags().BoolVar(&dryRun, "plan", false, "Compute and print the full change set WITHOUT writing the binding")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (same exit codes as text mode)")
+	cmd.Flags().BoolVar(&rollback, "rollback", false, "Record this as a ROLLBACK (the env must have run the release before)")
+	cmd.Flags().StringVar(&note, "note", "", "Why — recorded on the ledger entry (most valuable on a rollback)")
+	cmd.Flags().StringVar(&actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 
 	return cmd
 }
@@ -108,9 +134,16 @@ type promoteOptions struct {
 	JSON bool
 	// ProjectDir is the checkout read from. Empty falls back to discovery.
 	ProjectDir string
-	Bindings   bindingStore
-	Releases   []Release
-	Git        promoteGitReader
+	// Kind is promote (default) or rollback.
+	Kind release.PromotionKind
+	// Note and Actor are recorded on the ledger entry.
+	Note  string
+	Actor string
+	// Bindings and Releases are the env's ledger. Nil resolves the env's
+	// declared backend.
+	Bindings bindingStore
+	Releases releaseLedger
+	Git      promoteGitReader
 }
 
 // runPromote computes the change set and — unless --plan was passed — applies
@@ -136,17 +169,27 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if projectDir == "" {
 		projectDir = projectDirForKCL()
 	}
-	bindings := opts.Bindings
-	if bindings == nil {
-		bindings = bindingStoreFor(projectDir)
+	bindings, releases := opts.Bindings, opts.Releases
+	if bindings == nil || releases == nil {
+		l, err := ledgerFor(ctx, projectDir, env)
+		if err != nil {
+			return err
+		}
+		if bindings == nil {
+			bindings = l.Bindings
+		}
+		if releases == nil {
+			releases = l.Releases
+		}
 	}
 
 	plan, err := computePromotePlan(ctx, promotePlanOptions{
 		Env:        env,
 		Version:    version,
+		Kind:       opts.Kind,
 		ProjectDir: projectDir,
 		Bindings:   bindings,
-		Releases:   opts.Releases,
+		Releases:   releases,
 		Git:        opts.Git,
 	})
 	if err != nil {
@@ -159,7 +202,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// either way, which is why --plan cannot describe a different change
 	// than the one that gets made.
 	if !opts.DryRun {
-		if err := applyPromotePlan(bindings, &plan); err != nil {
+		if err := applyPromotePlan(ctx, bindings, &plan, promoteActor(opts.Actor), opts.Note); err != nil {
 			return err
 		}
 	}
@@ -169,4 +212,17 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 	renderPromotePlanText(plan)
 	return nil
+}
+
+// promoteActor is who the ledger entry names. An explicit --actor is an
+// automation; otherwise the local user, best-effort. The hosted ledger
+// ignores this for the human half and records the authenticated caller.
+func promoteActor(actor string) release.Actor {
+	if actor != "" {
+		return release.Actor{Actor: actor}
+	}
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return release.Actor{User: u.Username}
+	}
+	return release.Actor{}
 }

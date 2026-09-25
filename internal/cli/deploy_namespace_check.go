@@ -112,7 +112,7 @@ func checkNamespaceReferences(entities *KCLEntities, projectName, resolvedNamesp
 			// namespace produces exactly the silent CrashLoop this guard
 			// exists to catch.
 			if s.Deploy.SimpleBackend != nil {
-				collect(owner+" (simple-backend deploy)", s.Deploy.SimpleBackend.EnvVars)
+				collect(owner+" (simple-backend deploy)", s.Deploy.SimpleBackend.EnvVars())
 			}
 		}
 		// External and build-only deploys are intentionally out of scope.

@@ -247,3 +247,48 @@ func TestDiscoverBuildsWellKnownPath(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoverAuthorizationServer(t *testing.T) {
+	var doc map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != AuthorizationServerMetadataPath || doc == nil {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, doc)
+	}))
+	defer srv.Close()
+
+	// A resource server naming a DIFFERENT issuer is fine.
+	doc = map[string]any{
+		"issuer":                 "https://admin.example.com",
+		"authorization_endpoint": "https://admin.example.com/oauth/authorize",
+		"token_endpoint":         "https://admin.example.com/oauth/token",
+	}
+	meta, err := DiscoverAuthorizationServer(context.Background(), nil, srv.URL+"/")
+	if err != nil || meta.TokenEndpoint != "https://admin.example.com/oauth/token" {
+		t.Fatalf("got %+v %v", meta, err)
+	}
+
+	// A token endpoint off the issuer's origin is refused.
+	doc["token_endpoint"] = "https://evil.example.com/token"
+	if _, err := DiscoverAuthorizationServer(context.Background(), nil, srv.URL); err == nil {
+		t.Fatal("a token endpoint off the issuer origin must be refused")
+	}
+
+	// Plain http off loopback is refused.
+	doc = map[string]any{
+		"issuer":                 "http://admin.example.com",
+		"authorization_endpoint": "http://admin.example.com/oauth/authorize",
+		"token_endpoint":         "http://admin.example.com/oauth/token",
+	}
+	if _, err := DiscoverAuthorizationServer(context.Background(), nil, srv.URL); err == nil {
+		t.Fatal("http endpoints off loopback must be refused")
+	}
+
+	// No document is a distinct, detectable condition.
+	doc = nil
+	if _, err := DiscoverAuthorizationServer(context.Background(), nil, srv.URL); !errors.Is(err, ErrNoAuthorizationServer) {
+		t.Fatalf("want ErrNoAuthorizationServer; got %v", err)
+	}
+}

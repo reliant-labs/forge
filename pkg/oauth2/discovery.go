@@ -133,3 +133,81 @@ func Discover(ctx context.Context, client HTTPDoer, issuer string) (*ProviderMet
 	}
 	return &meta, nil
 }
+
+// AuthorizationServerMetadataPath is RFC 8414's well-known path.
+const AuthorizationServerMetadataPath = "/.well-known/oauth-authorization-server"
+
+// DiscoverAuthorizationServer fetches RFC 8414 authorization-server metadata
+// from server + AuthorizationServerMetadataPath.
+//
+// Unlike [Discover], the document may be published by a RESOURCE server on
+// behalf of the authorization server that protects it (an API naming the
+// control plane that issues its tokens), so the declared issuer need not equal
+// server. What IS required: the issuer and both endpoints are absolute, the
+// endpoints live on the issuer's origin, and every one is https or loopback.
+// A document naming a token endpoint on some other origin is refused, since
+// that is where the verifier and the code are about to be sent.
+func DiscoverAuthorizationServer(ctx context.Context, client HTTPDoer, server string) (*ProviderMetadata, error) {
+	base, err := url.Parse(strings.TrimSpace(server))
+	if err != nil || !base.IsAbs() {
+		return nil, fmt.Errorf("oauth2: server %q is not an absolute URL", server)
+	}
+	metaURL := strings.TrimSuffix(base.String(), "/") + AuthorizationServerMetadataPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metaURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("oauth2: build discovery request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if client == nil {
+		client = &http.Client{Timeout: DefaultExchangeTimeout}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("oauth2: fetch %s: %w", metaURL, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBytes))
+	if err != nil {
+		return nil, fmt.Errorf("oauth2: read %s: %w", metaURL, err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %s", ErrNoAuthorizationServer, metaURL)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("oauth2: fetch %s: HTTP %d: %s", metaURL, resp.StatusCode, summarizeBody(body))
+	}
+	var meta ProviderMetadata
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return nil, fmt.Errorf("oauth2: decode %s: %w", metaURL, err)
+	}
+	_ = json.Unmarshal(body, &meta.Raw)
+
+	issuer, err := url.Parse(meta.Issuer)
+	if err != nil || !issuer.IsAbs() {
+		return nil, fmt.Errorf("oauth2: %s declares no absolute issuer", metaURL)
+	}
+	for name, raw := range map[string]string{
+		"authorization_endpoint": meta.AuthorizationEndpoint,
+		"token_endpoint":         meta.TokenEndpoint,
+	} {
+		u, err := url.Parse(raw)
+		if raw == "" || err != nil || !u.IsAbs() {
+			return nil, fmt.Errorf("oauth2: %s has no absolute %s", metaURL, name)
+		}
+		if u.Scheme != issuer.Scheme || u.Host != issuer.Host {
+			return nil, fmt.Errorf("oauth2: %s's %s %q is not on the issuer's origin %s", metaURL, name, raw, meta.Issuer)
+		}
+		if u.Scheme != "https" && !isLoopbackHost(u.Hostname()) {
+			return nil, fmt.Errorf("oauth2: %s's %s must use https (loopback excepted)", metaURL, name)
+		}
+	}
+	return &meta, nil
+}
+
+// ErrNoAuthorizationServer reports a server that publishes no authorization
+// server metadata: it issues no tokens through a browser login.
+var ErrNoAuthorizationServer = errors.New("oauth2: the server publishes no authorization server metadata")
+
+func isLoopbackHost(h string) bool {
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+}

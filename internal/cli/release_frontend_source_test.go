@@ -7,6 +7,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/gitsource"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // A release is supposed to be "the environment at a version". Container
@@ -42,8 +44,8 @@ func TestAddFrontendSourceArtifacts_CapturesPinnedFrontend(t *testing.T) {
 		},
 	}
 
-	artifacts := map[string]ReleaseArtifact{
-		"control-plane": {Mode: artifactModeShared, Digests: map[string]string{sharedVariantKey: sha("a")}},
+	artifacts := map[string]release.Artifact{
+		"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: sha("a")}},
 	}
 
 	resolver := stubPinResolver{commit: wantCommit, dir: "/cache/reliant/web"}
@@ -55,8 +57,8 @@ func TestAddFrontendSourceArtifacts_CapturesPinnedFrontend(t *testing.T) {
 	if !ok {
 		t.Fatalf("reliant-web missing from the ledger; got keys %v", releaseArtifactKeys(artifacts))
 	}
-	if art.Mode != artifactModeSource {
-		t.Errorf("mode = %q, want %q", art.Mode, artifactModeSource)
+	if art.Mode != release.ModeSource {
+		t.Errorf("mode = %q, want %q", art.Mode, release.ModeSource)
 	}
 	if art.Source == nil {
 		t.Fatal("source artifact carries no Source pin")
@@ -93,8 +95,8 @@ func TestCheckReleaseCoversEnv_FailsOnMissingFrontend(t *testing.T) {
 			fakeFrontendEntity("reliant-web", "github.com/reliant-labs/reliant", "v1.7.12", "web"),
 		},
 	}
-	artifacts := map[string]ReleaseArtifact{
-		"control-plane": {Mode: artifactModeShared, Digests: map[string]string{sharedVariantKey: sha("a")}},
+	artifacts := map[string]release.Artifact{
+		"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: sha("a")}},
 	}
 
 	err := checkReleaseCoversEnv(entities, artifacts, buildOptions{release: "v1.6.0", env: "prod"})
@@ -117,8 +119,8 @@ func TestCheckReleaseCoversEnv_FailsOnMissingImage(t *testing.T) {
 			{Name: "workspace-base", Image: "workspace-base"},
 		},
 	}
-	artifacts := map[string]ReleaseArtifact{
-		"control-plane": {Mode: artifactModeShared, Digests: map[string]string{sharedVariantKey: sha("a")}},
+	artifacts := map[string]release.Artifact{
+		"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: sha("a")}},
 	}
 
 	err := checkReleaseCoversEnv(entities, artifacts, buildOptions{release: "v1.6.0", env: "prod"})
@@ -144,7 +146,7 @@ func TestCheckReleaseCoversEnv_DedupesSharedImages(t *testing.T) {
 		},
 	}
 
-	err := checkReleaseCoversEnv(entities, map[string]ReleaseArtifact{}, buildOptions{release: "v1.6.0", env: "prod"})
+	err := checkReleaseCoversEnv(entities, map[string]release.Artifact{}, buildOptions{release: "v1.6.0", env: "prod"})
 	if err == nil {
 		t.Fatal("expected a failure for a wholly uncovered env")
 	}
@@ -169,11 +171,12 @@ func TestCheckReleaseCoversEnv_PassesWhenComplete(t *testing.T) {
 			fakeFrontendEntity("reliant-web", "github.com/reliant-labs/reliant", "v1.7.12", "web"),
 		},
 	}
-	artifacts := map[string]ReleaseArtifact{
-		"control-plane": {Mode: artifactModeShared, Digests: map[string]string{sharedVariantKey: sha("a")}},
+	artifacts := map[string]release.Artifact{
+		"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: sha("a")}},
 		"reliant-web": {
-			Mode:   artifactModeSource,
-			Source: &ReleaseSource{Repo: "github.com/reliant-labs/reliant", Ref: "v1.7.12", Commit: "abc123"},
+			Kind:   release.KindGit,
+			Mode:   release.ModeSource,
+			Source: &release.Source{Repo: "github.com/reliant-labs/reliant", Ref: "v1.7.12", Commit: "abc123"},
 		},
 	}
 
@@ -187,13 +190,14 @@ func TestCheckReleaseCoversEnv_PassesWhenComplete(t *testing.T) {
 // leak into the image→digest map a manifest pins from — a frontend name in
 // there would render as an image reference that does not exist.
 func TestResolveReleaseDigests_SkipsSourceArtifacts(t *testing.T) {
-	rel := Release{
+	rel := release.Release{
 		Version: "v1.6.0",
-		Artifacts: map[string]ReleaseArtifact{
-			"control-plane": {Mode: artifactModeShared, Digests: map[string]string{sharedVariantKey: sha("a")}},
+		Artifacts: map[string]release.Artifact{
+			"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: sha("a")}},
 			"reliant-web": {
-				Mode:   artifactModeSource,
-				Source: &ReleaseSource{Repo: "github.com/reliant-labs/reliant", Ref: "v1.7.12", Commit: "abc123"},
+				Kind:   release.KindGit,
+				Mode:   release.ModeSource,
+				Source: &release.Source{Repo: "github.com/reliant-labs/reliant", Ref: "v1.7.12", Commit: "abc123"},
 			},
 		},
 	}
@@ -211,9 +215,9 @@ func TestResolveReleaseDigests_SkipsSourceArtifacts(t *testing.T) {
 
 	// The same release must still surface the frontend on the source side,
 	// so a promotion records it.
-	sources := resolveReleaseSources(rel)
+	sources := rel.Sources()
 	if got, ok := sources["reliant-web"]; !ok || got.Commit != "abc123" {
-		t.Errorf("resolveReleaseSources lost the frontend pin: %+v", sources)
+		t.Errorf("Sources() lost the frontend pin: %+v", sources)
 	}
 	if _, leaked := sources["control-plane"]; leaked {
 		t.Error("image artifact leaked into the source map")
@@ -232,7 +236,7 @@ func TestAddFrontendSourceArtifacts_RejectsLocalOverride(t *testing.T) {
 			fakeFrontendEntity("reliant-web", "github.com/reliant-labs/reliant", "v1.7.12", "web"),
 		},
 	}
-	artifacts := map[string]ReleaseArtifact{}
+	artifacts := map[string]release.Artifact{}
 
 	resolver := stubPinResolver{dir: "/Users/dev/src/reliant/web", overridden: true}
 	err := addFrontendSourceArtifactsWith(context.Background(), resolver, entities, artifacts)
@@ -267,7 +271,7 @@ func (s stubPinResolver) Resolve(_ context.Context, src gitsource.Source) (gitso
 	}, nil
 }
 
-func releaseArtifactKeys(m map[string]ReleaseArtifact) []string {
+func releaseArtifactKeys(m map[string]release.Artifact) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

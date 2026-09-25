@@ -121,9 +121,9 @@ func TestTestJWKSRendersThroughPlugin(t *testing.T) {
 
 	// Cross-check x/y against the Go derivation of the SAME PEM — signer +
 	// JWKS share the key, so the served JWK must equal the derived one.
-	want, derr := kclplugin.DeriveES256JWK(testES256PEM, "e2e-test-es256", "ES256")
+	want, derr := kclplugin.DeriveJWK(testES256PEM, "e2e-test-es256", "ES256")
 	if derr != nil {
-		t.Fatalf("DeriveES256JWK: %v", derr)
+		t.Fatalf("DeriveJWK: %v", derr)
 	}
 	for _, f := range []string{"kty", "crv", "x", "y", "kid", "alg", "use"} {
 		if jwk[f] != want[f] {

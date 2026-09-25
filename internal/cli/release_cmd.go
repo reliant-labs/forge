@@ -11,6 +11,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // `forge release` is the release-ledger noun. `forge build --release <v>` CUTS
@@ -28,7 +30,92 @@ release ships — container images, npm packages, Go modules, published files �
 with the coordinate and hash each one was cut with.`,
 	}
 	cmd.AddCommand(newReleaseVerifyCmd())
+	cmd.AddCommand(newReleaseCutCmd())
+	cmd.AddCommand(newReleaseConvertLedgerCmd())
 	return cmdutil.StrictGroup(cmd)
+}
+
+// newReleaseCutCmd is `forge release cut <version> --env <env>`: record a
+// release over the images an EARLIER build already pushed.
+//
+// `forge build --release` is build-then-cut in one process. This is the cut
+// alone, for the pipeline shape where the build step and the release step are
+// separate jobs — the digests are already in .forge/state, and rebuilding to
+// cut would be exactly the rebuild the release model exists to avoid.
+//
+// The release goes to the env's DECLARED ledger: the control plane when the
+// env's KCL declares forge.ControlPlane, the project's files otherwise.
+func newReleaseCutCmd() *cobra.Command {
+	var envName string
+	cmd := &cobra.Command{
+		Use:   "cut <version> --env <env>",
+		Short: "Record a release over images an earlier build already pushed",
+		Long: `Cut a release from the build state an earlier ` + "`forge build --push`" + ` recorded.
+
+The artifact set is discovered exactly as ` + "`forge build --release`" + ` discovers it: every
+image digest captured in .forge/state for --env, every publishable package, and
+every source-pinned frontend. The cut FAILS if anything --env declares is missing.
+
+The release is recorded in --env's ledger — the control plane its KCL declares
+(forge.ControlPlane), or .forge/releases/ otherwise. Re-cutting the same version
+over the same artifacts is a no-op; over DIFFERENT artifacts it is refused.
+
+Examples:
+  forge build prod --docker --push ghcr.io/acme   # CI job 1: build and push
+  forge release cut v1.4.0 --env prod             # CI job 2: record the release
+  forge env promote v1.4.0 --to prod              # bind prod to it`,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if envName == "" {
+				return fmt.Errorf("--env <env> is required: the release's artifact set is discovered from deploy/kcl/<env>/main.k")
+			}
+			projectDir := projectDirForKCL()
+			entities, err := RenderKCL(cmd.Context(), projectDir, envName)
+			if err != nil {
+				return fmt.Errorf("render deploy/kcl/%s: %w", envName, err)
+			}
+			_, err = cutReleaseFromBuildState(cmd.Context(), projectDir, envName, args[0], "", entities, buildOptions{})
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&envName, "env", "", "Environment whose declaration and build state the release covers (required)")
+	return cmd
+}
+
+// newReleaseConvertLedgerCmd is the one-time conversion from the retired
+// ledger format.
+func newReleaseConvertLedgerCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "convert-ledger",
+		Short: "Convert a project from .forge/env-releases.json to per-env promotion logs (one time)",
+		Long: `Rewrite a project's release ledger into the current format, once.
+
+  - Every .forge/releases/*.json gains the artifact ` + "`kind`" + ` that is now
+    required (oci for an image, git for a source-pinned frontend).
+  - .forge/env-releases.json becomes one append-only log per environment,
+    .forge/promotions/<env>.jsonl, holding that env's current binding as its
+    first entry — then it is deleted.
+
+The digests each environment is bound to are carried over unchanged, so a
+render or deploy after conversion pins exactly what it pinned before.
+Commit the result.`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			done, err := convertLegacyLedger(projectDirForKCL())
+			for _, line := range done {
+				fmt.Fprintln(cmd.OutOrStdout(), "  "+line)
+			}
+			if err != nil {
+				return err
+			}
+			if len(done) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Nothing to convert — the ledger is already in the current format.")
+			}
+			return nil
+		},
+	}
 }
 
 // defaultVerifyTimeout bounds each registry request. Generous enough for a
@@ -268,7 +355,7 @@ func releaseVerifyVerdict(version string, tally verifyTally, strict bool) error 
 // make the JSON the weaker of the two.
 type releaseVerifyReport struct {
 	Release    string                 `json:"release"`
-	Git        ReleaseGit             `json:"git"`
+	Git        release.Git            `json:"git"`
 	Strict     bool                   `json:"strict"`
 	Artifacts  []artifactVerification `json:"artifacts"`
 	Summary    verifyTally            `json:"summary"`
@@ -279,7 +366,7 @@ type releaseVerifyReport struct {
 
 // emitReleaseVerifyJSON writes the report and returns the SAME error text mode
 // would have returned, so the exit code is identical in both modes.
-func emitReleaseVerifyJSON(rel Release, results []artifactVerification, strict bool) error {
+func emitReleaseVerifyJSON(rel release.Release, results []artifactVerification, strict bool) error {
 	tally := tallyVerifications(results)
 	verdict := releaseVerifyVerdict(rel.Version, tally, strict)
 

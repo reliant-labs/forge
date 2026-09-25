@@ -167,14 +167,14 @@ func serviceEnvVars(s *ServiceEntity) []KCLEnvVar {
 	case s.Deploy.Cluster != nil:
 		out = append(out, s.Deploy.Cluster.EnvVars...)
 	case s.Deploy.SimpleBackend != nil:
-		// A SimpleBackend's env is an ordinary []EnvVar carrying the same
-		// secret_ref channel, and it lands in a cluster — so it needs
+		// A SimpleBackend's secretRef env is the same secret_ref channel
+		// (see SimpleBackendSpec.EnvVars), and it lands in a cluster, so it needs
 		// rendered Secret objects exactly as a K8sCluster service does.
 		// Omitting it here would not fail loudly: the deploy would apply
 		// a pod whose secretKeyRef names a Secret nothing created, and
 		// the pod would sit in CreateContainerConfigError with the
 		// declaration looking correct.
-		out = append(out, s.Deploy.SimpleBackend.EnvVars...)
+		out = append(out, s.Deploy.SimpleBackend.EnvVars()...)
 	}
 	return out
 }

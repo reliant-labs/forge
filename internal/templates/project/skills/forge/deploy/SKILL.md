@@ -97,6 +97,25 @@ providers (K8sCluster, External, Compose, HostDeploy). For External,
 `rollback_cmd`; deploys with no `rollback_cmd` declared error loudly
 rather than guessing.
 
+### Migrations run BEFORE the rollout (the pre-rollout gate)
+
+A one-shot Job (`forge.CronJob { schedule = "" }`, or a standalone
+`kind = "job"` workload) is **pre-rollout by default**. `forge env deploy`
+applies it and waits for it to COMPLETE before it applies any Deployment,
+StatefulSet or CronJob in the same cluster group. If it fails or times out,
+the deploy stops with NO workload changed, the previous release keeps
+serving, and the error names the Job and prints the exact command
+`kubectl --context <ctx> -n <ns> logs job/<name> --all-containers`. The gate
+holds under `--rollout=skip` and `--rollout=warn` too.
+
+A Job that needs THIS release's workloads running (e.g. a provisioner for an
+identity provider deployed in the same env) declares
+`deploy_phase = "post-rollout"`. It then applies with the workloads and is
+awaited after they roll out. Left pre-rollout, it would wait on a workload
+the gate is holding back, and every cold install would abort. The phase
+renders as the `forge.dev/deploy-phase` annotation on the Job, which is also
+how a raw `kind: Job` in `additional_manifests` opts out.
+
 ## External / host-VM targets (Fly, Cloud Run, scp-to-a-VM, systemd)
 
 Declared per-env in `deploy/kcl/<env>/main.k`:
@@ -118,8 +137,12 @@ MAIN = forge.Service {
 Only `deploy_cmd` is required.
 
 **Substitution tokens.** forge expands these into `deploy_cmd` /
-`rollback_cmd` / `health_cmd` (`${X}` and `$X`; unknown keys → empty
-string):
+`rollback_cmd` / `health_cmd` (`${X}` and `$X`). ONLY the tokens below
+are substituted; every other `$X` / `${X}` — your script's own variables,
+`$HOME`, `$(…)` — reaches `sh -c` untouched, so `W=$(mktemp -d); cp a "$W/b"`
+works inline. The same rule applies to a `ShellBuild`'s `cmd`, whose tokens
+are `${IMAGE}` `${TAG}` `${CODE_VERSION}` `${SERVICE}` `${TARGETARCH}`
+`${REGISTRY}` `${PROJECT_DIR}` `${ENV}` `${BUILD_CWD}` plus its `env` keys:
 
 | Token | Value |
 |---|---|

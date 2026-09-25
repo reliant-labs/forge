@@ -57,6 +57,34 @@ func warnIfVendorStale(workDir string) {
 	})
 }
 
+// vendorMu serializes the on-demand materialization: one command can
+// render several envs concurrently against the same project.
+var vendorMu sync.Mutex
+
+// EnsureVendor materializes the vendored forge KCL module on demand when
+// the project's kcl.mod points at a `.forge-kcl/` that is not on disk (a
+// fresh checkout, or a project that never ran `forge generate`). See
+// kclvendor.EnsurePresent for why this is safe at render time.
+//
+// Run calls it on every render. It is exported so a command that audits
+// its own render's writes (`forge env render`'s write check) can do this
+// forge-owned, announced step BEFORE its before-picture, and not report
+// forge's vendoring as a KCL file.write.
+func EnsureVendor(workDir string) error {
+	vendorMu.Lock()
+	defer vendorMu.Unlock()
+	wrote, err := kclvendor.EnsurePresent(workDir)
+	if err != nil {
+		return fmt.Errorf("vendor the forge KCL module into %s/ (run `forge generate` to retry with full diagnostics): %w",
+			kclvendor.VendorDirName, err)
+	}
+	if wrote {
+		fmt.Fprintf(os.Stderr, "  ✅ Vendored forge KCL module → %s/ (it was missing; `forge generate` keeps it refreshed)\n",
+			kclvendor.VendorDirName)
+	}
+	return nil
+}
+
 // pluginPreflight refuses the render when this binary cannot service
 // kcl_plugin.forge.* calls, which is the case exactly when it was built
 // with CGO_ENABLED=0 (kclplugin.Register is a no-op under !cgo).
@@ -219,6 +247,9 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 		return nil, err
 	}
 
+	if err := EnsureVendor(workDir); err != nil {
+		return nil, err
+	}
 	warnIfVendorStale(workDir)
 
 	c, err := client.NewKpmClient()

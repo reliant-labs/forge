@@ -260,11 +260,11 @@ func EnsureVendorDep(kclModPath, projectDir string) (Result, error) {
 	switch kind {
 	case DepNone:
 		return Result{Warning: fmt.Sprintf(
-			"%s has no `forge = …` dependency line — cannot point it at the vendored module; add `%s` by hand",
+			"%s has no `forge = …` dependency line — cannot point it at the vendored module; add %#q by hand",
 			kclModPath, vendorDepLine(relPath))}, nil
 	case DepUnrecognized:
 		return Result{Warning: fmt.Sprintf(
-			"%s carries a forge dependency in a shape `forge generate` does not manage — leaving it untouched; expected `%s` for the vendored module",
+			"%s carries a forge dependency in a shape `forge generate` does not manage — leaving it untouched; expected %#q for the vendored module",
 			kclModPath, vendorDepLine(relPath))}, nil
 	}
 

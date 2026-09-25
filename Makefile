@@ -30,14 +30,15 @@ help:
 # without CGO still work and are deliberately left alone — that is what the
 # nocgo stub exists for.)
 build:
-	CGO_ENABLED=1 go build -o forge ./cmd/forge
+	CGO_ENABLED=1 go build -ldflags "$(DEV_FORGE_ROOT_LDFLAG)" -o forge ./cmd/forge
 
 # Contributor dev loop: install forge into $GOBIN (add $HOME/go/bin to PATH)
 # with its own source root stamped in. Then `forge project new` writes a
 # gitignored go.work bridging each new project to THIS checkout's forge/pkg,
 # so scaffolds build against your in-development forge with no manual
-# `go mod edit -replace`. Use plain `make build` / a release install for a
-# binary that pins the published forge/pkg instead.
+# `go mod edit -replace`. `make build` stamps the same root: a binary built
+# from a checkout is on no proxy, so bridging is the only way its scaffolds
+# can resolve forge. Install a published release for a binary that pins one.
 dev:
 	CGO_ENABLED=1 go install -ldflags "$(DEV_FORGE_ROOT_LDFLAG)" ./cmd/forge
 

@@ -30,11 +30,15 @@ jobs:
         with:
           go-version-file: go.mod
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v7+ is required for golangci-lint v2 (the .golangci.yml forge
+        # scaffolds is `version: "2"`). The version is pinned, not `latest`:
+        # a linter release adds checks, and `latest` would turn this job red
+        # on code nobody changed. Bump it deliberately, with the fixes the new
+        # release asks for, in the same commit.
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.14.0
           args: --timeout=5m
-          only-new-issues: true
       - name: Ensure modules are ready for forge install
         run: go mod download
       - name: Install forge

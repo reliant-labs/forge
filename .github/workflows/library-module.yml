@@ -54,7 +54,8 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned; see ci.yml's lint job and templates.GolangciLintVersion.
+          version: v2.14.0
           # golangci-lint discovers pkg/.golangci.yml by walking up from its
           # working directory. Running from the repo root would silently pick
           # the CLI module's config and lint none of these packages.

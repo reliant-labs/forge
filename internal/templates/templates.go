@@ -339,6 +339,20 @@ type CIWorkflowData struct {
 	// (local builds). A full SHA is a valid `go install ...@<ref>` target,
 	// so dev-built scaffolds remain reproducible.
 	ForgeGitCommit string
+
+	// GolangciLintVersion is the golangci-lint release the lint job pins.
+	// Left empty by every caller and filled by withDefaults with
+	// GolangciLintVersion, so a new construction site cannot ship `latest`.
+	GolangciLintVersion string
+}
+
+// withDefaults satisfies selfDefaulting. An explicit GolangciLintVersion
+// still wins; only the zero value is filled.
+func (d CIWorkflowData) withDefaults() interface{} {
+	if d.GolangciLintVersion == "" {
+		d.GolangciLintVersion = GolangciLintVersion
+	}
+	return d
 }
 
 // FrontendCIConfig is a minimal frontend descriptor for CI templates.

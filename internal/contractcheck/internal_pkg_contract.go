@@ -298,7 +298,7 @@ func missingContractFinding(rootDir, pkgDir string, facts contractShapeFacts) fo
 	// boundary, Deps names the wiring.
 	declared, anchor := "a `type Deps struct`", facts.depsPos
 	if facts.hasServiceInterface {
-		declared = fmt.Sprintf("a contract interface `%s`", facts.serviceIfaceName)
+		declared = fmt.Sprintf("a contract interface %#q", facts.serviceIfaceName)
 		anchor = facts.serviceIfacePos
 	}
 

@@ -70,8 +70,10 @@ published version, with no `replace`. A `make dev` binary has NO such version �
 its bytes are on no module proxy — so instead of inventing one it writes a
 **gitignored `go.work`** into each new project that `use`s `<this-checkout>`,
 and scaffolds build against your in-development forge with no manual
-`go mod edit -replace`. A released `forge` (installed via `task install` or
-`go install …@vX.Y.Z`) omits the stamp and never writes that `go.work`.
+`go mod edit -replace`. `task build` / `task install` stamp the same root: any
+binary built from a checkout is on no proxy, so bridging is the only way its
+scaffolds can resolve forge. A released `forge` (`go install …@vX.Y.Z`) omits
+the stamp and never writes that `go.work`.
 
 The same rule applies to an EXISTING project: running a `make dev` forge's
 `forge generate` against a project pinned to a published forge is refused

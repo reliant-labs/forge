@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // generateDXFiles writes developer-experience and operations scaffolding:
@@ -335,7 +337,8 @@ main() {
 
   install_go_tool protoc-gen-go            google.golang.org/protobuf/cmd/protoc-gen-go@latest
   install_go_tool protoc-gen-connect-go    connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
-  install_go_tool golangci-lint            github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+  # v2 module path, pinned to the version this project's CI lint job uses.
+  install_go_tool golangci-lint            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@` + templates.GolangciLintVersion + `
   install_go_tool goimports                golang.org/x/tools/cmd/goimports@latest
   install_go_tool govulncheck              golang.org/x/vuln/cmd/govulncheck@latest
 

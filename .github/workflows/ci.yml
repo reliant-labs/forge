@@ -77,9 +77,17 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned, and kept equal to templates.GolangciLintVersion by
+          # TestGolangciLintVersionIsPinnedEverywhere. `latest` let v2.14.0
+          # add seven findings on untouched lines with no commit in between.
+          version: v2.14.0
           args: --timeout=5m
-          only-new-issues: true
+          # Whole-repo, not only-new-issues. The job analyses the whole repo
+          # anyway (type-checking needs it); only-new-issues only HIDES what it
+          # found outside the diff. That is how main stayed green while
+          # failing its own linter, and the action cannot fetch a PR patch over
+          # 20k lines, so large PRs silently fell back to whole-repo regardless.
+          only-new-issues: false
 
   test:
     name: Test

@@ -70,7 +70,10 @@ main() {
 
   install_go_tool protoc-gen-go            google.golang.org/protobuf/cmd/protoc-gen-go@latest
   install_go_tool protoc-gen-connect-go    connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
-  install_go_tool golangci-lint            github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+  # v2 module path and an explicit version: `.../golangci-lint/cmd/...@latest`
+  # is the v1 module (v1.64.8), which cannot read a `version: "2"` config.
+  # Kept equal to CI's pin by TestGolangciLintVersionIsPinnedEverywhere.
+  install_go_tool golangci-lint            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
   install_go_tool goimports                golang.org/x/tools/cmd/goimports@latest
   install_go_tool govulncheck              golang.org/x/vuln/cmd/govulncheck@latest
 

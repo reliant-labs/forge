@@ -187,17 +187,17 @@ jobs:
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
-      # golangci-lint at `latest`, matching ci.yml's lint job and
-      # scripts/bootstrap.sh. The trade-off is deliberate and it is the
-      # opposite of the govulncheck pin two files over: what these tests
-      # assert is that forge's SCAFFOLD OUTPUT is lint-clean under the
-      # golangci a real user has, and a real user has latest. A pin would
-      # keep this lane green through exactly the upstream release that
-      # starts failing every `forge lint` in the field.
+      # golangci-lint at templates.GolangciLintVersion — the same pin as
+      # ci.yml's lint job, scripts/bootstrap.sh, and the CI workflow and
+      # bootstrap forge SCAFFOLDS (TestGolangciLintVersionIsPinnedEverywhere
+      # keeps them equal). This used to be `latest` on the theory that "a real
+      # user has latest". They no longer do: a scaffolded project installs the
+      # pinned version, so the pin IS what a real user has. `latest` here
+      # only made this lane's verdict change without a commit.
       - name: Install golangci-lint
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" latest
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.14.0/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
           golangci-lint --version
 
       # npm's content-addressable store. Same reasoning as

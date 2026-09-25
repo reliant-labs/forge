@@ -68,6 +68,7 @@ package suppress
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -179,16 +180,21 @@ func ParseFile(content string) *fileDirectives { //nolint:revive // unexported r
 					fd.fileScope[r] = d
 				}
 			case TokenDisableNextLine:
-				fd.lineScope[lineNo+1] = append(fd.lineScope[lineNo+1], d)
+				for _, target := range nextLineTargets(lines, lineNo) {
+					fd.lineScope[target] = append(fd.lineScope[target], d)
+				}
 			case TokenNolint:
 				// golangci semantics: trailing on a line of code
 				// applies to THAT line; alone on its own line applies
-				// to the next one.
-				target := lineNo
+				// to what follows it, the same span a next-line
+				// directive covers.
+				targets := []int{lineNo}
 				if isDirectiveOnlyLine(raw, TokenNolint) {
-					target = lineNo + 1
+					targets = nextLineTargets(lines, lineNo)
 				}
-				fd.lineScope[target] = append(fd.lineScope[target], d)
+				for _, target := range targets {
+					fd.lineScope[target] = append(fd.lineScope[target], d)
+				}
 			case TokenDisable:
 				for _, r := range d.rules {
 					// A re-opened block keeps the first opener's line
@@ -326,6 +332,60 @@ func isPlausibleRuleName(s string) bool {
 	return true
 }
 
+// nextLineTargets is the span a directive on line directiveLine means by
+// "the next line": the line below it, and, when that line is a comment,
+// every comment line after it up to and including the first line that is
+// not a comment. In other words, the next line of CODE, plus the comment
+// lines between the directive and that code.
+//
+// A literal "directive line + 1" is not what authors mean, and two
+// ordinary things break it:
+//
+//   - gofmt moves `//forge:` directive lines to the END of a Go doc
+//     comment (they are Go directive syntax, like `//go:build`), past any
+//     prose, and separates them from prose with a blank `//`. A directive
+//     written directly above a declaration can end up several comment
+//     lines above it, or above a marker it no longer touches.
+//   - Two directives aimed at one target (a marker drawing two refusals,
+//     each with its own reasoned allowance) necessarily stack, so the
+//     upper one's literal next line is the lower one, not the target.
+//
+// golangci-lint's own `//nolint` has the same shape: it applies to the
+// whole declaration a doc comment belongs to, not to a line number.
+//
+// The span never crosses a blank line or a line of code, so it cannot
+// reach anything the author could not see directly beneath the directive.
+// A finding anchored ON a comment line inside the span (an
+// exclude-contract marker) is covered too, which is what makes stacked
+// allowances work.
+func nextLineTargets(lines []string, directiveLine int) []int {
+	targets := []int{directiveLine + 1}
+	for l := directiveLine + 1; l <= len(lines) && isCommentOnlyLine(lines[l-1]); l++ {
+		targets = append(targets, l+1)
+	}
+	return targets
+}
+
+// isCommentOnlyLine reports whether raw is entirely a line comment in
+// one of the syntaxes forge lints: `//` (Go, proto, TypeScript), `#`
+// (YAML, shell) or `--` (SQL). The `#` and `--` forms require a
+// following space or end of line, so a TypeScript private field
+// (`#count = 0`) or a decrement is never mistaken for a comment.
+func isCommentOnlyLine(raw string) bool {
+	t := strings.TrimSpace(raw)
+	switch {
+	case strings.HasPrefix(t, "//"):
+		return true
+	case t == "#" || t == "--":
+		return true
+	case strings.HasPrefix(t, "# ") || strings.HasPrefix(t, "#\t") || strings.HasPrefix(t, "##"):
+		return true
+	case strings.HasPrefix(t, "-- ") || strings.HasPrefix(t, "--\t"):
+		return true
+	}
+	return false
+}
+
 // isDirectiveOnlyLine reports whether the directive is the only thing
 // on the line (ignoring leading whitespace and the comment marker).
 // This is what distinguishes golangci's "applies to the next line" form
@@ -396,12 +456,15 @@ func Apply(content string, findings []finding.Finding) Result {
 			Directive: d.token,
 		})
 		// Silencing a gating rule without saying why is itself a
-		// finding — see the package doc.
+		// finding — see the package doc. It is an ERROR: a suppression
+		// is how a gating rule stops gating, so a reasonless one that
+		// merely warned would make "a reason is required" advice rather
+		// than a rule, and a bare directive would turn any gate green.
 		if f.Severity == finding.SeverityError && strings.TrimSpace(d.reason) == "" {
 			if _, exempt := fd.covers(RuleMissingReason, d.line); !exempt {
 				res.Violations = append(res.Violations, finding.Finding{
 					Rule:     RuleMissingReason,
-					Severity: finding.SeverityWarning,
+					Severity: finding.SeverityError,
 					File:     f.File,
 					Line:     d.line,
 					Message: fmt.Sprintf(
@@ -415,4 +478,60 @@ func Apply(content string, findings []finding.Finding) Result {
 		}
 	}
 	return res
+}
+
+// ApplyFiles runs Apply over findings that may span many files, reading
+// each file once through read. A finding's File is resolved against root
+// unless it is already absolute; root "" means the working directory.
+//
+// A finding with no File, or whose file cannot be read, is kept as-is:
+// failing to read the file that would carry a directive is not evidence
+// that the finding was suppressed. Order is preserved within each file,
+// and files appear in the order they first occur.
+//
+// read is a parameter (callers pass os.ReadFile) so this package stays a
+// policy over text rather than an owner of I/O.
+func ApplyFiles(root string, findings []finding.Finding, read func(path string) ([]byte, error)) Result {
+	var res Result
+	byFile := map[string][]finding.Finding{}
+	var order []string
+	for _, f := range findings {
+		if f.File == "" {
+			res.Kept = append(res.Kept, f)
+			continue
+		}
+		if _, seen := byFile[f.File]; !seen {
+			order = append(order, f.File)
+		}
+		byFile[f.File] = append(byFile[f.File], f)
+	}
+	for _, file := range order {
+		fs := byFile[file]
+		path := file
+		if root != "" && !filepath.IsAbs(path) {
+			path = filepath.Join(root, filepath.FromSlash(file))
+		}
+		content, err := read(path)
+		if err != nil {
+			res.Kept = append(res.Kept, fs...)
+			continue
+		}
+		one := Apply(string(content), fs)
+		res.Kept = append(res.Kept, one.Kept...)
+		res.Suppressed = append(res.Suppressed, one.Suppressed...)
+		res.Violations = append(res.Violations, one.Violations...)
+	}
+	return res
+}
+
+// IsDirectiveToken reports whether token (a `forge:`-prefixed word as it
+// appears in a comment) is one of this package's directives. Linters that
+// flag unrecognised `forge:*` comments consult it, so a suppression is
+// never itself reported as an unknown marker.
+func IsDirectiveToken(token string) bool {
+	switch token {
+	case TokenDisableFile, TokenDisableNextLine, TokenDisable, TokenEnable:
+		return true
+	}
+	return false
 }

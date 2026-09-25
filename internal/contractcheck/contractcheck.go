@@ -122,7 +122,24 @@ type Options struct {
 	// exclude list there would silence them on exactly the packages most
 	// likely to need them.
 	Excludes []string
+
+	// CodegenUnavailable reports that `forge generate` does not run in
+	// this tree (no forge.yaml): a contract.go yields no bootstrap wiring,
+	// no mock and no decorator. internal-package-contract-names is an
+	// ERROR only because "the bootstrap template hardcodes these names and
+	// a non-canonical contract produces a bootstrap that doesn't compile",
+	// so with no bootstrap it reports as a WARNING that says why. The
+	// other rules keep their severity: all-mock testability does not
+	// depend on codegen.
+	CodegenUnavailable bool
 }
+
+// CodegenUnavailableNote is appended to the remediation of a finding
+// downgraded under [Options.CodegenUnavailable], so the reader sees both
+// why it no longer gates and how to make it gate again.
+const CodegenUnavailableNote = " (Reported as a warning: this tree has no forge.yaml, so `forge generate` never " +
+	"runs and the codegen this rule protects does not exist here. The shape is still worth keeping; " +
+	"`forge lint --strict` gates it.)"
 
 // Inspect runs the configured rules over rootDir and returns findings
 // in deterministic (file, line, rule) order. A missing rootDir/internal
@@ -175,6 +192,14 @@ func runRule(rootDir string, r Rule, opts Options) ([]forgeconv.Finding, error) 
 		res, err := lintInternalContracts(rootDir, opts.Excludes)
 		if err != nil {
 			return nil, err
+		}
+		if opts.CodegenUnavailable {
+			for i := range res.Findings {
+				if res.Findings[i].Severity == forgeconv.SeverityError {
+					res.Findings[i].Severity = forgeconv.SeverityWarning
+					res.Findings[i].Remediation += CodegenUnavailableNote
+				}
+			}
 		}
 		return res.Findings, nil
 	case RuleInternalPackageMissingContract:

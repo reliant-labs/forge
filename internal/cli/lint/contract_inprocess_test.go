@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/linter/contract"
 )
 
 // writeContractFixture lays down a minimal self-contained module whose
@@ -57,7 +59,7 @@ func TestContractAnalysisInProcess_FindsViolations(t *testing.T) {
 	dir := writeContractFixture(t)
 	t.Chdir(dir)
 
-	diags, err := runContractAnalysisInProcess(context.Background(), []string{"./..."}, nil)
+	diags, err := runContractAnalysisInProcess(context.Background(), []string{"./..."}, nil, contract.ExcludeGateOptions{})
 	if err != nil {
 		t.Fatalf("in-process contract analysis: %v", err)
 	}
@@ -82,7 +84,7 @@ func TestContractAnalysisInProcess_HonorsExcludes(t *testing.T) {
 	dir := writeContractFixture(t)
 	t.Chdir(dir)
 
-	diags, err := runContractAnalysisInProcess(context.Background(), []string{"./..."}, []string{"internal/widgets"})
+	diags, err := runContractAnalysisInProcess(context.Background(), []string{"./..."}, []string{"internal/widgets"}, contract.ExcludeGateOptions{})
 	if err != nil {
 		t.Fatalf("in-process contract analysis: %v", err)
 	}

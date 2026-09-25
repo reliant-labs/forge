@@ -175,11 +175,11 @@ func lintPipeline() []linterStep {
 				return true, ""
 			},
 			runText: func(rc *lintRunCtx) error {
-				return runContractLinter(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg))
+				return runContractLinter(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
 			},
 			errFormat: "❌ contract linter failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectContractLintJSON(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg))
+				return collectContractLintJSON(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
 			},
 		},
 
@@ -530,8 +530,9 @@ func lintPipeline() []linterStep {
 		// re-declaration collapses absent and zero: the create writes ""
 		// into a nullable column and postgres answers with a foreign-key
 		// violation naming a constraint rather than the proto line that
-		// caused it. GATES, unlike its advisory proto siblings — there is
-		// no reading under which the two declarations should disagree.
+		// caused it. GATES when forge generates the create (those are the
+		// op's failure modes); a hand-written create owns what omission
+		// means, so it warns or passes (lint_create_nullability.go).
 		{
 			name:  "create-nullability lint",
 			gates: true,
@@ -539,12 +540,11 @@ func lintPipeline() []linterStep {
 				return dirExists(protoDirDefault), ""
 			},
 			runText: func(rc *lintRunCtx) error {
-				return runCreateNullabilityLint(protoDirDefault)
+				return runCreateNullabilityLint(protoDirDefault, rc.cwd)
 			},
 			errFormat: "❌ create-nullability lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				fs, err := collectCreateNullabilityJSON(protoDirDefault)
-				return fs, len(fs) > 0, err
+				return collectCreateNullabilityJSON(protoDirDefault, rc.cwd)
 			},
 		},
 

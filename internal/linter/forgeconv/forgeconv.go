@@ -35,6 +35,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/linter/finding"
+	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
 // Severity and Finding now live in the shared internal/linter/finding
@@ -167,7 +168,14 @@ func LintProtoTreeOpts(rootDir string, opts LintOptions) (Result, error) {
 		if relErr != nil {
 			rel = file
 		}
-		result.Findings = append(result.Findings, lintProtoFile(rel, string(content), opts)...)
+		// The shared suppression engine, over the content already in
+		// hand: `// forge:lint-disable-next-line <rule>: <why>` above the
+		// offending declaration, and a reasonless one of a gating rule is
+		// itself reported. Applied here rather than by the caller so
+		// every consumer (lint, audit) sees the same verdict.
+		applied := suppress.Apply(string(content), lintProtoFile(rel, string(content), opts))
+		result.Findings = append(result.Findings, applied.Kept...)
+		result.Findings = append(result.Findings, applied.Violations...)
 	}
 
 	// Stable ordering: by file, then line, then rule.

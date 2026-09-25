@@ -403,10 +403,13 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 		return nil, nil
 	}
 
-	// Findings are reported against contract.go (canonical anchor)
-	// even when the actually-missing declaration would live in
-	// service.go — the user reads contract.go to understand the
-	// package boundary, so that's where we point them.
+	// A finding anchors on the declaration it names when there is one
+	// (the non-canonical interface, struct or constructor the author
+	// wrote), in that declaration's OWN file. Only when nothing was found
+	// does it fall back to contract.go:1, the package boundary. Pairing
+	// contract.go with a line number taken from another file (the old
+	// behavior) pointed at an unrelated line, and a `forge:lint-disable`
+	// written above the real declaration could never reach it.
 	relPath := relContractPath
 
 	var findings []forgeconv.Finding
@@ -646,6 +649,16 @@ func shouldSkipContractShapeCheck(facts contractShapeFacts) bool {
 	return false
 }
 
+// anchorFile returns the file a finding should name for a declaration at
+// pos: that declaration's own file, made relative the same way as the
+// contract.go fallback, or fallback when pos is unset.
+func anchorFile(fallback string, pos token.Position) string {
+	if !pos.IsValid() || pos.Filename == "" {
+		return fallback
+	}
+	return filepath.Join(filepath.Dir(fallback), filepath.Base(pos.Filename))
+}
+
 // canonicalContractMessage is the shared prefix for every
 // contract-shape finding. Keep the wording uniform so users can grep the
 // codebase for it.
@@ -658,14 +671,16 @@ const canonicalContractMessage = "internal-package contracts must declare 'type 
 func missingServiceFinding(relPath string, facts contractShapeFacts) forgeconv.Finding {
 	line := 1
 	found := "no interface"
+	file := relPath
 	if facts.firstIfaceName != "" {
 		line = facts.firstIfacePos.Line
+		file = anchorFile(relPath, facts.firstIfacePos)
 		found = fmt.Sprintf("'%s'", facts.firstIfaceName)
 	}
 	return forgeconv.Finding{
 		Rule:     string(RuleInternalPackageContractNames),
 		Severity: forgeconv.SeverityError,
-		File:     relPath,
+		File:     file,
 		Line:     line,
 		Message: fmt.Sprintf(
 			"forge convention: %s. Found %s — name it 'Service', OR keep the name and add a `//forge:service` marker on the line above it, so the bootstrap template can wire it. See skill: contracts.",
@@ -684,14 +699,16 @@ func missingServiceFinding(relPath string, facts contractShapeFacts) forgeconv.F
 func missingDepsFinding(relPath string, facts contractShapeFacts) forgeconv.Finding {
 	line := 1
 	found := "no struct"
+	file := relPath
 	if facts.firstStructName != "" {
 		line = facts.firstStructPos.Line
+		file = anchorFile(relPath, facts.firstStructPos)
 		found = fmt.Sprintf("'%s'", facts.firstStructName)
 	}
 	return forgeconv.Finding{
 		Rule:     string(RuleInternalPackageContractNames),
 		Severity: forgeconv.SeverityError,
-		File:     relPath,
+		File:     file,
 		Line:     line,
 		Message: fmt.Sprintf(
 			"forge convention: %s. Found %s — rename to 'Deps' (or move out of contract.go) so the bootstrap template can wire it. See skill: contracts.",
@@ -714,8 +731,10 @@ func missingDepsFinding(relPath string, facts contractShapeFacts) forgeconv.Find
 func missingConstructorFinding(relPath string, facts contractShapeFacts) forgeconv.Finding {
 	line := 1
 	found := "no constructor"
+	file := relPath
 	if facts.firstCtorName != "" {
 		line = facts.firstCtorPos.Line
+		file = anchorFile(relPath, facts.firstCtorPos)
 		found = fmt.Sprintf("'%s'", facts.firstCtorName)
 	}
 	contract := facts.serviceIfaceName
@@ -725,7 +744,7 @@ func missingConstructorFinding(relPath string, facts contractShapeFacts) forgeco
 	return forgeconv.Finding{
 		Rule:     string(RuleInternalPackageContractNames),
 		Severity: forgeconv.SeverityError,
-		File:     relPath,
+		File:     file,
 		Line:     line,
 		Message: fmt.Sprintf(
 			"forge convention: the package needs a constructor with the signature `func(Deps) %[1]s` "+

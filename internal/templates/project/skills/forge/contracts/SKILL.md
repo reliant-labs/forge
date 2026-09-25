@@ -90,13 +90,54 @@ It is the per-package equivalent of a `contracts.exclude` entry in `forge.yaml`:
 
 Packages whose kind forge already exempts structurally — the `internal/app` composition seam, supervised workers under `internal/workers/`, controller-runtime reconciler packages (they have `SetupWithManager`) — are not refused for doing I/O: their shape is a forge runtime interface, not a `Service`.
 
-A genuinely-justified exception to a refusal (a conversion that is its own project) uses the ordinary suppression mechanism on the line above the marker, so it is visible, reasoned, and reported by `--show-suppressed`:
+A dial or HTTP call whose target is **statically loopback** is not outbound I/O: a constant `"127.0.0.1:8080"`, `"[::1]:80"`, `"localhost:3000"` or `"http://localhost:3000/health"`, or `net.JoinHostPort("127.0.0.1", port)` with a constant host and any port. It cannot leave the machine. If the host comes from a variable, the gate cannot tell, so it still refuses. When the call really only reaches loopback, write the host as a constant.
+
+A genuinely-justified exception to a refusal (a conversion that is its own project) uses the ordinary suppression mechanism in the marker's comment block. That keeps it visible, reasoned, and reported by `--show-suppressed`:
 
 ```go
 //forge:lint-disable-next-line forge-exclude-contract-outbound-io: 40-method DB layer; per-aggregate split tracked in #123
 //forge:exclude-contract: sqlc-style data layer, split pending
 package db
 ```
+
+A marker that draws both refusals needs one allowance per rule, stacked. Each covers the marker.
+
+### Spelling: `//forge:` or `// forge:` — and what gofmt does to it
+
+Both spellings are accepted by every forge directive and marker. **Prefer `//forge:` (no space).** It is Go's directive syntax, the same family as `//go:build` and `//nolint:`. godoc hides it from rendered documentation, and gofmt places it deterministically.
+
+What gofmt does with it: it **moves every `//forge:` line to the end of the doc comment**, after any prose, and separates it from the prose with a blank `//`. It keeps the directives' relative order. A spaced `// forge:` line is prose to gofmt and stays where you wrote it. So the placement you see after saving is gofmt's, and it is stable.
+
+Forge reads directives in a way that survives this:
+
+- Markers (`forge:exclude-contract`, `forge:constructor`, `forge:contract`, …) are found anywhere in the comment, so a move does not matter.
+- `forge:lint-disable-next-line` covers **the next line of code, plus the comment lines between it and that code**. After gofmt moves a directive to the end of a doc comment it still covers the declaration the comment documents, and it still covers a marker further down the same block. It never crosses a blank line or a line of code.
+- The exclude-contract gate accepts an allowance anywhere in the marker's comment block. Mixing spellings (a spaced marker with an unspaced allowance) makes gofmt put the allowance *below* the marker, and that still applies.
+
+## Suppressing a contract or convention finding
+
+Every forge rule, including `forgeconv-internal-package-contract-names`, `forgeconv-deps-are-interfaces`, `forgeconv-one-service-per-file` and `forgeconv-create-request-nullability` (the last in a `.proto`), takes the same directive:
+
+```go
+type Deps struct {
+    //forge:lint-disable-next-line forgeconv-deps-are-interfaces: token bucket is pure in-memory state; nothing to fake
+    Limiter *Limiter
+}
+```
+
+Other forms: `forge:lint-disable-file <rule>: <why>` for a whole file, a `forge:lint-disable` … `forge:lint-enable` block, or golangci's `//nolint:<rule> // <why>`. **A reason is required** for an error-severity rule. A reasonless suppression still silences the finding, but it is reported as `forge-suppression-missing-reason`, which is itself an error. Warnings need no reason.
+
+## In a Go repo that is not a forge project
+
+`forge lint` works in any Go module, including one with no `forge.yaml`. The contract discipline still applies there, but the codegen it pays for does not: without `forge generate` there is no bootstrap, no `mock_gen.go` and no decorator. So the three rules whose **error** severity exists to protect that codegen report as **warnings** there, and the message says why:
+
+| Rule | Why it gates in a forge project | Without forge.yaml |
+|---|---|---|
+| `forge-exclude-contract-outbound-io` | the boundary loses its generated mock and decorator | warning |
+| `forge-exclude-contract-multi-impl` | the interface loses its generated mock | warning |
+| `forgeconv-internal-package-contract-names` | a non-canonical contract breaks the generated bootstrap | warning |
+
+`forge-exclude-contract-reason` and `forgeconv-deps-are-interfaces` keep gating everywhere. A reason costs one line, and faking a dependency behind an interface does not need codegen. `forge lint --strict` restores all of them to errors, for a non-forge repo that wants the full gate.
 
 You do **not** need the marker for a package with no interfaces at all (constants, structs, top-level funcs). Those are skipped automatically: a package that declares no interface cannot declare `Service`, and the rule works that out for itself. Other lint rules still apply either way.
 

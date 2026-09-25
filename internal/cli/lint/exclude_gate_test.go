@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/contract"
 )
 
 // The exclusion gate (internal/linter/contract/exclude_directive.go), driven
@@ -228,6 +231,82 @@ func Start(t *testing.T) string {
 	return srv.URL
 }
 `,
+		// The reliant preview-forwarder shape: a net.Dialer to the user's
+		// own dev server on 127.0.0.1 then ::1, plus an http.Get of a
+		// constant localhost URL. Loopback cannot leave the machine, so it
+		// is not an outbound boundary.
+		"internal/loopback/forward.go": `// Package loopback forwards to a local dev server.
+//
+//forge:exclude-contract: preview forwarder over the user's own loopback dev server
+package loopback
+
+import (
+	"context"
+	"net"
+	"net/http"
+)
+
+const devHost = "127.0.0.1"
+
+func Dial(ctx context.Context, port string) (net.Conn, error) {
+	d := &net.Dialer{}
+	if c, err := d.DialContext(ctx, "tcp4", net.JoinHostPort(devHost, port)); err == nil {
+		return c, nil
+	}
+	if c, err := d.DialContext(ctx, "tcp6", net.JoinHostPort("::1", port)); err == nil {
+		return c, nil
+	}
+	return net.Dial("tcp", "localhost:9191")
+}
+
+func Health() error {
+	resp, err := http.Get("http://localhost:3000/health")
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+`,
+		// The same dial with a host the type checker cannot see: still I/O,
+		// and the refusal says how to make a real loopback dial visible.
+		"internal/dynhost/dial.go": `// Package dynhost dials a caller-chosen host.
+//
+//forge:exclude-contract: forwards to a configured host
+package dynhost
+
+import (
+	"context"
+	"net"
+)
+
+func Dial(ctx context.Context, host, port string) (net.Conn, error) {
+	d := &net.Dialer{}
+	return d.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+}
+`,
+		// Mixed spellings, as reliant writes them: a SPACED marker and an
+		// unspaced allowance. gofmt moves the unspaced directive to the end
+		// of the doc comment, BELOW the marker; the allowance must still
+		// reach it. This file is the gofmt OUTPUT, not the input.
+		"internal/reflowed/client.go": `// Package reflowed probes a vendor.
+//
+// forge:exclude-contract: legacy probe, conversion tracked in #7
+//
+// More prose the author wrote after the marker.
+//
+//forge:lint-disable-next-line forge-exclude-contract-outbound-io: health probe only, being converted in #7
+package reflowed
+
+import "net/http"
+
+func Probe(url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+`,
 		// A justified exception, written with the ordinary suppression
 		// mechanism on the marker's line.
 		"internal/allowed/client.go": `// Package allowed is an I/O package with a reviewed allowance.
@@ -263,11 +342,16 @@ func Probe(url string) error {
 // returns its exclusion-gate diagnostics keyed by package directory.
 func excludeGateDiags(t *testing.T) map[string][]contractDiagnostic {
 	t.Helper()
+	return excludeGateDiagsWith(t, contract.ExcludeGateOptions{})
+}
+
+func excludeGateDiagsWith(t *testing.T, gate contract.ExcludeGateOptions) map[string][]contractDiagnostic {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("loads a module with go/packages (type-checks net/http); skipped under -short")
 	}
 	t.Chdir(writeExcludeGateFixture(t))
-	diags, err := runContractAnalysisInProcess(context.Background(), []string{"./..."}, nil)
+	diags, err := runContractAnalysisInProcess(context.Background(), []string{"./..."}, nil, gate)
 	if err != nil {
 		t.Fatalf("in-process contract analysis: %v", err)
 	}
@@ -389,6 +473,78 @@ func TestExcludeGate(t *testing.T) {
 			t.Errorf("an allowance for one rule must not silence the other: %v", rulesOf(ds))
 		}
 	})
+}
+
+// A dial whose target is statically loopback is not outbound I/O; a dial
+// whose host the gate cannot see still is, and the refusal says how to make
+// a real loopback dial visible. Red before the exemption: the loopback
+// package was refused for "a network dial (net)".
+func TestExcludeGate_LoopbackLiteralIsNotOutbound(t *testing.T) {
+	byPkg := excludeGateDiags(t)
+
+	if ds := byPkg["loopback"]; len(ds) != 0 {
+		t.Errorf("a constant-loopback dial/GET was refused as outbound I/O: %v", ds)
+	}
+	ds := byPkg["dynhost"]
+	if !hasRule(ds, "forge-exclude-contract-outbound-io") {
+		t.Fatalf("a dial to a caller-chosen host must still be refused: %v", rulesOf(ds))
+	}
+	for _, d := range ds {
+		if d.Analyzer == "forge-exclude-contract-outbound-io" && !strings.Contains(d.FixHint, "LOOPBACK") {
+			t.Errorf("a dynamic-target refusal must say how to exempt a genuine loopback dial: %s", d.FixHint)
+		}
+	}
+}
+
+// gofmt moves `//forge:` directive lines to the END of a doc comment. With
+// mixed spellings (a spaced marker, an unspaced allowance) that puts the
+// allowance BELOW the marker, and it must still apply. Red before: the gate
+// only looked for allowances directly above the marker.
+func TestExcludeGate_AllowanceBelowMarkerAfterGofmtReflow(t *testing.T) {
+	byPkg := excludeGateDiags(t)
+	if ds := byPkg["reflowed"]; len(ds) != 0 {
+		t.Errorf("an allowance gofmt reflowed below the marker no longer applied: %v", ds)
+	}
+}
+
+// With no forge.yaml there is no codegen, so the refusals whose payoff is a
+// generated mock and decorator report as WARNINGS that say why; the reason
+// requirement keeps gating. Red before: no such option, every refusal gated.
+func TestExcludeGate_CodegenUnavailableDowngradesRefusals(t *testing.T) {
+	byPkg := excludeGateDiagsWith(t, contract.ExcludeGateOptions{CodegenUnavailable: true})
+
+	for _, pkg := range []string{"httpclient", "sqlstore", "stores", "dynhost"} {
+		ds := byPkg[pkg]
+		if len(ds) == 0 {
+			t.Errorf("%s: refusal disappeared instead of being downgraded", pkg)
+			continue
+		}
+		for _, d := range ds {
+			if !d.Warning {
+				t.Errorf("%s: %s should be a warning without codegen, got error", pkg, d.Analyzer)
+			}
+			if !strings.Contains(d.FixHint, "no forge.yaml") {
+				t.Errorf("%s: the downgraded refusal must say why: %s", pkg, d.FixHint)
+			}
+		}
+	}
+	ds := byPkg["bare"]
+	if !hasRule(ds, "forge-exclude-contract-reason") || ds[0].Warning {
+		t.Errorf("a bare marker must still gate without codegen: %+v", ds)
+	}
+}
+
+// And the grading is the CLI's decision: no forge.yaml and no --strict.
+func TestCodegenUnavailable(t *testing.T) {
+	if !codegenUnavailable(nil, false) {
+		t.Error("no forge.yaml, no --strict: codegen is unavailable")
+	}
+	if codegenUnavailable(nil, true) {
+		t.Error("--strict keeps the contract refusals gating")
+	}
+	if codegenUnavailable(&config.ProjectConfig{}, false) {
+		t.Error("a forge project has codegen")
+	}
 }
 
 // TestExcludeGate_AllowanceSurvivesGofmt pins the SPELLING the skill teaches

@@ -29,6 +29,7 @@ import (
 	"golang.org/x/tools/go/analysis/checker"
 	"golang.org/x/tools/go/packages"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/contract"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 )
@@ -57,6 +58,29 @@ type contractDiagnostic struct {
 	Warning bool
 }
 
+// codegenUnavailable reports whether the contract rules whose ERROR
+// severity is justified by forge codegen (bootstrap wiring, generated
+// mocks and decorators) should report as warnings instead: the tree has
+// no forge.yaml (cfg is nil), so `forge generate` never runs there, and
+// --strict was not asked for.
+//
+// Why a downgrade and not "stay an error with a better hint": a non-forge
+// Go repo that runs `forge lint` (reliant does) otherwise has to repeat
+// ONE project-level fact — "not a forge project, so a contract.go yields
+// no mock or decorator" — as a suppression reason at every site. Reliant
+// accumulated 35 of them. When every reason says the same thing, the
+// reason has become ceremony, and the tool already knows the fact. The
+// discipline stays visible as a warning on every run, and --strict keeps
+// it gating for a repo that wants that.
+func codegenUnavailable(cfg *config.ProjectConfig, strict bool) bool {
+	return cfg == nil && !strict
+}
+
+// contractGateOptions is the exclusion gate's tuning for this run.
+func contractGateOptions(cfg *config.ProjectConfig, strict bool) contract.ExcludeGateOptions {
+	return contract.ExcludeGateOptions{CodegenUnavailable: codegenUnavailable(cfg, strict)}
+}
+
 func (d contractDiagnostic) String() string {
 	s := fmt.Sprintf("%s: %s (%s)", d.Pos, d.Message, d.Analyzer)
 	if d.FixHint != "" {
@@ -68,8 +92,9 @@ func (d contractDiagnostic) String() string {
 // runContractAnalysisInProcess loads the requested packages and runs
 // the contract analyzers in-process, returning position-sorted
 // diagnostics. A load or analyzer failure is an error; diagnostics are
-// findings, not errors.
-func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string) ([]contractDiagnostic, error) {
+// findings, not errors. gate tunes the exclusion gate to the tree (see
+// codegenUnavailable).
+func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string, gate contract.ExcludeGateOptions) ([]contractDiagnostic, error) {
 	// The exclude list mirrors forge.yaml's contracts.exclude — same
 	// registration cmd/contractlint performs before multichecker.Main.
 	contract.SetExcludes(excludes)
@@ -159,7 +184,7 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string)
 	// internal/linter/contract/exclude_directive.go for why it is not an
 	// analyzer. The forge.yaml contracts.exclude list does not silence it: that
 	// list excludes paths, and the gate is about a marker in the source.
-	for _, f := range contract.CheckExcludeDirectives(pkgs) {
+	for _, f := range contract.CheckExcludeDirectives(pkgs, gate) {
 		pos := token.Position{Filename: f.File, Line: f.Line}
 		if cwd != "" {
 			if rel, rerr := filepath.Rel(cwd, pos.Filename); rerr == nil && !strings.HasPrefix(rel, "..") {

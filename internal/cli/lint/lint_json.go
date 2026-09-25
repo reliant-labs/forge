@@ -814,7 +814,7 @@ func collectGuardedFieldsJSON(cwd string, frontendDirs []string) ([]lintJSONFind
 			Line:     f.Line,
 			Severity: lintSevWarning,
 			Rule:     "forgeconv-guarded-field-written",
-			Message: fmt.Sprintf("this page's update_mask writes %s.%s, which %s declares `%s`",
+			Message: fmt.Sprintf("this page's update_mask writes %s.%s, which %s declares %#q",
 				f.Table, f.Column, f.GuardedBy, codegen.ProtoMarkerGuards),
 			FixHint: guardedFieldFixHint(f),
 		})

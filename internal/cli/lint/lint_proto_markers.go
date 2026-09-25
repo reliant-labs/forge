@@ -94,11 +94,11 @@ func protoMarkerFixHint(f protoMarkerFinding) string {
 			f.Marker, f.Renamed, f.Renamed)
 	case f.Suggestion != "":
 		return fmt.Sprintf(
-			"%q is not a marker forge recognizes — did you mean %q? Known proto markers: %s (see `%s`)",
+			"%q is not a marker forge recognizes — did you mean %q? Known proto markers: %s (see %#q)",
 			f.Marker, f.Suggestion, strings.Join(codegen.KnownProtoMarkers, ", "), protoMarkerDumpCmd)
 	default:
 		return fmt.Sprintf(
-			"%q is not a marker forge recognizes — known proto markers: %s (see `%s`)",
+			"%q is not a marker forge recognizes — known proto markers: %s (see %#q)",
 			f.Marker, strings.Join(codegen.KnownProtoMarkers, ", "), protoMarkerDumpCmd)
 	}
 }

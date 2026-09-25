@@ -267,7 +267,7 @@ func fieldTypeBriefTable() string {
 	b.WriteString("Applied once, at birth. The migration is yours from that moment: edit any\ncolumn freely afterwards, and evolve with a new migration.\n\n")
 	b.WriteString("| Proto field | Column |\n|---|---|\n")
 	for _, m := range entityscaffold.ProtoSQLMappings() {
-		row := fmt.Sprintf("| `%s` | `%s`", m.Proto, m.SQL)
+		row := fmt.Sprintf("| %#q | %#q", m.Proto, m.SQL)
 		if m.Notes != "" {
 			row += " — " + m.Notes
 		}

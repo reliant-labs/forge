@@ -1,6 +1,8 @@
 package suppress
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -182,6 +184,129 @@ func TestSuppressingErrorWithoutReasonIsReported(t *testing.T) {
 	// the directive is what the author has to edit.
 	if res.Violations[0].Line != 2 {
 		t.Fatalf("violation should point at the directive line 2, got %d", res.Violations[0].Line)
+	}
+}
+
+// The missing-reason violation must GATE. As a warning it was advice: a
+// bare `forge:lint-disable-next-line <error-rule>` silenced the error and
+// left only a non-gating note behind, so any gate could be turned green
+// with no reason at all — the exact outcome the requirement exists to stop.
+func TestMissingReasonViolationGates(t *testing.T) {
+	src := "package api\n// forge:lint-disable-next-line my-rule\ncode()\n"
+
+	res := Apply(src, []finding.Finding{errFinding("my-rule", 3)})
+
+	if len(res.Violations) != 1 {
+		t.Fatalf("expected one missing-reason violation, got %+v", res.Violations)
+	}
+	if got := res.Violations[0].Severity; got != finding.SeverityError {
+		t.Fatalf("missing-reason violation severity = %q, want error (a reasonless suppression must not turn a gate green)", got)
+	}
+}
+
+// A next-line directive covers the next line of CODE, through any comment
+// lines between. gofmt produces exactly that shape: it moves `//forge:`
+// directive lines to the end of a doc comment and separates them from
+// prose with a blank `//`, and a directive for a declaration naturally
+// sits in that declaration's doc comment.
+func TestNextLineSpansCommentLinesToCode(t *testing.T) {
+	src := strings.Join([]string{
+		"package api", // 1
+		"//forge:lint-disable-next-line my-rule: reviewed", // 2
+		"//",                       // 3
+		"// Prose gofmt put here.", // 4
+		"func Target() {}",         // 5
+	}, "\n")
+
+	res := Apply(src, []finding.Finding{errFinding("my-rule", 5)})
+
+	if len(res.Kept) != 0 {
+		t.Fatalf("directive should reach the declaration through its doc comment; kept %+v", res.Kept)
+	}
+}
+
+// The span stops at the first line of code, and never crosses a blank
+// line: it must not reach anything the author could not see directly
+// beneath the directive.
+func TestNextLineStopsAtCodeAndBlankLines(t *testing.T) {
+	src := strings.Join([]string{
+		"package api", // 1
+		"// forge:lint-disable-next-line my-rule: one", // 2
+		"a()", // 3
+		"b()", // 4
+		"// forge:lint-disable-next-line my-rule: two", // 5
+		"",    // 6
+		"c()", // 7
+	}, "\n")
+
+	res := Apply(src, []finding.Finding{errFinding("my-rule", 3), errFinding("my-rule", 4), errFinding("my-rule", 7)})
+
+	if len(res.Kept) != 2 || res.Kept[0].Line != 4 || res.Kept[1].Line != 7 {
+		t.Fatalf("span must stop at the first code line and not cross a blank line; kept %+v", res.Kept)
+	}
+}
+
+// `#` and `--` count as comment lines only as comments: a TypeScript
+// private field or a decrement is code, and ends the span.
+func TestCommentOnlyLineRecognition(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"// prose":        true,
+		"  //forge:x":     true,
+		"# yaml comment":  true,
+		"#":               true,
+		"-- sql comment":  true,
+		"#count = 0":      false,
+		"--i":             false,
+		"code() // trail": false,
+		"":                false,
+	} {
+		if got := isCommentOnlyLine(raw); got != want {
+			t.Errorf("isCommentOnlyLine(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+// ApplyFiles is Apply across many files: each finding is judged against
+// ITS file's directives, and a file that cannot be read keeps its findings
+// (an unreadable file is not evidence of a suppression).
+func TestApplyFilesResolvesEachFindingAgainstItsOwnFile(t *testing.T) {
+	files := map[string]string{
+		"root/a.proto": "// forge:lint-disable-next-line my-rule: server default\n  optional string x = 1;\n",
+		"root/b.proto": "  optional string y = 1;\n",
+	}
+	read := func(path string) ([]byte, error) {
+		if s, ok := files[filepath.ToSlash(path)]; ok {
+			return []byte(s), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	in := []finding.Finding{
+		{Rule: "my-rule", Severity: finding.SeverityError, File: "a.proto", Line: 2},
+		{Rule: "my-rule", Severity: finding.SeverityError, File: "b.proto", Line: 1},
+		{Rule: "my-rule", Severity: finding.SeverityError, File: "missing.proto", Line: 1},
+		{Rule: "my-rule", Severity: finding.SeverityError},
+	}
+
+	res := ApplyFiles("root", in, read)
+
+	if len(res.Suppressed) != 1 || res.Suppressed[0].File != "a.proto" {
+		t.Fatalf("only a.proto's finding carries a directive; suppressed %+v", res.Suppressed)
+	}
+	if len(res.Kept) != 3 {
+		t.Fatalf("b.proto, the unreadable file and the file-less finding must all be kept; kept %+v", res.Kept)
+	}
+}
+
+func TestIsDirectiveToken(t *testing.T) {
+	for _, tok := range []string{TokenDisableNextLine, TokenDisableFile, TokenDisable, TokenEnable} {
+		if !IsDirectiveToken(tok) {
+			t.Errorf("IsDirectiveToken(%q) = false", tok)
+		}
+	}
+	for _, tok := range []string{"forge:entity", "forge:lint-disabled", "forge:"} {
+		if IsDirectiveToken(tok) {
+			t.Errorf("IsDirectiveToken(%q) = true", tok)
+		}
 	}
 }
 

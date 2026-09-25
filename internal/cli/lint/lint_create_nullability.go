@@ -65,19 +65,53 @@
 //   - A message with no Create request at all (a filter, a nested value
 //     type, an envelope) is not an entity in this sense and is skipped.
 //
-// Severity is ERROR, unlike the advisory proto lints. The three siblings
-// that warn — proto-markers, proto-options, column-markers — all warn
-// because their subject is ambiguous: an unknown marker might be a future
-// forge's, an unknown option might be a project's own extension. There is
-// no such ambiguity here. Two declarations of the same field disagreeing
-// about presence is not a style the author might have chosen; it silently
-// corrupts writes, and it has exactly one correct resolution.
+// ── Severity follows provenance: who writes the create? ───────────────────
+//
+// Both harms above are harms of the GENERATED create: it is the generated
+// op that copies "" into a nullable FK, and the generated op that writes a
+// zero value for an omitted field. So the verdict depends on whether forge
+// generates the op for this Create request, and forge can tell. A Create
+// RPC forge wires has `crud.CreateOp[pb.Create<X>Request, …]` in a
+// handlers_crud_ops_gen.go, and that file exists only when forge matched
+// the RPC to a schema entity, validated its shape, and found no
+// hand-written method pre-empting it. The ops file IS the provenance
+// record; there is nothing to declare.
+//
+//	forge generates the op        both directions ERROR — the op is forge's,
+//	                              and it silently corrupts writes.
+//	hand-written handler,         NO FINDING. "Omit to get the server
+//	  optional only on Create     default" is a contract the handler owns:
+//	                              an auto-generated title, a default
+//	                              value_type, append-at-end position,
+//	                              base-branch detection. Demanding that the
+//	                              label be dropped would destroy it.
+//	hand-written handler,         WARNING. The wire really has lost
+//	  optional only on entity     presence (the handler cannot tell omitted
+//	                              from ""), but whether that matters is the
+//	                              handler's call, so it does not gate.
+//
+// A project with no forge codegen (no forge.yaml, or a hand-written create)
+// therefore never gates on this rule for a contract its own code keeps.
+// Scoping by provenance beats asking every such project to repeat a
+// suppression reason at each site, because the reason ("a handler owns this
+// create") is a fact the tool can read.
+//
+// The name-only match against the ops file fails safe: a hand-written
+// Create<X>Request in one proto package that shares its name with a
+// generated one in another is judged as generated (error), never the
+// reverse.
+//
+// Suppression: the ordinary engine (internal/linter/suppress), so an
+// author overriding a generated op on purpose writes
+// `// forge:lint-disable-next-line forgeconv-create-request-nullability: <why>`
+// above the field, and a reasonless one is itself an error.
 
 package lint
 
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -85,7 +119,13 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/linter/finding"
+	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
+
+// ruleCreateRequestNullability is the stable rule ID: it appears in output
+// and is the name a forge:lint-disable directive suppresses.
+const ruleCreateRequestNullability = "forgeconv-create-request-nullability"
 
 // createNullabilityFinding is one field whose `optional` label disagrees
 // between an entity message and its Create request. Line points at the
@@ -103,6 +143,27 @@ type createNullabilityFinding struct {
 	// rather than making the reader infer the other from a negation.
 	EntityOptional bool
 	CreateOptional bool
+	// Generated reports whether forge generates this Create request's op
+	// (see "Severity follows provenance" above).
+	Generated bool
+}
+
+// severity is the provenance verdict. Hand-written creates reach here only
+// in the entity-optional direction (the other is not a finding for them).
+func (f createNullabilityFinding) severity() finding.Severity {
+	if f.Generated {
+		return finding.SeverityError
+	}
+	return finding.SeverityWarning
+}
+
+// message states both sides explicitly.
+func (f createNullabilityFinding) message() string {
+	side, other := "the entity", "Create"+f.Entity+"Request"
+	if !f.EntityOptional {
+		side, other = "Create"+f.Entity+"Request", "the entity"
+	}
+	return fmt.Sprintf("%s.%s is `optional` on %s but not on %s", f.Entity, f.Field, side, other)
 }
 
 // createNullabilityFixHint renders the remediation: which line to change,
@@ -110,6 +171,17 @@ type createNullabilityFinding struct {
 // differently, so they get different explanations — a hint that described
 // only the common direction would misdescribe the other half.
 func createNullabilityFixHint(f createNullabilityFinding) string {
+	if !f.Generated {
+		// Only the entity-optional direction reaches a hand-written
+		// create; the generated op's failure modes do not apply to it.
+		return fmt.Sprintf(
+			"%s.%s is `optional` on the entity but not on Create%sRequest, so the wire cannot carry "+
+				"\"absent\": your hand-written create handler sees the empty value for a caller that sent "+
+				"nothing. If the handler needs to tell those apart (a nullable column, a nullable FK), add "+
+				"`optional` to the Create request field. If empty and absent mean the same thing to it, "+
+				"this is fine as it stands; a warning, because the handler owns the answer.",
+			f.Entity, f.Field, f.Entity)
+	}
 	if f.EntityOptional {
 		return fmt.Sprintf(
 			"%s.%s is `optional` on the entity but not on Create%sRequest. The flattened field "+
@@ -121,38 +193,128 @@ func createNullabilityFixHint(f createNullabilityFinding) string {
 	}
 	return fmt.Sprintf(
 		"%s.%s is `optional` on Create%sRequest but not on the entity. The entity says this "+
-			"field is always present, so a caller that omits it has the zero value written with "+
-			"no complaint. Drop `optional` from the Create request field, or add it to the "+
-			"entity if the value really is absent sometimes.",
+			"field is always present, and forge generates this create, so a caller that omits it "+
+			"has the zero value written with no complaint. Drop `optional` from the Create request "+
+			"field, or add it to the entity if the value really is absent sometimes. If the omission "+
+			"is a server-default contract, implement the create yourself (a hand-written handler "+
+			"owns what omission means) or suppress with "+
+			"`// forge:lint-disable-next-line "+ruleCreateRequestNullability+": <why>` above the field.",
 		f.Entity, f.Field, f.Entity)
 }
 
-// runCreateNullabilityLint is the text-mode entry point.
-func runCreateNullabilityLint(protoDir string) error {
+// runCreateNullabilityLint is the text-mode entry point. projectRoot is
+// where the generated handler ops live (the provenance record).
+func runCreateNullabilityLint(protoDir, projectRoot string) error {
 	fmt.Println("Running create-nullability lint...")
-	findings, err := collectCreateNullabilityFindings(protoDir)
+	findings, err := createNullabilityLintFindings(protoDir, projectRoot)
 	if err != nil {
 		return err
 	}
 	formatCreateNullability(os.Stdout, findings)
-	if len(findings) > 0 {
-		return fmt.Errorf("%d create-request nullability mismatch(es)", len(findings))
+	if n := countErrors(findings); n > 0 {
+		return fmt.Errorf("%d create-request nullability mismatch(es)", n)
 	}
 	return nil
 }
 
+// countErrors counts the gating findings.
+func countErrors(fs []finding.Finding) int {
+	n := 0
+	for _, f := range fs {
+		if f.Severity == finding.SeverityError {
+			n++
+		}
+	}
+	return n
+}
+
 // formatCreateNullability writes the human report.
-func formatCreateNullability(w io.Writer, findings []createNullabilityFinding) {
+func formatCreateNullability(w io.Writer, findings []finding.Finding) {
 	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  create-nullability clean — every Create request agrees with its entity on field presence")
+		_, _ = fmt.Fprintln(w, "  create-nullability clean — every forge-generated Create agrees with its entity on field presence")
 		return
 	}
 	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ✖ [forgeconv-create-request-nullability] %s:%d\n", f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      → %s\n", createNullabilityFixHint(f))
+		glyph := "✖"
+		if f.Severity != finding.SeverityError {
+			glyph = "⚠"
+		}
+		_, _ = fmt.Fprintf(w, "  %s [%s] %s:%d\n", glyph, f.Rule, f.File, f.Line)
+		_, _ = fmt.Fprintf(w, "      → %s\n", f.Remediation)
 	}
-	_, _ = fmt.Fprintf(w, "\n%d create-request nullability mismatch(es).\n", len(findings))
+	errs := countErrors(findings)
+	_, _ = fmt.Fprintf(w, "\n%d create-request nullability mismatch(es), %d warning(s).\n", errs, len(findings)-errs)
 }
+
+// createNullabilityLintFindings is the shared engine behind text mode and
+// `forge lint --json`: the raw findings graded by provenance, with the
+// suppression directives in each proto file applied. A reasonless
+// suppression of an error-severity finding comes back as an error of its
+// own (suppress.RuleMissingReason).
+func createNullabilityLintFindings(protoDir, projectRoot string) ([]finding.Finding, error) {
+	raw, err := collectCreateNullabilityFindings(protoDir, projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	fs := make([]finding.Finding, 0, len(raw))
+	for _, f := range raw {
+		fs = append(fs, finding.Finding{
+			Rule:        ruleCreateRequestNullability,
+			Severity:    f.severity(),
+			File:        f.File,
+			Line:        f.Line,
+			Message:     f.message(),
+			Remediation: createNullabilityFixHint(f),
+		})
+	}
+	res := suppress.ApplyFiles("", fs, os.ReadFile)
+	return append(res.Kept, res.Violations...), nil
+}
+
+// generatedCreateRequests returns the Create request message names whose
+// op forge generates: every `crud.CreateOp[pb.<Req>, …]` in a
+// handlers_crud_ops_gen.go under projectRoot's internal/ tree (and the
+// legacy top-level handlers/). A project with neither has no generated
+// creates, which is the honest answer for a non-forge repo.
+func generatedCreateRequests(projectRoot string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, sub := range []string{"internal", "handlers"} {
+		dir := filepath.Join(projectRoot, sub)
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "node_modules" || d.Name() == "testdata" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if d.Name() != "handlers_crud_ops_gen.go" {
+				return nil
+			}
+			data, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
+			}
+			for _, m := range generatedCreateOpRE.FindAllStringSubmatch(string(data), -1) {
+				out[m[1]] = true
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("scan %s for generated CRUD ops: %w", dir, err)
+		}
+	}
+	return out, nil
+}
+
+// generatedCreateOpRE matches the op signature handlers_crud_ops_gen.go.tmpl
+// emits for a create: `crud.CreateOp[pb.<InputType>, pb.<OutputType>, …]`.
+var generatedCreateOpRE = regexp.MustCompile(`crud\.CreateOp\[\s*pb\.(\w+)\s*,`)
 
 // managedLifecycleFields are server-owned and never appear on a write
 // envelope. Listed so a project that DOES declare one on its Create
@@ -170,11 +332,15 @@ var managedLifecycleFields = map[string]bool{
 // are in the same proto package by construction (forge never emits a
 // cross-package envelope, and a hand-written one could not resolve the
 // entity type anyway).
-func collectCreateNullabilityFindings(protoDir string) ([]createNullabilityFinding, error) {
+func collectCreateNullabilityFindings(protoDir, projectRoot string) ([]createNullabilityFinding, error) {
 	if _, err := os.Stat(protoDir); os.IsNotExist(err) {
 		return nil, nil
 	}
 	dirs, err := protoSubdirsWithFiles(protoDir)
+	if err != nil {
+		return nil, err
+	}
+	generated, err := generatedCreateRequests(projectRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +354,7 @@ func collectCreateNullabilityFindings(protoDir string) ([]createNullabilityFindi
 			// malformed file from masking findings everywhere else.
 			continue
 		}
-		findings = append(findings, createNullabilityFindingsIn(scan)...)
+		findings = append(findings, createNullabilityFindingsIn(scan, generated)...)
 	}
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
@@ -200,14 +366,17 @@ func collectCreateNullabilityFindings(protoDir string) ([]createNullabilityFindi
 }
 
 // createNullabilityFindingsIn compares every entity/Create-request pair in
-// one scanned directory.
-func createNullabilityFindingsIn(scan *codegen.RawProtoScan) []createNullabilityFinding {
+// one scanned directory. generated names the Create requests whose op forge
+// generates; the rest are hand-written (see "Severity follows provenance").
+func createNullabilityFindingsIn(scan *codegen.RawProtoScan, generated map[string]bool) []createNullabilityFinding {
 	var findings []createNullabilityFinding
 	for _, entity := range scan.Messages {
-		create, ok := scan.MessageByName("Create" + entity.Name + "Request")
+		createName := "Create" + entity.Name + "Request"
+		create, ok := scan.MessageByName(createName)
 		if !ok {
 			continue // not an entity in the CRUD sense
 		}
+		isGenerated := generated[createName]
 		createFields := make(map[string]codegen.SchemaFieldDef, len(create.Fields))
 		for _, f := range create.Fields {
 			createFields[f.Name] = f
@@ -232,6 +401,13 @@ func createNullabilityFindingsIn(scan *codegen.RawProtoScan) []createNullability
 			if ef.Optional == cf.Optional {
 				continue
 			}
+			// A hand-written create that makes a field optional on the
+			// request is keeping a "server default on omit" contract of
+			// its own. Nothing forge writes is at risk, so there is
+			// nothing to report.
+			if !isGenerated && cf.Optional {
+				continue
+			}
 			findings = append(findings, createNullabilityFinding{
 				File:           create.File,
 				Line:           fieldLineIn(create, ef.Name),
@@ -239,6 +415,7 @@ func createNullabilityFindingsIn(scan *codegen.RawProtoScan) []createNullability
 				Field:          ef.Name,
 				EntityOptional: ef.Optional,
 				CreateOptional: cf.Optional,
+				Generated:      isGenerated,
 			})
 		}
 	}

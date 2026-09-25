@@ -17,9 +17,11 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
+	"github.com/reliant-labs/forge/internal/linter/contract"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
+	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
@@ -260,14 +262,14 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		if store != nil && !store.Features().ContractsEnabled() {
 			return errFeatureDisabled("--contract", "contracts")
 		}
-		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
+		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg), contractGateOptions(cfg, flags.strict))
 	}
 	if flags.exportedVars {
 		_, cfg, err := loadLintConfig()
 		if err != nil {
 			return err
 		}
-		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
+		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg), contractGateOptions(cfg, flags.strict))
 	}
 	if flags.migrationSafety {
 		store, cfg, err := loadLintConfig()
@@ -338,7 +340,7 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		return runProtoMarkersLint(protoDirDefault)
 	}
 	if flags.createNullability {
-		return runCreateNullabilityLint(protoDirDefault)
+		return runWithCwd(func(cwd string) error { return runCreateNullabilityLint(protoDirDefault, cwd) })
 	}
 	if flags.computedFields {
 		return runWithCwd(runComputedFieldsLint)
@@ -453,11 +455,11 @@ func contractExcludesFromConfig(cfg *config.ProjectConfig) []string {
 // (resolveContractLintBinary → contractlint on PATH / bin/ / `go run`)
 // let a stale ~/go/bin/contractlint produce phantom violations against
 // a fresh forge with nothing to catch the mismatch.
-func runContractLinter(ctx context.Context, paths []string, excludes []string) error {
+func runContractLinter(ctx context.Context, paths []string, excludes []string, gate contract.ExcludeGateOptions) error {
 	fmt.Println("🔍 Running contract interface enforcement linter (in-process)...")
 	fmt.Println()
 
-	diags, err := runContractAnalysisInProcess(ctx, paths, excludes)
+	diags, err := runContractAnalysisInProcess(ctx, paths, excludes, gate)
 	if err != nil {
 		return cliutil.WrapUserErr("forge lint --contract",
 			"failed to run contract linter", "",
@@ -554,12 +556,22 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		notes = append(notes, "No proto/ directory found — skipping proto convention lint")
 	}
 
+	// Findings from the Go-tree rules below, whose File is relative to the
+	// project root. They pass through the shared suppression engine once,
+	// at the end, so every rule here honours `forge:lint-disable` the same
+	// way (the proto rules already do, inside forgeconv, because their
+	// paths are relative to proto/).
+	var goFindings []forgeconv.Finding
+
 	// Internal-package contract shape, plus the dep-interface rule and
 	// the `// forge:outbound-io` convention `--type=adapter` stamps. All
 	// three rules live in internal/contractcheck and ship through one
 	// Inspect call so the engine controls ordering and de-dup; the
 	// per-rule severity / gating discipline is preserved (contract-names
-	// is an error; the other two are warnings).
+	// is an error; the other two are warnings). contract-names reports as
+	// a warning where there is no forge.yaml (codegenUnavailable): its
+	// error severity exists to protect a bootstrap that is never generated
+	// there.
 	//
 	// Runs whether or not proto/ exists — CLI/library projects without
 	// proto can still ship internal/ packages whose bootstrap codegen
@@ -580,12 +592,13 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		// Using context.Background() preserves today's behavior; threading
 		// the cobra cmd.Context() through is a separate cleanup.
 		fs, err := contractcheck.Inspect(context.Background(), ".", contractcheck.Options{
-			Excludes: contractExcludesFromConfig(cfg),
+			Excludes:           contractExcludesFromConfig(cfg),
+			CodegenUnavailable: codegenUnavailable(cfg, opts.Strict),
 		})
 		if err != nil {
 			return combined, notes, false, fmt.Errorf("forge convention lint (contract-shape) failed: %w", err)
 		}
-		combined.Findings = append(combined.Findings, fs...)
+		goFindings = append(goFindings, fs...)
 	}
 
 	// Handler-tree analyzers — only run when handlers/ exists. The
@@ -602,7 +615,7 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		if err != nil {
 			return combined, notes, false, fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
 		}
-		combined.Findings = append(combined.Findings, res.Findings...)
+		goFindings = append(goFindings, res.Findings...)
 
 		// Handler-file size — warns when any handlers/<svc>/*.go grows
 		// past lint.handler_file_max_loc (default 1000). The threshold
@@ -621,7 +634,7 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		if err != nil {
 			return combined, notes, false, fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
 		}
-		combined.Findings = append(combined.Findings, sizeRes.Findings...)
+		goFindings = append(goFindings, sizeRes.Findings...)
 	}
 
 	// Component-tree analyzers — also run on workers/ and operators/
@@ -642,8 +655,11 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		if err != nil {
 			return combined, notes, false, fmt.Errorf("forge convention lint (optional-dep marker position) failed: %w", err)
 		}
-		combined.Findings = append(combined.Findings, res.Findings...)
+		goFindings = append(goFindings, res.Findings...)
 	}
+	applied := suppress.ApplyFiles("", goFindings, os.ReadFile)
+	combined.Findings = append(combined.Findings, applied.Kept...)
+	combined.Findings = append(combined.Findings, applied.Violations...)
 
 	// Frontend forge-owned-dotenv hygiene — a committed .env.local / .env*
 	// under a frontend that hard-codes a forge-owned variable

@@ -88,6 +88,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/contract"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
@@ -296,7 +297,7 @@ func collectSingleLinterJSON(
 		if store != nil && !store.Features().ContractsEnabled() {
 			return done(featureDisabledReport("--contract", "contracts"), nil)
 		}
-		return report(collectContractLintJSON(ctx, paths, contractExcludesFromConfig(cfg)))
+		return report(collectContractLintJSON(ctx, paths, contractExcludesFromConfig(cfg), contractGateOptions(cfg, flags.strict)))
 	case flags.migrationSafety:
 		if store != nil && !store.Features().MigrationsEnabled() {
 			return done(featureDisabledReport("--migration-safety", "migrations"), nil)
@@ -331,8 +332,7 @@ func collectSingleLinterJSON(
 	case flags.protoMarkers:
 		return reportUngated(collectProtoMarkersJSON(protoDirDefault))
 	case flags.createNullability:
-		fs, err := collectCreateNullabilityJSON(protoDirDefault)
-		return report(fs, len(fs) > 0, err)
+		return report(collectCreateNullabilityJSON(protoDirDefault, cwd))
 	case flags.computedFields:
 		return reportUngated(collectComputedFieldsJSON(cwd))
 	case flags.protoOptions:
@@ -715,32 +715,16 @@ func collectProtoMarkersJSON(protoDir string) ([]lintJSONFinding, error) {
 }
 
 // collectCreateNullabilityJSON maps create-nullability findings onto the
-// JSON contract. Severity ERROR, unlike its advisory proto siblings: an
-// unknown marker or option might be a future forge's, but two declarations
-// of the same field disagreeing about presence is unambiguous — it
-// silently corrupts writes and has exactly one correct resolution.
-func collectCreateNullabilityJSON(protoDir string) ([]lintJSONFinding, error) {
-	findings, err := collectCreateNullabilityFindings(protoDir)
+// JSON contract. Severity follows provenance (see lint_create_nullability.go):
+// ERROR when forge generates the create, WARNING for a hand-written one,
+// and suppression directives are already applied. The returned bool is the
+// gating verdict: any error-severity finding.
+func collectCreateNullabilityJSON(protoDir, projectRoot string) ([]lintJSONFinding, bool, error) {
+	findings, err := createNullabilityLintFindings(protoDir, projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("create-nullability lint failed: %w", err)
+		return nil, false, fmt.Errorf("create-nullability lint failed: %w", err)
 	}
-	out := make([]lintJSONFinding, 0, len(findings))
-	for _, f := range findings {
-		side, other := "the entity", "Create"+f.Entity+"Request"
-		if !f.EntityOptional {
-			side, other = "Create"+f.Entity+"Request", "the entity"
-		}
-		out = append(out, lintJSONFinding{
-			File:     f.File,
-			Line:     f.Line,
-			Severity: lintSevError,
-			Rule:     "forgeconv-create-request-nullability",
-			Message: fmt.Sprintf("%s.%s is `optional` on %s but not on %s",
-				f.Entity, f.Field, side, other),
-			FixHint: createNullabilityFixHint(f),
-		})
-	}
-	return out, nil
+	return findingsToJSON(findings), countErrors(findings) > 0, nil
 }
 
 // collectComputedFieldsJSON maps computed-fields findings onto the JSON
@@ -1050,8 +1034,8 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 // to findings instead of printed. Diagnostics gate; an analysis failure
 // (broken packages, analyzer error) gates with the error preserved as a
 // finding.
-func collectContractLintJSON(ctx context.Context, paths []string, excludes []string) ([]lintJSONFinding, bool, error) {
-	diags, err := runContractAnalysisInProcess(ctx, paths, excludes)
+func collectContractLintJSON(ctx context.Context, paths []string, excludes []string, gate contract.ExcludeGateOptions) ([]lintJSONFinding, bool, error) {
+	diags, err := runContractAnalysisInProcess(ctx, paths, excludes, gate)
 	if err != nil {
 		return []lintJSONFinding{{
 			Severity: lintSevError,

@@ -54,6 +54,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
 // protoMarkerFinding is one .proto comment carrying an unrecognized
@@ -219,6 +220,12 @@ func unknownProtoMarkerFinding(file string, line int, token string) (protoMarker
 		return protoMarkerFinding{}, false
 	}
 	if codegen.IsKnownProtoMarker(token) {
+		return protoMarkerFinding{}, false
+	}
+	// A suppression directive is forge vocabulary too, just not a schema
+	// marker: without this, silencing a proto rule would itself draw an
+	// "unrecognized marker" warning on the directive's own line.
+	if suppress.IsDirectiveToken(token) {
 		return protoMarkerFinding{}, false
 	}
 	f := protoMarkerFinding{File: file, Line: line, Marker: token}

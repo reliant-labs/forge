@@ -1,6 +1,7 @@
 package forgeconv
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -143,5 +144,51 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("setup: %v", err)
+	}
+}
+
+// The proto convention rules honour the shared suppression engine. Red
+// before: forgeconv never consulted it, so `forgeconv-one-service-per-file`
+// had no escape at all (reliant's workflow.proto, H-RELIANT-CI).
+func TestLintProtoTree_HonorsLineSuppression(t *testing.T) {
+	dir := t.TempDir()
+	src := `syntax = "proto3";
+
+package bad.v1;
+
+service FirstService {
+  rpc Foo(FooRequest) returns (FooResponse) {}
+}
+
+// forge:lint-disable-next-line forgeconv-one-service-per-file: scenario RPCs share the workflow messages; split tracked in #1
+service SecondService {
+  rpc Bar(FooRequest) returns (FooResponse) {}
+}
+
+message FooRequest {}
+message FooResponse {}
+`
+	if err := os.WriteFile(filepath.Join(dir, "api.proto"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := LintProtoTree(dir)
+	if err != nil {
+		t.Fatalf("LintProtoTree: %v", err)
+	}
+	if len(res.Findings) != 0 {
+		t.Fatalf("a reasoned suppression must silence the finding:\n%s", res.FormatText())
+	}
+
+	// Without the reason it is a gating error of its own.
+	bare := strings.Replace(src, ": scenario RPCs share the workflow messages; split tracked in #1", "", 1)
+	if err := os.WriteFile(filepath.Join(dir, "api.proto"), []byte(bare), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = LintProtoTree(dir)
+	if err != nil {
+		t.Fatalf("LintProtoTree: %v", err)
+	}
+	if len(res.Findings) != 1 || res.Findings[0].Rule != "forge-suppression-missing-reason" || !res.HasErrors() {
+		t.Fatalf("a reasonless suppression must gate:\n%s", res.FormatText())
 	}
 }

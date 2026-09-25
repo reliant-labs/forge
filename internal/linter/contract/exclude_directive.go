@@ -43,7 +43,12 @@ package contract
 // cloud SDK client. Importing a package is not enough — a types-only package
 // that names `client.Object` in a signature does no I/O. Local file I/O
 // (`os`) is deliberately NOT a signal: a file-format library over a
-// caller-supplied path is a legitimate pure-ish library.
+// caller-supplied path is a legitimate pure-ish library. Nor is a dial or
+// HTTP call whose target is STATICALLY loopback (a constant 127.0.0.1 / ::1
+// / localhost address, or net.JoinHostPort over such a host): it cannot
+// leave the machine, so it is not a third-party boundary. A target the type
+// checker cannot fold to a constant is still I/O, and the refusal's hint
+// says how to make a genuinely-loopback one visible.
 //
 // Multi-implementation is an EXPORTED interface declared in the package with
 // at least two distinct non-test, non-generated named types in the module
@@ -70,8 +75,11 @@ package contract
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -213,12 +221,28 @@ type ExcludeFinding struct {
 	FixHint  string
 }
 
+// ExcludeGateOptions tunes the gate for the tree it runs over.
+type ExcludeGateOptions struct {
+	// CodegenUnavailable reports that `forge generate` does not run here
+	// (no forge.yaml). The outbound-io and multi-impl refusals exist to
+	// deliver "a contract's mock and decorator", which are forge generate
+	// output; with no codegen that payoff does not exist, so the refusals
+	// report as WARNINGS that say so. A missing reason stays an error: it
+	// costs one line and is worth it in any repository.
+	CodegenUnavailable bool
+}
+
+// codegenUnavailableNote is appended to a refusal downgraded under
+// ExcludeGateOptions.CodegenUnavailable.
+const codegenUnavailableNote = " (Reported as a warning: this tree has no forge.yaml, so a contract.go gets no " +
+	"generated mock or decorator here. The boundary is still worth a narrow interface; `forge lint --strict` gates it.)"
+
 // CheckExcludeDirectives applies the exclusion gate to every root package in
 // pkgs (the packages `forge lint` was asked about, loaded with types). The
 // multi-implementation search spans every loaded package, so callers should
 // load the whole module (`./...`) for an accurate answer; a narrower load can
 // only miss an implementation, never invent one.
-func CheckExcludeDirectives(pkgs []*packages.Package) []ExcludeFinding {
+func CheckExcludeDirectives(pkgs []*packages.Package, opts ExcludeGateOptions) []ExcludeFinding {
 	// De-duplicate test variants: `Tests: true` loads `p`, `p [p.test]` and
 	// `p_test`; the gate is about the package's own non-test source, which
 	// the plain variant carries.
@@ -286,6 +310,17 @@ func CheckExcludeDirectives(pkgs []*packages.Package) []ExcludeFinding {
 		}
 		out = append(out, checkOnePackage(p, marker, candidates)...)
 	}
+	// Grade BEFORE suppressions apply: a warning needs no reason to be
+	// silenced, so a reasonless allowance of a downgraded refusal must not
+	// come back as a missing-reason error.
+	if opts.CodegenUnavailable {
+		for i := range out {
+			if out[i].Rule == RuleExcludeOutboundIO || out[i].Rule == RuleExcludeMultiImpl {
+				out[i].Severity = finding.SeverityWarning
+				out[i].FixHint += codegenUnavailableNote
+			}
+		}
+	}
 	return applyDirectiveSuppressions(out)
 }
 
@@ -307,7 +342,15 @@ func checkOnePackage(p *packages.Package, marker codegen.ExcludeContractMarker, 
 	if isTestSupportPackage(p) || isStructurallyExemptKind(p) {
 		return out
 	}
-	if label, pos, ok := firstOutboundIOCall(p); ok {
+	if hit, ok := firstOutboundIOCall(p); ok {
+		hint := "remove `//forge:exclude-contract` and make this an adapter: a contract.go carrying " +
+			"`// forge:outbound-io` with a narrow Service interface in domain types, and `// forge:constructor` " +
+			"on `func New(Deps)` — see `forge skill load adapter`"
+		if hit.dynamicTarget {
+			hint += ". If this call only ever reaches LOOPBACK (a local dev server, a sidecar on 127.0.0.1), " +
+				"it is not an outbound boundary: write the host as a constant — `net.JoinHostPort(\"127.0.0.1\", port)`, " +
+				"`\"http://localhost:8080/…\"` — and the gate exempts it, because it can then see the target"
+		}
 		out = append(out, ExcludeFinding{
 			Rule:     RuleExcludeOutboundIO,
 			Severity: finding.SeverityError,
@@ -315,10 +358,8 @@ func checkOnePackage(p *packages.Package, marker codegen.ExcludeContractMarker, 
 			Line:     marker.Line,
 			Message: fmt.Sprintf("package %s does outbound I/O (%s at %s) and so cannot opt out of the contract "+
 				"system: an outbound boundary is exactly what a contract's mock and decorator are for",
-				p.PkgPath, label, shortPos(pos)),
-			FixHint: "remove `//forge:exclude-contract` and make this an adapter: a contract.go carrying " +
-				"`// forge:outbound-io` with a narrow Service interface in domain types, and `// forge:constructor` " +
-				"on `func New(Deps)` — see `forge skill load adapter`",
+				p.PkgPath, hit.label, shortPos(hit.pos)),
+			FixHint: hint,
 		})
 	}
 	if iface, impls, ok := multiImplInterface(p, candidates); ok {
@@ -338,14 +379,22 @@ func checkOnePackage(p *packages.Package, marker codegen.ExcludeContractMarker, 
 	return out
 }
 
+// outboundHit is one outbound-I/O call found in a package.
+type outboundHit struct {
+	label string
+	pos   token.Position
+	// dynamicTarget is set when the callee takes an address or URL (a dial,
+	// an http.Get) and this call's target is not a compile-time constant,
+	// so the gate cannot tell whether it is loopback.
+	dynamicTarget bool
+}
+
 // firstOutboundIOCall returns the first (by position) call in p's non-test,
-// non-generated source whose callee is an outbound-I/O entry point.
-func firstOutboundIOCall(p *packages.Package) (string, token.Position, bool) {
-	type hit struct {
-		label string
-		pos   token.Position
-	}
-	var hits []hit
+// non-generated source whose callee is an outbound-I/O entry point. A call
+// whose target is statically a loopback address is not one (see
+// staticLoopbackTarget), and is skipped.
+func firstOutboundIOCall(p *packages.Package) (outboundHit, bool) {
+	var hits []outboundHit
 	for _, f := range p.Syntax {
 		file := p.Fset.Position(f.Pos()).Filename
 		if isNonSourceFile(file) {
@@ -360,14 +409,23 @@ func firstOutboundIOCall(p *packages.Package) (string, token.Position, bool) {
 			if !ok {
 				return true
 			}
-			if label, ok := ioSignalFor(fn); ok {
-				hits = append(hits, hit{label: label, pos: p.Fset.Position(call.Pos())})
+			label, ok := ioSignalFor(fn)
+			if !ok {
+				return true
 			}
+			hit := outboundHit{label: label, pos: p.Fset.Position(call.Pos())}
+			if idx, takesTarget := targetArgIndex(fn); takesTarget {
+				if idx < len(call.Args) && staticLoopbackTarget(p.TypesInfo, call.Args[idx]) {
+					return true
+				}
+				hit.dynamicTarget = true
+			}
+			hits = append(hits, hit)
 			return true
 		})
 	}
 	if len(hits) == 0 {
-		return "", token.Position{}, false
+		return outboundHit{}, false
 	}
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].pos.Filename != hits[j].pos.Filename {
@@ -375,7 +433,96 @@ func firstOutboundIOCall(p *packages.Package) (string, token.Position, bool) {
 		}
 		return hits[i].pos.Offset < hits[j].pos.Offset
 	})
-	return hits[0].label, hits[0].pos, true
+	return hits[0], true
+}
+
+// targetArgIndex reports which argument of fn names the remote end, for the
+// outbound-I/O entry points whose target is a string: the address of a
+// net dial, the URL of a net/http convenience call. Entry points whose
+// target is a struct (DialTCP's *TCPAddr, Client.Do's *Request) have none,
+// and are judged as outbound whatever they reach.
+func targetArgIndex(fn *types.Func) (int, bool) {
+	if fn.Pkg() == nil {
+		return 0, false
+	}
+	recv := ""
+	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+		recv = namedTypeName(sig.Recv().Type())
+	}
+	switch fn.Pkg().Path() {
+	case "net":
+		switch {
+		case recv == "" && (fn.Name() == "Dial" || fn.Name() == "DialTimeout"):
+			return 1, true
+		case recv == "Dialer" && fn.Name() == "Dial":
+			return 1, true
+		case recv == "Dialer" && fn.Name() == "DialContext":
+			return 2, true
+		}
+	case "net/http":
+		if recv == "" || recv == "Client" {
+			switch fn.Name() {
+			case "Get", "Head", "Post", "PostForm":
+				return 0, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// staticLoopbackTarget reports whether expr is, at compile time, an address
+// or URL on the loopback interface: a constant "127.0.0.1:8080",
+// "[::1]:80", "localhost:3000" or "http://localhost:8080/x", or a
+// net.JoinHostPort call whose HOST is such a constant (the port may be
+// anything). A dial to the machine's own loopback cannot leave it, so it
+// is not the third-party boundary a contract's mock and decorator exist
+// for. Anything the type checker cannot fold to a constant is NOT loopback:
+// the gate only exempts what it can see.
+func staticLoopbackTarget(info *types.Info, expr ast.Expr) bool {
+	if s, ok := constantString(info, expr); ok {
+		return isLoopbackAddress(s)
+	}
+	call, ok := ast.Unparen(expr).(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 {
+		return false
+	}
+	fn, ok := typeutil.Callee(info, call).(*types.Func)
+	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "net" || fn.Name() != "JoinHostPort" {
+		return false
+	}
+	host, ok := constantString(info, call.Args[0])
+	return ok && isLoopbackHost(host)
+}
+
+// constantString returns expr's value when the type checker folded it to a
+// string constant (a literal, a const, a constant expression).
+func constantString(info *types.Info, expr ast.Expr) (string, bool) {
+	tv, ok := info.Types[expr]
+	if !ok || tv.Value == nil || tv.Value.Kind() != constant.String {
+		return "", false
+	}
+	return constant.StringVal(tv.Value), true
+}
+
+// isLoopbackAddress reports whether s, a dial address ("host:port") or a
+// URL, names a loopback host.
+func isLoopbackAddress(s string) bool {
+	if strings.Contains(s, "://") {
+		u, err := url.Parse(s)
+		return err == nil && isLoopbackHost(u.Hostname())
+	}
+	host, _, err := net.SplitHostPort(s)
+	return err == nil && isLoopbackHost(host)
+}
+
+// isLoopbackHost reports whether host is a loopback IP (127.0.0.0/8, ::1)
+// or the name localhost, which RFC 6761 reserves for loopback.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // multiImplInterface returns the first exported, non-empty interface declared
@@ -575,25 +722,27 @@ func applyDirectiveSuppressions(in []ExcludeFinding) []ExcludeFinding {
 }
 
 // suppressAtMarker applies the file's suppression directives to one finding
-// anchored on the marker line. A marker can draw two refusals (outbound I/O
-// AND a multi-impl interface), and each wants its own reasoned allowance; a
-// second `forge:lint-disable-next-line` necessarily sits between the first and
-// the marker. So the contiguous block of next-line directives directly above
-// the marker is read as ONE block that all targets the marker: the finding is
-// checked at the marker and at each line of that block, and is suppressed if
-// any of those positions is covered. Everything else — reasons, the
-// missing-reason violation, file/block scopes — is suppress.Apply's own.
+// anchored on the marker line. An allowance anywhere in the marker's comment
+// block reaches it:
+//
+//   - ABOVE the marker, a next-line directive covers every comment line down
+//     to the declaration (suppress's next-line span), so the marker is
+//     covered even with a second stacked allowance, prose, or a blank `//`
+//     in between. A marker that draws two refusals needs two allowances,
+//     and the second necessarily sits between the first and the marker.
+//   - BELOW the marker, in the same block, a next-line directive targets the
+//     declaration the block documents. gofmt produces exactly this shape
+//     when the two are spelled differently: it moves `//forge:` directive
+//     lines to the end of a doc comment, so an unspaced allowance lands
+//     under a spaced `// forge:exclude-contract:` marker. The finding is
+//     therefore also checked at that declaration line.
+//
+// Everything else — reasons, the missing-reason violation, file/block
+// scopes — is suppress.Apply's own.
 func suppressAtMarker(content string, lines []string, f ExcludeFinding) (kept bool, violations []finding.Finding) {
 	anchors := []int{f.Line}
-	for l := f.Line - 1; l >= 1 && l-1 < len(lines); l-- {
-		if !strings.Contains(lines[l-1], suppress.TokenDisableNextLine) {
-			break
-		}
-		// A directive on line l covers line l+1; checking the finding at
-		// l+1 asks exactly "does the directive on l cover it".
-		if l+1 != f.Line {
-			anchors = append(anchors, l+1)
-		}
+	if decl := declLineAfterComment(lines, f.Line); decl != f.Line {
+		anchors = append(anchors, decl)
 	}
 	for _, line := range anchors {
 		res := suppress.Apply(content, []finding.Finding{{
@@ -604,4 +753,16 @@ func suppressAtMarker(content string, lines []string, f ExcludeFinding) (kept bo
 		}
 	}
 	return true, nil
+}
+
+// declLineAfterComment returns the first line after line that is not a `//`
+// comment: the declaration the marker's comment block documents (the package
+// clause, for a package doc). Returns line itself when there is none.
+func declLineAfterComment(lines []string, line int) int {
+	for l := line + 1; l <= len(lines); l++ {
+		if !strings.HasPrefix(strings.TrimSpace(lines[l-1]), "//") {
+			return l
+		}
+	}
+	return line
 }

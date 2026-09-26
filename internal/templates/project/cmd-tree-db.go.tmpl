@@ -12,6 +12,12 @@
 //     file instead of a fork of the library.
 //   - "nothing was pending" exits 0. A pipeline that wants to fail when a
 //     release ships no migration inverts that by testing res.Changed.
+//   - a schema AHEAD of this binary (a rollback: an older release running
+//     against a newer release's database) exits 0 only when every version
+//     this binary does not embed was declared `-- forge:backward-compatible`
+//     (res.Ahead), and fails with the step-down runbook otherwise.
+//     migratekit decides WHICH it is from a record the newer migrator wrote;
+//     what to do with each answer is this file's call.
 //   - `down` reverts exactly one step and is wired with no confirmation
 //     prompt, because it runs unattended. A team that wants a guard adds it.
 //
@@ -105,7 +111,25 @@ func newDBCmd(deps Deps) *cobra.Command {
 
 			res, err := m.Up()
 			if err != nil {
+				// A schema AHEAD of this binary that nobody declared
+				// backward-compatible arrives here as a
+				// *migratekit.SchemaAheadError, carrying the step-down
+				// runbook. Failing is the safe default: this binary's code
+				// was never written for that schema.
 				return fmt.Errorf("migrate up: %w", err)
+			}
+			// THE SCHEMA IS AHEAD OF THIS BINARY — A ROLLBACK — and every
+			// version it does not embed was declared
+			// `-- forge:backward-compatible`. Nothing was applied and this
+			// release's code can run, so exit 0; but say it loudly, because
+			// "the database is newer than the code" is the fact an operator
+			// mid-rollback most needs confirmed.
+			if res.Ahead != nil {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"SCHEMA AHEAD OF THIS BINARY (rollback): database is at version %d, this binary embeds up to %d; "+
+						"version(s) %v were declared backward-compatible — nothing applied\n",
+					res.Ahead.Version, res.Ahead.Latest, res.Ahead.Versions)
+				return nil
 			}
 			// NOTHING PENDING IS SUCCESS. res.Changed is false both for a
 			// release that shipped no migration and for a replica that lost

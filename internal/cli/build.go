@@ -979,12 +979,10 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 		}
 	}
 
-	// Per-env platform override from KCL: use the first cluster
-	// service's deploy.Cluster.Platform when set. KCL renders all cluster
-	// services in one env onto the same node arch in practice (one
-	// project image, one Application set), so picking the first non-empty
-	// platform is a clean default. Falls back to forge.yaml's
-	// deploy.target_arch otherwise.
+	// Per-env platform override from KCL: the env's declared
+	// cluster_target.platform, else the first cluster service's
+	// deploy.Cluster.Platform (kclFirstClusterPlatform). Falls back to
+	// forge.yaml's deploy.target_arch otherwise.
 	cfgArchForDocker := cfg.Deploy.TargetArch
 	if entities != nil {
 		if p := kclFirstClusterPlatform(entities); p != "" {
@@ -2322,6 +2320,11 @@ func kclHasClusterService(e *KCLEntities) bool {
 // service declares a platform — callers fall back to forge.yaml's
 // deploy.target_arch.
 func kclFirstClusterPlatform(e *KCLEntities) string {
+	// The env's declared platform, when stated, is the project image's
+	// arch — not whichever cross-cluster service renders first.
+	if p := e.ClusterTarget.field("platform"); p != "" {
+		return p
+	}
 	for _, s := range e.Services {
 		if s.Deploy.Cluster != nil && s.Deploy.Cluster.Platform != "" {
 			return s.Deploy.Cluster.Platform

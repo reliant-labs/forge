@@ -821,6 +821,13 @@ type deployJSONReport struct {
 	// one; its digests are what get pinned. Empty when the env has no
 	// binding.
 	Release string `json:"release,omitempty"`
+	// PromotionRollback is true when Release was bound by `forge env promote
+	// --rollback`; the deploy then does not run the pre-rollout Jobs.
+	PromotionRollback bool `json:"promotion_rollback,omitempty"`
+	// SkippedPreRolloutJobs names the pre-rollout Jobs (the schema
+	// migration) a rollback deploy did not run. The skip is deliberate and
+	// is recorded so nobody has to infer it from a Job that never appeared.
+	SkippedPreRolloutJobs []string `json:"skipped_pre_rollout_jobs,omitempty"`
 
 	Preflight deployJSONPreflight `json:"preflight"`
 	Images    deployJSONImages    `json:"images"`
@@ -1087,6 +1094,30 @@ func (r *deployReport) streamObserver() func(string) {
 	}
 	return func(manifests string) {
 		r.setStream(cluster.CollectManifestGVKs(manifests), imagesFromManifests(manifests))
+	}
+}
+
+// setPromotionRollback records that the bound release is a rollback.
+func (r *deployReport) setPromotionRollback(rollback bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.doc.PromotionRollback = rollback
+}
+
+// skippedJobsObserver returns the cluster.ApplyOpts.OnSkippedJobs callback, or
+// nil in text mode. Accumulates across groups, so a multi-cluster rollback
+// reports every Job it skipped.
+func (r *deployReport) skippedJobsObserver() func([]string) {
+	if r == nil {
+		return nil
+	}
+	return func(jobs []string) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.doc.SkippedPreRolloutJobs = append(r.doc.SkippedPreRolloutJobs, jobs...)
 	}
 }
 

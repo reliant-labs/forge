@@ -75,6 +75,8 @@ import (
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	_ "github.com/lib/pq" // postgres driver, registered as "postgres"
+
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
 // EnginePostgres is the only engine forge supervises natively today. It
@@ -276,8 +278,10 @@ func startPostgres(ctx context.Context, projectDir string, spec Spec) error {
 		return fmt.Errorf("host-infra %s: create data dir: %w", spec.Name, err)
 	}
 
-	ep := embeddedpostgres.NewDatabase(postgresConfig(spec, dataDir))
-	if err := ep.Start(); err != nil {
+	// pgtest.StartEmbedded fetches a cold cache's binary with retry and
+	// reports a failed download as one, rather than as the library's
+	// "no version found matching X" (pkg/pgtest/fetch.go).
+	if _, err := pgtest.StartEmbedded(postgresConfig(spec, dataDir)); err != nil {
 		return fmt.Errorf("host-infra %s: start postgres on :%d: %w", spec.Name, spec.Port, err)
 	}
 

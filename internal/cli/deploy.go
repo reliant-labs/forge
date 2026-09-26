@@ -686,7 +686,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// Env-wide kubectl context for the consumers that don't iterate groups
 	// (secrets pre-apply, empty-groups direct apply, rollback). Fails fast on
 	// a declared cluster with no matching context. See resolveDeployKubectlContext.
-	deployContext, err := resolveDeployKubectlContext(ctx, cfg, envName, groups, hasK8sServices)
+	deployContext, err := resolveDeployKubectlContext(ctx, cfg, envName, entities, groups, hasK8sServices)
 	if err != nil {
 		return err
 	}
@@ -1262,13 +1262,13 @@ func prepareDeployCluster(ctx context.Context, in deployClusterInput) error {
 // chokepoint HARD-REJECTS an empty context, so we resolve it directly from the
 // env (forge.K8sCluster.cluster) — the same source --explain uses. Host-only /
 // compose envs declare no cluster and are skipped.
-func resolveDeployKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envName string, groups []deploytarget.ServiceGroup, hasK8sServices bool) (string, error) {
+func resolveDeployKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envName string, entities *KCLEntities, groups []deploytarget.ServiceGroup, hasK8sServices bool) (string, error) {
 	if hasK8sServices {
 		if err := verifyDeclaredContextsExist(ctx, groups); err != nil {
 			return "", err
 		}
 	}
-	deployContext := declaredEnvContext(groups)
+	deployContext := declaredEnvContext(entities, groups)
 	if deployContext == "" {
 		deployContext = expectedClusterForEnv(ctx, cfg, envName)
 	}

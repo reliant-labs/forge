@@ -287,7 +287,7 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 		return err
 	}
 	projectDir := projectDirForKCL()
-	_, restore := activateDevStack(projectDir, env)
+	_, restore := activateDevStack(ctx, projectDir, env, renderToLaunch)
 	entities, err := RenderKCL(ctx, projectDir, env)
 	restore() // revert resolve_port bytes; a status render must not drift ports
 	if err != nil {
@@ -677,7 +677,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// .forge/ports-*.json are gitignored). restorePortStore reverts the
 	// resolve_port store if the already-running guard below rejects this
 	// render (a rejected attempt must not drift the stable assignments).
-	_, restorePortStore := activateDevStack(projectDir, opts.env)
+	_, restorePortStore := activateDevStack(ctx, projectDir, opts.env, renderToLaunch)
 
 	// Arm the -D render options BEFORE the first render. Validated against
 	// what the env's KCL declares so a typo'd name fails here rather than
@@ -1281,7 +1281,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 			// materialize a static frontend for a shipping frontend
 			// (FirebaseHosting or StaticSite) to reference at DEPLOY time;
 			// it has no place in the dev loop.
-			if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true, targets: opts.targets}); err != nil {
+			if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true, targets: opts.targets, purpose: renderToLaunch}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}
 		}

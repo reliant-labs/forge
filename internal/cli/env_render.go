@@ -262,7 +262,15 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// pinFile below is the narrower version of it, reverting the store only
 	// when the render actually moved it so an untouched file keeps even its
 	// mtime (and stays out of the write report as a phantom forge wrote).
-	activateDevStack(projectDir, envName)
+	//
+	// renderDeclaration: rendering a cloud env from a linked worktree used
+	// to register a NEW "prod-<worktree>" block in the PRIMARY checkout's
+	// .forge/blocks.json — outside this tree, so the write scan below never
+	// saw it — and failed outright once the registry reached the ceiling.
+	//
+	// Pinned and scanned BEFORE activation, because deciding the purpose is
+	// itself a render (envRunsOnThisMachine), and any file.write it fires
+	// belongs in the write report as much as the main render's does.
 	unpin := pinFile(filepath.Join(projectDir, ".forge", "ports-"+envName+".json"))
 
 	// Vendor a missing .forge-kcl/ BEFORE the write check's before-picture.
@@ -273,6 +281,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		return err
 	}
 	scan := newRenderWriteScan(projectDir, opts.noWriteCheck)
+	activateDevStack(ctx, projectDir, envName, renderDeclaration)
 
 	// Report what the render touched no matter how it ends: a render that
 	// fails half-way has still run whatever file.write it reached, and

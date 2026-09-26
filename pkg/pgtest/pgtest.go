@@ -190,6 +190,15 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 		Username(user).
 		Password(pass).
 		Database("postgres").
+		// Keep initdb independent of the caller's locale environment. In
+		// particular, PostgreSQL 18's macOS binary rejects some otherwise
+		// valid mixed LANG/LC_* configurations before the ephemeral server
+		// can start. Codegen and tests do not need locale-aware collation, and
+		// C is supported by every platform PostgreSQL runs on.
+		Locale("C").
+		// C otherwise defaults to SQL_ASCII. Keep the database encoding aligned
+		// with production and preserve validation of non-ASCII application data.
+		Encoding("UTF8").
 		Port(port).
 		RuntimePath(runtimeDir(port)).
 		// Shrink the per-instance footprint and — critically — use

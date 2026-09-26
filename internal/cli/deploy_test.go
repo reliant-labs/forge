@@ -298,10 +298,10 @@ func TestDeclaredEnvContext(t *testing.T) {
 		k8sGroup("gke_first", "ns"),
 		k8sGroup("gke_second", "ns2"),
 	}
-	if got := declaredEnvContext(groups); got != "gke_first" {
+	if got := declaredEnvContext(nil, groups); got != "gke_first" {
 		t.Errorf("env context should be the first declared cluster: want %q, got %q", "gke_first", got)
 	}
-	if got := declaredEnvContext([]deploytarget.ServiceGroup{{ProviderID: "compose"}}); got != "" {
+	if got := declaredEnvContext(nil, []deploytarget.ServiceGroup{{ProviderID: "compose"}}); got != "" {
 		t.Errorf("no k8s cluster declared should yield empty, got %q", got)
 	}
 }

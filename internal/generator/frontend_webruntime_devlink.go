@@ -148,6 +148,7 @@ var devBridgeIgnoreEntries = []string{
 func EnsureDevWebRuntimeLink(projectDir string) {
 	target, ok := devWebRuntimeCheckout()
 	if !ok {
+		removeModuleCacheBridge(projectDir)
 		return
 	}
 	members := bridgeMembers(projectDir)
@@ -180,6 +181,47 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 			"(gitignored; your frontends' package.json keeps %s). Run `npm install` at the project root.\n",
 			WebRuntimePackage, devLinkDir, webRuntimePublishedRange)
 	}
+}
+
+// removeModuleCacheBridge tears down a bridge an earlier forge wrote into the
+// Go MODULE CACHE, and nothing else.
+//
+// forge used to mistake a `go install …@<version>` build — which compiles from
+// $GOMODCACHE/github.com/reliant-labs/forge@<version>/ — for a dev checkout,
+// and linked .forge-link/web-runtime into that read-only tree. Discovery no
+// longer does that (buildinfo.forgeRootFromFile), but the link it left behind
+// outlives the fix: `npm install` at the root keeps trying to create
+// node_modules inside the module cache and fails with EACCES, so the
+// project's frontend test lane stays broken until someone deletes it by hand.
+//
+// Only a link that resolves INTO a module cache is removed, together with the
+// root manifest forge wrote for it. A bridge to a real sibling checkout is a
+// maintainer's dev loop and is left exactly as it is — a released forge
+// running in that tree has no business dismantling it. A user's own root
+// package.json is never touched.
+func removeModuleCacheBridge(projectDir string) {
+	link := filepath.Join(projectDir, devLinkDir, "web-runtime")
+	dest, err := os.Readlink(link)
+	if err != nil {
+		return
+	}
+	if !filepath.IsAbs(dest) {
+		dest = filepath.Join(filepath.Dir(link), dest)
+	}
+	if !buildinfo.IsModuleCachePath(filepath.Clean(dest)) {
+		return
+	}
+	if err := os.Remove(link); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not remove the stale %s bridge %s: %v\n", WebRuntimePackage, link, err)
+		return
+	}
+	_ = os.Remove(filepath.Join(projectDir, devLinkDir)) // only if now empty
+	rootPath := filepath.Join(projectDir, "package.json")
+	if isForgeOwnedWorkspaceRoot(rootPath) {
+		_ = os.Remove(rootPath)
+	}
+	fmt.Printf("🧹 removed a stale %s bridge into the read-only Go module cache (%s/, root package.json). "+
+		"Run `npm install` in each frontend to use the registry copy.\n", WebRuntimePackage, devLinkDir)
 }
 
 // devWebRuntimeCheckout returns the absolute web-runtime directory this dev

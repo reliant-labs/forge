@@ -505,6 +505,18 @@ type hookStarterData struct {
 	Methods     []hookStarterMethod
 }
 
+// HasMutation gates the template's waitForSettled helper, which only the
+// mutation rows call. Emitting it into a query-only service would hand that
+// file an unused declaration for no-unused-vars to flag.
+func (d hookStarterData) HasMutation() bool {
+	for _, m := range d.Methods {
+		if !m.IsQuery {
+			return true
+		}
+	}
+	return false
+}
+
 // writeHookStarterTest emits `<file>.test.tsx` next to the generated hooks
 // file IF the user does not already have one. Scaffold-once: written when
 // absent, never overwritten, so hand-edits and hand-written replacements

@@ -135,21 +135,9 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 	resultCh := make(chan buildResult, len(services))
 
 	dispatch := func(svc ServiceEntity) {
-		// Per-service tag: honor an explicit KCL per-service pin
-		// (Service.image_tag, e.g. e2e's reliant_image_tag="e2e" or the
-		// workspace-base "dev-per-daemon" build-only pin) first, then the
-		// env's resolved tag for THIS service's image off the rendered
-		// manifests, then the env-wide build-loop tag. This keeps the
-		// ${TAG} a build_cmd interpolates equal to the tag the env's
-		// deploy manifests reference for the SAME image — so the external
-		// build pushes exactly what deploy pulls, even when different
-		// external images carry different env tags.
-		svcTag := tag
-		if svc.ImageTag != "" {
-			svcTag = svc.ImageTag
-		} else if envTag := envImageTagFor(entities, svc.Image); envTag != "" {
-			svcTag = envTag
-		}
+		// Per-service tag — see externalBuildTag for the precedence and for
+		// why a release build overrides it with the release version.
+		svcTag := externalBuildTag(svc, entities, tag, opts)
 		spec := buildtarget.Spec{
 			Service:    svc.Name,
 			Image:      svc.Image,
@@ -294,6 +282,31 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 		results = append(results, r)
 	}
 	return results
+}
+
+// externalBuildTag is the ${TAG} one ShellBuild service is handed.
+//
+// Ordinarily: the service's own KCL `image_tag` pin, else the env's resolved
+// tag for its image off the rendered manifests, else the build-wide tag — so
+// the external build pushes exactly the tag the env's deploy pulls.
+//
+// A `--release` build overrides all three with the release version. The
+// user's build_cmd owns its own push, so ${TAG} IS the tag it writes to the
+// registry, and every one of the three ordinary answers is a SHARED tag
+// (prod's `stable`, e2e's `e2e`, a pinned `dev-per-daemon`): handing one of
+// them to a cut moves it the moment that one image finishes, whether or not
+// the cut ever records a release. See releaseImageTag.
+func externalBuildTag(svc ServiceEntity, entities *KCLEntities, buildTag string, opts buildOptions) string {
+	if rt := releaseImageTag(opts); rt != "" {
+		return rt
+	}
+	if svc.ImageTag != "" {
+		return svc.ImageTag
+	}
+	if envTag := envImageTagFor(entities, svc.Image); envTag != "" {
+		return envTag
+	}
+	return buildTag
 }
 
 // externalPushedRef reconstructs the image ref the external build_cmd was

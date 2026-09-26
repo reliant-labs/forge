@@ -184,6 +184,15 @@ type buildOptions struct {
 	// a --release build with no captured digest fails loudly rather than
 	// writing an empty ledger. Empty (the default) is today's behavior.
 	release string
+	// plan (--plan) resolves the exact build set a real invocation with the
+	// same arguments would build — the same render, the same --target
+	// narrowing, the same go/docker/external/variant dispatch — then
+	// PREFLIGHTS every step instead of running it, and exits non-zero on
+	// anything the real build would fail on. Nothing is built, pushed,
+	// generated, or written. With --release it also runs the release's
+	// completeness gate against the artifacts the build WOULD capture. See
+	// runBuildPlan.
+	plan bool
 }
 
 func newBuildCmd() *cobra.Command {
@@ -266,9 +275,30 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	// as the flag's argument-name placeholder, so a quoted command rendered
 	// as `--no-generate forge build` in --help.
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
+	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
 	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES the environment argument: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with 'forge env promote <version> --to <env>'. Captures each image's digest into a release ledger (.forge/releases/<version>.json); 'forge env deploy <env>' then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
+}
+
+// releaseImageTag is the ONE tag a `--release` build writes to a registry: the
+// release version itself. Empty for an ordinary build.
+//
+// A release build must never write a SHARED, MUTABLE tag. Before this, a cut
+// tagged each image with the env's manifest tag (prod's `stable`), with every
+// service's own `image_tag` pin, and with `:latest` — and it pushed each image
+// the moment that image finished, long before the release ledger was written.
+// So a cut that failed after its first push (v1.7.0, run 36264878946) left
+// prod GAR's `workspace-base:stable` and `reliant:stable` pointing at bytes no
+// release contains. Nothing broke only because every prod workload is pinned
+// by ledger digest; any render without those digests — a plain `kcl run`, a
+// ledger-less deploy — would have pulled unreleased code.
+//
+// `:<version>` is safe to push early precisely because it is release-scoped:
+// nothing references it until the ledger that records its digest exists, and
+// the ledger (not the tag) is what every promote and deploy reads.
+func releaseImageTag(opts buildOptions) string {
+	return opts.release
 }
 
 // validateReleaseFlags enforces that `forge build <env> --release <ver>` is
@@ -282,7 +312,17 @@ without forcing the user to add /etc/hosts entries on the host.`,
 // build, after which the release is promotable to every env. No-op when
 // --release is unset.
 func validateReleaseFlags(opts buildOptions) error {
-	if opts.release == "" || opts.env != "" {
+	if opts.release == "" {
+		return nil
+	}
+	// --release owns the tag: it is the release version, by construction
+	// (releaseImageTag). A different --tag would either be silently ignored
+	// or — worse — push the release's bytes under a second, arbitrary tag.
+	if opts.tag != "" && opts.tag != opts.release {
+		return fmt.Errorf("--tag %q conflicts with --release %q: a release build pushes its images under the release version only, "+
+			"so that a cut that fails part-way never moves a shared tag. Drop --tag", opts.tag, opts.release)
+	}
+	if opts.env != "" {
 		return nil
 	}
 	return fmt.Errorf("--release requires an environment argument (`forge build <env> --release <ver>`) so forge can build the full image set " +
@@ -389,11 +429,40 @@ func prepareBuild(opts buildOptions) (*config.ProjectConfig, error) {
 	// the cryptic "cannot load module gen listed in go.work" error. Gated
 	// on staleness so the steady-state loop pays nothing; --no-generate
 	// opts out. See ensureGeneratedCode.
-	if err := ensureGeneratedCode(projectDirForKCL(), opts.skipGenerate); err != nil {
+	//
+	// --plan never generates: it writes nothing by contract. A plan against a
+	// tree whose gen/ is missing reports the go-build packages that cannot
+	// load instead, which is the failure the real build would then hit.
+	if err := ensureGeneratedCode(projectDirForKCL(), opts.skipGenerate || opts.plan); err != nil {
 		return nil, err
 	}
 
 	return store.Config(), nil
+}
+
+// resolveBuildImageTag picks the one image tag this build writes, and says
+// where it came from. The priority is documented at the call site in runBuild.
+func resolveBuildImageTag(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions) (tag, source string, err error) {
+	if rt := releaseImageTag(opts); rt != "" {
+		// A release pushes ONLY its own version tag — never the env's
+		// shared tag (see releaseImageTag). validateReleaseFlags already
+		// refused a conflicting --tag.
+		return rt, "release version (release-scoped; no shared tag is moved)", nil
+	}
+	if opts.tag != "" || !opts.buildDocker {
+		return opts.tag, "explicit --tag flag", nil
+	}
+	if envTag := envImageTagFor(entities, cfg.Name); envTag != "" {
+		return envTag, fmt.Sprintf("env %q image_tag (deploy ref)", opts.env), nil
+	}
+	// Only resolve from git when we'll actually use a tag — avoids
+	// surfacing "not a git repo" errors on a plain `forge build`
+	// (no docker), and is the no-env / no-manifest-tag fallback.
+	t, terr := resolveImageTag(ctx, opts.env)
+	if terr != nil {
+		return "", "", fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
+	}
+	return t, "git describe --tags --always --dirty", nil
 }
 
 func runBuild(ctx context.Context, opts buildOptions) error {
@@ -431,23 +500,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	//  3. git-describe (resolveImageTag) — the standalone fallback when
 	//     no --env, or the env render carries no tag for the project
 	//     image.
-	resolvedTag := opts.tag
-	tagSource := "explicit --tag flag"
-	if resolvedTag == "" && opts.buildDocker {
-		if envTag := envImageTagFor(entities, cfg.Name); envTag != "" {
-			resolvedTag = envTag
-			tagSource = fmt.Sprintf("env %q image_tag (deploy ref)", opts.env)
-		} else {
-			// Only resolve from git when we'll actually use a tag — avoids
-			// surfacing "not a git repo" errors on a plain `forge build`
-			// (no docker), and is the no-env / no-manifest-tag fallback.
-			t, terr := resolveImageTag(ctx, opts.env)
-			if terr != nil {
-				return fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
-			}
-			resolvedTag = t
-			tagSource = "git describe --tags --always --dirty"
-		}
+	resolvedTag, tagSource, err := resolveBuildImageTag(ctx, cfg, entities, opts)
+	if err != nil {
+		return err
 	}
 
 	// Resolve the EMBEDDED build version once, up front, so every binary
@@ -476,11 +531,6 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	}
 	fmt.Println()
 
-	// Create output directory
-	if err := os.MkdirAll(opts.outputDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
-	}
-
 	// Filter targets. The Go-build set is KCL-driven: every service the
 	// rendered env declares contributes its EffectiveBuild() GoBuild
 	// (the synthesized ./cmd/<name> default when it omits `build`),
@@ -492,6 +542,18 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	targets, err := resolveBuildTargetSet(cfg, entities, opts)
 	if err != nil {
 		return err
+	}
+
+	// --plan stops HERE: the build set is fully resolved by the same
+	// discovery every real build runs, and nothing has been written, built
+	// or pushed. See runBuildPlan.
+	if opts.plan {
+		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag)
+	}
+
+	// Create output directory
+	if err := os.MkdirAll(opts.outputDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 	frontends := targets.frontends
 	dockerFrontends := targets.dockerFrontends
@@ -1335,7 +1397,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion, guard)
+				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, releaseImageTag(opts) != "", resolvedVersion, guard)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -1345,7 +1407,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
-				r := dockerBuild(ctx, cfg, f.Name, f.DeclaredDir(), opts.pushRegistry, dockerArch, resolvedTag)
+				r := dockerBuild(ctx, cfg, f.Name, f.DeclaredDir(), opts.pushRegistry, dockerArch, resolvedTag, releaseImageTag(opts) != "")
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -1397,14 +1459,14 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			// Image platform == the arch the project binaries were built for.
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
-			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion, guard)
+			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, releaseImageTag(opts) != "", resolvedVersion, guard)
 			results = append(results, r)
 			if r.err != nil {
 				return results
 			}
 		}
 		for _, fe := range dockerFrontends {
-			r := dockerBuild(ctx, cfg, fe.Name, fe.DeclaredDir(), opts.pushRegistry, dockerArch, resolvedTag)
+			r := dockerBuild(ctx, cfg, fe.Name, fe.DeclaredDir(), opts.pushRegistry, dockerArch, resolvedTag, releaseImageTag(opts) != "")
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -1779,7 +1841,10 @@ func projectImageBinaryNames(goTargets []goBuildTarget) []string {
 // so the resulting image runs on a node whose arch matches the deploy
 // target rather than the build host. Empty means "let docker use the
 // host arch" — appropriate when host == target.
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string, resolvedVersion versionInfo, guard projectImageGuard) buildResult {
+//
+// releaseScoped (a `--release` build) tags and pushes resolvedTag ONLY — no
+// `:latest` — so a cut never moves a shared tag. See imageTagSet.
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string, releaseScoped bool, resolvedVersion versionInfo, guard projectImageGuard) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -1816,11 +1881,7 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 	if registry == "" {
 		registry = cfg.Name
 	}
-	latestTag := fmt.Sprintf("%s/%s:latest", registry, cfg.Name)
-	versionTag := ""
-	if resolvedTag != "" {
-		versionTag = fmt.Sprintf("%s/%s:%s", registry, cfg.Name, resolvedTag)
-	}
+	tags := imageTagSet(registry, cfg.Name, pushRegistry, resolvedTag, releaseScoped)
 
 	dockerArgs := []string{"build"}
 	// Pass the resolved build version into the image build as build-args.
@@ -1838,34 +1899,10 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
 			crossArch, runtime.GOOS, runtime.GOARCH)
 	}
-	dockerArgs = append(dockerArgs, "-t", latestTag)
-	if versionTag != "" {
-		dockerArgs = append(dockerArgs, "-t", versionTag)
+	for _, t := range tags.local {
+		dockerArgs = append(dockerArgs, "-t", t)
 	}
-	// Tag for the push registry too when requested. For localhost:<port>
-	// we also tag the k3d in-cluster mirror (registry.localhost:<port>)
-	// so deployed manifests can reference the in-cluster-resolvable name —
-	// but we only PUSH to the user-specified registry, since the host
-	// can't DNS-resolve `registry.localhost` (it's a k3d-internal name).
-	// The mirror tag is a local-only alias that downstream manifest
-	// references resolve via the containerd mirror config inside k3d.
-	var pushTags []string
-	for i, reg := range expandPushRegistries(pushRegistry) {
-		pushLatest := fmt.Sprintf("%s/%s:latest", reg, cfg.Name)
-		dockerArgs = append(dockerArgs, "-t", pushLatest)
-		// Only the first (user-specified) registry gets pushed. The
-		// auto-mirrored registry.localhost:<port> tag is local-alias-only.
-		if i == 0 {
-			pushTags = append(pushTags, pushLatest)
-		}
-		if resolvedTag != "" {
-			pushVersion := fmt.Sprintf("%s/%s:%s", reg, cfg.Name, resolvedTag)
-			dockerArgs = append(dockerArgs, "-t", pushVersion)
-			if i == 0 {
-				pushTags = append(pushTags, pushVersion)
-			}
-		}
-	}
+	pushTags := tags.push
 	// Additional build contexts from forge.yaml's docker.build_contexts.
 	// Each becomes a `--build-context name=value` arg, letting the
 	// Dockerfile pull files from outside the normal context via
@@ -1933,6 +1970,51 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 	}
 }
 
+// dockerImageTags is the tag set for one image build: every `-t` the
+// `docker build` applies (local), and the subset `docker push` sends to the
+// registry (push).
+type dockerImageTags struct {
+	local []string
+	push  []string
+}
+
+// imageTagSet computes the tags one forge-built image gets, for all three
+// docker paths (project image, frontend image, per-service DockerBuild) — so
+// "which tags does a build write" has ONE answer rather than three loops kept
+// in step by hand.
+//
+// Ordinarily an image is tagged `:latest` plus resolvedTag, locally under
+// registry and again under each push registry (the k3d `registry.localhost`
+// mirror is tagged but never pushed — the host cannot resolve it). The version
+// tag is pushed LAST because the digest capture inspects the last pushed ref.
+//
+// releaseScoped (a `--release` build) drops `:latest` entirely. A release
+// writes its images under the release version and NOTHING else, so a cut that
+// fails after its first push leaves every shared tag exactly where it was.
+// See releaseImageTag for the incident this closes.
+func imageTagSet(registry, image, pushRegistry, resolvedTag string, releaseScoped bool) dockerImageTags {
+	var out dockerImageTags
+	add := func(reg string, pushed bool) {
+		refs := make([]string, 0, 2)
+		if !releaseScoped {
+			refs = append(refs, fmt.Sprintf("%s/%s:latest", reg, image))
+		}
+		if resolvedTag != "" {
+			refs = append(refs, fmt.Sprintf("%s/%s:%s", reg, image, resolvedTag))
+		}
+		out.local = append(out.local, refs...)
+		if pushed {
+			out.push = append(out.push, refs...)
+		}
+	}
+	add(registry, false)
+	for i, reg := range expandPushRegistries(pushRegistry) {
+		// Only the first (user-specified) registry is pushed.
+		add(reg, i == 0)
+	}
+	return out
+}
+
 // expandPushRegistries returns the set of registries to tag a built
 // image against. For non-localhost registries this is just the single
 // pushRegistry the caller passed. For `localhost:<port>` it also adds
@@ -1971,8 +2053,8 @@ func countTags(args []string) int {
 // crossArch, when non-empty, drives `docker buildx build --platform=linux/<arch>`
 // so frontends destined for the deploy-target node arch are built
 // correctly even on a different host arch. Same semantics as
-// dockerBuildProject.
-func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pushRegistry, crossArch, resolvedTag string) buildResult {
+// dockerBuildProject, including releaseScoped (see imageTagSet).
+func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pushRegistry, crossArch, resolvedTag string, releaseScoped bool) buildResult {
 	start := time.Now()
 	dockerfile := filepath.Join(path, "Dockerfile")
 
@@ -1991,11 +2073,7 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 	if registry == "" {
 		registry = cfg.Name
 	}
-	latestTag := fmt.Sprintf("%s/%s:latest", registry, name)
-	versionTag := ""
-	if resolvedTag != "" {
-		versionTag = fmt.Sprintf("%s/%s:%s", registry, name, resolvedTag)
-	}
+	tags := imageTagSet(registry, name, pushRegistry, resolvedTag, releaseScoped)
 
 	dockerArgs := []string{"build"}
 	if crossArch != "" {
@@ -2003,32 +2081,10 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
 			crossArch, runtime.GOOS, runtime.GOARCH)
 	}
-	dockerArgs = append(dockerArgs, "-t", latestTag)
-	if versionTag != "" {
-		dockerArgs = append(dockerArgs, "-t", versionTag)
+	for _, t := range tags.local {
+		dockerArgs = append(dockerArgs, "-t", t)
 	}
-	// For localhost:<port> we also tag the k3d in-cluster mirror
-	// (registry.localhost:<port>) so deployed manifests can reference
-	// the in-cluster-resolvable name. See expandPushRegistries. We only
-	// PUSH to the first (user-specified) registry — the host can't
-	// DNS-resolve registry.localhost, so the mirror tag is a local
-	// alias that downstream manifests resolve via the containerd mirror
-	// config inside k3d. Matches the dockerBuildProject behaviour.
-	var pushTags []string
-	for i, reg := range expandPushRegistries(pushRegistry) {
-		pushLatest := fmt.Sprintf("%s/%s:latest", reg, name)
-		dockerArgs = append(dockerArgs, "-t", pushLatest)
-		if i == 0 {
-			pushTags = append(pushTags, pushLatest)
-		}
-		if resolvedTag != "" {
-			pushVersion := fmt.Sprintf("%s/%s:%s", reg, name, resolvedTag)
-			dockerArgs = append(dockerArgs, "-t", pushVersion)
-			if i == 0 {
-				pushTags = append(pushTags, pushVersion)
-			}
-		}
-	}
+	pushTags := tags.push
 	// Additional build contexts from forge.yaml. Same semantics as
 	// dockerBuildProject — useful when the frontend Dockerfile needs
 	// to reference paths outside its own subtree.
@@ -2511,24 +2567,11 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile str
 			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
 		}
 	}
-	dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:latest", registry, imageName))
-	if resolvedTag != "" {
-		dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:%s", registry, imageName, resolvedTag))
+	tags := imageTagSet(registry, imageName, opts.pushRegistry, resolvedTag, releaseImageTag(opts) != "")
+	for _, t := range tags.local {
+		dockerArgs = append(dockerArgs, "-t", t)
 	}
-	for i, reg := range expandPushRegistries(opts.pushRegistry) {
-		pl := fmt.Sprintf("%s/%s:latest", reg, imageName)
-		dockerArgs = append(dockerArgs, "-t", pl)
-		if i == 0 {
-			pushTags = append(pushTags, pl)
-		}
-		if resolvedTag != "" {
-			pv := fmt.Sprintf("%s/%s:%s", reg, imageName, resolvedTag)
-			dockerArgs = append(dockerArgs, "-t", pv)
-			if i == 0 {
-				pushTags = append(pushTags, pv)
-			}
-		}
-	}
+	pushTags = tags.push
 	// Build contexts: the per-service DockerBuild.build_contexts win when set,
 	// else the project-level forge.yaml docker.build_contexts. A service whose
 	// Dockerfile COPY --from=s a sibling checkout declares only the contexts it

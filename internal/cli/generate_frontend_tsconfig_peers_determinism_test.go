@@ -72,10 +72,13 @@ func TestFrontendPinLayoutIgnoresInstallState(t *testing.T) {
 						mustMkdirAll(t, filepath.Join(projectDir, "node_modules", "@connectrpc", "connect"))
 					} else {
 						// Declared nothing: a standalone `npm ci` in the
-						// frontend. The tree is now the only evidence there
-						// is, so it legitimately becomes knowable.
+						// frontend. This is the case that flipped
+						// control-plane's committed pins: the nested copy
+						// made the layout "known" (local), and generate
+						// rewrote 14 committed "../../" pins to "./". An
+						// install is not a declaration — the answer must
+						// stay "unknown, leave the committed pins alone".
 						mustMkdirAll(t, filepath.Join(feDir, "node_modules", "@connectrpc", "connect"))
-						wantKnown, wantHoisted = true, false
 					}
 				}
 
@@ -94,7 +97,9 @@ func TestFrontendPinLayoutIgnoresInstallState(t *testing.T) {
 
 // A genuinely nested copy of the peer outranks a workspace declaration: node
 // resolution prefers the NEAREST node_modules, so whatever the root declares,
-// that is the copy the resolver binds and the pin must name it.
+// that is the copy the resolver binds. That is evidence forge may act on only
+// at scaffold time, right after its own install (ObserveInstalledPinLayout) —
+// never at generate time, which must not read node_modules at all.
 func TestNestedInstallOutranksWorkspaceDeclaration(t *testing.T) {
 	t.Parallel()
 
@@ -108,11 +113,14 @@ func TestNestedInstallOutranksWorkspaceDeclaration(t *testing.T) {
 	mustMkdirAll(t, filepath.Join(projectDir, "node_modules", "@connectrpc", "connect"))
 	mustMkdirAll(t, filepath.Join(feDir, "node_modules", "@connectrpc", "connect"))
 
-	got := generator.DetectFrontendPinLayout(projectDir, feDir)
-	if !got.Known || got.Hoisted {
-		t.Errorf("DetectFrontendPinLayout = %+v, want {Hoisted:false Known:true} — a real "+
-			"nested copy is the one node resolution binds, so the pin must name it "+
-			"even though the root declares a workspace", got)
+	if got := generator.ObserveInstalledPinLayout(projectDir, feDir); !got.Known || got.Hoisted {
+		t.Errorf("ObserveInstalledPinLayout = %+v, want {Hoisted:false Known:true} — a real "+
+			"nested copy is the one node resolution binds", got)
+	}
+	// The generate-time decision reads declarations only: the root workspace
+	// declares hoisting, and no install may overrule a declaration there.
+	if got := generator.DetectFrontendPinLayout(projectDir, feDir); !got.Known || !got.Hoisted {
+		t.Errorf("DetectFrontendPinLayout = %+v, want {Hoisted:true Known:true} from the workspace declaration", got)
 	}
 }
 
@@ -172,7 +180,6 @@ func TestReconcileStillHealsStalePinsWhenLayoutKnown(t *testing.T) {
 		wantHoisted bool
 	}{
 		{name: "workspace root heals local pins to hoisted", declareRoot: true, wantHoisted: true},
-		{name: "nested install heals hoisted pins to local", wantHoisted: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

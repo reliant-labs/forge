@@ -89,7 +89,10 @@ func tsconfigPinEntryRe(pkg string) *regexp.Regexp {
 }
 
 // ReconcileFrontendTsconfigPeers retargets every frontend's tsconfig peer pins
-// to the node_modules layout this project is known to have. Best-effort and
+// to the node_modules layout the install forge just ran produced. It is the
+// SCAFFOLD-time pass (`forge scaffold frontend`, right after its npm install)
+// and reads node_modules on purpose — see ObserveInstalledPinLayout. `forge
+// generate` has its own pass that reads declarations only. Best-effort and
 // non-fatal: a missing or unrecognised tsconfig is skipped rather than failed,
 // a project whose layout cannot be identified is left untouched, and a file
 // already correct is left byte-identical so a re-run reports nothing.
@@ -104,7 +107,9 @@ func ReconcileFrontendTsconfigPeers(projectDir string) {
 			continue
 		}
 		feDir := filepath.Join(projectDir, "frontends", entry.Name())
-		layout := DetectFrontendPinLayout(projectDir, feDir)
+		// The install forge just ran is the evidence here: this is the
+		// scaffold-time pass, on a frontend being created.
+		layout := ObserveInstalledPinLayout(projectDir, feDir)
 		if !layout.Known {
 			// Nothing here identifies a layout. The committed pins are the
 			// only statement of one that exists, so they stand.
@@ -126,18 +131,52 @@ func ReconcileFrontendTsconfigPeers(projectDir string) {
 const pinLayoutProbe = "@connectrpc/connect"
 
 // DetectFrontendPinLayout reports which node_modules feDir's PEER dependencies
-// resolve from, and whether that could be determined at all.
+// resolve from, as far as the project's DECLARED files say, and whether they
+// say anything at all.
 //
-// The signals are consulted strongest-first, and every one of them is a
-// POSITIVE identification — none of them is a default. Running out of signals
-// yields Known=false, which callers must treat as "leave the committed pins
-// alone", never as "local".
+// It reads no node_modules. That is the whole contract, and it is what keeps
+// `forge generate` from rewriting a committed tsconfig.json according to who
+// last ran `npm install`. It used to probe for an installed copy — a nested
+// frontends/<name>/node_modules/@connectrpc/connect first, then a hoisted one
+// — and a nested install is exactly what `npm ci` inside a frontend creates.
+// control-plane commits its pins at the project root (its layout is forge's
+// dev bridge); a developer who had run `npm ci` in internal-console got all 14
+// pins rewritten to "./node_modules/…" by the next `forge generate`, and the
+// next bridged generate flipped them back. A committed file must not follow an
+// install.
 //
-// A real nested copy is consulted FIRST because it is not an opinion about
-// what npm will do, it is where the module resolver will actually land. After
-// that a workspace declaration outranks a hoisted install, because it states
-// what npm WILL do regardless of when anybody last ran an install.
+// The signals are declarations, strongest-first, and each is a POSITIVE
+// identification. Running out of signals yields Known=false, which callers
+// must treat as "leave the committed pins alone", never as a default.
+//
+// What is installed is still the right evidence at ONE moment: the instant
+// forge itself has just installed a frontend it is creating, before anything
+// is committed. ObserveInstalledPinLayout serves that, and only that.
 func DetectFrontendPinLayout(projectDir, feDir string) PinLayout {
+	// An npm workspace root covering frontends/* — forge's own dev bridge
+	// writes one, and a user may have their own. Either way npm hoists.
+	if rootWorkspaceCovers(projectDir, feDir) {
+		return PinLayout{Hoisted: true, Known: true}
+	}
+	// The frontend's own manifest resolving the runtime through a parent
+	// workspace says the same thing from the other side.
+	if frontendDeclaresWorkspaceMember(feDir) {
+		return PinLayout{Hoisted: true, Known: true}
+	}
+	// Nothing declared — most commonly a fresh clone on a CI runner, or a
+	// standalone frontend. The committed pins are the declaration.
+	return PinLayout{}
+}
+
+// ObserveInstalledPinLayout is DetectFrontendPinLayout plus what an install
+// actually produced. It is for the moment forge has just run `npm install`
+// on a frontend it is CREATING (`forge scaffold frontend`): the tsconfig was
+// written before the install decided the layout, nothing about it is
+// committed yet, and the tree on disk is the best evidence there is.
+//
+// It must not be used by `forge generate`, which re-runs on every machine and
+// on committed files — see DetectFrontendPinLayout for what that caused.
+func ObserveInstalledPinLayout(projectDir, feDir string) PinLayout {
 	probe := filepath.FromSlash(pinLayoutProbe)
 
 	// A genuine nested copy of the PACKAGE outranks everything, including a
@@ -154,21 +193,12 @@ func DetectFrontendPinLayout(projectDir, feDir string) PinLayout {
 	if isDir(filepath.Join(feDir, "node_modules", probe)) {
 		return PinLayout{Hoisted: false, Known: true}
 	}
-	// An npm workspace root covering frontends/* — forge's own dev bridge
-	// writes one, and a user may have their own. Either way npm hoists.
-	if rootWorkspaceCovers(projectDir, feDir) {
-		return PinLayout{Hoisted: true, Known: true}
-	}
-	// The frontend's own manifest resolving the runtime through a parent
-	// workspace says the same thing from the other side.
-	if frontendDeclaresWorkspaceMember(feDir) {
-		return PinLayout{Hoisted: true, Known: true}
+	if layout := DetectFrontendPinLayout(projectDir, feDir); layout.Known {
+		return layout
 	}
 	if isDir(filepath.Join(projectDir, "node_modules", probe)) {
 		return PinLayout{Hoisted: true, Known: true}
 	}
-	// Nothing installed and nothing declared — most commonly a fresh clone on
-	// a CI runner, which is precisely where a guess does the damage.
 	return PinLayout{}
 }
 

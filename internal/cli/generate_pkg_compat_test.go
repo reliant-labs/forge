@@ -337,3 +337,53 @@ func appendTo(t *testing.T, path, extra string) {
 	}
 	mustWrite(t, path, string(data)+extra)
 }
+
+// The retired require came back through gen/go.mod as often as through the
+// root — `go mod tidy` in gen/ picked it for the forgepb import. The check
+// must read gen/go.mod as well, and the fix must name BOTH modules, each as a
+// command runnable from the project root.
+func TestCheckPkgCompat_RetiredPkgInGenModuleIsCaughtAndFixedPerModule(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge v0.1.17\n")
+	mustWrite(t, filepath.Join(dir, "gen", "go.mod"), "module example.com/app/gen\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge/pkg v0.1.15\n")
+
+	err := checkPkgCompat(dir)
+	if err == nil {
+		t.Fatal("a retired forge/pkg require in gen/go.mod must be refused")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"gen/go.mod (v0.1.15)",
+		"(cd gen && go mod edit -droprequire=github.com/reliant-labs/forge/pkg && go get github.com/reliant-labs/forge@",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error must contain %q, got:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "(cd . &&") {
+		t.Errorf("the root module is clean and must not be named in the fix, got:\n%s", msg)
+	}
+}
+
+// Generate must never re-pin a project, so a running forge that differs from
+// forge.yaml's forge_version is SAID (and nothing is rewritten) — a silent
+// mismatch is how a `+dirty` build's version ended up committed as a pin.
+func TestWarnForgeVersionPinMismatch(t *testing.T) {
+	var b strings.Builder
+	warnForgeVersionPinMismatch(&b, "v0.1.17", "v0.1.18-0.20260926120145-7787cb0e2b05+dirty")
+	for _, want := range []string{"v0.1.17", "+dirty", "does not re-pin", "forge project upgrade"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("warning missing %q: %q", want, b.String())
+		}
+	}
+	for _, tc := range [][2]string{{"", "v0.1.17"}, {"v0.1.17", "v0.1.17"}} {
+		b.Reset()
+		warnForgeVersionPinMismatch(&b, tc[0], tc[1])
+		if b.Len() != 0 {
+			t.Errorf("pinned=%q running=%q must be silent, got %q", tc[0], tc[1], b.String())
+		}
+	}
+}

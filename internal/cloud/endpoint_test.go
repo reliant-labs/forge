@@ -3,6 +3,8 @@ package cloud
 import (
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/credentials"
 )
 
 // TestResolveEndpoint_IsPerEnvironmentNotProcessState is THE test for
@@ -71,6 +73,34 @@ func TestResolveEndpoint_NoDeclarationIsAClearError(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message should contain %q so the user knows what to edit; got:\n%s", want, msg)
 		}
+	}
+}
+
+// TestDefaultEndpoint_IsHTTPSAndCanonical — Reliant cloud is where every
+// unconfigured forge sends a bearer credential, so it must never be plaintext,
+// and it must already be the normalized form credentials are keyed by (else a
+// login and a later lookup could land on two different keys).
+func TestDefaultEndpoint_IsHTTPSAndCanonical(t *testing.T) {
+	if !strings.HasPrefix(DefaultEndpoint, "https://") {
+		t.Fatalf("DefaultEndpoint must be https: %q", DefaultEndpoint)
+	}
+	key, err := credentials.Normalize(DefaultEndpoint)
+	if err != nil || key != DefaultEndpoint {
+		t.Fatalf("DefaultEndpoint must be canonical: Normalize(%q) = %q, %v", DefaultEndpoint, key, err)
+	}
+	ep, err := ResolveEndpoint("", &Declaration{Endpoint: DefaultEndpoint})
+	if err != nil || ep.URL != DefaultEndpoint || ep.TokenEnv != DefaultTokenEnv {
+		t.Fatalf("resolve default: %+v %v", ep, err)
+	}
+}
+
+// TestResolveEndpoint_NoDeclarationNeverDefaults — the Reliant-cloud default
+// belongs to a DECLARATION (`forge.ControlPlane {}`), never to its absence: an
+// env that declares nothing is not hosted and must not send anything anywhere.
+func TestResolveEndpoint_NoDeclarationNeverDefaults(t *testing.T) {
+	ep, err := ResolveEndpoint("dev", nil)
+	if err == nil || ep.URL != "" {
+		t.Fatalf("no declaration must not resolve to %s; got %+v %v", DefaultEndpoint, ep, err)
 	}
 }
 

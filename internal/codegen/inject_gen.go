@@ -344,7 +344,24 @@ func GenerateCompose(in InjectGenInput) error {
 		return err
 	}
 
-	resolver := NewServiceKeyResolver(comps)
+	// The owned Infra surface and the generated-store accessors are read
+	// BEFORE planning: producer inference defers to an explicit Infra binding
+	// and to the framework store seam, so it needs both.
+	infraFields, err := parseInfraFields(appDir)
+	if err != nil {
+		return fmt.Errorf("parse internal/app for Infra fields: %w", err)
+	}
+	storeAccessors := parseStoreAccessors(in.ProjectDir)
+
+	// Exact-contract-key resolution, layered with go/types inference so a
+	// consumer-declared narrow interface (or an alias) resolves to the one
+	// component that satisfies it — see producer_assignability.go.
+	baseResolver := NewServiceKeyResolver(comps)
+	inferred, ambiguous := inferInterfaceProducers(in.ProjectDir, comps, baseResolver, infraFields, storeAccessors)
+	if len(ambiguous) > 0 {
+		return ambiguousProviderError(ambiguous)
+	}
+	resolver := &inferringResolver{base: baseResolver, inferred: inferred}
 	plan := ComputeBuildPlan(comps, resolver)
 
 	// Producer lookup: FieldName -> the Go EXPRESSION a consumer's Deps
@@ -372,16 +389,11 @@ func GenerateCompose(in InjectGenInput) error {
 		producerVar[c.FieldName] = injectVarName(c.VarName)
 	}
 
-	// The Infra struct's exported fields — the owned provider set. Parsed
-	// from internal/app/providers.go (+ any sibling .go in internal/app
-	// that declares `type Infra struct`). Empty when providers.go hasn't
-	// been scaffolded yet (first generate) — every collaborator then falls
-	// to the compile-time backstop, which is the correct loud state.
-	infraFields, err := parseInfraFields(appDir)
-	if err != nil {
-		return fmt.Errorf("parse internal/app for Infra fields: %w", err)
-	}
-
+	// infraFields (parsed above) is the Infra struct's exported fields — the
+	// owned provider set, from internal/app/providers.go (+ any sibling .go
+	// that declares `type Infra struct`). Empty when providers.go hasn't been
+	// scaffolded yet (first generate) — every collaborator then falls to the
+	// compile-time backstop, which is the correct loud state.
 	matcher := NewInfraAssignabilityMatcher(in.ProjectDir)
 
 	// Config fields (pkg/config/config.go) — used to resolve a scalar Deps
@@ -389,9 +401,6 @@ func GenerateCompose(in InjectGenInput) error {
 	// of a bare typed-zero (FIX: kalshi's WTI EIAKey/FREDKey were being
 	// reset to ""+TODO). Empty when config.go hasn't been generated yet.
 	configFields := parseConfigFields(in.ProjectDir)
-
-	// Accessor map for the generated per-entity stores, read once per run.
-	storeAccessors := parseStoreAccessors(in.ProjectDir)
 
 	var (
 		rendered     []InjectComponentData

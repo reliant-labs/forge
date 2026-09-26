@@ -498,6 +498,11 @@ func routeFilterFor(fe config.FrontendConfig, liveSlugs map[string]bool) (func(s
 	if len(fe.Routes) == 0 {
 		return func(string) bool { return true }, nil
 	}
+	// `routes: [none]` — no generated pages, and nothing to warn about: it
+	// is a value, not a slug that failed to match an entity.
+	if fe.RoutesNone() {
+		return func(string) bool { return false }, nil
+	}
 
 	want := make(map[string]bool, len(fe.Routes))
 	var unknown []string
@@ -512,6 +517,21 @@ func routeFilterFor(fe config.FrontendConfig, liveSlugs map[string]bool) (func(s
 		}
 	}
 	return func(slug string) bool { return want[strings.ToLower(slug)] }, unknown
+}
+
+// filterNavPagesForFrontend narrows the project-wide nav page set to the
+// routes this frontend actually has — the same predicate the page generator
+// applies, so the sidebar never links a page that was deliberately not
+// written (an allowlist, or `routes: [none]`).
+func filterNavPagesForFrontend(pages []templates.NavPageData, fe config.FrontendConfig, liveSlugs map[string]bool) []templates.NavPageData {
+	want, _ := routeFilterFor(fe, liveSlugs)
+	out := make([]templates.NavPageData, 0, len(pages))
+	for _, p := range pages {
+		if want(p.Slug) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // sortedSlugs renders a slug set deterministically for the unknown-route

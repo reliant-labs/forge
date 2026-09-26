@@ -158,9 +158,12 @@ authored protos, in one call.`,
 			// Placed before the experimental-warning early-returns so
 			// --silence-experimental doesn't also silence it. No-op unless
 			// we're in a forge project that ships .githooks/ (see
-			// ensureGitHooksActivated).
-			if root, err := cmdutil.FindProjectRoot(); err == nil && root != "" {
-				ensureGitHooksActivated(root)
+			// ensureGitHooksActivated), and skipped for commands that
+			// opt out (see skipHookActivationAnnotation).
+			if !hookActivationSkipped(cmd) {
+				if root, err := cmdutil.FindProjectRoot(); err == nil && root != "" {
+					ensureGitHooksActivated(root)
+				}
 			}
 
 			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {

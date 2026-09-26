@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -105,14 +106,17 @@ var newHostedSecretWriter = func(ctx context.Context, envName string, entities *
 		return nil, cloud.Endpoint{}, err
 	}
 	client := cloud.NewClient(ep, cred)
+	ref := hostedEnvRefFor(envName, entities)
 	var envID string
 	if ensure {
-		envID, err = ensureHostedEnv(ctx, client, envName)
+		envID, err = ensureHostedEnv(ctx, client, ref)
 	} else {
-		envID, err = cloudEnvResolver{client: client}.ResolveEnvironmentID(ctx, envName)
+		envID, err = cloudEnvResolver{client: client, project: ref.Project}.ResolveEnvironmentID(ctx, envName)
 	}
 	if err != nil {
-		return nil, cloud.Endpoint{}, err
+		// The endpoint is known even when the env is not: list reports
+		// where it looked.
+		return nil, ep, err
 	}
 	return cloudSecretWriter{client: client, environmentID: envID}, ep, nil
 }
@@ -133,8 +137,23 @@ func runHostedSecretSet(ctx context.Context, envName, key string, entities *KCLE
 		return err
 	}
 	// Never echo the value — only that it landed, where, and its version.
-	fmt.Fprintf(out, "set %s (%d bytes) in hosted env %q at %s (version %d)\n", key, len(value), envName, ep.URL, version)
+	fmt.Fprintf(out, "%s: %s (%d bytes) in hosted env %q at %s\n", key, hostedSetVerb(version), len(value), envName, ep.URL)
 	return nil
+}
+
+// hostedSetVerb renders a SetSecret outcome from the version the store
+// reports: the first version CREATES the secret, every later one ROTATES it
+// (a new version is the rotation — there is no separate command). A store
+// that reports no version gets the neutral "set".
+func hostedSetVerb(version uint32) string {
+	switch {
+	case version == 1:
+		return "created v1"
+	case version > 1:
+		return fmt.Sprintf("rotated to v%d", version)
+	default:
+		return "set"
+	}
 }
 
 func runHostedSecretUnset(ctx context.Context, envName, key string, entities *KCLEntities, out io.Writer) error {
@@ -149,51 +168,32 @@ func runHostedSecretUnset(ctx context.Context, envName, key string, entities *KC
 	return nil
 }
 
-// collectHostedSecretListFacts builds the SAME secretListReport the file
-// provider produces, from the hosted store's names — so `forge secret list
-// --json` has one shape whatever the provider, and the console that reads it
-// needs no second parser.
-func collectHostedSecretListFacts(ctx context.Context, envName string, entities *KCLEntities) (secretListReport, error) {
+// hostedSecretListStore reads a hosted env's names and current versions —
+// value-free by construction (ListSecrets has no value field) — into the
+// same presence facts every provider reports, so `forge secret list --json`
+// has one shape whatever the provider.
+//
+// An env the control plane has never seen holds no secrets: every declared
+// one is missing, and listing does not create it.
+func hostedSecretListStore(ctx context.Context, envName string, entities *KCLEntities) (secretListStore, error) {
 	w, ep, err := newHostedSecretWriter(ctx, envName, entities, false)
+	if errors.Is(err, errHostedEnvNotFound) {
+		return secretListStore{provider: "hosted", location: ep.URL, verifiable: true, present: map[string]bool{}}, nil
+	}
 	if err != nil {
-		return secretListReport{}, err
+		return secretListStore{}, err
 	}
 	stored, err := w.List(ctx)
 	if err != nil {
-		return secretListReport{}, err
+		return secretListStore{}, err
 	}
-	present := map[string]bool{}
+	store := secretListStore{provider: "hosted", location: ep.URL, exists: true, verifiable: true,
+		present: map[string]bool{}, versions: map[string]uint32{}}
 	for _, s := range stored {
 		if s.present() {
-			present[s.Name] = true
+			store.present[s.Name] = true
+			store.versions[s.Name] = s.CurrentVersion
 		}
 	}
-	report := secretListReport{
-		Env:         envName,
-		Provider:    "hosted",
-		StorePath:   ep.URL,
-		StoreExists: true,
-		Secrets:     []secretListEntry{},
-		Inert:       []string{},
-		Missing:     []string{},
-	}
-	declared := declaredSecretNames(entities)
-	attribution := secretDeclarationsByEnvName(entities)
-	for _, name := range declared {
-		if !present[name] {
-			report.Missing = append(report.Missing, name)
-		}
-		report.Secrets = append(report.Secrets, secretListEntry{
-			Name: name, Present: present[name], DeclaredBy: attribution[name],
-		})
-	}
-	for name := range present {
-		if !containsString(declared, name) {
-			report.Inert = append(report.Inert, name)
-		}
-	}
-	sort.Strings(report.Inert)
-	report.MissingCount = len(report.Missing)
-	report.OK = report.MissingCount == 0
-	return report, nil
+	return store, nil
 }

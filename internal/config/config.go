@@ -538,12 +538,20 @@ type FrontendConfig struct {
 	// Unknown slugs are reported by `forge generate` rather than ignored: a
 	// typo'd or renamed entity would otherwise silently yield a frontend
 	// missing the page its author asked for.
+	//
+	// The single value `none` (RoutesNone) means NO generated CRUD pages at
+	// all — a marketing site, or an app whose every screen is hand-written.
+	// It is a value, not a slug: it cannot be combined with real slugs.
 	Routes []string `yaml:"routes,omitempty"`
 	// AuthMode names the sign-in FLOW this frontend uses. It does not
 	// change what authentication means anywhere else: the backend
 	// validates the same JWT either way, and forge still issues no tokens.
 	//
-	// "native" is the only value, and the default. The scaffolded frontend
+	// "none" is a PUBLIC frontend (AuthModeNone): no route guard, no
+	// sign-in screen. It is the default `forge scaffold frontend` picks for
+	// a project whose dev env declares no identity provider.
+	//
+	// "native" is the gated default otherwise. The scaffolded frontend
 	// POSTs credentials to this app's own API and receives an HttpOnly
 	// session cookie; the server runs the whole OIDC flow against the
 	// issuer (internal/app/login_broker.go, over forge/pkg/devidp). The
@@ -557,6 +565,49 @@ type FrontendConfig struct {
 	// See the `auth/frontend` skill for what the native flow guarantees,
 	// in particular why the credential check happens server-side.
 	AuthMode string `yaml:"auth_mode,omitempty"`
+	// DevRunner is the package manager forge drives this frontend with:
+	// "npm" (the default), "pnpm" or "yarn". It selects the binary for the
+	// dev server (`<runner> run dev`), the dependency install, and the
+	// production build (`<runner> run build`).
+	//
+	// The same knob exists on the KCL Frontend schema (`dev_runner`), and a
+	// frontend the env's KCL declares takes it from there. It is ALSO
+	// accepted here because forge.yaml is how an existing app is adopted:
+	// a pnpm frontend listed only in forge.yaml used to be refused at load
+	// ("unknown key"), leaving no way to tell forge not to run npm against a
+	// pnpm lockfile short of hand-writing a KCL declaration first.
+	DevRunner string `yaml:"dev_runner,omitempty"`
+}
+
+// RoutesNone is the frontends[].routes value meaning "generate no CRUD
+// pages for this frontend".
+const RoutesNone = "none"
+
+// RoutesNone reports whether this frontend opted out of generated CRUD pages
+// entirely (`routes: [none]`).
+func (f FrontendConfig) RoutesNone() bool {
+	for _, r := range f.Routes {
+		if strings.EqualFold(strings.TrimSpace(r), RoutesNone) {
+			return true
+		}
+	}
+	return false
+}
+
+// Dev-runner values for FrontendConfig.DevRunner, mirroring the KCL
+// Frontend schema's `dev_runner`.
+const (
+	DevRunnerNPM  = "npm"
+	DevRunnerPNPM = "pnpm"
+	DevRunnerYarn = "yarn"
+)
+
+// EffectiveDevRunner returns the frontend's package manager, defaulting to npm.
+func (f FrontendConfig) EffectiveDevRunner() string {
+	if r := strings.ToLower(strings.TrimSpace(f.DevRunner)); r != "" {
+		return r
+	}
+	return DevRunnerNPM
 }
 
 // Auth-mode values for FrontendConfig.AuthMode.
@@ -564,10 +615,19 @@ const (
 	// AuthModeNative signs users in through this app's own API, with the
 	// server running the OIDC flow on the browser's behalf.
 	AuthModeNative = "native"
+	// AuthModeNone is a PUBLIC frontend: no route guard and no sign-in
+	// screen, every page renders for every visitor. `forge scaffold
+	// frontend` picks it by default when the project's dev environment
+	// declares no identity provider, because a guarded frontend there can
+	// only redirect every page to a sign-in nothing can complete. The
+	// backend's own auth is untouched — an RPC that requires a caller still
+	// answers 401.
+	AuthModeNone = "none"
 )
 
 // EffectiveAuthMode returns the frontend's sign-in mode, defaulting to the
-// native flow. Empty means unset, not "no auth" — every mode authenticates.
+// native flow. Empty means unset, which is native — "no sign-in gate" is
+// spelled explicitly as AuthModeNone.
 func (f FrontendConfig) EffectiveAuthMode() string {
 	if f.AuthMode == "" {
 		return AuthModeNative
@@ -899,8 +959,21 @@ type SeedConfig struct {
 	Salt int `yaml:"salt,omitempty"`
 	// RowsPerTable overrides Rows for specific tables.
 	RowsPerTable map[string]int `yaml:"rows_per_table,omitempty"`
-	// Auto controls `forge run` first-boot auto-seed. Nil = on by default.
+	// Auto controls `forge run` / `forge env up` first-boot auto-seed. Nil =
+	// on by default. `auto: false` is the per-project opt-out; the
+	// per-run one is --no-seed.
 	Auto *bool `yaml:"auto,omitempty"`
+	// Tables scopes seeding — auto-seed AND `forge db seed` — to these
+	// tables plus the tables they require through a NOT NULL foreign key.
+	// An empty list (`tables: []`) seeds nothing.
+	//
+	// Unset, auto-seed defaults to the tables behind the project's CRUD
+	// entities: the ones generated pages list, which is what demo rows are
+	// FOR. Every other table is plain schema owned by hand-written code —
+	// a ledger, an idempotency log, a payments table — where a random row is
+	// not demo data but a lie (a "paid" deposit nobody paid). An explicit
+	// `forge db seed apply` with Tables unset still seeds every table.
+	Tables *[]string `yaml:"tables,omitempty"`
 }
 
 // EffectiveRows returns the default rows-per-table (falls back to 20).

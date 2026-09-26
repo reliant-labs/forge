@@ -1259,8 +1259,8 @@ schema FileSecrets:
     gated to dev/e2e (a check below + a Go guard). staging/prod must use
     ExternalSecrets.
 
-    Populate with `forge secret set <env> <KEY>` (value on stdin, never
-    argv), or hand-edit the YAML. `forge secret ensure <env>` creates the
+    Populate with `forge secret set --env <env> <KEY>` (value on stdin, never
+    argv), or hand-edit the YAML. `forge secret ensure --env <env>` creates the
     file and lists every declared ref that has no value yet."""
     type: str = "file"
     path: str = "secrets/dev.yaml"
@@ -1292,7 +1292,7 @@ schema HostedSecrets:
     control plane (endpoint + credential from `control_plane`), scoped to
     the control-plane environment with this env's NAME.
 
-        control_plane   = forge.ControlPlane {endpoint = "https://api.example.com"}
+        control_plane   = forge.ControlPlane {}    # Reliant cloud
         secret_provider = forge.HostedSecrets {}
 
     There is nothing to configure: WHERE the values live is the env's
@@ -1303,9 +1303,32 @@ schema HostedSecrets:
     check:
         type == "hosted", "HostedSecrets.type must be 'hosted'"
 
+# RELIANT_CLOUD_ENDPOINT is Reliant's production control plane — the
+# endpoint `forge.ControlPlane {}` means when it names none. It is the
+# PUBLIC origin that serves forge's whole hosted surface: the
+# controlplane.v1.* RPCs (deploy, releases, secrets) and the CLI OAuth
+# endpoints (/oauth/authorize, /oauth/token).
+#
+# One fact, twice: internal/cloud.DefaultEndpoint is the Go copy `forge
+# login` uses outside a project, where there is no KCL to read. A test
+# renders this schema and fails if the two disagree
+# (TestControlPlaneDefault_KCLMatchesGo).
+RELIANT_CLOUD_ENDPOINT: str = "https://admin.reliantapi.com"
+
 schema ControlPlane:
     """The hosted control plane THIS environment talks to: an endpoint URL
     and how forge finds the bearer credential for it.
+
+    RELIANT CLOUD IS THE DEFAULT. `endpoint` defaults to
+    RELIANT_CLOUD_ENDPOINT, so the whole declaration for an env hosted on
+    Reliant's infrastructure is:
+
+        control_plane = forge.ControlPlane {}
+
+    That is what a plain `go install`'d forge targets with no other
+    configuration. Any other control plane — a self-run one, or a local dev
+    stack — is named explicitly with `endpoint`, in the env that uses it,
+    where the diff shows it.
 
     Modelled on ExternalSecrets, which is the closest existing analogue:
     it declares WHERE something comes from without forge ever holding the
@@ -1319,15 +1342,14 @@ schema ControlPlane:
     environment in exactly the way `cluster`, `namespace` and `registry`
     are, so it is declared beside them:
 
-        # deploy/kcl/staging/main.k
+        # deploy/kcl/prod/main.k — Reliant cloud, credential from a CI secret
         control_plane = forge.ControlPlane {
-            endpoint = "https://api.staging.example.com"
+            token_env = "ACME_DEPLOY_TOKEN"
         }
 
-        # deploy/kcl/prod/main.k
+        # deploy/kcl/dev/main.k — a control plane you run yourself
         control_plane = forge.ControlPlane {
-            endpoint  = "https://api.example.com"
-            token_env = "ACME_DEPLOY_TOKEN"
+            endpoint = "http://127.0.0.1:8090"
         }
 
     There is NO `forge context use` and no stateful "current endpoint".
@@ -1349,7 +1371,9 @@ schema ControlPlane:
     the same relationship `External` has with flyctl, which needs
     FLY_API_TOKEN without forge linking Fly's SDK."""
     type: str = "control_plane"
-    endpoint: str
+    # Base URL of the control plane. Defaults to Reliant cloud; set it only
+    # to target a different one.
+    endpoint: str = RELIANT_CLOUD_ENDPOINT
     # Env var forge reads the bearer credential from. The NAME is
     # non-sensitive and belongs in git; the VALUE never does.
     token_env: str = "FORGE_CONTROL_PLANE_TOKEN"
@@ -1364,7 +1388,7 @@ schema ControlPlane:
 
     check:
         type == "control_plane", "ControlPlane.type must be 'control_plane'"
-        endpoint, "ControlPlane.endpoint is required (the hosted control plane's base URL)"
+        endpoint, "ControlPlane.endpoint must not be empty — omit it for Reliant cloud (forge.RELIANT_CLOUD_ENDPOINT), or set the base URL of another control plane"
         endpoint.startswith("http://") or endpoint.startswith("https://"), \
             "ControlPlane.endpoint must be an absolute http(s) URL"
         token_env, "ControlPlane.token_env is required (the env var NAME holding the credential)"
@@ -3650,7 +3674,7 @@ schema Bundle:
         # HostedSecrets names no endpoint of its own — the values live in THIS
         # env's control plane — so without one there is nowhere to put them.
         not (secret_provider and secret_provider.type == "hosted") or control_plane, \
-            "secret_provider = forge.HostedSecrets {} requires control_plane = forge.ControlPlane {endpoint = ...} on the same Bundle: hosted secret values live in that control plane"
+            "secret_provider = forge.HostedSecrets {} requires control_plane = forge.ControlPlane {} (Reliant cloud, or set endpoint) on the same Bundle: hosted secret values live in that control plane"
         # A cluster_target is required iff at least one workload resolves to
         # the k8s target — i.e. any workload WITHOUT a `host` block (target
         # polymorphism, docs/design/FORGE_TARGET_POLYMORPHISM.md §1.4). The k8s adapter

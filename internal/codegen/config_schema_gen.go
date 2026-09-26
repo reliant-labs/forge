@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // ConfigSchemaModule is the KCL module name (and filename stem) the config
@@ -100,8 +102,26 @@ func renderAppConfigSchema(fields []ConfigField, projectName string) (string, er
 // declared exactly once per module, so only the first schema in a file asks
 // for it.
 func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName string, withSecretRef bool) (string, error) {
-	if err := CheckDuplicateConfigFields(fields, ConfigSchemaModule, schemaName); err != nil {
+	root, blocks := partitionConfigBlocks(fields)
+	if err := CheckDuplicateConfigFields(root, ConfigSchemaModule, schemaName); err != nil {
 		return "", err
+	}
+	// Each block is its own KCL namespace, so a leaf name is only a duplicate
+	// WITHIN one block — two blocks may both declare `base_domain`.
+	for _, blk := range blocks {
+		if err := CheckDuplicateConfigFields(blk.Fields, ConfigSchemaModule, blk.schemaName(schemaName)); err != nil {
+			return "", err
+		}
+	}
+	// A block field and a root scalar of the same name would be two schema
+	// members fighting over one key; exactly one would survive.
+	for _, blk := range blocks {
+		for _, f := range root {
+			if f.Name == blk.Field {
+				return "", fmt.Errorf("%s.k: %q is both a field of %s and the config block %s — rename one in the proto",
+					ConfigSchemaModule, blk.Field, schemaName, blk.Type)
+			}
+		}
 	}
 
 	var b strings.Builder
@@ -120,19 +140,92 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 		b.WriteString("    key: str\n\n")
 	}
 
+	// One nested schema per composed block, declared BEFORE the root schema
+	// that instantiates it. Its name is scoped by the root schema
+	// (AppConfigStripe) so per-binary configs composing the same block each
+	// get their own, and a block message name can never shadow a root schema.
+	for _, blk := range blocks {
+		name := blk.schemaName(schemaName)
+		fmt.Fprintf(&b, "# %s is the %s block (%s) — author its values in config.k as `%s.<field> = ...`.\n", name, blk.Field, blk.Type, blk.Field)
+		b.WriteString("schema " + name + ":\n")
+		blockBody, emitted := renderConfigSchemaFields(blk.Fields, projectName)
+		if emitted == 0 {
+			b.WriteString("    \"\"\"No config fields.\"\"\"\n\n")
+			continue
+		}
+		b.WriteString(blockBody)
+		b.WriteString("\n")
+	}
+
 	b.WriteString("schema " + schemaName + ":\n")
 
-	// Count the fields we will actually emit (message block-references are
-	// skipped) so the empty case emits a valid placeholder schema.
-	emitted := 0
+	rootBody, emitted := renderConfigSchemaFields(root, projectName)
 	var body strings.Builder
+	body.WriteString(rootBody)
+	for _, blk := range blocks {
+		name := blk.schemaName(schemaName)
+		fmt.Fprintf(&body, "    # %s config block (%s). Set its fields as `%s.<field> = ...`.\n", blk.Field, blk.Type, blk.Field)
+		fmt.Fprintf(&body, "    %s: %s = %s {}\n", blk.Field, name, name)
+		emitted++
+	}
+
+	if emitted == 0 {
+		// A KCL schema suite must be non-empty. A docstring-only suite is
+		// valid KCL and doubles as the placeholder note.
+		b.WriteString("    # No (forge.v1.config)-annotated config fields were found.\n")
+		b.WriteString("    \"\"\"No config fields projected from proto/config/v1/config.proto yet — add `(forge.v1.config)`-annotated fields to the proto to populate this schema.\"\"\"\n")
+		return b.String(), nil
+	}
+
+	b.WriteString(body.String())
+	return b.String(), nil
+}
+
+// configBlock is one composed config block in a schema's field list.
+type configBlock struct {
+	Field  string // the composing field on the root message, e.g. "stripe"
+	Type   string // the block message, e.g. "StripeConfig"
+	Fields []ConfigField
+}
+
+// schemaName is the nested KCL schema this block projects to, scoped by the
+// schema that composes it: AppConfig + stripe -> AppConfigStripe.
+func (c configBlock) schemaName(parent string) string {
+	return parent + naming.ToPascalCase(c.Field)
+}
+
+// partitionConfigBlocks splits a flattened field list into its root fields and
+// its composed blocks (ConfigField.KCLBlock), preserving first-appearance order
+// for both so the emitted module is byte-stable.
+func partitionConfigBlocks(fields []ConfigField) (root []ConfigField, blocks []configBlock) {
+	idx := map[string]int{}
+	for _, f := range fields {
+		if f.KCLBlock == "" {
+			root = append(root, f)
+			continue
+		}
+		i, ok := idx[f.KCLBlock]
+		if !ok {
+			i = len(blocks)
+			idx[f.KCLBlock] = i
+			blocks = append(blocks, configBlock{Field: f.KCLBlock, Type: f.KCLBlockType})
+		}
+		blocks[i].Fields = append(blocks[i].Fields, f)
+	}
+	return root, blocks
+}
+
+// renderConfigSchemaFields renders the member lines of one schema suite and
+// how many members it declared.
+func renderConfigSchemaFields(fields []ConfigField, projectName string) (string, int) {
+	var body strings.Builder
+	emitted := 0
 	for _, f := range fields {
 		if f.MessageType != "" {
-			// Block-reference to a component config message: no scalar
-			// KCL type, env binds on its leaves. Nested schemas are not projected.
-			// (A duration/WKT leaf has ProtoType "message" too but NO
-			// MessageType — it is emitted below as a str.)
-			fmt.Fprintf(&body, "    # (omitted) %s references config message %q — its leaf fields bind env; nested schemas are not yet projected.\n", f.Name, f.MessageType)
+			// Block-reference to a config message that the flattener did not
+			// expand (an unknown message). A duration/WKT leaf has ProtoType
+			// "message" too but NO MessageType — it is emitted below as a str.
+			fmt.Fprintf(&body, "    # (omitted) %s references config message %q, which is not a known config message.\n", f.Name, f.MessageType)
 			continue
 		}
 		if d := strings.TrimSpace(f.Description); d != "" {
@@ -166,17 +259,7 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 		}
 		emitted++
 	}
-
-	if emitted == 0 {
-		// A KCL schema suite must be non-empty. A docstring-only suite is
-		// valid KCL and doubles as the placeholder note.
-		b.WriteString("    # No (forge.v1.config)-annotated config fields were found.\n")
-		b.WriteString("    \"\"\"No config fields projected from proto/config/v1/config.proto yet — add `(forge.v1.config)`-annotated fields to the proto to populate this schema.\"\"\"\n")
-		return b.String(), nil
-	}
-
-	b.WriteString(body.String())
-	return b.String(), nil
+	return body.String(), emitted
 }
 
 // CheckDuplicateConfigFields refuses a field set that would declare the same

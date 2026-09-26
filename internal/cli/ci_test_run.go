@@ -92,7 +92,8 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 			}
 			defer closeIn()
 
-			run, err := testreport.Parse(in)
+			report := testreport.New(testreport.Deps{})
+			run, err := report.Parse(in)
 			if err != nil {
 				// Unreadable input is UNDETERMINED, never a pass. Say
 				// which half failed — an empty pipe and a bad path are
@@ -112,11 +113,11 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 					"check the path and permissions, or re-run the suite with `-json`", err)
 			}
 
-			analysis := testreport.Analyze(run, policy)
+			analysis := report.Analyze(run, policy)
 			if projectNote != "" {
 				fmt.Fprintln(cmd.OutOrStdout(), projectNote)
 			}
-			testreport.Render(cmd.OutOrStdout(), analysis)
+			report.Render(cmd.OutOrStdout(), analysis)
 
 			switch analysis.Status() {
 			case testreport.StatusUndetermined:

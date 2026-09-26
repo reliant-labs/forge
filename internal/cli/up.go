@@ -357,6 +357,7 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 		}
 		dest := resolveEnvDestination(ctx, env, entities, readHostedStatusFromDeclaration)
 		rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
+		rep.ControlPlaneKind = dest.ControlPlaneKind
 		rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -779,17 +780,22 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// before any process starts. ValidateDeclaredRefs is a no-op for
 	// external/none providers, so this only bites a dotenv provider missing
 	// a declared key (and lists every miss at once).
+	//
+	// A LOCAL env (control_plane + HostedSecrets, no hosted tier) keeps its
+	// values on the control plane: pull them NOW, into memory, so the
+	// provider below resolves them like a file store. A failed pull fails
+	// the run — services must not start without their declared secrets.
+	if err := armLocalSecretsForUp(ctx, opts.env, entities, func(f string, a ...any) { fmt.Printf(f, a...) }); err != nil {
+		return err
+	}
+	defer disarmPulledSecrets()
 	prov, err := secretProviderFromEntities(entities, projectDir)
 	if err != nil {
 		return fmt.Errorf("secret provider: %w", err)
 	}
 	noteSecretLayering(prov, os.Stderr)
-	dotenvPath := ""
-	if entities.SecretProvider != nil {
-		dotenvPath = entities.SecretProvider.Path
-	}
-	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForHostServices(entities), dotenvPath); err != nil {
-		return err // already actionable; lists every missing key
+	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForLaunch(entities), secretStoreLabel(entities)); err != nil {
+		return withEnvInSecretFix(err, opts.env) // already actionable; lists every missing key
 	}
 
 	// Cluster phases — build + deploy. Both are feature-gated: if the
@@ -875,6 +881,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 			entities: entities, env: opts.env, background: detach,
 			noInstall: opts.noInstall, targets: opts.targets,
 			frontendArgs: opts.frontendArgs, apiBaseURL: apiBaseURL, procs: procs,
+			secrets: prov.All(),
 		})
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
@@ -1493,12 +1500,15 @@ type upServicesReport struct {
 	// are hosted-only. HostedNote explains a hosted status that could not
 	// be read (credentials, network), in which case the other hosted fields
 	// are empty rather than guessed.
-	Destination     string                              `json:"destination,omitempty"`
-	Endpoint        string                              `json:"endpoint,omitempty"`
-	EnvironmentID   string                              `json:"environment_id,omitempty"`
-	Verdict         string                              `json:"verdict,omitempty"`
-	HostedWorkloads []deploytarget.HostedWorkloadStatus `json:"hosted_workloads,omitempty"`
-	HostedNote      string                              `json:"hosted_note,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	// ControlPlaneKind: "local" | "persistent" when the env declares
+	// control_plane (see env_destination.go).
+	ControlPlaneKind string                              `json:"control_plane_kind,omitempty"`
+	Endpoint         string                              `json:"endpoint,omitempty"`
+	EnvironmentID    string                              `json:"environment_id,omitempty"`
+	Verdict          string                              `json:"verdict,omitempty"`
+	HostedWorkloads  []deploytarget.HostedWorkloadStatus `json:"hosted_workloads,omitempty"`
+	HostedNote       string                              `json:"hosted_note,omitempty"`
 }
 
 // collectUpServices builds the ordered host-then-frontend rows for env,
@@ -2900,6 +2910,10 @@ type frontendLaunch struct {
 	frontendArgs []string
 	apiBaseURL   string
 	procs        *procRegistry
+	// secrets is the env's resolved secret map (a file store, or a LOCAL
+	// env's pulled values). Each frontend receives only the keys it
+	// DECLARES via env_vars secret_ref.
+	secrets map[string]string
 }
 
 // frontendPhaseEnabled reports whether `forge env up` should start the
@@ -2945,6 +2959,12 @@ func upFrontends(ctx context.Context, fl frontendLaunch) int {
 			continue
 		}
 		cmd := buildFrontendCmd(ctx, fe, env, os.Environ(), frontendArgs, apiBaseURL)
+		// Declared secrets, scoped to this frontend's own secret_ref
+		// declarations, layered over the dev server's env. In memory:
+		// the value reaches the child process environment only.
+		for k, v := range scopeSecretsToEnvVars(fl.secrets, fe.EffectiveEnvVars()) {
+			cmd.Env = withForcedEnv(cmd.Env, k, v)
+		}
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++

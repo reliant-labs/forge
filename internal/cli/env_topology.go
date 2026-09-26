@@ -281,11 +281,14 @@ type topologyEnv struct {
 	// for the vocabulary. Destination is set for every DECLARED env; the
 	// rest are hosted-only, and EnvironmentID is empty (never fabricated)
 	// for a hosted env that has not been deployed.
-	Destination   string                              `json:"destination,omitempty"`
-	Endpoint      string                              `json:"endpoint,omitempty"`
-	EnvironmentID string                              `json:"environment_id,omitempty"`
-	Verdict       string                              `json:"verdict,omitempty"`
-	Workloads     []deploytarget.HostedWorkloadStatus `json:"workloads,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	// ControlPlaneKind is "local" | "persistent" for an env that declares
+	// control_plane (see env_destination.go); omitted otherwise.
+	ControlPlaneKind string                              `json:"control_plane_kind,omitempty"`
+	Endpoint         string                              `json:"endpoint,omitempty"`
+	EnvironmentID    string                              `json:"environment_id,omitempty"`
+	Verdict          string                              `json:"verdict,omitempty"`
+	Workloads        []deploytarget.HostedWorkloadStatus `json:"workloads,omitempty"`
 }
 
 // topologyTally counts image cells by state across every environment, so a
@@ -647,6 +650,7 @@ func buildTopologyEnvRow(
 		// must not also blank the destination badge.
 		dest := opts.Destinations(ctx, projectDir, envName)
 		row.Destination, row.Endpoint, row.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
+		row.ControlPlaneKind = dest.ControlPlaneKind
 		row.Verdict, row.Workloads = dest.Verdict, dest.Workloads
 		if dest.Note != "" {
 			row.Note = dest.Note

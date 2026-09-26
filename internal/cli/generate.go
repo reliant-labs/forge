@@ -970,7 +970,10 @@ func goBuildValidateFixHint(errOutput string) string {
 	// plugin emits — the pattern is forward-compatible without a
 	// growing per-constant allowlist).
 	if strings.Contains(errOutput, "undefined: orm.Type") {
-		return "forge/pkg pin is older than the codegen plugin (orm.Type* not exported). Run `go get github.com/reliant-labs/forge/pkg@latest && go mod tidy` in BOTH the project root and gen/ to bump the pin, then re-run 'forge generate'."
+		// The library is github.com/reliant-labs/forge — forge/pkg is a package
+		// prefix inside it. `go get .../forge/pkg@latest` resolves the RETIRED
+		// forge/pkg module instead, which makes every forge/pkg/* import ambiguous.
+		return "forge/pkg pin is older than the codegen plugin (orm.Type* not exported). Run `go get github.com/reliant-labs/forge@latest && go mod tidy` in BOTH the project root and gen/ to bump the pin, then re-run 'forge generate'."
 	}
 	if strings.Contains(errOutput, "pkg/config") {
 		return "ensure proto/config/ has annotated config fields and re-run 'forge generate'"

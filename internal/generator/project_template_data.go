@@ -77,11 +77,12 @@ type projectTemplateData struct {
 	// input shape; the upgrade lane reads the live forge.yaml api.rest value.
 	RESTEnabled bool
 	// ForgeVersion is the forge version go.mod.tmpl and gen-go.mod.tmpl pin
-	// (`require github.com/reliant-labs/forge <version>`, no replace). EMPTY
-	// when this binary is not proxy-resolvable (a local or dirty build); both
-	// templates then omit the require entirely rather than pin a version that
-	// cannot satisfy the code being generated — see resolveForgeVersion in
-	// project_pkgdep.go.
+	// (`require github.com/reliant-labs/forge <version>`, no replace): this
+	// binary's version when a proxy serves it, else the newest published
+	// release its source descends from (a dev build is bridged to its checkout
+	// by go.work). Never empty in practice — an empty require lets
+	// `go mod tidy` resolve forge/pkg/* to the retired forge/pkg module; see
+	// resolveForgeVersion in project_pkgdep.go.
 	// Populated by forScaffold only (go.mod is not an upgrade-managed file).
 	ForgeVersion string
 	// VersionVar mirrors forge.yaml build.version_var. The Dockerfile
@@ -233,8 +234,8 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
 		ConfigFields:           codegen.DefaultConfigFieldNames(),
 		// forge/pkg is a published module — pin its version, no replace, no
-		// vendoring. resolveForgeVersion uses this binary's release stamp
-		// or the latest published tag.
+		// vendoring. resolveForgeVersion uses this binary's proxy-resolvable
+		// version, or the published release its source descends from.
 		ForgeVersion: resolveForgeVersion(),
 		// REST is off at scaffold time; users opt-in post-scaffold by
 		// editing forge.yaml's `api.rest:` and re-running `forge generate`

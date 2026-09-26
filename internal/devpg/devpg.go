@@ -174,7 +174,7 @@ func (e *MismatchError) Error() string {
 			"forge stops here instead.\n"+
 			"\n"+
 			"Fix — make the two agree (pick one):\n"+
-			"  * point the DSN at compose:  forge secret set dev DATABASE_URL (port %s)\n"+
+			"  * point the DSN at compose:  forge secret set --env dev DATABASE_URL (port %s)\n"+
 			"  * point compose at the DSN:  re-run with %s=%s\n",
 		e.DSNPort, e.ComposePort, e.DSNPort, db, e.ComposePort, PortEnv, e.DSNPort)
 }

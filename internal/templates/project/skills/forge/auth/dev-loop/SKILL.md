@@ -69,7 +69,7 @@ Pinning a dev port is still available if you want a stable URL — set `port: <n
 
 No IdP, no container, **and no sign-in flow**. Appropriate for `curl`-ing an RPC or a scripted check; not appropriate for anything with a browser. The token carries whatever claims you typed, so it never exercises the claim shape your real issuer produces.
 
-Set `jwt_signing_method: "HS256"` in `deploy/kcl/dev/config.k` and a `jwt_secret` in the env's secret store (`forge secret set dev JWT_SECRET`), then sign with the same secret:
+Set `jwt_signing_method: "HS256"` in `deploy/kcl/dev/config.k` and a `jwt_secret` in the env's secret store (`forge secret set --env dev JWT_SECRET`), then sign with the same secret:
 
 ```go
 // go run ./tmp-token — delete it afterwards; never commit a signer.

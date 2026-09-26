@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -59,6 +60,10 @@ registry, platform, image_tag, supabase URL / JWT issuer) are replaced
 with REPLACE_ME_* placeholders carrying inline 'check:' guidance, so a
 knob you forget to set is a visible author-time error rather than a value
 silently inherited from the wrong environment.
+
+A hosted env's forge.ControlPlane endpoint is not copied either: the new
+env falls back to the declaration's default, Reliant cloud, with a comment
+naming the template's value. Set it only to target another control plane.
 
 The template env is auto-selected (a cloud-shaped sibling is preferred)
 or chosen explicitly with --from. After filling the placeholders, run
@@ -303,10 +308,76 @@ func transformEnvFile(body, template, name string) string {
 
 	lines := strings.Split(body, "\n")
 	out := make([]string, 0, len(lines)+8)
+	var cp controlPlaneScan
 	for _, line := range lines {
+		if rewritten, ok := cp.rewrite(line, template); ok {
+			out = append(out, rewritten...)
+			continue
+		}
 		out = append(out, transformLine(line, template, name, tIdent, nIdent)...)
 	}
 	return strings.Join(out, "\n")
+}
+
+// controlPlaneScan drops a copied `endpoint = "…"` out of a
+// `forge.ControlPlane { … }` block, so the derived env inherits the
+// declaration's DEFAULT — Reliant cloud — rather than the template env's
+// control plane.
+//
+// This knob differs from the REPLACE_ME_* ones in two ways. It has a safe,
+// working default, so the right derivation is to fall back to it, not to
+// leave a placeholder. And it is block-scoped: `endpoint` is too common a
+// field name to rewrite on sight, so the scan tracks brace depth and touches
+// it only inside a ControlPlane block. Copying it verbatim is how a derived
+// env silently talks to a sibling's control plane — a local dev one
+// (http://127.0.0.1:8090) included.
+type controlPlaneScan struct{ depth int }
+
+// rewrite returns the replacement lines for one source line when it carries
+// a ControlPlane endpoint, and false when the line should take the normal
+// per-line transform.
+func (s *controlPlaneScan) rewrite(line, template string) ([]string, bool) {
+	indent := leadingWhitespace(line)
+	if s.depth == 0 {
+		loc := controlPlaneOpenRe.FindStringIndex(line)
+		if loc == nil {
+			return nil, false
+		}
+		rest := line[loc[1]:]
+		depth := 1 + strings.Count(rest, "{") - strings.Count(rest, "}")
+		if depth > 0 {
+			// A multi-line block opens here; its endpoint line, if any, follows.
+			s.depth = depth
+			return nil, false
+		}
+		// One-line block: forge.ControlPlane {endpoint = "…", token_env = "…"}.
+		m := controlPlaneInlineEndpointRe.FindStringSubmatch(rest)
+		if m == nil {
+			return nil, false
+		}
+		kept := line[:loc[1]] + controlPlaneInlineEndpointRe.ReplaceAllString(rest, "")
+		return append(controlPlaneNote(indent, template, m[1]), kept), true
+	}
+	s.depth += strings.Count(line, "{") - strings.Count(line, "}")
+	if strings.ContainsAny(line, "{}") {
+		return nil, false
+	}
+	if m := controlPlaneEndpointRe.FindStringSubmatch(line); m != nil {
+		return controlPlaneNote(indent, template, m[1]), true
+	}
+	return nil, false
+}
+
+// controlPlaneNote is the guidance left where the copied endpoint was.
+func controlPlaneNote(indent, template, endpoint string) []string {
+	if strings.TrimRight(endpoint, "/") == cloud.DefaultEndpoint {
+		return []string{fmt.Sprintf("%s# endpoint omitted: Reliant cloud is forge.ControlPlane's default (the %s env spelled it out).", indent, template)}
+	}
+	return []string{
+		fmt.Sprintf("%s# endpoint omitted, so this env uses Reliant cloud (forge.ControlPlane's default).", indent),
+		fmt.Sprintf("%s#   The %s env names %q; copying it would point this env at %s's control plane.", indent, template, endpoint, template),
+		fmt.Sprintf("%s#   Set endpoint here only if this env targets a different control plane on purpose.", indent),
+	}
 }
 
 // identSegment maps an env name to the identifier segment forge envs use in
@@ -415,6 +486,12 @@ var (
 	platformAssignRe = regexp.MustCompile(`^\s*platform\s*=\s*"[^"]*"`)
 	// _supabase_url / _supabase_jwt_issuer = "<value>".
 	supabaseAssignRe = regexp.MustCompile(`^\s*(_supabase_url|_supabase_jwt_issuer)\s*=\s*"[^"]*"`)
+	// The opening of a forge.ControlPlane block, and its endpoint field —
+	// on its own line, or inline in a one-line block (with the separator
+	// after it, so dropping it leaves the remaining fields well-formed).
+	controlPlaneOpenRe           = regexp.MustCompile(`forge\.ControlPlane\s*\{`)
+	controlPlaneEndpointRe       = regexp.MustCompile(`^\s*endpoint\s*=\s*"([^"]*)"`)
+	controlPlaneInlineEndpointRe = regexp.MustCompile(`endpoint\s*=\s*"([^"]*)"\s*,?\s*`)
 )
 
 func leadingWhitespace(line string) string {

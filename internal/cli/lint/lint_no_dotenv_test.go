@@ -2,6 +2,7 @@ package lint
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,5 +120,46 @@ func TestNoDotenvLint_JSONFindings(t *testing.T) {
 		if f.Severity != "error" {
 			t.Errorf("severity = %q, want error", f.Severity)
 		}
+	}
+}
+
+// A dotenv inside a gitignored DIRECTORY (build output, a tool cache) is not
+// the project's source and must not fail the lint. A dotenv ignored only by
+// its own name is the untracked dotenv the lint exists for, and a tracked one
+// is in version control — both are still reported.
+func TestNoDotenvLint_RespectsGitignoredDirectories(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("tmp/\n.cache\n.env\nfixtures/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeDotenvTestFile(t, filepath.Join(root, "tmp", "run", ".env"))           // ignored dir → skipped
+	writeDotenvTestFile(t, filepath.Join(root, ".cache", "tool", ".env.local")) // ignored dir → skipped
+	writeDotenvTestFile(t, filepath.Join(root, ".env"))                         // ignored by NAME → reported
+	writeDotenvTestFile(t, filepath.Join(root, "fixtures", ".env.test"))        // tracked despite ignore → reported
+	writeDotenvTestFile(t, filepath.Join(root, "web", ".env.local"))            // not ignored → reported
+	run("add", "-f", "fixtures/.env.test")
+
+	found, err := findDotenvFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range found {
+		got = append(got, filepath.ToSlash(f.Path))
+	}
+	want := []string{".env", "fixtures/.env.test", "web/.env.local"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("findings = %v, want %v", got, want)
 	}
 }

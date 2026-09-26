@@ -6,6 +6,14 @@
 // has no equivalent hook, so the receiver is an ordinary route handler that
 // refuses to do anything in production.
 //
+// Why the folder is spelled `%5F_forge`: the App Router treats any folder
+// whose name starts with `_` as PRIVATE — excluded from routing — so a
+// literal `src/app/__forge/log/route.ts` compiles cleanly and then answers
+// 404 to every post, silently dropping every browser line. `%5F` is the
+// URL-encoded underscore, which is Next's documented escape for a URL
+// segment that must begin with one: this folder serves `/__forge/log`,
+// the path installDevLogging() posts to.
+//
 // It accepts the log lines that @reliantlabs/forge-web-runtime's
 // installDevLogging() posts and prints them to the dev server's stdout, where
 // `forge env up` is already tee-ing them to:

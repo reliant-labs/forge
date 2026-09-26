@@ -33,10 +33,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/robfig/cron/v3"
 	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
@@ -668,6 +670,11 @@ func runService(f *factory.Factory, name string, resume, force bool, batch *serv
 	var (
 		handlerDirPreexisted bool
 		protoDirPreexisted   bool
+		// genDirs are the buf output dirs for this service
+		// (<out>/services/<pkg>, one per buf.gen.yaml plugin `out:`) that did
+		// NOT exist before the scaffold — the generated stubs the pipeline
+		// writes before it validates, and so must also unwind.
+		genDirs []string
 	)
 	return scaffoldComponent(componentSpec{
 		name:     name,
@@ -699,6 +706,7 @@ func runService(f *factory.Factory, name string, resume, force bool, batch *serv
 			if _, err := os.Stat(filepath.Join(root, "proto", "services", servicePkg)); err == nil {
 				protoDirPreexisted = true
 			}
+			genDirs = freshGeneratedServiceDirs(root, servicePkg)
 			return nil
 		},
 		checkConflict: func(inv codegen.Inventory, name, ctxLabel string) error {
@@ -752,7 +760,7 @@ func runService(f *factory.Factory, name string, resume, force bool, batch *serv
 			// a re-run over a manual edit) is preserved.
 			batch.rollbacks = append(batch.rollbacks, func() {
 				if !exists && !resume && !force {
-					rollbackServiceScaffold(p.root, servicePkg, handlerDirPreexisted, protoDirPreexisted)
+					rollbackServiceScaffold(p.root, servicePkg, handlerDirPreexisted, protoDirPreexisted, genDirs)
 				}
 			})
 
@@ -810,6 +818,7 @@ func finishService(f *factory.Factory, p postScaffoldParams, name string) error 
 	// ships. Append the constructor (no-op when already wired; prints the
 	// manual line when main.go is not in a shape forge recognizes).
 	wireServiceIntoTree(p.cfg, p.root, name)
+	reportPendingServiceMount(p.cfg, p.root, name)
 
 	// Registration: pkg/app/services.go is user-owned — forge never edits it.
 	// When the file predates this service (the usual add-flow: the registry
@@ -835,6 +844,40 @@ func finishService(f *factory.Factory, p postScaffoldParams, name string) error 
 	return nil
 }
 
+// reportPendingServiceMount prints the one line a project with a HAND-OWNED
+// mount surface must add for the new service to be servable on its own.
+//
+// Such a project (control-plane disowned mounts_services_gen.go) is the one
+// place forge cannot emit `(*Components).Mount<Svc>` itself. Generate then
+// writes a placeholder mount reference that compiles — the scaffold succeeds —
+// and this names the exact method to add, so the gap is a printed instruction
+// instead of a build failure that rolled the whole scaffold back.
+func reportPendingServiceMount(cfg *config.ProjectConfig, root, name string) {
+	runtime, _, emitted := codegen.CmdServiceCommand(name)
+	if !emitted {
+		return
+	}
+	bin := binaryName(cfg, root)
+	method := codegen.PendingServiceMount(root, bin, runtime)
+	if method == "" {
+		return
+	}
+	fmt.Printf(`
+⚠️  internal/app's mount surface is yours (mounts_services_gen.go is disowned), so forge
+   cannot add the %q service's mount method. Until you add it, `+"`%s %s`"+` exits with
+   this instruction; every other command, including `+"`%s server`"+`'s MountAll, is unaffected.
+   Add next to the other Mount<Svc> methods in internal/app:
+
+       func (c *Components) %s(mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {
+           c.%s.Register(mux, opts...)
+           c.%s.RegisterHTTP(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))
+           return []string{ /* <svc>v1connect.<Svc>ServiceName */ }
+       }
+
+   (and, if compose.go is also yours, construct c.%s in NewComponents). Then re-run `+"`forge generate`"+`.
+`, runtime, bin, runtime, bin, method, strings.TrimPrefix(method, "Mount"), strings.TrimPrefix(method, "Mount"), strings.TrimPrefix(method, "Mount"))
+}
+
 // rollbackServiceScaffold removes the on-disk files a FAILED `forge scaffold
 // service` scaffolded — the handler dir (internal/handlers/<pkg>) and the
 // proto tree (proto/services/<pkg>) — so a validation/pipeline failure leaves
@@ -844,7 +887,7 @@ func finishService(f *factory.Factory, p postScaffoldParams, name string) error 
 // --force run or a re-run over manual edits never blows away real work.
 // Best-effort: removal errors are surfaced as a warning, never masking the
 // underlying pipeline error the caller is about to return.
-func rollbackServiceScaffold(root, servicePkg string, handlerPreexisted, protoPreexisted bool) {
+func rollbackServiceScaffold(root, servicePkg string, handlerPreexisted, protoPreexisted bool, genDirs []string) {
 	fmt.Fprintf(os.Stderr, "\n↩️  Rolling back scaffold for service %q (validation failed)...\n", servicePkg)
 	remove := func(dir string, preexisted bool) {
 		if preexisted {
@@ -858,6 +901,64 @@ func rollbackServiceScaffold(root, servicePkg string, handlerPreexisted, protoPr
 	}
 	remove(filepath.Join(root, "internal", "handlers", servicePkg), handlerPreexisted)
 	remove(filepath.Join(root, "proto", "services", servicePkg), protoPreexisted)
+	// The buf stubs (gen/services/<pkg>, a frontend's src/gen/services/<pkg>).
+	// The pipeline writes them BEFORE it validates, and they are typically
+	// gitignored — so leaving them made the failed service invisible to
+	// `git status` while it still compiled into the next build.
+	for _, dir := range genDirs {
+		remove(dir, false)
+	}
+}
+
+// freshGeneratedServiceDirs returns, for every plugin `out:` in the project's
+// buf.gen.yaml, the directory buf will generate this service's stubs into
+// (<out>/services/<pkg>) — only those that do not exist yet, so a rollback
+// removes exactly what this scaffold created. A missing or unreadable
+// buf.gen.yaml falls back to the scaffold default, gen/.
+func freshGeneratedServiceDirs(root, servicePkg string) []string {
+	outs := bufGenOutDirs(root)
+	if len(outs) == 0 {
+		outs = []string{"gen"}
+	}
+	var fresh []string
+	for _, out := range outs {
+		dir := filepath.Join(root, filepath.FromSlash(out), "services", servicePkg)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			fresh = append(fresh, dir)
+		}
+	}
+	return fresh
+}
+
+// bufGenOutDirs reads the distinct, project-relative plugin `out:` dirs from
+// buf.gen.yaml. Anything that is absolute or escapes the project is dropped:
+// a rollback must never reach outside the tree.
+func bufGenOutDirs(root string) []string {
+	raw, err := os.ReadFile(filepath.Join(root, "buf.gen.yaml"))
+	if err != nil {
+		return nil
+	}
+	var spec struct {
+		Plugins []struct {
+			Out string `yaml:"out"`
+		} `yaml:"plugins"`
+	}
+	if err := yaml.Unmarshal(raw, &spec); err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var outs []string
+	for _, pl := range spec.Plugins {
+		out := filepath.Clean(filepath.FromSlash(strings.TrimSpace(pl.Out)))
+		if out == "." || out == "" || filepath.IsAbs(out) || out == ".." || strings.HasPrefix(out, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if !seen[out] {
+			seen[out] = true
+			outs = append(outs, filepath.ToSlash(out))
+		}
+	}
+	return outs
 }
 
 // --- scaffold package (alias for package new) ---
@@ -1317,6 +1418,8 @@ one after it — a purpose-built frontend starts by deleting most of what was
 just written. Naming routes makes the set an allowlist, so entities added
 later do not silently appear in this frontend. The value is persisted as
 frontends[].routes and honored by every subsequent forge generate run.
+--routes none generates no CRUD pages at all (a marketing site, or a
+frontend whose screens are all hand-written).
 
 --base-path mounts the frontend under a URL prefix (e.g. /admin behind a
 reverse proxy that blends several apps on one host). It is persisted as
@@ -1357,7 +1460,7 @@ Example:
 	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: standalone (default), static, or server. Only applies to --kind web.")
 	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
 	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in flow for this frontend. Only `native` (the default) is scaffolded: your own form POSTs credentials to your own API and gets an HttpOnly session cookie; the server runs the OIDC flow (internal/app/login_broker.go) and the browser never contacts the IdP.")
-	cmd.Flags().StringSliceVar(&routes, "routes", nil, "Only generate CRUD pages for these entity route slugs (e.g. --routes users,usage-events). Default (unset) generates a page set for EVERY entity. Persisted as frontends[].routes and honored by every later generate run.")
+	cmd.Flags().StringSliceVar(&routes, "routes", nil, "Only generate CRUD pages for these entity route slugs (e.g. --routes users,usage-events), or `--routes none` for no generated pages at all. Default (unset) generates a page set for EVERY entity. Persisted as frontends[].routes and honored by every later generate run.")
 
 	return cmd
 }
@@ -1426,6 +1529,46 @@ func validateFrontendFlags(ctxLabel, kind, output, basePath, authMode string) (f
 	return frontendFlags{kind: kind, output: output, basePath: basePath, authMode: authMode}, nil
 }
 
+// checkFrontendNameConflict refuses a frontend name that is already taken.
+//
+// Two names conflict when they CANONICALIZE the same, not only when
+// they are spelled the same. Everything forge derives from a frontend
+// name — the config proto file (proto/config/v1/<name>_config.proto),
+// the dev-IdP KCL fragment, the Go package — goes through
+// naming.GoPackage, which folds hyphens to underscores. So "foo-bar"
+// and "foo_bar" are distinct in forge.yaml but name ONE config proto.
+//
+// Silently, too: WriteFrontendConfigProto refuses to overwrite an
+// existing file (it holds an issuer and client id it cannot
+// reconstruct), so scaffolding the second frontend would succeed while
+// quietly binding it to the FIRST one's config — a frontend reading
+// another frontend's OIDC client id, discovered at runtime as a login
+// that redirects to the wrong app. Refusing at the point the name is
+// chosen is the only place this is still cheap to fix.
+func checkFrontendNameConflict(ctxLabel, name string, existing []config.FrontendConfig) error {
+	canonical := naming.GoPackage(name)
+	for _, frontend := range existing {
+		if frontend.Name == name {
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("frontend %q already exists in the project", name),
+				"",
+				"pick a different name, or remove the existing frontend first")
+		}
+		if naming.GoPackage(frontend.Name) == canonical {
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("frontend %q collides with existing frontend %q: both canonicalize to %q",
+					name, frontend.Name, canonical),
+				fmt.Sprintf("forge derives generated names from the canonical form, so both frontends would "+
+					"claim proto/config/v1/%s_config.proto and deploy/kcl/dev/identity_%s_gen.k",
+					canonical, canonical),
+				fmt.Sprintf("pick a name that canonicalizes differently (hyphens and underscores are "+
+					"equivalent here — %q and %q are the same name to forge), or remove the existing frontend first",
+					name, frontend.Name))
+		}
+	}
+	return nil
+}
+
 func runFrontend(ctx context.Context, name string, port int, kind, output, basePath, authMode string, routes []string) error {
 	ctxLabel := fmt.Sprintf("forge scaffold frontend %s", name)
 	if err := validateFrontendName(name); err != nil {
@@ -1446,47 +1589,19 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	if err := requireServiceKind(root, "frontend"); err != nil {
 		return err
 	}
+	// React Native has no browser route guard to omit — it ships the mock
+	// auth provider either way — so the public/gated choice is web-only.
+	if kind != "mobile" {
+		authMode = resolveFrontendAuthMode(root, authMode)
+	}
 
 	cfg, _, err := readProject(root, ctxLabel)
 	if err != nil {
 		return err
 	}
 
-	// Check for name conflict.
-	//
-	// Two names conflict when they CANONICALIZE the same, not only when
-	// they are spelled the same. Everything forge derives from a frontend
-	// name — the config proto file (proto/config/v1/<name>_config.proto),
-	// the dev-IdP KCL fragment, the Go package — goes through
-	// naming.GoPackage, which folds hyphens to underscores. So "foo-bar"
-	// and "foo_bar" are distinct in forge.yaml but name ONE config proto.
-	//
-	// Silently, too: WriteFrontendConfigProto refuses to overwrite an
-	// existing file (it holds an issuer and client id it cannot
-	// reconstruct), so scaffolding the second frontend would succeed while
-	// quietly binding it to the FIRST one's config — a frontend reading
-	// another frontend's OIDC client id, discovered at runtime as a login
-	// that redirects to the wrong app. Refusing at the point the name is
-	// chosen is the only place this is still cheap to fix.
-	canonical := naming.GoPackage(name)
-	for _, frontend := range cfg.Frontends {
-		if frontend.Name == name {
-			return cliutil.UserErr(ctxLabel,
-				fmt.Sprintf("frontend %q already exists in the project", name),
-				"",
-				"pick a different name, or remove the existing frontend first")
-		}
-		if naming.GoPackage(frontend.Name) == canonical {
-			return cliutil.UserErr(ctxLabel,
-				fmt.Sprintf("frontend %q collides with existing frontend %q: both canonicalize to %q",
-					name, frontend.Name, canonical),
-				fmt.Sprintf("forge derives generated names from the canonical form, so both frontends would "+
-					"claim proto/config/v1/%s_config.proto and deploy/kcl/dev/identity_%s_gen.k",
-					canonical, canonical),
-				fmt.Sprintf("pick a name that canonicalizes differently (hyphens and underscores are "+
-					"equivalent here — %q and %q are the same name to forge), or remove the existing frontend first",
-					name, frontend.Name))
-		}
+	if err := checkFrontendNameConflict(ctxLabel, name, cfg.Frontends); err != nil {
+		return err
 	}
 
 	// Port 0 = EPHEMERAL, and it stays that way. `forge project new` already
@@ -1570,6 +1685,7 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		Output:      output,
 		BasePath:    basePath,
 		TypedConfig: typedConfig,
+		Public:      authMode == config.AuthModeNone,
 	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
@@ -1625,6 +1741,11 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		return fmt.Errorf("update project config: %w", err)
 	}
 
+	// Declare it where the environments are declared, exactly as
+	// `forge project new --frontend` does: without this the dev loop has no
+	// KCL-resolved port for it and `forge env up` falls back to a literal.
+	declareFrontendInKCL(root, cfg.Name, name, port)
+
 	// Flip features.frontend on so subsequent `forge generate` runs
 	// pick up the frontend codegen pass. Projects scaffolded with
 	// `forge project new --kind service` (no --frontend) leave this field
@@ -1678,6 +1799,12 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	generator.ReconcileFrontendTsconfigPeers(root)
 
 	fmt.Printf("\n✅ Frontend '%s' added successfully!\n", name)
+	if authMode == config.AuthModeNone {
+		fmt.Printf("\n🌐 '%s' is a PUBLIC frontend (auth_mode: none): this project's dev environment declares no\n"+
+			"   identity provider, so no sign-in gate was scaffolded — every page renders for every visitor.\n"+
+			"   The API's own auth is unchanged. To gate it later: `forge skill load auth/frontend`.\n", name)
+		return nil
+	}
 	reportFrontendAuthNextStep(root)
 
 	return nil
@@ -1987,12 +2114,6 @@ type frontendEntryInput struct {
 	Routes       []string
 }
 
-// defaultFrontendDevPort is the dev-server port a scaffolded frontend gets
-// when the user names none. It matches the base the dev environment's KCL
-// allocates from, so the origin the issuer is told and the origin the dev
-// server binds are the same number. See buildFrontendEntry.
-const defaultFrontendDevPort = 3000
-
 // buildFrontendEntry assembles the forge.yaml entry for a newly scaffolded
 // frontend.
 //
@@ -2001,28 +2122,17 @@ const defaultFrontendDevPort = 3000
 // without every existing forge.yaml pinning the old value. That is why each
 // assignment below is conditional rather than unconditional.
 func buildFrontendEntry(in frontendEntryInput) config.FrontendConfig {
+	// NO default port here, and that is the fix for a real outage of the dev
+	// loop. The frontend's dev port is declared in deploy/kcl/dev/main.k
+	// (declareFrontendInKCL writes `plugin.resolve_port(..., 3000)` there),
+	// and the render is what `forge env up` launches and preflights. This
+	// used to also write `port: 3000` into forge.yaml — a second, literal
+	// copy of the number that nothing kept in step with the resolved one, so
+	// on any machine where 3000 was taken the preflight probed the stale
+	// literal and refused to start. forge.yaml carries a port only when the
+	// user pinned one with --port, which the KCL declaration then repeats
+	// verbatim.
 	port := in.Port
-	if port == 0 {
-		// A STABLE default, not an ephemeral one.
-		//
-		// Port 0 means "allocate a free OS port at launch"
-		// (resolveEphemeralFrontendPorts), which never collides and is a
-		// fine default for a frontend nothing else has to find. It stops
-		// being fine the moment something OUTSIDE the dev loop is told the
-		// origin — and with the API-only sign-in flow something is: the
-		// issuer's `idp_login_uri` is where it redirects the authorization
-		// request, and it is compared literally. A frontend on a different
-		// port every run means that redirect lands on whatever else happens
-		// to be listening, which presents as "sign-in took me to some other
-		// app" rather than as a port problem.
-		//
-		// The dev env's KCL allocates the matching number deterministically
-		// (`plugin.allocate_port(3000, worktree)`), so a second worktree of
-		// the same project gets its own stable block rather than colliding.
-		// Set `port:` in forge.yaml to pin a different one; the launcher
-		// honors an explicit value verbatim.
-		port = defaultFrontendDevPort
-	}
 	fe := config.FrontendConfig{
 		Name: in.Name,
 		Type: in.FrontendType,
@@ -2042,6 +2152,11 @@ func buildFrontendEntry(in frontendEntryInput) config.FrontendConfig {
 	// frontend's route surface would depend on which command last touched it.
 	if len(in.Routes) > 0 {
 		fe.Routes = normalizeRouteSlugs(in.Routes)
+	}
+	// auth_mode persists whenever the scaffold decided it, so a public
+	// frontend is visibly public in forge.yaml rather than silently so.
+	if in.AuthMode != "" {
+		fe.AuthMode = in.AuthMode
 	}
 	return fe
 }
@@ -2081,11 +2196,56 @@ func frontendTypedConfigFor(root, frontendName string) generator.FrontendTypedCo
 // to the app's own API, and the server runs the OIDC flow against the issuer.
 func validateAuthMode(ctxLabel, authMode string) error {
 	switch authMode {
-	case "", config.AuthModeNative:
+	case "", config.AuthModeNative, config.AuthModeNone:
 		return nil
 	default:
 		return cliutil.UserErr(ctxLabel,
 			fmt.Sprintf("invalid --auth-mode %q", authMode), "",
-			"pass --auth-mode native (the default, and the only mode forge scaffolds)")
+			"pass --auth-mode native (sign-in gated) or none (public frontend, no sign-in gate)")
 	}
+}
+
+// devIdentityProviderRE matches the dev environment's IdP declaration: the
+// HostInfra engine forge supervises as the dev identity provider. It is the
+// same fact the scaffolded dev/main.k gates its whole sign-in wiring on
+// (the idp workload, IDP_BASE, the idp-provision job's login URI).
+var devIdentityProviderRE = regexp.MustCompile(`(?m)^[^#\n]*engine\s*=\s*"zitadel"`)
+
+// projectDeclaresDevIDP reports whether deploy/kcl/dev/main.k declares a dev
+// identity provider. A project created without --frontend does not: its dev
+// env has no IdP workload, so nothing can complete a sign-in.
+func projectDeclaresDevIDP(root string) bool {
+	b, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", "dev", "main.k"))
+	if err != nil {
+		return false
+	}
+	return devIdentityProviderRE.Match(b)
+}
+
+// resolveFrontendAuthMode picks the sign-in mode a newly scaffolded frontend
+// gets when --auth-mode was not passed.
+//
+// The default follows what the project can actually DO. With a dev IdP
+// declared, "native": the scaffold's sign-in form has an issuer behind it and
+// the route guard protects something. Without one, "none" — a public
+// frontend. A guard in a project with no issuer is not a safer default, it is
+// a broken one: every page redirects to /auth/sign-in, and the form there
+// posts to a login broker with no identity provider to broker to, so the app
+// is unreachable by construction. The backend's own auth is independent of
+// this choice — an RPC that requires a caller still answers 401 — so a
+// public frontend never widens what the API accepts.
+//
+// An explicit --auth-mode always wins; native without an IdP is allowed (the
+// user may be about to point it at a hosted issuer) but called out.
+func resolveFrontendAuthMode(root, requested string) string {
+	if requested != "" {
+		if requested == config.AuthModeNative && !projectDeclaresDevIDP(root) {
+			fmt.Println("⚠️  --auth-mode native: deploy/kcl/dev/main.k declares no identity provider, so the sign-in gate has no issuer to sign in against until you configure one (`forge skill load auth/dev-loop`).")
+		}
+		return requested
+	}
+	if projectDeclaresDevIDP(root) {
+		return config.AuthModeNative
+	}
+	return config.AuthModeNone
 }

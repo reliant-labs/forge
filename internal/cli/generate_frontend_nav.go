@@ -56,11 +56,14 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			continue
 		}
 
+		// Only the routes THIS frontend has — `routes:` narrows pages, so it
+		// must narrow the links to them too.
+		fePages := filterNavPagesForFrontend(pages, fe, navSlugSet(pages))
 		data := templates.FrontendTemplateData{
 			FrontendName:   fe.Name,
 			ProjectName:    cfg.Name,
-			Pages:          pages,
-			NavHookImports: buildNavHookImports(pages),
+			Pages:          fePages,
+			NavHookImports: buildNavHookImports(fePages),
 			BasePath:       strings.TrimSpace(fe.BasePath),
 			APIURL:         devAPIURL(cfg, projectDir),
 		}
@@ -147,6 +150,12 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			warnIfNextConfigIgnoresBasePath(projectDir, feDir, fe.Name, data.BasePath)
 		}
 
+		// Older scaffolds put the dev-log receiver in a `_`-prefixed (private,
+		// never-routed) App Router folder; move it to the spelling that serves.
+		if err := relocatePrivateDevLogRoute(projectDir, feDir, fe.Name, cs); err != nil {
+			return fmt.Errorf("frontend %s: %w", fe.Name, err)
+		}
+
 		// ── Scaffold ("yours"): nav.tsx + dashboard.tsx ──
 		//
 		// These are LAYOUTS, not projections. Tier-1 is for a file with a
@@ -186,7 +195,7 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		// worlds — forge stopped maintaining the file but never said so, and
 		// the route is only missing, never broken, so nothing else surfaces
 		// it. Name the routes and stop; editing is the user's call.
-		reportUnlinkedRoutes(projectDir, navRel, pages, fe.Name)
+		reportUnlinkedRoutes(projectDir, navRel, fePages, fe.Name)
 
 		// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
 		// Re-resolved every run so a project that moved on disk, or one
@@ -200,8 +209,8 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			return err
 		}
 
-		if len(pages) > 0 {
-			fmt.Printf("  ✅ Scaffolded nav.tsx + dashboard.tsx with %d page(s) for frontend %s (yours to edit)\n", len(pages), fe.Name)
+		if len(fePages) > 0 {
+			fmt.Printf("  ✅ Scaffolded nav.tsx + dashboard.tsx with %d page(s) for frontend %s (yours to edit)\n", len(fePages), fe.Name)
 		}
 	}
 
@@ -373,6 +382,16 @@ func emitScaffoldOnceIfMissing(projectDir, relPath, tmplPath string, data templa
 // stop. A regression here empties ALL_ROUTES silently (no error), dropping
 // every dashboard tile, so the match is pinned by
 // TestBuildNavPages_ControlPlaneEntitySet.
+// navSlugSet is the set of slugs a nav page list covers — the live-entity
+// set routeFilterFor checks declared routes against.
+func navSlugSet(pages []templates.NavPageData) map[string]bool {
+	out := make(map[string]bool, len(pages))
+	for _, p := range pages {
+		out[p.Slug] = true
+	}
+	return out
+}
+
 func buildNavPages(services []codegen.ServiceDef, entities []codegen.EntityDef) []templates.NavPageData {
 	entitySet := make(map[string]struct{}, len(entities))
 	for _, e := range entities {
@@ -563,7 +582,7 @@ func unlinkedRouteWarnings(cfg *config.ProjectConfig, projectDir string, service
 			continue
 		}
 		navRel := filepath.Join(feDir, "src", "components", "nav.tsx")
-		missing := missingNavRoutes(projectDir, navRel, pages)
+		missing := missingNavRoutes(projectDir, navRel, filterNavPagesForFrontend(pages, fe, navSlugSet(pages)))
 		if len(missing) == 0 {
 			continue
 		}

@@ -30,6 +30,17 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 	if rerr != nil || entities == nil || entities.ControlPlane == nil {
 		return false, nil
 	}
+	if isLocalControlPlaneEnv(entities) {
+		// A LOCAL env is not hosted: its control plane is only its secret
+		// store, and its workloads run here. `forge env up`'s deploy phase
+		// (renderToLaunch) continues down the ordinary path — compose,
+		// external, local clusters; a direct `forge env deploy` of it is
+		// refused BEFORE any RPC, because the platform never deploys to it.
+		if opts.purpose == renderToLaunch {
+			return false, nil
+		}
+		return true, refuseLocalEnvDeploy(envName)
+	}
 	if opts.frontendsOnly {
 		return true, fmt.Errorf("--frontends-only is not supported on hosted env %q", envName)
 	}
@@ -74,6 +85,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		return fmt.Errorf("env %q deploys to the control plane at %s: %w", envName, ep.URL, err)
 	}
 	client := hostedDeployClient(ep, cred)
+	ref := hostedEnvRefFor(envName, entities)
 
 	// The guard, stated for a hosted destination: the declared "context" is
 	// the endpoint. A consumer that keys its confirmation on where the bytes
@@ -86,7 +98,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	})
 	report.clearKubeContexts()
 	envID := ""
-	if id, lerr := deploytarget.LookupHostedEnvironment(ctx, client, envName); lerr == nil {
+	if id, lerr := deploytarget.LookupHostedEnvironment(ctx, client, ref.Project, envName); lerr == nil {
 		envID = id
 	} else if !errors.Is(lerr, deploytarget.ErrHostedEnvironmentNotFound) {
 		return lerr
@@ -98,7 +110,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		digests map[string]string
 	)
 	if !opts.rollback {
-		binding, bound, berr := hostedLedger(client, ep.URL).Bindings.Current(ctx, envName)
+		binding, bound, berr := hostedLedger(client, ep.URL, ref.Project, ref.Kind).Bindings.Current(ctx, envName)
 		if berr != nil {
 			return fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, ep.URL, berr)
 		}
@@ -120,7 +132,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	}
 	for i := range groups {
 		groups[i].DryRun = opts.dryRun
-		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Release: release, Digests: digests}
+		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Project: ref.Project, Release: release, Digests: digests}
 	}
 
 	registry := &deploytarget.Registry{}

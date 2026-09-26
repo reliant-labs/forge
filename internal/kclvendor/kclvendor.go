@@ -571,9 +571,21 @@ func Materialize(projectDir string, allowDowngrade bool) (changed bool, err erro
 	// `forge generate` and nowhere else, so without a recorded version a
 	// project could sit on an old copy and the only symptom would be a
 	// schema error that names the wrong cause.
+	//
+	// The stamp records WHICH FORGE'S MODULE THESE BYTES ARE — so it moves
+	// only when the bytes do. A refresh that changed nothing keeps the
+	// existing stamp. Rewriting it unconditionally re-pinned projects
+	// implicitly: a project whose stamp said v0.1.17 got a `+dirty` local
+	// build's version committed into it by a `forge generate` that changed
+	// no schema at all, and every developer's different build fought over
+	// the line. An unstamped copy is always stamped.
 	stampPath := filepath.Join(dst, StampFileName)
 	stamp := []byte(buildinfo.Version() + "\n")
-	if existing, rerr := os.ReadFile(stampPath); rerr != nil || !bytes.Equal(existing, stamp) {
+	existingStamp, stampErr := os.ReadFile(stampPath)
+	if stampErr == nil && !changed && len(bytes.TrimSpace(existingStamp)) > 0 {
+		return false, nil
+	}
+	if stampErr != nil || !bytes.Equal(existingStamp, stamp) {
 		if werr := os.WriteFile(stampPath, stamp, 0o644); werr != nil {
 			return changed, fmt.Errorf("write %s: %w", StampFileName, werr)
 		}
@@ -631,10 +643,14 @@ func EnsurePresent(projectDir string) (bool, error) {
 	return false, nil
 }
 
-// Stale reports whether <projectDir>/.forge-kcl was materialized by a
-// DIFFERENT forge version than the one running now, returning the
-// recorded version for the message. A vendor dir that is absent, or one
-// whose stamp matches, is not stale.
+// Stale reports whether <projectDir>/.forge-kcl differs from the KCL module
+// embedded in the running forge, returning the recorded version for the
+// message. A vendor dir that is absent is not stale.
+//
+// The answer is by CONTENT, not by version string: Materialize keeps the stamp
+// when a refresh changes no bytes, so two forge builds with the same module
+// legitimately leave a stamp that names the other one — and a render must not
+// nag about a copy that is exactly what this binary would write.
 //
 // An unstamped copy (materialized by a forge predating the stamp) counts
 // as stale with an empty version: it genuinely was written by another
@@ -648,5 +664,16 @@ func Stale(projectDir string) (stale bool, stampedVersion string) {
 		return true, ""
 	}
 	got := strings.TrimSpace(string(data))
-	return got != buildinfo.Version(), got
+	if got == buildinfo.Version() {
+		return false, got
+	}
+	want, err := embeddedModuleFiles()
+	if err != nil {
+		return true, got
+	}
+	differs, err := wouldChange(filepath.Join(projectDir, VendorDirName), want)
+	if err != nil {
+		return true, got
+	}
+	return differs, got
 }

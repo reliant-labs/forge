@@ -154,7 +154,7 @@ A bearer credential you own end to end: your table, your store, `forge/pkg/apike
 
 ## Dev mode
 
-Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in the env's secret store (`forge secret set dev JWT_SECRET`), or use the dev IdP, which `forge run` brings up as a host process for any project that declares a frontend. It is Zitadel, and its instance is DECLARED in `idp-steps.yaml` — `forge run` reproduces it, credential included.
+Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in the env's secret store (`forge secret set --env dev JWT_SECRET`), or use the dev IdP, which `forge run` brings up as a host process for any project that declares a frontend. It is Zitadel, and its instance is DECLARED in `idp-steps.yaml` — `forge run` reproduces it, credential included.
 
 Load `auth/dev-loop` before debugging a local 401: it covers the traps that are not your wiring — the dev IdP answers to ONE hostname (`localhost`, which is why its dev loop is `forge run`, not a containerized app), and an OIDC app registered with the default token type mints OPAQUE access tokens no JWKS can validate.
 

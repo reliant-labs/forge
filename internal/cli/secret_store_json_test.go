@@ -218,22 +218,19 @@ func TestSecretListJSONNothingDeclared(t *testing.T) {
 	}
 }
 
-// Exit-code parity: --json must fail exactly when text mode fails. Text mode's
-// only failure for list is an unrenderable / non-FileSecrets env.
+// Exit-code parity: --json must fail exactly when text mode fails. list
+// answers for every provider, so its only failure is an env that does not
+// render.
 func TestSecretListJSONExitParityOnBadEnv(t *testing.T) {
 	dir := t.TempDir()
-	fixturePath := filepath.Join(dir, "render.json")
-	if err := os.WriteFile(fixturePath, []byte(`{"services": []}`), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	t.Setenv("FORGE_KCL_RENDER_FIXTURE", fixturePath)
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", filepath.Join(dir, "does-not-exist.json"))
 
 	var textBuf, jsonBuf bytes.Buffer
 	textErr := runSecretList(context.Background(), "dev", &textBuf)
 	jsonErr := runSecretListJSON(context.Background(), "dev", &jsonBuf)
 
 	if textErr == nil {
-		t.Fatal("text mode accepted an env with no secret_provider")
+		t.Fatal("text mode accepted an env that does not render")
 	}
 	if jsonErr == nil {
 		t.Fatalf("--json accepted an env text mode rejected; exit codes diverge (out: %s)", jsonBuf.String())
@@ -254,6 +251,9 @@ func TestSecretListReportHasNoValueCarryingField(t *testing.T) {
 		"secrets": true, "inert": true, "missing": true, "missing_count": true,
 		"ok": true, "name": true, "present": true, "declared_by": true,
 		"workload": true, "kind": true, "secret_name": true, "secret_key": true,
+		// presence is an enum (set|missing|unknown), version a counter,
+		// verifiable a bool — none can carry a value.
+		"presence": true, "version": true, "verifiable": true,
 	}
 	for _, f := range jsonFieldNames(reflect.TypeOf(secretListReport{}), map[reflect.Type]bool{}) {
 		if !allowed[f] {

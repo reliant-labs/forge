@@ -76,72 +76,50 @@ func TestComposedBlocksWithCollidingLeafNamesStillProject(t *testing.T) {
 // simple-backend domains permanently equal. For this tier that is not a
 // cosmetic bug: the proto requires simple-backend's domain to be SEPARATE
 // from the api host's, because customer-deployed apps run untrusted code and
-// a shared parent domain puts the api's cookies in their reach. So the two
-// must be independently settable, and this test fails if they are ever fused.
+// a shared parent domain puts the api's cookies in their reach.
+//
+// Blocks are nested schemas now, so the two leaves keep their proto names
+// and are distinguished by the block that holds them.
 func TestCollidingLeavesAreDistinctSchemaFields(t *testing.T) {
 	fields := FlattenBlockLeaves(blockCollisionMessages(), "AppConfig")
 
-	var names []string
+	var paths []string
 	for _, f := range fields {
 		if f.EnvVar == "STATIC_SITE_BASE_DOMAIN" || f.EnvVar == "SIMPLE_BACKEND_BASE_DOMAIN" {
-			names = append(names, f.Name)
+			paths = append(paths, f.KCLPath())
 		}
 	}
-	if len(names) != 2 {
-		t.Fatalf("expected both base_domain leaves, got %v", names)
-	}
-	if names[0] == names[1] {
-		t.Fatalf("the two base_domain leaves projected to ONE schema field %q; "+
-			"static-site and simple-backend domains would be permanently equal, "+
-			"and this tier requires them to differ", names[0])
+	if len(paths) != 2 || paths[0] == paths[1] {
+		t.Fatalf("the two base_domain leaves must have distinct KCL paths, got %v", paths)
 	}
 
 	out, err := GenerateConfigKCL(fields, "proj")
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	for _, n := range names {
-		if !strings.Contains(out, "    "+n+":") {
-			t.Errorf("schema field %q not declared in the emitted schema", n)
-		}
-	}
-	// Each env var must read its OWN schema field, not share one.
-	for _, pair := range [][2]string{
-		{"STATIC_SITE_BASE_DOMAIN", names[0]},
-		{"SIMPLE_BACKEND_BASE_DOMAIN", names[1]},
+	for _, want := range []string{
+		"schema AppConfigStaticSite:",
+		"schema AppConfigSimpleBackend:",
+		"    static_site: AppConfigStaticSite = AppConfigStaticSite {}",
+		"    simple_backend: AppConfigSimpleBackend = AppConfigSimpleBackend {}",
+		`"STATIC_SITE_BASE_DOMAIN" = {value = c.static_site.base_domain}`,
+		`"SIMPLE_BACKEND_BASE_DOMAIN" = {value = c.simple_backend.base_domain}`,
 	} {
-		want := `"` + pair[0] + `" = {value = c.` + pair[1] + `}`
 		if !strings.Contains(out, want) {
-			t.Errorf("projection line %q missing; env var is not bound to its own field", want)
+			t.Errorf("projection missing %q:\n%s", want, out)
 		}
 	}
 }
 
-// TestNonCollidingLeavesKeepTheirBareNames pins that the disambiguation is
-// applied ONLY where it is needed.
-//
-// Every existing per-env config.k authors values by BARE leaf name
-// (`github_client_id = "..."`, `log_level = "debug"`). Qualifying every block
-// leaf unconditionally would be a cleaner rule and would silently invalidate
-// every one of those files at once — a KCL error per line, in files forge
-// does not own and cannot migrate. So the rule is deliberately narrow: a name
-// is qualified only when two blocks actually claim it, which is the only case
-// that was broken and the only case with no working spelling today.
-func TestNonCollidingLeavesKeepTheirBareNames(t *testing.T) {
-	fields := FlattenBlockLeaves(blockCollisionMessages(), "AppConfig")
-
-	byEnv := map[string]string{}
-	for _, f := range fields {
-		byEnv[f.EnvVar] = f.Name
-	}
-	if got := byEnv["STATIC_SITE_GCP_PROJECT"]; got != "gcp_project" {
-		t.Errorf("non-colliding leaf renamed to %q; existing config.k files author it as gcp_project", got)
-	}
-	if got := byEnv["SIMPLE_BACKEND_ALLOWED_IMAGE_REGISTRIES"]; got != "allowed_image_registries" {
-		t.Errorf("non-colliding leaf renamed to %q; want allowed_image_registries", got)
-	}
-	if got := byEnv["PORT"]; got != "port" {
-		t.Errorf("root scalar renamed to %q; want port", got)
+// TestBlockLeavesAreNeverRenamed pins that no leaf is renamed to dodge a
+// collision. The old flattening qualified a leaf only when another block
+// claimed the same name, so adding a field to one block could rename a field
+// in ANOTHER — silently invalidating every config.k line that authored it.
+func TestBlockLeavesAreNeverRenamed(t *testing.T) {
+	for _, f := range FlattenBlockLeaves(blockCollisionMessages(), "AppConfig") {
+		if strings.Contains(f.Name, "static_site_") || strings.Contains(f.Name, "simple_backend_") {
+			t.Errorf("leaf renamed to %q; block leaves keep their proto names", f.Name)
+		}
 	}
 }
 

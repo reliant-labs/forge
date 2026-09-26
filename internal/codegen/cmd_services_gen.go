@@ -2,8 +2,13 @@ package codegen
 
 import (
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -61,6 +66,14 @@ type CmdGroupItem struct {
 	// workers/operators it is set equal to FieldName (their template doesn't
 	// reference a Components mount method).
 	MountFieldName string
+
+	// MountMissing is true when internal/app declares a mount surface but
+	// NOT (*Components).Mount<MountFieldName> — a project that disowned
+	// mounts_services_gen.go and owns the surface by hand. The mount file then
+	// emits a placeholder that compiles and refuses at run time with the exact
+	// method to add, instead of a method expression that breaks the build (and
+	// with it every `forge generate` and `forge scaffold service`).
+	MountMissing bool
 }
 
 // CmdServicesTemplateData feeds cmd-svc-register.go.tmpl (the services group
@@ -234,6 +247,7 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	// owned without stranding the mount reference at whatever name it had on
 	// the day the service was born.
 	svcItems, skipped := cmdServiceItemsFromNames(modulePath, in.Bin, in.Services, mountOverride)
+	markMissingMounts(targetDir, svcItems)
 	for _, item := range svcItems {
 		mountContent, rerr := templates.ProjectTemplates().Render("cmd-svc-mount-gen.go.tmpl", item)
 		if rerr != nil {
@@ -456,4 +470,75 @@ func cmdServiceMountOverrides(targetDir string, in CmdServiceGroupInput) map[str
 		return nil
 	}
 	return overrides
+}
+
+// markMissingMounts sets MountMissing on every item whose mount method
+// internal/app does not declare. It stands down (marks nothing) when
+// internal/app declares no Mount method on *Components at all or cannot be
+// read: that is a tree mid-generate, not a hand-owned surface, and the
+// ordinary method expression plus the compiler is the right signal there.
+func markMissingMounts(targetDir string, items []CmdGroupItem) {
+	declared := componentsMountMethods(filepath.Join(targetDir, "internal", "app"))
+	if len(declared) == 0 {
+		return
+	}
+	for i := range items {
+		if !declared["Mount"+items[i].MountFieldName] {
+			items[i].MountMissing = true
+		}
+	}
+}
+
+// componentsMountMethods returns the names of every `Mount*` method declared
+// on Components (value or pointer receiver) in dir's non-test Go files.
+func componentsMountMethods(dir string) map[string]bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 || !strings.HasPrefix(fn.Name.Name, "Mount") {
+				continue
+			}
+			recv := fn.Recv.List[0].Type
+			if star, ok := recv.(*ast.StarExpr); ok {
+				recv = star.X
+			}
+			if id, ok := recv.(*ast.Ident); ok && id.Name == "Components" {
+				out[fn.Name.Name] = true
+			}
+		}
+	}
+	return out
+}
+
+// mountPlaceholderRE finds the method a placeholder mount file is waiting for.
+var mountPlaceholderRE = regexp.MustCompile(`internal/app declares no \(\*Components\)\.(Mount\w+)`)
+
+// PendingServiceMount reports the `(*Components).Mount<Svc>` method the
+// service's generated mount file is waiting for — non-empty exactly when that
+// file is the MountMissing placeholder (see cmd-svc-mount-gen.go.tmpl). It
+// reads the file generate just wrote rather than re-deriving the answer, so the
+// scaffold's report can never disagree with what was emitted.
+func PendingServiceMount(root, bin, runtimeName string) string {
+	raw, err := os.ReadFile(filepath.Join(root, "cmd", bin, "cmd", "services", runtimeName+"_mount_gen.go"))
+	if err != nil {
+		return ""
+	}
+	if m := mountPlaceholderRE.FindSubmatch(raw); m != nil {
+		return string(m[1])
+	}
+	return ""
 }

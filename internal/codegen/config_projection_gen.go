@@ -343,9 +343,9 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 			// when true: an explicit `secret_optional = False` on every
 			// credential would be noise in the generated module and says
 			// nothing the schema default does not.
-			expr := fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}}`, f.Name, f.Name)
+			expr := fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}}`, f.KCLPath(), f.KCLPath())
 			if f.Optional {
-				expr = fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}, secret_optional = True}`, f.Name, f.Name)
+				expr = fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}, secret_optional = True}`, f.KCLPath(), f.KCLPath())
 			}
 			secrets = append(secrets, kv{
 				key:      f.EnvVar,
@@ -375,7 +375,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 		}
 		if f.Optional {
 			if def, ok := kclConfigDefaultLiteral(f); ok {
-				entry.omitWhen = fmt.Sprintf("c.%s != %s", f.Name, def)
+				entry.omitWhen = fmt.Sprintf("c.%s != %s", f.KCLPath(), def)
 			}
 		}
 		inline = append(inline, entry)
@@ -496,7 +496,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 // This reuses kclTypeForProtoConfig so the str/non-str decision stays
 // identical to the schema emitter's type mapping.
 func kclConfigValueExpr(f ConfigField, recv string) string {
-	ref := recv + "." + f.Name
+	ref := recv + "." + f.KCLPath()
 	switch kclTypeForProtoConfig(f) {
 	case "str":
 		return ref

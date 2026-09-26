@@ -30,7 +30,7 @@ func (p HostedProvider) Observe(ctx context.Context, group ServiceGroup) (Observ
 		unknownAll(err.Error())
 		return out, err
 	}
-	st, err := ReadHostedStatus(ctx, c, group.Env)
+	st, err := ReadHostedStatus(ctx, c, groupProject(group), group.Env)
 	if errors.Is(err, ErrHostedEnvironmentNotFound) {
 		// Never deployed: every declared workload is absent, which is a
 		// measurement (the platform answered), not an unknown.

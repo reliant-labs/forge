@@ -122,13 +122,20 @@ func TestForgeLogin_WritesAKeyedEntry_TwoEndpointsCoexist_LogoutRemovesOne(t *te
 	}
 }
 
-func TestForgeLogin_RequiresATarget(t *testing.T) {
+// TestForgeLogin_TakesNoEnv: login is about WHO you are, never WHERE you
+// deploy — an env positional is refused outright (it would read as "log into
+// staging", the shape that makes acting on the wrong env easy).
+func TestForgeLogin_TakesNoEnv(t *testing.T) {
 	t.Setenv("FORGE_HOME", t.TempDir())
-	if _, err := runLoginCmd(t, "login"); err == nil || !strings.Contains(err.Error(), "--endpoint") {
-		t.Fatalf("login with no env and no --endpoint must say how to name one; got %v", err)
-	}
-	if _, err := runLoginCmd(t, "login", "prod", "--endpoint", "https://x.example"); err == nil {
-		t.Fatal("env AND --endpoint is ambiguous and must be refused")
+	withDeclaredControlPlanes(t, nil)
+	for _, args := range [][]string{
+		{"login", "prod"},
+		{"login", "prod", "--endpoint", "https://x.example"},
+		{"logout", "prod"},
+	} {
+		if _, err := runLoginCmd(t, args...); err == nil {
+			t.Fatalf("%v: an env positional must be refused", args)
+		}
 	}
 }
 

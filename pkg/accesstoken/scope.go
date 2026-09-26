@@ -51,8 +51,12 @@ const (
 	ScopeMCPConnector Scope = "mcp:connector"
 
 	// ScopeSecretRead lists the org's managed secrets' METADATA (names,
-	// versions). Secret VALUES are never readable through a token: they are
-	// materialized into workloads, not returned to callers.
+	// versions) for every environment, and — for LOCAL environments ONLY —
+	// pulls their VALUES (LocalSecretService/PullSecrets), because a LOCAL
+	// env's workloads run on the developer's machine (`forge env up`) and
+	// need them there. A PERSISTENT environment's values are never readable
+	// through a token: the platform materializes them into its workloads and
+	// the pull path is structurally confined to local envs.
 	ScopeSecretRead Scope = "secret:read"
 	// ScopeSecretWrite sets and deletes managed secret values. Implies
 	// secret:read at the point of use.

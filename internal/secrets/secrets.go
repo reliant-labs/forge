@@ -115,7 +115,7 @@ func NewProvider(cfg *ProviderConfig) (Provider, error) {
 		// later, somewhere less obvious.
 		return nil, fmt.Errorf(
 			"secret_provider 'dotenv' has been removed\n"+
-				"fix: forge secret migrate <env>   (converts %s to secrets/<env>.yaml)\n"+
+				"fix: forge secret migrate --env <env>   (converts %s to secrets/<env>.yaml)\n"+
 				"     then declare `secret_provider = forge.FileSecrets {path = \"secrets/<env>.yaml\"}`",
 			cfg.Path)
 	default:
@@ -145,7 +145,7 @@ func (externalProvider) All() map[string]string        { return nil }
 // It resolves NOTHING, exactly like externalProvider, and that is the design
 // rather than an unfinished feature: the store's API is write-only (no RPC
 // returns a value), so no forge process — a developer laptop, a CI runner —
-// ever holds a hosted value. Writes (`forge secret set <hosted-env>`) go through
+// ever holds a hosted value. Writes (`forge secret set --env <hosted-env>`) go through
 // a separate writer the CLI declares at its call site; this type is only the
 // resolve half, and it must stay value-free.
 type hostedProvider struct{}
@@ -153,6 +153,57 @@ type hostedProvider struct{}
 func (hostedProvider) Kind() string                  { return "hosted" }
 func (hostedProvider) Resolve(string) (string, bool) { return "", false }
 func (hostedProvider) All() map[string]string        { return nil }
+
+// pulledProvider is the hosted provider of a LOCAL environment: one whose
+// workloads run on a developer machine (`forge env up`) and whose control
+// plane is only its secret store. Such an env's values are PULLABLE — the
+// control plane serves them to the env's own org over a separately-scoped
+// read path that is structurally confined to local environments — so here,
+// unlike hostedProvider, forge holds values.
+//
+// IN MEMORY ONLY. The values arrive over the wire, are injected into the
+// processes `forge env up` launches, and are never written to disk or logged
+// by this package: there is no Write, no String, and no path.
+type pulledProvider struct {
+	values map[string]string
+}
+
+// NewPulledProvider wraps the values a LOCAL environment's control plane
+// served. Kind is "hosted" (that is where the values live); it resolves them.
+func NewPulledProvider(values map[string]string) Provider {
+	cp := make(map[string]string, len(values))
+	for k, v := range values {
+		cp[k] = v
+	}
+	return pulledProvider{values: cp}
+}
+
+func (pulledProvider) Kind() string { return "hosted" }
+
+func (p pulledProvider) Resolve(name string) (string, bool) {
+	v, ok := p.values[name]
+	return v, ok
+}
+
+func (p pulledProvider) All() map[string]string { return p.values }
+
+func (pulledProvider) resolvesValues() bool { return true }
+func (fileProvider) resolvesValues() bool   { return true }
+func (layeredProvider) resolvesValues() bool {
+	return true
+}
+
+// ResolvesValues reports whether p holds real values forge can validate
+// declarations against and inject: a file store, or a LOCAL env's pulled
+// hosted store. external / none / a persistent hosted env resolve nothing.
+//
+// Declared as an unexported marker rather than a Kind() comparison because a
+// hosted provider may or may not hold values (local vs persistent env), so
+// the kind name alone cannot answer it.
+func ResolvesValues(p Provider) bool {
+	r, ok := p.(interface{ resolvesValues() bool })
+	return ok && r.resolvesValues()
+}
 
 // fileProvider resolves values from a single gitignored YAML file: a flat
 // map of env-var NAME -> value.
@@ -351,7 +402,7 @@ func WriteSecretFile(path string, values map[string]string) error {
 	b.WriteString("# forge secret store — GITIGNORED, never commit.\n")
 	b.WriteString("# Managed by `forge secret set/unset`; hand-edits are fine too.\n")
 	b.WriteString("# Keys must match an EnvVar.secret_ref declared in KCL, or the value\n")
-	b.WriteString("# reaches nothing (`forge secret list <env>` reports unused keys).\n")
+	b.WriteString("# reaches nothing (`forge secret list --env <env>` reports unused keys).\n")
 	for _, k := range keys {
 		out, err := yaml.Marshal(map[string]string{k: values[k]})
 		if err != nil {
@@ -402,9 +453,10 @@ func ValidateDeclaredRefs(p Provider, refs []SecretRef, storePath string) error 
 	if p == nil {
 		return nil
 	}
-	// Only value-resolving providers can be validated: external/none
-	// deliberately cannot see values, so there is nothing to check.
-	if p.Kind() != "file" {
+	// Only value-resolving providers can be validated: external/none (and a
+	// persistent hosted env) deliberately cannot see values, so there is
+	// nothing to check.
+	if !ResolvesValues(p) {
 		return nil
 	}
 	values := p.All()
@@ -439,14 +491,14 @@ func ValidateDeclaredRefs(p Provider, refs []SecretRef, storePath string) error 
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "secret provider %q (path %s) is missing %d declared value(s):\n", p.Kind(), storePath, len(missing))
+	fmt.Fprintf(&b, "secret provider %q (%s) is missing %d declared value(s):\n", p.Kind(), storePath, len(missing))
 	for _, r := range missing {
 		fmt.Fprintf(&b, "    %-*s   (Secret %s/%s)\n", width, r.EnvName, r.SecretName, r.key())
 	}
-	// The fix line names the command for a dir provider — the whole point
-	// of the dir layout is that adding a secret is a forge command, not a
-	// hand-edit of a file that gets injected everywhere.
-	fmt.Fprintf(&b, "fix: forge secret set <env> <KEY>   (writes into %s)\n", storePath)
+	// The fix line names the command — the whole point of the store is that
+	// adding a secret is a forge command, not a hand-edit of a file that
+	// gets injected everywhere.
+	fmt.Fprintf(&b, "fix: forge secret set --env <env> <KEY>   (writes into %s)\n", storePath)
 	fmt.Fprint(&b, "     …or remove the secret_ref from the EnvVar if it is no longer needed.")
 	return errors.New(b.String())
 }
@@ -571,7 +623,7 @@ func RenderDeclaredSecrets(declared []DeclaredSecret, dot Provider, env, namespa
 // resolve (ValidateDeclaredRefs is the gate for those). Deterministic
 // ordering (sorted Secret names + keys) for stable diffs.
 func RenderK8sSecrets(p Provider, refs []SecretRef, namespace string) []map[string]any {
-	if p == nil || p.Kind() != "file" {
+	if p == nil || !ResolvesValues(p) {
 		return nil
 	}
 	// Group resolved (key -> value) pairs by Secret name.

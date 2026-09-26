@@ -319,8 +319,8 @@ _bundle = forge.Bundle {
     # Deployments roll out so every secretKeyRef resolves on first schedule.
     # It also layers the same values onto host processes (`forge run`).
     #
-    # Populate it with `forge secret set dev <KEY>` (value on stdin, never
-    # argv), or hand-edit the YAML. `forge secret ensure dev` creates the
+    # Populate it with `forge secret set --env dev <KEY>` (value on stdin, never
+    # argv), or hand-edit the YAML. `forge secret ensure --env dev` creates the
     # store and lists every declared ref still missing a value.
     #
     # A value only reaches a service that DECLARES it via EnvVar.secret_ref,

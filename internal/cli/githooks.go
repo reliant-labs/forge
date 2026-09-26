@@ -7,7 +7,31 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
+
+// skipHookActivationAnnotation marks a command during which the root
+// pre-run must NOT self-activate git hooks. Two kinds carry it:
+//
+//   - `forge project new`, which owns git setup for the project it creates:
+//     a fresh repository gets core.hooksPath from initGitRepository, and a
+//     repository that already existed is the user's — its config is not
+//     forge's to change. (Without this, a `--force` re-run found the
+//     scaffold's forge.yaml + .githooks and activated them.)
+//   - the hidden protoc-gen-forge plugin, which buf runs as a subprocess.
+//     It is not a user command: in a normal `forge generate` the parent
+//     already made the offer, and during `project new`'s bootstrap it would
+//     have written core.hooksPath into the user's existing repository.
+//
+// The offer is still made by the user's next ordinary forge command.
+const skipHookActivationAnnotation = "forge.skip-hook-activation"
+
+// hookActivationSkipped reports whether cmd opted out of hook activation.
+func hookActivationSkipped(cmd *cobra.Command) bool {
+	_, ok := cmd.Annotations[skipHookActivationAnnotation]
+	return ok
+}
 
 // ensureGitHooksActivated makes forge's committed git hooks fire in a
 // fresh clone or new worktree without any explicit install step or new

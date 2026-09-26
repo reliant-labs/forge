@@ -67,21 +67,52 @@ func devWorkspaceBridgesExternalModule(projectDir string) bool {
 	return false
 }
 
-// syncDevWorkspace runs `go work sync` in place of a proxy-resolving
-// `go mod tidy` when a dev-forge go.work bridge is active. `go work sync`
-// resolves against the workspace (so the local, unpublished bridged module is
-// honored) and writes the go.sum / go.work.sum entries `go build` needs.
-// Best-effort: a sync hiccup must not abort codegen, because the pipeline's
-// final `go build (validate)` step is the real correctness gate under a
-// workspace.
-func syncDevWorkspace(projectDir, label string) error {
-	fmt.Printf("🔗 %s: go.work bridges a local module — running `go work sync` instead of a proxy `go mod tidy`.\n", label)
-	cmd := exec.Command("go", "work", "sync")
-	cmd.Dir = projectDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠️  go work sync failed (continuing; `go build (validate)` still gates correctness): %v\n", err)
+// tidyBridgedModule is `go mod tidy` for ONE module of a project whose go.work
+// bridges forge (or another module) to a local checkout.
+//
+// It used to run `go work sync` instead, and that was wrong in a way that
+// looked like forge helpfully tidying: sync writes the WORKSPACE's build list
+// back into every member go.mod, and the workspace includes the bridged
+// checkout — so forge's own requirements (gomega, protovalidate, go-sqlite3,
+// …) were copied into the project's go.mod as "upgrades" on every generate. A
+// project that pinned a forge version had its dependency graph silently moved
+// by a tool that was only supposed to regenerate code.
+//
+// The bridge decides what COMPILES; it must never decide what the project
+// DECLARES. So tidy runs with GOWORK=off — against the module's own
+// requirements, exactly the graph `forge env up`'s `go mod tidy -diff`
+// preflight checks — and only when that graph is actually stale:
+//
+//   - clean: nothing is written (the common case — zero churn);
+//   - stale and tidy succeeds: go.mod/go.sum converge the way a plain
+//     `go mod tidy` would;
+//   - tidy cannot resolve (the project calls forge API that is not published
+//     yet, which is what the bridge is for): warn and leave go.mod alone. The
+//     validate build honors go.work, so it remains the correctness gate.
+func tidyBridgedModule(moduleDir, label string) error {
+	return tidyBridgedModuleWith(runGoOffWorkspace, moduleDir, label)
+}
+
+// goOffWorkspaceRunner runs `go <args...>` in dir with GOWORK=off. A seam so
+// the tidy decision is testable without a module proxy.
+type goOffWorkspaceRunner func(dir string, args ...string) ([]byte, error)
+
+func runGoOffWorkspace(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("go", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	return cmd.CombinedOutput()
+}
+
+func tidyBridgedModuleWith(run goOffWorkspaceRunner, moduleDir, label string) error {
+	if _, err := run(moduleDir, "mod", "tidy", "-diff"); err == nil {
+		return nil // already tidy against its own requirements — write nothing
+	}
+	fmt.Printf("🔗 %s: go.work bridges a local module — tidying against this module's own requirements (GOWORK=off), so the bridged checkout's deps never leak into go.mod.\n", label)
+	out, err := run(moduleDir, "mod", "tidy")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  %s: `GOWORK=off go mod tidy` could not resolve (continuing — go.mod left unchanged; the go.work-aware `go build (validate)` still gates correctness). Usually the code calls forge API that is not published yet; it tidies once that forge is released and pinned.\n%s", label, strings.TrimSpace(string(out)))
+		fmt.Fprintln(os.Stderr)
 	}
 	return nil
 }
@@ -251,10 +282,9 @@ func runGoModTidyGen(projectDir string) error {
 	}
 
 	// A dev-forge go.work bridge deliberately overrides a published require
-	// (forge/pkg) with an unpublished local checkout — a proxy `go mod tidy`
-	// would 404 and abort codegen. Sync the workspace instead.
+	// with an unpublished local checkout — see tidyBridgedModule.
 	if devWorkspaceBridgesExternalModule(projectDir) {
-		return syncDevWorkspace(projectDir, "gen/ tidy")
+		return tidyBridgedModule(genDir, "gen/ tidy")
 	}
 
 	fmt.Println("🔨 Running go mod tidy in gen/...")
@@ -277,11 +307,11 @@ func runGoModTidyRoot(projectDir string) error {
 		return nil
 	}
 
-	// See runGoModTidyGen: under a dev-forge go.work bridge, sync the
-	// workspace instead of a proxy `go mod tidy` that cannot resolve the
-	// unpublished local module.
+	// See runGoModTidyGen / tidyBridgedModule: under a dev-forge go.work
+	// bridge, tidy against the module's own requirements, never the
+	// workspace's.
 	if devWorkspaceBridgesExternalModule(projectDir) {
-		return syncDevWorkspace(projectDir, "root tidy")
+		return tidyBridgedModule(projectDir, "root tidy")
 	}
 
 	fmt.Println("🔨 Running go mod tidy in project root...")

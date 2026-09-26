@@ -25,16 +25,19 @@ type Registry struct {
 }
 
 // NewRegistry returns a new empty Registry. Most callers use the
-// package-level Default instead — there's one process-wide Registry
-// and codegen's init() targets it directly.
+// process-wide registry returned by Default instead.
 func NewRegistry() *Registry {
 	return &Registry{}
 }
 
-// Default is the process-wide Registry that codegen-emitted
-// diagnostics_gen.go's init() targets. Tests that want isolation can
+// defaultRegistry backs Default. Unexported so no caller can replace the
+// process-wide registry out from under code that already holds it.
+var defaultRegistry = NewRegistry()
+
+// Default returns the process-wide Registry — the one a registration
+// producer targets and Bootstrap boots. Tests that want isolation can
 // construct their own Registry via NewRegistry.
-var Default = NewRegistry()
+func Default() *Registry { return defaultRegistry }
 
 // RegisterStub records a Tier-1 stub whose body is solely
 // `return ..., ErrNotImplemented` (or the configured sentinel).
@@ -101,7 +104,7 @@ func (r *Registry) RegisterNilDep(component, depName, file string, line int) {
 //
 // Boot is idempotent in the sense that repeated calls emit the same
 // data; it does not clear entries. Tests that want isolation should
-// use a per-test Registry rather than calling Boot on Default twice.
+// use a per-test Registry rather than calling Boot on Default() twice.
 func (r *Registry) Boot(e Emitter) []Diagnostic {
 	if e == nil {
 		e = NopEmitter{}

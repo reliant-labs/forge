@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -196,14 +197,20 @@ type hostedStore struct {
 	client   cloudCaller
 	resolver hostedEnvResolver
 	endpoint string
+	// project and kind address the environment a WRITE ensures: identity is
+	// (org, project, name), and the kind (derived from the env's KCL) is
+	// immutable server-side.
+	project string
+	kind    deploytarget.HostedEnvKind
 
 	mu     sync.Mutex
 	envIDs map[string]string // env name → control-plane id, per process
 }
 
-// hostedLedger binds both halves of an env's ledger to one client.
-func hostedLedger(client cloudCaller, endpoint string) envLedger {
-	s := &hostedStore{client: client, resolver: cloudEnvResolver{client: client}, endpoint: endpoint}
+// hostedLedger binds both halves of an env's ledger to one client. project
+// and kind are the ledger env's control-plane address (see hostedEnvRefFor).
+func hostedLedger(client cloudCaller, endpoint, project string, kind deploytarget.HostedEnvKind) envLedger {
+	s := &hostedStore{client: client, resolver: cloudEnvResolver{client: client, project: project}, endpoint: endpoint, project: project, kind: kind}
 	return envLedger{Bindings: s, Releases: s, Hosted: true}
 }
 
@@ -308,7 +315,13 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion) (release.
 	// A promotion or rollback is a WRITE: ensure the env by name first (see
 	// ensureHostedEnv). A rollback of an env that has run nothing is still
 	// refused — by the server's ledger rule, not by the env being absent.
-	id, err := ensureHostedEnv(ctx, s.client, p.Env)
+	if s.kind == deploytarget.HostedEnvLocal {
+		// A LOCAL env runs on a developer machine; it has no release to
+		// bind. The control plane refuses this too — refusing here means
+		// no write is attempted at all.
+		return release.Promotion{}, fmt.Errorf("env %q is LOCAL (it declares control_plane but no hosted tier): it runs via `forge env up`, and a release cannot be promoted into it", p.Env)
+	}
+	id, err := ensureHostedEnv(ctx, s.client, deploytarget.HostedEnvRef{Project: s.project, Name: p.Env, Kind: s.kind})
 	if err != nil {
 		return release.Promotion{}, err
 	}

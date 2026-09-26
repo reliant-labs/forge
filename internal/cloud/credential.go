@@ -112,7 +112,7 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 	switch {
 	case err == nil:
 		if stored.Expired(time.Now()) {
-			return Credential{}, fmt.Errorf("%w\nthe login for %s stored in %s expired at %s\nfix: forge login %s",
+			return Credential{}, fmt.Errorf("%w\nthe login for %s stored in %s expired at %s\nfix: %s",
 				ErrNoCredential, ep.URL, path, stored.ExpiresAt.Format(time.RFC3339), loginHint(ep))
 		}
 		return Credential{Token: stored.Token, Source: SourceLogin, From: path}, nil
@@ -128,17 +128,19 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 			"fix, in the order forge checks them:\n"+
 			"    --token <token>        explicit, wins over everything (one-off / debugging)\n"+
 			"    export %s=<token>      for CI — a pipeline has no browser\n"+
-			"    forge login %s        for a human — opens a browser and stores the credential",
+			"    %s        for a human — opens a browser and stores the credential",
 		ErrNoCredential, ep.URL, tokenEnv, loginHint(ep))
 }
 
-// loginHint is the `forge login` argument that targets ep: the env name when
-// the endpoint came from one, else --endpoint.
+// loginHint is the `forge login` invocation that covers ep. An endpoint an
+// env declared is covered by a bare `forge login`, which logs into every
+// control plane the project declares — login never takes an env. Anything
+// else is named with --endpoint.
 func loginHint(ep Endpoint) string {
 	if ep.Env != "" {
-		return ep.Env
+		return "forge login"
 	}
-	return "--endpoint " + ep.URL
+	return "forge login --endpoint " + ep.URL
 }
 
 // CredentialsPath is where the shared credentials file lives, from

@@ -28,10 +28,6 @@ import (
 // a package can call its interface `Mailer` or `Repository`; the constructor
 // deserves the same freedom. forge is meant to promote good practice, not to
 // require that every component be `New` returning `Service`.
-//
-// And forge's own decorator layer already assumed this: resolveMiddlewareWrappers
-// takes a LIST of constructors and resolves same-concrete collisions, naming
-// the example `NewReadOnly`. The discovery side simply never caught up.
 func IsComponentConstructor(fn *ast.FuncDecl) bool {
 	if fn == nil || fn.Recv != nil || fn.Name == nil {
 		return false // methods are never component constructors

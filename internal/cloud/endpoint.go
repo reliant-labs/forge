@@ -5,6 +5,22 @@ import (
 	"strings"
 )
 
+// DefaultEndpoint is Reliant's production control plane: the one a plain
+// `go install`'d forge targets with no configuration.
+//
+// It is the Go copy of KCL's forge.RELIANT_CLOUD_ENDPOINT, which is what
+// `forge.ControlPlane {}` resolves to. KCL owns the default for every env; this
+// copy exists for the one command that runs with no env to render — `forge
+// login` outside a project (or in one that declares no control plane).
+// TestControlPlaneDefault_KCLMatchesGo renders the schema and fails if the two
+// drift.
+//
+// It is the PUBLIC origin serving forge's whole hosted surface: the
+// controlplane.v1.* RPCs and the CLI OAuth endpoints (/oauth/authorize,
+// /oauth/token). reliant's API host is a different server and answers 404 for
+// both, so pointing this at it would break login for every user.
+const DefaultEndpoint = "https://admin.reliantapi.com"
+
 // Endpoint is one environment's resolved hosted control plane: where to
 // send requests, and which env var holds the credential.
 //
@@ -43,20 +59,21 @@ type Declaration struct {
 // ResolveEndpoint turns one environment's declaration into an Endpoint.
 //
 // decl == nil means the environment declares no hosted control plane.
-// That is the default and the overwhelmingly common case, so it returns
-// a plain error naming the exact file to edit rather than inventing a
-// default endpoint. Inventing one would mean a project with no hosted
-// anything could send a request somewhere by accident, which is the one
-// outcome this signature is shaped to prevent.
+// That is the overwhelmingly common case, so it returns a plain error
+// naming the exact file to edit rather than falling back to
+// DefaultEndpoint. An env that declares nothing is not hosted; defaulting
+// here would mean a project with no hosted anything could send a request
+// somewhere by accident, which is the one outcome this signature is shaped
+// to prevent. The Reliant-cloud default belongs to the DECLARATION
+// (`forge.ControlPlane {}` fills endpoint in KCL), never to its absence.
 func ResolveEndpoint(env string, decl *Declaration) (Endpoint, error) {
 	if decl == nil || strings.TrimSpace(decl.Endpoint) == "" {
 		return Endpoint{}, fmt.Errorf(
 			"env %q declares no hosted control plane\n"+
 				"fix: add to the Bundle in deploy/kcl/%s/main.k\n"+
-				"    control_plane = forge.ControlPlane {\n"+
-				"        endpoint = \"https://api.example.com\"\n"+
-				"    }\n"+
-				"The endpoint is declared per environment, so staging and prod differ "+
+				"    control_plane = forge.ControlPlane {}    # Reliant cloud\n"+
+				"or name another control plane with endpoint = \"https://…\" inside it. "+
+				"The endpoint is declared per environment, so envs differ "+
 				"in their KCL rather than in machine-local CLI state",
 			env, env)
 	}

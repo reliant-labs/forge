@@ -234,10 +234,25 @@ func jobDeployPhase(m parsedDoc) (string, error) {
 // skipped: they configure things for the workloads being deployed, whichever
 // release that is.
 
-// skipPreRolloutForRollback announces the skip and returns the skipped Job
-// names, in stream order. The announcement is printed even under Quiet: it is
-// a decision a human must see, not a progress banner.
-func skipPreRolloutForRollback(phases rolloutPhases) []string {
+// skipPreRolloutForRollback removes the pre-rollout Jobs from a rollback's
+// apply: it returns the full stream without them (what is reported and shown
+// under --dry-run), the non-config remainder to apply in one pass, and the
+// phases with the gate emptied. It announces the skip — printed even under
+// Quiet, because it is a decision a human must see, not a progress banner —
+// and hands the skipped names to opts.OnSkippedJobs, in stream order.
+func skipPreRolloutForRollback(opts ApplyOpts, manifests string, phases rolloutPhases) (string, string, rolloutPhases) {
+	names := announceRollbackSkip(phases)
+	if opts.OnSkippedJobs != nil {
+		opts.OnSkippedJobs(names)
+	}
+	manifests = withoutJobs(manifests, phases.preJobRefs)
+	phases.preJobs, phases.preJobRefs = "", nil
+	return manifests, joinNonEmpty(phases.support, phases.workloads), phases
+}
+
+// announceRollbackSkip prints the skip and its runbook, and returns the
+// skipped Job names.
+func announceRollbackSkip(phases rolloutPhases) []string {
 	names := make([]string, 0, len(phases.preJobRefs))
 	for _, j := range phases.preJobRefs {
 		names = append(names, j.Name)

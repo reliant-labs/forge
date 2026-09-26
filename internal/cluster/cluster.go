@@ -762,13 +762,7 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	// `--json` describe the Jobs a rollback will NOT run exactly as the real
 	// apply behaves. See skipPreRolloutForRollback.
 	if opts.PromotionRollback && phases.gated() {
-		skipped := skipPreRolloutForRollback(phases)
-		if opts.OnSkippedJobs != nil {
-			opts.OnSkippedJobs(skipped)
-		}
-		manifests = withoutJobs(manifests, phases.preJobRefs)
-		phases.preJobs, phases.preJobRefs = "", nil
-		rest = joinNonEmpty(phases.support, phases.workloads)
+		manifests, rest, phases = skipPreRolloutForRollback(opts, manifests, phases)
 	}
 
 	// Render the selected platform deps (helm-as-a-RENDERER). Each chart's

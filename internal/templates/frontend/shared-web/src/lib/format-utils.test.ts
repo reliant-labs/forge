@@ -12,7 +12,7 @@
 // and Vite SPA both run `vitest run`. React Native scaffolds the same
 // format-utils.ts but runs jest-expo, which cannot resolve `vitest`.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   enumBadgeVariant,
@@ -21,7 +21,6 @@ import {
   formatMoneyCents,
   formatMoneyWhole,
   formatValue,
-  registerStatusVariants,
   timestampToDate,
 } from "@/lib/format-utils";
 
@@ -85,22 +84,42 @@ describe("enumBadgeVariant", () => {
     expect(enumBadgeVariant("payment_captured")).toBe("neutral");
   });
 
-  // …and registerStatusVariants is where the answer gets DECLARED. Runs last:
-  // registration mutates module state for the rest of the file.
-  it("colours a domain status once the project registers it", () => {
-    registerStatusVariants({
-      sent_to_pharmacy: "info",
-      capture_failed: "danger", // alias for "error"
-      renewal_required: "warning",
+  // …and registerStatusVariants is where the answer gets DECLARED.
+  //
+  // Registration mutates module-level state, and nothing un-registers. So the
+  // test registers into a FRESH copy of the module (resetModules + a dynamic
+  // import) and never touches the one the rest of this file imported. It used
+  // to register into the shared copy and rely on running last, which held
+  // only until the order changed: under `vitest --sequence.shuffle` the
+  // "unregistered domain status" test above failed in 13 of 30 runs, because
+  // by then sent_to_pharmacy WAS registered.
+  describe("registerStatusVariants", () => {
+    afterEach(() => {
+      vi.resetModules();
     });
 
-    expect(enumBadgeVariant("sent_to_pharmacy")).toBe("info");
-    expect(enumBadgeVariant("SENT_TO_PHARMACY")).toBe("info");
-    expect(
-      enumBadgeVariant(PatientStatus.SENT_TO_PHARMACY, PatientStatus),
-    ).toBe("info");
-    expect(enumBadgeVariant("capture_failed")).toBe("error");
-    expect(enumBadgeVariant("renewal_required")).toBe("warning");
+    it("colours a domain status once the project registers it", async () => {
+      vi.resetModules();
+      const fresh = await import("@/lib/format-utils");
+      fresh.registerStatusVariants({
+        sent_to_pharmacy: "info",
+        capture_failed: "danger", // alias for "error"
+        renewal_required: "warning",
+      });
+
+      expect(fresh.enumBadgeVariant("sent_to_pharmacy")).toBe("info");
+      expect(fresh.enumBadgeVariant("SENT_TO_PHARMACY")).toBe("info");
+      expect(
+        fresh.enumBadgeVariant(PatientStatus.SENT_TO_PHARMACY, PatientStatus),
+      ).toBe("info");
+      expect(fresh.enumBadgeVariant("capture_failed")).toBe("error");
+      expect(fresh.enumBadgeVariant("renewal_required")).toBe("warning");
+
+      // The isolation is the point, so pin it: the registration above must
+      // not have reached the module every other test in this file uses.
+      // Without it this line fails in EVERY order, not just unlucky ones.
+      expect(enumBadgeVariant("sent_to_pharmacy")).toBe("neutral");
+    });
   });
 });
 

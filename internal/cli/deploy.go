@@ -1362,6 +1362,8 @@ func gateDeployOnPreflight(ctx context.Context, in deployPreflightEnvInput, hasK
 func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) error {
 	targetArch := kclFirstClusterPlatform(in.entities)
 	return runDeployPreflight(ctx, deployPreflightInput{
+		entities:        in.entities,
+		groups:          in.groups,
 		secretContexts:  declaredClusterContexts(in.entities, in.deployContext, in.groups),
 		mainK:           in.mainK,
 		imageTag:        in.imageTag,
@@ -2787,11 +2789,17 @@ type deployPreflightInput struct {
 	// value_group byte mismatch is caught). Empty => no declared prereqs.
 	requiredSecrets []cluster.RequiredSecret
 	// secretContexts are the kubectl contexts of every cluster this env
-	// deploys to. The declared-prerequisite check runs in ALL of them: a
-	// workload scheduled onto a secondary cluster needs its Secret there, and
-	// verifying only the primary lets the deploy proceed to a rollout that
-	// dies with CreateContainerConfigError.
+	// deploys to. Each declared prerequisite is checked only on the clusters
+	// that consume it (scopeRequiredSecretsToClusters); this full set is the
+	// fallback for one nothing attributes. Checking only the primary would let
+	// a workload on a secondary reach a rollout that dies with
+	// CreateContainerConfigError; checking every Secret everywhere refused
+	// deploys for Secrets a cluster never uses.
 	secretContexts []string
+	// entities and groups feed the per-Secret cluster attribution: the
+	// deploy's own router decides which cluster each rendered object lands on.
+	entities *KCLEntities
+	groups   []deploytarget.ServiceGroup
 	// secretSupply is the env's bundle-internal Secret SUPPLY for the
 	// render-time back-propagation gate: the Secrets the bundle PROVIDES via a
 	// forge.KubeconfigSecret mint, a forge.ExternalSecret promise, or a
@@ -2957,6 +2965,12 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 	if err != nil {
 		return fmt.Errorf("preflight: render manifests: %w", err)
 	}
+	// Attribute each declared prerequisite to the clusters that consume it
+	// BEFORE the --target filter: a targeted deploy still checks every
+	// declared Secret, and the filtered stream no longer holds the consumers
+	// that place it.
+	requiredSecrets, unattributed := scopeRequiredSecretsToClusters(
+		in.requiredSecrets, manifests, in.groups, in.entities, in.namespace)
 	if len(in.targets) > 0 {
 		// Same exclusive --target filter the apply uses (keep iff the
 		// manifest's KCL-declared group ∈ targets) so the preflight checks
@@ -3017,16 +3031,16 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		opts.PullCreds = cluster.KubectlPullCredsResolver{}
 	}
 
-	// DECLARED external Secret prerequisites are checked on EVERY cluster,
-	// local ones included. The remote-only gate above exists because forge
+	// DECLARED external Secret prerequisites are checked on every cluster that
+	// consumes them, local ones included. The remote-only gate above exists because forge
 	// applies its own projected Secrets moments later, so checking those
 	// locally would false-fail the inner loop — but a forge.ExternalSecret is
 	// by definition one forge does NOT create, so that reasoning never applied
 	// to it. Skipping it locally is why a dev deploy could reach a rollout and
 	// die on a Secret that was missing, or present but missing a KEY, in the
 	// secondary cluster.
-	if len(in.requiredSecrets) > 0 && len(in.secretContexts) > 0 {
-		opts.RequiredSecrets = in.requiredSecrets
+	if len(requiredSecrets) > 0 && len(in.secretContexts) > 0 {
+		opts.RequiredSecrets = requiredSecrets
 		opts.RequiredSecretContexts = in.secretContexts
 		if opts.Secrets == nil {
 			opts.Secrets = cluster.KubectlSecretGetter{}
@@ -3039,6 +3053,9 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 	// distinguishable from one that never ran.
 	result, err := cluster.PreflightReport(ctx, opts)
 	in.report.setPreflightResult(result)
+	if note := unattributedSecretsNote(unattributed); err != nil && note != "" && len(result.MissingRequiredSecretKeys) > 0 {
+		return fmt.Errorf("%w\n%s", err, note)
+	}
 	return err
 }
 

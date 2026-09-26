@@ -680,6 +680,14 @@ type RequiredSecret struct {
 	// ValueGroup ties this Secret to others that must carry identical bytes
 	// (the cross-secret byte-match group). Empty => standalone.
 	ValueGroup string
+	// Contexts are the kubectl contexts THIS Secret must exist in: the
+	// clusters that receive its consumer. A multi-cluster env does not need
+	// every Secret everywhere — control-plane's prod daemon cluster receives
+	// only PriorityClasses and a pre-pull DaemonSet, and requiring the app's
+	// Secrets there blocked every prod deploy. Empty => every context the
+	// prerequisites are checked in (RequiredSecretContexts, else Context), the
+	// conservative choice for a Secret nothing attributes to a cluster.
+	Contexts []string
 }
 
 // SecretValueGetter resolves a Secret's decoded .data values for the
@@ -1168,10 +1176,28 @@ func requiredSecretKeys(rs RequiredSecret, refs ManifestRefs, deployNS string) [
 }
 
 func checkRequiredSecrets(ctx context.Context, opts PreflightOpts, refs ManifestRefs, wg *sync.WaitGroup, sink preflightSink) {
-	contexts := requiredSecretContexts(opts)
-	multi := len(contexts) > 1
+	fallback := requiredSecretContexts(opts)
+	contextsFor := func(rs RequiredSecret) []string {
+		if own := dedupeContexts(rs.Contexts); len(own) > 0 {
+			return own
+		}
+		return fallback
+	}
+	// Qualify by cluster whenever the env spans more than one, even if this
+	// Secret is checked in only one of them: once there are two, the reader
+	// cannot tell which cluster an unqualified miss is in.
+	spanned := map[string]struct{}{}
+	for _, c := range fallback {
+		spanned[c] = struct{}{}
+	}
 	for _, rs := range opts.RequiredSecrets {
-		for _, kctx := range contexts {
+		for _, c := range contextsFor(rs) {
+			spanned[c] = struct{}{}
+		}
+	}
+	multi := len(spanned) > 1
+	for _, rs := range opts.RequiredSecrets {
+		for _, kctx := range contextsFor(rs) {
 			rs, kctx := rs, kctx
 			wg.Add(1)
 			go func() {
@@ -1209,9 +1235,20 @@ func checkRequiredSecrets(ctx context.Context, opts PreflightOpts, refs Manifest
 // requiredSecretContexts resolves the clusters the declared prerequisites are
 // verified in, falling back to the single deploy target.
 func requiredSecretContexts(opts PreflightOpts) []string {
+	if out := dedupeContexts(opts.RequiredSecretContexts); len(out) > 0 {
+		return out
+	}
+	if c := strings.TrimSpace(opts.Context); c != "" {
+		return []string{c}
+	}
+	return nil
+}
+
+// dedupeContexts trims, drops empties and de-duplicates, preserving order.
+func dedupeContexts(in []string) []string {
 	var out []string
 	seen := map[string]struct{}{}
-	for _, c := range opts.RequiredSecretContexts {
+	for _, c := range in {
 		if c = strings.TrimSpace(c); c != "" {
 			if _, dup := seen[c]; !dup {
 				seen[c] = struct{}{}
@@ -1219,13 +1256,7 @@ func requiredSecretContexts(opts PreflightOpts) []string {
 			}
 		}
 	}
-	if len(out) > 0 {
-		return out
-	}
-	if c := strings.TrimSpace(opts.Context); c != "" {
-		return []string{c}
-	}
-	return nil
+	return out
 }
 
 // checkByteMatchGroupsAsync runs the cross-secret BYTE-MATCH check on its own

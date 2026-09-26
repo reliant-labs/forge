@@ -182,6 +182,22 @@ func forgeRootFromFile(file string) string {
 	for {
 		if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil {
 			if modfile.ModulePath(data) == forgeModulePath {
+				// A MODULE-CACHE copy is not a checkout. `go install
+				// github.com/reliant-labs/forge/cmd/forge@<pseudo-version>`
+				// — exactly how a project pins forge, and how its CI
+				// installs it — builds without -trimpath from
+				// $GOMODCACHE/github.com/reliant-labs/forge@<version>/, so
+				// the walk lands on a real go.mod and a real pkg/. Treating
+				// that as a dev checkout bridged the project to a READ-ONLY
+				// tree: .forge-link/web-runtime pointed into the module
+				// cache, and the `npm install` forge then asked for failed
+				// with EACCES creating web-runtime/node_modules. Nobody
+				// edits the module cache, so there is nothing to bridge to —
+				// such a binary resolves forge from the registry like any
+				// other released build.
+				if isModuleCacheDir(dir) {
+					return ""
+				}
 				// Module path matches. Confirm pkg/ is present too, so we
 				// never point a go.work `use` at a tree that lacks the
 				// runtime libraries a scaffold imports. pkg/ is a plain
@@ -200,6 +216,37 @@ func forgeRootFromFile(file string) string {
 		}
 		dir = parent
 	}
+}
+
+// IsModuleCachePath reports whether path is, or lies inside, a Go module-cache
+// extraction of some module — any ancestor directory named
+// `<element>@<version>`. See isModuleCacheDir.
+func IsModuleCachePath(path string) bool {
+	for dir := path; ; {
+		if isModuleCacheDir(dir) {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+// isModuleCacheDir reports whether dir is a Go module-cache extraction of a
+// module: its name is `<last path element>@<version>`, the layout the go
+// command uses under $GOMODCACHE (e.g. forge@v0.1.18-0.20260926053138-05d5d6999d39).
+// Decided from the name alone so discovery never shells out to `go env`; a git
+// checkout is named whatever its owner chose and does not carry a module
+// version after an @.
+func isModuleCacheDir(dir string) bool {
+	base := filepath.Base(dir)
+	at := strings.LastIndex(base, "@")
+	if at <= 0 {
+		return false
+	}
+	return semver.IsValid(base[at+1:])
 }
 
 var (

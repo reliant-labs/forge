@@ -95,3 +95,44 @@ func mustMkdirAll(t *testing.T, dir string) {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
 }
+
+// TestForgeRootFromFile_ModuleCacheIsNotACheckout is the reproduction for a
+// pinned forge bridging projects into the READ-ONLY module cache.
+//
+// A project pins forge by pseudo-version, and its CI (and anyone following
+// its docs) installs it with `go install …/cmd/forge@<pseudo-version>`. That
+// build is not -trimpath'd, so runtime.Caller resolves into
+// $GOMODCACHE/github.com/reliant-labs/forge@<version>/ — a tree with forge's
+// real go.mod and pkg/. The walk accepted it as a dev checkout, and forge
+// symlinked .forge-link/web-runtime into the module cache: `npm install` then
+// failed with EACCES creating web-runtime/node_modules, so the project's
+// frontend test lane could not run at all.
+func TestForgeRootFromFile_ModuleCacheIsNotACheckout(t *testing.T) {
+	modCache := filepath.Join(t.TempDir(), "pkg", "mod")
+	cached := filepath.Join(modCache, "github.com", "reliant-labs", "forge@v0.1.18-0.20260926053138-05d5d6999d39")
+	writeGoMod(t, cached, "module "+forgeModulePath+"\n\ngo 1.26\n")
+	mustMkdirAll(t, filepath.Join(cached, "pkg"))
+	mustMkdirAll(t, filepath.Join(cached, "web-runtime"))
+
+	if got := forgeRootFromFile(filepath.Join(cached, "internal", "buildinfo", "buildinfo.go")); got != "" {
+		t.Fatalf("module-cache copy accepted as a dev checkout: forgeRootFromFile = %q, want \"\" — "+
+			"a pinned forge would bridge the project's frontends into a read-only tree", got)
+	}
+
+	// A tagged release in the cache is the same thing.
+	tagged := filepath.Join(modCache, "github.com", "reliant-labs", "forge@v0.2.0")
+	writeGoMod(t, tagged, "module "+forgeModulePath+"\n\ngo 1.26\n")
+	mustMkdirAll(t, filepath.Join(tagged, "pkg"))
+	if got := forgeRootFromFile(filepath.Join(tagged, "cmd", "forge", "main.go")); got != "" {
+		t.Fatalf("tagged module-cache copy accepted as a checkout: %q", got)
+	}
+
+	// A real checkout whose directory merely contains an '@' (no module
+	// version after it) is still a checkout.
+	checkout := filepath.Join(t.TempDir(), "forge@work")
+	writeGoMod(t, checkout, "module "+forgeModulePath+"\n\ngo 1.26\n")
+	mustMkdirAll(t, filepath.Join(checkout, "pkg"))
+	if got := forgeRootFromFile(filepath.Join(checkout, "internal", "x.go")); got != checkout {
+		t.Fatalf("a checkout named %q was rejected: forgeRootFromFile = %q", filepath.Base(checkout), got)
+	}
+}

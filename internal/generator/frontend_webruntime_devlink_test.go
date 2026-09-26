@@ -193,3 +193,73 @@ func readAll(t *testing.T, projectDir string) string {
 	}
 	return b.String()
 }
+
+// modCacheBridgeFixture lays down a project carrying the bridge an earlier
+// forge wrote into the READ-ONLY module cache: forge's own root manifest and
+// .forge-link/web-runtime pointing at $GOMODCACHE/…/forge@<version>/web-runtime.
+func modCacheBridgeFixture(t *testing.T, base string) (projectDir, link string) {
+	t.Helper()
+	cached := fakeForgeCheckout(t, filepath.Join(base, "gomod", "github.com", "reliant-labs",
+		"forge@v0.1.18-0.20260926053138-05d5d6999d39"))
+	projectDir = filepath.Join(base, "app")
+	writeFrontendManifest(t, projectDir, "web", `"react": "^19.1.0"`)
+	if err := os.WriteFile(filepath.Join(projectDir, "package.json"),
+		[]byte(devWorkspaceRootManifest([]string{"frontends/web"})), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link = filepath.Join(projectDir, devLinkDir, "web-runtime")
+	if _, err := ensureRelativeSymlink(link, filepath.Join(cached, "web-runtime")); err != nil {
+		t.Fatal(err)
+	}
+	return projectDir, link
+}
+
+// TestEnsureDevWebRuntimeLink_HealsABridgeIntoTheModuleCache: a project that
+// an earlier forge bridged into the module cache must not stay broken after
+// the discovery fix. The stale link made every `npm install` fail with EACCES
+// creating node_modules inside the read-only cache, so the frontend lane
+// could not run until someone found and deleted it by hand.
+func TestEnsureDevWebRuntimeLink_HealsABridgeIntoTheModuleCache(t *testing.T) {
+	base := t.TempDir()
+	projectDir, link := modCacheBridgeFixture(t, base)
+	// The pinned pseudo-version forge: a "dev build" whose discovery (now)
+	// finds no checkout, because the only candidate was the module cache.
+	pinDevBuild(t, true, "")
+
+	EnsureDevWebRuntimeLink(projectDir)
+
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Errorf("the link into the module cache is still there (%v) — npm install keeps failing with EACCES", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "package.json")); !os.IsNotExist(err) {
+		t.Errorf("forge's own workspace root for the stale bridge was left behind (%v)", err)
+	}
+}
+
+// TestEnsureDevWebRuntimeLink_LeavesARealCheckoutBridgeAlone: a released
+// forge running in a maintainer's tree must not dismantle their bridge to a
+// real sibling checkout, and a user's own root manifest is never touched.
+func TestEnsureDevWebRuntimeLink_LeavesARealCheckoutBridgeAlone(t *testing.T) {
+	base := t.TempDir()
+	checkout := fakeForgeCheckout(t, filepath.Join(base, "forge"))
+	projectDir := filepath.Join(base, "app")
+	writeFrontendManifest(t, projectDir, "web", `"react": "^19.1.0"`)
+	const userRoot = `{"name":"my-monorepo","private":true,"workspaces":["frontends/*"]}`
+	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte(userRoot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(projectDir, devLinkDir, "web-runtime")
+	if _, err := ensureRelativeSymlink(link, filepath.Join(checkout, "web-runtime")); err != nil {
+		t.Fatal(err)
+	}
+	pinDevBuild(t, false, "")
+
+	EnsureDevWebRuntimeLink(projectDir)
+
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("a bridge to a real checkout was removed: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(projectDir, "package.json")); string(got) != userRoot {
+		t.Errorf("a user's own root package.json was modified: %s", got)
+	}
+}

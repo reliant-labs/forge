@@ -1,6 +1,7 @@
 package migratekit
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io/fs"
@@ -110,6 +111,29 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 			"(e.g. `migrate force %d`) before restarting", before.Version, before.Version)
 	}
 
+	// A schema AHEAD of this binary is a rollback: an older release booting
+	// against a database a newer one migrated. Boot is the path a
+	// deploy-time skip never reaches (AUTO_MIGRATE, `kubectl rollout undo`),
+	// so it gets the same verdict `db migrate up` does — serve if every
+	// unknown version was declared backward-compatible, refuse to start if
+	// not. See ahead.go.
+	source, err := scanSource(fsys, dir)
+	if err != nil {
+		return err
+	}
+	ahead, err := classifyAhead(context.Background(), db, source, before)
+	if err != nil {
+		return fmt.Errorf("running migrations: %w", err)
+	}
+	if ahead != nil {
+		warnf(logger, "database schema is AHEAD of this binary (a rollback) — every newer version was declared backward-compatible, so nothing is applied and startup continues",
+			"schema_version", ahead.Version, "binary_latest", ahead.Latest, "unknown_versions", joinVersions(ahead.Versions))
+		return nil
+	}
+	if err := recordCompat(context.Background(), db, source); err != nil {
+		return err
+	}
+
 	if _, err := foldNoChange(m.Up()); err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
@@ -153,5 +177,12 @@ func stateOf(m *migrate.Migrate) (State, error) {
 func logf(logger *slog.Logger, msg string, args ...any) {
 	if logger != nil {
 		logger.Info(msg, args...)
+	}
+}
+
+// warnf is logf at WARN, for a state that is healthy but must not be missed.
+func warnf(logger *slog.Logger, msg string, args ...any) {
+	if logger != nil {
+		logger.Warn(msg, args...)
 	}
 }

@@ -378,10 +378,15 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	if err := checkReleaseCoversEnv(in.entities, would, in.opts); err != nil {
+		return names, err
+	}
+	// The cut's other refusal (cutReleaseFromBuildState): a release that
+	// captured nothing at all.
 	if len(would) == 0 {
 		return nil, fmt.Errorf("--release %s: this build would capture no image digest to record — a release pins immutable digests, which require --push <registry>", in.opts.release)
 	}
-	return names, checkReleaseCoversEnv(in.entities, would, in.opts)
+	return names, nil
 }
 
 // imageNameOfPlanStep returns the image a docker plan step builds: the project

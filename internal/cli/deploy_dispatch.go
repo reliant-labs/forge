@@ -368,6 +368,10 @@ type applyOptsContext struct {
 	// group's rollout outcomes into ONE document.
 	OnStream  func(string)
 	OnRollout func(cluster.RolloutObservation)
+	// PromotionRollback and OnSkippedJobs carry the rollback skip into every
+	// group's apply. See cluster.ApplyOpts.
+	PromotionRollback bool
+	OnSkippedJobs     func([]string)
 }
 
 // applyOptsBuilderFromContext returns an ApplyOptsBuilder closure
@@ -464,6 +468,9 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			Rollout:      p.Rollout,
 			OnStream:     p.OnStream,
 			OnRollout:    p.OnRollout,
+
+			PromotionRollback: p.PromotionRollback,
+			OnSkippedJobs:     p.OnSkippedJobs,
 		}
 	}
 }

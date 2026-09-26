@@ -28,6 +28,7 @@ import (
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/kcl"
 	"github.com/reliant-labs/forge/pkg/deploystate"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 func newDeployCmd() *cobra.Command {
@@ -621,6 +622,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	imageDigests := tagRes.imageDigests
 	tagSource := tagRes.tagSource
 	report.setTags(imageTag, tagSource, tagRes.boundRelease, opts.noDigest)
+	report.setPromotionRollback(tagRes.promotionRollback)
 
 	namespace = resolveDeployNamespace(ctx, namespace, envName, store.Meta().Name)
 
@@ -786,6 +788,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
 		targets: targets, helmSpecs: helmSpecs,
 		rollout: opts.rollout, report: report,
+		promotionRollback: tagRes.promotionRollback,
 	}); err != nil {
 		return err
 	}
@@ -941,6 +944,9 @@ type deployTagResolution struct {
 	// named in tagSource's prose; carried structurally so the report does not
 	// have to parse it back out of a sentence.
 	boundRelease string
+	// promotionRollback is true when boundRelease was bound by `forge env
+	// promote --rollback`: the deploy then skips the pre-rollout Jobs.
+	promotionRollback bool
 }
 
 // resolveDeployTags resolves the image tag (three-tier precedence chain) and
@@ -991,6 +997,14 @@ func resolveDeployTags(ctx context.Context, projectDir, envName string, opts dep
 	if boundRel != "" {
 		res.tagSource = fmt.Sprintf("release %s (promoted; %s)", boundRel, bindings.Location())
 		fmt.Printf("  Release:     %s  (env %q is promoted to it — pinning its digests from %s)\n", boundRel, envName, bindings.Location())
+		isRollback, rerr := deployPromotionIsRollback(ctx, bindings, envName, opts.noDigest)
+		if rerr != nil {
+			return deployTagResolution{}, rerr
+		}
+		res.promotionRollback = isRollback
+		if isRollback {
+			fmt.Printf("  Rollback:    %s was bound by `forge env promote --rollback` — its pre-rollout Jobs (the schema migration) will NOT run\n", boundRel)
+		}
 	}
 	return res, nil
 }
@@ -1079,6 +1093,9 @@ type deployApplyInput struct {
 	// report, when non-nil, receives the applied manifest stream and the
 	// per-resource rollout outcomes. Nil-safe.
 	report *deployReport
+	// promotionRollback skips the pre-rollout Jobs (the env's ledger entry
+	// is a `forge env promote --rollback`). See cluster.ApplyOpts.
+	promotionRollback bool
 }
 
 // applyDeployGroups applies the rendered deploy groups. With no groups (and not
@@ -1110,6 +1127,9 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			Rollout:      in.rollout,
 			OnStream:     in.report.streamObserver(),
 			OnRollout:    in.report.rolloutObserver(),
+
+			PromotionRollback: in.promotionRollback,
+			OnSkippedJobs:     in.report.skippedJobsObserver(),
 		})
 	}
 	if len(in.groups) > 0 {
@@ -1121,6 +1141,9 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
 			Rollout:  in.rollout,
 			OnStream: in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
+
+			PromotionRollback: in.promotionRollback,
+			OnSkippedJobs:     in.report.skippedJobsObserver(),
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
@@ -2277,6 +2300,24 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		base[image] = digest
 	}
 	return base, binding.Release, nil
+}
+
+// deployPromotionIsRollback reports whether the release this deploy ships was
+// bound by `forge env promote --rollback` — the env's CURRENT ledger entry is
+// a rollback. Such a deploy skips the pre-rollout Jobs; see
+// cluster.ApplyOpts.PromotionRollback for why.
+//
+// noDigest deploys the mutable tag rather than the ledger's release, so the
+// ledger says nothing about what ships and the answer is false.
+func deployPromotionIsRollback(ctx context.Context, bindings bindingStore, envName string, noDigest bool) (bool, error) {
+	if noDigest {
+		return false, nil
+	}
+	current, bound, err := bindings.Current(ctx, envName)
+	if err != nil {
+		return false, fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, bindings.Location(), err)
+	}
+	return bound && current.Kind == release.KindRollback, nil
 }
 
 // shortDigest trims a canonical `sha256:<64 hex>` to a human-comparable head.

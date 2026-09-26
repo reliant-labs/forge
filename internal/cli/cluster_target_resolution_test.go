@@ -2,6 +2,9 @@ package cli
 
 import (
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 // clusterTargetJSON is the render shape that exposed the defect: the env's
@@ -91,6 +94,54 @@ func TestKCLFirstClusterPlatform_PrefersDeclaredClusterTarget(t *testing.T) {
 	e := parseClusterTargetFixture(t)
 	if got := kclFirstClusterPlatform(e); got != "amd64" {
 		t.Errorf("platform: got %q, want the declared cluster_target's amd64", got)
+	}
+}
+
+// TestDeclaredEnvContext_PrefersDeclaredClusterTarget: the env-wide kubectl
+// context (the deploy preflight's target, the secrets pre-apply, rollback) is
+// the declared cluster_target's, not the first deploy group's. Groups are
+// ordered by their SORTED key, `k8s-cluster|<context>|…`, so the first group
+// is whichever context sorts lowest. That is unrelated to which cluster is the
+// env's: GKE names a zonal cluster `gke_<p>_us-central1-a_<c>` and a regional
+// one `gke_<p>_us-central1_<c>`, and '-' sorts before '_', so a zonal
+// secondary cluster always wins. Before the fix, adding a second cluster to
+// prod pointed the deploy preflight at it, and the preflight failed on prod's
+// CRDs and Secrets missing from the daemon cluster.
+func TestDeclaredEnvContext_PrefersDeclaredClusterTarget(t *testing.T) {
+	e := parseClusterTargetFixture(t)
+	groups := []deploytarget.ServiceGroup{
+		k8sGroup("gke_proj_us-central1-a_prod-daemon-v2", "control-plane-prod"),
+		k8sGroup("gke_proj_us-central1_prod", "control-plane-prod"),
+	}
+	if got := declaredEnvContext(e, groups); got != "gke_proj_us-central1_prod" {
+		t.Errorf("env context: got %q, want the declared cluster_target's gke_proj_us-central1_prod", got)
+	}
+	// No cluster_target: the first declared group, as before.
+	if got := declaredEnvContext(nil, groups); got != "gke_proj_us-central1-a_prod-daemon-v2" {
+		t.Errorf("no cluster_target: got %q, want the first group's", got)
+	}
+}
+
+// TestHelmChartsRideTheDeclaredClusterTargetGroup: an env's platform deps
+// (forge.HelmChart: cert-manager, the gateway controller) apply ONCE, with
+// the group whose context is the env's. That must be the declared
+// cluster_target's group, not the first group in sorted order. The daemon
+// cluster's zonal context sorts first, so before the fix a bare
+// `forge env deploy prod` would have installed prod's cert-manager and
+// gateway charts onto the daemon cluster and skipped prod.
+func TestHelmChartsRideTheDeclaredClusterTargetGroup(t *testing.T) {
+	daemon := k8sGroup("gke_proj_us-central1-a_prod-daemon-v2", "control-plane-prod")
+	prod := k8sGroup("gke_proj_us-central1_prod", "control-plane-prod")
+	builder := applyOptsBuilderFromContext(applyOptsContext{
+		Groups:     []deploytarget.ServiceGroup{daemon, prod},
+		Entities:   parseClusterTargetFixture(t),
+		HelmCharts: []cluster.HelmChartSpec{{Name: "cert-manager"}},
+	})
+	if got := builder(daemon).HelmCharts; len(got) != 0 {
+		t.Errorf("the daemon cluster's group carries the env's platform deps %v; they belong to the declared target", got)
+	}
+	if got := builder(prod).HelmCharts; len(got) != 1 {
+		t.Errorf("the declared target's group carries %d platform deps, want 1", len(got))
 	}
 }
 

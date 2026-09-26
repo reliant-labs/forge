@@ -406,12 +406,32 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 	// re-targeted chart must be applied once whether or not the env happens to
 	// declare a service group on that cluster, and an operator cluster
 	// frequently has no forge-deployed service at all.
+	//
+	// The primary context is the env's own (declaredEnvContext: the declared
+	// cluster_target, else the first group). Group order alone would pick
+	// whichever context sorts lowest, which put prod's cert-manager on its
+	// daemon cluster.
 	primaryHelmContext := ""
 	if len(p.HelmCharts) > 0 {
+		primaryHelmContext = declaredEnvContext(p.Entities, p.Groups)
+		// The charts must ride SOME group or they are silently never
+		// applied. If no group in this dispatch targets the declared context
+		// (a --target that selects only a secondary cluster's app), fall back
+		// to the first group with a context, as before.
+		rides := false
 		for _, g := range p.Groups {
-			if c := resolveGroupContext(g); c != "" {
-				primaryHelmContext = c
+			if resolveGroupContext(g) == primaryHelmContext && primaryHelmContext != "" {
+				rides = true
 				break
+			}
+		}
+		if !rides {
+			primaryHelmContext = ""
+			for _, g := range p.Groups {
+				if c := resolveGroupContext(g); c != "" {
+					primaryHelmContext = c
+					break
+				}
 			}
 		}
 	}
@@ -598,9 +618,11 @@ func resolveGroupContext(group deploytarget.ServiceGroup) string {
 
 // declaredEnvContext returns the env-wide kubectl context for the
 // consumers that don't iterate groups per-target: the secrets pre-apply,
-// the empty-groups direct cluster.Apply, and the rollback provider. It is
-// the first declared K8sCluster cluster (group.Cluster, from KCL
-// `forge.K8sCluster.cluster`) — there is no CLI override. Empty when no
+// the empty-groups direct cluster.Apply, the rollback provider, and the
+// deploy preflight. It is the Bundle's declared `cluster_target.cluster`,
+// falling back (for a contract that declares none) to the first declared
+// K8sCluster cluster (group.Cluster, from KCL `forge.K8sCluster.cluster`) —
+// there is no CLI override. Empty when no
 // cluster is declared (host-only / compose); the apply chokepoint refuses
 // an empty context on a write rather than using kubectl's current one.
 //
@@ -608,7 +630,17 @@ func resolveGroupContext(group deploytarget.ServiceGroup) string {
 // own declared cluster via resolveGroupContext; this single value covers
 // only the env-wide single-cluster paths, which already assume one
 // namespace per env.
-func declaredEnvContext(groups []deploytarget.ServiceGroup) string {
+func declaredEnvContext(entities *KCLEntities, groups []deploytarget.ServiceGroup) string {
+	// The Bundle's declared env target wins. Group order cannot stand in for
+	// it: groups are sorted by `k8s-cluster|<context>|…`, so the "first"
+	// group is whichever context sorts lowest, and a zonal GKE context
+	// (`…_us-central1-a_…`) sorts ahead of a regional one (`…_us-central1_…`).
+	// That once aimed prod's deploy preflight at its secondary daemon cluster.
+	if entities != nil {
+		if c := entities.ClusterTarget.field("cluster"); c != "" {
+			return c
+		}
+	}
 	for _, g := range groups {
 		if g.ProviderID == "k8s-cluster" && g.Cluster != "" {
 			return g.Cluster

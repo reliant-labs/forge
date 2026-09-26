@@ -153,6 +153,8 @@ func resetDevStackGlobals(t *testing.T) {
 	reset := func() {
 		kclplugin.UseBlockAllocator(nil)
 		kclplugin.UseDevStacks(nil)
+		kclplugin.UseFileWriter("")
+		_ = kclplugin.SuppressedWrites()
 		kclplugin.ResetDefaultResolverForTest()
 		devstack.SetActive(devstack.Options{})
 		devstack.SetMaxStacks(0)

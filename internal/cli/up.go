@@ -678,6 +678,9 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// resolve_port store if the already-running guard below rejects this
 	// render (a rejected attempt must not drift the stable assignments).
 	_, restorePortStore := activateDevStack(ctx, projectDir, opts.env, renderToLaunch)
+	// Bringing the env up IS materializing it, so the module's generated
+	// files (fp.write_file) are written by these renders.
+	armMaterializer(projectDir)
 
 	// Arm the -D render options BEFORE the first render. Validated against
 	// what the env's KCL declares so a typo'd name fails here rather than

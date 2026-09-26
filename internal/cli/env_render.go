@@ -63,6 +63,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -289,6 +290,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	defer func() {
 		unpin()
 		scan.report(errOut, envName)
+		reportDeclinedWrites(errOut, kclplugin.SuppressedWrites())
 	}()
 
 	entities, kerr := RenderKCL(ctx, projectDir, envName)
@@ -920,4 +922,28 @@ func diffRenderTrees(before, after map[string]renderFileStamp) []renderTreeChang
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].path < changes[j].path })
 	return changes
+}
+
+// reportDeclinedWrites names the files the env's KCL generates through
+// fp.write_file that this render deliberately did NOT write. A render is a
+// read: those files are materialized by `forge env up` (and an applying
+// `forge env deploy` of a local env), so a reader auditing "what would this
+// env do" learns about them here rather than finding them silently absent.
+func reportDeclinedWrites(w io.Writer, paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	var uniq []string
+	for _, p := range paths {
+		if !seen[p] {
+			seen[p] = true
+			uniq = append(uniq, p)
+		}
+	}
+	sort.Strings(uniq)
+	fmt.Fprintf(w, "[render] %d generated file(s) not written — `forge env up` materializes them:\n", len(uniq))
+	for _, p := range uniq {
+		fmt.Fprintf(w, "[render]   %s\n", p)
+	}
 }

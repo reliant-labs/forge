@@ -53,7 +53,7 @@ func defaultSelfCapabilities() []selfCapability {
 	return []selfCapability{
 		{
 			Name:        "kcl-plugin",
-			Description: "kcl_plugin.forge namespace — resolve_port, allocate_port, dev_stacks, derive_jwk",
+			Description: "kcl_plugin.forge namespace — resolve_port, allocate_port, dev_stacks, write_file, derive_jwk",
 			// Every rendered environment imports kcl_plugin.forge, and
 			// rendering is what deploy gates. A project with deploy off
 			// never renders, so the capability is genuinely not needed.

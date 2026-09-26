@@ -48,6 +48,10 @@ import (
 // machine arms none of the WRITING halves: allocate_port resolves to its base
 // port and resolve_port reads its store without writing it.
 func activateDevStack(ctx context.Context, projectDir, env string, purpose renderPurpose) (devstack.Options, func()) {
+	// Every render starts unable to write files. Only a command that goes
+	// on to MATERIALIZE the env re-arms it (armMaterializer), after this.
+	kclplugin.UseFileWriter("")
+
 	opts := devstack.Resolve(projectDir)
 	devstack.SetActive(opts)
 	if opts.Worktree != "" || opts.Branch != "" {
@@ -73,7 +77,9 @@ func activateDevStack(ctx context.Context, projectDir, env string, purpose rende
 	})
 
 	storePath := filepath.Join(projectDir, ".forge", "ports-"+env+".json")
+	lastActivatedRunsHere = true
 	if purpose == renderDeclaration && !envRunsOnThisMachine(ctx, projectDir, env) {
+		lastActivatedRunsHere = false
 		// Nothing about this env runs here, so there is no local port for
 		// allocate_port to protect: it resolves to base, deterministically,
 		// and neither port store is written.
@@ -116,6 +122,33 @@ func activateDevStack(ctx context.Context, projectDir, env string, purpose rende
 	restore := kclplugin.UsePortStore(storePath)
 	return opts, restore
 }
+
+// armMaterializer lets the KCL fp.write_file builtin write files for the rest
+// of this process's renders of env. It is the one decision separating a
+// render that CHECKS from a render that BUILDS: `forge env up`'s bring-up and
+// an applying `forge env deploy` of an env that runs here call it; `env
+// render`, `env deploy --dry-run`, `env config`, status, doctor, lint, ci and
+// generate never do, so a module's generated files are written by the
+// commands that launch the env and by nothing that only reads it.
+//
+// A deploy of an env that runs nowhere on this machine does not arm it
+// either: a file a dev KCL generates for a LOCAL process (control-plane's
+// shared NATS config) has no consumer when the env is a cloud cluster.
+//
+// It reads activateDevStack's answer rather than probing again: the probe is
+// itself a render, and it disarms the port allocator activateDevStack just
+// armed. Call it immediately after activateDevStack for the same env.
+func armMaterializer(projectDir string) {
+	if !lastActivatedRunsHere {
+		return
+	}
+	kclplugin.UseFileWriter(projectDir)
+}
+
+// lastActivatedRunsHere records activateDevStack's verdict on whether the env
+// it just armed runs on this machine, for armMaterializer. One command
+// activates one env at a time, so a process-level record is enough.
+var lastActivatedRunsHere bool
 
 // renderPurpose is WHY a command renders an env, and it decides whether that
 // render may claim machine-local port state.

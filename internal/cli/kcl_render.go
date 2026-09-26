@@ -1581,6 +1581,16 @@ func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
 	// that does not exist.
 	case "compose", "external", "host-infra", "simple-backend":
 		return BuildConfigEntity{}
+	case "cluster":
+		// An IMAGE-LESS cluster service is the infra-bundle shape: it renders
+		// only its owned `manifests` onto a cluster and has no artifact at all
+		// (render.k: "An image-less cluster service is an INFRA service … no
+		// phantom Deployment"). Synthesizing ./cmd/<name> here disagreed with
+		// the render and sent `forge build --release` at a package that does
+		// not exist, failing the whole cut.
+		if s.Image == "" {
+			return BuildConfigEntity{}
+		}
 	}
 	return BuildConfigEntity{
 		Type: "go",

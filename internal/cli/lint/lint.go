@@ -1247,14 +1247,39 @@ func laneUnavailable(fixHint, format string, a ...any) error {
 	return &laneUnavailableError{reason: fmt.Sprintf(format, a...), fixHint: fixHint}
 }
 
+// golangciRunArgs is the ONE place a `golangci-lint run` argv is assembled,
+// so every lane that shells golangci-lint waits for the machine-global lock
+// the same way.
+//
+// --allow-serial-runners is what makes it wait. Without it golangci-lint gives
+// the lock at $TMPDIR/golangci-lint.lock five seconds and then exits 3 with
+// "parallel golangci-lint is running" — on a shared box that fails `forge
+// lint` whenever any other agent, editor LSP or CI job on the machine is
+// linting ANY project. The flag keeps the lock and drops only the deadline:
+// invocations queue and run one at a time.
+//
+// NOT --allow-parallel-runners. That drops the lock entirely, and the lock is
+// there because two full golangci-lint runs at once can exhaust a small
+// machine's memory — the same reasoning the scaffolded .golangci.yml
+// (templates/project/golangci.yml.tmpl) records beside its own
+// `allow-serial-runners: true`. The flag is passed here as well because that
+// config line reaches only projects scaffolded or upgraded after it landed; a
+// project on an older .golangci.yml still got five seconds. A project that
+// deliberately sets allow-parallel-runners keeps it: golangci-lint consults
+// that before this flag.
+func golangciRunArgs(extra []string, paths []string) []string {
+	args := append([]string{"run", "--allow-serial-runners"}, extra...)
+	return append(args, paths...)
+}
+
 func runGolangciLint(ctx context.Context, fix bool, paths []string) error {
 	fmt.Println("Running golangci-lint...")
 
-	args := []string{"run"}
+	var extra []string
 	if fix {
-		args = append(args, "--fix")
+		extra = append(extra, "--fix")
 	}
-	args = append(args, paths...)
+	args := golangciRunArgs(extra, paths)
 
 	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
 	cmd.Stdout = os.Stdout
@@ -1283,8 +1308,7 @@ func runGolangciLint(ctx context.Context, fix bool, paths []string) error {
 func runTypedAccessGuardAdvisory(ctx context.Context, paths []string) error {
 	fmt.Println("Checking typed-config guardrail (advisory)...")
 
-	args := []string{"run", "--enable-only=forbidigo", "--issues-exit-code=0"}
-	args = append(args, paths...)
+	args := golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, paths)
 
 	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
 	cmd.Stdout = os.Stdout
@@ -1305,16 +1329,18 @@ func runTypedAccessGuardAdvisory(ctx context.Context, paths []string) error {
 }
 
 // typedAccessGuardUnavailableHint is the remediation for a guardrail
-// invocation that never reported. It leads with golangci-lint's
-// machine-global lock because that is overwhelmingly the cause: the lock
-// lives at $TMPDIR/golangci-lint.lock, is shared by every golangci-lint on
-// the machine regardless of project or cache, and the default patience for
-// it is five seconds.
-const typedAccessGuardUnavailableHint = "re-run `forge lint`. If another golangci-lint was running on this machine " +
-	"(an editor's golangci-lint LSP, a sibling CI job, another service in the same monorepo) it held the " +
-	"machine-global lock at $TMPDIR/golangci-lint.lock and this invocation got five seconds: set " +
-	"`allow-serial-runners: true` under `run:` in .golangci.yml so invocations queue instead of failing " +
-	"(forge scaffolds that line — `forge project upgrade` re-renders it into an existing project)"
+// invocation that never reported.
+//
+// It no longer leads with golangci-lint's machine-global lock. forge passes
+// --allow-serial-runners on every invocation (golangciRunArgs), so a
+// contended lock now QUEUES rather than failing after five seconds. What is
+// left is a golangci-lint that could not start at all — most often an old
+// binary that predates the flag, or a config it cannot load — and the
+// output printed just above this line names which.
+const typedAccessGuardUnavailableHint = "read the golangci-lint output above — it exited before reporting. The usual " +
+	"causes are a golangci-lint too old for this project's .golangci.yml (the version CI pins is in " +
+	".github/workflows) or a config it cannot load. A lock held by another golangci-lint on this machine is " +
+	"NOT the cause: forge runs it with --allow-serial-runners, so a contended lock waits its turn instead of failing"
 
 func runBufLint(ctx context.Context) error {
 	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {

@@ -962,7 +962,7 @@ func parseDigitsLint(s string) int {
 // Non-zero exit gates (same as text mode); the captured diagnostics
 // become findings at error severity. A clean exit contributes nothing.
 func collectGolangciLintJSON(ctx context.Context, paths []string) ([]lintJSONFinding, bool) {
-	args := append([]string{"run"}, paths...)
+	args := golangciRunArgs(nil, paths)
 	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
 	var buf strings.Builder
 	cmd.Stdout = &buf
@@ -1006,7 +1006,7 @@ const (
 // same rule id at warning severity with gated=false, so `forge lint --json`
 // answered "ok": true over a check that never executed.
 func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-	args := append([]string{"run", "--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths...)
+	args := golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths)
 	cmd := exec.CommandContext(rc.ctx, "golangci-lint", args...)
 	var buf strings.Builder
 	cmd.Stdout = &buf

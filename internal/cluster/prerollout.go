@@ -205,6 +205,71 @@ func jobDeployPhase(m parsedDoc) (string, error) {
 	}
 }
 
+// A ROLLBACK SKIPS THE PRE-ROLLOUT JOBS
+// ====================================
+// A deploy whose ledger entry is a `forge env promote --rollback` ships the
+// OLDER release's images, so its pre-rollout Jobs run the older binary — and
+// the rule is to not run them at all, for three reasons:
+//
+//  1. They can do nothing useful. The ledger refuses a rollback to a release
+//     this env never ran, so that release's migrations are already applied;
+//     its migrate step can only no-op, or FAIL because a newer release moved
+//     the schema past what the older binary embeds ("no migration found for
+//     version N" — golang-migrate, and every migrator older than migratekit's
+//     schema-ahead handling). Holding the rollout on that failure makes the
+//     rollback impossible exactly when it is needed.
+//  2. They cannot undo the schema. The older binary has no down SQL for a
+//     newer release's migrations, so no pre-rollout step of the OLDER release
+//     can step the schema back. Refusing the rollback instead would refuse
+//     every rollback across any migration, which is the defect, not a fix.
+//  3. The decision needs no live database and no git history. forge cannot
+//     read a production schema from CI, and a shallow CI checkout does not
+//     hold the release commits, so any rule of the form "skip only if the
+//     schema is ahead" would fail open or fail closed on facts it cannot see.
+//
+// What it costs: the older code runs against the newer schema. That is safe
+// only when the newer migrations are backward-compatible (expand/contract),
+// so the skip is never silent — it is printed with the step-down runbook and
+// reported (OnSkippedJobs → the deploy's --json). Post-rollout Jobs are NOT
+// skipped: they configure things for the workloads being deployed, whichever
+// release that is.
+
+// skipPreRolloutForRollback announces the skip and returns the skipped Job
+// names, in stream order. The announcement is printed even under Quiet: it is
+// a decision a human must see, not a progress banner.
+func skipPreRolloutForRollback(phases rolloutPhases) []string {
+	names := make([]string, 0, len(phases.preJobRefs))
+	for _, j := range phases.preJobRefs {
+		names = append(names, j.Name)
+	}
+	fmt.Printf("ROLLBACK: skipping %d pre-rollout Job(s): %s\n", len(names), strings.Join(names, ", "))
+	fmt.Println("  This deploy ships a release the env already ran (`forge env promote --rollback`). Its pre-rollout")
+	fmt.Println("  Jobs (the schema migration) cannot step a newer schema back and would fail against it, so they are")
+	fmt.Println("  not run. The older code now runs against the CURRENT schema — safe only if the migrations it is")
+	fmt.Println("  rolling back across are backward-compatible. If they are not, step the schema down with the NEWER")
+	fmt.Println("  release's image (`<binary> db migrate down`, once per version, reading each down file first — a")
+	fmt.Println("  down can discard data) before this release serves traffic. See the forge skill db/deploy-migrations.")
+	return names
+}
+
+// withoutJobs removes the named Jobs from a manifest stream, keeping every
+// other document in order. Used so the stream a rollback REPORTS (dry-run,
+// --json) is the stream it applies.
+func withoutJobs(stream string, jobs []jobRef) string {
+	drop := make(map[string]bool, len(jobs))
+	for _, j := range jobs {
+		drop[j.Name] = true
+	}
+	var kept []string
+	for _, doc := range splitDocs(stream) {
+		if m, ok := parseDoc(doc); ok && m.Kind == "Job" && drop[m.Metadata.Name] {
+			continue
+		}
+		kept = append(kept, doc)
+	}
+	return strings.Join(kept, docDelimiter)
+}
+
 // applyPreRolloutGate applies the support objects and the pre-rollout Jobs,
 // then waits for every one of those Jobs to complete.
 //

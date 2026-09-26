@@ -392,6 +392,17 @@ type ApplyOpts struct {
 	// mode, so it has nothing to report, and inventing "not waited" entries
 	// here would mean synthesizing observations Apply never made.
 	OnRollout func(RolloutObservation)
+
+	// PromotionRollback is true when the env's current ledger entry is a
+	// `forge env promote --rollback`. The pre-rollout Jobs are then NOT
+	// applied: see skipPreRolloutForRollback in prerollout.go for why that
+	// is the only step that makes a rollback across a migration possible.
+	PromotionRollback bool
+
+	// OnSkippedJobs, when non-nil, receives the names of the pre-rollout
+	// Jobs a rollback skipped, so the deploy report records them. The skip
+	// is also printed; this is the machine-readable half.
+	OnSkippedJobs func(jobs []string)
 }
 
 // GroupScope describes how to filter the env's rendered manifest stream
@@ -745,6 +756,19 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	phases, err := partitionRolloutPhases(rest)
 	if err != nil {
 		return err
+	}
+	// A ROLLBACK does not run the pre-rollout Jobs. Decided here, before the
+	// stream is reported and before the dry-run return, so `--dry-run` and
+	// `--json` describe the Jobs a rollback will NOT run exactly as the real
+	// apply behaves. See skipPreRolloutForRollback.
+	if opts.PromotionRollback && phases.gated() {
+		skipped := skipPreRolloutForRollback(phases)
+		if opts.OnSkippedJobs != nil {
+			opts.OnSkippedJobs(skipped)
+		}
+		manifests = withoutJobs(manifests, phases.preJobRefs)
+		phases.preJobs, phases.preJobRefs = "", nil
+		rest = joinNonEmpty(phases.support, phases.workloads)
 	}
 
 	// Render the selected platform deps (helm-as-a-RENDERER). Each chart's

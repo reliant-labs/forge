@@ -227,8 +227,11 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 		cfg = cfg.CachePath(cache)
 	}
 
-	ep = embeddedpostgres.NewDatabase(cfg)
-	if err := ep.Start(); err != nil {
+	// StartEmbedded, not NewDatabase+Start: a cold cache downloads the
+	// binary, and the library reports ANY failed download as "no version
+	// found matching X". See fetch.go.
+	ep, err = StartEmbedded(cfg)
+	if err != nil {
 		return "", 0, nil, fmt.Errorf("pgtest: start embedded postgres: %w", err)
 	}
 

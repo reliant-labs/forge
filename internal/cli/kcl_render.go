@@ -65,6 +65,18 @@ type KCLEntities struct {
 	// implicit via Cluster.Network / Cluster.RegistryMirror — there is
 	// no "primary" cluster.
 	Clusters []ClusterEntity `json:"clusters,omitempty"`
+	// ClusterTarget is the Bundle's DECLARED env-wide target — the kubectl
+	// context, namespace, registry and platform the env deploys to, stated
+	// once (kcl/render.k `cluster_target`). Nil for a contract that declares
+	// none (host-only / External-only envs, hand-rolled fixtures).
+	//
+	// Every env-wide question (which namespace, which context, which arch)
+	// is answered from HERE when it is present, never inferred from "the
+	// first cluster-shaped service". The render emits services as
+	// `bundle.services + projected(bundle.workloads)`, so a lone image-less
+	// infra service pinned to a SECOND cluster sorts ahead of every real
+	// workload — and inferring from it re-namespaced an entire prod render.
+	ClusterTarget *ClusterTargetEntity `json:"cluster_target,omitempty"`
 	// KubeconfigSecrets are cross-cluster kubeconfigs forge mints fresh
 	// each up (at the cluster→deploy boundary) and applies as k8s Secrets.
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
@@ -1014,6 +1026,7 @@ type KCLEnvVar struct {
 // deploy block by type to populate the typed [KCLEntities].
 type kclRenderRaw struct {
 	Clusters          []ClusterEntity          `json:"clusters,omitempty"`
+	ClusterTarget     *ClusterTargetEntity     `json:"cluster_target,omitempty"`
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
 	Services          []kclServiceRaw          `json:"services,omitempty"`
 	Operators         []OperatorEntity         `json:"operators,omitempty"`
@@ -1068,6 +1081,38 @@ type rawManifest struct {
 			} `json:"spec,omitempty"`
 		} `json:"template,omitempty"`
 	} `json:"spec,omitempty"`
+}
+
+// ClusterTargetEntity is the rendered `cluster_target` (kcl/render.k
+// `_render_cluster_target`): the env-wide coordinates a Bundle declares once.
+// Only the fields forge resolves env-wide facts from are read.
+type ClusterTargetEntity struct {
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Registry  string `json:"registry,omitempty"`
+	Domain    string `json:"domain,omitempty"`
+	Platform  string `json:"platform,omitempty"`
+}
+
+// field returns one env-wide coordinate by the name the "first K8sCluster
+// field" resolvers use, or "" when the target does not declare it.
+func (t *ClusterTargetEntity) field(name string) string {
+	if t == nil {
+		return ""
+	}
+	switch name {
+	case "cluster":
+		return t.Cluster
+	case "namespace":
+		return t.Namespace
+	case "registry":
+		return t.Registry
+	case "domain":
+		return t.Domain
+	case "platform":
+		return t.Platform
+	}
+	return ""
 }
 
 type kclServiceRaw struct {
@@ -1196,6 +1241,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	}
 	out := &KCLEntities{
 		Clusters:             raw.Clusters,
+		ClusterTarget:        raw.ClusterTarget,
 		KubeconfigSecrets:    raw.KubeconfigSecrets,
 		Operators:            raw.Operators,
 		Frontends:            raw.Frontends,

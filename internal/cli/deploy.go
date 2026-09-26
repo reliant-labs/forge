@@ -3016,7 +3016,8 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 
 // expectedClusterForEnv returns the expected kubectl context name for
 // an environment. Resolution priority:
-//  1. The rendered KCL's first K8sCluster.cluster for env <envName>
+//  1. The rendered KCL's declared cluster_target.cluster for env <envName>,
+//     else its first K8sCluster.cluster (see k8sClusterFieldFromEntities)
 //  2. For dev: k3d-<project-name>
 //  3. Empty string — no expectation declared (skip the guard)
 //
@@ -3037,9 +3038,9 @@ func expectedClusterForEnv(ctx context.Context, cfg *config.ProjectConfig, envNa
 
 // firstK8sClusterField reads the rendered KCL for env and returns the
 // requested field ("cluster" / "namespace" / "registry" / "domain")
-// from the first service whose Deploy is K8sCluster-shaped. Returns ""
-// when KCL can't be rendered, no service is cluster-shaped, or the
-// requested field is empty across every service.
+// from the env's declared cluster_target, falling back to the first
+// service whose Deploy is K8sCluster-shaped. Returns "" when KCL can't be
+// rendered or the field is declared nowhere.
 func firstK8sClusterField(ctx context.Context, envName, field string) string {
 	if envName == "" {
 		return ""
@@ -3059,6 +3060,16 @@ func firstK8sClusterField(ctx context.Context, envName, field string) string {
 func k8sClusterFieldFromEntities(entities *KCLEntities, field string) string {
 	if entities == nil {
 		return ""
+	}
+	// The Bundle's declared env-wide target is the answer whenever it
+	// states the field. Walking services for it is only a fallback for a
+	// contract with no cluster_target: services render as
+	// `bundle.services + projected(bundle.workloads)`, so the first
+	// cluster-shaped one can be a lone infra service pinned to ANOTHER
+	// cluster — which is how an env's whole render once moved into that
+	// service's namespace.
+	if v := entities.ClusterTarget.field(field); v != "" {
+		return v
 	}
 	for _, svc := range entities.Services {
 		// A SimpleBackend carries cluster / namespace / domain of its own

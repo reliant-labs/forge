@@ -549,18 +549,22 @@ func clusterScopeForGroups(groups []deploytarget.ServiceGroup, entities *KCLEnti
 
 // mainClusterForEntities resolves the env's MAIN cluster — the env-level deploy
 // target an operator / cronjob (which carry no per-service deploy block) lands
-// on. This is the SAME cluster the bulk of the stack deploys to: the FIRST
-// cluster-shaped service's `forge.K8sCluster.cluster`, matching the
-// firstK8sClusterField / expectedClusterForEnv resolution the rest of the deploy
-// path uses for the env-wide context. Walking entities.Services preserves the
-// KCL render order (the bundle's `services` list), so the env's catch-all first
-// service — admin-server in control-plane's full_stack — defines the main
-// cluster; the lone cross-cluster override (workspace-proxy on cp-daemon) never
-// wins. Falls back to the first k8s group's cluster when no service entity
+// on. This is the Bundle's declared `cluster_target.cluster` — the same
+// resolution firstK8sClusterField / expectedClusterForEnv use for the env-wide
+// context. Only a contract with no cluster_target falls back to render order
+// (the FIRST cluster-shaped service's `forge.K8sCluster.cluster`), which is
+// not safe in general: services render as bundle.services + projected
+// workloads, so an image-less infra service on a second cluster can come
+// first. Falls back to the first k8s group's cluster when no service entity
 // carries a cluster (the manifests-only render shape), and "" when the env
 // declares no cluster at all (host-only / compose — nothing to attribute).
 func mainClusterForEntities(entities *KCLEntities, groups []deploytarget.ServiceGroup) string {
 	if entities != nil {
+		// The declared env target wins. See k8sClusterFieldFromEntities
+		// for why render order cannot stand in for it.
+		if c := entities.ClusterTarget.field("cluster"); c != "" {
+			return c
+		}
 		for _, s := range entities.Services {
 			if s.Deploy.Type == "cluster" && s.Deploy.Cluster != nil && s.Deploy.Cluster.Cluster != "" {
 				return s.Deploy.Cluster.Cluster

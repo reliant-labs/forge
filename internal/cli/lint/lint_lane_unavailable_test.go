@@ -83,10 +83,11 @@ func TestTypedAccessGuardAdvisoryReportsUnavailable(t *testing.T) {
 	if unavail.fixHint == "" {
 		t.Error("an unavailable lane must say what to do about it; fixHint is empty")
 	}
-	// The remediation has to name the actual cause, or the user re-runs into
-	// the same lock forever.
-	if !strings.Contains(unavail.fixHint, "allow-serial-runners") {
-		t.Errorf("fix hint never mentions allow-serial-runners, the one-line fix for the lock:\n%s", unavail.fixHint)
+	// The remediation has to send the user to golangci-lint's own output,
+	// which names why it could not start — and must not blame the
+	// machine-global lock, which forge now queues on (golangciRunArgs).
+	if !strings.Contains(unavail.fixHint, "output above") {
+		t.Errorf("fix hint does not point at golangci-lint's own output:\n%s", unavail.fixHint)
 	}
 }
 

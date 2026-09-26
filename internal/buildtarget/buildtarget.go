@@ -278,6 +278,36 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 	// disk; an UNSET cwd resolves explicitly to ProjectDir itself (always
 	// present, so no existence check) so a ShellBuild with no cwd always
 	// runs from the project root regardless of where forge was invoked.
+	cwd, cerr := ResolveCwd(spec)
+	if cerr != nil {
+		result.Err = cerr
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	expanded := Expand(spec.BuildCmd, spec)
+
+	runner := r.runner
+	if runner == nil {
+		runner = execRunner{}
+	}
+	// Set the working directory on the runner (cmd.Dir) rather than via
+	// a shell `cd <dir> && …` prefix: the latter breaks on a cwd with
+	// spaces or shell metacharacters. RunInDir with an empty dir leaves
+	// cmd.Dir unset, inheriting the host cwd (== ProjectDir for forge
+	// build) — matching the prior no-cwd behavior.
+	err := runner.RunInDir(ctx, cwd, spec.BuildEnv, "sh", "-c", expanded)
+	result.Err = err
+	result.Duration = time.Since(start)
+	return result
+}
+
+// ResolveCwd returns the directory spec.BuildCmd runs in, or the error
+// Runner.Build would fail with for it. It is the ONE place the cwd rule
+// lives, so `forge build --plan` can report exactly the failure the real
+// build would hit — before any other build in the same run has spent time
+// or pushed anything — without a second copy of the rule to drift.
+func ResolveCwd(spec Spec) (string, error) {
 	cwd := spec.ProjectDir
 	if spec.BuildCwd != "" {
 		cwd = spec.BuildCwd
@@ -299,31 +329,12 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 		// the service from this env's KCL.
 		if _, err := os.Stat(cwd); err != nil {
 			if os.IsNotExist(err) {
-				result.Err = fmt.Errorf("ShellBuild for service %q requires working directory %s, which does not exist on disk — check out the required source (e.g. the sibling repo) or remove the service from this env's KCL", spec.Service, cwd)
-				result.Duration = time.Since(start)
-				return result
+				return "", fmt.Errorf("ShellBuild for service %q requires working directory %s, which does not exist on disk — check out the required source (e.g. the sibling repo) or remove the service from this env's KCL", spec.Service, cwd)
 			}
-			result.Err = fmt.Errorf("stat cwd %s: %w", cwd, err)
-			result.Duration = time.Since(start)
-			return result
+			return "", fmt.Errorf("stat cwd %s: %w", cwd, err)
 		}
 	}
-
-	expanded := Expand(spec.BuildCmd, spec)
-
-	runner := r.runner
-	if runner == nil {
-		runner = execRunner{}
-	}
-	// Set the working directory on the runner (cmd.Dir) rather than via
-	// a shell `cd <dir> && …` prefix: the latter breaks on a cwd with
-	// spaces or shell metacharacters. RunInDir with an empty dir leaves
-	// cmd.Dir unset, inheriting the host cwd (== ProjectDir for forge
-	// build) — matching the prior no-cwd behavior.
-	err := runner.RunInDir(ctx, cwd, spec.BuildEnv, "sh", "-c", expanded)
-	result.Err = err
-	result.Duration = time.Since(start)
-	return result
+	return cwd, nil
 }
 
 // State is the per-service build-state record persisted after a

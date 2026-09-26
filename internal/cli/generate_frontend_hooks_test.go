@@ -619,6 +619,111 @@ func TestWriteHookStarterTest_EmitsLiveTestWhenNoSiblingPresent(t *testing.T) {
 	}
 }
 
+// TestWriteHookStarterTest_LeavesNothingQueuedPastTeardown pins the shape
+// that keeps the scaffolded hook test from failing a green run.
+//
+// The starter used to end a mutation test the moment `mutateAsync` resolved.
+// React Query tells its observers on a LATER macrotask, so that return left
+// a re-render queued; when the mutation was the last test in the file, it
+// fired after vitest tore jsdom down and died on `window` —
+// "ReferenceError: window is not defined … caught after test environment
+// was torn down". Every test passed and the run failed anyway,
+// intermittently, on whichever runner lost the race (control-plane CI runs
+// 35813220867 and 36222818452).
+//
+// The rendered roots were never unmounted either: Testing Library only
+// registers auto-cleanup when `afterEach` is a vitest GLOBAL, which the
+// scaffolded config does not enable.
+func TestWriteHookStarterTest_LeavesNothingQueuedPastTeardown(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeHookStarterTest(dir, "user-service-hooks_gen.ts", codegenServiceDefForStarterTest(), codegenHookDataForStarterTest()); err != nil {
+		t.Fatalf("writeHookStarterTest: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "user-service-hooks.test.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+
+	for _, want := range []string{
+		// Explicit, because vitest globals are off and RTL's auto-cleanup
+		// never registers.
+		`import { cleanup, renderHook, waitFor } from "@testing-library/react";`,
+		`import { afterEach, beforeEach, describe, it, expect } from "vitest";`,
+		"cleanup();",
+		"queryClient.clear();",
+		// One client per test, owned by the hooks so afterEach can clear it —
+		// not built inside `wrapper`, where each re-render made a new one.
+		"<QueryClientProvider client={queryClient}>",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("hook test missing %q, got:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "function wrapper({ children }: { children: ReactNode }) {\n  const qc = new QueryClient(") {
+		t.Errorf("wrapper must not build its own QueryClient — afterEach cannot clear a client it never sees:\n%s", s)
+	}
+
+	// The mutation test must wait for the RENDERED hook to settle. Checked
+	// inside the CreateUser block specifically: the query branch already
+	// waits on isSuccess, so a file-wide match would pass without the fix.
+	start := strings.Index(s, `it("useCreateUser resolves a happy-path response"`)
+	if start < 0 {
+		t.Fatalf("no useCreateUser test in:\n%s", s)
+	}
+	block := s[start:]
+	if end := strings.Index(block, "\n  });\n"); end >= 0 {
+		block = block[:end]
+	}
+	if !strings.Contains(block, "mutateAsync(") {
+		t.Fatalf("useCreateUser test no longer calls mutateAsync:\n%s", block)
+	}
+	const settle = "await waitForSettled(result);"
+	if !strings.Contains(block, settle) {
+		t.Errorf("mutation test returns before the hook re-renders; want %q in:\n%s", settle, block)
+	}
+	if strings.Index(block, settle) < strings.Index(block, "mutateAsync(") {
+		t.Errorf("the settle wait must come AFTER mutateAsync:\n%s", block)
+	}
+	// ...and the helper must wait on the RENDERED status, not on the promise.
+	if !strings.Contains(s, `await waitFor(() => expect(["success", "error"]).toContain(result.current.status));`) {
+		t.Errorf("waitForSettled no longer waits for the rendered status to settle:\n%s", s)
+	}
+}
+
+// TestWriteHookStarterTest_QueryOnlyServiceDeclaresNoUnusedHelper: the
+// waitForSettled helper is only called from mutation rows, so a query-only
+// service must not declare it — no-unused-vars would flag the scaffold the
+// moment it landed, the same way an unused `waitFor` import once had to be
+// deleted by hand from every mutation-only service's test.
+func TestWriteHookStarterTest_QueryOnlyServiceDeclaresNoUnusedHelper(t *testing.T) {
+	svc := codegen.ServiceDef{
+		Name:      "AuditService",
+		ProtoFile: "proto/services/audit/v1/audit.proto",
+		Methods: []codegen.Method{
+			{Name: "ListEvents", InputType: "ListEventsRequest", OutputType: "ListEventsResponse"},
+		},
+	}
+	dir := t.TempDir()
+	if err := writeHookStarterTest(dir, "audit-service-hooks_gen.ts", svc, codegen.ServiceDefToHookData(svc)); err != nil {
+		t.Fatalf("writeHookStarterTest: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "audit-service-hooks.test.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if strings.Contains(s, "waitForSettled") {
+		t.Errorf("query-only service declares the mutation-only helper:\n%s", s)
+	}
+	// The teardown is NOT mutation-specific: queries still render roots.
+	for _, want := range []string{"cleanup();", "queryClient.clear();"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("query-only hook test missing %q:\n%s", want, s)
+		}
+	}
+}
+
 // TestWriteHookStarterTest_SkipsWhenActiveTestExists asserts the test is
 // NOT rewritten when the user already has `<file>.test.tsx`. Scaffold-once:
 // regenerating must not clobber hand-edited tests.

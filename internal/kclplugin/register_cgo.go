@@ -97,6 +97,23 @@ func Register() {
 						return &plugin.MethodResult{V: keys}, nil
 					},
 				},
+				// write_file(path, content) -> str. Materializes a
+				// project-relative file — but ONLY on a render whose job is
+				// to materialize this env (env up; env deploy of a local
+				// env). Every other render (generate, lint, ci, doctor, env
+				// config / render) writes nothing and returns the path
+				// unchanged. Use this, not KCL's file.write, for any file a
+				// render generates: file.write fires on every evaluation,
+				// read-only ones included. See materialize.go.
+				"write_file": {
+					Body: func(args *plugin.MethodArgs) (*plugin.MethodResult, error) {
+						p, err := writeFile(args.StrArg(0), args.StrArg(1))
+						if err != nil {
+							return nil, err
+						}
+						return &plugin.MethodResult{V: p}, nil
+					},
+				},
 				// derive_jwk(private_key_pem, kid, alg) -> JWK dict. Derives
 				// the PUBLIC JWK from an ES256 (EC) or RS256 (RSA) private-key
 				// PEM at render time so a forge.TestJWKS publishes the public

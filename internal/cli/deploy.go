@@ -594,6 +594,11 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// A deploy of an env that runs nowhere on this machine claims no port
 	// block (see renderPurpose).
 	activateDevStack(ctx, projectDir, envName, opts.purpose)
+	// An applying deploy of an env that runs here materializes it; a
+	// --dry-run previews it, and must leave the tree exactly as it found it.
+	if !dryRun {
+		armMaterializer(projectDir)
+	}
 
 	if hosted, err := dispatchHostedDeploy(ctx, projectDir, envName, opts); hosted {
 		return err

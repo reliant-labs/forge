@@ -229,6 +229,22 @@ After every deploy confirm pods are healthy (`kubectl get pods -n <ns>`,
 undo deployment/<name>`, then fix forward via KCL — never leave a rollback
 as the permanent state.
 
+**Rolling a release-bound env back** is a ledger entry, then a deploy:
+
+```bash
+forge env promote v1.6.0 --to prod --plan --rollback   # direction must read ROLLBACK
+forge env promote v1.6.0 --to prod --rollback --note "<signal>"
+forge env deploy prod
+```
+
+A deploy whose ledger entry is a rollback does NOT run its pre-rollout Jobs.
+The older release's migrate step cannot step a newer schema back and would fail
+against it, aborting the rollback at the gate. It prints `ROLLBACK: skipping …`
+and `--json` records `skipped_pre_rollout_jobs`. The older code then runs on
+the CURRENT schema. If the migrations you are rolling back across were not
+expand-only, step the schema down first with the newer image. The runbook is in
+`db/deploy-migrations` under "Rolling back across a migration".
+
 ## Rules
 
 - Never skip lint — `.golangci.yml` and `buf.yaml` are the contract.

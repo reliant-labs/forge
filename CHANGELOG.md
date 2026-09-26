@@ -112,6 +112,18 @@ failures that presented as something other than what they were.
 
 ### Fixed
 
+- **Rendering or deploying a cloud env no longer claims a local port
+  block.** `forge env render` / `forge env deploy` armed the persistent
+  `fp.allocate_port` block registry for every env, so rendering prod from a
+  linked worktree registered a new `prod-<worktree>` block in the primary
+  checkout's `.forge/blocks.json`. That leaked one permanent block per
+  throwaway worktree, went unseen by `--fail-on-write` because the registry
+  sits outside the worktree, and failed the render outright once the registry
+  reached `dev_stack.max_stacks`. These commands now claim a block only when
+  the env's declaration runs on this machine: a k3d cluster, a host, compose
+  or host-infra service, or a workload on a local context. Otherwise
+  `allocate_port` returns its base port and nothing is written. `forge env up`
+  is unchanged, including `forge env up prod --target <frontend>`.
 - **A stale k3d serverlb upstream no longer reads as a flaky cluster.**
   k3d's serverlb is nginx configured with the server node's NAME and no
   `resolver` directive, so it resolves each upstream once at startup and

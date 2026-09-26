@@ -766,7 +766,7 @@ func parseNestedSecondaries(out, owner string) []string {
 // env-scoped lifecycle paths are unit-testable without a KCL toolchain.
 var renderEnvClustersFn = func(ctx context.Context, env string) ([]ClusterEntity, string, error) {
 	projectDir := projectDirForKCL()
-	_, restore := activateDevStack(projectDir, env)
+	_, restore := activateDevStack(ctx, projectDir, env, renderDeclaration)
 	entities, err := RenderKCL(ctx, projectDir, env)
 	restore() // a cluster lifecycle render must not drift resolve_port state
 	if err != nil {

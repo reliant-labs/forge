@@ -445,6 +445,13 @@ type deployOptions struct {
 	// effect on rollback (which never dispatches frontends).
 	skipFrontend bool
 
+	// purpose is why this deploy renders the env. `forge env deploy` leaves
+	// the zero value (renderDeclaration): its render claims a local port
+	// block only when the env runs on this machine. `forge env up`'s deploy
+	// phase passes renderToLaunch so it resolves exactly the ports up's own
+	// launch render did.
+	purpose renderPurpose
+
 	// frontendsOnly, when true, deploys EXCLUSIVELY the env's Firebase
 	// frontend(s): the entire k8s apply (Services, Operators, CronJobs,
 	// gateways, routes, helm charts) is dropped and only the frontend
@@ -584,7 +591,9 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// deploy resolve the SAME ports for a given key — this is the
 	// kill-the-up-vs-deploy-port-drift fix. Deploy commits its render, so the
 	// restore hook is unused (an applied render's ports are the truth).
-	activateDevStack(projectDir, envName)
+	// A deploy of an env that runs nowhere on this machine claims no port
+	// block (see renderPurpose).
+	activateDevStack(ctx, projectDir, envName, opts.purpose)
 
 	if hosted, err := dispatchHostedDeploy(ctx, projectDir, envName, opts); hosted {
 		return err

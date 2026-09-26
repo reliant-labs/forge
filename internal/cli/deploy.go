@@ -709,7 +709,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// span more than one cluster (control-plane's own dev env does), and a
 	// confirmation dialog shown only the env-wide context would omit a cluster
 	// the deploy is about to write to.
-	report.setTarget(deployContext, namespace, declaredClusterContexts(entities, deployContext)...)
+	report.setTarget(deployContext, namespace, declaredClusterContexts(entities, deployContext, groups)...)
 
 	// Env's declared platform deps (forge.HelmChart) rendered into
 	// cluster.HelmChartSpec values. See resolveDeployHelmSpecs.
@@ -742,7 +742,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// registry the checker can't reach). Runs under --dry-run too (pure
 	// read-only check). --skip-preflight bypasses it.
 	if err := gateDeployOnPreflight(ctx, deployPreflightEnvInput{
-		entities: entities, mainK: mainK, imageTag: imageTag, namespace: namespace,
+		entities: entities, groups: groups, mainK: mainK, imageTag: imageTag, namespace: namespace,
 		envName: envName, envCfgKV: envCfgKV, deployContext: deployContext,
 		targets: targets, imageDigests: imageDigests, report: report,
 	}, hasK8sServices, rollback, opts.skipPreflight); err != nil {
@@ -1315,6 +1315,7 @@ func resolveDeployHelmSpecs(ctx context.Context, entities *KCLEntities, targets 
 // target arch) are derived from entities inside the helper.
 type deployPreflightEnvInput struct {
 	entities      *KCLEntities
+	groups        []deploytarget.ServiceGroup
 	mainK         string
 	imageTag      string
 	namespace     string
@@ -1361,7 +1362,7 @@ func gateDeployOnPreflight(ctx context.Context, in deployPreflightEnvInput, hasK
 func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) error {
 	targetArch := kclFirstClusterPlatform(in.entities)
 	return runDeployPreflight(ctx, deployPreflightInput{
-		secretContexts:  declaredClusterContexts(in.entities, in.deployContext),
+		secretContexts:  declaredClusterContexts(in.entities, in.deployContext, in.groups),
 		mainK:           in.mainK,
 		imageTag:        in.imageTag,
 		namespace:       in.namespace,
@@ -2907,11 +2908,19 @@ func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
 // for the same don't-break-dev-loop reason. Image checks DO still run on a
 // local cluster for remote-registry images (e.g. ghcr.io refs in a local
 // test), since those are reachable and a miss is real.
-// declaredClusterContexts lists the kubectl contexts an env deploys to: every
-// cluster its KCL declares, plus the resolved deploy target. A single-cluster
-// env yields exactly the target, so the multi-cluster handling is inert for
-// the common case.
-func declaredClusterContexts(e *KCLEntities, deployCtx string) []string {
+// declaredClusterContexts lists the kubectl contexts an env deploys to: the
+// resolved deploy target, every cluster its KCL declares, and every cluster a
+// k8s apply group targets. A single-cluster env yields exactly the target, so
+// the multi-cluster handling is inert for the common case.
+//
+// The groups are the part that must not be skipped. e.Clusters lists only the
+// clusters forge CREATES (k3d); a cloud env's second cluster is declared only
+// by where its workloads route (a ClusterTarget / K8sCluster.cluster), so it
+// appears in no entity list — only as a group the dispatch applies to.
+// control-plane's prod applies PriorityClasses to prod-daemon-v2 that way, and
+// the report's all_kube_contexts listed prod alone: a confirmation dialog would
+// have shown one cluster for a deploy that writes to two.
+func declaredClusterContexts(e *KCLEntities, deployCtx string, groups []deploytarget.ServiceGroup) []string {
 	seen := map[string]struct{}{}
 	var out []string
 	add := func(c string) {
@@ -2929,6 +2938,11 @@ func declaredClusterContexts(e *KCLEntities, deployCtx string) []string {
 	if e != nil {
 		for _, c := range e.Clusters {
 			add(c.Context)
+		}
+	}
+	for _, g := range groups {
+		if g.ProviderID == "k8s-cluster" {
+			add(g.Cluster)
 		}
 	}
 	return out

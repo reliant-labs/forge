@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/deploytarget"
+
 	"github.com/reliant-labs/forge/internal/cluster"
 )
 
@@ -950,4 +952,30 @@ func indentJSONForTest(t *testing.T, raw []byte) string {
 		t.Fatalf("re-indent: %v", err)
 	}
 	return string(out)
+}
+
+// TestDeclaredClusterContexts_IncludesGroupOnlyClusters is control-plane's prod
+// shape: one declared env context, NO forge-created clusters (e.Clusters is
+// empty for a cloud env), and a second cluster reached only because a deploy
+// group routes there — PriorityClasses applied to prod-daemon-v2. The report's
+// all_kube_contexts (and the preflight's secret contexts) listed prod alone,
+// so a confirmation dialog showed one cluster for a deploy that writes to two.
+func TestDeclaredClusterContexts_IncludesGroupOnlyClusters(t *testing.T) {
+	const (
+		prod   = "gke_reliant-labs-475814_us-central1_prod"
+		daemon = "gke_reliant-labs-475814_us-central1-a_prod-daemon-v2"
+	)
+	groups := []deploytarget.ServiceGroup{
+		{ProviderID: "k8s-cluster", Cluster: daemon},
+		{ProviderID: "k8s-cluster", Cluster: prod},
+		{ProviderID: "external"}, // not a cluster: contributes nothing
+	}
+	got := declaredClusterContexts(&KCLEntities{}, prod, groups)
+
+	report := newDeployReport("prod", true)
+	report.setTarget(prod, "control-plane-prod", got...)
+	all := report.document().Target.AllKubeContexts
+	if len(all) != 2 || all[0] != daemon || all[1] != prod {
+		t.Errorf("all_kube_contexts = %v, want both clusters the dispatch applies to: [%s %s]", all, daemon, prod)
+	}
 }

@@ -440,6 +440,31 @@ func prepareBuild(opts buildOptions) (*config.ProjectConfig, error) {
 	return store.Config(), nil
 }
 
+// resolveBuildImageTag picks the one image tag this build writes, and says
+// where it came from. The priority is documented at the call site in runBuild.
+func resolveBuildImageTag(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions) (tag, source string, err error) {
+	if rt := releaseImageTag(opts); rt != "" {
+		// A release pushes ONLY its own version tag — never the env's
+		// shared tag (see releaseImageTag). validateReleaseFlags already
+		// refused a conflicting --tag.
+		return rt, "release version (release-scoped; no shared tag is moved)", nil
+	}
+	if opts.tag != "" || !opts.buildDocker {
+		return opts.tag, "explicit --tag flag", nil
+	}
+	if envTag := envImageTagFor(entities, cfg.Name); envTag != "" {
+		return envTag, fmt.Sprintf("env %q image_tag (deploy ref)", opts.env), nil
+	}
+	// Only resolve from git when we'll actually use a tag — avoids
+	// surfacing "not a git repo" errors on a plain `forge build`
+	// (no docker), and is the no-env / no-manifest-tag fallback.
+	t, terr := resolveImageTag(ctx, opts.env)
+	if terr != nil {
+		return "", "", fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
+	}
+	return t, "git describe --tags --always --dirty", nil
+}
+
 func runBuild(ctx context.Context, opts buildOptions) error {
 	cfg, err := prepareBuild(opts)
 	if err != nil {
@@ -475,29 +500,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	//  3. git-describe (resolveImageTag) — the standalone fallback when
 	//     no --env, or the env render carries no tag for the project
 	//     image.
-	resolvedTag := opts.tag
-	tagSource := "explicit --tag flag"
-	if rt := releaseImageTag(opts); rt != "" {
-		// A release pushes ONLY its own version tag — never the env's
-		// shared tag (see releaseImageTag). validateReleaseFlags already
-		// refused a conflicting --tag.
-		resolvedTag = rt
-		tagSource = "release version (release-scoped; no shared tag is moved)"
-	} else if resolvedTag == "" && opts.buildDocker {
-		if envTag := envImageTagFor(entities, cfg.Name); envTag != "" {
-			resolvedTag = envTag
-			tagSource = fmt.Sprintf("env %q image_tag (deploy ref)", opts.env)
-		} else {
-			// Only resolve from git when we'll actually use a tag — avoids
-			// surfacing "not a git repo" errors on a plain `forge build`
-			// (no docker), and is the no-env / no-manifest-tag fallback.
-			t, terr := resolveImageTag(ctx, opts.env)
-			if terr != nil {
-				return fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
-			}
-			resolvedTag = t
-			tagSource = "git describe --tags --always --dirty"
-		}
+	resolvedTag, tagSource, err := resolveBuildImageTag(ctx, cfg, entities, opts)
+	if err != nil {
+		return err
 	}
 
 	// Resolve the EMBEDDED build version once, up front, so every binary

@@ -345,6 +345,39 @@ func TestEffectiveBuild_SynthesizesGoDefault(t *testing.T) {
 	}
 }
 
+// An IMAGE-LESS cluster service is the declared "infra bundle" shape
+// (schema.k RenderedWorkload; render.k renders it as ONLY its owned
+// manifests, "no phantom Deployment"). It has no artifact, so the build
+// side must agree with the render side and synthesize nothing.
+//
+// Regression: control-plane's prod declares two such services on its daemon
+// cluster (PriorityClasses, a kata pre-pull DaemonSet). `forge build prod
+// --release v1.7.0` synthesized `go build ./cmd/prod-daemon-cluster` for one
+// and failed the whole cut on "directory not found".
+func TestEffectiveBuild_ImagelessClusterServiceBuildsNothing(t *testing.T) {
+	infra := ServiceEntity{Name: "prod-daemon-cluster", Deploy: DeployConfigEntity{Type: "cluster"}}
+	if b := infra.EffectiveBuild(); b.Type != "" {
+		t.Fatalf("image-less cluster service synthesized a build: %+v / %+v", b, b.Go)
+	}
+	if targets := goBuildTargetsFromKCL(&KCLEntities{Services: []ServiceEntity{infra}}); len(targets) != 0 {
+		t.Fatalf("image-less cluster service became a go-build target: %+v", targets)
+	}
+
+	// A cluster service WITH an image keeps the GoBuild default — that is the
+	// ordinary project service, and the reason the default exists.
+	workload := ServiceEntity{Name: "api", Image: "proj", Deploy: DeployConfigEntity{Type: "cluster"}}
+	if b := workload.EffectiveBuild(); b.Type != "go" || b.Go == nil || b.Go.Cmd != "./cmd/api" {
+		t.Fatalf("cluster service with an image lost its GoBuild default: %+v / %+v", b, b.Go)
+	}
+
+	// An EXPLICIT build on an image-less cluster service still wins: the
+	// suppression is only of the SYNTHESIZED default.
+	explicit := ServiceEntity{Name: "x", Deploy: DeployConfigEntity{Type: "cluster"}, Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cmd: "make x"}}}
+	if explicit.EffectiveBuild().Type != "shell" {
+		t.Errorf("explicit build dropped for an image-less cluster service: %+v", explicit.EffectiveBuild())
+	}
+}
+
 func TestGoBuildTargetsFromKCL_DedupsSharedBinary(t *testing.T) {
 	// Two server services that map to the same shared ./cmd/proj binary
 	// collapse to ONE go-build target; a distinct binary stays separate.

@@ -97,6 +97,18 @@ providers (K8sCluster, External, Compose, HostDeploy). For External,
 `rollback_cmd`; deploys with no `rollback_cmd` declared error loudly
 rather than guessing.
 
+### Hosted StaticSites: one artifact, per-env runtime config as spec
+
+On a hosted env, `forge build <env> --push <base>` packs a `forge.StaticSite` frontend into an OCI release **with no `config.js` in it**. Any dev copy that travelled in `public/` is stripped. The artifact is environment-agnostic, so `forge env promote` moves the same digest everywhere. The env's document travels as the StaticSite spec's `runtimeConfig`, which comes from the frontend's `runtime_config`:
+
+```yaml
+runtimeConfig:
+  API_URL: {workloadURL: {name: api}}   # resolved by the control plane to the api SimpleBackend's URL
+  APP_NAME: {value: acme}               # literal
+```
+
+After every sync, the control plane writes `live/<basePath>/config.js` = `window.__FORGE_CONFIG__ = {...};`. It resolves references against workloads in the same environment only, and re-resolves when a target's URL changes. A SimpleBackend env var can carry the same `workloadURL` reference, for example a `CORS_ORIGINS` that names the site. Each entry must set exactly one of `value` or `workloadURL`, and the spec validation refuses both-or-neither. Non-hosted static deploys (Firebase, your own bucket) are unchanged: forge resolves the references at render time and writes `config.js` into the deploy. See `frontend` → "Runtime config and backend URLs".
+
 ### Migrations run BEFORE the rollout (the pre-rollout gate)
 
 A one-shot Job (`forge.CronJob { schedule = "" }`, or a standalone

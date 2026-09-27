@@ -41,6 +41,12 @@ Presentation stays yours and is deliberately NOT in the package: the component
 library under `src/components/ui`, `globals.css`, the nav and the layout are
 all scaffolded once for you to fork.
 
+Per-env VALUES (API origin, feature flags) are not part of this package. They
+come from the generated `src/lib/config_gen.ts`, which reads
+`window.__FORGE_CONFIG__` from `<basePath>/config.js`. Dev, Firebase, own-bucket
+and hosted deploys all serve the same `{KEY: "value"}` shape, so the
+bundle cannot tell them apart. See `frontend` → "Runtime config and backend URLs".
+
 Tailwind v4 does not scan `node_modules`, so your stylesheet carries an
 `@source` directive pointing at the package. Keep it — without it every
 utility only the runtime renders vanishes from the built CSS.

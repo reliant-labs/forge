@@ -1865,8 +1865,8 @@ func (f FeaturesConfig) IsZero() bool {
 //   - Reconcile:      the reconciliation loop — Provider.Observe reads
 //     back what is actually running, and desired state is
 //     pulled as a content-addressed OCI artifact rather
-//     than re-rendered. OFF means Deploy/Rollback behave
-//     exactly as they always have and NOTHING observes;
+//     than re-rendered. OFF means Deploy behaves
+//     exactly as it always has and NOTHING observes;
 //     the verb still exists on the interface (an interface
 //     that changed shape with a config flag would be
 //     unimplementable), it is simply never driven. Stays
@@ -2139,9 +2139,8 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 // ReconcileEnabled reports whether the reconciliation loop is wired
 // (default: OFF — opt-in under `features.experimental.reconcile: true`).
 //
-// OFF is a genuine no-op, not a degraded mode: `forge env deploy` and its
-// rollback path run exactly the code they ran before this feature
-// existed, nothing calls Provider.Observe, and no desired-state artifact
+// OFF is a genuine no-op, not a degraded mode: `forge env deploy` runs
+// exactly the code it ran before this feature existed, nothing calls Provider.Observe, and no desired-state artifact
 // is fetched. The flag gates the DRIVING of the loop, not the existence
 // of Observe on the Provider interface — an interface whose method set
 // changed with a config value could not be implemented at all.

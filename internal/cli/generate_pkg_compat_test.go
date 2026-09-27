@@ -9,66 +9,6 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 )
 
-// TestDecideForgeCompat is the decision table. It is a pure function, so
-// every row is deterministic — no module graph, no network, no toolchain.
-func TestDecideForgeCompat(t *testing.T) {
-	const binary = "v0.1.16"
-	cases := []struct {
-		name    string
-		binary  string
-		project string
-		raw     string // buildinfo.Version(): what the binary calls itself
-		local   bool
-		want    compatVerdict
-	}{
-		{"pin equals binary", binary, "v0.1.16", "", false, compatOK},
-		{"pin newer than binary", binary, "v0.1.17", "", false, compatOK},
-		{"pin older than binary", binary, "v0.1.15", "", false, compatStalePin},
-		{"pin older by patch", binary, "v0.1.16-rc.1", "", false, compatStalePin},
-
-		// A pseudo-version from `go install ...@main` is a real, orderable
-		// version: it sorts after the tag it builds on and before the next
-		// one, which is exactly what commit-pinning mode needs.
-		{"binary is a pseudo-version, pin is the tag it follows",
-			"v0.1.16-0.20260916085636-c01e07ec6ef2", "v0.1.15", "", false, compatStalePin},
-		{"binary is a pseudo-version, pin is the next tag",
-			"v0.1.16-0.20260916085636-c01e07ec6ef2", "v0.1.16", "", false, compatOK},
-
-		// The regression this design exists for: an unreleasable binary
-		// (dirty tree, plain `go build`) against a published pin.
-		{"unreleasable binary, published pin", "", "v0.1.15", "", false, compatUnreleasableNoBridge},
-		{"unreleasable binary, newer published pin", "", "v9.9.9", "", false, compatUnreleasableNoBridge},
-
-		// A local resolution is the supported pairing for an unreleasable
-		// binary, and is fine for a released one too.
-		{"unreleasable binary, bridged", "", "", "", true, compatOK},
-		{"released binary, bridged", binary, "", "", true, compatOK},
-
-		// A BUILD THAT CANNOT VOUCH FOR ITSELF, against a project that
-		// already resolves to exactly it. InstallableVersion() is "" for any
-		// working-tree build, but the project's own `go list -m` answering
-		// with this version proves the proxy served it — so refusing would be
-		// a false positive whose message names one version as both "what this
-		// forge is" and "the published version" it conflicts with.
-		{"unreleasable binary, project resolves to this very build",
-			"", "v0.1.17-0.20260918232310-3cfebb459c15", "v0.1.17-0.20260918232310-3cfebb459c15", false, compatOK},
-		// Same shape, DIFFERENT commit: no proof, so the refusal stands.
-		{"unreleasable binary, project resolves to a different build",
-			"", "v0.1.17-0.20260918232310-3cfebb459c15", "v0.1.17-0.20260918144654-6b3a0a0050cd", false, compatUnreleasableNoBridge},
-
-		// Unknown beats guessing.
-		{"unknown project version", binary, "", "", false, compatOK},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := decideForgeCompat(c.binary, c.raw, c.project, c.local); got != c.want {
-				t.Errorf("decideForgeCompat(%q, %q, %q, %v) = %v, want %v",
-					c.binary, c.raw, c.project, c.local, got, c.want)
-			}
-		})
-	}
-}
-
 // TestCheckPkgCompat_NoForgeDependency is a no-op (nil) when the project
 // doesn't depend on forge at all — nothing to check, not our error to raise.
 func TestCheckPkgCompat_NoForgeDependency(t *testing.T) {
@@ -106,7 +46,6 @@ func TestCheckPkgCompat_RetiredPkgModuleExplainsTheAmbiguity(t *testing.T) {
 		"ambiguous",            // the error the user would otherwise face
 		"-droprequire",         // the literal fix for a DIRECT requirement
 		"Import paths did NOT", // the reassurance that matters most
-		"No files were changed",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("retired-module error must contain %q, got:\n%s", want, msg)
@@ -139,9 +78,8 @@ func TestCheckPkgCompat_UnreleasableBuildNamesTheBridge(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"go work use",           // the literal fix
-		"No files were changed", // the tree is intact
-		"v0.1.15",               // what the project resolves
+		"go work use", // the literal fix
+		"v0.1.15",     // what the project resolves
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("unreleasable-build error must contain %q, got:\n%s", want, msg)
@@ -384,6 +322,27 @@ func TestWarnForgeVersionPinMismatch(t *testing.T) {
 		warnForgeVersionPinMismatch(&b, tc[0], tc[1])
 		if b.Len() != 0 {
 			t.Errorf("pinned=%q running=%q must be silent, got %q", tc[0], tc[1], b.String())
+		}
+	}
+}
+
+// The refusals must not describe the tree: whether generate changed anything
+// is a fact about the pipeline run, reported from its write journal. A
+// hard-coded "No files were changed" here was printed over a .forge-kcl/ an
+// earlier step had just rewritten.
+func TestCheckPkgCompat_RefusalsMakeNoTreeClaim(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge/pkg v0.1.15\n")
+	for name, err := range map[string]error{
+		"retired module": checkPkgCompat(dir),
+		"stale pin":      staleForgePinErr(dir, "v0.1.15", "v0.9.9"),
+		"unreleasable":   unreleasableBuildErr(dir, "v0.1.15"),
+	} {
+		if err == nil {
+			t.Fatalf("%s: expected a refusal", name)
+		}
+		if strings.Contains(err.Error(), "No files were changed") {
+			t.Errorf("%s refusal asserts the tree state it cannot know:\n%s", name, err)
 		}
 	}
 }

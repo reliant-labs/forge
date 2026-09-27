@@ -469,6 +469,10 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		steps = filtered
 	}
 
+	// onlyReadOnlyRan stays true while every step that has RUN is declared
+	// ReadOnly. Together with an empty journal it is the evidence behind a
+	// failure's "No files were changed" — see rollbackGeneratedTree.
+	onlyReadOnlyRan := true
 	for _, step := range steps {
 		if !step.Gate(ctx) {
 			// Verbose mode prints one line per gate-off skip so the user
@@ -478,6 +482,9 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 				fmt.Fprintf(os.Stderr, "⏩ skipped: %s (%s)\n", step.Name, gateSkipReason(step))
 			}
 			continue
+		}
+		if !step.ReadOnly {
+			onlyReadOnlyRan = false
 		}
 		if err := step.Run(ctx); err != nil {
 			// --explain-drift cleanup still runs on a mid-pipeline
@@ -515,7 +522,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 				// rollback branch).
 				reprintCompilerOutput(err, "")
 			} else {
-				rolledBack = rollbackGeneratedTree(ctx.AbsPath, err)
+				rolledBack = rollbackGeneratedTree(ctx.AbsPath, err, onlyReadOnlyRan)
 			}
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
@@ -645,7 +652,16 @@ const failedGenerateErrorFile = "error.txt"
 // (when it carries any — see validateBuildError) is REPEATED after the
 // reverted-file list: the original print scrolls away behind that list,
 // and a `tail` of the run must show the error, not just bookkeeping.
-func rollbackGeneratedTree(absPath string, stepErr error) bool {
+//
+// onlyReadOnlyRan reports whether every step that ran is declared
+// GenStep.ReadOnly. The journal records forge's own writers, not every
+// write a step can make (an external tool, a KCL render), so an empty
+// journal alone proves nothing about the tree. "No files were changed" is
+// printed only when both facts hold; otherwise the message says what the
+// journal shows and no more. It used to assert "tree is unchanged" from an
+// empty journal alone, over a .forge-kcl/ an unjournaled step had just
+// rewritten.
+func rollbackGeneratedTree(absPath string, stepErr error, onlyReadOnlyRan bool) bool {
 	if !checksums.RollbackEnabled() {
 		return false
 	}
@@ -655,7 +671,12 @@ func rollbackGeneratedTree(absPath string, stepErr error) bool {
 	}
 	restored := checksums.RestoreRollback(absPath)
 	if len(restored) == 0 {
-		fmt.Fprintln(os.Stderr, "↩️  generate failed after validation; no forge-written files needed reverting (tree is unchanged).")
+		if onlyReadOnlyRan {
+			fmt.Fprintln(os.Stderr, "↩️  generate stopped before any step that writes had run. No files were changed.")
+		} else {
+			fmt.Fprintln(os.Stderr, "↩️  generate failed; nothing needed reverting (forge's own writers recorded no writes this run). "+
+				"Steps that ran external tools (buf, go mod tidy, sqlc) are not journaled — check `git status` for their output.")
+		}
 		reprintCompilerOutput(stepErr, "")
 		return true
 	}

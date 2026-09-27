@@ -64,18 +64,17 @@ jobs:
       - name: Build binary
         run: task build
 
-      - name: Start infrastructure
-        run: docker compose -f docker-compose.yml up -d --wait
-        timeout-minutes: 5
-
+      # No "start infrastructure" step: each e2e/<svc> harness (main_test.go)
+      # starts its OWN dependencies from e2e/<svc>/docker-compose.e2e.yml,
+      # builds the binary, runs the service on a free port, and tears it all
+      # down. The root docker-compose.yml is the DEV stack — an air hot-reload
+      # container that compiles from scratch on first start (~2 min cold),
+      # longer than its healthcheck allows, so `up --wait` reported it
+      # unhealthy — and nothing in the e2e suite talks to it.
       - name: Run E2E tests
         run: task test:e2e
         env:
           E2E: "true"
-
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.yml logs --tail=200
 
       - name: Upload test artifacts
         if: failure()
@@ -85,79 +84,48 @@ jobs:
           path: |
             e2e/**/*.log
             /tmp/e2e-*
-
-      - name: Cleanup
-        if: always()
-        run: docker compose -f docker-compose.yml down -v
 {{- else if eq .Runtime "k3d"}}
 
-      - name: Create k3d cluster
-        uses: AbsaOSS/k3d-action@v2
-        with:
-          cluster-name: e2e
-          args: --no-lb
+      - name: Install forge
+        # The version comes from go.mod at run time — the forge this project
+        # compiles against — so bumping forge in go.mod is the whole upgrade.
+        # A module that does not link forge (a CLI or library) falls back to
+        # forge.yaml's forge_version, the generator it was scaffolded with.
+        # A `replace` of forge, or a pin no module proxy can serve, fails here
+        # by name rather than installing some other forge.
+        # CGO is required: kcl_plugin.forge (imported by every env render) is
+        # registered by a cgo-only file.
+        run: |
+          r=$(GOWORK=off go list -m -e -f '{{"{{"}}with .Replace{{"}}"}}{{"{{"}}.Path{{"}}"}} {{"{{"}}.Version{{"}}"}}{{"{{"}}end{{"}}"}}' github.com/reliant-labs/forge)
+          if [ -n "$r" ]; then echo "::error file=go.mod::go.mod replaces github.com/reliant-labs/forge with ${r% } — CI cannot install that forge. Bridge a local forge checkout with an uncommitted go.work instead."; exit 1; fi
+          v=$(GOWORK=off go list -m -f '{{"{{"}}.Version{{"}}"}}' github.com/reliant-labs/forge 2>/dev/null || sed -n 's/^forge_version:[[:space:]]*//p' forge.yaml | tr -d "\"' ")
+          case "$v" in v*+*|""|dev|0.0.0) echo "::error file=go.mod::no installable forge version (got '$v') — require github.com/reliant-labs/forge in go.mod, or set forge_version in forge.yaml to a published version."; exit 1 ;; esac
+          CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      # Everything below goes through forge — never a raw KCL render piped to
+      # kubectl, which cannot resolve kcl_plugin.forge and skips the declared
+      # context binding. This requires the project to declare an `e2e`
+      # environment (deploy/kcl/e2e/main.k). Create one with:
+      #   forge env new e2e --from dev
+      - name: Create the e2e cluster
+        # Ensures every cluster the e2e env's KCL declares (CIDRs, API port,
+        # registry) exactly as its deploy expects them.
+        run: forge cluster up e2e --wait
 
       - name: Build images
-        run: |
-          docker buildx build --load \
-            --cache-from type=gha,scope=e2e-{{.ProjectName}} \
-            --cache-to type=gha,scope=e2e-{{.ProjectName}},mode=max \
-            -t {{.ProjectName}}:e2e .
-{{- if .HasFrontends}}
-          for dockerfile in frontends/*/Dockerfile; do
-            if [ -f "$dockerfile" ]; then
-              fe_dir=$(dirname "$dockerfile")
-              fe_name=$(basename "$fe_dir")
-              docker buildx build --load \
-                --cache-from "type=gha,scope=e2e-$fe_name" \
-                --cache-to "type=gha,scope=e2e-$fe_name,mode=max" \
-                -t "{{.ProjectName}}/$fe_name:e2e" "$fe_dir"
-            fi
-          done
-{{- end}}
+        # Builds what the e2e env declares, renders its frontend config.js
+        # into the build, and pushes to the cluster-local registry the env
+        # declares (forge.K8sCluster.registry — localhost:5050 in the
+        # scaffolded dev env it was copied from; keep the two in step).
+        run: forge build e2e --push localhost:5050
 
-      - name: Import images into k3d
-        run: |
-          k3d image import {{.ProjectName}}:e2e -c e2e
-{{- if .HasFrontends}}
-          for dockerfile in frontends/*/Dockerfile; do
-            if [ -f "$dockerfile" ]; then
-              fe_name=$(basename "$(dirname "$dockerfile")")
-              k3d image import "{{.ProjectName}}/$fe_name:e2e" -c e2e
-            fi
-          done
-{{- end}}
-
-      - name: Cache KCL CLI
-        uses: actions/cache@v4
-        id: kcl-cache
-        with:
-          path: ~/.kcl
-          key: kcl-cli-${{"{{"}} runner.os {{"}}"}}
-
-      - name: Install KCL
-        if: steps.kcl-cache.outputs.cache-hit != 'true'
-        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-
-      - name: Add KCL to PATH
-        run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
-
-      - name: Deploy to cluster
-        # `-S manifests` is REQUIRED: `kcl run` alone emits the module's
-        # top-level variables as a YAML mapping, which kubectl rejects
-        # with "apiVersion not set, kind not set". `-S` selects the
-        # manifest list and emits a `---` document stream.
-        #
-        # Every kubectl below is namespace-scoped. The manifests deploy
-        # into <project>-dev, so an unscoped `kubectl wait` matches
-        # nothing in the default namespace and returns immediately —
-        # the tests would then run against a stack that never came up.
-        run: |
-          set -euo pipefail
-          kcl run deploy/kcl/dev/main.k -D image_tag=e2e -S manifests | kubectl apply -f -
-          kubectl wait --for=condition=available deployment \
-            -n {{.ProjectName}}-dev \
-            -l app.kubernetes.io/part-of={{.ProjectName}} --timeout=120s
+      - name: Deploy to the cluster
+        # Applies to the context the e2e env declares and waits for every
+        # workload to become ready.
+        run: forge env deploy e2e
 
       - name: Run E2E tests
         run: task test:e2e
@@ -167,8 +135,8 @@ jobs:
       - name: Dump logs on failure
         if: failure()
         run: |
-          kubectl logs -n {{.ProjectName}}-dev -l app.kubernetes.io/part-of={{.ProjectName}} --tail=200 --all-containers
-          kubectl describe pods -n {{.ProjectName}}-dev -l app.kubernetes.io/part-of={{.ProjectName}}
+          kubectl logs -n {{.ProjectName}}-e2e -l app.kubernetes.io/part-of={{.ProjectName}} --tail=200 --all-containers
+          kubectl describe pods -n {{.ProjectName}}-e2e -l app.kubernetes.io/part-of={{.ProjectName}}
 
       - name: Upload test artifacts
         if: failure()

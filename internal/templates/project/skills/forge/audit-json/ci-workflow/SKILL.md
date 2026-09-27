@@ -27,7 +27,11 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install the forge CLI
-        run: go install github.com/reliant-labs/forge/cmd/forge@main
+        # The version go.mod pins (the one that generated this project), not
+        # @main, which audits with whichever release is newest.
+        run: |
+          v=$(GOWORK=off go list -m -f '{{.Version}}' github.com/reliant-labs/forge)
+          CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"
 
       - name: Forge audit
         id: audit

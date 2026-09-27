@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -28,6 +29,21 @@ type E2ETemplateData struct {
 	Port             int
 	Methods          []E2EMethodInfo
 	FirstRequestType string // Used to anchor the pb import in helpers
+	// ServeArgs is the argv (after the binary) that runs this service: its
+	// own top-level subcommand, named by the same derivation that generates
+	// the CLI tree (codegen.CmdServiceCommand), so the harness and the CLI
+	// cannot disagree. A service whose name collides with a built-in command
+	// gets no subcommand; `server` (which mounts every service) runs it.
+	ServeArgs []string
+}
+
+// e2eServeArgs returns the CLI argv that serves serviceName in the scaffolded
+// binary. See E2ETemplateData.ServeArgs.
+func e2eServeArgs(serviceName string) []string {
+	if cmd, _, ok := codegen.CmdServiceCommand(serviceName); ok {
+		return []string{cmd}
+	}
+	return []string{"server"}
 }
 
 // GenerateE2ETests renders E2E test templates into e2e/<servicePackage>/ under projectDir.
@@ -51,6 +67,7 @@ func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, m
 		Port:             0, // E2E uses freePort(); this is available as a template var
 		Methods:          methods,
 		FirstRequestType: "",
+		ServeArgs:        e2eServeArgs(serviceName),
 	}
 
 	templateFiles := []struct {

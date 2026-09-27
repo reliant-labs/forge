@@ -1,6 +1,5 @@
-// Package v1alpha1 is the ONE declaration of forge's three hosted deploy
-// tiers — SimpleBackend, StaticSite and ManagedDatabase — in API group
-// forge.dev.
+// Package v1alpha1 is the ONE declaration of forge's deploy kinds —
+// Workload, StaticSite and ManagedDatabase — in API group forge.dev.
 //
 // # ONE DECLARATION, TWO DESTINATIONS
 //
@@ -11,9 +10,11 @@
 // deploys self-hosted (forge renders it with deploy.Render and applies it) and
 // hosted (the control plane receives it as a CR, calls the same Render, and
 // composes its hosted concerns around the result). Before this package there
-// were four definitions of SimpleBackend — forge's KCL schema, control-plane's
-// CRD, control-plane's deployrender config and a JSONB row struct — using
-// three unit systems and three different sets of env channels.
+// were four definitions of a hosted backend — forge's KCL schema,
+// control-plane's CRD, control-plane's deployrender config and a JSONB row
+// struct — using three unit systems and three different sets of env
+// channels. ADR 0002 (docs/adr/0002-one-workload-model.md) then folded every
+// other way to declare a runnable thing into the one Workload kind.
 //
 // # WHAT IS SPEC, WHAT IS NOT
 //
@@ -38,17 +39,22 @@
 // doc admitted this ("the platform fills these in; they are not an app-facing
 // knob"). The renderer takes the namespace as a RenderContext argument.
 //
-// # THE SCHEMA IS CLOSED, AND THAT IS THE ENFORCEMENT MECHANISM
+// # THE SCHEMA IS CLOSED, AND RESTRICTION IS A PROFILE
 //
-// This is forge's doctrine, and it is kept on merit: a hosted tier that must
-// reject configuration it will not honour does so by NOT DECLARING THE FIELD.
-// An absent field needs no allowlist, cannot drift out of sync with one, and
-// is refused for free — by KCL at author time, and by the API server's
-// structural schema at apply time. So there is no replicas, no
-// securityContext, no serviceAccount, no RBAC, no image pull secrets, no node
-// placement, no command/args, no volumes and no raw-manifest passthrough. An
-// app that needs any of those has outgrown the tier and should declare a
-// forge.K8sCluster service, which is a different product.
+// The schema is closed. A field that is not declared cannot be expressed:
+// KCL refuses it at author time and the API server's structural schema
+// prunes it at apply time. So the Kubernetes surface a Workload can reach
+// is an ALLOWLIST by construction. There is no securityContext, no node
+// placement, no volumes and no raw-manifest passthrough, and a new PodSpec
+// field is unreachable until someone adds it here on purpose.
+//
+// Inside that closed set, what a DESTINATION accepts is a Profile (see
+// profile.go). ProfileFull is a cluster the author operates.
+// ProfileRestricted is the hosted runtime on shared nodes, and it refuses
+// RBAC, CRDs, raw Secret and ConfigMap reads and the other fields that
+// reach past the tenant's own pod. Every spec field is classified in one
+// table, FieldProfiles, and a reflection test fails the build when a field
+// is added without a classification. That keeps the profile default-deny.
 //
 // # INVARIANTS LIVE IN GO
 //
@@ -56,7 +62,7 @@
 // schema carries a generated copy. The previous design kept the rules
 // (the resource ratio band, image pinning) only as KCL checks, and the
 // hosted path — which never ran forge's KCL — bypassed them. The live dev
-// cluster ran a SimpleBackend at 100m/128Mi, off the band the KCL check
+// cluster ran a hosted backend at 100m/128Mi, off the band the KCL check
 // claimed to guarantee. The KCL copy is still useful, because it fails at
 // author time with a message naming the field. But it is a convenience, and
 // Validate() is the check.

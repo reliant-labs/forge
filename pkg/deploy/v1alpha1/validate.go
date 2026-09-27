@@ -18,12 +18,11 @@ import (
 // plane.
 
 var (
-	envNameRE    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	dnsLabelRE   = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	sha256RE     = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
-	hostnameRE   = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]([-a-z0-9]*[a-z0-9])?$`)
-	validDBKeys  = map[DatabaseCredentialKey]bool{DatabaseKeyURI: true, DatabaseKeyHost: true, DatabaseKeyPort: true, DatabaseKeyDBName: true, DatabaseKeyUsername: true, DatabaseKeyPassword: true}
-	validNetwork = map[Network]bool{"": true, NetworkPublic: true, NetworkPrivate: true, NetworkNone: true}
+	envNameRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	dnsLabelRE  = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	sha256RE    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	hostnameRE  = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]([-a-z0-9]*[a-z0-9])?$`)
+	validDBKeys = map[DatabaseCredentialKey]bool{DatabaseKeyURI: true, DatabaseKeyHost: true, DatabaseKeyPort: true, DatabaseKeyDBName: true, DatabaseKeyUsername: true, DatabaseKeyPassword: true}
 )
 
 // ValidateImage enforces forge's image invariant: an explicit registry host and
@@ -90,8 +89,20 @@ func (e EnvVar) Validate() error {
 			errs = append(errs, fmt.Errorf("env var %s: %w", e.Name, err))
 		}
 	}
+	if e.ConfigMapRef != nil {
+		set++
+		if e.ConfigMapRef.Name == "" || e.ConfigMapRef.Key == "" {
+			errs = append(errs, fmt.Errorf("env var %s: configMapRef needs both name and key", e.Name))
+		}
+	}
+	if e.FieldRef != nil {
+		set++
+		if e.FieldRef.FieldPath == "" {
+			errs = append(errs, fmt.Errorf("env var %s: fieldRef needs a fieldPath", e.Name))
+		}
+	}
 	if set > 1 {
-		errs = append(errs, fmt.Errorf("env var %s sets more than one of value / secretRef / managedSecret / databaseRef / workloadURL: a spec that says two things has no correct reading", e.Name))
+		errs = append(errs, fmt.Errorf("env var %s sets more than one of value / secretRef / managedSecret / databaseRef / workloadURL / configMapRef / fieldRef: a spec that says two things has no correct reading", e.Name))
 	}
 	return errors.Join(errs...)
 }
@@ -176,21 +187,6 @@ func (r Resources) Validate() error {
 	return errors.Join(errs...)
 }
 
-// Validate checks probe bounds.
-func (h HealthCheck) Validate() error {
-	var errs []error
-	if h.Port < 1 || h.Port > 65535 {
-		errs = append(errs, fmt.Errorf("healthCheck.port %d must be 1-65535", h.Port))
-	}
-	if h.Path != "" && !strings.HasPrefix(h.Path, "/") {
-		errs = append(errs, fmt.Errorf("healthCheck.path %q must start with '/'", h.Path))
-	}
-	if h.InitialDelaySeconds < 0 || h.PeriodSeconds < 0 || h.TimeoutSeconds < 0 || h.FailureThreshold < 0 {
-		errs = append(errs, errors.New("healthCheck timings must not be negative"))
-	}
-	return errors.Join(errs...)
-}
-
 func validateDomains(field string, domains []string) error {
 	var errs []error
 	seen := map[string]bool{}
@@ -202,64 +198,6 @@ func validateDomains(field string, domains []string) error {
 			errs = append(errs, fmt.Errorf("%s: %q is listed twice", field, d))
 		}
 		seen[d] = true
-	}
-	return errors.Join(errs...)
-}
-
-// Validate checks a SimpleBackend spec. It is the one Go home of every rule
-// that used to live only in forge's KCL.
-func (s SimpleBackendSpec) Validate() error {
-	var errs []error
-	if err := ValidateImage(s.Image); err != nil {
-		errs = append(errs, err)
-	}
-	if !validNetwork[s.Network] {
-		errs = append(errs, fmt.Errorf("network %q must be public, private or none", s.Network))
-	}
-	seenPorts := map[int32]bool{}
-	for _, p := range s.Ports {
-		if p < 1 || p > 65535 {
-			errs = append(errs, fmt.Errorf("port %d must be 1-65535", p))
-		}
-		if seenPorts[p] {
-			errs = append(errs, fmt.Errorf("port %d is listed twice", p))
-		}
-		seenPorts[p] = true
-	}
-	// A reachable backend that listens on nothing cannot be dialed, and a
-	// "none" backend's ports would describe an address that does not exist.
-	if s.ServesTraffic() && len(s.Ports) == 0 {
-		errs = append(errs, fmt.Errorf("network %q requires at least one port: a reachable backend that listens on nothing cannot be dialed", s.EffectiveNetwork()))
-	}
-	if !s.ServesTraffic() && len(s.Ports) > 0 {
-		errs = append(errs, errors.New("network none must declare no ports: no Service is rendered, so a port would describe an address that does not exist"))
-	}
-	if len(s.Domains) > 0 && !s.IsPublic() {
-		errs = append(errs, errors.New("domains are only meaningful for network public: nothing serves a hostname for a private or none backend"))
-	}
-	if err := validateDomains("domains", s.Domains); err != nil {
-		errs = append(errs, err)
-	}
-	seenEnv := map[string]bool{}
-	for _, e := range s.Env {
-		if err := e.Validate(); err != nil {
-			errs = append(errs, err)
-		}
-		if seenEnv[e.Name] {
-			errs = append(errs, fmt.Errorf("env var %s is declared twice", e.Name))
-		}
-		seenEnv[e.Name] = true
-	}
-	if err := s.Resources.Validate(); err != nil {
-		errs = append(errs, err)
-	}
-	if s.HealthCheck != nil {
-		if err := s.HealthCheck.Validate(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if s.StorageGiB < 0 {
-		errs = append(errs, errors.New("storageGiB must not be negative; omit it for a stateless backend"))
 	}
 	return errors.Join(errs...)
 }

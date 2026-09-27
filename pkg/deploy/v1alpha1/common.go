@@ -18,44 +18,23 @@ const (
 	LabelDeploymentID  = "forge.dev/deployment-id"
 )
 
-// Network is a backend's addressability mode.
-//
-// NETWORK IS A MANIFEST DIFFERENCE, NOT A LABEL (forge's framing, which both
-// sides already shared word for word):
-//
-//   - none    — NO Service object. Nothing can dial the workload by name; it
-//     reaches out and is never reached. This is ADDRESSABILITY, not
-//     containment: it makes no claim about egress.
-//   - private — a ClusterIP Service, reachable from the same namespace. The
-//     default.
-//   - public  — a ClusterIP Service plus a hostname. On hosted the platform
-//     ALLOCATES a collision-safe hostname and records it in status; on
-//     self-hosted the environment's gateway supplies one. Custom hostnames
-//     are the optional Domains field.
-//
-// +kubebuilder:validation:Enum=public;private;none
-type Network string
-
-const (
-	NetworkPublic  Network = "public"
-	NetworkPrivate Network = "private"
-	NetworkNone    Network = "none"
-)
-
 // EnvVar is one container environment variable.
 //
-// # FOUR CHANNELS, AT MOST ONE SET
+// # SEVEN CHANNELS, AT MOST ONE SET
 //
 // MERGE DECISION. forge's tier used its generic EnvVar (value / secret_ref /
 // config_map_ref / field_ref). control-plane's CRD used value / secretRef /
-// a platform-secret name / databaseRef. The merged tier has exactly four:
+// a platform-secret name / databaseRef. The merged type has five channels
+// every profile may use, and two that only the Full profile may:
 //
 //   - Value — an inline literal. Both sides had it.
+//
 //   - SecretRef — one key of a Secret in the workload's own namespace. Both
 //     sides had it. Self-hosted, forge's secrets provider renders that Secret.
 //     Hosted, the operator additionally refuses names outside the customer's
 //     prefix, because the hosted namespace also holds platform-owned secrets.
 //     That check is a HOSTED decoration and stays in control-plane.
+//
 //   - ManagedSecret — a value stored in the environment's secret STORE, named
 //     by a bare logical name. This is control-plane's platform-secret channel, kept on
 //     merit and renamed. It is the highest-level way to say "my API key". The
@@ -68,24 +47,38 @@ const (
 //     ManagedSecretsSecretName before the pod starts. It is renamed because
 //     the old name was the hosted platform's vocabulary, which means
 //     nothing to a self-hosted user, while every environment has a secret store.
+//
 //   - DatabaseRef — the credential of a ManagedDatabase in the same
 //     namespace. control-plane's design, kept on merit. It removes the most
 //     common hand-wiring task in a three-tier app, and it ran live (a
 //     backend reached a real CNPG Postgres through it). It NAMES A DATABASE,
 //     NEVER A SECRET, so the set of things it can resolve to is closed by
 //     construction.
+//
 //   - WorkloadURL — the public URL of a sibling workload (a backend's
 //     CORS_ORIGINS naming its StaticSite). Added with StaticSite runtime
 //     config, which uses the same reference kind. Like DatabaseRef it NAMES
 //     A WORKLOAD, never a hostname, so it cannot point outside the env.
 //
-// config_map_ref and field_ref are DELIBERATELY ABSENT from the tier. They
-// stay on forge.K8sCluster. field_ref projects pod and node metadata, and
-// config_map_ref reads arbitrary namespace objects. Neither says anything an
-// app on this tier needs, and the closed-schema doctrine is that an app that
-// needs them has outgrown the tier. Keeping them and having the hosted side
-// refuse them (design D's first proposal) would rebuild the allowlist the
-// closed schema exists to avoid.
+//   - ConfigMapRef — one key of a ConfigMap in the workload's namespace.
+//     FULL PROFILE ONLY.
+//
+//   - FieldRef — a Downward-API field path (metadata.name, status.podIP).
+//     FULL PROFILE ONLY.
+//
+// Why the last two are Full-only: a Workload is one type for every runtime
+// (ADR 0002), so a cluster the author operates must be able to say
+// everything forge.K8sCluster could. A shared hosted namespace is different.
+// ConfigMapRef reads an arbitrary namespace object the tenant did not write,
+// and FieldRef exposes pod and node placement the platform owns. So
+// Validate(ProfileRestricted) refuses both, by name, through FieldProfiles.
+// That is an explicit allowlist with a default-deny test behind it, not a
+// denylist that has to chase new fields: an unclassified field fails the
+// build.
+//
+// SecretRef is Full-only by the same table. A raw Secret name in a shared
+// namespace can address a platform-owned Secret, and ManagedSecret is the
+// hosted spelling of "my credential".
 //
 // Two channels set is REFUSED by Validate rather than resolved by
 // precedence. A spec that says two contradictory things has no correct
@@ -132,6 +125,37 @@ type EnvVar struct {
 	// still holds one rather than render an empty variable.
 	// +optional
 	WorkloadURL *WorkloadURLRef `json:"workloadURL,omitempty"`
+
+	// ConfigMapRef projects one key of a ConfigMap in the workload's
+	// namespace. Full profile only.
+	// +optional
+	ConfigMapRef *ConfigMapKeyRef `json:"configMapRef,omitempty"`
+
+	// FieldRef projects a pod field through the Downward API
+	// (valueFrom.fieldRef.fieldPath). Full profile only.
+	// +optional
+	FieldRef *FieldRef `json:"fieldRef,omitempty"`
+}
+
+// ConfigMapKeyRef names one key of a ConfigMap in the workload's own
+// namespace.
+type ConfigMapKeyRef struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Key string `json:"key"`
+}
+
+// FieldRef selects a pod field for the Downward API. Only the path is
+// modelled. apiVersion is always v1 for the fields a container env can read,
+// so a knob for it would be a field that is either redundant or wrong.
+type FieldRef struct {
+	// FieldPath is the pod field, e.g. metadata.name or status.podIP.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	FieldPath string `json:"fieldPath"`
 }
 
 // WorkloadURLRef names a workload, in the same environment, whose public URL
@@ -140,9 +164,10 @@ type EnvVar struct {
 // sibling workload.
 //
 // What the URL IS depends on the target's kind: a StaticSite's URL is its
-// site origin plus basePath, and a SimpleBackend's is its public hostname's
-// origin. A reference to a workload with no public URL (a private or none
-// backend, a database) is unresolvable and is refused, never guessed.
+// site origin plus basePath, and a Workload's is the origin of the hostname
+// its exposed port is served at. A reference to a workload with no public URL
+// (nothing exposed, a database) is unresolvable and is refused, never
+// guessed.
 type WorkloadURLRef struct {
 	// Name is the target workload's name (its metadata.name).
 	// +kubebuilder:validation:MinLength=1
@@ -319,83 +344,6 @@ func (r Resources) WithDefaults() Resources {
 	return r
 }
 
-// HealthCheck is ONE probe description that drives both liveness and
-// readiness.
-//
-// MERGE DECISION: control-plane's shape wins. forge's HealthCheck carried
-// liveness_path, readiness_path, http_port and exec_command, but the tier's
-// projection read only liveness_path and http_port
-// (_project_simple_backend). readiness_path and exec_command were fields
-// that looked honoured and were silently dropped, which is worse than
-// having no field. control-plane's shape is smaller and every field is real,
-// and it adds the one capability forge lacked. An empty Path probes with a
-// TCP connect, which is the correct probe for a backend that serves a
-// non-HTTP protocol. Probing "/" by default would restart-loop such a
-// backend and make the loop look like an application fault.
-//
-// The timing defaults are forge's (5s initial delay, 10s period, 3s timeout,
-// 3 failures), not Kubernetes' 1s timeout. They are the values forge has
-// shipped for this tier, and 1s is tight for an app's cold path.
-type HealthCheck struct {
-	// Port is the container port the probe connects to.
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port"`
-
-	// Path is the HTTP path to GET. Empty means a TCP connect.
-	// +optional
-	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:Pattern=`^/.*$`
-	Path string `json:"path,omitempty"`
-
-	// +optional
-	// +kubebuilder:default=5
-	// +kubebuilder:validation:Minimum=0
-	InitialDelaySeconds int32 `json:"initialDelaySeconds,omitempty"`
-	// +optional
-	// +kubebuilder:default=10
-	// +kubebuilder:validation:Minimum=1
-	PeriodSeconds int32 `json:"periodSeconds,omitempty"`
-	// +optional
-	// +kubebuilder:default=3
-	// +kubebuilder:validation:Minimum=1
-	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
-	// +optional
-	// +kubebuilder:default=3
-	// +kubebuilder:validation:Minimum=1
-	FailureThreshold int32 `json:"failureThreshold,omitempty"`
-}
-
-// Health-check timing defaults, mirrored by the markers above.
-const (
-	DefaultProbeInitialDelaySeconds int32 = 5
-	DefaultProbePeriodSeconds       int32 = 10
-	DefaultProbeTimeoutSeconds      int32 = 3
-	DefaultProbeFailureThreshold    int32 = 3
-)
-
-// WithDefaults fills every unset timing value.
-//
-// InitialDelaySeconds is the one value where 0 is meaningful, and the
-// default still applies when it is unset. A caller that wants no delay
-// declares 1. That is the price of omitempty ints, and it matches how the
-// API server applies the marker default to an absent field.
-func (h HealthCheck) WithDefaults() HealthCheck {
-	if h.InitialDelaySeconds == 0 {
-		h.InitialDelaySeconds = DefaultProbeInitialDelaySeconds
-	}
-	if h.PeriodSeconds == 0 {
-		h.PeriodSeconds = DefaultProbePeriodSeconds
-	}
-	if h.TimeoutSeconds == 0 {
-		h.TimeoutSeconds = DefaultProbeTimeoutSeconds
-	}
-	if h.FailureThreshold == 0 {
-		h.FailureThreshold = DefaultProbeFailureThreshold
-	}
-	return h
-}
-
 // Phase is a tier's observed lifecycle phase.
 //
 // ONE VOCABULARY FOR ALL THREE TIERS. control-plane had three:
@@ -432,8 +380,13 @@ const (
 	PhaseLocked      Phase = "Locked"
 )
 
-// WorkloadStatus is the observed state shared by the tiers that serve
-// traffic.
+// TierStatus is the observed state shared by the kinds that serve traffic
+// (Workload, StaticSite).
+//
+// It was called WorkloadStatus until Workload became a kind of its own. The
+// shared part is now TierStatus, so that WorkloadStatus can be the Workload
+// kind's full status, following the <Kind>Status convention every other
+// kind in this package uses.
 //
 // MERGE DECISION: control-plane's shape wins outright, since forge had no
 // status at all. A self-hosted user could not ask "what is running in prod
@@ -445,7 +398,7 @@ const (
 //
 // Every field is OBSERVED, never desired. A value appears only after the
 // thing it names is already true.
-type WorkloadStatus struct {
+type TierStatus struct {
 	// +optional
 	Phase Phase `json:"phase,omitempty"`
 

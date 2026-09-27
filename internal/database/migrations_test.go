@@ -30,7 +30,10 @@ func TestSanitizeMigrationName(t *testing.T) {
 	}
 }
 
-func TestCreateMigrationCreatesUpAndDownFiles(t *testing.T) {
+// TestCreateMigrationCreatesOnlyAnUpFile pins the roll-forward policy at the
+// writer: `forge db migration new` scaffolds a forward migration and nothing
+// that claims to reverse it.
+func TestCreateMigrationCreatesOnlyAnUpFile(t *testing.T) {
 	dir := t.TempDir()
 
 	if err := CreateMigration(context.Background(), "Add Users Table", dir, nil); err != nil {
@@ -41,31 +44,19 @@ func TestCreateMigrationCreatesUpAndDownFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadDir() error = %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 migration files, got %d", len(entries))
-	}
-
-	var upFile, downFile string
-	for _, entry := range entries {
-		switch {
-		case strings.HasSuffix(entry.Name(), ".up.sql"):
-			upFile = entry.Name()
-		case strings.HasSuffix(entry.Name(), ".down.sql"):
-			downFile = entry.Name()
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
 		}
+		t.Fatalf("expected exactly one migration file (up only), got %v", names)
 	}
-
-	if upFile == "" {
-		t.Fatal("expected an .up.sql migration file")
-	}
-	if downFile == "" {
-		t.Fatal("expected a .down.sql migration file")
+	upFile := entries[0].Name()
+	if !strings.HasSuffix(upFile, ".up.sql") {
+		t.Fatalf("expected an .up.sql migration file, got %s", upFile)
 	}
 	if !strings.Contains(upFile, "add_users_table") {
 		t.Fatalf("expected sanitized name in up migration, got %s", upFile)
-	}
-	if !strings.Contains(downFile, "add_users_table") {
-		t.Fatalf("expected sanitized name in down migration, got %s", downFile)
 	}
 
 	upContents, err := os.ReadFile(filepath.Join(dir, upFile))
@@ -74,14 +65,6 @@ func TestCreateMigrationCreatesUpAndDownFiles(t *testing.T) {
 	}
 	if !strings.Contains(string(upContents), "Write your migration SQL below") {
 		t.Fatalf("unexpected up migration contents: %s", string(upContents))
-	}
-
-	downContents, err := os.ReadFile(filepath.Join(dir, downFile))
-	if err != nil {
-		t.Fatalf("ReadFile(down) error = %v", err)
-	}
-	if !strings.Contains(string(downContents), "Write rollback SQL here") {
-		t.Fatalf("unexpected down migration contents: %s", string(downContents))
 	}
 }
 

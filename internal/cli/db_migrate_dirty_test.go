@@ -61,18 +61,6 @@ func TestDirtyMigrationMessage_NamesMigrateForceAndVersion(t *testing.T) {
 	}
 }
 
-// `forge db migrate down` wedges identically and needs the same way out.
-func TestDirtyMigrationMessage_CoversDownToo(t *testing.T) {
-	msg := dirtyMigrationMessage(&seedplan.MigrationBlock{Dirty: true, Version: "6"}, "down")
-
-	if !strings.Contains(msg, "forge db migrate force 6") {
-		t.Errorf("`migrate down` on a dirty database must name `forge db migrate force`; got:\n%s", msg)
-	}
-	if !strings.Contains(msg, "down") {
-		t.Errorf("the refusal should name the command the user actually ran; got:\n%s", msg)
-	}
-}
-
 // THE MISROUTING GUARD. A migration whose SQL is simply broken fails against a
 // database with a clean flag. golang-migrate then MARKS it dirty, which is why
 // this check runs before the migration rather than after: a post-hoc dirty

@@ -3,10 +3,15 @@
 // it, and reporting what the schema is doing.
 //
 // WHAT IS DELIBERATELY NOT HERE: policy. Whether a dirty schema aborts the
-// run or is force-cleared, whether "nothing to apply" exits 0 or non-zero,
-// whether `down` is allowed to run in production at all — those differ per
-// deployment, so they stay in the project's own cmd/<bin>/cmd/db.go where an
-// operator can read and change them. This package only reports FACTS
+// run or is force-cleared, whether "nothing to apply" exits 0 or non-zero —
+// those differ per deployment, so they stay in the project's own
+// cmd/<bin>/cmd/db.go where an operator can read and change them.
+//
+// WHAT IS DELIBERATELY NOT HERE EITHER: moving DOWN. Forge rolls forward
+// only, so the Migrator can apply pending migrations and nothing else — there
+// is no Steps(-n), Down() or Migrate(<lower version>). A down script claims to
+// undo a release and cannot account for what the release already wrote; the
+// recovery is a new forward migration. This package only reports FACTS
 // (Up.Changed, State.Applied, State.Dirty) and never decides what a fact
 // means. That split is the whole design: a helper that returned an error for
 // a dirty schema would have made "auto-force in staging" unexpressible
@@ -29,12 +34,9 @@
 package migratekit
 
 import (
-	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 
 	"github.com/golang-migrate/migrate/v4"
 	// Registers the "pgx5" database driver under the scheme NormalizeDSN
@@ -102,14 +104,6 @@ type Options struct {
 // Migrator is an open migration session. Always Close it.
 type Migrator struct {
 	m *migrate.Migrate
-	// db is a plain connection for the rollback-compatibility record (see
-	// ahead.go). golang-migrate's driver owns its own connection and exposes
-	// no query surface, so the record needs one of its own. Nil on a
-	// Migrator built around a bare *migrate.Migrate (stateOf), which only
-	// ever reads the version.
-	db *sql.DB
-	// source is what this binary embeds, parsed once at Open.
-	source sourceSet
 }
 
 // Open builds a Migrator over the embedded migration set in opts.FS.
@@ -134,11 +128,6 @@ func Open(opts Options) (*Migrator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
 	}
-	embedded, err := scanSource(opts.FS, dir)
-	if err != nil {
-		_ = source.Close()
-		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
-	}
 	m, err := migrate.NewWithSourceInstance("iofs", source, NormalizeDSN(opts.DSN))
 	if err != nil {
 		// The source instance owns an open handle even though the
@@ -147,34 +136,7 @@ func Open(opts Options) (*Migrator, error) {
 		_ = source.Close()
 		return nil, fmt.Errorf("open migrator: %w", err)
 	}
-	db, err := sql.Open("pgx/v5", sqlDSN(opts.DSN))
-	if err != nil {
-		_, _ = m.Close()
-		return nil, fmt.Errorf("open migrator: %w", err)
-	}
-	return &Migrator{m: m, db: db, source: embedded}, nil
-}
-
-// sqlDSN turns the DSN a caller handed Open into one database/sql's pgx
-// driver accepts: the postgres:// scheme (a caller may already have
-// normalized to pgx5://), with golang-migrate's own `x-` options removed —
-// they configure the migrator, and the server would reject them as unknown
-// run-time parameters. The same filtering golang-migrate applies before it
-// connects.
-func sqlDSN(dsn string) string {
-	u, err := url.Parse(NormalizeDSN(dsn))
-	if err != nil {
-		return dsn
-	}
-	u.Scheme = "postgres"
-	q := u.Query()
-	for k := range q {
-		if len(k) > 1 && k[:2] == "x-" {
-			q.Del(k)
-		}
-	}
-	u.RawQuery = q.Encode()
-	return u.String()
+	return &Migrator{m: m}, nil
 }
 
 // Close releases the migration source and the database connection.
@@ -187,11 +149,7 @@ func (mg *Migrator) Close() error {
 		return nil
 	}
 	srcErr, dbErr := mg.m.Close()
-	var recErr error
-	if mg.db != nil {
-		recErr = mg.db.Close()
-	}
-	return errors.Join(srcErr, dbErr, recErr)
+	return errors.Join(srcErr, dbErr)
 }
 
 // State is what the schema currently reports.
@@ -242,13 +200,6 @@ type Result struct {
 	// trip, and so "no change" still carries the version it is at.
 	Before State
 	After  State
-	// Ahead is set when the schema was AHEAD of this binary — a rollback —
-	// and every version it does not embed was declared backward-compatible.
-	// Nothing was applied (Changed is false); the binary's code can run.
-	// A caller should say so loudly: it is the fact an operator mid-rollback
-	// most needs confirmed. A schema ahead that is NOT proven compatible is
-	// a *SchemaAheadError instead, never this.
-	Ahead *Ahead
 }
 
 // Up applies every pending migration.
@@ -258,40 +209,7 @@ type Result struct {
 // outcome for every replica that lost the advisory-lock race, so treating it
 // as failure would fail most of a healthy deploy. A caller that genuinely
 // wants "fail if nothing was pending" has Changed to test.
-//
-// A schema AHEAD of this binary (the database is at a version it does not
-// embed — what a rollback produces) is classified before anything runs: a
-// Result with Ahead set when every unknown version was declared
-// backward-compatible, a *SchemaAheadError when not. golang-migrate alone
-// fails both with "no migration found for version N". See ahead.go.
-func (mg *Migrator) Up() (Result, error) {
-	before, err := mg.State()
-	if err != nil {
-		return Result{}, err
-	}
-	if ahead, err := classifyAhead(context.Background(), mg.db, mg.source, before); err != nil || ahead != nil {
-		if err != nil {
-			return Result{}, err
-		}
-		return Result{Before: before, After: before, Ahead: ahead}, nil
-	}
-	if err := recordCompat(context.Background(), mg.db, mg.source); err != nil {
-		return Result{}, err
-	}
-	return mg.apply(mg.m.Up)
-}
-
-// Steps moves n migrations — positive up, negative down. Same ErrNoChange
-// folding as Up. A step UP records the compatibility declarations first, as
-// Up does; a step down only ever removes versions, so it has nothing to add.
-func (mg *Migrator) Steps(n int) (Result, error) {
-	if n > 0 {
-		if err := recordCompat(context.Background(), mg.db, mg.source); err != nil {
-			return Result{}, err
-		}
-	}
-	return mg.apply(func() error { return mg.m.Steps(n) })
-}
+func (mg *Migrator) Up() (Result, error) { return mg.apply(mg.m.Up) }
 
 // Force sets the recorded version and CLEARS the dirty flag without running
 // any SQL.
@@ -308,7 +226,7 @@ func (mg *Migrator) Force(version int) error {
 	return nil
 }
 
-// apply is the shared ceremony behind Up and Steps: read state, run, fold
+// apply is the ceremony behind Up: read state, run, fold
 // ErrNoChange, read state again.
 func (mg *Migrator) apply(run func() error) (Result, error) {
 	before, err := mg.State()

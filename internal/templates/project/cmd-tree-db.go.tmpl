@@ -2,7 +2,7 @@
 //
 // MIGRATION POLICY — and, deliberately, nothing else.
 //
-// The three subcommands below are a shape every project shares, but every
+// The two subcommands below are a shape every project shares, but every
 // LINE inside them is an operational decision that differs per deployment:
 //
 //   - `up` refuses to run against a dirty schema. That is the safe default,
@@ -12,14 +12,15 @@
 //     file instead of a fork of the library.
 //   - "nothing was pending" exits 0. A pipeline that wants to fail when a
 //     release ships no migration inverts that by testing res.Changed.
-//   - a schema AHEAD of this binary (a rollback: an older release running
-//     against a newer release's database) exits 0 only when every version
-//     this binary does not embed was declared `-- forge:backward-compatible`
-//     (res.Ahead), and fails with the step-down runbook otherwise.
-//     migratekit decides WHICH it is from a record the newer migrator wrote;
-//     what to do with each answer is this file's call.
-//   - `down` reverts exactly one step and is wired with no confirmation
-//     prompt, because it runs unattended. A team that wants a guard adds it.
+//
+// There is NO `down`, deliberately. Forge rolls forward only: a down script
+// claims to undo a release and cannot — by the time anyone would run it the
+// release has written rows in the new shape and other code has acted on them,
+// and the script was written before any of that. A bad migration is repaired
+// by a NEW forward migration written against the state the database is
+// actually in. Write migrations expand-then-contract (add, backfill, switch
+// readers, drop in a later release) so the previous release keeps working
+// against the new schema; that is what makes a bad deploy survivable.
 //
 // The invariant half — opening a migrator over the embedded SQL, rewriting
 // the DATABASE_URL to the scheme the driver registered under, closing both
@@ -78,8 +79,8 @@ func newDBCmd(deps Deps) *cobra.Command {
 	migrateCmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Manage database migrations",
-		Long: "Apply, revert, or inspect the SQL migrations embedded in this binary " +
-			"(compiled from db/migrations/).",
+		Long: "Apply or inspect the SQL migrations embedded in this binary " +
+			"(compiled from db/migrations/). Forward only: there is no down.",
 	}
 	config.RegisterFlags(migrateCmd)
 
@@ -111,25 +112,7 @@ func newDBCmd(deps Deps) *cobra.Command {
 
 			res, err := m.Up()
 			if err != nil {
-				// A schema AHEAD of this binary that nobody declared
-				// backward-compatible arrives here as a
-				// *migratekit.SchemaAheadError, carrying the step-down
-				// runbook. Failing is the safe default: this binary's code
-				// was never written for that schema.
 				return fmt.Errorf("migrate up: %w", err)
-			}
-			// THE SCHEMA IS AHEAD OF THIS BINARY — A ROLLBACK — and every
-			// version it does not embed was declared
-			// `-- forge:backward-compatible`. Nothing was applied and this
-			// release's code can run, so exit 0; but say it loudly, because
-			// "the database is newer than the code" is the fact an operator
-			// mid-rollback most needs confirmed.
-			if res.Ahead != nil {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"SCHEMA AHEAD OF THIS BINARY (rollback): database is at version %d, this binary embeds up to %d; "+
-						"version(s) %v were declared backward-compatible — nothing applied\n",
-					res.Ahead.Version, res.Ahead.Latest, res.Ahead.Versions)
-				return nil
 			}
 			// NOTHING PENDING IS SUCCESS. res.Changed is false both for a
 			// release that shipped no migration and for a replica that lost
@@ -140,28 +123,6 @@ func newDBCmd(deps Deps) *cobra.Command {
 				return nil
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "migrations applied: %d -> %d\n", res.Before.Version, res.After.Version)
-			return nil
-		}),
-	})
-
-	migrateCmd.AddCommand(&cobra.Command{
-		Use:          "down",
-		Short:        "Revert the most recently applied migration",
-		Long:         "Revert exactly one migration. Use with care in production — each invocation steps down one version.",
-		SilenceUsage: true,
-		RunE: withMigrator(func(cmd *cobra.Command, m *migratekit.Migrator) error {
-			// ONE STEP, NO PROMPT. Reverting is destructive and this runs
-			// unattended, so the safety is the step count, not a
-			// confirmation nobody would be there to answer.
-			res, err := m.Steps(-1)
-			if err != nil {
-				return fmt.Errorf("migrate down: %w", err)
-			}
-			if !res.Changed {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "nothing to revert")
-				return nil
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "migration reverted: %d -> %d\n", res.Before.Version, res.After.Version)
 			return nil
 		}),
 	})
@@ -230,10 +191,9 @@ func withMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cob
 // environment, so nothing started at all — a fresh project could not boot.
 //
 // Skipping is safe precisely because there is nothing to apply. It is NOT
-// extended to the other subcommands: `migrate down`, `status`, `force` and
-// `version` are typed by a human asking a direct question about the schema,
-// and answering "no migrations embedded" with silence would hide a
-// regenerate they need to run. Those keep withMigrator and keep failing.
+// extended to `status`: it is typed by a human asking a direct question
+// about the schema, and answering "no migrations embedded" with silence would
+// hide a regenerate they need to run. It keeps withMigrator and keeps failing.
 //
 // See db/source_gen.go, whose generated doc states this same contract from
 // the other side.

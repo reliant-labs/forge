@@ -109,17 +109,22 @@ type RuleConfig struct {
 	DestructiveChange  string
 	VolatileDefault    string
 	AllowedDestructive []string
+	// DownFilesAllowedUntil is the grandfather line for no-down-migration:
+	// down migrations at or below this version warn, newer ones error.
+	// Empty grandfathers nothing.
+	DownFilesAllowedUntil string
 }
 
 // ConfigFromProject lifts a config.MigrationSafetyConfig into a
 // migrationlint.RuleConfig by resolving defaults.
 func ConfigFromProject(cfg config.MigrationSafetyConfig) RuleConfig {
 	return RuleConfig{
-		Enabled:            cfg.IsEnabled(),
-		UnsafeAddColumn:    cfg.EffectiveUnsafeAddColumn(),
-		DestructiveChange:  cfg.EffectiveDestructiveChange(),
-		VolatileDefault:    cfg.EffectiveVolatileDefault(),
-		AllowedDestructive: cfg.AllowedDestructive,
+		Enabled:               cfg.IsEnabled(),
+		UnsafeAddColumn:       cfg.EffectiveUnsafeAddColumn(),
+		DestructiveChange:     cfg.EffectiveDestructiveChange(),
+		VolatileDefault:       cfg.EffectiveVolatileDefault(),
+		AllowedDestructive:    cfg.AllowedDestructive,
+		DownFilesAllowedUntil: cfg.DownFilesAllowedUntil,
 	}
 }
 
@@ -135,7 +140,8 @@ func DefaultConfig() RuleConfig {
 }
 
 // LintMigrationsDir walks dir for *.up.sql files and returns a Result
-// containing every rule violation it finds.
+// containing every rule violation it finds. Every OTHER .sql file is checked
+// for being a down migration (no-down-migration): forge rolls forward only.
 //
 // The three "examined nothing" outcomes — rules disabled, directory
 // absent, directory empty — each set Result.Skipped with the reason and
@@ -150,25 +156,39 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 		return Result{Dir: dir, Skipped: fmt.Sprintf("no migrations directory at %s (path is resolved from the current directory — run this from the project root, or set database.migrations_dir in forge.yaml)", dir)}, nil
 	}
 
-	var files []string
+	var files, rollbackCandidates []string
 	if err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".up.sql") {
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".sql") {
 			return nil
 		}
-		files = append(files, path)
+		if strings.HasSuffix(d.Name(), ".up.sql") {
+			files = append(files, path)
+		} else {
+			// *.down.sql, or a one-file goose migration that may carry a
+			// Down section.
+			rollbackCandidates = append(rollbackCandidates, path)
+		}
 		return nil
 	}); err != nil {
 		return Result{}, err
 	}
 	sort.Strings(files)
+	sort.Strings(rollbackCandidates)
+
+	findings, err := lintDownMigrations(rollbackCandidates, cfg.DownFilesAllowedUntil)
+	if err != nil {
+		return Result{}, err
+	}
 	if len(files) == 0 {
+		if len(findings) > 0 {
+			return Result{Findings: findings, Dir: dir}, nil
+		}
 		return Result{Dir: dir, Skipped: fmt.Sprintf("%s exists but holds no *.up.sql files — create one with `forge db migration new <name>`", dir)}, nil
 	}
 
-	var findings []Finding
 	for _, file := range files {
 		data, err := os.ReadFile(file)
 		if err != nil {
@@ -469,6 +489,8 @@ func RemediationFor(rule string) string {
 		return UnsafeNotNullRemediation
 	case "volatile-default":
 		return VolatileDefaultRemediation
+	case RuleNoDownMigration:
+		return NoDownMigrationRemediation
 	default:
 		return DestructiveChangeRemediation
 	}

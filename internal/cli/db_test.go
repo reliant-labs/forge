@@ -83,9 +83,15 @@ func TestDBMigrateCommandIncludesExpectedLifecycleCommands(t *testing.T) {
 		t.Fatal("migrate command not found")
 	}
 
-	for _, subcommand := range []string{"up", "down", "status", "version", "force"} {
+	for _, subcommand := range []string{"up", "status", "version", "force"} {
 		if got := commandName(migrateCmd, subcommand); got == nil {
 			t.Fatalf("expected migrate command to include %q", subcommand)
+		}
+	}
+	// Roll forward only: there is no command that runs down SQL.
+	for _, forbidden := range []string{"down", "rollback", "redo"} {
+		if got := commandName(migrateCmd, forbidden); got != nil {
+			t.Fatalf("`forge db migrate %s` must not exist — forge never runs down migrations", forbidden)
 		}
 	}
 }

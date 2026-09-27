@@ -61,10 +61,8 @@ func writeResetMigrations(t *testing.T, projectDir string) string {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		"000001_org_spine.up.sql":    resetMigration1,
-		"000001_org_spine.down.sql":  "DROP TABLE memberships; DROP TABLE organizations;",
-		"000002_add_org_fk.up.sql":   resetMigration2,
-		"000002_add_org_fk.down.sql": "ALTER TABLE memberships DROP CONSTRAINT memberships_org_id_fkey;",
+		"000001_org_spine.up.sql":  resetMigration1,
+		"000002_add_org_fk.up.sql": resetMigration2,
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {

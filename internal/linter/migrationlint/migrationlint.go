@@ -109,22 +109,17 @@ type RuleConfig struct {
 	DestructiveChange  string
 	VolatileDefault    string
 	AllowedDestructive []string
-	// DownFilesAllowedUntil is the grandfather line for no-down-migration:
-	// down migrations at or below this version warn, newer ones error.
-	// Empty grandfathers nothing.
-	DownFilesAllowedUntil string
 }
 
 // ConfigFromProject lifts a config.MigrationSafetyConfig into a
 // migrationlint.RuleConfig by resolving defaults.
 func ConfigFromProject(cfg config.MigrationSafetyConfig) RuleConfig {
 	return RuleConfig{
-		Enabled:               cfg.IsEnabled(),
-		UnsafeAddColumn:       cfg.EffectiveUnsafeAddColumn(),
-		DestructiveChange:     cfg.EffectiveDestructiveChange(),
-		VolatileDefault:       cfg.EffectiveVolatileDefault(),
-		AllowedDestructive:    cfg.AllowedDestructive,
-		DownFilesAllowedUntil: cfg.DownFilesAllowedUntil,
+		Enabled:            cfg.IsEnabled(),
+		UnsafeAddColumn:    cfg.EffectiveUnsafeAddColumn(),
+		DestructiveChange:  cfg.EffectiveDestructiveChange(),
+		VolatileDefault:    cfg.EffectiveVolatileDefault(),
+		AllowedDestructive: cfg.AllowedDestructive,
 	}
 }
 
@@ -178,7 +173,7 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 	sort.Strings(files)
 	sort.Strings(rollbackCandidates)
 
-	findings, err := lintDownMigrations(rollbackCandidates, cfg.DownFilesAllowedUntil)
+	findings, err := lintDownMigrations(rollbackCandidates)
 	if err != nil {
 		return Result{}, err
 	}

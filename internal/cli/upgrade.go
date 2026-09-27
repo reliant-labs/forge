@@ -15,7 +15,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 )
 
 func newUpgradeCmd() *cobra.Command {
@@ -245,9 +244,6 @@ func runUpgradeWithView(check, force, showAll bool, forcePaths []string, toVersi
 	// the old version, so the next `forge generate` runs the wrong
 	// template set against an already-migrated tree.
 	if err := bumpForgeVersion(cfg, configPath, target, check); err != nil {
-		return err
-	}
-	if err := recordDownFilesBaseline(cfg, configPath, check); err != nil {
 		return err
 	}
 
@@ -686,52 +682,6 @@ func bumpForgeVersion(cfg *config.ProjectConfig, configPath, target string, chec
 		return fmt.Errorf("bump forge_version in forge.yaml: %w", err)
 	}
 	fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
-	return nil
-}
-
-// recordDownFilesBaseline grandfathers the down migrations a project wrote
-// before forge's no-down-migration rule, so an upgrade does not turn the lint
-// red over history nobody can rewrite. It writes
-// database.migration_safety.down_files_allowed_until = <newest down file's
-// version> ONCE: only when the key is unset and down files exist.
-//
-// It lives in `forge project upgrade`, never `forge generate`, on purpose.
-// Upgrade is the deliberate, human-run step that already edits forge.yaml
-// (forge_version) and whose diff gets reviewed; generate runs constantly,
-// often from an agent, and a baseline it re-stamped would grandfather the
-// down file that agent wrote a minute earlier — the exact file the rule
-// exists to catch. After this runs once, the key is set and it never moves
-// again unless a human moves it.
-func recordDownFilesBaseline(cfg *config.ProjectConfig, configPath string, check bool) error {
-	if cfg == nil || cfg.Database.MigrationSafety.DownFilesAllowedUntil != "" {
-		return nil
-	}
-	migDir := cfg.Database.MigrationsDir
-	if migDir == "" {
-		migDir = defaultMigrationsDir
-	}
-	if !filepath.IsAbs(migDir) {
-		migDir = filepath.Join(filepath.Dir(configPath), migDir)
-	}
-	baseline, err := migrationlint.DownFilesBaseline(migDir)
-	if err != nil {
-		return fmt.Errorf("scan %s for down migrations: %w", migDir, err)
-	}
-	if baseline == "" {
-		return nil
-	}
-	if check {
-		fmt.Printf("\nwould set database.migration_safety.down_files_allowed_until: %q (grandfathers the down migrations that predate forge's roll-forward-only rule)\n", baseline)
-		return nil
-	}
-	if err := generator.SetProjectConfigScalarPath(configPath,
-		[]string{"database", "migration_safety", "down_files_allowed_until"}, baseline); err != nil {
-		return fmt.Errorf("record down_files_allowed_until in forge.yaml: %w", err)
-	}
-	cfg.Database.MigrationSafety.DownFilesAllowedUntil = baseline
-	fmt.Printf("\ndatabase.migration_safety.down_files_allowed_until → %q (forge.yaml updated)\n", baseline)
-	fmt.Println("    forge rolls forward only: the existing down migrations are grandfathered as a single lint warning")
-	fmt.Println("    (nothing runs them — delete them when convenient); any NEW down migration is a lint error.")
 	return nil
 }
 

@@ -83,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `database.migration_safety.down_files_allowed_until` and the
+  `forge project upgrade` step that stamped it. Every down migration is now a
+  `no-down-migration` lint error, with no grandfathered history: forge never
+  runs one, so deleting it is always safe. A forge.yaml still carrying the key
+  loads with a warning naming the fix.
 - `go.work` from forge's own repo. It existed to stitch `pkg` to the root
   module, and it was also what hid the stale-require bug: every in-repo build
   resolved `./pkg` locally and stayed green while `@main` was uninstallable.

@@ -476,6 +476,12 @@ var removedSchemaKeys = map[string]string{
 	"stack.deploy": "delete the key — the image registry lives in `docker.registry`, and the " +
 		"deploy target/cluster is declared per-env in `deploy/kcl/<env>/main.k` (forge.K8sCluster).",
 	"stack.ci": "delete the key and set the CI provider under `ci.provider` (github is the default).",
+	// down_files_allowed_until grandfathered pre-policy down migrations as a
+	// warning. There is nothing to grandfather: forge never runs a down file,
+	// so deleting one is always safe, and every down file is a lint error.
+	// `forge project upgrade` stamped this key, so it must warn, not fail.
+	"database.migration_safety.down_files_allowed_until": "delete the key and delete the down migrations it " +
+		"grandfathered — forge never runs them, so removing them is always safe; `forge lint` errors on every down file.",
 	// deploy graduated from experimental to a stable kind-derived flag in
 	// the front-door rework; projects scaffolded in the experimental
 	// window still carry the old nesting.

@@ -185,7 +185,12 @@ forge build --docker --tag v42          # local <registry>/<name>:v42, NOT pushe
 LOCAL `<registry>/<name>:<tag>` image (registry from forge.yaml's
 `docker.registry`, falling back to the project name) and
 AUTO-injects `--build-arg FORGE_VERSION/COMMIT/DATE`, so `code_version`
-stamps correctly. It does NOT push unless you pass `--push <registry>`.
+stamps correctly. It does NOT push unless you pass `--push`: a bare
+`forge build <env> --push` pushes to the registry the env declares
+(`cluster_target.registry` in `deploy/kcl/<env>/main.k`, the same value
+`forge env deploy` pulls from), and `--push <registry>` overrides it. A hosted
+env (`forge.ControlPlane`) declares no registry, so it needs
+`--push <image push base>` explicitly.
 
 Then a custom `deploy_cmd` ships that local image — no `build_cmd`:
 
@@ -246,7 +251,7 @@ no `rollback_cmd`, and no `kubectl rollout undo` path. Recovery is always a
 
 ```bash
 # fix on main, then cut + promote + deploy the fix
-forge build --release v1.7.1 --push <registry>
+forge build prod --release v1.7.1 --push     # the registry prod's KCL declares
 forge env promote v1.7.1 --to prod --plan    # read it: direction must be AHEAD
 forge env promote v1.7.1 --to prod --note "<incident>"
 forge env deploy prod

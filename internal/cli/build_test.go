@@ -77,6 +77,11 @@ func TestBuildPushFlagRegistered(t *testing.T) {
 	if f.DefValue != "" {
 		t.Errorf("--push default = %q, want empty", f.DefValue)
 	}
+	// A bare --push resolves the env's declared registry, so it must parse
+	// without a value instead of failing "flag needs an argument".
+	if f.NoOptDefVal != pushDeclaredSentinel {
+		t.Errorf("--push NoOptDefVal = %q, want %q (bare --push = the env's declared registry)", f.NoOptDefVal, pushDeclaredSentinel)
+	}
 }
 
 func TestBuildDebugFlagExists(t *testing.T) {

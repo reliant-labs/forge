@@ -74,7 +74,7 @@ PROMOTE SHIPS NOTHING. It moves a pointer. No image reaches any cluster until
 arrived. The plan says so on every invocation.
 
 Examples:
-  forge build --release v1.4.0 --push ghcr.io/acme   # build once, cut the release
+  forge build prod --release v1.4.0 --push   # build once, cut the release (prod's declared registry)
   forge env promote v1.4.0 --to staging --plan            # what WOULD change (writes nothing)
   forge env promote v1.4.0 --to staging --plan --json     # the same, machine-readable
   forge env promote v1.4.0 --to staging                  # bind staging → v1.4.0

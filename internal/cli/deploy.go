@@ -1813,6 +1813,7 @@ func filterEntitiesToFrontendsOnly(e *KCLEntities) *KCLEntities {
 	out.Clusters = nil
 	out.KubeconfigSecrets = nil
 	out.RequiredSecrets = nil
+	out.RenderedSecrets = nil
 	// Frontends carried through unchanged — the Firebase deploy + any
 	// build-only frontends it bundles.
 	return &out
@@ -2687,10 +2688,11 @@ func requiredSecretsForPreflight(entities *KCLEntities) []cluster.RequiredSecret
 //   - forge.ExternalSecret promises (entities.RequiredSecrets) — the author's
 //     explicit out-of-band promise the Secret exists. Counts as SATISFIED here;
 //     the LIVE preflight separately verifies it's actually provisioned.
-//   - rendered secret_provider Secrets (SecretProvider.Secrets, Type=="rendered")
-//     — forge renders + applies these per cluster; recorded as supply for
-//     completeness even though they typically also appear in the manifest
-//     stream.
+//   - declared rendered Secrets (Bundle.rendered_secrets, plus a
+//     RenderedSecrets provider's SecretProvider.Secrets) — forge renders +
+//     applies these CLI-side BEFORE the Deployments, so they never appear in
+//     the manifest stream; without this entry a plain manifest mounting one
+//     reads as an undeclared mount.
 //   - dotenv secret_provider Secrets (Type=="dotenv") — forge renders these
 //     CLI-side from the declared cluster refs and applies them BEFORE the
 //     Deployments roll out (see applyK8sSecretsFromProvider), so the mount
@@ -2719,13 +2721,14 @@ func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
 			Kind:      cluster.SupplyExternalSecret,
 		})
 	}
+	for _, s := range declaredSecretEntities(entities) {
+		out = append(out, cluster.SecretSupply{
+			Name:      s.Name,
+			Namespace: s.Namespace,
+			Kind:      cluster.SupplyRenderedManifest,
+		})
+	}
 	if entities.SecretProvider != nil {
-		for _, s := range entities.SecretProvider.Secrets {
-			out = append(out, cluster.SecretSupply{
-				Name: s.Name,
-				Kind: cluster.SupplyRenderedManifest,
-			})
-		}
 		if entities.SecretProvider.Type == "file" {
 			// The refs forge resolves + renders into Secrets at deploy time are
 			// exactly the cluster-service refs; dedupe by Secret name.
@@ -3180,12 +3183,17 @@ func verifyDeclaredContextsExist(ctx context.Context, groups []deploytarget.Serv
 // external/none providers produce no manifests (RenderK8sSecrets returns
 // nil), so this is a no-op for them beyond the validation gate.
 func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, kubeContext, envName string, dryRun bool) error {
-	// RenderedSecrets is a distinct provider shape: explicit named Secrets
-	// (name + per-key source) applied PER CLUSTER — each Secret lands ONLY
-	// in the cluster(s) whose services reference it, never projected across
-	// the trust boundary. Handled by its own per-group path.
+	// Declared Secrets (Bundle.rendered_secrets, and a RenderedSecrets
+	// provider's list) go first and through ONE path, whatever the
+	// provider: a dev env whose services read FileSecrets can still
+	// declare the Secrets its plain-manifest workloads mount.
+	if err := applyDeclaredSecrets(ctx, entities, groups, namespace, envName, dryRun); err != nil {
+		return err
+	}
+	// A RenderedSecrets provider has nothing further to project: its
+	// Secrets ARE its declarations, applied above.
 	if entities != nil && entities.SecretProvider != nil && entities.SecretProvider.Type == "rendered" {
-		return applyRenderedSecretsPerGroup(ctx, entities, groups, namespace, envName, dryRun)
+		return nil
 	}
 
 	prov, err := secretProviderFromEntities(entities, projectDirForKCL())
@@ -3261,67 +3269,113 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 	return nil
 }
 
-// applyRenderedSecretsPerGroup renders + applies a RenderedSecrets
-// provider's declared Secrets, scoping each Secret to ONLY the cluster(s)
-// whose services reference it. This is the trust-safe, multi-cluster
-// generalization of the env-wide dotenv apply: a Secret declared for the
-// control-plane cluster never lands in the workload cluster (and vice
-// versa) — each cluster gets only the Secrets its own services declare.
+// placedSecrets is the set of declared Secrets bound for ONE
+// (cluster, namespace): the unit a single render + apply handles.
+type placedSecrets struct {
+	cluster, namespace string
+	secrets            []secrets.DeclaredSecret
+}
+
+// placeDeclaredSecrets decides where every declared Secret lands, from two
+// sources that share one rule:
 //
-// Sourcing: `from="dotenv"` keys resolve from `.env.<env>` (gitignored);
-// `from="literal"` keys are inlined but ONLY in dev/e2e (the Go guard in
-// secrets.RenderDeclaredSecrets mirrors the KCL check). Local-cluster
-// only — like DotenvSecrets, this renders PLAINTEXT Secrets, so a
-// non-local target cluster is refused.
-func applyRenderedSecretsPerGroup(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, envName string, dryRun bool) error {
-	declared := declaredSecretsFromEntities(entities)
-	if len(declared) == 0 {
+//   - Bundle.rendered_secrets: always EXPLICIT — the entry's own
+//     cluster/namespace (KCL resolves the cluster_target default). This is
+//     the only way to place a Secret whose consumer is a plain manifest,
+//     because nothing about a raw Deployment's secretKeyRef tells forge
+//     which cluster it runs in.
+//   - a RenderedSecrets provider's list: explicit when the entry names a
+//     cluster; otherwise INFERRED — once per k8s group whose services
+//     reference it by secret_ref, in that group's namespace. Inference is
+//     the provider's original trust boundary (a Secret never lands in a
+//     cluster none of its consumers run in), kept for entries that rely
+//     on it.
+//
+// An entry with no namespace falls back to fallbackNamespace, the env's
+// resolved deploy namespace. The result is grouped and sorted so the apply
+// order — and the dry-run output — is stable.
+func placeDeclaredSecrets(entities *KCLEntities, groups []deploytarget.ServiceGroup, fallbackNamespace string) []placedSecrets {
+	if entities == nil {
 		return nil
+	}
+	byPlace := map[[2]string][]secrets.DeclaredSecret{}
+	place := func(cluster, namespace string, s RenderedSecretEntity) {
+		if namespace == "" {
+			namespace = fallbackNamespace
+		}
+		k := [2]string{cluster, namespace}
+		byPlace[k] = append(byPlace[k], declaredSecret(s))
+	}
+
+	for _, s := range entities.RenderedSecrets {
+		place(s.Cluster, s.Namespace, s)
+	}
+	if entities.SecretProvider != nil && entities.SecretProvider.Type == "rendered" {
+		for _, s := range entities.SecretProvider.Secrets {
+			if s.Cluster != "" {
+				place(s.Cluster, s.Namespace, s)
+				continue
+			}
+			for _, g := range groups {
+				if g.ProviderID != "k8s-cluster" {
+					continue
+				}
+				if _, ok := referencedSecretNamesForGroup(entities, g)[s.Name]; ok {
+					place(g.Cluster, g.Namespace, s)
+				}
+			}
+		}
+	}
+
+	out := make([]placedSecrets, 0, len(byPlace))
+	for k, list := range byPlace {
+		out = append(out, placedSecrets{cluster: k[0], namespace: k[1], secrets: list})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].cluster != out[j].cluster {
+			return out[i].cluster < out[j].cluster
+		}
+		return out[i].namespace < out[j].namespace
+	})
+	return out
+}
+
+// applyDeclaredSecrets renders + applies every declared Secret at the place
+// placeDeclaredSecrets assigned it, BEFORE the Deployments roll out, so a
+// secretKeyRef resolves on first schedule.
+//
+// Sourcing: `from="file"` keys resolve from the env's secret store
+// (secrets/<env>.yaml, gitignored — the value never enters KCL output);
+// `from="literal"` keys are inlined but ONLY in dev/e2e (the Go guard in
+// secrets.RenderDeclaredSecrets mirrors the KCL check). Local clusters only:
+// these are PLAINTEXT Secrets, so a non-local placement is refused before
+// anything is applied anywhere.
+func applyDeclaredSecrets(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, envName string, dryRun bool) error {
+	placed := placeDeclaredSecrets(entities, groups, namespace)
+	if len(placed) == 0 {
+		return nil
+	}
+	for _, p := range placed {
+		// GUARD: PLAINTEXT Secrets — local clusters only. Checked for
+		// every placement up front, so a bad one refuses the whole set
+		// rather than leaving half of it applied.
+		if !isLocalCluster(p.cluster) {
+			return fmt.Errorf(
+				"rendered Secret(s) %s would land in cluster %q, which is not local: forge renders these as plaintext "+
+					"and applies them to LOCAL clusters only. Declare the Secret as a forge.ExternalSecret in "+
+					"required_secrets (provisioned out-of-band) for a remote cluster",
+				declaredSecretNamesList(p.secrets), p.cluster)
+		}
 	}
 
 	// Value source for `from="file"` keys: the env's secret store.
-	dot, derr := renderedSecretsValueSource(envName)
-	if derr != nil {
-		return fmt.Errorf("rendered secrets value source: %w", derr)
+	store, err := renderedSecretsValueSource(envName, entities)
+	if err != nil {
+		return fmt.Errorf("rendered secrets value source: %w", err)
 	}
 
-	// Index declared Secrets by name for the per-group lookup.
-	byName := make(map[string]secrets.DeclaredSecret, len(declared))
-	for _, d := range declared {
-		byName[d.Name] = d
-	}
-
-	for _, g := range groups {
-		if g.ProviderID != "k8s-cluster" {
-			continue
-		}
-		// GUARD: PLAINTEXT Secrets — local clusters only.
-		if !isLocalCluster(g.Cluster) {
-			return fmt.Errorf(
-				"secret_provider 'rendered' renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
-					"Use secret_provider = forge.ExternalSecrets {} for remote clusters",
-				g.Cluster)
-		}
-
-		// Which declared Secrets do THIS group's services reference? Only
-		// those land in this group's cluster — never project a Secret
-		// across the trust boundary.
-		refNames := referencedSecretNamesForGroup(entities, g)
-		var groupSecrets []secrets.DeclaredSecret
-		for name := range refNames {
-			if d, ok := byName[name]; ok {
-				groupSecrets = append(groupSecrets, d)
-			}
-		}
-		if len(groupSecrets) == 0 {
-			continue
-		}
-
-		ns := g.Namespace
-		if ns == "" {
-			ns = namespace
-		}
-		mans, rerr := secrets.RenderDeclaredSecrets(groupSecrets, dot, envName, ns)
+	for _, p := range placed {
+		mans, rerr := secrets.RenderDeclaredSecrets(p.secrets, store, envName, p.namespace)
 		if rerr != nil {
 			return rerr
 		}
@@ -3333,36 +3387,53 @@ func applyRenderedSecretsPerGroup(ctx context.Context, entities *KCLEntities, gr
 			return fmt.Errorf("render rendered secrets: %w", merr)
 		}
 		if dryRun {
-			fmt.Printf("\n--- Rendered Secret Manifests for cluster %s (dry-run) ---\n", g.Cluster)
+			fmt.Printf("\n--- Rendered Secret Manifests for %s/%s (dry-run) ---\n", p.cluster, p.namespace)
 			fmt.Println(stream)
 			fmt.Println("--- End Rendered Secret Manifests ---")
 			continue
 		}
-		if err := cluster.EnsureNamespace(ctx, g.Cluster, ns); err != nil {
-			return fmt.Errorf("ensure namespace %q in %q before rendered secrets: %w", ns, g.Cluster, err)
+		if err := cluster.EnsureNamespace(ctx, p.cluster, p.namespace); err != nil {
+			return fmt.Errorf("ensure namespace %q in %q before rendered secrets: %w", p.namespace, p.cluster, err)
 		}
-		fmt.Printf("Applying %d rendered Secret(s) into %s/%s...\n", len(mans), g.Cluster, ns)
-		if err := cluster.KubectlApply(ctx, g.Cluster, stream); err != nil {
-			return fmt.Errorf("apply rendered secrets to %s: %w", g.Cluster, err)
+		fmt.Printf("Applying %d rendered Secret(s) into %s/%s...\n", len(mans), p.cluster, p.namespace)
+		if err := cluster.KubectlApply(ctx, p.cluster, stream); err != nil {
+			return fmt.Errorf("apply rendered secrets to %s: %w", p.cluster, err)
 		}
 	}
 	return nil
 }
 
-// declaredSecretsFromEntities maps the cli RenderedSecretEntity set to the
-// secrets-package DeclaredSecret shape (keeping the secrets package
-// decoupled from cli). Returns nil when the provider isn't "rendered".
-func declaredSecretsFromEntities(entities *KCLEntities) []secrets.DeclaredSecret {
-	if entities == nil || entities.SecretProvider == nil || entities.SecretProvider.Type != "rendered" {
+// declaredSecret maps one cli RenderedSecretEntity to the secrets-package
+// DeclaredSecret shape (keeping the secrets package decoupled from cli).
+func declaredSecret(s RenderedSecretEntity) secrets.DeclaredSecret {
+	keys := make(map[string]secrets.DeclaredSecretKey, len(s.Keys))
+	for k, src := range s.Keys {
+		keys[k] = secrets.DeclaredSecretKey{From: src.From, Key: src.Key, Value: src.Value}
+	}
+	return secrets.DeclaredSecret{Name: s.Name, Keys: keys}
+}
+
+// declaredSecretNamesList renders Secret names for an error message.
+func declaredSecretNamesList(list []secrets.DeclaredSecret) string {
+	names := make([]string, 0, len(list))
+	for _, d := range list {
+		names = append(names, fmt.Sprintf("%q", d.Name))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// declaredSecretEntities is every declared Secret the env renders itself —
+// Bundle.rendered_secrets plus a RenderedSecrets provider's list — for the
+// consumers that ask "what does this env declare?" rather than "where does
+// it land?": the preflight supply set and `forge secret list/ensure`.
+func declaredSecretEntities(entities *KCLEntities) []RenderedSecretEntity {
+	if entities == nil {
 		return nil
 	}
-	var out []secrets.DeclaredSecret
-	for _, s := range entities.SecretProvider.Secrets {
-		keys := make(map[string]secrets.DeclaredSecretKey, len(s.Keys))
-		for k, src := range s.Keys {
-			keys[k] = secrets.DeclaredSecretKey{From: src.From, Key: src.Key, Value: src.Value}
-		}
-		out = append(out, secrets.DeclaredSecret{Name: s.Name, Keys: keys})
+	out := append([]RenderedSecretEntity(nil), entities.RenderedSecrets...)
+	if entities.SecretProvider != nil && entities.SecretProvider.Type == "rendered" {
+		out = append(out, entities.SecretProvider.Secrets...)
 	}
 	return out
 }

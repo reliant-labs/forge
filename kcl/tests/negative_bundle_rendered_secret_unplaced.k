@@ -1,0 +1,18 @@
+"""
+Negative: a Bundle-level rendered Secret with no cluster, in a Bundle with
+no cluster_target, has nowhere to land. It is placed by declaration, never
+inferred, so this is a load error rather than a Secret that is silently
+never applied.
+"""
+
+import forge
+
+_bundle = forge.Bundle {
+    services = []
+    rendered_secrets = [forge.RenderedSecret {
+        name = "orphan"
+        keys = {"k" = forge.RenderedSecretKey {key = "SOME_KEY"}}
+    }]
+}
+
+output = forge.render(_bundle)

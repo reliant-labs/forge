@@ -219,17 +219,36 @@ func serviceEnvVars(s *ServiceEntity) []KCLEnvVar {
 }
 
 // renderedSecretsValueSource builds the provider that resolves
-// `from="dir"` / `from="dotenv"` keys for a RenderedSecrets bundle.
+// `from="file"` keys of declared Secrets (Bundle.rendered_secrets and a
+// RenderedSecrets provider's list).
 //
-// A RenderedSecrets provider declares the Secrets but not where their
-// values live, so this picks the env's local store: secrets/<env>.yaml.
-func renderedSecretsValueSource(envName string) (secrets.Provider, error) {
-	projectDir := projectDirForKCL()
+// It is the env's ONE secret store. When the env declares FileSecrets —
+// dev's usual shape, with rendered_secrets beside it for plain-manifest
+// consumers — that is the provider's own file, so `forge secret set --env
+// dev X` feeds a service's secret_ref and a rendered Secret's key alike.
+// Otherwise it is the conventional secrets/<env>.yaml. Either way it layers
+// over the primary checkout's store in a linked worktree, as the services'
+// provider does.
+func renderedSecretsValueSource(envName string, entities *KCLEntities) (secrets.Provider, error) {
+	return secrets.NewProvider(renderedSecretsStoreConfig(envName, entities))
+}
 
-	return secrets.NewProvider(&secrets.ProviderConfig{
-		Type: "file",
-		Path: filepath.Join(projectDir, "secrets", envName+".yaml"),
-	})
+// renderedSecretsStoreConfig is renderedSecretsValueSource's path half, also
+// used to REPORT where the values are read from.
+func renderedSecretsStoreConfig(envName string, entities *KCLEntities) *secrets.ProviderConfig {
+	projectDir := projectDirForKCL()
+	rel := filepath.Join("secrets", envName+".yaml")
+	if entities != nil && entities.SecretProvider != nil && entities.SecretProvider.Type == "file" && entities.SecretProvider.Path != "" {
+		rel = entities.SecretProvider.Path
+	}
+	if filepath.IsAbs(rel) {
+		return &secrets.ProviderConfig{Type: "file", Path: rel}
+	}
+	return &secrets.ProviderConfig{
+		Type:       "file",
+		Path:       filepath.Join(projectDir, rel),
+		SharedPath: sharedSecretStorePath(projectDir, rel),
+	}
 }
 
 // scopeSecretsToEnvVars narrows the env-wide secret map to the keys a

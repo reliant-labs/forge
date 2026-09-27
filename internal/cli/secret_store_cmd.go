@@ -566,14 +566,14 @@ func secretListStoreFor(ctx context.Context, envName string, entities *KCLEntiti
 // in-Secret key is "present" when its declared source resolves — a literal,
 // or a key in the env's local file store (secrets/<env>.yaml).
 func renderedSecretListStore(envName string, entities *KCLEntities) (secretListStore, error) {
-	source, err := renderedSecretsValueSource(envName)
+	source, err := renderedSecretsValueSource(envName, entities)
 	if err != nil {
 		return secretListStore{}, err
 	}
-	path := filepath.Join(projectDirForKCL(), "secrets", envName+".yaml")
+	path := renderedSecretsStoreConfig(envName, entities).Path
 	_, statErr := os.Stat(path)
 	store := secretListStore{provider: "rendered", location: path, exists: statErr == nil, verifiable: true, present: map[string]bool{}}
-	for _, rs := range entities.SecretProvider.Secrets {
+	for _, rs := range declaredSecretEntities(entities) {
 		for key, src := range rs.Keys {
 			name := rs.Name + "/" + key
 			switch strings.ToLower(strings.TrimSpace(src.From)) {
@@ -647,10 +647,7 @@ func buildSecretListReport(envName string, entities *KCLEntities, store secretLi
 func renderedSecretDeclarations(e *KCLEntities) ([]string, map[string][]secretDeclaration) {
 	var names []string
 	attribution := map[string][]secretDeclaration{}
-	if e == nil || e.SecretProvider == nil {
-		return names, attribution
-	}
-	for _, rs := range e.SecretProvider.Secrets {
+	for _, rs := range declaredSecretEntities(e) {
 		for key := range rs.Keys {
 			name := rs.Name + "/" + key
 			names = append(names, name)
@@ -689,7 +686,43 @@ func secretDeclarationsByEnvName(e *KCLEntities) map[string][]secretDeclaration 
 			byName[name] = append(byName[name], secretDeclaration{Workload: svc.Name, Kind: "managed-secret"})
 		}
 	}
+	for _, ref := range renderedSecretStoreKeys(e) {
+		byName[ref.storeKey] = append(byName[ref.storeKey], secretDeclaration{
+			Workload: ref.secret, Kind: "rendered-secret", SecretName: ref.secret, SecretKey: ref.secretKey,
+		})
+	}
 	return byName
+}
+
+// renderedSecretStoreRef is one `from="file"` key of a Bundle-level rendered
+// Secret: the store key it reads, and the Secret/key it fills.
+type renderedSecretStoreRef struct {
+	storeKey, secret, secretKey string
+}
+
+// renderedSecretStoreKeys lists the store keys Bundle.rendered_secrets reads
+// with `from="file"`. They are declarations exactly like a service's
+// secret_ref: `forge secret ensure` must list one with no value, and `forge
+// secret list` must not call its value inert. (A RenderedSecrets PROVIDER's
+// keys are reported by Secret/key instead — see renderedSecretListStore.)
+func renderedSecretStoreKeys(e *KCLEntities) []renderedSecretStoreRef {
+	if e == nil {
+		return nil
+	}
+	var out []renderedSecretStoreRef
+	for _, rs := range e.RenderedSecrets {
+		for key, src := range rs.Keys {
+			if strings.EqualFold(strings.TrimSpace(src.From), "literal") {
+				continue
+			}
+			storeKey := src.Key
+			if storeKey == "" {
+				storeKey = key
+			}
+			out = append(out, renderedSecretStoreRef{storeKey: storeKey, secret: rs.Name, secretKey: key})
+		}
+	}
+	return out
 }
 
 // managedSecretNamesForService lists the store names a service's
@@ -930,6 +963,9 @@ func declaredSecretNames(e *KCLEntities) []string {
 				seen[name] = struct{}{}
 			}
 		}
+	}
+	for _, ref := range renderedSecretStoreKeys(e) {
+		seen[ref.storeKey] = struct{}{}
 	}
 	out := make([]string, 0, len(seen))
 	for k := range seen {

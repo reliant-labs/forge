@@ -104,6 +104,12 @@ type KCLEntities struct {
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// RenderedSecrets are the Bundle-level forge.RenderedSecret
+	// declarations (Bundle.rendered_secrets): Secrets forge renders and
+	// applies itself, INDEPENDENT of SecretProvider, each at the
+	// cluster/namespace it declares (KCL resolves the cluster_target
+	// default, so Cluster is always set). Empty => none.
+	RenderedSecrets []RenderedSecretEntity `json:"rendered_secrets,omitempty"`
 	// ControlPlane is the bundle-level hosted control-plane declaration
 	// (WHICH endpoint this env talks to, and the env var NAME its
 	// credential is read from). Nil when the bundle declares none —
@@ -194,6 +200,12 @@ type ControlPlaneEntity struct {
 type RenderedSecretEntity struct {
 	Name string                             `json:"name"`
 	Keys map[string]RenderedSecretKeyEntity `json:"keys"`
+	// Cluster / Namespace are the EXPLICIT placement (kubectl context +
+	// namespace). Always set for a Bundle.rendered_secrets entry. On a
+	// RenderedSecrets provider entry an empty Cluster means "infer": land
+	// in each cluster whose services reference it by secret_ref.
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // RenderedSecretKeyEntity mirrors the kcl/schema.k RenderedSecretKey.
@@ -1056,6 +1068,8 @@ type kclRenderRaw struct {
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// RenderedSecrets is Bundle.rendered_secrets, placement resolved.
+	RenderedSecrets []RenderedSecretEntity `json:"rendered_secrets,omitempty"`
 	// ControlPlane rides alongside secret_provider in the entity output;
 	// nil when the bundle declares none (KCL omits the key entirely).
 	ControlPlane *ControlPlaneEntity `json:"control_plane,omitempty"`
@@ -1262,6 +1276,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		HelmCharts:           raw.HelmCharts,
 		Databases:            raw.Databases,
 		SecretProvider:       raw.SecretProvider,
+		RenderedSecrets:      raw.RenderedSecrets,
 		ControlPlane:         raw.ControlPlane,
 		RequiredSecrets:      raw.RequiredSecrets,
 		RequiredDNS:          raw.RequiredDNS,

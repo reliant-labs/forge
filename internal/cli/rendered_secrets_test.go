@@ -6,38 +6,29 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
-// TestDeclaredSecretsFromEntities maps the entity provider shape to the
-// secrets-package DeclaredSecret, preserving per-key sources.
-func TestDeclaredSecretsFromEntities(t *testing.T) {
-	e := &KCLEntities{
-		SecretProvider: &SecretProviderEntity{
-			Type: "rendered",
-			Secrets: []RenderedSecretEntity{{
-				Name: "db-credentials",
-				Keys: map[string]RenderedSecretKeyEntity{
-					"password": {From: "dotenv", Key: "DB_PASSWORD"},
-					"issuer":   {From: "literal", Value: "https://test.local/"},
-				},
-			}},
+// TestDeclaredSecret maps the entity shape to the secrets-package
+// DeclaredSecret, preserving per-key sources.
+func TestDeclaredSecret(t *testing.T) {
+	got := declaredSecret(RenderedSecretEntity{
+		Name: "db-credentials",
+		Keys: map[string]RenderedSecretKeyEntity{
+			"password": {From: "file", Key: "DB_PASSWORD"},
+			"issuer":   {From: "literal", Value: "https://test.local/"},
 		},
+	})
+	if got.Name != "db-credentials" {
+		t.Errorf("name = %q", got.Name)
 	}
-	got := declaredSecretsFromEntities(e)
-	if len(got) != 1 {
-		t.Fatalf("got %d declared secrets want 1", len(got))
+	if got.Keys["password"].Key != "DB_PASSWORD" || got.Keys["password"].From != "file" {
+		t.Errorf("password key wrong: %+v", got.Keys["password"])
 	}
-	if got[0].Name != "db-credentials" {
-		t.Errorf("name = %q", got[0].Name)
-	}
-	if got[0].Keys["password"].Key != "DB_PASSWORD" || got[0].Keys["password"].From != "dotenv" {
-		t.Errorf("password key wrong: %+v", got[0].Keys["password"])
-	}
-	if got[0].Keys["issuer"].Value != "https://test.local/" || got[0].Keys["issuer"].From != "literal" {
-		t.Errorf("issuer key wrong: %+v", got[0].Keys["issuer"])
+	if got.Keys["issuer"].Value != "https://test.local/" || got.Keys["issuer"].From != "literal" {
+		t.Errorf("issuer key wrong: %+v", got.Keys["issuer"])
 	}
 
-	// A non-rendered provider yields nothing.
-	if declaredSecretsFromEntities(&KCLEntities{SecretProvider: &SecretProviderEntity{Type: "dotenv"}}) != nil {
-		t.Error("dotenv provider should yield no declared secrets")
+	// A non-rendered provider declares nothing of its own.
+	if got := declaredSecretEntities(&KCLEntities{SecretProvider: &SecretProviderEntity{Type: "file"}}); len(got) != 0 {
+		t.Errorf("a file provider should declare no rendered Secrets, got %+v", got)
 	}
 }
 

@@ -371,6 +371,8 @@ func TestGenerate_ZeroValues(t *testing.T) {
 	assertContains(t, mockPath, "return LocalStruct{}, contractkit.MockNotSet")
 	// The non-error single-return struct must also use composite literal.
 	assertContains(t, mockPath, "return LocalStruct{}")
+	// A cross-package named scalar gets the universal zero value.
+	assertContains(t, mockPath, "return *new(time.Duration), contractkit.MockNotSet")
 
 	// The middleware/tracing/metrics wrappers are no longer generated, so
 	// the build sandbox only needs to type-check contract.go + mock_gen.go.
@@ -474,20 +476,23 @@ func TestGenerate_RecordMethodShadowsRecorder(t *testing.T) {
 // — an interface the built-in crossPackageInterfaces list does not (and
 // should not) know about.
 //
-// Plain Generate (no extras) still produces "billing.MeterClient{}"
-// because the type is not in any allow-list; that branch is exercised
-// first so the test pins down both halves of the contract.
+// Plain Generate (no extras) cannot know billing.MeterClient is an
+// interface, so it emits the universal "*new(billing.MeterClient)" —
+// which compiles for every type family (it used to emit the invalid
+// "billing.MeterClient{}"). The hook still turns it into the more
+// readable "nil"; both halves are pinned.
 func TestGenerate_ExtraInterfaceTypes(t *testing.T) {
 	// Baseline: without the extras hook, an unknown cross-package
 	// interface return falls through to the qualified-named-type branch
-	// and emits the (invalid) composite literal "billing.MeterClient{}".
+	// and emits the universal zero value, never a composite literal.
 	baselineDir := copyTestdata(t, "testdata/extra_iface")
 	if err := Generate(filepath.Join(baselineDir, "contract.go")); err != nil {
 		t.Fatalf("Generate() baseline error = %v", err)
 	}
 	baselineMock := filepath.Join(baselineDir, "mock_gen.go")
 	assertFileExists(t, baselineMock)
-	assertContains(t, baselineMock, "billing.MeterClient{}")
+	assertContains(t, baselineMock, "*new(billing.MeterClient)")
+	assertNotContains(t, baselineMock, "billing.MeterClient{}")
 
 	// With the extras hook: declare "billing.MeterClient" as a mockable
 	// interface and the mock fallback collapses to "nil".

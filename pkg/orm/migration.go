@@ -16,11 +16,12 @@ type Migration struct {
 	// Description is a human-readable description of the migration
 	Description string
 
-	// Up is the function to apply the migration
+	// Up is the function to apply the migration.
+	//
+	// There is no Down. Forge rolls forward only: a reverse step written
+	// before the release ran cannot account for what the release wrote, so
+	// a bad migration is repaired by a NEW forward migration instead.
 	Up func(ctx context.Context, db Context) error
-
-	// Down is the function to rollback the migration (optional)
-	Down func(ctx context.Context, db Context) error
 }
 
 // PairedMigration represents a migration that combines schema changes with optional data migrations
@@ -140,15 +141,6 @@ func (m *MigrationManager) recordMigration(ctx context.Context, db Context, migr
 	return err
 }
 
-// removeMigration removes a migration record (used during rollback)
-func (m *MigrationManager) removeMigration(ctx context.Context, db Context, version string) error {
-	d := m.client.Dialect()
-	quotedTable := d.QuoteIdentifier(m.tableName)
-	query := fmt.Sprintf("DELETE FROM %s WHERE version = %s", quotedTable, d.Placeholder(0))
-	_, err := db.Exec(ctx, query, version)
-	return err
-}
-
 // Migrate runs all pending migrations
 func (m *MigrationManager) Migrate(ctx context.Context) error {
 	// Ensure migrations table exists
@@ -251,65 +243,6 @@ func (m *MigrationManager) MigrateTo(ctx context.Context, targetVersion string) 
 	return nil
 }
 
-// Rollback rolls back the last N migrations
-func (m *MigrationManager) Rollback(ctx context.Context, steps int) error {
-	if steps <= 0 {
-		return fmt.Errorf("steps must be greater than 0")
-	}
-
-	// Get applied migrations
-	applied, err := m.getAppliedMigrations(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get applied migrations: %w", err)
-	}
-
-	// Build list of applied migrations and sort by version descending
-	var appliedMigrations []*Migration
-	for _, migration := range m.migrations {
-		if _, exists := applied[migration.Version]; exists {
-			appliedMigrations = append(appliedMigrations, migration)
-		}
-	}
-
-	sort.Slice(appliedMigrations, func(i, j int) bool {
-		return appliedMigrations[i].Version > appliedMigrations[j].Version
-	})
-
-	// Rollback the last N migrations
-	count := 0
-	for _, migration := range appliedMigrations {
-		if count >= steps {
-			break
-		}
-
-		if migration.Down == nil {
-			return fmt.Errorf("migration %s has no Down function", migration.Version)
-		}
-
-		// Run rollback in a transaction
-		err := m.client.RunTransaction(ctx, func(tx Context) error {
-			if err := migration.Down(ctx, tx); err != nil {
-				return fmt.Errorf("rollback %s failed: %w", migration.Version, err)
-			}
-
-			// Remove migration record within the transaction
-			if err := m.removeMigration(ctx, tx, migration.Version); err != nil {
-				return fmt.Errorf("failed to remove migration record %s: %w", migration.Version, err)
-			}
-
-			return nil
-		})
-
-		if err != nil {
-			return err
-		}
-
-		count++
-	}
-
-	return nil
-}
-
 // Status returns the status of all migrations
 func (m *MigrationManager) Status(ctx context.Context) ([]MigrationStatus, error) {
 	// Ensure migrations table exists
@@ -353,20 +286,13 @@ type MigrationStatus struct {
 	AppliedAt   time.Time
 }
 
-// Helper function to create a simple schema migration from a SQL string
-func NewSQLMigration(version, description, upSQL, downSQL string) *Migration {
+// NewSQLMigration creates a forward-only migration from a SQL string.
+func NewSQLMigration(version, description, upSQL string) *Migration {
 	return &Migration{
 		Version:     version,
 		Description: description,
 		Up: func(ctx context.Context, db Context) error {
 			_, err := db.Exec(ctx, upSQL)
-			return err
-		},
-		Down: func(ctx context.Context, db Context) error {
-			if downSQL == "" {
-				return fmt.Errorf("no down migration provided")
-			}
-			_, err := db.Exec(ctx, downSQL)
 			return err
 		},
 	}
@@ -382,17 +308,6 @@ func NewSchemaCreateMigration(version string, schemas ...TableSchema) *Migration
 				sql := GenerateCreateTableSQL(schema)
 				if _, err := db.Exec(ctx, sql); err != nil {
 					return fmt.Errorf("failed to create table %s: %w", schema.Name, err)
-				}
-			}
-			return nil
-		},
-		Down: func(ctx context.Context, db Context) error {
-			// Drop tables in reverse order
-			for i := len(schemas) - 1; i >= 0; i-- {
-				schema := schemas[i]
-				sql := fmt.Sprintf("DROP TABLE IF EXISTS %s", schema.Name)
-				if _, err := db.Exec(ctx, sql); err != nil {
-					return fmt.Errorf("failed to drop table %s: %w", schema.Name, err)
 				}
 			}
 			return nil
@@ -472,7 +387,6 @@ func (m *MigrationManager) GenerateMigration(ctx context.Context, schemas []Tabl
 			}
 			return nil
 		},
-		Down: nil, // Auto-generated migrations don't have automatic rollback
 	}
 
 	return migration, nil
@@ -646,17 +560,6 @@ func (m *MigrationManager) RegisterPairedMigration(paired *PairedMigration) erro
 
 			return nil
 		},
-		Down: func(ctx context.Context, db Context) error {
-			// Execute data migration rollback first (if available)
-			if paired.DataMigration != nil && paired.DataMigration.Down != nil {
-				if err := paired.DataMigration.Down(ctx, db); err != nil {
-					return fmt.Errorf("data migration rollback failed: %w", err)
-				}
-			}
-
-			// Schema rollback is not automatically generated
-			return fmt.Errorf("schema rollback not supported for paired migrations")
-		},
 	}
 
 	// Register the combined migration
@@ -666,7 +569,7 @@ func (m *MigrationManager) RegisterPairedMigration(paired *PairedMigration) erro
 // AutoMigrate is a convenience function that automatically generates and applies migrations for the provided schemas
 // WARNING: This is a DANGEROUS operation that should ONLY be used in development environments.
 // - It automatically modifies your database schema without explicit review
-// - There is no automatic rollback mechanism
+// - There is no rollback: forge rolls forward only
 // - It may cause data loss if destructive operations are allowed
 // - Production databases should use explicit migrations instead
 //

@@ -999,6 +999,17 @@ type MigrationSafetyConfig struct {
 	DestructiveChange  string   `yaml:"destructive_change,omitempty"`  // error, warn, off
 	VolatileDefault    string   `yaml:"volatile_default,omitempty"`    // warn, error, off
 	AllowedDestructive []string `yaml:"allowed_destructive,omitempty"` // file globs that may contain destructive changes
+	// DownFilesAllowedUntil grandfathers the down migrations a project wrote
+	// before forge stopped accepting them. A `*.down.sql` (or goose Down
+	// section) whose migration version is at or below this value is
+	// reported once as a warning; anything newer is an error. Empty means
+	// no down file is grandfathered.
+	//
+	// It is a hand-written, reviewable line rather than something `forge
+	// generate` records for you: a baseline stamped automatically would
+	// grandfather whatever an agent wrote a minute before the stamp, which is
+	// exactly the file the rule exists to catch.
+	DownFilesAllowedUntil string `yaml:"down_files_allowed_until,omitempty"`
 }
 
 // IsEnabled reports whether migration safety linting is on. Nil

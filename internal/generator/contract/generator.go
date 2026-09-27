@@ -1048,16 +1048,25 @@ func zeroValue(typeExpr string, interfaceNames map[string]bool, primitiveAliases
 			return z
 		}
 		return typeExpr + "{}"
-	case localNamedTypeRe.MatchString(typeExpr),
-		qualifiedNamedTypeRe.MatchString(typeExpr):
-		// Named type — assume a struct value and emit the composite-literal
-		// zero value "T{}" / "pkg.T{}". This is the only safe default for
-		// struct returns (where "nil" would not compile). Known limitation:
-		// if the named type is actually an interface from another package
-		// not in crossPackageInterfaces, "T{}" will not compile; either
-		// hand-edit the function field, change the contract to return a
-		// pointer, or extend the allow-list.
+	case localNamedTypeRe.MatchString(typeExpr):
+		// Local named type that is neither a known interface nor a
+		// primitive alias (both are resolved from this package's own
+		// declarations above), so it is a struct/array/slice/map —
+		// and the composite literal "T{}" is valid and reads best.
 		return typeExpr + "{}"
+	case qualifiedNamedTypeRe.MatchString(typeExpr):
+		// Cross-package named type. From the rendered text alone its
+		// family is unknowable: `time.Duration` (a defined int64),
+		// `billing.Tier` (a defined string), `store.Snapshot` (a struct)
+		// and an unlisted interface all read the same. "pkg.T{}" is
+		// valid only for the struct case and was emitted here until
+		// `time.Duration{}` broke a real contract's mock_gen.go.
+		//
+		// `*new(pkg.T)` is the zero value of EVERY type and is an
+		// expression, so it drops into a multi-value return unchanged.
+		// Same form internal/codegen.zeroValueForType settled on for the
+		// identical problem in handler stubs.
+		return "*new(" + typeExpr + ")"
 	default:
 		// Anything else (generics like "Result[T]", arrays "[N]T", etc.)
 		// — fall back to nil. This is wrong for some shapes but matches

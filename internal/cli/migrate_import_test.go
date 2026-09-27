@@ -95,11 +95,8 @@ DROP TABLE memberships;
 
 	got := readMigrationsDir(t, dest)
 	want := []string{
-		"00001_add_users.down.sql",
 		"00001_add_users.up.sql",
-		"00002_add_orgs.down.sql",
 		"00002_add_orgs.up.sql",
-		"00003_add_memberships.down.sql",
 		"00003_add_memberships.up.sql",
 	}
 	if len(got) != len(want) {
@@ -118,9 +115,17 @@ DROP TABLE memberships;
 	if strings.Contains(up, "+goose") {
 		t.Errorf("up file still has goose markers: %q", up)
 	}
-	down := readMigrateImportFile(t, filepath.Join(dest, "00001_add_users.down.sql"))
-	if !strings.Contains(down, "DROP TABLE users") {
-		t.Errorf("down file missing DROP TABLE: %q", down)
+	// Forward only: the Down section is dropped, never written, and the drop
+	// is reported rather than silent.
+	if downs, _ := filepath.Glob(filepath.Join(dest, "*.down.sql")); len(downs) != 0 {
+		t.Errorf("import must write no .down.sql (forge rolls forward only), got %v", downs)
+	}
+	if strings.Contains(up, "DROP TABLE users") {
+		t.Errorf("up file must not carry the Down section's SQL: %q", up)
+	}
+	if !strings.Contains(buf.String(), "Dropped -- +goose Down sections") ||
+		!strings.Contains(buf.String(), "20240501_add_users.sql") {
+		t.Errorf("expected the dropped Down sections to be reported, got: %q", buf.String())
 	}
 
 	if !strings.Contains(buf.String(), "Foreign-key check") {
@@ -156,13 +161,9 @@ DROP INDEX CONCURRENTLY idx_users_email;
 	}
 
 	up := readMigrateImportFile(t, filepath.Join(dest, "00001_create_index.up.sql"))
-	down := readMigrateImportFile(t, filepath.Join(dest, "00001_create_index.down.sql"))
 
 	if !strings.Contains(up, "x-no-tx-wrap: true") {
 		t.Errorf("up missing x-no-tx-wrap header: %q", up)
-	}
-	if !strings.Contains(down, "x-no-tx-wrap: true") {
-		t.Errorf("down missing x-no-tx-wrap header: %q", down)
 	}
 	if strings.Contains(up, "+goose NO TRANSACTION") {
 		t.Errorf("up still contains goose NO TRANSACTION marker: %q", up)
@@ -201,19 +202,15 @@ DROP FUNCTION foo();
 	}
 
 	up := readMigrateImportFile(t, filepath.Join(dest, "00001_create_fn.up.sql"))
-	down := readMigrateImportFile(t, filepath.Join(dest, "00001_create_fn.down.sql"))
 
 	if strings.Contains(up, "StatementBegin") || strings.Contains(up, "StatementEnd") {
 		t.Errorf("up still contains Statement markers: %q", up)
 	}
-	if strings.Contains(down, "StatementBegin") || strings.Contains(down, "StatementEnd") {
-		t.Errorf("down still contains Statement markers: %q", down)
-	}
 	if !strings.Contains(up, "CREATE FUNCTION foo") {
 		t.Errorf("up missing CREATE FUNCTION: %q", up)
 	}
-	if !strings.Contains(down, "DROP FUNCTION foo") {
-		t.Errorf("down missing DROP FUNCTION: %q", down)
+	if strings.Contains(up, "DROP FUNCTION foo") {
+		t.Errorf("the Down section leaked into up: %q", up)
 	}
 }
 
@@ -221,11 +218,8 @@ func TestMigrateImportRenumbersAfterPacks(t *testing.T) {
 	dest := t.TempDir()
 	for _, name := range []string{
 		"00001_audit_log.up.sql",
-		"00001_audit_log.down.sql",
 		"00002_api_key.up.sql",
-		"00002_api_key.down.sql",
 		"00003_session.up.sql",
-		"00003_session.down.sql",
 	} {
 		if err := os.WriteFile(filepath.Join(dest, name), []byte("-- pack\n"), 0o644); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
@@ -263,9 +257,7 @@ DROP TABLE orgs;
 
 	for _, name := range []string{
 		"00004_add_users.up.sql",
-		"00004_add_users.down.sql",
 		"00005_add_orgs.up.sql",
-		"00005_add_orgs.down.sql",
 	} {
 		if _, err := os.Stat(filepath.Join(dest, name)); err != nil {
 			t.Errorf("expected %s to exist: %v", name, err)
@@ -318,7 +310,7 @@ DROP TABLE users;
 	}
 
 	files := readMigrationsDir(t, dest)
-	if len(files) != 2 {
+	if len(files) != 1 {
 		t.Errorf("refused run should not touch disk, got: %v", files)
 	}
 }
@@ -419,12 +411,16 @@ DROP TABLE users;
 	}
 }
 
-func TestMigrateImportEmptyDownGetsTodo(t *testing.T) {
+// A source with no Down section imports cleanly and reports no drop — it is
+// already the shape the policy asks for.
+func TestMigrateImportWithoutDownReportsNoDrop(t *testing.T) {
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_no_down.sql",
 			Content: `-- +goose Up
 CREATE TABLE users (id INT);
+-- +goose Down
+-- intentionally empty: roll forward
 `,
 		},
 	})
@@ -440,9 +436,11 @@ CREATE TABLE users (id INT);
 		t.Fatalf("runMigrateImport: %v", err)
 	}
 
-	down := readMigrateImportFile(t, filepath.Join(dest, "00001_no_down.down.sql"))
-	if !strings.Contains(down, "TODO") {
-		t.Errorf("expected TODO comment in down file: %q", down)
+	if got := readMigrationsDir(t, dest); len(got) != 1 || got[0] != "00001_no_down.up.sql" {
+		t.Fatalf("want only the up migration, got %v", got)
+	}
+	if strings.Contains(buf.String(), "Dropped") {
+		t.Errorf("an empty Down section is not a drop worth reporting: %q", buf.String())
 	}
 }
 
@@ -475,8 +473,8 @@ DROP TABLE users;
 	}
 
 	files := readMigrationsDir(t, dest)
-	if len(files) != 2 {
-		t.Errorf("expected 2 output files (only add_users converted), got: %v", files)
+	if len(files) != 1 {
+		t.Errorf("expected 1 output file (only add_users converted), got: %v", files)
 	}
 
 	out := buf.String()

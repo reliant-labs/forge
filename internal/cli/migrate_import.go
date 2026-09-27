@@ -25,21 +25,23 @@ func newMigrateImportCmd() *cobra.Command {
 		Use:   "import",
 		Short: "Import migrations from another format (e.g. goose) into golang-migrate shape",
 		Long: `Import SQL migrations from another tool's format into forge's
-golang-migrate two-file shape (.up.sql + .down.sql).
+forward-only golang-migrate shape (one .up.sql per migration).
 
 Currently supports:
   --from goose    One-file goose migrations with -- +goose Up / -- +goose Down
 
 For each *.sql file in --src-dir, the importer:
-  1. Splits the file at the -- +goose Down line.
+  1. Keeps the -- +goose Up section and DROPS the -- +goose Down section.
+     Forge rolls forward only and never runs down SQL, so the importer
+     writes no .down.sql; each dropped Down section is listed so you can
+     see what was discarded.
   2. Drops -- +goose StatementBegin / -- +goose StatementEnd markers.
   3. Carries -- +goose NO TRANSACTION over to a golang-migrate x-no-tx-wrap
-     header on both halves.
+     header.
   4. Renumbers starting from the next-available index in --dest-dir, so
      pack-installed migrations (00001-0000N) keep their slots.
 
-Files with no goose markers are skipped. Files with no Down block get an
-empty .down.sql with a TODO comment.
+Files with no goose markers are skipped.
 
 Examples:
   forge project migrate import --from goose --src-dir ../old-project/migrations
@@ -128,10 +130,8 @@ func runMigrateImport(opts migrateImportOptions) error {
 			return err
 		}
 		for _, p := range plans {
-			for _, target := range []string{p.UpPath(destAbs), p.DownPath(destAbs)} {
-				if _, err := os.Stat(target); err == nil {
-					return fmt.Errorf("target file already exists: %s (pass --force to overwrite)", target)
-				}
+			if _, err := os.Stat(p.UpPath(destAbs)); err == nil {
+				return fmt.Errorf("target file already exists: %s (pass --force to overwrite)", p.UpPath(destAbs))
 			}
 			if _, ok := existingStems[p.Stem]; ok {
 				return fmt.Errorf("a migration with stem %q already exists in %s (pass --force to overwrite, or rename the source file)", p.Stem, destAbs)
@@ -146,7 +146,7 @@ func runMigrateImport(opts migrateImportOptions) error {
 		}
 		for _, p := range plans {
 			for _, oldPath := range stemToPaths[p.Stem] {
-				if oldPath == p.UpPath(destAbs) || oldPath == p.DownPath(destAbs) {
+				if oldPath == p.UpPath(destAbs) {
 					continue
 				}
 				if err := os.Remove(oldPath); err != nil {
@@ -157,10 +157,11 @@ func runMigrateImport(opts migrateImportOptions) error {
 	}
 
 	if opts.DryRun {
-		_, _ = fmt.Fprintf(opts.Stdout, "Dry run: would write %d migration pair(s) to %s\n\n", len(plans), destAbs)
+		_, _ = fmt.Fprintf(opts.Stdout, "Dry run: would write %d migration(s) to %s\n\n", len(plans), destAbs)
 		for _, p := range plans {
-			_, _ = fmt.Fprintf(opts.Stdout, "  %s\n  %s\n", p.UpPath(destAbs), p.DownPath(destAbs))
+			_, _ = fmt.Fprintf(opts.Stdout, "  %s\n", p.UpPath(destAbs))
 		}
+		printDroppedDowns(opts.Stdout, plans)
 		printImportSkips(opts.Stdout, skipped)
 		printFKWarnings(opts.Stdout, plans)
 		return nil
@@ -174,33 +175,30 @@ func runMigrateImport(opts migrateImportOptions) error {
 		if err := os.WriteFile(p.UpPath(destAbs), []byte(p.UpBody), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", p.UpPath(destAbs), err)
 		}
-		if err := os.WriteFile(p.DownPath(destAbs), []byte(p.DownBody), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", p.DownPath(destAbs), err)
-		}
-		_, _ = fmt.Fprintf(opts.Stdout, "  Wrote %s\n  Wrote %s\n", p.UpPath(destAbs), p.DownPath(destAbs))
+		_, _ = fmt.Fprintf(opts.Stdout, "  Wrote %s\n", p.UpPath(destAbs))
 	}
 
+	printDroppedDowns(opts.Stdout, plans)
 	printImportSkips(opts.Stdout, skipped)
 	printFKWarnings(opts.Stdout, plans)
 
-	_, _ = fmt.Fprintf(opts.Stdout, "\nImported %d migration pair(s).\n", len(plans))
+	_, _ = fmt.Fprintf(opts.Stdout, "\nImported %d migration(s).\n", len(plans))
 	return nil
 }
 
 type importPlan struct {
-	Index    int
-	Stem     string
-	UpBody   string
-	DownBody string
-	SrcPath  string
+	Index  int
+	Stem   string
+	UpBody string
+	// DroppedDown reports that the source carried a goose Down section
+	// with SQL in it, which the import discarded (forge rolls forward
+	// only). Surfaced so the drop is visible rather than silent.
+	DroppedDown bool
+	SrcPath     string
 }
 
 func (p importPlan) UpPath(destDir string) string {
 	return filepath.Join(destDir, fmt.Sprintf("%05d_%s.up.sql", p.Index, p.Stem))
-}
-
-func (p importPlan) DownPath(destDir string) string {
-	return filepath.Join(destDir, fmt.Sprintf("%05d_%s.down.sql", p.Index, p.Stem))
 }
 
 type importSkip struct {
@@ -317,11 +315,11 @@ func planGooseImport(srcFiles []string, startIdx int) ([]importPlan, []importSki
 			continue
 		}
 		plans = append(plans, importPlan{
-			Index:    idx,
-			Stem:     gooseSlug(src),
-			UpBody:   converted.Up,
-			DownBody: converted.Down,
-			SrcPath:  src,
+			Index:       idx,
+			Stem:        gooseSlug(src),
+			UpBody:      converted.Up,
+			DroppedDown: converted.HadDown,
+			SrcPath:     src,
 		})
 		idx++
 	}
@@ -337,8 +335,9 @@ func gooseSlug(srcPath string) string {
 }
 
 type convertedGoose struct {
-	Up   string
-	Down string
+	Up string
+	// HadDown reports a Down section carrying SQL — discarded, not written.
+	HadDown bool
 }
 
 var (
@@ -348,7 +347,6 @@ var (
 	gooseStatementEnd   = regexp.MustCompile(`^\s*--\s*\+goose\s+StatementEnd\b`)
 	gooseNoTransaction  = regexp.MustCompile(`^\s*--\s*\+goose\s+NO\s+TRANSACTION\b`)
 	noTxWrapHeader      = "-- golang-migrate: no transaction wrap\n-- x-no-tx-wrap: true\n"
-	noDownTodoComment   = "-- TODO: implement down migration\n"
 )
 
 func convertGooseFile(content string) (convertedGoose, bool, string) {
@@ -361,19 +359,13 @@ func convertGooseFile(content string) (convertedGoose, bool, string) {
 	upLines, downLines := splitAtGooseDown(content)
 
 	upBody := strings.TrimSpace(stripGooseMarkers(upLines)) + "\n"
-	downBody := strings.TrimSpace(stripGooseMarkers(downLines))
-	if downBody == "" {
-		downBody = noDownTodoComment
-	} else {
-		downBody += "\n"
-	}
+	hadDown := strings.TrimSpace(stripSQLLineComments(stripGooseMarkers(downLines))) != ""
 
 	if noTx {
 		upBody = noTxWrapHeader + upBody
-		downBody = noTxWrapHeader + downBody
 	}
 
-	return convertedGoose{Up: upBody, Down: downBody}, true, ""
+	return convertedGoose{Up: upBody, HadDown: hadDown}, true, ""
 }
 
 func containsGooseMarker(content string) bool {
@@ -451,6 +443,40 @@ func printFKWarnings(w interface{ Write(p []byte) (int, error) }, plans []import
 	_, _ = fmt.Fprintln(w, "\nForeign-key check: the following imported files reference other tables.")
 	_, _ = fmt.Fprintln(w, "Verify the referenced tables exist in earlier (lower-numbered) migrations:")
 	for _, f := range fkFiles {
+		_, _ = fmt.Fprintf(w, "  - %s\n", f)
+	}
+}
+
+// stripSQLLineComments drops `--` comment lines, so a Down section holding
+// only commentary does not count as down SQL.
+func stripSQLLineComments(body string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+// printDroppedDowns lists the source files whose goose Down section was
+// discarded. Dropping it is the policy — forge never runs down SQL — but a
+// silent drop would read as data loss, so it is named.
+func printDroppedDowns(w interface{ Write(p []byte) (int, error) }, plans []importPlan) {
+	var dropped []string
+	for _, p := range plans {
+		if p.DroppedDown {
+			dropped = append(dropped, filepath.Base(p.SrcPath))
+		}
+	}
+	if len(dropped) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(w, "\nDropped -- +goose Down sections (forge rolls forward only and never runs down SQL;")
+	_, _ = fmt.Fprintln(w, "recover from a bad migration with a new forward migration):")
+	for _, f := range dropped {
 		_, _ = fmt.Fprintf(w, "  - %s\n", f)
 	}
 }

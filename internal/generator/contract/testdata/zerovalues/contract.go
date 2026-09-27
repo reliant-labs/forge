@@ -2,6 +2,7 @@ package zerovalues
 
 import (
 	"context"
+	"time"
 )
 
 // LocalStruct is a same-package struct value return.
@@ -24,4 +25,7 @@ type Service interface {
 	Func(ctx context.Context) (func(int) int, error)
 	Any(ctx context.Context) (any, error)
 	IfaceLiteral(ctx context.Context) (interface{}, error)
+	// A cross-package NAMED SCALAR: `time.Duration{}` is not a valid
+	// composite literal, so the zero value must not be guessed as `T{}`.
+	Interval(ctx context.Context) (time.Duration, error)
 }

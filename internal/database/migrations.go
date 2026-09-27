@@ -21,7 +21,7 @@ var migrationVersionPattern = regexp.MustCompile(`^(\d+)_`)
 // pack allocator (00001_init → 5 digits).
 const defaultMigrationWidth = 5
 
-// CreateMigration creates a new SQL migration pair, continuing the project's
+// CreateMigration creates a new forward-only SQL migration, continuing the project's
 // existing sequential numbering. It scans dir for the highest numeric version
 // prefix and emits max+1 in the same zero-padded style the dir already uses
 // (00001_, 00002_, …). When opts is non-nil, it gathers schema context and
@@ -38,8 +38,10 @@ func CreateMigration(ctx context.Context, name, dir string, opts *MigrationOptio
 
 	version := nextMigrationVersion(dir)
 	baseName := fmt.Sprintf("%s_%s", version, sanitizedName)
+	// Up only. Forge rolls forward: a bad migration is repaired by the next
+	// migration, never reversed by a down script written before the release
+	// ran (see migrationlint's no-down-migration rule).
 	upPath := filepath.Join(dir, baseName+".up.sql")
-	downPath := filepath.Join(dir, baseName+".down.sql")
 
 	// Build up contents with context if opts provided.
 	var upContents string
@@ -55,18 +57,12 @@ func CreateMigration(ctx context.Context, name, dir string, opts *MigrationOptio
 		upContents = GenerateContextComment(migCtx)
 	}
 
-	downContents := fmt.Sprintf("-- Rollback: %s\n-- Write rollback SQL here.\n\n", sanitizedName)
-
 	if err := writeNewFile(upPath, upContents); err != nil {
-		return err
-	}
-	if err := writeNewFile(downPath, downContents); err != nil {
 		return err
 	}
 
 	fmt.Printf("✅ Migration '%s' created:\n", sanitizedName)
 	fmt.Printf("   %s\n", upPath)
-	fmt.Printf("   %s\n", downPath)
 	return nil
 }
 

@@ -309,18 +309,128 @@ func TestLintMigrationsDirVolatileDefaultFiresAtProjectDefaults(t *testing.T) {
 	assertFinding(t, result, "volatile-default", SeverityWarn)
 }
 
-func TestLintMigrationsDirIgnoresDownMigrations(t *testing.T) {
+// A down migration is an ERROR by default: forge rolls forward only. Its
+// DROP TABLE body must not ALSO trip destructive-change — the finding is that
+// the file exists, not what it says.
+func TestLintMigrationsDirFlagsDownMigration(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "0001_drop.down.sql"), []byte(`DROP TABLE users;`), 0o644); err != nil {
-		t.Fatal(err)
+	for name, body := range map[string]string{
+		"0001_create_users.up.sql":   `CREATE TABLE users (id TEXT PRIMARY KEY);`,
+		"0001_create_users.down.sql": `DROP TABLE users;`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	result, err := LintMigrationsDir(dir, DefaultConfig())
 	if err != nil {
 		t.Fatalf("LintMigrationsDir() error = %v", err)
 	}
-	if len(result.Findings) != 0 {
-		t.Fatalf("expected no findings, got %#v", result.Findings)
+	assertFinding(t, result, RuleNoDownMigration, SeverityError)
+	if len(result.Findings) != 1 {
+		t.Fatalf("want exactly the no-down-migration finding, got %#v", result.Findings)
+	}
+	if !result.HasErrors() {
+		t.Fatal("a down migration must fail the lint")
+	}
+	if got := RemediationFor(RuleNoDownMigration); !strings.Contains(got, "forward migration") {
+		t.Errorf("remediation must point at the roll-forward alternative, got %q", got)
+	}
+}
+
+// An EMPTY .down.sql is still a down migration — it tells golang-migrate there
+// is a way back.
+func TestLintMigrationsDirFlagsEmptyDownFile(t *testing.T) {
+	dir := writeMigration(t, "0001_x.down.sql", "")
+	result, err := LintMigrationsDir(dir, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFinding(t, result, RuleNoDownMigration, SeverityError)
+}
+
+// Goose one-file migrations: a Down section with SQL is a down migration; a
+// Down marker with nothing (or only directives/comments) under it is not.
+func TestLintMigrationsDirGooseDownSection(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want bool
+	}{
+		"down with sql": {"-- +goose Up\nALTER TABLE p ADD COLUMN n TEXT;\n\n-- +goose Down\nALTER TABLE p DROP COLUMN n;\n", true},
+		"empty down":    {"-- +goose Up\nALTER TABLE p ADD COLUMN n TEXT;\n-- +goose Down\n-- nothing: roll forward\n", false},
+		"directives":    {"-- +goose Up\nSELECT 1;\n-- +goose Down\n-- +goose StatementBegin\n-- +goose StatementEnd\n", false},
+		"no down":       {"-- +goose Up\nALTER TABLE p ADD COLUMN n TEXT;\n", false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := writeMigration(t, "20260926000001_add_n.sql", tc.body)
+			result, err := LintMigrationsDir(dir, DefaultConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := false
+			for _, f := range result.Findings {
+				if f.Rule == RuleNoDownMigration {
+					got = true
+					if f.Line != 4 && f.Line != 3 {
+						t.Errorf("finding should point at the Down marker, got line %d", f.Line)
+					}
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("flagged=%v, want %v; findings=%#v", got, tc.want, result.Findings)
+			}
+		})
+	}
+}
+
+// Historical down files at or below down_files_allowed_until collapse into ONE
+// warning; a newer one is still an error. This is what lets a project with
+// ninety pre-policy down files adopt the rule without going red on day one,
+// while still catching the next one written.
+func TestLintMigrationsDirGrandfathersDownFilesUpToBaseline(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"00001_a.up.sql", "00001_a.down.sql",
+		"00002_b.up.sql", "00002_b.down.sql",
+		"00003_c.up.sql", "00003_c.down.sql",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("SELECT 1;"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := ConfigFromProject(config.MigrationSafetyConfig{DownFilesAllowedUntil: "00002"})
+
+	result, err := LintMigrationsDir(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errs, warns []Finding
+	for _, f := range result.Findings {
+		if f.Rule != RuleNoDownMigration {
+			continue
+		}
+		switch f.Severity {
+		case SeverityError:
+			errs = append(errs, f)
+		case SeverityWarn:
+			warns = append(warns, f)
+		}
+	}
+	if len(errs) != 1 || !strings.HasSuffix(errs[0].File, "00003_c.down.sql") {
+		t.Fatalf("want one error for the post-baseline 00003 down file, got %#v", errs)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0].Message, "2 grandfathered") {
+		t.Fatalf("want one folded warning naming 2 grandfathered files, got %#v", warns)
+	}
+}
+
+func TestLintMigrationsDirRejectsMalformedDownBaseline(t *testing.T) {
+	dir := writeMigration(t, "00001_a.up.sql", "SELECT 1;")
+	cfg := ConfigFromProject(config.MigrationSafetyConfig{DownFilesAllowedUntil: "latest"})
+	if _, err := LintMigrationsDir(dir, cfg); err == nil {
+		t.Fatal("a non-numeric down_files_allowed_until must be an error, not a silent grandfather-nothing")
 	}
 }
 

@@ -29,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the ServiceAccount forge GENERATES for the workload, and on no other
   object. It is how a workload gets cloud workload identity (GKE
   `iam.gke.io/gcp-service-account`, EKS `eks.amazonaws.com/role-arn`) without
-  renaming its identity — the SA keeps the workload's name, so RBAC and policy
-  that bind that name keep working. Keys are validated as Kubernetes
+  renaming its identity — the SA keeps the workload's name, so Roles, bindings
+  and policy that name it keep working. Keys are validated as Kubernetes
   annotation keys at render time, and combining it with `service_account`
   (where forge generates no SA) is refused rather than silently dropped.
 - `forge env render` now includes every declared `forge.HelmChart`'s objects.

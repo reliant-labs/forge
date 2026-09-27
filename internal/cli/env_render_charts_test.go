@@ -130,9 +130,9 @@ func TestEnvRender_IncludesHelmChartObjects(t *testing.T) {
 		have[d.Kind+"/"+d.Metadata.Name] = true
 	}
 	for _, want := range []string{
-		"Deployment/api",                   // the app, from KCL
-		"Deployment/source-controller",     // the chart's templated output
-		"Namespace/flux-system",            // synthesized, as deploy does
+		"Deployment/api",               // the app, from KCL
+		"Deployment/source-controller", // the chart's templated output
+		"Namespace/flux-system",        // synthesized, as deploy does
 		"CustomResourceDefinition/gitrepositories.source.toolkit.fluxcd.io", // chart-owned CRD
 	} {
 		if !have[want] {

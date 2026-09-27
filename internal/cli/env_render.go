@@ -300,7 +300,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		return err
 	}
 	scan := newRenderWriteScan(projectDir, opts.noWriteCheck)
-	activateDevStack(ctx, projectDir, envName, renderDeclaration)
+	activateDevStack(ctx, projectDir, envName, renderDeclaration, inspectBlocks)
 
 	// Report what the render touched no matter how it ends: a render that
 	// fails half-way has still run whatever file.write it reached, and

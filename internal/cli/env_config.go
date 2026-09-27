@@ -81,7 +81,14 @@ which variables a project uses, so pick the one you want:
 			envName := args[0]
 			projectDir := projectDirForKCL()
 
+			// The values `forge env up` passes are the ones THIS checkout's
+			// stack gets: its option("worktree") and the port blocks its
+			// keys hold. Without arming that context a linked worktree
+			// reported the PRIMARY checkout's namespace and ports. Inspect
+			// only — a readback registers no block (see blockClaim).
+			_, restore := activateDevStack(cmd.Context(), projectDir, envName, renderToLaunch, inspectBlocks)
 			entities, err := RenderKCL(cmd.Context(), projectDir, envName)
+			restore()
 			if err != nil {
 				return fmt.Errorf("read deploy/kcl/%s/: %w", envName, err)
 			}

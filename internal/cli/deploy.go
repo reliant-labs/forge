@@ -567,8 +567,13 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// kill-the-up-vs-deploy-port-drift fix. Deploy commits its render, so the
 	// restore hook is unused (an applied render's ports are the truth).
 	// A deploy of an env that runs nowhere on this machine claims no port
-	// block (see renderPurpose).
-	activateDevStack(ctx, projectDir, envName, opts.purpose)
+	// block (see renderPurpose), and a --dry-run claims none at all: it
+	// previews the stack, it does not bring one up (see blockClaim).
+	claim := claimNewBlocks
+	if dryRun {
+		claim = inspectBlocks
+	}
+	activateDevStack(ctx, projectDir, envName, opts.purpose, claim)
 	// An applying deploy of an env that runs here materializes it; a
 	// --dry-run previews it, and must leave the tree exactly as it found it.
 	if !dryRun {

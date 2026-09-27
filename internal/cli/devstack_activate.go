@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/devstack"
@@ -43,11 +45,16 @@ import (
 // KCL that keys on it composes the DEFAULT stack — historical names and
 // allocate_port(base, "") == base — byte-identical to before this primitive.
 //
-// purpose decides whether the render may claim machine-local port state at
-// all — see renderPurpose. A render of an env that runs nowhere on this
-// machine arms none of the WRITING halves: allocate_port resolves to its base
-// port and resolve_port reads its store without writing it.
-func activateDevStack(ctx context.Context, projectDir, env string, purpose renderPurpose) (devstack.Options, func()) {
+// purpose decides WHICH ports the render is about — see renderPurpose. A
+// render of an env that runs nowhere on this machine arms none of the WRITING
+// halves: allocate_port resolves to its base port and resolve_port reads its
+// store without writing it.
+//
+// claim decides whether the render may REGISTER anything — see blockClaim. A
+// read-only command (render, config, status, deploy --dry-run) resolves the
+// blocks its keys already hold and never hands out a new one, so it can
+// neither leak a block nor fail at the dev_stack.max_stacks ceiling.
+func activateDevStack(ctx context.Context, projectDir, env string, purpose renderPurpose, claim blockClaim) (devstack.Options, func()) {
 	// Every render starts unable to write files. Only a command that goes
 	// on to MATERIALIZE the env re-arms it (armMaterializer), after this.
 	kclplugin.UseFileWriter("")
@@ -87,6 +94,16 @@ func activateDevStack(ctx context.Context, projectDir, env string, purpose rende
 		kclplugin.UsePortStoreReadOnly(storePath)
 		fmt.Fprintf(os.Stderr, "[devstack] env %q declares no local cluster or host process: "+
 			"allocate_port resolves to its base port and no port block is claimed\n", env)
+		return opts, func() {}
+	}
+
+	if claim == inspectBlocks {
+		// The env runs here, so its keyed ports matter — but this command
+		// only READS the stack. Resolve every key to the block it already
+		// holds; a key with none renders as a labelled preview. Neither the
+		// block registry nor the resolve_port store is written.
+		kclplugin.UseBlockAllocator(inspectBlockAllocator(projectDir, env, os.Stderr))
+		kclplugin.UsePortStoreReadOnly(storePath)
 		return opts, func() {}
 	}
 
@@ -179,6 +196,73 @@ const (
 	// cloud env, and it needs its own block exactly as a dev stack does.
 	renderToLaunch
 )
+
+// blockClaim is whether a render may REGISTER a port block, and it is a
+// separate question from renderPurpose.
+//
+// renderPurpose answers "which ports is this render about" — a dev stack's
+// own, or none because the env runs elsewhere. blockClaim answers "is this
+// command the one entitled to hand a new block out". Only a command that goes
+// on to bind the ports — `forge env up`, an applying `forge env deploy`, the
+// cluster lifecycle that creates the stack's cluster — is. A command that
+// only describes the stack is not, however local the env is.
+//
+// Conflating the two is what made `forge env render dev` from a fresh git
+// worktree try to register a block for that worktree and, with the registry
+// at dev_stack.max_stacks, FAIL with "refusing to allocate a NEW port block".
+// The command printed manifests; it had no business claiming anything. The
+// workaround agents found — `GIT_DIR=<primary>/.git GIT_WORK_TREE=<wt>` so the
+// worktree resolved to the default stack — rendered the WRONG stack's
+// namespace and ports, silently.
+type blockClaim int
+
+const (
+	// inspectBlocks: resolve keys to blocks they ALREADY hold; register
+	// nothing. A key with no block renders at its base port, announced on
+	// stderr as a preview. The zero value on purpose — a render that never
+	// says it may claim, claims nothing.
+	inspectBlocks blockClaim = iota
+	// claimNewBlocks: register a block for a key seeing its first render,
+	// bounded by dev_stack.max_stacks. For commands that bind the ports.
+	claimNewBlocks
+)
+
+// inspectBlockAllocator backs allocate_port for a read-only render: base +
+// block*100 for a key that already holds a block, and base for one that does
+// not — a PREVIEW, said once per key on w so nobody mistakes it for the port
+// the stack will get.
+//
+// Base, rather than a guess at the next free block, because the guess is not
+// a fact: another worktree can take that block first, and past the ceiling
+// there is no next block at all. Base is deterministic and the notice is
+// explicit about what it is.
+func inspectBlockAllocator(projectDir, env string, w io.Writer) func(base int, key string) (int, error) {
+	var (
+		mu        sync.Mutex
+		announced = map[string]bool{}
+	)
+	return func(base int, key string) (int, error) {
+		block, found, err := devstack.LookupBlock(projectDir, key)
+		if err != nil {
+			return 0, err
+		}
+		if found {
+			return base + block*100, nil
+		}
+		if key != "" {
+			mu.Lock()
+			first := !announced[key]
+			announced[key] = true
+			mu.Unlock()
+			if first {
+				fmt.Fprintf(w, "[devstack] PREVIEW: port-block key %q has no block yet, so its allocate_port "+
+					"ports render at their BASE values and nothing was claimed. `forge env up %s` claims the "+
+					"block; the ports then move to base+block*100.\n", key, env)
+			}
+		}
+		return base, nil
+	}
+}
 
 // envRunsOnThisMachine reports whether env's declaration targets this machine,
 // decided by a probe render with the block allocator DISARMED — so the probe

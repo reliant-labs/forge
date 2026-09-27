@@ -19,8 +19,9 @@ func writeAuditDevProject(t *testing.T, mainK string) string {
 	dir := t.TempDir()
 	files := map[string]string{
 		"forge.yaml": "name: acme\nmodule_path: github.com/example/acme\nversion: 0.1.0\nfrontends: []\n",
-		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n" +
-			"forge = { path = \"" + forgeModuleRoot(t) + "\" }\n",
+		// No `forge` dependency: the forge KCL module is supplied by the
+		// rendering binary (ADR 0003), so a project's kcl.mod never names it.
+		"deploy/kcl/kcl.mod":    "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
 		"deploy/kcl/dev/main.k": mainK,
 	}
 	for rel, body := range files {

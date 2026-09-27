@@ -384,6 +384,74 @@ spec:
 	}
 }
 
+// A reference marked `optional: true` is not a schedule-time dependency:
+// kubelet starts the container without it (an optional secretKeyRef yields no
+// env var, an optional secret volume mounts empty). Demanding it made a
+// deliberately-absent break-glass Secret — present for minutes, once, ever —
+// block every ordinary deploy and read in `forge project audit` as a pod that
+// "will FailedMount". Required refs beside it must still be collected.
+func TestCollectManifestRefs_OptionalRefsNotRequired(t *testing.T) {
+	const job = `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openbao-bootstrap
+spec:
+  template:
+    spec:
+      containers:
+        - name: bootstrap
+          image: quay.io/openbao/openbao:2.6.2
+          env:
+            - name: OPENBAO_BREAK_GLASS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: root-once
+                  key: token
+                  optional: true
+            - name: OPENBAO_SERVICE_SECRET_ID
+              valueFrom:
+                secretKeyRef:
+                  name: approles
+                  key: service-secret-id
+            - name: FEATURE_FLAG
+              valueFrom:
+                configMapKeyRef:
+                  name: optional-flags
+                  key: flag
+                  optional: true
+          envFrom:
+            - secretRef:
+                name: optional-bulk
+                optional: true
+      volumes:
+        - name: extra
+          secret:
+            secretName: optional-volume
+            optional: true
+        - name: extra-cm
+          configMap:
+            name: optional-cm-volume
+            optional: true
+`
+	refs := CollectManifestRefs(job)
+	for _, name := range []string{"root-once", "optional-bulk", "optional-volume"} {
+		if _, ok := refs.Secrets[name]; ok {
+			t.Errorf("optional Secret %q must not be demanded; got %v", name, refs.Secrets)
+		}
+	}
+	for _, name := range []string{"optional-flags", "optional-cm-volume"} {
+		if _, ok := refs.ConfigMaps[name]; ok {
+			t.Errorf("optional ConfigMap %q must not be demanded; got %v", name, refs.ConfigMaps)
+		}
+	}
+	if _, ok := refs.Secrets["approles"]["service-secret-id"]; !ok {
+		t.Errorf("a required secretKeyRef beside an optional one must still be demanded; got %v", refs.Secrets)
+	}
+	if misses := CheckSecretSupply(job, []SecretSupply{{Name: "approles"}}); len(misses) != 0 {
+		t.Errorf("an optional Secret must not be an undeclared mount; got %+v", misses)
+	}
+}
+
 func TestCollectManifestRefs_Empty(t *testing.T) {
 	refs := CollectManifestRefs("")
 	if len(refs.Secrets) != 0 || len(refs.Images) != 0 {

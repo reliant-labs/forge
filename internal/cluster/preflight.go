@@ -227,21 +227,30 @@ func collectRefs(node any, refs *ManifestRefs) {
 // `ClusterClient external=True` out-of-band kubeconfig Secret that forge does
 // NOT mint — mounted via a secret volume — so the gate catches it instead of
 // letting the pod crash on first schedule.
+//
+// A reference marked `optional: true` is NOT recorded, in any shape. It is not
+// a schedule-time dependency: kubelet starts the container without it (an
+// optional secretKeyRef yields no env var, an optional envFrom or volume
+// projects nothing). Recording it made a deliberately-absent Secret — a
+// break-glass token that exists for minutes, once, ever — block every ordinary
+// deploy in the live preflight and report as a pod that "will FailedMount" in
+// the render-time supply gate, both false. imagePullSecrets carry no
+// `optional` field and are unaffected.
 func collectSecretRefs(v map[string]any, refs *ManifestRefs) {
 	// secretKeyRef: {name, key} — a single (Secret, key) projection.
-	if skr, ok := mapAt(v, "secretKeyRef"); ok {
+	if skr, ok := mapAt(v, "secretKeyRef"); ok && !isOptional(skr) {
 		if name := stringAt(skr, "name"); name != "" {
 			addRef(refs.Secrets, name, stringAt(skr, "key"))
 		}
 	}
 	// envFrom secretRef: {name} — projects the WHOLE Secret. Existence only.
-	if sr, ok := mapAt(v, "secretRef"); ok {
+	if sr, ok := mapAt(v, "secretRef"); ok && !isOptional(sr) {
 		if name := stringAt(sr, "name"); name != "" {
 			addRef(refs.Secrets, name, "")
 		}
 	}
 	// volumes[].secret.secretName — a secret-backed volume mount.
-	if sv, ok := mapAt(v, "secret"); ok {
+	if sv, ok := mapAt(v, "secret"); ok && !isOptional(sv) {
 		// A pod-volume secret source keys the name as `secretName`; a
 		// projected source keys it as `name`. Accept either so both the
 		// `volumes[].secret` and `sources[].secret` shapes are covered.
@@ -290,9 +299,12 @@ func collectImagePullSecretNames(v map[string]any, out map[string]struct{}) {
 // (sources[].configMap.name). control-plane projects non-sensitive config to
 // ConfigMaps, so a missing ConfigMap key is a real CreateContainerConfigError
 // class the gate must catch.
+//
+// `optional: true` references are skipped for the reason collectSecretRefs
+// gives: kubelet schedules the pod without them.
 func collectConfigMapRefs(v map[string]any, refs *ManifestRefs) {
 	// configMapKeyRef: {name, key} — a single (ConfigMap, key) projection.
-	if ckr, ok := mapAt(v, "configMapKeyRef"); ok {
+	if ckr, ok := mapAt(v, "configMapKeyRef"); ok && !isOptional(ckr) {
 		if name := stringAt(ckr, "name"); name != "" {
 			addRef(refs.ConfigMaps, name, stringAt(ckr, "key"))
 		}
@@ -300,12 +312,12 @@ func collectConfigMapRefs(v map[string]any, refs *ManifestRefs) {
 	// envFrom configMapRef / volumes[].configMap / sources[].configMap:
 	// each is {name} — existence only. All three use the `configMap` key
 	// EXCEPT envFrom, which uses `configMapRef`; handle both.
-	if cmr, ok := mapAt(v, "configMapRef"); ok {
+	if cmr, ok := mapAt(v, "configMapRef"); ok && !isOptional(cmr) {
 		if name := stringAt(cmr, "name"); name != "" {
 			addRef(refs.ConfigMaps, name, "")
 		}
 	}
-	if cm, ok := mapAt(v, "configMap"); ok {
+	if cm, ok := mapAt(v, "configMap"); ok && !isOptional(cm) {
 		if name := stringAt(cm, "name"); name != "" {
 			addRef(refs.ConfigMaps, name, "")
 		}
@@ -359,6 +371,13 @@ func mapAt(m map[string]any, key string) (map[string]any, bool) {
 	}
 	sub, ok := raw.(map[string]any)
 	return sub, ok
+}
+
+// isOptional reports whether a Secret/ConfigMap reference carries
+// `optional: true` — the Kubernetes marker that the pod runs without it.
+func isOptional(m map[string]any) bool {
+	b, ok := m["optional"].(bool)
+	return ok && b
 }
 
 // stringAt returns m[key] as a string when present and of that type.

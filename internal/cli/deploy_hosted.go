@@ -8,6 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // hostedDeployClient builds the control-plane client a hosted deploy talks
@@ -106,15 +107,25 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	report.setHostedTarget(ep.URL, envID)
 
 	var (
-		release string
-		digests map[string]string
+		release    string
+		digests    map[string]string
+		registries map[string]string
 	)
-	binding, bound, berr := hostedLedger(client, ep.URL, ref.Project, ref.Kind).Bindings.Current(ctx, envName)
+	ledger := hostedLedger(client, ep.URL, ref.Project, ref.Kind)
+	binding, bound, berr := ledger.Bindings.Current(ctx, envName)
 	if berr != nil {
 		return fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, ep.URL, berr)
 	}
 	if bound {
 		release, digests = binding.Release, binding.Resolved
+		// The promotion froze digests; WHERE each was pushed lives on the
+		// (immutable) release. A backend this project builds is declared
+		// registry-less and is pinned under that recorded registry.
+		rel, rerr := ledger.Releases.Get(ctx, release)
+		if rerr != nil {
+			return fmt.Errorf("read release %s from %s: %w", release, ep.URL, rerr)
+		}
+		registries = releaseRegistries(rel)
 	}
 	report.setTags("", "release "+emptyAs(release, "(none)")+" (promoted; "+ep.URL+")", release, false)
 
@@ -130,7 +141,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	}
 	for i := range groups {
 		groups[i].DryRun = opts.dryRun
-		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Project: ref.Project, Release: release, Digests: digests}
+		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Project: ref.Project, Release: release, Digests: digests, Registries: registries}
 	}
 
 	registry := &deploytarget.Registry{}
@@ -151,4 +162,22 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	}
 	return nil
+}
+
+// releaseRegistries is a release's OCI artifact → registry map: the URI each
+// image was pushed to, which the hosted pin uses to locate a backend this
+// project built. A nil release (never cut) or an artifact with no URI (built
+// without --push) contributes nothing, and the pin refuses such a backend with
+// the fix.
+func releaseRegistries(rel *release.Release) map[string]string {
+	if rel == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for name, art := range rel.Artifacts {
+		if art.Kind == release.KindOCI && art.URI != "" {
+			out[name] = art.URI
+		}
+	}
+	return out
 }

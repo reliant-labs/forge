@@ -69,12 +69,14 @@
 //  2. for .md: after the closing --- of a leading YAML frontmatter
 //     block (Claude Code requires frontmatter at byte 0);
 //  3. after a #! shebang line;
-//  4. at the very top.
+//  4. for a Dockerfile: after its leading parser directives (# syntax=…);
+//  5. at the very top.
 package checksums
 
 import (
 	"bytes"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -450,6 +452,30 @@ func markerInsertOffset(relPath string, content []byte) int {
 		return len(lines[0])
 	}
 
-	// Rule 4: top of file.
+	// Rule 4: Dockerfile parser directives stay on top.
+	if isDockerfile(relPath) {
+		offset = 0
+		for _, line := range lines {
+			if !dockerfileDirectiveRE.Match(bytes.TrimRight(line, "\r\n")) {
+				break
+			}
+			offset += len(line)
+		}
+		return offset
+	}
+
+	// Rule 5: top of file.
 	return 0
+}
+
+// dockerfileDirectiveRE matches a Dockerfile parser directive line
+// (`# syntax=…`, `# escape=…`, `# check=…`). BuildKit honors directives only
+// while every preceding line is also a directive: the first comment ends the
+// directive block, so a marker stamped above `# syntax=` silently demotes it
+// to a comment and the build falls back to the builtin frontend.
+var dockerfileDirectiveRE = regexp.MustCompile(`^#\s*[A-Za-z]+\s*=`)
+
+func isDockerfile(relPath string) bool {
+	base := path.Base(strings.ReplaceAll(relPath, "\\", "/"))
+	return base == "Dockerfile" || strings.HasPrefix(base, "Dockerfile.") || strings.HasSuffix(base, ".Dockerfile")
 }

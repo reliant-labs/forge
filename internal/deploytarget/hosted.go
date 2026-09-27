@@ -100,6 +100,12 @@ type HostedTarget struct {
 	// Digests is the bound release's artifact → digest map (the ledger's
 	// Resolved set).
 	Digests map[string]string
+	// Registries is the bound release's artifact → registry map: where each
+	// image was pushed (the release artifact's URI). It locates the bytes of
+	// a backend whose image THIS project builds, which is declared
+	// registry-less (`image = "api"`) because the registry is a push-time
+	// fact (`forge build --push <image push base>`), not a declaration.
+	Registries map[string]string
 }
 
 // ─── Wire (controlplane.v1, proto3 JSON) ─────────────────────────────────────
@@ -351,6 +357,42 @@ func HostedArtifactName(image string) string {
 	return repo[strings.LastIndex(repo, "/")+1:]
 }
 
+// hostedBackendRepository is the repository a backend's bound digest is pinned
+// under.
+//
+//   - A spec image that names its registry (ghcr.io/acme/api:v1) is an image
+//     built elsewhere: its own repository, as declared.
+//   - A registry-less spec image (`api`) is one THIS project builds. Its
+//     repository is where the release recorded pushing it: the artifact's
+//     registry + "/" + the artifact name — the same coordinates
+//     `forge build --push` wrote the digest under.
+//
+// A registry-less image whose release recorded no registry was built without
+// --push, so there are no addressable bytes to pin: refused, naming the fix.
+func hostedBackendRepository(image, artifact string, group ServiceGroup) (string, error) {
+	repo := HostedImageRepository(image)
+	if hostedImageNamesRegistry(repo) {
+		return repo, nil
+	}
+	var registry string
+	if group.Hosted != nil {
+		registry = strings.TrimSuffix(group.Hosted.Registries[artifact], "/")
+	}
+	if registry == "" {
+		return "", fmt.Errorf("image %q names no registry, and release %s recorded none for artifact %q — it was built without a push.\n"+
+			"  fix: forge build %s --push <image push base>, re-cut the release (forge release cut <version> --env %s), then promote it",
+			image, group.Hosted.Release, artifact, group.Env, group.Env)
+	}
+	return registry + "/" + artifact, nil
+}
+
+// hostedImageNamesRegistry reports whether an image repository's first path
+// component is a registry host — the same rule v1alpha1.ValidateImage applies.
+func hostedImageNamesRegistry(repo string) bool {
+	host, _, found := strings.Cut(repo, "/")
+	return found && (strings.ContainsAny(host, ".:") || host == "localhost")
+}
+
 // HostedImageDigest is the digest an image reference is pinned by, or "".
 func HostedImageDigest(image string) string {
 	if i := strings.LastIndex(image, "@"); i >= 0 {
@@ -431,7 +473,12 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 					svc.Name, group.Hosted.Release, artifact, spec.Image, group.Env))
 				continue
 			}
-			spec.Image = HostedImageRepository(spec.Image) + "@" + digest
+			repo, rerr := hostedBackendRepository(spec.Image, artifact, group)
+			if rerr != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, rerr))
+				continue
+			}
+			spec.Image = repo + "@" + digest
 			if err := spec.Validate(); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
 				continue

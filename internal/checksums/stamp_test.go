@@ -153,6 +153,13 @@ func TestStampInsertionPosition(t *testing.T) {
 		{"frontmatter md", "s/SKILL.md", "---\nname: s\n---\nbody\n", "", 3},
 		{"shebang", "tools/run.sh", "#!/bin/sh\necho hi\n", "", 1},
 		{"plain top", "deploy/x.yaml", "apiVersion: 1\n", "", 0},
+		// BuildKit reads parser directives only BEFORE the first comment
+		// line: a marker above `# syntax=` demotes it to a plain comment and
+		// the build silently falls back to the builtin frontend.
+		{"dockerfile syntax directive", "Dockerfile", "# syntax=docker/dockerfile:1\n\nFROM scratch\n", "", 1},
+		{"dockerfile several directives", "Dockerfile", "# syntax=docker/dockerfile:1\n# escape=`\n# check=error=true\nFROM scratch\n", "", 3},
+		{"dockerfile no directive", "Dockerfile", "# Build stage.\nFROM scratch\n", "", 0},
+		{"directive shape outside a Dockerfile", "x.yaml", "# syntax=docker/dockerfile:1\na: 1\n", "", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

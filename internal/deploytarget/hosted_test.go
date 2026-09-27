@@ -85,6 +85,23 @@ func (f *fakeCP) Call(_ context.Context, proc string, req, out any) error {
 	return json.Unmarshal([]byte(reply), out)
 }
 
+// publishedBackendImage is the spec.image the EnsureDeployment call for
+// deployment name carried on the wire.
+func publishedBackendImage(t *testing.T, f *fakeCP, name string) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if strings.HasSuffix(c.Proc, "/EnsureDeployment") && c.Body["name"] == name {
+			spec, _ := c.Body["spec"].(map[string]any)
+			img, _ := spec["image"].(string)
+			return img
+		}
+	}
+	t.Fatalf("no EnsureDeployment for %q", name)
+	return ""
+}
+
 func (f *fakeCP) procs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -251,6 +268,57 @@ func TestHostedImagePushBase(t *testing.T) {
 		}
 		if w := writes(cp); len(w) != 4 {
 			t.Fatalf("writes = %v, want 2 ensures + 2 publishes", w)
+		}
+	})
+}
+
+// TestHostedForgeBuiltBackendPinsTheRecordedRegistry: a backend whose image
+// THIS project builds declares it registry-less (`image = "api"`), because the
+// registry is a push-time fact (`forge build --push <image push base>`), not a
+// declaration. The release recorded where the bytes went; the pin must use it.
+// Before, the pin re-derived the repository from the bare spec image and the
+// deploy refused "hounders@sha256:… must name its registry host explicitly".
+func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
+	group := func(registries map[string]string) ServiceGroup {
+		g := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
+		g.Hosted.Registries = registries
+		g.Services[0].Hosted.Backend.Image = "api"
+		return g
+	}
+
+	t.Run("pinned under the release's registry", func(t *testing.T) {
+		cp := &fakeCP{status: readyStatus(digestA), pushBase: "localhost:5051/org-1"}
+		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(),
+			group(map[string]string{"api": "localhost:5051/org-1"}))
+		if err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+		want := "localhost:5051/org-1/api@" + digestA
+		if got := publishedBackendImage(t, cp, "api"); got != want {
+			t.Fatalf("published image = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no recorded registry is refused with the fix", func(t *testing.T) {
+		cp := &fakeCP{status: readyStatus(digestA), pushBase: "localhost:5051/org-1"}
+		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(), group(nil))
+		if err == nil || !strings.Contains(err.Error(), "--push") {
+			t.Fatalf("err = %v, want a refusal naming forge build --push", err)
+		}
+		if len(cp.procs()) != 0 {
+			t.Fatalf("RPCs made: %v", cp.procs())
+		}
+	})
+
+	t.Run("an explicit registry in the spec wins", func(t *testing.T) {
+		g := group(map[string]string{"api": "localhost:5051/org-1"})
+		g.Services[0].Hosted.Backend.Image = "ghcr.io/acme/api:v1"
+		cp := &fakeCP{status: readyStatus(digestA), pushBase: "ghcr.io/acme"}
+		if err := (HostedProvider{Client: cp, PollInterval: time.Millisecond}).Deploy(context.Background(), g); err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+		if got := publishedBackendImage(t, cp, "api"); got != "ghcr.io/acme/api@"+digestA {
+			t.Fatalf("published image = %q: a declared registry was overridden", got)
 		}
 	})
 }

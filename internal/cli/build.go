@@ -2292,7 +2292,23 @@ func summarizeKCLBuildPlan(e *KCLEntities) {
 		fmt.Printf("[build]   Cluster-mode (docker):   %s\n", strings.Join(cluster, ", "))
 	}
 	if sb := e.SimpleBackendServiceNames(); len(sb) > 0 {
-		fmt.Printf("[build]   Simple-backend (skip):   %s\n", strings.Join(sb, ", "))
+		var built, named []string
+		for _, s := range e.Services {
+			if s.Deploy.Type != "simple-backend" {
+				continue
+			}
+			if s.Build.Type != "" {
+				built = append(built, s.Name)
+			} else {
+				named = append(named, s.Name)
+			}
+		}
+		if len(built) > 0 {
+			fmt.Printf("[build]   Simple-backend (docker): %s\n", strings.Join(built, ", "))
+		}
+		if len(named) > 0 {
+			fmt.Printf("[build]   Simple-backend (image):  %s  (declared image, not built here)\n", strings.Join(named, ", "))
+		}
 	}
 	if bo := e.BuildOnlyServiceNames(); len(bo) > 0 {
 		fmt.Printf("[build]   Build-only (binary):     %s\n", strings.Join(bo, ", "))
@@ -2354,19 +2370,30 @@ func kclImageFrontends(frontends []config.FrontendConfig, e *KCLEntities) []conf
 // one service with deploy.Type == "cluster". When false the project
 // docker build is skipped: there's no in-cluster Application to ship.
 //
-// simple-backend is deliberately NOT counted here, and this is the one
-// place its answer differs from every other cluster predicate. The
-// question this asks is "does forge need to BUILD an image for this
-// env", not "does this env touch a cluster". A SimpleBackend names a
-// app owner's already-built, already-pushed image — forge has no Dockerfile
-// for it and no source to compile (see ServiceEntity.EffectiveBuild,
-// which returns no build for this type). Counting it would run a project
-// docker build for an env that ships nothing forge produced, and push
-// the result under a tag no manifest references.
+// The question this asks is "does forge need to BUILD an image for this
+// env", not "does this env touch a cluster" — which is why a SimpleBackend
+// answers by its BUILD, not its deploy type:
+//
+//   - one that only names an image (CI pushed it, or it is third-party) is
+//     not counted. ServiceEntity.EffectiveBuild synthesizes no build for
+//     it, and a project image here would be pushed under a tag nothing
+//     references.
+//   - one that DECLARES a build (`build = forge.build_of(...)`) is this
+//     project's own backend, and IS counted. Its image is the project
+//     image; the build state records the digest under the service's
+//     `image`, which is exactly the key hostedArtifactKey pins it by at
+//     `forge release cut` and the hosted deploy. Skipping it compiled the
+//     binary and then shipped nothing, leaving the release with no digest
+//     for the backend it exists to deploy.
 func kclHasClusterService(e *KCLEntities) bool {
 	for _, s := range e.Services {
-		if s.Deploy.Type == "cluster" {
+		switch s.Deploy.Type {
+		case "cluster":
 			return true
+		case "simple-backend":
+			if s.Build.Type != "" {
+				return true
+			}
 		}
 	}
 	return false

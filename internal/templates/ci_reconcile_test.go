@@ -117,7 +117,7 @@ func TestReconcile_PinsTheForgeVersion(t *testing.T) {
 	if strings.Contains(out, "cmd/forge@latest") {
 		t.Error("reconcile.yml installs forge@latest")
 	}
-	if !strings.Contains(out, `go list -m -f '{{.Version}}' github.com/reliant-labs/forge`) {
-		t.Error("reconcile.yml does not read the forge version from go.mod")
+	if !strings.Contains(out, installForgeRun(8)) {
+		t.Error("reconcile.yml does not install forge with the shared from-the-project script")
 	}
 }

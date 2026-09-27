@@ -85,18 +85,11 @@ jobs:
           go-version-file: go.mod
 
       - name: Install forge
-        # Same install as ci.yml's (TestCIWorkflows_InstallForgeFromProjectAtRunTime
-        # pins the two to one script): the version comes from go.mod at run
-        # time, so a scheduled run a month from now reconciles with the forge
-        # this checkout compiles against — never with one stamped here when
-        # the file was scaffolded, which drifts on every forge bump.
-        # CGO is required: kcl_plugin.forge is registered by a cgo-only file.
-        run: |
-          r=$(GOWORK=off go list -m -e -f '{{"{{"}}with .Replace{{"}}"}}{{"{{"}}.Path{{"}}"}} {{"{{"}}.Version{{"}}"}}{{"{{"}}end{{"}}"}}' github.com/reliant-labs/forge)
-          if [ -n "$r" ]; then echo "::error file=go.mod::go.mod replaces github.com/reliant-labs/forge with ${r% } — CI cannot install that forge. Bridge a local forge checkout with an uncommitted go.work instead."; exit 1; fi
-          v=$(GOWORK=off go list -m -f '{{"{{"}}.Version{{"}}"}}' github.com/reliant-labs/forge 2>/dev/null || sed -n 's/^forge_version:[[:space:]]*//p' forge.yaml | tr -d "\"' ")
-          case "$v" in v*+*|""|dev|0.0.0) echo "::error file=go.mod::no installable forge version (got '$v') — require github.com/reliant-labs/forge in go.mod, or set forge_version in forge.yaml to a published version."; exit 1 ;; esac
-          CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"
+        # The same install every forge-scaffolded workflow runs: the version
+        # comes from the project at run time, so a scheduled run a month from
+        # now reconciles with the forge this checkout compiles against —
+        # never with one stamped here when the file was scaffolded.
+{{installForgeRun 8}}
 
       # Credentials for whatever this environment's targets actually are.
       # Observing a Kubernetes target needs cluster read access; observing a

@@ -78,7 +78,7 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 		}
 		text := body.String()
 		if strings.Contains(text, "\nforge ") || strings.HasPrefix(text, "forge ") {
-			if !strings.Contains(text, `go install "github.com/reliant-labs/forge/cmd/forge@`) {
+			if !strings.Contains(text, installForgeScript) {
 				t.Errorf("job %q runs forge but never installs it", name)
 			}
 		}

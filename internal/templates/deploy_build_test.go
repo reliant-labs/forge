@@ -105,7 +105,7 @@ func TestDeployTemplate_DeploysThroughForge(t *testing.T) {
 		`forge build "${{ matrix.env }}" --push "$REGISTRY"`,
 		`forge env deploy "${{ matrix.env }}"`,
 		// The same run-time install every CI job uses.
-		`CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"`,
+		installForgeRun(8),
 		// Both credential kinds: forge picks one from the env's own KCL.
 		"secrets.KUBECONFIG",
 		"FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}",

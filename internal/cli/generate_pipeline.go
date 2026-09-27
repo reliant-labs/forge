@@ -1347,7 +1347,7 @@ func stepFrontendBufTS(ctx *pipelineContext) error {
 		return runBufGenerateTypeScriptWorkspace(ctx.Cfg, ctx.ProjectDir)
 	}
 	for _, fe := range ctx.Cfg.Frontends {
-		if strings.EqualFold(fe.Type, "nextjs") || strings.EqualFold(fe.Type, "react-native") || strings.EqualFold(fe.Type, "vite-spa") {
+		if generatesTypeScript(fe.Type) {
 			if err := ctx.warnOrFail(fmt.Sprintf("TypeScript generation for %s", fe.Name),
 				runBufGenerateTypeScript(fe, ctx.Cfg, ctx.ProjectDir)); err != nil {
 				return err

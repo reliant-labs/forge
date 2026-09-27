@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -29,18 +30,54 @@ const frontendTSPluginPackage = "@bufbuild/protoc-gen-es"
 //   - scripts/bootstrap.sh (devcontainer bootstrap)
 var requiredProtoTools = []protoTool{
 	{
-		Binary: "protoc-gen-go",
-		Module: "google.golang.org/protobuf/cmd/protoc-gen-go",
+		Binary:        "protoc-gen-go",
+		Module:        "google.golang.org/protobuf/cmd/protoc-gen-go",
+		VersionModule: "google.golang.org/protobuf",
 	},
 	{
-		Binary: "protoc-gen-connect-go",
-		Module: "connectrpc.com/connect/cmd/protoc-gen-connect-go",
+		Binary:        "protoc-gen-connect-go",
+		Module:        "connectrpc.com/connect/cmd/protoc-gen-connect-go",
+		VersionModule: "connectrpc.com/connect",
+	},
+	// goimports formats every Go file forge generates. It is not a buf
+	// plugin, but it shapes committed output the same way: `forge generate`
+	// without it skips the pass, so a regenerate on a machine that lacks it
+	// (a CI runner) produces different bytes than one that has it.
+	{
+		Binary:        "goimports",
+		Module:        "golang.org/x/tools/cmd/goimports",
+		VersionModule: "golang.org/x/tools",
 	},
 }
 
 type protoTool struct {
 	Binary string
 	Module string
+	// VersionModule is the module whose version go.mod resolves for this
+	// tool. protoc-gen-go's output names its own version in every file it
+	// writes, so installing the version the project's runtime library is
+	// pinned at is what makes a regenerate reproduce the committed bytes.
+	VersionModule string
+}
+
+// resolveToolVersion picks the version to `go install` for a tool: an
+// explicit --version wins; otherwise the version projectDir's go.mod
+// resolves for the tool's module (the one the committed code was generated
+// against), and `latest` only when the module graph does not contain it.
+func resolveToolVersion(ctx context.Context, projectDir string, t protoTool, override string) string {
+	if override != "" {
+		return override
+	}
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", t.VersionModule)
+	cmd.Dir = projectDir
+	// The module graph CI sees: a developer's go.work may bridge a local
+	// checkout, which is not what the committed stubs were built against.
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
+	if v := strings.TrimSpace(string(out)); err == nil && v != "" {
+		return v
+	}
+	return "latest"
 }
 
 func newToolsCmd() *cobra.Command {
@@ -50,8 +87,9 @@ func newToolsCmd() *cobra.Command {
 		Long: `Manage developer tooling that forge expects on PATH but does not ship.
 
 Subcommands:
-  install   Install required proto codegen plugins (protoc-gen-go,
-            protoc-gen-connect-go) via 'go install'.
+  install   Install the codegen tools forge runs (protoc-gen-go,
+            protoc-gen-connect-go, goimports) via 'go install', at the
+            versions this project's go.mod resolves.
 
 Forge scaffolds buf.gen.yaml with 'local:' plugins by default so that
 'forge generate' works without any BSR (buf.build) authentication.
@@ -71,12 +109,19 @@ func newToolsInstallCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Install proto codegen plugins (protoc-gen-go, protoc-gen-connect-go)",
-		Long: `Install the proto codegen plugins forge needs on PATH for the default
-local:-plugin buf.gen.yaml workflow.
+		Short: "Install codegen tools (protoc-gen-go, protoc-gen-connect-go, goimports)",
+		Long: `Install the codegen tools forge needs on PATH for the default
+local:-plugin buf.gen.yaml workflow, plus goimports, which formats every Go
+file forge generates.
 
-By default, plugins already present on PATH are skipped. Use --force to
-re-install at the requested version (default: @latest).
+Each tool is installed at the version this project's go.mod resolves for it
+(google.golang.org/protobuf, connectrpc.com/connect, golang.org/x/tools) —
+the version the committed generated code was produced with — falling back to
+@latest when go.mod does not contain the module. --version overrides that for
+every tool.
+
+By default, tools already present on PATH are skipped. Use --force to
+re-install.
 
 Examples:
   forge tools install
@@ -94,7 +139,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&version, "version", "latest", "Version suffix passed to 'go install' (e.g. latest, v1.34.2)")
+	cmd.Flags().StringVar(&version, "version", "", "Version passed to 'go install' for every tool (e.g. latest, v1.34.2); default: the version go.mod resolves, else latest")
 	cmd.Flags().BoolVar(&force, "force", false, "Reinstall even when the binary is already on PATH")
 
 	return cmd
@@ -167,10 +212,6 @@ func installFrontendTSPlugin(ctx context.Context, projectDir string, force bool)
 // install error (if any) but always tries every tool so users see the
 // full picture.
 func runToolsInstall(ctx context.Context, version string, force bool) error {
-	if version == "" {
-		version = "latest"
-	}
-
 	if _, err := exec.LookPath("go"); err != nil {
 		return fmt.Errorf("'go' not found on PATH — install Go before running '%s tools install'", Name())
 	}
@@ -184,7 +225,7 @@ func runToolsInstall(ctx context.Context, version string, force bool) error {
 			}
 		}
 
-		spec := t.Module + "@" + version
+		spec := t.Module + "@" + resolveToolVersion(ctx, ".", t, version)
 		fmt.Printf("📦 Installing %-26s (go install %s)\n", t.Binary, spec)
 		out, err := exec.CommandContext(ctx, "go", "install", spec).CombinedOutput()
 		if err != nil {
@@ -212,6 +253,6 @@ func runToolsInstall(ctx context.Context, version string, force bool) error {
 		return firstErr
 	}
 	fmt.Println()
-	fmt.Println("✅ All required proto plugins installed.")
+	fmt.Println("✅ All required codegen tools installed.")
 	return nil
 }

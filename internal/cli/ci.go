@@ -70,6 +70,19 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 				return fmt.Errorf("generated files failed self-certification")
 			}
 
+			// Refuse a regenerate that would skip part of the tree. forge
+			// generate only WARNS when a frontend's protoc-gen-es is missing
+			// (a fresh checkout before `npm install` is a normal state
+			// locally), and skips that frontend's TypeScript stubs. Here the
+			// skip is a silent green: the committed stubs are never
+			// regenerated, so nothing is compared, and the gate certifies a
+			// tree it only half-checked.
+			if store, err := loadProjectStore(); err == nil {
+				if err := verifyTSPluginsResolvable(root, store.Config().Frontends); err != nil {
+					return err
+				}
+			}
+
 			// Pass 2: regenerate and diff.
 			parts, err := forgeExecCommand()
 			if err != nil {
@@ -484,4 +497,45 @@ func countSelfCertifiedFiles(root string, cs *generator.FileChecksums) int {
 		}
 	}
 	return n
+}
+
+// verifyTSPluginsResolvable returns an error naming every frontend whose
+// TypeScript stubs `forge generate` would silently skip because the local
+// protoc-gen-es plugin its buf.gen.yaml runs is not installed. Frontends that
+// generate no TypeScript, or use a remote plugin, are not its concern.
+func verifyTSPluginsResolvable(root string, frontends []config.FrontendConfig) error {
+	var missing []string
+	for _, fe := range frontends {
+		if !generatesTypeScript(fe.Type) {
+			continue
+		}
+		feDir, ok := fe.Dir(root)
+		if !ok {
+			continue
+		}
+		bufGen := filepath.Join(root, feDir, "buf.gen.yaml")
+		if _, err := os.Stat(bufGen); err != nil || !usesLocalTSPlugin(bufGen) {
+			continue
+		}
+		if _, ok := resolveLocalTSPluginRel(root, feDir); !ok {
+			missing = append(missing, filepath.ToSlash(feDir))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	for _, dir := range missing {
+		fmt.Fprintf(os.Stderr, "Error: %s: @bufbuild/protoc-gen-es is not installed, so its TypeScript stubs cannot be regenerated — run `npm ci` in %s first.\n", dir, dir)
+	}
+	return fmt.Errorf("cannot verify generated code: %d frontend(s) have no protoc-gen-es (%s)", len(missing), strings.Join(missing, ", "))
+}
+
+// generatesTypeScript mirrors stepFrontendBufTS's frontend-type gate: the
+// types whose stubs `forge generate` produces with buf + protoc-gen-es.
+func generatesTypeScript(feType string) bool {
+	switch strings.ToLower(feType) {
+	case "nextjs", "react-native", "vite-spa":
+		return true
+	}
+	return false
 }

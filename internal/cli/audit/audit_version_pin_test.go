@@ -104,3 +104,31 @@ func TestPinIdentity(t *testing.T) {
 		t.Error("two different release tags collapsed to one identity")
 	}
 }
+
+// A workflow that installs forge from go.mod at run time carries no pin of
+// its own — it cannot diverge from the project — so audit must not read the
+// shell variable in it as a version and report "divergent pins".
+func TestAuditVersion_RunTimeInstallIsNotAPin(t *testing.T) {
+	t.Cleanup(func() { buildinfo.Set("dev", "unknown", "unknown") })
+	const pin = "v0.1.18-0.20260927181843-7355bcb3af9c"
+	buildinfo.Set(pin, "7355bcb3af9c", "unknown")
+
+	dir := t.TempDir()
+	wfDir := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ci := "jobs:\n  verify:\n    steps:\n      - run: |\n" +
+		"          v=$(GOWORK=off go list -m -f '{{.Version}}' github.com/reliant-labs/forge)\n" +
+		"          CGO_ENABLED=1 go install \"github.com/reliant-labs/forge/cmd/forge@${v}\"\n"
+	if err := os.WriteFile(filepath.Join(wfDir, "ci.yml"), []byte(ci), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ciForgePin(dir); got != "" {
+		t.Errorf("ciForgePin read %q out of a run-time install", got)
+	}
+	cat := auditVersion(&config.ProjectConfig{ForgeVersion: pin}, dir)
+	if strings.Contains(cat.Summary, "divergent") {
+		t.Errorf("a run-time CI install was reported as a divergent pin: %q", cat.Summary)
+	}
+}

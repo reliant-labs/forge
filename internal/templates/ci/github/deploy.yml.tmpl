@@ -1,15 +1,38 @@
 # yours: scaffolded once, never touched again — forge will not overwrite this file.
 # This CI workflow is a starting point you own — add jobs, secrets, and steps freely.
 # `forge generate` re-creates it only if you delete it first.
+#
+# Every deploy goes THROUGH forge: `forge build <env> --push` then
+# `forge env deploy <env>` — never a raw KCL render piped to kubectl. forge is what
+# resolves `kcl_plugin.forge` (imported by every env render), materializes the
+# KCL module this checkout's forge ships, binds the kubectl context the env
+# DECLARES (forge.K8sCluster.cluster — never the runner's current context),
+# re-renders each frontend's config.js for THIS env before building, pins the
+# pushed image by digest, runs the secret/image preflight against the live
+# target, and routes a hosted env (forge.ControlPlane) to its control plane
+# instead of a cluster. A raw render skips every one of those.
+#
+# Environments are the ones this project declares — one per
+# deploy/kcl/<env>/main.k at scaffold time, `dev` excluded (it runs locally
+# via `forge env up`). Add an env later by adding it to the matrix below.
+#
 # Triggers:
-#   * workflow_run (after "Build & Push Images" on main)
-#     → automatically promotes to the first env with `auto: true` (typically
-#       "staging"). Other envs ignore this trigger.
-#   * push tag v*
-#     → runs the retag-release + deploy-release jobs, promoting the image
-#       to the last env (typically "prod").
-#   * workflow_dispatch
-#     → lets a human promote any env on demand.
+#   * workflow_run (after "Build & Push Images" succeeds on main)
+#     → deploys the env marked auto below (the first of several; a lone env
+#       is never auto-deployed).
+#   * workflow_dispatch → a human deploys any env on demand.
+#
+# There is deliberately no tag trigger: a tag records what a release IS, it
+# does not decide when production changes. Deploying to a protected env is a
+# person pressing the button, gated by that env's GitHub environment rules.
+#
+# Credentials, per env kind (forge decides the kind from the env's own KCL):
+#   * forge.K8sCluster env → secrets.KUBECONFIG, a kubeconfig holding a context
+#     named exactly the env's declared `cluster`. forge refuses to deploy when
+#     that context is missing, rather than falling back to the current one.
+#   * hosted env (forge.ControlPlane) → secrets.FORGE_CONTROL_PLANE_TOKEN, a
+#     bearer token for the declared control plane (mint a machine identity,
+#     not a person's token). No kubeconfig: the control plane owns the cluster.
 name: Deploy
 {{- if .Environments}}
 
@@ -18,8 +41,6 @@ on:
     workflows: ["Build & Push Images"]
     types: [completed]
     branches: [main]
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       environment:
@@ -30,10 +51,6 @@ on:
           {{- range .Environments}}
           - {{.Name}}
           {{- end}}
-      image_tag:
-        description: "Image tag to deploy (e.g. sha-abc1234 or v1.0.0)"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -49,195 +66,103 @@ env:
   {{- else}}
   REGISTRY: "ghcr.io/${{"{{"}} github.repository_owner {{"}}"}}"
   {{- end}}
-  PROJECT: "{{.ProjectName}}"
 
 jobs:
-  {{- $data := .}}
-  {{- $prevJob := ""}}
-  {{- range $i, $env := .Environments}}
-
-  deploy-{{$env.Name}}:
-    name: Deploy to {{$env.Name | title}}
+  deploy:
+    name: Deploy to ${{"{{"}} matrix.env {{"}}"}}
     runs-on: ubuntu-latest
-    {{- if and $data.Concurrency true}}
-    concurrency:
-      group: deploy-{{$env.Name}}
-      cancel-in-progress: {{$data.CancelInProgress}}
-    {{- end}}
-    {{- if and (gt $i 0) $env.Auto (index $data.Environments (add $i -1)).Auto}}
-    # Ordered promotion within the AUTO chain: both this env and its
-    # predecessor fire on the same workflow_run, so `needs` sequences
-    # them. A manually-dispatched env must NOT depend on the env before
-    # it — that env's `if:` is false on this dispatch, so it is SKIPPED,
-    # and a skipped dependency skips its dependents. Making prod need
-    # staging is what made the manual prod promotion path unreachable.
-    needs: [deploy-{{(index $data.Environments (add $i -1)).Name}}]
-    {{- end}}
-    # Auto-deploy envs (e.g. staging) fire on workflow_run success after
-    # "Build & Push Images" completes on main. Every env also accepts an
-    # explicit workflow_dispatch targeted at it. Prod-style envs without
-    # `auto: true` must be dispatched manually or reached via a v* tag
-    # (handled by the deploy-release job below).
+    # A deploy that has not finished in 30 minutes is stuck, not slow.
+    timeout-minutes: 30
+    strategy:
+      # Each env is an independent deploy: one failing must not cancel another.
+      fail-fast: false
+      matrix:
+        include:
+          {{- range .Environments}}
+          - env: {{.Name}}
+            auto: {{.Auto}}
+            {{- if .Protection}}
+            protected: true
+            {{- end}}
+          {{- end}}
+    # Auto envs deploy after a green image build on main; every env accepts a
+    # dispatch naming it. A workflow_run for a FAILED build deploys nothing.
     if: >-
-      {{- if $env.Auto}}
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      {{- end}}
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == '{{$env.Name}}')
-    {{- if $env.Protection}}
-    environment:
-      name: {{$env.Name}}
-      {{- if $env.URL}}
-      url: {{$env.URL}}
-      {{- end}}
+      github.event_name == 'workflow_dispatch'
+    {{- if .Concurrency}}
+    concurrency:
+      group: deploy-${{"{{"}} matrix.env {{"}}"}}
+      cancel-in-progress: {{.CancelInProgress}}
     {{- end}}
+    # A protected env runs under its GitHub environment, so its protection
+    # rules (required reviewers, branch policy) gate the deploy.
+    environment: ${{"{{"}} matrix.protected && matrix.env || '' {{"}}"}}
     env:
-      # The namespace the manifests declare. Mirrors `_namespace` in
-      # deploy/kcl/{{$env.Name}}/main.k — change both together. Every
-      # verification step below is namespace-scoped: without it kubectl
-      # queries the kubeconfig's default namespace, finds nothing, and
-      # passes vacuously.
-      NAMESPACE: {{$data.ProjectName}}-{{$env.Name}}
+      FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure kubectl
-        uses: azure/setup-kubectl@v4
-
-      - name: Set kubeconfig
-        env:
-          KUBECONFIG_CONTENTS: ${{"{{"}} secrets.KUBECONFIG {{"}}"}}
-        run: |
-          mkdir -p $HOME/.kube
-          printf '%s' "$KUBECONFIG_CONTENTS" > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
-
-      - name: Determine image tag
-        id: tag
+      - name: Select this run's environments
+        id: select
+        # The matrix names every env; this decides whether THIS run deploys
+        # this one. Steps below are skipped (not failed) for the others.
         run: |
           if [ "${{"{{"}} github.event_name {{"}}"}}" = "workflow_dispatch" ]; then
-            echo "tag=${{"{{"}} github.event.inputs.image_tag {{"}}"}}" >> "$GITHUB_OUTPUT"
+            [ "${{"{{"}} github.event.inputs.environment {{"}}"}}" = "${{"{{"}} matrix.env {{"}}"}}" ] && run=true || run=false
           else
-            echo "tag=sha-$(echo ${{"{{"}} github.event.workflow_run.head_sha {{"}}"}} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+            run=${{"{{"}} matrix.auto {{"}}"}}
           fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
 
-      - name: Cache KCL CLI
-        uses: actions/cache@v4
-        id: kcl-cache
-        with:
-          path: ~/.kcl
-          key: kcl-cli-${{"{{"}} runner.os {{"}}"}}
-
-      - name: Install KCL
-        if: steps.kcl-cache.outputs.cache-hit != 'true'
-        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-
-      - name: Add KCL to PATH
-        run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
-      {{- if and $data.MigrationTest (ne $env.Name "staging")}}
-
-      - name: Dry-run against the live API server
-        # Renders the same manifests the deploy step applies and pushes
-        # them through server-side validation (admission, CRD presence,
-        # schema) WITHOUT mutating anything. Note this validates the
-        # workload manifests only — forge does not yet render a schema
-        # migration Job, so nothing here exercises the database.
-        run: |
-          kcl run deploy/kcl/{{$env.Name}}/main.k \
-            -D image_tag=${{"{{"}} steps.tag.outputs.tag {{"}}"}} \
-            -D registry=${{"{{"}} env.REGISTRY {{"}}"}} \
-            -S manifests | \
-            kubectl apply --dry-run=server -f -
-      {{- end}}
-
-      - name: Deploy to {{$env.Name}}
-        # `-S manifests` is REQUIRED. Without it `kcl run` emits the
-        # module's top-level variables as a YAML MAPPING (`manifests:` +
-        # `output:`), and `kubectl apply` rejects that root with
-        # "apiVersion not set, kind not set". `-S manifests` selects the
-        # manifest list and emits it as a `---`-separated document
-        # stream, which is what kubectl consumes.
-        run: |
-          kcl run deploy/kcl/{{$env.Name}}/main.k \
-            -D image_tag=${{"{{"}} steps.tag.outputs.tag {{"}}"}} \
-            -D registry=${{"{{"}} env.REGISTRY {{"}}"}} \
-            -S manifests | \
-            kubectl apply --server-side -f -
-
-      - name: Wait for rollouts
-        # An EMPTY match is a failure, not a pass: a `for` over no
-        # results exits 0 and reports a green deploy that verified
-        # nothing. The selector must find the objects the apply above
-        # created — same namespace, same `part-of` label the renderer
-        # stamps.
-        run: |
-          set -euo pipefail
-          mapfile -t deploys < <(kubectl get deployments -n "$NAMESPACE" \
-            -l app.kubernetes.io/part-of="$PROJECT" -o name)
-          if [ ${#deploys[@]} -eq 0 ]; then
-            echo "::error::no Deployments matched app.kubernetes.io/part-of=$PROJECT in namespace $NAMESPACE — nothing was verified"
-            exit 1
-          fi
-          for deploy in "${deploys[@]}"; do
-            kubectl rollout status -n "$NAMESPACE" "$deploy" --timeout=300s
-          done
-
-      - name: Verify service endpoints
-        # The rollout wait above proves every pod reached Ready, i.e.
-        # its readiness probe passed. This proves the Services actually
-        # SELECT those pods: a selector/label mismatch yields Ready pods
-        # behind an endpointless Service — a total outage a rollout wait
-        # cannot see.
-        run: |
-          set -euo pipefail
-          mapfile -t svcs < <(kubectl get svc -n "$NAMESPACE" \
-            -l app.kubernetes.io/part-of="$PROJECT" -o name)
-          if [ ${#svcs[@]} -eq 0 ]; then
-            echo "::error::no Services matched app.kubernetes.io/part-of=$PROJECT in namespace $NAMESPACE — nothing was verified"
-            exit 1
-          fi
-          failed=0
-          for svc in "${svcs[@]}"; do
-            name=${svc#service/}
-            ready=$(kubectl get endpointslices -n "$NAMESPACE" \
-              -l kubernetes.io/service-name="$name" \
-              -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' \
-              | grep -c '^true$' || true)
-            if [ "$ready" -eq 0 ]; then
-              echo "::error::Service $name has no ready endpoints in $NAMESPACE"
-              failed=1
-            else
-              echo "  ✓ $name: $ready ready endpoint(s)"
-            fi
-          done
-          [ "$failed" -eq 0 ]
-  {{- end}}
-
-  retag-release:
-    name: Retag for Release
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    outputs:
-      version: ${{"{{"}} steps.version.outputs.tag {{"}}"}}
-    steps:
       - uses: actions/checkout@v4
+        if: steps.select.outputs.run == 'true'
         with:
-          fetch-depth: 0
+          # Deploy the commit whose image build triggered this run, not
+          # whatever main points at by the time the run starts.
+          ref: ${{"{{"}} github.event.workflow_run.head_sha || github.sha {{"}}"}}
 
-      - name: Get version tag
-        id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        if: steps.select.outputs.run == 'true'
+        with:
+          go-version-file: go.mod
+{{- if .HasFrontends}}
 
-      - name: Install crane
-        uses: imjasonh/setup-crane@v0.4
+      - uses: actions/setup-node@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          node-version-file: '{{.FrontendPath}}/package.json'
+          cache: 'npm'
+          cache-dependency-path: '{{.FrontendPath}}/package-lock.json'
+{{- end}}
+
+      - name: Install forge
+        if: steps.select.outputs.run == 'true'
+        # The version comes from go.mod at run time — the forge this project
+        # compiles against — so bumping forge in go.mod is the whole upgrade.
+        # A module that does not link forge (a CLI or library) falls back to
+        # forge.yaml's forge_version, the generator it was scaffolded with.
+        # A `replace` of forge, or a pin no module proxy can serve, fails here
+        # by name rather than installing some other forge.
+        # CGO is required: kcl_plugin.forge (imported by every env render) is
+        # registered by a cgo-only file.
+        run: |
+          r=$(GOWORK=off go list -m -e -f '{{"{{"}}with .Replace{{"}}"}}{{"{{"}}.Path{{"}}"}} {{"{{"}}.Version{{"}}"}}{{"{{"}}end{{"}}"}}' github.com/reliant-labs/forge)
+          if [ -n "$r" ]; then echo "::error file=go.mod::go.mod replaces github.com/reliant-labs/forge with ${r% } — CI cannot install that forge. Bridge a local forge checkout with an uncommitted go.work instead."; exit 1; fi
+          v=$(GOWORK=off go list -m -f '{{"{{"}}.Version{{"}}"}}' github.com/reliant-labs/forge 2>/dev/null || sed -n 's/^forge_version:[[:space:]]*//p' forge.yaml | tr -d "\"' ")
+          case "$v" in v*+*|""|dev|0.0.0) echo "::error file=go.mod::no installable forge version (got '$v') — require github.com/reliant-labs/forge in go.mod, or set forge_version in forge.yaml to a published version."; exit 1 ;; esac
+          CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"
+{{- if .HasFrontends}}
+
+      - name: Install frontend dependencies
+        if: steps.select.outputs.run == 'true'
+        working-directory: {{.FrontendPath}}
+        run: npm ci
+{{- end}}
 
       - name: Log in to registry
+        if: steps.select.outputs.run == 'true'
         uses: docker/login-action@v3
         with:
-          {{- if eq .Registry "ghcr"}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: ${{"{{"}} github.actor {{"}}"}}
-          password: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-          {{- else if eq .Registry "gar"}}
+          {{- if eq .Registry "gar"}}
           registry: ${{"{{"}} env.REGISTRY {{"}}"}}
           username: _json_key
           password: ${{"{{"}} secrets.GAR_JSON_KEY {{"}}"}}
@@ -247,132 +172,35 @@ jobs:
           password: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
           {{- end}}
 
-      - name: Retag images
-        run: |
-          SHA_TAG="sha-$(git rev-parse --short HEAD)"
-          VERSION="${{"{{"}} steps.version.outputs.tag {{"}}"}}"
-          echo "Retagging {{.ProjectName}}: $SHA_TAG -> $VERSION, latest"
-          crane tag "${{"{{"}} env.REGISTRY {{"}}"}}/{{.ProjectName}}:$SHA_TAG" "$VERSION"
-          crane tag "${{"{{"}} env.REGISTRY {{"}}"}}/{{.ProjectName}}:$SHA_TAG" "latest"
-          {{- if .HasFrontends}}
-          for fe_dir in frontends/*/; do
-            fe_name=$(basename "$fe_dir")
-            echo "Retagging $fe_name: $SHA_TAG -> $VERSION, latest"
-            crane tag "${{"{{"}} env.REGISTRY {{"}}"}}/$fe_name:$SHA_TAG" "$VERSION"
-            crane tag "${{"{{"}} env.REGISTRY {{"}}"}}/$fe_name:$SHA_TAG" "latest"
-          done
-          {{- end}}
-
-  deploy-release:
-    name: Deploy Release
-    needs: retag-release
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    {{- $lastEnv := index .Environments (add (len .Environments) -1)}}
-    {{- if $lastEnv.Protection}}
-    environment:
-      name: {{$lastEnv.Name}}
-      {{- if $lastEnv.URL}}
-      url: {{$lastEnv.URL}}
-      {{- end}}
-    {{- end}}
-    {{- if .Concurrency}}
-    concurrency:
-      group: deploy-{{$lastEnv.Name}}
-      cancel-in-progress: false
-    {{- end}}
-    env:
-      # Mirrors `_namespace` in deploy/kcl/{{$lastEnv.Name}}/main.k —
-      # change both together. See the per-env deploy job above.
-      NAMESPACE: {{.ProjectName}}-{{$lastEnv.Name}}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure kubectl
-        uses: azure/setup-kubectl@v4
-
       - name: Set kubeconfig
+        # Only a forge.K8sCluster env needs one; a hosted env deploys through
+        # its control plane with FORGE_CONTROL_PLANE_TOKEN instead. forge binds
+        # the env's DECLARED context from this file — it never uses whatever
+        # context happens to be current.
+        if: steps.select.outputs.run == 'true'
         env:
           KUBECONFIG_CONTENTS: ${{"{{"}} secrets.KUBECONFIG {{"}}"}}
         run: |
-          mkdir -p $HOME/.kube
-          printf '%s' "$KUBECONFIG_CONTENTS" > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
-
-      - name: Cache KCL CLI
-        uses: actions/cache@v4
-        id: kcl-cache
-        with:
-          path: ~/.kcl
-          key: kcl-cli-${{"{{"}} runner.os {{"}}"}}
-
-      - name: Install KCL
-        if: steps.kcl-cache.outputs.cache-hit != 'true'
-        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-
-      - name: Add KCL to PATH
-        run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
-      {{- if .MigrationTest}}
-
-      - name: Dry-run against the live API server
-        # See the per-env deploy job: server-side validation of the same
-        # manifests, no mutation. Workload manifests only — forge does
-        # not yet render a schema migration Job.
-        run: |
-          kcl run deploy/kcl/{{$lastEnv.Name}}/main.k \
-            -D image_tag=${{"{{"}} needs.retag-release.outputs.version {{"}}"}} \
-            -D registry=${{"{{"}} env.REGISTRY {{"}}"}} \
-            -S manifests | \
-            kubectl apply --dry-run=server -f -
-      {{- end}}
-
-      - name: Deploy to {{$lastEnv.Name}}
-        # `-S manifests` is REQUIRED — see the per-env deploy job.
-        run: |
-          kcl run deploy/kcl/{{$lastEnv.Name}}/main.k \
-            -D image_tag=${{"{{"}} needs.retag-release.outputs.version {{"}}"}} \
-            -D registry=${{"{{"}} env.REGISTRY {{"}}"}} \
-            -S manifests | \
-            kubectl apply --server-side -f -
-
-      - name: Wait for rollouts
-        run: |
-          set -euo pipefail
-          mapfile -t deploys < <(kubectl get deployments -n "$NAMESPACE" \
-            -l app.kubernetes.io/part-of="$PROJECT" -o name)
-          if [ ${#deploys[@]} -eq 0 ]; then
-            echo "::error::no Deployments matched app.kubernetes.io/part-of=$PROJECT in namespace $NAMESPACE — nothing was verified"
-            exit 1
+          if [ -z "$KUBECONFIG_CONTENTS" ]; then
+            echo "secrets.KUBECONFIG is not set — fine for a hosted env; a forge.K8sCluster env will stop at forge's context check."
+            exit 0
           fi
-          for deploy in "${deploys[@]}"; do
-            kubectl rollout status -n "$NAMESPACE" "$deploy" --timeout=300s
-          done
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBECONFIG_CONTENTS" > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
 
-      - name: Verify service endpoints
-        # Mirrors the per-env deploy job: a release must fail on an
-        # endpointless Service, and must fail rather than pass vacuously
-        # when the selector matches nothing.
-        run: |
-          set -euo pipefail
-          mapfile -t svcs < <(kubectl get svc -n "$NAMESPACE" \
-            -l app.kubernetes.io/part-of="$PROJECT" -o name)
-          if [ ${#svcs[@]} -eq 0 ]; then
-            echo "::error::no Services matched app.kubernetes.io/part-of=$PROJECT in namespace $NAMESPACE — nothing was verified"
-            exit 1
-          fi
-          failed=0
-          for svc in "${svcs[@]}"; do
-            name=${svc#service/}
-            ready=$(kubectl get endpointslices -n "$NAMESPACE" \
-              -l kubernetes.io/service-name="$name" \
-              -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' \
-              | grep -c '^true$' || true)
-            if [ "$ready" -eq 0 ]; then
-              echo "::error::Service $name has no ready endpoints in $NAMESPACE"
-              failed=1
-            else
-              echo "  ✓ $name: $ready ready endpoint(s)"
-            fi
-          done
-          [ "$failed" -eq 0 ]
+      - name: Build and push ${{"{{"}} matrix.env {{"}}"}}
+        # Builds what THIS env declares, with this env's frontend config.js
+        # rendered into the build, and pushes it. The pushed tag (and digest)
+        # land in .forge/state/build-<env>.json, which the deploy below pins.
+        if: steps.select.outputs.run == 'true'
+        run: forge build "${{"{{"}} matrix.env {{"}}"}}" --push "$REGISTRY"
+
+      - name: Deploy ${{"{{"}} matrix.env {{"}}"}}
+        # Applies to exactly the target the env declares and waits for every
+        # workload to become ready (--rollout wait, the default). A K8sCluster
+        # env gets the live preflight first: every referenced Secret key and
+        # image must exist on the target, or nothing is applied.
+        if: steps.select.outputs.run == 'true'
+        run: forge env deploy "${{"{{"}} matrix.env {{"}}"}}"
 {{- end}}

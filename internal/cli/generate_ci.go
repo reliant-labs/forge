@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -212,13 +211,6 @@ func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWor
 		// version (the bug is silent: ci.yml renders fine, just without
 		// the verify job).
 		VerifyGenerated: true,
-
-		// Stamp the INSTALLABLE version (release tag or clean pseudo-version)
-		// so the CI `go install` ref is resolvable — never a `+dirty` build.
-		// A dirty/dev binary yields "" here and the template pins by SHA
-		// instead (fr-8c8a24ea97).
-		ForgeVersion:   buildinfo.InstallableVersion(),
-		ForgeGitCommit: buildinfo.GitCommit(),
 	}
 }
 
@@ -295,17 +287,27 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig, root string) templates.D
 			envs = append(envs, templates.DeployEnv{Name: name})
 		}
 		sortByPromotionOrder(envs)
+		// A lone env is the one users reach — protected, and never
+		// auto-deployed: auto-promoting it would ship every merge to main
+		// straight to production (houndersclub: dev + prod only).
 		if len(envs) > 0 {
-			envs[0].Auto = true
 			envs[len(envs)-1].Protection = true
+		}
+		if len(envs) > 1 {
+			envs[0].Auto = true
 		}
 	}
 
+	var fePath string
+	if declared := discoverCIFrontends(root, cfg); len(declared) > 0 {
+		fePath = declared[0].DeclaredDir()
+	}
 	return templates.DeployWorkflowData{
 		ProjectName:      cfg.Name,
 		Environments:     envs,
 		Registry:         cfg.Deploy.EffectiveRegistry(),
-		HasFrontends:     len(discoverCIFrontends(root, cfg)) > 0,
+		HasFrontends:     fePath != "",
+		FrontendPath:     fePath,
 		FrontendDeploy:   cfg.Deploy.FrontendDeploy,
 		MigrationTest:    cfg.Deploy.MigrationTest,
 		Concurrency:      cfg.Deploy.IsConcurrencyEnabled(),
@@ -319,10 +321,9 @@ func buildBuildImagesWorkflowData(cfg *config.ProjectConfig, root string) templa
 	allVulnDefault := vulnCfg.UsesDefaultScanners()
 
 	return templates.BuildImagesWorkflowData{
-		ProjectName:  cfg.Name,
-		Registry:     cfg.Deploy.EffectiveRegistry(),
-		HasFrontends: len(discoverCIFrontends(root, cfg)) > 0,
-		VulnDocker:   allVulnDefault || vulnCfg.Docker,
+		ProjectName: cfg.Name,
+		Registry:    cfg.Deploy.EffectiveRegistry(),
+		VulnDocker:  allVulnDefault || vulnCfg.Docker,
 	}
 }
 

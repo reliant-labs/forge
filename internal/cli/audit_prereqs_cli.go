@@ -70,12 +70,57 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 	// surfacing it in audit lets CI catch a silently-undeclared mount without a
 	// deploy. A render failure here is non-fatal (the declarations above still
 	// audit); we just skip the supply check.
+	//
+	// It runs under the SAME condition the deploy runs it: only when forge
+	// itself applies this env's manifest stream to a cluster. See
+	// envAppliesManifestsToCluster for why a stream nothing applies is not
+	// demand.
 	var undeclared []cluster.UndeclaredSecretMount
-	mainK := filepath.Join(projectDir, "deploy", "kcl", "dev", "main.k")
-	if manifests, merr := cluster.RenderManifests(ctx, mainK, "audit", "", "dev", nil, nil); merr == nil {
-		undeclared = cluster.CheckSecretSupply(manifests, secretSupplyForPreflight(entities))
+	supplyChecked := envAppliesManifestsToCluster(entities)
+	if supplyChecked {
+		mainK := filepath.Join(projectDir, "deploy", "kcl", "dev", "main.k")
+		if manifests, merr := cluster.RenderManifests(ctx, mainK, "audit", "", "dev", nil, nil); merr == nil {
+			undeclared = cluster.CheckSecretSupply(manifests, secretSupplyForPreflight(entities))
+		}
 	}
-	return crossCheckPrereqs(entities.RequiredSecrets, entities.RequiredDNS, undeclared)
+	cat := crossCheckPrereqs(entities.RequiredSecrets, entities.RequiredDNS, undeclared)
+	if !supplyChecked {
+		cat.Details["secret_supply_check"] = "n/a — dev places no workload in a cluster, so its manifest stream is never applied and no Secret it references can FailedMount"
+	}
+	return cat
+}
+
+// envAppliesManifestsToCluster reports whether `forge env deploy` applies this
+// env's rendered manifest stream to a cluster ITSELF — the only case in which a
+// secretKeyRef or secret volume in that stream is demand a Secret must meet.
+//
+// It is the condition the deploy preflight already gates the same check on
+// (gateDeployOnPreflight skips it when kclEntitiesHaveK8sCluster is false), so
+// the audit and the deploy agree on when a mount is undeclared:
+//
+//   - No workload placed in a cluster: the stream is rendered but never
+//     applied. The scaffolded dev env is exactly this — `manifests` renders
+//     every workload through fw.render_workloads, while the Bundle runs each
+//     one as a host process, whose secrets reach it from the secret store as
+//     env values and never as a k8s Secret. Counting those refs as cluster
+//     demand failed the audit for any project whose workload declares a
+//     `config_secrets` credential, in every checkout, whether or not the local
+//     store was populated.
+//   - Hosted (control_plane with a hosted tier): the control plane owns the
+//     cluster and materializes the Secrets it reads (forge-managed-secrets,
+//     the CNPG credential), and forge applies nothing — the deploy publishes
+//     specs instead.
+//
+// Anything else that places a workload in a cluster (K8sCluster, a
+// self-hosted SimpleBackend, a LOCAL control-plane env) keeps the gate.
+func envAppliesManifestsToCluster(e *KCLEntities) bool {
+	if e == nil {
+		return false
+	}
+	if e.ControlPlane != nil && !isLocalControlPlaneEnv(e) {
+		return false
+	}
+	return kclEntitiesHaveK8sCluster(e)
 }
 
 // crossCheckPrereqs is the pure decision core: takes the declared external

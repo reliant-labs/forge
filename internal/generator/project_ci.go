@@ -2,6 +2,9 @@ package generator
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -77,32 +80,31 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 		Registry:     "ghcr",
 		FrontendName: g.FrontendName,
 		GitHubOwner:  githubOwner,
-
-		// Stamp forge's version so `verify-generated` installs exactly the
-		// same version that produced the scaffold. We stamp the INSTALLABLE
-		// version (release tag or clean pseudo-version) — never a `+dirty`
-		// build, which no module proxy can serve. When the running binary is
-		// a dirty/dev build InstallableVersion returns "" and the template
-		// falls back to pinning by git SHA (fr-8c8a24ea97).
-		ForgeVersion:   buildinfo.InstallableVersion(),
-		ForgeGitCommit: buildinfo.GitCommit(),
 	}
 
 	// The deploy environments, shared by the deploy workflow and the
-	// reconcile matrix. ONE declaration rather than two literals: the two
-	// workflows must agree about which environments exist, and two lists
-	// would be free to drift into reconciling an environment nothing deploys.
-	deployEnvs := []templates.DeployEnv{
-		{Name: "staging", Auto: true, Protection: false},
-		{Name: "prod", Auto: false, Protection: true},
-	}
+	// reconcile matrix. ONE list rather than two literals: the two workflows
+	// must agree about which environments exist, and two lists would be free
+	// to drift into reconciling an environment nothing deploys.
+	//
+	// Read from disk, never hard-coded: the KCL envs are written before the
+	// workflows, and a workflow job for an env with no deploy/kcl/<env>/main.k
+	// fails on every run. A project converted in place keeps its own env set
+	// (houndersclub had dev + prod and got a deploy-staging job wired to every
+	// image build on main).
+	deployEnvs := scaffoldDeployEnvs(g.Path)
 
 	// Deploy and build-images use their own spec-driven data types
+	var frontendPath string
+	if hasFrontends {
+		frontendPath = fmt.Sprintf("frontends/%s", g.FrontendName)
+	}
 	deployData := templates.DeployWorkflowData{
 		ProjectName:      g.Name,
 		Environments:     deployEnvs,
 		Registry:         "ghcr",
 		HasFrontends:     hasFrontends,
+		FrontendPath:     frontendPath,
 		FrontendDeploy:   "none",
 		MigrationTest:    false,
 		Concurrency:      true,
@@ -110,10 +112,9 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 	}
 
 	buildImagesData := templates.BuildImagesWorkflowData{
-		ProjectName:  g.Name,
-		Registry:     "ghcr",
-		HasFrontends: hasFrontends,
-		VulnDocker:   true,
+		ProjectName: g.Name,
+		Registry:    "ghcr",
+		VulnDocker:  true,
 		// The cut-release + promote job rides the same gate as the reconcile
 		// workflow. Both talk to a control plane, and a project that has not
 		// opted into that machinery must not get CI steps that fail on every
@@ -122,10 +123,8 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 	}
 
 	reconcileData := templates.ReconcileWorkflowData{
-		ProjectName:    g.Name,
-		Environments:   deployEnvs,
-		ForgeVersion:   buildinfo.InstallableVersion(),
-		ForgeGitCommit: buildinfo.GitCommit(),
+		ProjectName:  g.Name,
+		Environments: deployEnvs,
 	}
 
 	var e2eFrontendPath string
@@ -217,9 +216,9 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 		return fmt.Errorf("load checksums: %w", err)
 	}
 
-	// Keep the stamped forge version in sync with the binary that produced
-	// the CI files. This allows CI `verify-generated` to pin the exact forge
-	// version via install.
+	// Record the binary that produced the CI files in forge's ownership
+	// state. (The workflows themselves pin nothing: they install the forge
+	// go.mod resolves at run time.)
 	cs.ForgeVersion = buildinfo.Version()
 
 	for _, f := range templatedFiles {
@@ -289,4 +288,43 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 	}
 
 	return nil
+}
+
+// scaffoldDeployEnvs lists the environments a deploy workflow should target:
+// every deploy/kcl/<env>/main.k under projectDir except dev (which runs
+// locally via `forge env up`), ordered along the promotion path. The first
+// auto-deploys after a green image build on main; the last is protected.
+func scaffoldDeployEnvs(projectDir string) []templates.DeployEnv {
+	kclDir := filepath.Join(projectDir, "deploy", "kcl")
+	entries, err := os.ReadDir(kclDir)
+	if err != nil {
+		return nil
+	}
+	var envs []templates.DeployEnv
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == "dev" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(kclDir, e.Name(), "main.k")); err == nil {
+			envs = append(envs, templates.DeployEnv{Name: e.Name()})
+		}
+	}
+	// prod ships last; everything else precedes it alphabetically.
+	sort.SliceStable(envs, func(i, j int) bool {
+		pi, pj := envs[i].Name == "prod", envs[j].Name == "prod"
+		if pi != pj {
+			return pj
+		}
+		return envs[i].Name < envs[j].Name
+	})
+	// A lone env is the one users reach — protected, and never
+	// auto-deployed: auto-promoting it would ship every merge to main
+	// straight to production.
+	if len(envs) > 0 {
+		envs[len(envs)-1].Protection = true
+	}
+	if len(envs) > 1 {
+		envs[0].Auto = true
+	}
+	return envs
 }

@@ -246,18 +246,27 @@ func rollupStatus(cats map[string]audittype.Category) audittype.Status {
 // ciInstallRefRE extracts the ref a generated CI workflow pins forge to,
 // from a `go install github.com/reliant-labs/forge/cmd/forge@<ref>` line.
 var ciInstallRefRE = regexp.MustCompile(
-	`go install github\.com/reliant-labs/forge/cmd/forge@(\S+)`)
+	`go install "?github\.com/reliant-labs/forge/cmd/forge@(\S+)`)
 
 // ciForgePin reads the forge install ref pinned by the generated CI
 // workflow (.github/workflows/ci.yml). Returns "" when there is no
 // workflow or no pin line — a project may legitimately have neither.
+//
+// A workflow scaffolded by a current forge pins NOTHING: it installs the
+// version go.mod resolves at run time (`…/cmd/forge@${v}`), so it cannot
+// diverge from the project and is not a pin at all. Only a LITERAL ref — an
+// older scaffold's, or a hand-written one — is reported.
 func ciForgePin(projectDir string) string {
 	data, err := os.ReadFile(filepath.Join(projectDir, ".github", "workflows", "ci.yml"))
 	if err != nil {
 		return ""
 	}
 	if m := ciInstallRefRE.FindSubmatch(data); m != nil {
-		return strings.TrimSpace(string(m[1]))
+		ref := strings.Trim(strings.TrimSpace(string(m[1])), `"'`)
+		if strings.Contains(ref, "$") {
+			return ""
+		}
+		return ref
 	}
 	return ""
 }

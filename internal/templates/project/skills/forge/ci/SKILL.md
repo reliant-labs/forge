@@ -17,9 +17,9 @@ without forge ever touching your additions.
 | File | Tier | What it gates |
 |------|------|---------------|
 | `.github/workflows/ci.yml` | Tier-1 | Lint (golangci-lint, buf lint, frontend lint+typecheck, migration safety), test (`go test -race -count=1 ./...`, frontend vitest), build (Go binaries with `-trimpath -buildvcs=true`, frontend `next build`), `forge ci verify-generated`, KCL validation, vuln scan (govulncheck, npm audit, Trivy), license check (go-licenses), Docker build, optional E2E |
-| `.github/workflows/proto-breaking.yml` | Tier-1 | `buf breaking` against the `main` branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. See the `proto-breaking` skill for the full deprecation flow. |
-| `.github/workflows/build-images.yml` | Tier-1 | Multi-arch Docker image build + push (when registries are configured) |
-| `.github/workflows/deploy.yml` | Tier-1 | Per-environment deploy via KCL (one job per `deploy/kcl/<env>/main.k` directory) |
+| `.github/workflows/proto-breaking.yml` | Tier-1 | `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow. |
+| `.github/workflows/build-images.yml` | Tier-1 | The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml` |
+| `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge build <env> --push` + `forge env deploy <env>`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
 | `.github/workflows/e2e.yml` | Tier-1 | E2E suite (only when `ci.e2e.enabled: true`) — docker-compose or k3d runtime |
 | `.github/workflows/pre-commit.yml` | Tier-2 | Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after) |
 | `.github/dependabot.yml` | Tier-1 | Weekly bumps for `gomod` (root + `/gen` + each frontend), `npm` (frontend), `docker`, and `github-actions` |
@@ -54,13 +54,67 @@ ci:
   extra_jobs: []              # see "Extending ci.yml" below
 ```
 
-The forge binary records the version that scaffolded the project; CI
-re-installs that exact ref via `go install
-github.com/reliant-labs/forge/cmd/forge@<version>` so `forge ci
-verify-generated` runs against the same generator that wrote the
-checked-in code. Scaffolds from a `dev` build pin by git SHA when one
-is available, otherwise fall back to `@main` with a TODO to regenerate
-from a tagged release.
+### Which forge CI installs
+
+Every job that runs forge installs it from the PROJECT, at run time — no
+workflow carries a version literal:
+
+```yaml
+      - name: Install forge
+        run: |
+          v=$(GOWORK=off go list -m -f '{{.Version}}' github.com/reliant-labs/forge)
+          CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"
+```
+
+(plus two guards, below). go.mod's forge requirement is the forge the code
+compiles against and the one that generated it, so **bumping forge in go.mod
+is the whole upgrade** — the workflows follow on their own. A version stamped
+into a workflow at scaffold time froze there while go.mod moved on: that is
+how a project ended up verifying its generated code with an older forge than
+the one that wrote it ("refusing to overwrite .forge-kcl/ with an OLDER
+forge's KCL module").
+
+- A module that does not link forge (a `--kind cli` / `library` project)
+  falls back to `forge_version` in forge.yaml.
+- A `replace` of forge in go.mod fails the step with `::error` naming it — CI
+  cannot install a local checkout. Bridge one with an uncommitted `go.work`.
+- A pin no module proxy can serve (`+dirty`, `dev`, `0.0.0`) fails the same
+  way rather than installing something else.
+- `CGO_ENABLED=1` is required: `kcl_plugin.forge`, imported by every env
+  render, is registered by a cgo-only file.
+
+The verify-generated job also installs the codegen toolchain at go.mod's
+versions — `forge tools install --force` (protoc-gen-go, protoc-gen-connect-go,
+goimports) — and runs `npm ci` in each frontend, because it regenerates the
+tree and demands identical bytes. `forge ci verify-generated` refuses to run
+when a frontend's protoc-gen-es is missing rather than certify a tree whose
+TypeScript stubs it skipped.
+
+### Deploys go through forge
+
+`deploy.yml` runs, per env, `forge build <env> --push "$REGISTRY"` then
+`forge env deploy <env>` — never `kcl run | kubectl apply`, which cannot
+resolve `kcl_plugin.forge` and skips the declared-context binding, the
+per-env frontend `config.js` render, digest pinning and the live preflight.
+The env list is the project's `deploy/kcl/<env>/main.k` set (dev excluded),
+read when the workflow is scaffolded; with several, the first auto-deploys
+after a green image build on main and the last is protected. A lone env is
+never auto-deployed.
+
+Credentials: a `forge.K8sCluster` env needs `secrets.KUBECONFIG` holding a
+context named exactly the env's declared `cluster`; a hosted env
+(`forge.ControlPlane`) needs `secrets.FORGE_CONTROL_PLANE_TOKEN` and no
+kubeconfig. forge picks the path from the env's own KCL.
+
+### Pre-commit and generated files
+
+`.pre-commit-config.yaml` excludes every forge-generated path (`gen/`,
+`*_gen.*`, `.forge-kcl/`, the grafana dashboards, `deploy/alloy-config.alloy`,
+`public/config.js`, the hooks barrel) from the MUTATING hooks — whitespace
+fixers, gofmt/goimports, prettier. `forge ci verify-generated` demands
+generated files regenerate byte-identically, so a formatter that rewrote one
+would fail it on every commit. forge also emits those files already clean
+(single trailing newline, no trailing whitespace, `buf format`-clean protos).
 
 ## Tier-1 vs Tier-2 boundary
 
@@ -191,7 +245,7 @@ than inlining shell logic, so the same checks are runnable locally:
 
 | Command | What it does |
 |---------|--------------|
-| `forge ci verify-generated` | Runs `forge generate` and asserts `git diff --exit-code` — catches mock/codegen drift where a contract.go grew a parameter but the mock_gen.go wasn't refreshed |
+| `forge ci verify-generated` | Runs `forge generate` and asserts nothing changed (`git status --porcelain`, so a newly created file counts) — catches mock/codegen drift where a contract.go grew a parameter but the mock_gen.go wasn't refreshed. Refuses to run when a frontend's protoc-gen-es is missing |
 | `forge ci validate-kcl` | Renders every environment under `deploy/kcl/<env>/` and asserts the result is APPLYABLE — a `manifests` root exists, every document carries apiVersion + kind, and no other top-level key hides objects no deploy would apply. Shares its implementation with `forge doctor --signal deploy`, so CI and the doctor cannot disagree |
 | `forge doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image |
 | `forge ci vuln-scan --go` | Runs govulncheck against `./...` |
@@ -229,9 +283,9 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
   any name forge doesn't own; open with `# yours: scaffolded once,
   never touched again — forge will not overwrite this file` so the
   boundary is visible.
-- The generated workflows pin the forge binary to the version that
-  scaffolded the project. Bumping forge means re-running `forge
-  upgrade` so the workflow re-pins.
+- The generated workflows install the forge go.mod resolves, at run
+  time. Bumping forge in go.mod is the whole upgrade; there is no pin in
+  a workflow to re-stamp.
 - `extra_jobs:` in forge.yaml is the right escape hatch for jobs that
   belong in `ci.yml`. A standalone trigger (cron, tag, dispatch) means
   a Tier-2 file.

@@ -21,7 +21,6 @@ func reconcileFixture() ReconcileWorkflowData {
 			{Name: "staging", Auto: true},
 			{Name: "prod", Protection: true},
 		},
-		ForgeVersion: "v0.1.15",
 	}
 }
 
@@ -108,22 +107,17 @@ func TestReconcile_OneEnvironmentFailingDoesNotCancelTheRest(t *testing.T) {
 	}
 }
 
-// The forge binary is PINNED. A scheduled job runs unattended for months, and
-// resolving `@latest` at 03:17 on some future morning means the reconcile that
-// reports drift is not the forge that wrote the project.
+// The forge binary is PINNED — by the project, at run time. A scheduled job
+// runs unattended for months, and resolving `@latest` at 03:17 on some future
+// morning means the reconcile that reports drift is not the forge the project
+// compiles against. The install script itself is shared with ci.yml and
+// exercised by TestCIWorkflows_InstallForgeScriptResolvesFromProject.
 func TestReconcile_PinsTheForgeVersion(t *testing.T) {
 	out := renderReconcile(t, reconcileFixture())
-	if !strings.Contains(out, "cmd/forge@v0.1.15") {
-		t.Error("reconcile.yml does not pin the forge version it installs")
+	if strings.Contains(out, "cmd/forge@latest") {
+		t.Error("reconcile.yml installs forge@latest")
 	}
-
-	// Falls back to the commit when there is no installable version — a
-	// dev-built scaffold is still reproducible.
-	data := reconcileFixture()
-	data.ForgeVersion = ""
-	data.ForgeGitCommit = "83eddf47e689"
-	out = renderReconcile(t, data)
-	if !strings.Contains(out, "cmd/forge@83eddf47e689") {
-		t.Error("with no version, reconcile.yml does not fall back to pinning by commit")
+	if !strings.Contains(out, `go list -m -f '{{.Version}}' github.com/reliant-labs/forge`) {
+		t.Error("reconcile.yml does not read the forge version from go.mod")
 	}
 }

@@ -74,7 +74,7 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"# broadcast to workloads that never read it turns one feature's missing\n" +
 		"# secret into a whole namespace outage.\n" +
 		"#\n" +
-		"#     env = forge.env_project(appConfigEnvMap(cfg, w.config_secrets)) \n" +
+		"#     env = forge.env_project(appConfigEnvMap(cfg, w.config_secrets))\n" +
 		"appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: forge.EnvSource} {\n" +
 		"    _sensitive: {str: forge.EnvSource} = {\n" +
 		"        \"DATABASE_URL\" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}\n" +

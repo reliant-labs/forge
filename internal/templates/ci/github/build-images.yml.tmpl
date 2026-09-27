@@ -146,6 +146,13 @@ jobs:
           if-no-files-found: error
 
       - name: Attest build provenance
+        # GitHub's attestation store only accepts public repositories (or
+        # private ones on GitHub Enterprise Cloud). Elsewhere the step fails
+        # with "Feature not available for user-owned private repositories"
+        # AFTER the image is pushed, turning every push to main red. The image
+        # is still cosign-signed and ships an SBOM above; this condition only
+        # skips the SLSA provenance upload. On Enterprise Cloud, drop it.
+        if: ${{"{{"}} !github.event.repository.private {{"}}"}}
         uses: actions/attest-build-provenance@v1
         with:
           subject-name: ${{"{{"}} env.REGISTRY {{"}}"}}/{{.ProjectName}}
@@ -170,56 +177,15 @@ jobs:
           exit-code: "1"
           severity: CRITICAL,HIGH
 {{- end}}
-{{- if .HasFrontends}}
-
-  build-push-frontends:
-    name: Build & Push Frontends
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to registry
-        uses: docker/login-action@v3
-        with:
-          {{- if eq .Registry "ghcr"}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: ${{"{{"}} github.actor {{"}}"}}
-          password: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-          {{- else if eq .Registry "gar"}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: _json_key
-          password: ${{"{{"}} secrets.GAR_JSON_KEY {{"}}"}}
-          {{- else}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: ${{"{{"}} github.actor {{"}}"}}
-          password: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-          {{- end}}
-
-      - name: Build and push frontend images
-        run: |
-          SHORT_SHA=$(echo ${{"{{"}} github.sha {{"}}"}} | cut -c1-7)
-          for dockerfile in frontends/*/Dockerfile; do
-            if [ -f "$dockerfile" ]; then
-              fe_dir=$(dirname "$dockerfile")
-              fe_name=$(basename "$fe_dir")
-              echo "Building $fe_name"
-              docker buildx build \
-                --push \
-                -f "$dockerfile" \
-                -t "${{"{{"}} env.REGISTRY {{"}}"}}/$fe_name:sha-$SHORT_SHA" \
-                -t "${{"{{"}} env.REGISTRY {{"}}"}}/$fe_name:${{"{{"}} github.ref_name {{"}}"}}" \
-                {{- /* Tag as latest only on main branch */}}
-                $(if [ "${{"{{"}} github.ref {{"}}"}}" = "refs/heads/main" ]; then echo "-t ${{"{{"}} env.REGISTRY {{"}}"}}/$fe_name:latest"; fi) \
-                --cache-from type=gha,scope=$fe_name \
-                --cache-to type=gha,mode=max,scope=$fe_name \
-                "$fe_dir"
-            fi
-          done
-{{- end}}
-
+{{- /*
+  No frontend job here. A frontend image is ENVIRONMENT-SPECIFIC — each env
+  renders its own config.js (API origin, OIDC client, telemetry) into the
+  build — so it cannot be built once on main. `forge build <env> --push` in
+  deploy.yml builds it, after re-rendering config.js from that env's KCL. The
+  raw `docker buildx build frontends/*` this replaced baked whatever
+  config.js happened to be on disk (the DEV document, or nothing on a clean
+  clone) into every image.
+*/}}
 {{- if .CutRelease}}
 
   # ── The CI-to-promote hop ───────────────────────────────────────────
@@ -381,9 +347,6 @@ jobs:
       {{- if .VulnDocker}}
       - trivy-scan
       {{- end}}
-      {{- if .HasFrontends}}
-      - build-push-frontends
-      {{- end}}
       {{- if .CutRelease}}
       - cut-release
       {{- end}}
@@ -399,9 +362,6 @@ jobs:
           echo "| {{.ProjectName}} | ${{"{{"}} needs.build-push.result {{"}}"}} |" >> "$GITHUB_STEP_SUMMARY"
           {{- if .VulnDocker}}
           echo "| trivy scan | ${{"{{"}} needs.trivy-scan.result {{"}}"}} |" >> "$GITHUB_STEP_SUMMARY"
-          {{- end}}
-          {{- if .HasFrontends}}
-          echo "| frontends | ${{"{{"}} needs.build-push-frontends.result {{"}}"}} |" >> "$GITHUB_STEP_SUMMARY"
           {{- end}}
           {{- if .CutRelease}}
           echo "| release cut + promote | ${{"{{"}} needs.cut-release.result {{"}}"}} |" >> "$GITHUB_STEP_SUMMARY"

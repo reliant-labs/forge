@@ -177,7 +177,6 @@ func TestGoldenSnapshots(t *testing.T) {
 					PermContents:        "read",
 					Module:              "github.com/example/demo",
 					Registry:            "ghcr",
-					ForgeVersion:        "v0.0.0-test",
 					HasDocker:           true,
 					VerifyGenerated:     true,
 				}
@@ -215,7 +214,6 @@ func TestGoldenSnapshots(t *testing.T) {
 					Module:              "github.com/example/demo",
 					Registry:            "ghcr",
 					FrontendName:        "web",
-					ForgeVersion:        "v0.0.0-test",
 				}
 				return renderCI(t, "github", "ci.yml.tmpl", data)
 			},

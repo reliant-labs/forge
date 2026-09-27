@@ -49,18 +49,8 @@ jobs:
         run: buf lint
 {{- end}}
 {{- if .LintMigrationSafety}}
-      - name: Ensure modules are ready for forge install
-        run: go mod download
       - name: Install forge
-        # Reuses the same pinned forge version as verify-generated so CI runs
-        # migration rules from the generator that created the project.
-{{- if and .ForgeVersion (ne .ForgeVersion "dev")}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeVersion}}
-{{- else if and .ForgeGitCommit (ne .ForgeGitCommit "unknown")}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeGitCommit}}
-{{- else}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@main
-{{- end}}
+{{- template "install-forge" .}}
       - name: Migration safety lint
         run: forge ci migration-safety
 {{- end}}
@@ -212,21 +202,36 @@ jobs:
         uses: bufbuild/buf-setup-action@v1
 {{- end}}
       - name: Install forge
-        # Version is stamped at scaffold time from the forge binary that
-        # produced the project. CI installs that exact ref so this step is
-        # reproducible:
-        #   1. Tagged/pseudo-version build → pin by module version.
-        #   2. Local `dev` build with a known git SHA → pin by SHA
-        #      (`go install ...@<sha>` is a valid ref).
-        #   3. Neither available → fall back to @main (regenerate from a
-        #      tagged release to eliminate this branch).
-{{- if and .ForgeVersion (ne .ForgeVersion "dev")}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeVersion}}
-{{- else if and .ForgeGitCommit (ne .ForgeGitCommit "unknown")}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeGitCommit}}
-{{- else}}
-        # TODO: regenerate from a tagged forge release to pin this install.
-        run: go install github.com/reliant-labs/forge/cmd/forge@main
+{{- template "install-forge" .}}
+      # verify-generated REGENERATES the tree and demands a byte-identical
+      # result, so it needs every tool that produced the committed output,
+      # at the versions that produced it. `forge tools install` installs the
+      # Go codegen plugins buf.gen.yaml runs (protoc-gen-go,
+      # protoc-gen-connect-go) and the goimports forge formats Go output
+      # with, each at the version go.mod resolves — the same version the
+      # committed stubs were generated with. --force: a runner image's own
+      # copy of a plugin must not stand in for go.mod's version.
+      - name: Install codegen tools
+        run: forge tools install --force
+{{- if .HasFrontends}}
+      # The TypeScript stubs come from each frontend's lockfile-pinned
+      # protoc-gen-es. Without node_modules there is nothing to regenerate
+      # them with, and verify-generated refuses to run rather than certify a
+      # tree it only half-checked.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
+          cache: 'npm'
+          cache-dependency-path: |
+{{- range .Frontends}}
+            {{.Path}}/package-lock.json
+{{- end}}
+{{- range .Frontends}}
+      - name: Install {{.Name}} dependencies
+        working-directory: {{.Path}}
+        run: npm ci
+{{- end}}
 {{- end}}
       - name: Verify generated code
         run: forge ci verify-generated
@@ -243,8 +248,6 @@ jobs:
           go-version-file: go.mod
       # No KCL CLI install: forge renders through the embedded KCL
       # runtime, so the toolchain travels with the binary.
-      - name: Ensure modules are ready for forge install
-        run: go mod download
       - name: Install forge
 {{- template "install-forge" .}}
       - name: Validate KCL manifests are applyable
@@ -419,15 +422,7 @@ jobs:
           path: test-results/
 {{- else if eq .E2ERuntime "k3d"}}
       - name: Install forge
-        # Same pin policy as the verify-generated job — see its comment.
-{{- if and .ForgeVersion (ne .ForgeVersion "dev")}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeVersion}}
-{{- else if and .ForgeGitCommit (ne .ForgeGitCommit "unknown")}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeGitCommit}}
-{{- else}}
-        # TODO: regenerate from a tagged forge release to pin this install.
-        run: go install github.com/reliant-labs/forge/cmd/forge@main
-{{- end}}
+{{- template "install-forge" .}}
       - name: Create k3d cluster
         uses: AbsaOSS/k3d-action@v2
         with:
@@ -489,14 +484,18 @@ jobs:
 {{- end}}
 {{- end}}
 {{- end}}{{- define "install-forge"}}
-        # Pinned to the forge version that generated this project, so CI
-        # runs the same generator, linters and deployability rules the
-        # checkout was built with.
-{{- if and .ForgeVersion (ne .ForgeVersion "dev")}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeVersion}}
-{{- else if and .ForgeGitCommit (ne .ForgeGitCommit "unknown")}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeGitCommit}}
-{{- else}}
-        run: go install github.com/reliant-labs/forge/cmd/forge@main
-{{- end}}
+        # The version comes from go.mod at run time — the forge this project
+        # compiles against — so bumping forge in go.mod is the whole upgrade.
+        # A module that does not link forge (a CLI or library) falls back to
+        # forge.yaml's forge_version, the generator it was scaffolded with.
+        # A `replace` of forge, or a pin no module proxy can serve, fails here
+        # by name rather than installing some other forge.
+        # CGO is required: kcl_plugin.forge (imported by every env render) is
+        # registered by a cgo-only file.
+        run: |
+          r=$(GOWORK=off go list -m -e -f '{{"{{"}}with .Replace{{"}}"}}{{"{{"}}.Path{{"}}"}} {{"{{"}}.Version{{"}}"}}{{"{{"}}end{{"}}"}}' github.com/reliant-labs/forge)
+          if [ -n "$r" ]; then echo "::error file=go.mod::go.mod replaces github.com/reliant-labs/forge with ${r% } — CI cannot install that forge. Bridge a local forge checkout with an uncommitted go.work instead."; exit 1; fi
+          v=$(GOWORK=off go list -m -f '{{"{{"}}.Version{{"}}"}}' github.com/reliant-labs/forge 2>/dev/null || sed -n 's/^forge_version:[[:space:]]*//p' forge.yaml | tr -d "\"' ")
+          case "$v" in v*+*|""|dev|0.0.0) echo "::error file=go.mod::no installable forge version (got '$v') — require github.com/reliant-labs/forge in go.mod, or set forge_version in forge.yaml to a published version."; exit 1 ;; esac
+          CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"
 {{- end}}

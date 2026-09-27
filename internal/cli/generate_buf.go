@@ -143,6 +143,9 @@ plugins:
 		}
 	}
 
+	// Build command: run from project root, use --template with relative path to frontend's buf.gen.yaml
+	template := filepath.Join(feDir, "buf.gen.yaml")
+
 	// Verify the local TS plugin is on disk before invoking buf — otherwise
 	// buf emits a confusing "fork/exec: no such file" error. If absent, surface
 	// a clear remediation message and skip cleanly.
@@ -152,20 +155,24 @@ plugins:
 			fmt.Printf("  ⚠️  %s: @bufbuild/protoc-gen-es not installed yet — run `npm install` in %s before `forge generate`.\n", fe.Name, feDir)
 			return nil
 		}
-		// Heal a buf.gen.yaml whose plugin path names a layout this project
-		// does not have. buf.gen.yaml is scaffold-once, so a project whose
-		// node_modules later moved (npm hoisting it to the workspace root
-		// under forge's dev bridge) would otherwise keep pointing at a path
-		// that no longer exists — and the skip above would report "not
-		// installed yet" for a plugin that IS installed, one directory up.
-		if err := retargetLocalTSPlugin(feBufGen, pluginRel); err != nil {
-			return fmt.Errorf("retarget TypeScript plugin path for %s: %w", fe.Name, err)
+		// Point THIS RUN at wherever the plugin actually is, by handing buf
+		// the retargeted template as inline data. The committed buf.gen.yaml
+		// is never rewritten: the right path depends on the generating
+		// machine's node_modules layout (a dev build hoists it to the
+		// project root under forge's web-runtime bridge; CI's `npm ci` puts
+		// it in the frontend), so writing it back made every dev regenerate
+		// commit a path CI's regenerate then reverted — a verify-generated
+		// failure caused by nothing but where npm put a directory.
+		body, err := os.ReadFile(feBufGen)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", feBufGen, err)
+		}
+		if retargeted, changed := retargetedTSTemplate(body, pluginRel); changed {
+			template = string(retargeted)
 		}
 	}
 
-	// Build command: run from project root, use --template with relative path to frontend's buf.gen.yaml
-	relativeTemplate := filepath.Join(feDir, "buf.gen.yaml")
-	args := []string{"generate", "--template", relativeTemplate}
+	args := []string{"generate", "--template", template}
 
 	// Include every proto/<sub>/ with .proto files so pack-emitted services
 	// (e.g. proto/audit/ from audit-log) participate in TypeScript codegen,
@@ -355,29 +362,17 @@ func resolveLocalTSPluginRel(projectDir, feDir string) (string, bool) {
 // file's own indentation.
 var localTSPluginLineRe = regexp.MustCompile(`(?m)^(\s*-\s*local:\s*)\S*protoc-gen-es\s*$`)
 
-// retargetLocalTSPlugin rewrites the local protoc-gen-es path in bufGenPath to
-// want when it differs. No-op — and no write — when it already matches, so a
-// re-run neither churns the file nor its mtime.
-func retargetLocalTSPlugin(bufGenPath, want string) error {
-	body, err := os.ReadFile(bufGenPath)
-	if err != nil {
-		return err
-	}
-	loc := localTSPluginLineRe.FindSubmatchIndex(body)
-	if loc == nil {
-		// A plugin line this cannot recognise is one a user has restructured.
-		// Forge does not rewrite what it no longer understands.
-		return nil
+// retargetedTSTemplate returns body with its local protoc-gen-es path set to
+// want, and whether that changed anything. It is pure: the result is passed to
+// `buf generate --template` as inline data, and the committed file is left as
+// its author wrote it. A plugin line it cannot recognise is one a user has
+// restructured; forge leaves that alone.
+func retargetedTSTemplate(body []byte, want string) ([]byte, bool) {
+	if localTSPluginLineRe.FindIndex(body) == nil {
+		return body, false
 	}
 	updated := localTSPluginLineRe.ReplaceAll(body, []byte("${1}"+want))
-	if bytes.Equal(updated, body) {
-		return nil
-	}
-	mode := os.FileMode(0o644)
-	if info, statErr := os.Stat(bufGenPath); statErr == nil {
-		mode = info.Mode().Perm()
-	}
-	return os.WriteFile(bufGenPath, updated, mode)
+	return updated, !bytes.Equal(updated, body)
 }
 
 func usesLocalTSPlugin(bufGenPath string) bool {

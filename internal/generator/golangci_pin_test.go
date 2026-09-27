@@ -66,7 +66,6 @@ func TestGolangciLintVersionIsPinnedEverywhere(t *testing.T) {
 		LintGolangci: true,
 		PermContents: "read",
 		Module:       "example.com/pin-probe",
-		ForgeVersion: "v0.0.0-test",
 	})
 	if err != nil {
 		t.Fatalf("render ci.yml.tmpl: %v", err)

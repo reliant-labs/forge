@@ -328,17 +328,11 @@ type CIWorkflowData struct {
 	// project's module path (e.g. "github.com/example/demo" -> "example").
 	GitHubOwner string
 
-	// ForgeVersion is the version of the forge CLI that produced the scaffold.
-	// Used to pin `go install` in the verify-generated CI job so the
-	// regeneration step is reproducible across runs. Empty or "dev" falls
-	// back to ForgeGitCommit (when known), then to the pinned default.
-	ForgeVersion string
-
-	// ForgeGitCommit is the git commit SHA the forge binary was built from.
-	// Used as a fallback for `go install` pinning when ForgeVersion is "dev"
-	// (local builds). A full SHA is a valid `go install ...@<ref>` target,
-	// so dev-built scaffolds remain reproducible.
-	ForgeGitCommit string
+	// There is deliberately no forge-version field. Every job that installs
+	// forge reads the version from the project AT RUN TIME (go.mod, falling
+	// back to forge.yaml's forge_version) — see the "install-forge" block in
+	// ci.yml.tmpl. The workflow is scaffold-once, so a version stamped here
+	// froze at scaffold time and drifted from go.mod on every forge bump.
 
 	// GolangciLintVersion is the golangci-lint release the lint job pins.
 	// Left empty by every caller and filled by withDefaults with
@@ -387,10 +381,17 @@ type DeployEnv struct {
 
 // DeployWorkflowData holds data for the deploy workflow template.
 type DeployWorkflowData struct {
-	ProjectName      string
-	Environments     []DeployEnv // ordered: staging, preprod, prod
-	Registry         string      // "ghcr", "gar", "ecr"
-	HasFrontends     bool
+	ProjectName string
+	// Environments are the envs the project DECLARES (deploy/kcl/<env>/main.k,
+	// dev excluded), ordered along the promotion path. Never a hard-coded
+	// list: a job for an env with no main.k fails on every run.
+	Environments []DeployEnv
+	Registry     string // "ghcr", "gar", "ecr"
+	HasFrontends bool
+	// FrontendPath is the first frontend's directory: setup-node reads its
+	// package.json `engines.node`, and `npm ci` there installs what
+	// `forge build <env>` needs to build it.
+	FrontendPath     string
 	FrontendDeploy   string // "firebase", "vercel", "none"
 	MigrationTest    bool   // test migrations before deploy
 	Concurrency      bool   // per-env concurrency groups
@@ -399,10 +400,12 @@ type DeployWorkflowData struct {
 
 // BuildImagesWorkflowData holds data for the build-images workflow template.
 type BuildImagesWorkflowData struct {
-	ProjectName  string
-	Registry     string // "ghcr", "gar"
-	HasFrontends bool
-	VulnDocker   bool // trivy scanning
+	ProjectName string
+	Registry    string // "ghcr", "gar"
+	// No frontend field: frontend images are per-env (each renders that
+	// env's config.js into the build), so deploy.yml builds them with
+	// `forge build <env> --push`, not this once-per-commit workflow.
+	VulnDocker bool // trivy scanning
 
 	// CutRelease emits the job that records a release against a control
 	// plane and promotes an environment to it — the step between "the image
@@ -428,12 +431,8 @@ type ReconcileWorkflowData struct {
 	// the POLICY is per-environment: one may be converging while another is
 	// pinned during an incident.
 	Environments []DeployEnv
-	// ForgeVersion / ForgeGitCommit pin the `go install` the same way the
-	// verify-generated job does, so a scheduled run a month from now
-	// reconciles with the forge that wrote the project rather than whatever
-	// is newest.
-	ForgeVersion   string
-	ForgeGitCommit string
+	// No forge-version field: like ci.yml, the workflow installs the forge
+	// go.mod resolves at run time rather than one stamped at scaffold time.
 }
 
 // E2EWorkflowData holds data for the standalone E2E test workflow template.

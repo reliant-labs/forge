@@ -109,3 +109,26 @@ func TestBuildDeployWorkflowData_DiscoveryFallbackOrdersPromotion(t *testing.T) 
 		t.Fatalf("prod must not auto-deploy on a main merge: %+v", last)
 	}
 }
+
+// A project with only one cloud env (houndersclub: dev + prod) must not
+// auto-deploy it: the lone env IS production, and auto-promoting it would ship
+// every merge to main straight to users.
+func TestBuildDeployWorkflowData_LoneEnvIsNeverAuto(t *testing.T) {
+	root := t.TempDir()
+	for _, env := range []string{"dev", "prod"} {
+		dir := filepath.Join(root, "deploy", "kcl", env)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte("manifests = []\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data := buildDeployWorkflowData(&config.ProjectConfig{Name: "demo"}, root)
+	if len(data.Environments) != 1 {
+		t.Fatalf("want exactly prod, got %+v", data.Environments)
+	}
+	if prod := data.Environments[0]; prod.Auto || !prod.Protection {
+		t.Fatalf("a lone prod env must be protected and never auto-deployed: %+v", prod)
+	}
+}

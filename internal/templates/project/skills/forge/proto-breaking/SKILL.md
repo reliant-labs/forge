@@ -153,13 +153,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the base branch has protos
+        id: base
+        # ...writes has_protos=false, with a ::notice, when origin/<base> has
+        # no .proto files yet
       - uses: bufbuild/buf-action@v1
+        if: steps.base.outputs.has_protos == 'true'
         with:
           breaking: true
-          breaking_against: 'https://github.com/${{ github.repository }}.git#branch=main'
+          breaking_against: 'https://github.com/${{ github.repository }}.git#branch=${{ github.base_ref }}'
+          lint: false
+          format: false
+          push: false
+          archive: false
+          pr_comment: false
 ```
 
 The workflow is generated when `forge.yaml` has `ci.lint.buf_breaking: true` (the default) AND the project has at least one service. Pushes to main itself are exempt — main is the baseline against which PRs are compared.
+
+It checks breaking changes ONLY. buf-action's defaults would also run lint and format (already gated by ci.yml's `buf lint` and pre-commit's `buf format`), push to the BSR, and post a PR comment — which fails under this workflow's read-only token ("Resource not accessible by integration"). And the PR that introduces a project's first protos passes with a notice: against a base with no protos, buf fails with `Module "path: "proto"" had no .proto files`, which is not a breaking change.
 
 `forge.yaml` toggles whether the workflow is generated, not which rules run — edit `buf.yaml` directly to change the rule set.
 

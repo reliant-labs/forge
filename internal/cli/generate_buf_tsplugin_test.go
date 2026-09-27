@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // writeTSPluginBin creates an executable stub at dir/node_modules/.bin/protoc-gen-es.
@@ -85,63 +87,83 @@ plugins:
       - target=ts
 `
 
-// buf.gen.yaml is scaffold-once, so a project whose node_modules layout later
-// changed keeps a plugin path that no longer resolves. Forge must heal it.
-func TestRetargetLocalTSPlugin_RewritesStalePath(t *testing.T) {
+// The plugin path is retargeted for THIS RUN ONLY — in the template handed to
+// buf — never in the committed buf.gen.yaml.
+//
+// forge used to heal a mismatched path by rewriting the file on disk. The
+// file is committed, and the path it wants depends on the generating
+// machine's node_modules layout: a dev build of forge hoists node_modules to
+// the project root (the web-runtime bridge), CI's `npm ci` puts it in the
+// frontend. So a dev machine rewrote buf.gen.yaml to ./node_modules/…, that
+// got committed, and CI's regenerate rewrote it straight back — a
+// verify-generated failure caused by nothing but where npm put a directory
+// (houndersclub, frontends/web/buf.gen.yaml).
+func TestRetargetedTSTemplate_RetargetsInMemory(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "buf.gen.yaml")
-	if err := os.WriteFile(path, []byte(tsPluginBufGen), 0o644); err != nil {
-		t.Fatal(err)
+	got, changed := retargetedTSTemplate([]byte(tsPluginBufGen), "./node_modules/.bin/protoc-gen-es")
+	if !changed {
+		t.Fatal("a stale plugin path was reported as already correct")
 	}
-
-	if err := retargetLocalTSPlugin(path, "./node_modules/.bin/protoc-gen-es"); err != nil {
-		t.Fatal(err)
-	}
-
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(body)
-	if !strings.Contains(got, "- local: ./node_modules/.bin/protoc-gen-es") {
+	if !strings.Contains(string(got), "- local: ./node_modules/.bin/protoc-gen-es") {
 		t.Errorf("plugin path was not retargeted:\n%s", got)
 	}
-	if strings.Contains(got, "./frontends/web/node_modules/.bin/protoc-gen-es") {
+	if strings.Contains(string(got), "./frontends/web/node_modules/.bin/protoc-gen-es") {
 		t.Errorf("the stale path survived:\n%s", got)
 	}
 	// Everything else the user owns must be untouched.
 	for _, want := range []string{"out: frontends/web/src/gen", "include_imports: true", "- target=ts"} {
-		if !strings.Contains(got, want) {
+		if !strings.Contains(string(got), want) {
 			t.Errorf("retarget disturbed unrelated config (missing %q):\n%s", want, got)
 		}
 	}
+
+	if _, changed := retargetedTSTemplate([]byte(tsPluginBufGen), "./frontends/web/node_modules/.bin/protoc-gen-es"); changed {
+		t.Error("a path that already matches was reported as changed")
+	}
 }
 
-// A path that already matches must not be rewritten — `forge generate` twice in
-// a row has to report no changes, and a needless write churns the file's mtime,
-// which the staleness checks elsewhere key on.
-func TestRetargetLocalTSPlugin_Idempotent(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "buf.gen.yaml")
-	if err := os.WriteFile(path, []byte(tsPluginBufGen), 0o644); err != nil {
+// The end-to-end half: a TS generation pass on a machine whose node_modules is
+// hoisted to the root leaves the committed buf.gen.yaml byte-identical, and
+// hands buf the retargeted template instead.
+func TestRunBufGenerateTypeScript_NeverRewritesCommittedBufGen(t *testing.T) {
+	projectDir := t.TempDir()
+	feRel := filepath.Join("frontends", "web")
+	feBufGen := filepath.Join(projectDir, feRel, "buf.gen.yaml")
+	if err := os.MkdirAll(filepath.Dir(feBufGen), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.Stat(path)
+	if err := os.WriteFile(feBufGen, []byte(tsPluginBufGen), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTSPluginBin(t, projectDir) // hoisted: ONLY <project>/node_modules exists
+
+	// A fake buf on PATH that records the --template it was given.
+	binDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "buf-args")
+	fakeBuf := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n--ARG--\\n' \"$a\"; done > " + argsFile + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "buf"), []byte(fakeBuf), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	fe := config.FrontendConfig{Name: "web", Type: "nextjs"}
+	if err := runBufGenerateTypeScript(fe, &config.ProjectConfig{}, projectDir); err != nil {
+		t.Fatalf("runBufGenerateTypeScript: %v", err)
+	}
+
+	after, err := os.ReadFile(feBufGen)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if err := retargetLocalTSPlugin(path, "./frontends/web/node_modules/.bin/protoc-gen-es"); err != nil {
-		t.Fatal(err)
+	if string(after) != tsPluginBufGen {
+		t.Errorf("forge rewrote the committed buf.gen.yaml for this machine's node_modules layout:\n%s", after)
 	}
-
-	after, err := os.Stat(path)
+	args, err := os.ReadFile(argsFile)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("buf was never invoked: %v", err)
 	}
-	if !after.ModTime().Equal(before.ModTime()) {
-		t.Error("rewrote a buf.gen.yaml whose plugin path was already correct")
+	if !strings.Contains(string(args), "- local: ./node_modules/.bin/protoc-gen-es") {
+		t.Errorf("buf was not handed the retargeted plugin path; args:\n%s", args)
 	}
 }

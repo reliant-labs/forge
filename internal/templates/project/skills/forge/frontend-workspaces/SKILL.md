@@ -58,7 +58,7 @@ frontend's code.
       buf.gen.yaml             # buf emits TS stubs here
       src/
         index.ts               # re-export barrel
-        gen/                   # buf-generated *_pb.ts (gitignored by default)
+        gen/                   # buf-generated *_pb.ts (committed, like all generated code)
     hooks/                     # @<project>/hooks
       package.json
       src/

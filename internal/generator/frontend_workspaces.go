@@ -265,14 +265,12 @@ export {};
 		return err
 	}
 
-	gitignore := `# buf-generated stubs are committed in some teams and ignored in
-# others — leave the choice to the project. Default to ignoring so
-# repositories stay clean; remove this line if you want to commit them.
-src/gen/
-`
-	if err := writeIfMissing(filepath.Join(apiDir, ".gitignore"), gitignore); err != nil {
-		return err
-	}
+	// No .gitignore for src/gen/: buf's stubs are committed, like every
+	// other generated file forge emits, so a checkout builds as-cloned and
+	// `forge ci verify-generated` can see drift in them. This package used
+	// to ship `src/gen/` ignored "so repositories stay clean", which left
+	// every fresh clone's frontends unable to typecheck until someone ran
+	// codegen — the failure the scaffold .gitignore now documents.
 
 	readme := fmt.Sprintf("# %s\n\n"+
 		"Shared Connect TS clients + proto types for the project's frontends.\n\n"+

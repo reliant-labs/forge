@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/commitpolicy"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -39,12 +40,15 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "verify-generated",
 		Short: "Verify generated code is pristine and up to date",
-		Long: "Two checks, both local to the checkout:\n" +
+		Long: "Three checks, all local to the checkout:\n" +
 			"  1. Self-certification: every generated file's embedded forge:hash marker\n" +
 			"     must verify (recompute vs embedded) — catches hand-edits that were\n" +
 			"     committed without --force / forge project disown.\n" +
 			"  2. Freshness: runs forge generate and verifies no files changed —\n" +
-			"     catches stale generated code after an input (proto/forge.yaml) change.",
+			"     catches stale generated code after an input (proto/forge.yaml) change.\n" +
+			"  3. Commit policy: no generated file is gitignored (check 2 cannot see an\n" +
+			"     ignored file), and no machine-local state (.forge-kcl/, a frontend's\n" +
+			"     dev public/config.js) is tracked.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := requireFeature(config.FeatureCI); err != nil {
 				return err
@@ -100,6 +104,21 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 				}
 				fmt.Fprintln(os.Stderr, "Run 'forge generate' and commit the changes.")
 				return fmt.Errorf("generated code is out of date (%d file(s))", len(changed))
+			}
+
+			// Pass 3: commit policy. Porcelain honours .gitignore, so it is
+			// blind to generated code a project's (inherited) .gitignore
+			// excludes — a regenerate that recreates an ignored file reports
+			// "up to date" while every fresh clone fails to compile. Checked
+			// AFTER the regenerate, so the generated set is complete.
+			violations, err := commitpolicy.Check(root)
+			if err != nil {
+				return err
+			}
+			if len(violations) > 0 {
+				fmt.Fprintf(os.Stderr, "Error: %d path(s) break forge's commit policy (generated code is committed; machine-local state is not):\n", len(violations))
+				fmt.Fprint(os.Stderr, commitpolicy.Format(violations))
+				return fmt.Errorf("commit policy violated (%d path(s))", len(violations))
 			}
 
 			// State what was verified. "up to date" over a project whose

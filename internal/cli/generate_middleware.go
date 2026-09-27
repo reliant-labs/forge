@@ -232,6 +232,20 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			return reportRetirement(contract.RetireExcludedArtifacts(path, contractOpts))
 		}
 
+		// Resolve the decorator's name BEFORE GenerateWithOptions runs: it
+		// deletes middleware_gen.go (removeLegacyWrappers), and the name is
+		// PINNED from that file — ResolveMiddlewareWrapper keeps whatever an
+		// earlier run declared, because hand-owned code calls it by that name.
+		// Resolved after the delete, the pin found nothing and fell back to the
+		// declared `New<Iface>WithForgeMiddleware`, renaming a wrapper
+		// (daemonpat's NewSecretsWithForgeMiddleware) out from under every
+		// caller.
+		ifaceName := codegen.DetectServiceInterfaceName(path)
+		if ifaceName == "" {
+			ifaceName = "Service"
+		}
+		mw := codegen.ResolveMiddlewareWrapper(path, ifaceName)
+
 		if genErr := contract.GenerateWithOptions(contractPath, contractOpts); genErr != nil {
 			return fmt.Errorf("generate contract for %s: %w", rel, genErr)
 		}
@@ -253,17 +267,13 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		if obsErr != nil {
 			return fmt.Errorf("parse contract for observability decorator %s: %w", rel, obsErr)
 		}
-		ifaceName := codegen.DetectServiceInterfaceName(path)
-		if ifaceName == "" {
-			ifaceName = "Service"
-		}
 		ctorType, _ := codegen.DetectConstructorType(path)
 		if codegen.ShouldInstrumentComponent(path, ctorType, ifaceName) {
-			// Resolve the wrapper's names from the declared contract (the SAME
-			// resolver the compose assembler uses), so the generated
-			// constructor matches the emitted call exactly. One wrapper per
-			// package, so spans/metrics keep the clean "<pkg>.<Method>" op.
-			mw := codegen.ResolveMiddlewareWrapper(path, ifaceName)
+			// mw was resolved above, before the delete, by the SAME resolver
+			// the compose assembler uses — which reads back the file written
+			// here, so the generated constructor matches the emitted call
+			// exactly. One wrapper per package, so spans/metrics keep the
+			// clean "<pkg>.<Method>" op.
 			opNamespace := obsCF.Package
 			// The decorator calls the OWNED seam newObserveChain. A package
 			// opted in by `// forge:constructor` alone — a hand-written

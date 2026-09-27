@@ -47,6 +47,40 @@ func TestKCLHasClusterService_AllHost(t *testing.T) {
 	}
 }
 
+// TestKCLHasClusterService_SimpleBackend pins the one case a SimpleBackend
+// needs the project image: it DECLARES a build of this project's source. A
+// SimpleBackend that only names an image someone else pushed has nothing for
+// forge to build, so it must not trigger one; one that declares
+// `build = forge.build_of({type = "go", …})` is this project's own backend,
+// and skipping the image left `forge release cut` with no digest to record
+// under its artifact key (the service's `image`).
+func TestKCLHasClusterService_SimpleBackend(t *testing.T) {
+	cases := map[string]struct {
+		json string
+		want bool
+	}{
+		"prebuilt image, no build": {`{"services": [
+    {"name": "api", "deploy": {"type": "simple-backend", "spec": {"image": "ghcr.io/acme/api:v1", "ports": [8080]}}}
+  ]}`, false},
+		"declares a go build of this project": {`{"services": [
+    {"name": "api", "image": "hounders",
+     "build": {"type": "go", "cmd": "./cmd/hounders", "output_name": "hounders"},
+     "deploy": {"type": "simple-backend", "spec": {"image": "hounders", "ports": [8080]}}}
+  ]}`, true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			entities, err := parseKCLEntities([]byte(tc.json))
+			if err != nil {
+				t.Fatalf("parseKCLEntities: %v", err)
+			}
+			if got := kclHasClusterService(entities); got != tc.want {
+				t.Errorf("kclHasClusterService = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFilterFrontendsForBuild pins Item 3: host-mode frontends are
 // dropped from the prod-build set (their dev server doesn't consume
 // the build artifact); cluster-mode frontends are kept; and frontends

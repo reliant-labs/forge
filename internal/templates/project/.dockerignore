@@ -1,5 +1,9 @@
 .git
 .github
+# A local Go workspace can name host paths; the image builds from go.mod
+# (the Dockerfile sets GOWORK=off). Kept out so `COPY . .` cannot reintroduce it.
+go.work
+go.work.sum
 docs/
 *.md
 tmp/

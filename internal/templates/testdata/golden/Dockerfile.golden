@@ -28,8 +28,17 @@ ARG FORGE_DATE=unknown
 
 WORKDIR /app
 
-# Copy go workspace files
-COPY go.work go.work.sum* ./
+# The image builds from the COMMITTED module graph, never a go.work.
+#
+# go.work is gitignored, and on a contributor's machine it can `use` an
+# absolute host path (a local forge checkout, a sibling repo). Copying it in
+# made the image depend on the builder's disk: a clean CI checkout failed on
+# the COPY because the file does not exist, and a dev machine failed on `go
+# mod download` because the host path does not exist inside the container.
+# go.mod already resolves gen/ through its `replace … => ./gen`, so workspace
+# mode buys the image nothing. GOWORK=off makes that true for every RUN below.
+ENV GOWORK=off
+
 COPY go.mod go.sum ./
 COPY gen/go.mod gen/go.sum ./gen/
 

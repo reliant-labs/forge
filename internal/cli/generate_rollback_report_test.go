@@ -232,7 +232,7 @@ func TestRollbackGeneratedTree_DogfoodScenarioEndToEnd(t *testing.T) {
 	}
 
 	stderr, restore := captureStderr(t)
-	rollbackGeneratedTree(root, rootCauseErr())
+	rollbackGeneratedTree(root, rootCauseErr(), false)
 	restore()
 	out := stderr.String()
 

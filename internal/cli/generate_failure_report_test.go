@@ -57,7 +57,7 @@ func TestRollbackGeneratedTree_PreservesFailedSourcesAndRepeatsCompilerOutput(t 
 	}
 
 	stderr, restore := captureStderr(t)
-	rolled := rollbackGeneratedTree(root, stepErr)
+	rolled := rollbackGeneratedTree(root, stepErr, false)
 	restore()
 	if !rolled {
 		t.Fatal("rollbackGeneratedTree should report a rollback ran (journal was armed)")
@@ -112,7 +112,7 @@ func TestRollbackGeneratedTree_NonBuildErrorHasNoCompilerBlock(t *testing.T) {
 	}
 
 	stderr, restore := captureStderr(t)
-	rollbackGeneratedTree(root, errors.New("step failed for a non-build reason"))
+	rollbackGeneratedTree(root, errors.New("step failed for a non-build reason"), false)
 	restore()
 
 	if strings.Contains(stderr.String(), "Compiler output") {

@@ -368,6 +368,19 @@ func (e *DowngradeError) Error() string {
 		VendorDirName, e.Stamped, VendorDirName, e.Running, upgrade)
 }
 
+// RefreshRefusal returns the [DowngradeError] `forge generate` would refuse
+// a refresh of projectDir's vendor dir with (without --allow-kcl-downgrade),
+// or nil. For advice that would otherwise send the user to `forge generate`
+// — see kclrender's stale-vendor warning.
+func RefreshRefusal(projectDir string) error {
+	// Not `return checkDowngrade(...)`: a nil *DowngradeError in an error
+	// interface is non-nil.
+	if err := checkDowngrade(projectDir); err != nil {
+		return err
+	}
+	return nil
+}
+
 // checkDowngrade returns a [DowngradeError] when the running forge is
 // provably older, by semver, than the forge stamped on the vendor dir.
 //

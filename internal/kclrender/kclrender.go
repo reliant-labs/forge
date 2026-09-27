@@ -11,16 +11,21 @@
 package kclrender
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
+	"golang.org/x/mod/semver"
 	"kcl-lang.io/kpm/pkg/client"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/devstack"
+	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/internal/kubeconfig"
@@ -39,22 +44,94 @@ var staleWarnOnce sync.Once
 // mechanism: the module refreshes when `forge generate` runs and at no
 // other time, so a project can render against a copy an older forge
 // wrote. Without this the symptom of that drift is a schema error that
-// names a field rather than the stale module, and the fix (`forge
-// generate`) is not obvious from it.
+// names a field rather than the stale module, and the fix is not obvious
+// from it.
+//
+// The fix is NOT always `forge generate`. When this binary is newer than
+// the forge the project pins, generate refuses at its version check — so
+// advising it walked users straight into that refusal (which, before the
+// check moved to the front of the pipeline, also rewrote .forge-kcl/ on its
+// way out). staleVendorAdvice names the fix generate would actually accept.
 func warnIfVendorStale(workDir string) {
 	stale, stamped := kclvendor.Stale(workDir)
 	if !stale {
 		return
 	}
 	staleWarnOnce.Do(func() {
-		was := stamped
-		if was == "" {
-			was = "an older forge (unstamped)"
-		}
-		fmt.Fprintf(os.Stderr,
-			"⚠️  %s/ was materialized by %s; this is forge %s. Run `forge generate` to refresh the vendored KCL module.\n",
-			kclvendor.VendorDirName, was, buildinfo.Version())
+		assessment, assessed := forgecompat.Assess(workDir)
+		fmt.Fprint(os.Stderr, staleVendorAdvice(stamped, buildinfo.Version(), assessment, assessed,
+			kclvendor.RefreshRefusal(workDir), projectHasTask(workDir, "pin:forge")))
 	})
+}
+
+// staleVendorAdvice renders the stale-vendor warning. Pure, so each branch
+// is testable without a module graph.
+//
+// assessment/assessed are forgecompat's verdict for the project; refusal is
+// kclvendor.RefreshRefusal (a copy vendored by a NEWER forge, which
+// generate's downgrade guard will not overwrite); pinTask reports whether
+// the project declares a `pin:forge` task.
+func staleVendorAdvice(stamped, running string, assessment forgecompat.Assessment, assessed bool, refusal error, pinTask bool) string {
+	was := stamped
+	if was == "" {
+		was = "an older forge (unstamped)"
+	}
+	head := fmt.Sprintf("⚠️  %s/ was materialized by %s; this is forge %s.", kclvendor.VendorDirName, was, running)
+
+	if assessed && assessment.Verdict != forgecompat.OK {
+		pinned := assessment.ProjectVersion
+		var why string
+		if assessment.Verdict == forgecompat.StalePin {
+			why = fmt.Sprintf("this forge is newer than the forge the project pins (%s %s)", forgecompat.ModulePath, pinned)
+		} else {
+			why = fmt.Sprintf("this forge is an unreleased build and the project pins the published %s %s", forgecompat.ModulePath, pinned)
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s\n    Do NOT run `forge generate` with this binary: %s, so generate refuses at its version check.\n", head, why)
+		b.WriteString("    Either:\n")
+		fmt.Fprintf(&b, "      • use the pinned forge, then run `forge generate` with it:  %s\n", installCommand(pinned))
+		if pinTask {
+			b.WriteString("      • or move the pin to this forge deliberately:  task pin:forge   (then `forge generate`)\n")
+		} else {
+			fmt.Fprintf(&b, "      • or move the pin to this forge deliberately:  go get %s@<this forge's version> && go mod tidy, then `forge project upgrade` and `forge generate`\n", forgecompat.ModulePath)
+		}
+		return b.String()
+	}
+
+	var dErr *kclvendor.DowngradeError
+	if errors.As(refusal, &dErr) {
+		return fmt.Sprintf("%s\n    Do NOT run `forge generate` with this binary: the copy on disk was vendored by a NEWER forge, and generate refuses to downgrade it.\n"+
+			"    Use the forge that vendored it:  %s\n", head, installCommand(dErr.Stamped))
+	}
+
+	return head + " Run `forge generate` to refresh the vendored KCL module.\n"
+}
+
+// installCommand is the command that puts forge at version v on PATH.
+//
+// NOT buildinfo.IsDevVersion: that calls every pseudo-version "dev", but a
+// pushed pseudo-version is exactly what control-plane pins, and the
+// project's own `go list -m` resolving it proves the proxy serves it. Only
+// build metadata (`+dirty`) or a non-semver string names no fetchable ref,
+// and those get a rebuild instruction instead of a `go install` that fails.
+func installCommand(v string) string {
+	if !semver.IsValid(v) || strings.Contains(v, "+") {
+		return "rebuild forge from a checkout at " + v
+	}
+	return "CGO_ENABLED=1 go install " + forgecompat.ModulePath + "/cmd/forge@" + v
+}
+
+// projectHasTask reports whether the project's Taskfile declares the named
+// task, so advice can name the project's own pin workflow when it has one
+// instead of the raw commands behind it.
+func projectHasTask(projectDir, task string) bool {
+	re := regexp.MustCompile(`(?m)^[ \t]+` + regexp.QuoteMeta(task) + `:[ \t]*$`)
+	for _, name := range []string{"Taskfile.yml", "Taskfile.yaml"} {
+		if data, err := os.ReadFile(filepath.Join(projectDir, name)); err == nil && re.Match(data) {
+			return true
+		}
+	}
+	return false
 }
 
 // vendorMu serializes the on-demand materialization: one command can

@@ -35,18 +35,21 @@ import (
 func TestGenerateStepsPlanStable(t *testing.T) {
 	want := []string{
 		"load project config",
-		// Immediately after the load: every later gate and emitter reads
-		// the frontend inventory, so it must be settled before any of
-		// them runs. See generate_frontend_inventory.go.
+		// The refusals, before ANY step that can write: a refused generate
+		// must leave the tree byte-identical. See
+		// generate_refusal_no_writes_test.go.
+		"forge version compatibility",
+		"pre-codegen contract check",
+		// Before every later gate and emitter that reads the frontend
+		// inventory, so it is settled before any of them runs. See
+		// generate_frontend_inventory.go.
 		"derive frontend inventory",
 		"load checksums",
 		"migrate legacy checksums manifest",
 		"check Tier-1 file-stomp guard",
 		"snapshot Tier-1 exports",
-		"sync forge KCL module vendor",
-		"forge version compatibility",
 		"announce project",
-		"pre-codegen contract check",
+		"sync forge KCL module vendor",
 		"detect proto directories",
 		"ensure gen/go.mod",
 		"buf generate (Go stubs)",

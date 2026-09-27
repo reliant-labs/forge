@@ -90,6 +90,15 @@ type GenStep struct {
 	// values: "config", "proto", "codegen", "migrations", "frontend",
 	// "deploy", "tools", "validate".
 	Tag string
+
+	// ReadOnly declares that the step never writes to the project tree,
+	// by any route — forge's journaled writers, a raw os.WriteFile, or an
+	// external tool. It is what lets a failed run say "No files were
+	// changed" as a computed fact: the claim is made only when every step
+	// that ran is ReadOnly AND the rollback journal is empty. Default
+	// false, so a step that is not explicitly vouched for can never
+	// produce the claim. Pinned by TestGenerateStepsReadOnlySet.
+	ReadOnly bool
 }
 
 // pipelineContext is the shared state passed between steps. Steps may
@@ -286,9 +295,21 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 // boundaries (stepParseServicesAndModule) is documented inline.
 func generateSteps() []GenStep {
 	return []GenStep{
-		{Name: "load project config", Gate: always, Run: stepLoadConfig, Tag: "config"},
-		// Immediately after the load, so every gate and emitter that reads
-		// the frontend inventory sees one answer. See
+		{Name: "load project config", Gate: always, Run: stepLoadConfig, Tag: "config", ReadOnly: true},
+		// The REFUSALS come before anything that can write. A refusal is
+		// only honest if it leaves the tree exactly as it found it, and the
+		// steps below them are not all read-only: the legacy-manifest
+		// migration stamps files, the frontend-inventory render can vendor
+		// .forge-kcl/, and the KCL vendor sync rewrites it. The compat check
+		// used to run AFTER that sync, so a newer forge refusing a
+		// project's pin had already replaced the project's KCL schemas with
+		// its own. Neither check reads anything a later step derives (not
+		// the frontend inventory, not the checksums), so running them first
+		// costs nothing.
+		{Name: "forge version compatibility", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate", ReadOnly: true},
+		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate", ReadOnly: true},
+		// Before every gate and emitter that reads the frontend inventory,
+		// so they all see one answer (the two pre-checks above read none). See
 		// generate_frontend_inventory.go for why a project can reach here
 		// with an empty inventory and a frontend sitting in its own tree.
 		{Name: "derive frontend inventory", Gate: hasForgeYAML, GateReason: "no forge.yaml (directory-scan fallback)", Run: stepDeriveFrontendInventory, Tag: "config"},
@@ -300,10 +321,10 @@ func generateSteps() []GenStep {
 		{Name: "migrate legacy checksums manifest", Gate: always, Run: stepMigrateLegacyManifest, Tag: "config"},
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
+		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config", ReadOnly: true},
+		// After every refusal: this rewrites .forge-kcl/ (and kcl.mod), and
+		// its writes are journaled so a later failure restores them.
 		{Name: "sync forge KCL module vendor", Gate: always, Run: stepSyncForgeKCL, Tag: "config"},
-		{Name: "forge version compatibility", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate"},
-		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
-		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
 		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config"},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto"},

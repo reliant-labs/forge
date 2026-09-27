@@ -217,39 +217,49 @@ func TestFileBindingStore_RetryIsNoOp(t *testing.T) {
 	}
 }
 
-// ROLLBACK IS A NEW LINE of kind rollback, and it must target a release the
-// env has run. A rollback to a never-promoted release writes nothing.
-func TestFileBindingStore_RollbackIsANewLine(t *testing.T) {
+// A LEDGER WRITTEN BEFORE ROLLBACK WAS REMOVED still parses. Its
+// `"kind":"rollback"` lines bound the env to their release exactly as a
+// promote does, so they read as promotes of that release — the env's
+// current binding is unchanged by the upgrade, and a new promote appends
+// after them.
+func TestFileBindingStore_LegacyRollbackLinesStillParse(t *testing.T) {
 	dir := t.TempDir()
+	path := filepath.Join(dir, ".forge", "promotions", "prod.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"id":"a","env":"prod","release":"v1","kind":"promote","resolved":{"api":"` + sha("1") + `"},"promoted_at":"2026-09-01T00:00:00Z"}
+{"id":"b","env":"prod","release":"v2","kind":"promote","resolved":{"api":"` + sha("2") + `"},"promoted_at":"2026-09-02T00:00:00Z"}
+{"id":"c","env":"prod","release":"v1","kind":"rollback","resolved":{"api":"` + sha("1") + `"},"note":"5xx spike","promoted_at":"2026-09-03T00:00:00Z"}
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	store := newFileBindingStore(dir)
 	ctx := context.Background()
-	for _, v := range []string{"v1", "v2"} {
-		if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: v, Kind: release.KindPromote,
-			Resolved: map[string]string{"api": sha(v[1:])}}); err != nil {
-			t.Fatalf("append %s: %v", v, err)
-		}
+	cur, bound, err := store.Current(ctx, "prod")
+	if err != nil || !bound {
+		t.Fatalf("a ledger with a legacy rollback line must still read: bound=%v err=%v", bound, err)
 	}
-
-	_, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v9", Kind: release.KindRollback})
-	if !errors.Is(err, release.ErrNeverPromoted) {
-		t.Fatalf("rollback to a never-run release must be ErrNeverPromoted, got %v", err)
+	if cur.Release != "v1" || cur.Kind != release.KindPromote || cur.Note != "5xx spike" || cur.Resolved["api"] != sha("1") {
+		t.Fatalf("legacy rollback line must read as the promote of v1, got %+v", cur)
 	}
-
-	rb, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindRollback,
-		Resolved: map[string]string{"api": sha("1")}, Note: "5xx spike"})
-	if err != nil {
-		t.Fatalf("rollback to v1: %v", err)
+	// A retry of the state the env is in appends nothing, legacy line or not.
+	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote,
+		Resolved: map[string]string{"api": sha("1")}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v3", Kind: release.KindPromote,
+		Resolved: map[string]string{"api": sha("3")}}); err != nil {
+		t.Fatal(err)
 	}
 	history, _ := store.History("prod")
-	if len(history) != 3 {
-		t.Fatalf("want 3 lines (v1, v2, rollback→v1) — the refused rollback must write nothing; got %d", len(history))
+	if len(history) != 4 || history[3].Release != "v3" {
+		t.Fatalf("want v1, v2, v1(legacy), v3 — got %d entries: %+v", len(history), history)
 	}
-	last := history[2]
-	if last.Kind != release.KindRollback || last.Release != "v1" || last.Note != "5xx spike" || last.ID != rb.ID {
-		t.Errorf("the rollback must be recorded as its own entry of kind rollback, got %+v", last)
-	}
-	if history[0].Kind != release.KindPromote || history[0].Release != "v1" {
-		t.Errorf("the original v1 promotion must be untouched, got %+v", history[0])
+	raw, _ := os.ReadFile(path)
+	if strings.Count(string(raw), `"kind":"rollback"`) != 1 {
+		t.Errorf("the legacy line must be preserved verbatim and nothing new may write kind rollback:\n%s", raw)
 	}
 }
 
@@ -505,9 +515,11 @@ func TestRunPromote_AppendsThroughTheDeclaredStore(t *testing.T) {
 	}
 }
 
-// `forge env promote --rollback` records a rollback entry, and refuses one to a
-// release the env never ran — end to end through the command's run function.
-func TestRunPromote_Rollback(t *testing.T) {
+// A promote to an OLDER release is an ordinary promote — no special kind, no
+// "must have run it before" rule — end to end through the command's run
+// function. Recovery is roll forward; moving backwards is possible and is
+// labelled BEHIND by the plan, never recorded as a rollback.
+func TestRunPromote_BackwardsIsAPlainPromote(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	for _, v := range []string{"v1", "v2", "v3"} {
@@ -515,31 +527,32 @@ func TestRunPromote_Rollback(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	run := func(v string, kind release.PromotionKind) error {
+	run := func(v string) (string, error) {
 		var err error
-		captureStdout(t, func() {
-			err = runPromote(context.Background(), v, "prod", promoteOptions{ProjectDir: dir, Kind: kind, Note: "why", Git: allCommitsPresent()})
+		out := captureStdout(t, func() {
+			err = runPromote(context.Background(), v, "prod", promoteOptions{ProjectDir: dir, Note: "why", Git: allCommitsPresent()})
 		})
-		return err
+		return out, err
 	}
-	if err := run("v1", release.KindPromote); err != nil {
-		t.Fatal(err)
+	for _, v := range []string{"v2", "v3"} {
+		if _, err := run(v); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := run("v2", release.KindPromote); err != nil {
-		t.Fatal(err)
+	// v1 never ran in prod — a backwards promote to it is still just a promote.
+	out, err := run("v1")
+	if err != nil {
+		t.Fatalf("a backwards promote must be allowed: %v", err)
 	}
-	if err := run("v3", release.KindRollback); !errors.Is(err, release.ErrNeverPromoted) {
-		t.Fatalf("rollback to never-run v3 must be refused with ErrNeverPromoted, got %v", err)
-	}
-	if err := run("v1", release.KindRollback); err != nil {
-		t.Fatalf("rollback to v1: %v", err)
+	if !strings.Contains(out, "direction BEHIND") || !strings.Contains(out, "moves BACKWARDS") {
+		t.Errorf("a backwards promote must be labelled loudly, got:\n%s", out)
 	}
 	history, _ := newFileBindingStore(dir).History("prod")
 	got := make([]string, 0, len(history))
 	for _, p := range history {
 		got = append(got, p.Release+":"+string(p.Kind))
 	}
-	if s := strings.Join(got, ","); s != "v1:promote,v2:promote,v1:rollback" {
-		t.Errorf("ledger = %s, want v1:promote,v2:promote,v1:rollback", s)
+	if s := strings.Join(got, ","); s != "v2:promote,v3:promote,v1:promote" {
+		t.Errorf("ledger = %s, want v2:promote,v3:promote,v1:promote", s)
 	}
 }

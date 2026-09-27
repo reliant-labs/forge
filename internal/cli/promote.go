@@ -19,12 +19,11 @@ import (
 // the bytes the env will deploy.
 func newPromoteCmd() *cobra.Command {
 	var (
-		toEnv    string
-		dryRun   bool
-		jsonOut  bool
-		rollback bool
-		note     string
-		actor    string
+		toEnv   string
+		dryRun  bool
+		jsonOut bool
+		note    string
+		actor   string
 	)
 
 	cmd := &cobra.Command{
@@ -43,11 +42,15 @@ WHERE THE LEDGER LIVES is declared by the environment, not chosen by a flag:
 an env whose KCL declares forge.ControlPlane records promotions on that control
 plane; every other env records them in .forge/promotions/<env>.jsonl.
 
-ROLLBACK IS A NEW ENTRY, NOT AN EDIT. --rollback records the entry as a
-rollback, and the ledger refuses it unless the env has run that release
-before — rolling "back" to something that never ran is a promotion, and must
-be recorded as one. Re-promoting the release an env already runs appends
-nothing; a CI retry is safe.
+EVERY PROMOTE IS A NEW ENTRY, NOT AN EDIT. Re-promoting the release an env
+already runs appends nothing; a CI retry is safe.
+
+THERE IS NO ROLLBACK. Recovery is ROLL FORWARD: cut a release with the fix and
+promote it. Binding an env to an OLDER release is still possible — it is an
+ordinary promote — but it cannot undo the newer release: that release's
+migrations stay applied and the data it wrote stays written, so the older code
+runs against a schema it was never tested on. The plan labels such a move
+` + "`direction: BEHIND`" + ` and says so; read it before you write it.
 
 ` + "`forge env deploy <env>`" + ` then pins those SAME digests, so every env promoted
 to the same release deploys byte-identical images. This eliminates the per-env
@@ -58,8 +61,8 @@ writes nothing: the release the env runs now versus the one it would move to,
 every image classified as unchanged / changed / added / removed (with both
 digests where they differ), the git commits between the two releases, and —
 the fact most worth reading twice — the DIRECTION. A promote to an older
-release is a legitimate rollback, and it is reported as one rather than left
-for you to infer from version numbers.
+release is reported as BEHIND rather than left for you to infer from version
+numbers.
 
 The plan and the real promote are computed by the SAME function, so the
 preview cannot disagree with the write. --json emits it machine-readably, in
@@ -78,8 +81,7 @@ Examples:
   forge env deploy staging                               # ships v1.4.0's digests
   forge env promote v1.4.0 --to prod                     # same digests advance to prod
   forge env deploy prod                                  # the bytes that passed staging
-  forge env promote v1.3.0 --to prod --plan | grep -i rollback   # catch a backwards move
-  forge env promote v1.3.0 --to prod --rollback --note "5xx spike" # record a rollback`,
+  forge env promote v1.3.0 --to prod --plan | grep BEHIND       # catch a backwards move`,
 		Args: cobra.ExactArgs(1),
 		// The change set IS the output; a cobra usage dump would bury it
 		// under the flag list.
@@ -94,15 +96,10 @@ Examples:
 			// state them — but the production path states them too, so
 			// the fields carry a real value rather than only ever the
 			// zero one a test overwrites.
-			kind := release.KindPromote
-			if rollback {
-				kind = release.KindRollback
-			}
 			return runPromote(cmd.Context(), args[0], toEnv, promoteOptions{
 				DryRun:     dryRun,
 				JSON:       jsonOut,
 				ProjectDir: projectDirForKCL(),
-				Kind:       kind,
 				Note:       note,
 				Actor:      actor,
 			})
@@ -112,8 +109,7 @@ Examples:
 	cmd.Flags().StringVar(&toEnv, "to", "", "Environment to bind to the release (required)")
 	cmd.Flags().BoolVar(&dryRun, "plan", false, "Compute and print the full change set WITHOUT writing the binding")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (same exit codes as text mode)")
-	cmd.Flags().BoolVar(&rollback, "rollback", false, "Record this as a ROLLBACK (the env must have run the release before)")
-	cmd.Flags().StringVar(&note, "note", "", "Why — recorded on the ledger entry (most valuable on a rollback)")
+	cmd.Flags().StringVar(&note, "note", "", "Why — recorded on the ledger entry (most valuable on a promote that moves the env BEHIND)")
 	cmd.Flags().StringVar(&actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 
 	return cmd
@@ -123,7 +119,7 @@ Examples:
 //
 // The three seams (Bindings, Releases, Git) are injected for the same reason
 // env verify injects its three: a test asserting that --plan writes nothing,
-// or that a rollback is reported as one, should be able to STATE the ledger
+// or that a backwards move is reported as one, should be able to STATE the ledger
 // and the git history rather than staging a project and a repository to imply
 // them. Production leaves them nil and gets the real ones.
 type promoteOptions struct {
@@ -134,8 +130,6 @@ type promoteOptions struct {
 	JSON bool
 	// ProjectDir is the checkout read from. Empty falls back to discovery.
 	ProjectDir string
-	// Kind is promote (default) or rollback.
-	Kind release.PromotionKind
 	// Note and Actor are recorded on the ledger entry.
 	Note  string
 	Actor string
@@ -186,7 +180,6 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	plan, err := computePromotePlan(ctx, promotePlanOptions{
 		Env:        env,
 		Version:    version,
-		Kind:       opts.Kind,
 		ProjectDir: projectDir,
 		Bindings:   bindings,
 		Releases:   releases,

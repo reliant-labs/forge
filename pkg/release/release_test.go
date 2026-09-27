@@ -120,14 +120,45 @@ func TestDecide(t *testing.T) {
 	if cur, err := Decide(history, p("v1", KindPromote)); err != nil || cur != nil {
 		t.Errorf("v2→v1 is a real move and must append, got %v %v", cur, err)
 	}
-	if cur, err := Decide(history, p("v1", KindRollback)); err != nil || cur != nil {
-		t.Errorf("rollback to a release that ran here must append, got %v %v", cur, err)
-	}
-	if _, err := Decide(history, p("v0", KindRollback)); !errors.Is(err, ErrNeverPromoted) {
-		t.Errorf("rollback to a release that never ran here must be refused, got %v", err)
-	}
 	if cur, err := Decide(nil, p("v1", KindPromote)); err != nil || cur != nil {
 		t.Errorf("first promote must append, got %v %v", cur, err)
+	}
+}
+
+// TestPromotionKind_LegacyRollbackReadsAsPromote: ledgers written before
+// rollback was removed carry `"kind":"rollback"` entries. They must still
+// parse — an unreadable ledger would strand every env that ever rolled back —
+// and they read as the promotion of that release they mechanically were.
+// Nothing can WRITE the retired kind: it is not Valid.
+func TestPromotionKind_LegacyRollbackReadsAsPromote(t *testing.T) {
+	line := `{"env":"prod","release":"v1.6.0","kind":"rollback","resolved":{},"promoted_at":"2026-09-01T00:00:00Z"}`
+	var p Promotion
+	if err := json.Unmarshal([]byte(line), &p); err != nil {
+		t.Fatalf("legacy rollback entry no longer parses: %v", err)
+	}
+	if p.Kind != KindPromote || p.Release != "v1.6.0" {
+		t.Fatalf("legacy rollback entry decoded as %+v, want a promote of v1.6.0", p)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("decoded legacy entry fails Validate: %v", err)
+	}
+	if PromotionKind("rollback").Valid() {
+		t.Fatal(`"rollback" is a writable promotion kind again`)
+	}
+	var k PromotionKind
+	if err := json.Unmarshal([]byte(`"revert"`), &k); err == nil {
+		t.Fatal("an unknown kind decoded instead of being refused")
+	}
+	// The same rule for a database row, which is read without JSON.
+	for stored, want := range map[string]PromotionKind{"promote": KindPromote, "rollback": KindPromote} {
+		if got, err := ParsePromotionKind(stored); err != nil || got != want {
+			t.Errorf("ParsePromotionKind(%q) = %q, %v; want %q", stored, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "revert", "Promote"} {
+		if _, err := ParsePromotionKind(bad); !errors.Is(err, ErrInvalid) {
+			t.Errorf("ParsePromotionKind(%q) must be refused as ErrInvalid, got %v", bad, err)
+		}
 	}
 }
 

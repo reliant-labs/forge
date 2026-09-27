@@ -86,16 +86,14 @@ forge env deploy dev              # auto-detects provider per service (K8sCluste
 forge env deploy staging          # staging environment
 forge env deploy prod             # production (must explicitly type "prod")
 forge env deploy dev --dry-run    # render/print without applying — works for every provider
-forge env deploy prod --rollback  # roll back to the previous good tag (mutually exclusive with --tag)
 forge env deploy dev --tag=<tag>  # override image tag (default: commit SHA)
 ```
 
-`--dry-run` and `--rollback` are honoured across all four runtime
-providers (K8sCluster, External, Compose, HostDeploy). For External,
-`--rollback` reads the last good tag from
-`.forge/state/external-<env>-<service>.json` and substitutes it into
-`rollback_cmd`; deploys with no `rollback_cmd` declared error loudly
-rather than guessing.
+`--dry-run` is honoured across all four runtime providers (K8sCluster,
+External, Compose, HostDeploy).
+
+There is **no rollback**. Recovery is ROLL FORWARD: fix, cut a release, deploy
+it. See "Verify + recover" below.
 
 ### Migrations run BEFORE the rollout (the pre-rollout gate)
 
@@ -126,7 +124,6 @@ MAIN = forge.Service {
     image  = "registry.fly.io/trader"     # ${IMAGE} is hoisted from here
     deploy = forge.External {
         deploy_cmd   = "flyctl deploy -i ${IMAGE}:${TAG} -a trader"
-        rollback_cmd = "flyctl deploy -i ${IMAGE}:${LAST_TAG} -a trader"  # optional
         health_cmd   = "curl -fsS https://trader.fly.dev/healthz"          # optional
         env_file     = "~/.config/trader/.env"                            # optional
         env          = { REGION = "iad" }                                  # optional map
@@ -137,7 +134,7 @@ MAIN = forge.Service {
 Only `deploy_cmd` is required.
 
 **Substitution tokens.** forge expands these into `deploy_cmd` /
-`rollback_cmd` / `health_cmd` (`${X}` and `$X`). ONLY the tokens below
+`health_cmd` (`${X}` and `$X`). ONLY the tokens below
 are substituted; every other `$X` / `${X}` — your script's own variables,
 `$HOME`, `$(…)` — reaches `sh -c` untouched, so `W=$(mktemp -d); cp a "$W/b"`
 works inline. The same rule applies to a `ShellBuild`'s `cmd`, whose tokens
@@ -150,7 +147,7 @@ are `${IMAGE}` `${TAG}` `${CODE_VERSION}` `${SERVICE}` `${TARGETARCH}`
 | `${TAG}` | resolved tag (build-state or `--tag`) |
 | `${CODE_VERSION}` | == `${TAG}` — pass to `docker run -e CODE_VERSION=…` / a label so the binary's reported `code_version` matches the image |
 | `${PIPELINE}` | `"forge"` — label the container with it to distinguish forge deploys from manual ones |
-| `${LAST_TAG}` | prior deployed tag (rollback target on rollback; empty on first deploy) |
+| `${LAST_TAG}` | prior deployed tag (empty on first deploy) |
 | `${SERVICE}` | `Service.name` |
 | `${ENV}` | env name (dev/staging/prod) |
 | `${ENV_FILE}` | the `env_file` path (if any) |
@@ -222,28 +219,36 @@ so the dev server picks up source changes. The declared
 subprocess so the dev server binds the canonical port regardless of
 whatever bled in from the parent env.
 
-## Verify + rollback
+## Verify + recover — roll forward, never back
 
 After every deploy confirm pods are healthy (`kubectl get pods -n <ns>`,
-`kubectl logs -n <ns> -l app=<service>`). Fast revert with `kubectl rollout
-undo deployment/<name>`, then fix forward via KCL — never leave a rollback
-as the permanent state.
+`kubectl logs -n <ns> -l app=<service>`, `forge env verify <env>`).
 
-**Rolling a release-bound env back** is a ledger entry, then a deploy:
+**There is no rollback command, and that is deliberate.** A rollback claims to
+undo a release, and it cannot: by the time you would run it the release has
+applied its migrations, written rows in the new shape, and other services have
+acted on them. Putting old code back does not put any of that back — it runs
+old code against state it was never tested on. So forge has no `--rollback`,
+no `rollback_cmd`, and no `kubectl rollout undo` path. Recovery is always a
+**new release that rolls forward** from the state the system is actually in:
 
 ```bash
-forge env promote v1.6.0 --to prod --plan --rollback   # direction must read ROLLBACK
-forge env promote v1.6.0 --to prod --rollback --note "<signal>"
+# fix on main, then cut + promote + deploy the fix
+forge build --release v1.7.1 --push <registry>
+forge env promote v1.7.1 --to prod --plan    # read it: direction must be AHEAD
+forge env promote v1.7.1 --to prod --note "<incident>"
 forge env deploy prod
 ```
 
-A deploy whose ledger entry is a rollback does NOT run its pre-rollout Jobs.
-The older release's migrate step cannot step a newer schema back and would fail
-against it, aborting the rollback at the gate. It prints `ROLLBACK: skipping …`
-and `--json` records `skipped_pre_rollout_jobs`. The older code then runs on
-the CURRENT schema. If the migrations you are rolling back across were not
-expand-only, step the schema down first with the newer image. The runbook is in
-`db/deploy-migrations` under "Rolling back across a migration".
+A failed deploy changes nothing to undo: the pre-rollout gate (above) stops a
+bad migration before any workload changes, and a workload that never becomes
+ready leaves the previous ReplicaSet serving.
+
+Binding an env to an OLDER release is still possible — it is an ordinary
+`forge env promote` — but the plan labels it `direction BEHIND` and warns that
+it undoes nothing. Reach for it only when the older code is known to run on
+the current schema (every migration since was expand-only and marked
+`-- forge:backward-compatible`); see `db/deploy-migrations`.
 
 ## Rules
 

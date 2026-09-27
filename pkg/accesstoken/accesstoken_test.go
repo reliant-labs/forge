@@ -82,6 +82,26 @@ func TestPermits_WriteImpliesReadWithinAProductOnly(t *testing.T) {
 	}
 }
 
+// TestClusterManage_IsItsOwnAuthority pins cluster:manage as a first-class
+// scope: it parses from the wire, and it neither implies nor is implied by the
+// deploy scopes — a CI deploy token must not be able to change which clusters
+// the org trusts, and a cluster admin credential must not ship releases.
+func TestClusterManage_IsItsOwnAuthority(t *testing.T) {
+	got, ok := ParseScope("cluster:manage")
+	if !ok || got != ScopeClusterManage {
+		t.Fatalf("ParseScope(cluster:manage) = %q, %v", got, ok)
+	}
+	if SetOf(ScopeDeployWrite).Permits(ScopeClusterManage) {
+		t.Fatal("deploy:write permitted cluster:manage")
+	}
+	cm := SetOf(ScopeClusterManage)
+	for _, other := range AllScopes {
+		if other != ScopeClusterManage && cm.Permits(other) {
+			t.Errorf("cluster:manage permitted %s", other)
+		}
+	}
+}
+
 // TestCovers_IsTheNoMintBeyondYourScopesRule covers every scope, including the
 // new ones: a holder can grant exactly what it holds.
 func TestCovers_IsTheNoMintBeyondYourScopesRule(t *testing.T) {

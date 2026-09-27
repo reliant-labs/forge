@@ -161,7 +161,6 @@ _render_external = lambda d: External -> any {
     {
         "type": "external"
         "deploy_cmd": d.deploy_cmd
-        "rollback_cmd": d.rollback_cmd if d.rollback_cmd else None
         "health_cmd": d.health_cmd if d.health_cmd else None
         # Build is declared on Service.build (forge.ShellBuild) — the single
         # shell hatch — NOT on the deploy block. No build_cmd is projected here.

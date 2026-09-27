@@ -396,7 +396,7 @@ func staticSiteGroup(bucket string) ServiceGroup {
 // TestStaticSiteObserve_RoundTripsThroughRealDeployState is the round
 // trip: rather than hand-writing a state file whose shape a test author
 // guessed, it drives the PRODUCTION writer (WriteDeployState — the same
-// call the deploy and rollback paths make) and then observes. A change to
+// call the deploy path makes) and then observes. A change to
 // the state file's layout that broke the reader would fail here; a
 // hand-built fixture would keep passing against the stale shape, which is
 // exactly the fixture-drift this project has already been bitten by.
@@ -434,7 +434,7 @@ func TestStaticSiteObserve_RoundTripsThroughRealDeployState(t *testing.T) {
 // is a claim about what forge did last; it stops being true when
 // retention, a lifecycle rule or a human `gcloud storage rm` removes the
 // archive. Reporting healthy off the record alone would mean forge
-// asserts a rollback target that would 404.
+// asserts an archive that would 404.
 func TestStaticSiteObserve_MissingArchiveIsDegraded(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := WriteDeployState(dir, "static-site", "prod", "web", DeployState{Tag: "gone"}); err != nil {
@@ -452,7 +452,7 @@ func TestStaticSiteObserve_MissingArchiveIsDegraded(t *testing.T) {
 	item := obs.Items[0]
 	if item.Health != HealthDegraded {
 		t.Errorf("health = %v, want degraded: the recorded live release has no archive, so a "+
-			"rollback to it would 404", item.Health)
+			"promoting an env to it would 404", item.Health)
 	}
 	if item.Digest != "gone" {
 		t.Errorf("digest = %q; the recorded value is still real information and should be reported", item.Digest)

@@ -62,10 +62,10 @@ func (c StaticSiteCDN) EffectiveInvalidate() Invalidate {
 //
 // Both sides already implemented the same model, and it is kept. An
 // assembled tree is archived IMMUTABLY under releases/<digest>/, and the
-// live/ prefix is synced from one release. Deploy, promotion and rollback
-// are therefore the same mechanical move: re-point live/ at an archive
-// that already exists. None of them rebuilds, so a rollback cannot produce
-// different bytes than the deploy it undoes.
+// live/ prefix is synced from one release. Deploy and promotion are
+// therefore the same mechanical move: re-point live/ at an archive that
+// already exists. Neither rebuilds, so a promotion cannot produce different
+// bytes than the release that was tested.
 //
 // MERGE DECISIONS:
 //
@@ -109,8 +109,9 @@ type StaticSiteSpec struct {
 	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
 	LiveDigest string `json:"liveDigest,omitempty"`
 
-	// PreviousDigest is the release that was live before LiveDigest: the
-	// one-step rollback target.
+	// PreviousDigest is the release that was live before LiveDigest.
+	// Retention never deletes it: pages loaded from it moments ago are still
+	// fetching its hashed assets.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
 	PreviousDigest string `json:"previousDigest,omitempty"`
@@ -126,8 +127,8 @@ type StaticSiteSpec struct {
 	// KeepReleases is how many archived releases to retain, newest first.
 	// Unset means DefaultKeepReleases. An explicit 0 retains everything.
 	// Otherwise it must be at least MinKeepReleases, because keeping fewer
-	// than the live release plus its predecessor would delete the artifact
-	// a rollback needs.
+	// than the live release plus its predecessor would delete assets pages
+	// loaded moments ago still fetch.
 	//
 	// A POINTER because there are three states. control-plane's plain
 	// omitempty int32 made "unset" and "retain everything" the same value,
@@ -217,9 +218,9 @@ type StaticSiteList struct {
 	Items           []StaticSite `json:"items"`
 }
 
-// EffectiveKeepReleases applies the default and the rollback floor. The floor
+// EffectiveKeepReleases applies the default and the predecessor floor. The floor
 // is applied here, on the type, so that no retention planner is one forgotten
-// max() away from deleting a rollback target. 0 means "retain everything" and
+// max() away from deleting the predecessor. 0 means "retain everything" and
 // is not floored. Validate refuses 1 outright; the floor here is the
 // defense-in-depth for a spec that skipped it.
 func (s StaticSiteSpec) EffectiveKeepReleases() int32 {

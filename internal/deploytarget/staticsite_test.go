@@ -206,12 +206,10 @@ func TestStagingDigestIsContentAddressed(t *testing.T) {
 	}
 }
 
-// TestReleasesToPrune_NeverDeletesRollbackTarget is the load-bearing
-// retention test. Retention must never be able to delete the release a
-// rollback needs — that is the one failure mode a retention policy is
-// not allowed to cause, because it surfaces only when someone is already
-// trying to recover from something else.
-func TestReleasesToPrune_NeverDeletesRollbackTarget(t *testing.T) {
+// TestReleasesToPrune_NeverDeletesLiveOrPrevious is the load-bearing
+// retention test. Retention must never be able to delete the live release
+// or its predecessor, whose assets pages loaded moments ago still fetch.
+func TestReleasesToPrune_NeverDeletesLiveOrPrevious(t *testing.T) {
 	all := []string{"aaa", "bbb", "ccc", "ddd", "eee"}
 
 	t.Run("live and previous are exempt even at the minimum count", func(t *testing.T) {
@@ -255,7 +253,7 @@ func TestReleasesToPrune_NeverDeletesRollbackTarget(t *testing.T) {
 // with keep_releases = 1 is floored at 2 rather than honoured. The KCL
 // check rejects 1 at render, so this is the belt-and-braces arm: a spec
 // constructed in Go (a test, a future caller) must not be able to
-// configure away the rollback target either.
+// configure away the predecessor either.
 func TestEffectiveKeepReleasesFloor(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -263,7 +261,7 @@ func TestEffectiveKeepReleasesFloor(t *testing.T) {
 		want     int
 	}{
 		{"zero means retain everything", 0, 0},
-		{"one is floored to the rollback minimum", 1, 2},
+		{"one is floored to the minimum", 1, 2},
 		{"two is honoured", 2, 2},
 		{"larger values pass through", 10, 10},
 	} {
@@ -385,26 +383,6 @@ func TestStaticSiteBucketNormalization(t *testing.T) {
 	}
 	if got := bare.releaseURI("abc"); got != "gs://my-site/releases/abc" {
 		t.Errorf("releaseURI = %q", got)
-	}
-}
-
-// TestStaticSiteRollbackWithoutPreviousRefuses confirms a rollback on a
-// frontend that has only ever been deployed once fails with a message
-// saying so, rather than silently succeeding against a prefix that does
-// not exist.
-func TestStaticSiteRollbackWithoutPreviousRefuses(t *testing.T) {
-	prov := StaticSiteProvider{ProjectDir: t.TempDir(), Runner: &fakeRunner{}}
-	group := ServiceGroup{
-		Env:         "prod",
-		ProviderID:  prov.Name(),
-		StaticSites: []StaticSiteFrontend{fakeStaticSiteFrontend()},
-	}
-	err := prov.Rollback(context.Background(), group, "")
-	if err == nil {
-		t.Fatal("rollback with no recorded previous release should fail")
-	}
-	if !strings.Contains(err.Error(), "no previous release recorded") {
-		t.Errorf("error should name the cause, got: %v", err)
 	}
 }
 

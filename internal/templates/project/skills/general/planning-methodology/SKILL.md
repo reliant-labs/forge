@@ -38,7 +38,7 @@ Transform research into a concrete, step-by-step implementation plan.
 - Ensure the plan handles error cases and edge conditions
 - Consider atomicity for multi-step operations (use transactions where needed)
 - Identify potential race conditions, deadlocks, or data integrity issues
-- Plan for rollback if something fails
+- Plan recovery as roll forward: if it ships broken, what is the fix-forward release, and does every schema change leave the previous release working (expand/contract)?
 - Validate error handling, retries, idempotency, and resource cleanup
 
 ### 3) Refactor First, Then Implement
@@ -176,9 +176,10 @@ For each step:
 - Edge cases to cover
 - How to manually verify
 
-### Rollback Plan
-- How to undo if something goes wrong
-- Data migration reversal if applicable
+### Recovery Plan (roll forward)
+- What the fix-forward release looks like if this ships broken
+- Schema changes are expand/contract, so the previous release keeps working
+  while the new one rolls out — there are no down migrations to fall back on
 
 ### Open Questions
 - Uncertainties that need resolution

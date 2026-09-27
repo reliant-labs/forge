@@ -318,8 +318,8 @@ func TestLocalReconcileRecordWinsOverLegacy(t *testing.T) {
 }
 
 // TestLocalDoesNotWriteLegacyFile: Local must never touch the file
-// forge's rollback path depends on. Corrupting that file loses the only
-// recorded way back for External and Compose.
+// forge's non-cluster providers read back as ${LAST_TAG}. Corrupting it
+// loses the only record of what External and Compose deployed.
 func TestLocalDoesNotWriteLegacyFile(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -347,7 +347,7 @@ func TestLocalDoesNotWriteLegacyFile(t *testing.T) {
 		t.Fatalf("read legacy after Put: %v", err)
 	}
 	if string(after) != string(original) {
-		t.Fatalf("Put rewrote the legacy rollback file:\n before: %s\n  after: %s", original, after)
+		t.Fatalf("Put rewrote the legacy deploy-state file:\n before: %s\n  after: %s", original, after)
 	}
 }
 

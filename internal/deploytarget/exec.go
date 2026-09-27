@@ -31,7 +31,7 @@ import (
 // Intended for any user-supplied shell-command template forge runs
 // via `sh -c` after substituting a documented set of tokens:
 //
-//   - External deploy: DeployCmd / RollbackCmd / HealthCmd, where the
+//   - External deploy: DeployCmd / HealthCmd, where the
 //     kcl/schema.k contract advertises ${IMAGE} / ${TAG} /
 //     ${CODE_VERSION} / ${PIPELINE} / ${LAST_TAG} / ${SERVICE} / ${ENV}
 //     / ${ENV_FILE} / ${PROJECT_DIR}.

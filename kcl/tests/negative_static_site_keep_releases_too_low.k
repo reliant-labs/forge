@@ -1,9 +1,8 @@
 """
 Negative test — StaticSite.keep_releases = 1 is rejected.
 
-Retaining a single release deletes the archive a rollback re-points at,
-so `forge env deploy --rollback` would 404 against a bucket prefix
-retention just removed. The schema refuses the value rather than
+Retaining a single release deletes the previous release's archive while
+pages loaded from it moments ago are still fetching its hashed assets. The schema refuses the value rather than
 silently clamping it to 2: a policy the author wrote and forge quietly
 ignored is worse than an error, because it reads as accepted.
 

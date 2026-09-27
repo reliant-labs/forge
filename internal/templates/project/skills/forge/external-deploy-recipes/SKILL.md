@@ -12,7 +12,7 @@ provider exec's `deploy_cmd` via `sh -c` after substituting:
 |------------------|------------------------------------------------------|
 | `${IMAGE}`       | service image (from `Service.image`)                 |
 | `${TAG}`         | image tag forge resolved (build-state or `--tag`)    |
-| `${LAST_TAG}`    | previous good tag (rollback only — empty on deploy)  |
+| `${LAST_TAG}`    | previously deployed tag (empty on first deploy)      |
 | `${SERVICE}`     | `Service.name`                                       |
 | `${ENV}`         | env name (e.g. `dev`, `staging`, `prod`)             |
 | `${ENV_FILE}`    | the path declared in `env_file` (if any)             |
@@ -22,13 +22,12 @@ provider exec's `deploy_cmd` via `sh -c` after substituting:
 Only these tokens are substituted. Any other `$X` / `${X}` (your script's
 own variables, `$HOME`, `$(…)`) is passed to the shell untouched.
 
-`rollback_cmd` is optional. When unset, `forge env deploy --rollback` errors
-loudly — forge can't synthesise a rollback for an arbitrary CLI. Set it
-explicitly (or skip rollback for that service).
+There is no `rollback_cmd`: recovery is roll forward. Ship the fix as a new
+tag through the same `deploy_cmd`.
 
 `health_cmd` runs after a successful deploy. A failing health check
-short-circuits before the state-file write so the recorded last-good
-tag stays clean.
+short-circuits before the state-file write so the recorded tag stays
+the last one that came up healthy.
 
 ## Fly.io (`flyctl`)
 
@@ -38,7 +37,6 @@ forge.Service {
     image = "registry.fly.io/edge-prod"
     deploy = forge.External {
         deploy_cmd = r"flyctl deploy --image ${IMAGE}:${TAG} --app edge-prod"
-        rollback_cmd = r"flyctl deploy --image ${IMAGE}:${LAST_TAG} --app edge-prod"
         health_cmd = "flyctl status --app edge-prod | grep -q 'running'"
     }
 }
@@ -55,7 +53,6 @@ forge.Service {
     image = "gcr.io/myproj/api"
     deploy = forge.External {
         deploy_cmd = r"gcloud run deploy ${SERVICE} --image ${IMAGE}:${TAG} --region us-central1 --platform managed"
-        rollback_cmd = r"gcloud run deploy ${SERVICE} --image ${IMAGE}:${LAST_TAG} --region us-central1 --platform managed"
         health_cmd = r"gcloud run services describe ${SERVICE} --region us-central1 --format='value(status.latestReadyRevisionName)' | grep -q ."
     }
 }
@@ -72,7 +69,6 @@ forge.Service {
     name = "edge-worker"
     deploy = forge.External {
         deploy_cmd = r"wrangler deploy --name ${SERVICE} --env ${ENV}"
-        rollback_cmd = r"wrangler rollback --name ${SERVICE} --message 'rollback to ${LAST_TAG}'"
         health_cmd = r"curl -fsS https://${SERVICE}.workers.dev/health"
     }
 }
@@ -90,7 +86,6 @@ forge.Service {
     image = "123456789.dkr.ecr.us-east-1.amazonaws.com/api"
     deploy = forge.External {
         deploy_cmd = r"aws ecs update-service --cluster prod --service ${SERVICE} --force-new-deployment --task-definition $(aws ecs register-task-definition --family ${SERVICE} --container-definitions '[{\"name\":\"app\",\"image\":\"${IMAGE}:${TAG}\"}]' --query 'taskDefinition.taskDefinitionArn' --output text)"
-        rollback_cmd = r"aws ecs update-service --cluster prod --service ${SERVICE} --task-definition ${SERVICE}:${LAST_TAG}"
         health_cmd = r"aws ecs wait services-stable --cluster prod --services ${SERVICE}"
     }
 }
@@ -110,7 +105,6 @@ forge.Service {
     image = "123456789.dkr.ecr.us-east-1.amazonaws.com/ingest"
     deploy = forge.External {
         deploy_cmd = r"aws lambda update-function-code --function-name ${SERVICE} --image-uri ${IMAGE}:${TAG} && aws lambda wait function-updated --function-name ${SERVICE}"
-        rollback_cmd = r"aws lambda update-function-code --function-name ${SERVICE} --image-uri ${IMAGE}:${LAST_TAG}"
         health_cmd = r"aws lambda invoke --function-name ${SERVICE} --payload '{\"healthcheck\":true}' /tmp/${SERVICE}-health.json && grep -q '\"ok\":true' /tmp/${SERVICE}-health.json"
     }
 }
@@ -127,7 +121,6 @@ forge.Service {
     name = "web"
     deploy = forge.External {
         deploy_cmd = r"vercel deploy --prod --yes --token ${VERCEL_TOKEN}"
-        rollback_cmd = r"vercel rollback ${LAST_TAG} --token ${VERCEL_TOKEN}"
         health_cmd = r"curl -fsS https://${SERVICE}.vercel.app/api/health"
         env = {"VERCEL_TOKEN" = "ignored — overridden by CI secret"}
     }
@@ -146,7 +139,6 @@ forge.Service {
     name = "api"
     deploy = forge.External {
         deploy_cmd = r"railway up --service ${SERVICE} --environment ${ENV}"
-        rollback_cmd = r"railway rollback --service ${SERVICE} --to ${LAST_TAG}"
         health_cmd = r"railway status --service ${SERVICE} | grep -q 'Running'"
     }
 }
@@ -168,7 +160,6 @@ forge.Service {
     image = "edge"  # unused — informational
     deploy = forge.External {
         deploy_cmd = r"rsync -avz ./bin/${SERVICE} ${SSH_HOST}:/usr/local/bin/${SERVICE}.next && ssh ${SSH_HOST} 'mv /usr/local/bin/${SERVICE}.next /usr/local/bin/${SERVICE} && systemctl restart ${SERVICE}'"
-        rollback_cmd = r"ssh ${SSH_HOST} 'systemctl rollback ${SERVICE}'"
         health_cmd = r"ssh ${SSH_HOST} 'systemctl is-active ${SERVICE}'"
         env = {"SSH_HOST" = "ubuntu@edge-prod.example.com"}
     }
@@ -179,18 +170,13 @@ Auth: SSH key in `~/.ssh/` (forge inherits the deploy user's ssh-agent).
 The `env` map's `SSH_HOST` is checked-in config — secrets stay in the
 SSH key itself, not in KCL.
 
-## How rollback actually works
+## What the state file is for
 
 1. Deploy success writes `.forge/state/external-<env>-<service>.json`
    with `{image, tag, deployed_at}`.
-2. Next deploy success overwrites that file with the new tag.
-3. `forge env deploy --rollback` reads the file, substitutes the recorded
-   tag into `${LAST_TAG}`, and runs `rollback_cmd`.
-4. If the state file is missing AND the dispatcher's fallback tag is
-   empty, rollback errors loudly — forge won't guess.
-
-Implication: the first `--rollback` after a project's first-ever
-deploy is a no-op (no previous tag yet). Subsequent rollbacks work.
+2. The next deploy reads it back as `${LAST_TAG}` (label the outgoing
+   container, or diff against it) and then overwrites it with the new tag.
+3. `forge env status` reads it as what is deployed.
 
 ## Picking a recipe
 

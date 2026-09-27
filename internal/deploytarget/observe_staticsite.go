@@ -15,10 +15,8 @@ import (
 // the live prefix hold". The bucket cannot answer that directly: live/ is
 // a SYNCED COPY of a release prefix, not a pointer at one, so listing it
 // tells you the files and not which release they came from. The deploy
-// path already records the answer (WriteDeployState after every deploy
-// AND every rollback, which is what makes the recorded value track
-// reality rather than only the last deploy), so the digest comes from
-// there.
+// path already records the answer (WriteDeployState after every deploy),
+// so the digest comes from there.
 //
 // A recorded value alone would be a CLAIM, not an observation — it says
 // what forge did last, which stops being true the moment retention, a
@@ -26,7 +24,8 @@ import (
 // archive underneath it. So the recorded digest is CONFIRMED against the
 // bucket's actual release listing, and a digest whose archive is gone
 // reports degraded: live/ is still serving those bytes today, but the
-// rollback target behind it has evaporated.
+// archive behind it has evaporated, so no environment can be re-pointed at
+// that release again.
 //
 // That check is also the only thing here that costs a network call, and
 // it is the reason this is an observation rather than a state-file read.
@@ -91,7 +90,7 @@ func (p StaticSiteProvider) observeOne(ctx context.Context, fe StaticSiteFronten
 		Digest: st.Tag,
 		Health: HealthDegraded,
 		Detail: fmt.Sprintf(
-			"live is serving release %s but no archive for it remains at %s — a rollback to it would 404",
+			"live is serving release %s but no archive for it remains at %s — promoting an env to it would 404",
 			st.Tag, fe.Spec.releaseURI(st.Tag)),
 	}
 }

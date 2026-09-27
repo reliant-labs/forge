@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 )
@@ -36,11 +33,10 @@ type K8sClusterProvider struct {
 	// `kubectl get deployment -o json`. Nil falls back to the package
 	// default.
 	//
-	// Deploy and Rollback deliberately do NOT route through it: Deploy
-	// delegates to cluster.Apply (which owns its own execution, the KCL
-	// render and the rollout wait), and Rollback shells kubectl directly
-	// as it always has. Threading this field into either would change
-	// deploy behaviour, which is not what adding a read verb is for.
+	// Deploy deliberately does NOT route through it: it delegates to
+	// cluster.Apply, which owns its own execution, the KCL render and the
+	// rollout wait. Threading this field into it would change deploy
+	// behaviour, which is not what adding a read verb is for.
 	Runner commandRunner
 }
 
@@ -52,18 +48,14 @@ func (p K8sClusterProvider) runner() commandRunner {
 	return defaultRunner
 }
 
-// rollbackContext resolves the kubectl context for a single rollback
-// group. The context is purely DECLARATIVE: the group's own declared
-// cluster (group.Cluster, from KCL forge.K8sCluster.cluster, which IS the
-// kubectl context name) is the only source. There is NO CLI override and
-// NO fall-back to kubectl's current/active context. A multi-cluster
-// rollback therefore routes each group to its own declared cluster, and a
-// wrong-cluster rollback can't happen by relying on a globally-switched
-// active context. An empty result means the group carried no declared
-// cluster; the rollback path treats that as a HARD ERROR (see Rollback)
-// rather than running `kubectl rollout undo` against whatever context is
-// active.
-func (p K8sClusterProvider) rollbackContext(group ServiceGroup) string {
+// declaredContext resolves the kubectl context for a group. The context is
+// purely DECLARATIVE: the group's own declared cluster (group.Cluster, from
+// KCL forge.K8sCluster.cluster, which IS the kubectl context name) is the
+// only source. There is NO CLI override and NO fall-back to kubectl's
+// current/active context, so a multi-cluster env routes each group to its
+// own declared cluster. An empty result means the group carried no declared
+// cluster.
+func (p K8sClusterProvider) declaredContext(group ServiceGroup) string {
 	return group.Cluster
 }
 
@@ -94,60 +86,6 @@ func (p K8sClusterProvider) Deploy(ctx context.Context, group ServiceGroup) erro
 	if err := cluster.Apply(ctx, opts); err != nil {
 		return fmt.Errorf("k8s-cluster deploy (ns=%s, cluster=%s): %w",
 			group.Namespace, group.Cluster, err)
-	}
-	return nil
-}
-
-// Rollback runs `kubectl rollout undo deployment/<svc> -n <ns>` for
-// every service in the group. Best-effort: per-service failures are
-// logged and joined into the returned error, but the loop doesn't
-// abort on the first failure (one stuck service shouldn't block
-// rolling back the others).
-//
-// The function falls back to a no-op when kubectl isn't on PATH or
-// the namespace is empty (an invalid group shape) — those cases
-// already failed louder upstream.
-func (p K8sClusterProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
-	if group.Namespace == "" {
-		return errors.New("k8s-cluster rollback: ServiceGroup.Namespace is empty")
-	}
-	kctx := p.rollbackContext(group)
-	// HARD ERROR on an empty context, mirroring cluster.KubectlApply: a
-	// rollback runs `kubectl rollout undo`, a cluster WRITE/mutation. The
-	// target cluster is declarative (forge.K8sCluster.cluster), so an empty
-	// context means this group failed to carry its declared cluster.
-	// Running the undo against whatever context happens to be active is the
-	// same footgun as a wrong-cluster apply — refuse loudly, never fall
-	// back to the current context.
-	if strings.TrimSpace(kctx) == "" {
-		return errors.New("k8s-cluster rollback: refusing to roll back without an explicit kubectl context: " +
-			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
-			"forge never falls back to the current context for a write")
-	}
-	var failures []string
-	for _, svc := range group.Services {
-		// Thread the `--context <ctx>` per command (not via a global
-		// `kubectl config use-context`) so a concurrent rollback to a
-		// different cluster can't be clobbered by another deploy's context
-		// switch. kctx is the group's declared cluster (never empty here —
-		// guarded above). cluster.KubectlArgs is the single point that owns
-		// the per-command `--context` invariant.
-		args := cluster.KubectlArgs(kctx, "rollout", "undo", "deployment/"+svc.Name, "-n", group.Namespace)
-		// The annotated revision lets users see which tag we rolled
-		// back from. Best-effort — failures are logged below.
-		cmd := exec.CommandContext(ctx, "kubectl", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", svc.Name, err))
-			fmt.Printf("  rollback %s: %v\n", svc.Name, err)
-			continue
-		}
-		fmt.Printf("  rollback %s: ok (target tag %s)\n", svc.Name, lastGoodTag)
-	}
-	if len(failures) > 0 {
-		return fmt.Errorf("k8s-cluster rollback: %d failure(s): %s",
-			len(failures), strings.Join(failures, "; "))
 	}
 	return nil
 }

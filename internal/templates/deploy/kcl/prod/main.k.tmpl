@@ -261,7 +261,7 @@ _bundle = forge.Bundle {
     #
     #   * StaticSite — built assets to an object-store bucket, with an
     #     immutable `releases/<digest>/` archive and a mutable `live/`
-    #     prefix, so a rollback re-points at a digest that already exists
+    #     prefix, so a promotion re-points at a digest that already exists
     #     instead of rebuilding it.
     #
     #         deploy = forge.StaticSite {

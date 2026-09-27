@@ -158,103 +158,6 @@ func TestCompose_Deploy_SecretsMergedEnvFileWins(t *testing.T) {
 	}
 }
 
-// TestCompose_Rollback_NoState confirms Rollback errors loudly when
-// there's no state file AND no fallback tag.
-func TestCompose_Rollback_NoState(t *testing.T) {
-	dir := t.TempDir()
-	r := &fakeRunner{}
-	p := ComposeProvider{ProjectDir: dir, Runner: r}
-	group := ServiceGroup{
-		Env:        "prod",
-		ProviderID: "compose",
-		Services: []ResolvedService{
-			{Name: "edge", Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"}},
-		},
-	}
-	err := p.Rollback(context.Background(), group, "")
-	if err == nil {
-		t.Fatal("expected error for missing state file, got nil")
-	}
-	if !strings.Contains(err.Error(), "no previous tag recorded") {
-		t.Errorf("want 'no previous tag recorded', got %v", err)
-	}
-}
-
-// TestCompose_Rollback_NoImageHint confirms that when the state file
-// has a tag but no image name, rollback errors with a clear "manual
-// intervention" message rather than silently writing a broken
-// override.
-func TestCompose_Rollback_NoImageHint(t *testing.T) {
-	dir := t.TempDir()
-	_, err := WriteDeployState(dir, "compose", "prod", "edge", DeployState{
-		Tag: "v1.0.0",
-		// Image empty.
-	})
-	if err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	r := &fakeRunner{}
-	p := ComposeProvider{ProjectDir: dir, Runner: r}
-	group := ServiceGroup{
-		Env: "prod", ProviderID: "compose",
-		Services: []ResolvedService{
-			{Name: "edge", Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"}},
-		},
-	}
-	err = p.Rollback(context.Background(), group, "")
-	if err == nil {
-		t.Fatal("expected error for missing image hint, got nil")
-	}
-	if !strings.Contains(err.Error(), "no previous image recorded") {
-		t.Errorf("want 'no previous image recorded' message, got %v", err)
-	}
-}
-
-// TestCompose_Rollback_HappyPath writes an override file and runs up
-// -d --force-recreate. The override should be deleted after the call.
-func TestCompose_Rollback_HappyPath(t *testing.T) {
-	dir := t.TempDir()
-	_, err := WriteDeployState(dir, "compose", "prod", "edge", DeployState{
-		Image: "ghcr.io/x/edge",
-		Tag:   "v1.0.0",
-	})
-	if err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	r := &fakeRunner{}
-	p := ComposeProvider{ProjectDir: dir, Runner: r}
-	group := ServiceGroup{
-		Env: "prod", ProviderID: "compose",
-		Services: []ResolvedService{
-			{Name: "edge", Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"}},
-		},
-	}
-	if err := p.Rollback(context.Background(), group, ""); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-	// The up call should reference both compose files and --force-recreate.
-	var upCall string
-	for _, c := range r.calls {
-		if strings.Contains(c, "up -d --force-recreate") {
-			upCall = c
-		}
-	}
-	if upCall == "" {
-		t.Fatalf("expected up -d --force-recreate call, got %v", r.calls)
-	}
-	if !strings.Contains(upCall, "-f docker-compose.yml") {
-		t.Errorf("up call should reference main compose file, got %q", upCall)
-	}
-	if !strings.Contains(upCall, "rollback.override.yml") {
-		t.Errorf("up call should reference override file, got %q", upCall)
-	}
-	// Override file should be cleaned up.
-	matches, _ := filepath.Glob(filepath.Join(dir, ".forge/state", "compose-prod-edge-rollback.override.yml"))
-	if len(matches) > 0 {
-		t.Errorf("override file should be deleted after rollback, found %v", matches)
-	}
-}
-
 // TestCompose_ComposeServiceName_Default confirms the compose service
 // defaults to the forge service name when KCL leaves it unset.
 func TestCompose_ComposeServiceName_Default(t *testing.T) {
@@ -310,49 +213,6 @@ func TestCompose_Deploy_DryRun(t *testing.T) {
 	statePath := filepath.Join(dir, ".forge/state/compose-prod-edge.json")
 	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
 		t.Errorf("state file should NOT exist after dry-run, got err=%v", err)
-	}
-}
-
-// TestCompose_Rollback_DryRun confirms the rollback dry-run path
-// prints the override + up commands without writing the override file
-// or exec'ing docker.
-func TestCompose_Rollback_DryRun(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := WriteDeployState(dir, "compose", "prod", "edge", DeployState{
-		Image: "ghcr.io/x/edge",
-		Tag:   "v1.0.0",
-	}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	r := &fakeRunner{}
-	p := ComposeProvider{ProjectDir: dir, Runner: r}
-	group := ServiceGroup{
-		Env: "prod", ProviderID: "compose", DryRun: true,
-		Services: []ResolvedService{
-			{Name: "edge", Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"}},
-		},
-	}
-	out := captureStdout(t, func() {
-		if err := p.Rollback(context.Background(), group, ""); err != nil {
-			t.Fatalf("Rollback: %v", err)
-		}
-	})
-	if len(r.calls) != 0 {
-		t.Fatalf("dry-run rollback should NOT exec, got %d call(s): %v", len(r.calls), r.calls)
-	}
-	for _, want := range []string{
-		"[DRY-RUN] would write override",
-		"ghcr.io/x/edge:v1.0.0",
-		"[DRY-RUN] would run: docker compose -f docker-compose.yml",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("stdout should contain %q, got:\n%s", want, out)
-		}
-	}
-	// Override file should NOT have been written.
-	matches, _ := filepath.Glob(filepath.Join(dir, ".forge/state", "compose-prod-edge-rollback.override.yml"))
-	if len(matches) > 0 {
-		t.Errorf("override file should NOT exist after dry-run rollback, found %v", matches)
 	}
 }
 
@@ -511,39 +371,6 @@ func TestCompose_Deploy_OldComposeFailsLoudly(t *testing.T) {
 		if strings.Contains(c, "up -d") {
 			t.Error("should not have attempted the up after failing the version gate")
 		}
-	}
-}
-
-// TestCompose_Rollback_Waits confirms rollback is readiness-gated too.
-// A rollback is reached for when things are already broken; "the old
-// version is starting" is not the answer, "it is serving" is.
-func TestCompose_Rollback_Waits(t *testing.T) {
-	dir := t.TempDir()
-	r := &fakeRunner{outputs: map[string]string{"docker compose version --short": "2.34.0\n"}}
-	if _, err := WriteDeployState(dir, "compose", "prod", "edge",
-		DeployState{Tag: "v1.0.0", Image: "ghcr.io/acme/edge"}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	p := ComposeProvider{ProjectDir: dir, Runner: r}
-	err := p.Rollback(context.Background(), ServiceGroup{
-		Env:        "prod",
-		ProviderID: "compose",
-		Services: []ResolvedService{{
-			Name:    "edge",
-			Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"},
-		}},
-	}, "v1.0.0")
-	if err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-	var upCall string
-	for _, c := range r.calls {
-		if strings.Contains(c, "--force-recreate") {
-			upCall = c
-		}
-	}
-	if !strings.Contains(upCall, "--wait") {
-		t.Errorf("rollback up should carry --wait, got %q", upCall)
 	}
 }
 

@@ -76,8 +76,6 @@ func (f *fakeCP) Call(_ context.Context, proc string, req, out any) error {
 		reply = f.envs
 	case "ListPromotions":
 		reply = f.proms
-	case "Rollback":
-		reply = `{"promotion":{}}`
 	default:
 		return fmt.Errorf("unexpected procedure %s", proc)
 	}
@@ -315,32 +313,6 @@ func TestHostedReadyNeedsTheDesiredDigest(t *testing.T) {
 	st.Deployment.Observed.ImageDigest = digestA
 	if !hostedDeploymentReady(st, digestA) {
 		t.Fatal("READY on the desired digest not counted as ready")
-	}
-}
-
-// TestHostedRollbackRecordsThenRepublishes: rollback reads the ledger, records
-// a Rollback to the previous release, and republishes that release's digests.
-func TestHostedRollbackRecordsThenRepublishes(t *testing.T) {
-	cp := &fakeCP{
-		status: readyStatus(digestA),
-		envs:   `{"environments":[{"id":"env-1","name":"prod","imagePushBase":"ghcr.io/acme"}]}`,
-		proms: fmt.Sprintf(`{"promotions":[{"releaseVersion":"v2","resolvedArtifacts":{"api":%q}},
-		                                    {"releaseVersion":"v1","resolvedArtifacts":{"api":%q}}]}`, digestB, digestA),
-	}
-	p := HostedProvider{Client: cp, PollInterval: time.Millisecond}
-	if err := p.Rollback(context.Background(), hostedGroup("", nil, v1alpha1.Resources{}), ""); err != nil {
-		t.Fatalf("rollback: %v", err)
-	}
-	got := cp.procs()
-	want := []string{"ListEnvironments", "ListPromotions", "Rollback", "EnsureDeployment", "EnsureDeployment", "PublishDeploymentConfig", "PublishDeploymentConfig", "GetStatus"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("call order = %v, want %v", got, want)
-	}
-	if cp.calls[2].Body["version"] != "v1" {
-		t.Errorf("rolled back to %v, want v1", cp.calls[2].Body["version"])
-	}
-	if img := cp.calls[3].Body["spec"].(map[string]any)["image"]; img != "ghcr.io/acme/api@"+digestA {
-		t.Errorf("republished image = %v, want v1's digest", img)
 	}
 }
 

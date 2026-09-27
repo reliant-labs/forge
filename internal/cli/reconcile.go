@@ -41,7 +41,7 @@
 //	forge env deploy <env> = lifecycle=once, opts=<from flags>
 //	forge env up <env>     = lifecycle=auto, opts={skipFrontend: true}
 //
-// The surgical knobs (tag / rollback / prune / dry-run / context override /
+// The surgical knobs (tag / prune / dry-run / context override /
 // targets / skip-frontend) live on deployOptions — the cluster reconcile's
 // option surface, shared by both commands. `up`'s cluster step passes its
 // deployOptions through the SAME named entry point deploy uses

@@ -290,7 +290,7 @@ func TestApplyOptsBuilder_ContextFromDeclaredCluster(t *testing.T) {
 }
 
 // TestDeclaredEnvContext picks the first declared cluster for the
-// env-wide consumers (secrets pre-apply / empty-groups apply / rollback);
+// env-wide consumers (secrets pre-apply / empty-groups apply);
 // host-only envs yield empty. There is no override to consult.
 func TestDeclaredEnvContext(t *testing.T) {
 	groups := []deploytarget.ServiceGroup{

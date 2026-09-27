@@ -32,23 +32,17 @@ import (
 // identical content lands at an identical path and re-deploying unchanged
 // content overwrites itself byte-for-byte.
 //
-// This is what makes rollback and promotion real rather than aspirational:
-//
-//   - ROLLBACK re-syncs live/ from a release prefix still sitting in the
-//     bucket. It does not rebuild, so it cannot produce different bytes
-//     than the deploy it is undoing. (Contrast FirebaseProvider, which
-//     returns ErrProviderNotImplemented and defers to Firebase's own
-//     release history — forge has no artifact of its own there.)
-//   - PROMOTION is the same move across environments: re-point at an
-//     EXISTING digest. Never a rebuild.
+// This is what makes promotion real rather than aspirational: PROMOTION
+// re-points an environment's live/ at an EXISTING digest. Never a rebuild,
+// so it cannot produce different bytes than the release that was tested.
 //
 // # Retention
 //
 // After a successful deploy, releases beyond KeepReleases are deleted
 // newest-first — but the digest now live and the digest previously live
-// are ALWAYS exempt, whatever the count says. Deleting either would turn
-// a rollback into a 404, which is the one failure a retention policy
-// must not be able to cause. The KCL schema refuses keep_releases = 1
+// are ALWAYS exempt, whatever the count says. A browser that loaded the
+// previous release's HTML moments ago is still fetching its hashed assets;
+// deleting its prefix turns that page into 404s mid-session. The KCL schema refuses keep_releases = 1
 // for the same reason, so the exemption is a belt-and-braces floor
 // rather than the only guard.
 //
@@ -168,8 +162,8 @@ const (
 // prune direction deletes archived releases irrecoverably.
 
 // minRetainedReleases is the floor retention can never go below: the
-// live release plus its predecessor, so a rollback always has somewhere
-// to go. Enforced independently of KeepReleases.
+// live release plus its predecessor, whose assets in-flight pages still
+// fetch. Enforced independently of KeepReleases.
 const minRetainedReleases = 2
 
 // Name returns the provider identifier.
@@ -204,7 +198,7 @@ func (s StaticSiteSpec) liveURI() string {
 
 // effectiveKeepReleases resolves the retention count actually applied.
 // 0 means retain everything; any positive value is floored at
-// minRetainedReleases so retention can never delete a rollback target
+// minRetainedReleases so retention can never delete the predecessor
 // even if a spec reached this far carrying 1.
 func (s StaticSiteSpec) effectiveKeepReleases() int {
 	if s.KeepReleases == 0 {
@@ -236,79 +230,6 @@ func (p StaticSiteProvider) Deploy(ctx context.Context, group ServiceGroup) erro
 		if err := p.deployOne(ctx, fe, group.Env, group.DryRun); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-// previousStateSuffix names the second state slot: the digest that was
-// live BEFORE the most recent deploy — i.e. the rollback target.
-//
-// Two slots are needed because a rollback must go to the PREDECESSOR of
-// what is live, and one slot can only record one of the two. External
-// and Compose get away with a single slot because their "last good tag"
-// IS what they redeploy; here, redeploying the live digest would be a
-// no-op that reports success while changing nothing, which is the worst
-// possible rollback outcome.
-const previousStateSuffix = ".previous"
-
-// Rollback re-points live/ at the previous release's archived bytes.
-//
-// Unlike Firebase, this IS supported and is the reason the release
-// archive exists: the previous deploy's tree is still in the bucket
-// under its content digest, so recovery is a sync between two prefixes.
-// Nothing is rebuilt, so a rollback cannot produce different bytes than
-// the deploy it undoes.
-//
-// lastGoodTag, when non-empty, pins the release digest to restore.
-// Empty — which is what the CLI dispatcher passes — means "read the
-// recorded predecessor", matching how External and Compose resolve their
-// own rollback target. A frontend with no recorded predecessor (its
-// first-ever deploy) is refused rather than guessed at.
-func (p StaticSiteProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
-	var failures []string
-	for _, fe := range group.StaticSites {
-		digest := lastGoodTag
-		if digest == "" {
-			st, err := ReadDeployState(p.projectDir(), p.Name(), group.Env, fe.Name+previousStateSuffix)
-			if err != nil {
-				failures = append(failures, fmt.Sprintf("%s: read previous release: %v", fe.Name, err))
-				continue
-			}
-			if st == nil || st.Tag == "" {
-				failures = append(failures, fmt.Sprintf(
-					"%s: no previous release recorded at %s; nothing to roll back to (this environment has only ever had one deploy)",
-					fe.Name, group.Env))
-				continue
-			}
-			digest = st.Tag
-		}
-
-		src := fe.Spec.releaseURI(digest)
-		if group.DryRun {
-			fmt.Printf("  [DRY-RUN] static-site %s: would restore %s -> %s\n", fe.Name, src, fe.Spec.liveURI())
-			continue
-		}
-		fmt.Printf("  [static-site] %s: rolling back to release %s...\n", fe.Name, digest)
-		if err := p.syncToLive(ctx, fe.Spec, src); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", fe.Name, err))
-			continue
-		}
-		// The rolled-back digest is now live. Record it so retention
-		// keeps exempting the right prefix, and so a second rollback
-		// does not walk back to a release the first one just left.
-		if _, err := WriteDeployState(p.projectDir(), p.Name(), group.Env, fe.Name, DeployState{
-			Image: fe.Spec.normalizedBucket(),
-			Tag:   digest,
-		}); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: record rolled-back state: %v", fe.Name, err))
-			continue
-		}
-		if err := p.invalidate(ctx, fe, group.DryRun); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: invalidate: %v", fe.Name, err))
-		}
-	}
-	if len(failures) > 0 {
-		return fmt.Errorf("static-site rollback: %s", strings.Join(failures, "; "))
 	}
 	return nil
 }
@@ -379,8 +300,8 @@ func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend
 	}
 
 	// The digest currently live, read BEFORE this deploy overwrites the
-	// state file. It becomes the rollback target, and retention exempts
-	// it explicitly.
+	// state file. Retention exempts it explicitly: a browser that loaded
+	// the previous release's HTML moments ago still fetches its assets.
 	previous := ""
 	if st, rerr := ReadDeployState(p.projectDir(), p.Name(), env, fe.Name); rerr == nil && st != nil {
 		previous = st.Tag
@@ -400,22 +321,8 @@ func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend
 		return fmt.Errorf("static-site %s: %w", fe.Name, err)
 	}
 
-	// Record the new live digest, and the one it displaced as the
-	// rollback target. Written AFTER a successful sync, so a failed
-	// publish leaves the previous release recorded and still recoverable.
-	//
-	// A redeploy of unchanged content produces the same digest, so the
-	// predecessor is left alone in that case rather than being
-	// overwritten with the live digest — otherwise pushing twice with no
-	// source change would quietly destroy the rollback target.
-	if previous != "" && previous != digest {
-		if _, err := WriteDeployState(p.projectDir(), p.Name(), env, fe.Name+previousStateSuffix, DeployState{
-			Image: fe.Spec.normalizedBucket(),
-			Tag:   previous,
-		}); err != nil {
-			return fmt.Errorf("static-site %s: record previous release: %w", fe.Name, err)
-		}
-	}
+	// Record the new live digest. Written AFTER a successful sync, so a
+	// failed publish leaves the previous release recorded.
 	if _, err := WriteDeployState(p.projectDir(), p.Name(), env, fe.Name, DeployState{
 		Image: fe.Spec.normalizedBucket(),
 		Tag:   digest,
@@ -596,8 +503,8 @@ func (p StaticSiteProvider) invalidate(ctx context.Context, fe StaticSiteFronten
 // newest first.
 //
 // live and previous are ALWAYS exempt regardless of the count: deleting
-// either turns a rollback into a 404, which is the one outcome a
-// retention policy must not be able to produce. KeepReleases == 0 means
+// either 404s pages that are still being served, which is the one
+// outcome a retention policy must not be able to produce. KeepReleases == 0 means
 // retain everything and prunes nothing.
 func (p StaticSiteProvider) pruneReleases(ctx context.Context, fe StaticSiteFrontend, live, previous string) error {
 	keep := fe.Spec.effectiveKeepReleases()
@@ -644,7 +551,7 @@ func (p StaticSiteProvider) listReleaseDigests(ctx context.Context, spec StaticS
 // releasesToPrune decides which archived digests to delete.
 //
 // Pure, and separated from the gcloud plumbing precisely so the
-// never-delete-a-rollback-target rule is testable without a bucket. The
+// never-delete-live-or-previous rule is testable without a bucket. The
 // exemptions are applied BEFORE the count, so `keep` bounds the
 // prunable set rather than the total — a bucket holding exactly `keep`
 // releases of which two are exempt deletes nothing rather than deleting

@@ -16,8 +16,8 @@ package cli
 // login is a product that lied about being local-first.
 //
 // ONE MODEL, TWO BACKENDS. Both read and write forge/pkg/release types and
-// both apply release.Decide, so "is this a no-op retry", "is this rollback
-// legal" and "what does the env run now" have one answer whichever backend
+// both apply release.Decide, so "is this a no-op retry" and "what does the env
+// run now" have one answer whichever backend
 // holds the ledger. See pkg/release's package doc.
 
 import (
@@ -48,8 +48,8 @@ import (
 //
 // THERE IS NO "SET". The ledger is append-only: an environment's current
 // binding is its most recent entry, and there is no pointer beside the
-// history that could disagree with it. A rollback is a NEW entry of kind
-// rollback, never an edit of an old one.
+// history that could disagree with it. Moving an env back to an older release
+// is a NEW promote entry, never an edit of an old one.
 //
 // NO projectDir ANYWHERE IN THIS INTERFACE. A project directory is a FILE
 // concept; the hosted backend has none. The backing is bound ONCE at
@@ -63,8 +63,7 @@ type bindingStore interface {
 	// Append records p (which must name p.Env, p.Release and p.Kind) under
 	// release.Decide's rules and returns the entry the ledger now holds:
 	// the newly appended one, or — for a retry of the current state — the
-	// EXISTING entry, unchanged. A rollback to a release the env never ran
-	// is release.ErrNeverPromoted. The backend stamps ID and PromotedAt.
+	// EXISTING entry, unchanged. The backend stamps ID and PromotedAt.
 	Append(ctx context.Context, p release.Promotion) (release.Promotion, error)
 
 	// Location names where promotions are recorded, for human-facing
@@ -186,7 +185,7 @@ const legacyEnvReleasesRel = ".forge/env-releases.json"
 //
 // WHY A LOG AND NOT A MAP. The previous format was one JSON object holding
 // every env's CURRENT binding, rewritten whole on every promote: history
-// lived only in git, a rollback was indistinguishable from a promote, and two
+// lived only in git, a move could not be told from a no-op, and two
 // promotes of different envs raced a read-modify-write of one file. A log per
 // env has no pointer that can disagree with its history, and an append never
 // rewrites a neighbour's line.

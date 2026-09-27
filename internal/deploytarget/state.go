@@ -8,10 +8,9 @@ import (
 
 // DeployState records the last image+tag a non-cluster provider
 // (External, Compose) successfully shipped for one service-env pair.
-// It exists because external and compose, unlike `kubectl rollout
-// undo`, have no native "go back to the previous revision" affordance —
-// the provider has to remember the previous good tag itself if the
-// rollback path is going to mean anything.
+// It exists because external and compose have no cluster to ask what is
+// deployed: the next deploy reads it back as ${LAST_TAG}, and the
+// reconciler reads it as the observed tag.
 //
 // The shape mirrors internal/cli.BuildState (image / tag /
 // deployed_at) but it's a deliberate copy rather than a shared type:

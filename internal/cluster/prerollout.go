@@ -205,8 +205,6 @@ func jobDeployPhase(m parsedDoc) (string, error) {
 	}
 }
 
-// A ROLLBACK SKIPS THE PRE-ROLLOUT JOBS
-// ====================================
 // A deploy whose ledger entry is a `forge env promote --rollback` ships the
 // OLDER release's images, so its pre-rollout Jobs run the older binary — and
 // the rule is to not run them at all, for three reasons:
@@ -285,6 +283,7 @@ func withoutJobs(stream string, jobs []jobRef) string {
 	return strings.Join(kept, docDelimiter)
 }
 
+=======
 // applyPreRolloutGate applies the support objects and the pre-rollout Jobs,
 // then waits for every one of those Jobs to complete.
 //

@@ -27,11 +27,10 @@
 //     K8sCluster.{Cluster,Namespace}.
 //   - ExternalProvider   — generic shell-command escape hatch. Run
 //     `sh -c <deploy_cmd>` with ${IMAGE}/${TAG}/${SERVICE}/etc.
-//     substituted; record last-good tag in .forge/state for rollback.
+//     substituted; record the deployed tag in .forge/state.
 //     Covers Fly.io / Cloud Run / Cloudflare Workers / ECS / Vercel
 //     / systemd-on-VM and any other CLI-driven deploy target.
-//   - ComposeProvider    — docker compose pull/up -d. Rollback writes a
-//     generated override file pinning the previous tag.
+//   - ComposeProvider    — docker compose pull/up -d.
 //   - HostInfraProvider  — a third-party server (postgres) run as a HOST
 //     PROCESS, no container runtime. This is the DEFAULT shape for dev
 //     infrastructure; Compose is the opt-in for projects that want the
@@ -65,10 +64,11 @@ import (
 // compose, etc.); the dispatcher in forge env deploy hands it a
 // ServiceGroup and the provider does the rest.
 //
-// Rollback is invoked on Deploy failure with the last-known-good tag
-// the dispatcher has tracked. Rollback errors are logged but the
-// group's overall outcome remains "failed" — rollback is a recovery
-// affordance, not a way to mask the underlying problem.
+// There is deliberately no Rollback verb. Recovery is ROLL FORWARD: ship a
+// new release (or promote a newer build) through Deploy. A "go back to the
+// previous revision" verb claims to undo a release it cannot undo — the
+// release has already written data and run migrations the older code never
+// saw — so forge does not offer one.
 type Provider interface {
 	// Name returns the provider's stable identifier — used in log
 	// output and error messages so users can tell which provider
@@ -81,17 +81,12 @@ type Provider interface {
 	// cluster/namespace).
 	Deploy(ctx context.Context, group ServiceGroup) error
 
-	// Rollback reverts every service in the group to lastGoodTag.
-	// Best-effort: per-service failures are logged and accumulated
-	// into the returned error rather than aborting the loop.
-	Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error
-
 	// Observe reports what this provider currently sees deployed, so a
 	// caller can compare it against what was declared.
 	//
 	// A READ with no side effects: it may run against a target forge has
-	// never deployed to, and it must never mutate one. Deploy and
-	// Rollback describe transitions; this is the only verb that answers
+	// never deployed to, and it must never mutate one. Deploy describes
+	// a transition; this is the only verb that answers
 	// "what is actually running right now", which is what a reconciler
 	// is built around.
 	//
@@ -239,11 +234,10 @@ type K8sClusterSpec struct {
 // well-defined value without forcing the user to duplicate the
 // service's image string on the deploy block.
 type ExternalSpec struct {
-	Image       string
-	DeployCmd   string
-	RollbackCmd string
-	HealthCmd   string
-	EnvFile     string
+	Image     string
+	DeployCmd string
+	HealthCmd string
+	EnvFile   string
 	// Env is the user-declared substitution map merged underneath the
 	// built-in tokens (IMAGE / TAG / LAST_TAG / SERVICE / ENV /
 	// ENV_FILE / PROJECT_DIR).

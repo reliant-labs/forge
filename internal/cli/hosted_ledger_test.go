@@ -24,7 +24,7 @@ import (
 // fakeDeployService is an httptest control plane speaking Connect's JSON
 // binding for the six ledger RPCs plus ListEnvironments, with the SERVER's
 // semantics: CutRelease is idempotent on version and refuses a different
-// artifact set (AlreadyExists); Promote/Rollback freeze the pin set from the
+// artifact set (AlreadyExists); Promote freezes the pin set from the
 // release the server holds and apply release.Decide; responses use proto3 JSON
 // names and enum value names.
 //
@@ -250,7 +250,7 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"releases": out})
 
-	case "/controlplane.v1.DeployService/Promote", "/controlplane.v1.DeployService/Rollback":
+	case "/controlplane.v1.DeployService/Promote":
 		envID, version := str("environmentId"), str("version")
 		rel, ok := f.releases[version]
 		if !ok {
@@ -258,9 +258,6 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		kind := release.KindPromote
-		if strings.HasSuffix(r.URL.Path, "/Rollback") {
-			kind = release.KindRollback
-		}
 		relDomain, _ := releaseFromWire(rel)
 		var history []release.Promotion
 		for _, p := range f.promotions[envID] {
@@ -268,9 +265,8 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			history = append(history, release.Promotion{Env: envID, Release: p.ReleaseVersion, Kind: k})
 		}
 		existing, err := release.Decide(history, release.Promotion{Env: envID, Release: version, Kind: kind})
-		if errors.Is(err, release.ErrNeverPromoted) {
-			connectErr(w, http.StatusBadRequest, "failed_precondition",
-				"that version has never run in this environment; promote it instead of rolling back to it")
+		if err != nil {
+			connectErr(w, http.StatusBadRequest, "failed_precondition", err.Error())
 			return
 		}
 		if existing != nil {
@@ -279,9 +275,6 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		wk := wireKindPromote
-		if kind == release.KindRollback {
-			wk = wireKindRollback
-		}
 		p := wirePromotion{
 			ID: fmt.Sprintf("promo-%d", len(f.promotions[envID])+1), EnvironmentID: envID, ReleaseID: rel.ID,
 			ReleaseVersion: version, Kind: wk, ResolvedArtifacts: relDomain.SharedDigests(),
@@ -333,7 +326,7 @@ func newHostedTestStore(t *testing.T, fake *fakeDeployService) (*hostedStore, *h
 }
 
 // The hosted store against an httptest Connect server: cut, promote, retry,
-// rollback (refused, then accepted), and Current — with the pin set coming
+// a backwards promote, and Current — with the pin set coming
 // from the SERVER, not from what the client sent.
 func TestHostedStore_LedgerRoundTrip(t *testing.T) {
 	fake := newFakeDeployService(map[string]string{"prod": "env-prod-uuid", "prod-eu": "env-prod-eu"})
@@ -392,18 +385,18 @@ func TestHostedStore_LedgerRoundTrip(t *testing.T) {
 	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote}); err != nil {
 		t.Fatal(err)
 	}
-	// v3 was CUT but never ran in prod: a rollback to it is refused.
-	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v3", Kind: release.KindRollback}); !errors.Is(err, release.ErrNeverPromoted) {
-		t.Fatalf("rollback to a never-run release must be ErrNeverPromoted, got %v", err)
+	// Moving prod back to v1 is an ordinary promote through the Promote RPC.
+	back, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote, Note: "5xx"})
+	if err != nil || back.Kind != release.KindPromote {
+		t.Fatalf("backwards promote to v1: %+v %v", back, err)
 	}
-	rb, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindRollback, Note: "5xx"})
-	if err != nil || rb.Kind != release.KindRollback {
-		t.Fatalf("rollback to v1: %+v %v", rb, err)
+	if n := fake.callCount("controlplane.v1.DeployService/Rollback"); n != 0 {
+		t.Errorf("the retired Rollback RPC was called %d times", n)
 	}
 
 	cur, bound, err := store.Current(ctx, "prod")
-	if err != nil || !bound || cur.Release != "v1" || cur.Kind != release.KindRollback || cur.Resolved["api"] != sha("1") {
-		t.Fatalf("current must be the rollback to v1, got bound=%v %+v err=%v", bound, cur, err)
+	if err != nil || !bound || cur.Release != "v1" || cur.Kind != release.KindPromote || cur.Resolved["api"] != sha("1") {
+		t.Fatalf("current must be the promote back to v1, got bound=%v %+v err=%v", bound, cur, err)
 	}
 	// Exactly one env lookup per env name: the id is cached per process.
 	if n := fake.callCount("controlplane.v1.DeployService/ListEnvironments"); n != 1 {
@@ -422,8 +415,7 @@ func TestHostedStore_LedgerRoundTrip(t *testing.T) {
 // An env the control plane has never heard of has never been promoted — a
 // read answers unbound and creates nothing. Every WRITE ensures the env by
 // name first (ensureHostedEnv), so the first PROMOTE of a fresh hosted env
-// works; a ROLLBACK is still refused — by the ledger's never-promoted rule.
-// Mutation: dropping the ensure in Append fails the promote half.
+// works. Mutation: dropping the ensure in Append fails the promote half.
 func TestHostedStore_UnknownEnvironment(t *testing.T) {
 	fake := newFakeDeployService(map[string]string{})
 	fake.releases["v1"] = wireRelease{ID: "rel-1", Version: "v1", Artifacts: []wireArtifact{
@@ -432,10 +424,6 @@ func TestHostedStore_UnknownEnvironment(t *testing.T) {
 	store, _ := newHostedTestStore(t, fake)
 	if _, bound, err := store.Current(context.Background(), "prod"); err != nil || bound {
 		t.Fatalf("read of an unknown env must be unbound, got bound=%v err=%v", bound, err)
-	}
-	_, err := store.Append(context.Background(), release.Promotion{Env: "staging", Release: "v1", Kind: release.KindRollback})
-	if !errors.Is(err, release.ErrNeverPromoted) {
-		t.Fatalf("a rollback of a fresh env must be refused as never-promoted, got %v", err)
 	}
 	p, err := store.Append(context.Background(), release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote})
 	if err != nil {

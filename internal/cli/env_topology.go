@@ -228,8 +228,8 @@ type topologyEnv struct {
 	// `destination == "hosted"`, and a second spelling of the same fact is
 	// a second place for the two to disagree.
 	Hosted bool `json:"-"`
-	// Kind is the current entry's kind: "promote" or "rollback". A
-	// rollback is the fact on this screen most worth seeing.
+	// Kind is the current entry's kind. Always "promote": a legacy
+	// "rollback" entry reads as the promote of its release.
 	Kind release.PromotionKind `json:"kind,omitempty"`
 	// Bound is false for an env that has never been promoted. Not a
 	// failure: it has declared nothing, so there is nothing to be wrong
@@ -984,9 +984,6 @@ func renderEnvTopologyText(report envTopologyReport) {
 			fmt.Printf("  release   (unbound)\n")
 		default:
 			line := fmt.Sprintf("  release   %s", env.Release)
-			if env.Kind == release.KindRollback {
-				line += "  [ROLLED BACK]"
-			}
 			if env.Lag != nil {
 				if env.Lag.Current {
 					line += "  [current]"

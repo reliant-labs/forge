@@ -152,22 +152,6 @@ func (p FirebaseProvider) Deploy(ctx context.Context, group ServiceGroup) error 
 	return p.deployFrontends(ctx, group.Frontends, group.DryRun)
 }
 
-// Rollback is unsupported for Firebase Hosting: a hosting deploy ships a
-// fully-assembled static tree with no forge-tracked previous-tag state,
-// and Firebase's own `hosting:rollback` (release history) is the right
-// recovery surface. We return ErrProviderNotImplemented so the
-// dispatcher records "rollback not supported" rather than silently
-// claiming success.
-//
-// (StaticSiteProvider, by contrast, DOES support rollback: it archives
-// every deploy's tree under a content digest in the bucket, so a previous
-// artifact is still there to re-point at. Firebase owns its own release
-// history, so duplicating that here would be forge second-guessing the
-// target's native affordance.)
-func (FirebaseProvider) Rollback(_ context.Context, _ ServiceGroup, _ string) error {
-	return fmt.Errorf("firebase: rollback not supported (use `firebase hosting:rollback`): %w", ErrProviderNotImplemented)
-}
-
 // deployFrontends builds, assembles, configures, and ships each frontend
 // to its Firebase Hosting site. dryRun prints the plan and skips every
 // side effect.

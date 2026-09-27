@@ -2646,7 +2646,7 @@ func infraGroupServiceNames(g deploytarget.ServiceGroup) string {
 // `forge env deploy` and `forge env up`'s deploy phase: render the env's KCL,
 // resolve context / namespace / secrets, and apply the in-cluster
 // workloads + External/Compose deploy targets. opts carries the surgical
-// knobs (tag / rollback / prune / dry-run / context override / targets /
+// knobs (tag / prune / dry-run / context override / targets /
 // skip-frontend); `forge env deploy` fills it from its flags, `forge env up` passes
 // the zero value (no knobs). Both reach the SAME pipeline — there is no
 // longer a blank-`deployOptions{}` literal hiding the up-vs-deploy seam.

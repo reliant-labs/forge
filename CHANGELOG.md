@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING: every rollback surface is gone — recovery is roll forward.**
+  `forge env deploy --rollback`, `forge env promote --rollback`, the KCL
+  `forge.External.rollback_cmd` field, and every provider's rollback path
+  (`kubectl rollout undo`, compose override pinning, the static-site
+  re-sync, the hosted `DeployService/Rollback` call) are removed, along with
+  the deploy's skip-the-migration-on-a-rollback machinery. A rollback claims to
+  undo a release it cannot undo: the release already ran its migrations and
+  wrote data. Fix forward instead — cut a release and promote it. Binding an
+  env to an OLDER release is still an ordinary `forge env promote`; the plan
+  labels it `direction BEHIND` and warns that it undoes nothing. Existing
+  ledgers keep working: a `"kind":"rollback"` entry reads as the promote of
+  its release. Delete `rollback_cmd` from any `forge.External` block.
+
+### Added
+
+- `cluster:manage` access-token scope (`accesstoken.ScopeClusterManage`):
+  registers, rotates and removes an org's BYO clusters. Its own authority —
+  `deploy:write` neither implies it nor is implied by it.
+
 ### Changed
 
 - **BREAKING (one require line): `github.com/reliant-labs/forge/pkg` is no

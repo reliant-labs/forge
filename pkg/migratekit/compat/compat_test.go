@@ -10,7 +10,7 @@ import (
 // The negative cases are the ones that matter. A migration that DISCUSSES
 // compatibility in a block comment, or a string literal that happens to
 // contain the words, must not be read as having claimed it: a false positive
-// here is a rollback forge waves through onto a schema the older code cannot
+// here lets the previous release serve on a schema its code cannot
 // run against.
 func TestDeclaredMatchesOnlyALineComment(t *testing.T) {
 	cases := []struct {
@@ -78,36 +78,5 @@ func TestScanDistinguishesMissingFromEmpty(t *testing.T) {
 	}
 	if _, err := Scan(fstest.MapFS{}, "migrations"); err == nil {
 		t.Error("missing dir: Scan returned no error; an unreadable migration set must not read as empty")
-	}
-}
-
-// TestCompareIsByMembershipNotMaxVersion is the control-plane v1.7.0 shape
-// (91 additive + declared, 92 a drop that is not) plus the case a max-version
-// comparison gets wrong: a migration numbered BELOW the older release's newest
-// that the older release never had (merged out of order). The older binary
-// has not seen it, so it is part of what a rollback crosses.
-func TestCompareIsByMembershipNotMaxVersion(t *testing.T) {
-	older := []Migration{{Version: 88}, {Version: 90}}
-	newer := []Migration{
-		{Version: 88},
-		{Version: 89, Name: "89_out_of_order.up.sql"},
-		{Version: 90},
-		{Version: 91, Name: "91_add.up.sql", BackwardCompatible: true},
-		{Version: 92, Name: "92_drop.up.sql"},
-	}
-	d := Compare(newer, older)
-	var ahead []uint
-	for _, m := range d.Ahead {
-		ahead = append(ahead, m.Version)
-	}
-	if len(ahead) != 3 || ahead[0] != 89 || ahead[1] != 91 || ahead[2] != 92 {
-		t.Fatalf("Ahead = %v, want [89 91 92]", ahead)
-	}
-	bad := d.Incompatible()
-	if len(bad) != 2 || bad[0].Version != 89 || bad[1].Version != 92 {
-		t.Errorf("Incompatible = %+v, want 89 and 92 (91 declared itself)", bad)
-	}
-	if got := Compare(older, older).Ahead; len(got) != 0 {
-		t.Errorf("same set: Ahead = %+v, want none", got)
 	}
 }

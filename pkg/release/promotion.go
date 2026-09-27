@@ -1,35 +1,63 @@
 package release
 
 import (
-	"errors"
+	"encoding/json"
 	"fmt"
 	"time"
 )
 
-// ErrNeverPromoted is returned for a rollback to a release that never ran in
-// the environment. Rolling "back" to something that never ran here is a
-// promotion, and must be called one.
-var ErrNeverPromoted = errors.New("release was never promoted to this environment")
-
-// PromotionKind records INTENT. Both kinds are mechanically identical — a
-// new ledger entry naming an already-cut release — but a rollback must read
-// as a rollback in the audit trail. Closed.
+// PromotionKind records what a ledger entry is. There is ONE kind: a
+// promotion binds an environment to a release. Moving an environment to an
+// OLDER release is still a promotion — the plan labels its direction
+// `behind` — because there is no such thing as undoing a release: the newer
+// one already wrote data and ran migrations. Recovery is roll forward.
+//
+// The field survives because it is the ledger's wire format, and an
+// explicit kind keeps a future entry type from being read as a promotion.
 type PromotionKind string
 
 const (
-	// KindPromote advances an environment to a release.
+	// KindPromote binds an environment to a release.
 	KindPromote PromotionKind = "promote"
-	// KindRollback returns an environment to a release it already ran.
-	KindRollback PromotionKind = "rollback"
+
+	// legacyKindRollback is what the retired promote-as-rollback flag
+	// recorded before rollback was removed. It is READ ONLY: existing ledgers still
+	// carry it, and an entry that bound an env to a release is a promotion
+	// of that release whatever intent it was labelled with. It decodes as
+	// KindPromote and can never be written.
+	legacyKindRollback = "rollback"
 )
 
-// Valid reports whether k is promote or rollback.
-func (k PromotionKind) Valid() bool { return k == KindPromote || k == KindRollback }
+// Valid reports whether k is a kind a ledger entry may carry.
+func (k PromotionKind) Valid() bool { return k == KindPromote }
 
-// UnmarshalJSON refuses an empty or unknown kind.
+// ParsePromotionKind reads a STORED kind — a ledger line, a database row —
+// into the kind it means today. It is the one place the retired "rollback"
+// kind is recognised, so every backend that holds old entries reads them the
+// same way: as the promote of their release. Unknown and empty are refused,
+// never defaulted — a kind nobody recognises must not read as a binding.
+func ParsePromotionKind(stored string) (PromotionKind, error) {
+	if stored == legacyKindRollback {
+		return KindPromote, nil
+	}
+	if k := PromotionKind(stored); k.Valid() {
+		return k, nil
+	}
+	return "", fmt.Errorf("%w: unknown promotion kind %q (expected %s)", ErrInvalid, stored, KindPromote)
+}
+
+// UnmarshalJSON decodes through ParsePromotionKind.
 func (k *PromotionKind) UnmarshalJSON(data []byte) error {
-	return decodeClosed(data, "promotion kind", func(s string) bool { return PromotionKind(s).Valid() },
-		[]string{string(KindPromote), string(KindRollback)}, (*string)(k))
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("%w: promotion kind must be a string: %v", ErrInvalid, err)
+	}
+	parsed, err := ParsePromotionKind(raw)
+	if err != nil {
+		return err
+	}
+	*k = parsed
+	return nil
 }
 
 // Gate is one check that had passed when a promotion was recorded. EVIDENCE,
@@ -61,7 +89,7 @@ type Promotion struct {
 	Release string        `json:"release"`
 	Kind    PromotionKind `json:"kind"`
 	// FromEnv is the environment this release was promoted FROM, or empty
-	// for a first deploy or a rollback. Makes the promotion PATH auditable.
+	// for a first deploy or a direct promote. Makes the promotion PATH auditable.
 	FromEnv string `json:"from_env,omitempty"`
 	// Resolved is the image → digest pin set FROZEN at promote time. A
 	// deploy pins exactly these; nothing re-reads the release later.
@@ -70,7 +98,8 @@ type Promotion struct {
 	Sources    map[string]Source `json:"sources,omitempty"`
 	PromotedBy Actor             `json:"promoted_by,omitempty"`
 	Gates      []Gate            `json:"gates,omitempty"`
-	// Note is the free-form "why" — the most valuable field on a rollback.
+	// Note is the free-form "why" — the most valuable field on a promote
+	// that moves an environment backwards.
 	Note string `json:"note,omitempty"`
 	// PromotedAt is when the entry was written. It is PROMOTE time, not
 	// deploy time: a promotion moves no bytes.
@@ -86,7 +115,7 @@ func (p Promotion) Validate() error {
 	case p.Release == "":
 		return fmt.Errorf("%w: promotion release is required", ErrInvalid)
 	case !p.Kind.Valid():
-		return fmt.Errorf("%w: promotion kind %q (expected promote or rollback)", ErrInvalid, p.Kind)
+		return fmt.Errorf("%w: promotion kind %q (expected promote)", ErrInvalid, p.Kind)
 	case p.FromEnv != "" && p.FromEnv == p.Env:
 		return fmt.Errorf("%w: environment %q cannot be promoted from itself", ErrInvalid, p.Env)
 	}
@@ -111,34 +140,26 @@ func NewPromotion(env string, r Release, kind PromotionKind) Promotion {
 	}
 }
 
-// Decide applies the ledger's append rules to one environment's history
+// Decide applies the ledger's append rule to one environment's history
 // (OLDEST FIRST) and a requested entry. It returns:
 //
 //   - (current, nil) when the request is already the current state — the
-//     same release with the same kind. A CI retry must not append a second
-//     entry claiming the environment moved where it already was. The key
-//     is the CURRENT entry, not "ever promoted": v1→v2→v1 is three real
-//     moves, and the third must be recorded.
-//   - (nil, ErrNeverPromoted) for a rollback to a release absent from the
-//     history.
+//     same release. A CI retry must not append a second entry claiming the
+//     environment moved where it already was. The key is the CURRENT
+//     entry, not "ever promoted": v1→v2→v1 is three real moves, and the
+//     third must be recorded.
 //   - (nil, nil) when the entry should be appended.
 //
 // Both backends call this inside whatever serializes their appends (the
-// hosted one under a row lock), so the rule has one implementation.
+// hosted one under a row lock), so the rule has one implementation. The
+// error return is kept so a future rule can refuse without a signature
+// change across both backends.
 func Decide(history []Promotion, requested Promotion) (*Promotion, error) {
 	if n := len(history); n > 0 {
 		current := history[n-1]
-		if current.Release == requested.Release && current.Kind == requested.Kind {
+		if current.Release == requested.Release {
 			return &current, nil
 		}
-	}
-	if requested.Kind == KindRollback {
-		for _, p := range history {
-			if p.Release == requested.Release {
-				return nil, nil
-			}
-		}
-		return nil, fmt.Errorf("rollback of %q to %q: %w", requested.Env, requested.Release, ErrNeverPromoted)
 	}
 	return nil, nil
 }

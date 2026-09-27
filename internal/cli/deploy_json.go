@@ -36,7 +36,7 @@ import (
 // WHAT A CONSUMER NEEDS, AND WHY EACH PIECE IS MODELLED EXPLICITLY.
 //
 //   - MODE, unambiguously. "Did bytes move?" must never be inferred. explain
-//     and dry_run touch nothing; apply and rollback do. A consumer that has to
+//     and dry_run touch nothing; apply does. A consumer that has to
 //     deduce this from the absence of a field will get it wrong on the day it
 //     matters.
 //   - The GUARD, as data. The deploy applies to the context the env's KCL
@@ -82,9 +82,6 @@ const (
 	deployModeDryRun
 	// deployModeApply: a real deploy. Manifests reached the cluster.
 	deployModeApply
-	// deployModeRollback: --rollback. The env was reverted to the last
-	// successfully deployed tag per service. Bytes moved.
-	deployModeRollback
 )
 
 func (m deployJSONMode) String() string {
@@ -95,8 +92,6 @@ func (m deployJSONMode) String() string {
 		return "dry_run"
 	case deployModeApply:
 		return "apply"
-	case deployModeRollback:
-		return "rollback"
 	default:
 		return "unknown"
 	}
@@ -125,10 +120,8 @@ func (m *deployJSONMode) UnmarshalJSON(data []byte) error {
 		*m = deployModeDryRun
 	case "apply":
 		*m = deployModeApply
-	case "rollback":
-		*m = deployModeRollback
 	default:
-		return fmt.Errorf("unknown deploy mode %q (expected explain, dry_run, apply or rollback) — "+
+		return fmt.Errorf("unknown deploy mode %q (expected explain, dry_run or apply) — "+
 			"refusing to decode it as a default, which would report a real apply as a preview", name)
 	}
 	return nil
@@ -138,7 +131,7 @@ func (m *deployJSONMode) UnmarshalJSON(data []byte) error {
 // asks the question once, here, instead of each caller re-deriving it from the
 // mode set and getting it wrong when a mode is added.
 func (m deployJSONMode) Writes() bool {
-	return m == deployModeApply || m == deployModeRollback
+	return m == deployModeApply
 }
 
 // ─── The declared-context guard ───────────────────────────────────────────────
@@ -463,9 +456,6 @@ const (
 	deployPreflightRan
 	// deployPreflightSkippedFlag: --skip-preflight. The operator bypassed it.
 	deployPreflightSkippedFlag
-	// deployPreflightSkippedRollback: a rollback reuses the tag (and the
-	// Secrets) already in the cluster, so there is nothing to pre-verify.
-	deployPreflightSkippedRollback
 	// deployPreflightSkippedNoCluster: the env has no K8sCluster services, so
 	// there is no live target to check anything against.
 	deployPreflightSkippedNoCluster
@@ -477,8 +467,6 @@ func (s deployJSONPreflightStatus) String() string {
 		return "ran"
 	case deployPreflightSkippedFlag:
 		return "skipped_flag"
-	case deployPreflightSkippedRollback:
-		return "skipped_rollback"
 	case deployPreflightSkippedNoCluster:
 		return "skipped_no_cluster"
 	default:
@@ -502,8 +490,6 @@ func (s *deployJSONPreflightStatus) UnmarshalJSON(data []byte) error {
 		*s = deployPreflightRan
 	case "skipped_flag":
 		*s = deployPreflightSkippedFlag
-	case "skipped_rollback":
-		*s = deployPreflightSkippedRollback
 	case "skipped_no_cluster":
 		*s = deployPreflightSkippedNoCluster
 	default:
@@ -821,13 +807,6 @@ type deployJSONReport struct {
 	// one; its digests are what get pinned. Empty when the env has no
 	// binding.
 	Release string `json:"release,omitempty"`
-	// PromotionRollback is true when Release was bound by `forge env promote
-	// --rollback`; the deploy then does not run the pre-rollout Jobs.
-	PromotionRollback bool `json:"promotion_rollback,omitempty"`
-	// SkippedPreRolloutJobs names the pre-rollout Jobs (the schema
-	// migration) a rollback deploy did not run. The skip is deliberate and
-	// is recorded so nobody has to infer it from a Job that never appeared.
-	SkippedPreRolloutJobs []string `json:"skipped_pre_rollout_jobs,omitempty"`
 
 	Preflight deployJSONPreflight `json:"preflight"`
 	Images    deployJSONImages    `json:"images"`
@@ -1094,30 +1073,6 @@ func (r *deployReport) streamObserver() func(string) {
 	}
 	return func(manifests string) {
 		r.setStream(cluster.CollectManifestGVKs(manifests), imagesFromManifests(manifests))
-	}
-}
-
-// setPromotionRollback records that the bound release is a rollback.
-func (r *deployReport) setPromotionRollback(rollback bool) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.doc.PromotionRollback = rollback
-}
-
-// skippedJobsObserver returns the cluster.ApplyOpts.OnSkippedJobs callback, or
-// nil in text mode. Accumulates across groups, so a multi-cluster rollback
-// reports every Job it skipped.
-func (r *deployReport) skippedJobsObserver() func([]string) {
-	if r == nil {
-		return nil
-	}
-	return func(jobs []string) {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		r.doc.SkippedPreRolloutJobs = append(r.doc.SkippedPreRolloutJobs, jobs...)
 	}
 }
 

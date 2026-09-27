@@ -37,8 +37,7 @@ import (
 // # Context is declarative, exactly as it is for a write
 //
 // The kubectl context is group.Cluster, with NO fallback to the active
-// context. Rollback refuses outright on an empty context because it is a
-// mutation; a read cannot corrupt anything, but it CAN report another
+// context. A write (cluster.Apply) refuses outright on an empty context; a read cannot corrupt anything, but it CAN report another
 // cluster's state as this environment's, which is a worse outcome than
 // no answer. So an empty context reports unknown rather than reading
 // whatever context happens to be selected.
@@ -48,7 +47,7 @@ func (p K8sClusterProvider) Observe(ctx context.Context, group ServiceGroup) (Ob
 			"ServiceGroup.Namespace is empty (forge.yaml or K8sCluster.namespace must declare it)",
 			observableNames(group))
 	}
-	kctx := p.rollbackContext(group)
+	kctx := p.declaredContext(group)
 	if strings.TrimSpace(kctx) == "" {
 		return unsupported(p.Name(),
 			"no declared kubectl context (forge.K8sCluster.cluster in the env's KCL); "+

@@ -220,13 +220,30 @@ func TestPromotePlan_FirstPromote(t *testing.T) {
 	}
 }
 
+// TestPromoteCmd_RollbackFlagRemoved: `forge env promote --rollback` is gone.
+// A backwards promote is an ordinary promote; the flag must be an unknown-flag
+// error rather than a silently accepted no-op.
+func TestPromoteCmd_RollbackFlagRemoved(t *testing.T) {
+	cmd := newPromoteCmd()
+	if cmd.Flags().Lookup("rollback") != nil {
+		t.Fatal("--rollback is registered on `forge env promote` again")
+	}
+	cmd.SetArgs([]string{"v1", "--to", "prod", "--rollback"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --rollback") {
+		t.Fatalf("want an unknown-flag error for --rollback, got %v", err)
+	}
+}
+
 // ─── Direction ───────────────────────────────────────────────────────────────
 
-// TestPromotePlan_BackwardsPromoteReportsRollback is the most consequential
-// single fact in the plan. Promoting an OLDER release is legitimate — it is how
-// a rollback is spelled — but a reviewer who reads it as a forward move has
-// misread the whole screen.
-func TestPromotePlan_BackwardsPromoteReportsRollback(t *testing.T) {
+// TestPromotePlan_BackwardsPromoteReportsBehind is the most consequential
+// single fact in the plan. Promoting an OLDER release is possible — an
+// ordinary promote, never an undo — but a reviewer who reads it as a forward
+// move has misread the whole screen.
+func TestPromotePlan_BackwardsPromoteReportsBehind(t *testing.T) {
 	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{"reliant": sha("new")}),
 		rel("v1.4.0", "2026-02-01T00:00:00Z", "bbbbbbbbbbbb", false, map[string]string{"reliant": sha("mid")}),
@@ -236,7 +253,7 @@ func TestPromotePlan_BackwardsPromoteReportsRollback(t *testing.T) {
 		"prod": {Release: "v1.5.15", Resolved: map[string]string{"reliant": sha("new")}},
 	})
 	git := allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc")
-	// History runs oldest → newest, so a rollback's range is target..current.
+	// History runs oldest → newest, so a BEHIND range is target..current.
 	git.commits["aaaaaaaaaaaa..cccccccccccc"] = []string{"ccc1 later work", "bbb1 earlier work"}
 
 	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
@@ -244,7 +261,7 @@ func TestPromotePlan_BackwardsPromoteReportsRollback(t *testing.T) {
 		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
 	})
 	if err != nil {
-		t.Fatalf("a rollback must not be an error: %v", err)
+		t.Fatalf("a backwards promote must not be an error: %v", err)
 	}
 
 	if plan.Direction != promoteDirectionBehind {
@@ -255,8 +272,13 @@ func TestPromotePlan_BackwardsPromoteReportsRollback(t *testing.T) {
 	}
 	// The word must be in the human line, not just implied by the enum: the
 	// text report is what an operator reads at 2am.
-	if !strings.Contains(strings.ToUpper(plan.DirectionDetail), "ROLLBACK") {
-		t.Errorf("direction_detail must name the rollback, got %q", plan.DirectionDetail)
+	if !strings.Contains(plan.DirectionDetail, "BEHIND") || !strings.Contains(plan.DirectionDetail, "BACKWARDS") {
+		t.Errorf("direction_detail must say BEHIND and BACKWARDS, got %q", plan.DirectionDetail)
+	}
+	// "Rollback" is a promise forge does not make: the newer release's
+	// migrations and data stay. The plan must not use the word.
+	if strings.Contains(strings.ToUpper(plan.DirectionDetail), "ROLLBACK") {
+		t.Errorf("direction_detail must not call a backwards promote a rollback, got %q", plan.DirectionDetail)
 	}
 	// And the commits are being taken AWAY, which a consumer must not paint
 	// as incoming changes.
@@ -264,16 +286,16 @@ func TestPromotePlan_BackwardsPromoteReportsRollback(t *testing.T) {
 		t.Error("a backwards promote must set commits.reverts so the listed commits are read as REMOVED, not added")
 	}
 	if plan.Commits.State != promoteRangeComputed || plan.Commits.Count != 2 {
-		t.Errorf("range should still compute for a rollback, got %s count=%d", plan.Commits.State, plan.Commits.Count)
+		t.Errorf("range should still compute for a backwards promote, got %s count=%d", plan.Commits.State, plan.Commits.Count)
 	}
 	// Asked in oldest→newest order, or git log returns nothing at all.
 	if len(git.rangesAsked) != 1 || git.rangesAsked[0] != "aaaaaaaaaaaa..cccccccccccc" {
-		t.Errorf("a rollback range must be read target..current, asked %v", git.rangesAsked)
+		t.Errorf("a BEHIND range must be read target..current, asked %v", git.rangesAsked)
 	}
 }
 
 // TestPromotePlan_ForwardPromoteReportsAhead is the other half. Without it a
-// direction function hardcoded to "behind" would pass the rollback test.
+// direction function hardcoded to "behind" would pass the backwards test.
 func TestPromotePlan_ForwardPromoteReportsAhead(t *testing.T) {
 	releases := []release.Release{
 		rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false, map[string]string{"reliant": sha("new")}),

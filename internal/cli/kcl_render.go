@@ -738,13 +738,12 @@ type HealthCheck struct {
 // deploy target — Fly.io / Cloudflare Workers / Cloud Run / ECS /
 // Vercel / etc. The forge-side ExternalProvider exec's DeployCmd via
 // `sh -c` after substituting ${IMAGE}/${TAG}/${SERVICE}/etc. and runs
-// HealthCmd / RollbackCmd through the same path.
+// HealthCmd through the same path.
 type ExternalDeploy struct {
-	DeployCmd   string            `json:"deploy_cmd,omitempty"`
-	RollbackCmd string            `json:"rollback_cmd,omitempty"`
-	HealthCmd   string            `json:"health_cmd,omitempty"`
-	EnvFile     string            `json:"env_file,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
+	DeployCmd string            `json:"deploy_cmd,omitempty"`
+	HealthCmd string            `json:"health_cmd,omitempty"`
+	EnvFile   string            `json:"env_file,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
 }
 
 // ComposeDeploy is the deploy block for a docker-compose service.

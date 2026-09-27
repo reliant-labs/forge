@@ -106,7 +106,7 @@ description: Code hygiene review methodology — correctness bugs, test quality 
 - **Schema changes safe?**: backwards compatible, nullable new columns
 - **Backfills needed?**: data migration for existing records
 - **Feature flags**: gradual rollout, kill switch
-- **Rollback plan**: can this be reverted safely?
+- **Roll-forward plan**: if this ships broken, can a follow-up release fix it from the state it leaves behind (no down migrations, no rollback)?
 - **Config changes documented**: new config values, changed defaults
 
 ## Output Format

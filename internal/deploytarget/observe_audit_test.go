@@ -419,9 +419,6 @@ type stubProvider struct{}
 
 func (stubProvider) Name() string                               { return "stub" }
 func (stubProvider) Deploy(context.Context, ServiceGroup) error { return nil }
-func (stubProvider) Rollback(context.Context, ServiceGroup, string) error {
-	return nil
-}
 func (stubProvider) Observe(context.Context, ServiceGroup) (Observed, error) {
 	return Observed{}, nil
 }
@@ -432,9 +429,6 @@ type greenStubProvider struct{}
 
 func (greenStubProvider) Name() string                               { return "green-stub" }
 func (greenStubProvider) Deploy(context.Context, ServiceGroup) error { return nil }
-func (greenStubProvider) Rollback(context.Context, ServiceGroup, string) error {
-	return nil
-}
 func (greenStubProvider) Observe(_ context.Context, group ServiceGroup) (Observed, error) {
 	obs := Observed{ProviderID: "green-stub"}
 	for _, name := range observableNames(group) {
@@ -449,9 +443,6 @@ type temporaryStubProvider struct{}
 
 func (temporaryStubProvider) Name() string                               { return "temporary-stub" }
 func (temporaryStubProvider) Deploy(context.Context, ServiceGroup) error { return nil }
-func (temporaryStubProvider) Rollback(context.Context, ServiceGroup, string) error {
-	return nil
-}
 func (temporaryStubProvider) Observe(_ context.Context, group ServiceGroup) (Observed, error) {
 	return unsupported("temporary-stub",
 		"observing this target is not implemented yet", observableNames(group))
@@ -466,9 +457,6 @@ type contradictoryStubProvider struct{}
 
 func (contradictoryStubProvider) Name() string                               { return "contradictory-stub" }
 func (contradictoryStubProvider) Deploy(context.Context, ServiceGroup) error { return nil }
-func (contradictoryStubProvider) Rollback(context.Context, ServiceGroup, string) error {
-	return nil
-}
 func (contradictoryStubProvider) Observe(_ context.Context, group ServiceGroup) (Observed, error) {
 	obs, err := unsupported("contradictory-stub",
 		"this target is opaque to forge and always will be", observableNames(group))
@@ -486,9 +474,6 @@ type honestStubProvider struct{}
 
 func (honestStubProvider) Name() string                               { return "honest-stub" }
 func (honestStubProvider) Deploy(context.Context, ServiceGroup) error { return nil }
-func (honestStubProvider) Rollback(context.Context, ServiceGroup, string) error {
-	return nil
-}
 func (honestStubProvider) Observe(_ context.Context, group ServiceGroup) (Observed, error) {
 	return unsupported("honest-stub",
 		"this target is deployed through an opaque third-party API that reports no state back, "+

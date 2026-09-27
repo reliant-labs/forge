@@ -19,8 +19,15 @@ const (
 	// ScopeDeployRead reads the org's deploy state.
 	ScopeDeployRead Scope = "deploy:read"
 	// ScopeDeployWrite mutates it (releases, environments, publish,
-	// promote, rollback). Implies deploy:read at the point of use.
+	// promote). Implies deploy:read at the point of use.
 	ScopeDeployWrite Scope = "deploy:write"
+
+	// ScopeClusterManage registers, rotates and removes the org's BYO
+	// clusters — the credentials the platform uses to reach infrastructure
+	// the org owns. Its own product, not a deploy action: deploy:write moves
+	// a release onto clusters the org already trusts, and must not be able
+	// to change WHICH clusters those are. An org-admin authority.
+	ScopeClusterManage Scope = "cluster:manage"
 
 	// ScopeTokenRead lists the org's machine credentials — an inventory of
 	// its automation, so a separate authority from deploy:read.
@@ -67,6 +74,7 @@ const (
 var AllScopes = []Scope{
 	ScopeDeployRead,
 	ScopeDeployWrite,
+	ScopeClusterManage,
 	ScopeTokenRead,
 	ScopeTokenWrite,
 	ScopeReliantAPI,

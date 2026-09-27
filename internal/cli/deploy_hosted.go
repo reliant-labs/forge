@@ -109,14 +109,12 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		release string
 		digests map[string]string
 	)
-	if !opts.rollback {
-		binding, bound, berr := hostedLedger(client, ep.URL, ref.Project, ref.Kind).Bindings.Current(ctx, envName)
-		if berr != nil {
-			return fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, ep.URL, berr)
-		}
-		if bound {
-			release, digests = binding.Release, binding.Resolved
-		}
+	binding, bound, berr := hostedLedger(client, ep.URL, ref.Project, ref.Kind).Bindings.Current(ctx, envName)
+	if berr != nil {
+		return fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, ep.URL, berr)
+	}
+	if bound {
+		release, digests = binding.Release, binding.Resolved
 	}
 	report.setTags("", "release "+emptyAs(release, "(none)")+" (promoted; "+ep.URL+")", release, false)
 
@@ -144,17 +142,9 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		OnEnvironment: func(id string) { report.setHostedTarget(ep.URL, id) },
 	})
 	start := time.Now()
-	if opts.rollback {
-		if err := rollbackDeployGroups(ctx, registry, groups, projectDirForKCL()); err != nil {
-			return err
-		}
-		fmt.Printf("\nRollback completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
-		return nil
-	}
-	// No lastGoodTag: a failed hosted publish is NOT auto-rolled-back. The
-	// ledger still names the release the operator promoted, and silently
-	// recording a rollback on it would rewrite history to hide a failure.
-	if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
+	// A failed hosted publish is NOT reverted. The ledger still names the
+	// release the operator promoted; recovery is roll forward.
+	if err := dispatchDeployGroups(ctx, registry, groups); err != nil {
 		return err
 	}
 	if !opts.dryRun {

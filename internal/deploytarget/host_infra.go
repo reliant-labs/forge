@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/hostinfra"
 )
@@ -61,24 +60,6 @@ func (p HostInfraProvider) Deploy(ctx context.Context, group ServiceGroup) error
 		}
 	}
 	return errors.Join(failures...)
-}
-
-// Rollback is a no-op with an explanation rather than a silent success.
-//
-// Rollback means "put the previous VERSION back", and these instances have
-// no version forge deploys — the engine version is a declared field, not
-// an image tag a pipeline moves. A failed `forge run` leaves the data
-// directory exactly as it was, so there is nothing to revert; changing the
-// declared version and running again is the whole update story.
-func (p HostInfraProvider) Rollback(_ context.Context, group ServiceGroup, _ string) error {
-	names := make([]string, 0, len(group.Services))
-	for _, svc := range group.Services {
-		names = append(names, svc.Name)
-	}
-	fmt.Printf("  rollback %s: nothing to roll back — host infra has no deployed version "+
-		"(the engine version is declared in KCL, and the data directory is untouched by a failed start)\n",
-		strings.Join(names, ", "))
-	return nil
 }
 
 // Stop shuts every instance in the group down cleanly, leaving its data in

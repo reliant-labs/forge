@@ -1,4 +1,4 @@
-// Package compat reads the ROLLBACK-COMPATIBILITY contract a migration
+// Package compat reads the BACKWARD-COMPATIBILITY contract a migration
 // declares about itself.
 //
 // THE CONTRACT. A migration's .up.sql may carry the line
@@ -16,21 +16,16 @@
 // directions: `DROP TABLE` of a table nothing reads is safe, and `ADD COLUMN
 // ... NOT NULL` without a default breaks every old INSERT. So the author,
 // who knows, states it once, in the file, in review — and forge enforces
-// what follows from it:
+// what follows from it: the migrator records the declared versions in the
+// database as it applies them, so an OLDER binary that meets a schema ahead
+// of it — the previous release's pods, still serving or rescheduled, during
+// every rolling deploy — can prove the extra versions are safe rather than
+// hoping (see migratekit.SchemaAheadError).
 //
-//   - `forge env promote --rollback` refuses to move an environment back
-//     across a migration that does not declare it (the older release would
-//     run against a schema its code was never written for), and says to
-//     roll forward with a hotfix instead;
-//   - the migrator records the declared versions in the database as it
-//     applies them, so an OLDER binary that meets a schema ahead of it can
-//     prove the extra versions are safe rather than hoping (see
-//     migratekit.SchemaAheadError).
-//
-// WHY THIS IS ITS OWN PACKAGE. It is read by two very different programs: the
-// forge CLI (promote, lint) and every project's migrator. The CLI must not
-// link golang-migrate for a comment parser, so this package imports nothing
-// but the standard library.
+// WHY THIS IS ITS OWN PACKAGE. It is a comment parser every project's
+// migrator links; keeping it free of golang-migrate lets any tool read the
+// declaration without that dependency, so it imports nothing but the
+// standard library.
 package compat
 
 import (
@@ -128,49 +123,4 @@ func Scan(fsys fs.FS, dir string) ([]Migration, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil
-}
-
-// Delta is the schema difference between two releases' migration sets: the
-// versions the NEWER set has that the OLDER one does not.
-//
-// It is what a rollback crosses. Running the older release against a
-// database the newer one migrated means running it against every migration
-// in Delta, so Delta is exactly the set whose compatibility matters.
-type Delta struct {
-	// Ahead is every migration in the newer set absent from the older,
-	// in version order.
-	Ahead []Migration
-}
-
-// Incompatible returns the migrations in the delta that do NOT declare
-// themselves backward-compatible. Empty means the older release's code can
-// run against the newer schema as-is.
-func (d Delta) Incompatible() []Migration {
-	var out []Migration
-	for _, m := range d.Ahead {
-		if !m.BackwardCompatible {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
-// Compare computes the delta a move from `newer` back to `older` crosses.
-//
-// Membership is by VERSION, not by "greater than older's max". A version
-// present in newer and absent from older is ahead even when it is numbered
-// below older's newest — that is what a migration merged out of order looks
-// like, and the older binary has never seen it either.
-func Compare(newer, older []Migration) Delta {
-	known := make(map[uint]bool, len(older))
-	for _, m := range older {
-		known[m.Version] = true
-	}
-	var d Delta
-	for _, m := range newer {
-		if !known[m.Version] {
-			d.Ahead = append(d.Ahead, m)
-		}
-	}
-	return d
 }

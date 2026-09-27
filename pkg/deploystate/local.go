@@ -34,12 +34,11 @@ const (
 //
 // A NEW filename prefix rather than reusing the existing
 // `<provider>-<env>-<service>.json`, and that is deliberate. Those files
-// are written and read by forge's non-cluster providers to remember a
-// previous good tag — it is the only rollback affordance External and
-// Compose have, since neither has anything like `kubectl rollout undo`.
-// Widening that file's schema in place would mean an older forge reading
-// a newer file, and the failure mode of a rollback path that
-// misparses is losing the one recorded way back.
+// are written and read by forge's non-cluster providers to remember the
+// tag they last shipped (the next deploy's ${LAST_TAG}). Widening that
+// file's schema in place would mean an older forge reading a newer file,
+// and a provider that misparses it loses the only record of what it
+// deployed.
 //
 // So the two coexist, and Local READS the legacy file when it has no
 // record of its own (see [Local.Get]). A project that has been deploying

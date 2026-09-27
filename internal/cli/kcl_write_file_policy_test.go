@@ -70,18 +70,18 @@ func TestGeneratedFilesAreWrittenOnlyByCommandsThatLaunch(t *testing.T) {
 		wantWrite bool
 	}
 	up := command{"env up", func(ctx context.Context, dir, env string) {
-		activateDevStack(ctx, dir, env, renderToLaunch)
+		activateDevStack(ctx, dir, env, renderToLaunch, claimNewBlocks)
 		armMaterializer(dir)
 	}, true}
 	deployApply := command{"env deploy", func(ctx context.Context, dir, env string) {
-		activateDevStack(ctx, dir, env, renderDeclaration)
+		activateDevStack(ctx, dir, env, renderDeclaration, claimNewBlocks)
 		armMaterializer(dir)
 	}, true}
 	deployDryRun := command{"env deploy --dry-run", func(ctx context.Context, dir, env string) {
-		activateDevStack(ctx, dir, env, renderDeclaration)
+		activateDevStack(ctx, dir, env, renderDeclaration, inspectBlocks)
 	}, false}
 	statusOnly := command{"env status / cluster lifecycle", func(ctx context.Context, dir, env string) {
-		activateDevStack(ctx, dir, env, renderToLaunch)
+		activateDevStack(ctx, dir, env, renderToLaunch, inspectBlocks)
 	}, false}
 	bare := command{"ci / doctor / generate (no activation)", func(context.Context, string, string) {}, false}
 

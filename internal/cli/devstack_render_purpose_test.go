@@ -235,10 +235,10 @@ func TestEnvRender_CloudEnvClaimsNoPortBlock(t *testing.T) {
 // renderWebPort renders env from projectDir after activating the dev-stack
 // context for purpose — the exact sequence `forge env up` / `forge env deploy`
 // run — and returns the WEB_PORT the KCL resolved.
-func renderWebPort(t *testing.T, projectDir, env string, purpose renderPurpose) int {
+func renderWebPort(t *testing.T, projectDir, env string, purpose renderPurpose, claim blockClaim) int {
 	t.Helper()
 	t.Chdir(projectDir)
-	activateDevStack(t.Context(), projectDir, env, purpose)
+	activateDevStack(t.Context(), projectDir, env, purpose, claim)
 	entities, err := RenderKCL(t.Context(), projectDir, env)
 	if err != nil {
 		t.Fatalf("render %s: %v", env, err)
@@ -296,7 +296,7 @@ func TestLocalEnvStillClaimsItsPortBlock(t *testing.T) {
 			primary, worktree := portblockRepo(t)
 			writePortblockProject(t, worktree, "dev", localDevMainK)
 
-			got := renderWebPort(t, worktree, "dev", purpose.purpose)
+			got := renderWebPort(t, worktree, "dev", purpose.purpose, claimNewBlocks)
 			if got != 3100 {
 				t.Errorf("a linked worktree's dev render must claim block 1 (port 3100), got %d", got)
 			}
@@ -316,7 +316,7 @@ func TestLaunchingCloudEnvLocallyStillClaimsABlock(t *testing.T) {
 	primary, worktree := portblockRepo(t)
 	writePortblockProject(t, worktree, "prod", cloudProdMainK)
 
-	if got := renderWebPort(t, worktree, "prod", renderToLaunch); got != 3100 {
+	if got := renderWebPort(t, worktree, "prod", renderToLaunch, claimNewBlocks); got != 3100 {
 		t.Errorf("`forge env up prod` must claim a block for its local dev server (port 3100), got %d", got)
 	}
 	if !readRegistryKeys(t, primary)["prod-rollout-160"] {

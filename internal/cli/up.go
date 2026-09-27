@@ -287,7 +287,7 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 		return err
 	}
 	projectDir := projectDirForKCL()
-	_, restore := activateDevStack(ctx, projectDir, env, renderToLaunch)
+	_, restore := activateDevStack(ctx, projectDir, env, renderToLaunch, inspectBlocks)
 	entities, err := RenderKCL(ctx, projectDir, env)
 	restore() // revert resolve_port bytes; a status render must not drift ports
 	if err != nil {
@@ -678,7 +678,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// .forge/ports-*.json are gitignored). restorePortStore reverts the
 	// resolve_port store if the already-running guard below rejects this
 	// render (a rejected attempt must not drift the stable assignments).
-	_, restorePortStore := activateDevStack(ctx, projectDir, opts.env, renderToLaunch)
+	_, restorePortStore := activateDevStack(ctx, projectDir, opts.env, renderToLaunch, claimNewBlocks)
 	// Bringing the env up IS materializing it, so the module's generated
 	// files (fp.write_file) are written by these renders.
 	armMaterializer(projectDir)

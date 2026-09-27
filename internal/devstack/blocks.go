@@ -454,6 +454,37 @@ func AllocatePortAvoidingForeign(projectDir string, base int, key string, isFree
 	return AllocatePort(projectDir, base, key)
 }
 
+// LookupBlock reports the block already registered for key, and whether one
+// is, WITHOUT claiming anything: no lock is taken (taking it creates
+// .forge/blocks.lock), no entry is added, no label is reconciled. It is the
+// engine behind a READ-ONLY render's allocate_port — `forge env render`,
+// `forge env config`, `forge env status`, `forge env deploy --dry-run` —
+// which must describe the stack a key already has, and must never be the
+// thing that hands a new one out.
+//
+// Reading without the lock is safe because writeRegistry replaces the file
+// by atomic rename: a reader sees the whole old registry or the whole new
+// one, never half of either.
+//
+// The key is validated exactly as an allocation would validate it, so a
+// malformed key is reported by the render that composed it rather than
+// surfacing later at `forge env up`.
+//
+// The default key "" is implicitly block 0 and is reported found=false until
+// an availability-aware allocation recorded it; the caller resolves it to
+// base, which is what AllocateBlock returns for it too.
+func LookupBlock(projectDir, key string) (block int, found bool, err error) {
+	if err := validateKey(key); err != nil {
+		return 0, false, err
+	}
+	reg, err := readRegistry(projectDir)
+	if err != nil {
+		return 0, false, err
+	}
+	e, found := reg[key]
+	return e.Block, found, nil
+}
+
 // maxForeignProbeBlocks bounds the search for a free block. Ten stacks of one
 // base port on one machine is already far past the case this exists for.
 const maxForeignProbeBlocks = 10

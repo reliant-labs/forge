@@ -241,111 +241,6 @@ func TestExternal_HealthCheckFails_NoStateWrite(t *testing.T) {
 	}
 }
 
-// TestExternal_Rollback_WithState confirms Rollback substitutes
-// ${LAST_TAG} from the state file into rollback_cmd and exec's it.
-func TestExternal_Rollback_WithState(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := WriteDeployState(dir, "external", "prod", "edge", DeployState{
-		Image: "x/edge",
-		Tag:   "v1.0.0",
-	}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	r := &fakeRunner{}
-	p := ExternalProvider{ProjectDir: dir, Runner: r}
-	group := ServiceGroup{
-		Env:        "prod",
-		ProviderID: "external",
-		Services: []ResolvedService{
-			{
-				Name: "edge",
-				External: &ExternalSpec{
-					Image:       "x/edge",
-					DeployCmd:   "flyctl deploy --image ${IMAGE}:${TAG}",
-					RollbackCmd: "flyctl deploy --image ${IMAGE}:${LAST_TAG} --app ${SERVICE}",
-				},
-			},
-		},
-	}
-	if err := p.Rollback(context.Background(), group, "v9-current-broken"); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-	if len(r.calls) != 1 {
-		t.Fatalf("call count: want 1 (rollback_cmd), got %d (%v)", len(r.calls), r.calls)
-	}
-	// State-file tag wins over the dispatcher-supplied lastGoodTag.
-	want := "sh -c flyctl deploy --image x/edge:v1.0.0 --app edge"
-	if r.calls[0] != want {
-		t.Errorf("rollback call: want %q, got %q", want, r.calls[0])
-	}
-}
-
-// TestExternal_Rollback_NoState confirms Rollback errors loudly when
-// there's no state file AND no fallback tag — guessing would risk
-// shipping a regression.
-func TestExternal_Rollback_NoState(t *testing.T) {
-	dir := t.TempDir()
-	r := &fakeRunner{}
-	p := ExternalProvider{ProjectDir: dir, Runner: r}
-	group := ServiceGroup{
-		Env:        "prod",
-		ProviderID: "external",
-		Services: []ResolvedService{
-			{
-				Name: "edge",
-				External: &ExternalSpec{
-					Image:       "x/edge",
-					DeployCmd:   "flyctl deploy",
-					RollbackCmd: "flyctl deploy --image ${IMAGE}:${LAST_TAG}",
-				},
-			},
-		},
-	}
-	err := p.Rollback(context.Background(), group, "")
-	if err == nil {
-		t.Fatal("expected error for missing state file + empty lastGoodTag, got nil")
-	}
-	if !strings.Contains(err.Error(), "no previous tag recorded") {
-		t.Errorf("want 'no previous tag recorded', got %v", err)
-	}
-}
-
-// TestExternal_Rollback_NoRollbackCmd confirms Rollback errors clearly
-// when the user didn't declare a rollback_cmd — forge can't synthesise
-// one for an arbitrary CLI.
-func TestExternal_Rollback_NoRollbackCmd(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := WriteDeployState(dir, "external", "prod", "edge", DeployState{
-		Image: "x/edge",
-		Tag:   "v1.0.0",
-	}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	r := &fakeRunner{}
-	p := ExternalProvider{ProjectDir: dir, Runner: r}
-	group := ServiceGroup{
-		Env:        "prod",
-		ProviderID: "external",
-		Services: []ResolvedService{
-			{
-				Name: "edge",
-				External: &ExternalSpec{
-					Image:     "x/edge",
-					DeployCmd: "flyctl deploy",
-					// RollbackCmd intentionally empty.
-				},
-			},
-		},
-	}
-	err := p.Rollback(context.Background(), group, "v0")
-	if err == nil {
-		t.Fatal("expected error for missing rollback_cmd, got nil")
-	}
-	if !strings.Contains(err.Error(), "no rollback_cmd declared") {
-		t.Errorf("want 'no rollback_cmd declared', got %v", err)
-	}
-}
-
 // TestExternal_Deploy_DryRun confirms --dry-run prints the resolved
 // deploy_cmd + health_cmd lines but does NOT exec anything and does
 // NOT write the state file. The trap this guards against: a user runs
@@ -392,45 +287,6 @@ func TestExternal_Deploy_DryRun(t *testing.T) {
 	statePath := filepath.Join(dir, ".forge/state/external-prod-edge.json")
 	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
 		t.Errorf("state file should NOT exist after dry-run, got err=%v", err)
-	}
-}
-
-// TestExternal_Rollback_DryRun confirms the rollback dry-run path
-// prints the substituted rollback_cmd and exec's nothing.
-func TestExternal_Rollback_DryRun(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := WriteDeployState(dir, "external", "prod", "edge", DeployState{
-		Image: "x/edge",
-		Tag:   "v1.0.0",
-	}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	r := &fakeRunner{}
-	p := ExternalProvider{ProjectDir: dir, Runner: r}
-	group := ServiceGroup{
-		Env: "prod", ProviderID: "external", DryRun: true,
-		Services: []ResolvedService{
-			{
-				Name: "edge",
-				External: &ExternalSpec{
-					Image:       "x/edge",
-					DeployCmd:   "flyctl deploy",
-					RollbackCmd: "flyctl deploy --image ${IMAGE}:${LAST_TAG}",
-				},
-			},
-		},
-	}
-	out := captureStdout(t, func() {
-		if err := p.Rollback(context.Background(), group, ""); err != nil {
-			t.Fatalf("Rollback: %v", err)
-		}
-	})
-	if len(r.calls) != 0 {
-		t.Fatalf("dry-run rollback should NOT exec, got %d call(s): %v", len(r.calls), r.calls)
-	}
-	want := "[DRY-RUN] would exec: sh -c flyctl deploy --image x/edge:v1.0.0"
-	if !strings.Contains(out, want) {
-		t.Errorf("stdout should contain %q, got:\n%s", want, out)
 	}
 }
 
@@ -617,8 +473,7 @@ func TestExternal_Deploy_CodeVersionAndPipelineTokens(t *testing.T) {
 }
 
 // TestExternal_Deploy_LastTagFromPriorDeploy confirms ${LAST_TAG} carries
-// the previously-recorded forge env deploy tag on a NORMAL deploy (not just
-// rollback), so a script can reference the outgoing version.
+// the previously-recorded forge env deploy tag on a deploy, so a script can reference the outgoing version.
 func TestExternal_Deploy_LastTagFromPriorDeploy(t *testing.T) {
 	dir := t.TempDir()
 	// Seed a prior forge env deploy of this service at tag v1.

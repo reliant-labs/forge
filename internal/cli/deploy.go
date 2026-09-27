@@ -28,7 +28,6 @@ import (
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/kcl"
 	"github.com/reliant-labs/forge/pkg/deploystate"
-	"github.com/reliant-labs/forge/pkg/release"
 )
 
 func newDeployCmd() *cobra.Command {
@@ -39,7 +38,6 @@ func newDeployCmd() *cobra.Command {
 		explain       bool
 		targetArch    string
 		prune         bool
-		rollback      bool
 		targets       []string
 		skipFrontend  bool
 		frontendsOnly bool
@@ -73,7 +71,7 @@ owned by forge run / forge env up and forge build respectively.
 Safety (declarative context): the kubectl context is read SOLELY from the
 env's KCL — forge.K8sCluster.cluster IS the kubectl context name (e.g.
 "gke_<project>_<region>_prod"; defaults to k3d-<project> for dev). Every
-kubectl call in the apply/wait/prune/rollback/secrets path runs
+kubectl call in the apply/wait/prune/secrets path runs
 --context <declared> per command, so the deploy applies to EXACTLY the
 cluster the env declares — independent of whatever context is currently
 active. There is NO CLI override and NO fall-back to the current context:
@@ -87,7 +85,7 @@ kubeconfig, and the verdict without applying.
 
 Machine-readable output: --json emits ONE JSON document covering the whole
 invocation, with the same exit code text mode produces. It reports the MODE
-actually performed (explain / dry_run / apply / rollback) so a consumer never
+actually performed (explain / dry_run / apply) so a consumer never
 has to infer whether bytes moved; the guard verdict, the target cluster +
 namespace (every declared context, for a multi-cluster env); whether the
 preflight ran and its findings as structured entries; per-image digest-vs-tag
@@ -138,7 +136,7 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return dispatchDeployCmd(cmd.Context(), args[0], deployCmdFlags{
 				tag: tag, dryRun: dryRun, namespace: namespace, explain: explain,
-				targetArch: targetArch, prune: prune, rollback: rollback, targets: targets,
+				targetArch: targetArch, prune: prune, targets: targets,
 				skipFrontend: skipFrontend, frontendsOnly: frontendsOnly,
 				skipPreflight: skipPreflight, noDigest: noDigest, jsonOut: jsonOut,
 				rolloutMode: rolloutMode, rolloutTimeout: rolloutTimeout,
@@ -153,13 +151,12 @@ Examples:
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
 	cmd.Flags().StringVar(&targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
 	cmd.Flags().BoolVar(&prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
-	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back the env to the last successfully deployed tag (per service, from .forge/state).")
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
 	cmd.Flags().BoolVar(&frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to Firebase Hosting or a static-site bucket, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
 	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON describing the whole invocation — mode (explain/dry_run/apply/rollback), the declared-cluster guard verdict, the target cluster + namespace, the preflight findings, per-image digest-vs-tag pinning, the resource identities applied, and the per-resource rollout outcome (ready / failed / timed_out / not_waited). Works with --explain and --dry-run, which is how a UI previews a deploy. Same exit codes as text mode; the human output moves to stderr so stdout carries exactly one JSON document.")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON describing the whole invocation — mode (explain/dry_run/apply), the declared-cluster guard verdict, the target cluster + namespace, the preflight findings, per-image digest-vs-tag pinning, the resource identities applied, and the per-resource rollout outcome (ready / failed / timed_out / not_waited). Works with --explain and --dry-run, which is how a UI previews a deploy. Same exit codes as text mode; the human output moves to stderr so stdout carries exactly one JSON document.")
 	cmd.Flags().StringVar(&rolloutMode, "rollout", "wait", "What to do after the manifests land: 'wait' (wait for every Deployment/Job and FAIL if any does not become ready — the default), 'warn' (wait and report, but exit 0), or 'skip' (apply and return immediately).")
 	cmd.Flags().DurationVar(&rolloutTimeout, "rollout-timeout", 0, "Per-resource readiness budget (e.g. 90s, 10m). Applies to EACH Deployment and one-shot Job, not the set. Default 5m.")
 	cmd.Flags().BoolVar(&rolloutFailFast, "rollout-fail-fast", false, "Stop at the FIRST resource that fails instead of waiting for the rest. Default reports every failure, which is usually what you want when diagnosing a bad deploy.")
@@ -180,7 +177,6 @@ type deployCmdFlags struct {
 	explain       bool
 	targetArch    string
 	prune         bool
-	rollback      bool
 	targets       []string
 	skipFrontend  bool
 	frontendsOnly bool
@@ -194,8 +190,8 @@ type deployCmdFlags struct {
 	rolloutOrder    []string
 }
 
-// dispatchDeployCmd validates the flag combination and routes to the explain,
-// deploy or rollback path.
+// dispatchDeployCmd validates the flag combination and routes to the explain
+// or deploy path.
 //
 // The report is constructed HERE, before the explain branch, because --json has
 // to work for --explain and --dry-run too: those are exactly what a UI calls to
@@ -218,14 +214,6 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) er
 	if f.explain {
 		return runDeployExplain(ctx, envName, report)
 	}
-	// --rollback is mutually exclusive with --tag. Rollback's whole purpose is
-	// to ship the previously-recorded last-good tag from .forge/state;
-	// accepting a caller-supplied tag alongside it would either override the
-	// recorded value (defeating the rollback) or be silently ignored (worse:
-	// the user thinks they pinned a tag and they didn't).
-	if f.rollback && f.tag != "" {
-		return errors.New("--rollback and --tag are mutually exclusive")
-	}
 	// --frontends-only is the inverse of --skip-frontend: ship ONLY the env's
 	// shippable frontend(s) and nothing else. The two are mutually exclusive —
 	// one says "everything but the frontend", the other "the frontend and
@@ -242,7 +230,6 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) er
 		namespace:     f.namespace,
 		targetArch:    f.targetArch,
 		prune:         f.prune,
-		rollback:      f.rollback,
 		targets:       f.targets,
 		skipFrontend:  f.skipFrontend,
 		frontendsOnly: f.frontendsOnly,
@@ -413,17 +400,6 @@ type deployOptions struct {
 	// refactor leaves stale Deployments behind otherwise.
 	prune bool
 
-	// rollback, when true, switches the dispatch from Deploy to
-	// Rollback. Each external/compose group reads its
-	// .forge/state/<provider>-<env>-<svc>.json file to find the last
-	// good tag and asks the provider to revert there; k8s-cluster
-	// groups invoke `kubectl rollout undo`. Missing state files
-	// produce a clear per-service error rather than guessing.
-	//
-	// Mutually exclusive with imageTag — the deploy command rejects
-	// the combination at flag-parse time.
-	rollback bool
-
 	// targets, when non-empty, scopes the deploy to the named
 	// applications (service / operator / frontend names). Two layers
 	// honour it: (1) entities.Services / entities.Operators /
@@ -442,8 +418,7 @@ type deployOptions struct {
 	// "k8s-only, leave the frontend alone" escape hatch for the WHOLE
 	// backend bundle — naming backend apps via --target already excludes
 	// frontends, but that forces enumerating every service; --skip-frontend
-	// covers the deploy-everything-but-the-frontend case in one flag. No
-	// effect on rollback (which never dispatches frontends).
+	// covers the deploy-everything-but-the-frontend case in one flag.
 	skipFrontend bool
 
 	// purpose is why this deploy renders the env. `forge env deploy` leaves
@@ -464,7 +439,7 @@ type deployOptions struct {
 	// rendered entity set to its Frontends (filterEntitiesByTarget with
 	// frontendsOnly=true strips every non-frontend kind), which makes the
 	// frontendOnly guard in runDeploy engage so the empty-manifest
-	// cluster.Apply is skipped. No effect on rollback.
+	// cluster.Apply is skipped.
 	frontendsOnly bool
 
 	// skipPreflight, when true, bypasses the deploy-time deployability
@@ -476,7 +451,7 @@ type deployOptions struct {
 	// naturally skipped for local dev clusters (where images live in the
 	// in-cluster registry the checker can't reach the same way) and no-ops
 	// when there's nothing to check. Bypass is the escape hatch when you
-	// knowingly accept the risk. No effect on rollback.
+	// knowingly accept the risk.
 	skipPreflight bool
 
 	// noDigest, when true, forces deploy to reference the mutable :tag even
@@ -562,7 +537,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	namespace := opts.namespace
 	targetArchFlag := opts.targetArch
 	prune := opts.prune
-	rollback := opts.rollback
 	targets := opts.targets
 	report := opts.report
 
@@ -613,7 +587,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// `<image>@<digest>` per service rather than stamping one env-wide digest
 	// onto every image (the multi-image correctness fix). Empty on the
 	// no-digest / local-registry path → every image stays on imageTag.
-	tagRes, err := resolveDeployTags(ctx, projectDir, envName, opts, rollback)
+	tagRes, err := resolveDeployTags(ctx, projectDir, envName, opts)
 	if err != nil {
 		return err
 	}
@@ -622,7 +596,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	imageDigests := tagRes.imageDigests
 	tagSource := tagRes.tagSource
 	report.setTags(imageTag, tagSource, tagRes.boundRelease, opts.noDigest)
-	report.setPromotionRollback(tagRes.promotionRollback)
 
 	namespace = resolveDeployNamespace(ctx, namespace, envName, store.Meta().Name)
 
@@ -662,7 +635,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		}
 	}
 
-	printDeployBanner(store.Meta().Name, envName, imageTag, tagSource, namespace, rollback, dryRun, hasK8sServices)
+	printDeployBanner(store.Meta().Name, envName, imageTag, tagSource, namespace, dryRun, hasK8sServices)
 
 	// Declared external-prerequisite CHECKLIST: print the out-of-band facts
 	// this env DEPENDS ON (forge.ExternalSecret / forge.DNSRecord) so the
@@ -683,7 +656,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if err := prepareDeployCluster(ctx, deployClusterInput{
 		cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
 		imageTag: imageTag, targetArchFlag: targetArchFlag,
-		dryRun: dryRun, rollback: rollback, hasK8sServices: hasK8sServices,
+		dryRun: dryRun, hasK8sServices: hasK8sServices,
 	}); err != nil {
 		return err
 	}
@@ -700,7 +673,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	}
 
 	// Env-wide kubectl context for the consumers that don't iterate groups
-	// (secrets pre-apply, empty-groups direct apply, rollback). Fails fast on
+	// (secrets pre-apply, empty-groups direct apply). Fails fast on
 	// a declared cluster with no matching context. See resolveDeployKubectlContext.
 	deployContext, err := resolveDeployKubectlContext(ctx, cfg, envName, entities, groups, hasK8sServices)
 	if err != nil {
@@ -747,28 +720,16 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		entities: entities, groups: groups, mainK: mainK, imageTag: imageTag, namespace: namespace,
 		envName: envName, envCfgKV: envCfgKV, deployContext: deployContext,
 		targets: targets, imageDigests: imageDigests, report: report,
-	}, hasK8sServices, rollback, opts.skipPreflight); err != nil {
+	}, hasK8sServices, opts.skipPreflight); err != nil {
 		return err
 	}
 
 	// k8s Secret projection: for a dotenv secret_provider, render the
 	// declared cluster secret refs into plaintext Secret manifests and
 	// apply them BEFORE the Deployments roll out (so each Deployment's
-	// secretKeyRef resolves on first schedule). Skipped on rollback —
-	// rollback reuses the tag (and the Secret) already in the cluster.
-	if !rollback {
-		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
-			return err
-		}
-	}
-
-	if rollback {
-		return runDeployRollback(ctx, deployRollbackInput{
-			mainK: mainK, imageTag: imageTag, namespace: namespace, envName: envName,
-			envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, targets: targets,
-			groups: groups, entities: entities, imageDigests: imageDigests,
-			cfg: cfg, projectDir: projectDir, start: start, report: report,
-		})
+	// secretKeyRef resolves on first schedule).
+	if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
+		return err
 	}
 
 	// When no K8sCluster groups are present, the rendered set carries
@@ -788,7 +749,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
 		targets: targets, helmSpecs: helmSpecs,
 		rollout: opts.rollout, report: report,
-		promotionRollback: tagRes.promotionRollback,
 	}); err != nil {
 		return err
 	}
@@ -918,12 +878,9 @@ func dispatchFrontendsOrSkip(ctx context.Context, in deployFrontendInput) error 
 // the one question the report must always be able to answer. Nil-safe, so text
 // mode calls it and nothing happens.
 func recordDeployInvocation(report *deployReport, opts deployOptions) {
-	switch {
-	case opts.rollback:
-		report.setMode(deployModeRollback)
-	case opts.dryRun:
+	if opts.dryRun {
 		report.setMode(deployModeDryRun)
-	default:
+	} else {
 		report.setMode(deployModeApply)
 	}
 	report.setScope(opts.targets, opts.skipFrontend, opts.frontendsOnly, opts.prune)
@@ -944,17 +901,11 @@ type deployTagResolution struct {
 	// named in tagSource's prose; carried structurally so the report does not
 	// have to parse it back out of a sentence.
 	boundRelease string
-	// promotionRollback is true when boundRelease was bound by `forge env
-	// promote --rollback`: the deploy then skips the pre-rollout Jobs.
-	promotionRollback bool
 }
 
 // resolveDeployTags resolves the image tag (three-tier precedence chain) and
 // the per-image digest map for a deploy. Split out of runDeploy so the
-// precedence logic is testable without stubbing the whole pipeline. Rollback
-// never consults this chain — it reads the per-service state file inside
-// dispatchDeployGroups instead — so the rollback case returns the plain
-// opts.imageTag with a "rollback (state file)" source and no digests.
+// precedence logic is testable without stubbing the whole pipeline.
 //
 // Digest resolution precedence (highest first):
 //  1. A bound RELEASE (env promoted via `forge env promote`): pins the digests the
@@ -968,15 +919,8 @@ type deployTagResolution struct {
 //
 // FULL BACKWARD COMPAT: with no release binding this is byte-identical to
 // resolveDeployImageDigests alone. --no-digest disables both digest paths.
-func resolveDeployTags(ctx context.Context, projectDir, envName string, opts deployOptions, rollback bool) (deployTagResolution, error) {
-	res := deployTagResolution{
-		imageTag:  opts.imageTag,
-		plainTag:  opts.imageTag,
-		tagSource: "rollback (state file)",
-	}
-	if rollback {
-		return res, nil
-	}
+func resolveDeployTags(ctx context.Context, projectDir, envName string, opts deployOptions) (deployTagResolution, error) {
+	var res deployTagResolution
 	ref, pt, src, terr := resolveDeployImageTag(ctx, projectDir, envName, opts.imageTag, opts.noDigest)
 	if terr != nil {
 		return deployTagResolution{}, terr
@@ -997,78 +941,8 @@ func resolveDeployTags(ctx context.Context, projectDir, envName string, opts dep
 	if boundRel != "" {
 		res.tagSource = fmt.Sprintf("release %s (promoted; %s)", boundRel, bindings.Location())
 		fmt.Printf("  Release:     %s  (env %q is promoted to it — pinning its digests from %s)\n", boundRel, envName, bindings.Location())
-		isRollback, rerr := deployPromotionIsRollback(ctx, bindings, envName, opts.noDigest)
-		if rerr != nil {
-			return deployTagResolution{}, rerr
-		}
-		res.promotionRollback = isRollback
-		if isRollback {
-			fmt.Printf("  Rollback:    %s was bound by `forge env promote --rollback` — its pre-rollout Jobs (the schema migration) will NOT run\n", boundRel)
-		}
 	}
 	return res, nil
-}
-
-// deployRollbackInput carries the resolved deploy envelope runDeployRollback
-// needs to revert each group to the tag already in the cluster.
-type deployRollbackInput struct {
-	mainK        string
-	imageTag     string
-	namespace    string
-	envName      string
-	envCfgKV     map[string]string
-	dryRun       bool
-	prune        bool
-	targets      []string
-	groups       []deploytarget.ServiceGroup
-	entities     *KCLEntities
-	imageDigests map[string]string
-	cfg          *config.ProjectConfig
-	projectDir   string
-	start        time.Time
-	// report, when non-nil, receives the rollback's stream and rollout
-	// outcomes. Nil-safe.
-	report *deployReport
-}
-
-// runDeployRollback dispatches each group to its provider's Rollback. The
-// dispatcher reads per-service state files for external/compose providers and
-// surfaces a clear error when a service has no previous deploy on record.
-//
-// Rollback's K8sCluster provider doesn't drive cluster.Apply (kubectl rollout
-// undo lives in the provider's Rollback), so the builder is unused for rollback
-// groups, but the registry still needs the provider registered; we reuse the
-// deploy-shaped builder for symmetry with the deploy path. Rollback reuses the
-// tag already in the cluster (imageDigests threads through unused) and applies
-// no platform deps (helmSpecs is nil).
-func runDeployRollback(ctx context.Context, in deployRollbackInput) error {
-	hostSkip := hostDeploymentSkipSetFromKCL(in.cfg, in.entities)
-	builder := applyOptsBuilderFromContext(applyOptsContext{
-		MainK: in.mainK, ImageTag: in.imageTag, FallbackNamespace: in.namespace, Env: in.envName,
-		EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
-		Targets: in.targets, Groups: in.groups, Entities: in.entities,
-		ImageDigests: in.imageDigests, HelmCharts: nil,
-		OnStream: in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
-	})
-	registry := deploytarget.NewRegistry()
-	// Rollback's per-group context is resolved by the provider purely from each
-	// group's declared cluster (forge.K8sCluster.cluster) — no override, no
-	// current-context fallback.
-	registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
-	// StaticSiteProvider genuinely supports rollback (it re-points live/ at an
-	// archived release prefix), so it is registered ProjectDir-configured: it
-	// reads the recorded predecessor digest out of .forge/state.
-	registry.Register(deploytarget.StaticSiteProvider{ProjectDir: in.projectDir})
-
-	groups := in.groups
-	if frontendGroups := staticSiteRollbackGroups(in.entities, in.envName, in.dryRun); len(frontendGroups) > 0 {
-		groups = append(append([]deploytarget.ServiceGroup{}, groups...), frontendGroups...)
-	}
-	if err := rollbackDeployGroups(ctx, registry, groups, in.projectDir); err != nil {
-		return err
-	}
-	fmt.Printf("\nRollback completed in %s.\n", time.Since(in.start).Truncate(time.Millisecond))
-	return nil
 }
 
 // deployApplyInput carries everything applyDeployGroups needs to route the
@@ -1093,9 +967,6 @@ type deployApplyInput struct {
 	// report, when non-nil, receives the applied manifest stream and the
 	// per-resource rollout outcomes. Nil-safe.
 	report *deployReport
-	// promotionRollback skips the pre-rollout Jobs (the env's ledger entry
-	// is a `forge env promote --rollback`). See cluster.ApplyOpts.
-	promotionRollback bool
 }
 
 // applyDeployGroups applies the rendered deploy groups. With no groups (and not
@@ -1127,9 +998,6 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			Rollout:      in.rollout,
 			OnStream:     in.report.streamObserver(),
 			OnRollout:    in.report.rolloutObserver(),
-
-			PromotionRollback: in.promotionRollback,
-			OnSkippedJobs:     in.report.skippedJobsObserver(),
 		})
 	}
 	if len(in.groups) > 0 {
@@ -1141,13 +1009,10 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
 			Rollout:  in.rollout,
 			OnStream: in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
-
-			PromotionRollback: in.promotionRollback,
-			OnSkippedJobs:     in.report.skippedJobsObserver(),
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
-		return dispatchDeployGroups(ctx, registry, in.groups, "")
+		return dispatchDeployGroups(ctx, registry, in.groups)
 	}
 	return nil
 }
@@ -1212,14 +1077,10 @@ func renderAndScopeEntities(ctx context.Context, projectDir, envName string, tar
 // printDeployBanner prints the pre-deploy summary. Namespace belongs to the
 // K8sCluster pipeline, so it is suppressed for external-only / compose-only
 // projects to keep the output uncluttered.
-func printDeployBanner(projectName, envName, imageTag, tagSource, namespace string, rollback, dryRun, hasK8sServices bool) {
+func printDeployBanner(projectName, envName, imageTag, tagSource, namespace string, dryRun, hasK8sServices bool) {
 	fmt.Printf("Deploying project: %s\n", projectName)
 	fmt.Printf("  Environment: %s\n", envName)
-	if rollback {
-		fmt.Printf("  Mode:        rollback\n")
-	} else {
-		fmt.Printf("  Image tag:   %s  (source: %s)\n", imageTag, tagSource)
-	}
+	fmt.Printf("  Image tag:   %s  (source: %s)\n", imageTag, tagSource)
 	if hasK8sServices {
 		fmt.Printf("  Namespace:   %s\n", namespace)
 	}
@@ -1248,14 +1109,13 @@ type deployClusterInput struct {
 	imageTag       string
 	targetArchFlag string
 	dryRun         bool
-	rollback       bool
 	hasK8sServices bool
 }
 
 // prepareDeployCluster reconciles the env's declared clusters (or the legacy
 // dev-only ensureDevCluster) and, for the dev env, builds + pushes images to
-// the local registry. All of this is skipped under --dry-run (renders only), on
-// rollback (reuses the tag already in the cluster), and when the env has no
+// the local registry. All of this is skipped under --dry-run (renders only) and
+// when the env has no
 // K8sCluster services (external-only env needs no k3d cluster).
 //
 // Declarative first: when the env's Bundle declares `clusters = [...]`,
@@ -1266,7 +1126,7 @@ type deployClusterInput struct {
 // byte-identical. The local build+push is independent of the cluster bootstrap
 // so a multi-cluster dev env still pushes to its owner cluster's registry.
 func prepareDeployCluster(ctx context.Context, in deployClusterInput) error {
-	if in.dryRun || in.rollback || !in.hasK8sServices {
+	if in.dryRun || !in.hasK8sServices {
 		return nil
 	}
 	if in.entities != nil && len(in.entities.Clusters) > 0 {
@@ -1290,7 +1150,7 @@ func prepareDeployCluster(ctx context.Context, in deployClusterInput) error {
 
 // resolveDeployKubectlContext resolves the env-wide kubectl context for the
 // consumers that don't iterate groups (the secrets pre-apply, the empty-groups
-// direct cluster.Apply, and the rollback provider). It fails fast when a
+// direct cluster.Apply). It fails fast when a
 // declared cluster has no matching kubectl context (with the list of available
 // contexts) rather than silently applying to whatever's active.
 //
@@ -1356,16 +1216,12 @@ type deployPreflightEnvInput struct {
 //
 // The skip reason is recorded as precisely as a finding, because "no findings"
 // and "nobody looked" are different claims and a consumer that cannot tell them
-// apart will present an unchecked deploy as a clean one. The three skips are the
-// pre-existing conditions, unchanged: no cluster to check against, a rollback
-// (which reuses the tag and Secrets already in the cluster), and the explicit
-// --skip-preflight bypass.
-func gateDeployOnPreflight(ctx context.Context, in deployPreflightEnvInput, hasK8sServices, rollback, skipPreflight bool) error {
+// apart will present an unchecked deploy as a clean one. The two skips are: no
+// cluster to check against, and the explicit --skip-preflight bypass.
+func gateDeployOnPreflight(ctx context.Context, in deployPreflightEnvInput, hasK8sServices, skipPreflight bool) error {
 	switch {
 	case !hasK8sServices:
 		in.report.setPreflightStatus(deployPreflightSkippedNoCluster)
-	case rollback:
-		in.report.setPreflightStatus(deployPreflightSkippedRollback)
 	case skipPreflight:
 		in.report.setPreflightStatus(deployPreflightSkippedFlag)
 	default:
@@ -1624,7 +1480,7 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			DryRun:      dryRun,
 		})
 	}
-	return dispatchDeployGroups(ctx, registry, groups, "")
+	return dispatchDeployGroups(ctx, registry, groups)
 }
 
 // hasShippableFrontend reports whether any rendered frontend declares a
@@ -1678,43 +1534,6 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 			Rewrites:  fb.Rewrites,
 		},
 	}
-}
-
-// staticSiteRollbackGroups builds the rollback groups for an env's
-// static-site frontends.
-//
-// Rollback deliberately does NOT go through dispatchFrontendDeploys:
-// that path builds (install + `npm run build`), and a rollback must not
-// build anything — the whole point is to serve the bytes already
-// archived in the bucket. So the group carries the specs and nothing
-// else, and the provider's Rollback resolves the target digest from the
-// recorded predecessor.
-//
-// Firebase frontends are excluded because FirebaseProvider.Rollback
-// returns ErrProviderNotImplemented (Firebase owns its own release
-// history via `firebase hosting:rollback`); including them would turn a
-// mixed env's rollback into a hard failure over a target that has a
-// perfectly good native recovery path.
-func staticSiteRollbackGroups(entities *KCLEntities, envName string, dryRun bool) []deploytarget.ServiceGroup {
-	if entities == nil {
-		return nil
-	}
-	var sites []deploytarget.StaticSiteFrontend
-	for _, f := range entities.Frontends {
-		if f.Deploy == nil || f.Deploy.Type != frontendDeployStaticSite || f.Deploy.StaticSite == nil {
-			continue
-		}
-		sites = append(sites, frontendToStaticSite(f))
-	}
-	if len(sites) == 0 {
-		return nil
-	}
-	return []deploytarget.ServiceGroup{{
-		Env:         envName,
-		ProviderID:  deploytarget.StaticSiteProvider{}.Name(),
-		StaticSites: sites,
-		DryRun:      dryRun,
-	}}
 }
 
 // frontendToStaticSite maps a rendered FrontendEntity (with a StaticSite
@@ -2302,24 +2121,6 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		base[image] = digest
 	}
 	return base, binding.Release, nil
-}
-
-// deployPromotionIsRollback reports whether the release this deploy ships was
-// bound by `forge env promote --rollback` — the env's CURRENT ledger entry is
-// a rollback. Such a deploy skips the pre-rollout Jobs; see
-// cluster.ApplyOpts.PromotionRollback for why.
-//
-// noDigest deploys the mutable tag rather than the ledger's release, so the
-// ledger says nothing about what ships and the answer is false.
-func deployPromotionIsRollback(ctx context.Context, bindings bindingStore, envName string, noDigest bool) (bool, error) {
-	if noDigest {
-		return false, nil
-	}
-	current, bound, err := bindings.Current(ctx, envName)
-	if err != nil {
-		return false, fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, bindings.Location(), err)
-	}
-	return bound && current.Kind == release.KindRollback, nil
 }
 
 // shortDigest trims a canonical `sha256:<64 hex>` to a human-comparable head.

@@ -64,56 +64,35 @@ against the Deployments at all.
   `forge db migrate force <version> --dsn ...`.
 - **Every pod start re-runs it** (scale-up, node eviction). Intended, and
   cheap: a no-op is one connection, one lock, one version read.
-- **The schema is AHEAD of the binary** — a rollback. See below.
+- **The schema is AHEAD of the binary** — the previous release, mid-deploy.
+  See below.
 
-## Rolling back across a migration
+## Old code on a new schema — every deploy, not just incidents
 
-A rollback runs an OLDER release's binary against a database a NEWER release
-already migrated. An older migrator sees a version it does not embed and fails
-(`no migration found for version N`), which used to make the rollback deploy die
-at its own migrate step. Two things now handle it:
+Every rolling deploy runs the PREVIOUS release's code against the NEXT
+release's schema for a while: the new release migrates first, and the old
+ReplicaSet keeps serving — and keeps starting pods on a reschedule or a
+scale-up — until the rollout completes. So every migration must leave a schema
+the previous release still works on. That is expand/contract: add in release N,
+stop reading the old shape in N, drop it in N+1.
 
-**1. The deploy skips the migration.** `forge env promote <old> --to <env>
---rollback`, then `forge env deploy <env>`: when the env's current ledger entry
-is a rollback, the deploy does NOT apply its pre-rollout Jobs (the standalone
-migrate Job). It prints `ROLLBACK: skipping N pre-rollout Job(s): …` and
-`--json` records `promotion_rollback` and `skipped_pre_rollout_jobs`. The older
-release's migrations are already applied (the ledger refuses a rollback to a
-release the env never ran), and the older binary has no down SQL for the newer
-ones, so running its migrate step could only no-op or fail. Post-rollout Jobs
-still run. The next forward promote migrates again as normal.
-
-This covers the STANDALONE migrate Job (`forge.CronJob{schedule = ""}`, or a
-`kind = "job"` workload with no `before`). A migration lowered to an
-initContainer (`before = [fw.BEFORE_ALL]`) is part of the pod and is not
-skipped; there the older binary's own migrator decides (point 2).
-
-**2. The migrator classifies a schema ahead of it** (`forge/pkg/migratekit`,
-the scaffolded `db migrate up` and `AutoMigrate`). A migration may declare, in
-its `.up.sql`:
+A migration states that it is the safe (expand) kind in its `.up.sql`:
 
 ```sql
 -- forge:backward-compatible — additive column; the previous release never reads it
 ALTER TABLE plans ADD COLUMN retired_at TIMESTAMPTZ;
 ```
 
-The migrator records each version's declaration in `schema_migrations_compat`
-as it applies. An older binary built on this migratekit that meets a schema
-ahead of it exits 0 and says so (`SCHEMA AHEAD OF THIS BINARY`) when every
-unknown version was declared compatible, and fails with the runbook
-(`*migratekit.SchemaAheadError`) when not. A binary built BEFORE this has no
-such handling. That is why the deploy-side skip exists.
+The migrator (`forge/pkg/migratekit`: the scaffolded `db migrate up` and
+`AutoMigrate`) records each version's declaration in `schema_migrations_compat`
+as it applies. A binary that meets a schema AHEAD of it — an old pod booting
+mid-deploy — exits 0 and says so (`SCHEMA AHEAD OF THIS BINARY`) when every
+unknown version was declared compatible, and refuses to start
+(`*migratekit.SchemaAheadError`) when one was not. That refusal is the point:
+old code does not get to guess on a schema nobody vouched for.
 
-**What neither does: make the older code correct on the newer schema.**
-Skipping the migration runs the older code against the CURRENT schema. That is
-safe when the newer migrations were expand-only (added columns and tables the
-old code ignores). When one removed or changed something the old code uses, do
-NOT roll the app back across it — there is no down to run, and the schema is
-never stepped back. Roll forward instead: ship a hotfix release built on the
-current schema.
-
-Author migrations expand/contract so rolling the app back is always safe: add
-in release N, stop reading the old shape in N, drop it in N+1.
+There is no stepping a schema back, and no rollback of a release either — see
+"Roll forward only" below.
 
 ## Where AUTO_MIGRATE still fits
 
@@ -156,10 +135,12 @@ What to do instead:
   backfill; switch readers and writers in a release; drop the old shape in a
   LATER release. At every step the previous release still works against the
   new schema.
-- **Roll back the app, never the schema.** `forge env deploy --rollback`
-  re-points an environment at an earlier release's images and runs no SQL — and
-  the migrate Job only ever runs `db migrate up`. Expand-then-contract is what
-  makes the older release safe to run.
+- **Roll the app forward too.** There is no release rollback: a bad release is
+  fixed by a new one, cut and promoted like any other. Binding an env to an
+  OLDER release is possible (an ordinary `forge env promote`, labelled
+  `direction BEHIND`), but it undoes nothing — the older code then runs on the
+  newer schema, which is safe only if every migration since was
+  expand-only and marked `-- forge:backward-compatible`.
 
 ### Down files that predate the policy
 

@@ -10,19 +10,12 @@ import (
 )
 
 // fakeProvider is a minimal Provider used by the dispatch tests. It
-// records every Deploy/Rollback invocation so tests can assert the
-// dispatcher invoked the expected method on each group.
+// records every Deploy invocation so tests can assert the dispatcher
+// invoked it on each group.
 type fakeProvider struct {
-	id           string
-	deployCalls  []deploytarget.ServiceGroup
-	rollbackArgs []rollbackCall
-	deployErr    error
-	rollbackErr  error
-}
-
-type rollbackCall struct {
-	group       deploytarget.ServiceGroup
-	lastGoodTag string
+	id          string
+	deployCalls []deploytarget.ServiceGroup
+	deployErr   error
 }
 
 func (f *fakeProvider) Name() string { return f.id }
@@ -32,174 +25,14 @@ func (f *fakeProvider) Deploy(_ context.Context, g deploytarget.ServiceGroup) er
 	return f.deployErr
 }
 
-func (f *fakeProvider) Rollback(_ context.Context, g deploytarget.ServiceGroup, last string) error {
-	f.rollbackArgs = append(f.rollbackArgs, rollbackCall{group: g, lastGoodTag: last})
-	return f.rollbackErr
-}
-
 // Observe satisfies the Provider interface. These tests exercise the
-// DEPLOY and ROLLBACK dispatchers, which never call it — so it declines
+// DEPLOY dispatcher, which never calls it — so it declines
 // rather than returning a fabricated green observation that a future
 // test could accidentally assert against.
 func (f *fakeProvider) Observe(_ context.Context, _ deploytarget.ServiceGroup) (deploytarget.Observed, error) {
 	return deploytarget.Observed{ProviderID: f.id}, deploytarget.ObservationUnsupportedError{
 		Provider: f.id,
-		Reason:   "test double for the deploy/rollback dispatch; observation is not part of these tests",
-	}
-}
-
-// TestRollbackDeployGroups_CallsRollback confirms the rollback
-// dispatcher invokes the provider's Rollback (not Deploy) for each
-// group, and only after the per-service state file is on disk.
-func TestRollbackDeployGroups_CallsRollback(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := deploytarget.WriteDeployState(dir, "external", "prod", "edge", deploytarget.DeployState{
-		Image: "x/edge", Tag: "v1.0.0",
-	}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	fp := &fakeProvider{id: "external"}
-	reg := &deploytarget.Registry{}
-	reg.Register(fp)
-	groups := []deploytarget.ServiceGroup{
-		{
-			Env: "prod", ProviderID: "external",
-			Services: []deploytarget.ResolvedService{
-				{Name: "edge", External: &deploytarget.ExternalSpec{}},
-			},
-		},
-	}
-	if err := rollbackDeployGroups(context.Background(), reg, groups, dir); err != nil {
-		t.Fatalf("rollbackDeployGroups: %v", err)
-	}
-	if len(fp.deployCalls) != 0 {
-		t.Errorf("Rollback should not call Deploy, got %d calls", len(fp.deployCalls))
-	}
-	if len(fp.rollbackArgs) != 1 {
-		t.Fatalf("want 1 Rollback call, got %d", len(fp.rollbackArgs))
-	}
-}
-
-// TestRollbackDeployGroups_MissingStateError confirms a service
-// without a recorded last-good deploy produces a clear per-service
-// error and never reaches the provider.
-func TestRollbackDeployGroups_MissingStateError(t *testing.T) {
-	dir := t.TempDir()
-	fp := &fakeProvider{id: "external"}
-	reg := &deploytarget.Registry{}
-	reg.Register(fp)
-	groups := []deploytarget.ServiceGroup{
-		{
-			Env: "prod", ProviderID: "external",
-			Services: []deploytarget.ResolvedService{
-				{Name: "edge", External: &deploytarget.ExternalSpec{}},
-			},
-		},
-	}
-	err := rollbackDeployGroups(context.Background(), reg, groups, dir)
-	if err == nil {
-		t.Fatal("expected error for missing state file, got nil")
-	}
-	want := "no previous deploy state recorded for edge at prod; cannot rollback"
-	if !strings.Contains(err.Error(), want) {
-		t.Errorf("want %q in error, got %v", want, err)
-	}
-	if len(fp.rollbackArgs) != 0 {
-		t.Errorf("provider Rollback should not run when state missing, got %d calls", len(fp.rollbackArgs))
-	}
-}
-
-// TestRollbackDeployGroups_K8sClusterSkipsStateCheck confirms the
-// k8s-cluster path does NOT require a state file (kubectl rollout
-// undo tracks history in-cluster).
-func TestRollbackDeployGroups_K8sClusterSkipsStateCheck(t *testing.T) {
-	dir := t.TempDir()
-	fp := &fakeProvider{id: "k8s-cluster"}
-	reg := &deploytarget.Registry{}
-	reg.Register(fp)
-	groups := []deploytarget.ServiceGroup{
-		{
-			Env: "prod", ProviderID: "k8s-cluster", Namespace: "ns-prod",
-			Services: []deploytarget.ResolvedService{
-				{Name: "api", K8sCluster: &deploytarget.K8sClusterSpec{}},
-			},
-		},
-	}
-	if err := rollbackDeployGroups(context.Background(), reg, groups, dir); err != nil {
-		t.Fatalf("rollbackDeployGroups: %v", err)
-	}
-	if len(fp.rollbackArgs) != 1 {
-		t.Fatalf("want 1 Rollback call, got %d", len(fp.rollbackArgs))
-	}
-}
-
-// TestRollbackDeployGroups_DryRunPropagates confirms the DryRun flag
-// stays on each group as the dispatcher passes it to Rollback —
-// providers honor it on their end (Item 1).
-func TestRollbackDeployGroups_DryRunPropagates(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := deploytarget.WriteDeployState(dir, "external", "prod", "edge", deploytarget.DeployState{
-		Image: "x/edge", Tag: "v1.0.0",
-	}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	fp := &fakeProvider{id: "external"}
-	reg := &deploytarget.Registry{}
-	reg.Register(fp)
-	groups := []deploytarget.ServiceGroup{
-		{
-			Env: "prod", ProviderID: "external", DryRun: true,
-			Services: []deploytarget.ResolvedService{
-				{Name: "edge", External: &deploytarget.ExternalSpec{}},
-			},
-		},
-	}
-	if err := rollbackDeployGroups(context.Background(), reg, groups, dir); err != nil {
-		t.Fatalf("rollbackDeployGroups: %v", err)
-	}
-	if len(fp.rollbackArgs) != 1 {
-		t.Fatalf("want 1 Rollback call, got %d", len(fp.rollbackArgs))
-	}
-	if !fp.rollbackArgs[0].group.DryRun {
-		t.Errorf("dispatcher should pass DryRun=true through to Rollback")
-	}
-}
-
-// TestRollbackDeployGroups_RegistryNil rejects a nil registry up
-// front rather than nil-panicking inside the loop.
-func TestRollbackDeployGroups_RegistryNil(t *testing.T) {
-	if err := rollbackDeployGroups(context.Background(), nil, nil, ""); err == nil {
-		t.Error("expected error for nil registry")
-	}
-}
-
-// TestRollbackDeployGroups_PropagatesProviderError confirms a
-// provider Rollback failure aborts the loop and wraps with the
-// provider id.
-func TestRollbackDeployGroups_PropagatesProviderError(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := deploytarget.WriteDeployState(dir, "external", "prod", "edge", deploytarget.DeployState{
-		Image: "x/edge", Tag: "v1.0.0",
-	}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	fp := &fakeProvider{id: "external", rollbackErr: errors.New("flyctl boom")}
-	reg := &deploytarget.Registry{}
-	reg.Register(fp)
-	groups := []deploytarget.ServiceGroup{
-		{
-			Env: "prod", ProviderID: "external",
-			Services: []deploytarget.ResolvedService{
-				{Name: "edge", External: &deploytarget.ExternalSpec{}},
-			},
-		},
-	}
-	err := rollbackDeployGroups(context.Background(), reg, groups, dir)
-	if err == nil {
-		t.Fatal("expected provider error, got nil")
-	}
-	if !strings.Contains(err.Error(), "rollback external") || !strings.Contains(err.Error(), "flyctl boom") {
-		t.Errorf("error should wrap provider id + provider error, got %v", err)
+		Reason:   "test double for the deploy dispatch; observation is not part of these tests",
 	}
 }
 
@@ -261,19 +94,6 @@ func TestKclEntitiesHaveK8sCluster(t *testing.T) {
 	})
 }
 
-// TestDeployCmd_RollbackFlagRegistered confirms `--rollback` is
-// declared with a sensible help line.
-func TestDeployCmd_RollbackFlagRegistered(t *testing.T) {
-	cmd := newDeployCmd()
-	f := cmd.Flags().Lookup("rollback")
-	if f == nil {
-		t.Fatal("--rollback flag not registered")
-	}
-	if !strings.Contains(f.Usage, "Roll back") {
-		t.Errorf("--rollback usage should mention 'Roll back', got %q", f.Usage)
-	}
-}
-
 // TestDeployCmd_SkipFrontendFlagRegistered confirms `--skip-frontend`
 // is declared with a help line that names the k8s-only intent — the
 // GAP-2 flag that runs the k8s apply but suppresses the Frontend
@@ -292,27 +112,43 @@ func TestDeployCmd_SkipFrontendFlagRegistered(t *testing.T) {
 	}
 }
 
-// TestDeployCmd_RollbackAndTagMutuallyExclusive confirms a
-// --rollback + --tag combination is rejected at flag-parse time. The
-// rollback path reads the per-service state file for the target tag;
-// accepting a caller-supplied --tag alongside would silently shadow
-// the recorded value (a confusing footgun).
-//
-// We test by invoking the cobra command directly. The mutual-exclusion
-// check fires inside RunE BEFORE runDeploy ever loads forge.yaml, so a
-// chdir-to-tempdir setup isn't necessary — the check refuses fast.
-func TestDeployCmd_RollbackAndTagMutuallyExclusive(t *testing.T) {
+// TestDispatchDeployGroups_FailureIsNotReverted: a failed group returns its
+// error and nothing tries to put the previous version back — there is no
+// rollback, recovery is roll forward. The dispatcher stops at the failed
+// group rather than deploying the rest on top of it.
+func TestDispatchDeployGroups_FailureIsNotReverted(t *testing.T) {
+	failing := &fakeProvider{id: "external", deployErr: errors.New("flyctl boom")}
+	after := &fakeProvider{id: "compose"}
+	reg := deploytarget.NewRegistry()
+	reg.Register(failing)
+	reg.Register(after)
+	groups := []deploytarget.ServiceGroup{
+		{ProviderID: "external", Env: "prod", Services: []deploytarget.ResolvedService{{Name: "edge"}}},
+		{ProviderID: "compose", Env: "prod", Services: []deploytarget.ResolvedService{{Name: "web"}}},
+	}
+	err := dispatchDeployGroups(context.Background(), reg, groups)
+	if err == nil || !strings.Contains(err.Error(), "deploy external") || !strings.Contains(err.Error(), "flyctl boom") {
+		t.Fatalf("want the provider's deploy error wrapped with its id, got %v", err)
+	}
+	if len(failing.deployCalls) != 1 || len(after.deployCalls) != 0 {
+		t.Errorf("dispatch must stop at the failed group: failing=%d after=%d", len(failing.deployCalls), len(after.deployCalls))
+	}
+}
+
+// TestDeployCmd_RollbackFlagRemoved: `forge env deploy --rollback` is gone.
+// Recovery is roll forward, so the flag must be an unknown-flag error rather
+// than a silently accepted no-op.
+func TestDeployCmd_RollbackFlagRemoved(t *testing.T) {
 	cmd := newDeployCmd()
-	cmd.SetArgs([]string{"prod", "--rollback", "--tag", "v9"})
-	// Silence cobra's stderr usage printout.
+	if cmd.Flags().Lookup("rollback") != nil {
+		t.Fatal("--rollback is registered on `forge env deploy` again")
+	}
+	cmd.SetArgs([]string{"prod", "--rollback"})
 	cmd.SetOut(&strings.Builder{})
 	cmd.SetErr(&strings.Builder{})
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected mutual-exclusion error")
-	}
-	if !strings.Contains(err.Error(), "--rollback and --tag are mutually exclusive") {
-		t.Errorf("error should mention mutual exclusion, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --rollback") {
+		t.Fatalf("want an unknown-flag error for --rollback, got %v", err)
 	}
 }
 

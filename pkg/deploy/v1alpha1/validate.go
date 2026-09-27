@@ -221,7 +221,7 @@ func (s StaticSiteSpec) Validate() error {
 		}
 	}
 	if s.KeepReleases != nil && *s.KeepReleases != 0 && *s.KeepReleases < MinKeepReleases {
-		errs = append(errs, fmt.Errorf("keepReleases %d must be 0 (retain everything) or at least %d: fewer would delete the artifact a rollback needs", *s.KeepReleases, MinKeepReleases))
+		errs = append(errs, fmt.Errorf("keepReleases %d must be 0 (retain everything) or at least %d: fewer would delete the predecessor release pages loaded moments ago still fetch", *s.KeepReleases, MinKeepReleases))
 	}
 	for _, p := range s.Entrypoints {
 		if !strings.HasPrefix(p, "/") {

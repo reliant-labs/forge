@@ -2,16 +2,11 @@ package deploytarget
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"golang.org/x/mod/semver"
-
-	"github.com/reliant-labs/forge/internal/statefile"
 )
 
 // ComposeProvider deploys each service in a group via docker-compose
@@ -24,25 +19,7 @@ import (
 // against the compose file declared in KCL. Compose handles the
 // container swap itself.
 //
-// Rollback for docker-compose is a sharper edge: compose itself has
-// no native "go back to the previous revision" affordance. Our
-// strategy:
-//
-//  1. Track the last-good image+tag in a per-(env, service) state
-//     file (same shape External uses).
-//  2. On rollback, generate a temporary override file alongside the
-//     state file that pins `image: <name>:<old-tag>`, then run
-//     `docker compose -f <main> -f <override> up -d --force-recreate
-//     <svc>`. This avoids mutating the user's compose file or
-//     requiring them to keep multiple tagged copies around.
-//  3. When no state file exists, error loudly — there's nothing to
-//     roll back to and guessing would risk shipping a regression.
-//
-// The override-file approach assumes the docker daemon already has
-// the old image locally (it was pulled by the previous deploy). If
-// it doesn't — e.g. the registry GC'd the tag, or the user wiped
-// /var/lib/docker — the up command surfaces the pull failure and
-// rollback reports it.
+// There is no rollback: recovery is roll forward — deploy a newer tag.
 type ComposeProvider struct {
 	// ProjectDir is the project root used for state-file paths. Empty
 	// means "current working directory".
@@ -93,34 +70,6 @@ func (p ComposeProvider) checkWaitSupport(ctx context.Context, runner commandRun
 		if svc.Compose != nil && composeWait(svc.Compose) {
 			return ensureComposeSupportsWait(ctx, runner)
 		}
-	}
-	return nil
-}
-
-// Rollback restarts every service against its previously recorded
-// good tag via a generated override file. Best-effort: per-service
-// failures are joined into the returned error rather than aborting
-// the loop.
-func (p ComposeProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
-	runner := p.runner()
-	if err := p.checkWaitSupport(ctx, runner, group); err != nil {
-		return err
-	}
-	var failures []string
-	for _, svc := range group.Services {
-		if svc.Compose == nil {
-			failures = append(failures, fmt.Sprintf("%s: Compose spec is nil", svc.Name))
-			continue
-		}
-		if err := p.rollbackOne(ctx, runner, group, svc, lastGoodTag); err != nil {
-			fmt.Printf("  rollback %s: %v\n", svc.Name, err)
-			failures = append(failures, fmt.Sprintf("%s: %v", svc.Name, err))
-			continue
-		}
-	}
-	if len(failures) > 0 {
-		return fmt.Errorf("compose rollback: %d failure(s): %s",
-			len(failures), strings.Join(failures, "; "))
 	}
 	return nil
 }
@@ -355,10 +304,9 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 		return fmt.Errorf("compose %s: service not in running state", svc.Name)
 	}
 
-	// 4. Persist the (image, tag) tuple for rollback. We pull the
-	//    image+tag from the group; if the dispatcher didn't set
-	//    ImageTag we still record the service+env tuple so a future
-	//    rollback at least sees that a deploy happened.
+	// 4. Persist the deployed tag so the reconciler can read back what
+	//    is deployed. If the dispatcher didn't set ImageTag we still
+	//    record the service+env tuple so a deploy is visible.
 	st := DeployState{Tag: group.ImageTag}
 	if _, err := WriteDeployState(p.projectDir(), "compose", group.Env, svc.Name, st); err != nil {
 		return fmt.Errorf("compose %s: record state: %w", svc.Name, err)
@@ -405,100 +353,4 @@ func composeHasRunningLine(out []byte, service string) bool {
 		}
 	}
 	return false
-}
-
-// rollbackOne writes a temp override file that pins the service's
-// image to the previous good tag, then runs `compose up -d --force-
-// recreate` with both files. The override is deleted after the
-// command returns so a subsequent normal deploy isn't shadowed by
-// stale state on disk.
-func (p ComposeProvider) rollbackOne(ctx context.Context, runner commandRunner, group ServiceGroup, svc ResolvedService, lastGoodTag string) error {
-	spec := svc.Compose
-	prev, err := ReadDeployState(p.projectDir(), "compose", group.Env, svc.Name)
-	if err != nil {
-		return err
-	}
-	target := lastGoodTag
-	imageHint := ""
-	if prev != nil {
-		if prev.Tag != "" {
-			target = prev.Tag
-		}
-		imageHint = prev.Image
-	}
-	if target == "" {
-		return errors.New("no previous tag recorded; cannot rollback")
-	}
-	if imageHint == "" {
-		// Without an image name we can't write the override — compose
-		// pins by image, not by tag alone. Tell the user what they
-		// need to do rather than failing silently.
-		return fmt.Errorf("no previous image recorded for tag %s; manual `docker compose -f %s up -d` against the older image required",
-			target, composeFile(spec))
-	}
-
-	file := composeFile(spec)
-	composeSvc := composeServiceName(spec, svc.Name)
-
-	if group.DryRun {
-		// Don't write the override file on dry-run — the goal is "no
-		// side effects on disk." Show the user the shape of the
-		// override fragment we would have written so the dry-run is
-		// informative.
-		fmt.Printf("  [DRY-RUN] would write override pinning %s to %s:%s\n", composeSvc, imageHint, target)
-		dryArgs := appendComposeWaitArgs([]string{"up", "-d", "--force-recreate"}, spec)
-		fmt.Printf("  [DRY-RUN] would run: docker compose -f %s -f <override> %s %s\n",
-			file, strings.Join(dryArgs, " "), composeSvc)
-		return nil
-	}
-
-	overridePath, err := writeComposeOverride(p.projectDir(), group.Env, svc.Name, composeSvc, imageHint, target)
-	if err != nil {
-		return fmt.Errorf("write override: %w", err)
-	}
-	defer func() { _ = os.Remove(overridePath) }()
-
-	// Rollback waits on the same terms as deploy, and for a stronger
-	// reason. A rollback is what someone reaches for when production is
-	// already broken; "the old version is starting" is not the answer
-	// they need, "the old version is SERVING" is. Returning early here
-	// would report a successful rollback while the previous image was
-	// still booting — or crash-looping, which is the case where the
-	// difference matters most, since the operator would move on
-	// believing they had recovered.
-	upArgs := []string{"compose", "-f", file, "-f", overridePath}
-	if spec.EnvFile != "" {
-		upArgs = append(upArgs, "--env-file", spec.EnvFile)
-	}
-	upArgs = append(upArgs, "up", "-d", "--force-recreate")
-	upArgs = appendComposeWaitArgs(upArgs, spec)
-	upArgs = append(upArgs, composeSvc)
-	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
-	if ferr != nil {
-		return fmt.Errorf("env_file: %w", ferr)
-	}
-	if err := runner.RunWithEnv(ctx, envOverlay, "docker", upArgs...); err != nil {
-		return fmt.Errorf("up --force-recreate: %w", err)
-	}
-	fmt.Printf("  rollback %s: ok (tag %s)\n", svc.Name, target)
-	return nil
-}
-
-// writeComposeOverride writes a minimal `services.<name>.image:` YAML
-// fragment to a temp file under .forge/state/. The fragment is
-// hand-rolled rather than gen'd via a YAML library — the shape is
-// fixed, well-understood, and the output is short enough that string
-// formatting is more legible than yaml.Marshal.
-func writeComposeOverride(projectDir, env, svc, composeService, image, tag string) (string, error) {
-	dir := filepath.Join(projectDir, statefile.DirRel)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	name := fmt.Sprintf("compose-%s-%s-rollback.override.yml", statefile.SafeSegment(env), statefile.SafeSegment(svc))
-	path := filepath.Join(dir, name)
-	body := fmt.Sprintf("services:\n  %s:\n    image: %s:%s\n", composeService, image, tag)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
 }

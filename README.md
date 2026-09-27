@@ -380,7 +380,7 @@ The details:
 - **`External` is the generic CLI-driven target** for anything with a deploy
   command: Fly.io, Cloudflare Workers, Cloud Run, ECS, Vercel, Railway,
   systemd-on-a-VM. Forge substitutes `${IMAGE}`, `${TAG}`, `${ENV}` and friends
-  and execs it, with optional rollback and health commands.
+  and execs it, with an optional health command.
 - **KCL is still KCL.** Forge models _your_ workloads — Application,
   Environment, ConfigMap, Ingress, RBAC. It deliberately does not model
   third-party in-cluster infra, so when you need NATS, Temporal, or a Postgres

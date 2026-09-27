@@ -31,10 +31,6 @@ func (p recordingProvider) Deploy(_ context.Context, group deploytarget.ServiceG
 	return nil
 }
 
-func (p recordingProvider) Rollback(_ context.Context, _ deploytarget.ServiceGroup, _ string) error {
-	return nil
-}
-
 // Observe satisfies the Provider interface. This double stands in for
 // compose/host-infra in the DEPLOY dispatch contract, which never
 // observes; it declines rather than reporting a health nothing measured.

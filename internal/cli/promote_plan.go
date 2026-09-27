@@ -40,8 +40,8 @@ import (
 //     A digest map diff leaves that for the caller to notice; an explicit
 //     added/removed classification cannot be missed.
 //   - DIRECTION is the single most consequential thing a reader can misread.
-//     A backwards promote is a legitimate operation (it is how a rollback is
-//     spelled), but "staging moves forward 20 releases" and "staging moves
+//     A backwards promote is possible (it is an ordinary promote, and it
+//     undoes nothing the newer release did), but "staging moves forward 20 releases" and "staging moves
 //     back 20 releases" look identical in a digest diff.
 //   - The COMMIT RANGE is what makes the digests mean something. Every way it
 //     can be unavailable is a first-class state rather than an error, because
@@ -146,7 +146,7 @@ func (k *promoteImageChangeKind) UnmarshalJSON(data []byte) error {
 // runs now, in the project's release ordering.
 //
 // Zero value is "unknown": a direction nobody computed must not read as
-// "same", which would tell a reviewer a rollback was a no-op.
+// "same", which would tell a reviewer a backwards move was a no-op.
 type promoteDirection int
 
 const (
@@ -159,8 +159,8 @@ const (
 	// currently runs — moving forward.
 	promoteDirectionAhead
 	// promoteDirectionBehind: the target was cut BEFORE the current
-	// release. A ROLLBACK. Legitimate, and the thing a reviewer most needs
-	// told to them explicitly.
+	// release. Possible, never a rollback (the newer release's migrations
+	// and data stay), and the thing a reviewer most needs told explicitly.
 	promoteDirectionBehind
 	// promoteDirectionSame: the env is already bound to this release.
 	promoteDirectionSame
@@ -203,7 +203,7 @@ func (d *promoteDirection) UnmarshalJSON(data []byte) error {
 		*d = promoteDirectionSame
 	default:
 		return fmt.Errorf("unknown promote direction %q (expected initial, ahead, behind or same) — "+
-			"refusing to decode it as a default, which would render a rollback as a forward promote", name)
+			"refusing to decode it as a default, which would render a backwards move as a forward promote", name)
 	}
 	return nil
 }
@@ -351,7 +351,7 @@ type promoteCommitRange struct {
 	// FromCommit is the CURRENT release's recorded commit, ToCommit the
 	// TARGET's. They are the ledgers' values verbatim, regardless of
 	// direction, so a consumer can always tell which release each belongs
-	// to. For a rollback, history runs from ToCommit to FromCommit — see
+	// to. For a BEHIND move, history runs from ToCommit to FromCommit — see
 	// Reverts.
 	FromCommit string `json:"from_commit,omitempty"`
 	ToCommit   string `json:"to_commit,omitempty"`
@@ -418,9 +418,8 @@ type promotePlanTarget struct {
 type promotePlan struct {
 	// Env is the environment being promoted.
 	Env string `json:"env"`
-	// Kind is what this entry records: "promote", or "rollback" when
-	// --rollback was passed. A rollback must name a release the env has
-	// already run; the ledger refuses one that does not.
+	// Kind is what this entry records. Always "promote" — kept in the
+	// document so a future entry type cannot be mistaken for one.
 	Kind release.PromotionKind `json:"kind"`
 	// Ledger names where the binding is recorded, as the binding store
 	// reports it — a path today, a URL for a hosted backend. Opaque, for
@@ -440,8 +439,8 @@ type promotePlan struct {
 	// Target is the release being promoted to.
 	Target promotePlanTarget `json:"target"`
 	// Direction is where the target sits relative to the current release.
-	// `behind` is a ROLLBACK — legitimate, and the single most
-	// consequential thing on this screen to misread.
+	// `behind` moves the env BACKWARDS — possible, never an undo, and the
+	// single most consequential thing on this screen to misread.
 	Direction promoteDirection `json:"direction"`
 	// DirectionDetail says the same thing in one human sentence.
 	DirectionDetail string `json:"direction_detail,omitempty"`
@@ -471,7 +470,7 @@ type promotePlan struct {
 	Note string `json:"note,omitempty"`
 	// OK is false exactly when text mode exits non-zero. Computing or
 	// applying a plan either succeeds (true) or returns an error, so a
-	// rendered plan is always true — a rollback is not a failure.
+	// rendered plan is always true — a backwards move is not a failure.
 	OK bool `json:"ok"`
 	// Recorded is the ledger entry the env now resolves to, after an
 	// apply: the new entry, or — for a retry of the env's current state —
@@ -567,8 +566,6 @@ type promotePlanOptions struct {
 	// ProjectDir is the checkout the ledgers and the git history are read
 	// from. Empty falls back to projectDirForKCL().
 	ProjectDir string
-	// Kind is promote (the default) or rollback.
-	Kind release.PromotionKind
 	// Bindings is the promotion ledger. Nil falls back to the env's
 	// store. Injected so a test can STATE the env's current binding
 	// instead of staging a file to imply it.
@@ -585,7 +582,7 @@ type promotePlanOptions struct {
 // It returns an error only for conditions that make a promote impossible at
 // all: an unreadable binding ledger, a target release that does not exist, a
 // release carrying no resolvable digests. Everything else — a missing current
-// ledger, a commit this checkout does not have, a dirty release, a rollback —
+// ledger, a commit this checkout does not have, a dirty release, a backwards move —
 // is a VALUE in the returned plan. That split is deliberate: the states a
 // reviewer most needs described are exactly the ones an error would refuse to
 // describe.
@@ -614,10 +611,6 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 			releaseStore = l.Releases
 		}
 	}
-	kind := opts.Kind
-	if kind == "" {
-		kind = release.KindPromote
-	}
 	git := opts.Git
 	if git == nil {
 		git = gitCommitReader{}
@@ -637,7 +630,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 
 	plan := promotePlan{
 		Env:          opts.Env,
-		Kind:         kind,
+		Kind:         release.KindPromote,
 		Ledger:       bindings.Location(),
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		Images:       []promoteImageChange{},
@@ -742,8 +735,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 //
 // It APPENDS. The ledger decides (release.Decide) whether the entry is a real
 // move, a retry of the state the env is already in (nothing is written, and
-// the existing entry comes back), or a rollback to a release the env never
-// ran (refused). Applied reports whether a NEW entry was written.
+// the existing entry comes back). Applied reports whether a NEW entry was written.
 func applyPromotePlan(ctx context.Context, bindings bindingStore, plan *promotePlan, by release.Actor, note string) error {
 	p := release.Promotion{
 		Env:        plan.Env,
@@ -878,8 +870,8 @@ func promoteDirectionFor(releases []release.Release, hadPrev bool, currentVersio
 			"FORWARD — %s is %d release(s) NEWER than %s", targetVersion, curIdx-tgtIdx, currentVersion)
 	}
 	return promoteDirectionBehind, tgtIdx - curIdx, fmt.Sprintf(
-		"ROLLBACK — %s is %d release(s) OLDER than %s. This moves the environment BACKWARDS",
-		targetVersion, tgtIdx-curIdx, currentVersion)
+		"BEHIND — %s is %d release(s) OLDER than %s. This moves the environment BACKWARDS; it undoes nothing %s did",
+		targetVersion, tgtIdx-curIdx, currentVersion, currentVersion)
 }
 
 // promoteRangeInput is what the commit-range computation needs, gathered so
@@ -975,7 +967,7 @@ func computePromoteCommitRange(ctx context.Context, git promoteGitReader, dir st
 		return out
 	}
 
-	// History runs oldest → newest. For a rollback that is target →
+	// History runs oldest → newest. For a BEHIND move that is target →
 	// current, and the commits listed are the ones being taken AWAY.
 	from, to := out.FromCommit, out.ToCommit
 	if in.Reverts {
@@ -1046,6 +1038,15 @@ func renderPromotePlanText(plan promotePlan) {
 	// as a symbol: a reader skimming for "am I going forwards" must not
 	// have to decode an arrow.
 	fmt.Fprintf(out, "  direction %s  %s\n", plan.Direction, plan.DirectionDetail)
+	if plan.Direction == promoteDirectionBehind {
+		// A backwards promote is not a rollback and cannot be one: the
+		// newer release's migrations stay applied and the rows it wrote stay
+		// written. Said on every BEHIND plan, applied or not, because the
+		// operator reaching for this is usually mid-incident.
+		fmt.Fprintf(out, "  WARNING   %s moves BACKWARDS. The schema and data %s left behind stay; %s's code will run against them.\n",
+			plan.Env, plan.Current.Release, plan.Target.Release)
+		fmt.Fprintf(out, "            Recovery is roll forward: prefer cutting a release with the fix and promoting that.\n")
+	}
 	if plan.Current.Note != "" {
 		fmt.Fprintf(out, "  note      %s\n", plan.Current.Note)
 	}

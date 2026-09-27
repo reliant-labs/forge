@@ -418,13 +418,13 @@ rather than silently dropping them.
 
 Maturity is not uniform, and the docs should not pretend otherwise:
 
-| Target             | State                                                                              |
-| ------------------ | ---------------------------------------------------------------------------------- |
-| Kubernetes         | Production-grade; the deeply-developed path                                        |
-| External (`sh -c`) | Mature by simplicity; refuses to synthesize a rollback it cannot verify            |
-| Compose            | Real, thinner; rollback pins the previous tag and assumes the image is still local |
-| Firebase           | Substantial, frontend-only                                                         |
-| Host               | Excellent dev loop, not a deploy target                                            |
+| Target             | State                                                                      |
+| ------------------ | -------------------------------------------------------------------------- |
+| Kubernetes         | Production-grade; the deeply-developed path                                |
+| External (`sh -c`) | Mature by simplicity; forge runs your command and records the deployed tag |
+| Compose            | Real, thinner; `pull` + `up -d --wait`                                     |
+| Firebase           | Substantial, frontend-only                                                 |
+| Host               | Excellent dev loop, not a deploy target                                    |
 
 ### Failures move to author time
 

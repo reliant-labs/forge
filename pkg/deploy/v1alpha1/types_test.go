@@ -207,7 +207,7 @@ func TestStaticSiteValidateAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustFail(t, StaticSiteSpec{LiveDigest: "latest"}.Validate(), "never a tag")
-	mustFail(t, StaticSiteSpec{KeepReleases: ptr(int32(1))}.Validate(), "rollback needs")
+	mustFail(t, StaticSiteSpec{KeepReleases: ptr(int32(1))}.Validate(), "predecessor release")
 	mustFail(t, StaticSiteSpec{CDN: &StaticSiteCDN{}}.Validate(), "urlMap")
 	mustFail(t, StaticSiteSpec{CDN: &StaticSiteCDN{URLMap: "m", Invalidate: "some"}}.Validate(), "cdn.invalidate")
 	mustFail(t, StaticSiteSpec{BasePath: "admin"}.Validate(), "basePath")

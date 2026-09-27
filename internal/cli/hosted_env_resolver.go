@@ -59,7 +59,7 @@ func (r cloudEnvResolver) ResolveEnvironmentID(ctx context.Context, envName stri
 
 // ensureHostedEnv makes the control-plane environment of this NAME (in this
 // project, of this kind) exist and returns its id. THE rule for hosted
-// writes: every MUTATING hosted command (promote, rollback, secret set/unset,
+// writes: every MUTATING hosted command (promote, secret set/unset,
 // deploy) ensures the env first, because the env is DECLARED in this
 // project's KCL — whichever of them runs first on a fresh env creates it, and
 // none of them can deadlock on another having run. Reads (topology, status,

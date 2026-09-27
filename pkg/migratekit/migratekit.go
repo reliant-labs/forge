@@ -107,7 +107,7 @@ type Options struct {
 // Migrator is an open migration session. Always Close it.
 type Migrator struct {
 	m *migrate.Migrate
-	// db is a plain connection for the rollback-compatibility record (see
+	// db is a plain connection for the backward-compatibility record (see
 	// ahead.go). golang-migrate's driver owns its own connection and exposes
 	// no query surface, so the record needs one of its own. Nil on a
 	// Migrator built around a bare *migrate.Migrate (stateOf), which only
@@ -247,11 +247,12 @@ type Result struct {
 	// trip, and so "no change" still carries the version it is at.
 	Before State
 	After  State
-	// Ahead is set when the schema was AHEAD of this binary — a rollback of
-	// the app — and every version it does not embed was declared
+	// Ahead is set when the schema was AHEAD of this binary — the previous
+	// release meeting the next one's schema mid-deploy — and every version it
+	// does not embed was declared
 	// backward-compatible. Nothing was applied (Changed is false); the
 	// binary's code can run. A caller should say so loudly: it is the fact
-	// an operator mid-rollback most needs confirmed. A schema ahead that is
+	// an operator mid-deploy most needs confirmed. A schema ahead that is
 	// NOT proven compatible is a *SchemaAheadError instead, never this.
 	Ahead *Ahead
 }

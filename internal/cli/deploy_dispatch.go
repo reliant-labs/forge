@@ -165,12 +165,11 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 					// so the ${IMAGE} substitution token resolves without
 					// forcing the user to duplicate the string on the
 					// deploy block.
-					Image:       svc.Image,
-					DeployCmd:   e.DeployCmd,
-					RollbackCmd: e.RollbackCmd,
-					HealthCmd:   e.HealthCmd,
-					EnvFile:     e.EnvFile,
-					Env:         e.Env,
+					Image:     svc.Image,
+					DeployCmd: e.DeployCmd,
+					HealthCmd: e.HealthCmd,
+					EnvFile:   e.EnvFile,
+					Env:       e.Env,
 				},
 				Secrets: secretEnv,
 			})
@@ -246,12 +245,9 @@ func simpleBackendOwnedClaims(svcName string, sb *SimpleBackendSpec) []string {
 // include the provider id + group target so users can tell at a
 // glance which group failed.
 //
-// Rollback: when a group's Deploy fails AND lastGoodTag is non-empty,
-// the function asks the provider to roll back to lastGoodTag. Rollback
-// errors are logged but the original Deploy error is still returned —
-// rollback is a recovery affordance, not a way to mask the underlying
-// failure.
-func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, groups []deploytarget.ServiceGroup, lastGoodTag string) error {
+// A failed group is NOT reverted: there is no rollback. The failure is
+// returned as-is and recovery is roll forward — fix, then deploy again.
+func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, groups []deploytarget.ServiceGroup) error {
 	if registry == nil {
 		return errors.New("deploy dispatch: nil provider registry")
 	}
@@ -262,86 +258,7 @@ func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, 
 		}
 		fmt.Printf("\n%s\n", deploytarget.FormatGroupSummary(group))
 		if err := p.Deploy(ctx, group); err != nil {
-			if lastGoodTag != "" {
-				if rerr := p.Rollback(ctx, group, lastGoodTag); rerr != nil {
-					fmt.Printf("  Note: rollback also failed: %v\n", rerr)
-				}
-			}
 			return fmt.Errorf("deploy %s: %w", group.ProviderID, err)
-		}
-	}
-	return nil
-}
-
-// rollbackDeployGroups is the `forge env deploy <env> --rollback`
-// dispatcher. For each group it looks up the previously-recorded
-// last-good tag (per service, from .forge/state) and asks the
-// provider to revert there.
-//
-// Per-provider error contract:
-//
-//   - k8s-cluster: `kubectl rollout undo deployment/<svc>` doesn't
-//     need a state file (the cluster tracks the previous ReplicaSet),
-//     so the dispatcher hands the provider the empty tag and lets
-//     kubectl do the work. Missing-Deployment is the provider's
-//     concern, not the dispatcher's.
-//   - external / compose: per-service state file is required. A
-//     missing file produces a clear `no previous deploy state
-//     recorded` error so the user knows there's nothing to revert.
-//
-// Group-level failures abort the loop — partial rollbacks are still
-// recovery (a service that can't roll back is louder than a service
-// that quietly stays on the new tag).
-func rollbackDeployGroups(ctx context.Context, registry *deploytarget.Registry, groups []deploytarget.ServiceGroup, projectDir string) error {
-	if registry == nil {
-		return errors.New("rollback dispatch: nil provider registry")
-	}
-	if len(groups) == 0 {
-		fmt.Println("Nothing to roll back — no deploy targets declared for this env.")
-		return nil
-	}
-	for _, group := range groups {
-		p := registry.Lookup(group.ProviderID)
-		if p == nil {
-			return fmt.Errorf("rollback dispatch: no provider for %q (group: %s)", group.ProviderID, deploytarget.FormatGroupSummary(group))
-		}
-		fmt.Printf("\n%s (rollback)\n", deploytarget.FormatGroupSummary(group))
-
-		// For external/compose, validate each service has a state
-		// file BEFORE the provider's Rollback runs — so we can fail
-		// the whole group with a precise per-service message rather
-		// than letting the provider emit a partial-rollback error.
-		if group.ProviderID == "external" || group.ProviderID == "compose" {
-			if err := requireRollbackState(projectDir, group); err != nil {
-				return fmt.Errorf("rollback %s: %w", group.ProviderID, err)
-			}
-		}
-
-		// lastGoodTag is empty for the k8s-cluster path (kubectl owns
-		// the revision history). For external/compose, the provider
-		// reads its own per-service state file inside Rollback — the
-		// dispatcher-supplied lastGoodTag is a fallback only, and we
-		// leave it empty so the state-file tag always wins.
-		if err := p.Rollback(ctx, group, ""); err != nil {
-			return fmt.Errorf("rollback %s: %w", group.ProviderID, err)
-		}
-	}
-	return nil
-}
-
-// requireRollbackState confirms every service in an external/compose
-// group has a recorded last-good deploy. Surfaces a clear per-service
-// error when one is missing — `forge env deploy <env> --rollback` against
-// a service that's never deployed should refuse rather than
-// silently no-op or guess.
-func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) error {
-	for _, svc := range group.Services {
-		st, err := deploytarget.ReadDeployState(projectDir, group.ProviderID, group.Env, svc.Name)
-		if err != nil {
-			return err
-		}
-		if st == nil {
-			return fmt.Errorf("no previous deploy state recorded for %s at %s; cannot rollback", svc.Name, group.Env)
 		}
 	}
 	return nil
@@ -372,10 +289,6 @@ type applyOptsContext struct {
 	// group's rollout outcomes into ONE document.
 	OnStream  func(string)
 	OnRollout func(cluster.RolloutObservation)
-	// PromotionRollback and OnSkippedJobs carry the rollback skip into every
-	// group's apply. See cluster.ApplyOpts.
-	PromotionRollback bool
-	OnSkippedJobs     func([]string)
 }
 
 // applyOptsBuilderFromContext returns an ApplyOptsBuilder closure
@@ -472,9 +385,6 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			Rollout:      p.Rollout,
 			OnStream:     p.OnStream,
 			OnRollout:    p.OnRollout,
-
-			PromotionRollback: p.PromotionRollback,
-			OnSkippedJobs:     p.OnSkippedJobs,
 		}
 	}
 }
@@ -629,7 +539,7 @@ func resolveGroupContext(group deploytarget.ServiceGroup) string {
 
 // declaredEnvContext returns the env-wide kubectl context for the
 // consumers that don't iterate groups per-target: the secrets pre-apply,
-// the empty-groups direct cluster.Apply, the rollback provider, and the
+// the empty-groups direct cluster.Apply, and the
 // deploy preflight. It is the Bundle's declared `cluster_target.cluster`,
 // falling back (for a contract that declares none) to the first declared
 // K8sCluster cluster (group.Cluster, from KCL `forge.K8sCluster.cluster`) —

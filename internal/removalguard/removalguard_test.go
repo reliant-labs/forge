@@ -1120,6 +1120,75 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "rollback — recovery is roll forward",
+		Why: "forge has no rollback. `forge env deploy --rollback`, `forge env promote --rollback`, " +
+			"`forge.External.rollback_cmd`, the Provider.Rollback verb (kubectl rollout undo, compose " +
+			"override pinning, static-site re-sync, the hosted DeployService/Rollback call) and the " +
+			"deploy's skip-the-migrate-Job-on-a-rollback path are all gone. A rollback claims to undo a " +
+			"release it cannot undo: the release already ran its migrations and wrote rows in the new " +
+			"shape. Recovery is a new release that rolls forward. A backwards `forge env promote` is " +
+			"still an ordinary promote, labelled `direction BEHIND`. Ledgers keep reading legacy " +
+			"`\"kind\":\"rollback\"` entries as promotes (release.legacyKindRollback, " +
+			"wireKindLegacyRollback) — that decode path is the one sanctioned mention.",
+		Patterns: []*regexp.Regexp{
+			// The removed flags, on any surface, in the typed and the ARGV form.
+			regexp.MustCompile(`--rollback\b`),
+			regexp.MustCompile(`"--rollback"`),
+			// The removed KCL field and its Go projection.
+			regexp.MustCompile(`\brollback_cmd\b`),
+			regexp.MustCompile(`\bRollbackCmd\b`),
+			// The removed provider verb and its dispatcher.
+			regexp.MustCompile(`\) Rollback\(ctx context\.Context, group ServiceGroup`),
+			regexp.MustCompile(`\brollbackDeployGroups\b|\brunDeployRollback\b`),
+			// The hosted RPC, the writable kind, and the migrate-skip seam.
+			regexp.MustCompile(`DeployService/Rollback\b`),
+			regexp.MustCompile(`\bKindRollback\b|\bPromotionRollback\b|\bOnSkippedJobs\b|\bskipPreRolloutForRollback\b`),
+			regexp.MustCompile(`\brollout\s+undo\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the tests that prove the flags are rejected",
+				Reason: "These assert `forge env deploy --rollback` and `forge env promote --rollback` are " +
+					"unknown flags, and that no call reaches the retired Rollback RPC. They must name what " +
+					"they test is absent. Scoped by path and token.",
+				Token: regexp.MustCompile(`"--rollback"|--rollback\b|DeployService/Rollback\b`),
+				Paths: []string{
+					"internal/cli/deploy_dispatch_test.go",
+					"internal/cli/promote_plan_test.go",
+					"internal/cli/hosted_ledger_test.go",
+				},
+			},
+			{
+				Name: "prose stating what forge does not do",
+				Reason: "The deploy skill and the External provider say, in so many words, that there is " +
+					"no rollback_cmd and no rollout-undo path — that sentence is the removal, and deleting " +
+					"it would delete the explanation. Scoped to the negating phrasings.",
+				Token: regexp.MustCompile("no `--rollback`,\\s*|no `rollback_cmd`|no `kubectl rollout undo` path|There is no rollback_cmd|There is no `rollback_cmd`"),
+				Paths: []string{
+					"internal/templates/project/skills/forge/deploy/SKILL.md",
+					"internal/templates/project/skills/forge/external-deploy-recipes/SKILL.md",
+					"internal/deploytarget/external.go",
+					".claude/skills/",
+				},
+			},
+			{
+				Name: "the changelog entry announcing the removal",
+				Reason: "A Keep-a-Changelog `### Removed` entry has to name what was removed, or readers " +
+					"cannot tell which of their invocations broke.",
+				Token: regexp.MustCompile("`forge env (?:deploy|promote) --rollback`|`?forge\\.External\\.rollback_cmd`?|`rollback_cmd`|`kubectl rollout undo`|`DeployService/Rollback`"),
+				Paths: []string{"CHANGELOG.md"},
+			},
+			{
+				Name: "Helm's own hook vocabulary",
+				Reason: "`post-rollback` is a Helm hook name forge must recognise to strip hooks from a " +
+					"rendered chart. It is Helm's API, not a forge rollback. None of the patterns above " +
+					"match it today; recorded so nobody widens a pattern into it.",
+				Token: regexp.MustCompile(`post-rollback`),
+				Paths: []string{"internal/cluster/helm.go"},
+			},
+		},
+	},
+	{
 		Name: "the generated per-API MCP manifest and its bridge",
 		Why: "forge generated gen/mcp/manifest.json — one Model Context Protocol tool per " +
 			"Connect RPC — plus a stdio bridge (internal/mcpbridge) and two hosts for it " +

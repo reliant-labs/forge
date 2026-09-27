@@ -129,9 +129,8 @@ type Desired struct {
 	Digest string `json:"digest,omitempty"`
 
 	// Image and Tag are the human-facing reference, carried for
-	// reporting and for the rollback path that predates this package
-	// (a non-cluster provider has no `kubectl rollout undo`, so the
-	// previous good tag has to be remembered somewhere).
+	// reporting (a non-cluster provider has no cluster to ask, so the
+	// deployed tag has to be remembered somewhere).
 	Image string `json:"image,omitempty"`
 	Tag   string `json:"tag,omitempty"`
 

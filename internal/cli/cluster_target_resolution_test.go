@@ -98,7 +98,7 @@ func TestKCLFirstClusterPlatform_PrefersDeclaredClusterTarget(t *testing.T) {
 }
 
 // TestDeclaredEnvContext_PrefersDeclaredClusterTarget: the env-wide kubectl
-// context (the deploy preflight's target, the secrets pre-apply, rollback) is
+// context (the deploy preflight's target, the secrets pre-apply) is
 // the declared cluster_target's, not the first deploy group's. Groups are
 // ordered by their SORTED key, `k8s-cluster|<context>|…`, so the first group
 // is whichever context sorts lowest. That is unrelated to which cluster is the

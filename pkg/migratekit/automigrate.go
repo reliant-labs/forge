@@ -111,12 +111,11 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 			"(e.g. `migrate force %d`) before restarting", before.Version, before.Version)
 	}
 
-	// A schema AHEAD of this binary is a rollback: an older release booting
-	// against a database a newer one migrated. Boot is the path a
-	// deploy-time skip never reaches (AUTO_MIGRATE, `kubectl rollout undo`),
-	// so it gets the same verdict `db migrate up` does — serve if every
-	// unknown version was declared backward-compatible, refuse to start if
-	// not. See ahead.go.
+	// A schema AHEAD of this binary is the previous release booting against
+	// a database the next one already migrated — every rolling deploy does
+	// this until the old ReplicaSet is gone. It gets the same verdict
+	// `db migrate up` does — serve if every unknown version was declared
+	// backward-compatible, refuse to start if not. See ahead.go.
 	source, err := scanSource(fsys, dir)
 	if err != nil {
 		return err
@@ -126,7 +125,7 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 		return fmt.Errorf("running migrations: %w", err)
 	}
 	if ahead != nil {
-		warnf(logger, "database schema is AHEAD of this binary (a rollback) — every newer version was declared backward-compatible, so nothing is applied and startup continues",
+		warnf(logger, "database schema is AHEAD of this binary (an older release mid-deploy) — every newer version was declared backward-compatible, so nothing is applied and startup continues",
 			"schema_version", ahead.Version, "binary_latest", ahead.Latest, "unknown_versions", joinVersions(ahead.Versions))
 		return nil
 	}

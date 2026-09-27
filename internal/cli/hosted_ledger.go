@@ -8,10 +8,10 @@ package cli
 // value names, Timestamps as RFC3339), and carried by cloud.Client.Call. A
 // field forge does not read is a field forge does not break on.
 //
-// THE SERVER OWNS THE RULES THAT NEED A LOCK. Promote and Rollback apply
-// release.Decide inside a transaction that holds the environment row, so the
-// idempotent-retry and never-promoted checks are made against a history no
-// concurrent promoter can change underneath them. This file therefore does
+// THE SERVER OWNS THE RULES THAT NEED A LOCK. Promote applies release.Decide
+// inside a transaction that holds the environment row, so the idempotent-retry
+// check is made against a history no concurrent promoter can change underneath
+// it. This file therefore does
 // NOT pre-check with a read — a read-then-write from a client would be the
 // race the server's lock exists to close.
 
@@ -33,7 +33,6 @@ const (
 	procGetRelease     = "controlplane.v1.DeployService/GetRelease"
 	procListReleases   = "controlplane.v1.DeployService/ListReleases"
 	procPromote        = "controlplane.v1.DeployService/Promote"
-	procRollback       = "controlplane.v1.DeployService/Rollback"
 	procListPromotions = "controlplane.v1.DeployService/ListPromotions"
 )
 
@@ -99,8 +98,11 @@ type wirePromotion struct {
 
 // The DeployPromotionKind enum's value names, as protojson writes them.
 const (
-	wireKindPromote  = "DEPLOY_PROMOTION_KIND_PROMOTE"
-	wireKindRollback = "DEPLOY_PROMOTION_KIND_ROLLBACK"
+	wireKindPromote = "DEPLOY_PROMOTION_KIND_PROMOTE"
+	// wireKindLegacyRollback is what a control plane returns for a ledger
+	// row written by the retired Rollback RPC. READ ONLY: it binds the env
+	// to its release exactly as a promote does, and decodes as one.
+	wireKindLegacyRollback = "DEPLOY_PROMOTION_KIND_ROLLBACK"
 )
 
 // ─── Conversion ──────────────────────────────────────────────────────────────
@@ -178,13 +180,11 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 
 func promotionKindFromWire(k string) (release.PromotionKind, error) {
 	switch k {
-	case wireKindPromote:
+	case wireKindPromote, wireKindLegacyRollback:
 		return release.KindPromote, nil
-	case wireKindRollback:
-		return release.KindRollback, nil
 	default:
-		// Never defaulted: an unknown kind read as "promote" would turn a
-		// rollback into a forward move in every consumer's eyes.
+		// Never defaulted: an unknown kind read as "promote" would make a
+		// future entry type indistinguishable from a binding.
 		return "", fmt.Errorf("%w: control plane returned promotion kind %q", release.ErrInvalid, k)
 	}
 }
@@ -304,7 +304,7 @@ func (s *hostedStore) Current(ctx context.Context, env string) (release.Promotio
 	return p, true, nil
 }
 
-// Append calls Promote or Rollback. The server freezes the pin set from the
+// Append calls Promote. The server freezes the pin set from the
 // release it holds — the Resolved/Sources on p are the client's PREVIEW and
 // are deliberately not sent, because a request that could state digests
 // would be a request that could ship bytes nobody cut.
@@ -312,9 +312,8 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion) (release.
 	if err := p.Validate(); err != nil {
 		return release.Promotion{}, err
 	}
-	// A promotion or rollback is a WRITE: ensure the env by name first (see
-	// ensureHostedEnv). A rollback of an env that has run nothing is still
-	// refused — by the server's ledger rule, not by the env being absent.
+	// A promotion is a WRITE: ensure the env by name first (see
+	// ensureHostedEnv).
 	if s.kind == deploytarget.HostedEnvLocal {
 		// A LOCAL env runs on a developer machine; it has no release to
 		// bind. The control plane refuses this too — refusing here means
@@ -338,33 +337,24 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion) (release.
 	if p.Note != "" {
 		req["note"] = p.Note
 	}
-	proc := procPromote
-	switch p.Kind {
-	case release.KindRollback:
-		proc = procRollback
-	default:
-		if p.FromEnv != "" {
-			fromID, ferr := s.envID(ctx, p.FromEnv)
-			if ferr != nil {
-				return release.Promotion{}, ferr
-			}
-			req["fromEnvironmentId"] = fromID
+	if p.FromEnv != "" {
+		fromID, ferr := s.envID(ctx, p.FromEnv)
+		if ferr != nil {
+			return release.Promotion{}, ferr
 		}
-		if len(p.Gates) > 0 {
-			gates := make([]wireGate, 0, len(p.Gates))
-			for _, g := range p.Gates {
-				gates = append(gates, wireGate(g))
-			}
-			req["gates"] = gates
+		req["fromEnvironmentId"] = fromID
+	}
+	if len(p.Gates) > 0 {
+		gates := make([]wireGate, 0, len(p.Gates))
+		for _, g := range p.Gates {
+			gates = append(gates, wireGate(g))
 		}
+		req["gates"] = gates
 	}
 	var resp struct {
 		Promotion wirePromotion `json:"promotion"`
 	}
-	if err := s.client.Call(ctx, proc, req, &resp); err != nil {
-		if p.Kind == release.KindRollback && strings.Contains(err.Error(), "never run in this environment") {
-			return release.Promotion{}, fmt.Errorf("%w: %v", release.ErrNeverPromoted, err)
-		}
+	if err := s.client.Call(ctx, procPromote, req, &resp); err != nil {
 		return release.Promotion{}, err
 	}
 	return s.promotionFromWire(p.Env, resp.Promotion)

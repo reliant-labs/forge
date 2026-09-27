@@ -110,8 +110,6 @@ const (
 	procPublishConfig     = "controlplane.v1.DeployService/PublishDeploymentConfig"
 	procGetStatus         = "controlplane.v1.DeployService/GetStatus"
 	procListEnvironments  = "controlplane.v1.DeployService/ListEnvironments"
-	procListPromotions    = "controlplane.v1.DeployService/ListPromotions"
-	procRollback          = "controlplane.v1.DeployService/Rollback"
 )
 
 type wireEnvironment struct {
@@ -158,11 +156,6 @@ type wireStatusResponse struct {
 	Deployments        []wireDeploymentStatus `json:"deployments"`
 	EnvironmentVerdict string                 `json:"environmentVerdict,omitempty"`
 	ReconcilePolicy    string                 `json:"reconcilePolicy,omitempty"`
-}
-
-type wirePromotion struct {
-	ReleaseVersion    string            `json:"releaseVersion"`
-	ResolvedArtifacts map[string]string `json:"resolvedArtifacts,omitempty"`
 }
 
 // The verdict and observed-state value names this file branches on.
@@ -746,86 +739,6 @@ func (p HostedProvider) observe(name string, state cluster.RolloutState, err err
 	if p.OnRollout != nil {
 		p.OnRollout(cluster.RolloutObservation{Kind: "HostedDeployment", Name: name, State: state, Err: err})
 	}
-}
-
-// Rollback returns the env to an earlier release and republishes it.
-//
-// lastGoodTag, when set, is the release VERSION to return to; empty means the
-// newest release the env ran before its current one, read from the ledger.
-// The older release's pinned digests are validated BEFORE the ledger is
-// written, so an old release that is no longer admissible (a shape band that
-// changed since) refuses with the ledger untouched.
-func (p HostedProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
-	c, err := p.client()
-	if err != nil {
-		return err
-	}
-	env, err := lookupHostedEnvironment(ctx, c, groupProject(group), group.Env)
-	if err != nil {
-		return err
-	}
-	envID := env.ID
-	var hist struct {
-		Promotions []wirePromotion `json:"promotions"`
-	}
-	if err := c.Call(ctx, procListPromotions, map[string]any{"environmentId": envID, "limit": 50}, &hist); err != nil {
-		return fmt.Errorf("read the promotion history of %q: %w", group.Env, err)
-	}
-	if len(hist.Promotions) == 0 {
-		return fmt.Errorf("hosted env %q has never been promoted; there is nothing to roll back to", group.Env)
-	}
-	current := hist.Promotions[0].ReleaseVersion
-	var target *wirePromotion
-	for i := range hist.Promotions {
-		pr := hist.Promotions[i]
-		if lastGoodTag != "" && pr.ReleaseVersion == lastGoodTag || lastGoodTag == "" && pr.ReleaseVersion != current {
-			target = &pr
-			break
-		}
-	}
-	if target == nil {
-		if lastGoodTag != "" {
-			return fmt.Errorf("hosted env %q has never run release %s, so it cannot be rolled back to it", group.Env, lastGoodTag)
-		}
-		return fmt.Errorf("hosted env %q has only ever run release %s; there is no earlier release to roll back to", group.Env, current)
-	}
-	if target.ReleaseVersion == current {
-		return fmt.Errorf("hosted env %q already runs release %s", group.Env, current)
-	}
-	rollbackGroup := group
-	hosted := HostedTarget{Release: target.ReleaseVersion, Digests: target.ResolvedArtifacts}
-	if group.Hosted != nil {
-		hosted.Endpoint = group.Hosted.Endpoint
-		hosted.Project = group.Hosted.Project
-	}
-	rollbackGroup.Hosted = &hosted
-	plan, err := planHosted(rollbackGroup)
-	if err != nil {
-		return fmt.Errorf("roll back to %s: %w", target.ReleaseVersion, err)
-	}
-	if group.DryRun {
-		fmt.Printf("  would roll %s back from %s to %s\n", group.Env, current, target.ReleaseVersion)
-		printHostedPlan(rollbackGroup, plan)
-		return nil
-	}
-	// Before the Rollback write: a release whose images the platform will no
-	// longer publish must not move the ledger to a state it cannot run.
-	if err := checkImagePushBase(group.Env, env.ImagePushBase, plan); err != nil {
-		return fmt.Errorf("roll back to %s: %w", target.ReleaseVersion, err)
-	}
-	// A deploy-triggered rollback is recovery from a failed publish, so its
-	// ledger note says so. An operator-authored note belongs on
-	// `forge env promote --rollback --note`, which writes the ledger directly.
-	if err := c.Call(ctx, procRollback, map[string]any{
-		"environmentId": envID, "version": target.ReleaseVersion, "note": "forge env deploy --rollback",
-	}, nil); err != nil {
-		return fmt.Errorf("record the rollback to %s: %w", target.ReleaseVersion, err)
-	}
-	if p.OnEnvironment != nil {
-		p.OnEnvironment(envID)
-	}
-	fmt.Printf("  rolled %s back from %s to %s (recorded on the ledger)\n", group.Env, current, target.ReleaseVersion)
-	return p.publish(ctx, c, rollbackGroup, envID, plan)
 }
 
 func printHostedPlan(group ServiceGroup, plan []hostedPlanItem) {

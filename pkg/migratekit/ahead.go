@@ -11,22 +11,22 @@ import (
 	"github.com/reliant-labs/forge/pkg/migratekit/compat"
 )
 
-// SCHEMA AHEAD OF THE BINARY — the rollback case.
+// SCHEMA AHEAD OF THE BINARY — the previous release, mid-deploy.
 //
-// A rollback deploys an OLDER release against a database the newer release
-// already migrated. Its migrator meets a recorded version it does not embed,
-// and golang-migrate reports that as
+// Every rolling deploy runs the PREVIOUS release's code against the NEXT
+// release's schema for a while: the new release migrates first, and the old
+// ReplicaSet keeps serving — and keeps booting pods, on a reschedule or a
+// scale-up — until the rollout completes. An old pod that migrates at boot
+// (AUTO_MIGRATE) meets a recorded version it does not embed, and
+// golang-migrate reports that as
 //
 //	no migration found for version 92: read down for version 92 ...: file does not exist
 //
-// — a hard error, so the migrate step fails and with it the rollback, at the
-// moment a rollback is needed. control-plane's v1.7.0 release (migrations 91
-// and 92 on top of v1.6.0's 90) is the case that surfaced it.
+// — a hard error that crash-loops the release still carrying the traffic.
 //
-// Neither obvious answer is right. Failing always makes rollback impossible;
-// tolerating always runs old code on a schema nobody checked it against, which
-// is how a rollback turns an incident into data loss. The answer is a FACT the
-// older binary can check: whether every version it does not know was declared
+// Neither obvious answer is right. Failing always breaks every deploy that
+// adds a migration; tolerating always runs old code on a schema nobody
+// checked it against. The answer is a FACT the older binary can check: whether every version it does not know was declared
 // backward-compatible by its author (see package compat). The older binary
 // has never seen those files, so it cannot read the declaration itself — the
 // NEWER migrator records it in the database as it applies them, in
@@ -51,7 +51,7 @@ const compatLockKey = 7250513029716893481
 // binary embeds, where every such version was declared backward-compatible.
 // It is a SUCCESS state — the binary's code can run — and it is reported, not
 // swallowed, because "the database is ahead of the code" is the single most
-// important thing an operator mid-rollback needs to see confirmed.
+// important thing an operator mid-deploy needs to see confirmed.
 type Ahead struct {
 	// Version is the schema version recorded in the database.
 	Version uint
@@ -66,7 +66,7 @@ type Ahead struct {
 // prove it is compatible with. Nothing was applied.
 //
 // It is a type, not a string, so a caller's policy (and a test) can tell
-// "this is a rollback across a schema change nobody declared safe" apart from
+// "old code meeting a schema change nobody declared safe" apart from
 // every other migration failure.
 type SchemaAheadError struct {
 	// Version is the schema version recorded in the database.
@@ -86,7 +86,7 @@ type SchemaAheadError struct {
 func (e *SchemaAheadError) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "database schema is at version %d, AHEAD of the newest migration this binary embeds (%d) — "+
-		"this is what running an older release against a newer release's database looks like (a rollback)", e.Version, e.Latest)
+		"this is an older release running against a newer release's database", e.Version, e.Latest)
 	if e.Unrecorded {
 		fmt.Fprintf(&b, "; the database holds no compatibility record for version %d (it was migrated by a binary that predates %s), "+
 			"so nothing proves this binary's code runs against it", e.Version, compatTable)
@@ -94,9 +94,10 @@ func (e *SchemaAheadError) Error() string {
 		fmt.Fprintf(&b, "; version(s) %s are not declared backward-compatible (%q in the .up.sql), "+
 			"so this binary's code is not known to run against them", joinVersions(e.Incompatible), compat.Directive)
 	}
-	b.WriteString(". NOTHING WAS APPLIED. Forge rolls forward only: deploy the release that owns this schema (or a " +
-		"newer hotfix built on it) instead of this one. The schema is never stepped back. See the forge skill " +
-		"db/deploy-migrations")
+	b.WriteString(". NOTHING WAS APPLIED and this binary refuses to serve. Forge rolls forward only: run the release " +
+		"that owns this schema (or a newer one). A schema is never stepped back. Write migrations " +
+		"expand/contract and mark the expand half `" + compat.Directive + "` so the previous release keeps " +
+		"working through a deploy. See the forge skill db/deploy-migrations")
 	return b.String()
 }
 
@@ -200,8 +201,8 @@ func readCompat(ctx context.Context, db *sql.DB) (map[uint]bool, error) {
 //
 // It runs BEFORE golang-migrate's Up, on every run, including one with nothing
 // to apply. Before, so a crash between applying a version and recording it
-// cannot leave an applied version unrecorded (which a later rollback would
-// have to refuse). Every run, so a database migrated before this record
+// cannot leave an applied version unrecorded (which an older binary would
+// then have to refuse). Every run, so a database migrated before this record
 // existed gains it on the first run of a binary that keeps it. Rows for
 // versions not yet applied are harmless: a reader only considers versions at
 // or below the schema's.

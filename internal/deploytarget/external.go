@@ -2,7 +2,6 @@ package deploytarget
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -20,15 +19,16 @@ import (
 // The provider's responsibilities are deliberately narrow:
 //
 //  1. Substitute the documented ${X} tokens into deploy_cmd /
-//     rollback_cmd / health_cmd against the merged env map
-//     (built-ins + user-declared `env`).
+//     health_cmd against the merged env map (built-ins +
+//     user-declared `env`).
 //  2. Run deploy_cmd via `sh -c`. On success, optionally run
 //     health_cmd. On both success, persist the (image, tag) tuple to
-//     .forge/state/external-<env>-<service>.json so a future rollback
-//     has a previous good tag to target.
-//  3. Rollback reads the state file, substitutes ${LAST_TAG}, and
-//     runs rollback_cmd. When no state file exists or rollback_cmd
-//     is unset, return a clear error rather than guess.
+//     .forge/state/external-<env>-<service>.json, which the next deploy
+//     reads back as ${LAST_TAG} and the reconciler reads as "what is
+//     deployed".
+//
+// There is no rollback_cmd: recovery is roll forward — deploy a newer
+// release through deploy_cmd.
 //
 // The provider does NOT understand the user's CLI. It doesn't know
 // whether `flyctl deploy` succeeded beyond the process exit code,
@@ -70,32 +70,6 @@ func (p ExternalProvider) Deploy(ctx context.Context, group ServiceGroup) error 
 	return nil
 }
 
-// Rollback reverts every service in the group to its previously
-// recorded good tag by running the user-supplied rollback_cmd.
-// Per-service failures are accumulated rather than aborting the loop —
-// rollback is a recovery affordance, not a way to mask the underlying
-// failure.
-func (p ExternalProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
-	runner := p.runner()
-	var failures []string
-	for _, svc := range group.Services {
-		if svc.External == nil {
-			failures = append(failures, fmt.Sprintf("%s: External spec is nil", svc.Name))
-			continue
-		}
-		if err := p.rollbackOne(ctx, runner, group, svc, lastGoodTag); err != nil {
-			fmt.Printf("  rollback %s: %v\n", svc.Name, err)
-			failures = append(failures, fmt.Sprintf("%s: %v", svc.Name, err))
-			continue
-		}
-	}
-	if len(failures) > 0 {
-		return fmt.Errorf("external rollback: %d failure(s): %s",
-			len(failures), strings.Join(failures, "; "))
-	}
-	return nil
-}
-
 func (p ExternalProvider) runner() commandRunner {
 	if p.Runner != nil {
 		return p.Runner
@@ -119,7 +93,7 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 
 	// Read the previously-recorded forge env deploy so we can (a) hand the
 	// deploy_cmd the prior tag as ${LAST_TAG} (some scripts label the
-	// outgoing container or keep a rollback pointer), and (b) WARN when
+	// outgoing container), and (b) WARN when
 	// the container forge is about to replace was shipped under a
 	// different tag/pipeline (fr-bde7b7e8e5). The warning makes "what
 	// code is live, and who deployed it?" answerable when a legacy manual
@@ -133,7 +107,7 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 
 	// Build the substitution map. ${LAST_TAG} carries the previously
 	// deployed tag (empty on first deploy) so the script can stamp the
-	// outgoing container or keep its own rollback pointer.
+	// outgoing container.
 	vars := externalVars(spec, group, svc.Name, p.projectDir(), tag, prevTag)
 
 	// Deploy phase — required; the schema check enforces non-empty
@@ -187,51 +161,6 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 	}); err != nil {
 		return fmt.Errorf("external %s: record state: %w", svc.Name, err)
 	}
-	return nil
-}
-
-// rollbackOne runs the user-supplied rollback_cmd against the state-
-// file's recorded tag, with ${LAST_TAG} substituted. Two failure
-// modes:
-//
-//   - No state file (and no fallback tag): error loudly — there's
-//     nothing to roll back to and guessing would risk shipping a
-//     regression.
-//   - No rollback_cmd set: error loudly — the user opted out of the
-//     rollback path and forge can't synthesise one for an arbitrary
-//     CLI.
-func (p ExternalProvider) rollbackOne(ctx context.Context, runner commandRunner, group ServiceGroup, svc ResolvedService, lastGoodTag string) error {
-	spec := svc.External
-	prev, err := ReadDeployState(p.projectDir(), "external", group.Env, svc.Name)
-	if err != nil {
-		return err
-	}
-	target := lastGoodTag
-	if prev != nil && prev.Tag != "" {
-		target = prev.Tag
-	}
-	if target == "" {
-		return errors.New("no previous tag recorded; cannot rollback")
-	}
-	if spec.RollbackCmd == "" {
-		return errors.New("no rollback_cmd declared; cannot rollback (set External.rollback_cmd to enable)")
-	}
-	// Current tag is whatever the dispatcher passed in on the group.
-	currentTag := resolveExternalTag(spec, group)
-	vars := externalVars(spec, group, svc.Name, p.projectDir(), currentTag, target)
-	expanded := expandVars(spec.RollbackCmd, vars)
-	if group.DryRun {
-		fmt.Printf("  [DRY-RUN] would exec: sh -c %s\n", expanded)
-		return nil
-	}
-	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
-	if ferr != nil {
-		return fmt.Errorf("env_file: %w", ferr)
-	}
-	if err := runner.RunWithEnv(ctx, envOverlay, "sh", "-c", expanded); err != nil {
-		return fmt.Errorf("rollback_cmd: %w", err)
-	}
-	fmt.Printf("  rollback %s: ok (tag %s)\n", svc.Name, target)
 	return nil
 }
 

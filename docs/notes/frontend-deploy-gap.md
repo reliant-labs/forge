@@ -13,7 +13,7 @@ from reading code alone.
 >
 > - `schema StaticSite` — bucket + `public_dir` + `base_path` + `bundle` +
 >   `cache_control` + `cdn`, with `releases/<digest>/` immutable archive and a
->   mutable `live/` prefix, so rollback and promotion re-point at an existing
+>   mutable `live/` prefix, so promotion re-points at an existing
 >   digest instead of rebuilding.
 > - `schema SimpleBackend` — one container, explicitly a _constrained profile
 >   over_ `K8sCluster` rather than a parallel mechanism; `render.k` projects it

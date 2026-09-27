@@ -12,8 +12,7 @@ import "context"
 //     command talked to Fly.io, systemd or a wet string, so there is
 //     genuinely nothing to read back.
 //   - Firebase owns its own release history and forge keeps no artifact
-//     of its own there, which is the same reason its Rollback returns
-//     ErrProviderNotImplemented rather than guessing.
+//     of its own there.
 //
 // There is deliberately no third category. Compose and HostInfra were
 // once listed here as NOT YET BUILT, and both are now implemented
@@ -47,11 +46,10 @@ func (p ExternalProvider) Observe(_ context.Context, group ServiceGroup) (Observ
 
 // Observe is not supported for Firebase Hosting targets.
 //
-// Structural, and the same gap that makes Rollback return
-// ErrProviderNotImplemented here: forge ships the assembled tree to
+// Structural: forge ships the assembled tree to
 // Firebase and Firebase owns the release history afterwards. forge keeps
 // no artifact of its own (contrast StaticSite, whose per-digest release
-// prefix is exactly what makes both rollback and observation real), so
+// prefix is exactly what makes both promotion and observation real), so
 // there is no forge-side identity to compare a live site against.
 func (p FirebaseProvider) Observe(_ context.Context, group ServiceGroup) (Observed, error) {
 	return unsupported(p.Name(),

@@ -10,9 +10,9 @@ import (
 // Observe — the third verb, and why it is a verb rather than a field on
 // Deploy's result.
 //
-// Deploy and Rollback are IMPERATIVE and ONE-SHOT: they describe a
-// transition ("ship this", "go back"), they run once, and when they
-// return they have no further opinion. Neither answers the question a
+// Deploy is IMPERATIVE and ONE-SHOT: it describes a transition ("ship
+// this"), runs once, and when it returns it has no further opinion. It
+// does not answer the question a
 // reconciler is built around — WHAT IS ACTUALLY RUNNING RIGHT NOW — and
 // that gap is the whole difference between a deploy tool and a
 // reconciler. A deploy's own return value cannot answer it either: it

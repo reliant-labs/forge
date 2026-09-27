@@ -1041,18 +1041,17 @@ schema External:
                         forge-deployed container distinguishable from one a
                         manual script placed under the same name.
       * ${LAST_TAG}     previously deployed tag from the state file (the
-                        prior forge env deploy on a deploy; the rollback target
-                        on a rollback). Empty on the first deploy.
+                        prior forge env deploy). Empty on the first deploy.
       * ${SERVICE}      Service.name
       * ${ENV}          env name (e.g. dev, staging, prod)
       * ${ENV_FILE}     path declared in env_file (if any)
       * ${PROJECT_DIR}  project root
       * Any keys declared in `env`.
 
-    `rollback_cmd` is optional — forge rollback errors loudly when it
-    isn't set rather than guessing. `health_cmd` runs after a
-    successful deploy; failures short-circuit before the state-file
-    write so the recorded last-good tag stays clean.
+    There is no rollback command: recovery is roll forward (deploy a
+    newer tag). `health_cmd` runs after a successful deploy; failures
+    short-circuit before the state-file write so the recorded tag stays
+    the last one that came up healthy.
 
     BUILD side: to build (and push) this service's image via a shell
     command, declare a `build = forge.ShellBuild { cmd = ... }` on the
@@ -1064,7 +1063,6 @@ schema External:
     """
     type: str = "external"
     deploy_cmd: str
-    rollback_cmd?: str
     health_cmd?: str
     env_file?: str
     env?: {str: str}
@@ -1076,8 +1074,7 @@ schema External:
 schema Compose:
     """Service runs under docker-compose on the target host. forge
     invokes `docker compose pull` + `docker compose up -d --wait`
-    against the declared compose file. Rollback writes a temporary
-    override file pinning the previous image:tag.
+    against the declared compose file.
 
     `service` defaults to the parent Service.name when unset.
 
@@ -2593,13 +2590,11 @@ schema StaticSite:
       * `live/…` — what the CDN/bucket actually serves, synced from the
         release. This is the only mutable prefix.
 
-    That split is what makes ROLLBACK and PROMOTION real rather than
-    aspirational. A rollback re-syncs `live/` from a release prefix that
-    is still sitting in the bucket; it does not rebuild, and it cannot
-    produce different bytes than the deploy it is undoing. A promotion is
-    the same move across environments: it re-points at an EXISTING digest
-    and never rebuilds. See `keep_releases` for the retention rule that
-    keeps those targets alive.
+    That split is what makes PROMOTION real rather than aspirational: a
+    promotion re-syncs `live/` from a release prefix still sitting in the
+    bucket. It re-points at an EXISTING digest and never rebuilds, so it
+    cannot produce different bytes than the release that was tested. See
+    `keep_releases` for the retention rule.
 
     Fields:
       * `bucket`        — target bucket. `gs://name` or a bare `name`.
@@ -2639,9 +2634,9 @@ schema StaticSite:
     # How many archived `releases/<digest>/` prefixes to retain, newest
     # first. Retention runs AFTER a successful deploy and NEVER deletes
     # the digest currently live, nor the digest recorded as the previous
-    # live one — deleting either would turn `forge env deploy --rollback`
-    # into a 404, which is the one failure mode a retention policy must
-    # not be able to cause. So the effective floor is 2 regardless of
+    # live one — a page loaded from the previous release moments ago is
+    # still fetching its hashed assets, and deleting them 404s it
+    # mid-session. So the effective floor is 2 regardless of
     # what is declared here, and the check enforces it rather than
     # silently correcting a smaller value.
     #
@@ -2658,7 +2653,7 @@ schema StaticSite:
         base_path == Undefined or base_path.startswith("/"), \
             "StaticSite.base_path must start with '/' (e.g. '/admin'); omit for the site root"
         keep_releases == 0 or keep_releases >= 2, \
-            "StaticSite.keep_releases must be 0 (retain everything) or at least 2 — retaining fewer than the live release plus its predecessor would delete the artifact a rollback needs"
+            "StaticSite.keep_releases must be 0 (retain everything) or at least 2 — retaining fewer than the live release plus its predecessor would delete assets pages loaded moments ago still fetch"
 
 # ---------------------------------------------------------------------------
 # Typed entities — each captures ONE orchestration shape.
@@ -3043,8 +3038,8 @@ schema Frontend:
                           optionally behind a CDN. Same build-and-assemble
                           contract as FirebaseHosting; differs in where
                           the tree lands, and it archives every deploy
-                          under a content digest so rollback and
-                          promotion re-point at existing bytes rather
+                          under a content digest so promotion
+                          re-points at existing bytes rather
                           than rebuilding.
       * K8sCluster      — ships as a container image and runs as an
                           in-cluster Deployment + Service, exactly like a

@@ -71,16 +71,68 @@ type Service interface {
 // cannot derive for itself — the running stack's addresses — is passed per
 // call on [RuntimeInput] rather than wired here, because it is a fact about
 // one invocation and one environment, not about the service.
-type Deps struct{}
+type Deps struct {
+	// DeployShaper classifies each rendered environment the way the deploy
+	// path does. See [DeployShaper]. Nil leaves every environment judged as
+	// a kubectl-applied render.
+	DeployShaper DeployShaper
+}
+
+// DeployShaper answers, for one environment's raw KCL render, how
+// `forge env deploy <env>` would ship it. Declared here, where it is
+// consumed: the deploy path lives in the CLI, and doctor must judge an
+// environment by the SAME classification that deploys it rather than by a
+// second guess of its own — a guess that disagrees with the deploy path is
+// how a hosted env was failed for rendering no Kubernetes objects, which is
+// exactly what a hosted env is supposed to render.
+//
+// An error means the render's deploy contract could not be read at all; the
+// environment is then reported as unreadable, never judged.
+type DeployShaper func(env string, render []byte) (DeployShape, error)
+
+// DeployShape is how one environment deploys, as the deploy path reads it.
+// The zero value means "unknown — judge it as a `manifests` stream", which
+// is what a render that carries no `output` deploy contract gets.
+type DeployShape struct {
+	// Destinations are the destination kinds the environment deploys to, in
+	// the vocabulary of `forge env topology` (hosted, cluster, compose, host,
+	// external, static), sorted. Nil when the render carries no deploy
+	// contract to read them from. Only an env with "cluster" among them
+	// needs its `manifests` stream to carry anything: an env that runs on
+	// this machine, on compose, or behind a static host applies no
+	// Kubernetes objects, and an empty stream is the correct render for it.
+	Destinations []string
+	// Hosted is true when the environment deploys THROUGH a control plane:
+	// every workload is a tier published as a spec, the platform renders and
+	// runs it, and forge applies nothing to any cluster. Such an env renders
+	// an empty `manifests` stream by design.
+	Hosted bool
+	// Workloads is how many tier workloads the control plane would admit.
+	Workloads int
+	// Refusal is the deploy path's own refusal, verbatim: non-nil means
+	// `forge env deploy` would refuse this environment before publishing
+	// anything (a workload that is not a tier, a spec the platform would
+	// reject, a reference nothing can satisfy).
+	Refusal error
+	// PlatformObjects is a JSON list of the Kubernetes objects the platform
+	// runs for the admitted workloads, rendered by pkg/deploy.Render — the
+	// renderer the control plane's tier operators call. It is what the
+	// content checks (probes, resources, secrets, ServiceAccounts,
+	// migrations) read for a hosted env, so they judge what will actually
+	// run rather than an empty stream.
+	PlatformObjects []byte
+}
 
 // New constructs a doctor.Service.
 //
 // forge:no-observe
-// Pure compute: empty Deps. Doctor shells out to local tooling and
-// reports what it found; the CLI's own output is the trace.
-func New(_ Deps) Service { return &svc{} }
+// Pure compute. Doctor shells out to local tooling and reports what it
+// found; the CLI's own output is the trace.
+func New(deps Deps) Service { return &svc{deps: deps} }
 
-type svc struct{}
+type svc struct {
+	deps Deps
+}
 
 // RuntimeTarget is the resolved address set the env-runtime checks probe.
 // It is supplied by the CLI from the SAME render + live-port overlay
@@ -225,6 +277,7 @@ func runtimeSignals() map[string][]namedCheck {
 // RunFiltered runs the named subset of the PROJECT-HEALTH set.
 func (s *svc) RunFiltered(ctx context.Context, projectName, projectDir, signal string) (Report, error) {
 	d := newDoctor(projectName, projectDir)
+	d.env.DeployShaper = s.deps.DeployShaper
 	switch signal {
 	case "":
 		for _, c := range projectChecks() {

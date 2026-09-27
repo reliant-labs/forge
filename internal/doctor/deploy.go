@@ -44,6 +44,11 @@ type k8sObject struct {
 	// deliberate slice of the object, and the difference usually lives in the
 	// part that was sliced off. See CheckObjectCollision.
 	raw []byte
+	// platform marks an object the CONTROL PLANE runs for a hosted env
+	// (pkg/deploy.Render of a tier spec) rather than one forge applies. The
+	// checks' evidence then names the tier field to change, since the
+	// author never wrote this manifest and cannot edit it.
+	platform bool
 }
 
 // UnmarshalJSON decodes the typed fields AND retains the original document.
@@ -261,6 +266,71 @@ type envRender struct {
 	// declare" — see CheckFrontendCode.
 	frontends []renderedFrontend
 	err       error
+
+	// destinations is the deploy path's classification (DeployShape
+	// .Destinations); nil when the render was not classified.
+	destinations []string
+	// hosted is true when the deploy path ships this env THROUGH a control
+	// plane (see DeployShape). Its `manifests` stream is empty by design,
+	// and what runs is platformObjects.
+	hosted bool
+	// hostedWorkloads is how many tier workloads the control plane would
+	// admit, and hostedRefusal the deploy path's refusal when it would admit
+	// none of them.
+	hostedWorkloads int
+	hostedRefusal   error
+	// platformObjects are the Kubernetes objects the control plane runs for
+	// a hosted env's tiers. Deliberately NOT in objects: objects is what
+	// forge applies to a cluster it addresses, and the checks that reason
+	// about that (object collisions, orphans, cluster routing) must never
+	// see a workload that lands in a namespace the platform allocates.
+	platformObjects []k8sObject
+}
+
+// workloadObjects is every object that will actually RUN for this env —
+// what forge applies plus what the platform runs for its hosted tiers. The
+// content checks (probes, resources, secrets, ServiceAccounts, migrations)
+// read this, so a hosted env is judged by its real workloads rather than by
+// an empty stream that says nothing either way.
+func (r envRender) workloadObjects() []k8sObject {
+	if len(r.platformObjects) == 0 {
+		return r.objects
+	}
+	return append(append([]k8sObject{}, r.objects...), r.platformObjects...)
+}
+
+// applyShape folds the deploy path's classification of this env into the
+// render.
+func (r *envRender) applyShape(s DeployShape) {
+	r.destinations = s.Destinations
+	r.hosted = s.Hosted
+	r.hostedWorkloads = s.Workloads
+	r.hostedRefusal = s.Refusal
+	if len(s.PlatformObjects) == 0 {
+		return
+	}
+	var objs []k8sObject
+	if err := json.Unmarshal(s.PlatformObjects, &objs); err != nil {
+		// The CLI marshalled these from pkg/deploy.Render; an undecodable
+		// list is a forge defect, and the env is reported unreadable rather
+		// than judged on half its workloads.
+		r.err = fmt.Errorf("decode the platform objects for hosted env %q: %w", r.env, err)
+		return
+	}
+	for i := range objs {
+		objs[i].platform = true
+	}
+	r.platformObjects = objs
+}
+
+// subject names an object in evidence. A platform object is named for the
+// tier the author declared, since that declaration is the only thing they
+// can change.
+func (o k8sObject) subject(env string) string {
+	if o.platform {
+		return fmt.Sprintf("%s/%s %s (hosted tier, rendered as the control plane runs it)", env, o.Kind, o.Metadata.Name)
+	}
+	return fmt.Sprintf("%s/%s %s", env, o.Kind, o.Metadata.Name)
 }
 
 // renderedFrontend is the slice of the `output.frontends` contract the
@@ -330,13 +400,15 @@ type renderedEnv struct {
 // doctor's parallel phase share a single KCL evaluation.
 func deployRenders(env *Environment) []envRender {
 	env.deployOnce.Do(func() {
-		env.deployCache = renderDeployEnvs(env.ProjectDir)
+		env.deployCache = renderDeployEnvs(env.ProjectDir, env.DeployShaper)
 	})
 	return env.deployCache
 }
 
-// renderDeployEnvs discovers deploy/kcl/<env>/main.k and renders each.
-func renderDeployEnvs(projectDir string) []envRender {
+// renderDeployEnvs discovers deploy/kcl/<env>/main.k and renders each. A
+// non-nil shaper classifies every successful render the way the deploy path
+// does, so a hosted env is judged as one.
+func renderDeployEnvs(projectDir string, shaper DeployShaper) []envRender {
 	kclDir := filepath.Join(projectDir, "deploy", "kcl")
 	entries, err := os.ReadDir(kclDir)
 	if err != nil {
@@ -378,6 +450,14 @@ func renderDeployEnvs(projectDir string) []envRender {
 		}
 		r := parseRender(raw)
 		r.env = name
+		if shaper != nil && r.err == nil {
+			shape, serr := shaper(name, raw)
+			if serr != nil {
+				r = envRender{env: name, err: serr}
+			} else {
+				r.applyShape(shape)
+			}
+		}
 		renders = append(renders, r)
 	}
 	return renders
@@ -782,13 +862,48 @@ func examineRenderability(env *Environment, what string, examine func(all []envR
 // than examineRendered: an environment that does not render is its
 // finding, not a hole in its evidence, so it receives the failures and
 // reports them by name instead of being degraded to UNDETERMINED.
+//
+// A HOSTED env (see DeployShape) is judged by its own deploy path instead:
+// `forge env deploy` publishes its tiers to a control plane and applies
+// nothing, so its `manifests` stream is empty BY DESIGN and "applyable"
+// means the control plane would admit every workload. The deploy path's
+// refusal is the finding, verbatim. Any k8s object it does render is a
+// defect of its own, because no deploy of a hosted env will ever apply it.
+//
+// "Produced no k8s objects" is a finding only for an env that deploys to a
+// cluster. An env the deploy path places entirely on this machine, on
+// compose or behind a static host applies nothing to Kubernetes, and
+// failing it for that failed the correct render. An env whose shape was
+// never classified (no contract in the render, or no shaper wired) keeps
+// the strict reading, since nothing says it is exempt.
 func CheckDeployManifests(_ context.Context, env *Environment) CheckResult {
 	return examineRenderability(env, "manifest shape", func(renders []envRender) CheckResult {
 		var problems []string
-		total := 0
+		total, hosted, tiers := 0, 0, 0
 		for _, r := range renders {
 			if r.err != nil {
 				problems = append(problems, fmt.Sprintf("%s: render failed: %v", r.env, r.err))
+				continue
+			}
+			if r.hosted {
+				hosted++
+				tiers += r.hostedWorkloads
+				if r.hostedRefusal != nil {
+					problems = append(problems, fmt.Sprintf(
+						"%s: hosted env — `forge env deploy %s` would refuse it before publishing anything:\n    %s",
+						r.env, r.env, strings.ReplaceAll(r.hostedRefusal.Error(), "\n", "\n    ")))
+				}
+				if len(r.objects) > 0 {
+					problems = append(problems, fmt.Sprintf(
+						"%s: hosted env renders %d k8s object(s) into `%s`, and a hosted deploy applies none of them — "+
+							"the control plane runs its tiers; declare this as a tier or move it to an env without control_plane",
+						r.env, len(r.objects), manifestRootKey))
+				}
+				if len(r.strayRoots) > 0 {
+					problems = append(problems, fmt.Sprintf(
+						"%s: top-level key(s) %s carry k8s objects, and a hosted deploy applies none of them",
+						r.env, strings.Join(r.strayRoots, ", ")))
+				}
 				continue
 			}
 			total += len(r.objects)
@@ -809,7 +924,7 @@ func CheckDeployManifests(_ context.Context, env *Environment) CheckResult {
 						"`-S %s` cannot reach them; move them into `%s`",
 					r.env, strings.Join(r.strayRoots, ", "), manifestRootKey, manifestRootKey))
 			}
-			if len(r.objects) == 0 && r.hasManifestRoot {
+			if len(r.objects) == 0 && r.hasManifestRoot && r.deploysToCluster() {
 				problems = append(problems, fmt.Sprintf("%s: render produced no k8s objects", r.env))
 			}
 		}
@@ -821,11 +936,22 @@ func CheckDeployManifests(_ context.Context, env *Environment) CheckResult {
 				Evidence: strings.Join(problems, "\n"),
 			}
 		}
-		return CheckResult{
-			Status:  StatusPass,
-			Message: fmt.Sprintf("%d env(s), %d manifest(s) — all applyable", len(renders), total),
+		msg := fmt.Sprintf("%d env(s), %d manifest(s) — all applyable", len(renders), total)
+		if hosted > 0 {
+			// Named separately, and never folded into the manifest count: a
+			// hosted env's tiers are not manifests anything applies.
+			msg += fmt.Sprintf("; %d hosted env(s), %d tier workload(s) the control plane would admit", hosted, tiers)
 		}
+		return CheckResult{Status: StatusPass, Message: msg}
 	})
+}
+
+// deploysToCluster reports whether an env's `manifests` stream is expected to
+// carry anything. True when the deploy path classified it as deploying to a
+// cluster — and when it was not classified at all, because an unclassified
+// env has not been shown to be exempt from the strict reading.
+func (r envRender) deploysToCluster() bool {
+	return r.destinations == nil || slices.Contains(r.destinations, "cluster")
 }
 
 // CheckDeployProbes verifies every rendered container that serves a
@@ -848,7 +974,7 @@ func CheckDeployProbes(_ context.Context, env *Environment) CheckResult {
 		var missing []string
 		checked, exempt := 0, 0
 		for _, r := range renders {
-			for _, o := range r.objects {
+			for _, o := range r.workloadObjects() {
 				_, containers := containersOf(o)
 				for _, c := range containers {
 					name, _ := c["name"].(string)
@@ -870,8 +996,14 @@ func CheckDeployProbes(_ context.Context, env *Environment) CheckResult {
 						absent = append(absent, "livenessProbe")
 					}
 					if len(absent) > 0 {
-						missing = append(missing, fmt.Sprintf("%s/%s %s container %q: serves %d port(s) but declares no %s",
-							r.env, o.Kind, o.Metadata.Name, name, len(ports), strings.Join(absent, " or ")))
+						msg := fmt.Sprintf("%s container %q: serves %d port(s) but declares no %s",
+							o.subject(r.env), name, len(ports), strings.Join(absent, " or "))
+						if o.platform {
+							// One HealthCheck drives both probes (pkg/deploy
+							// renderProbe), so the fix is one field, not two.
+							msg += " — set `healthCheck = tiers.HealthCheck {port = …, path = …}` on the SimpleBackend"
+						}
+						missing = append(missing, msg)
 					}
 				}
 			}
@@ -905,7 +1037,7 @@ func CheckDeployResources(_ context.Context, env *Environment) CheckResult {
 		var missing []string
 		checked := 0
 		for _, r := range renders {
-			for _, o := range r.objects {
+			for _, o := range r.workloadObjects() {
 				_, containers := containersOf(o)
 				for _, c := range containers {
 					checked++
@@ -925,8 +1057,8 @@ func CheckDeployResources(_ context.Context, env *Environment) CheckResult {
 						}
 					}
 					if len(absent) > 0 {
-						missing = append(missing, fmt.Sprintf("%s/%s %s container %q: missing %s",
-							r.env, o.Kind, o.Metadata.Name, name, strings.Join(absent, ", ")))
+						missing = append(missing, fmt.Sprintf("%s container %q: missing %s",
+							o.subject(r.env), name, strings.Join(absent, ", ")))
 					}
 				}
 			}
@@ -1061,7 +1193,7 @@ func CheckDeploySecrets(_ context.Context, env *Environment) CheckResult {
 			if literalSecretEnvs[r.env] {
 				continue
 			}
-			for _, o := range r.objects {
+			for _, o := range r.workloadObjects() {
 				_, containers := containersOf(o)
 				containers = append(containers, initContainersOf(o)...)
 				for _, c := range containers {
@@ -1087,8 +1219,13 @@ func CheckDeploySecrets(_ context.Context, env *Environment) CheckResult {
 						if !literal {
 							continue
 						}
-						leaks = append(leaks, fmt.Sprintf("%s/%s %s container %q: env %s is a literal value: "+
-							"— use valueFrom.secretKeyRef", r.env, o.Kind, o.Metadata.Name, cname, name))
+						fix := "use valueFrom.secretKeyRef"
+						if o.platform {
+							fix = "declare it `managedSecret = \"" + name + "\"` (write-only via `forge secret set --env " +
+								r.env + "`) or `databaseRef`, never `value`"
+						}
+						leaks = append(leaks, fmt.Sprintf("%s container %q: env %s is a literal value — %s",
+							o.subject(r.env), cname, name, fix))
 					}
 				}
 			}
@@ -1261,10 +1398,16 @@ func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
 			// here: "this env produced no manifests" is CheckDeployManifests'
 			// finding, and repeating it as a migration failure would report
 			// one defect twice under two names.
-			if len(r.objects) == 0 {
+			//
+			// A hosted env is read through its platform objects: the
+			// backend the control plane runs carries the same env and
+			// command a cluster Deployment would, so the same two
+			// mechanisms answer for it.
+			objects := r.workloadObjects()
+			if len(objects) == 0 {
 				continue
 			}
-			if hasMigrationStep(r.objects) || autoMigrateEnabled(r.objects) {
+			if hasMigrationStep(objects) || autoMigrateEnabled(objects) {
 				continue
 			}
 			// A HOST-deployed service migrates just as effectively as a
@@ -1354,8 +1497,9 @@ func CheckDeployServiceAccount(_ context.Context, env *Environment) CheckResult 
 		var unbound []string
 		declared := 0
 		for _, r := range renders {
+			objects := r.workloadObjects()
 			accounts := map[string]bool{}
-			for _, o := range r.objects {
+			for _, o := range objects {
 				if o.Kind == "ServiceAccount" {
 					accounts[o.Metadata.Namespace+"/"+o.Metadata.Name] = false
 					declared++
@@ -1368,7 +1512,7 @@ func CheckDeployServiceAccount(_ context.Context, env *Environment) CheckResult 
 			// it the check can say an SA is unbound but not why, which is
 			// how it came to report a cause it never tested.
 			boundElsewhere := map[string][]string{}
-			for _, o := range r.objects {
+			for _, o := range objects {
 				podSpec, containers := containersOf(o)
 				if len(containers) == 0 {
 					continue

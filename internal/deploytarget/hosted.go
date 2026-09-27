@@ -456,10 +456,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				continue
 			}
 			spec := *w.Backend
-			artifact := w.Artifact
-			if artifact == "" {
-				artifact = HostedArtifactName(spec.Image)
-			}
+			artifact := hostedArtifactOf(svc.Name, w)
 			if other, dup := seen[artifact]; dup && HostedImageRepository(spec.Image) != other {
 				errs = append(errs, fmt.Errorf("%s: image %q and %q share the release artifact name %q, so one binding cannot pin both; rename one repository",
 					svc.Name, spec.Image, other, artifact))
@@ -494,10 +491,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				continue
 			}
 			spec := *w.Static
-			artifact := w.Artifact
-			if artifact == "" {
-				artifact = svc.Name
-			}
+			artifact := hostedArtifactOf(svc.Name, w)
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no static site artifact %q.\n"+
@@ -530,9 +524,173 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			errs = append(errs, fmt.Errorf("%s: unknown hosted tier %q", svc.Name, w.Tier))
 		}
 	}
+	errs = append(errs, hostedReferenceErrors(group)...)
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("hosted env %q: refusing to publish anything — %d workload(s) are not admissible:\n  %w",
 			group.Env, len(errs), errors.Join(errs...))
+	}
+	return out, nil
+}
+
+// hostedArtifactOf is the release artifact a pinned workload's digest is
+// bound under: the declared Artifact, else HostedArtifactName(image) for a
+// backend and the workload's own name for a static site (the frontend name
+// `forge build` records its site release under). One rule, read by both the
+// plan and PreflightHosted, so the preflight can never pin a key the deploy
+// would not look up.
+func hostedArtifactOf(name string, w *HostedWorkload) string {
+	if w.Artifact != "" {
+		return w.Artifact
+	}
+	if w.Tier == HostedTierBackend && w.Backend != nil {
+		return HostedArtifactName(w.Backend.Image)
+	}
+	return name
+}
+
+// hostedReferenceErrors refuses the cross-workload references the control
+// plane can never satisfy. Each spec validates alone, so these are invisible
+// to Validate, and the platform does not refuse them either: it publishes
+// the spec and the workload waits forever.
+//
+//   - a databaseRef naming no ManagedDatabase in this env reads a
+//     "<name>-app" Secret nothing will ever publish, so the pod never
+//     starts (CreateContainerConfigError, no application log);
+//   - a workloadURL naming a workload the env does not publish, or a
+//     SimpleBackend that is not network public, has no URL the control
+//     plane can allocate — its resolver refuses a non-public backend
+//     permanently, and the referring workload waits on it forever.
+func hostedReferenceErrors(group ServiceGroup) []error {
+	databases := map[string]bool{}
+	urls := map[string]string{} // workload → "" (has a URL) or why it has none
+	for _, svc := range group.Services {
+		w := svc.Hosted
+		if w == nil {
+			continue
+		}
+		switch {
+		case w.Tier == HostedTierDatabase:
+			databases[svc.Name] = true
+		case w.Tier == HostedTierStatic:
+			urls[svc.Name] = ""
+		case w.Tier == HostedTierBackend && w.Backend != nil:
+			if n := w.Backend.EffectiveNetwork(); n != v1alpha1.NetworkPublic {
+				urls[svc.Name] = fmt.Sprintf("it is network %s, and only a public backend has a URL", n)
+			} else {
+				urls[svc.Name] = ""
+			}
+		}
+	}
+	urlRef := func(from, field, target string) error {
+		why, known := urls[target]
+		switch {
+		case !known:
+			return fmt.Errorf("%s: %s references workload %q, which this env does not publish to the control plane", from, field, target)
+		case why != "":
+			return fmt.Errorf("%s: %s references workload %q, but %s — the control plane can never resolve it", from, field, target, why)
+		}
+		return nil
+	}
+
+	var errs []error
+	for _, svc := range group.Services {
+		w := svc.Hosted
+		if w == nil {
+			continue
+		}
+		if w.Backend != nil {
+			for _, e := range w.Backend.Env {
+				if e.DatabaseRef != nil && !databases[e.DatabaseRef.Name] {
+					errs = append(errs, fmt.Errorf("%s: env var %s reads databaseRef %q, but this env declares no ManagedDatabase of that name — "+
+						"its credential Secret will never exist and the pod will never start", svc.Name, e.Name, e.DatabaseRef.Name))
+				}
+				if e.WorkloadURL != nil {
+					if err := urlRef(svc.Name, "env var "+e.Name, e.WorkloadURL.Name); err != nil {
+						errs = append(errs, err)
+					}
+				}
+			}
+		}
+		if w.Static != nil {
+			keys := make([]string, 0, len(w.Static.RuntimeConfig))
+			for k := range w.Static.RuntimeConfig {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				if ref := w.Static.RuntimeConfig[k].WorkloadURL; ref != nil {
+					if err := urlRef(svc.Name, "runtimeConfig."+k, ref.Name); err != nil {
+						errs = append(errs, err)
+					}
+				}
+			}
+		}
+	}
+	return errs
+}
+
+// HostedPreflightItem is one workload PreflightHosted admitted: its name,
+// tier and the spec the control plane would store — pinned to a PLACEHOLDER
+// digest, because no release is involved. Exactly one spec is set.
+type HostedPreflightItem struct {
+	Name     string
+	Tier     HostedTier
+	Backend  *v1alpha1.SimpleBackendSpec
+	Database *v1alpha1.ManagedDatabaseSpec
+	Static   *v1alpha1.StaticSiteSpec
+}
+
+// preflightDigest and preflightRegistry stand in for what a promotion
+// supplies. They are well-formed, so every rule that does not depend on WHICH
+// bytes ship still runs, and obviously not real, so a placeholder can never be
+// mistaken for a pin.
+const (
+	preflightDigest   = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	preflightRegistry = "preflight.forge.invalid"
+)
+
+// PreflightHosted answers "would the control plane admit this env's
+// workloads?" WITHOUT a release, a credential or a control plane — the
+// question CI asks of a checkout (`forge ci validate-kcl`, `forge doctor`)
+// before anything is built, pushed or promoted.
+//
+// It is planHostedWith, not a re-statement of it: every artifact the plan
+// would pin is bound to a placeholder digest (and a registry-less image to a
+// placeholder registry), and the plan then runs every rule it runs at deploy
+// time — spec validation, the shape band, the artifact collision rule and the
+// cross-workload references. What it cannot check is what only a live deploy
+// knows: that the promoted release pins these artifacts, and that the org's
+// image push base admits the image.
+func PreflightHosted(group ServiceGroup) ([]HostedPreflightItem, error) {
+	digests := map[string]string{}
+	registries := map[string]string{}
+	for _, svc := range group.Services {
+		w := svc.Hosted
+		if w == nil || (w.Tier != HostedTierBackend && w.Tier != HostedTierStatic) {
+			continue
+		}
+		artifact := hostedArtifactOf(svc.Name, w)
+		digests[artifact] = preflightDigest
+		registries[artifact] = preflightRegistry
+	}
+	g := group
+	g.Hosted = &HostedTarget{Release: "(preflight: no release)", Digests: digests, Registries: registries}
+	plan, err := planHostedWith(g, digests)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]HostedPreflightItem, 0, len(plan))
+	for _, item := range plan {
+		p := HostedPreflightItem{Name: item.Name, Tier: item.Tier}
+		switch spec := item.Spec.(type) {
+		case v1alpha1.SimpleBackendSpec:
+			p.Backend = &spec
+		case v1alpha1.ManagedDatabaseSpec:
+			p.Database = &spec
+		case v1alpha1.StaticSiteSpec:
+			p.Static = &spec
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }

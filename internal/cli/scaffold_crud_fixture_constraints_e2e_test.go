@@ -91,12 +91,8 @@ func TestE2ECRUDFixtureSurvivesAddedConstraints(t *testing.T) {
 	up := "CREATE UNIQUE INDEX gadgets_sku_uniq ON gadgets (sku);\n" +
 		"CREATE UNIQUE INDEX gadgets_seq_uniq ON gadgets (seq);\n" +
 		"CREATE UNIQUE INDEX gadgets_name_uniq ON gadgets (name);\n"
-	down := "DROP INDEX gadgets_name_uniq;\nDROP INDEX gadgets_seq_uniq;\nDROP INDEX gadgets_sku_uniq;\n"
 	if err := os.WriteFile(filepath.Join(migDir, "00090_constraints.up.sql"), []byte(up), 0o644); err != nil {
 		t.Fatalf("write constraints migration: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(migDir, "00090_constraints.down.sql"), []byte(down), 0o644); err != nil {
-		t.Fatalf("write constraints down migration: %v", err)
 	}
 
 	// The scaffold-once test must survive UNCHANGED — that is the contract.

@@ -72,10 +72,11 @@ func scaffoldEntityProject(t *testing.T) string {
 	return root
 }
 
-// TestWriteMigrationPair_SequencesAfterExisting pins the migration
-// numbering every birth shares: the next pair lands after the highest
-// existing sequence, never colliding with a migration already on disk.
-func TestWriteMigrationPair_SequencesAfterExisting(t *testing.T) {
+// TestWriteBirthMigration_SequencesAfterExistingAndWritesNoDown pins the
+// numbering every birth shares — the next migration lands after the highest
+// existing sequence — and the roll-forward policy: a birth writes the up
+// migration and nothing that claims to reverse it.
+func TestWriteBirthMigration_SequencesAfterExistingAndWritesNoDown(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "db", "migrations")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -83,15 +84,16 @@ func TestWriteMigrationPair_SequencesAfterExisting(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "00007_other.up.sql"), []byte("CREATE TABLE x (id TEXT PRIMARY KEY);"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	up, down, err := writeMigrationPair(dir, "things", "CREATE TABLE things (id TEXT PRIMARY KEY);\n", "DROP TABLE things;\n")
+	up, err := writeBirthMigration(dir, "things", "CREATE TABLE things (id TEXT PRIMARY KEY);\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if filepath.Base(up) != "00008_create_things.up.sql" {
 		t.Errorf("expected sequence 00008, got %s", up)
 	}
-	if filepath.Base(down) != "00008_create_things.down.sql" {
-		t.Errorf("down pair out of step with up: %s", down)
+	downs, _ := filepath.Glob(filepath.Join(dir, "*.down.sql"))
+	if len(downs) != 0 {
+		t.Errorf("a birth must write no down migration, found %v", downs)
 	}
 }
 

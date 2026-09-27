@@ -170,8 +170,6 @@ func setupProjectScaffoldFixture(t *testing.T) string {
 	writeFixtureFile(t, dir, filepath.Join("proto", "services", "tasks", "v1", "tasks.proto"), scaffoldFixtureProto)
 	writeFixtureFile(t, dir, filepath.Join("db", "migrations", "00001_create_legacies.up.sql"),
 		"CREATE TABLE legacies (id TEXT PRIMARY KEY CHECK (id <> ''), title TEXT NOT NULL DEFAULT '');\n")
-	writeFixtureFile(t, dir, filepath.Join("db", "migrations", "00001_create_legacies.down.sql"),
-		"DROP TABLE legacies;\n")
 	return dir
 }
 
@@ -220,7 +218,7 @@ func TestProjectScaffold_DryRunPlansEverythingAndWritesNothing(t *testing.T) {
 		t.Error("dry run modified the proto")
 	}
 	entries, _ := os.ReadDir(filepath.Join(dir, "db", "migrations"))
-	if len(entries) != 2 {
+	if len(entries) != 1 { // the fixture's one pre-existing up migration
 		t.Errorf("dry run must write no migrations, dir has %d entries", len(entries))
 	}
 }

@@ -757,8 +757,7 @@ Conventions read off real columns (no annotations):
 ` + "```" + `
 db/
   migrations/
-    00001_create_bookmarks.up.sql    # forward migration
-    00001_create_bookmarks.down.sql  # rollback
+    00001_create_bookmarks.up.sql    # forward-only migration (there are no down files)
   seeds/
     0001_examples.sql                # idempotent dev/test seed data
 ` + "```" + `
@@ -769,7 +768,8 @@ stable regardless of merge order.
 
 ## Writing a new migration
 
-1. Create paired ` + "`N_name.up.sql`" + ` / ` + "`N_name.down.sql`" + ` files.
+1. Create ` + "`N_name.up.sql`" + ` (` + "`forge db migration new <name>`" + `). Write NO down
+   migration: forge rolls forward only, and ` + "`forge lint`" + ` fails on a ` + "`.down.sql`" + `.
 2. Wrap **multi-statement DDL in an explicit transaction**
    (` + "`BEGIN; ... COMMIT;`" + `) so a mid-migration failure rolls back cleanly.
    Single-statement migrations can omit the transaction.
@@ -778,18 +778,18 @@ stable regardless of merge order.
    ephemeral postgres, so anything postgres accepts works: ` + "`::type`" + `
    casts, schema-qualified names (` + "`CREATE TABLE app.foo`" + `), native
    arrays (` + "`TEXT[]`" + `), ` + "`JSONB`" + `, generated/identity columns.
-3. Keep migrations **forward-compatible with running code**: ship the
-   migration first, then the code that depends on it. Avoid destructive
-   changes (e.g. dropping columns) in the same release as the code that
-   reads them.
-4. Test rollback. ` + "`go run ./cmd db migrate down`" + ` should leave the schema
-   in the pre-migration state.
+3. Keep migrations **forward-compatible with running code** — expand, then
+   contract: add the new shape and backfill, switch the code over in a
+   release, and drop the old shape in a LATER release. The previous release
+   must keep working against the new schema; that is what makes rolling the
+   APP back safe.
+4. A bad migration is fixed by a **new forward migration** (a hotfix written
+   against the state the database is actually in), never by reversing one.
 
 ## CLI
 
 ` + "```" + `
 go run ./cmd db migrate up      # apply all pending migrations
-go run ./cmd db migrate down    # revert the most recently applied migration
 go run ./cmd db migrate status  # print current version / dirty flag
 ` + "```" + `
 

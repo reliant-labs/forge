@@ -181,10 +181,6 @@ message Order {
 	if err := os.WriteFile(hand, []byte("ALTER TABLE orders ADD COLUMN item_index JSONB NOT NULL DEFAULT '{}';\n"), 0o644); err != nil {
 		t.Fatalf("write hand migration: %v", err)
 	}
-	down := filepath.Join(migDir, "99999999999999_add_item_index.down.sql")
-	if err := os.WriteFile(down, []byte("ALTER TABLE orders DROP COLUMN item_index;\n"), 0o644); err != nil {
-		t.Fatalf("write hand migration down: %v", err)
-	}
 
 	out, err := runCmdCombined(projectDir, 10*time.Minute, forgeBin, "generate")
 	if err == nil {

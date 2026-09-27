@@ -94,9 +94,8 @@ message Session {
 		!strings.Contains(auditUp, "RAISE EXCEPTION 'table audit_logs is append-only") {
 		t.Errorf("audit_logs migration missing the append-only guard:\n%s", auditUp)
 	}
-	auditDown := readMigration(t, migDir, "create_audit_logs.down.sql")
-	if !strings.Contains(auditDown, "DROP TRIGGER IF EXISTS audit_logs_append_only") {
-		t.Errorf("audit_logs down migration missing the guard drop:\n%s", auditDown)
+	if downs, _ := filepath.Glob(filepath.Join(migDir, "*.down.sql")); len(downs) != 0 {
+		t.Errorf("scaffold must write no down migrations (forge rolls forward only), found %v", downs)
 	}
 	// No Update/Delete surface anywhere.
 	protoAfter := readFileE2E(t, protoPath)

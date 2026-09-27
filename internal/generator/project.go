@@ -233,11 +233,14 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		// Scaffold a README.md in db/ so the migrations workflow is self-documenting.
 		dbReadme := "# db\n\nSQL migrations managed by [golang-migrate](https://github.com/golang-migrate/migrate).\n\n" +
 			"## Layout\n\n" +
-			"Place numbered migration pairs in `db/migrations/`:\n\n" +
-			"```\ndb/migrations/\n  0001_init.up.sql\n  0001_init.down.sql\n  0002_add_users.up.sql\n  0002_add_users.down.sql\n```\n\n" +
+			"Place numbered, forward-only migrations in `db/migrations/`:\n\n" +
+			"```\ndb/migrations/\n  00001_init.up.sql\n  00002_add_users.up.sql\n```\n\n" +
+			"There are no down migrations: forge rolls forward only. Recover from a bad migration with a new\n" +
+			"forward migration, and write changes expand-then-contract so the previous release keeps working.\n" +
+			"`forge lint` fails on a `.down.sql`.\n\n" +
 			"## CLI\n\n" +
 			"The generated binary exposes `db migrate` subcommands:\n\n" +
-			"```\ngo run ./cmd db migrate up      # apply all pending migrations\ngo run ./cmd db migrate down    # revert the most recently applied migration\ngo run ./cmd db migrate status  # print current version / dirty flag\n```\n\n" +
+			"```\ngo run ./cmd db migrate up      # apply all pending migrations\ngo run ./cmd db migrate status  # print current version / dirty flag\n```\n\n" +
 			"All subcommands read `DATABASE_URL` (or `--database-url`) from the standard project config.\n"
 		if err := os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0644); err != nil {
 			return fmt.Errorf("failed to create db/README.md: %w", err)

@@ -11,7 +11,7 @@
 //	Phase 1  entity births — every `// forge:entity`-marked message with
 //	         no applied table gets its missing CRUD quintet injected
 //	         (one-time, entity.go's own piece builders) and its owned
-//	         migration pair (internal/scaffold's renderer, fed from the
+//	         migration (internal/scaffold's renderer, fed from the
 //	         RAW proto — a brand-new message need not be in the
 //	         descriptor). Already-tabled marked messages are INERT
 //	         (reported; evolution is a new migration). Envelope-shaped
@@ -77,7 +77,7 @@ then run it:
 
   Phase 1: entity births. Every marked message with no applied table gets
            its missing CRUD quintet injected into the service proto
-           (one-time) and an owned create-table migration pair. A marked
+           (one-time) and an owned create-table migration. A marked
            message whose table already exists is INERT (evolution is a
            new migration); envelope shapes (Request/Response names,
            pagination fields) are refused loudly — the marker never
@@ -195,7 +195,7 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 	// generates two different Go identifiers and cannot build.
 	//
 	// Phase 2 catches this too, but by then phase 1 has already written a
-	// migration pair per birthed entity. The revert is clean and the re-run
+	// migration per birthed entity. The revert is clean and the re-run
 	// is a correct no-op, so nothing breaks — it just costs a full cycle to
 	// learn a fact that is a string comparison over data already in hand.
 	// Checked here, before anything is written.
@@ -251,7 +251,7 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 			table := naming.Pluralize(naming.ToSnakeCase(m.Name))
 			if dryRun {
 				birthsPlanned++
-				fmt.Printf("  📋 would birth %s → table %q (migration pair)\n", m.Package+"."+m.Name, table)
+				fmt.Printf("  📋 would birth %s → table %q (migration)\n", m.Package+"."+m.Name, table)
 				missRPCs, missMsgs := predictQuintetCompletion(scan, m.Name, m.AppendOnly)
 				fmt.Print("   ")
 				printQuintetPlan(scan, m.Name, missRPCs, missMsgs)

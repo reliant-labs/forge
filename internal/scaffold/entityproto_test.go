@@ -123,10 +123,6 @@ func TestRenderEntityMigrationFromProto_MappingTable(t *testing.T) {
 		t.Errorf("deleted_at appears %d times, want exactly 1 (the soft-delete column):\n%s", n, mig.UpSQL)
 	}
 
-	if mig.DownSQL != "DROP TABLE orders;\n" {
-		t.Errorf("down.sql = %q", mig.DownSQL)
-	}
-
 	// Every skip/TODO is reported — never silent.
 	notes := strings.Join(mig.Notes, "\n")
 	for _, want := range []string{"payment", "blob", "external", "created_at", "deleted_at", "id:"} {
@@ -455,9 +451,6 @@ func TestRenderEntityMigrationFromProto_FKOrderIndependence(t *testing.T) {
 	if !strings.Contains(parent.UpSQL, want) {
 		t.Errorf("customers must back-fill the reference orders could not constrain:\n%s", parent.UpSQL)
 	}
-	if !strings.Contains(parent.DownSQL, "ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_customer_id_fkey;") {
-		t.Errorf("the down migration must drop a constraint it added to another table:\n%s", parent.DownSQL)
-	}
 	if got := parent.BackfilledRefColumns["orders"]; len(got) != 1 || got[0] != "customer_id" {
 		t.Errorf("BackfilledRefColumns[orders] = %v, want [customer_id]", got)
 	}
@@ -540,9 +533,6 @@ func TestRenderEntityMigrationFromProto_ValidateConstraints(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "00001_create_widgets.up.sql"), []byte(mig.UpSQL), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "00001_create_widgets.down.sql"), []byte(mig.DownSQL), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := schemadef.ApplyAndIntrospect(dir); err != nil {
@@ -634,9 +624,6 @@ func TestRenderEntityMigrationFromProto_ShadowRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "00002_create_orders.up.sql"), []byte(mig.UpSQL), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "00002_create_orders.down.sql"), []byte(mig.DownSQL), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

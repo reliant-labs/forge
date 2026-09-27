@@ -310,7 +310,7 @@ func TestCmdTreeDB_KeepsItsOperationalPolicy(t *testing.T) {
 	// Unattended (initContainer) execution: a failure must leave the SQL
 	// error at the end of the pod log, not a cobra flag table. One per
 	// subcommand.
-	if got, want := strings.Count(src, "SilenceUsage: true"), 3; got != want {
+	if got, want := strings.Count(src, "SilenceUsage: true"), 2; got != want {
 		t.Errorf("rendered db.go sets SilenceUsage on %d subcommands, want %d — a migration "+
 			"failure must leave the SQL error at the end of the pod log, not a flag table:\n%s",
 			got, want, src)
@@ -332,15 +332,21 @@ func TestCmdTreeDB_KeepsItsOperationalPolicy(t *testing.T) {
 	}
 }
 
-// TestCmdTreeDB_DeclaresTheThreeMigrateSubcommands pins the command SHAPE.
-// `up`, `down` and `status` are the surface the deploy pipeline and the
-// Taskfile invoke by name, so losing one silently breaks a deploy step rather
-// than a build.
-func TestCmdTreeDB_DeclaresTheThreeMigrateSubcommands(t *testing.T) {
+// TestCmdTreeDB_DeclaresUpAndStatusAndNoDown pins the command SHAPE. `up`
+// and `status` are the surface the deploy pipeline and the Taskfile invoke by
+// name, so losing one silently breaks a deploy step rather than a build. And
+// there is no `down`: forge rolls forward only, so the scaffolded binary ships
+// no command that runs down SQL (and hence no m.Steps(-1)).
+func TestCmdTreeDB_DeclaresUpAndStatusAndNoDown(t *testing.T) {
 	src := renderDB(t, "cmd-tree-db.go.tmpl", true)
-	for _, use := range []string{`Use:   "up"`, `Use:          "down"`, `Use:          "status"`} {
+	for _, use := range []string{`Use:   "up"`, `Use:          "status"`} {
 		if !strings.Contains(src, use) {
 			t.Errorf("rendered db.go does not declare %s:\n%s", use, src)
+		}
+	}
+	for _, forbidden := range []string{`"down"`, `Steps(-`} {
+		if strings.Contains(src, forbidden) {
+			t.Errorf("rendered db.go contains %s — forge never runs down migrations", forbidden)
 		}
 	}
 }

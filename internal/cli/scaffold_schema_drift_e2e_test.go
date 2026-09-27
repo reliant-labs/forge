@@ -77,10 +77,6 @@ message Order {
 	if err := os.WriteFile(devMig, []byte("ALTER TABLE orders ADD COLUMN internal_note TEXT;\n"), 0o644); err != nil {
 		t.Fatalf("write dev migration: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "db", "migrations", "00002_add_internal_note.down.sql"),
-		[]byte("ALTER TABLE orders DROP COLUMN internal_note;\n"), 0o644); err != nil {
-		t.Fatalf("write dev down migration: %v", err)
-	}
 	if out := runCmdOutput(t, projectDir, forgeBin, "generate"); strings.Contains(out, "Schema drift") {
 		t.Fatalf("developer-added column must not trip a drift false positive; got:\n%s", out)
 	}

@@ -158,9 +158,8 @@ func TestAddEntityFromProto_SingleBirthsOwnedMigration(t *testing.T) {
 			t.Errorf("up.sql must not contain %q before customers exists:\n%s", bad, up)
 		}
 	}
-	down := readFileT(t, filepath.Join(dir, "db", "migrations", "00001_create_invoices.down.sql"))
-	if !strings.Contains(down, "DROP TABLE invoices;") {
-		t.Errorf("down.sql = %q", down)
+	if _, err := os.Stat(filepath.Join(dir, "db", "migrations", "00001_create_invoices.down.sql")); !os.IsNotExist(err) {
+		t.Errorf("birth must write no .down.sql (forge rolls forward only); stat err = %v", err)
 	}
 
 	// The evolution contract must be stated plainly in the next steps.

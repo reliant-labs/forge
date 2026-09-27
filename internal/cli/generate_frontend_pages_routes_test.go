@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 func liveSet(slugs ...string) map[string]bool {
@@ -107,5 +108,46 @@ func TestSortedSlugs_IsDeterministic(t *testing.T) {
 	got := sortedSlugs(liveSet("plans", "users", "daemons"))
 	if !reflect.DeepEqual(got, []string{"daemons", "plans", "users"}) {
 		t.Errorf("sortedSlugs = %v, want sorted [daemons plans users]", got)
+	}
+}
+
+// `routes: [none]` is the first-class spelling of "this frontend gets no
+// generated CRUD pages" — a marketing site, or an app whose screens are all
+// hand-written. It used to be read as a slug named "none" and warned about
+// on every generate ("routes [none] match no CRUD entity").
+func TestRouteFilter_NoneGeneratesNothingAndWarnsNothing(t *testing.T) {
+	t.Parallel()
+	for _, spelling := range []string{"none", "NONE", " none "} {
+		fe := config.FrontendConfig{Name: "web", Routes: []string{spelling}}
+		want, unknown := routeFilterFor(fe, liveSet("users", "daemons"))
+		for _, slug := range []string{"users", "daemons", "none"} {
+			if want(slug) {
+				t.Errorf("routes [%q]: want(%q) = true, want false — none means no pages", spelling, slug)
+			}
+		}
+		if len(unknown) != 0 {
+			t.Errorf("routes [%q]: unknown = %v, want none — `none` is a value, not a slug", spelling, unknown)
+		}
+	}
+}
+
+// The sidebar must link only routes this frontend actually has. With an
+// allowlist (or `none`) the nav used to advertise every entity in the
+// project, i.e. links to pages the page generator had deliberately not
+// written.
+func TestFilterNavPagesForFrontend(t *testing.T) {
+	t.Parallel()
+	pages := []templates.NavPageData{{Slug: "users"}, {Slug: "daemons"}}
+	live := liveSet("users", "daemons")
+
+	if got := filterNavPagesForFrontend(pages, config.FrontendConfig{Name: "web", Routes: []string{"none"}}, live); len(got) != 0 {
+		t.Errorf("routes [none]: nav = %v, want empty", got)
+	}
+	got := filterNavPagesForFrontend(pages, config.FrontendConfig{Name: "ops", Routes: []string{"users"}}, live)
+	if len(got) != 1 || got[0].Slug != "users" {
+		t.Errorf("allowlist [users]: nav = %v, want [users]", got)
+	}
+	if got := filterNavPagesForFrontend(pages, config.FrontendConfig{Name: "web"}, live); len(got) != 2 {
+		t.Errorf("no allowlist: nav = %v, want every page", got)
 	}
 }

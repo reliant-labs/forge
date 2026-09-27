@@ -34,7 +34,8 @@ func TestGoBuildValidateFixHint(t *testing.T) {
 		// wantContains is a list of substrings that MUST appear in the
 		// returned hint. Multiple substrings let us assert both the
 		// classification ("forge/pkg pin is older") AND the actionable
-		// command (`go get github.com/reliant-labs/forge/pkg@latest`).
+		// command (`go get github.com/reliant-labs/forge@latest` — never the
+		// retired forge/pkg module).
 		wantContains []string
 	}{
 		{
@@ -43,7 +44,7 @@ func TestGoBuildValidateFixHint(t *testing.T) {
 gen/db/v1/cycle_run.pb.orm.go:55:18: undefined: orm.TypeDoublePrecision`,
 			wantContains: []string{
 				"forge/pkg pin is older",
-				"go get github.com/reliant-labs/forge/pkg@latest",
+				"go get github.com/reliant-labs/forge@latest",
 				"go mod tidy",
 				"gen/",
 			},
@@ -53,7 +54,7 @@ gen/db/v1/cycle_run.pb.orm.go:55:18: undefined: orm.TypeDoublePrecision`,
 			errOutput: `gen/db/v1/model_performance.pb.orm.go:48:18: undefined: orm.TypeReal`,
 			wantContains: []string{
 				"forge/pkg pin is older",
-				"go get github.com/reliant-labs/forge/pkg@latest",
+				"go get github.com/reliant-labs/forge@latest",
 			},
 		},
 		{

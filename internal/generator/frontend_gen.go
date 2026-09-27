@@ -103,6 +103,17 @@ type FrontendGenOptions struct {
 	// means the project has not opted in, and every template renders its
 	// previous env-var form unchanged.
 	TypedConfig FrontendTypedConfig
+	// Public scaffolds a frontend with NO sign-in gate: no route guard
+	// wrapping the app, and no /auth/sign-in route. It is what
+	// `auth_mode: none` renders, and what `forge scaffold frontend` picks
+	// by default for a project whose dev environment declares no identity
+	// provider — there, a guarded frontend can only ever redirect every
+	// page to a sign-in form nothing can satisfy.
+	//
+	// The auth modules themselves (src/lib/auth/*) are still emitted: they
+	// compile, answer "signed out" without an issuer, and are what a later
+	// switch to `auth_mode: native` re-attaches to.
+	Public bool
 }
 
 // FrontendTypedConfig tells the frontend templates which typed config
@@ -138,6 +149,12 @@ func FrontendTypedConfigFrom(envVars []string) FrontendTypedConfig {
 		}
 	}
 	return out
+}
+
+// isSignInScreen reports whether a frontend template-tree path is one of the
+// Next.js /auth route files — the sign-in screens a public frontend omits.
+func isSignInScreen(rel string) bool {
+	return strings.HasPrefix(filepath.ToSlash(rel), "src/app/auth/")
 }
 
 // GenerateFrontendFiles generates the frontend directory and files.
@@ -190,6 +207,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		output = "standalone"
 	}
 	data := templates.FrontendTemplateData{
+		Public:       opts.Public,
 		FrontendName: frontendName,
 		ProjectName:  projectName,
 		Platform:     tmplDir,
@@ -218,6 +236,12 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	}
 
 	for _, file := range frontendFiles {
+		// A public frontend has nothing to sign in to, so the sign-in
+		// screens are not emitted at all (the Vite tree carries its sign-in
+		// route inline in routes.tsx, gated on .Public there).
+		if opts.Public && isSignInScreen(file.Rel) {
+			continue
+		}
 		// nav.tsx and dashboard.tsx ARE emitted here, empty of routes, even
 		// though the entity set that seeds them does not exist yet.
 		//

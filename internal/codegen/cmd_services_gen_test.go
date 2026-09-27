@@ -468,3 +468,53 @@ func assertParses(t *testing.T, name, content string) {
 		t.Fatalf("rendered %s does not parse: %v\n%s", name, perr, content)
 	}
 }
+
+// A project that owns its mount surface (mounts_services_gen.go disowned,
+// Mount<Svc> methods hand-written in internal/app) cannot get a new service's
+// Mount method from forge. The generated mount reference used to name it
+// anyway — `(*app.Components).MountWidget undefined` — which failed generate's
+// validate and rolled back every `forge scaffold service`. It must instead
+// emit a placeholder that compiles, while a method the surface DOES declare
+// keeps the direct typed expression.
+func TestGenerateCmdGroups_HandOwnedMountSurfaceMissingMethod(t *testing.T) {
+	dir := t.TempDir()
+	writeTestGoMod(t, dir, "github.com/example/proj")
+	mustWriteFile(t, filepath.Join(dir, "internal", "app", "mounts_services.go"),
+		"package app\n\ntype Components struct{}\n\nfunc (c *Components) MountItem() []string { return nil }\n")
+
+	if err := GenerateCmdGroups(CmdServiceGroupInput{Bin: "proj", Services: []string{"item", "widget"}}, dir, nil); err != nil {
+		t.Fatalf("GenerateCmdGroups: %v", err)
+	}
+	svcDir := filepath.Join(dir, "cmd", "proj", "cmd", "services")
+
+	item := mustReadFile(t, filepath.Join(svcDir, "item_mount_gen.go"))
+	if !strings.Contains(item, "= (*app.Components).MountItem") {
+		t.Errorf("a declared mount method must stay a direct method expression:\n%s", item)
+	}
+	widget := mustReadFile(t, filepath.Join(svcDir, "widget_mount_gen.go"))
+	if strings.Contains(widget, "= (*app.Components).MountWidget") {
+		t.Errorf("an undeclared mount method must not be named (it breaks the build):\n%s", widget)
+	}
+	assertParses(t, "widget_mount_gen.go", widget)
+	if got := PendingServiceMount(dir, "proj", "widget"); got != "MountWidget" {
+		t.Errorf("PendingServiceMount(widget) = %q, want MountWidget", got)
+	}
+	if got := PendingServiceMount(dir, "proj", "item"); got != "" {
+		t.Errorf("PendingServiceMount(item) = %q, want empty", got)
+	}
+}
+
+// With no Mount methods in internal/app at all (a first generate, before the
+// surface exists), nothing is marked missing: that is a tree mid-generate, and
+// the forge-emitted surface will declare every method.
+func TestGenerateCmdGroups_NoMountSurfaceYetKeepsMethodExpressions(t *testing.T) {
+	dir := t.TempDir()
+	writeTestGoMod(t, dir, "github.com/example/proj")
+	if err := GenerateCmdGroups(CmdServiceGroupInput{Bin: "proj", Services: []string{"widget"}}, dir, nil); err != nil {
+		t.Fatalf("GenerateCmdGroups: %v", err)
+	}
+	widget := mustReadFile(t, filepath.Join(dir, "cmd", "proj", "cmd", "services", "widget_mount_gen.go"))
+	if !strings.Contains(widget, "= (*app.Components).MountWidget") {
+		t.Errorf("with no surface yet the direct expression must be emitted:\n%s", widget)
+	}
+}

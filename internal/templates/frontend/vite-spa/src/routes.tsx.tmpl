@@ -26,16 +26,40 @@ import {
   createRoute,
   createRouter,
   Outlet,
+{{- if not .Public}}
   useRouterState,
+{{- end}}
 } from "@tanstack/react-router";
+{{- if not .Public}}
 import { useState } from "react";
 
 import Button from "@/components/ui/button";
 import { useAuth } from "@/lib/auth/context";
 import { AuthError, signIn, signUp } from "@/lib/auth/native-login";
 import { RouteGuard } from "@/lib/auth/route-guard";
+{{- end}}
 
 import App from "./App";
+{{- if .Public}}
+
+// Root route — renders the app shell (<App />) and an <Outlet /> for matched
+// children.
+//
+// PUBLIC FRONTEND (auth_mode: none): there is no route guard and no sign-in
+// route — every page renders for every visitor. To gate it later, set
+// `auth_mode: native` in forge.yaml, wrap the shell in the RouteGuard from
+// @/lib/auth/route-guard and add a sign-in route (`forge skill load
+// auth/frontend`).
+export const rootRoute = createRootRoute({
+  component: function RootShell() {
+    return (
+      <App>
+        <Outlet />
+      </App>
+    );
+  },
+});
+{{- else}}
 
 // Root route — renders the app shell (<App />) and an <Outlet /> for
 // matched children.
@@ -77,6 +101,7 @@ export const rootRoute = createRootRoute({
     );
   },
 });
+{{- end}}
 
 // Index route — the welcome / dashboard landing page. Replace with your own
 // dashboard component once you have services with CRUD entities and have
@@ -100,7 +125,7 @@ const indexRoute = createRoute({
     );
   },
 });
-
+{{if not .Public}}
 // ── The sign-in route ──────────────────────────────────────────────────
 //
 // ONE route, and no callback route beside it.
@@ -289,6 +314,7 @@ const signInRoute = createRoute({
   },
 });
 
+{{end -}}
 // ── FORGE-ROUTES: BEGIN (managed by `forge scaffold page` and `forge generate`) ──
 // Entity routes are appended below this marker. Hand-editing inside this
 // block is allowed, but `forge generate` may re-stitch entries — keep the
@@ -316,7 +342,9 @@ const generatedRoutes: any[] = [];
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+{{- if not .Public}}
   signInRoute,
+{{- end}}
   ...generatedRoutes,
 ]);
 

@@ -109,7 +109,9 @@ func TestPerBinaryKCL_EndToEndDisjointEnvMaps(t *testing.T) {
 
 	write("main.k", `import `+ConfigSchemaModule+` as config_gen
 
-_admin = config_gen.AdminConfig {log_level = "debug"}
+# log_level lives in the composed BaseConfig block, so it is authored by its
+# path — the block is a nested schema, not flattened into AdminConfig.
+_admin = config_gen.AdminConfig {base.log_level = "debug"}
 _gateway = config_gen.GatewayConfig {upstream_timeout_ms = 1500}
 
 # The two mechanisms COMPOSE, and this is where that shows. Per-binary

@@ -642,6 +642,10 @@ type FrontendTemplateData struct {
 	// "/", [A-Za-z0-9._-] segments) — templates splice it verbatim into
 	// TypeScript string literals.
 	BasePath string
+	// Public renders the frontend WITHOUT a sign-in gate (auth_mode: none):
+	// providers.tsx / routes.tsx mount no RouteGuard and the Vite tree
+	// declares no /auth/sign-in route. See generator.FrontendGenOptions.Public.
+	Public bool
 }
 
 // withDefaults fills the optional fields a caller may leave zero, and

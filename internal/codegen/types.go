@@ -439,6 +439,27 @@ type ConfigField struct {
 	// `json:",omitempty"` keeps descriptors written by older forge binaries
 	// readable (additive contract, see the audit-json skill).
 	ProtoFile string `json:",omitempty"`
+
+	// KCLBlock / KCLBlockType place a composed config block's LEAF in the KCL
+	// projection: KCLBlock is the composing field's name on the root message
+	// (`stripe` for `StripeConfig stripe = 40;`) and KCLBlockType the block
+	// message (`StripeConfig`). Set only by the block flattener
+	// (config_block_flatten.go); empty for a root-level field. The KCL
+	// emitters project such a leaf into a NESTED schema — authored as
+	// `stripe.secret_key` — so two blocks may each declare a leaf of the same
+	// name. Never serialized: it is derived from MessageType on every run.
+	KCLBlock     string `json:"-"`
+	KCLBlockType string `json:"-"`
+}
+
+// KCLPath is the dotted path a config.k instance authors this field by, and
+// the lambda reads it by: `secret_key` for a root field, `stripe.secret_key`
+// for a leaf of the `stripe` block.
+func (f ConfigField) KCLPath() string {
+	if f.KCLBlock == "" {
+		return f.Name
+	}
+	return f.KCLBlock + "." + f.Name
 }
 
 // ConfigMessage represents a parsed config proto message.

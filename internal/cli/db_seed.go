@@ -191,6 +191,11 @@ func seedConfigFromStore(store *projectstore.Store) seedplan.Config {
 	if len(s.RowsPerTable) > 0 {
 		c.RowsPerTable = s.RowsPerTable
 	}
+	if s.Tables != nil {
+		// Non-nil even when empty: `tables: []` means "seed nothing",
+		// which a nil slice would read as "seed everything".
+		c.Tables = append([]string{}, (*s.Tables)...)
+	}
 	return c
 }
 

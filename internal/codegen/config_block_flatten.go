@@ -1,50 +1,37 @@
 package codegen
 
-// Flattening composed config blocks into one KCL schema.
+// Composed config blocks in the KCL projection.
 //
 // A config block is its own namespace in proto: `StaticSiteConfig.base_domain`
 // and `SimpleBackendConfig.base_domain` are two different fields, bound to two
 // different env vars, and the Go loader resolves each through its own message.
 // Nothing about declaring both is a proto error.
 //
-// The KCL projection does not have that namespace. It flattens every block's
-// leaves into ONE `schema AppConfig`, because an env's config.k authors values
-// as a flat instance (`log_level = "debug"`), and nested schema instantiation
-// is not projected. So two blocks declaring the same leaf name arrive at the
-// emitter as two declarations of one field.
+// The KCL projection used to FLATTEN every block's leaves into the one
+// `schema AppConfig` ("nested schemas are not yet projected"), so two blocks
+// declaring the same leaf name arrived as two declarations of one field. The
+// first mitigation qualified contested names (`simple_backend_base_domain`),
+// which meant the key an operator typed in config.k depended on whether some
+// OTHER block happened to declare the same leaf — adding a field to one block
+// could rename a field in another.
 //
-// CheckDuplicateConfigFields then refuses the schema, correctly — KCL keeps the
-// LAST declaration of a repeated field silently, which once shipped an empty
-// APP_URL to three prod workloads. But the refusal lands on the whole AppConfig,
-// and `forge generate` downgrades a config-generation failure to a warning, so
-// the previous config_gen.k stays on disk. The author does not see an error
-// about their field; they see a generated file in which EVERY leaf of BOTH
-// blocks is silently absent, indistinguishable from fields that were never
-// declared. In control-plane that hid the entire on-switch for two deploy
-// tiers, which is how a tier that was fully implemented could not be turned on.
+// Blocks are now projected as NESTED schemas, which is what they are:
 //
-// The fix is to give the flattened names the namespace the projection lost, and
-// to do it ONLY where a name is actually contested. Qualifying every block leaf
-// unconditionally is the cleaner rule and is the wrong one here: every existing
-// per-env config.k authors leaves by bare name, and a blanket rename would
-// invalidate all of them at once, in files forge does not own.
+//	schema AppConfigStripe:            # one schema per composed block
+//	    secret_key: ConfigSecretRef = …
+//	schema AppConfig:
+//	    stripe: AppConfigStripe = AppConfigStripe {}
+//
+// and config.k authors a leaf by its path, `stripe.secret_key = …` (KCL merges
+// a path key into the nested schema's defaults). The namespace the proto has is
+// the namespace KCL has, so no leaf name can collide across blocks and none is
+// ever renamed. The flattener's job is only to hand the emitters one ordered
+// field list in which every block leaf carries its KCLBlock.
 
-// FlattenBlockLeaves projects rootMessage's fields into the flat field list the
-// KCL emitters consume: its own scalar leaves, plus one level of the leaves of
-// every config block it composes.
-//
-// A leaf claimed by two different blocks is emitted under `<block>_<leaf>`
-// (`simple_backend_base_domain`); a leaf claimed by only one keeps its bare
-// name. Qualification is decided across the whole message set before any field
-// is emitted, so it does not depend on declaration order — both sides of a
-// collision are qualified, never just the second one to be visited, which would
-// make which name an author writes depend on proto field order.
-//
-// Only Name is rewritten. EnvVar, defaults and sensitivity are untouched: the
-// env var is the actual contract with the running binary, and it was never
-// ambiguous — SIMPLE_BACKEND_BASE_DOMAIN and STATIC_SITE_BASE_DOMAIN already
-// differ. This function changes what an operator TYPES in config.k, and nothing
-// about what the process reads.
+// FlattenBlockLeaves projects rootMessage's fields into the field list the KCL
+// emitters consume: its own scalar leaves, plus one level of the leaves of
+// every config block it composes, each tagged with the block it belongs to
+// (ConfigField.KCLBlock). Names are never rewritten.
 func FlattenBlockLeaves(messages []ConfigMessage, rootMessage string) []ConfigField {
 	byName := make(map[string]*ConfigMessage, len(messages))
 	for i := range messages {
@@ -76,55 +63,30 @@ func FlattenFieldsWithBlocks(fields []ConfigField, messages []ConfigMessage) []C
 	return flattenWithBlocks(fields, byName)
 }
 
-// flattenWithBlocks is the shared core: it walks one field list, expands each
-// composed block one level, and qualifies leaf names that more than one block
-// claims. Exported callers differ only in how they obtain the field list.
+// flattenWithBlocks is the shared core: it walks one field list and expands
+// each composed block one level, tagging every expanded leaf with its block.
+// The block-reference field itself is dropped — the nested schema IS its
+// projection. A reference to an unknown message is dropped too (nothing to
+// project), exactly as before.
 func flattenWithBlocks(fields []ConfigField, byName map[string]*ConfigMessage) []ConfigField {
-	// Pass one: count which blocks claim each leaf name. Counting BLOCKS
-	// rather than occurrences matters — a single block declaring a name twice
-	// is a real duplicate that must still be refused downstream, not
-	// something to paper over by qualifying it.
-	claims := map[string]map[string]bool{}
-	noteClaim := func(leaf, owner string) {
-		if claims[leaf] == nil {
-			claims[leaf] = map[string]bool{}
-		}
-		claims[leaf][owner] = true
-	}
-	for _, f := range fields {
-		if f.MessageType != "" {
-			if bm, known := byName[f.MessageType]; known {
-				for _, bf := range bm.Fields {
-					if bf.MessageType == "" {
-						noteClaim(bf.Name, f.Name)
-					}
-				}
-			}
-			continue
-		}
-		noteClaim(f.Name, "")
-	}
-
-	// Pass two: emit, qualifying only contested names.
 	var out []ConfigField
 	for _, f := range fields {
-		if f.MessageType != "" {
-			bm, known := byName[f.MessageType]
-			if !known {
-				continue
-			}
-			for _, bf := range bm.Fields {
-				if bf.MessageType != "" {
-					continue // one nesting level, as elsewhere
-				}
-				if len(claims[bf.Name]) > 1 {
-					bf.Name = f.Name + "_" + bf.Name
-				}
-				out = append(out, bf)
-			}
+		if f.MessageType == "" {
+			out = append(out, f)
 			continue
 		}
-		out = append(out, f)
+		bm, known := byName[f.MessageType]
+		if !known {
+			continue
+		}
+		for _, bf := range bm.Fields {
+			if bf.MessageType != "" {
+				continue // one nesting level, as elsewhere
+			}
+			bf.KCLBlock = f.Name
+			bf.KCLBlockType = f.MessageType
+			out = append(out, bf)
+		}
 	}
 	return out
 }

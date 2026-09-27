@@ -1351,8 +1351,8 @@ schema FileSecrets:
     gated to dev/e2e (a check below + a Go guard). staging/prod must use
     ExternalSecrets.
 
-    Populate with `forge secret set <env> <KEY>` (value on stdin, never
-    argv), or hand-edit the YAML. `forge secret ensure <env>` creates the
+    Populate with `forge secret set --env <env> <KEY>` (value on stdin, never
+    argv), or hand-edit the YAML. `forge secret ensure --env <env>` creates the
     file and lists every declared ref that has no value yet."""
     type: str = "file"
     path: str = "secrets/dev.yaml"

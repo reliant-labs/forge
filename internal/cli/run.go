@@ -210,34 +210,55 @@ func declaredServiceNames(comps []config.ComponentConfig) []string {
 	return out
 }
 
-// mergeConfigFrontends populates entities.Frontends from the project's
-// forge.yaml `frontends:` when the rendered KCL carried none.
+// mergeConfigFrontends reconciles entities.Frontends (what the env's KCL
+// declares) with the project's forge.yaml `frontends:`.
 //
-// Frontends are a forge.yaml concept, not a Kubernetes workload: `forge
-// build` and `forge env deploy` read them from cfg.Frontends, and the
-// env templates project only the k8s workloads
-// (services/workers/crons/operators from deploy/kcl/workloads.k) into the
-// `output` contract — never frontends. So the KCL render always comes back
-// with entities.Frontends empty, and the up/run frontend phase (which
-// iterates entities.Frontends) would start ZERO dev servers. This bridges
-// cfg.Frontends into the entity set that phase consumes, mirroring the
-// build/deploy path's source of truth so `forge run` actually launches the
-// scaffolded frontend.
+// Both sources are real. The scaffolded env templates — and
+// `forge scaffold frontend` — declare each frontend in deploy/kcl/<env>/main.k
+// with its dev port; forge.yaml also lists every frontend, and is the only
+// place a frontend adopted without KCL (or declared before the KCL block
+// existed) appears. The up/run frontend phase iterates entities.Frontends, so
+// a frontend in neither place is never dev-served.
 //
-// No-op when the KCL already carried frontends (forward-compat, if a
-// template ever emits them) or the project declares none. dev_runner
-// defaults to npm in buildFrontendCmd, so it is left unset here.
+// PER FRONTEND, and the env's KCL is authoritative for every frontend it
+// declares. The render is where the dev port is RESOLVED
+// (`plugin.resolve_port` steps off a busy 3000 and remembers the answer), so
+// a KCL-declared frontend keeps its KCL port, path and dev_runner; forge.yaml
+// only fills fields the declaration left empty (today: type). A forge.yaml
+// frontend the KCL does not mention is appended with forge.yaml's own fields,
+// including dev_runner — the path an adopted pnpm app takes before it has a
+// KCL declaration of its own.
+//
+// This used to be all-or-nothing: bridge every forge.yaml frontend when KCL
+// carried none, and do nothing otherwise. The first half let forge.yaml's
+// literal `port: 3000` stand in for a KCL-resolved port the env had never
+// been told about, and the second silently dropped a frontend added after
+// the first one was declared in KCL.
 func mergeConfigFrontends(e *KCLEntities, cfg *config.ProjectConfig) {
-	if e == nil || cfg == nil || len(e.Frontends) > 0 || len(cfg.Frontends) == 0 {
+	if e == nil || cfg == nil {
 		return
 	}
+	declared := make(map[string]int, len(e.Frontends))
+	for i, fe := range e.Frontends {
+		declared[fe.Name] = i
+	}
 	for _, fe := range cfg.Frontends {
-		e.Frontends = append(e.Frontends, FrontendEntity{
+		if i, ok := declared[fe.Name]; ok {
+			if e.Frontends[i].Type == "" {
+				e.Frontends[i].Type = fe.Type
+			}
+			continue
+		}
+		entity := FrontendEntity{
 			Name: fe.Name,
 			Type: fe.Type,
 			Path: fe.DeclaredDir(),
 			Port: fe.Port,
-		})
+		}
+		if fe.DevRunner != "" {
+			entity.DevRunner = fe.EffectiveDevRunner()
+		}
+		e.Frontends = append(e.Frontends, entity)
 	}
 }
 

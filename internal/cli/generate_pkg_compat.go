@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,6 +63,7 @@ var legacyForgePkgRequireRE = regexp.MustCompile(
 // forge requirement, or a toolchain that won't tell us how forge resolved.
 // generate's existing validate step remains the backstop for those.
 func checkPkgCompat(projectDir string) error {
+	warnForgeVersionPinMismatch(os.Stderr, projectForgeVersionAt(projectDir), buildinfo.Version())
 	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
 		return nil // no module → nothing to check; not our error to raise
@@ -81,8 +83,12 @@ func checkPkgCompat(projectDir string) error {
 	// project's OWN go.mod is in scope; going looking for the same module
 	// elsewhere in the dependency graph is not — see
 	// directRetiredPkgRequire.
-	if version, found := directRetiredPkgRequire(gomod); found {
-		return retiredPkgModuleErr(projectDir, version)
+	//
+	// gen/go.mod is read too: it is the project's own second module, and a
+	// plain `go mod tidy` there is exactly how the retired require used to
+	// come back (see generator.resolveForgeVersion).
+	if retired := projectRetiredPkgRequires(projectDir, gomod); len(retired) > 0 {
+		return retiredPkgModuleErr(projectDir, retired)
 	}
 	if !strings.Contains(gomod, forgeModuleRequirePath) {
 		return nil // project doesn't consume forge's libraries
@@ -310,26 +316,94 @@ func shortPseudoCommit(v string) string {
 	return v
 }
 
+// retiredPkgRequire is one of the project's own go.mod files that directly
+// requires the retired forge/pkg module.
+type retiredPkgRequire struct {
+	// Dir is the module directory relative to the project root ("." or "gen").
+	Dir     string
+	Version string
+}
+
+// projectRetiredPkgRequires reads the project's two go.mod files — the root
+// (already loaded as rootGoMod) and gen/ — for a direct retired require.
+func projectRetiredPkgRequires(projectDir, rootGoMod string) []retiredPkgRequire {
+	var out []retiredPkgRequire
+	if v, found := directRetiredPkgRequire(rootGoMod); found {
+		out = append(out, retiredPkgRequire{Dir: ".", Version: v})
+	}
+	if data, err := os.ReadFile(filepath.Join(projectDir, "gen", "go.mod")); err == nil {
+		if v, found := directRetiredPkgRequire(string(data)); found {
+			out = append(out, retiredPkgRequire{Dir: "gen", Version: v})
+		}
+	}
+	return out
+}
+
 // retiredPkgModuleErr names the pre-collapse submodule. Only the DIRECT case
 // reaches here — see directRetiredPkgRequire for why forge does not go looking
 // for it in the graph.
-func retiredPkgModuleErr(projectDir, version string) error {
+func retiredPkgModuleErr(projectDir string, retired []retiredPkgRequire) error {
+	// The replacement must be a version the proxy SERVES: this binary's own
+	// when it can name one, else the newest release its source descends from.
+	// "latest" would do for a released binary but can lag a dev build's floor.
 	target := buildinfo.InstallableVersion()
+	if target == "" {
+		target = buildinfo.PublishedFloor()
+	}
 	if target == "" {
 		target = "latest"
 	}
 
-	what := fmt.Sprintf("this project's go.mod requires the retired module "+
-		"github.com/reliant-labs/forge/pkg %s. It was merged into "+
-		"github.com/reliant-labs/forge, and BOTH modules provide the import path "+
+	var where []string
+	for _, r := range retired {
+		file := "go.mod"
+		if r.Dir != "." {
+			file = r.Dir + "/go.mod"
+		}
+		where = append(where, fmt.Sprintf("%s (%s)", file, r.Version))
+	}
+	what := fmt.Sprintf("this project requires the retired module github.com/reliant-labs/forge/pkg in %s. "+
+		"It was merged into github.com/reliant-labs/forge, and BOTH modules provide the import path "+
 		"github.com/reliant-labs/forge/pkg/* — so every such import is ambiguous and nothing in the "+
 		"project compiles. Import paths did NOT change; only the require line did. No files were "+
-		"changed", version)
+		"changed", strings.Join(where, " and "))
 
-	fix := fmt.Sprintf("swap the requirement, in the root module and in gen/ if there is one:"+
-		"\n    go mod edit -droprequire=github.com/reliant-labs/forge/pkg"+
-		"\n    go get github.com/reliant-labs/forge@%s && go mod tidy", target)
+	// One command line per affected module, each runnable from the project
+	// root as written. Requiring github.com/reliant-labs/forge explicitly is
+	// what keeps it from coming back: `go mod tidy` ignores go.work, so a
+	// module that imports forge/pkg/* WITHOUT a forge require makes tidy pick
+	// the retired module again as the longest path that provides it.
+	var fix strings.Builder
+	fix.WriteString("swap the requirement in each affected module (run from the project root):")
+	for _, r := range retired {
+		fmt.Fprintf(&fix, "\n    (cd %s && go mod edit -droprequire=github.com/reliant-labs/forge/pkg && "+
+			"go get github.com/reliant-labs/forge@%s && go mod tidy)", r.Dir, target)
+	}
+	fix.WriteString("\n  then re-run generate")
 
-	base := cliutil.UserErr("forge generate (forge version compatibility)", what, "", fix)
+	base := cliutil.UserErr("forge generate (forge version compatibility)", what, "", fix.String())
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
+}
+
+// warnForgeVersionPinMismatch says, once per generate, that the running forge
+// is not the one the project pins in forge.yaml — and that generate will NOT
+// change that.
+//
+// Generate never re-pins a project. forge_version, the go.mod require and the
+// vendored KCL stamp move only when someone decides to move them (`forge
+// project upgrade` bumps forge_version; the go.mod pin is a `go get`). A
+// generate that silently wrote its own version into those files turned "which
+// forge does this project use" into "whichever forge last ran generate" — a
+// `+dirty` local build no one else can fetch, committed as the project's pin.
+//
+// It is a warning, not a refusal: running a newer or local forge against a
+// pinned project is ordinary development, and the real incompatibilities are
+// refused by checkPkgCompat on evidence, not on a string mismatch.
+func warnForgeVersionPinMismatch(w io.Writer, pinned, running string) {
+	if pinned == "" || running == "" || pinned == running {
+		return
+	}
+	fmt.Fprintf(w, "⚠️  forge.yaml pins forge_version %s; this is forge %s. Generating with it anyway — "+
+		"generate does not re-pin the project. To move the pin deliberately: `forge project upgrade`.\n",
+		pinned, running)
 }

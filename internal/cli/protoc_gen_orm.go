@@ -42,6 +42,8 @@ func newProtocGenForgeCmd() *cobra.Command {
 		Use:    "protoc-gen-forge",
 		Short:  "Protoc plugin for descriptor extraction (invoked by buf)",
 		Hidden: true,
+		// A buf subprocess, not a user command: never touch git config.
+		Annotations: map[string]string{skipHookActivationAnnotation: ""},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// protogen.Options{}.Run() reads os.Args directly and rejects
 			// any arg that doesn't start with "--". When invoked as

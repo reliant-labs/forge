@@ -1737,9 +1737,12 @@ func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildM
 	// purpose. Re-deriving through Dir would apply a containment check to
 	// a path that is legitimately external and undo the resolution.
 	feDir := fe.DeclaredDir()
-	fmt.Printf("[build] %s: NODE_ENV=production npm run build in %s\n", fe.Name, feDir)
+	// forge.yaml's dev_runner picks the package manager; `<runner> run build`
+	// is the same invocation for npm, pnpm and yarn.
+	runner := fe.EffectiveDevRunner()
+	fmt.Printf("[build] %s: NODE_ENV=production %s run build in %s\n", fe.Name, runner, feDir)
 
-	cmd := exec.CommandContext(ctx, "npm", "run", "build")
+	cmd := exec.CommandContext(ctx, runner, "run", "build")
 	cmd.Dir = feDir
 	cmd.Env = withForcedEnv(os.Environ(), "NODE_ENV", "production")
 	// Cap V8's heap under a constrained budget so `next build` can't

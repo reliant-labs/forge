@@ -81,13 +81,19 @@ references reaches nothing. That is deliberate: it means the store
 cannot become a side channel for configuration.
 
 ```bash
-# Store the values (or hand-edit the YAML)
-printf '%s' "$STRIPE_KEY" | forge secret set dev STRIPE_SECRET_KEY
-forge secret set dev JWT_SIGNING_KEY --from-file ./key.pem
+# Store the values (or hand-edit the YAML). --env is REQUIRED — there is no
+# default env and no positional form, so a secret can't land in the wrong one.
+printf '%s' "$STRIPE_KEY" | forge secret set --env dev STRIPE_SECRET_KEY
+forge secret set --env dev JWT_SIGNING_KEY --from-file ./key.pem
 
-forge secret ensure dev   # create the dir + list refs with no value yet
-forge secret list dev     # names + presence, never values
+forge secret unset  --env dev JWT_SIGNING_KEY
+forge secret ensure --env dev   # FileSecrets: create the store + list refs with no value yet
+forge secret list   --env dev   # names + presence, never values — works for EVERY provider
 ```
+
+`set` on a key that already has a value REPLACES it. For a hosted store that
+is a new version, and that IS rotation — there is no separate rotate command
+(`created v1` / `rotated to v3` in the output).
 
 ## Per-env provider
 
@@ -123,18 +129,50 @@ _bundle = forge.Bundle {
 - `forge.ExternalSecrets {}` — `type="external"`; a pure marker, **no
   other fields**. PROD / STAGING.
 - `forge.HostedSecrets {}` — `type="hosted"`; values live in the env's
-  hosted control plane and are materialized IN-CLUSTER by it into the
-  `forge-managed-secrets` Secret every `managedSecret` env var reads. Requires
+  control plane (the managed secret store). Requires
   `control_plane = forge.ControlPlane {...}` on the same Bundle (load-time
-  check). forge never sees a value — the API is write-only — but
-  `forge secret set/list/unset <env>` work: they write/list through that
+  check). `forge secret set/list/unset --env <env>` write/list through that
   control plane (endpoint + credential from `control_plane`, i.e. `--token` /
   `$FORGE_CONTROL_PLANE_TOKEN` / `forge login`), scoped to the control-plane
-  environment with this env's NAME. A machine token needs `secret:write` to
-  set, `secret:read` to list. A changed value rolls the pods that read it.
+  environment addressed by (this project's forge.yaml `name`, the env's NAME).
+  What happens to the values depends on the env's KIND, which forge derives
+  from the env's own workloads:
+  - **persistent** — the env declares ≥1 hosted tier (SimpleBackend /
+    StaticSite / ManagedDatabase). The platform runs it and materializes the
+    values IN-CLUSTER into the `forge-managed-secrets` Secret every
+    `managedSecret` env var reads. The store is write-only: no forge process
+    ever reads a value back. A changed value rolls the pods that read it.
+  - **local** — the env declares control_plane but NO hosted tier (host /
+    compose / frontend workloads run by `forge env up`). The control plane is
+    only its secret store. `forge env up` PULLS the values (after
+    `forge login`) and injects them — in memory only, never written to disk —
+    into each host service, job, compose/external service and frontend that
+    declares them. A failed pull fails `env up` before anything starts.
+    `forge env deploy` refuses a local env: there is nothing to publish.
+
+  The kind is immutable on the control plane: flipping a persistent env to
+  local (to make its values readable) is refused, not silently applied.
 - `forge.DotenvSecrets { path = ... }` — **DEPRECATED**. Still resolved
   so existing projects run; `forge lint` fails on the file and
-  `forge secret migrate <env>` converts it.
+  `forge secret migrate --env <env>` converts it.
+
+A dev env on the managed store (the shape a real project uses so dev
+credentials never live in a file on a laptop):
+
+```kcl
+# deploy/kcl/dev/main.k — LOCAL: runs here, secrets pulled from the control plane
+_bundle = forge.Bundle {
+    control_plane   = forge.ControlPlane { endpoint = "https://api.example.com" }
+    secret_provider = forge.HostedSecrets {}
+    services = [ ... ]   # host / compose workloads — no hosted tier
+}
+```
+
+```bash
+forge login                                              # once: every control plane the project declares
+printf '%s' "$KEY" | forge secret set --env dev STRIPE_SECRET_KEY
+forge env up dev                                         # pulls, injects in memory, starts
+```
 
 ## Per-runtime: what forge does
 
@@ -148,8 +186,16 @@ and injects it differently per runtime:
 | k8s | Forge **renders** Secret objects CLI-side from the declared cluster `secret_ref`s and `kubectl apply`s them **before** the Deployments, so `secretKeyRef` resolves. Guarded by an `isLocalCluster` check — forge **refuses** to render plaintext into a non-local cluster (only k3d / kind / docker-desktop / minikube / rancher-desktop / colima / orbstack). |
 
 **Validation:** `forge env up` / `forge env deploy` **fail-fast** if a declared
-`secret_ref` has no value in the store, listing every miss with the
-`forge secret set` line that fixes it.
+`secret_ref` has no value in the store (a file store, or a LOCAL env's pulled
+hosted store), listing every miss with the `forge secret set --env <env>` line
+that fixes it.
+
+**`forge secret list --env <env>`** answers for every provider: `file` reads
+presence from the YAML; `hosted` lists names + current versions; `rendered`
+reports whether each declared Secret key resolves from its source; `external`
+and `none` list the declarations with presence `unknown` (exit 0 — unknown is
+an answer, not a refusal). `--json` carries `presence` (`set` | `missing` |
+`unknown`), `version` (hosted), and `verifiable`; it never carries a value.
 
 ## Why a YAML store, not a `.env` file
 
@@ -249,7 +295,7 @@ bundle provider is the single-source model now — prefer it.
 - **Multi-line values round-trip.** A PEM key or JSON blob is written as
   a YAML block scalar; values with colons or leading spaces are quoted.
 - **Undeclared values are inert.** A key no service declares is never
-  injected. `forge secret list <env>` reports these — they are usually a
+  injected. `forge secret list --env <env>` reports these — they are usually a
   typo, or config that belongs in `config.k`.
 - **ExternalSecrets is inert.** It renders nothing and validates
   nothing — it only declares that values live outside forge. It has

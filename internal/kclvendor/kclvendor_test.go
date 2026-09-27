@@ -254,9 +254,18 @@ func TestMaterialize_StampsForgeVersionAndReportsStaleness(t *testing.T) {
 		t.Errorf("a freshly materialized copy must not be stale")
 	}
 
-	// A copy written by a different forge is stale, and names the version.
+	// A copy stamped by a different forge whose CONTENT still matches is not
+	// stale: staleness is by bytes, because a byte-identical refresh keeps
+	// the stamp it found.
 	if err := os.WriteFile(stampPath, []byte("v0.0.1-ancient\n"), 0o644); err != nil {
 		t.Fatalf("rewrite stamp: %v", err)
+	}
+	if stale, got := Stale(dir); stale || got != "v0.0.1-ancient" {
+		t.Errorf("identical content: Stale() = (%v, %q), want (false, \"v0.0.1-ancient\")", stale, got)
+	}
+	// Once the content differs it is stale, and names the version.
+	if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
+		t.Fatalf("drift a source file: %v", err)
 	}
 	stale, got := Stale(dir)
 	if !stale || got != "v0.0.1-ancient" {
@@ -379,8 +388,13 @@ func TestMaterialize_RefusesDowngrade(t *testing.T) {
 		if err != nil {
 			t.Fatalf("no-op downgrade refused: %v", err)
 		}
-		if !changed {
-			t.Error("expected the stamp itself to be rewritten")
+		// Nothing changed, so nothing is written — not even the stamp. It
+		// still names the forge whose module these bytes are.
+		if changed {
+			t.Error("a no-op refresh must not restamp the vendor dir")
+		}
+		if got := strings.TrimSpace(readFile(t, filepath.Join(dir, VendorDirName, StampFileName))); got != "v99.0.0" {
+			t.Errorf("stamp = %q, want the untouched v99.0.0", got)
 		}
 	})
 
@@ -610,5 +624,47 @@ func TestEnsurePresent_NeverTouchesExistingOrForeignShapes(t *testing.T) {
 				t.Errorf("no vendor dir may be created for a %s kcl.mod (stat err %v)", name, err)
 			}
 		})
+	}
+}
+
+// TestMaterialize_NoOpRefreshKeepsThePinnedStamp is the item-13 regression: a
+// project whose vendored module was stamped by a released forge (v0.1.17) ran
+// `forge generate` with a local `+dirty` build whose embedded module is
+// byte-identical. Generate reported "0 changed" yet rewrote
+// .forge-kcl/.forge-version to the dirty build — implicitly re-pinning the
+// project to a version no one can fetch, in a file that is committed.
+func TestMaterialize_NoOpRefreshKeepsThePinnedStamp(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Materialize(dir, false); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	stampPath := filepath.Join(dir, VendorDirName, StampFileName)
+	const pinned = "v0.1.17"
+	if err := os.WriteFile(stampPath, []byte(pinned+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	buildinfo.Set("v0.1.18-0.20260926120145-7787cb0e2b05+dirty", "", "7787cb0e2b05")
+
+	changed, err := Materialize(dir, false)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if changed {
+		t.Error("a byte-identical refresh must report no change")
+	}
+	if got := strings.TrimSpace(readFile(t, stampPath)); got != pinned {
+		t.Fatalf("stamp = %q, want the pinned %q left untouched", got, pinned)
+	}
+
+	// When the bytes DO change, the stamp follows them.
+	if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Materialize(dir, true); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if got := strings.TrimSpace(readFile(t, stampPath)); got != buildinfo.Version() {
+		t.Fatalf("after a real refresh stamp = %q, want the running forge %q", got, buildinfo.Version())
 	}
 }

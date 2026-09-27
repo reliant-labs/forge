@@ -10,7 +10,7 @@ import (
 
 // pkg/diagnostics' package doc used to describe a running subsystem: codegen
 // emitting a `pkg/app/diagnostics_gen.go` whose init() registers every
-// scaffold it detected, Bootstrap calling Default.Boot after Setup, and
+// scaffold it detected, Bootstrap calling Default().Boot after Setup, and
 // `features.strict_wiring` flipping the emitter to fatal. None of that
 // exists. Nothing in forge imports this package, so the registry is always
 // empty and Boot emits nothing — a reader who believed the doc would think

@@ -1003,17 +1003,42 @@ func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 				})
 			}
 		}
-		// frontends[].auth_mode names the sign-in flow. "native" is the
-		// only mode forge scaffolds: the app's own form posts to the app's
-		// own API, and the server runs the OIDC flow. A rejected value
-		// here is better than a silently-ignored one.
-		if am := strings.ToLower(strings.TrimSpace(fe.AuthMode)); am != "" && am != AuthModeNative {
+		// frontends[].auth_mode names the sign-in flow: "native" (the app's
+		// own form posts to the app's own API, and the server runs the OIDC
+		// flow) or "none" (a public frontend with no sign-in gate). A
+		// rejected value here is better than a silently-ignored one.
+		if am := strings.ToLower(strings.TrimSpace(fe.AuthMode)); am != "" && am != AuthModeNative && am != AuthModeNone {
 			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "auth_mode"})
 			out = append(out, validationIssue{
 				line:   line,
 				column: col,
 				msg:    fmt.Sprintf("%s.auth_mode value %q is invalid", prefix, fe.AuthMode),
-				fix:    "use native (the default, and the only mode forge scaffolds) — see `forge skill load auth/frontend`.",
+				fix:    "use native (sign-in gated) or none (public, no sign-in gate) — see `forge skill load auth/frontend`.",
+			})
+		}
+		// frontends[].routes: `none` means "no generated pages" and is
+		// meaningless beside real slugs — reject the mix rather than guess.
+		if fe.RoutesNone() && len(fe.Routes) > 1 {
+			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "routes"})
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.routes combines %q with route slugs %v", prefix, RoutesNone, fe.Routes),
+				fix:    "use `routes: [none]` for no generated pages, OR list the slugs you want — not both.",
+			})
+		}
+		// frontends[].dev_runner selects the package manager forge shells
+		// into. Validated against the same set the KCL Frontend schema
+		// accepts, so the two spellings of the knob cannot disagree.
+		switch strings.ToLower(strings.TrimSpace(fe.DevRunner)) {
+		case "", DevRunnerNPM, DevRunnerPNPM, DevRunnerYarn:
+		default:
+			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "dev_runner"})
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.dev_runner value %q is invalid", prefix, fe.DevRunner),
+				fix:    "use npm (the default), pnpm, or yarn.",
 			})
 		}
 	}

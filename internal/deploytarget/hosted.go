@@ -91,6 +91,9 @@ type HostedTarget struct {
 	// Endpoint is the control plane's normalized base URL. Display only —
 	// the Caller already addresses it.
 	Endpoint string
+	// Project is the forge project name the environment is addressed under
+	// on the control plane (identity is (org, project, env name)).
+	Project string
 	// Release is the version the env is promoted to. Empty means unbound,
 	// which a deploy refuses: a hosted deploy ships only promoted digests.
 	Release string
@@ -112,8 +115,12 @@ const (
 )
 
 type wireEnvironment struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Project is the forge project the environment belongs to (forge.yaml
+	// `name`). Identity is (org, project, name).
+	Project   string `json:"project,omitempty"`
+	Kind      string `json:"kind,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	// ImagePushBase is `<registry_base>/<org>`: the one registry subtree the
 	// control plane admits this org's images from. Empty means it admits
@@ -177,26 +184,59 @@ const (
 // that name" answer.
 var ErrHostedEnvironmentNotFound = errors.New("the control plane has no environment")
 
-// LookupHostedEnvironment resolves an environment NAME to the control plane's
-// id, by listing the caller's environments and matching the name EXACTLY.
-// `search` only narrows server-side: it is a free-text match, and "prod" must
-// not resolve to "prod-eu". Two exact matches is a contract violation and is
-// refused rather than guessed at — a guess would write into the wrong env.
-func LookupHostedEnvironment(ctx context.Context, c HostedCaller, envName string) (string, error) {
-	env, err := lookupHostedEnvironment(ctx, c, envName)
+// HostedEnvKind is the controlplane.v1.DeployEnvironmentKind value name an
+// environment is ensured with. It is IMMUTABLE server-side: ensuring an
+// existing environment with a different kind is refused (FailedPrecondition),
+// which is what keeps a persistent env's secrets from ever becoming pullable.
+type HostedEnvKind string
+
+const (
+	// HostedEnvPersistent is an env whose workloads the platform runs (it
+	// declares at least one hosted tier).
+	HostedEnvPersistent HostedEnvKind = "DEPLOY_ENVIRONMENT_KIND_PERSISTENT"
+	// HostedEnvLocal is an env whose workloads run on a developer machine
+	// (`forge env up`); the control plane is only its secret store, and its
+	// secrets are pullable.
+	HostedEnvLocal HostedEnvKind = "DEPLOY_ENVIRONMENT_KIND_LOCAL"
+)
+
+// HostedEnvRef addresses one control-plane environment: (project, name) in
+// the caller's org, plus the kind an ensure creates it with.
+type HostedEnvRef struct {
+	// Project is the forge project name (forge.yaml `name`).
+	Project string
+	Name    string
+	Kind    HostedEnvKind
+}
+
+// LookupHostedEnvironment resolves an environment (project, NAME) to the
+// control plane's id, by listing the caller's environments and matching the
+// name EXACTLY. `search` only narrows server-side: it is a free-text match,
+// and "prod" must not resolve to "prod-eu". Two exact matches is a contract
+// violation and is refused rather than guessed at — a guess would write into
+// the wrong env.
+func LookupHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (string, error) {
+	env, err := lookupHostedEnvironment(ctx, c, project, envName)
 	return env.ID, err
 }
 
-func lookupHostedEnvironment(ctx context.Context, c HostedCaller, envName string) (wireEnvironment, error) {
+func lookupHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (wireEnvironment, error) {
 	var resp struct {
 		Environments []wireEnvironment `json:"environments"`
 	}
-	if err := c.Call(ctx, procListEnvironments, map[string]any{"search": envName}, &resp); err != nil {
+	req := map[string]any{"search": envName}
+	if project != "" {
+		req["project"] = project
+	}
+	if err := c.Call(ctx, procListEnvironments, req, &resp); err != nil {
 		return wireEnvironment{}, fmt.Errorf("resolve hosted environment %q: %w", envName, err)
 	}
 	var matches []wireEnvironment
 	for _, e := range resp.Environments {
-		if e.Name == envName {
+		// The project filter is applied server-side; this is the client's
+		// second check. A row that states a DIFFERENT project is never
+		// ours. (A row stating none predates the project dimension.)
+		if e.Name == envName && (e.Project == "" || project == "" || e.Project == project) {
 			matches = append(matches, e)
 		}
 	}
@@ -214,28 +254,35 @@ func lookupHostedEnvironment(ctx context.Context, c HostedCaller, envName string
 	}
 }
 
-// EnsureHostedEnvironment makes an environment of this NAME exist in the
+// EnsureHostedEnvironment makes the environment ref names exist in the
 // caller's org and returns its id and whether this call created it. It is the
 // one write every hosted path that needs an environment goes through, so a
 // hosted env is DECLARED in KCL and never provisioned by a manual step —
-// whichever of promote / deploy runs first creates it.
-func EnsureHostedEnvironment(ctx context.Context, c HostedCaller, envName string) (string, bool, error) {
-	env, created, err := ensureHostedEnvironment(ctx, c, envName)
+// whichever of promote / deploy / secret set runs first creates it.
+func EnsureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvRef) (string, bool, error) {
+	env, created, err := ensureHostedEnvironment(ctx, c, ref)
 	return env.ID, created, err
 }
 
-func ensureHostedEnvironment(ctx context.Context, c HostedCaller, envName string) (wireEnvironment, bool, error) {
+func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvRef) (wireEnvironment, bool, error) {
+	if ref.Kind == "" {
+		// Never defaulted: the kind is immutable server-side, so a guess
+		// here would be a permanent decision nobody made.
+		return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: no environment kind (local or persistent) was derived", ref.Name)
+	}
 	var ensured struct {
 		Environment wireEnvironment `json:"environment"`
 		Created     bool            `json:"created"`
 	}
-	if err := c.Call(ctx, procEnsureEnvironment, map[string]any{
-		"spec": map[string]any{"name": envName, "kind": "DEPLOY_ENVIRONMENT_KIND_PERSISTENT"},
-	}, &ensured); err != nil {
-		return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", envName, err)
+	spec := map[string]any{"name": ref.Name, "kind": string(ref.Kind)}
+	if ref.Project != "" {
+		spec["project"] = ref.Project
+	}
+	if err := c.Call(ctx, procEnsureEnvironment, map[string]any{"spec": spec}, &ensured); err != nil {
+		return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, err)
 	}
 	if ensured.Environment.ID == "" {
-		return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: the control plane returned no environment id", envName)
+		return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: the control plane returned no environment id", ref.Name)
 	}
 	return ensured.Environment, ensured.Created, nil
 }
@@ -509,7 +556,7 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if err != nil {
 		return err
 	}
-	env, created, err := ensureHostedEnvironment(ctx, c, group.Env)
+	env, created, err := ensureHostedEnvironment(ctx, c, HostedEnvRef{Project: groupProject(group), Name: group.Env, Kind: HostedEnvPersistent})
 	if err != nil {
 		return err
 	}
@@ -713,7 +760,7 @@ func (p HostedProvider) Rollback(ctx context.Context, group ServiceGroup, lastGo
 	if err != nil {
 		return err
 	}
-	env, err := lookupHostedEnvironment(ctx, c, group.Env)
+	env, err := lookupHostedEnvironment(ctx, c, groupProject(group), group.Env)
 	if err != nil {
 		return err
 	}
@@ -749,6 +796,7 @@ func (p HostedProvider) Rollback(ctx context.Context, group ServiceGroup, lastGo
 	hosted := HostedTarget{Release: target.ReleaseVersion, Digests: target.ResolvedArtifacts}
 	if group.Hosted != nil {
 		hosted.Endpoint = group.Hosted.Endpoint
+		hosted.Project = group.Hosted.Project
 	}
 	rollbackGroup.Hosted = &hosted
 	plan, err := planHosted(rollbackGroup)
@@ -825,10 +873,11 @@ type HostedEnvStatus struct {
 	Workloads       []HostedWorkloadStatus
 }
 
-// ReadHostedStatus reads an environment's status by NAME. An environment the
-// control plane has never heard of returns ErrHostedEnvironmentNotFound.
-func ReadHostedStatus(ctx context.Context, c HostedCaller, envName string) (HostedEnvStatus, error) {
-	envID, err := LookupHostedEnvironment(ctx, c, envName)
+// ReadHostedStatus reads an environment's status by (project, NAME). An
+// environment the control plane has never heard of returns
+// ErrHostedEnvironmentNotFound.
+func ReadHostedStatus(ctx context.Context, c HostedCaller, project, envName string) (HostedEnvStatus, error) {
+	envID, err := LookupHostedEnvironment(ctx, c, project, envName)
 	if err != nil {
 		return HostedEnvStatus{}, err
 	}
@@ -885,6 +934,15 @@ func observedName(wire string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// groupProject is the project a hosted group's environment is addressed
+// under, or "" when the group carries no hosted target.
+func groupProject(group ServiceGroup) string {
+	if group.Hosted == nil {
+		return ""
+	}
+	return group.Hosted.Project
 }
 
 func emptyOr(s, alt string) string {

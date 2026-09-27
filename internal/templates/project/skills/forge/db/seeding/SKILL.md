@@ -42,9 +42,26 @@ forge db seed status   # per-table seeded-row counts vs the seed model
 forge db seed reset    # wipe seeded tables and re-seed (dev only)
 ```
 
-`forge run` auto-seeds a fresh dev database on first boot (all tables empty).
-`apply`/`reset` refuse any non-dev environment, and the applier is never
-compiled into your server binary.
+`forge run` / `forge env up` auto-seed a fresh dev database on first boot
+(every in-scope table empty). `apply`/`reset` refuse any non-dev environment,
+and the applier is never compiled into your server binary.
+
+**What auto-seed writes to.** By default only the tables behind your CRUD
+entities (a service with `Create<X>`/`List<Xs>`/… RPCs over a matching table),
+plus any table those reach through a NOT NULL foreign key. Every other table is
+plain schema your own code owns — a ledger, an idempotency log, a payments
+table — and synthesized rows there are fabricated facts, not demo data. Control
+it in `forge.yaml`:
+
+```yaml
+database:
+  seed:
+    auto: false            # never auto-seed this project (per run: --no-seed)
+    tables: [tasks, plans] # seed exactly these (+ required FK parents); [] = none
+```
+
+`tables` also scopes `forge db seed apply`/`reset`; unset, those explicit
+commands seed every table.
 
 Keep seed data out of migrations: migrations define schema, seeds populate it.
 Mixing them makes both harder to reason about.

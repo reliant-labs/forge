@@ -417,6 +417,25 @@ func InstallableVersion() string {
 	return v
 }
 
+// PublishedFloor returns the newest forge RELEASE this binary's source is
+// known to descend from — the embedded VERSION file (e.g. "v0.1.17") — or ""
+// when that file is missing or malformed.
+//
+// It exists for the one question InstallableVersion must answer "" to: what
+// should a module REQUIRE when this build itself is on no proxy? Requiring
+// nothing is not neutral. `go mod tidy` never reads go.work, so a module that
+// imports github.com/reliant-labs/forge/pkg/* with no forge requirement makes
+// tidy go looking for a module that provides that import path — and the
+// longest match on the proxy is the RETIRED github.com/reliant-labs/forge/pkg
+// module. tidy writes that in, and the next `forge generate` refuses the
+// project. The floor is a version the proxy DOES serve and that genuinely
+// provides every forge/pkg package, so tidy resolves the require it already
+// has instead of inventing one; a go.work bridge (the dev case) still decides
+// what the build actually compiles.
+func PublishedFloor() string {
+	return versionFromFile(embeddedVersionFile)
+}
+
 // builtFromLocalCheckout reports whether FORGE'S OWN bytes in this binary
 // were compiled from a local working tree rather than served by a proxy.
 func builtFromLocalCheckout() bool {

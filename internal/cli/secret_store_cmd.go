@@ -33,21 +33,26 @@ func newSecretCmd() *cobra.Command {
 
   forge.FileSecrets    the gitignored YAML store (dev/e2e) — a flat map of
                        env-var NAME to value.
-  forge.HostedSecrets  the env's hosted control plane (control_plane). set /
-                       unset / list go through its write-only API; values are
-                       materialized in-cluster and are never read back or
-                       cached on this machine.
+  forge.HostedSecrets  the env's control plane (control_plane). set / unset /
+                       list go through its API. A hosted env's values are
+                       never read back by these commands; a LOCAL env's
+                       (control_plane with no hosted tier) are pulled into
+                       memory by ` + "`forge env up`" + ` and nothing else.
+
+Every command names its environment with a REQUIRED --env flag. There is no
+default and no positional form: the env is the one thing a secret command
+must never guess.
 
 A secret is declared ONCE in KCL as a reference (EnvVar.secret_ref); its
 value lives here and never enters git or KCL render output. A value only
 reaches a service that DECLARES it, so putting something here that no
 service references does nothing — config belongs in deploy/kcl/<env>/config.k.
 
-  forge secret ensure dev          # create the file + report missing values
-  forge secret set    dev STRIPE_SECRET_KEY
-  forge secret unset  dev STRIPE_SECRET_KEY
-  forge secret list   dev          # names + presence, never values
-  forge secret migrate dev         # convert a legacy .env file to YAML`,
+  forge secret set   --env dev STRIPE_SECRET_KEY   # value on stdin; add, or replace (= rotate)
+  forge secret unset --env dev STRIPE_SECRET_KEY
+  forge secret list  --env dev                     # names + presence, never values
+  forge secret ensure --env dev                    # FileSecrets: create the file + report missing
+  forge secret migrate --env dev                   # FileSecrets: convert a legacy .env file`,
 	}
 	cmd.AddCommand(
 		newSecretSetCmd(),
@@ -59,121 +64,191 @@ service references does nothing — config belongs in deploy/kcl/<env>/config.k.
 	return cmdutil.StrictGroup(cmd)
 }
 
+// addSecretEnvFlag registers the REQUIRED --env flag every secret command
+// takes. Required, with no default and no positional spelling: a secret
+// command aimed at the wrong environment writes a credential somewhere it
+// must not be, and nothing about the command line would say so.
+func addSecretEnvFlag(cmd *cobra.Command, env *string) {
+	cmd.Flags().StringVar(env, "env", "", "Environment whose secret store to act on (required; deploy/kcl/<env>/)")
+}
+
+// requireSecretEnv turns a missing --env into the actionable error, naming
+// the exact command to re-run. Checked in RunE (not MarkFlagRequired) so the
+// message can carry the fix.
+func requireSecretEnv(env, usage string) (string, error) {
+	env = strings.TrimSpace(env)
+	if env == "" {
+		return "", fmt.Errorf("--env is required: name the environment whose secret store to use\n"+
+			"fix: forge secret %s\n"+
+			"(there is no default environment, on purpose — a secret aimed at the wrong env is a leaked credential)", usage)
+	}
+	return env, nil
+}
+
 func newSecretSetCmd() *cobra.Command {
-	var fromFile string
+	var fromFile, env string
 	cmd := &cobra.Command{
-		Use:   "set <environment> <KEY>",
-		Short: "Set one secret value (read from stdin)",
-		Args:  cobra.ExactArgs(2),
-		Long: `Set a single secret in the environment's secret store.
+		Use:   "set --env <environment> <KEY>",
+		Short: "Add or replace one secret value (read from stdin)",
+		Args:  cobra.ExactArgs(1),
+		Long: `Set a single secret in the environment's secret store. Setting a key that
+already has a value REPLACES it — for a hosted store that is a new version,
+which is how a secret is rotated (there is no separate rotate command).
 
 The VALUE is read from stdin, never from argv — an argv value would land
 in shell history and in the process table. Pipe it, or type it and press
 Ctrl-D:
 
-  printf '%s' "$TOKEN" | forge secret set dev STRIPE_SECRET_KEY
-  forge secret set dev TLS_KEY --from-file ./key.pem
+  printf '%s' "$TOKEN" | forge secret set --env dev STRIPE_SECRET_KEY
+  forge secret set --env dev TLS_KEY --from-file ./key.pem
 
 A trailing newline is trimmed. Multi-line values (a PEM key, a JSON blob)
-are written as a YAML block scalar and round-trip unchanged.`,
+round-trip unchanged.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecretSet(cmd.Context(), args[0], args[1], fromFile, cmd.InOrStdin(), cmd.OutOrStdout())
+			envName, err := requireSecretEnv(env, "set --env <env> "+args[0])
+			if err != nil {
+				return err
+			}
+			return runSecretSet(cmd.Context(), envName, args[0], fromFile, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
+	addSecretEnvFlag(cmd, &env)
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "Read the value from a file instead of stdin")
 	return cmd
 }
 
 func newSecretUnsetCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "unset <environment> <KEY>",
+	var env string
+	cmd := &cobra.Command{
+		Use:   "unset --env <environment> <KEY>",
 		Short: "Remove one secret from the store",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecretUnset(cmd.Context(), args[0], args[1], cmd.OutOrStdout())
+			envName, err := requireSecretEnv(env, "unset --env <env> "+args[0])
+			if err != nil {
+				return err
+			}
+			return runSecretUnset(cmd.Context(), envName, args[0], cmd.OutOrStdout())
 		},
 	}
+	addSecretEnvFlag(cmd, &env)
+	return cmd
 }
 
 func newSecretListCmd() *cobra.Command {
-	var jsonOut bool
+	var (
+		jsonOut bool
+		env     string
+	)
 	cmd := &cobra.Command{
-		Use:   "list <environment>",
+		Use:   "list --env <environment>",
 		Short: "List declared secrets and whether each has a value",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.NoArgs,
 		Long: `List every secret the environment's KCL declares, and whether the store
 holds a value for it. Values are NEVER printed.
 
-Also reports keys in the store that no service declares — those are inert
-(nothing injects them) and are usually either a typo or config that belongs
-in deploy/kcl/<env>/config.k.
+Works for every secret_provider:
+
+  file      presence read from the YAML store; inert (undeclared) keys listed.
+  hosted    names and current versions from the control plane's store.
+  external  the declarations only — presence is "unknown": forge cannot see
+            a Secret provisioned out of band.
+  rendered  the declared Secrets' keys, and whether each resolves from its
+            declared source.
+  none      the declarations only; nothing can supply a value.
 
 --json emits the same facts as a machine-readable document, and holds the
 same promise: the report has no field capable of carrying a value.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if jsonOut {
-				return runSecretListJSON(cmd.Context(), args[0], cmd.OutOrStdout())
+			envName, err := requireSecretEnv(env, "list --env <env>")
+			if err != nil {
+				return err
 			}
-			return runSecretList(cmd.Context(), args[0], cmd.OutOrStdout())
+			if jsonOut {
+				return runSecretListJSON(cmd.Context(), envName, cmd.OutOrStdout())
+			}
+			return runSecretList(cmd.Context(), envName, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (names/presence/declaring workloads/inert keys — never values)")
+	addSecretEnvFlag(cmd, &env)
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (names/presence/versions/declaring workloads/inert keys — never values)")
 	return cmd
 }
 
 func newSecretEnsureCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "ensure <environment>",
-		Short: "Create the secret store and report missing values",
-		Args:  cobra.ExactArgs(1),
-		Long: `Create the environment's secret store (0600) if absent and list every
+	var env string
+	cmd := &cobra.Command{
+		Use:   "ensure --env <environment>",
+		Short: "Create the FileSecrets store and report missing values",
+		Args:  cobra.NoArgs,
+		Long: `Create the environment's FileSecrets store (0600) if absent and list every
 declared secret that has no value yet.
 
 Exits non-zero when a declared secret is missing a value, so it works as a
 setup gate in a task/Makefile before 'forge env up'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecretEnsure(cmd.Context(), args[0], cmd.OutOrStdout())
+			envName, err := requireSecretEnv(env, "ensure --env <env>")
+			if err != nil {
+				return err
+			}
+			return runSecretEnsure(cmd.Context(), envName, cmd.OutOrStdout())
 		},
 	}
+	addSecretEnvFlag(cmd, &env)
+	return cmd
 }
 
 func newSecretMigrateCmd() *cobra.Command {
-	var dryRun bool
+	var (
+		dryRun bool
+		env    string
+	)
 	cmd := &cobra.Command{
-		Use:   "migrate <environment>",
+		Use:   "migrate --env <environment>",
 		Short: "Convert a legacy .env secrets file into the YAML store",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.NoArgs,
 		Long: `Convert a legacy dotenv into the FileSecrets YAML store, then delete the
 original. Run with --dry-run first to see exactly which keys move.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecretMigrate(cmd.Context(), args[0], dryRun, cmd.OutOrStdout())
+			envName, err := requireSecretEnv(env, "migrate --env <env>")
+			if err != nil {
+				return err
+			}
+			return runSecretMigrate(cmd.Context(), envName, dryRun, cmd.OutOrStdout())
 		},
 	}
+	addSecretEnvFlag(cmd, &env)
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would move without writing anything")
 	return cmd
 }
 
 // secretStorePath resolves the env's secret file from its KCL provider
-// declaration. It requires a FileSecrets provider: these commands manage
-// that store specifically, and pointing them elsewhere would silently
-// write a file nothing reads.
+// declaration. It requires a FileSecrets provider: set/unset/ensure manage
+// that store specifically, and pointing them elsewhere would silently write a
+// file nothing reads.
 func secretStorePath(ctx context.Context, envName string) (string, *KCLEntities, error) {
-	projectDir := projectDirForKCL()
-	entities, err := RenderKCL(ctx, projectDir, envName)
+	entities, err := renderEntitiesForSecrets(ctx, envName)
 	if err != nil {
 		return "", nil, fmt.Errorf("render KCL: %w", err)
 	}
+	path, err := fileSecretStorePath(envName, entities)
+	return path, entities, err
+}
+
+// fileSecretStorePath is secretStorePath's render-free half.
+func fileSecretStorePath(envName string, entities *KCLEntities) (string, error) {
+	projectDir := projectDirForKCL()
 	sp := entities.SecretProvider
 	if sp == nil {
-		return "", nil, fmt.Errorf(
+		return "", fmt.Errorf(
 			"env %q declares no secret_provider\n"+
 				"fix: add `secret_provider = forge.FileSecrets {path = \"secrets/%s.yaml\"}` to the Bundle in deploy/kcl/%s/main.k",
 			envName, envName, envName)
 	}
 	if sp.Type != "file" {
-		return "", nil, fmt.Errorf(
-			"env %q declares a %q secret_provider, not FileSecrets\n"+
-				"fix: forge secret migrate %s   (converts the file, then switch the KCL to forge.FileSecrets)",
+		return "", fmt.Errorf(
+			"env %q declares a %q secret_provider, not FileSecrets — this command manages the file store only\n"+
+				"fix: forge secret migrate --env %s   (converts a legacy .env, then switch the KCL to forge.FileSecrets)",
 			envName, sp.Type, envName)
 	}
 	path := sp.Path
@@ -191,13 +266,13 @@ func secretStorePath(ctx context.Context, envName string) (string, *KCLEntities,
 			// deliberately — and once it exists, it wins.
 			if _, err := os.Stat(filepath.Join(projectDir, path)); err != nil {
 				if _, sharedErr := os.Stat(shared); sharedErr == nil {
-					return shared, entities, nil
+					return shared, nil
 				}
 			}
 		}
 		path = filepath.Join(projectDir, path)
 	}
-	return path, entities, nil
+	return path, nil
 }
 
 // loadStore reads the store, treating a missing file as empty so `set` and
@@ -269,7 +344,7 @@ func runSecretSet(ctx context.Context, envName, key, fromFile string, stdin io.R
 		if value == "" {
 			return fmt.Errorf(
 				"refusing to write an empty value for %s\n"+
-					"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge secret set %s %s",
+					"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge secret set --env %s %s",
 				key, envName, key)
 		}
 		return runHostedSecretSet(ctx, envName, key, hosted, value, out)
@@ -286,7 +361,7 @@ func runSecretSet(ctx context.Context, envName, key, fromFile string, stdin io.R
 	if value == "" {
 		return fmt.Errorf(
 			"refusing to write an empty value for %s\n"+
-				"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge secret set %s %s",
+				"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge secret set --env %s %s",
 			key, envName, key)
 	}
 
@@ -345,11 +420,26 @@ type secretDeclaration struct {
 // secretListEntry is one declared secret: its name, whether the store holds
 // a value, and who declares it. Present is a BOOLEAN, not a redacted or
 // truncated value — the distinction is the whole point of the type.
+//
+// Presence is the three-valued form: "set" | "missing" | "unknown". Unknown
+// is an ANSWER, not a failure — an external provider's Secrets are
+// provisioned out of band where forge cannot look, and reporting them as
+// missing (or as set) would be a guess. Present is true iff Presence is
+// "set".
 type secretListEntry struct {
 	Name       string              `json:"name"`
 	Present    bool                `json:"present"`
+	Presence   string              `json:"presence"`
+	Version    uint32              `json:"version,omitempty"` // hosted: the current version number
 	DeclaredBy []secretDeclaration `json:"declared_by,omitempty"`
 }
+
+// The Presence vocabulary.
+const (
+	secretPresenceSet     = "set"
+	secretPresenceMissing = "missing"
+	secretPresenceUnknown = "unknown"
+)
 
 // secretListReport is the `forge secret list --json` document.
 //
@@ -371,12 +461,16 @@ type secretListEntry struct {
 //
 //	{
 //	  "env": "dev",
-//	  "provider": "file",              // file | none | external | hosted
-//	  "store_path": "/abs/secrets/dev.yaml", // hosted: the control-plane URL
+//	  "provider": "file",              // file | hosted | external | rendered | none
+//	  "store_path": "/abs/secrets/dev.yaml", // hosted: the control-plane URL;
+//	                                   // external/none: ""
 //	  "store_exists": true,            // distinguishes "no secrets set yet"
 //	                                   // from "no store file at all"
+//	  "verifiable": true,              // false iff presence cannot be read
+//	                                   // (external, none)
 //	  "secrets": [
-//	    {"name": "STRIPE_SECRET_KEY", "present": true,
+//	    {"name": "STRIPE_SECRET_KEY", "present": true, "presence": "set",
+//	     "version": 3,                 // hosted only
 //	     "declared_by": [{"workload": "api", "kind": "service",
 //	                      "secret_name": "app-secrets",
 //	                      "secret_key": "stripe_secret_key"}]}
@@ -384,17 +478,19 @@ type secretListEntry struct {
 //	  "inert": ["OLD_KEY"],            // store keys nothing declares
 //	  "missing": ["JWT_SECRET"],       // what `forge secret ensure` gates on
 //	  "missing_count": 1,
-//	  "ok": false                      // false iff a declared secret has no value
+//	  "ok": false                      // true iff verifiable and nothing missing
 //	}
 //
 // `ok` mirrors `forge secret ensure`'s gate, NOT this command's exit code:
-// `secret list` reports rather than gates, so it exits 0 with missing
-// secrets in both modes. Exit codes are identical between text and --json.
+// `secret list` reports rather than gates, so it exits 0 with missing (or
+// unknown) secrets in both modes, for EVERY provider. Exit codes are
+// identical between text and --json.
 type secretListReport struct {
 	Env          string            `json:"env"`
 	Provider     string            `json:"provider"`
 	StorePath    string            `json:"store_path"`
 	StoreExists  bool              `json:"store_exists"`
+	Verifiable   bool              `json:"verifiable"`
 	Secrets      []secretListEntry `json:"secrets"`
 	Inert        []string          `json:"inert"`
 	Missing      []string          `json:"missing"`
@@ -402,67 +498,169 @@ type secretListReport struct {
 	OK           bool              `json:"ok"`
 }
 
-// collectSecretListFacts is the single declared-vs-present computation both
-// output modes render from. It reads the store and returns only derived
-// facts — the value map does not escape this function.
-func collectSecretListFacts(ctx context.Context, envName string) (secretListReport, error) {
-	hosted, err := hostedEntitiesFor(ctx, envName)
-	if err != nil {
-		return secretListReport{}, err
-	}
-	if hosted != nil {
-		return collectHostedSecretListFacts(ctx, envName, hosted)
-	}
-	path, entities, err := secretStorePath(ctx, envName)
-	if err != nil {
-		return secretListReport{}, err
-	}
-	values, err := loadStore(path)
-	if err != nil {
-		return secretListReport{}, err
-	}
-	_, statErr := os.Stat(path)
+// secretListStore is what one provider knows about its store, reduced to
+// value-free facts: which names hold a value (and at what version), or that
+// presence cannot be read at all.
+type secretListStore struct {
+	provider   string
+	location   string
+	exists     bool
+	verifiable bool
+	present    map[string]bool
+	versions   map[string]uint32
+}
 
-	provider := ""
-	if entities != nil && entities.SecretProvider != nil {
-		provider = entities.SecretProvider.Type
+// collectSecretListFacts is the single declared-vs-present computation both
+// output modes render from. It asks the env's provider for value-free
+// presence facts and joins them with the KCL declarations. It NEVER refuses
+// a provider: listing is a read every env can answer, even if the answer is
+// "unknown".
+func collectSecretListFacts(ctx context.Context, envName string) (secretListReport, error) {
+	entities, err := renderEntitiesForSecrets(ctx, envName)
+	if err != nil {
+		return secretListReport{}, fmt.Errorf("render KCL: %w", err)
 	}
+	store, err := secretListStoreFor(ctx, envName, entities)
+	if err != nil {
+		return secretListReport{}, err
+	}
+	return buildSecretListReport(envName, entities, store), nil
+}
+
+// secretListStoreFor reads presence facts from whichever provider the env
+// declares. The value map of a file store does not escape this function.
+func secretListStoreFor(ctx context.Context, envName string, entities *KCLEntities) (secretListStore, error) {
+	sp := entities.SecretProvider
+	switch {
+	case sp == nil:
+		return secretListStore{provider: "none"}, nil
+	case isHostedSecretEnv(entities):
+		return hostedSecretListStore(ctx, envName, entities)
+	case sp.Type == "external":
+		return secretListStore{provider: "external"}, nil
+	case sp.Type == "rendered":
+		return renderedSecretListStore(envName, entities)
+	case sp.Type == "file":
+		path, err := fileSecretStorePath(envName, entities)
+		if err != nil {
+			return secretListStore{}, err
+		}
+		values, err := loadStore(path)
+		if err != nil {
+			return secretListStore{}, err
+		}
+		_, statErr := os.Stat(path)
+		present := make(map[string]bool, len(values))
+		for k := range values {
+			present[k] = true
+		}
+		return secretListStore{provider: "file", location: path, exists: statErr == nil, verifiable: true, present: present}, nil
+	default:
+		// An unrecognised provider type is still a declaration forge can
+		// report on; it just cannot see its values.
+		return secretListStore{provider: sp.Type}, nil
+	}
+}
+
+// renderedSecretListStore answers for forge.RenderedSecrets: each declared
+// in-Secret key is "present" when its declared source resolves — a literal,
+// or a key in the env's local file store (secrets/<env>.yaml).
+func renderedSecretListStore(envName string, entities *KCLEntities) (secretListStore, error) {
+	source, err := renderedSecretsValueSource(envName)
+	if err != nil {
+		return secretListStore{}, err
+	}
+	path := filepath.Join(projectDirForKCL(), "secrets", envName+".yaml")
+	_, statErr := os.Stat(path)
+	store := secretListStore{provider: "rendered", location: path, exists: statErr == nil, verifiable: true, present: map[string]bool{}}
+	for _, rs := range entities.SecretProvider.Secrets {
+		for key, src := range rs.Keys {
+			name := rs.Name + "/" + key
+			switch strings.ToLower(strings.TrimSpace(src.From)) {
+			case "literal":
+				store.present[name] = true
+			default:
+				k := src.Key
+				if k == "" {
+					k = key
+				}
+				if _, ok := source.Resolve(k); ok {
+					store.present[name] = true
+				}
+			}
+		}
+	}
+	return store, nil
+}
+
+// buildSecretListReport joins declarations with a store's presence facts.
+// Pure.
+func buildSecretListReport(envName string, entities *KCLEntities, store secretListStore) secretListReport {
 	report := secretListReport{
 		Env:         envName,
-		Provider:    provider,
-		StorePath:   path,
-		StoreExists: statErr == nil,
+		Provider:    store.provider,
+		StorePath:   store.location,
+		StoreExists: store.exists,
+		Verifiable:  store.verifiable,
 		Secrets:     []secretListEntry{},
 		Inert:       []string{},
 		Missing:     []string{},
 	}
-
 	declared := declaredSecretNames(entities)
 	attribution := secretDeclarationsByEnvName(entities)
+	if store.provider == "rendered" {
+		// A RenderedSecrets bundle declares Secret/key pairs rather than
+		// env-var names, and those ARE its declarations.
+		declared, attribution = renderedSecretDeclarations(entities)
+	}
 	for _, name := range declared {
-		_, present := values[name]
-		if !present {
-			report.Missing = append(report.Missing, name)
+		entry := secretListEntry{Name: name, DeclaredBy: attribution[name], Presence: secretPresenceUnknown}
+		if store.verifiable {
+			entry.Present = store.present[name]
+			entry.Presence = secretPresenceMissing
+			if entry.Present {
+				entry.Presence = secretPresenceSet
+				entry.Version = store.versions[name]
+			} else {
+				report.Missing = append(report.Missing, name)
+			}
 		}
-		report.Secrets = append(report.Secrets, secretListEntry{
-			Name:       name,
-			Present:    present,
-			DeclaredBy: attribution[name],
-		})
+		report.Secrets = append(report.Secrets, entry)
 	}
 	report.MissingCount = len(report.Missing)
-	report.OK = report.MissingCount == 0
+	report.OK = store.verifiable && report.MissingCount == 0
 
 	// Keys nobody declares are inert under declaration-scoped injection.
 	// Surfacing them is what keeps the store from silently accumulating
 	// config that belongs in KCL.
-	for k := range values {
+	for k := range store.present {
 		if !containsString(declared, k) {
 			report.Inert = append(report.Inert, k)
 		}
 	}
 	sort.Strings(report.Inert)
-	return report, nil
+	return report
+}
+
+// renderedSecretDeclarations lists a RenderedSecrets bundle's declared keys as
+// "<Secret>/<key>" names, attributed to the Secret that declares them.
+func renderedSecretDeclarations(e *KCLEntities) ([]string, map[string][]secretDeclaration) {
+	var names []string
+	attribution := map[string][]secretDeclaration{}
+	if e == nil || e.SecretProvider == nil {
+		return names, attribution
+	}
+	for _, rs := range e.SecretProvider.Secrets {
+		for key := range rs.Keys {
+			name := rs.Name + "/" + key
+			names = append(names, name)
+			attribution[name] = append(attribution[name], secretDeclaration{
+				Workload: rs.Name, Kind: "rendered-secret", SecretName: rs.Name, SecretKey: key,
+			})
+		}
+	}
+	sort.Strings(names)
+	return names, attribution
 }
 
 // secretDeclarationsByEnvName maps each declared env-var name to the
@@ -507,14 +705,35 @@ func runSecretList(ctx context.Context, envName string, out io.Writer) error {
 		return err
 	}
 
-	fmt.Fprintf(out, "secret store: %s\n\n", report.StorePath)
+	switch {
+	case report.StorePath != "":
+		fmt.Fprintf(out, "secret store (%s): %s\n\n", report.Provider, report.StorePath)
+	default:
+		fmt.Fprintf(out, "secret store: %s\n\n", report.Provider)
+	}
+	if !report.Verifiable {
+		switch report.Provider {
+		case "external":
+			fmt.Fprintln(out, "values are provisioned out of band (forge.ExternalSecrets): presence is unknown to forge.")
+		case "none":
+			fmt.Fprintf(out, "env %q declares no secret_provider: nothing supplies these values.\n", envName)
+		default:
+			fmt.Fprintf(out, "forge cannot read presence from a %q provider.\n", report.Provider)
+		}
+		if len(report.Secrets) > 0 {
+			fmt.Fprintln(out)
+		}
+	}
 	if len(report.Secrets) == 0 {
 		fmt.Fprintln(out, "no secrets declared in KCL (nothing to resolve)")
 	}
 	for _, s := range report.Secrets {
-		mark := "MISSING"
-		if s.Present {
+		mark := strings.ToUpper(s.Presence)
+		if s.Presence == secretPresenceSet {
 			mark = "set"
+			if s.Version > 0 {
+				mark = fmt.Sprintf("set (v%d)", s.Version)
+			}
 		}
 		fmt.Fprintf(out, "  %-34s %s\n", s.Name, mark)
 	}
@@ -526,6 +745,9 @@ func runSecretList(ctx context.Context, envName string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "fix: declare it with `forge.EnvVar {name = \"%s\", secret_ref = \"...\"}`,\n", report.Inert[0])
 		fmt.Fprintln(out, "     move it to deploy/kcl/<env>/config.k if it is not a credential, or remove it.")
+	}
+	if report.MissingCount > 0 && (report.Provider == "file" || report.Provider == "hosted") {
+		fmt.Fprintf(out, "\nfix: forge secret set --env %s <KEY>\n", envName)
 	}
 	return nil
 }
@@ -560,7 +782,7 @@ func runSecretEnsure(ctx context.Context, envName string, out io.Writer) error {
 	for _, m := range missing {
 		fmt.Fprintf(out, "  %s\n", m)
 	}
-	fmt.Fprintf(out, "\nfix: forge secret set %s <KEY>\n", envName)
+	fmt.Fprintf(out, "\nfix: forge secret set --env %s <KEY>\n", envName)
 	return fmt.Errorf("%d secret(s) missing a value", len(missing))
 }
 

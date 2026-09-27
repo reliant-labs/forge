@@ -6,10 +6,14 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jinzhu/inflection"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/internal/devpg"
 	"github.com/reliant-labs/forge/internal/hostinfra"
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/seedplan"
@@ -316,7 +320,14 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seedplan.BuildLivePlan(ctx, db, migrationsDefault(), seedShadowFor(migrationsDefault()), seedConfigFromProject())
+	seedCfg := autoSeedConfig(seedConfigFromProject(), crudEntityTablesForSeed)
+	if seedCfg.Tables != nil && len(seedCfg.Tables) == 0 {
+		// quiet-ish: nothing is in scope — no CRUD entity, or `tables: []`.
+		// One line, because "why is my dev DB empty?" deserves an answer.
+		fmt.Println("[up] auto-seed: no tables in scope (no CRUD entities, and database.seed.tables unset) — nothing seeded")
+		return
+	}
+	plan, err := seedplan.BuildLivePlan(ctx, db, migrationsDefault(), seedShadowFor(migrationsDefault()), seedCfg)
 	if err != nil {
 		fmt.Printf("[up] auto-seed skipped: %v\n", err)
 		return
@@ -350,9 +361,94 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 		return
 	}
 	if res.Total() > 0 {
-		fmt.Printf("[up] auto-seeded %d rows across %d tables (first boot; disable with --no-seed)\n",
-			res.Total(), len(res.Tables))
+		// Name the tables and BOTH opt-outs. The per-project one used to go
+		// unmentioned, so the only discoverable way to stop a project from
+		// being seeded was a flag every run had to remember.
+		fmt.Printf("[up] auto-seeded %d rows across %d tables (%s) — first boot only.\n"+
+			"[up]   skip once: --no-seed · never for this project: database.seed.auto: false · choose tables: database.seed.tables in forge.yaml\n",
+			res.Total(), len(res.Tables), strings.Join(seededTableNames(res), ", "))
 	}
+}
+
+func seededTableNames(res *seedplan.Result) []string {
+	out := make([]string, 0, len(res.Tables))
+	for _, t := range res.Tables {
+		out = append(out, t.Table)
+	}
+	return out
+}
+
+// autoSeedConfig scopes the first-boot auto-seed.
+//
+// An explicit database.seed.tables wins (the project decided). Otherwise the
+// scope is the tables behind the project's CRUD entities — the rows the
+// generated list/detail pages exist to show — plus whatever those require
+// through a NOT NULL foreign key (seedplan.ScopeTables).
+//
+// It used to be EVERY table. That is the right default only for a schema that
+// is nothing but CRUD entities, and exactly wrong for the rest: a table with
+// no CRUD RPCs is plain schema owned by hand-written code — a payments
+// ledger, a webhook-idempotency log, a reservations table whose rows mean
+// money moved — and 20 synthesized rows there are not demo data, they are
+// fabricated facts the app then acts on (Bark Social booted with "paid"
+// founding deposits nobody paid, counting against a 100-member cap).
+//
+// entityTables returns nil when forge cannot tell (no descriptor yet); then
+// the historical every-table behaviour stands rather than silently seeding
+// nothing on a project whose entities simply have not been generated.
+func autoSeedConfig(base seedplan.Config, entityTables func() []string) seedplan.Config {
+	if base.Tables != nil {
+		return base
+	}
+	if tables := entityTables(); tables != nil {
+		base.Tables = tables
+	}
+	return base
+}
+
+// crudEntityTablesForSeed lists the tables behind the project's CRUD entities
+// — each entity a service declares Create/Get/List/Update/Delete RPCs for,
+// mapped to its table the way codegen.BuildSchemaEntities maps it (the
+// pluralized snake_case of the entity name). Tables that do not exist are
+// harmless: seedplan.ScopeTables ignores unknown roots.
+//
+// nil (not empty) when the service descriptor cannot be read, so the caller
+// can tell "no entities" from "could not look".
+func crudEntityTablesForSeed() []string {
+	root, err := projectRoot()
+	if err != nil {
+		return nil
+	}
+	services, err := codegen.ParseServicesFromProtos("", root)
+	if err != nil || services == nil {
+		return nil
+	}
+	return crudEntityTables(services)
+}
+
+func crudEntityTables(services []codegen.ServiceDef) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, svc := range services {
+		for _, m := range svc.Methods {
+			if m.ClientStreaming || m.ServerStreaming {
+				continue
+			}
+			op, name := codegen.ParseCRUDOperation(m.Name)
+			if op == "" {
+				continue
+			}
+			if op == "list" {
+				name = inflection.Singular(name)
+			}
+			table := naming.Pluralize(naming.ToSnakeCase(name))
+			if !seen[table] {
+				seen[table] = true
+				out = append(out, table)
+			}
+		}
+	}
+	return out
 }
 
 // resolveSeedDSN finds the DATABASE_URL that ensureDevDatabase, the

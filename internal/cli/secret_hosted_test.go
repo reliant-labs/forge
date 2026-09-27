@@ -129,14 +129,15 @@ func hostedFixture(t *testing.T, envs []cloudEnvironment) (*fakeControlPlane, st
 			return nil, cloud.Endpoint{}, err
 		}
 		client := cloud.NewClient(ep, cloud.Credential{Token: token})
+		ref := hostedEnvRefFor(envName, e)
 		var id string
 		if ensure {
-			id, err = ensureHostedEnv(ctx, client, envName)
+			id, err = ensureHostedEnv(ctx, client, ref)
 		} else {
-			id, err = cloudEnvResolver{client: client}.ResolveEnvironmentID(ctx, envName)
+			id, err = cloudEnvResolver{client: client, project: ref.Project}.ResolveEnvironmentID(ctx, envName)
 		}
 		if err != nil {
-			return nil, cloud.Endpoint{}, err
+			return nil, ep, err
 		}
 		return cloudSecretWriter{client: client, environmentID: id}, ep, nil
 	}
@@ -268,13 +269,13 @@ func TestHostedSecretCLIEndToEnd(t *testing.T) {
 		return out.String()
 	}
 
-	run(value+"\n", "set", "prod", "API_KEY")
+	run(value+"\n", "set", "--env", "prod", "API_KEY")
 	sets := fake.callsTo("controlplane.v1.SecretStoreService/SetSecret")
 	if len(sets) != 1 || sets[0].Auth != "Bearer rlat_e2e_token" || sets[0].Body["environmentId"] != "env-prod-uuid" {
 		t.Fatalf("SetSecret calls = %+v", sets)
 	}
 
-	listJSON := run("", "list", "prod", "--json")
+	listJSON := run("", "list", "--env", "prod", "--json")
 	var report secretListReport
 	if err := json.Unmarshal([]byte(listJSON), &report); err != nil {
 		t.Fatalf("list --json is not JSON: %v\n%s", err, listJSON)
@@ -323,11 +324,19 @@ func TestHostedSecretSetCreatesAFreshEnv(t *testing.T) {
 }
 
 // TestHostedSecretListNeverCreates: list is a READ. An env the control plane
-// has not seen is an error for list, and nothing is created.
+// has not seen holds no secrets — every declared one is reported missing —
+// and nothing is created.
 func TestHostedSecretListNeverCreates(t *testing.T) {
 	fake, _ := hostedFixture(t, nil)
-	if _, err := collectSecretListFacts(context.Background(), "prod"); err == nil {
-		t.Fatal("list of an unknown env must not succeed silently")
+	e, _ := renderEntitiesForSecrets(context.Background(), "prod")
+	e.Services = []ServiceEntity{{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+		EnvVars: []KCLEnvVar{{Name: "K", SecretRef: "s"}}}}}}
+	r, err := collectSecretListFacts(context.Background(), "prod")
+	if err != nil {
+		t.Fatalf("list of an env the control plane has not seen: %v", err)
+	}
+	if r.OK || len(r.Missing) != 1 || r.Missing[0] != "K" || r.StoreExists {
+		t.Fatalf("report = %+v, want K missing and no store", r)
 	}
 	if n := len(fake.callsTo("controlplane.v1.DeployService/EnsureEnvironment")); n != 0 {
 		t.Fatalf("list called EnsureEnvironment %d time(s)", n)

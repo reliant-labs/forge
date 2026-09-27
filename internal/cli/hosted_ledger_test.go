@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -327,7 +328,7 @@ func newHostedTestStore(t *testing.T, fake *fakeDeployService) (*hostedStore, *h
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)
 	ep := cloud.Endpoint{Env: "prod", URL: srv.URL, TokenEnv: "T"}
-	l := hostedLedger(cloud.NewClient(ep, cloud.Credential{Token: "rlat_test"}), srv.URL)
+	l := hostedLedger(cloud.NewClient(ep, cloud.Credential{Token: "rlat_test"}), srv.URL, "acme", deploytarget.HostedEnvPersistent)
 	return l.Bindings.(*hostedStore), srv
 }
 
@@ -475,7 +476,7 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	t.Chdir(dir)
 	t.Setenv("FORGE_E2E_CP_TOKEN", "rlat_e2e")
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fmt.Sprintf(
-		`{"control_plane":{"type":"control_plane","endpoint":%q,"token_env":"FORGE_E2E_CP_TOKEN"},"services":[{"name":"api","image":"api","deploy":{"type":"cluster","cluster":"c","namespace":"n"}}]}`, srv.URL)))
+		`{"control_plane":{"type":"control_plane","endpoint":%q,"token_env":"FORGE_E2E_CP_TOKEN"},"services":[{"name":"api","image":"api","deploy":{"type":"cluster","cluster":"c","namespace":"n"}}],"databases":[{"name":"orders","namespace":""}]}`, srv.URL)))
 	// The build state an earlier `forge build prod --push` left behind.
 	if err := WriteBuildState(dir, "prod", BuildState{
 		Image: "api", Tag: "v1", Pushed: true, PushedAt: nowRFC3339(), Digest: sha("1"), Registry: "ghcr.io/acme",

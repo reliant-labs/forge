@@ -40,29 +40,33 @@ func TestResolveForgeVersion_UntaggedCommitPinsPseudoVersion(t *testing.T) {
 	}
 }
 
-// TestResolveForgeVersion_UnreleasableBuildPinsNothing is the regression this
-// whole design exists for. A dirty local build's bytes are on no proxy, so
-// there is no honest version to require. It used to fall back to a
-// hand-maintained "last published tag" constant, which told projects to pin a
-// release that could not satisfy the code being generated —
-// `undefined: testkit.StubNotConfigured`, after the tree was already
-// rewritten.
-//
-// "" means "this build needs a source bridge". Anything else here is a bug.
-func TestResolveForgeVersion_UnreleasableBuildPinsNothing(t *testing.T) {
+// TestResolveForgeVersion_UnreleasableBuildPinsPublishedFloor: a dirty or
+// unstamped local build is on no proxy, so it cannot pin itself — but it must
+// still pin SOMETHING. An empty require let `go mod tidy` (which ignores the
+// dev go.work bridge) resolve forge/pkg/* imports to the retired
+// github.com/reliant-labs/forge/pkg module, which generate then refused and
+// env up's `tidy -diff` preflight reported as a stale graph forever. The
+// newest published release this source descends from is a version the proxy
+// serves and that provides every forge/pkg package; the go.work bridge still
+// decides what compiles.
+func TestResolveForgeVersion_UnreleasableBuildPinsPublishedFloor(t *testing.T) {
 	restoreBuildinfo(t)
 
+	floor := buildinfo.PublishedFloor()
+	if floor == "" {
+		t.Fatal("PublishedFloor is empty — the embedded VERSION file is missing or malformed")
+	}
 	for _, v := range []string{
 		"v0.1.16-0.20260916085636-c01e07ec6ef2+dirty", // dirty tree
 		"dev",         // no stamp at all
 		"(devel)",     // plain `go build`
-		"v0.1.15+dev", // the VERSION-file floor
+		"v0.1.15+dev", // an old VERSION-file floor spelling
 	} {
 		t.Run(v, func(t *testing.T) {
 			buildinfo.Set(v, "", "")
-			if got := resolveForgeVersion(); got != "" {
-				t.Errorf("resolveForgeVersion = %q for build %q, want \"\" — pinning a version "+
-					"this build is not is what produced the StubNotConfigured class of failure", got, v)
+			if got := resolveForgeVersion(); got != floor {
+				t.Errorf("resolveForgeVersion = %q for build %q, want the published floor %q — "+
+					"an empty require is what let `go mod tidy` pick the retired forge/pkg module", got, v, floor)
 			}
 		})
 	}

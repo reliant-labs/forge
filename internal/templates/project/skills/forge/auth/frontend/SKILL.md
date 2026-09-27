@@ -64,6 +64,21 @@ The issuer treats "which credentials were checked" as the **caller's** decision.
 
 `devidp.CreateSession` refuses a credential set with no verifying factor before it makes any network call, and the broker builds its request from **typed fields it reads itself**. Do not "simplify" either by forwarding a request body straight through: that single change turns a login form into an impersonation endpoint, and nothing in the response would look wrong.
 
+## Public frontends (`auth_mode: none`)
+
+`frontends[].auth_mode: none` scaffolds a frontend with **no sign-in gate**:
+no route guard around the app and no `/auth/sign-in` screen. It is what
+`forge scaffold frontend` picks by default when `deploy/kcl/dev/main.k`
+declares no identity provider — a gated frontend there could only redirect
+every page to a form nothing can complete. `--auth-mode native|none`
+overrides the default either way.
+
+It changes nothing on the server: an RPC that requires a caller still answers
+401. To gate a public frontend later, set `auth_mode: native`, wrap the app in
+`RouteGuard` from `src/lib/auth/route-guard.tsx` (still emitted, unused) and
+add a sign-in screen — `forge scaffold frontend <tmp> --auth-mode native` in a
+scratch checkout shows the exact files.
+
 ## React Native is different, and ships a mock
 
 RN has neither half of what makes native sign-in work: no automatic cookie jar on `fetch`, and no same-origin. Shipping the web flow there produces code that **typechecks** (RN's tsconfig includes the DOM lib) and silently never authenticates — every call returns 200 and the next one is anonymous. So `native-login.ts` and `route-guard.tsx` are deliberately not emitted into an RN tree.

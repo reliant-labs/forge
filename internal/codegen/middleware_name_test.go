@@ -6,108 +6,25 @@ import (
 	"testing"
 )
 
-// TestResolveMiddlewareWrappers_Core exercises the pure naming core directly —
-// the multi-impl disambiguation and same-concrete fallback that the generate
-// pipeline itself cannot currently reach (it emits exactly ONE wrapped
-// constructor per package, `New`; see the note in TestResolveMiddlewareWrapper_Dir).
-func TestResolveMiddlewareWrappers_Core(t *testing.T) {
-	t.Run("single impl keeps the clean name and bare op namespace", func(t *testing.T) {
-		got := resolveMiddlewareWrappers([]wrappedConstructor{{Ctor: "New", Concrete: "service"}})
-		want := MiddlewareWrapper{
-			Constructor: "NewServiceWithForgeMiddleware",
-			Struct:      "forgeMiddlewareService",
-			OpSegment:   "", // single → op stays "<pkg>.<Method>"
-		}
-		if got["New"] != want {
-			t.Fatalf("single-impl wrapper = %+v, want %+v", got["New"], want)
-		}
-	})
-
-	t.Run("two impls of one interface get DISTINCT concrete-keyed names + namespaces", func(t *testing.T) {
-		got := resolveMiddlewareWrappers([]wrappedConstructor{
-			{Ctor: "New", Concrete: "service"},
-			{Ctor: "NewReadOnly", Concrete: "readOnlyService"},
-		})
-		newW := got["New"]
-		roW := got["NewReadOnly"]
-		if newW.Constructor != "NewServiceWithForgeMiddleware" || newW.Struct != "forgeMiddlewareService" {
-			t.Errorf("New wrapper = %+v", newW)
-		}
-		if roW.Constructor != "NewReadOnlyServiceWithForgeMiddleware" || roW.Struct != "forgeMiddlewareReadOnlyService" {
-			t.Errorf("NewReadOnly wrapper = %+v", roW)
-		}
-		// Distinct constructor names (the whole point — no collision).
-		if newW.Constructor == roW.Constructor {
-			t.Errorf("constructor names collide: %q", newW.Constructor)
-		}
-		// Multi-impl → each carries a distinct op-namespace segment so the impls
-		// are distinguishable in traces/metrics.
-		if newW.OpSegment != "Service" || roW.OpSegment != "ReadOnlyService" {
-			t.Errorf("op segments = %q / %q, want Service / ReadOnlyService", newW.OpSegment, roW.OpSegment)
-		}
-		if newW.OpSegment == roW.OpSegment {
-			t.Errorf("op segments collide: %q", newW.OpSegment)
-		}
-	})
-
-	t.Run("two constructors of the SAME concrete type fall back to the constructor name", func(t *testing.T) {
-		got := resolveMiddlewareWrappers([]wrappedConstructor{
-			{Ctor: "New", Concrete: "service"},
-			{Ctor: "NewReadOnly", Concrete: "service"}, // same concrete → concrete keying would collide
-		})
-		newW := got["New"]
-		roW := got["NewReadOnly"]
-		// Fallback keys off the (unique) constructor name — not New<Ctor>...,
-		// the constructor already begins with "New".
-		if newW.Constructor != "NewWithForgeMiddleware" {
-			t.Errorf("New fallback constructor = %q, want NewWithForgeMiddleware", newW.Constructor)
-		}
-		if roW.Constructor != "NewReadOnlyWithForgeMiddleware" {
-			t.Errorf("NewReadOnly fallback constructor = %q, want NewReadOnlyWithForgeMiddleware", roW.Constructor)
-		}
-		if newW.Constructor == roW.Constructor {
-			t.Errorf("fallback constructor names collide: %q", newW.Constructor)
-		}
-		if newW.Struct == roW.Struct {
-			t.Errorf("fallback struct names collide: %q", newW.Struct)
-		}
-	})
-
-	t.Run("unresolvable concrete type degrades to the constructor name", func(t *testing.T) {
-		// Sole constructor, concrete unresolved (e.g. `return newImpl()` / local
-		// var) → constructor-name keying, never a hard error.
-		got := resolveMiddlewareWrappers([]wrappedConstructor{{Ctor: "New", Concrete: ""}})
-		if got["New"].Constructor != "NewWithForgeMiddleware" {
-			t.Fatalf("unresolvable concrete constructor = %q, want NewWithForgeMiddleware", got["New"].Constructor)
-		}
-	})
-}
-
-// TestResolveMiddlewareWrapper_Dir proves the dir-based resolver reads the
-// CONCRETE type from the constructor's return expression (`return &service{…}`),
-// including the fallible `(Service, error)` shape, and that the canonical
-// single-`New` package title-cases `service` back to `NewServiceWithForgeMiddleware`
-// with a bare op namespace — i.e. the common case is unchanged by concrete-type
-// keying.
-//
-// NOTE ON REACHABILITY: the generate pipeline wraps exactly one constructor per
-// package (generate_middleware calls WriteObservedDecorator once, for `New`;
-// compose constructs one component per package via `New`). So the multi-wrapped-
-// constructor scenario above is NOT reachable through the real pipeline today —
-// hence it is tested against the pure core directly. The dir resolver
-// deliberately keys only off `New`, immune to unrelated sibling `New*` funcs.
+// TestResolveMiddlewareWrapper_Dir: the wrapper name is derived from the
+// DECLARED contract, never from how New's body is written. The regression this
+// pins: a New that returns via a helper (`return build()`) used to rename the
+// wrapper NewServiceWithForgeMiddleware -> NewWithForgeMiddleware, breaking
+// every hand-owned caller on the next generate.
 func TestResolveMiddlewareWrapper_Dir(t *testing.T) {
+	canonical := MiddlewareWrapper{Constructor: "NewServiceWithForgeMiddleware", Struct: "forgeMiddlewareService"}
 	cases := []struct {
-		name string
-		src  string
-		want MiddlewareWrapper
+		name  string
+		src   string
+		iface string
+		want  MiddlewareWrapper
 	}{
 		{
 			name: "non-fallible New returning &service",
 			src: "package checkout\n\ntype Service interface{ Do() }\n" +
 				"type service struct{}\n\nfunc (s *service) Do() {}\n" +
 				"type Deps struct{}\n\nfunc New(d Deps) Service { return &service{} }\n",
-			want: MiddlewareWrapper{Constructor: "NewServiceWithForgeMiddleware", Struct: "forgeMiddlewareService", OpSegment: ""},
+			want: canonical,
 		},
 		{
 			name: "fallible New with an error branch before the real return",
@@ -115,22 +32,28 @@ func TestResolveMiddlewareWrapper_Dir(t *testing.T) {
 				"type service struct{}\n\nfunc (s *service) Do() {}\n" +
 				"type Deps struct{ Bad bool }\n\n" +
 				"func New(d Deps) (Service, error) {\n\tif d.Bad {\n\t\treturn nil, errors.New(\"bad\")\n\t}\n\treturn &service{}, nil\n}\n",
-			want: MiddlewareWrapper{Constructor: "NewServiceWithForgeMiddleware", Struct: "forgeMiddlewareService", OpSegment: ""},
+			want: canonical,
 		},
 		{
-			name: "concrete type other than `service` keys the wrapper off it",
-			src: "package checkout\n\ntype Service interface{ Do() }\n" +
-				"type engine struct{}\n\nfunc (e *engine) Do() {}\n" +
-				"type Deps struct{}\n\nfunc New(d Deps) Service { return &engine{} }\n",
-			want: MiddlewareWrapper{Constructor: "NewEngineWithForgeMiddleware", Struct: "forgeMiddlewareEngine", OpSegment: ""},
-		},
-		{
-			name: "unresolvable return (delegated call) degrades to constructor name",
+			name: "New returning via a helper keeps the contract-derived name",
 			src: "package checkout\n\ntype Service interface{ Do() }\n" +
 				"type service struct{}\n\nfunc (s *service) Do() {}\n" +
 				"func build() Service { return &service{} }\n" +
-				"type Deps struct{}\n\nfunc New(d Deps) Service { return build() }\n",
-			want: MiddlewareWrapper{Constructor: "NewWithForgeMiddleware", Struct: "forgeMiddlewareNew", OpSegment: ""},
+				"type Deps struct{}\n\nfunc New(d Deps) (Service, error) { return build(), nil }\n",
+			want: canonical,
+		},
+		{
+			name: "a concrete impl not named service does not rename the wrapper",
+			src: "package checkout\n\ntype Service interface{ Do() }\n" +
+				"type engine struct{}\n\nfunc (e *engine) Do() {}\n" +
+				"type Deps struct{}\n\nfunc New(d Deps) Service { return &engine{} }\n",
+			want: canonical,
+		},
+		{
+			name:  "a marked contract name keys the wrapper",
+			src:   "package mail\n\ntype Mailer interface{ Send() }\n\ntype Deps struct{}\n\nfunc New(d Deps) Mailer { return nil }\n",
+			iface: "Mailer",
+			want:  MiddlewareWrapper{Constructor: "NewMailerWithForgeMiddleware", Struct: "forgeMiddlewareMailer"},
 		},
 	}
 	for _, tc := range cases {
@@ -139,10 +62,39 @@ func TestResolveMiddlewareWrapper_Dir(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "contract.go"), []byte(tc.src), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			got := ResolveMiddlewareWrapper(dir, "Service")
-			if got != tc.want {
+			iface := tc.iface
+			if iface == "" {
+				iface = "Service"
+			}
+			if got := ResolveMiddlewareWrapper(dir, iface); got != tc.want {
 				t.Fatalf("ResolveMiddlewareWrapper = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// An already-generated wrapper keeps its name: existing projects carry names
+// derived by the old expression-keyed resolver (NewStoreWithForgeMiddleware,
+// NewWithForgeMiddleware, ...) that hand-owned wire files call. Re-deriving
+// would rename them out from under those callers.
+func TestResolveMiddlewareWrapper_PinsExistingDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	contract := "package gcs\n\ntype Service interface{ Do() }\n\ntype Deps struct{}\n\nfunc New(d Deps) (Service, error) { return newStore(), nil }\n"
+	generated := "// Code generated by forge. DO NOT EDIT.\npackage gcs\n\n" +
+		"func NewStoreWithForgeMiddleware(inner Service) Service {\n\treturn &forgeMiddlewareStore{inner: inner}\n}\n\n" +
+		"type forgeMiddlewareStore struct{ inner Service }\n"
+	for name, src := range map[string]string{"contract.go": contract, "middleware_gen.go": generated} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := MiddlewareWrapper{Constructor: "NewStoreWithForgeMiddleware", Struct: "forgeMiddlewareStore"}
+	if got := ResolveMiddlewareWrapper(dir, "Service"); got != want {
+		t.Fatalf("ResolveMiddlewareWrapper = %+v, want the pinned %+v", got, want)
+	}
+	// A wrapper over a DIFFERENT interface (the contract was renamed) is not a
+	// pin for this one.
+	if got := ResolveMiddlewareWrapper(dir, "Mailer"); got.Constructor != "NewMailerWithForgeMiddleware" {
+		t.Fatalf("renamed contract must not inherit the old pin, got %+v", got)
 	}
 }

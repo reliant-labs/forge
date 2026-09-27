@@ -11,6 +11,16 @@ type Config struct {
 	Salt int
 	// RowsPerTable overrides Rows for specific tables.
 	RowsPerTable map[string]int
+	// Tables scopes the plan to these tables plus every table they reach
+	// through a NOT NULL foreign key (a row there cannot exist without a
+	// parent row). nil means every table in the schema. A nullable
+	// reference to a table outside the scope is written NULL, exactly as a
+	// reference to any unseedable table is.
+	//
+	// Scoping exists because "fill every table" is the wrong default for a
+	// schema that holds more than CRUD demo data: a payments ledger, an
+	// idempotency log, a reservations table whose rows mean money moved.
+	Tables []string
 }
 
 const defaultRows = 20

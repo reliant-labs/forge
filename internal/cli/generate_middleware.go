@@ -259,16 +259,12 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		}
 		ctorType, _ := codegen.DetectConstructorType(path)
 		if codegen.ShouldInstrumentComponent(path, ctorType, ifaceName) {
-			// Resolve the wrapper's names off the constructor's concrete return
-			// type (the SAME resolver the compose assembler uses), so the
-			// generated constructor matches the emitted call exactly. opNamespace
-			// stays "<pkg>" for the single-impl package; a multi-wrapped-ctor
-			// package would carry the concrete-type segment.
+			// Resolve the wrapper's names from the declared contract (the SAME
+			// resolver the compose assembler uses), so the generated
+			// constructor matches the emitted call exactly. One wrapper per
+			// package, so spans/metrics keep the clean "<pkg>.<Method>" op.
 			mw := codegen.ResolveMiddlewareWrapper(path, ifaceName)
 			opNamespace := obsCF.Package
-			if mw.OpSegment != "" {
-				opNamespace += "." + mw.OpSegment
-			}
 			// The decorator calls the OWNED seam newObserveChain. A package
 			// opted in by `// forge:constructor` alone — a hand-written
 			// component, or one converted from an exclusion — has no seam, and
@@ -603,12 +599,9 @@ func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.C
 		}
 		selected = append(selected, m.Fields...)
 	}
-	// Block expansion goes through the shared flattener so a leaf name claimed
-	// by two different blocks (two tiers each declaring `base_domain`) is
-	// qualified rather than emitted twice. Two bare declarations reach
-	// CheckDuplicateConfigFields as one shadowed field, and since a config
-	// failure is only a WARNING, the refusal silently left the PREVIOUS
-	// config_gen.k in place with every leaf of both blocks missing. See
+	// Block expansion goes through the shared flattener, which tags every
+	// block leaf with its block so the KCL projection nests it in its own
+	// schema — two blocks may each declare `base_domain`. See
 	// config_block_flatten.go.
 	return codegen.FlattenFieldsWithBlocks(selected, messages)
 }
@@ -643,13 +636,13 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	// CheckDuplicateConfigFields — a silently-shadowed default shipped an
 	// empty APP_URL to prod once). The bug was feeding it a field set that
 	// was never meant to be one schema.
-	var fields []codegen.ConfigField
-	for _, m := range messages {
-		if m.Frontend != "" {
-			continue
-		}
-		fields = append(fields, m.Fields...)
-	}
+	//
+	// Composed blocks are expanded through the shared flattener, which tags
+	// each block leaf with its block so the KCL projection nests it
+	// (`stripe.secret_key`) instead of flattening it into AppConfig — see
+	// config_block_flatten.go. configFieldsExcludingBinaries already selects
+	// exactly the non-frontend, non-composed messages and flattens them.
+	fields := configFieldsExcludingBinaries(messages)
 
 	kclDir := cfg.K8s.KCLDir
 	if kclDir == "" {
@@ -697,6 +690,19 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	} else if len(rewrote) > 0 {
 		fmt.Printf("  ♻️  Repointed %d env file(s) at deploy/kcl/%s.k (config_schema + config_projection merged): %s\n",
 			len(rewrote), codegen.ConfigSchemaModule, strings.Join(rewrote, ", "))
+	}
+	// Config blocks are nested schemas now; move each env's flat block-leaf
+	// keys (`github_client_id = …`) and reads (`app_config.github_client_id`)
+	// to their paths (`github.github_client_id`). See config_block_migrate.go.
+	instanceFields := rootFields
+	if len(perBinary) == 0 {
+		instanceFields = fields
+	}
+	if moved, merr := codegen.MigrateConfigBlockReferences(kclDirAbs, codegen.ConfigInstancesForMigration(instanceFields, perBinary)); merr != nil {
+		return fmt.Errorf("migrate config block references: %w", merr)
+	} else if len(moved) > 0 {
+		fmt.Printf("  ♻️  Config blocks are nested KCL schemas now — moved flat block-leaf keys to their paths (e.g. `stripe.secret_key`) in: %s\n",
+			strings.Join(moved, ", "))
 	}
 
 	envs, lerr := ListEnvs(projectDir)

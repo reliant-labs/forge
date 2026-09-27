@@ -304,7 +304,7 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 	_, _ = w.WriteString("hello-from-secret\n")
 	_ = w.Close()
 	os.Stdin = r
-	out, err := runForge(t, "secret", "set", "hosted", "GREETING")
+	out, err := runForge(t, "secret", "set", "--env", "hosted", "GREETING")
 	os.Stdin = stdin
 	if err != nil {
 		t.Fatalf("secret set before any deploy: %v\n%s", err, out)
@@ -469,11 +469,12 @@ func TestDestinationOf(t *testing.T) {
 // TestResolveEnvDestinationNeverFabricatesAnID: a hosted env the control
 // plane does not know has an endpoint and NO environment_id.
 func TestResolveEnvDestinationNeverFabricatesAnID(t *testing.T) {
-	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example/"}}
+	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example/"},
+		Databases: []DatabaseEntity{{Name: "orders"}}}
 	got := resolveEnvDestination(context.Background(), "prod", e, func(context.Context, string, *KCLEntities) (deploytarget.HostedEnvStatus, error) {
 		return deploytarget.HostedEnvStatus{}, deploytarget.ErrHostedEnvironmentNotFound
 	})
-	if got.Destination != "hosted" || got.Endpoint != "https://cp.example" || got.EnvironmentID != "" || got.Note == "" {
+	if got.Destination != "hosted" || got.ControlPlaneKind != "persistent" || got.Endpoint != "https://cp.example" || got.EnvironmentID != "" || got.Note == "" {
 		t.Fatalf("destination = %+v", got)
 	}
 	var _ = cloud.DefaultTokenEnv

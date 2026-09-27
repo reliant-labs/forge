@@ -33,7 +33,7 @@
 // Nothing in forge imports this package. In particular there is no
 // codegen step emitting a `pkg/app/diagnostics_gen.go` whose `init()`
 // registers the scaffolds it found, and no Bootstrap call to
-// `Default.Boot`. So a project depending on forge today gets no
+// `Default().Boot`. So a project depending on forge today gets no
 // boot-time warning about its unwired scaffolds — the registry is
 // simply empty, and an empty registry emits nothing.
 //

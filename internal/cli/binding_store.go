@@ -134,7 +134,10 @@ func ledgerFor(ctx context.Context, projectDir, env string) (envLedger, error) {
 // selection rule is testable from a literal entity.
 func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (envLedger, error) {
 	decl := declarationFromEntities(entities)
-	if decl == nil {
+	// A LOCAL env's control plane is only its secret store: the platform
+	// runs nothing of it, so there is no hosted release to bind and its
+	// ledger stays the project's own.
+	if decl == nil || isLocalControlPlaneEnv(entities) {
 		return fileLedger(projectDir), nil
 	}
 	ep, err := cloud.ResolveEndpoint(env, decl)
@@ -145,7 +148,8 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	if err != nil {
 		return envLedger{}, fmt.Errorf("env %q keeps its release ledger on the control plane at %s: %w", env, ep.URL, err)
 	}
-	return hostedLedger(cloud.NewClient(ep, cred), ep.URL), nil
+	ref := hostedEnvRefFor(env, entities)
+	return hostedLedger(cloud.NewClient(ep, cred), ep.URL, ref.Project, ref.Kind), nil
 }
 
 // bindingStoreFor is ledgerFor for the callers that need only the promotion

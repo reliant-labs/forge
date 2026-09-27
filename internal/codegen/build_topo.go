@@ -212,11 +212,11 @@ type TypeResolver interface {
 // This is intentionally string-structural rather than go/types-based:
 // it is pure, deterministic, and cheap, and the package-qualified
 // Service interface name is unambiguous across a project (one `Service`
-// per component package by the strict-contract-names convention). When a
-// project genuinely needs assignability-by-implementation (a narrow
-// collaborator interface satisfied by another component's Service), that
-// is surfaced as an unresolved dep + TODO in build.go rather than guessed
-// — matching the fail-loud stance of the wire matcher.
+// per component package by the strict-contract-names convention). A narrow
+// consumer-declared interface (or an alias) satisfied by another component
+// is NOT this resolver's job: GenerateCompose layers the go/types
+// assignability pass (producer_assignability.go) over it, which resolves a
+// unique satisfier and refuses loudly when several components satisfy it.
 type ServiceKeyResolver struct {
 	// byPath maps the FULL import-path-qualified Service key
 	// (e.g. "example.com/proj/internal/billing.Service") -> producer

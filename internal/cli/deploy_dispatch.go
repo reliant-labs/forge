@@ -49,7 +49,11 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 	// workload, as one hosted group. This is the single selection point, and
 	// it is declarative: the same KCL chooses the same destination on every
 	// machine, with no flag that could route a hosted env to a kubeconfig.
-	if entities.ControlPlane != nil {
+	//
+	// A LOCAL env (control_plane but no hosted tier) is the exception: its
+	// control plane is only its secret store, and its workloads run on this
+	// machine, so it takes the ordinary path below.
+	if entities.ControlPlane != nil && !isLocalControlPlaneEnv(entities) {
 		return buildHostedGroups(envName, entities)
 	}
 

@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 // hostedEnvResolver maps a forge environment NAME to the control plane's id
-// for the environment of that name, in the caller's organization.
+// for the environment of that name, in the caller's organization and this
+// project.
 //
 // The id is what every per-environment hosted RPC is keyed on (secrets are
 // stored per environment id on the control plane), and the NAME is what the
@@ -24,17 +26,21 @@ type hostedEnvResolver interface {
 
 // cloudEnvResolver resolves through deploytarget.LookupHostedEnvironment —
 // the ONE exact-name lookup, shared with the hosted deploy provider so the two
-// cannot disagree about "which environment".
+// cannot disagree about "which environment". project scopes the lookup: env
+// identity on the control plane is (org, project, name), so two projects'
+// `prod` envs never collide.
 type cloudEnvResolver struct {
-	client cloudCaller
+	client  cloudCaller
+	project string
 }
 
 // cloudEnvironment is the subset of controlplane.v1.DeployEnvironment forge
 // reads. Declared locally, like cloudRelease, because forge does not vendor
 // the control plane's protos.
 type cloudEnvironment struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Project string `json:"project,omitempty"`
 }
 
 type cloudEnvironmentsResponse struct {
@@ -48,21 +54,114 @@ type cloudEnvironmentsResponse struct {
 var errHostedEnvNotFound = deploytarget.ErrHostedEnvironmentNotFound
 
 func (r cloudEnvResolver) ResolveEnvironmentID(ctx context.Context, envName string) (string, error) {
-	return deploytarget.LookupHostedEnvironment(ctx, r.client, envName)
+	return deploytarget.LookupHostedEnvironment(ctx, r.client, r.project, envName)
 }
 
-// ensureHostedEnv makes the control-plane environment of this NAME exist and
-// returns its id. THE rule for hosted writes: every MUTATING hosted command
-// (promote, rollback, secret set/unset, deploy) ensures the env first, because
-// the env is DECLARED in this project's KCL — whichever of them runs first on
-// a fresh env creates it, and none of them can deadlock on another having run.
-// Reads (topology, status, secret list, releases) never call this: they
-// report an env the control plane has not seen as `environment_id: ""`.
+// ensureHostedEnv makes the control-plane environment of this NAME (in this
+// project, of this kind) exist and returns its id. THE rule for hosted
+// writes: every MUTATING hosted command (promote, rollback, secret set/unset,
+// deploy) ensures the env first, because the env is DECLARED in this
+// project's KCL — whichever of them runs first on a fresh env creates it, and
+// none of them can deadlock on another having run. Reads (topology, status,
+// secret list, releases, env up's secret pull) never call this: they report
+// an env the control plane has not seen as `environment_id: ""`.
 //
-// Idempotent server-side (EnsureEnvironment). The hosted deploy provider calls
-// the same underlying deploytarget.EnsureHostedEnvironment, so there is one
-// request shape for "make it exist".
-func ensureHostedEnv(ctx context.Context, client cloudCaller, envName string) (string, error) {
-	id, _, err := deploytarget.EnsureHostedEnvironment(ctx, client, envName)
+// Idempotent server-side (EnsureEnvironment). The kind is IMMUTABLE there: an
+// ensure whose kind disagrees with the stored row is refused rather than
+// silently changing it, so a persistent env can never be turned into a local
+// (pullable) one by editing KCL.
+func ensureHostedEnv(ctx context.Context, client cloudCaller, ref deploytarget.HostedEnvRef) (string, error) {
+	id, _, err := deploytarget.EnsureHostedEnvironment(ctx, client, ref)
 	return id, err
+}
+
+// hostedEnvRefFor is the ONE derivation of a control-plane environment's
+// address from its rendered KCL: the project name, the env name, and the
+// kind (hostedEnvKindOf).
+func hostedEnvRefFor(envName string, e *KCLEntities) deploytarget.HostedEnvRef {
+	return deploytarget.HostedEnvRef{Project: hostedProjectName(), Name: envName, Kind: hostedEnvKindOf(e)}
+}
+
+// hostedProjectName is the forge project name (forge.yaml `name`) — the
+// project dimension of a control-plane environment's identity. A seam so
+// tests without a forge.yaml on disk state it.
+var hostedProjectName = func() string {
+	cfg, err := loadProjectConfig()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return cfg.Name
+}
+
+// hostedEnvKindOf derives the control-plane environment kind of an env that
+// declares control_plane. Pure.
+//
+//   - ≥1 hosted-tier workload (a SimpleBackend with no cluster, a StaticSite
+//     frontend, a ManagedDatabase with no namespace) → PERSISTENT: the
+//     platform runs it, and its secrets are write-only.
+//   - none → LOCAL: its workloads run on a developer machine via
+//     `forge env up`, and the control plane is only its secret store (pullable).
+//
+// "" when the env declares no control plane.
+func hostedEnvKindOf(e *KCLEntities) deploytarget.HostedEnvKind {
+	if e == nil || e.ControlPlane == nil {
+		return ""
+	}
+	if hasHostedTierWorkload(e) {
+		return deploytarget.HostedEnvPersistent
+	}
+	return deploytarget.HostedEnvLocal
+}
+
+// isLocalControlPlaneEnv reports whether the env declares a control plane that
+// is ONLY its secret store (kind LOCAL).
+func isLocalControlPlaneEnv(e *KCLEntities) bool {
+	return hostedEnvKindOf(e) == deploytarget.HostedEnvLocal
+}
+
+// hasHostedTierWorkload reports whether any workload in e is a tier the
+// control plane runs. The KCL Bundle check already refuses cluster/namespace
+// coordinates on a tier in a control_plane env, so "no cluster" holds for
+// every tier that reaches here; it is checked anyway so a hand-built entity
+// cannot misclassify.
+func hasHostedTierWorkload(e *KCLEntities) bool {
+	for _, s := range e.Services {
+		if s.Deploy.Type == "simple-backend" && s.Deploy.SimpleBackend != nil && s.Deploy.SimpleBackend.Cluster == "" {
+			return true
+		}
+	}
+	for _, f := range e.Frontends {
+		if f.Deploy != nil && f.Deploy.Type == frontendDeployStaticSite {
+			return true
+		}
+	}
+	for _, db := range e.Databases {
+		if db.Namespace == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// hostedControlPlaneKindName is the lower-case vocabulary the JSON reports
+// use for a kind: "local" | "persistent" | "".
+func hostedControlPlaneKindName(k deploytarget.HostedEnvKind) string {
+	switch k {
+	case deploytarget.HostedEnvLocal:
+		return "local"
+	case deploytarget.HostedEnvPersistent:
+		return "persistent"
+	default:
+		return ""
+	}
+}
+
+// refuseLocalEnvDeploy is `forge env deploy`'s refusal for a LOCAL env: the
+// platform never deploys to one (the control plane refuses too, but this
+// fires before any RPC).
+func refuseLocalEnvDeploy(envName string) error {
+	return fmt.Errorf("env %q is LOCAL: it declares control_plane but no hosted tier (SimpleBackend / StaticSite / ManagedDatabase), "+
+		"so the control plane is only its secret store and its workloads run on this machine.\n"+
+		"There is nothing for `forge env deploy` to publish.\n"+
+		"fix: run it with `forge env up %s`, or declare a hosted tier to make it a hosted env", envName, envName)
 }

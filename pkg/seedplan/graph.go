@@ -35,6 +35,9 @@ func BuildPlanFromDB(ctx context.Context, db *sql.DB, cfg Config) (*Plan, error)
 // given the schema model and the target database, read the pools/bounds that
 // only the live database can answer and build the plan.
 func planFromTables(ctx context.Context, db schemadef.Queryer, tables []schemadef.Table, cfg Config) (*Plan, error) {
+	if cfg.Tables != nil {
+		tables = ScopeTables(tables, cfg.Tables)
+	}
 	if len(tables) == 0 {
 		return emptyPlan(cfg), nil
 	}

@@ -214,20 +214,6 @@ type Metadata struct {
 // MetadataFile is the completion marker inside a cache entry.
 const MetadataFile = ".forge-source.json"
 
-// Fetcher materializes a source into a destination directory. It exists
-// as an interface so the resolver can be tested without a network: the
-// production implementation shells out to git, and a test injects a fake.
-//
-// A Fetcher is called only on a cache MISS, and must leave dst either
-// fully populated or absent — the resolver writes the completion marker,
-// so a Fetcher that fails partway is retried rather than trusted.
-type Fetcher interface {
-	// Fetch checks repo out at ref into dst (which does not yet exist).
-	// It returns the resolved commit sha when it knows one; an empty
-	// string is acceptable and only costs auditability.
-	Fetch(ctx context.Context, src Source, dst string) (commit string, err error)
-}
-
 // Resolver turns declared sources into directories on disk.
 //
 // The zero value is not usable; construct one with NewResolver.

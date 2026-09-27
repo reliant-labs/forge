@@ -21,8 +21,7 @@ import (
 // "Service" merely a fallback) so a package can name its interface `Mailer` or
 // `Repository`. The constructor gets the same freedom: forge promotes good
 // practice, it does not require every component to be `New` returning
-// `Service`. Its own decorator layer already assumed this —
-// resolveMiddlewareWrappers takes a LIST and its example name is `NewReadOnly`.
+// `Service`.
 func TestIsComponentConstructor(t *testing.T) {
 	for _, tc := range []struct {
 		name string

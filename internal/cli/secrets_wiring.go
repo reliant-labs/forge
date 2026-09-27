@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/secrets"
@@ -61,6 +63,15 @@ func secretProviderFromEntities(e *KCLEntities, projectDir string) (secrets.Prov
 	// from="dir" / from="dotenv" keys.
 	if e.SecretProvider.Type == "rendered" {
 		return secrets.NewProvider(nil)
+	}
+	// A LOCAL env's hosted store is pullable: when `forge env up` has pulled
+	// its values (armLocalSecretsForUp), they resolve here — in memory. Any
+	// other hosted env (persistent, or no pull in this process) stays the
+	// value-free hosted provider.
+	if isHostedSecretEnv(e) {
+		if values, ok := pulledSecretsFor(e); ok {
+			return secrets.NewPulledProvider(values), nil
+		}
 	}
 	cfg := &secrets.ProviderConfig{
 		Type: e.SecretProvider.Type,
@@ -150,6 +161,34 @@ func secretRefsForHostServices(e *KCLEntities) []secrets.SecretRef {
 		refs = append(refs, secretRefsForService(&e.Services[i])...)
 	}
 	return refs
+}
+
+// secretRefsForLaunch is the set `forge env up` must be able to resolve
+// before it starts anything: host services' declared refs plus every
+// frontend's (a dev server receives its declared secret_refs too).
+func secretRefsForLaunch(e *KCLEntities) []secrets.SecretRef {
+	refs := secretRefsForHostServices(e)
+	if e == nil {
+		return refs
+	}
+	for _, fe := range e.Frontends {
+		for _, ev := range fe.EffectiveEnvVars() {
+			if ev.SecretRef == "" || ev.Name == "" {
+				continue
+			}
+			refs = append(refs, secrets.SecretRef{EnvName: ev.Name, SecretName: ev.SecretRef, SecretKey: ev.SecretKey, Optional: ev.SecretOptional})
+		}
+	}
+	return refs
+}
+
+// withEnvInSecretFix substitutes the env name into a pre-flight error's
+// generic `--env <env>` fix line, so the command it names is copy-pasteable.
+func withEnvInSecretFix(err error, env string) error {
+	if err == nil || env == "" {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), "--env <env>", "--env "+env))
 }
 
 // serviceEnvVars returns every EnvVar a service declares, across BOTH the

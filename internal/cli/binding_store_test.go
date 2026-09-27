@@ -359,14 +359,22 @@ func TestLedgerForEntities_SelectsHostedWhenControlPlaneDeclared(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
 
+	// A hosted tier (the database) makes the env PERSISTENT; a control plane
+	// with no tier is LOCAL and keeps the project's own ledger (below).
 	hosted, err := ledgerForEntities("prod", &KCLEntities{ControlPlane: &ControlPlaneEntity{
 		Type: "control_plane", Endpoint: "https://cp.example.com/", TokenEnv: "FORGE_TEST_CP_TOKEN",
-	}}, dir)
+	}, Databases: []DatabaseEntity{{Name: "orders"}}}, dir)
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
 	if !hosted.Hosted {
 		t.Fatal("an env declaring forge.ControlPlane must use the hosted ledger")
+	}
+	local, err := ledgerForEntities("dev", &KCLEntities{ControlPlane: &ControlPlaneEntity{
+		Type: "control_plane", Endpoint: "https://cp.example.com/", TokenEnv: "FORGE_TEST_CP_TOKEN",
+	}}, dir)
+	if err != nil || local.Hosted {
+		t.Fatalf("a LOCAL env (control plane, no hosted tier) keeps the project's ledger: hosted=%v err=%v", local.Hosted, err)
 	}
 	if _, isHosted := hosted.Bindings.(*hostedStore); !isHosted {
 		t.Errorf("bindings = %T, want *hostedStore", hosted.Bindings)
@@ -375,7 +383,7 @@ func TestLedgerForEntities_SelectsHostedWhenControlPlaneDeclared(t *testing.T) {
 		t.Errorf("a hosted ledger's label must be the endpoint URL, got %q", got)
 	}
 
-	local, err := ledgerForEntities("dev", &KCLEntities{}, dir)
+	local, err = ledgerForEntities("dev", &KCLEntities{}, dir)
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
@@ -394,7 +402,7 @@ func TestBindingStoreFor_ReadsTheEnvDeclaration(t *testing.T) {
 	declareEnvDir(t, dir, "prod")
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t,
-		`{"control_plane":{"type":"control_plane","endpoint":"https://cp.example.com","token_env":"FORGE_TEST_CP_TOKEN"}}`))
+		`{"control_plane":{"type":"control_plane","endpoint":"https://cp.example.com","token_env":"FORGE_TEST_CP_TOKEN"},"databases":[{"name":"orders","namespace":""}]}`))
 
 	store, err := bindingStoreFor(context.Background(), dir, "prod")
 	if err != nil {

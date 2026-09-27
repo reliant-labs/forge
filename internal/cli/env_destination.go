@@ -18,7 +18,12 @@ import (
 //   - destination     hosted | cluster | compose | host | external | static | mixed
 //     Always set for an env declared in this checkout. Derived from the
 //     env's own render, never from machine state.
-//   - endpoint        hosted only: the control plane's normalized base URL.
+//   - control_plane_kind  local | persistent — set for every env that
+//     declares control_plane. persistent ⇔ destination "hosted"; a LOCAL env
+//     keeps its secrets on the control plane but its destination is derived
+//     from its workloads (host / compose / mixed …).
+//   - endpoint        any env declaring control_plane: the control plane's
+//     normalized base URL.
 //   - environment_id  hosted only: the control plane's id for the env. EMPTY
 //     when the env has never been ensured (never deployed) or the control
 //     plane could not be read — never fabricated.
@@ -41,11 +46,14 @@ const (
 
 // envDestination is where one env runs, as the contract above reports it.
 type envDestination struct {
-	Destination   string
-	Endpoint      string
-	EnvironmentID string
-	Verdict       string
-	Workloads     []deploytarget.HostedWorkloadStatus
+	Destination string
+	// ControlPlaneKind is "local" | "persistent" for an env that declares
+	// control_plane, "" otherwise.
+	ControlPlaneKind string
+	Endpoint         string
+	EnvironmentID    string
+	Verdict          string
+	Workloads        []deploytarget.HostedWorkloadStatus
 	// Note explains a hosted read that failed; the other fields stay
 	// honest (empty) rather than guessed.
 	Note string
@@ -53,8 +61,10 @@ type envDestination struct {
 
 // destinationOf classifies a rendered env. Pure.
 //
-// A Bundle declaring control_plane is hosted, whatever else it holds — that
-// is the declaration that routes the deploy. Otherwise every deployable thing
+// A Bundle declaring control_plane AND at least one hosted tier is hosted —
+// the platform runs it (hostedEnvKindOf: PERSISTENT). A control_plane env with
+// no hosted tier is LOCAL: the control plane is only its secret store, so it
+// is classified by its workloads like any other env. Every deployable thing
 // votes for its target kind; one kind is that kind, several are "mixed". An
 // env that declares nothing deployable runs nothing anywhere but the local
 // machine, which is "host".
@@ -62,7 +72,7 @@ func destinationOf(e *KCLEntities) string {
 	if e == nil {
 		return ""
 	}
-	if e.ControlPlane != nil {
+	if e.ControlPlane != nil && !isLocalControlPlaneEnv(e) {
 		return destinationHosted
 	}
 	kinds := map[string]bool{}
@@ -118,20 +128,22 @@ func readHostedStatusFromDeclaration(ctx context.Context, envName string, e *KCL
 	if err != nil {
 		return deploytarget.HostedEnvStatus{}, err
 	}
-	return deploytarget.ReadHostedStatus(ctx, hostedDeployClient(ep, cred), envName)
+	return deploytarget.ReadHostedStatus(ctx, hostedDeployClient(ep, cred), hostedProjectName(), envName)
 }
 
 // resolveEnvDestination fills the contract for one rendered env. read may be
 // nil, in which case a hosted env reports destination and endpoint only.
 func resolveEnvDestination(ctx context.Context, envName string, e *KCLEntities, read hostedStatusReader) envDestination {
-	out := envDestination{Destination: destinationOf(e)}
+	out := envDestination{Destination: destinationOf(e), ControlPlaneKind: hostedControlPlaneKindName(hostedEnvKindOf(e))}
+	if out.ControlPlaneKind != "" {
+		if decl := declarationFromEntities(e); decl != nil {
+			if ep, err := cloud.ResolveEndpoint(envName, decl); err == nil {
+				out.Endpoint = ep.URL
+			}
+		}
+	}
 	if out.Destination != destinationHosted {
 		return out
-	}
-	if decl := declarationFromEntities(e); decl != nil {
-		if ep, err := cloud.ResolveEndpoint(envName, decl); err == nil {
-			out.Endpoint = ep.URL
-		}
 	}
 	if read == nil {
 		return out

@@ -81,8 +81,18 @@ Example:
 With --in-place and no name, the project is named after the DIRECTORY. That
 name becomes cmd/<name>/, the binary, the image and the deploy manifests, so
 in a worktree or a branch checkout — where the directory is named after the
-branch rather than the product — pass --name.`,
+branch rather than the product — pass --name.
+
+--in-place never overwrites a file that already exists: forge keeps yours,
+skips its own version, and lists what it kept (--force replaces them). An
+existing .gitignore is merged — forge appends only the entries it lacks,
+in a "# --- forge ---" block. A directory already inside a git repository
+(its root or any subdirectory) is left alone: no git init, no commit. A
+fresh directory outside any repository gets 'git init' + an initial commit.`,
 		Args: cobra.RangeArgs(0, 1),
+		// project new owns git setup: initGitRepository activates hooks in a
+		// repository it creates, and an existing one is left alone.
+		Annotations: map[string]string{skipHookActivationAnnotation: ""},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectName := nameFlag
 			if len(args) > 0 {
@@ -106,7 +116,7 @@ branch rather than the product — pass --name.`,
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
-	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing project configuration")
+	cmd.Flags().BoolVar(&force, "force", false, "With --in-place: scaffold over an existing forge.yaml, and REPLACE every pre-existing file the scaffold writes (README.md, go.mod, Taskfile.yml, …) with forge's version. Without it, existing files are kept and listed. .gitignore is always merged, never replaced")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload")
 	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; only claude also receives on-disk skills. reliant (default): reliant.md — skills are read from the forge binary (`forge skill load <name>`) and discovered via forge.yaml, so NO skill files are written. claude: CLAUDE.md + .claude/skills/ (regenerated every `forge generate`). cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as `harness:` in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
@@ -232,6 +242,17 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		}
 	}
 
+	// An in-place target may already hold a frontend app. Refuse to scaffold
+	// a same-named second one beside it before anything is written; any
+	// others are reported (with how to adopt them) at the end.
+	var existingApps []existingFrontendApp
+	if inPlace {
+		existingApps = detectExistingFrontendApps(targetPath)
+		if err := checkInPlaceFrontendCollisions(existingApps, frontendNames); err != nil {
+			return err
+		}
+	}
+
 	fmt.Printf("Creating new project '%s' at %s\n", projectName, targetPath)
 	if len(serviceNames) > 0 {
 		if len(serviceNames) == 1 {
@@ -282,49 +303,26 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return fmt.Errorf("failed to write scaffold marker: %w", err)
 	}
 
-	gen, err := configureProjectGenerator(newGeneratorConfig{
-		projectName:        projectName,
-		targetPath:         targetPath,
-		modulePath:         modulePath,
-		kind:               kindNormalized,
-		binary:             binaryNormalized,
-		serviceNames:       serviceNames,
-		frontendNames:      frontendNames,
-		goVersion:          goVersion,
-		frontendWorkspaces: frontendWorkspaces,
-		harness:            harness,
-		disableFeatures:    disableFeatures,
+	merged, err := writeScaffoldFiles(scaffoldFilesInput{
+		gen: newGeneratorConfig{
+			projectName:        projectName,
+			targetPath:         targetPath,
+			modulePath:         modulePath,
+			kind:               kindNormalized,
+			binary:             binaryNormalized,
+			serviceNames:       serviceNames,
+			frontendNames:      frontendNames,
+			goVersion:          goVersion,
+			frontendWorkspaces: frontendWorkspaces,
+			harness:            harness,
+			disableFeatures:    disableFeatures,
+		},
+		bufPlugins: bufPluginsNormalized,
+		inPlace:    inPlace,
+		force:      force,
 	})
 	if err != nil {
 		return err
-	}
-
-	// Generate project structure
-	if err := gen.Generate(); err != nil {
-		return fmt.Errorf("failed to generate project: %w", err)
-	}
-
-	emitHarnessSkills(gen, targetPath)
-
-	// Generate additional services beyond the first (if any). Scaffolding the
-	// per-service handler/proto skeleton is the whole job in both binary
-	// modes: forge derives the service inventory from the proto descriptor,
-	// so there is no manifest to keep in sync afterwards.
-	if err := generateAdditionalServices(targetPath, modulePath, projectName, serviceNames); err != nil {
-		return err
-	}
-
-	// Generate additional frontends beyond the first
-	if err := generateAdditionalFrontends(targetPath, modulePath, projectName, frontendNames, gen.ServicePort, gen.FrontendPort, frontendWorkspaces); err != nil {
-		return err
-	}
-
-	// Apply the --buf-plugins=remote opt-in BEFORE bootstrapGeneratedCode
-	// runs, since the bootstrap invokes `buf generate` which reads
-	// buf.gen.yaml. The default ('local') is already what the template
-	// emits, so only act on 'remote'.
-	if bufPluginsNormalized == "remote" {
-		applyRemoteBufPlugins(targetPath, frontendNames)
 	}
 
 	// Dev-forge bridge: when THIS forge binary is a dev build that stamped
@@ -334,7 +332,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	// released binaries.
 	writeDevForgeGoWork(targetPath)
 
-	finalizeNewProject(ctx, newFinalizeInput{
+	existingRepo := finalizeNewProject(ctx, newFinalizeInput{
 		targetPath:    targetPath,
 		kind:          kindNormalized,
 		binary:        binaryNormalized,
@@ -347,6 +345,20 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	success = true
 	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
 	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames, len(frontendNames) > 0)
+	for _, line := range inPlaceMergeSummary(merged) {
+		fmt.Println(line)
+	}
+	for _, line := range existingFrontendNote(existingApps) {
+		fmt.Println(line)
+	}
+	if existingRepo != "" {
+		where := "This directory is an existing git repository"
+		if resolvePathForCompare(existingRepo) != resolvePathForCompare(targetPath) {
+			where = "This directory is inside the existing git repository " + existingRepo
+		}
+		fmt.Printf("\n📁 %s — forge left the repository alone (no git init, no commit). "+
+			"Review `git status` and commit the scaffold yourself.\n", where)
+	}
 
 	return nil
 }
@@ -426,6 +438,79 @@ func resolveNewTargetPath(projectName, projectPath string, inPlace, force bool) 
 			err)
 	}
 	return targetPath, projectName, nil
+}
+
+// scaffoldFilesInput carries the inputs writeScaffoldFiles needs.
+type scaffoldFilesInput struct {
+	// gen.targetPath is the project directory the files must end up in.
+	gen        newGeneratorConfig
+	bufPlugins string
+	inPlace    bool
+	force      bool
+}
+
+// writeScaffoldFiles renders every scaffold file — the project generator,
+// harness skills, services and frontends beyond the first, and the
+// --buf-plugins=remote switch — and lands them in the target directory.
+//
+// A fresh project is rendered straight into its (new, empty) directory. An
+// in-place one is rendered into a private staging directory and merged into
+// the user's tree by mergeScaffoldInto, the one place that decides what an
+// in-place scaffold may write: existing files are kept (or, with force,
+// replaced) and .gitignore is merged. The returned result is what that merge
+// did; it is zero for a fresh project.
+func writeScaffoldFiles(in scaffoldFilesInput) (inPlaceMergeResult, error) {
+	targetPath := in.gen.targetPath
+	cfg := in.gen
+	if in.inPlace {
+		staging, err := os.MkdirTemp("", "forge-inplace-*")
+		if err != nil {
+			return inPlaceMergeResult{}, fmt.Errorf("failed to create scaffold staging directory: %w", err)
+		}
+		defer func() { _ = os.RemoveAll(staging) }()
+		cfg.targetPath = staging
+	}
+	root := cfg.targetPath
+
+	gen, err := configureProjectGenerator(cfg)
+	if err != nil {
+		return inPlaceMergeResult{}, err
+	}
+	if err := gen.Generate(); err != nil {
+		return inPlaceMergeResult{}, fmt.Errorf("failed to generate project: %w", err)
+	}
+	emitHarnessSkills(gen, root)
+
+	// Services beyond the first get the handler/proto skeleton only — that
+	// is the whole job in both binary modes, since forge derives the service
+	// inventory from the proto descriptor.
+	if err := generateAdditionalServices(root, cfg.modulePath, cfg.projectName, cfg.serviceNames); err != nil {
+		return inPlaceMergeResult{}, err
+	}
+	if err := generateAdditionalFrontends(root, cfg.modulePath, cfg.projectName, cfg.frontendNames, gen.ServicePort, gen.FrontendPort, cfg.frontendWorkspaces); err != nil {
+		return inPlaceMergeResult{}, err
+	}
+
+	// The --buf-plugins=remote opt-in must land before the bootstrap's
+	// `buf generate` reads buf.gen.yaml. 'local' is what the template
+	// already emits.
+	if in.bufPlugins == "remote" {
+		applyRemoteBufPlugins(root, cfg.frontendNames)
+	}
+
+	if !in.inPlace {
+		return inPlaceMergeResult{}, nil
+	}
+	merged, err := mergeScaffoldInto(root, targetPath, in.force)
+	if err != nil {
+		return merged, fmt.Errorf("failed to write scaffold into %s: %w", targetPath, err)
+	}
+	// The dev web-runtime bridge symlink is relative to where it was laid,
+	// so it is not merged — re-lay it in the real tree.
+	if len(cfg.frontendNames) > 0 {
+		generator.EnsureDevWebRuntimeLink(targetPath)
+	}
+	return merged, nil
 }
 
 // newGeneratorConfig carries the inputs configureProjectGenerator projects onto
@@ -610,7 +695,14 @@ type newFinalizeInput struct {
 // checksums (bootstrap's goimports -w reformats pkg/* and would otherwise show
 // as user-modified), init git, run go mod tidy, and remove the in-progress
 // marker. Every step is best-effort — failures are warned, never fatal.
-func finalizeNewProject(ctx context.Context, in newFinalizeInput) {
+//
+// Git is only initialised for a target OUTSIDE any existing work tree. When
+// the target is already inside one — an existing product repo converted in
+// place, or a subdirectory of a monorepo — forge must not add a nested repo,
+// reconfigure the user's repo, or commit (`git add .` would sweep in every
+// untracked file they have). The work tree's top level is returned so the
+// caller can say so; "" means forge initialised (or tried to) itself.
+func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo string) {
 	// Auto-install required proto plugins for the default local-plugin
 	// workflow. Skipped for --skip-tools, remote plugins (no local binaries),
 	// and non-service kinds.
@@ -662,9 +754,13 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) {
 		fmt.Fprintf(os.Stderr, "warning: failed to re-record frozen checksums: %v\n", err)
 	}
 
-	fmt.Println("\n🔧 Initializing git repository...")
-	if err := initGitRepository(ctx, in.targetPath); err != nil {
-		fmt.Printf("Warning: failed to initialize git repository: %v\n", err)
+	if top, inRepo := gitWorkTreeRoot(ctx, in.targetPath); inRepo {
+		existingRepo = top
+	} else {
+		fmt.Println("\n🔧 Initializing git repository...")
+		if err := initGitRepository(ctx, in.targetPath); err != nil {
+			fmt.Printf("Warning: failed to initialize git repository: %v\n", err)
+		}
 	}
 
 	fmt.Println("🔧 Running go mod tidy...")
@@ -678,6 +774,7 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) {
 	if err := os.Remove(in.markerPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "warning: failed to remove scaffold marker: %v\n", err)
 	}
+	return existingRepo
 }
 
 // printNewNextSteps prints the post-scaffold guidance block. The
@@ -1077,27 +1174,29 @@ func runNpmInstall(ctx context.Context, root string, frontends []string) error {
 
 // runGoModTidy runs go mod tidy in the project root and gen/ directories when safe.
 func runGoModTidy(ctx context.Context, path string) error {
-
 	// A dev-forge go.work bridge deliberately overrides a published require
-	// (forge/pkg) with an unpublished local checkout — a proxy `go mod tidy`
-	// would 404. Sync the workspace instead (mirrors the generate pipeline).
-	if devWorkspaceBridgesExternalModule(path) {
-		cmd := exec.CommandContext(ctx, "go", "work", "sync")
-		cmd.Dir = path
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("Warning: go work sync failed: %v\n", err)
-		}
-		return nil
-	}
+	// (forge) with an unpublished local checkout. Tidy each module against
+	// its OWN requirements (GOWORK=off) — the same bridged tidy the generate
+	// pipeline runs, and exactly the graph `forge env up`'s `go mod tidy
+	// -diff` preflight checks. This used to run `go work sync`, which never
+	// writes the go.sum `/go.mod` hashes a GOWORK=off tidy wants, so a
+	// freshly scaffolded project failed that preflight before its first
+	// generate.
+	bridged := devWorkspaceBridgesExternalModule(path)
 
 	shouldTidyRoot, err := shouldRunRootGoModTidy(path)
 	if err != nil {
 		return err
 	}
 
-	if shouldTidyRoot {
+	switch {
+	case !shouldTidyRoot:
+		fmt.Printf("ℹ️  Skipping root go mod tidy until generated proto code exists. Run '%s generate' first.\n", Name())
+	case bridged:
+		if err := tidyBridgedModule(path, "root tidy"); err != nil {
+			return err
+		}
+	default:
 		cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 		cmd.Dir = path
 		cmd.Stdout = os.Stdout
@@ -1105,21 +1204,22 @@ func runGoModTidy(ctx context.Context, path string) error {
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("go mod tidy (root) failed: %w", err)
 		}
-	} else {
-		fmt.Printf("ℹ️  Skipping root go mod tidy until generated proto code exists. Run '%s generate' first.\n", Name())
 	}
 
 	genDir := filepath.Join(path, "gen")
-	if _, err := os.Stat(filepath.Join(genDir, "go.mod")); err == nil {
-		cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
-		cmd.Dir = genDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("go mod tidy (gen) failed: %w", err)
-		}
+	if _, err := os.Stat(filepath.Join(genDir, "go.mod")); err != nil {
+		return nil
 	}
-
+	if bridged {
+		return tidyBridgedModule(genDir, "gen/ tidy")
+	}
+	cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
+	cmd.Dir = genDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go mod tidy (gen) failed: %w", err)
+	}
 	return nil
 }
 

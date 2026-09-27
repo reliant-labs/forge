@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // fakeControlPlane is an httptest server speaking Connect's JSON binding for
@@ -219,6 +221,64 @@ func TestHostedSecretListIsNamesOnly(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"provider": "hosted"`) {
 		t.Errorf("json report: %s", buf.String())
+	}
+}
+
+// TestHostedSecretListCountsManagedSecrets: a SimpleBackend's managedSecret
+// env vars ARE the hosted env's secret declarations — the control plane
+// materializes exactly those names into forge-managed-secrets, all or nothing,
+// so one without a value stalls the backend's reconcile. `forge secret list`
+// must report each as declared (set or missing) and must not call a stored
+// one inert. Before this, list read only secret_ref channels, so a hosted env
+// printed "no secrets declared" while its api could not start.
+func TestHostedSecretListCountsManagedSecrets(t *testing.T) {
+	fake, _ := hostedFixture(t, []cloudEnvironment{{ID: "env-1", Name: "prod"}})
+	fake.stored["STRIPE_SECRET_KEY"] = 1
+
+	prevRender := renderEntitiesForSecrets
+	renderEntitiesForSecrets = func(ctx context.Context, env string) (*KCLEntities, error) {
+		e, err := prevRender(ctx, env)
+		if err != nil {
+			return nil, err
+		}
+		e.Services = []ServiceEntity{{
+			Name: "api",
+			Deploy: DeployConfigEntity{Type: "simple-backend", SimpleBackend: &SimpleBackendSpec{
+				Spec: deployv1alpha1.SimpleBackendSpec{Env: []deployv1alpha1.EnvVar{
+					{Name: "LOG_FORMAT", Value: "json"},
+					{Name: "STRIPE_SECRET_KEY", ManagedSecret: "STRIPE_SECRET_KEY"},
+					// The env var and the store name differ: the STORE name
+					// is what gets declared, because that is what `forge
+					// secret set` writes and the control plane resolves.
+					{Name: "WEBHOOK_SECRET", ManagedSecret: "STRIPE_WEBHOOK_SECRET"},
+					{Name: "DATABASE_URL", DatabaseRef: &deployv1alpha1.DatabaseRef{Name: "db"}},
+				}},
+			}},
+		}}
+		return e, nil
+	}
+	t.Cleanup(func() { renderEntitiesForSecrets = prevRender })
+
+	report, err := collectSecretListFacts(context.Background(), "prod")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := map[string]string{}
+	for _, s := range report.Secrets {
+		got[s.Name] = s.Presence
+		if len(s.DeclaredBy) != 1 || s.DeclaredBy[0].Workload != "api" || s.DeclaredBy[0].Kind != "managed-secret" {
+			t.Errorf("%s declared_by = %+v, want one managed-secret declaration by api", s.Name, s.DeclaredBy)
+		}
+	}
+	want := map[string]string{"STRIPE_SECRET_KEY": secretPresenceSet, "STRIPE_WEBHOOK_SECRET": secretPresenceMissing}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("secrets = %v, want %v (DATABASE_URL is a databaseRef, never a store key)", got, want)
+	}
+	if len(report.Inert) != 0 {
+		t.Errorf("inert = %v: a stored managedSecret is declared, not inert", report.Inert)
+	}
+	if report.OK || report.MissingCount != 1 {
+		t.Errorf("ok=%v missing=%d, want ok=false missing=1", report.OK, report.MissingCount)
 	}
 }
 

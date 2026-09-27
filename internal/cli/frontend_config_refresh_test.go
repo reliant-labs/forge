@@ -121,10 +121,10 @@ func TestRefreshFrontendRuntimeConfigs_SkipsAProjectWithNoFrontend(t *testing.T)
 	projectDir := identityProject(t)
 	// Both entry points: the full refresh (which must not even render) and
 	// the writer underneath it.
-	if changed, err := refreshFrontendRuntimeConfigs(&config.ProjectConfig{Name: "acme"}, projectDir, "dev"); err != nil || changed != 0 {
+	if changed, err := refreshFrontendRuntimeConfigs(&config.ProjectConfig{Name: "acme"}, projectDir, "dev", nil); err != nil || changed != 0 {
 		t.Errorf("a frontendless project must be a silent no-op, got (%d, %v)", changed, err)
 	}
-	if changed, err := refreshFrontendRuntimeConfigs(nil, projectDir, "dev"); err != nil || changed != 0 {
+	if changed, err := refreshFrontendRuntimeConfigs(nil, projectDir, "dev", nil); err != nil || changed != 0 {
 		t.Errorf("a nil config must be a no-op, got (%d, %v)", changed, err)
 	}
 	if changed, err := writeFrontendRuntimeDocs(&config.ProjectConfig{Name: "acme"}, projectDir,

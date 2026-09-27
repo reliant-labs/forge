@@ -712,7 +712,7 @@ func buildHostedGroups(envName string, entities *KCLEntities) ([]deploytarget.Se
 		case f.Deploy.Type == "static-site" && f.Deploy.StaticSite != nil:
 			services = append(services, deploytarget.ResolvedService{
 				Name:   f.Name,
-				Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f.Deploy.StaticSite), Artifact: f.Name},
+				Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f), Artifact: f.Name},
 			})
 		default:
 			refused = append(refused, fmt.Sprintf("%s (frontend deploy type %q)", f.Name, f.Deploy.Type))
@@ -746,9 +746,21 @@ func buildHostedGroups(envName string, entities *KCLEntities) ([]deploytarget.Se
 // `forge build` and are not part of the deployed spec; bucket and cdn are
 // refused on a hosted env by the Bundle check, so none reaches here. The
 // liveDigest is pinned later, from the bound release.
-func hostedStaticSpec(ss *StaticSiteDeploy) *v1alpha1.StaticSiteSpec {
+//
+// runtimeConfig is the frontend's declared runtime_config with every
+// forge.WorkloadURL KEPT as a reference: the control plane knows the URLs
+// (it allocates them), resolves each against the named workload in the same
+// environment, and writes config.js after every sync. That document is what
+// the release artifact deliberately does NOT carry — see
+// buildHostedStaticSites.
+func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
+	ss := f.Deploy.StaticSite
 	keep := int32(ss.KeepReleases)
-	return &v1alpha1.StaticSiteSpec{BasePath: ss.BasePath, KeepReleases: &keep}
+	spec := &v1alpha1.StaticSiteSpec{BasePath: ss.BasePath, KeepReleases: &keep}
+	if len(f.RuntimeConfigSpec) > 0 {
+		spec.RuntimeConfig = f.RuntimeConfigSpec
+	}
+	return spec
 }
 
 // hostedArtifactKey is the ONE rule for which release artifact a hosted

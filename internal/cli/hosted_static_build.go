@@ -37,6 +37,16 @@ var hostedStaticPusher = func(ctx context.Context, projectDir, repository string
 //
 // It runs only with --push: a site release that is not registry-addressable
 // cannot be pinned, promoted or pulled by the platform.
+//
+// # The artifact carries NO runtime config
+//
+// A hosted release is promoted between environments by digest. A config.js
+// baked in here would carry the BUILD env's values into every env the
+// release is promoted to — staging's API origin, served to production users.
+// So no document is written into the tree (and the dev copy `forge generate`
+// keeps in the frontend's public/ is stripped from it). The environment's
+// document is spec instead: the StaticSite's runtimeConfig, which the
+// control plane resolves and writes after each sync (hostedStaticSpec).
 func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KCLEntities, opts buildOptions) error {
 	if entities == nil || entities.ControlPlane == nil {
 		return nil
@@ -66,17 +76,16 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
 		return err
 	}
-	runtimeConfigs, err := renderFrontendRuntimeDocs(projectDir, opts.env)
-	if err != nil {
-		return err
-	}
 	registry := strings.TrimSuffix(opts.pushRegistry, "/") + "/" + deploytarget.StaticSiteRepositorySegment
 	for _, f := range sites {
 		if err := checkDeployableFrontendMock(f); err != nil {
 			return err
 		}
 		fe := frontendToStaticSite(f)
-		fe.RuntimeConfigJS = runtimeConfigs[f.Name]
+		// Environment-agnostic by construction: no document written, and
+		// any travelling in the built bundle removed.
+		fe.RuntimeConfigJS = ""
+		fe.StripRuntimeConfig = true
 		repository := deploytarget.HostedStaticRepository(opts.pushRegistry, f.Name)
 		fmt.Printf("[build] %s: hosted static site → %s\n", f.Name, repository)
 		digest, err := hostedStaticPusher(ctx, projectDir, repository, fe)

@@ -933,6 +933,16 @@ type FrontendEntity struct {
 	// EffectiveEnvVars.
 	Config *FrontendConfigEntity `json:"config,omitempty"`
 	Deploy *FrontendDeployEntity `json:"deploy,omitempty"`
+	// RuntimeConfig is the frontend's declared `runtime_config` RESOLVED
+	// to literals by the KCL render (forge.WorkloadURL references lowered
+	// to the target's URL). It is layered over the typed per-env config
+	// when forge writes config.js. EMPTY on a hosted env, where the control
+	// plane resolves references and writes the document itself.
+	RuntimeConfig map[string]string `json:"runtime_config,omitempty"`
+	// RuntimeConfigSpec is the same declaration in the StaticSite spec's
+	// wire shape, references KEPT. The hosted provider publishes it as
+	// spec.runtimeConfig.
+	RuntimeConfigSpec map[string]deployv1alpha1.RuntimeConfigValue `json:"runtime_config_spec,omitempty"`
 }
 
 // FrontendConfigEntity mirrors the kcl/schema.k FrontendConfig — the

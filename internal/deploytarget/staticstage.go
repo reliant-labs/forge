@@ -81,6 +81,11 @@ type StageInput struct {
 	// frontend declares no typed config and nothing is written.
 	RuntimeConfigJS string
 
+	// StripRuntimeConfig deletes <basePath>/config.js from the assembled
+	// tree instead of writing one: the environment-agnostic artifact a
+	// hosted release ships. See StaticSiteFrontend.StripRuntimeConfig.
+	StripRuntimeConfig bool
+
 	// ProjectDir is the project root that Path and Bundle[].Src resolve
 	// against. Empty means the current working directory.
 	ProjectDir string
@@ -114,6 +119,9 @@ type StagePlan struct {
 	// RuntimeConfigJS means no document is written.
 	RuntimeConfigJS  string
 	RuntimeConfigRel string
+	// StripRuntimeConfig removes RuntimeConfigRel from the tree after the
+	// copies rather than writing it.
+	StripRuntimeConfig bool
 }
 
 type stageCopy struct {
@@ -176,21 +184,25 @@ func buildStagePlan(in StageInput) (StagePlan, error) {
 		})
 	}
 
+	if in.StripRuntimeConfig && in.RuntimeConfigJS != "" {
+		return StagePlan{}, fmt.Errorf("%s: a runtime config document cannot be both written and stripped", in.Name)
+	}
 	runtimeConfigRel := ""
-	if in.RuntimeConfigJS != "" {
+	if in.RuntimeConfigJS != "" || in.StripRuntimeConfig {
 		runtimeConfigRel = filepath.Join(basePathToDestRel(in.BasePath), FrontendConfigJSName)
 	}
 
 	return StagePlan{
-		Name:             in.Name,
-		FrontendDir:      frontendDir,
-		InstallCmd:       frontendInstallCmd(in.DevRunner),
-		BuildCmd:         []string{"npm", "run", "build"},
-		BuildEnv:         in.BuildEnv,
-		StagingDir:       staging,
-		Copies:           copies,
-		RuntimeConfigJS:  in.RuntimeConfigJS,
-		RuntimeConfigRel: runtimeConfigRel,
+		Name:               in.Name,
+		FrontendDir:        frontendDir,
+		InstallCmd:         frontendInstallCmd(in.DevRunner),
+		BuildCmd:           []string{"npm", "run", "build"},
+		BuildEnv:           in.BuildEnv,
+		StagingDir:         staging,
+		Copies:             copies,
+		RuntimeConfigJS:    in.RuntimeConfigJS,
+		RuntimeConfigRel:   runtimeConfigRel,
+		StripRuntimeConfig: in.StripRuntimeConfig,
 	}, nil
 }
 
@@ -241,6 +253,12 @@ func assembleStaging(plan StagePlan) error {
 	// This is the step that makes promotion real: the bundle is
 	// environment-agnostic, and this one file is the only part of the
 	// deployed artifact that differs between environments.
+	if plan.StripRuntimeConfig {
+		dst := filepath.Join(plan.StagingDir, plan.RuntimeConfigRel)
+		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("strip runtime config %s: %w", dst, err)
+		}
+	}
 	if plan.RuntimeConfigJS != "" {
 		dst := filepath.Join(plan.StagingDir, plan.RuntimeConfigRel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -269,6 +287,10 @@ func printStagePlanBuild(w io.Writer, plan StagePlan) {
 			mount = "/" + c.DestRel
 		}
 		_, _ = fmt.Fprintf(w, "      %-18s -> %s   (%s)\n", c.Src, mount, c.Label)
+	}
+	if plan.StripRuntimeConfig {
+		_, _ = fmt.Fprintf(w, "      %-18s -> /%s   (removed: the control plane writes it per environment)\n",
+			"<none>", filepath.ToSlash(plan.RuntimeConfigRel))
 	}
 	if plan.RuntimeConfigJS != "" {
 		_, _ = fmt.Fprintf(w, "      %-18s -> /%s   (runtime config for this environment)\n",

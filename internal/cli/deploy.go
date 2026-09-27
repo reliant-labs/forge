@@ -1516,7 +1516,7 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	// once picks up a different config.js in each environment it is
 	// promoted to. A project that annotates no frontend config gets an
 	// empty map and an unchanged deploy.
-	runtimeConfigs, rcErr := renderFrontendRuntimeDocs(projectDir, envName)
+	runtimeConfigs, rcErr := renderFrontendRuntimeDocsWith(projectDir, envName, frontendRuntimeOverlays(entities))
 	if rcErr != nil {
 		return rcErr
 	}

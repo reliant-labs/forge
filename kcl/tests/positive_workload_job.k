@@ -118,10 +118,17 @@ assert_bare_job_is_gated_by_broadcast = _seed_inits == ["migrate"]
 # no standalone Job of its own — and cannot be its own init container.
 assert_broadcast_job_has_no_job_object = "migrate" not in _job_handles
 
-# --- Jobs bind their own ServiceAccount, like every other workload ---
+# --- A standalone Job binds its own ServiceAccount, like every other workload ---
 _sa_names = [m.metadata.name for m in manifests if m.kind == "ServiceAccount"]
-assert_job_has_sa = "seed" in _sa_names and "provision-idp" in _sa_names
+assert_job_has_sa = "seed" in _sa_names
 assert_bare_job_binds_sa = _seed.spec.template.spec.serviceAccountName == "seed"
+
+# --- A GATING job renders no identity: it runs inside its dependents ---
+# migrate and provision-idp are initContainers, so they run as the api/sync
+# pods' ServiceAccounts. An SA named for them would be bound by nothing —
+# the inert identity `forge doctor` reports.
+assert_gating_jobs_render_no_sa = "migrate" not in _sa_names and "provision-idp" not in _sa_names
+assert_gated_pod_keeps_its_own_sa = _api.spec.template.spec.serviceAccountName == "api"
 
 # --- Labels follow the same project/component split as every kind ---
 assert_job_part_of_project = _seed.metadata.labels["app.kubernetes.io/part-of"] == "demo"

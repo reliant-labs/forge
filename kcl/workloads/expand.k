@@ -740,7 +740,16 @@ render_job = lambda c: any, namespace: str, env_registry: str, image_tag: str, p
     # expansion having the capability made it look considered rather than
     # accidental. It is now the shared `_workload_rbac` rule, applied to
     # every kind the matrix says can carry it, on identical terms.
-    _job + _workload_rbac(c, namespace, part_of)
+    #
+    # A GATING job (`before` set) renders no identity at all, for the same
+    # reason it renders no Job: it never runs as a pod of its own. It is an
+    # initContainer inside each dependent, and an initContainer runs as its
+    # POD's ServiceAccount — the dependent's. The SA it used to render here
+    # was bound by nothing, which is precisely the shape `forge doctor`
+    # reports as an inert identity (every scaffolded project's `migrate`
+    # step tripped it). The schema refuses `namespaced_rbac` on a gating job
+    # for the same reason, so no Role is silently dropped by this.
+    _job + (_workload_rbac(c, namespace, part_of) if not c.before else [])
 }
 
 # Operator → manager Deployment + cluster-scoped RBAC. The Deployment

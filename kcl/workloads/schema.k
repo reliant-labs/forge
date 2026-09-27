@@ -415,6 +415,13 @@ schema Workload:
         len(namespaced_rbac) == 0 or caps.supports(kind, caps.CAP_NAMESPACED_RBAC), \
             "Workload.namespaced_rbac is not supported for kind='${kind}'. An operator's permissions are CLUSTER-scoped, so an operator uses `cluster_rbac` instead; a tool is never scheduled, so it has no pod to grant permission to (use kind='service' or kind='worker')."
 
+        # A GATING job is an initContainer inside each dependent's pod, so it
+        # runs as the DEPENDENT's ServiceAccount — there is no identity of its
+        # own for a Role to bind to. Accepting the rules would render a Role
+        # nothing uses while the job runs without them.
+        len(namespaced_rbac) == 0 or len(before) == 0, \
+            "Workload.namespaced_rbac is not supported on a gating job (before = ${before}): it runs as an initContainer in each dependent's pod, under the DEPENDENT's ServiceAccount, so a Role for '${name}' would bind nothing. Grant the rules on the dependents, or drop `before` to run '${name}' as a standalone Job with its own identity."
+
         len(cluster_rbac) == 0 or caps.supports(kind, caps.CAP_CLUSTER_RBAC), \
             "Workload.cluster_rbac is only supported for kind='operator' — got '${kind}'. Watching resources ACROSS namespaces is what makes a workload an operator. For access within this workload's own namespace use `namespaced_rbac`; if it genuinely watches cluster-wide, declare kind='operator' (which also gets you leader election and CRD wiring)."
 

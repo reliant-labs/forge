@@ -758,10 +758,13 @@ func mockGenerateValue(seed *SeedProjection, tableName string, f EntityField, i 
 		}
 	}
 
-	// Enum fields — use value 1 (first non-UNSPECIFIED value) to avoid overflow
-	// since some enums have fewer than 5 values.
+	// Enum fields — the first DECLARED non-zero value. Zero is the enum's
+	// UNSPECIFIED ("unset"), which a fixture should not model; and the
+	// literal must be a number the enum declares, or the fixture fails the
+	// frontend typecheck against the protobuf-es enum type. A hardcoded `1`
+	// did exactly that for any enum that reserved its value 1.
 	if protoType == "enum" {
-		return "1"
+		return mockDefaultEnumLiteral(f, svc)
 	}
 
 	// Message fields — use empty object
@@ -824,9 +827,9 @@ func mockSeededLiteral(raw string, f EntityField, ts string, isScalar bool) (str
 // CHECK vocabulary is the enum's members, or a native pg enum), because
 // that is what the database stores. protobuf-es represents an enum field
 // as a number at runtime, so a quoted name would fail `tsc` against the
-// generated field type. The number is read from the enum's own
-// declaration in the proto — svc.Enums carries the value names in
-// declaration order — and never guessed from the seeded string.
+// generated field type. The number is the value's DECLARED number, read
+// from the enum's own declaration (svc.EnumNumbers, parallel to the names
+// in svc.Enums) and never guessed from the seeded string.
 //
 // ok is false when the field is not an enum, the enum is unresolvable
 // (cross-package, or a descriptor without the deep schema), or the
@@ -840,20 +843,49 @@ func mockSeededEnumLiteral(raw string, f EntityField, protoType string, svc Serv
 	if !ok {
 		return "", false
 	}
-	// Index in declaration order IS the wire number for a zero-based,
-	// gap-free enum — which is what forge generates and what buf's
-	// ENUM_ZERO_VALUE_SUFFIX lint keeps projects on. It is the only signal
-	// available: the proto scan captures value NAMES in order and discards
-	// the numbers (see rawEnumValueRE), so a hand-written enum that skips
-	// or reorders numbers would resolve to the wrong member here. Carrying
-	// the declared numbers through the scan is what would make this exact
-	// rather than conventional.
-	for n, name := range values {
+	numbers := mockEnumValueNumbers(f, svc, values)
+	for i, name := range values {
 		if name == raw {
-			return strconv.Itoa(n), true
+			return strconv.Itoa(int(numbers[i])), true
 		}
 	}
 	return "", false
+}
+
+// mockDefaultEnumLiteral is the enum literal for a cell no dataset answers:
+// the first DECLARED value whose number is non-zero, as its number. An enum
+// the service cannot resolve (cross-package, or a descriptor without the deep
+// schema) keeps the historical `1`, the first non-zero number of a gap-free
+// enum — there is nothing better to read.
+func mockDefaultEnumLiteral(f EntityField, svc ServiceDef) string {
+	values, ok := mockEnumValueNames(f, svc)
+	if !ok {
+		return "1"
+	}
+	for _, n := range mockEnumValueNumbers(f, svc, values) {
+		if n != 0 {
+			return strconv.Itoa(int(n))
+		}
+	}
+	// Only a zero value is declared: it is the only number that type-checks.
+	return "0"
+}
+
+// mockEnumValueNumbers returns the declared wire number of each value in
+// values (parallel to it). They come from the descriptor (ServiceDef.
+// EnumNumbers), because declaration order is not the wire number once an
+// enum reserves a removed value. A descriptor written before EnumNumbers
+// existed carries names only; declaration order is then the only signal, and
+// it is right for the zero-based, gap-free enums forge scaffolds.
+func mockEnumValueNumbers(f EntityField, svc ServiceDef, values []string) []int32 {
+	if numbers := svc.EnumNumbers[f.MessageType]; len(numbers) == len(values) {
+		return numbers
+	}
+	ordinals := make([]int32, len(values))
+	for i := range values {
+		ordinals[i] = int32(i) //nolint:gosec // an enum's value count is far below 2^31
+	}
+	return ordinals
 }
 
 // mockEnumValueNames resolves the declared value names of an enum-typed

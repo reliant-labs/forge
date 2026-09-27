@@ -43,6 +43,16 @@ type ServiceDef struct {
 	// Schemas. protojson encodes enums as their value-name strings, so
 	// this is exactly the "enum" list a JSON Schema needs.
 	Enums map[string][]string `json:",omitempty"`
+
+	// EnumNumbers maps the same fully-qualified enum names to each value's
+	// DECLARED wire number, parallel to Enums (EnumNumbers[fq][i] is the
+	// number of Enums[fq][i]). Declaration order is not the wire number once
+	// an enum reserves a removed value (`reserved 1;`), and protobuf-es types
+	// an enum field as its declared numbers, so anything that emits an enum
+	// as a number — the frontend mock fixtures — must read it from here.
+	// Absent on descriptors written before this field existed; readers then
+	// fall back to declaration order.
+	EnumNumbers map[string][]int32 `json:",omitempty"`
 }
 
 // Method represents a single RPC method.

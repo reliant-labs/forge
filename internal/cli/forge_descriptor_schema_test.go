@@ -205,6 +205,9 @@ func TestExtractService_DeepSchemaGraph(t *testing.T) {
 	if got := sd.Enums["demo.v1.Status"]; !reflect.DeepEqual(got, []string{"STATUS_UNSPECIFIED", "STATUS_ACTIVE"}) {
 		t.Errorf("Enums[demo.v1.Status] = %v", got)
 	}
+	if got := sd.EnumNumbers["demo.v1.Status"]; !reflect.DeepEqual(got, []int32{0, 1}) {
+		t.Errorf("EnumNumbers[demo.v1.Status] = %v, want [0 1]", got)
+	}
 
 	// Field-level assertions on CreateRequest.
 	byName := map[string]codegen.SchemaFieldDef{}

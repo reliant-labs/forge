@@ -40,6 +40,7 @@ import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
 import .lib.quantity as qty_lib
 import .lib.labels as labels_lib
+import .lib.workload_url as wurl_lib
 import .tiers
 
 # ---------------------------------------------------------------------------
@@ -148,12 +149,85 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
 # entity contract is what `forge project audit` and `forge env render` read,
 # and a tier that vanished into "cluster" there would be invisible to exactly
 # the tooling that needs to see it.
-_render_simple_backend = lambda d: SimpleBackend -> any {
+_render_simple_backend = lambda d: SimpleBackend, bundle: Bundle -> any {
     {
         "type": "simple-backend"
         "cluster": d.cluster
         "namespace": d.namespace
-        "spec": tiers.simple_backend_json(d.spec)
+        "spec": _simple_backend_spec_json(d.spec, bundle)
+    }
+}
+
+# ---------------------------------------------------------------------------
+# forge.WorkloadURL lowering. See lib/workload_url.k for the resolution rules.
+# ---------------------------------------------------------------------------
+
+# A Bundle whose workload URLs the CONTROL PLANE resolves: it declares a
+# control plane AND runs at least one tier through it. This is the same
+# predicate as the Go side's hasHostedTierWorkload (a LOCAL control-plane env
+# — control plane as secret store only — runs its workloads here, so forge
+# resolves). The two must agree, or a reference is either resolved twice or
+# never.
+_resolves_on_control_plane = lambda bundle: Bundle -> bool {
+    bool(bundle.control_plane) and ( \
+        any s in bundle.services { s.deploy and s.deploy.type == "simple-backend" and not s.deploy.cluster } \
+        or any f in bundle.frontends { f.deploy and f.deploy.type == "static-site" } \
+        or any db in bundle.databases { not db.namespace })
+}
+
+# The URL a reference resolves to, or a load-time refusal naming it. `where`
+# says which declaration holds the reference, so the message points at it.
+_require_workload_url = lambda name: str, where: str, bundle: Bundle -> str {
+    _names = wurl_lib.workload_names(bundle)
+    assert name in _names, \
+        "${where}: forge.WorkloadURL names workload '${name}', which this environment does not declare. " \
+        + "Declared workloads: " + ", ".join(_names) + "."
+    _url = wurl_lib.resolve(name, bundle)
+    assert _url, \
+        "${where}: forge.WorkloadURL '${name}' has no URL forge can know at render time. " \
+        + "Give it one: an HTTPRoute to it, a public SimpleBackend domain, `listen_ports` on its host deploy " \
+        + "(forge env up assigns an undeclared host port only after rendering), or a frontend `port`."
+    _url
+}
+
+# A frontend's runtime_config as the StaticSite spec's `runtimeConfig` wire
+# shape, with references kept as references — the HOSTED lowering. Every
+# name is still checked, so a typo fails at load rather than at the operator.
+_runtime_config_spec = lambda f: Frontend, bundle: Bundle -> {str:} {
+    _names = wurl_lib.workload_names(bundle)
+    _bad = [k + " -> " + v.name for k, v in f.runtime_config if typeof(v) != "str" and v.name not in _names]
+    assert len(_bad) == 0, \
+        "Frontend '${f.name}'.runtime_config: forge.WorkloadURL names a workload this environment does not declare: " \
+        + ", ".join(_bad) + ". Declared workloads: " + ", ".join(_names) + "."
+    {k: ({"value": v} if typeof(v) == "str" else {"workloadURL": {"name": v.name}}) for k, v in f.runtime_config}
+}
+
+# A frontend's runtime_config RESOLVED to literals — the document forge
+# writes itself on every env it resolves for. Empty on a hosted env (the
+# control plane writes it there).
+_runtime_config_resolved = lambda f: Frontend, bundle: Bundle -> {str:str} {
+    {} if _resolves_on_control_plane(bundle) else \
+        {k: (v if typeof(v) == "str" else _require_workload_url(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle)) for k, v in f.runtime_config}
+}
+
+# A SimpleBackend spec as CR JSON with every env workloadURL lowered: kept as
+# a reference on a hosted env, resolved to a literal value everywhere else.
+# The declaration record and the entity contract both go through here, so the
+# Go renderer (which refuses an unresolved reference) never sees one on a
+# self-hosted path.
+_simple_backend_spec_json = lambda spec: tiers.SimpleBackend, bundle: Bundle -> {str:} {
+    _json = tiers.simple_backend_json(spec)
+    _hosted = _resolves_on_control_plane(bundle)
+    _names = wurl_lib.workload_names(bundle)
+    _bad = [e.name + " -> " + e.workloadURL.name for e in (spec.env or []) if e.workloadURL and e.workloadURL.name not in _names]
+    assert len(_bad) == 0, \
+        "SimpleBackend env: workloadURL names a workload this environment does not declare: " \
+        + ", ".join(_bad) + ". Declared workloads: " + ", ".join(_names) + "."
+    # Rebuilt key by key rather than `_json | {"env": ...}`: KCL's dict union
+    # MERGES nested values, so the resolved entries would keep the
+    # reference they replace.
+    _json if _hosted or not spec.env else {
+        k: (v if k != "env" else [({ek: ev for ek, ev in e if ek != "workloadURL"} | {"value": _require_workload_url(e.workloadURL.name, "SimpleBackend env var " + e.name, bundle)}) if "workloadURL" in e else e for e in v]) for k, v in _json
     }
 }
 
@@ -216,10 +290,10 @@ _render_build_only = lambda d: BuildOnly -> any {
 # Dispatch on the populated deploy's discriminator. Called only when
 # `d` is not Undefined / None. Seven branches: host / cluster (K8sCluster) /
 # simple-backend / external / compose / host-infra / build-only.
-_render_deploy_populated = lambda d: any -> any {
+_render_deploy_populated = lambda d: any, bundle: Bundle -> any {
     _render_host_deploy(d) if d.type == "host" else \
         (_render_k8s_cluster(d) if d.type == "cluster" else \
-        (_render_simple_backend(d) if d.type == "simple-backend" else \
+        (_render_simple_backend(d, bundle) if d.type == "simple-backend" else \
         (_render_external(d) if d.type == "external" else \
         (_render_compose(d) if d.type == "compose" else \
         (_render_host_infra(d) if d.type == "host-infra" else _render_build_only(d))))))
@@ -232,8 +306,8 @@ _render_deploy_populated = lambda d: any -> any {
 # and out of the deploy set (no Deployment/Service/manifests). This is
 # self-describing (the consumer never has to special-case a null deploy),
 # and render_manifests still skips it (it isn't `type == "cluster"`).
-_render_deploy = lambda d: any -> any {
-    _render_deploy_populated(d) if d else {"type": "build-only", "build_variants": []}
+_render_deploy = lambda d: any, bundle: Bundle -> any {
+    _render_deploy_populated(d, bundle) if d else {"type": "build-only", "build_variants": []}
 }
 
 # build_of coerces a plain build dict (the shape a workloads.k entry
@@ -382,14 +456,14 @@ _render_build = lambda b: any -> any {
     _render_build_populated(b) if b else None
 }
 
-_render_service = lambda s: RenderedWorkload -> any {
+_render_service = lambda s: RenderedWorkload, bundle: Bundle -> any {
     {
         "name": s.name
         "image": s.image if s.image else None
         "image_tag": s.image_tag if s.image_tag else None
         "command": s.command
         "env_vars": [_render_env_var(e) for e in s.env_vars]
-        "deploy": _render_deploy(s.deploy)
+        "deploy": _render_deploy(s.deploy, bundle)
         "build": _render_build(s.build)
         "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
         # Operator CRD kind names (projected from Service.k8s.operator.crds).
@@ -588,7 +662,7 @@ _render_managed_database_record = lambda db: ManagedDatabase, part_of: str -> an
     }
 }
 
-_render_simple_backend_record = lambda s: RenderedWorkload, part_of: str -> any {
+_render_simple_backend_record = lambda s: RenderedWorkload, part_of: str, bundle: Bundle -> any {
     {
         apiVersion = "forge.dev/v1alpha1"
         kind = "SimpleBackend"
@@ -597,7 +671,7 @@ _render_simple_backend_record = lambda s: RenderedWorkload, part_of: str -> any 
             namespace = s.deploy.namespace
             labels = labels_lib.managed_labels(s.name, part_of)
         }
-        spec = tiers.simple_backend_json(s.deploy.spec)
+        spec = _simple_backend_spec_json(s.deploy.spec, bundle)
     }
 }
 
@@ -614,7 +688,7 @@ _render_simple_backend_record = lambda s: RenderedWorkload, part_of: str -> any 
 # An unset deploy still projects as null — the consumer treats that as
 # "dev-serve / build only, never auto-ship", which is the legacy behaviour
 # every existing project relies on.
-_render_frontend_deploy = lambda d: any -> any {
+_render_frontend_deploy = lambda d: any, f: Frontend, bundle: Bundle -> any {
     (_render_k8s_cluster(d) if d.type == "cluster" else _render_static_site(d) if d.type == "static-site" else _render_firebase_hosting(d)) if d else None
 }
 
@@ -643,7 +717,7 @@ _render_git_source = lambda s: GitSource -> any {
     }
 }
 
-_render_frontend = lambda f: Frontend -> any {
+_render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     {
         "name": f.name
         "type": f.type
@@ -654,7 +728,14 @@ _render_frontend = lambda f: Frontend -> any {
         "env_file": f.env_file if f.env_file else None
         "env_vars": [_render_env_var(e) for e in f.env_vars]
         "config": _render_frontend_config(f.config) if f.config else None
-        "deploy": _render_frontend_deploy(f.deploy)
+        "deploy": _render_frontend_deploy(f.deploy, f, bundle)
+        # The browser's runtime config, as DECLARED (references kept) and as
+        # RESOLVED for an env forge resolves itself. The Go side layers
+        # `runtime_config` over the typed per-env config for config.js, and
+        # a hosted StaticSite publishes `runtime_config_spec` as the spec's
+        # runtimeConfig. Both are empty for a frontend that declares none.
+        "runtime_config": _runtime_config_resolved(f, bundle)
+        "runtime_config_spec": _runtime_config_spec(f, bundle)
     }
 }
 
@@ -1012,10 +1093,10 @@ render = lambda bundle: Bundle -> any {
         # was authored as an agnostic `forge.Service` or a raw `RenderedWorkload`.
         # Projection needs the env-wide `cluster_target`; a Bundle carrying
         # `workloads` therefore must declare one.
-        "services": [_render_service(s) for s in bundle.services] \
-            + [_render_service(_project_workload(w, bundle)) for w in bundle.workloads]
+        "services": [_render_service(s, bundle) for s in bundle.services] \
+            + [_render_service(_project_workload(w, bundle), bundle) for w in bundle.workloads]
         "operators": [_render_operator(o) for o in bundle.operators]
-        "frontends": [_render_frontend(f) for f in bundle.frontends]
+        "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "cronjobs": [_render_cronjob(c) for c in bundle.cronjobs]
         "jobs": [_render_job(j) for j in bundle.jobs]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
@@ -1306,7 +1387,7 @@ _render_manifests_self_hosted = lambda bundle: Bundle, image_tag: str, image_dig
         + [_render_config_map_manifest(cm, _ns, _project) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
         + [item for s in _workload_services for item in _render_cluster_service(s, s.deploy.namespace, s.deploy.registry, image_tag, image_digests, s.deploy.image_pull_secrets if s.deploy.image_pull_secrets else _pull_secrets, _project)] \
-        + [_render_simple_backend_record(s, _project) for s in _simple_backends] \
+        + [_render_simple_backend_record(s, _project, bundle) for s in _simple_backends] \
         + [_render_managed_database_record(db, _project) for db in bundle.databases] \
         + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s, _project)] \
         + [item for o in bundle.operators for item in _render_operator_manifests(o, _ns, _registry, image_tag, image_digests, _pull_secrets, _project)] \

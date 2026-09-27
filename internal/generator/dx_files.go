@@ -313,27 +313,16 @@ install_buf() {
   install_go_tool buf github.com/bufbuild/buf/cmd/buf@latest
 }
 
-install_kcl() {
-  if have kcl; then
-    log "kcl already installed — skipping"
-    return
-  fi
-  log "installing KCL (https://kcl-lang.io)"
-  # KCL ships its own installer; fall back to a printed instruction on
-  # platforms where curl isn't available.
-  if have curl; then
-    curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-  else
-    echo "curl missing — install KCL manually: https://kcl-lang.io/docs/user_docs/getting-started/install" >&2
-  fi
-}
+# No KCL CLI: forge renders every environment through the KCL runtime it
+# embeds, and injects its own KCL module at render time. A bare ` + "`kcl run`" + `
+# cannot resolve ` + "`import forge`" + `, so installing one only invites a render
+# that bypasses forge — use ` + "`forge env render <env>`" + ` instead.
 
 main() {
   need_go
 
   install_task
   install_buf
-  install_kcl
 
   install_go_tool protoc-gen-go            google.golang.org/protobuf/cmd/protoc-gen-go@latest
   install_go_tool protoc-gen-connect-go    connectrpc.com/connect/cmd/protoc-gen-connect-go@latest

@@ -3,37 +3,31 @@ package kcloptions
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"kcl-lang.io/kcl-go/pkg/spec/gpyrpc"
+
+	"github.com/reliant-labs/forge/internal/kclvendor"
 )
 
-// forgeKCLModuleDir is the in-repo forge KCL module. Fixtures depend on it by
-// path so they reproduce the shape that matters: an env package that imports
-// an EXTERNAL module. Without dependency resolution kcl's ListOptions walks
-// into an unresolved symbol and bails, so a fixture with no imports would
-// pass while every real project failed.
-const forgeKCLModuleDir = "../../kcl"
-
 // writeEnvProject lays down a project shaped like a real one —
-// deploy/kcl/<env>/main.k, with the module declared once at deploy/kcl/ —
-// and returns the project root.
+// deploy/kcl/<env>/main.k under a kcl.mod that, like every forge project's,
+// declares NO forge dependency — and returns the project root. Every fixture
+// imports the forge module, so each one proves Discover supplies it from the
+// binary: without it kcl's ListOptions walks into an unresolved symbol and
+// bails, and a fixture with no imports would pass while every real project
+// failed.
 func writeEnvProject(t *testing.T, envName, mainK string) string {
 	t.Helper()
+	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
 	root := t.TempDir()
 
-	forgeAbs, err := filepath.Abs(forgeKCLModuleDir)
-	if err != nil {
-		t.Fatalf("resolve forge kcl module: %v", err)
-	}
 	kclRoot := filepath.Join(root, "deploy", "kcl")
 	envDir := filepath.Join(kclRoot, envName)
 	if err := os.MkdirAll(envDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mod := "[package]\nname = \"fixture-deploy\"\nversion = \"0.1.0\"\n\n" +
-		"[dependencies]\nforge = { path = " + strconv.Quote(forgeAbs) + " }\n"
+	mod := "[package]\nname = \"fixture-deploy\"\nversion = \"0.1.0\"\n\n[dependencies]\n"
 	if err := os.WriteFile(filepath.Join(kclRoot, "kcl.mod"), []byte(mod), 0o644); err != nil {
 		t.Fatal(err)
 	}

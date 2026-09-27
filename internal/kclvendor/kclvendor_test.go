@@ -2,33 +2,29 @@ package kclvendor
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
+	forgekcl "github.com/reliant-labs/forge/kcl"
 )
 
-// legacyGitTagKclMod is the shape older scaffolds emitted: a git tag
-// that was never published. EnsureVendorDep must heal it.
-const legacyGitTagKclMod = `[package]
-name = "proj-deploy"
-edition = "v0.11.0"
-version = "0.0.1"
-
-# The ` + "`forge`" + ` KCL module ships the typed schemas this package's env
-# main.k files import.
-[dependencies]
-forge = { git = "https://github.com/reliant-labs/forge.git", tag = "kcl-v0.1.0" }
-`
-
-// writeKclMod writes content at <projectDir>/<rel> and returns the path.
-func writeKclMod(t *testing.T, projectDir, rel, content string) string {
+// useTempCache points the module cache at a per-test directory, so tests
+// never touch a developer's real <UserCacheDir>/forge/kcl.
+func useTempCache(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(projectDir, filepath.FromSlash(rel))
+	dir := t.TempDir()
+	t.Cleanup(SetCacheDirForTest(dir))
+	return dir
+}
+
+func writeFile(t *testing.T, root, rel, content string) string {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -47,679 +43,322 @@ func readFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-func TestEnsureVendorDep_SwapsGitTagWithDepthCorrectPath(t *testing.T) {
-	cases := []struct {
-		name    string
-		rel     string
-		wantDep string
-	}{
-		{"deploy-kcl depth", "deploy/kcl/kcl.mod", `forge = { path = "../../.forge-kcl" }`},
-		{"project-root depth", "kcl.mod", `forge = { path = "./.forge-kcl" }`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := writeKclMod(t, dir, tc.rel, legacyGitTagKclMod)
-			res, err := EnsureVendorDep(path, dir)
-			if err != nil {
-				t.Fatalf("EnsureVendorDep: %v", err)
-			}
-			if !res.Changed || res.Warning != "" {
-				t.Fatalf("want Changed with no warning, got %+v", res)
-			}
-			got := readFile(t, path)
-			if !strings.Contains(got, tc.wantDep) {
-				t.Errorf("missing %q in:\n%s", tc.wantDep, got)
-			}
-			if !strings.Contains(got, MarkerHeader) {
-				t.Errorf("missing marker header in:\n%s", got)
-			}
-			if strings.Contains(got, "git = ") {
-				t.Errorf("published git dep should be gone:\n%s", got)
-			}
-			// The [package] block and the scaffold's own comment survive.
-			for _, keep := range []string{`name = "proj-deploy"`, "typed schemas"} {
-				if !strings.Contains(got, keep) {
-					t.Errorf("user content %q clobbered:\n%s", keep, got)
-				}
-			}
-		})
-	}
-}
-
-func TestEnsureVendorDep_Idempotent(t *testing.T) {
-	dir := t.TempDir()
-	path := writeKclMod(t, dir, "deploy/kcl/kcl.mod", legacyGitTagKclMod)
-	if _, err := EnsureVendorDep(path, dir); err != nil {
-		t.Fatalf("first: %v", err)
-	}
-	first := readFile(t, path)
-	res, err := EnsureVendorDep(path, dir)
+// TestModuleDir_IsTheEmbeddedModuleInTheUserCache: the module lives OUTSIDE
+// any project, under the cache root, and holds exactly the embedded files.
+func TestModuleDir_IsTheEmbeddedModuleInTheUserCache(t *testing.T) {
+	cache := useTempCache(t)
+	dir, err := ModuleDir()
 	if err != nil {
-		t.Fatalf("second: %v", err)
+		t.Fatalf("ModuleDir: %v", err)
 	}
-	if res.Changed || res.Warning != "" {
-		t.Fatalf("second call must be a no-op, got %+v", res)
+	if !strings.HasPrefix(dir, cache+string(filepath.Separator)) {
+		t.Fatalf("ModuleDir = %s, want a directory under the cache root %s", dir, cache)
 	}
-	if got := readFile(t, path); got != first {
-		t.Errorf("second call changed bytes:\n--- first ---\n%s\n--- second ---\n%s", first, got)
+	files, err := embeddedModuleFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("embedded module is empty — this test would pass vacuously")
+	}
+	for _, p := range files {
+		want, _ := fs.ReadFile(forgekcl.Module, p)
+		if got := readFile(t, filepath.Join(dir, filepath.FromSlash(p))); got != string(want) {
+			t.Errorf("%s in the cache differs from the embedded module", p)
+		}
+	}
+	for _, absent := range []string{"tests", "example", "embed.go", "README.md"} {
+		if _, err := os.Stat(filepath.Join(dir, absent)); err == nil {
+			t.Errorf("%s is not part of the embedded module and must not be materialized", absent)
+		}
+	}
+
+	// Memoized and stable: the same directory, and the arg names it.
+	again, err := ModuleDir()
+	if err != nil || again != dir {
+		t.Fatalf("second ModuleDir = (%s, %v), want (%s, nil)", again, err, dir)
+	}
+	arg, err := ExternalPkgArg()
+	if err != nil || arg != "forge="+dir {
+		t.Fatalf("ExternalPkgArg = (%q, %v), want %q", arg, err, "forge="+dir)
 	}
 }
 
-func TestEnsureVendorDep_RewritesAbsolutePathHandPatch(t *testing.T) {
-	// The historical workaround this package replaces: an absolute host
-	// path, with a hand-written comment above it that must survive.
-	dir := t.TempDir()
-	content := `[package]
+// TestModuleDir_RebuildsAPartialEntry: a directory a crashed process left
+// without its completion marker is rebuilt, never trusted.
+func TestModuleDir_RebuildsAPartialEntry(t *testing.T) {
+	cache := useTempCache(t)
+	hash, err := moduleHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := filepath.Join(cache, hash)
+	writeFile(t, partial, "schema.k", "# truncated by a crash\n")
+
+	dir, err := ModuleDir()
+	if err != nil {
+		t.Fatalf("ModuleDir: %v", err)
+	}
+	want, _ := fs.ReadFile(forgekcl.Module, "schema.k")
+	if got := readFile(t, filepath.Join(dir, "schema.k")); got != string(want) {
+		t.Fatal("a partial cache entry was served instead of rebuilt")
+	}
+}
+
+// legacyVendoredKclMod is exactly what forge scaffolded and maintained
+// before this change: the marker-delimited `.forge-kcl` block.
+const legacyVendoredKclMod = `[package]
 name = "proj-deploy"
 edition = "v0.11.0"
 version = "0.0.1"
 
+# The ` + "`forge`" + ` KCL module ships the typed schemas.
 [dependencies]
-# Local-dev override: resolve the module from the local clone.
-forge = { path = "/Users/someone/src/forge/kcl" }
-`
-	path := writeKclMod(t, dir, "deploy/kcl/kcl.mod", content)
-	res, err := EnsureVendorDep(path, dir)
-	if err != nil {
-		t.Fatalf("EnsureVendorDep: %v", err)
-	}
-	if !res.Changed {
-		t.Fatalf("want Changed, got %+v", res)
-	}
-	got := readFile(t, path)
-	if !strings.Contains(got, `forge = { path = "../../.forge-kcl" }`) {
-		t.Errorf("abs path not rewritten:\n%s", got)
-	}
-	if strings.Contains(got, "/Users/someone") {
-		t.Errorf("absolute host path lingers:\n%s", got)
-	}
-	if !strings.Contains(got, "# Local-dev override: resolve the module from the local clone.") {
-		t.Errorf("user comment above the dep line was deleted:\n%s", got)
-	}
-}
-
-func TestEnsureVendorDep_HandMangledWarnsAndNoops(t *testing.T) {
-	cases := []struct {
-		name string
-		dep  string
-	}{
-		{"toml table form", "[dependencies.forge]\npath = \"../../somewhere\""},
-		{"extra keys", `forge = { path = "../../.forge-kcl", version = "0.1.0" }`},
-		{"relative non-vendor path", `forge = { path = "../forge/kcl" }`},
-		{"registry version", `forge = "0.1.0"`},
-		{"two forge lines", "forge = { path = \"./a\" }\nforge = { path = \"./b\" }"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			content := "[package]\nname = \"p\"\n\n[dependencies]\n" + tc.dep + "\n"
-			path := writeKclMod(t, dir, "deploy/kcl/kcl.mod", content)
-			res, err := EnsureVendorDep(path, dir)
-			if err != nil {
-				t.Fatalf("EnsureVendorDep: %v", err)
-			}
-			if res.Changed {
-				t.Fatalf("hand-mangled shape must not be edited, got %+v", res)
-			}
-			if res.Warning == "" {
-				t.Fatalf("want a warning for shape %q", tc.dep)
-			}
-			if got := readFile(t, path); got != content {
-				t.Errorf("content changed:\n%s", got)
-			}
-		})
-	}
-}
-
-func TestEnsureVendorDep_NoForgeDepWarns(t *testing.T) {
-	dir := t.TempDir()
-	content := "[package]\nname = \"p\"\n\n[dependencies]\nk8s = \"1.31\"\n"
-	path := writeKclMod(t, dir, "deploy/kcl/kcl.mod", content)
-	res, err := EnsureVendorDep(path, dir)
-	if err != nil {
-		t.Fatalf("EnsureVendorDep: %v", err)
-	}
-	if res.Changed || res.Warning == "" {
-		t.Fatalf("want warn+no-op, got %+v", res)
-	}
-	if got := readFile(t, path); got != content {
-		t.Errorf("content changed:\n%s", got)
-	}
-}
-
-func TestEnsureVendorDep_MissingFileIsSilentNoop(t *testing.T) {
-	dir := t.TempDir()
-	res, err := EnsureVendorDep(filepath.Join(dir, "deploy", "kcl", "kcl.mod"), dir)
-	if err != nil {
-		t.Fatalf("EnsureVendorDep: %v", err)
-	}
-	if res.Changed || res.Warning != "" {
-		t.Fatalf("missing file must be a silent no-op, got %+v", res)
-	}
-}
-
-// TestEnsureVendorDep_RewritesLegacyMarkerBlockInPlace: a project
-// vendored by an older forge carries that forge's marker header. The
-// upgrade must REPLACE the whole stale block, not stack a fresh one on
-// top of it — otherwise every upgrade grows the file by a comment block.
-func TestEnsureVendorDep_RewritesLegacyMarkerBlockInPlace(t *testing.T) {
-	dir := t.TempDir()
-	content := `[package]
-name = "proj-deploy"
-
-[dependencies]
-` + legacyMarkerHeaders[0] + `
+` + MarkerHeader + `
 #
-# Some older explanatory text that no longer describes what forge does.
+# ` + "`forge generate`" + ` materializes the KCL module embedded in the forge
+# binary into ` + "`.forge-kcl/`" + ` at the project root and points this
+# dependency at it by RELATIVE path. That copy travels with the repo, so
+# containers, CI checkouts and other machines resolve the identical
+# module — with no network, no git auth, and nothing to publish.
+#
+# Commit ` + "`.forge-kcl/`" + `. It refreshes on every ` + "`forge generate`" + `.
 forge = { path = "../../.forge-kcl" }
 `
-	path := writeKclMod(t, dir, "deploy/kcl/kcl.mod", content)
-	res, err := EnsureVendorDep(path, dir)
-	if err != nil {
-		t.Fatalf("EnsureVendorDep: %v", err)
-	}
-	if !res.Changed || res.Warning != "" {
-		t.Fatalf("want the legacy block rewritten, got %+v", res)
-	}
-	got := readFile(t, path)
-	if strings.Contains(got, legacyMarkerHeaders[0]) {
-		t.Errorf("legacy marker header survived the rewrite:\n%s", got)
-	}
-	if strings.Contains(got, "no longer describes") {
-		t.Errorf("stale legacy comment body survived:\n%s", got)
-	}
-	if n := strings.Count(got, MarkerHeader); n != 1 {
-		t.Errorf("want exactly one marker header, got %d:\n%s", n, got)
-	}
-	if !strings.Contains(got, `forge = { path = "../../.forge-kcl" }`) {
-		t.Errorf("dep line missing:\n%s", got)
-	}
-}
 
-// TestMaterialize_StampsForgeVersionAndReportsStaleness: the vendored
-// copy records the forge that wrote it, and Stale reports a mismatch.
-// This is the mitigation for vendoring's one real cost — a project can
-// otherwise sit silently on a module an older forge materialized.
-func TestMaterialize_StampsForgeVersionAndReportsStaleness(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := Materialize(dir, false); err != nil {
-		t.Fatalf("materialize: %v", err)
-	}
-	stampPath := filepath.Join(dir, VendorDirName, StampFileName)
-	stamped := strings.TrimSpace(readFile(t, stampPath))
-	if stamped != buildinfo.Version() {
-		t.Errorf("stamp = %q, want this binary's version %q", stamped, buildinfo.Version())
-	}
-	if stale, _ := Stale(dir); stale {
-		t.Errorf("a freshly materialized copy must not be stale")
-	}
+const legacyForgeLock = `[dependencies]
+  [dependencies.forge]
+    name = "forge"
+    full_name = "forge_0.1.0"
+    version = "0.1.0"
+`
 
-	// A copy stamped by a different forge whose CONTENT still matches is not
-	// stale: staleness is by bytes, because a byte-identical refresh keeps
-	// the stamp it found.
-	if err := os.WriteFile(stampPath, []byte("v0.0.1-ancient\n"), 0o644); err != nil {
-		t.Fatalf("rewrite stamp: %v", err)
-	}
-	if stale, got := Stale(dir); stale || got != "v0.0.1-ancient" {
-		t.Errorf("identical content: Stale() = (%v, %q), want (false, \"v0.0.1-ancient\")", stale, got)
-	}
-	// Once the content differs it is stale, and names the version.
-	if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
-		t.Fatalf("drift a source file: %v", err)
-	}
-	stale, got := Stale(dir)
-	if !stale || got != "v0.0.1-ancient" {
-		t.Errorf("Stale() = (%v, %q), want (true, \"v0.0.1-ancient\")", stale, got)
-	}
-
-	// An unstamped copy (materialized before the stamp existed) is stale.
-	if err := os.Remove(stampPath); err != nil {
-		t.Fatalf("remove stamp: %v", err)
-	}
-	if stale, got := Stale(dir); !stale || got != "" {
-		t.Errorf("unstamped copy: Stale() = (%v, %q), want (true, \"\")", stale, got)
-	}
-
-	// Re-materializing heals it, and stays byte-idempotent afterwards.
-	if _, err := Materialize(dir, false); err != nil {
-		t.Fatalf("re-materialize: %v", err)
-	}
-	if stale, _ := Stale(dir); stale {
-		t.Errorf("still stale after re-materialize")
-	}
-	changed, err := Materialize(dir, false)
-	if err != nil {
-		t.Fatalf("third materialize: %v", err)
-	}
-	if changed {
-		t.Errorf("materialize must be a no-op once the stamp is current")
-	}
-
-	// No project is stale for lacking a vendor dir entirely.
-	if stale, _ := Stale(t.TempDir()); stale {
-		t.Errorf("a project with no vendor dir must not report stale")
-	}
-}
-
-// TestMaterialize_RefusesDowngrade is the regression test for the failure
-// the stamp originally FAILED to catch. Stamping alone recorded a
-// downgrade as cheerfully as an upgrade, so an older forge silently
-// rewrote control-plane's `.forge-kcl/schema.k` — outdated Gateway
-// listener rule included — and prod's `env render` broke somewhere else
-// entirely. The stamp was a no-op that looked like a guard.
-//
-// Each subtest pins one branch of checkDowngrade, because the value of
-// this guard is as much in what it does NOT block: a refusal that fires
-// on equal versions, on unorderable strings, or on a no-op refresh gets
-// switched off by the first person it inconveniences.
-func TestMaterialize_RefusesDowngrade(t *testing.T) {
-	// stampedNewer materializes a real vendor copy, then rewrites both
-	// the stamp AND one source file so the running forge is provably
-	// older AND the refresh would genuinely change bytes.
-	stampedNewer := func(t *testing.T, version string) string {
-		t.Helper()
-		dir := t.TempDir()
-		if _, err := Materialize(dir, false); err != nil {
-			t.Fatalf("seed materialize: %v", err)
-		}
-		stampPath := filepath.Join(dir, VendorDirName, StampFileName)
-		if err := os.WriteFile(stampPath, []byte(version+"\n"), 0o644); err != nil {
-			t.Fatalf("rewrite stamp: %v", err)
-		}
-		return dir
-	}
-
-	// The damage case: on-disk copy stamped by a much newer forge, and
-	// the embedded module differs from what is vendored.
-	t.Run("refuses and writes nothing", func(t *testing.T) {
-		dir := stampedNewer(t, "v99.0.0")
-		modPath := filepath.Join(dir, VendorDirName, "kcl.mod")
-		sentinel := "# hand-synced by the other agent — must survive a refusal\n"
-		if err := os.WriteFile(modPath, []byte(sentinel), 0o644); err != nil {
-			t.Fatalf("drift a source file: %v", err)
-		}
-
-		changed, err := Materialize(dir, false)
-		var dErr *DowngradeError
-		if !errors.As(err, &dErr) {
-			t.Fatalf("Materialize() error = %v, want *DowngradeError", err)
-		}
-		if changed {
-			t.Error("a refused materialize must report changed=false")
-		}
-		// The refusal must be actionable: both identities and the remedy.
-		msg := dErr.Error()
-		for _, want := range []string{"v99.0.0", buildinfo.Version(), "--allow-kcl-downgrade"} {
-			if !strings.Contains(msg, want) {
-				t.Errorf("refusal message missing %q:\n%s", want, msg)
-			}
-		}
-		// The guard runs BEFORE the walk, so the file another agent
-		// synced is still theirs. This is the byte that got clobbered.
-		if got := readFile(t, modPath); got != sentinel {
-			t.Errorf("refused materialize still overwrote a vendored file:\ngot  %q\nwant %q", got, sentinel)
-		}
-	})
-
-	// The deliberate rollback: --allow-kcl-downgrade lets it through.
-	t.Run("allowDowngrade opts out", func(t *testing.T) {
-		dir := stampedNewer(t, "v99.0.0")
-		if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
-			t.Fatalf("drift a source file: %v", err)
-		}
-		changed, err := Materialize(dir, true)
-		if err != nil {
-			t.Fatalf("Materialize(allowDowngrade=true) = %v, want nil", err)
-		}
-		if !changed {
-			t.Error("the opt-out must actually perform the refresh")
-		}
-		if stale, _ := Stale(dir); stale {
-			t.Error("an allowed downgrade must restamp to the running forge")
-		}
-	})
-
-	// A downgrade that would change nothing is not worth blocking —
-	// otherwise anyone on a pinned older build with an identical module
-	// is wedged out of `forge generate` for no schema difference at all.
-	t.Run("identical content is not refused", func(t *testing.T) {
-		dir := stampedNewer(t, "v99.0.0")
-		changed, err := Materialize(dir, false)
-		if err != nil {
-			t.Fatalf("no-op downgrade refused: %v", err)
-		}
-		// Nothing changed, so nothing is written — not even the stamp. It
-		// still names the forge whose module these bytes are.
-		if changed {
-			t.Error("a no-op refresh must not restamp the vendor dir")
-		}
-		if got := strings.TrimSpace(readFile(t, filepath.Join(dir, VendorDirName, StampFileName))); got != "v99.0.0" {
-			t.Errorf("stamp = %q, want the untouched v99.0.0", got)
-		}
-	})
-
-	// An EQUAL version is the normal refresh and must never refuse.
-	t.Run("same version is not refused", func(t *testing.T) {
-		dir := stampedNewer(t, buildinfo.Version())
-		if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
-			t.Fatalf("drift a source file: %v", err)
-		}
-		if _, err := Materialize(dir, false); err != nil {
-			t.Fatalf("Materialize() = %v, want nil for an equal-version refresh", err)
-		}
-	})
-
-	// UNORDERABLE now refuses. This reverses a previous decision, so the
-	// reasoning belongs here: the old rule was "a guard that fires on a coin
-	// flip gets disabled by everyone", which held while unorderable meant the
-	// bare "dev" sentinel that every contributor build produced. buildinfo
-	// now derives a real pseudo-version for dev and workspace builds, so
-	// unorderable means something genuinely unexpected — a hand-edited stamp,
-	// or a forge predating derivation — and proceeding on "I cannot tell" is
-	// how a project's deploy-tier KCL schemas were deleted by a routine
-	// generate, surfacing much later as an unknown-schema render error.
-	for name, stamp := range map[string]string{
-		"unorderable stamp": "(devel)",
-		"hand-edited stamp": "not-a-version",
+// TestMigrateKclMod_RemovesEveryLegacyDeclaration: every shape an older forge
+// wrote is removed — the vendored block with its marker comments, a bare
+// relative path, an absolute host path, the unpublished git tag — and user
+// content around it survives. A lock recording forge is stripped to what kpm
+// itself writes for a dependency-free package.
+func TestMigrateKclMod_RemovesEveryLegacyDeclaration(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mod      string
+		keep     []string
+		gone     []string
+		wantDeps string
+	}{
+		"vendored block with marker": {
+			mod:  legacyVendoredKclMod,
+			keep: []string{`name = "proj-deploy"`, "ships the typed schemas", "[dependencies]"},
+			gone: []string{"forge =", MarkerHeader, "travels with the repo", "Commit `.forge-kcl/`"},
+		},
+		"unpublished git tag": {
+			mod:  "[package]\nname = \"p\"\n\n[dependencies]\nforge = { git = \"https://github.com/reliant-labs/forge.git\", tag = \"kcl-v0.1.0\" }\n",
+			keep: []string{`name = "p"`},
+			gone: []string{"forge =", "kcl-v0.1.0"},
+		},
+		"absolute host path keeps the user's comment": {
+			mod:  "[package]\nname = \"p\"\n\n[dependencies]\n# Local-dev override: resolve the module from the local clone.\nforge = { path = \"/Users/someone/src/forge/kcl\" }\nother = { path = \"../other\" }\n",
+			keep: []string{"Local-dev override", `other = { path = "../other" }`},
+			gone: []string{"forge ="},
+		},
 	} {
-		t.Run(name+" is refused", func(t *testing.T) {
-			dir := stampedNewer(t, stamp)
-			if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
-				t.Fatalf("drift a source file: %v", err)
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			modPath := writeFile(t, dir, "deploy/kcl/kcl.mod", tc.mod)
+			lockPath := writeFile(t, dir, "deploy/kcl/kcl.mod.lock", legacyForgeLock)
+
+			res, err := MigrateKclMod(modPath)
+			if err != nil {
+				t.Fatalf("MigrateKclMod: %v", err)
 			}
-			_, err := Materialize(dir, false)
-			if err == nil {
-				t.Fatalf("Materialize() = nil, want a refusal for unorderable stamp %q", stamp)
+			if !res.Changed || res.Warning != "" {
+				t.Fatalf("want Changed with no warning, got %+v", res)
 			}
-			var de *DowngradeError
-			if !errors.As(err, &de) {
-				t.Fatalf("error is %T, want *DowngradeError: %v", err, err)
+			got := readFile(t, modPath)
+			for _, k := range tc.keep {
+				if !strings.Contains(got, k) {
+					t.Errorf("user content %q was removed:\n%s", k, got)
+				}
 			}
-			if !de.Unorderable {
-				t.Error("refusal must be marked Unorderable — the prose differs, since there is nothing to upgrade TO")
+			for _, g := range tc.gone {
+				if strings.Contains(got, g) {
+					t.Errorf("%q survived migration:\n%s", g, got)
+				}
 			}
-			if !strings.Contains(err.Error(), "--allow-kcl-downgrade") {
-				t.Errorf("refusal must name the escape hatch, got:\n%v", err)
+			if has, _ := HasForgeDep(modPath); has {
+				t.Errorf("kcl.mod still declares forge after migration:\n%s", got)
+			}
+			if lock := readFile(t, lockPath); lock != "" {
+				t.Errorf("lock = %q; a lock whose only entry was forge must become the empty lock kpm writes", lock)
 			}
 
-			// And the escape hatch must actually work, or the guard is a wall.
-			if _, err := Materialize(dir, true); err != nil {
-				t.Fatalf("Materialize(allowDowngrade=true) = %v, want nil", err)
+			// Idempotent: a migrated file is a byte-identical no-op.
+			res, err = MigrateKclMod(modPath)
+			if err != nil || res.Changed || res.Warning != "" {
+				t.Fatalf("second MigrateKclMod = (%+v, %v), want a no-op", res, err)
+			}
+			if again := readFile(t, modPath); again != got {
+				t.Errorf("second migration changed bytes")
 			}
 		})
 	}
+}
 
-	// Nothing on disk to protect: a fresh project must always vendor.
-	t.Run("absent vendor dir is not refused", func(t *testing.T) {
-		if _, err := Materialize(t.TempDir(), false); err != nil {
-			t.Fatalf("materialize into an empty project: %v", err)
+// TestMigrateKclMod_KeepsOtherLockEntries: only the forge package leaves the
+// lock; a project's own KCL dependencies stay pinned.
+func TestMigrateKclMod_KeepsOtherLockEntries(t *testing.T) {
+	dir := t.TempDir()
+	modPath := writeFile(t, dir, "deploy/kcl/kcl.mod", legacyVendoredKclMod)
+	lock := legacyForgeLock + "  [dependencies.k8s]\n    name = \"k8s\"\n    version = \"1.31\"\n"
+	lockPath := writeFile(t, dir, "deploy/kcl/kcl.mod.lock", lock)
+	if _, err := MigrateKclMod(modPath); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, lockPath)
+	if strings.Contains(got, "dependencies.forge") {
+		t.Errorf("forge entry survived:\n%s", got)
+	}
+	if !strings.Contains(got, "[dependencies.k8s]") || !strings.Contains(got, `version = "1.31"`) {
+		t.Errorf("the project's own dependency was dropped:\n%s", got)
+	}
+}
+
+// TestMigrateKclMod_UnmanagedShapesWarnAndNoop: a spelling forge never
+// wrote is not edited.
+func TestMigrateKclMod_UnmanagedShapesWarnAndNoop(t *testing.T) {
+	for name, mod := range map[string]string{
+		"toml table":  "[package]\nname = \"p\"\n\n[dependencies.forge]\npath = \"../../.forge-kcl\"\n",
+		"two entries": "[dependencies]\nforge = { path = \"a\" }\nforge = { path = \"b\" }\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			modPath := writeFile(t, dir, "deploy/kcl/kcl.mod", mod)
+			res, err := MigrateKclMod(modPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Changed || res.Warning == "" {
+				t.Fatalf("want an untouched file with a warning, got %+v", res)
+			}
+			if got := readFile(t, modPath); got != mod {
+				t.Errorf("unmanaged kcl.mod was edited:\n%s", got)
+			}
+		})
+	}
+	// A missing file is silent.
+	if res, err := MigrateKclMod(filepath.Join(t.TempDir(), "kcl.mod")); err != nil || res != (Result{}) {
+		t.Errorf("missing file: (%+v, %v), want a silent no-op", res, err)
+	}
+}
+
+// TestCheckKclMods_RefusesUnmigratedProjects: render refuses a project whose
+// kcl.mod or lock still declares forge — kpm would resolve that declaration
+// ahead of the binary's module — and names `forge generate` as the fix.
+func TestCheckKclMods_RefusesUnmigratedProjects(t *testing.T) {
+	t.Run("declared dep", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "deploy/kcl/kcl.mod", legacyVendoredKclMod)
+		err := CheckKclMods(dir)
+		var ue *UnmigratedError
+		if !errors.As(err, &ue) {
+			t.Fatalf("CheckKclMods = %v, want *UnmigratedError", err)
+		}
+		if !strings.Contains(err.Error(), "forge generate") || !strings.Contains(err.Error(), "deploy/kcl/kcl.mod") {
+			t.Errorf("refusal must name the file and the fix:\n%v", err)
+		}
+	})
+	t.Run("stale lock only", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "deploy/kcl/kcl.mod", "[package]\nname = \"p\"\n\n[dependencies]\n")
+		writeFile(t, dir, "deploy/kcl/kcl.mod.lock", legacyForgeLock)
+		if err := CheckKclMods(dir); err == nil {
+			t.Fatal("a lock that still records forge must be refused: it shadows the binary's module")
+		}
+	})
+	t.Run("migrated and fresh projects pass", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "deploy/kcl/kcl.mod", "[package]\nname = \"p\"\n\n[dependencies]\n")
+		writeFile(t, dir, "deploy/kcl/kcl.mod.lock", "")
+		if err := CheckKclMods(dir); err != nil {
+			t.Fatalf("CheckKclMods on a migrated project = %v", err)
+		}
+		if err := CheckKclMods(t.TempDir()); err != nil {
+			t.Fatalf("CheckKclMods with no kcl.mod = %v", err)
 		}
 	})
 }
 
-func TestMaterialize_IdempotentRefreshesDriftAndDeletesStrays(t *testing.T) {
+// TestRemoveLegacyVendorDir deletes the project-local copy and is a no-op
+// when there is none.
+func TestRemoveLegacyVendorDir(t *testing.T) {
 	dir := t.TempDir()
-
-	changed, err := Materialize(dir, false)
-	if err != nil {
-		t.Fatalf("first materialize: %v", err)
+	writeFile(t, dir, ".forge-kcl/schema.k", "old\n")
+	removed, err := RemoveLegacyVendorDir(dir)
+	if err != nil || !removed {
+		t.Fatalf("RemoveLegacyVendorDir = (%v, %v), want (true, nil)", removed, err)
 	}
-	if !changed {
-		t.Fatalf("first materialize must report change")
+	if _, err := os.Stat(filepath.Join(dir, ".forge-kcl")); !os.IsNotExist(err) {
+		t.Errorf(".forge-kcl/ still present")
 	}
-	if !Present(dir) {
-		t.Fatalf("vendor dir not present after materialize")
-	}
-	// The embedded module's core files landed; excluded trees did not.
-	for _, want := range []string{"kcl.mod", "schema.k", "render.k", filepath.Join("workloads", "schema.k"), filepath.Join("lib", "services.k")} {
-		if _, err := os.Stat(filepath.Join(dir, VendorDirName, want)); err != nil {
-			t.Errorf("expected vendored file %s: %v", want, err)
-		}
-	}
-	for _, absent := range []string{"tests", "example", "embed.go", "README.md"} {
-		if _, err := os.Stat(filepath.Join(dir, VendorDirName, absent)); err == nil {
-			t.Errorf("%s must not be vendored", absent)
-		}
-	}
-
-	// Second run: byte-idempotent.
-	changed, err = Materialize(dir, false)
-	if err != nil {
-		t.Fatalf("second materialize: %v", err)
-	}
-	if changed {
-		t.Errorf("second materialize must be a no-op")
-	}
-
-	// Drift heal + stray deletion; a kpm-derived lock is tolerated.
-	schemaPath := filepath.Join(dir, VendorDirName, "schema.k")
-	if err := os.WriteFile(schemaPath, []byte("# drift"), 0o644); err != nil {
-		t.Fatalf("inject drift: %v", err)
-	}
-	strayPath := filepath.Join(dir, VendorDirName, "stale.k")
-	if err := os.WriteFile(strayPath, []byte("# stray"), 0o644); err != nil {
-		t.Fatalf("inject stray: %v", err)
-	}
-	lockPath := filepath.Join(dir, VendorDirName, "kcl.mod.lock")
-	if err := os.WriteFile(lockPath, []byte("[dependencies]\n"), 0o644); err != nil {
-		t.Fatalf("inject lock: %v", err)
-	}
-	changed, err = Materialize(dir, false)
-	if err != nil {
-		t.Fatalf("heal materialize: %v", err)
-	}
-	if !changed {
-		t.Errorf("heal materialize must report change")
-	}
-	if got := readFile(t, schemaPath); got == "# drift" {
-		t.Errorf("drifted file not healed")
-	}
-	if _, err := os.Stat(strayPath); err == nil {
-		t.Errorf("stray file not deleted")
-	}
-	if _, err := os.Stat(lockPath); err != nil {
-		t.Errorf("kpm lock must be tolerated, got %v", err)
+	if removed, err := RemoveLegacyVendorDir(dir); err != nil || removed {
+		t.Errorf("second call = (%v, %v), want (false, nil)", removed, err)
 	}
 }
 
-// TestMaterialize_JournalsForRollback: a `forge generate` that fails after
-// the vendor sync must hand .forge-kcl/ back exactly as it found it. The
-// vendor sync wrote with bare os.WriteFile / os.Remove, invisible to the
-// rollback journal, so a failed run reported "no forge-written files needed
-// reverting (tree is unchanged)" while leaving the vendored schema rewritten,
-// a stray deleted and the version stamp moved.
-func TestMaterialize_JournalsForRollback(t *testing.T) {
+// TestMigration_JournalsForRollback: a `forge generate` that fails after the
+// migration step must hand kcl.mod, its lock and the legacy .forge-kcl/ back
+// exactly as it found them. Bare writes and removals are invisible to the
+// rollback journal, so a failed run would report an unchanged tree while
+// leaving the project half-migrated (the #271 failure, carried forward).
+func TestMigration_JournalsForRollback(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Materialize(dir, false); err != nil {
-		t.Fatalf("seed materialize: %v", err)
-	}
-	vendor := filepath.Join(dir, VendorDirName)
-	schemaPath := filepath.Join(vendor, "schema.k")
-	strayPath := filepath.Join(vendor, "stale.k")
-	stampPath := filepath.Join(vendor, StampFileName)
-	for path, body := range map[string]string{
-		schemaPath: "# pre-run schema\n",
-		strayPath:  "# pre-run stray\n",
-		stampPath:  "v0.0.0-pre-run\n",
-	} {
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	kclMod := filepath.Join(dir, "deploy", "kcl", "kcl.mod")
-	if err := os.MkdirAll(filepath.Dir(kclMod), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(kclMod, []byte(legacyGitTagKclMod), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	modPath := writeFile(t, dir, "deploy/kcl/kcl.mod", legacyVendoredKclMod)
+	lockPath := writeFile(t, dir, "deploy/kcl/kcl.mod.lock", legacyForgeLock)
+	schemaPath := writeFile(t, dir, ".forge-kcl/schema.k", "# pre-run schema\n")
+	stampPath := writeFile(t, dir, ".forge-kcl/.forge-version", "v0.1.17\n")
 
 	checksums.BeginRollbackJournal(dir)
 	t.Cleanup(checksums.CommitRollback)
-	if res, err := EnsureVendorDep(kclMod, dir); err != nil || !res.Changed {
-		t.Fatalf("EnsureVendorDep = %+v, %v; want a rewrite", res, err)
+	if res, err := MigrateKclMod(modPath); err != nil || !res.Changed {
+		t.Fatalf("MigrateKclMod = %+v, %v; want a rewrite", res, err)
 	}
-	if changed, err := Materialize(dir, true); err != nil || !changed {
-		t.Fatalf("Materialize = %v, %v; want a change", changed, err)
+	if removed, err := RemoveLegacyVendorDir(dir); err != nil || !removed {
+		t.Fatalf("RemoveLegacyVendorDir = %v, %v; want a removal", removed, err)
 	}
 	checksums.RestoreRollback(dir)
 
 	for path, want := range map[string]string{
+		modPath:    legacyVendoredKclMod,
+		lockPath:   legacyForgeLock,
 		schemaPath: "# pre-run schema\n",
-		strayPath:  "# pre-run stray\n",
-		stampPath:  "v0.0.0-pre-run\n",
-		kclMod:     legacyGitTagKclMod,
+		stampPath:  "v0.1.17\n",
 	} {
 		if got := readFile(t, path); got != want {
-			t.Errorf("%s after rollback = %q, want the pre-run bytes %q", filepath.Base(path), got, want)
+			t.Errorf("%s not restored by rollback:\ngot  %q\nwant %q", path, got, want)
 		}
 	}
 }
 
-// TestScaffoldTemplateEmitsTheVendoredDep: the template must emit the
-// vendored relative path DIRECTLY, so a scaffold is resolvable the
-// instant it is written rather than depending on a later patch.
-//
-// The template previously emitted a published git tag here and the
-// vendor patch only ran on dev builds, so a released forge produced a
-// kcl.mod pointing at a tag that did not exist.
-func TestScaffoldTemplateEmitsTheVendoredDep(t *testing.T) {
+// TestScaffoldTemplateDeclaresNoForgeDependency: the scaffold kcl.mod must
+// not declare the module in any spelling, and must already be what
+// migration produces, so `forge generate` never rewrites a fresh scaffold
+// and the file is identical under every forge build.
+func TestScaffoldTemplateDeclaresNoForgeDependency(t *testing.T) {
 	rendered, err := templates.DeployTemplates().Render("kcl/kcl.mod.tmpl", struct{ ProjectName string }{"proj"})
 	if err != nil {
 		t.Fatalf("render kcl.mod.tmpl: %v", err)
 	}
-	dir := t.TempDir()
-	path := writeKclMod(t, dir, "deploy/kcl/kcl.mod", string(rendered))
-
-	wantDep, err := VendorDepPath(path, dir)
-	if err != nil {
-		t.Fatalf("VendorDepPath: %v", err)
-	}
-	if !strings.Contains(string(rendered), vendorDepLine(wantDep)) {
-		t.Fatalf("kcl.mod.tmpl must emit %q directly:\n%s", vendorDepLine(wantDep), rendered)
-	}
-	if strings.Contains(string(rendered), "git = ") {
-		t.Fatalf("kcl.mod.tmpl still emits a git dependency — the scaffold must be born vendored:\n%s", rendered)
-	}
-
-	// The patcher must AGREE with the template: what the scaffold emits
-	// is already canonical, so re-patching it is a no-op. A mismatch here
-	// means every `forge generate` would rewrite a fresh scaffold.
-	if kind, _, _ := classifyDep(strings.Split(string(rendered), "\n")); kind != DepVendored {
-		t.Fatalf("patcher classifies the scaffold template output as %v, want DepVendored", kind)
-	}
-	res, err := EnsureVendorDep(path, dir)
-	if err != nil {
-		t.Fatalf("EnsureVendorDep on rendered template: %v", err)
-	}
-	if res.Warning != "" {
-		t.Fatalf("patcher does not recognize the scaffold template output: %+v", res)
-	}
-}
-
-// fixtureKclMod is the minimal-project kcl.mod shape: the vendored path is
-// declared, but nothing has materialized .forge-kcl/ yet (F4).
-const fixtureKclMod = "[package]\nname = \"e2eh\"\n\n[dependencies]\nforge = { path = \"../../.forge-kcl\" }\n"
-
-// TestEnsurePresent_MaterializesAbsentVendorDir is the F4 regression at the
-// kclvendor seam: a kcl.mod that points at an absent .forge-kcl/ gets the
-// copy, stamped, without kcl.mod being touched.
-func TestEnsurePresent_MaterializesAbsentVendorDir(t *testing.T) {
-	dir := t.TempDir()
-	modPath := writeKclMod(t, dir, "deploy/kcl/kcl.mod", fixtureKclMod)
-
-	wrote, err := EnsurePresent(dir)
-	if err != nil {
-		t.Fatalf("EnsurePresent: %v", err)
-	}
-	if !wrote || !Present(dir) {
-		t.Fatalf("wrote=%v present=%v; an absent vendor dir the kcl.mod points at must be materialized", wrote, Present(dir))
-	}
-	if stale, _ := Stale(dir); stale {
-		t.Error("an on-demand copy must carry this forge's stamp")
-	}
-	if got := readFile(t, modPath); got != fixtureKclMod {
-		t.Errorf("render-time vendoring must never edit kcl.mod; got:\n%s", got)
-	}
-	// Second call: present → no-op.
-	if wrote, err := EnsurePresent(dir); err != nil || wrote {
-		t.Errorf("second EnsurePresent = (%v, %v); want (false, nil)", wrote, err)
-	}
-}
-
-// TestEnsurePresent_NeverTouchesExistingOrForeignShapes pins the narrow
-// scope: an existing copy (even a stale one) is generate's to refresh, and
-// a kcl.mod in any non-vendored shape — or pointing elsewhere — gets no
-// orphan directory.
-func TestEnsurePresent_NeverTouchesExistingOrForeignShapes(t *testing.T) {
-	t.Run("existing copy untouched", func(t *testing.T) {
-		dir := t.TempDir()
-		writeKclMod(t, dir, "deploy/kcl/kcl.mod", fixtureKclMod)
-		marker := writeKclMod(t, dir, VendorDirName+"/kcl.mod", "old\n")
-		if wrote, err := EnsurePresent(dir); err != nil || wrote {
-			t.Fatalf("EnsurePresent = (%v, %v); want (false, nil)", wrote, err)
+	for _, banned := range []string{"forge =", ".forge-kcl", "git ="} {
+		if strings.Contains(string(rendered), banned) {
+			t.Errorf("kcl.mod.tmpl must not contain %q — forge supplies the module from the binary:\n%s", banned, rendered)
 		}
-		if readFile(t, marker) != "old\n" {
-			t.Error("an existing vendor copy must never be rewritten at render time")
-		}
-	})
-	for name, mod := range map[string]string{
-		"git tag":      legacyGitTagKclMod,
-		"no forge dep": "[package]\nname = \"x\"\n",
-		"elsewhere":    "[dependencies]\nforge = { path = \"../.forge-kcl\" }\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			writeKclMod(t, dir, "deploy/kcl/kcl.mod", mod)
-			if wrote, err := EnsurePresent(dir); err != nil || wrote {
-				t.Fatalf("EnsurePresent = (%v, %v); want (false, nil)", wrote, err)
-			}
-			if _, err := os.Stat(filepath.Join(dir, VendorDirName)); !os.IsNotExist(err) {
-				t.Errorf("no vendor dir may be created for a %s kcl.mod (stat err %v)", name, err)
-			}
-		})
 	}
-}
-
-// TestMaterialize_NoOpRefreshKeepsThePinnedStamp is the item-13 regression: a
-// project whose vendored module was stamped by a released forge (v0.1.17) ran
-// `forge generate` with a local `+dirty` build whose embedded module is
-// byte-identical. Generate reported "0 changed" yet rewrote
-// .forge-kcl/.forge-version to the dirty build — implicitly re-pinning the
-// project to a version no one can fetch, in a file that is committed.
-func TestMaterialize_NoOpRefreshKeepsThePinnedStamp(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Materialize(dir, false); err != nil {
-		t.Fatalf("materialize: %v", err)
+	path := writeFile(t, dir, "deploy/kcl/kcl.mod", string(rendered))
+	res, err := MigrateKclMod(path)
+	if err != nil || res.Changed || res.Warning != "" {
+		t.Fatalf("migration must be a no-op on the scaffold template, got (%+v, %v)", res, err)
 	}
-	stampPath := filepath.Join(dir, VendorDirName, StampFileName)
-	const pinned = "v0.1.17"
-	if err := os.WriteFile(stampPath, []byte(pinned+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
-	buildinfo.Set("v0.1.18-0.20260926120145-7787cb0e2b05+dirty", "", "7787cb0e2b05")
-
-	changed, err := Materialize(dir, false)
-	if err != nil {
-		t.Fatalf("materialize: %v", err)
-	}
-	if changed {
-		t.Error("a byte-identical refresh must report no change")
-	}
-	if got := strings.TrimSpace(readFile(t, stampPath)); got != pinned {
-		t.Fatalf("stamp = %q, want the pinned %q left untouched", got, pinned)
-	}
-
-	// When the bytes DO change, the stamp follows them.
-	if err := os.WriteFile(filepath.Join(dir, VendorDirName, "kcl.mod"), []byte("drift\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Materialize(dir, true); err != nil {
-		t.Fatalf("materialize: %v", err)
-	}
-	if got := strings.TrimSpace(readFile(t, stampPath)); got != buildinfo.Version() {
-		t.Fatalf("after a real refresh stamp = %q, want the running forge %q", got, buildinfo.Version())
+	if err := CheckKclMods(dir); err != nil {
+		t.Fatalf("the scaffold template must render without migration: %v", err)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -64,14 +63,11 @@ func TestReleaseBuildScaffoldResolvesAndRenders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read deploy/kcl/kcl.mod: %v", err)
 	}
-	if strings.Contains(string(kclMod), "git = ") {
-		t.Fatalf("release scaffold emits a git dependency — it must be born vendored:\n%s", kclMod)
+	if has, _ := kclvendor.HasForgeDep(kclModPath); has {
+		t.Fatalf("release scaffold declares the forge KCL module — the binary supplies it; kcl.mod must not:\n%s", kclMod)
 	}
-	if !kclvendor.Present(tmp) {
-		t.Fatalf("release scaffold did not materialize %s/", kclvendor.VendorDirName)
-	}
-	if stale, stamped := kclvendor.Stale(tmp); stale {
-		t.Errorf("freshly scaffolded vendor copy reports stale (stamp %q)", stamped)
+	if _, err := os.Stat(filepath.Join(tmp, kclvendor.LegacyVendorDirName)); !os.IsNotExist(err) {
+		t.Fatalf("release scaffold materialized a project-local %s/ (stat err %v)", kclvendor.LegacyVendorDirName, err)
 	}
 
 	// The pipeline-generated config trio, which a bare Generate has not

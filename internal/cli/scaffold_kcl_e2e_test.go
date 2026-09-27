@@ -15,11 +15,9 @@ import (
 //
 // This guards two things:
 //  1. The scaffold's KCL files `import forge` correctly — a broken
-//     module import is caught here rather than on first deploy. On a
-//     dev-built forge binary the project is BORN with the module
-//     vendored into `.forge-kcl/` and deploy/kcl/kcl.mod pointing at
-//     it by relative path (internal/kclvendor), so no kcl.mod rewrite
-//     is needed — the render exercises exactly what a user gets.
+//     module import is caught here rather than on first deploy. The
+//     module comes from the rendering binary (internal/kclvendor), so
+//     the render exercises exactly what a user gets on any machine.
 //  2. The -D override contract documented in main.k (via `option()`)
 //     stays accepted by the entrypoint. NOTE: whether the tag appears
 //     in the output depends on deploy/kcl/workloads.k declaring
@@ -53,16 +51,14 @@ func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
 	devManifest := filepath.Join(projectDir, "deploy", "kcl", "dev", "main.k")
 	assertPathExistsE2E(t, devManifest)
 
-	// Born-vendored: the dev-build scaffold must have materialized the
-	// embedded forge KCL module and pointed kcl.mod at it by RELATIVE
-	// path — no hand-patching, no network, no forge checkout needed.
-	assertPathExistsE2E(t, filepath.Join(projectDir, ".forge-kcl", "kcl.mod"))
+	// No forge dependency and no module copy: the render supplies
+	// `import forge` from the binary — no network, no forge checkout.
 	kclMod, err := os.ReadFile(filepath.Join(projectDir, "deploy", "kcl", "kcl.mod"))
 	if err != nil {
 		t.Fatalf("read deploy/kcl/kcl.mod: %v", err)
 	}
-	if !strings.Contains(string(kclMod), `forge = { path = "../../.forge-kcl" }`) {
-		t.Fatalf("deploy/kcl/kcl.mod does not carry the relative vendored dep:\n%s", kclMod)
+	if strings.Contains(string(kclMod), "forge =") {
+		t.Fatalf("deploy/kcl/kcl.mod declares the forge module — the binary supplies it:\n%s", kclMod)
 	}
 
 	// Use a distinctive tag so string-matching is unambiguous.

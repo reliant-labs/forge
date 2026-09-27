@@ -137,8 +137,8 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		// KCL deploy manifests. Per-env main.k files only — the
 		// shared schemas (Service / Operator / Frontend / CronJob,
 		// deploy union, render layer) live in the upstream `forge`
-		// KCL module declared in deploy/kcl/kcl.mod (the KCL package
-		// root; dev builds vendor the module into .forge-kcl/).
+		// KCL module, which the binary supplies at render time;
+		// deploy/kcl/kcl.mod is the KCL package root.
 		"deploy/kcl/kcl.mod",
 		"deploy/kcl/dev/main.k",
 		"deploy/kcl/staging/main.k",

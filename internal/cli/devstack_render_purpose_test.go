@@ -132,7 +132,7 @@ func writePortblockProject(t *testing.T, dir, env, mainK string) {
 	t.Helper()
 	files := map[string]string{
 		"forge.yaml":                    "name: portblock\nmodule_path: github.com/example/portblock\n",
-		"deploy/kcl/kcl.mod":            "[package]\nname = \"portblock-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + forgeModuleRoot(t) + "\" }\n",
+		"deploy/kcl/kcl.mod":            "[package]\nname = \"portblock-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n",
 		"deploy/kcl/" + env + "/main.k": mainK,
 	}
 	for rel, body := range files {

@@ -20,7 +20,7 @@ import (
 func writeSimpleBackendProject(t *testing.T, name, deployBlock string) string {
 	t.Helper()
 	dir := t.TempDir()
-	kclMod := "[package]\nname = \"simplebackend\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + forgeModuleRoot(t) + "\" }\n"
+	kclMod := "[package]\nname = \"simplebackend\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
 	// The env registry deliberately differs from the image's registry: the
 	// app owner's pinned reference must survive both it and the image_tag.
 	main := `import forge
@@ -299,7 +299,7 @@ func TestSimpleBackend_NetworkNoneDropsService(t *testing.T) {
 // that Secret, with key uri.
 func TestManagedDatabase_BackendReachesDatabase(t *testing.T) {
 	dir := t.TempDir()
-	kclMod := "[package]\nname = \"threetier\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + forgeModuleRoot(t) + "\" }\n"
+	kclMod := "[package]\nname = \"threetier\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
 	main := `import forge
 import forge.tiers
 

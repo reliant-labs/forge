@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/kcl"
 )
 
@@ -53,7 +52,7 @@ import (
 //	store    EstimateStore                 internal/db/store_gen.go:214  go doc ./internal/db EstimateStore
 //	handler  roofops.RecalculateEstimate   internal/handlers/roofops/rpc_recalculate_estimate.go:24  unwired-stub
 //	hook     useListEstimates              frontends/dashboard/src/hooks/roofops-service-hooks_gen.ts:212
-//	deploy-target FirebaseHosting          .forge-kcl/schema.k:1851  on=Frontend  required=project,site,public_dir  …
+//	deploy-target FirebaseHosting          forge:kcl/schema.k:1851  on=Frontend  required=project,site,public_dir  …
 
 type shape struct {
 	Kind   string // rpc | message | enum | table | store | handler | hook | deploy-target
@@ -382,6 +381,11 @@ func scanStores(root string) []shape {
 // Unlike every other scanner this one does not read projectDir — the schemas
 // ride inside the binary, so it answers in a non-project directory too. The
 // parameter is kept for signature symmetry with the rest of collectShapes.
+// kclModuleRefPrefix labels a location inside forge's own KCL module
+// (github.com/reliant-labs/forge/kcl), which the binary supplies at render
+// time rather than the project carrying a copy.
+const kclModuleRefPrefix = "forge:kcl/"
+
 func scanDeployTargets(_ string) []shape {
 	targets, err := kcl.DeployTargets()
 	if err != nil {
@@ -405,9 +409,12 @@ func scanDeployTargets(_ string) []shape {
 		}
 		file := t.File
 		if file != "" {
-			// Locate it where a reader can actually open it: the module is
-			// vendored into the project at .forge-kcl/ on every generate.
-			file = filepath.Join(kclvendor.VendorDirName, file)
+			// The schema lives in forge's KCL module, which the binary
+			// supplies at render time — it is not a file in the project.
+			// Name it as a path inside that module (github.com/
+			// reliant-labs/forge/kcl/<file>), with a prefix no project path
+			// can have, so nobody greps their tree for it.
+			file = kclModuleRefPrefix + file
 		}
 		out = append(out, shape{"deploy-target", t.Name, file, t.Line, detail})
 	}

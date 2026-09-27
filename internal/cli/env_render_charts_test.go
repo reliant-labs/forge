@@ -73,7 +73,7 @@ func writeChartRenderProject(t *testing.T) string {
 		}
 	}
 	write("forge.yaml", "name: charttest\nmodule_path: github.com/example/charttest\nversion: \"0.1.0\"\n")
-	write("deploy/kcl/kcl.mod", "[package]\nname = \"charttest-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \""+forgeModuleRoot(t)+"\" }\n")
+	write("deploy/kcl/kcl.mod", "[package]\nname = \"charttest-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n")
 	write("deploy/kcl/prod/main.k", `import forge
 
 _bundle = forge.Bundle {

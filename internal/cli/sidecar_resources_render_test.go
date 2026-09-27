@@ -33,10 +33,9 @@ import (
 // fallback is the half that regresses silently — nothing about a missing
 // resources block looks wrong in a diff.
 func TestSidecarRendersResources(t *testing.T) {
-	moduleRoot := forgeModuleRoot(t)
 	dir := t.TempDir()
 
-	kclMod := "[package]\nname = \"sidecarres\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + moduleRoot + "\" }\n"
+	kclMod := "[package]\nname = \"sidecarres\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
 	if err := os.WriteFile(filepath.Join(dir, "kcl.mod"), []byte(kclMod), 0o644); err != nil {
 		t.Fatal(err)
 	}

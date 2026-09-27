@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 )
 
@@ -40,8 +39,7 @@ func staticSiteRenderProject(t *testing.T, deployBody string) FrontendEntity {
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mod := "[package]\nname = \"t\"\nedition = \"v0.11.4\"\n\n[dependencies]\nforge = { path = " +
-		strconv.Quote(forgeKcl) + " }\n"
+	mod := "[package]\nname = \"t\"\nedition = \"v0.11.4\"\n\n[dependencies]\n"
 	if err := os.WriteFile(filepath.Join(kclParent, "kcl.mod"), []byte(mod), 0o644); err != nil {
 		t.Fatal(err)
 	}

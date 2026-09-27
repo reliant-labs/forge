@@ -47,10 +47,11 @@ func TestScanDeployTargetsReflectsSchema(t *testing.T) {
 		if s.Line != w.Line {
 			t.Errorf("%s: line %d, want %d", w.Name, s.Line, w.Line)
 		}
-		// file:line must be openable in a generated project, where the
-		// module is vendored under .forge-kcl/.
-		if !strings.HasPrefix(s.File, ".forge-kcl/") {
-			t.Errorf("%s: file %q should be project-relative under .forge-kcl/", w.Name, s.File)
+		// The schema is in forge's KCL module, which the binary supplies —
+		// not a project file — so it is labelled as a path inside that
+		// module, never as a project-relative path someone would grep for.
+		if !strings.HasPrefix(s.File, kclModuleRefPrefix) {
+			t.Errorf("%s: file %q should name a path in forge's KCL module (%s…)", w.Name, s.File, kclModuleRefPrefix)
 		}
 		// Which workload kind accepts the target is the distinction users
 		// are missing, so it must be in the output, not just the model.

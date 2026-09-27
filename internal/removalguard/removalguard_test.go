@@ -416,6 +416,25 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "the vendored KCL-module downgrade guard",
+		Why: "`forge generate --allow-kcl-downgrade` and kclvendor.DowngradeError are gone. They " +
+			"guarded a committed project-local .forge-kcl/ copy against an older forge rewriting it; " +
+			"the module now comes from the rendering binary as a KCL external package, so there is " +
+			"no shared copy to protect (docs/adr/0003-kcl-module-from-the-binary.md). A surviving " +
+			"reference hands the user a flag that no longer exists.",
+		Patterns: []*regexp.Regexp{
+			regexp.MustCompile(`--allow-kcl-downgrade\b`),
+			regexp.MustCompile(`\bAllowKCLDowngrade\b|\bDowngradeError\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name:   "the ADR that records the removal",
+				Reason: "ADR 0003 explains why the refusal and its flag were deleted; naming them is the record, not a reference.",
+				Paths:  []string{"docs/adr/0003-kcl-module-from-the-binary.md"},
+			},
+		},
+	},
+	{
 		Name: "packs",
 		Why: "The pack subsystem was retired wholesale — there is no pack root, no pack " +
 			"manifest and no `packs` / `pack_overrides` / `features.packs` config key. What " +

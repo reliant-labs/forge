@@ -20,35 +20,15 @@ AwEHoUQDQgAEGdqz6sZl229WS3ixXQmFory5kkkus2UT4cBGQuO3dpMN2FQ/8260
 9YszSMpty7qF7I3/9elHmcVvzBglAF7CrQ==
 -----END EC PRIVATE KEY-----`
 
-// forgeModuleRoot resolves <repo>/kcl from internal/cli.
-func forgeModuleRoot(t *testing.T) string {
-	t.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	root := wd
-	for range []int{1, 2, 3, 4} {
-		cand := filepath.Join(root, "kcl", "kcl.mod")
-		if _, err := os.Stat(cand); err == nil {
-			return filepath.Join(root, "kcl")
-		}
-		root = filepath.Dir(root)
-	}
-	t.Fatalf("could not locate kcl/ module root from %s", wd)
-	return ""
-}
-
 // TestTestJWKSRendersThroughPlugin proves the forge.TestJWKS path end to
 // end through kclrender (which registers the forge.derive_jwk plugin):
 // the builder emits ConfigMap + Deployment + Service, the ConfigMap holds
 // a JWKS document whose single key is the PUBLIC JWK derived from the
 // ES256 private PEM, and the private key NEVER appears in the render.
 func TestTestJWKSRendersThroughPlugin(t *testing.T) {
-	moduleRoot := forgeModuleRoot(t)
 	dir := t.TempDir()
 
-	kclMod := "[package]\nname = \"jwkstest\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + moduleRoot + "\" }\n"
+	kclMod := "[package]\nname = \"jwkstest\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
 	if err := os.WriteFile(filepath.Join(dir, "kcl.mod"), []byte(kclMod), 0o644); err != nil {
 		t.Fatal(err)
 	}

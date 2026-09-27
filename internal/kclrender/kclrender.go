@@ -11,155 +11,45 @@
 package kclrender
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
-	"golang.org/x/mod/semver"
 	"kcl-lang.io/kpm/pkg/client"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/devstack"
-	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/internal/kubeconfig"
 )
 
-// staleWarnOnce keeps the vendored-module drift notice to one line per
-// process. A single command renders every env in a loop, and repeating
-// the same warning three times reads like three problems.
-var staleWarnOnce sync.Once
-
-// warnIfVendorStale tells the user, once, when the vendored forge KCL
-// module under workDir was materialized by a different forge version
-// than the one rendering now.
+// forgeModuleArg resolves the external-package binding that supplies
+// `import forge` from THIS binary's embedded module, after refusing a
+// project whose kcl.mod still declares the module itself.
 //
-// This is the counterweight to vendoring being the only resolution
-// mechanism: the module refreshes when `forge generate` runs and at no
-// other time, so a project can render against a copy an older forge
-// wrote. Without this the symptom of that drift is a schema error that
-// names a field rather than the stale module, and the fix is not obvious
-// from it.
+// This is the whole of how a project resolves forge's KCL: no kcl.mod
+// dependency, no project-local copy, no network. The binary rendering the
+// project is the module version it renders against — for a project pinned
+// to a released forge, CI's `go install …@vX.Y.Z` is that release's module.
+// See internal/kclvendor.
 //
-// The fix is NOT always `forge generate`. When this binary is newer than
-// the forge the project pins, generate refuses at its version check — so
-// advising it walked users straight into that refusal (which, before the
-// check moved to the front of the pipeline, also rewrote .forge-kcl/ on its
-// way out). staleVendorAdvice names the fix generate would actually accept.
-func warnIfVendorStale(workDir string) {
-	stale, stamped := kclvendor.Stale(workDir)
-	if !stale {
-		return
+// The unmigrated-kcl.mod refusal lives here, at the one seam every render
+// passes through, because the failure it prevents is silent: kpm resolves a
+// declared `forge` dependency AHEAD of an external package, so an old
+// `forge = { path = "../../.forge-kcl" }` line would render against whatever
+// stale copy sat on disk — or fail on a missing directory with kpm's own
+// `kcl mod add` advice, which is wrong for a forge project.
+func forgeModuleArg(workDir string) (string, error) {
+	if err := kclvendor.CheckKclMods(workDir); err != nil {
+		return "", err
 	}
-	staleWarnOnce.Do(func() {
-		assessment, assessed := forgecompat.Assess(workDir)
-		fmt.Fprint(os.Stderr, staleVendorAdvice(stamped, buildinfo.Version(), assessment, assessed,
-			kclvendor.RefreshRefusal(workDir), projectHasTask(workDir, "pin:forge")))
-	})
-}
-
-// staleVendorAdvice renders the stale-vendor warning. Pure, so each branch
-// is testable without a module graph.
-//
-// assessment/assessed are forgecompat's verdict for the project; refusal is
-// kclvendor.RefreshRefusal (a copy vendored by a NEWER forge, which
-// generate's downgrade guard will not overwrite); pinTask reports whether
-// the project declares a `pin:forge` task.
-func staleVendorAdvice(stamped, running string, assessment forgecompat.Assessment, assessed bool, refusal error, pinTask bool) string {
-	was := stamped
-	if was == "" {
-		was = "an older forge (unstamped)"
-	}
-	head := fmt.Sprintf("⚠️  %s/ was materialized by %s; this is forge %s.", kclvendor.VendorDirName, was, running)
-
-	if assessed && assessment.Verdict != forgecompat.OK {
-		pinned := assessment.ProjectVersion
-		var why string
-		if assessment.Verdict == forgecompat.StalePin {
-			why = fmt.Sprintf("this forge is newer than the forge the project pins (%s %s)", forgecompat.ModulePath, pinned)
-		} else {
-			why = fmt.Sprintf("this forge is an unreleased build and the project pins the published %s %s", forgecompat.ModulePath, pinned)
-		}
-		var b strings.Builder
-		fmt.Fprintf(&b, "%s\n    Do NOT run `forge generate` with this binary: %s, so generate refuses at its version check.\n", head, why)
-		b.WriteString("    Either:\n")
-		fmt.Fprintf(&b, "      • use the pinned forge, then run `forge generate` with it:  %s\n", installCommand(pinned))
-		if pinTask {
-			b.WriteString("      • or move the pin to this forge deliberately:  task pin:forge   (then `forge generate`)\n")
-		} else {
-			fmt.Fprintf(&b, "      • or move the pin to this forge deliberately:  go get %s@<this forge's version> && go mod tidy, then `forge project upgrade` and `forge generate`\n", forgecompat.ModulePath)
-		}
-		return b.String()
-	}
-
-	var dErr *kclvendor.DowngradeError
-	if errors.As(refusal, &dErr) {
-		return fmt.Sprintf("%s\n    Do NOT run `forge generate` with this binary: the copy on disk was vendored by a NEWER forge, and generate refuses to downgrade it.\n"+
-			"    Use the forge that vendored it:  %s\n", head, installCommand(dErr.Stamped))
-	}
-
-	return head + " Run `forge generate` to refresh the vendored KCL module.\n"
-}
-
-// installCommand is the command that puts forge at version v on PATH.
-//
-// NOT buildinfo.IsDevVersion: that calls every pseudo-version "dev", but a
-// pushed pseudo-version is exactly what control-plane pins, and the
-// project's own `go list -m` resolving it proves the proxy serves it. Only
-// build metadata (`+dirty`) or a non-semver string names no fetchable ref,
-// and those get a rebuild instruction instead of a `go install` that fails.
-func installCommand(v string) string {
-	if !semver.IsValid(v) || strings.Contains(v, "+") {
-		return "rebuild forge from a checkout at " + v
-	}
-	return "CGO_ENABLED=1 go install " + forgecompat.ModulePath + "/cmd/forge@" + v
-}
-
-// projectHasTask reports whether the project's Taskfile declares the named
-// task, so advice can name the project's own pin workflow when it has one
-// instead of the raw commands behind it.
-func projectHasTask(projectDir, task string) bool {
-	re := regexp.MustCompile(`(?m)^[ \t]+` + regexp.QuoteMeta(task) + `:[ \t]*$`)
-	for _, name := range []string{"Taskfile.yml", "Taskfile.yaml"} {
-		if data, err := os.ReadFile(filepath.Join(projectDir, name)); err == nil && re.Match(data) {
-			return true
-		}
-	}
-	return false
-}
-
-// vendorMu serializes the on-demand materialization: one command can
-// render several envs concurrently against the same project.
-var vendorMu sync.Mutex
-
-// EnsureVendor materializes the vendored forge KCL module on demand when
-// the project's kcl.mod points at a `.forge-kcl/` that is not on disk (a
-// fresh checkout, or a project that never ran `forge generate`). See
-// kclvendor.EnsurePresent for why this is safe at render time.
-//
-// Run calls it on every render. It is exported so a command that audits
-// its own render's writes (`forge env render`'s write check) can do this
-// forge-owned, announced step BEFORE its before-picture, and not report
-// forge's vendoring as a KCL file.write.
-func EnsureVendor(workDir string) error {
-	vendorMu.Lock()
-	defer vendorMu.Unlock()
-	wrote, err := kclvendor.EnsurePresent(workDir)
+	arg, err := kclvendor.ExternalPkgArg()
 	if err != nil {
-		return fmt.Errorf("vendor the forge KCL module into %s/ (run `forge generate` to retry with full diagnostics): %w",
-			kclvendor.VendorDirName, err)
+		return "", fmt.Errorf("materialize the forge KCL module: %w", err)
 	}
-	if wrote {
-		fmt.Fprintf(os.Stderr, "  ✅ Vendored forge KCL module → %s/ (it was missing; `forge generate` keeps it refreshed)\n",
-			kclvendor.VendorDirName)
-	}
-	return nil
+	return arg, nil
 }
 
 // pluginPreflight refuses the render when this binary cannot service
@@ -306,9 +196,9 @@ func withDevStackDArgs(dArgs []string) []string {
 // file — and returns the raw JSON result.
 //
 // workDir is the process cwd KCL resolves relative reads against, and the
-// directory kpm resolves the package's kcl.mod dependencies from (including
-// the relative `.forge-kcl/` vendor path forge points every project at), so
-// it is part of the contract.
+// project root whose managed kcl.mod files are checked for a legacy `forge`
+// dependency (forgeModuleArg), so it is part of the contract. The `forge`
+// module itself is supplied from this binary as an external package.
 // dArgs are `-D key=value` top-level option assignments (e.g. "env=dev").
 // `kubeconfig` is appended here for every render — see withKubeconfigDArg —
 // as are the active dev-stack git facts, see withDevStackDArgs.
@@ -324,10 +214,10 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 		return nil, err
 	}
 
-	if err := EnsureVendor(workDir); err != nil {
+	forgeArg, err := forgeModuleArg(workDir)
+	if err != nil {
 		return nil, err
 	}
-	warnIfVendorStale(workDir)
 
 	c, err := client.NewKpmClient()
 	if err != nil {
@@ -337,6 +227,7 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 		client.WithRunSourceUrl(source),
 		client.WithWorkDir(workDir),
 		client.WithArguments(withKubeconfigDArg(withDevStackDArgs(dArgs))),
+		client.WithExternalPkgs([]string{forgeArg}),
 		client.WithLogger(os.Stderr),
 	)
 	if err != nil {

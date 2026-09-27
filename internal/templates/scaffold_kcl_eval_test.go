@@ -41,17 +41,18 @@ func TestScaffoldedIngressEvaluates(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	// Born-vendored dev scaffold: relative dep + materialized module.
+	// The dev scaffold declares no forge dependency and carries no module
+	// copy: the render below supplies `import forge` from this binary.
 	kclModPath := filepath.Join(tmp, "deploy", "kcl", "kcl.mod")
 	kclMod, err := os.ReadFile(kclModPath)
 	if err != nil {
 		t.Fatalf("read deploy/kcl/kcl.mod: %v", err)
 	}
-	if !strings.Contains(string(kclMod), `forge = { path = "../../.forge-kcl" }`) {
-		t.Fatalf("dev scaffold kcl.mod not vendored:\n%s", kclMod)
+	if strings.Contains(string(kclMod), "forge =") {
+		t.Fatalf("dev scaffold kcl.mod declares the forge module — the binary supplies it:\n%s", kclMod)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, ".forge-kcl", "kcl.mod")); err != nil {
-		t.Fatalf(".forge-kcl not materialized: %v", err)
+	if _, err := os.Stat(filepath.Join(tmp, ".forge-kcl")); !os.IsNotExist(err) {
+		t.Fatalf("dev scaffold materialized a project-local .forge-kcl/ (stat err %v)", err)
 	}
 
 	// Stub the pipeline-generated KCL-native config trio (`forge

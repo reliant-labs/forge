@@ -26,6 +26,9 @@ func TestRunNew_BridgedScaffoldIsTidyWithoutGenerate(t *testing.T) {
 		t.Skip("scaffolds a real project and runs `go mod tidy` in two modules (slow); runs in full mode and CI")
 	}
 
+	// Requires proto bootstrap during scaffold to write internal/app and gen/
+	requireProtoToolchain(t)
+
 	// Configure git identity for scaffold operations that may commit
 	t.Setenv("GIT_AUTHOR_NAME", "forge-test")
 	t.Setenv("GIT_AUTHOR_EMAIL", "forge-test@example.com")

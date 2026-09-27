@@ -23,7 +23,7 @@ _pg = forge.RenderedWorkload {
 }
 
 _bundle = forge.Bundle {
-    project = "barksocial"
+    project = "hounders"
     env = "dev"
     control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}
     secret_provider = forge.HostedSecrets {}

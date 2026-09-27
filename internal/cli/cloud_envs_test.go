@@ -390,13 +390,13 @@ func TestResolveEnvDestination_LocalCarriesKindAndEndpoint(t *testing.T) {
 
 func TestEnsureHostedEnv_SendsProjectAndKind(t *testing.T) {
 	fake := &fakeCPCaller{ensureID: "env-9"}
-	id, err := ensureHostedEnv(context.Background(), fake, deploytarget.HostedEnvRef{Project: "barksocial", Name: "dev", Kind: deploytarget.HostedEnvLocal})
+	id, err := ensureHostedEnv(context.Background(), fake, deploytarget.HostedEnvRef{Project: "hounders", Name: "dev", Kind: deploytarget.HostedEnvLocal})
 	if err != nil || id != "env-9" {
 		t.Fatalf("ensure = %q, %v", id, err)
 	}
 	c := fake.callsTo("controlplane.v1.DeployService/EnsureEnvironment")
 	spec, _ := c[0].Body["spec"].(map[string]any)
-	if spec["project"] != "barksocial" || spec["name"] != "dev" || spec["kind"] != "DEPLOY_ENVIRONMENT_KIND_LOCAL" {
+	if spec["project"] != "hounders" || spec["name"] != "dev" || spec["kind"] != "DEPLOY_ENVIRONMENT_KIND_LOCAL" {
 		t.Fatalf("spec = %v", spec)
 	}
 	if _, err := ensureHostedEnv(context.Background(), fake, deploytarget.HostedEnvRef{Name: "dev"}); err == nil {
@@ -406,7 +406,7 @@ func TestEnsureHostedEnv_SendsProjectAndKind(t *testing.T) {
 
 func TestHostedSecretSet_EnsuresWithProjectAndDerivedKind(t *testing.T) {
 	fake, _ := hostedFixture(t, nil)
-	withProjectName(t, "barksocial")
+	withProjectName(t, "hounders")
 	if err := runSecretSet(context.Background(), "dev", "K", "", strings.NewReader("v"), io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -416,8 +416,8 @@ func TestHostedSecretSet_EnsuresWithProjectAndDerivedKind(t *testing.T) {
 	}
 	spec := ensures[0].Body["spec"].(map[string]any)
 	// hostedFixture's env declares HostedSecrets and no tier → LOCAL.
-	if spec["project"] != "barksocial" || spec["kind"] != "DEPLOY_ENVIRONMENT_KIND_LOCAL" {
-		t.Fatalf("EnsureEnvironment spec = %v, want project=barksocial kind=LOCAL", spec)
+	if spec["project"] != "hounders" || spec["kind"] != "DEPLOY_ENVIRONMENT_KIND_LOCAL" {
+		t.Fatalf("EnsureEnvironment spec = %v, want project=hounders kind=LOCAL", spec)
 	}
 }
 
@@ -479,10 +479,10 @@ func TestBuildDeployGroups_LocalEnvIsNotHosted(t *testing.T) {
 
 func TestPullLocalSecrets_ResolvesByProjectThenPulls(t *testing.T) {
 	fake := &fakeCPCaller{
-		envs:    []map[string]any{{"id": "env-dev", "name": "dev", "project": "barksocial"}},
+		envs:    []map[string]any{{"id": "env-dev", "name": "dev", "project": "hounders"}},
 		secrets: []map[string]any{{"name": "STRIPE_SECRET_KEY", "value": "sk_pulled", "version": 2}},
 	}
-	got, err := pullLocalSecretsWith(context.Background(), fake, "dev", "barksocial", "https://cp")
+	got, err := pullLocalSecretsWith(context.Background(), fake, "dev", "hounders", "https://cp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestPullLocalSecrets_ResolvesByProjectThenPulls(t *testing.T) {
 
 func TestPullLocalSecrets_UnknownEnvIsEmptyNotError(t *testing.T) {
 	fake := &fakeCPCaller{}
-	got, err := pullLocalSecretsWith(context.Background(), fake, "dev", "barksocial", "https://cp")
+	got, err := pullLocalSecretsWith(context.Background(), fake, "dev", "hounders", "https://cp")
 	if err != nil || len(got) != 0 {
 		t.Fatalf("an env the control plane has not seen holds no values: got %v, %v", got, err)
 	}

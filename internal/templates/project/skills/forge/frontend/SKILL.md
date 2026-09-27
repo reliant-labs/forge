@@ -152,14 +152,14 @@ forge.Frontend {
 }
 ```
 
-Name the workload, never the hostname. Who resolves the reference depends on the env:
+Name the workload, never the hostname:
 
 | Env | Who resolves `forge.WorkloadURL` | Who writes `config.js` |
 |---|---|---|
 | **Hosted** (Bundle declares `control_plane` and runs tiers through it) | The control plane. It allocates the hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync. The release artifact carries **no** config.js. |
 | Everything else (host, compose, cluster, Firebase / own bucket) | forge, **at render time**: a route to the workload → its public SimpleBackend domain → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / StaticSite deploy. |
 
-An unknown workload name is refused at load. On a non-hosted env, a workload whose URL forge cannot know at render time is refused too, rather than guessed. The usual case is a host service without `listen_ports`: `forge env up` assigns it an ephemeral port only after rendering, so declare `listen_ports = [plugin.resolve_port(...)]`. Keys must be JS identifiers.
+Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
 
 The backend half uses the same reference. A SimpleBackend's `CORS_ORIGINS` names the site, not its URL:
 

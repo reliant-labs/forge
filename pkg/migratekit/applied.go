@@ -1,0 +1,191 @@
+package migratekit
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
+// A VERSION NUMBER IS NOT A MIGRATION'S IDENTITY.
+//
+// golang-migrate records one integer: the schema is "at 93". It cannot say
+// WHICH 93. Two branches that each add a migration numbered 93 both apply
+// cleanly to a shared database, and when one of them is renumbered before it
+// merges, the database stays stamped with the branch's 91..93 while main's
+// 91..93 — different files — never run. Every later `up` agrees the schema is
+// current, and the first symptom is a query for a column that does not exist,
+// usually in a crash-looping pod far from the migration that owns it.
+//
+// So the migrator keeps a second fact beside the version: for each version it
+// applied, the descriptor of the file it ran (appliedTable). Before applying
+// anything, it checks every recorded version this binary also embeds against
+// the file the binary has under that number, and refuses on a mismatch.
+//
+// Only the DESCRIPTOR is compared, never a content hash. A hash would turn
+// every comment fix or whitespace strip in an old migration into a refusal to
+// boot, while the failure this exists for — a different migration under the
+// same number — always changes the name.
+//
+// Versions applied before this record existed have no row and are not
+// checked. They are deliberately NOT backfilled from the binary's own
+// filenames: that would certify whatever the database already holds, which is
+// exactly the state this check cannot vouch for.
+
+// appliedTable is the per-version record of which file was applied.
+// Unqualified, like schema_migrations and compatTable, so it lands in the
+// search_path's first schema.
+const appliedTable = "schema_migrations_applied"
+
+// appliedLockKey serializes the table's create-and-insert across replicas
+// that finish the same release's Up concurrently. See compatLockKey.
+const appliedLockKey = 7250513029716893482
+
+// MigrationMismatch is one version whose applied file is not the file this
+// binary embeds under that number.
+type MigrationMismatch struct {
+	Version uint
+	// Applied is the descriptor recorded when the version was applied.
+	Applied string
+	// Embedded is the descriptor this binary carries for the same version.
+	Embedded string
+}
+
+// MigrationMismatchError reports versions the database applied from a
+// different migration file than the one this binary embeds under the same
+// number. Nothing was applied.
+//
+// It is a type so a caller (and a test) can tell "the schema is not the one
+// these version numbers describe" from every other migration failure: the
+// fix is a human reconciling the schema, never a retry.
+type MigrationMismatchError struct {
+	Mismatches []MigrationMismatch
+}
+
+func (e *MigrationMismatchError) Error() string {
+	var b strings.Builder
+	b.WriteString("the database applied DIFFERENT migrations under version numbers this binary uses — " +
+		"usually a branch's migrations applied to a shared database and then renumbered before merge:")
+	for _, m := range e.Mismatches {
+		fmt.Fprintf(&b, " version %d was applied as %q, but this binary's %d is %q;", m.Version, m.Applied, m.Version, m.Embedded)
+	}
+	first := e.Mismatches[0].Version
+	fmt.Fprintf(&b, " NOTHING WAS APPLIED. The schema_migrations version does not describe this schema, so "+
+		"no later migration can be trusted to apply. Reconcile by hand: apply this binary's migrations from %d "+
+		"that the database lacks, set schema_migrations to the highest version the schema now truly reflects, "+
+		"then `DELETE FROM %s WHERE version >= %d` so the record is rewritten as those versions are next applied", first, appliedTable, first)
+	return b.String()
+}
+
+// verifyApplied checks every version the database recorded as applied, at or
+// below the schema's current version, against the file this binary embeds
+// under that number. Versions the binary does not embed are the schema-ahead
+// case (classifyAhead's business), and versions with no record are unknown,
+// not wrong.
+func verifyApplied(ctx context.Context, db *sql.DB, source sourceSet, state State) error {
+	if !state.Applied {
+		return nil
+	}
+	records, err := readApplied(ctx, db)
+	if err != nil {
+		return err
+	}
+	var mismatches []MigrationMismatch
+	for _, m := range source {
+		if m.Version > state.Version {
+			break
+		}
+		if applied, ok := records[m.Version]; ok && applied != m.Descriptor {
+			mismatches = append(mismatches, MigrationMismatch{Version: m.Version, Applied: applied, Embedded: m.Descriptor})
+		}
+	}
+	if len(mismatches) > 0 {
+		return &MigrationMismatchError{Mismatches: mismatches}
+	}
+	return nil
+}
+
+// readApplied returns version → descriptor from appliedTable. An absent table
+// is an empty record: every database migrated before it existed has none.
+func readApplied(ctx context.Context, db *sql.DB) (map[uint]string, error) {
+	var exists bool
+	if err := db.QueryRowContext(ctx, "SELECT to_regclass('"+appliedTable+"') IS NOT NULL").Scan(&exists); err != nil {
+		return nil, fmt.Errorf("read applied-migration record: %w", err)
+	}
+	out := map[uint]string{}
+	if !exists {
+		return out, nil
+	}
+	rows, err := db.QueryContext(ctx, "SELECT version, name FROM "+appliedTable)
+	if err != nil {
+		return nil, fmt.Errorf("read applied-migration record: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			v    int64
+			name string
+		)
+		if err := rows.Scan(&v, &name); err != nil {
+			return nil, fmt.Errorf("read applied-migration record: %w", err)
+		}
+		out[uint(v)] = name
+	}
+	return out, rows.Err()
+}
+
+// recordApplied records the descriptor of every embedded version in
+// (before, after] — what the Up that moved the schema from before to after ran.
+//
+// It runs AFTER golang-migrate's Up, because until then nothing was applied;
+// a crash in between leaves those versions unrecorded, which only means they
+// go unchecked. Existing rows are never overwritten: a row states what was
+// applied, and a later binary disagreeing with it is the mismatch
+// verifyApplied reports, not a correction. A replica that lost the
+// advisory-lock race sees the same (before, after] and inserts nothing new.
+func recordApplied(ctx context.Context, db *sql.DB, source sourceSet, before, after State) error {
+	if !after.Applied {
+		return nil
+	}
+	var values []string
+	for _, m := range source {
+		if (before.Applied && m.Version <= before.Version) || m.Version > after.Version {
+			continue
+		}
+		values = append(values, fmt.Sprintf("(%d, %s)", m.Version, quoteLiteral(m.Descriptor)))
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("record applied migrations: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmts := []string{
+		fmt.Sprintf("SELECT pg_advisory_xact_lock(%d)", int64(appliedLockKey)),
+		"CREATE TABLE IF NOT EXISTS " + appliedTable + ` (
+			version BIGINT PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		"INSERT INTO " + appliedTable + " (version, name) VALUES " + strings.Join(values, ", ") +
+			" ON CONFLICT (version) DO NOTHING",
+	}
+	for _, s := range stmts {
+		if _, err := tx.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("record applied migrations: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("record applied migrations: %w", err)
+	}
+	return nil
+}
+
+// quoteLiteral renders s as a postgres string literal. The descriptor comes
+// from a filename in the binary's own embed, but a filename may hold a quote,
+// and a statement built by concatenation must not care.
+func quoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}

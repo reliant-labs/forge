@@ -120,6 +120,12 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	if err != nil {
 		return err
 	}
+	// A version applied from a different file than this binary's (a branch's
+	// migration, renumbered before merge) means the recorded version does not
+	// describe the schema. See applied.go.
+	if err := verifyApplied(context.Background(), db, source, before); err != nil {
+		return fmt.Errorf("running migrations: %w", err)
+	}
 	ahead, err := classifyAhead(context.Background(), db, source, before)
 	if err != nil {
 		return fmt.Errorf("running migrations: %w", err)
@@ -140,6 +146,9 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	after, err := stateOf(m)
 	if err != nil {
 		return fmt.Errorf("after apply: %w", err)
+	}
+	if err := recordApplied(context.Background(), db, source, before, after); err != nil {
+		return err
 	}
 	if after.Version != before.Version {
 		logf(logger, "migrations applied", "from_version", before.Version, "to_version", after.Version)

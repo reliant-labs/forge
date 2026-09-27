@@ -6,11 +6,12 @@ import (
 	"sort"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // deployShapeOf is doctor's DeployShaper: it classifies one environment's raw

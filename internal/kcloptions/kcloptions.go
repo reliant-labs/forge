@@ -43,12 +43,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/kclvendor"
 	kcl "kcl-lang.io/kcl-go"
 	"kcl-lang.io/kcl-go/pkg/spec/gpyrpc"
 	"kcl-lang.io/kpm/pkg/client"
 	"kcl-lang.io/kpm/pkg/env"
 	kclpkg "kcl-lang.io/kpm/pkg/package"
+
+	"github.com/reliant-labs/forge/internal/kclvendor"
 )
 
 // Reserved are the option names forge derives and binds on every render. A

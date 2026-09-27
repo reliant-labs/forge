@@ -93,10 +93,10 @@ parties consume the KCL module without forge.
   version stamp, the render-time staleness warning, the downgrade refusal and
   `--allow-kcl-downgrade` are all deleted rather than maintained.
 - The stock `kcl` CLI no longer resolves `import forge` in a forge project,
-  because kpm does not know about the module. Render through forge (`forge env
-  render <env>`). That was already the rule: a bare `kcl run` also misses
-  `kcl_plugin.forge`, forge's `-D` bindings and its preflights. CI templates
-  that shelled out to `kcl run` must render through forge.
+  because kpm does not know about the module. Render through forge:
+  `forge env render <env>`. That was already the rule: a bare `kcl run` also
+  misses `kcl_plugin.forge`, forge's `-D` bindings and its preflights. CI
+  templates that shelled out to `kcl run` must render through forge.
 - Editor/LSP support for `import forge` without forge in the loop is not
   provided. If it is wanted, it belongs to a deliberate, gitignored,
   dev-only link — never a committed dependency.

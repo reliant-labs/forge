@@ -1122,6 +1122,20 @@ render = lambda bundle: Bundle -> any {
         # only the declaration (type + path). NOT in render_manifests.
         if bundle.secret_provider:
             "secret_provider": bundle.secret_provider
+        # Explicitly-placed Secrets, independent of the provider. Placement
+        # is RESOLVED here (own cluster/namespace, else cluster_target's) so
+        # the CLI applies each exactly where it says, with no inference. As
+        # with the provider, a `from = "file"` key carries only the store
+        # KEY — its value is resolved CLI-side and never enters this output.
+        "rendered_secrets": [{
+            "name": s.name
+            "keys": s.keys
+            "cluster": s.cluster or bundle.cluster_target.cluster
+            # An explicit cluster without a namespace falls back to the
+            # target's namespace too; with no target the CLI uses the
+            # env's resolved deploy namespace.
+            "namespace": s.namespace or (bundle.cluster_target.namespace if bundle.cluster_target else None)
+        } for s in bundle.rendered_secrets]
         # The hosted control plane declaration (endpoint + the env var NAME
         # the credential is read from). Absent when the env declares none.
         # Like secret_provider this is a DECLARATION only — no credential

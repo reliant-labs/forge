@@ -1432,13 +1432,40 @@ schema RenderedSecretKey:
 schema RenderedSecret:
     """A single k8s Secret forge renders + applies from declared
     sources. `name` is the Secret name; `keys` maps each in-Secret key
-    to its value source (RenderedSecretKey)."""
+    to its value source (RenderedSecretKey).
+
+    PLACEMENT. `cluster` (a kubectl context) and `namespace` say where the
+    Secret lands, EXPLICITLY:
+
+      * In `Bundle.rendered_secrets` both default to the Bundle's
+        `cluster_target`, so a Secret is always placed by declaration —
+        never inferred. This is the form for a Secret whose consumer is a
+        PLAIN manifest (a raw Deployment/Job in `additional_manifests`),
+        which no service `secret_ref` names.
+      * In `RenderedSecrets.secrets` (the provider) an entry with no
+        `cluster` keeps the provider's inference: it lands in each cluster
+        whose SERVICES reference it by `secret_ref`, in that group's
+        namespace. Setting `cluster` places it there instead.
+
+    Either way the Secret is applied into a LOCAL cluster only (it is
+    plaintext rendered CLI-side), before the Deployments, and counts as
+    supply for the deploy preflight."""
     name: str
     keys: {str: RenderedSecretKey}
+    # Defaulted to "" rather than optional (`?`), deliberately: a check that
+    # reads an UNSET attribute by bare name falls through to the enclosing
+    # program's scope, so a consumer with a top-level `namespace` (control-
+    # plane's lib/identity.k defines one as a lambda) made the check below
+    # evaluate that function instead and fail every entry. A set attribute
+    # always resolves to itself.
+    cluster: str = ""
+    namespace: str = ""
 
     check:
         name, "RenderedSecret.name is required"
         len(keys) > 0, "RenderedSecret.keys must declare at least one key"
+        not namespace or cluster, \
+            "RenderedSecret.namespace requires cluster: a namespace names no cluster, so the Secret would have nowhere to land"
 
 schema RenderedSecrets:
     """Dev/e2e secret provider that RENDERS named k8s Secrets from
@@ -3665,6 +3692,16 @@ schema Bundle:
     # sees values — k8s references pre-existing Secrets.
     # KCL only emits this DECLARATION; secret VALUES never enter KCL.
     secret_provider?: FileSecrets | ExternalSecrets | RenderedSecrets | HostedSecrets
+    # Secrets forge renders + applies itself, INDEPENDENT of
+    # secret_provider and placed EXPLICITLY — each at its own
+    # `cluster`/`namespace`, defaulting to cluster_target. For a Secret no
+    # service references (a plain-manifest consumer: an in-cluster
+    # database, a vault, a Job), which neither FileSecrets (projects
+    # service refs) nor RenderedSecrets (lands where services reference
+    # it) can place. Values come from the env's secret store
+    # (`from = "file"`, never in git) or dev/e2e-only literals. Local
+    # clusters only. See RenderedSecret.
+    rendered_secrets: [RenderedSecret] = []
     # The hosted control plane THIS env talks to (endpoint + where the
     # credential is found). Absent => no hosted control plane for this
     # env, which is the default and changes no behaviour. Declared
@@ -3734,6 +3771,15 @@ schema Bundle:
         # env's control plane — so without one there is nowhere to put them.
         not (secret_provider and secret_provider.type == "hosted") or control_plane, \
             "secret_provider = forge.HostedSecrets {} requires control_plane = forge.ControlPlane {} (Reliant cloud, or set endpoint) on the same Bundle: hosted secret values live in that control plane"
+        # A Bundle-level rendered Secret is placed by declaration, never by
+        # inference, so it must resolve to a cluster: its own, or the
+        # env-wide target's.
+        all s in rendered_secrets { s.cluster or cluster_target }, \
+            "Bundle.rendered_secrets: every Secret needs a cluster — set RenderedSecret.cluster, or declare Bundle.cluster_target (its cluster/namespace are the default placement)"
+        # One name per (cluster, namespace): two declarations of the same
+        # Secret would apply in turn and the last would silently win.
+        not cluster_target or len({"${s.cluster or cluster_target.cluster}/${s.namespace or cluster_target.namespace}/${s.name}": 0 for s in rendered_secrets}) == len(rendered_secrets), \
+            "Bundle.rendered_secrets: a Secret name is declared twice for the same cluster/namespace — the later apply would silently overwrite the earlier one"
         # A cluster_target is required iff at least one workload resolves to
         # the k8s target — i.e. any workload WITHOUT a `host` block (target
         # polymorphism, docs/design/FORGE_TARGET_POLYMORPHISM.md §1.4). The k8s adapter

@@ -174,6 +174,67 @@ printf '%s' "$KEY" | forge secret set --env dev STRIPE_SECRET_KEY
 forge env up dev                                         # pulls, injects in memory, starts
 ```
 
+## Secrets a plain manifest mounts: `Bundle.rendered_secrets`
+
+A provider serves the secrets your **services** declare. Some Secrets have
+no service behind them: an in-cluster database, vault or broker you run from
+raw manifests (`additional_manifests`) mounts a Secret by `secretKeyRef`,
+and nothing about that manifest tells forge which cluster it runs in.
+
+Declare those on the Bundle, beside whatever provider the env uses:
+
+```kcl
+# deploy/kcl/dev/main.k — services read FileSecrets; the in-cluster
+# store's raw Deployment + Job mount three Secrets no service references.
+_bundle = forge.Bundle {
+    cluster_target  = _target          # default placement for rendered_secrets
+    secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
+    rendered_secrets = [
+        forge.RenderedSecret {
+            name = "vault-storage"
+            keys = {"connection-url" = forge.RenderedSecretKey {from = "literal", value = "postgres://postgres:postgres@host.k3d.internal:5434/vault"}}
+        }
+        forge.RenderedSecret {
+            name = "vault-unseal"
+            # A store key: the value lives in secrets/dev.yaml, never in git.
+            keys = {"static-key" = forge.RenderedSecretKey {key = "VAULT_STATIC_KEY"}}
+        }
+        forge.RenderedSecret {
+            name = "vault-unseal"
+            cluster = "k3d-workload"         # explicit placement elsewhere
+            namespace = "workload"
+            keys = {"static-key" = forge.RenderedSecretKey {key = "VAULT_STATIC_KEY"}}
+        }
+    ]
+    additional_manifests = [ ...the raw Deployment and Job... ]
+}
+```
+
+- **Placed by declaration, never inferred.** Each Secret lands at its own
+  `cluster` / `namespace`, defaulting to `cluster_target`'s. No cluster and
+  no `cluster_target` is a load error, and so is the same name twice in one
+  cluster/namespace.
+- **Values never enter git.** `from = "file"` (the default) names a key in
+  the env's secret store, which is the FileSecrets file when the env declares
+  one (else `secrets/<env>.yaml`), layered over the primary checkout's store
+  in a worktree. Only the key is in the render. `from = "literal"` is
+  permitted in dev/e2e only, by a KCL check and a Go guard.
+- **Same guarantees as a provider Secret.** Applied before the Deployments,
+  so the first schedule finds it. Local clusters only (it is plaintext). It
+  counts as supply for the deploy preflight's mount check.
+  `forge secret ensure --env <env>` lists a store key with no value, and
+  `forge secret list` attributes it to its Secret.
+- **Prefer it to a hand-written `kind: Secret`.** A raw Secret manifest with
+  literals gets none of the above, and a real credential would have to be
+  pasted into git to be expressed at all.
+
+`RenderedSecret` also accepts `cluster` / `namespace` inside a
+`forge.RenderedSecrets` provider. There, an entry with no `cluster` keeps
+the provider's inference (it lands where a service references it by
+`secret_ref`), and one that names a cluster is placed explicitly. So an
+infra-only Secret no longer needs a dummy "carrier" `secret_ref` on some
+service to make it render.
+
 ## Per-runtime: what forge does
 
 With **FileSecrets**, forge reads the YAML store (env-var name -> value)
@@ -218,7 +279,8 @@ Two properties fix that, and both matter:
 
 If a value is the same on every developer's machine, it is not a secret:
 put it in `deploy/kcl/<env>/config.k`, or declare it as a
-`RenderedSecretKey { from = "literal" }` where it stays in git.
+`RenderedSecretKey { from = "literal" }` (in `Bundle.rendered_secrets` or a
+`RenderedSecrets` provider) where it stays in git.
 
 With **ExternalSecrets**, forge **never sees values** and is inert on
 its side — it renders nothing and validates nothing. k8s references

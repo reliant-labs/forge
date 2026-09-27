@@ -129,7 +129,7 @@ func TestKCLModule_PositiveAssertions(t *testing.T) {
 		// Skip the DirSecrets fixtures — the provider is gated to
 		// dev/e2e (it renders plaintext Secrets), so they need
 		// `-D env=`. Dedicated test: TestKCLModule_FileSecrets.
-		if name == "positive_file_secrets.k" || name == "positive_secret_provider.k" {
+		if name == "positive_file_secrets.k" || name == "positive_secret_provider.k" || name == "positive_bundle_rendered_secrets.k" {
 			continue
 		}
 		found++
@@ -327,7 +327,9 @@ func TestKCLModule_FileSecrets(t *testing.T) {
 	// positive_secret_provider.k also declares a DirSecrets bundle, so it
 	// carries the same dev/e2e gate and runs here rather than in the
 	// env-less sweep.
-	for _, fixture := range []string{"positive_file_secrets.k", "positive_secret_provider.k"} {
+	// positive_bundle_rendered_secrets.k pairs FileSecrets with
+	// Bundle.rendered_secrets (a literal key), so it is gated the same way.
+	for _, fixture := range []string{"positive_file_secrets.k", "positive_secret_provider.k", "positive_bundle_rendered_secrets.k"} {
 		runFileSecretsFixture(t, filepath.Join(root, "tests", fixture))
 	}
 }

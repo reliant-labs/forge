@@ -98,6 +98,23 @@ type RuntimeTarget struct {
 	// Pprof is "host:port" of its pprof side-listener (PPROF_ADDR), which
 	// serverkit binds separately from the main mux.
 	Pprof string
+	// RemoteOnly is true when the env runs NOTHING on this machine: it
+	// declares no host service and no compose infra — every workload lands
+	// on a cluster or a hosted control plane (a GKE prod, a hosted env).
+	// The checks that probe the developer's machine (compose, app health,
+	// pprof, the local Grafana stack, Delve) then have no subject: running
+	// them anyway reported THIS machine's dev compose stack as the env's
+	// infra ("9/9 healthy" under prod) and told the reader to `forge env up`
+	// an env nobody runs locally. They SKIP, naming why; the cluster check
+	// still runs.
+	RemoteOnly bool
+}
+
+// machineLocalChecks are the runtime checks whose only subject is the
+// developer's machine. See RuntimeTarget.RemoteOnly.
+var machineLocalChecks = map[string]bool{
+	composeCheckName: true, "App Health": true, "pprof": true, "Profiles (Pyro)": true,
+	"Prometheus": true, "Traces (Tempo)": true, "Logs (Loki)": true, "Delve": true,
 }
 
 // RuntimeInput carries everything RunRuntime needs. Env is reported in
@@ -254,9 +271,24 @@ func (s *svc) RunRuntime(ctx context.Context, in RuntimeInput) (Report, error) {
 		d.env.SetPort("app", 6060, in.Target.Pprof)
 	}
 	for _, c := range checks {
+		if in.Target.RemoteOnly && machineLocalChecks[c.name] {
+			d.register(c.name, skipRemoteOnly(in.Env))
+			continue
+		}
 		d.register(c.name, c.fn)
 	}
 	return d.run(ctx, []string{composeCheckName}), nil
+}
+
+// skipRemoteOnly is the result a machine-local check reports for an env that
+// runs nothing on this machine.
+func skipRemoteOnly(env string) CheckFunc {
+	return func(context.Context, *Environment) CheckResult {
+		return CheckResult{
+			Status:  StatusSkip,
+			Message: fmt.Sprintf("env %q runs nothing on this machine (every workload is on a cluster or hosted) — see Cluster Workloads", env),
+		}
+	}
 }
 
 // PrintReport delegates to the package-level pretty printer.

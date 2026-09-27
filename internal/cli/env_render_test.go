@@ -557,6 +557,9 @@ func TestEnvRenderCommandSurface(t *testing.T) {
 		"list",
 		"name",
 		"namespace",
+		// Offline escape hatch: skips `helm template` (the render's only
+		// network step) and the summary names what it left out.
+		"no-charts",
 		"no-digest",
 		"no-write-check",
 		"tag",

@@ -551,6 +551,41 @@ func chartStreams(charts []renderedChart) []string {
 	return out
 }
 
+// RenderedChartStream is one platform dep's contribution to a deploy's
+// manifest stream: the chart's name, the kubectl context it installs into
+// ("" = the env's primary), and its documents in apply order (CRDs, then the
+// templated chart, then the riding manifests).
+type RenderedChartStream struct {
+	Name    string
+	Cluster string
+	Stream  string
+}
+
+// RenderChartStreams renders each chart EXACTLY as a deploy does — the same
+// renderSelectedCharts call, the same CRD bundle, the same --skip-crds
+// template, post-hook drop, synthesized Namespace and app-label stamp — and
+// returns each chart's stream in chartStreams order.
+//
+// It exists so `forge env render` can show chart output without modelling it
+// a second time. A preview that re-implemented the chart render would drift
+// from the apply the first time either changed, and a preview that disagrees
+// with the deploy is worse than none: it is what an audit trusts.
+func RenderChartStreams(ctx context.Context, specs []HelmChartSpec) ([]RenderedChartStream, error) {
+	charts, err := renderSelectedCharts(ctx, specs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RenderedChartStream, 0, len(charts))
+	for _, rc := range charts {
+		out = append(out, RenderedChartStream{
+			Name:    rc.spec.Name,
+			Cluster: strings.TrimSpace(rc.spec.Cluster),
+			Stream:  joinNonEmpty(chartStreams([]renderedChart{rc})...),
+		})
+	}
+	return out, nil
+}
+
 // renderSelectedCharts helm-templates each selected platform dep into the
 // manifests, CRDs and consumer-declared extras the apply pipeline needs.
 //

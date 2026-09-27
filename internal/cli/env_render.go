@@ -90,6 +90,12 @@ type renderedObject struct {
 	// that belong to no service.
 	App      string
 	Clusters []string
+	// Chart names the forge.HelmChart this document was templated from, or
+	// "" for a document the env's KCL rendered. Chart output is not in the
+	// KCL stream at all — deploy runs `helm template` for it — so the printer
+	// labels it rather than letting it pass as something the project's KCL
+	// declared object by object.
+	Chart string
 }
 
 // renderedObjectMeta is the slice of a manifest this command reads. Anything
@@ -117,6 +123,7 @@ func newEnvRenderCmd() *cobra.Command {
 		noDigest     bool
 		failOnWrite  bool
 		noWriteCheck bool
+		noCharts     bool
 	)
 
 	cmd := &cobra.Command{
@@ -136,6 +143,14 @@ declares; otherwise it is replicated to EVERY cluster the environment deploys
 to. A replicated document is printed ONCE with every cluster named, so the
 object count matches the render's own — pass --cluster to see exactly the
 stream one cluster receives.
+
+Declared platform dependencies (forge.HelmChart — cert-manager, Envoy Gateway,
+Flux, …) are rendered too, through the SAME code path deploy applies them
+with: ` + "`helm template`" + ` with the declared values, forge's pinned CRD bundle, and the
+chart's own CRDs. Each chart document is labelled ` + "`# source: helm chart <name>`" + `
+and attributed to the chart's declared cluster. Templating a chart pulls it from
+its repository (helm caches it after the first pull), so it needs ` + "`helm`" + ` on PATH
+and registry access; --no-charts skips them and says so in the summary.
 
 The render is READ-ONLY as far as forge is concerned: no kubectl context is
 resolved, no cluster is created, no image is built or pushed, and none of the
@@ -159,6 +174,7 @@ Examples:
   ` + Name() + ` env render dev --fail-on-write >/dev/null   # assert the render touched nothing`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runEnvRender(cmd, args[0], envRenderOptions{
+				noCharts:     noCharts,
 				imageTag:     tag,
 				namespace:    namespace,
 				cluster:      clusterName,
@@ -183,6 +199,7 @@ Examples:
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Render image references as the mutable :tag even when a build state captured an immutable digest (matches forge env deploy --no-digest)")
 	cmd.Flags().BoolVar(&failOnWrite, "fail-on-write", false, "Exit non-zero if any file in the project changed while rendering (the render is not guaranteed side-effect-free — see the command description)")
 	cmd.Flags().BoolVar(&noWriteCheck, "no-write-check", false, "Skip the before/after scan that detects files the render wrote")
+	cmd.Flags().BoolVar(&noCharts, "no-charts", false, "Skip templating declared forge.HelmChart platform deps (no helm, no network); the summary names what was left out")
 
 	return cmd
 }
@@ -200,6 +217,7 @@ type envRenderOptions struct {
 	noDigest     bool
 	failOnWrite  bool
 	noWriteCheck bool
+	noCharts     bool
 }
 
 // runEnvRender prints the render with a hard guarantee: STDOUT CARRIES ONLY
@@ -351,6 +369,14 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 
 	objects, clusters := attributeRenderedObjects(manifests, groups, entities)
 
+	charts, cerr := renderEnvCharts(ctx, entities, groups, opts)
+	if cerr != nil {
+		return cerr
+	}
+	objects = append(objects, charts.objects...)
+	totalRendered += charts.total
+	clusters = mergeClusters(clusters, charts.clusters)
+
 	if opts.cluster != "" && !containsString(clusters, opts.cluster) {
 		return fmt.Errorf("environment %q deploys to no cluster named %q (it deploys to: %s)",
 			envName, opts.cluster, describeClusters(clusters))
@@ -375,6 +401,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		boundRelease: boundRelease,
 		namespace:    namespace,
 	}, clusters, objects, totalRendered)
+	writeChartSummary(errOut, charts)
 
 	// The write report runs in the deferred close, so the fail-on-write
 	// verdict has to be taken after it — hence the sentinel here and the
@@ -587,6 +614,11 @@ func writeRenderedStream(w io.Writer, objects []renderedObject) error {
 		if _, err := fmt.Fprintf(w, "# cluster: %s\n", describeClusters(o.Clusters)); err != nil {
 			return err
 		}
+		if o.Chart != "" {
+			if _, err := fmt.Fprintf(w, "# source: %s\n", chartSourceLabel(o.Chart)); err != nil {
+				return err
+			}
+		}
 		if _, err := fmt.Fprintln(w, o.Doc); err != nil {
 			return err
 		}
@@ -608,8 +640,15 @@ func writeRenderedTable(w io.Writer, objects []renderedObject) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "CLUSTER\tKIND\tNAMESPACE\tNAME\tAPP")
 	for _, o := range objects {
+		app := orDash(o.App)
+		if o.Chart != "" {
+			// A chart document's app label IS the chart name (stampAppLabel
+			// forces it), so the column would not distinguish it from a KCL
+			// service of the same name. Say where it came from.
+			app = o.App + " (" + chartSourceLabel(o.Chart) + ")"
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			describeClusters(o.Clusters), orDash(o.Kind), orDash(o.Namespace), orDash(o.Name), orDash(o.App))
+			describeClusters(o.Clusters), orDash(o.Kind), orDash(o.Namespace), orDash(o.Name), app)
 	}
 	return tw.Flush()
 }

@@ -334,27 +334,7 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 	// daemon cluster.
 	primaryHelmContext := ""
 	if len(p.HelmCharts) > 0 {
-		primaryHelmContext = declaredEnvContext(p.Entities, p.Groups)
-		// The charts must ride SOME group or they are silently never
-		// applied. If no group in this dispatch targets the declared context
-		// (a --target that selects only a secondary cluster's app), fall back
-		// to the first group with a context, as before.
-		rides := false
-		for _, g := range p.Groups {
-			if resolveGroupContext(g) == primaryHelmContext && primaryHelmContext != "" {
-				rides = true
-				break
-			}
-		}
-		if !rides {
-			primaryHelmContext = ""
-			for _, g := range p.Groups {
-				if c := resolveGroupContext(g); c != "" {
-					primaryHelmContext = c
-					break
-				}
-			}
-		}
+		primaryHelmContext = helmPrimaryContext(p.Entities, p.Groups)
 	}
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
@@ -535,6 +515,29 @@ func mainClusterForEntities(entities *KCLEntities, groups []deploytarget.Service
 // rather than falling back to kubectl's current context.
 func resolveGroupContext(group deploytarget.ServiceGroup) string {
 	return group.Cluster
+}
+
+// helmPrimaryContext is the context a chart WITHOUT its own `cluster`
+// installs into: the env's declared context, provided some group in this
+// dispatch targets it. The charts must ride SOME group or they are silently
+// never applied, so when none does (a --target that selects only a secondary
+// cluster's app) it falls back to the first group with a context.
+//
+// Shared by the deploy dispatch and `forge env render`, so the render
+// attributes each chart to the cluster the deploy actually applies it to.
+func helmPrimaryContext(entities *KCLEntities, groups []deploytarget.ServiceGroup) string {
+	primary := declaredEnvContext(entities, groups)
+	for _, g := range groups {
+		if primary != "" && resolveGroupContext(g) == primary {
+			return primary
+		}
+	}
+	for _, g := range groups {
+		if c := resolveGroupContext(g); c != "" {
+			return c
+		}
+	}
+	return ""
 }
 
 // declaredEnvContext returns the env-wide kubectl context for the

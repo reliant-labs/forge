@@ -84,6 +84,11 @@ type Migration struct {
 	Version uint
 	// Name is the filename, for messages.
 	Name string
+	// Descriptor is the filename between the version prefix and `.up.` —
+	// `retire_plan_compute_free` in `00091_retire_plan_compute_free.up.sql`.
+	// It is what identifies WHICH migration a version is: two branches that
+	// both claim 91 differ here, while a change of zero-padding does not.
+	Descriptor string
 	// BackwardCompatible is whether the file carries Directive.
 	BackwardCompatible bool
 }
@@ -119,7 +124,7 @@ func Scan(fsys fs.FS, dir string) ([]Migration, error) {
 		if rerr != nil {
 			return nil, fmt.Errorf("read migration %s: %w", e.Name(), rerr)
 		}
-		out = append(out, Migration{Version: uint(v), Name: e.Name(), BackwardCompatible: Declared(string(raw))})
+		out = append(out, Migration{Version: uint(v), Name: e.Name(), Descriptor: m[2], BackwardCompatible: Declared(string(raw))})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil

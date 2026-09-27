@@ -269,12 +269,22 @@ type Result struct {
 // embed — what rolling the app back produces) is classified before anything
 // runs: a Result with Ahead set when every unknown version was declared
 // backward-compatible, a *SchemaAheadError when not. golang-migrate alone
-// fails both with "no migration found for version N". Up also records this
+// fails both with "no migration found for version N".
+//
+// Before either, every version the database recorded as applied is checked
+// against the file this binary embeds under that number; a different file is
+// a *MigrationMismatchError and nothing runs. After applying, Up records which
+// file each new version was. See applied.go.
+//
+// Up also records this
 // binary's compatibility declarations, which is what lets an OLDER binary
 // (at boot via AutoMigrate, or here) reach that verdict. See ahead.go.
 func (mg *Migrator) Up() (Result, error) {
 	before, err := mg.State()
 	if err != nil {
+		return Result{}, err
+	}
+	if err := verifyApplied(context.Background(), mg.db, mg.source, before); err != nil {
 		return Result{}, err
 	}
 	if ahead, err := classifyAhead(context.Background(), mg.db, mg.source, before); err != nil || ahead != nil {
@@ -286,7 +296,14 @@ func (mg *Migrator) Up() (Result, error) {
 	if err := recordCompat(context.Background(), mg.db, mg.source); err != nil {
 		return Result{}, err
 	}
-	return mg.apply(mg.m.Up)
+	res, err := mg.apply(mg.m.Up)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := recordApplied(context.Background(), mg.db, mg.source, res.Before, res.After); err != nil {
+		return Result{}, err
+	}
+	return res, nil
 }
 
 // Force sets the recorded version and CLEARS the dirty flag without running

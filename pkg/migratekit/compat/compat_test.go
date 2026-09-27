@@ -56,9 +56,9 @@ func TestScanOrdersByVersionAndReadsOnlyUpFiles(t *testing.T) {
 		t.Fatalf("Scan: %v", err)
 	}
 	want := []Migration{
-		{Version: 1, Name: "00001_one.up.sql"},
-		{Version: 9, Name: "9_nine.up.sql"},
-		{Version: 10, Name: "10_ten.up.sql", BackwardCompatible: true},
+		{Version: 1, Name: "00001_one.up.sql", Descriptor: "one"},
+		{Version: 9, Name: "9_nine.up.sql", Descriptor: "nine"},
+		{Version: 10, Name: "10_ten.up.sql", Descriptor: "ten", BackwardCompatible: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Scan = %+v, want %+v", got, want)

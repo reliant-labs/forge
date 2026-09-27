@@ -91,6 +91,15 @@ unknown version was declared compatible, and refuses to start
 (`*migratekit.SchemaAheadError`) when one was not. That refusal is the point:
 old code does not get to guess on a schema nobody vouched for.
 
+It also records WHICH file each version was, in `schema_migrations_applied`,
+and before applying anything checks those against the files the binary embeds
+under the same numbers. A version applied from a different file — typically a
+branch's migration run against a shared database and renumbered before merge —
+is `*migratekit.MigrationMismatchError`, and nothing runs: the recorded version
+no longer describes the schema. The error names both files and the manual
+reconcile. Only the name after the version prefix is compared, so editing an
+old migration's comments or re-padding its number is not a mismatch.
+
 There is no stepping a schema back, and no rollback of a release either — see
 "Roll forward only" below.
 

@@ -950,14 +950,15 @@ func introspect(db Queryer) ([]Table, error) {
 
 	// schema, table for every user BASE TABLE. Exclude the system schemas
 	// and the migration-bookkeeping tables (golang-migrate's
-	// schema_migrations, migratekit's schema_migrations_compat); keep
+	// schema_migrations, migratekit's schema_migrations_compat and
+	// schema_migrations_applied); keep
 	// everything a project defined, including non-public schemas.
 	rows, err := db.QueryContext(ctx, `
 		SELECT table_schema, table_name
 		FROM information_schema.tables
 		WHERE table_type = 'BASE TABLE'
 		  AND table_schema NOT IN ('pg_catalog', 'information_schema')
-		  AND table_name NOT IN ('schema_migrations', 'schema_migrations_compat')
+		  AND table_name NOT IN ('schema_migrations', 'schema_migrations_compat', 'schema_migrations_applied')
 		ORDER BY table_schema, table_name`)
 	if err != nil {
 		return nil, fmt.Errorf("list shadow tables: %w", err)

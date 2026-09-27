@@ -119,7 +119,7 @@ func renderEnvCharts(ctx context.Context, entities *KCLEntities, groups []deploy
 				obj.Kind = meta.Kind
 				obj.Name = meta.Metadata.Name
 				obj.Namespace = meta.Metadata.Namespace
-				obj.App = meta.Metadata.Labels[cluster.AppNameLabel]
+				obj.App = cluster.ManifestGroup(meta.Metadata.Labels)
 			}
 			out.objects = append(out.objects, obj)
 		}

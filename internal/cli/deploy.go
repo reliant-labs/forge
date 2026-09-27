@@ -599,12 +599,25 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 
 	namespace = resolveDeployNamespace(ctx, namespace, envName, store.Meta().Name)
 
-	entities, err := renderAndScopeEntities(ctx, projectDir, envName, targets, opts.frontendsOnly)
+	envCfgKV := loadDeployEnvConfigKV(projectDir, envName)
+	renderFull := func() (string, error) {
+		return cluster.RenderManifests(ctx, mainK, imageTag, namespace, envName, envCfgKV, imageDigests)
+	}
+	entities, fullEntities, err := renderAndScopeEntities(ctx, projectDir, envName, targets, opts.frontendsOnly, renderFull)
 	if err != nil {
 		return err
 	}
 
+	// A targeted deploy is still a deploy INTO the whole env's topology: a
+	// target may be a group of raw manifests that no entity owns (so the
+	// scoped entities carry no cluster service at all), and the cluster
+	// guards below must still engage for it. The full env answers "does
+	// this env deploy to a cluster"; --frontends-only is the one scoping
+	// that genuinely removes the cluster from the picture.
 	hasK8sServices := kclEntitiesHaveK8sCluster(entities)
+	if len(targets) > 0 && !opts.frontendsOnly {
+		hasK8sServices = kclEntitiesHaveK8sCluster(fullEntities)
+	}
 
 	// Loud-by-default namespace mismatch guard: when KCL env_vars hardcode
 	// a project-prefixed `*.svc.cluster.local` reference that disagrees
@@ -661,15 +674,32 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		return err
 	}
 
-	envCfgKV := loadDeployEnvConfigKV(projectDir, envName)
-
 	fmt.Printf("Generating manifests from %s...\n", mainK)
 
 	// Build the deploy groups (bucketed by target type) and propagate the
 	// resolved image tag to each. See buildDeployGroupsForEnv.
+	//
+	// topology is the WHOLE env's groups — the routing model every object's
+	// destination cluster is decided by — and groups is what this deploy
+	// dispatches. Untargeted they are the same. Targeted, groups is one k8s
+	// apply per cluster the selected objects land on (plus the named apps'
+	// non-k8s groups), each still scoped by the full topology, so a targeted
+	// deploy ships each object exactly where `forge env render --list` says
+	// it goes. See deploy_target_scope.go.
 	groups, gerr := buildDeployGroupsForEnv(envName, entities, namespace, plainTag, dryRun)
 	if gerr != nil {
 		return gerr
+	}
+	topology := groups
+	if len(targets) > 0 && !opts.frontendsOnly && fullEntities != nil {
+		if topology, gerr = buildDeployGroupsForEnv(envName, fullEntities, namespace, plainTag, dryRun); gerr != nil {
+			return gerr
+		}
+		full, rerr := renderFull()
+		if rerr != nil {
+			return fmt.Errorf("render %s: %w", mainK, rerr)
+		}
+		groups = targetedK8sGroups(cluster.SelectManifestsByGroup(full, targets), topology, groups, fullEntities)
 	}
 
 	// Env-wide kubectl context for the consumers that don't iterate groups
@@ -717,7 +747,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// registry the checker can't reach). Runs under --dry-run too (pure
 	// read-only check). --skip-preflight bypasses it.
 	if err := gateDeployOnPreflight(ctx, deployPreflightEnvInput{
-		entities: entities, groups: groups, mainK: mainK, imageTag: imageTag, namespace: namespace,
+		entities: entities, groups: groups, topology: topology, topologyEntities: fullEntities,
+		mainK: mainK, imageTag: imageTag, namespace: namespace,
 		envName: envName, envCfgKV: envCfgKV, deployContext: deployContext,
 		targets: targets, imageDigests: imageDigests, report: report,
 	}, hasK8sServices, opts.skipPreflight); err != nil {
@@ -743,7 +774,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// such projects don't need kubectl configured at all — the frontend
 	// dispatch further down does the real work.
 	if err := applyDeployGroups(ctx, deployApplyInput{
-		groups: groups, entities: entities, hasK8sServices: hasK8sServices,
+		groups: groups, topology: topology, topologyEntities: fullEntities,
+		entities: entities, hasK8sServices: hasK8sServices,
 		mainK: mainK, imageTag: imageTag, imageDigests: imageDigests,
 		namespace: namespace, envName: envName, deployContext: deployContext,
 		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
@@ -948,22 +980,28 @@ func resolveDeployTags(ctx context.Context, projectDir, envName string, opts dep
 // deployApplyInput carries everything applyDeployGroups needs to route the
 // rendered groups to the cluster (or the empty-groups direct apply).
 type deployApplyInput struct {
-	groups         []deploytarget.ServiceGroup
-	entities       *KCLEntities
-	hasK8sServices bool
-	mainK          string
-	imageTag       string
-	imageDigests   map[string]string
-	namespace      string
-	envName        string
-	deployContext  string
-	envCfgKV       map[string]string
-	dryRun         bool
-	prune          bool
-	cfg            *config.ProjectConfig
-	targets        []string
-	helmSpecs      []cluster.HelmChartSpec
-	rollout        cluster.RolloutPolicy
+	groups []deploytarget.ServiceGroup
+	// topology / topologyEntities are the WHOLE env's groups and entities,
+	// which decide each object's destination cluster (the multi-cluster
+	// scope). Equal to groups / entities on an untargeted deploy; nil falls
+	// back to them. See deploy_target_scope.go.
+	topology         []deploytarget.ServiceGroup
+	topologyEntities *KCLEntities
+	entities         *KCLEntities
+	hasK8sServices   bool
+	mainK            string
+	imageTag         string
+	imageDigests     map[string]string
+	namespace        string
+	envName          string
+	deployContext    string
+	envCfgKV         map[string]string
+	dryRun           bool
+	prune            bool
+	cfg              *config.ProjectConfig
+	targets          []string
+	helmSpecs        []cluster.HelmChartSpec
+	rollout          cluster.RolloutPolicy
 	// report, when non-nil, receives the applied manifest stream and the
 	// per-resource rollout outcomes. Nil-safe.
 	report *deployReport
@@ -1006,6 +1044,7 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			MainK: in.mainK, ImageTag: in.imageTag, FallbackNamespace: in.namespace, Env: in.envName,
 			EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
 			Targets: in.targets, Groups: in.groups, Entities: in.entities,
+			Topology: in.topology, TopologyEntities: in.topologyEntities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
 			Rollout:  in.rollout,
 			OnStream: in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
@@ -1054,24 +1093,43 @@ func buildDeployGroupsForEnv(envName string, entities *KCLEntities, namespace, p
 // and DROP every other kind, so the frontend-only cluster-skip guard engages
 // even for a project that declares backend CronJobs; refuse fast when the env
 // declares no shippable frontend rather than silently no-op'ing.
-func renderAndScopeEntities(ctx context.Context, projectDir, envName string, targets []string, frontendsOnly bool) (*KCLEntities, error) {
+//
+// It returns the scoped entities AND the full, unfiltered ones: the full set
+// is the env's routing topology, which a targeted deploy still needs to send
+// each selected object to the cluster `forge env render --list` attributes it
+// to (see deploy_target_scope.go). renderManifests is the env's manifest
+// render, consulted only to extend the --target vocabulary with the groups
+// the rendered stream carries; nil skips that (entity names only).
+func renderAndScopeEntities(ctx context.Context, projectDir, envName string, targets []string, frontendsOnly bool, renderManifests func() (string, error)) (scoped, full *KCLEntities, err error) {
 	entities, kerr := RenderKCL(ctx, projectDir, envName)
 	if kerr != nil {
 		fmt.Printf("Note: KCL entity read skipped (%v) — waiting on every Deployment in namespace.\n", kerr)
 	}
+	full = entities
 	if len(targets) > 0 && entities != nil {
-		if err := validateDeployTargets(entities, targets); err != nil {
-			return nil, err
+		if verr := validateDeployTargets(entities, targets); verr != nil && renderManifests != nil {
+			// Not an entity name; it may still be a group the rendered
+			// stream carries. Only now is the manifest render worth paying.
+			manifests, rerr := renderManifests()
+			if rerr != nil {
+				return nil, nil, fmt.Errorf("%w (and the manifest render that would list the rest failed: %v)", verr, rerr)
+			}
+			verr = validateTargetsAgainstRender(entities, targets, manifests)
+			if verr != nil {
+				return nil, nil, verr
+			}
+		} else if verr != nil {
+			return nil, nil, verr
 		}
 		entities = filterEntitiesByTarget(entities, targets)
 	}
 	if frontendsOnly {
 		if entities == nil || !hasShippableFrontend(entities) {
-			return nil, fmt.Errorf("--frontends-only: environment %q declares no shippable frontend to deploy (a forge.FirebaseHosting or forge.StaticSite deploy block)", envName)
+			return nil, nil, fmt.Errorf("--frontends-only: environment %q declares no shippable frontend to deploy (a forge.FirebaseHosting or forge.StaticSite deploy block)", envName)
 		}
 		entities = filterEntitiesToFrontendsOnly(entities)
 	}
-	return entities, nil
+	return entities, full, nil
 }
 
 // printDeployBanner prints the pre-deploy summary. Namespace belongs to the
@@ -1197,16 +1255,21 @@ func resolveDeployHelmSpecs(ctx context.Context, entities *KCLEntities, targets 
 // needs; the remaining preflight fields (required secrets, secret supply,
 // target arch) are derived from entities inside the helper.
 type deployPreflightEnvInput struct {
-	entities      *KCLEntities
-	groups        []deploytarget.ServiceGroup
-	mainK         string
-	imageTag      string
-	namespace     string
-	envName       string
-	envCfgKV      map[string]string
-	deployContext string
-	targets       []string
-	imageDigests  map[string]string
+	entities *KCLEntities
+	groups   []deploytarget.ServiceGroup
+	// topology / topologyEntities: the WHOLE env's groups and entities, the
+	// model a declared Secret's consumers are attributed against. Nil falls
+	// back to groups / entities (an untargeted deploy, where they are equal).
+	topology         []deploytarget.ServiceGroup
+	topologyEntities *KCLEntities
+	mainK            string
+	imageTag         string
+	namespace        string
+	envName          string
+	envCfgKV         map[string]string
+	deployContext    string
+	targets          []string
+	imageDigests     map[string]string
 	// report, when non-nil, receives the structured findings. Nil-safe.
 	report *deployReport
 }
@@ -1240,9 +1303,14 @@ func gateDeployOnPreflight(ctx context.Context, in deployPreflightEnvInput, hasK
 // WARN-don't-block contract). Empty (no platform declared) leaves the gate inert.
 func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) error {
 	targetArch := kclFirstClusterPlatform(in.entities)
+	topology, topologyEntities := in.groups, in.entities
+	if len(in.topology) > 0 {
+		topology, topologyEntities = in.topology, in.topologyEntities
+	}
 	return runDeployPreflight(ctx, deployPreflightInput{
-		entities:        in.entities,
-		groups:          in.groups,
+		entities:        topologyEntities,
+		groups:          topology,
+		deployedTo:      clustersDeployedTo(in.groups),
 		secretContexts:  declaredClusterContexts(in.entities, in.deployContext, in.groups),
 		mainK:           in.mainK,
 		imageTag:        in.imageTag,
@@ -1697,12 +1765,15 @@ func inferPublicDir(frontendType string) string {
 // errored "unknown --target" because operators were absent from the
 // available-groups list — you couldn't deploy just an operator.
 //
-// A --target is always a SERVICE group (service / operator / frontend /
-// helm-chart name). The env-shared manifests (Namespace, ConfigMap,
-// RuntimeClass, NetworkPolicy, bundle-level additional_manifests) belong to
-// no service — they carry no group, apply only on a bare deploy, and are
-// not addressable by `--target`, so they are deliberately NOT in this set.
-func validateDeployTargets(e *KCLEntities, targets []string) error {
+// manifestGroups extends the set with every GROUP the rendered stream
+// attributes an object to (cluster.ManifestGroups over the FULL render) — the
+// names `forge env render --list` prints in its APP column. A Bundle's
+// `additional_manifests` that carry their own `app.kubernetes.io/name`
+// (control-plane dev's `openbao`) form such a group without any entity, and
+// `--list` showing a name `--target` refuses is the defect this closes.
+// Ungrouped objects (the env-shared Namespace, NetworkPolicies, …) have no
+// name to target and stay addressable only by a bare deploy.
+func validateDeployTargets(e *KCLEntities, targets []string, manifestGroups ...string) error {
 	avail := map[string]struct{}{}
 	for _, s := range e.Services {
 		avail[s.Name] = struct{}{}
@@ -1720,9 +1791,26 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 	for _, h := range e.HelmCharts {
 		avail[h.Name] = struct{}{}
 	}
+	var manifestOnly []string
+	for _, g := range manifestGroups {
+		if _, entity := avail[g]; !entity {
+			manifestOnly = append(manifestOnly, g)
+		}
+	}
+	isTarget := func(t string) bool {
+		if _, ok := avail[t]; ok {
+			return true
+		}
+		for _, g := range manifestOnly {
+			if g == t {
+				return true
+			}
+		}
+		return false
+	}
 	var unknown []string
 	for _, t := range targets {
-		if _, ok := avail[t]; !ok {
+		if !isTarget(t) {
 			unknown = append(unknown, t)
 		}
 	}
@@ -1733,9 +1821,7 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 	for n := range avail {
 		names = append(names, n)
 	}
-	sort.Strings(names)
-	return fmt.Errorf("unknown --target %s; available apps in env: %s",
-		strings.Join(unknown, ", "), strings.Join(names, ", "))
+	return errUnknownTargets(unknown, names, manifestOnly)
 }
 
 // filterEntitiesByTarget returns a shallow copy of e with Services,
@@ -2638,8 +2724,14 @@ type deployPreflightInput struct {
 	// CreateContainerConfigError; checking every Secret everywhere refused
 	// deploys for Secrets a cluster never uses.
 	secretContexts []string
+	// deployedTo are the clusters this deploy WRITES (its k8s groups). A
+	// declared Secret is checked only where it is both consumed and written:
+	// a targeted deploy of the daemon cluster must not be refused for the
+	// hub's IdP credentials. Empty = no narrowing.
+	deployedTo []string
 	// entities and groups feed the per-Secret cluster attribution: the
 	// deploy's own router decides which cluster each rendered object lands on.
+	// They are the WHOLE env's (the routing topology), not a --target subset.
 	entities *KCLEntities
 	groups   []deploytarget.ServiceGroup
 	// secretSupply is the env's bundle-internal Secret SUPPLY for the
@@ -2813,6 +2905,12 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 	// that place it.
 	requiredSecrets, unattributed := scopeRequiredSecretsToClusters(
 		in.requiredSecrets, manifests, in.groups, in.entities, in.namespace)
+	// Then narrow to the clusters this deploy actually writes. Attribution
+	// answers "who consumes it"; this answers "is that cluster ours to break
+	// right now" — a deploy that never touches the hub is not blocked by a
+	// Secret only the hub reads.
+	requiredSecrets = restrictSecretsToDeployedClusters(requiredSecrets, in.deployedTo)
+	unattributed = restrictSecretsToDeployedClusters(unattributed, in.deployedTo)
 	if len(in.targets) > 0 {
 		// Same exclusive --target filter the apply uses (keep iff the
 		// manifest's KCL-declared group ∈ targets) so the preflight checks

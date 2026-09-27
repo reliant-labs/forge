@@ -2834,9 +2834,12 @@ schema RenderedWorkload:
     # Unset => no volumes (field omitted from the manifest entirely).
     volumes?: [Volume]
     # Raw k8s manifests OWNED by this service. Each is rendered tagged with
-    # this service's app.kubernetes.io/name (lib/services.k
-    # render_owned_manifests) so the deploy layer routes it to this
-    # service's DECLARED cluster — the load-bearing primitive for
+    # `forge.dev/workload: <this service>` (lib/services.k
+    # render_owned_manifests), which `--target <this service>` selects and
+    # the deploy layer routes to this service's DECLARED cluster. The
+    # manifest's own `app.kubernetes.io/*` labels are kept as written (a
+    # selector may depend on them) and only defaulted when absent — see
+    # lib/labels.k owner_labels. This is the load-bearing primitive for
     # declared-cluster-only multi-cluster routing (there is NO
     # primary-cluster / most-services heuristic; a manifest lands on the
     # cluster of its owning service, nowhere else).
@@ -3316,9 +3319,10 @@ schema HelmChart:
 
     SELECTION IS `--target`. A HelmChart is a renderable with a NAME, in
     the SAME env Bundle as the app — it differs from the app only in which
-    `--target` you pick. forge stamps `app.kubernetes.io/name = <name>` on
-    every manifest the chart renders, so the EXISTING `--target` /
-    FilterManifestsByApp axis selects it:
+    `--target` you pick. forge stamps `forge.dev/workload = <name>` on
+    every manifest the chart renders (defaulting `app.kubernetes.io/name`
+    only where the chart set none — its selectors depend on it), so the
+    EXISTING `--target` axis selects the whole chart:
 
         forge env deploy <env> --target <name>   # apply ONLY this platform dep
         forge env deploy <env>                   # apply the app (no platform target)

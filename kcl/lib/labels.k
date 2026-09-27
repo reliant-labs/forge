@@ -111,7 +111,7 @@ env_labels = lambda env: str = "" -> {str: str} {
 
 # Merge `add` into a metadata block's `labels`, UNDER whatever labels are
 # already there: a key the author set explicitly WINS and is left exactly
-# as written (the same precedence lib/services.k's owner stamp uses).
+# as written (the same precedence owner_labels gives the app.kubernetes.io set).
 # Only genuinely-new keys are appended, and they are appended LAST, so the
 # rendered label block diffs as one added line rather than a reordering.
 # Everything else on `metadata` (name, namespace, annotations,
@@ -188,4 +188,49 @@ managed_labels = lambda name: str, part_of: str = "" -> {str: str} {
         "app.kubernetes.io/managed-by" = "forge"
         "app.kubernetes.io/part-of" = part_of if part_of else name
     }
+}
+
+# ---------------------------------------------------------------------------
+# The OWNER stamp for manifests forge did not build.
+#
+# `forge.dev/workload` is forge's ROUTING key: the deploy GROUP that
+# `forge env deploy --target` selects and the multi-cluster router
+# (internal/cluster.ScopeManifestsToGroup) attributes a document by. Go reads it
+# through cluster.ManifestGroup, which falls back to `app.kubernetes.io/name`
+# for the objects forge's own builders render (those set both to the same
+# value, so they carry no second label and no pod rolls).
+#
+# Why a forge-owned key instead of `app.kubernetes.io/name`. A raw manifest
+# attached to a workload (`RenderedWorkload.manifests`) is very often chart
+# output or a hand-written controller, and its `app.kubernetes.io/name` means
+# something to ITSELF: a Service or DaemonSet selector, a ServiceMonitor, an
+# operator that looks its own objects up by label. Overwriting it to route the
+# object would silently break whatever keys on it; deferring to it (the old
+# behaviour) let the manifest's own label decide which `--target` shipped it,
+# so control-plane's kata pre-pull DaemonSet — labelled for its selector —
+# was dropped from `--target kata-prepull`. Routing by a key nothing else
+# reads removes the conflict instead of choosing a loser.
+#
+# The rule, per label:
+#   * `forge.dev/workload` — ALWAYS the owner. forge owns this key.
+#   * `app.kubernetes.io/{name,managed-by,part-of}` — forge's value is a
+#     DEFAULT, written only when the manifest carries none. An existing value
+#     is left exactly as written, whatever it is.
+#   * every other label — carried through untouched.
+#
+# Built by comprehension, never by `defaults | existing`: a dict decoded by
+# `yaml.decode` unions with `:` (unify) semantics, so `{managed-by = "forge"}
+# | {managed-by: "Helm"}` is a KCL "conflicting values" error that fails the
+# whole render. Each key below is produced by exactly one of three disjoint
+# comprehensions, so no key is ever unified.
+# ---------------------------------------------------------------------------
+WORKLOAD_LABEL_KEY: str = "forge.dev/workload"
+
+owner_labels = lambda existing: {str: str}, name: str, part_of: str = "" -> {str: str} {
+    _defaults = managed_labels(name, part_of)
+    # Defaults first, in their usual order, so an unlabelled manifest renders
+    # its label block exactly as it did before the owner key existed.
+    {k: existing[k] if k in existing else _defaults[k] for k in _defaults} \
+        | {k: existing[k] for k in existing if not (k in _defaults) and k != WORKLOAD_LABEL_KEY} \
+        | {"${WORKLOAD_LABEL_KEY}" = name}
 }

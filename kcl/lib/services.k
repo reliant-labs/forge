@@ -29,26 +29,25 @@ import .labels as labels_lib
 # the object's own name.
 _managed_labels = labels_lib.managed_labels
 
-# Stamp the OWNING service's app.kubernetes.io/name onto an arbitrary raw
-# manifest dict so the deploy layer can route it to that service's declared
-# cluster (declared-cluster-only routing — there is no primary-cluster
-# heuristic). Used by render_owned_manifests for the per-service
-# `Service.manifests` field.
+# Stamp the OWNING service onto an arbitrary raw manifest dict so the deploy
+# layer routes it to that service's declared cluster and selects it under that
+# service's `--target` (declared-cluster-only routing — there is no
+# primary-cluster heuristic). Used by render_owned_manifests for the
+# per-service `Service.manifests` field.
 #
-# The merge is deliberately non-destructive and kind-agnostic: it rebuilds
-# `metadata` from whatever the manifest already carried (preserving name,
-# namespace, annotations, ownerReferences, …) and merges the forge-managed
-# labels UNDER any labels the user already set, so a user label always wins
-# on key conflict. This works for ANY object — namespaced or cluster-scoped
-# (Namespace, CRD, ClusterRole, ClusterIssuer) — because every k8s object
-# has a metadata block and metadata.labels is universally legal.
+# The owner is AUTHORITATIVE and lives on forge's own key,
+# `forge.dev/workload`; the `app.kubernetes.io/*` set is only defaulted, never
+# overwritten. See labels_lib.owner_labels for the full rule and for why the
+# routing key cannot be `app.kubernetes.io/name` (a manifest's own name label
+# is frequently what its selector keys on).
 #
-# Label precedence (`_managed_labels(name) | _existing_labels`) mirrors how
-# _render_config_map_manifest already merges forge defaults under user
-# labels: the stamp is the DEFAULT owner, an explicit user-set
-# app.kubernetes.io/name (rare) wins and routes the manifest to whatever
-# the user named — explicit intent over the forge default. Re-rendering is
-# idempotent (the stamp equals the existing label on the second pass).
+# Kind-agnostic: it rebuilds `metadata` from whatever the manifest already
+# carried (name, namespace, annotations, ownerReferences, …), which is legal
+# for ANY object — namespaced or cluster-scoped (Namespace, CRD, ClusterRole,
+# ClusterIssuer). `labels = ` REPLACES the label map rather than unifying into
+# it, which is what keeps a `yaml.decode`d manifest (whose values unify with
+# `:` semantics) from conflicting with forge's defaults. Idempotent: a second
+# pass produces the same labels.
 #
 # KCL v0.11 note: the body instantiates no schema literals — only raw-dict
 # operations (`|`) and member access — so it is legal inside a lambda body.
@@ -57,7 +56,7 @@ _stamp_owner_label = lambda manifest: any, name: str, part_of: str = "" -> any {
     _existing_labels = _existing_meta.labels if _existing_meta.labels else {}
     manifest | {
         metadata = _existing_meta | {
-            labels = _managed_labels(name, part_of) | _existing_labels
+            labels = labels_lib.owner_labels(_existing_labels, name, part_of)
         }
     }
 }

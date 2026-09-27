@@ -445,6 +445,62 @@ type GroupScope struct {
 // service's `--target`, declare it on that service's `manifests`.
 const AppNameLabel = "app.kubernetes.io/name"
 
+// WorkloadLabel is forge's OWN routing key. It names the workload that owns a
+// manifest forge did not build itself — a `RenderedWorkload.manifests` entry
+// (kcl/lib/labels.k owner_labels) or a helm chart's output (stampAppLabel) —
+// and it takes priority over AppNameLabel when present. See ManifestGroup.
+//
+// It exists because AppNameLabel is not forge's to take. Chart output and
+// hand-written controllers set `app.kubernetes.io/name` for their own reasons,
+// most often as the key a Service or DaemonSet SELECTOR matches on. Forcing it
+// to the owning workload's name breaks those selectors; deferring to it lets
+// the manifest's own label pick which `--target` ships it (control-plane's
+// kata pre-pull DaemonSet fell out of `--target kata-prepull` that way). A key
+// nothing else reads resolves both without choosing a loser.
+//
+// Objects forge's own builders render carry no WorkloadLabel: their
+// AppNameLabel already is the workload, and adding a second label to every pod
+// template would roll every Deployment in every project for no routing gain.
+const WorkloadLabel = "forge.dev/workload"
+
+// ManifestGroup is the deploy GROUP a manifest belongs to — the value
+// `--target` selects on and multi-cluster routing attributes by. WorkloadLabel
+// when the manifest carries one, else AppNameLabel, else "" (an env-shared
+// object that belongs to no workload).
+//
+// It is the ONE reader of that fact. SelectManifestsByGroup,
+// ScopeManifestsToGroup, `forge env render --list`, the `--target` vocabulary
+// and doctor's routing model all call it, so the name `--list` prints for an
+// object is by construction the name `--target` accepts and routes by.
+func ManifestGroup(labels map[string]string) string {
+	if g := labels[WorkloadLabel]; g != "" {
+		return g
+	}
+	return labels[AppNameLabel]
+}
+
+// ManifestGroups returns every distinct non-empty ManifestGroup in a
+// `---`-separated stream, sorted. It is the manifest half of the `--target`
+// vocabulary: every name an object in the rendered env is attributed to.
+func ManifestGroups(manifests string) []string {
+	seen := map[string]struct{}{}
+	for _, doc := range splitDocs(manifests) {
+		m, ok := parseDoc(doc)
+		if !ok {
+			continue
+		}
+		if g := ManifestGroup(m.Metadata.Labels); g != "" {
+			seen[g] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for g := range seen {
+		out = append(out, g)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ClusterRoutingLabel is the FIRST-CLASS per-manifest cluster-attribution
 // key. forge's KCL gateway/route builders stamp it
 // (`forge.dev/cluster: k3d-<name>`) when an ingress entity (Gateway /
@@ -776,7 +832,22 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	// and before any chart is fetched: an unknown deploy-phase declaration
 	// is refused for a preview exactly as for a real apply, and before
 	// anything has touched the cluster. See prerollout.go.
-	config, rest := PartitionConfigManifests(manifests)
+	//
+	// CRDs come out FIRST, into their own early batch: a RenderedWorkload
+	// that ships a CRD together with an instance of it (an operator and its
+	// default CR, CNPG's CRDs and webhooks) otherwise sends both in one
+	// server-side apply, and the instance races the CRD's registration. The
+	// chart path has always done this; the env stream now uses the SAME
+	// primitive (applyEarlyBatch). The stream's Namespaces ride that batch
+	// too, so a namespaced object the config pass sends never lands before
+	// its namespace. A stream with no CRD keeps its historical passes
+	// exactly: early is then only the Namespaces the config pass would have
+	// applied first anyway.
+	earlyCRDs, earlyNS, remainder := partitionEarlyBatch(manifests)
+	if strings.TrimSpace(earlyCRDs) == "" {
+		earlyNS, remainder = "", manifests
+	}
+	config, rest := PartitionConfigManifests(remainder)
 	phases, err := partitionRolloutPhases(rest)
 	if err != nil {
 		return err
@@ -844,6 +915,9 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	// governed by the same policy as a failed rollout (see
 	// classifyApplyResult).
 	policy := opts.Rollout.Normalize()
+	if err := applyEarlyBatch(ctx, opts.Context, "", earlyCRDs, earlyNS); err != nil {
+		return policy.classifyApplyResult(err)
+	}
 	if strings.TrimSpace(config) != "" {
 		if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, config)); err != nil {
 			if opts.Quiet {
@@ -2175,7 +2249,7 @@ func SelectManifestsByGroup(manifests string, targets []string) string {
 		if !ok {
 			continue
 		}
-		if _, in := want[m.Metadata.Labels[AppNameLabel]]; in {
+		if _, in := want[ManifestGroup(m.Metadata.Labels)]; in {
 			kept = append(kept, doc)
 		}
 	}
@@ -2246,7 +2320,7 @@ func ScopeManifestsToGroup(manifests string, scope GroupScope) string {
 		app := ""
 		routeCluster := ""
 		if parsed {
-			app = m.Metadata.Labels[AppNameLabel]
+			app = ManifestGroup(m.Metadata.Labels)
 			routeCluster = m.Metadata.Labels[ClusterRoutingLabel]
 		}
 		// First-class cluster attribution wins over the app-label rule: a

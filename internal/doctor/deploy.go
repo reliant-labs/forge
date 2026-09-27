@@ -212,7 +212,7 @@ func (r envRender) clustersOf(o k8sObject) []string {
 	if c := o.Metadata.Labels[cluster.ClusterRoutingLabel]; c != "" {
 		return []string{c}
 	}
-	if app := o.Metadata.Labels[cluster.AppNameLabel]; app != "" {
+	if app := cluster.ManifestGroup(o.Metadata.Labels); app != "" {
 		if c := r.clusterOfApp[app]; c != "" {
 			return []string{c}
 		}

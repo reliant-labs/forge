@@ -40,11 +40,13 @@ metadata:
 }
 
 // TestStampAppLabel_OverridesEveryDoc proves the helm-as-a-RENDERER
-// bridge: every manifest a chart renders is FORCED to
-// `app.kubernetes.io/name = <name>` so the SAME exclusive --target axis
-// (SelectManifestsByGroup) selects the WHOLE chart as one group — even the
-// chart's sub-components that label THEMSELVES (cert-manager's webhook /
-// cainjector), which would otherwise be dropped by --target=cert-manager.
+// bridge: every manifest a chart renders is FORCED into the chart's group
+// (WorkloadLabel) so the SAME exclusive --target axis (SelectManifestsByGroup)
+// selects the WHOLE chart as one group — even the chart's sub-components that
+// label THEMSELVES (cert-manager's webhook / cainjector), which would
+// otherwise be dropped by --target=cert-manager. The sub-component's own
+// `app.kubernetes.io/name` is what its Service selector matches, so it must
+// come through untouched.
 func TestStampAppLabel_OverridesEveryDoc(t *testing.T) {
 	in := `apiVersion: v1
 kind: ServiceAccount
@@ -63,10 +65,17 @@ spec: {}`
 
 	got := stampAppLabel(in, "cert-manager")
 
-	// The chart's own sub-component label ("webhook") MUST be overridden
-	// to the chart name, or --target=cert-manager would drop the webhook.
-	if strings.Contains(got, `app.kubernetes.io/name: webhook`) {
-		t.Errorf("chart sub-component label must be overridden to the chart name:\n%s", got)
+	// The chart's own sub-component label ("webhook") is what its selectors
+	// key on; routing must not rewrite it.
+	if !strings.Contains(got, `app.kubernetes.io/name: webhook`) {
+		t.Errorf("chart sub-component name label was rewritten; its selectors would stop matching:\n%s", got)
+	}
+	// A doc with no name label is defaulted to the chart name.
+	if !strings.Contains(got, "app.kubernetes.io/name: cert-manager") {
+		t.Errorf("unlabelled chart doc was not defaulted to the chart name:\n%s", got)
+	}
+	if strings.Count(got, WorkloadLabel+": cert-manager") != 2 {
+		t.Errorf("every chart doc must carry the chart's group on %s:\n%s", WorkloadLabel, got)
 	}
 
 	// Round-trip through SelectManifestsByGroup: a --target=cert-manager

@@ -22,6 +22,7 @@ metadata.labels created.
 """
 
 import forge
+import yaml
 
 # Primary target — render_manifests reads namespace/registry off this one.
 _target = forge.ClusterTarget {
@@ -85,6 +86,32 @@ _bundle = forge.Bundle {
             image = "example"
             deploy = _daemon_target.deploy
         }
+        # 4. Chart-shaped owned manifests whose OWN app.kubernetes.io/* labels
+        # disagree with forge's stamp (control-plane's kata pre-pull and its
+        # vendored CNPG render). The DaemonSet's name label is what its
+        # selector keys on, so it must survive; the decoded doc's
+        # `managed-by: Helm` used to be a KCL unification error that failed
+        # the whole render.
+        forge.RenderedWorkload {
+            name = "prepull"
+            deploy = _daemon_target.deploy
+            manifests = [
+                {
+                    apiVersion = "apps/v1"
+                    kind = "DaemonSet"
+                    metadata = {
+                        name = "image-prepull"
+                        namespace = "prepull"
+                        labels = {"app.kubernetes.io/name" = "image-prepull"}
+                    }
+                    spec = {
+                        selector.matchLabels = {"app.kubernetes.io/name" = "image-prepull"}
+                        template.metadata.labels = {"app.kubernetes.io/name" = "image-prepull"}
+                    }
+                }
+                yaml.decode("apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: operator\n  namespace: prepull\n  labels:\n    app.kubernetes.io/name: operator-chart\n    app.kubernetes.io/managed-by: Helm\n    forge.dev/workload: someone-else\n    helm.sh/chart: operator-1.0.0\n")
+            ]
+        }
     ]
 }
 
@@ -121,3 +148,24 @@ _deploy_names = [d.metadata.name for d in _deployments]
 assert_no_infra_deployment = len([n for n in _deploy_names if n == "cp-infra"]) == 0
 assert_workload_deployments = len([n for n in _deploy_names if n == "api"]) == 1 \
     and len([n for n in _deploy_names if n == "workspace-proxy"]) == 1
+
+# ── (4) The owner is authoritative; the manifest's own labels survive ──
+# forge.dev/workload is the routing key --target and the cluster scoper read
+# (cluster.ManifestGroup), so it names the OWNER on every owned manifest.
+_owned = _crds + _gateways + _issuers
+assert_owner_key_everywhere = all m in _owned {
+    m.metadata.labels["forge.dev/workload"] == m.metadata.labels["app.kubernetes.io/name"]
+}
+_ds = [m for m in manifests if m.kind == "DaemonSet"][0]
+_sa = [m for m in manifests if m.kind == "ServiceAccount" and m.metadata.name == "operator"][0]
+assert_ds_routed_to_owner = _ds.metadata.labels["forge.dev/workload"] == "prepull"
+# ...without touching the name label its selector depends on.
+assert_ds_name_label_kept = _ds.metadata.labels["app.kubernetes.io/name"] == "image-prepull"
+assert_ds_selector_untouched = _ds.spec.selector.matchLabels == {"app.kubernetes.io/name" = "image-prepull"}
+# The decoded chart doc renders (no unification error) with its own values
+# kept, forge's routing key forced, and absent defaults filled in.
+assert_decoded_routed_to_owner = _sa.metadata.labels["forge.dev/workload"] == "prepull"
+assert_decoded_managed_by_kept = _sa.metadata.labels["app.kubernetes.io/managed-by"] == "Helm"
+assert_decoded_name_kept = _sa.metadata.labels["app.kubernetes.io/name"] == "operator-chart"
+assert_decoded_other_label_kept = _sa.metadata.labels["helm.sh/chart"] == "operator-1.0.0"
+assert_decoded_part_of_defaulted = _sa.metadata.labels["app.kubernetes.io/part-of"] == "prepull"

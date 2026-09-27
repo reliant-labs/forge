@@ -184,6 +184,64 @@ func TestPreflightKeepsUnattributableSecretsOnEveryCluster(t *testing.T) {
 	}
 }
 
+// TestPreflightTargetedDaemonDeployChecksNoHubSecret is D4 as reported:
+// `forge env deploy prod --target prod-daemon-cluster --dry-run` on
+// control-plane main was refused for the hub's zitadel / openbao / sentry
+// Secrets "missing" on prod-daemon-v2.
+//
+// The deploy writes ONLY the daemon cluster. Before the fix the targeted
+// deploy handed the preflight the target-FILTERED groups — one cluster — so
+// the attribution saw a single-cluster env, gave up scoping, and required
+// every declared Secret on it. Now the attribution runs against the whole
+// env's topology and the check is narrowed to the clusters this deploy writes:
+// no hub Secret is asked for anywhere, because the hub is not being written.
+func TestPreflightTargetedDaemonDeployChecksNoHubSecret(t *testing.T) {
+	gets := scopeFakeKubectl(t) // no Secret exists anywhere
+	in, report := scopeProdInput(t, "", scopeProdSecrets...)
+	// The whole env stays the topology; this deploy dispatches only the
+	// daemon cluster's group (what targetedK8sGroups yields for
+	// --target kata-prepull / prod-daemon-cluster).
+	in.topology, in.topologyEntities = in.groups, in.entities
+	in.groups = []deploytarget.ServiceGroup{in.groups[0]}
+	in.targets = []string{"kata-prepull"}
+
+	if err := runDeployPreflightForEnv(context.Background(), in); err != nil {
+		t.Fatalf("a deploy that writes only the daemon cluster was refused for Secrets it never uses:\n%v", err)
+	}
+	if asked := gets(); len(asked) != 0 {
+		t.Errorf("asked for Secrets this deploy cannot break: %v", asked)
+	}
+	if doc := report.document(); doc.Preflight.Blocking != 0 {
+		t.Errorf("preflight = %+v, want 0 blocking", doc.Preflight)
+	}
+}
+
+// TestPreflightTargetedDeployStillChecksTheSecretsItWrites: narrowing to the
+// written clusters must not turn into "check nothing". A targeted deploy of
+// the daemon cluster still requires a Secret that cluster consumes.
+func TestPreflightTargetedDeployStillChecksTheSecretsItWrites(t *testing.T) {
+	scopeFakeKubectl(t)
+	daemonConsumer := `    {apiVersion = "v1", kind = "ConfigMap", metadata = {name = "proxy", namespace = "workspaces", labels = _on("` + scopeDaemon + `")}, data = {a = "b"}}`
+	in, _ := scopeProdInput(t, daemonConsumer, append([]ExternalSecretEntity{
+		{Name: "workspace-proxy-secrets", Namespace: "workspaces", Keys: []string{"token"}},
+	}, scopeProdSecrets...)...)
+	in.topology, in.topologyEntities = in.groups, in.entities
+	in.groups = []deploytarget.ServiceGroup{in.groups[0]}
+	in.targets = []string{"kata-prepull"}
+
+	err := runDeployPreflightForEnv(context.Background(), in)
+	if err == nil || !strings.Contains(err.Error(), scopeDaemon+"/workspaces/workspace-proxy-secrets") {
+		t.Fatalf("the daemon cluster's own Secret was not required: %v", err)
+	}
+	// Findings are the "Secret <ctx>/<ns>/<name> missing" lines; the
+	// remediation prose below them names cloudflare-api-token as an example.
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if strings.Contains(line, "missing keys") && !strings.Contains(line, "workspace-proxy-secrets") {
+			t.Errorf("a hub Secret leaked into a daemon-only deploy's findings: %s", strings.TrimSpace(line))
+		}
+	}
+}
+
 // TestScopeRequiredSecretsSingleClusterUntouched: one cluster, nothing to scope.
 func TestScopeRequiredSecretsSingleClusterUntouched(t *testing.T) {
 	in := []cluster.RequiredSecret{{Name: "s", Namespace: "ns"}}

@@ -356,7 +356,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		// Reuse the deploy path's own validation and filter: a typo'd
 		// --target that silently prints nothing is the worst possible
 		// answer to "does this app own anything".
-		if verr := validateDeployTargets(entities, opts.targets); verr != nil {
+		if verr := validateTargetsAgainstRender(entities, opts.targets, manifests); verr != nil {
 			return verr
 		}
 		manifests = cluster.SelectManifestsByGroup(manifests, opts.targets)
@@ -478,7 +478,7 @@ func attributeRenderedObjects(manifests string, groups []deploytarget.ServiceGro
 			obj.Kind = meta.Kind
 			obj.Name = meta.Metadata.Name
 			obj.Namespace = meta.Metadata.Namespace
-			obj.App = meta.Metadata.Labels[cluster.AppNameLabel]
+			obj.App = cluster.ManifestGroup(meta.Metadata.Labels)
 		}
 		obj.Clusters = clustersForDoc(doc, clusters, scopes)
 		objects = append(objects, obj)

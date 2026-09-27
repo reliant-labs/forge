@@ -397,6 +397,9 @@ var removals = []removal{
 			// Writers: a Go expression that BUILDS a down filename.
 			regexp.MustCompile(`\+\s*"\.down\.sql"`),
 			regexp.MustCompile(`\bDownSQL\b|\bDownPath\b|\bDownBody\b`),
+			// Tolerating them: the grandfather knob that turned pre-policy down
+			// files into a warning, and the upgrade step that stamped it.
+			regexp.MustCompile(`\bDownFilesAllowedUntil\b|\bDownFilesBaseline\b|\brecordDownFilesBaseline\b`),
 		},
 		Allowances: []allowance{
 			{

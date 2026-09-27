@@ -385,55 +385,6 @@ func TestLintMigrationsDirGooseDownSection(t *testing.T) {
 	}
 }
 
-// Historical down files at or below down_files_allowed_until collapse into ONE
-// warning; a newer one is still an error. This is what lets a project with
-// ninety pre-policy down files adopt the rule without going red on day one,
-// while still catching the next one written.
-func TestLintMigrationsDirGrandfathersDownFilesUpToBaseline(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{
-		"00001_a.up.sql", "00001_a.down.sql",
-		"00002_b.up.sql", "00002_b.down.sql",
-		"00003_c.up.sql", "00003_c.down.sql",
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("SELECT 1;"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cfg := ConfigFromProject(config.MigrationSafetyConfig{DownFilesAllowedUntil: "00002"})
-
-	result, err := LintMigrationsDir(dir, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var errs, warns []Finding
-	for _, f := range result.Findings {
-		if f.Rule != RuleNoDownMigration {
-			continue
-		}
-		switch f.Severity {
-		case SeverityError:
-			errs = append(errs, f)
-		case SeverityWarn:
-			warns = append(warns, f)
-		}
-	}
-	if len(errs) != 1 || !strings.HasSuffix(errs[0].File, "00003_c.down.sql") {
-		t.Fatalf("want one error for the post-baseline 00003 down file, got %#v", errs)
-	}
-	if len(warns) != 1 || !strings.Contains(warns[0].Message, "2 grandfathered") {
-		t.Fatalf("want one folded warning naming 2 grandfathered files, got %#v", warns)
-	}
-}
-
-func TestLintMigrationsDirRejectsMalformedDownBaseline(t *testing.T) {
-	dir := writeMigration(t, "00001_a.up.sql", "SELECT 1;")
-	cfg := ConfigFromProject(config.MigrationSafetyConfig{DownFilesAllowedUntil: "latest"})
-	if _, err := LintMigrationsDir(dir, cfg); err == nil {
-		t.Fatal("a non-numeric down_files_allowed_until must be an error, not a silent grandfather-nothing")
-	}
-}
-
 func writeMigration(t *testing.T, name, content string) string {
 	t.Helper()
 	dir := t.TempDir()

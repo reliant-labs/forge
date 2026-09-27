@@ -161,19 +161,10 @@ What to do instead:
   the migrate Job only ever runs `db migrate up`. Expand-then-contract is what
   makes the older release safe to run.
 
-### Down files that predate the policy
+### Existing down files
 
 `forge lint`'s `no-down-migration` rule (in the migration-safety lane) errors on
-every `*.down.sql` and every goose `-- +goose Down` section with SQL in it. A
-project that wrote them before the rule grandfathers its history with one
-reviewable line; anything newer still fails:
-
-```yaml
-database:
-  migration_safety:
-    down_files_allowed_until: "00092"   # at or below: one folded warning; above: error
-```
-
-The line is hand-written on purpose — a baseline stamped automatically would
-grandfather whatever was written a minute before the stamp. Forge never runs
-the grandfathered files, so deleting them is always safe.
+every `*.down.sql` and every goose `-- +goose Down` section with SQL in it,
+whenever it was written. There is no grandfather line: forge never runs a down
+file, so deleting one is always safe — delete them, along with any test or CI
+job that executes them.

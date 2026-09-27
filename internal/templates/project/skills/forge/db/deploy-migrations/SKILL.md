@@ -91,10 +91,8 @@ unknown version was declared compatible, and refuses to start
 (`*migratekit.SchemaAheadError`) when one was not. That refusal is the point:
 old code does not get to guess on a schema nobody vouched for.
 
-**There is no stepping a schema back.** No down migrations, no
-`db migrate down`, no rollback. If a release's migration is wrong, the fix is a
-NEW migration in a new release that repairs the schema from the state it is
-actually in — roll forward.
+There is no stepping a schema back, and no rollback of a release either — see
+"Roll forward only" below.
 
 ## Where AUTO_MIGRATE still fits
 
@@ -137,10 +135,12 @@ What to do instead:
   backfill; switch readers and writers in a release; drop the old shape in a
   LATER release. At every step the previous release still works against the
   new schema.
-- **Roll back the app, never the schema.** `forge env deploy --rollback`
-  re-points an environment at an earlier release's images and runs no SQL — and
-  the migrate Job only ever runs `db migrate up`. Expand-then-contract is what
-  makes the older release safe to run.
+- **Roll the app forward too.** There is no release rollback: a bad release is
+  fixed by a new one, cut and promoted like any other. Binding an env to an
+  OLDER release is possible (an ordinary `forge env promote`, labelled
+  `direction BEHIND`), but it undoes nothing — the older code then runs on the
+  newer schema, which is safe only if every migration since was
+  expand-only and marked `-- forge:backward-compatible`.
 
 ### Down files that predate the policy
 

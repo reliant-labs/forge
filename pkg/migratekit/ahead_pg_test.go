@@ -27,8 +27,8 @@ func requirePG(t *testing.T) string {
 }
 
 // release is one binary's embedded migration set: the files a release was
-// built with. `newer` is v1.7.0-shaped (it adds 3), `older` is the rollback
-// target that tops out at 2.
+// built with. `newer` is v1.7.0-shaped (it adds 3), `older` is the previous
+// release that tops out at 2 — still serving while `newer` rolls out.
 func release(files map[string]string) fstest.MapFS {
 	fsys := fstest.MapFS{}
 	for name, sql := range files {
@@ -47,7 +47,8 @@ var (
 		"3_retire.up.sql": "-- forge:backward-compatible\nALTER TABLE plans ADD COLUMN retired_at TIMESTAMPTZ;",
 	}
 	// 3 drops a table the older release still reads, and does NOT declare
-	// itself compatible — exactly what a rollback must refuse to run over.
+	// itself compatible — exactly what the previous release must refuse to
+	// serve over.
 	incompatibleThird = map[string]string{
 		"3_drop.up.sql": "DROP TABLE accounts;",
 	}
@@ -78,15 +79,15 @@ func mustUp(t *testing.T, fsys fstest.MapFS, dsn string) Result {
 	return res
 }
 
-// TestUpToleratesASchemaAheadThatDeclaredItselfCompatible is the rollback in
-// the control-plane v1.7.0 incident, at the migrator.
+// TestUpToleratesASchemaAheadThatDeclaredItselfCompatible is the previous
+// release meeting the next one's schema — every rolling deploy, at the
+// migrator.
 //
-// The newer release migrates the database to 3. The environment is then
-// rolled back, and the OLDER release's `db migrate up` runs against a schema
-// one version past the newest migration it embeds. golang-migrate fails that
-// with "no migration found for version 3", which aborts the migrate step and
-// with it the whole rollback — the rollback becomes impossible exactly when it
-// is needed.
+// The newer release migrates the database to 3 while the OLDER release is
+// still serving, and an old pod that starts (reschedule, scale-up) runs its
+// `db migrate up` against a schema one version past the newest migration it
+// embeds. golang-migrate fails that with "no migration found for version 3",
+// crash-looping the release that is carrying the traffic.
 //
 // Migration 3 declared itself backward-compatible, and the newer migrator
 // recorded that in the database when it applied it. So the older binary can
@@ -105,7 +106,7 @@ func TestUpToleratesASchemaAheadThatDeclaredItselfCompatible(t *testing.T) {
 	}
 	if res.Ahead == nil || res.Ahead.Latest != 2 || len(res.Ahead.Versions) != 1 || res.Ahead.Versions[0] != 3 {
 		t.Errorf("Result.Ahead = %+v; want the schema-ahead fact reported (latest 2, unknown [3]) — "+
-			"a rollback that silently reads as 'no pending migrations' hides the one thing the operator must see", res.Ahead)
+			"a schema-ahead boot that silently reads as 'no pending migrations' hides the one thing the operator must see", res.Ahead)
 	}
 }
 
@@ -133,7 +134,7 @@ func TestUpRefusesASchemaAheadThatIsNotDeclaredCompatible(t *testing.T) {
 	}
 	for _, want := range []string{"AHEAD", "NOTHING WAS APPLIED", "rolls forward only", "forge:backward-compatible"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not carry %q — it is the runbook an operator reads mid-rollback:\n%v", want, err)
+			t.Errorf("error does not carry %q — it is the runbook an operator reads mid-deploy:\n%v", want, err)
 		}
 	}
 	if st, _ := mg.State(); st.Version != 3 || st.Dirty {
@@ -173,10 +174,10 @@ func TestUpRefusesASchemaAheadWithNoRecord(t *testing.T) {
 	}
 }
 
-// TestAutoMigrateAppliesTheSameVerdictAtBoot covers the path a deploy-time
-// skip never reaches: a server booting with AUTO_MIGRATE (or a `kubectl
-// rollout undo` to an image that migrates on start). It must reach the same
-// two verdicts `db migrate up` does, on the pool it is handed.
+// TestAutoMigrateAppliesTheSameVerdictAtBoot covers a server booting with
+// AUTO_MIGRATE — an old pod starting mid-rollout on an image that migrates on
+// start. It must reach the same two verdicts `db migrate up` does, on the pool
+// it is handed.
 func TestAutoMigrateAppliesTheSameVerdictAtBoot(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -210,8 +211,8 @@ func TestAutoMigrateAppliesTheSameVerdictAtBoot(t *testing.T) {
 
 // TestAutoMigrateTrustsTheDeclarationsTheMigrateJobRecorded is the production
 // shape: the NEWER release migrates through the scaffolded `db migrate up`
-// (a pre-rollout Job, i.e. Migrator.Up), then the app is rolled back and the
-// OLDER image boots with AutoMigrate. Boot can only accept the compatible
+// (a pre-rollout Job, i.e. Migrator.Up), then an OLDER-release pod boots with
+// AutoMigrate before the rollout completes. Boot can only accept the compatible
 // version if Up recorded its declaration — a Migrator.Up that applies without
 // recording leaves every Job-applied version "unrecorded", and the older
 // release refuses to start over a migration its author declared safe.

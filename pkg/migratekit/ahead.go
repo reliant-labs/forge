@@ -94,8 +94,8 @@ func (e *SchemaAheadError) Error() string {
 		fmt.Fprintf(&b, "; version(s) %s are not declared backward-compatible (%q in the .up.sql), "+
 			"so this binary's code is not known to run against them", joinVersions(e.Incompatible), compat.Directive)
 	}
-	b.WriteString(". NOTHING WAS APPLIED and this binary refuses to serve. Run the release that owns this schema " +
-		"(or a newer one): recovery is roll forward. A schema is never stepped back. Write migrations " +
+	b.WriteString(". NOTHING WAS APPLIED and this binary refuses to serve. Forge rolls forward only: run the release " +
+		"that owns this schema (or a newer one). A schema is never stepped back. Write migrations " +
 		"expand/contract and mark the expand half `" + compat.Directive + "` so the previous release keeps " +
 		"working through a deploy. See the forge skill db/deploy-migrations")
 	return b.String()

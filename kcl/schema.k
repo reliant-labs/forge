@@ -63,6 +63,7 @@ needs the alias trick.
 import json
 import regex
 import .tiers
+import .lib.annotations as annotations_lib
 
 # ---------------------------------------------------------------------------
 # Shared sub-structures.
@@ -2806,6 +2807,13 @@ schema RenderedWorkload:
     # control-plane kata daemon-pool pinning case). Only meaningful for a
     # K8sCluster deploy.
     service_account?: str
+    # `service_account_annotations` are stamped on the ServiceAccount forge
+    # GENERATES for this workload (lib/rbac.k _sa_metadata) and on no other
+    # object — the cloud workload-identity binding (GKE
+    # `iam.gke.io/gcp-service-account`) that must sit on the KSA itself.
+    # Refused with `service_account`, since forge then generates no SA.
+    # Empty => no `annotations` on the SA, byte-identical to before.
+    service_account_annotations: {str: str} = {}
     pod_annotations: {str: str} = {}
     node_selector: {str: str} = {}
     tolerations: [{str: any}] = []
@@ -2875,6 +2883,10 @@ schema RenderedWorkload:
 
     check:
         name, "RenderedWorkload.name is required"
+        not (service_account and service_account_annotations), \
+            "RenderedWorkload '${name}': service_account_annotations annotate the ServiceAccount forge GENERATES, and `service_account = \"${service_account}\"` means forge generates none — the annotations would land nowhere. Put them on '${service_account}' where it is provisioned, or drop `service_account`"
+        len(annotations_lib.invalid_keys(service_account_annotations)) == 0, \
+            "RenderedWorkload '${name}': service_account_annotations has invalid annotation key(s) ${annotations_lib.invalid_keys(service_account_annotations)}: a key is `[prefix/]name`, where name is <= 63 chars of [A-Za-z0-9-_.] starting and ending alphanumeric, and prefix is a DNS subdomain (e.g. iam.gke.io/gcp-service-account)"
 
 schema Operator:
     """A cluster-scoped controller that reconciles CRDs.

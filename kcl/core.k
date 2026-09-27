@@ -34,6 +34,7 @@ NOTE (ADDITIVE): control-plane and other consumers keep authoring
 """
 
 import .lib.quantity as qty_lib
+import .lib.annotations as annotations_lib
 
 schema EnvSource:
     """A target-neutral, single-channel env value — the MAP value in the
@@ -320,6 +321,21 @@ schema K8sOverrides:
                             Any `image_pull_secrets` ride the pod spec
                             instead of the SA, since there is no generated
                             SA to carry them.
+      * `service_account_annotations`
+                          — annotations stamped on the ServiceAccount forge
+                            GENERATES for this workload, and on nothing else
+                            (not the pod, not the Deployment). The case it
+                            exists for is cloud workload identity: GKE reads
+                            `iam.gke.io/gcp-service-account` off the KSA the
+                            pod runs as, EKS reads `eks.amazonaws.com/role-arn`.
+                            Unlike `service_account` it keeps the identity
+                            forge generated — the SA is still named after the
+                            workload — so RBAC, audit and policy that bind that
+                            literal name keep working. Refused together with
+                            `service_account`: forge generates no SA then, and
+                            the annotation belongs wherever that SA is
+                            provisioned. Keys must be legal annotation keys
+                            (`[prefix/]name`, lib/annotations.k).
       * `namespaced_rbac` — extra namespaced PolicyRule dicts appended to
                             the service's generated Role (same shape as
                             Operator.cluster_rbac.rules): controller-runtime
@@ -380,6 +396,7 @@ schema K8sOverrides:
                             resort, not the only one.
     """
     service_account?: str
+    service_account_annotations?: {str: str}
     namespaced_rbac?: [{str: any}]
     operator?: OperatorSpec
     annotations?: {str: str}
@@ -392,6 +409,10 @@ schema K8sOverrides:
     check:
         termination_grace_period_seconds == Undefined or termination_grace_period_seconds > 0, \
             "K8sOverrides.termination_grace_period_seconds must be positive"
+        not (service_account and service_account_annotations), \
+            "K8sOverrides.service_account_annotations annotate the ServiceAccount forge GENERATES, and `service_account = \"${service_account}\"` means forge generates none — the annotations would land nowhere. Put them on '${service_account}' where it is provisioned, or drop `service_account` so forge generates (and annotates) the workload's own SA"
+        len(annotations_lib.invalid_keys(service_account_annotations)) == 0, \
+            "K8sOverrides.service_account_annotations has invalid annotation key(s) ${annotations_lib.invalid_keys(service_account_annotations)}: a key is `[prefix/]name`, where name is <= 63 chars of [A-Za-z0-9-_.] starting and ending alphanumeric, and prefix is a DNS subdomain (e.g. iam.gke.io/gcp-service-account)"
 
 schema HostOverrides:
     """The HOST adapter's escape hatch — a target-NAMESPACED block on an
@@ -774,6 +795,9 @@ _project_container = lambda c: Container -> {str: any} {
 # RBAC / owned-manifest stream), so the override is a structural by-name
 # splice, and a Service with no `k8s` block projects byte-identically:
 #   svc.k8s.service_account -> RenderedWorkload.service_account
+#   svc.k8s.service_account_annotations
+#                           -> RenderedWorkload.service_account_annotations
+#                              (stamped on the GENERATED ServiceAccount only)
 #   svc.k8s.namespaced_rbac -> RenderedWorkload.namespaced_rbac
 #   svc.k8s.operator        -> RenderedWorkload.operator_cluster_rbac + operator_crds
 #                              (marks this workload an OPERATOR: the renderer
@@ -850,6 +874,8 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> RenderedWorkload
         if _k8s:
             if _k8s.service_account:
                 service_account = _k8s.service_account
+            if _k8s.service_account_annotations:
+                service_account_annotations = _k8s.service_account_annotations
             if _k8s.namespaced_rbac:
                 namespaced_rbac = _k8s.namespaced_rbac
             # Operator tail — presence of `operator_cluster_rbac` is the

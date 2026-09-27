@@ -106,6 +106,7 @@ inside a lambda.
 
 import .expand as expand
 import .capabilities as caps
+import ..lib.annotations as annotations_lib
 
 # ---------------------------------------------------------------------------
 # The workload kinds. A kind answers HOW this thing runs — never what
@@ -345,6 +346,15 @@ schema Workload:
     # a workload watching cluster-wide state almost certainly wants too.
     cluster_rbac: [{str: any}] = []
 
+    # Annotations stamped on the ServiceAccount forge generates for this
+    # workload — and on no other object. The case it exists for is cloud
+    # workload identity: GKE reads `iam.gke.io/gcp-service-account` off the
+    # KSA the pod runs as (EKS: `eks.amazonaws.com/role-arn`), so the
+    # binding must sit on the SA itself, not on the pod. The SA keeps the
+    # workload's name, so RBAC and policy that refer to it are unaffected.
+    # Empty => no `annotations` key on the SA, byte-identical to before.
+    service_account_annotations: {str: str} = {}
+
     check:
         name, "Workload.name is required"
         kind in caps.WORKLOAD_KINDS, \
@@ -413,6 +423,12 @@ schema Workload:
 
         replicas == 1 or caps.supports(kind, caps.CAP_REPLICAS), \
             "Workload.replicas is not supported for kind='${kind}' — a tool is never scheduled, and a batch pod's concurrency is a property of the batch object (a CronJob's concurrencyPolicy, a Job's parallelism) rather than a replica count, so k8s has nowhere to put this value."
+
+        len(service_account_annotations) == 0 or caps.supports(kind, caps.CAP_WORKLOAD), \
+            "Workload.service_account_annotations is not supported for kind='${kind}' — a tool is never scheduled, so forge renders no ServiceAccount to annotate."
+
+        len(annotations_lib.invalid_keys(service_account_annotations)) == 0, \
+            "Workload '${name}': service_account_annotations has invalid annotation key(s) ${annotations_lib.invalid_keys(service_account_annotations)}: a key is `[prefix/]name`, where name is <= 63 chars of [A-Za-z0-9-_.] starting and ending alphanumeric, and prefix is a DNS subdomain (e.g. iam.gke.io/gcp-service-account)"
 
         len(crds) == 0 or caps.supports(kind, caps.CAP_CRDS), \
             "Workload.crds is only supported for kind='operator' — got '${kind}'. `crds` names the custom resources a controller-runtime manager owns."

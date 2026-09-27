@@ -40,6 +40,32 @@ _default_rules: [{str: any}] = [
     }
 ]
 
+# The metadata of a ServiceAccount forge GENERATES, carrying the workload's
+# `service_account_annotations` (K8sOverrides / Workload). The canonical
+# use is cloud workload identity — GKE's
+# `iam.gke.io/gcp-service-account: <gsa>@<project>.iam.gserviceaccount.com`,
+# EKS's `eks.amazonaws.com/role-arn` — which is read off the KSA a pod runs
+# as, so it must be on THIS object and on no other.
+#
+# Why the generated SA rather than an out-of-band one (`service_account`):
+# naming a different SA changes the identity every RBAC binding, audit
+# rule and PDP policy already refers to. A project whose live RBAC binds
+# the literal workload name (control-plane's leader-election and PDP
+# grants) cannot rename the SA to gain an annotation. Annotating the SA
+# forge already owns keeps the identity and adds the cloud binding.
+#
+# Unset/empty => `annotations` is omitted entirely, so every workload that
+# declares none renders byte-identically to before.
+_sa_metadata = lambda name: str, namespace: str, labels: {str: str}, sa_annotations: {str: str} = {} -> any {
+    {
+        name = name
+        namespace = namespace
+        labels = labels
+        if sa_annotations:
+            annotations = sa_annotations
+    }
+}
+
 # A ServiceAccount with NO Role and NO token, for a workload that does
 # not talk to the Kubernetes API — which is every forge Server, Worker,
 # Binary and Cron: their configuration is projected into the container
@@ -58,11 +84,14 @@ _default_rules: [{str: any}] = [
 # read like scoped RBAC, granted more than any forge workload needs,
 # and bound to nothing. Manifests that look like scoped RBAC and are
 # not are worse than none.
-render_service_account = lambda name: str, namespace: str, part_of: str = "", pull_secrets: [str] = [] -> [any] {
+#
+# `sa_annotations` are stamped on this generated ServiceAccount — and on
+# nothing else. See _sa_metadata.
+render_service_account = lambda name: str, namespace: str, part_of: str = "", pull_secrets: [str] = [], sa_annotations: {str: str} = {} -> [any] {
     [{
         apiVersion = "v1"
         kind = "ServiceAccount"
-        metadata = {name = name, namespace = namespace, labels = _managed_labels(name, part_of)}
+        metadata = _sa_metadata(name, namespace, _managed_labels(name, part_of), sa_annotations)
         automountServiceAccountToken = False
         if pull_secrets:
             imagePullSecrets = [{name = s} for s in pull_secrets]
@@ -112,7 +141,12 @@ render_service_account = lambda name: str, namespace: str, part_of: str = "", pu
 #
 # The imagePullSecrets consequence is handled at the POD, in
 # lib/services.k — see the `_pull_secrets_on_pod` note there.
-render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: any}] = [], pull_secrets: [str] = [], part_of: str = "", service_account: str = "" -> [any] {
+#
+# `sa_annotations` land on the GENERATED ServiceAccount only (see
+# _sa_metadata). With a `service_account` override there is no generated
+# SA, so they have nowhere to go — the schemas refuse that combination at
+# declaration rather than dropping the annotations here.
+render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: any}] = [], pull_secrets: [str] = [], part_of: str = "", service_account: str = "", sa_annotations: {str: str} = {} -> [any] {
     _labels = _managed_labels(name, part_of)
     # The identity the Role is granted TO: the override when the pod
     # binds one, else the SA forge generates below.
@@ -121,7 +155,7 @@ render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: a
         {
             apiVersion = "v1"
             kind = "ServiceAccount"
-            metadata = {name = name, namespace = namespace, labels = _labels}
+            metadata = _sa_metadata(name, namespace, _labels, sa_annotations)
             if pull_secrets:
                 imagePullSecrets = [{name = s} for s in pull_secrets]
         }
@@ -193,7 +227,7 @@ render_namespaced_rbac = lambda name: str, namespace: str, extra_rules: [{str: a
 # and forge stops emitting an SA it does not own. The failure it prevents
 # is worse at this tier than at the namespaced one — a controller-runtime
 # manager that cannot read its leases or watch its CRs does not start.
-render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets: [str] = [], part_of: str = "", service_account: str = "" -> [any] {
+render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets: [str] = [], part_of: str = "", service_account: str = "", sa_annotations: {str: str} = {} -> [any] {
     _labels = _managed_labels(name, part_of)
     # Scoped to the namespace for the last-writer-wins reason above. The
     # ServiceAccount is NOT suffixed: it is namespaced already, so its
@@ -205,7 +239,7 @@ render_cluster_rbac = lambda name: str, namespace: str, rbac: any, pull_secrets:
         {
             apiVersion = "v1"
             kind = "ServiceAccount"
-            metadata = {name = name, namespace = namespace, labels = _labels}
+            metadata = _sa_metadata(name, namespace, _labels, sa_annotations)
             if pull_secrets:
                 imagePullSecrets = [{name = s} for s in pull_secrets]
         }

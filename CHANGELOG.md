@@ -24,6 +24,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `service_account_annotations: {str:str}` on `forge.K8sOverrides`,
+  `forge.RenderedWorkload` and `forge.workloads.Workload`: annotations stamped
+  on the ServiceAccount forge GENERATES for the workload, and on no other
+  object. It is how a workload gets cloud workload identity (GKE
+  `iam.gke.io/gcp-service-account`, EKS `eks.amazonaws.com/role-arn`) without
+  renaming its identity — the SA keeps the workload's name, so Roles, bindings
+  and policy that name it keep working. Keys are validated as Kubernetes
+  annotation keys at render time, and combining it with `service_account`
+  (where forge generates no SA) is refused rather than silently dropped.
+- `forge env render` now includes every declared `forge.HelmChart`'s objects.
+  They used to be missing entirely (flux, cert-manager and envoy-gateway each
+  rendered 0 objects while `env deploy` applied them), so render was not a
+  preview of deploy. Charts are templated through the deploy's own chart
+  render (`helm template` with the declared values, the pinned CRD bundle,
+  the chart's own CRDs, the post-hook drop), each document is marked
+  `# source: helm chart <name>` and attributed to the cluster deploy applies it
+  to, and `--target` selects charts the same way deploy does. Templating needs
+  `helm` and registry access; `--no-charts` skips it, and the summary names the
+  charts it left out.
 - `cluster:manage` access-token scope (`accesstoken.ScopeClusterManage`):
   registers, rotates and removes an org's BYO clusters. Its own authority —
   `deploy:write` neither implies it nor is implied by it.

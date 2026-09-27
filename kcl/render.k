@@ -1193,6 +1193,10 @@ _render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: 
     # named after the SERVICE while the pod bound a different SA, so the grant
     # attached to an identity with no pods. Unset => "" => byte-identical.
     _sa_override = s.service_account if s.service_account else ""
+    # Annotations for the GENERATED SA (cloud workload identity). The
+    # RenderedWorkload check refuses them alongside an override, so on the
+    # override path this is always empty and nothing is dropped.
+    _sa_annotations = s.service_account_annotations if s.service_account_annotations else {}
     svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests, part_of, pull_secrets) \
         + (rbac_lib.render_cluster_rbac(
             s.name,
@@ -1201,6 +1205,7 @@ _render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: 
             pull_secrets,
             part_of,
             _sa_override,
+            _sa_annotations,
         ) if _is_operator else rbac_lib.render_namespaced_rbac(
             s.name,
             namespace,
@@ -1208,6 +1213,7 @@ _render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: 
             pull_secrets,
             part_of,
             _sa_override,
+            _sa_annotations,
         ))
 }
 

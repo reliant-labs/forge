@@ -58,11 +58,16 @@ import (
 // render failure is reported and the dev loop continues. Blocking a `forge
 // run` on it would trade a working stack with a stale client id for no
 // stack at all.
-func refreshFrontendRuntimeConfigs(cfg *config.ProjectConfig, projectDir, envName string) (int, error) {
+//
+// overlays is each frontend's render-resolved runtime_config (see
+// frontendRuntimeOverlays); the caller has already rendered the env, so it
+// passes them rather than this function rendering the whole env a second
+// time. nil means none.
+func refreshFrontendRuntimeConfigs(cfg *config.ProjectConfig, projectDir, envName string, overlays map[string]map[string]string) (int, error) {
 	if cfg == nil || len(cfg.Frontends) == 0 {
 		return 0, nil
 	}
-	docs, err := renderFrontendRuntimeDocs(projectDir, envName)
+	docs, err := renderFrontendRuntimeDocsWith(projectDir, envName, overlays)
 	if err != nil {
 		return 0, fmt.Errorf("render frontend runtime config: %w", err)
 	}

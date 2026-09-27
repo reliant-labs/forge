@@ -582,7 +582,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// build proceeds on the existing document rather than failing a build that
 	// would otherwise succeed.
 	if opts.env != "" && len(frontends) > 0 {
-		if changed, ferr := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), opts.env); ferr != nil {
+		if changed, ferr := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), opts.env, frontendRuntimeOverlays(entities)); ferr != nil {
 			fmt.Printf("[build]   Warning: frontend runtime config: %v (building with the previously generated config.js)\n", ferr)
 		} else if changed > 0 {
 			fmt.Printf("[build]   Refreshed %d frontend runtime config(s) from env %q\n", changed, opts.env)

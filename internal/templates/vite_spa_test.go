@@ -235,3 +235,35 @@ func TestViteSPAPageTemplatesRender(t *testing.T) {
 		})
 	}
 }
+
+// TestFrontendShellsLoadRuntimeConfigBeforeTheBundle pins that BOTH scaffolded
+// web shells load the runtime config document (config.js) with a classic,
+// blocking script in <head>, before any module script. The generated
+// src/lib/config_gen.ts reads window.__FORGE_CONFIG__ synchronously. A shell
+// that never loads the file makes every per-env value silently fall back to
+// its schema default. That is what the Vite scaffold did: its index.html had
+// no config.js tag at all, so a deployed Vite app called whatever API origin
+// the default named.
+func TestFrontendShellsLoadRuntimeConfigBeforeTheBundle(t *testing.T) {
+	vite, err := FrontendTemplates().Render("vite-spa/index.html.tmpl", FrontendTemplateData{FrontendName: "web", ProjectName: "acme", Platform: "vite-spa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := string(vite)
+	tag := `<script src="%BASE_URL%config.js"></script>`
+	i, j := strings.Index(v, tag), strings.Index(v, `<script type="module"`)
+	if i < 0 {
+		t.Fatalf("vite-spa index.html does not load %s (honouring Vite's base):\n%s", tag, v)
+	}
+	if head := strings.Index(v, "</head>"); i > head || j < i {
+		t.Errorf("config.js must load in <head>, before the module bundle (config at %d, </head> at %d, module at %d)", i, head, j)
+	}
+
+	next, err := FrontendTemplates().Render("nextjs/src/app/layout.tsx.tmpl", FrontendTemplateData{FrontendName: "web", ProjectName: "acme", Platform: "nextjs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(next), `<script src={joinBasePath("/config.js")} />`) {
+		t.Error("nextjs layout no longer loads config.js through joinBasePath")
+	}
+}

@@ -3021,6 +3021,36 @@ schema GitSource:
         not subdir or not subdir.startswith(".."), \
             "GitSource.subdir must not escape the repository root"
 
+schema WorkloadURL(tiers.WorkloadURLRef):
+    """The public URL of another workload in this environment, by NAME.
+
+        runtime_config = {API_URL = forge.WorkloadURL { workload = "api" }}
+
+        spec = tiers.SimpleBackend {
+            env = [tiers.EnvVar {
+                name = "CORS_ORIGINS"
+                workloadURL = forge.WorkloadURL { workload = "web" }
+            }]
+        }
+
+    It IS a tiers.WorkloadURLRef (the generated reference type the Go spec
+    and the control plane's CRD share), with `workload` as the author-facing
+    spelling of `name`. So the same value drops into a frontend's
+    `runtime_config` and a SimpleBackend env var's `workloadURL` slot.
+
+    A reference, not a URL: on a HOSTED env the control plane resolves it
+    (the platform allocates hostnames, and re-resolves when one moves). On
+    every other env forge resolves it at RENDER time from what the env
+    declares — a route, a custom domain, a host service's listen port, a
+    frontend's port — and refuses when it cannot. See kcl/lib/workload_url.k
+    for the exact order. An unknown name is refused at load either way.
+    """
+    workload: str
+    name: str = workload
+
+    check:
+        name == workload, "WorkloadURL: set `workload` only; `name` is derived from it"
+
 schema Frontend:
     """A web or mobile frontend.
 
@@ -3090,10 +3120,32 @@ schema Frontend:
     # same variable (forge warns). Additive — omit for the legacy
     # env_vars-only shape. See FrontendConfig.
     config?: FrontendConfig
+    # The browser's runtime configuration document — what the bundle reads
+    # as window.__FORGE_CONFIG__ — declared per environment:
+    #
+    #     runtime_config = {
+    #         API_URL = forge.WorkloadURL { workload = "api" }
+    #         APP_NAME = "acme"
+    #     }
+    #
+    # A value is a literal string or a forge.WorkloadURL. It is layered OVER
+    # the typed per-env config (deploy/kcl/<env>/config.k) on the same key,
+    # so the typed schema still validates and defaults it in the bundle.
+    #
+    # Where it lands: a HOSTED StaticSite publishes it as the spec's
+    # `runtimeConfig`, and the control plane writes config.js after every
+    # sync, so the release artifact carries NO config.js and promotes across
+    # environments unchanged. Every other env resolves references at render
+    # time and writes config.js itself (the dev server's public/, a
+    # Firebase / own-bucket deploy).
+    runtime_config: {str:str | WorkloadURL} = {}
     deploy?: FirebaseHosting | StaticSite | K8sCluster
 
     check:
         name, "Frontend.name is required"
+        all k, _v in runtime_config { regex.match(k, "^[A-Za-z_$][A-Za-z0-9_$]*$") }, \
+            "Frontend '${name}'.runtime_config keys must be JavaScript identifiers (e.g. API_URL): the bundle reads each as window.__FORGE_CONFIG__.<KEY>"
+        len(runtime_config) <= 128, "Frontend '${name}'.runtime_config allows at most 128 entries"
         path or source, \
             "Frontend needs a source of code: `path` for a directory in this repo, or `source = forge.GitSource { ... }` for a pinned checkout of another repo"
         not (path and source), \

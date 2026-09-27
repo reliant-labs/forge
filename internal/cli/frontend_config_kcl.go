@@ -96,6 +96,75 @@ func loadFrontendRuntimeConfig(projectDir, env string, configs []codegen.Fronten
 // An environment that declares no frontend config yields an empty map and
 // the deploy is unchanged.
 func renderFrontendRuntimeDocs(projectDir, envName string) (map[string]string, error) {
+	return renderFrontendRuntimeDocsWith(projectDir, envName, nil)
+}
+
+// frontendRuntimeOverlays collects each frontend's RESOLVED runtime_config
+// (kcl/schema.k Frontend.runtime_config, forge.WorkloadURL references already
+// lowered to URLs by the render) keyed by frontend name. Empty on a hosted
+// env: the render leaves references unresolved there, and the control plane
+// writes the document.
+func frontendRuntimeOverlays(entities *KCLEntities) map[string]map[string]string {
+	if entities == nil {
+		return nil
+	}
+	out := map[string]map[string]string{}
+	for _, f := range entities.Frontends {
+		if len(f.RuntimeConfig) > 0 {
+			out[f.Name] = f.RuntimeConfig
+		}
+	}
+	return out
+}
+
+// renderFrontendRuntimeDocsWith is renderFrontendRuntimeDocs with each
+// frontend's resolved runtime_config layered OVER the typed per-env values,
+// key by key. The typed layer (config.k through the generated projection)
+// stays the source of every field the proto declares; runtime_config is how
+// an env says "this value is another workload's URL" without restating a
+// hostname. A key both declare takes runtime_config's value — it is the more
+// specific, render-resolved statement.
+//
+// A frontend with runtime_config but NO typed config message still gets a
+// document holding just those keys. Rendering nothing would make the
+// declaration a silent no-op, and the bundle would read undefined.
+func renderFrontendRuntimeDocsWith(projectDir, envName string, overlays map[string]map[string]string) (map[string]string, error) {
+	out := map[string]string{}
+	typed, err := renderTypedFrontendRuntimeValues(projectDir, envName)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	for name := range typed {
+		names[name] = true
+	}
+	for name := range overlays {
+		names[name] = true
+	}
+	for name := range names {
+		merged := map[string]any{}
+		for k, v := range typed[name] {
+			merged[k] = v
+		}
+		for k, v := range overlays[name] {
+			merged[k] = v
+		}
+		encoded, err := json.MarshalIndent(merged, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("encode runtime config for %s: %w", name, err)
+		}
+		out[name] = codegen.GenerateFrontendConfigJS(name, envName, string(encoded))
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// renderTypedFrontendRuntimeValues is the TYPED half of a runtime document:
+// the env's config.k values through the generated projection, with proto
+// defaults filling every field the env does not pin.
+func renderTypedFrontendRuntimeValues(projectDir, envName string) (map[string]map[string]any, error) {
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
 	if err != nil {
 		// A project with no readable config protos has no frontend config
@@ -120,14 +189,9 @@ func renderFrontendRuntimeDocs(projectDir, envName string) (map[string]string, e
 		return nil, fmt.Errorf("frontend runtime config for %s: %w", envName, err)
 	}
 
-	out := make(map[string]string, len(configs))
+	out := make(map[string]map[string]any, len(configs))
 	for _, fc := range configs {
-		merged := frontendRuntimeValues(fc, values[fc.Frontend])
-		encoded, err := json.MarshalIndent(merged, "", "  ")
-		if err != nil {
-			return nil, fmt.Errorf("encode runtime config for %s: %w", fc.Frontend, err)
-		}
-		out[fc.Frontend] = codegen.GenerateFrontendConfigJS(fc.Frontend, envName, string(encoded))
+		out[fc.Frontend] = frontendRuntimeValues(fc, values[fc.Frontend])
 	}
 	return out, nil
 }

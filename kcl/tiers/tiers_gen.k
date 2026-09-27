@@ -65,6 +65,7 @@ schema StaticSite:
     liveDigest?: str
     previousDigest?: str
     retainedDigests?: [str]
+    runtimeConfig?: {str:RuntimeConfigValue}
 
     check:
         basePath == Undefined or regex.match(basePath, "^/.*$"), "StaticSite.basePath must match ^/.*$"
@@ -73,6 +74,7 @@ schema StaticSite:
         keepReleases == Undefined or keepReleases >= 0, "StaticSite.keepReleases must be at least 0"
         liveDigest == Undefined or regex.match(liveDigest, "^sha256:[a-f0-9]{64}$"), "StaticSite.liveDigest must match ^sha256:[a-f0-9]{64}$"
         previousDigest == Undefined or regex.match(previousDigest, "^sha256:[a-f0-9]{64}$"), "StaticSite.previousDigest must match ^sha256:[a-f0-9]{64}$"
+        runtimeConfig == Undefined or len(runtimeConfig) <= 128, "StaticSite.runtimeConfig allows at most 128 entries"
 
 static_site_json = lambda v: StaticSite -> {str:} {
     _d = {
@@ -85,6 +87,7 @@ static_site_json = lambda v: StaticSite -> {str:} {
         "liveDigest": v.liveDigest
         "previousDigest": v.previousDigest
         "retainedDigests": v.retainedDigests
+        "runtimeConfig": {_k: runtime_config_value_json(_i) for _k, _i in v.runtimeConfig} if v.runtimeConfig else Undefined
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
@@ -140,6 +143,7 @@ schema EnvVar:
     name: str
     secretRef?: SecretKeyRef
     value?: str
+    workloadURL?: WorkloadURLRef
 
     check:
         managedSecret == Undefined or regex.match(managedSecret, "^[A-Za-z_][A-Za-z0-9_]*$"), "EnvVar.managedSecret must match ^[A-Za-z_][A-Za-z0-9_]*$"
@@ -156,6 +160,7 @@ env_var_json = lambda v: EnvVar -> {str:} {
         "name": v.name
         "secretRef": secret_key_ref_json(v.secretRef) if v.secretRef else Undefined
         "value": v.value
+        "workloadURL": workload_url_ref_json(v.workloadURL) if v.workloadURL else Undefined
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
@@ -214,6 +219,23 @@ resources_json = lambda v: Resources -> {str:} {
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
 
+schema RuntimeConfigValue:
+    """RuntimeConfigValue is one entry of a StaticSite's runtime config: EXACTLY ONE of a literal value or a workload URL reference."""
+    value?: str
+    workloadURL?: WorkloadURLRef
+
+    check:
+        value == Undefined or len(value) <= 32768, "RuntimeConfigValue.value must be at most 32768 characters"
+        (1 if value != Undefined and value != None else 0) + (1 if workloadURL != Undefined and workloadURL != None else 0) == 1, "RuntimeConfigValue: exactly one of the fields in [value workloadURL] must be set"
+
+runtime_config_value_json = lambda v: RuntimeConfigValue -> {str:} {
+    _d = {
+        "value": v.value
+        "workloadURL": workload_url_ref_json(v.workloadURL) if v.workloadURL else Undefined
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
 schema SecretKeyRef:
     """SecretKeyRef names one key of a Secret in the workload's own namespace."""
     key: str
@@ -248,6 +270,22 @@ static_site_cdn_json = lambda v: StaticSiteCDN -> {str:} {
         "extraInvalidatePaths": v.extraInvalidatePaths
         "invalidate": v.invalidate
         "urlMap": v.urlMap
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema WorkloadURLRef:
+    """WorkloadURLRef names a workload, in the same environment, whose public URL is the value. Resolution is scoped by construction: the name carries no org, env or namespace component, so a reference can only ever reach a sibling workload."""
+    name: str
+
+    check:
+        regex.match(name, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "WorkloadURLRef.name must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        len(name) >= 1, "WorkloadURLRef.name must be at least 1 characters"
+        len(name) <= 63, "WorkloadURLRef.name must be at most 63 characters"
+
+workload_url_ref_json = lambda v: WorkloadURLRef -> {str:} {
+    _d = {
+        "name": v.name
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

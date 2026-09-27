@@ -133,6 +133,40 @@ Dispatch order: scenario handler → hybrid passthrough → entity fixtures → 
 
 To stub an RPC, run `forge scaffold scenario <name>` and add a typed handler — do NOT edit `mock-transport_gen.ts`. Activate with `?scenario=<name>`; it is read once at module init, so client-side navigation keeps it active until a full reload.
 
+## Runtime config and backend URLs
+
+A frontend reads its per-env values from `src/lib/config_gen.ts` (`loadConfig()`), which reads `window.__FORGE_CONFIG__`. That global is set by **`<basePath>/config.js`**, a classic blocking `<script>` in the shell's `<head>`: `layout.tsx` for Next.js, `index.html` (`%BASE_URL%config.js`) for Vite. Values arrive at RUNTIME, so one built bundle promotes across environments. Never read `NEXT_PUBLIC_*` / `VITE_*` for a per-env value, because the bundler freezes it at build time.
+
+Two sources are layered into the document, key by key:
+
+1. **Typed config**: the `(forge.v1.frontend_config)` proto message, with per-env values in `deploy/kcl/<env>/config.k`.
+2. **`runtime_config`** on the `forge.Frontend`, which wins on the same key. Use it when a value is **another workload's URL**:
+
+```kcl
+forge.Frontend {
+    name = "web"
+    runtime_config = {
+        API_URL = forge.WorkloadURL { workload = "api" }   # a sibling workload's public URL
+        APP_NAME = "acme"                                   # or a literal
+    }
+}
+```
+
+Name the workload, never the hostname:
+
+| Env | Who resolves `forge.WorkloadURL` | Who writes `config.js` |
+|---|---|---|
+| **Hosted** (Bundle declares `control_plane` and runs tiers through it) | The control plane. It allocates the hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync. The release artifact carries **no** config.js. |
+| Everything else (host, compose, cluster, Firebase / own bucket) | forge, **at render time**: a route to the workload → its public SimpleBackend domain → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / StaticSite deploy. |
+
+Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
+
+The backend half uses the same reference. A SimpleBackend's `CORS_ORIGINS` names the site, not its URL:
+
+```kcl
+tiers.EnvVar { name = "CORS_ORIGINS", workloadURL = forge.WorkloadURL { workload = "web" } }
+```
+
 ## Protobuf-ES v2
 
 Forge uses protobuf-es v2 — create message instances with `create()`, never constructors:

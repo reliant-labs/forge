@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"regexp"
@@ -55,6 +56,10 @@ func fullSite() *StaticSite {
 			RetainedDigests: []string{digestA}, KeepReleases: ptr(int32(0)), Entrypoints: []string{"/index.html"},
 			CDN:     &StaticSiteCDN{URLMap: "acme-lb", Invalidate: InvalidateAll, ExtraInvalidatePaths: []string{"/sw.js"}},
 			Domains: []string{"www.acme.com"},
+			RuntimeConfig: map[string]RuntimeConfigValue{
+				"API_URL": {WorkloadURL: &WorkloadURLRef{Name: "api"}},
+				"FLAG":    {Value: ptr("")},
+			},
 		},
 		Status: StaticSiteStatus{WorkloadStatus: WorkloadStatus{Phase: PhaseProgressing}, BucketPrefix: "sites/web", LiveDigest: digestB, PreviousDigest: digestA, ReleaseCount: 4, LastSyncedAt: ptr(metav1.Unix(1700000000, 0))},
 	}
@@ -186,6 +191,12 @@ func TestSimpleBackendValidate(t *testing.T) {
 		"negative resources": {func(s *SimpleBackendSpec) { s.Resources.MemoryRequestBytes = -1 }, "must not be negative"},
 		"bad probe port":     {func(s *SimpleBackendSpec) { s.HealthCheck = &HealthCheck{Port: 0} }, "healthCheck.port"},
 		"negative storage":   {func(s *SimpleBackendSpec) { s.StorageGiB = -1 }, "storageGiB"},
+		"value and workloadURL": {func(s *SimpleBackendSpec) {
+			s.Env = []EnvVar{{Name: "CORS_ORIGINS", Value: "x", WorkloadURL: &WorkloadURLRef{Name: "web"}}}
+		}, "more than one"},
+		"bad workloadURL name": {func(s *SimpleBackendSpec) {
+			s.Env = []EnvVar{{Name: "CORS_ORIGINS", WorkloadURL: &WorkloadURLRef{Name: "Web_Site"}}}
+		}, "workloadURL.name"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -211,6 +222,30 @@ func TestStaticSiteValidateAndRetention(t *testing.T) {
 	mustFail(t, StaticSiteSpec{CDN: &StaticSiteCDN{}}.Validate(), "urlMap")
 	mustFail(t, StaticSiteSpec{CDN: &StaticSiteCDN{URLMap: "m", Invalidate: "some"}}.Validate(), "cdn.invalidate")
 	mustFail(t, StaticSiteSpec{BasePath: "admin"}.Validate(), "basePath")
+
+	// Runtime config: exactly one channel per entry, JS-identifier keys,
+	// DNS-label reference names. An explicit empty value is legal.
+	empty, lit := "", "x"
+	ok := StaticSiteSpec{RuntimeConfig: map[string]RuntimeConfigValue{
+		"API_URL": {WorkloadURL: &WorkloadURLRef{Name: "api"}},
+		"FLAG":    {Value: &empty},
+	}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid runtime config refused: %v", err)
+	}
+	mustFail(t, StaticSiteSpec{RuntimeConfig: map[string]RuntimeConfigValue{
+		"X": {Value: &lit, WorkloadURL: &WorkloadURLRef{Name: "api"}},
+	}}.Validate(), "both value and workloadURL")
+	mustFail(t, StaticSiteSpec{RuntimeConfig: map[string]RuntimeConfigValue{"X": {}}}.Validate(), "neither value nor workloadURL")
+	mustFail(t, StaticSiteSpec{RuntimeConfig: map[string]RuntimeConfigValue{"api-url": {Value: &lit}}}.Validate(), "JavaScript identifier")
+	mustFail(t, StaticSiteSpec{RuntimeConfig: map[string]RuntimeConfigValue{
+		"X": {WorkloadURL: &WorkloadURLRef{Name: "API"}},
+	}}.Validate(), "workloadURL.name")
+	big := map[string]RuntimeConfigValue{}
+	for i := 0; i <= MaxRuntimeConfigEntries; i++ {
+		big[fmt.Sprintf("K%d", i)] = RuntimeConfigValue{Value: &lit}
+	}
+	mustFail(t, StaticSiteSpec{RuntimeConfig: big}.Validate(), "at most 128")
 
 	for _, c := range []struct {
 		keep *int32

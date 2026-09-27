@@ -1059,7 +1059,7 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		//
 		// A no-op from the second run on, and never fatal — see
 		// refreshFrontendRuntimeConfigs.
-		if changed, err := refreshFrontendRuntimeConfigs(cfg, p.projectDir, opts.env); err != nil {
+		if changed, err := refreshFrontendRuntimeConfigs(cfg, p.projectDir, opts.env, frontendRuntimeOverlays(entities)); err != nil {
 			fmt.Printf("[up] frontend runtime config: %v (serving the previously generated config.js)\n", err)
 		} else if changed > 0 {
 			fmt.Printf("[up] frontend runtime config: refreshed %d config.js from converged identity\n", changed)

@@ -102,6 +102,14 @@ type StaticSiteFrontend struct {
 	// without rebuilding.
 	RuntimeConfigJS string
 
+	// StripRuntimeConfig removes any runtime config document that
+	// travelled inside the built bundle (the dev copy under the frontend's
+	// public/) instead of writing one. Set for a HOSTED release, whose
+	// artifact must be environment-agnostic: its document is spec, written
+	// by the control plane after each sync. Mutually exclusive with a
+	// non-empty RuntimeConfigJS.
+	StripRuntimeConfig bool
+
 	// Spec is the StaticSite deploy config.
 	Spec StaticSiteSpec
 }
@@ -251,16 +259,17 @@ type staticSitePlan struct {
 func (p StaticSiteProvider) stageInput(fe StaticSiteFrontend) StageInput {
 	staging := filepath.Join(os.TempDir(), "forge-static-site-"+fe.Name)
 	return StageInput{
-		Name:            fe.Name,
-		Path:            fe.Path,
-		DevRunner:       fe.DevRunner,
-		BuildEnv:        fe.BuildEnv,
-		PublicDir:       fe.Spec.PublicDir,
-		BasePath:        fe.Spec.BasePath,
-		Bundle:          fe.Spec.Bundle,
-		RuntimeConfigJS: fe.RuntimeConfigJS,
-		ProjectDir:      p.ProjectDir,
-		StagingRoot:     staging,
+		Name:               fe.Name,
+		Path:               fe.Path,
+		DevRunner:          fe.DevRunner,
+		BuildEnv:           fe.BuildEnv,
+		PublicDir:          fe.Spec.PublicDir,
+		BasePath:           fe.Spec.BasePath,
+		Bundle:             fe.Spec.Bundle,
+		RuntimeConfigJS:    fe.RuntimeConfigJS,
+		StripRuntimeConfig: fe.StripRuntimeConfig,
+		ProjectDir:         p.ProjectDir,
+		StagingRoot:        staging,
 	}
 }
 

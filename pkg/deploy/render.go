@@ -149,6 +149,15 @@ func RenderSimpleBackend(name string, spec v1alpha1.SimpleBackendSpec, ctx Conte
 	if err := spec.Validate(); err != nil {
 		return nil, fmt.Errorf("simplebackend %s: %w", name, err)
 	}
+	// A workloadURL is a reference, and a pod can only carry a value.
+	// Rendering it as an empty variable would start a backend whose
+	// CORS_ORIGINS silently admits nothing. The caller resolves it first
+	// (ResolveEnvWorkloadURLs), where the target's URL is known.
+	for _, e := range spec.Env {
+		if e.WorkloadURL != nil {
+			return nil, fmt.Errorf("simplebackend %s: env var %s holds an unresolved workloadURL %q: resolve it (deploy.ResolveEnvWorkloadURLs) before rendering", name, e.Name, e.WorkloadURL.Name)
+		}
+	}
 
 	ns := ctx.Namespace
 	labels := managedLabels(name, ctx.PartOf)

@@ -639,17 +639,22 @@ func GenerateFrontendConfigKCL(configs []FrontendConfig, projectName string) (st
 	b.WriteString("# marked `sensitive` in the proto is refused at generate time rather than\n")
 	b.WriteString("# projected here — see ValidateFrontendConfigs.\n\n")
 
-	for _, fc := range configs {
+	for i, fc := range configs {
 		schemaName, lambdaName := KCLFrontendConfigName(fc.MessageName)
 
 		schema, err := renderFrontendConfigSchema(fc, projectName, schemaName)
 		if err != nil {
 			return "", fmt.Errorf("render frontend config schema for %s: %w", fc.Frontend, err)
 		}
+		// A blank line BETWEEN blocks, none after the last: the file must end
+		// in exactly one newline, or pre-commit's end-of-file-fixer rewrites
+		// it and verify-generated reports the rewrite as drift.
+		if i > 0 {
+			b.WriteString("\n")
+		}
 		b.WriteString(schema)
 		b.WriteString("\n")
 		b.WriteString(renderFrontendRuntimeProjection(fc, schemaName, lambdaName))
-		b.WriteString("\n")
 	}
 
 	return b.String(), nil

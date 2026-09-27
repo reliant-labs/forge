@@ -101,6 +101,8 @@ func (g *ProjectGenerator) writeProjectJSON(reliantDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
+	// MarshalIndent emits no final newline; end-of-file-fixer would add one.
+	data = append(data, '\n')
 
 	if err := os.WriteFile(filepath.Join(reliantDir, "project.json"), data, 0o644); err != nil {
 		return fmt.Errorf("failed to write .reliant/project.json: %w", err)

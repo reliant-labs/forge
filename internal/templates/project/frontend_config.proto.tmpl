@@ -2,9 +2,9 @@ syntax = "proto3";
 
 package config.v1;
 
-option go_package = "{{.Module}}/gen/config/v1;configv1";
-
 import "forge/v1/forge.proto";
+
+option go_package = "{{.Module}}/gen/config/v1;configv1";
 
 // {{.MessageName}} is the PUBLIC runtime configuration for the "{{.Frontend}}"
 // frontend.
@@ -65,23 +65,23 @@ message {{.MessageName}} {
   option (forge.v1.frontend_config) = {frontend: "{{.Frontend}}"};
 
   string api_url = 1 [(forge.v1.config) = {
-    env_var: "API_URL",
-    default_value: "http://localhost:{{.APIPort}}",
+    env_var: "API_URL"
+    default_value: "http://localhost:{{.APIPort}}"
     description: "Origin of the Connect RPC endpoint this frontend calls. Every service mounts onto the binary's one Connect mux, so this is one origin for the whole API. Deployed environments pin their own in deploy/kcl/<env>/config.k. IN THE DEV LOOP THIS DEFAULT IS STALE AND MUST NOT BE TRUSTED: `forge run` gives the backend a kernel-assigned port and injects the live origin as NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL, which src/lib/connect.ts prefers over everything here. Build a client from the generated transport rather than reading this value, or you will dial the port the default happens to name — which in a project with a dev IdP is the IdP."
   }];
 
   string mock_api = 2 [(forge.v1.config) = {
-    env_var: "MOCK_API",
+    env_var: "MOCK_API"
     description: "Mock-transport mode: `true` answers every RPC locally from fixtures (and selects the mock auth provider, so no IdP is needed), `hybrid` overlays ?scenario= fixtures over a real backend. Empty means the real backend, which is the deployed value."
   }];
 
   string app_version = 3 [(forge.v1.config) = {
-    env_var: "APP_VERSION",
+    env_var: "APP_VERSION"
     description: "Build identifier surfaced in the UI and as a telemetry attribute. Empty renders as a development placeholder."
   }];
 
   string otel_endpoint = 4 [(forge.v1.config) = {
-    env_var: "OTEL_ENDPOINT",
+    env_var: "OTEL_ENDPOINT"
     description: "OTLP/HTTP collector endpoint for BROWSER traces. Empty disables browser telemetry entirely, which is the correct default for local development — there is nothing to export to."
   }];
 

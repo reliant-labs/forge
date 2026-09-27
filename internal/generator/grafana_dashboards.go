@@ -40,7 +40,10 @@ func GenerateGrafanaDashboards(projectName, projectDir string) error {
 		{"traces-dashboard.json", tracesDashboardJSON},
 	}
 	for _, d := range dashboards {
-		replaced := strings.ReplaceAll(d.content, "{{PROJECT_NAME}}", projectName)
+		// Exactly one trailing newline: a dashboard that lacks it is
+		// rewritten by pre-commit's end-of-file-fixer, which forge's
+		// verify-generated then reports as drift.
+		replaced := strings.TrimRight(strings.ReplaceAll(d.content, "{{PROJECT_NAME}}", projectName), "\n") + "\n"
 		if err := os.WriteFile(filepath.Join(dashDir, d.name), []byte(replaced), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", d.name, err)
 		}

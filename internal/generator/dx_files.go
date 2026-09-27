@@ -429,6 +429,16 @@ see [CONTRIBUTING.md](CONTRIBUTING.md).
 	return os.WriteFile(filepath.Join(g.Path, "SECURITY.md"), []byte(content), 0o644)
 }
 
+// forgeGeneratedPathPattern matches every path `forge generate` writes (and
+// rewrites) in a project, as a pre-commit `exclude` regex. Mutating hooks must
+// skip these: forge emits them already formatted, and `forge ci
+// verify-generated` demands they regenerate byte-identically, so a formatter
+// rewriting one makes the two gates fight on every commit.
+//
+// TestForgeGeneratedPathPattern matches it against every forge-owned file in
+// a real scaffold, so a new generated path that escapes it fails there.
+const forgeGeneratedPathPattern = `(^|/)gen/|_gen(_test)?(\.test)?\.[A-Za-z0-9]+$|^\.forge-kcl/|^deploy/observability/grafana/|^deploy/alloy-config\.alloy$|(^|/)public/config\.js$|(^|/)src/hooks/index\.ts$`
+
 // generatePreCommitConfig writes .pre-commit-config.yaml. Hooks are
 // chosen to match the existing CI surface (gofmt/govet/goimports via
 // dnephin/pre-commit-golang, frontend prettier, buf format via a local
@@ -441,6 +451,21 @@ func (g *ProjectGenerator) generatePreCommitConfig() error {
 	content := `# See https://pre-commit.com for full docs. Run locally with:
 #     pip install pre-commit && pre-commit install
 # CI runs the same set via .github/workflows/pre-commit.yml.
+#
+# FORGE-GENERATED FILES ARE EXCLUDED FROM EVERY MUTATING HOOK. forge writes
+# them already formatted, and ` + "`forge ci verify-generated`" + ` regenerates them and
+# demands a byte-identical tree — so a hook that rewrites one (a whitespace
+# fixer, goimports regrouping protoc-gen-go's imports, prettier re-wrapping a
+# generated hook file) makes the two gates fight on every commit. The
+# exclusion is one pattern, repeated on each mutating hook:
+#   (^|/)gen/                     generated Go + TS stubs
+#   _gen(_test)?(\.test)?\.<ext>   *_gen.go, *_gen_test.go, *_gen.ts, *_gen.test.ts, *_gen.k
+#   ^\.forge-kcl/                 the KCL module forge materializes locally
+#   ^deploy/observability/grafana/, ^deploy/alloy-config\.alloy$
+#   (^|/)public/config\.js$       a frontend's rendered runtime config
+#   (^|/)src/hooks/index\.ts$     the generated hooks barrel
+# A file you take over with ` + "`forge project disown`" + ` is yours: drop it from
+# the pattern if you want the formatters to own it too.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
@@ -449,11 +474,11 @@ repos:
       # snapshots assert on EXACT bytes — trailing blank lines included —
       # so "fixing" one silently rewrites the expectation the test exists
       # to check, and the suite goes red for a reason the diff makes look
-      # cosmetic.
+      # cosmetic. Forge-generated files are excluded too (see the top).
       - id: trailing-whitespace
-        exclude: (^|/)testdata/
+        exclude: (^|/)testdata/|` + forgeGeneratedPathPattern + `
       - id: end-of-file-fixer
-        exclude: (^|/)testdata/
+        exclude: (^|/)testdata/|` + forgeGeneratedPathPattern + `
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
@@ -472,10 +497,12 @@ repos:
       # malformed fixtures (off-module imports, phantom packages) that the
       # linter tests assert on, and goimports "fixes" them into passing —
       # silently deleting the very import a test expects it to flag.
+      # Generated Go is excluded too (see the top): goimports regroups
+      # protoc-gen-go's single import block in gen/.
       - id: go-fmt
-        exclude: (^|/)testdata/
+        exclude: (^|/)testdata/|(^|/)gen/|_gen(_test)?\.go$
       - id: go-imports
-        exclude: (^|/)testdata/
+        exclude: (^|/)testdata/|(^|/)gen/|_gen(_test)?\.go$
 
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v3.1.0
@@ -490,8 +517,12 @@ repos:
         # rewrites the very table headers TestSkillsAuditCategoryDocsMatchEmittedSet
         # asserts on. These files are size- and structure-checked by tests;
         # a formatter cannot own them.
+        #
+        # Forge-generated files are excluded (see the top), and so is
+        # forge.yaml: forge rewrites it in place when a command updates the
+        # manifest, and a prettier pass on top is a diff forge then fights.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ^(gen/|.*\.pb\.go$|.*/skills/.*\.md$)
+        exclude: ` + forgeGeneratedPathPattern + `|\.pb\.go$|/skills/.*\.md$|^forge\.yaml$
 
   # go vet as a LOCAL hook rather than dnephin's go-vet. Two reasons:
   # v0.5.1 ships no go-vet-mod (the module-wide id), and its go-vet runs

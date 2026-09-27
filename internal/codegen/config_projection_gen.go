@@ -440,7 +440,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	b.WriteString("# in CreateContainerConfigError with no application log — so a credential\n")
 	b.WriteString("# broadcast to workloads that never read it turns one feature's missing\n")
 	b.WriteString("# secret into a whole namespace outage.\n")
-	fmt.Fprintf(&b, "#\n#     env = forge.env_project(%s(cfg, w.config_secrets)) \n", lambdaName)
+	fmt.Fprintf(&b, "#\n#     env = forge.env_project(%s(cfg, w.config_secrets))\n", lambdaName)
 	// The schema is declared above in this same file, so the parameter type
 	// is the bare name — no module qualifier.
 	//

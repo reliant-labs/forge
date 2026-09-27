@@ -35,7 +35,7 @@ func renderControlPlaneDecl(t *testing.T, main string) *cloud.Declaration {
 	t.Helper()
 	kclplugin.Register()
 	dir := t.TempDir()
-	kclMod := "[package]\nname = \"controlplane\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + forgeModuleRoot(t) + "\" }\n"
+	kclMod := "[package]\nname = \"controlplane\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
 	for f, c := range map[string]string{"kcl.mod": kclMod, "main.k": main} {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o644); err != nil {
 			t.Fatal(err)

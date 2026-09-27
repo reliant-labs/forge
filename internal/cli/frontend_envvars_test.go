@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 )
 
@@ -30,8 +29,7 @@ func TestFrontendEnvVarsRoundTrip(t *testing.T) {
 	if err := os.MkdirAll(devDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mod := "[package]\nname = \"t\"\nedition = \"v0.11.4\"\n\n[dependencies]\nforge = { path = " +
-		strconv.Quote(forgeKcl) + " }\n"
+	mod := "[package]\nname = \"t\"\nedition = \"v0.11.4\"\n\n[dependencies]\n"
 	if err := os.WriteFile(filepath.Join(kclParent, "kcl.mod"), []byte(mod), 0o644); err != nil {
 		t.Fatal(err)
 	}

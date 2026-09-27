@@ -120,11 +120,12 @@ module.
 ### The KCL module needs no tag
 
 There is deliberately no `kcl-vX.Y.Z` step here. The forge KCL module is
-embedded in the binary and vendored into each project's `.forge-kcl/` by
-`forge generate`, so a release publishes it automatically by shipping the
-binary. Forge once scaffolded a published KCL git tag on release builds; the
-tag was never pushed, and every project a released forge created could not
-resolve its deploy manifests. See `docs/adr/0001-always-vendor-forge-kcl.md`.
+embedded in the binary, and every render supplies it to KCL from the binary
+doing the render, so a release publishes it automatically by shipping the
+binary — a project pinned to the release renders against exactly its module.
+Forge once scaffolded a published KCL git tag on release builds; the tag was
+never pushed, and every project a released forge created could not resolve its
+deploy manifests. See `docs/adr/0003-kcl-module-from-the-binary.md`.
 
 ## 4. Forge's own CI needs no pin
 

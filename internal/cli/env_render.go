@@ -64,7 +64,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
-	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // renderedObject is one document of the env's rendered manifest stream,
@@ -292,13 +291,6 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// belongs in the write report as much as the main render's does.
 	unpin := pinFile(filepath.Join(projectDir, ".forge", "ports-"+envName+".json"))
 
-	// Vendor a missing .forge-kcl/ BEFORE the write check's before-picture.
-	// It is forge's own announced step, not a KCL file.write, and counting
-	// it would make `--fail-on-write` fail on a fresh checkout's first
-	// render for a reason the report blames on the project.
-	if err := kclrender.EnsureVendor(projectDir); err != nil {
-		return err
-	}
 	scan := newRenderWriteScan(projectDir, opts.noWriteCheck)
 	activateDevStack(ctx, projectDir, envName, renderDeclaration, inspectBlocks)
 

@@ -27,10 +27,9 @@ import (
 // takes the env registry, which is the behavior the prefixing exists for and
 // the thing a naive fix would break.
 func TestSidecarImageKeepsItsOwnRegistry(t *testing.T) {
-	moduleRoot := forgeModuleRoot(t)
 	dir := t.TempDir()
 
-	kclMod := "[package]\nname = \"sidecarimg\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + moduleRoot + "\" }\n"
+	kclMod := "[package]\nname = \"sidecarimg\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
 	if err := os.WriteFile(filepath.Join(dir, "kcl.mod"), []byte(kclMod), 0o644); err != nil {
 		t.Fatal(err)
 	}

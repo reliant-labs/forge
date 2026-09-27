@@ -799,6 +799,27 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 14c. Commit policy — generated code is committed; machine-local
+		// state (.forge-kcl/, a frontend's dev public/config.js) is not.
+		// ERROR-gated: an ignored generated file breaks every fresh clone
+		// and CI checkout, and `forge ci verify-generated` (git status)
+		// cannot see it — this is the check that can. See
+		// internal/commitpolicy.
+		{
+			name:  "commit-policy lint",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && fileExists("forge.yaml"), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runCommitPolicyLint(rc.cwd)
+			},
+			errFormat: "❌ commit-policy lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectCommitPolicyJSON(rc.cwd)
+			},
+		},
+
 		// 14. Check-workarounds — flags canonical cross-lane workarounds.
 		// Warnings only.
 		{

@@ -23,31 +23,29 @@ import (
 	"github.com/reliant-labs/forge/internal/kclvendor"
 )
 
-// legacyVendorKclMod is a deploy/kcl/kcl.mod in the pre-vendoring shape, so
-// the KCL sync step would rewrite it as well as .forge-kcl/.
+// legacyVendorKclMod is a deploy/kcl/kcl.mod in the pre-module-from-binary
+// shape, so the KCL migration step would rewrite it and delete .forge-kcl/.
 const legacyVendorKclMod = `[package]
 name = "app-deploy"
 edition = "v0.11.0"
 version = "0.0.1"
 
 [dependencies]
-forge = { git = "https://github.com/reliant-labs/forge.git", tag = "kcl-v0.1.0" }
+forge = { path = "../../.forge-kcl" }
 `
 
-// seedStaleVendoredProject lays down a forge consumer pinned to pin, with a
-// vendored .forge-kcl/ that an older forge wrote: stamped with that forge's
-// version and carrying one file whose bytes differ from this binary's
-// embedded module. Anything that refreshes the vendor dir changes bytes.
+// seedStaleVendoredProject lays down a forge consumer pinned to pin, carrying
+// the legacy project-local .forge-kcl/ copy an older forge wrote and a
+// kcl.mod that declares it. The migration step rewrites the one and deletes
+// the other, so anything that runs it changes bytes.
 func seedStaleVendoredProject(t *testing.T, dir, pin string) {
 	t.Helper()
 	writeForgeConsumer(t, dir, pin)
 	mustMkdirAllT(t, filepath.Join(dir, "deploy", "kcl"))
 	mustWrite(t, filepath.Join(dir, "deploy", "kcl", "kcl.mod"), legacyVendorKclMod)
-	if _, err := kclvendor.Materialize(dir, true); err != nil {
-		t.Fatalf("seed vendor dir: %v", err)
-	}
-	mustWrite(t, filepath.Join(dir, kclvendor.VendorDirName, "kcl.mod"), "# vendored by an older forge\n")
-	mustWrite(t, filepath.Join(dir, kclvendor.VendorDirName, kclvendor.StampFileName), pin+"\n")
+	mustMkdirAllT(t, filepath.Join(dir, kclvendor.LegacyVendorDirName))
+	mustWrite(t, filepath.Join(dir, kclvendor.LegacyVendorDirName, "kcl.mod"), "# vendored by an older forge\n")
+	mustWrite(t, filepath.Join(dir, kclvendor.LegacyVendorDirName, ".forge-version"), pin+"\n")
 }
 
 // snapshotTree maps every regular file under root (except .forge/, which
@@ -127,8 +125,8 @@ func TestGenerate_RefusedVersionCompatWritesNothing(t *testing.T) {
 	}
 	// Byte-identical is not enough: a tree that was rewritten and then
 	// rolled back also ends up identical. A refusal must not write at all.
-	if strings.Contains(out, "Refreshed "+kclvendor.VendorDirName) || strings.Contains(out, "Vendored forge KCL module") {
-		t.Errorf("the KCL vendor sync must not run before the compatibility refusal:\n%s", out)
+	if strings.Contains(out, "no longer declares the forge KCL module") || strings.Contains(out, "Removed the legacy project-local") {
+		t.Errorf("the KCL module migration must not run before the compatibility refusal:\n%s", out)
 	}
 	if strings.Contains(out, "reverted") {
 		t.Errorf("a refusal must have nothing to revert:\n%s", out)
@@ -143,8 +141,9 @@ func TestGenerate_RefusedVersionCompatWritesNothing(t *testing.T) {
 	}
 }
 
-// The KCL vendor sync's writes belong to the same rollback set as every other
-// generate write: a later failure must restore .forge-kcl/ and kcl.mod.
+// The KCL module migration's writes belong to the same rollback set as every
+// other generate write: a later failure must restore kcl.mod and the legacy
+// .forge-kcl/ it deleted.
 func TestSyncForgeKCL_WritesAreJournaledAndRestored(t *testing.T) {
 	dir := t.TempDir()
 	seedStaleVendoredProject(t, dir, "v0.1.15")
@@ -156,27 +155,24 @@ func TestSyncForgeKCL_WritesAreJournaledAndRestored(t *testing.T) {
 	t.Cleanup(checksums.CommitRollback)
 
 	captureStdout(t, func() {
-		if err := syncForgeKCL(dir, true); err != nil {
+		if err := syncForgeKCL(dir); err != nil {
 			t.Fatalf("sync: %v", err)
 		}
 	})
 	if len(diffTrees(before, snapshotTree(t, dir))) == 0 {
-		t.Fatal("precondition: the sync should have refreshed the stale vendor dir")
+		t.Fatal("precondition: the migration should have rewritten kcl.mod and removed .forge-kcl/")
 	}
 
+	// The write ledger records rewrites (it has no deletion category); the
+	// deletion is proven by the rollback below restoring it.
 	sum := checksums.SummarizeWrites(dir)
-	if sum.Changed() == 0 {
-		t.Errorf("the write ledger must see the vendor refresh, got %+v", sum)
-	}
-	for _, want := range []string{"deploy/kcl/kcl.mod", kclvendor.VendorDirName + "/kcl.mod"} {
-		if !containsPath(append(sum.Updated, sum.Created...), want) {
-			t.Errorf("write ledger must record %s, got %+v", want, sum)
-		}
+	if !containsPath(sum.Updated, "deploy/kcl/kcl.mod") {
+		t.Errorf("write ledger must record the kcl.mod rewrite, got %+v", sum)
 	}
 
 	checksums.RestoreRollback(dir)
 	if diffs := diffTrees(before, snapshotTree(t, dir)); len(diffs) > 0 {
-		t.Errorf("rollback must restore the vendor refresh, still changed:\n  %s", strings.Join(diffs, "\n  "))
+		t.Errorf("rollback must restore kcl.mod and .forge-kcl/, still changed:\n  %s", strings.Join(diffs, "\n  "))
 	}
 }
 

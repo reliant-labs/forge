@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,6 +54,41 @@ func TestMissingGoWorkModule(t *testing.T) {
 		writeFileAt(t, dir, "go.work", "go 1.26.2\n\nuse ./gen\n")
 		if got := missingGoWorkModule(dir); got != "gen" {
 			t.Fatalf("want \"gen\", got %q", got)
+		}
+	})
+}
+
+// TestGeneratedCodeNeedsRefresh_MissingDevRuntimeConfig: public/config.js is
+// gitignored (it bakes in machine-local ports), so a fresh clone has none.
+// A web frontend whose committed config_gen.ts reads it must trigger a
+// regenerate before `forge build` / `forge env up`; a frontend that does not
+// consume one (no config module, or React Native with no public/) must not.
+func TestGeneratedCodeNeedsRefresh_MissingDevRuntimeConfig(t *testing.T) {
+	fresh := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeFileAt(t, dir, "go.mod", "module example.com/x\n\ngo 1.26.2\n")
+		return dir
+	}
+	t.Run("web frontend without its dev document regenerates", func(t *testing.T) {
+		dir := fresh(t)
+		writeFileAt(t, dir, "frontends/web/src/lib/config_gen.ts", "// generated\n")
+		writeFileAt(t, dir, "frontends/web/public/favicon.ico", "x")
+		reason, needs := generatedCodeNeedsRefresh(dir)
+		if !needs || !strings.Contains(reason, "frontends/web/public/config.js") {
+			t.Fatalf("got (%q, %v); want a regenerate naming frontends/web/public/config.js", reason, needs)
+		}
+		writeFileAt(t, dir, "frontends/web/public/config.js", "window.__FORGE_CONFIG__ = {};\n")
+		if reason, needs := generatedCodeNeedsRefresh(dir); needs {
+			t.Fatalf("document present, still asked to regenerate: %q", reason)
+		}
+	})
+	t.Run("frontends that consume no document are ignored", func(t *testing.T) {
+		dir := fresh(t)
+		writeFileAt(t, dir, "frontends/plain/public/favicon.ico", "x")           // no config module
+		writeFileAt(t, dir, "frontends/mobile/src/lib/config_gen.ts", "// rn\n") // no public/
+		if reason, needs := generatedCodeNeedsRefresh(dir); needs {
+			t.Fatalf("asked to regenerate for a frontend with no runtime document: %q", reason)
 		}
 	})
 }

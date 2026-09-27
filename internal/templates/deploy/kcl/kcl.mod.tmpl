@@ -3,14 +3,12 @@ name = "{{.ProjectName}}-deploy"
 edition = "v0.11.0"
 version = "0.0.1"
 
-# The `forge` KCL module ships the typed schemas this package's env
-# main.k files import (Service / Operator / Frontend / CronJob, plus
-# the polymorphic deploy union).
+# `import forge` — the typed schemas this package's env main.k files use
+# (Service / Operator / Frontend / CronJob, plus the polymorphic deploy
+# union) — is NOT declared here. forge supplies that module from the binary
+# that is rendering, so it always matches the forge you run: for a project
+# pinned to a released forge, the release CI installs IS the module. No
+# network, no git tag, no project-local copy.
 #
-# `forge generate` materializes the module embedded in the forge binary
-# into `.forge-kcl/` at the project root and maintains the dependency
-# below (marker-delimited). That copy travels with the repo, so
-# containers and CI resolve the identical module with no network and no
-# git auth — commit `.forge-kcl/` along with this file.
+# Declare only your own additional KCL packages below.
 [dependencies]
-forge = { path = "../../.forge-kcl" }

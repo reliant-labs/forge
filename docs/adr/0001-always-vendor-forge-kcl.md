@@ -1,6 +1,17 @@
 # ADR 0001: Always vendor the forge KCL module
 
-**Status:** accepted
+**Status:** accepted; the project-local vendored copy is superseded by
+[ADR 0003](0003-kcl-module-from-the-binary.md)
+
+> **Superseded in part.** The decision here — one mechanism, the module
+> embedded in the binary, offline, no dev/release branch — still stands. What
+> changed is WHERE the binary's module lives: it is no longer copied into a
+> committed `<project>/.forge-kcl/` that kcl.mod points at. Every render now
+> supplies it to KCL as an external package from a user cache, and kcl.mod
+> declares no `forge` dependency. A committed copy made two forge builds fight
+> over one directory (a backwards refresh broke prod, and the downgrade refusal
+> added for that broke CI). ADR 0003 has the full account. The text below is
+> the original record.
 
 ## Context
 

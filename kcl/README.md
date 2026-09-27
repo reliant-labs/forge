@@ -242,15 +242,18 @@ edition = "v0.11.0"
 version = "0.0.1"
 
 [dependencies]
-forge = { path = "../../.forge-kcl" }
 ```
 
-You do not write that dependency by hand, and there is no tag or registry to
-pin. `forge generate` materializes this module — the copy embedded in the forge
-binary — into `.forge-kcl/` at the project root and maintains the dependency
-line above. The vendored copy travels with the repo, so containers, CI
-checkouts and other machines resolve the identical module with no network and
-no git auth. Commit `.forge-kcl/`.
+There is no `forge` dependency to declare, and no tag, registry or project-local
+copy to pin. Every forge command that evaluates KCL supplies this module — the
+copy embedded in the forge binary doing the evaluation — as an external package,
+materialized once into a content-addressed user cache
+(`<UserCacheDir>/forge/kcl/<hash>/`, overridable with
+`FORGE_KCL_MODULE_CACHE`). A project pinned to a released forge therefore
+renders against exactly that release's module wherever it runs: CI installs the
+pinned forge, and the binary IS the module. No network, no git, nothing to
+commit. Because kpm does not know about the module, the stock `kcl` CLI cannot
+render a project on its own; render through forge (`forge env render <env>`).
 
 Project's `deploy/kcl/dev/main.k`:
 
@@ -398,21 +401,18 @@ the `EnvVar` schema doc in `schema.k`.
 
 ## Versioning
 
-The module version is the forge version that materialized it. There is no
-separate tag to pin: `forge generate` refreshes `.forge-kcl/` from the running
-binary and stamps that version into `.forge-kcl/.forge-version`.
-
-Because the module refreshes only on `forge generate`, a project can sit on a
-copy an older forge wrote. Forge notices: every render compares the stamp
-against the running binary and warns when they differ, naming `forge generate`
-as the fix.
+The module version IS the forge version doing the render — there is nothing
+separate to pin, refresh or go stale. Pin forge (go.mod's
+`github.com/reliant-labs/forge vX.Y.Z`, and the matching `go install` in CI) and
+the module is pinned with it.
 
 When a release changes this module's schemas in a breaking way, forge ships a
 migration skill for that release; `forge project upgrade list` surfaces the
 ones your project still needs.
 
-See `docs/adr/0001-always-vendor-forge-kcl.md` for why vendoring is the only
-mechanism.
+See `docs/adr/0003-kcl-module-from-the-binary.md` for why the binary is the
+only source (and `docs/adr/0001-always-vendor-forge-kcl.md` for the vendored
+copy it replaced).
 
 ## Layout
 

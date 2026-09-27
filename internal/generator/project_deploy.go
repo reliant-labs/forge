@@ -8,7 +8,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -39,32 +38,10 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		return fmt.Errorf("write kcl.mod: %w", err)
 	}
 
-	// Vendor the binary's embedded copy of the forge KCL module into
-	// `.forge-kcl/` and point the freshly-rendered kcl.mod at it, so the
-	// project is born rendering — the exact mechanism `forge generate`
-	// maintains from here on (internal/cli sync step + the shared
-	// internal/kclvendor patcher).
-	//
-	// Unconditional, on every build of forge. This used to be gated on a
-	// dev build, and a released forge scaffolded a published git tag
-	// instead — a tag that was never published, so every project a
-	// released forge created was unresolvable from birth.
-	// allowDowngrade=true: a scaffold is creating the project, so there
-	// is no prior vendor copy to protect and the guard has nothing to
-	// decide. Passing false would be harmless but implies a comparison
-	// that cannot happen here.
-	if _, err := kclvendor.Materialize(g.Path, true); err != nil {
-		return fmt.Errorf("vendor forge KCL module: %w", err)
-	}
-	res, err := kclvendor.EnsureVendorDep(kclModPath, g.Path)
-	if err != nil {
-		return fmt.Errorf("point kcl.mod at %s: %w", kclvendor.VendorDirName, err)
-	}
-	if res.Warning != "" {
-		// Freshly rendered from our own template — a warning here
-		// means the template and patcher drifted apart.
-		return fmt.Errorf("kcl.mod vendor patch: %s", res.Warning)
-	}
+	// kcl.mod declares no `forge` dependency: every render supplies the
+	// module from the running binary (internal/kclvendor), so a scaffold is
+	// resolvable the instant it is written, on any build of forge, with
+	// nothing materialized into the project.
 
 	// The legacy in-tree `deploy/kcl/schema.k` + `base.k` + `render.k`
 	// files were retired in favor of the upstream `forge` KCL module.

@@ -49,7 +49,7 @@ func writeRenderStdoutProject(t *testing.T) string {
 		}
 	}
 	write("forge.yaml", "name: rendertest\nmodule_path: github.com/example/rendertest\nversion: \"0.1.0\"\n")
-	write("deploy/kcl/kcl.mod", "[package]\nname = \"rendertest-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \""+forgeModuleRoot(t)+"\" }\n")
+	write("deploy/kcl/kcl.mod", "[package]\nname = \"rendertest-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n")
 	write("deploy/kcl/prod/main.k", `import forge
 
 _bundle = forge.Bundle {

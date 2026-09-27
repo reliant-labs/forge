@@ -43,6 +43,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/kclvendor"
 	kcl "kcl-lang.io/kcl-go"
 	"kcl-lang.io/kcl-go/pkg/spec/gpyrpc"
 	"kcl-lang.io/kpm/pkg/client"
@@ -94,10 +95,24 @@ func Discover(projectDir, envName string) ([]Option, bool, error) {
 		return nil, false, fmt.Errorf("kcl dir %s: %w", kclDir, err)
 	}
 
+	// `import forge` resolves from THIS binary's embedded module, handed to
+	// KCL as an external package — exactly as every render does
+	// (internal/kclrender). The project's kcl.mod declares no forge
+	// dependency, so without this the walk would find no forge package and
+	// report zero options, which callers read as "discovery failed".
+	if err := kclvendor.CheckKclMods(projectDir); err != nil {
+		return nil, false, err
+	}
+	forgeDir, err := kclvendor.ModuleDir()
+	if err != nil {
+		return nil, false, fmt.Errorf("materialize the forge KCL module: %w", err)
+	}
+
 	extPkgs, err := externalPkgs(kclDir)
 	if err != nil {
 		return nil, false, err
 	}
+	extPkgs = append(extPkgs, &gpyrpc.ExternalPkg{PkgName: kclvendor.ModuleName, PkgPath: forgeDir})
 
 	res, err := kcl.ListOptions(&kcl.ListOptionsArgs{
 		Paths:        []string{kclDir},

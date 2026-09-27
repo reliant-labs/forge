@@ -55,7 +55,7 @@ func TestPluginPreflightIsActionableWhenUnavailable(t *testing.T) {
 // TestPluginPreflightDevBuildFixIsRunnable — a "(devel)"/+dirty stamp
 // names no ref a module proxy can serve, so `go install ...@<version>`
 // would hand the user a command that fails. Dev builds get the
-// contributor install instead. Mirrors kclvendor.DowngradeError's handling
+// contributor install instead. Mirrors the retired KCL-downgrade refusal's handling
 // of the same hazard.
 func TestPluginPreflightDevBuildFixIsRunnable(t *testing.T) {
 	for _, version := range []string{"", "dev", "(devel)", "v0.1.20+dirty"} {

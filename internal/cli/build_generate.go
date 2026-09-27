@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // ensureGeneratedCode runs the generate pipeline when the project's
@@ -64,6 +66,9 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 	if missing := missingGoWorkModule(projectDir); missing != "" {
 		return fmt.Sprintf("module %q is missing (listed in go.work, no go.mod)", missing), true
 	}
+	if missing := missingDevRuntimeConfig(projectDir); missing != "" {
+		return fmt.Sprintf("%s is missing (machine-local, gitignored)", missing), true
+	}
 	protoNewest, okProto := newestModTime(filepath.Join(projectDir, "proto"))
 	genNewest, okGen := newestModTime(filepath.Join(projectDir, "gen"))
 	if okProto && okGen && protoNewest.After(genNewest) {
@@ -106,6 +111,45 @@ func missingGoWorkModule(projectDir string) string {
 		}
 		if _, err := os.Stat(filepath.Join(modDir, "go.mod")); err != nil {
 			return dir
+		}
+	}
+	return ""
+}
+
+// missingDevRuntimeConfig returns the project-relative path of the first web
+// frontend's dev runtime document (public/config.js) that is absent, or "".
+//
+// That document is machine-local — `forge generate` renders it from
+// deploy/kcl/dev/config.k, whose ports resolve per machine — so it is
+// gitignored, and every fresh clone lacks it. A frontend whose committed
+// src/lib/config_gen.ts reads window.__FORGE_CONFIG__ then boots with no
+// config at all: the bundle's loadConfig() throws "invalid runtime
+// configuration" from inside the provider that wraps the whole app. So the
+// dev loop (`forge env up`, `forge run`) and `forge build` regenerate first.
+//
+// Only frontends that actually consume the document are considered: one with
+// the generated config module AND a served static root. React Native has
+// neither a public/ directory nor a config.js.
+func missingDevRuntimeConfig(projectDir string) string {
+	entries, err := os.ReadDir(filepath.Join(projectDir, "frontends"))
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		feRel := filepath.Join("frontends", e.Name())
+		feDir := filepath.Join(projectDir, feRel)
+		if _, err := os.Stat(filepath.Join(feDir, filepath.FromSlash(codegen.FrontendConfigTSFile))); err != nil {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(feDir, "public")); err != nil || !info.IsDir() {
+			continue
+		}
+		docRel := filepath.Join(feRel, "public", codegen.FrontendConfigJSFile)
+		if _, err := os.Stat(filepath.Join(projectDir, docRel)); err != nil {
+			return filepath.ToSlash(docRel)
 		}
 	}
 	return ""

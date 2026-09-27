@@ -1,201 +1,326 @@
-// Package kclvendor materializes the forge KCL module into generated
-// projects and points their kcl.mod at that copy.
+// Package kclvendor supplies the forge KCL module to every KCL evaluation
+// forge performs, straight from the binary that is performing it.
 //
-// A scaffolded project's `deploy/kcl/kcl.mod` depends on the `forge` KCL
-// module — the typed schemas + render layer its env `main.k` files
-// import. Forge resolves that dependency ONE way, on every build of
-// forge: it materializes the module EMBEDDED IN THE BINARY
-// (github.com/reliant-labs/forge/kcl) into `<project>/.forge-kcl/` and
-// writes a RELATIVE path dependency. Relative, not absolute: the
-// vendored copy travels with the repo, so containers, CI checkouts, and
-// other machines resolve it identically.
+// A project's env `main.k` files `import forge` — the typed schemas and
+// render layer shipped as github.com/reliant-labs/forge/kcl and EMBEDDED in
+// the forge binary. Forge resolves that import ONE way, on every build of
+// forge: it materializes the embedded module into a content-addressed
+// directory in the USER cache (<UserCacheDir>/forge/kcl/<hash>/) and hands
+// it to KCL as an external package (`forge=<dir>`) at render and at option
+// discovery. The project declares no `forge` dependency in kcl.mod and
+// holds no copy of the module anywhere in its tree.
 //
-// There is deliberately no second mechanism. Forge previously scaffolded
-// a published `kcl-vX.Y.Z` git tag on release builds and vendored only
-// on dev builds, which failed in three separate ways: the tag was never
-// published so every released scaffold was unresolvable; a release build
-// DELETED a working `.forge-kcl/` and rewrote the dependency back to the
-// dead tag; and even a correctly published tag would have required
-// network plus git auth at render time, which an air-gapped or
-// offline-CI render does not have. Resolving from the binary's own copy
-// removes all three, and removes a release step that has to be
-// remembered. See docs/adr/0001-always-vendor-forge-kcl.md.
+// # Why the module comes from the binary, and nowhere else
 //
-// The cost of vendoring is staleness: the module refreshes when `forge
-// generate` runs, so a project can sit on a copy an older forge wrote.
-// Materialize therefore stamps the materializing forge's version into
-// the vendor dir, and [Stale] reports a mismatch so the render seam can
-// say so out loud rather than let a confusing schema error stand in for
-// "you have not regenerated".
+// The version that must render a project is the version of the forge doing
+// the render. For a project pinned to a released forge (go.mod
+// `github.com/reliant-labs/forge vX.Y.Z`), the binary CI installs at that pin
+// IS that release's module — version-matched by construction, with no
+// network, no git, no registry and nothing to publish. A dev build uses the
+// identical mechanism with its own embedded module. There is no dev/release
+// split to maintain, and no committed file differs by which build generated
+// it: kcl.mod is byte-identical under every forge.
 //
-// Staleness has a second, sharper failure mode that the stamp did not
-// originally guard: refreshing BACKWARDS. `forge generate` rewrites the
-// vendor dir from whatever binary happens to be on PATH, so a developer
-// or CI job running a slightly older forge silently replaced a project's
-// KCL with an OLDER schema. That is not hypothetical — it broke prod.
-// An agent ran `forge generate` in control-plane with a binary predating
-// forge d51e8b6c; generate overwrote `.forge-kcl/schema.k` with the stale
-// copy, including an outdated Gateway listener rule, and prod's `env
-// render` started failing. Nothing warned: the stamp recorded the
-// downgrade as cheerfully as it records an upgrade, so the marker was a
-// no-op that looked like a guard. The symptom surfaced later, in a
-// different command, looking like a different bug.
+// # What this replaced (docs/adr/0003-kcl-module-from-the-binary.md)
 //
-// So Materialize now REFUSES to write an older module over a newer one
-// ([DowngradeError]), and refuses loudly and early — before any byte is
-// written — rather than producing a subtly-wrong render downstream. The
-// refusal is precise in both directions: it fires only when the running
-// forge is provably older by semver AND the embedded module would
-// actually change bytes on disk, so identical-content republishes and
-// unorderable version strings never wedge a project.
+// Before this, every project carried the module as `.forge-kcl/` and kcl.mod
+// pointed at it (`forge = { path = "../../.forge-kcl" }`). That copy was
+// committed, and every failure it produced came from two forge builds
+// sharing one copy through git: a developer's older binary rewrote
+// control-plane's committed schema.k backwards and broke prod's `env
+// render`; the downgrade refusal added in response then failed a scaffolded
+// project's CI outright, because the forge its workflow pinned lagged go.mod
+// by one commit ("refusing to overwrite .forge-kcl/ with an OLDER forge's
+// KCL module"). Keeping the copy out of git and syncing it per render would
+// have fixed the sharing, but a project-relative path in kcl.mod still
+// required every machine — CI, containers, the deploy path — to materialize
+// a project-local directory before anything rendered. Supplying the module
+// as an external package needs neither.
 //
-// The kcl.mod is user-owned. All edits are marker-delimited and
-// exact-match (the same discipline as the Dockerfile COPY block in
-// internal/cli/generate_pipeline.go): only a recognized `forge = { … }`
-// dependency line is ever rewritten, and a hand-rewritten file the
-// patcher cannot prove it understands is left alone with a warning for
-// the caller to surface.
+// Before THAT, release builds pointed kcl.mod at a `kcl-vX.Y.Z` git tag that
+// was never published (docs/adr/0001-always-vendor-forge-kcl.md). The
+// external-package mechanism keeps ADR 0001's decision — one mechanism, from
+// the binary, offline — and drops only its vendored project copy.
+//
+// # Migration
+//
+// [MigrateKclMod] removes the legacy `forge = …` dependency (and the
+// marker block forge maintained around it) from a managed kcl.mod, and drops
+// a kcl.mod.lock that still records it: kpm resolves a locked `forge` package
+// ahead of the external one, which would shadow the binary's module.
+// [RemoveLegacyVendorDir] deletes the project-local `.forge-kcl/`. Both are
+// run by `forge generate`; a render that finds an unmigrated kcl.mod fails
+// with that instruction ([CheckKclMods]) rather than evaluating a stale copy.
 package kclvendor
 
 import (
-	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 
-	"golang.org/x/mod/semver"
-
-	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	forgekcl "github.com/reliant-labs/forge/kcl"
 )
 
-// VendorDirName is the project-root directory the embedded module is
-// materialized into. The dot prefix groups it with `.forge/` and
-// `.forge-pkg/` (forge-maintained state).
-const VendorDirName = ".forge-kcl"
+// ModuleName is the KCL package name projects import (`import forge`).
+const ModuleName = "forge"
 
-// StampFileName is the file Materialize writes inside the vendor dir
-// recording which forge version produced the copy. A dotfile so KCL
-// never treats it as a source, and read back by [Stale] to tell a
-// project its vendored module predates the forge now rendering it.
-const StampFileName = ".forge-version"
+// LegacyVendorDirName is the project-root directory older forge versions
+// materialized the module into. Nothing reads it any more; it survives as a
+// name so migration can remove it and the scaffold .gitignore can keep a
+// stray one out of git.
+const LegacyVendorDirName = ".forge-kcl"
 
-// MarkerHeader is the first line of the forge-maintained dependency
-// block — the ownership anchor, mirroring the Dockerfile vendor COPY
-// block's header.
+// MarkerHeader is the first line of the dependency block older forge
+// versions maintained in kcl.mod. Migration recognizes it so it removes the
+// whole forge-owned block, not just the dependency line under it.
 const MarkerHeader = "# ── Vendored forge KCL module (maintained by forge generate) ──"
 
-// legacyMarkerHeaders are marker headers earlier forge versions wrote.
-// ownedBlockStart accepts them so an upgrade rewrites the whole stale
-// block instead of stacking a new one above the old comments.
+// legacyMarkerHeaders are marker headers even earlier forge versions wrote.
 var legacyMarkerHeaders = []string{
 	"# ── Dev-mode local forge KCL module vendor ──",
 }
 
-// markerBody is the explanatory comment between the header and the
-// dependency line.
-const markerBody = `#
-# ` + "`forge generate`" + ` materializes the KCL module embedded in the forge
-# binary into ` + "`" + VendorDirName + "/`" + ` at the project root and points this
-# dependency at it by RELATIVE path. That copy travels with the repo, so
-# containers, CI checkouts and other machines resolve the identical
-# module — with no network, no git auth, and nothing to publish.
-#
-# Commit ` + "`" + VendorDirName + "/`" + `. It refreshes on every ` + "`forge generate`" + `.`
+// CacheDirEnv names the directory forge materializes its KCL module under,
+// replacing <UserCacheDir>/forge/kcl. For environments whose home directory
+// is read-only or ephemeral (a locked-down CI container) and for test
+// isolation. The module lands in <CacheDirEnv>/<content-hash>/.
+const CacheDirEnv = "FORGE_KCL_MODULE_CACHE"
 
-// DepKind classifies the forge dependency line found in a kcl.mod.
-type DepKind int
+// cacheDirOverride, when non-empty, replaces the cache root ahead of
+// CacheDirEnv. Tests set it (via SetCacheDirForTest) so they never write
+// into a developer's real cache.
+var cacheDirOverride string
 
-const (
-	// DepNone — the file has no `forge = …` dependency line.
-	DepNone DepKind = iota
-	// DepGitTag — `forge = { git = "…", tag = "…" }`. The shape older
-	// scaffolds emitted; forge rewrites it to the vendored path.
-	DepGitTag
-	// DepAbsolutePath — `forge = { path = "/abs/host/path" }` (the
-	// hand-patch pattern this package exists to replace).
-	DepAbsolutePath
-	// DepVendored — `forge = { path = "…/.forge-kcl" }` (any relative
-	// spelling that targets the vendor dir).
-	DepVendored
-	// DepUnrecognized — a forge line (or lines) exists in a shape the
-	// patcher does not manage: multiple lines, a TOML table, extra
-	// keys, a path to somewhere that is not the vendor dir, etc.
-	DepUnrecognized
+// SetCacheDirForTest points the module cache at dir for the duration of a
+// test and returns a restore func. Not for production use.
+func SetCacheDirForTest(dir string) (restore func()) {
+	moduleMu.Lock()
+	prev, prevDir := cacheDirOverride, moduleDir
+	cacheDirOverride, moduleDir = dir, ""
+	moduleMu.Unlock()
+	return func() {
+		moduleMu.Lock()
+		cacheDirOverride, moduleDir = prev, prevDir
+		moduleMu.Unlock()
+	}
+}
+
+var (
+	moduleMu  sync.Mutex
+	moduleDir string // memoized per process once materialized
 )
 
-// Result reports what a patch call did.
+// ModuleDir returns a directory holding exactly the KCL module embedded in
+// this binary, materializing it on first use.
+//
+// The directory is <UserCacheDir>/forge/kcl/<hash>, keyed by a hash of the
+// embedded CONTENT rather than by version string: two builds that embed an
+// identical module share one directory, and a `+dirty` rebuild with a
+// schema change can never be served a stale directory under the same
+// version name. Content-addressing also makes the directory immutable once
+// complete, so concurrent forge processes need no coordination beyond an
+// atomic rename into place.
+func ModuleDir() (string, error) {
+	moduleMu.Lock()
+	defer moduleMu.Unlock()
+	if moduleDir != "" {
+		return moduleDir, nil
+	}
+	root := cacheDirOverride
+	if root == "" {
+		root = os.Getenv(CacheDirEnv)
+	}
+	if root == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("locate the user cache directory for the forge KCL module: %w", err)
+		}
+		root = filepath.Join(base, "forge", "kcl")
+	}
+	hash, err := moduleHash()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, hash)
+	if complete(dir) {
+		moduleDir = dir
+		return dir, nil
+	}
+	if err := materializeInto(root, dir); err != nil {
+		return "", err
+	}
+	moduleDir = dir
+	return dir, nil
+}
+
+// ExternalPkgArg is the `name=path` external-package binding a KCL
+// evaluation needs to resolve `import forge` from this binary's module.
+func ExternalPkgArg() (string, error) {
+	dir, err := ModuleDir()
+	if err != nil {
+		return "", err
+	}
+	return ModuleName + "=" + dir, nil
+}
+
+// completeMarker is written last into a materialized module directory. A
+// directory without it is a partial write from a process that died, and is
+// rebuilt rather than trusted.
+const completeMarker = ".complete"
+
+func complete(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, completeMarker))
+	return err == nil
+}
+
+// moduleHash is the hex SHA-256 over every embedded file's path and bytes,
+// in sorted order.
+func moduleHash() (string, error) {
+	files, err := embeddedModuleFiles()
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	for _, p := range files {
+		data, err := fs.ReadFile(forgekcl.Module, p)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", p, len(data))
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:24], nil
+}
+
+// embeddedModuleFiles lists every file in the embedded module, sorted, in
+// forward-slash form.
+func embeddedModuleFiles() ([]string, error) {
+	var out []string
+	err := fs.WalkDir(forgekcl.Module, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p != "." && !d.IsDir() {
+			out = append(out, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read embedded forge KCL module: %w", err)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// materializeInto writes the embedded module into a fresh temp directory
+// under root and renames it to dir. A concurrent process that wins the
+// rename first leaves an identical directory behind (same content hash), so
+// losing the race is success.
+func materializeInto(root, dir string) error {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("create forge KCL module cache %s: %w", root, err)
+	}
+	tmp, err := os.MkdirTemp(root, ".tmp-")
+	if err != nil {
+		return fmt.Errorf("create forge KCL module cache entry: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+
+	files, err := embeddedModuleFiles()
+	if err != nil {
+		return err
+	}
+	for _, p := range files {
+		data, err := fs.ReadFile(forgekcl.Module, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(tmp, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, completeMarker), nil, 0o644); err != nil {
+		return err
+	}
+	// A leftover partial directory at dir (no completeMarker) blocks the
+	// rename; clear it first.
+	if _, err := os.Stat(dir); err == nil && !complete(dir) {
+		_ = os.RemoveAll(dir)
+	}
+	if err := os.Rename(tmp, dir); err != nil {
+		if complete(dir) {
+			return nil // another process materialized the same content
+		}
+		return fmt.Errorf("install forge KCL module into %s: %w", dir, err)
+	}
+	return nil
+}
+
+// ── kcl.mod migration ────────────────────────────────────────────────────
+
+// Result reports what a migration call did.
 type Result struct {
 	// Changed is true when the file was rewritten.
 	Changed bool
 	// Warning, when non-empty, is a caller-surfaceable reason the file
-	// was left alone (hand-rewritten beyond recognition, …).
+	// was left alone.
 	Warning string
 }
 
-// forgeDepLineRE matches a single-line forge dependency in kcl.mod.
-// The RHS is parsed separately; this only anchors the line.
-var forgeDepLineRE = regexp.MustCompile(`(?m)^[\t ]*forge[\t ]*=[\t ]*(.+?)[\t ]*$`)
+// forgeDepLineRE matches a single-line `forge = …` dependency in kcl.mod.
+var forgeDepLineRE = regexp.MustCompile(`^[\t ]*forge[\t ]*=[\t ]*(.+?)[\t ]*$`)
 
-// gitTagRHSRE recognizes the git+tag inline-table shape older scaffolds
-// emitted, which EnsureVendorDep rewrites to the vendored path.
-var gitTagRHSRE = regexp.MustCompile(`^\{\s*git\s*=\s*"[^"]+"\s*,\s*tag\s*=\s*"[^"]+"\s*\}$`)
+// forgeTableRE matches a `[dependencies.forge]` table header — a spelling
+// forge never wrote, which migration therefore refuses to edit.
+var forgeTableRE = regexp.MustCompile(`^[\t ]*\[[\t ]*dependencies[\t ]*\.[\t ]*forge[\t ]*\][\t ]*$`)
 
-// pathRHSRE recognizes the local-path inline-table shape and captures
-// the path.
-var pathRHSRE = regexp.MustCompile(`^\{\s*path\s*=\s*"([^"]+)"\s*\}$`)
+// ManagedKclMods returns the kcl.mod locations forge manages:
+// deploy/kcl/kcl.mod (the canonical package root) and the legacy project-root
+// kcl.mod older scaffolds emitted.
+func ManagedKclMods(projectDir string) []string {
+	return []string{
+		filepath.Join(projectDir, "deploy", "kcl", "kcl.mod"),
+		filepath.Join(projectDir, "kcl.mod"),
+	}
+}
 
-// classifyDep inspects file content and returns the dep kind plus the
-// line index of the forge dependency (-1 when absent) and, for path
-// deps, the target path.
-func classifyDep(lines []string) (kind DepKind, depIdx int, pathTarget string) {
-	depIdx = -1
+// forgeDep locates the forge dependency in a kcl.mod. idx is the line of a
+// single-line dependency (-1 when there is none); table reports a
+// `[dependencies.forge]` table, which is never edited.
+func forgeDep(lines []string) (idx int, count int, table bool) {
+	idx = -1
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "forge") {
+		if forgeTableRE.MatchString(line) {
+			table = true
 			continue
 		}
-		m := forgeDepLineRE.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		if depIdx != -1 {
-			return DepUnrecognized, depIdx, "" // multiple forge lines
-		}
-		depIdx = i
-		rhs := strings.TrimSpace(m[1])
-		switch {
-		case gitTagRHSRE.MatchString(rhs):
-			kind = DepGitTag
-		case pathRHSRE.MatchString(rhs):
-			target := pathRHSRE.FindStringSubmatch(rhs)[1]
-			pathTarget = target
-			if filepath.IsAbs(target) {
-				kind = DepAbsolutePath
-			} else if filepath.Base(filepath.FromSlash(target)) == VendorDirName {
-				kind = DepVendored
-			} else {
-				kind = DepUnrecognized // relative path to something else (e.g. "../forge/kcl")
+		if forgeDepLineRE.MatchString(line) {
+			if idx == -1 {
+				idx = i
 			}
-		default:
-			kind = DepUnrecognized
+			count++
 		}
 	}
-	if depIdx == -1 {
-		return DepNone, -1, ""
-	}
-	return kind, depIdx, pathTarget
+	return idx, count, table
 }
 
 // ownedBlockStart walks up from the dependency line over the contiguous
-// comment run directly above it. If that run begins with MarkerHeader —
-// or a header an earlier forge wrote — the block [start..depIdx] is
-// forge-owned and returns start; otherwise returns depIdx (only the line
-// itself is ours to touch, so user comments above it are preserved).
+// comment run directly above it. If that run begins with MarkerHeader — or a
+// header an earlier forge wrote — the block [start..depIdx] is forge-owned and
+// returns start; otherwise returns depIdx (only the line itself is ours to
+// remove, so user comments above it are preserved).
 func ownedBlockStart(lines []string, depIdx int) int {
 	start := depIdx
 	for start > 0 && strings.HasPrefix(strings.TrimSpace(lines[start-1]), "#") {
@@ -216,481 +341,213 @@ func ownedBlockStart(lines []string, depIdx int) int {
 	return depIdx
 }
 
-// VendorDepPath returns the relative dependency path a kcl.mod at
-// kclModPath must carry to reference <projectDir>/.forge-kcl, in the
-// forward-slash form kcl.mod uses (e.g. "./.forge-kcl" from the project
-// root, "../../.forge-kcl" from deploy/kcl/).
-func VendorDepPath(kclModPath, projectDir string) (string, error) {
-	rel, err := filepath.Rel(filepath.Dir(kclModPath), filepath.Join(projectDir, VendorDirName))
+// HasForgeDep reports whether the kcl.mod at path declares a `forge`
+// dependency in any spelling (false when the file does not exist).
+func HasForgeDep(path string) (bool, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
 	}
-	rel = filepath.ToSlash(rel)
-	if !strings.HasPrefix(rel, "../") {
-		rel = "./" + rel
-	}
-	return rel, nil
+	idx, _, table := forgeDep(strings.Split(string(data), "\n"))
+	return idx != -1 || table, nil
 }
 
-// vendorDepLine renders the dependency line for a given relative path.
-func vendorDepLine(relPath string) string {
-	return fmt.Sprintf("forge = { path = %q }", relPath)
-}
-
-// EnsureVendorDep rewrites the forge dependency in the kcl.mod at
-// kclModPath to the marker-delimited relative-path vendor block.
-// Idempotent: byte-identical no-op when the block is already exactly in
-// place. A missing file is a silent no-op (the project has no KCL at
-// that location); an unmanageable dependency shape is a no-op with a
-// Warning for the caller to surface.
-func EnsureVendorDep(kclModPath, projectDir string) (Result, error) {
-	data, err := os.ReadFile(kclModPath)
+// MigrateKclMod removes the legacy `forge = …` dependency from the kcl.mod at
+// path, together with the marker-delimited comment block forge maintained
+// around it, and deletes a sibling kcl.mod.lock that still records the forge
+// package. Every shape older forges wrote (a vendored relative path, an
+// absolute host path, the unpublished git tag) is removed the same way: the
+// module now comes from the binary, so no spelling of the dependency is
+// right any more.
+//
+// Idempotent: a kcl.mod with no forge dependency is untouched. A missing file
+// is a silent no-op. A shape forge never wrote (a `[dependencies.forge]`
+// table, several forge lines) is left alone with a Warning.
+func MigrateKclMod(path string) (Result, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Result{}, nil
 		}
-		return Result{}, fmt.Errorf("read %s: %w", kclModPath, err)
-	}
-	relPath, err := VendorDepPath(kclModPath, projectDir)
-	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("read %s: %w", path, err)
 	}
 	lines := strings.Split(string(data), "\n")
-	kind, depIdx, _ := classifyDep(lines)
-
-	switch kind {
-	case DepNone:
+	idx, count, table := forgeDep(lines)
+	switch {
+	case table || count > 1:
 		return Result{Warning: fmt.Sprintf(
-			"%s has no `forge = …` dependency line — cannot point it at the vendored module; add %#q by hand",
-			kclModPath, vendorDepLine(relPath))}, nil
-	case DepUnrecognized:
-		return Result{Warning: fmt.Sprintf(
-			"%s carries a forge dependency in a shape `forge generate` does not manage — leaving it untouched; expected %#q for the vendored module",
-			kclModPath, vendorDepLine(relPath))}, nil
+			"%s declares the forge KCL module in a shape `forge generate` does not manage — leaving it untouched. "+
+				"forge now supplies `import forge` from its own binary; delete the forge dependency from [dependencies] by hand, then remove kcl.mod.lock",
+			path)}, nil
+	case idx == -1:
+		return Result{}, dropForgeLock(path)
 	}
 
-	// DepGitTag, DepAbsolutePath, or DepVendored (possibly with a
-	// different spelling / missing marker): replace the owned span with
-	// the canonical block.
-	blockStart := ownedBlockStart(lines, depIdx)
-	block := append(strings.Split(MarkerHeader+"\n"+markerBody, "\n"), vendorDepLine(relPath))
-	updated := make([]string, 0, len(lines)+len(block))
-	updated = append(updated, lines[:blockStart]...)
-	updated = append(updated, block...)
-	updated = append(updated, lines[depIdx+1:]...)
+	start := ownedBlockStart(lines, idx)
+	updated := make([]string, 0, len(lines))
+	updated = append(updated, lines[:start]...)
+	updated = append(updated, lines[idx+1:]...)
 	out := strings.Join(updated, "\n")
-	if out == string(data) {
-		return Result{}, nil
+	// Journaled, so a `forge generate` that fails later rolls the kcl.mod
+	// edit back instead of reporting an unchanged tree (#271).
+	checksums.RecordPreWriteAbs(path)
+	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+		return Result{}, fmt.Errorf("write %s: %w", path, err)
 	}
-	checksums.RecordPreWriteAbs(kclModPath)
-	if err := os.WriteFile(kclModPath, []byte(out), 0o644); err != nil {
-		return Result{}, fmt.Errorf("write %s: %w", kclModPath, err)
+	if err := dropForgeLock(path); err != nil {
+		return Result{}, err
 	}
-	// The sibling lock pins the previous resolution; it is derived
-	// state, so drop it on a source swap and let kpm rebuild it.
-	_ = checksums.RemoveJournaled(filepath.Join(filepath.Dir(kclModPath), "kcl.mod.lock"))
 	return Result{Changed: true}, nil
 }
 
-// InspectDep reports the dependency kind carried by the kcl.mod at
-// kclModPath (DepNone when the file does not exist).
-func InspectDep(kclModPath string) (DepKind, error) {
-	data, err := os.ReadFile(kclModPath)
+// dropForgeLock removes the forge package from the kcl.mod.lock beside
+// kclModPath. kpm resolves a locked dependency before it consults the
+// external packages it was handed, so a stale entry silently shadows the
+// binary's module (observed: `attribute 'Bundle' not found in module
+// 'forge'`).
+//
+// The lock is REWRITTEN, not deleted. kpm writes a kcl.mod.lock on every
+// run — an empty one for a package with no dependencies — so deleting it
+// would leave a tracked file that reappears (empty) at the next render: a
+// diff produced by rendering, which `forge ci verify-generated` rightly
+// fails. Stripping the forge entry leaves exactly the file kpm itself
+// would write, so the state is stable. Entries for other packages are kept.
+func dropForgeLock(kclModPath string) error {
+	lockPath := filepath.Join(filepath.Dir(kclModPath), "kcl.mod.lock")
+	data, err := os.ReadFile(lockPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return DepNone, nil
-		}
-		return DepNone, err
+		return nil //nolint:nilerr // no lock: nothing can shadow the module
 	}
-	kind, _, _ := classifyDep(strings.Split(string(data), "\n"))
-	return kind, nil
-}
-
-// Present reports whether a materialized vendor copy exists at
-// <projectDir>/.forge-kcl (kcl.mod as the marker file, mirroring
-// localVendorPresent for .forge-pkg).
-func Present(projectDir string) bool {
-	_, err := os.Stat(filepath.Join(projectDir, VendorDirName, "kcl.mod"))
-	return err == nil
-}
-
-// DowngradeError is returned by [Materialize] when the running forge's
-// embedded KCL module would overwrite a vendor dir that a NEWER forge
-// wrote. It carries both versions so callers can print the two identities
-// side by side — "which binary is doing this" is the one question the
-// original silent-overwrite failure left unanswerable.
-type DowngradeError struct {
-	// Stamped is the version recorded in .forge-kcl/.forge-version —
-	// the forge that produced the copy currently on disk.
-	Stamped string
-	// Running is the version of the forge that just tried to overwrite it.
-	Running string
-	// ProjectDir is the project whose vendor dir was protected.
-	ProjectDir string
-	// Unorderable marks the refusal as "could not compare" rather than
-	// "provably older" — the two need different prose, because in the
-	// unorderable case there is nothing to upgrade TO.
-	Unorderable bool
-}
-
-func (e *DowngradeError) Error() string {
-	if e.Unorderable {
-		return fmt.Sprintf(
-			"refusing to overwrite %s/ — cannot tell which forge is newer.\n"+
-				"    on disk:  %s  (wrote %s/)\n"+
-				"    running:  %s  (this binary)\n"+
-				"  One of these is not a comparable version, so refreshing might replace the\n"+
-				"  project's KCL schemas with an older or unrelated copy. Overwriting on\n"+
-				"  \"cannot tell\" is how a project's deploy-tier schemas were silently deleted\n"+
-				"  by a routine generate, with the failure surfacing later as an unknown-schema\n"+
-				"  error in `env render`.\n"+
-				"  Fix: run the forge that vendored it, or if replacing it is deliberate:\n"+
-				"    forge generate --allow-kcl-downgrade",
-			VendorDirName, e.Stamped, VendorDirName, e.Running)
+	if !lockNamesForge(data) {
+		return nil
 	}
-	upgrade := "go install github.com/reliant-labs/forge/cmd/forge@" + e.Stamped
-	if buildinfo.IsDevVersion(e.Stamped) {
-		// A `+dirty`/workspace stamp names no ref any proxy can serve,
-		// so pointing at it would hand the user a command that fails.
-		upgrade = "rebuild forge from a checkout at or after " + e.Stamped + " (task install:dev)"
-	}
-	return fmt.Sprintf(
-		"refusing to overwrite %s/ with an OLDER forge's KCL module.\n"+
-			"    on disk:  %s  (wrote %s/)\n"+
-			"    running:  %s  (this binary)\n"+
-			"  This forge is older than the one that vendored the module, so refreshing would\n"+
-			"  REPLACE the project's KCL schemas with a stale copy. That exact downgrade shipped\n"+
-			"  an outdated Gateway listener rule into control-plane and broke prod's `env render`,\n"+
-			"  with the failure surfacing later in a different command.\n"+
-			"  Fix: upgrade this binary — %s\n"+
-			"  Or, if the downgrade is deliberate (rolling forge back on purpose):\n"+
-			"    forge generate --allow-kcl-downgrade",
-		VendorDirName, e.Stamped, VendorDirName, e.Running, upgrade)
-}
-
-// RefreshRefusal returns the [DowngradeError] `forge generate` would refuse
-// a refresh of projectDir's vendor dir with (without --allow-kcl-downgrade),
-// or nil. For advice that would otherwise send the user to `forge generate`
-// — see kclrender's stale-vendor warning.
-func RefreshRefusal(projectDir string) error {
-	// Not `return checkDowngrade(...)`: a nil *DowngradeError in an error
-	// interface is non-nil.
-	if err := checkDowngrade(projectDir); err != nil {
-		return err
+	checksums.RecordPreWriteAbs(lockPath)
+	if err := os.WriteFile(lockPath, stripForgeFromLock(data), 0o644); err != nil {
+		return fmt.Errorf("rewrite %s: %w", lockPath, err)
 	}
 	return nil
 }
 
-// checkDowngrade returns a [DowngradeError] when the running forge is
-// provably older, by semver, than the forge stamped on the vendor dir.
-//
-// Deliberately narrow — every branch that returns nil is a case where
-// refusing would wedge a project for no safety gain:
-//
-//   - no vendor dir, or no stamp: nothing to protect (and an unstamped
-//     copy predates stamping entirely, so a refresh is the whole point).
-//   - equal or newer: the normal refresh path.
-//
-// NOT on the nil list any more: a version that cannot be ordered. That used
-// to return nil — "comparison would be a coin flip, and a guard that fires on
-// a coin flip gets disabled by everyone" — and the reasoning was sound while
-// unorderable meant the bare "dev" sentinel. It no longer does: buildinfo now
-// derives a real pseudo-version for dev and workspace builds, so an
-// unorderable version means something genuinely unexpected (a hand-edited
-// stamp, a version from a forge that predates derivation). Allowing an
-// overwrite on "I cannot tell" is how ~880 lines of a project'"'"'s deploy-tier
-// KCL got deleted by a routine generate. It now refuses and names
-// --allow-kcl-downgrade, which is the same escape hatch a deliberate
-// downgrade already uses.
-//
-// Build metadata is stripped before comparing: `v0.1.12+dirty` and
-// `v0.1.12` are the same source vintage, and semver.Compare already
-// ignores it — but +dev/+dirty floors compare EQUAL to the release tag,
-// which is what we want (a dirty local build of the same release must
-// not be called a downgrade).
-func checkDowngrade(projectDir string) error {
-	if !Present(projectDir) {
-		return nil
+// lockForgeTableRE matches the header of the forge package's entry in a kpm
+// lock file.
+var lockForgeTableRE = regexp.MustCompile(`^\s*\[dependencies\.forge\]\s*$`)
+
+// lockTableRE matches any TOML table header.
+var lockTableRE = regexp.MustCompile(`^\s*\[[^\]]+\]\s*$`)
+
+func lockNamesForge(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		if lockForgeTableRE.MatchString(line) {
+			return true
+		}
 	}
-	data, err := os.ReadFile(filepath.Join(projectDir, VendorDirName, StampFileName))
-	if err != nil {
-		return nil
-	}
-	stamped := strings.TrimSpace(string(data))
-	running := buildinfo.Version()
-	if stamped == "" || stamped == running {
-		return nil
-	}
-	if !semver.IsValid(stamped) || !semver.IsValid(running) {
-		// Cannot order them: fail closed. See the nil-list note above.
-		return &DowngradeError{Stamped: stamped, Running: running, ProjectDir: projectDir, Unorderable: true}
-	}
-	if semver.Compare(running, stamped) >= 0 {
-		return nil
-	}
-	return &DowngradeError{Stamped: stamped, Running: running, ProjectDir: projectDir}
+	return false
 }
 
-// wouldChange reports whether materializing the embedded module into dst
-// would create, rewrite, or delete anything.
-//
-// The downgrade guard consults this so it fires on SUBSTANCE, not on
-// version strings alone: an older forge whose embedded module is
-// byte-identical to what is already vendored is doing nothing, and
-// blocking it would break `forge generate` for anyone on a pinned older
-// build with no actual schema difference. Only a downgrade that would
-// really move bytes is worth refusing.
-func wouldChange(dst string, want map[string]struct{}) (bool, error) {
-	for path := range want {
-		src, err := fs.ReadFile(forgekcl.Module, path)
-		if err != nil {
-			return false, err
+// stripForgeFromLock removes the `[dependencies.forge]` table (its header
+// through the line before the next table header). A lock left with nothing
+// but the bare `[dependencies]` header becomes empty — the exact bytes kpm
+// writes for a package with no dependencies.
+func stripForgeFromLock(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines))
+	skipping := false
+	for _, line := range lines {
+		switch {
+		case lockForgeTableRE.MatchString(line):
+			skipping = true
+			continue
+		case skipping && lockTableRE.MatchString(line):
+			skipping = false
 		}
-		existing, err := os.ReadFile(filepath.Join(dst, filepath.FromSlash(path)))
-		if err != nil || !bytes.Equal(existing, src) {
-			return true, nil
+		if !skipping {
+			out = append(out, line)
 		}
 	}
-	stray := false
-	_ = filepath.Walk(dst, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || stray {
-			return nil
+	meaningful := 0
+	for _, line := range out {
+		if t := strings.TrimSpace(line); t != "" && t != "[dependencies]" {
+			meaningful++
 		}
-		rel, relErr := filepath.Rel(dst, path)
-		if relErr != nil {
-			return nil
-		}
-		slashRel := filepath.ToSlash(rel)
-		if slashRel == "kcl.mod.lock" || slashRel == StampFileName {
-			return nil
-		}
-		if _, keep := want[slashRel]; !keep {
-			stray = true
-		}
+	}
+	if meaningful == 0 {
 		return nil
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+// RemoveLegacyVendorDir deletes <projectDir>/.forge-kcl, the project-local
+// copy older forge versions maintained. Returns true when it removed one.
+//
+// Every file goes through the generate rollback journal (a no-op outside a
+// generate run), so a generate that fails after this step hands the copy
+// back exactly as it found it rather than leaving it half-deleted (#271).
+func RemoveLegacyVendorDir(projectDir string) (bool, error) {
+	dir := filepath.Join(projectDir, LegacyVendorDirName)
+	if _, err := os.Stat(dir); err != nil {
+		return false, nil //nolint:nilerr // absent is the goal state
+	}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		return checksums.RemoveJournaled(p)
 	})
-	return stray, nil
+	if err == nil {
+		err = os.RemoveAll(dir) // only empty directories remain
+	}
+	if err != nil {
+		return false, fmt.Errorf("remove legacy %s/: %w", LegacyVendorDirName, err)
+	}
+	return true, nil
 }
 
-// embeddedModuleFiles lists every file path in the embedded KCL module,
-// in the forward-slash form both the walk and the stray sweep key on.
-func embeddedModuleFiles() (map[string]struct{}, error) {
-	want := make(map[string]struct{})
-	err := fs.WalkDir(forgekcl.Module, ".", func(path string, d fs.DirEntry, err error) error {
+// UnmigratedError reports a managed kcl.mod that still declares the forge
+// dependency (or a lock that still records it). Rendering it would resolve
+// `import forge` from that declaration instead of from this binary — a stale
+// project copy, or a git tag that does not exist — so render refuses and
+// names the one command that fixes it.
+type UnmigratedError struct {
+	Paths []string // project-relative
+}
+
+func (e *UnmigratedError) Error() string {
+	return fmt.Sprintf(
+		"%s still declares the forge KCL module as a dependency.\n"+
+			"    expected: no `forge = …` line — forge supplies `import forge` from the binary\n"+
+			"              that is rendering, so the module always matches the forge you run\n"+
+			"    found:    a declaration older forge versions wrote (a .forge-kcl/ path, or a git tag)\n"+
+			"  Fix: run `forge generate` once. It removes the dependency and any kcl.mod.lock\n"+
+			"  that records it, and deletes the old project-local .forge-kcl/. Commit the\n"+
+			"  kcl.mod change; the result is identical under every forge build.",
+		strings.Join(e.Paths, " and "))
+}
+
+// CheckKclMods returns an [UnmigratedError] when a managed kcl.mod under
+// projectDir still declares the forge dependency, or its lock still records
+// it. Render calls this before evaluating; it never edits anything.
+func CheckKclMods(projectDir string) error {
+	var bad []string
+	for _, p := range ManagedKclMods(projectDir) {
+		has, err := HasForgeDep(p)
 		if err != nil {
 			return err
 		}
-		if path != "." && !d.IsDir() {
-			want[path] = struct{}{}
-		}
-		return nil
-	})
-	return want, err
-}
-
-// Materialize syncs the embedded forge KCL module into
-// <projectDir>/.forge-kcl. Content-hash idempotent: byte-identical
-// files are not rewritten, files that drifted are replaced, and files
-// under the vendor dir that are not in the embedded module are deleted
-// (so renames/removals upstream never leave stale sources behind).
-// Returns true when anything was created, rewritten, or deleted.
-//
-// It refuses, before writing anything, when the running forge is older
-// than the forge that vendored the copy on disk AND the refresh would
-// actually change bytes — see [DowngradeError] and the package doc's
-// account of the prod render this broke. allowDowngrade is the deliberate
-// opt-out (`forge generate --allow-kcl-downgrade`), for rolling forge
-// back on purpose.
-func Materialize(projectDir string, allowDowngrade bool) (changed bool, err error) {
-	dst := filepath.Join(projectDir, VendorDirName)
-	want, err := embeddedModuleFiles()
-	if err != nil {
-		return false, fmt.Errorf("read embedded forge KCL module: %w", err)
-	}
-
-	// Guard FIRST, and on a would-change check rather than the version
-	// alone. Ordering is the point: a guard that runs after the walk has
-	// already rewritten half the files protects nothing.
-	if !allowDowngrade {
-		if dErr := checkDowngrade(projectDir); dErr != nil {
-			differs, cErr := wouldChange(dst, want)
-			if cErr != nil {
-				return false, cErr
+		lockData, lerr := os.ReadFile(filepath.Join(filepath.Dir(p), "kcl.mod.lock"))
+		stale := lerr == nil && lockNamesForge(lockData)
+		if has || stale {
+			rel, rerr := filepath.Rel(projectDir, p)
+			if rerr != nil {
+				rel = p
 			}
-			if differs {
-				return false, dErr
-			}
+			bad = append(bad, filepath.ToSlash(rel))
 		}
 	}
-
-	walkErr := fs.WalkDir(forgekcl.Module, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path == "." {
-			return nil
-		}
-		target := filepath.Join(dst, filepath.FromSlash(path))
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		want[path] = struct{}{}
-		src, rerr := fs.ReadFile(forgekcl.Module, path)
-		if rerr != nil {
-			return rerr
-		}
-		if existing, eerr := os.ReadFile(target); eerr == nil && bytes.Equal(existing, src) {
-			return nil
-		}
-		if merr := os.MkdirAll(filepath.Dir(target), 0o755); merr != nil {
-			return merr
-		}
-		checksums.RecordPreWriteAbs(target)
-		if werr := os.WriteFile(target, src, 0o644); werr != nil {
-			return werr
-		}
-		changed = true
-		return nil
-	})
-	if walkErr != nil {
-		return changed, fmt.Errorf("materialize embedded forge KCL module into %s: %w", VendorDirName, walkErr)
+	if len(bad) > 0 {
+		return &UnmigratedError{Paths: bad}
 	}
-
-	// Delete strays. Two files are tolerated rather than treated as
-	// strays: kcl.mod.lock, which kpm derives inside the vendor dir on
-	// some resolution paths, and the version stamp this function writes
-	// below — deleting either every run would churn.
-	if _, err := os.Stat(dst); err == nil {
-		_ = filepath.Walk(dst, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-			rel, relErr := filepath.Rel(dst, path)
-			if relErr != nil {
-				return nil
-			}
-			slashRel := filepath.ToSlash(rel)
-			if slashRel == "kcl.mod.lock" || slashRel == StampFileName {
-				return nil
-			}
-			if _, keep := want[slashRel]; !keep {
-				if rmErr := checksums.RemoveJournaled(path); rmErr == nil {
-					changed = true
-				}
-			}
-			return nil
-		})
-	}
-	// Stamp the materializing forge's version LAST, so a stamp is only
-	// ever present over a complete copy. This is what makes vendoring
-	// safe to rely on as the single mechanism: the module refreshes on
-	// `forge generate` and nowhere else, so without a recorded version a
-	// project could sit on an old copy and the only symptom would be a
-	// schema error that names the wrong cause.
-	//
-	// The stamp records WHICH FORGE'S MODULE THESE BYTES ARE — so it moves
-	// only when the bytes do. A refresh that changed nothing keeps the
-	// existing stamp. Rewriting it unconditionally re-pinned projects
-	// implicitly: a project whose stamp said v0.1.17 got a `+dirty` local
-	// build's version committed into it by a `forge generate` that changed
-	// no schema at all, and every developer's different build fought over
-	// the line. An unstamped copy is always stamped.
-	stampPath := filepath.Join(dst, StampFileName)
-	stamp := []byte(buildinfo.Version() + "\n")
-	existingStamp, stampErr := os.ReadFile(stampPath)
-	if stampErr == nil && !changed && len(bytes.TrimSpace(existingStamp)) > 0 {
-		return false, nil
-	}
-	if stampErr != nil || !bytes.Equal(existingStamp, stamp) {
-		checksums.RecordPreWriteAbs(stampPath)
-		if werr := os.WriteFile(stampPath, stamp, 0o644); werr != nil {
-			return changed, fmt.Errorf("write %s: %w", StampFileName, werr)
-		}
-		changed = true
-	}
-	return changed, nil
-}
-
-// EnsurePresent materializes <projectDir>/.forge-kcl when it is ABSENT and
-// a forge-managed kcl.mod (deploy/kcl/kcl.mod or the legacy root kcl.mod)
-// already points its `forge` dependency at exactly that directory. It
-// returns true when it wrote the copy.
-//
-// This is the render-time half of vendoring. Without it a fresh checkout
-// (or any project that has not run `forge generate` yet) could not
-// `forge env render` at all: kpm failed with a raw `CannotFindModule`
-// and suggested `kcl mod add forge`, a command that is wrong for a forge
-// project. The copy is a pure function of this binary, so producing it on
-// demand is what `forge generate` would have done anyway.
-//
-// Deliberately narrow, so a render can never do what generate's guards
-// exist to prevent:
-//   - an EXISTING copy is never touched — refreshing (and the downgrade
-//     guard that protects it) stays with `forge generate`;
-//   - kcl.mod is never edited — a dependency in any other shape is left
-//     for generate's surgery, and nothing is materialized;
-//   - a dependency path that resolves anywhere other than
-//     <projectDir>/.forge-kcl materializes nothing (no orphan dirs).
-func EnsurePresent(projectDir string) (bool, error) {
-	if Present(projectDir) {
-		return false, nil
-	}
-	want := filepath.Join(projectDir, VendorDirName)
-	for _, modPath := range []string{
-		filepath.Join(projectDir, "deploy", "kcl", "kcl.mod"),
-		filepath.Join(projectDir, "kcl.mod"),
-	} {
-		data, err := os.ReadFile(modPath)
-		if err != nil {
-			continue
-		}
-		kind, _, target := classifyDep(strings.Split(string(data), "\n"))
-		if kind != DepVendored {
-			continue
-		}
-		resolved := filepath.Join(filepath.Dir(modPath), filepath.FromSlash(target))
-		if filepath.Clean(resolved) != filepath.Clean(want) {
-			continue
-		}
-		if _, err := Materialize(projectDir, false); err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-	return false, nil
-}
-
-// Stale reports whether <projectDir>/.forge-kcl differs from the KCL module
-// embedded in the running forge, returning the recorded version for the
-// message. A vendor dir that is absent is not stale.
-//
-// The answer is by CONTENT, not by version string: Materialize keeps the stamp
-// when a refresh changes no bytes, so two forge builds with the same module
-// legitimately leave a stamp that names the other one — and a render must not
-// nag about a copy that is exactly what this binary would write.
-//
-// An unstamped copy (materialized by a forge predating the stamp) counts
-// as stale with an empty version: it genuinely was written by another
-// forge, and one `forge generate` clears it for good.
-func Stale(projectDir string) (stale bool, stampedVersion string) {
-	if !Present(projectDir) {
-		return false, ""
-	}
-	data, err := os.ReadFile(filepath.Join(projectDir, VendorDirName, StampFileName))
-	if err != nil {
-		return true, ""
-	}
-	got := strings.TrimSpace(string(data))
-	if got == buildinfo.Version() {
-		return false, got
-	}
-	want, err := embeddedModuleFiles()
-	if err != nil {
-		return true, got
-	}
-	differs, err := wouldChange(filepath.Join(projectDir, VendorDirName), want)
-	if err != nil {
-		return true, got
-	}
-	return differs, got
+	return nil
 }

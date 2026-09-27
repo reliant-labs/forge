@@ -1,26 +1,19 @@
-// Package cli — forge KCL module vendor handling.
+// Package cli — forge KCL module migration.
 //
-// A scaffolded project's deploy/kcl/kcl.mod depends on the `forge` KCL
-// module. `forge generate` resolves that dependency exactly one way, on
-// every build of forge: it materializes the module EMBEDDED IN THE
-// BINARY into `<project>/.forge-kcl/` and points the kcl.mod at it by
-// relative path. Relative — not a hand-patched absolute host path — so
-// containers, CI checkouts, and other machines resolve the identical
-// vendored copy, offline and with nothing to publish.
+// A project's env main.k files `import forge`. forge supplies that module
+// from the binary that is rendering (internal/kclvendor → internal/kclrender),
+// so the project's deploy/kcl/kcl.mod declares NO forge dependency and the
+// project holds no copy of the module.
 //
-// There is no un-vendor direction and no release-vs-dev branch. Forge
-// once had both, and a release build would delete a project's working
-// `.forge-kcl/` and rewrite the dependency to a git tag that had never
-// been published — breaking every project it touched. See
-// docs/adr/0001-always-vendor-forge-kcl.md.
-//
-// All kcl.mod surgery lives in internal/kclvendor (shared with the
-// scaffolder, which uses the same primitives so projects are born
-// already vendored). This file owns pipeline orchestration + printing.
+// Older forge versions declared it — first as an unpublished `kcl-vX.Y.Z`
+// git tag, then as `forge = { path = "../../.forge-kcl" }` over a
+// project-local copy — and this step migrates those projects forward: it
+// removes the declaration (and the marker block forge maintained around it),
+// strips the forge entry from kcl.mod.lock, and deletes `.forge-kcl/`. See
+// docs/adr/0003-kcl-module-from-the-binary.md.
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,51 +22,22 @@ import (
 	"github.com/reliant-labs/forge/internal/kclvendor"
 )
 
-// kclModCandidates returns the kcl.mod locations forge manages, in
-// resolution-priority order: deploy/kcl/kcl.mod (the canonical package
-// root for deploy manifests) and the legacy project-root kcl.mod that
-// older scaffolds emitted. Each is patched with its own correctly
-// depth-adjusted relative path.
-func kclModCandidates(projectDir string) []string {
-	return []string{
-		filepath.Join(projectDir, "deploy", "kcl", "kcl.mod"),
-		filepath.Join(projectDir, "kcl.mod"),
-	}
-}
-
-// stepSyncForgeKCL keeps the project's kcl.mod forge-module dependency
-// pointed at the vendored copy of the KCL module embedded in this forge
-// binary, and refreshes that copy. Best-effort: failure warns and the
-// pipeline continues (--strict promotes to fatal), matching the
-// forge/pkg sync step.
-// A KCL-module DOWNGRADE is the one failure here that does NOT route
-// through warnOrFail. warnOrFail's default is print-and-continue, which
-// is right for "the sync did not happen" but catastrophic for "the sync
-// happened backwards": the vendor dir is the project's KCL schema, and a
-// warning the user scrolls past leaves an older schema on disk and a
-// broken `env render` waiting somewhere downstream. That is precisely how
-// a stale binary shipped an outdated Gateway listener rule into
-// control-plane and broke prod. Refusals are returned bare so they abort
-// the pipeline whether or not --strict is set.
+// stepSyncForgeKCL migrates a project off every legacy declaration of the
+// forge KCL module. Best-effort: failure warns and the pipeline continues
+// (--strict promotes to fatal), matching the forge/pkg sync step. A render
+// of an unmigrated project refuses on its own with this step named as the
+// fix, so a skipped migration cannot render against a stale copy.
 func stepSyncForgeKCL(ctx *pipelineContext) error {
-	err := syncForgeKCL(ctx.ProjectDir, ctx.AllowKCLDowngrade)
-	var dErr *kclvendor.DowngradeError
-	if errors.As(err, &dErr) {
-		return err
-	}
-	return ctx.warnOrFail("forge KCL module vendor sync", err)
+	return ctx.warnOrFail("forge KCL module migration", syncForgeKCL(ctx.ProjectDir))
 }
 
-// syncForgeKCL implements the sync. Split from the step for direct
-// testing.
-func syncForgeKCL(projectDir string, allowDowngrade bool) error {
-	// Ensure every managed kcl.mod resolves the module from the vendored
-	// copy, then materialize/refresh that copy. A kcl.mod forge cannot
-	// prove it understands is warned about, never edited.
-	var patched []string
-	referenced := false
-	for _, modPath := range kclModCandidates(projectDir) {
-		res, err := kclvendor.EnsureVendorDep(modPath, projectDir)
+// syncForgeKCL implements the migration. Split from the step for direct
+// testing. Idempotent: a migrated project is a byte-identical no-op, under
+// any forge build.
+func syncForgeKCL(projectDir string) error {
+	var migrated []string
+	for _, modPath := range kclvendor.ManagedKclMods(projectDir) {
+		res, err := kclvendor.MigrateKclMod(modPath)
 		if err != nil {
 			return err
 		}
@@ -81,32 +45,21 @@ func syncForgeKCL(projectDir string, allowDowngrade bool) error {
 			fmt.Fprintf(os.Stderr, "⚠️  Warning: %s\n", res.Warning)
 			continue
 		}
-		kind, err := kclvendor.InspectDep(modPath)
-		if err != nil {
-			return err
-		}
-		if kind == kclvendor.DepVendored {
-			referenced = true
-			if res.Changed {
-				patched = append(patched, projectRelPath(projectDir, modPath))
-			}
+		if res.Changed {
+			migrated = append(migrated, projectRelPath(projectDir, modPath))
 		}
 	}
-	if !referenced {
-		// Nothing points at the vendor dir (no kcl.mod, or shapes we
-		// don't manage) — never materialize an orphan directory.
-		return nil
-	}
-
-	changed, err := kclvendor.Materialize(projectDir, allowDowngrade)
+	removed, err := kclvendor.RemoveLegacyVendorDir(projectDir)
 	if err != nil {
 		return err
 	}
-	if len(patched) > 0 {
-		fmt.Printf("  ✅ Vendored forge KCL module → %s/ (%s now resolve(s) it by relative path)\n",
-			kclvendor.VendorDirName, strings.Join(patched, ", "))
-	} else if changed {
-		fmt.Printf("  ✅ Refreshed %s/ from this forge binary's embedded KCL module\n", kclvendor.VendorDirName)
+	if len(migrated) > 0 {
+		fmt.Printf("  ✅ %s no longer declares the forge KCL module — forge supplies it from the running binary\n",
+			strings.Join(migrated, ", "))
+	}
+	if removed {
+		fmt.Printf("  🧹 Removed the legacy project-local %s/ (if it was committed: git rm -r --cached %s)\n",
+			kclvendor.LegacyVendorDirName, kclvendor.LegacyVendorDirName)
 	}
 	return nil
 }

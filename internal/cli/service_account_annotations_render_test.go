@@ -26,7 +26,7 @@ func TestServiceAccountAnnotations_ReachTheAppliedStream(t *testing.T) {
 	const gsa = "deploy-publisher@reliant-labs-475814.iam.gserviceaccount.com"
 
 	dir := t.TempDir()
-	kclMod := "[package]\nname = \"saannotations\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + forgeModuleRoot(t) + "\" }\n"
+	kclMod := "[package]\nname = \"saannotations\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
 	main := `import forge
 
 _bundle = forge.Bundle {

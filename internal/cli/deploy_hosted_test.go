@@ -26,9 +26,8 @@ func writeHostedProject(t *testing.T, endpoint, backendSpec string) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"forge.yaml": "name: acme\nmodule_path: github.com/example/acme\nversion: 0.1.0\nfrontends: []\n",
-		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n" +
-			"forge = { path = \"" + forgeModuleRoot(t) + "\" }\n",
+		"forge.yaml":         "name: acme\nmodule_path: github.com/example/acme\nversion: 0.1.0\nfrontends: []\n",
+		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n",
 		"deploy/kcl/hosted/main.k": `import forge
 import forge.tiers
 

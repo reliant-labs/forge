@@ -7,9 +7,11 @@
 // dependency against, exactly like dev builds have no published
 // forge/pkg Go module version. The Go-side answer is vendoring a
 // sibling checkout into `.forge-pkg/` (internal/cli/dev_pkg_replace.go);
-// the KCL-side answer is materializing THIS embedded copy into the
-// project at `.forge-kcl/` (internal/kclvendor) — which works even when
-// no forge checkout exists on disk (daemon / `go install`'d binaries).
+// the KCL-side answer is supplying THIS embedded copy to every KCL
+// evaluation as an external package, from a content-addressed user cache
+// (internal/kclvendor) — which works even when no forge checkout exists on
+// disk (daemon / `go install`'d binaries), and for a released binary IS
+// that release's module.
 //
 // The embed deliberately covers only what a consuming project needs to
 // resolve and render: kcl.mod plus the schema/render sources (root *.k,

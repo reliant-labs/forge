@@ -156,10 +156,6 @@ type pipelineContext struct {
 	// Pass --force-cleanup to actually delete.
 	ForceCleanup bool
 
-	// AllowKCLDowngrade opts out of the vendored-KCL downgrade refusal.
-	// See the matching pipelineFlags field.
-	AllowKCLDowngrade bool
-
 	// TemplatesOnly narrows the pipeline to template-driven render
 	// steps. See the matching pipelineFlags.TemplatesOnly field for the
 	// full rationale and the templatesOnlyStepAllow allowlist.
@@ -269,18 +265,17 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 		return nil, fmt.Errorf("failed to resolve project dir: %w", err)
 	}
 	return &pipelineContext{
-		ProjectDir:        projectDir,
-		AbsPath:           abs,
-		Force:             flags.Force,
-		ExplainDrift:      flags.ExplainDrift,
-		SkipValidate:      flags.SkipValidate,
-		SkipPreChecks:     flags.SkipPreChecks,
-		SkipConfigCheck:   flags.SkipConfigCheck,
-		ForceCleanup:      flags.ForceCleanup,
-		AllowKCLDowngrade: flags.AllowKCLDowngrade,
-		TemplatesOnly:     flags.TemplatesOnly,
-		Strict:            flags.Strict,
-		Verbose:           flags.Verbose,
+		ProjectDir:      projectDir,
+		AbsPath:         abs,
+		Force:           flags.Force,
+		ExplainDrift:    flags.ExplainDrift,
+		SkipValidate:    flags.SkipValidate,
+		SkipPreChecks:   flags.SkipPreChecks,
+		SkipConfigCheck: flags.SkipConfigCheck,
+		ForceCleanup:    flags.ForceCleanup,
+		TemplatesOnly:   flags.TemplatesOnly,
+		Strict:          flags.Strict,
+		Verbose:         flags.Verbose,
 	}, nil
 }
 

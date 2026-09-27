@@ -153,6 +153,28 @@ type StaticSiteSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=8
 	Domains []string `json:"domains,omitempty"`
+
+	// RuntimeConfig is the site's runtime configuration document: the
+	// object the browser receives as window.__FORGE_CONFIG__, keyed by the
+	// name the bundle reads (API_URL, OIDC_ISSUER, ...).
+	//
+	// It is SPEC, not a file inside the release, and that is the point.
+	// A release artifact that carried its own config.js would be frozen to
+	// the environment it was built for, and promoting it would ship
+	// staging's backend URL to production. Keeping the document here makes
+	// the artifact environment-agnostic: whoever executes the spec writes
+	// `live/<basePath>/config.js` AFTER syncing live/ from the release, on
+	// every sync (a sync prunes files the release does not contain), as
+	//
+	//	window.__FORGE_CONFIG__ = {"KEY": "resolved value", ...};
+	//
+	// (pkg/deploy.RuntimeConfigJS renders exactly that document.) An entry
+	// is either a literal or a reference to another workload's URL, which
+	// is resolved where the URL is known: by the control plane for a
+	// hosted env, at render time by forge otherwise. See RuntimeConfigValue.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=128
+	RuntimeConfig map[string]RuntimeConfigValue `json:"runtimeConfig,omitempty"`
 }
 
 // MinKeepReleases is the retention floor: the live release plus its

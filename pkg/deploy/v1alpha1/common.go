@@ -74,6 +74,10 @@ const (
 //     backend reached a real CNPG Postgres through it). It NAMES A DATABASE,
 //     NEVER A SECRET, so the set of things it can resolve to is closed by
 //     construction.
+//   - WorkloadURL — the public URL of a sibling workload (a backend's
+//     CORS_ORIGINS naming its StaticSite). Added with StaticSite runtime
+//     config, which uses the same reference kind. Like DatabaseRef it NAMES
+//     A WORKLOAD, never a hostname, so it cannot point outside the env.
 //
 // config_map_ref and field_ref are DELIBERATELY ABSENT from the tier. They
 // stay on forge.K8sCluster. field_ref projects pod and node metadata, and
@@ -116,6 +120,56 @@ type EnvVar struct {
 	// DatabaseRef projects a ManagedDatabase's credential.
 	// +optional
 	DatabaseRef *DatabaseRef `json:"databaseRef,omitempty"`
+
+	// WorkloadURL is the public URL of another workload in the SAME
+	// environment — the canonical case is a backend's CORS_ORIGINS naming
+	// the StaticSite that calls it. It names a workload, never a hostname,
+	// so it follows the workload when its URL changes.
+	//
+	// It is a REFERENCE that must be resolved before a pod can carry it:
+	// the control plane resolves it on a hosted env (and re-resolves when
+	// the target's URL moves), and pkg/deploy.Render refuses a spec that
+	// still holds one rather than render an empty variable.
+	// +optional
+	WorkloadURL *WorkloadURLRef `json:"workloadURL,omitempty"`
+}
+
+// WorkloadURLRef names a workload, in the same environment, whose public URL
+// is the value. Resolution is scoped by construction: the name carries no
+// org, env or namespace component, so a reference can only ever reach a
+// sibling workload.
+//
+// What the URL IS depends on the target's kind: a StaticSite's URL is its
+// site origin plus basePath, and a SimpleBackend's is its public hostname's
+// origin. A reference to a workload with no public URL (a private or none
+// backend, a database) is unresolvable and is refused, never guessed.
+type WorkloadURLRef struct {
+	// Name is the target workload's name (its metadata.name).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+}
+
+// RuntimeConfigValue is one entry of a StaticSite's runtime config: EXACTLY
+// ONE of a literal value or a workload URL reference.
+//
+// Value is a pointer because an explicitly empty string is a legal value
+// (the conventional "feature off" sentinel) and must not read as "unset".
+// Every value is a STRING on the wire. A bundle that wants a number or a
+// boolean coerces it (forge's generated config module does), so the document
+// has one type rule no matter which side resolved it.
+//
+// +kubebuilder:validation:ExactlyOneOf=value;workloadURL
+type RuntimeConfigValue struct {
+	// Value is an inline literal.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32768
+	Value *string `json:"value,omitempty"`
+
+	// WorkloadURL resolves to another workload's public URL.
+	// +optional
+	WorkloadURL *WorkloadURLRef `json:"workloadURL,omitempty"`
 }
 
 // ManagedSecretsSecretName is the Secret every ManagedSecret env var reads

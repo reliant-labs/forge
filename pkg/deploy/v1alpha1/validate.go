@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -83,10 +84,72 @@ func (e EnvVar) Validate() error {
 			errs = append(errs, fmt.Errorf("env var %s: databaseRef.key %q must be one of uri, host, port, dbname, username, password", e.Name, e.DatabaseRef.Key))
 		}
 	}
+	if e.WorkloadURL != nil {
+		set++
+		if err := e.WorkloadURL.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("env var %s: %w", e.Name, err))
+		}
+	}
 	if set > 1 {
-		errs = append(errs, fmt.Errorf("env var %s sets more than one of value / secretRef / managedSecret / databaseRef: a spec that says two things has no correct reading", e.Name))
+		errs = append(errs, fmt.Errorf("env var %s sets more than one of value / secretRef / managedSecret / databaseRef / workloadURL: a spec that says two things has no correct reading", e.Name))
 	}
 	return errors.Join(errs...)
+}
+
+// Validate checks a workload URL reference names a workload: an RFC-1123
+// label, which is what every tier's metadata.name is.
+func (r WorkloadURLRef) Validate() error {
+	if !dnsLabelRE.MatchString(r.Name) || len(r.Name) > 63 {
+		return fmt.Errorf("workloadURL.name %q must be the target workload's name (an RFC-1123 label of at most 63 characters)", r.Name)
+	}
+	return nil
+}
+
+// runtimeConfigKeyRE is the set of keys a runtime config document may carry:
+// JavaScript identifiers in the ASCII subset, so every key is reachable as
+// window.__FORGE_CONFIG__.KEY and the document is never ambiguous about
+// what a key means across the Go, KCL and TypeScript layers.
+var runtimeConfigKeyRE = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+
+// MaxRuntimeConfigEntries bounds the runtime config document. It is served
+// to every browser on every page load, so it is configuration, not storage.
+const MaxRuntimeConfigEntries = 128
+
+// ValidateRuntimeConfig checks a StaticSite's runtime config: legal keys and
+// exactly one of value / workloadURL per entry.
+func ValidateRuntimeConfig(rc map[string]RuntimeConfigValue) error {
+	var errs []error
+	if len(rc) > MaxRuntimeConfigEntries {
+		errs = append(errs, fmt.Errorf("runtimeConfig has %d entries; at most %d are allowed", len(rc), MaxRuntimeConfigEntries))
+	}
+	for _, k := range sortedKeys(rc) {
+		v := rc[k]
+		if !runtimeConfigKeyRE.MatchString(k) {
+			errs = append(errs, fmt.Errorf("runtimeConfig key %q must be a JavaScript identifier (%s)", k, runtimeConfigKeyRE))
+		}
+		switch {
+		case v.Value != nil && v.WorkloadURL != nil:
+			errs = append(errs, fmt.Errorf("runtimeConfig.%s sets both value and workloadURL: exactly one is allowed", k))
+		case v.Value == nil && v.WorkloadURL == nil:
+			errs = append(errs, fmt.Errorf("runtimeConfig.%s sets neither value nor workloadURL: exactly one is required (value: \"\" for an empty string)", k))
+		case v.Value != nil && len(*v.Value) > 32768:
+			errs = append(errs, fmt.Errorf("runtimeConfig.%s value is longer than 32768 characters", k))
+		case v.WorkloadURL != nil:
+			if err := v.WorkloadURL.Validate(); err != nil {
+				errs = append(errs, fmt.Errorf("runtimeConfig.%s: %w", k, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // Validate checks the request/limit pairs. Zero means "use the default" and
@@ -244,6 +307,9 @@ func (s StaticSiteSpec) Validate() error {
 		}
 	}
 	if err := validateDomains("domains", s.Domains); err != nil {
+		errs = append(errs, err)
+	}
+	if err := ValidateRuntimeConfig(s.RuntimeConfig); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

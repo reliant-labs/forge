@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -323,6 +324,11 @@ func writeTierSchema(b *strings.Builder, goName string, s apiext.JSONSchemaProps
 		b.WriteString(line + "\n")
 		checks = append(checks, fieldChecks(name, p, ps, !required[p] && ps.Default == nil)...)
 	}
+	typeChecks, err := typeLevelChecks(name, s)
+	if err != nil {
+		return err
+	}
+	checks = append(checks, typeChecks...)
 	if len(checks) > 0 {
 		b.WriteString("\n    check:\n")
 		for _, c := range checks {
@@ -362,7 +368,48 @@ func jsonExpr(access string, s apiext.JSONSchemaProps, pkgPath string) string {
 			return fmt.Sprintf("[%s_json(_i) for _i in %s] if %s else Undefined", toSnake(kclSchemaName(ref)), access, access)
 		}
 	}
+	// A map of tier structs recurses per value, exactly like a list: a raw
+	// schema instance would carry its unset optionals into the CR.
+	if s.Type == "object" && s.AdditionalProperties != nil && s.AdditionalProperties.Schema != nil && s.AdditionalProperties.Schema.Ref != nil {
+		if ref, ok := localRefName(*s.AdditionalProperties.Schema.Ref, pkgPath); ok {
+			return fmt.Sprintf("{_k: %s_json(_i) for _k, _i in %s} if %s else Undefined", toSnake(kclSchemaName(ref)), access, access)
+		}
+	}
 	return access
+}
+
+// oneOfRuleRE matches the CEL rule controller-tools emits for the
+// ExactlyOneOf / AtMostOneOf markers: a sum of `(has(self.f)?1:0)` terms
+// compared against 1.
+var (
+	oneOfRuleRE     = regexp.MustCompile(`^((\(has\(self\.[A-Za-z_][A-Za-z0-9_]*\)\?1:0\)\+?)+) (==|<=) 1$`)
+	oneOfRuleTermRE = regexp.MustCompile(`has\(self\.([A-Za-z_][A-Za-z0-9_]*)\)`)
+)
+
+// typeLevelChecks lowers the TYPE-level validations: x-kubernetes-validations
+// (CEL) rules. Only the forms controller-tools' one-of markers emit are
+// understood. Any other CEL rule is an ERROR, not a skipped line: a rule the
+// API server enforces but the KCL does not would make the author-time schema
+// silently looser than the wire, which is the drift this generator exists to
+// rule out. Teach this function the new form instead.
+func typeLevelChecks(schemaName string, s apiext.JSONSchemaProps) ([]string, error) {
+	var out []string
+	for _, v := range s.XValidations {
+		m := oneOfRuleRE.FindStringSubmatch(v.Rule)
+		if m == nil {
+			return nil, fmt.Errorf("x-kubernetes-validations rule %q has no KCL lowering; extend typeLevelChecks", v.Rule)
+		}
+		var terms []string
+		for _, f := range oneOfRuleTermRE.FindAllStringSubmatch(m[1], -1) {
+			terms = append(terms, fmt.Sprintf("(1 if %s != Undefined and %s != None else 0)", f[1], f[1]))
+		}
+		msg := v.Message
+		if msg == "" {
+			msg = "violates " + v.Rule
+		}
+		out = append(out, fmt.Sprintf("%s %s 1, %s", strings.Join(terms, " + "), m[3], quoteKCLString(schemaName+": "+msg)))
+	}
+	return out, nil
 }
 
 // structRef reports the type a property references, if it is a struct in the
@@ -467,6 +514,9 @@ func fieldChecks(schemaName, field string, s apiext.JSONSchemaProps, optional bo
 	}
 	if s.MaxItems != nil {
 		out = append(out, fmt.Sprintf("%s, %s", guard(fmt.Sprintf("len(%s) <= %d", field, *s.MaxItems)), msg("allows at most %d entries", *s.MaxItems)))
+	}
+	if s.MaxProperties != nil {
+		out = append(out, fmt.Sprintf("%s, %s", guard(fmt.Sprintf("len(%s) <= %d", field, *s.MaxProperties)), msg("allows at most %d entries", *s.MaxProperties)))
 	}
 	if s.Minimum != nil {
 		out = append(out, fmt.Sprintf("%s, %s", guard(fmt.Sprintf("%s >= %s", field, fmtNum(*s.Minimum))), msg("must be at least %s", fmtNum(*s.Minimum))))

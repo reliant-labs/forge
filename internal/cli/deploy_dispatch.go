@@ -280,9 +280,16 @@ type applyOptsContext struct {
 	Targets           []string
 	Groups            []deploytarget.ServiceGroup
 	Entities          *KCLEntities
-	ImageDigests      map[string]string
-	HelmCharts        []cluster.HelmChartSpec
-	Rollout           cluster.RolloutPolicy
+	// Topology / TopologyEntities are the WHOLE env's groups and entities —
+	// what the multi-cluster scope is built from. A targeted deploy
+	// dispatches a subset of the env (Groups) but must route each object by
+	// the env's full ownership map, or a target on one cluster turns scoping
+	// off entirely. Nil falls back to Groups / Entities.
+	Topology         []deploytarget.ServiceGroup
+	TopologyEntities *KCLEntities
+	ImageDigests     map[string]string
+	HelmCharts       []cluster.HelmChartSpec
+	Rollout          cluster.RolloutPolicy
 	// OnStream and OnRollout are the optional observation callbacks the
 	// --json report installs (nil in text mode). Threaded through the builder
 	// so a multi-group dispatch reports every group's stream and every
@@ -311,7 +318,11 @@ type applyOptsContext struct {
 // cluster.KubectlApply chokepoint refuses an empty context rather than
 // falling back to the active one.
 func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
-	scopeFor := clusterScopeForGroups(p.Groups, p.Entities)
+	topology, topologyEntities := p.Groups, p.Entities
+	if len(p.Topology) > 0 {
+		topology, topologyEntities = p.Topology, p.TopologyEntities
+	}
+	scopeFor := clusterScopeForGroups(topology, topologyEntities)
 	// Platform deps (helm-as-a-RENDERER) are env-level, not per-group. To
 	// apply each selected chart EXACTLY ONCE across a multi-group dispatch,
 	// attach the chart specs only to the FIRST k8s group processed —

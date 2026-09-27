@@ -612,20 +612,21 @@ func helmTemplateIncludeCRDs(ctx context.Context, spec HelmChartSpec) (string, e
 	return stripHelmOCIStatus(stdout.String()), nil
 }
 
-// stampAppLabel FORCES `app.kubernetes.io/name = <name>` onto every
-// document in a `---`-separated manifest stream so the deploy layer's
+// stampAppLabel stamps the chart's NAME onto every document in a
+// `---`-separated manifest stream as its deploy GROUP, so the deploy layer's
 // `--target` selection (SelectManifestsByGroup) treats the WHOLE chart as
 // ONE named app. Documents that don't parse are passed through unchanged.
 //
-// OVERRIDE, not defer-to-existing: unlike lib/services.k's
-// `_stamp_owner_label` (which lets a user's explicit app label win on a
-// raw Service.manifests entry), a helm chart sets its OWN per-component
-// `app.kubernetes.io/name` (cert-manager's webhook / cainjector subcharts
-// label themselves "webhook" / "cainjector"). If those survived,
-// `--target=cert-manager` would DROP them (SelectManifestsByGroup keeps only
-// docs whose app label equals the target), shipping a half-installed
-// chart. The chart `name` is the single `--target` selector for the whole
-// dependency, so it MUST overwrite any chart-set value.
+// The group rides WorkloadLabel (`forge.dev/workload`), which is FORCED: a
+// chart's sub-components label themselves (cert-manager's webhook /
+// cainjector are `app.kubernetes.io/name: webhook` / `cainjector`), and
+// `--target=cert-manager` must select all of them. The chart's own
+// `app.kubernetes.io/name` is left EXACTLY as the chart rendered it, because
+// the chart's Service and Deployment selectors match on it — overwriting it
+// (the old behaviour) rewrote the labels on the pod template's owner but not
+// the selector, which is only safe by accident. It is defaulted to the chart
+// name when the chart set none, so every document still carries the
+// recommended label. See WorkloadLabel for why routing cannot share that key.
 func stampAppLabel(manifests, name string) string {
 	var out []string
 	for _, doc := range splitDocs(manifests) {
@@ -634,11 +635,10 @@ func stampAppLabel(manifests, name string) string {
 	return strings.Join(out, docDelimiter)
 }
 
-// stampDocAppLabel OVERWRITES metadata.labels["app.kubernetes.io/name"]
-// with name on a single YAML document, preserving every other field and
-// label. The override (see stampAppLabel) is what makes the chart's whole
-// manifest set select as ONE `--target`. Unparseable docs pass through
-// verbatim.
+// stampDocAppLabel forces metadata.labels[WorkloadLabel] = name on a single
+// YAML document and defaults AppNameLabel / managed-by when absent,
+// preserving every other field and label (see stampAppLabel). Unparseable docs
+// pass through verbatim.
 func stampDocAppLabel(doc, name string) string {
 	var m map[string]any
 	if err := yaml.Unmarshal([]byte(doc), &m); err != nil || m == nil {
@@ -652,8 +652,12 @@ func stampDocAppLabel(doc, name string) string {
 	if labels == nil {
 		labels = map[string]any{}
 	}
-	// FORCE the chart name — the whole chart is one --target unit.
-	labels[AppNameLabel] = name
+	// FORCE the group — the whole chart is one --target unit. The chart's
+	// own name label is only defaulted: its selectors depend on it.
+	labels[WorkloadLabel] = name
+	if _, ok := labels[AppNameLabel]; !ok {
+		labels[AppNameLabel] = name
+	}
 	if _, ok := labels["app.kubernetes.io/managed-by"]; !ok {
 		labels["app.kubernetes.io/managed-by"] = "forge"
 	}
@@ -705,18 +709,8 @@ func applyCRDsThenRest(ctx context.Context, kctx, namespace, extraCRDs, manifest
 	// pre-requisites of the rest, applied together; only the CRDs gate on
 	// Established (a Namespace is ready the moment it exists).
 	crds := joinNonEmpty(extraCRDs, streamCRDs)
-	early := joinNonEmpty(crds, streamNS)
-	if strings.TrimSpace(early) != "" {
-		if err := KubectlApplyNamespaced(ctx, kctx, namespace, early); err != nil {
-			return fmt.Errorf("apply CRDs/Namespaces: %w", err)
-		}
-		names := crdNames(crds)
-		if len(names) > 0 {
-			fmt.Printf("Waiting for %d CRD(s) to be Established...\n", len(names))
-			if err := waitCRDsEstablished(ctx, kctx, names, 120*time.Second); err != nil {
-				return fmt.Errorf("wait CRDs Established: %w", err)
-			}
-		}
+	if err := applyEarlyBatch(ctx, kctx, namespace, crds, streamNS); err != nil {
+		return err
 	}
 
 	if strings.TrimSpace(rest) != "" {
@@ -732,6 +726,43 @@ func applyCRDsThenRest(ctx context.Context, kctx, namespace, extraCRDs, manifest
 		if err := KubectlApplyNamespaced(ctx, kctx, namespace, workloads); err != nil {
 			return fmt.Errorf("apply: %w", err)
 		}
+	}
+	return nil
+}
+
+// crdEstablishedTimeout bounds the wait for a freshly applied CRD to be
+// served. Establishing is the apiserver registering a new REST endpoint — it
+// takes well under a second on a healthy cluster; this only guards a wedged one.
+const crdEstablishedTimeout = 120 * time.Second
+
+// applyEarlyBatch is the CRD-first primitive both apply paths share: apply the
+// CRDs together with the early Namespaces, then block until every CRD reports
+// Established. Nothing that instantiates one of those CRDs may be sent before
+// this returns — an apply racing its own CRD fails `no matches for kind`
+// (or, worse, succeeds against a stale discovery cache and fails half-way).
+//
+// Used by the chart path (applyCRDsThenRest, whose CRDs include forge's pinned
+// bundle) and by the env's own manifest stream (applyRendered, whose CRDs come
+// from RenderedWorkload.manifests / additional_manifests). One implementation
+// on purpose: a second copy of "apply, then wait Established" is a second
+// place for the wait to be forgotten.
+//
+// A no-op when both inputs are empty.
+func applyEarlyBatch(ctx context.Context, kctx, namespace, crds, namespaces string) error {
+	early := joinNonEmpty(crds, namespaces)
+	if strings.TrimSpace(early) == "" {
+		return nil
+	}
+	if err := KubectlApplyNamespaced(ctx, kctx, namespace, early); err != nil {
+		return fmt.Errorf("apply CRDs/Namespaces: %w", err)
+	}
+	names := crdNames(crds)
+	if len(names) == 0 {
+		return nil
+	}
+	fmt.Printf("Waiting for %d CRD(s) to be Established...\n", len(names))
+	if err := waitCRDsEstablished(ctx, kctx, names, crdEstablishedTimeout); err != nil {
+		return fmt.Errorf("wait CRDs Established: %w", err)
 	}
 	return nil
 }

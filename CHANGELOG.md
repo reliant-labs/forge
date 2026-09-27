@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `service_account_annotations: {str:str}` on `forge.K8sOverrides`,
+  `forge.RenderedWorkload` and `forge.workloads.Workload`: annotations stamped
+  on the ServiceAccount forge GENERATES for the workload, and on no other
+  object. It is how a workload gets cloud workload identity (GKE
+  `iam.gke.io/gcp-service-account`, EKS `eks.amazonaws.com/role-arn`) without
+  renaming its identity — the SA keeps the workload's name, so RBAC and policy
+  that bind that name keep working. Keys are validated as Kubernetes
+  annotation keys at render time, and combining it with `service_account`
+  (where forge generates no SA) is refused rather than silently dropped.
 - `cluster:manage` access-token scope (`accesstoken.ScopeClusterManage`):
   registers, rotates and removes an org's BYO clusters. Its own authority —
   `deploy:write` neither implies it nor is implied by it.

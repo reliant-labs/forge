@@ -382,11 +382,15 @@ _workload_rbac = lambda c: any, namespace: str, part_of: str = "" -> [any] {
     _tier = caps.rbac_tier(c.kind)
     _ns_rules = c.namespaced_rbac
     _cluster_rules = c.cluster_rbac
-    rbac_lib.render_cluster_rbac(c.name, namespace, {rules = _cluster_rules}, [], part_of) \
+    # Every tier emits exactly ONE generated ServiceAccount, and the
+    # workload's SA annotations (cloud workload identity) ride it whichever
+    # tier renders it.
+    _sa_annotations = c.service_account_annotations if c.service_account_annotations else {}
+    rbac_lib.render_cluster_rbac(c.name, namespace, {rules = _cluster_rules}, [], part_of, "", _sa_annotations) \
         if _tier == "cluster" \
-        else (rbac_lib.render_namespaced_rbac(c.name, namespace, _ns_rules, [], part_of) \
+        else (rbac_lib.render_namespaced_rbac(c.name, namespace, _ns_rules, [], part_of, "", _sa_annotations) \
             if (_tier == "namespaced" and _ns_rules) \
-            else rbac_lib.render_service_account(c.name, namespace, part_of))
+            else rbac_lib.render_service_account(c.name, namespace, part_of, [], _sa_annotations))
 }
 
 # Does job `j` gate workload `target`?

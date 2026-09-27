@@ -112,7 +112,25 @@ func newDBCmd(deps Deps) *cobra.Command {
 
 			res, err := m.Up()
 			if err != nil {
+				// A schema AHEAD of this binary that nobody declared
+				// backward-compatible arrives here as a
+				// *migratekit.SchemaAheadError. Failing is the safe
+				// default: this binary's code was never written for that
+				// schema, and forge never steps a schema back.
 				return fmt.Errorf("migrate up: %w", err)
+			}
+			// THE SCHEMA IS AHEAD OF THIS BINARY — the app was rolled
+			// back — and every version it does not embed was declared
+			// `-- forge:backward-compatible`. Nothing was applied and this
+			// release's code can run, so exit 0; but say it loudly, because
+			// "the database is newer than the code" is the fact an operator
+			// mid-rollback most needs confirmed.
+			if res.Ahead != nil {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"SCHEMA AHEAD OF THIS BINARY (rollback): database is at version %d, this binary embeds up to %d; "+
+						"version(s) %v were declared backward-compatible — nothing applied\n",
+					res.Ahead.Version, res.Ahead.Latest, res.Ahead.Versions)
+				return nil
 			}
 			// NOTHING PENDING IS SUCCESS. res.Changed is false both for a
 			// release that shipped no migration and for a replica that lost

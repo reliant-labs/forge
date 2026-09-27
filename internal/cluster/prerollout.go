@@ -229,7 +229,7 @@ func jobDeployPhase(m parsedDoc) (string, error) {
 //
 // What it costs: the older code runs against the newer schema. That is safe
 // only when the newer migrations are backward-compatible (expand/contract),
-// so the skip is never silent — it is printed with the step-down runbook and
+// so the skip is never silent — it is printed with the roll-forward runbook and
 // reported (OnSkippedJobs → the deploy's --json). Post-rollout Jobs are NOT
 // skipped: they configure things for the workloads being deployed, whichever
 // release that is.
@@ -261,9 +261,9 @@ func announceRollbackSkip(phases rolloutPhases) []string {
 	fmt.Println("  This deploy ships a release the env already ran (`forge env promote --rollback`). Its pre-rollout")
 	fmt.Println("  Jobs (the schema migration) cannot step a newer schema back and would fail against it, so they are")
 	fmt.Println("  not run. The older code now runs against the CURRENT schema — safe only if the migrations it is")
-	fmt.Println("  rolling back across are backward-compatible. If they are not, step the schema down with the NEWER")
-	fmt.Println("  release's image (`<binary> db migrate down`, once per version, reading each down file first — a")
-	fmt.Println("  down can discard data) before this release serves traffic. See the forge skill db/deploy-migrations.")
+	fmt.Println("  rolling back across are backward-compatible. If they are not, do not roll back: roll forward with a")
+	fmt.Println("  hotfix release built on the current schema. Forge never steps a schema back. See the forge skill")
+	fmt.Println("  db/deploy-migrations.")
 	return names
 }
 

@@ -353,7 +353,6 @@ func applyBornCorpus(t *testing.T) (*sql.DB, string) {
 			}
 		}
 		write(base+".up.sql", up)
-		write(base+".down.sql", mig.DownSQL)
 
 		// Apply strictly. Every statement forge emitted must run; a
 		// best-effort apply would let a broken constraint vanish and the

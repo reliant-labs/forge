@@ -4,7 +4,7 @@
 // wire→schema birth affordance. The message is ALREADY authored in the
 // service proto; this command reads its shape from the compiled
 // descriptor (gen/forge_descriptor.json) and emits the create-table
-// migration pair, once. The migration is user-owned at birth and never
+// migration, once. The migration is user-owned at birth and never
 // re-read: after this moment, forge never writes or modifies a migration
 // from proto state ("the line is the filesystem" —
 // docs/design/VERTICAL_SCAFFOLDING.md §6). Rendering lives in
@@ -160,7 +160,7 @@ type birthContext struct {
 }
 
 // birthListedEntityFromProto births ONE explicitly-named entity from the
-// descriptor: migration pair + CRUD-quintet completion. Refusals are
+// descriptor: migration + CRUD-quintet completion. Refusals are
 // hard errors — an explicit listing gets loud refusal, not a silent skip.
 func birthListedEntityFromProto(bc birthContext, msgName, name string, opts entityOpts) error {
 	ctxLabel, root, migDir := bc.CtxLabel, bc.Root, bc.MigDir
@@ -201,7 +201,7 @@ func birthListedEntityFromProto(bc birthContext, msgName, name string, opts enti
 
 	if opts.DryRun {
 		missRPCs, missMsgs := predictQuintetCompletion(scan, msgName, markers.AppendOnly)
-		fmt.Printf("📋 would birth %s → table %q (migration pair)\n", fq, table)
+		fmt.Printf("📋 would birth %s → table %q (migration)\n", fq, table)
 		printQuintetPlan(scan, msgName, missRPCs, missMsgs)
 		return nil
 	}
@@ -337,11 +337,11 @@ func runEntityFromProtoBatch(ctxLabel, root, migDir string, sd codegen.ServiceDe
 	if opts.DryRun {
 		for _, msgName := range selected {
 			table := naming.Pluralize(naming.ToSnakeCase(msgName))
-			fmt.Printf("📋 would birth %s → table %q (migration pair; quintet already present)\n", sd.Package+"."+msgName, table)
+			fmt.Printf("📋 would birth %s → table %q (migration; quintet already present)\n", sd.Package+"."+msgName, table)
 		}
 		for _, m := range marked {
 			table := naming.Pluralize(naming.ToSnakeCase(m.Name))
-			fmt.Printf("📋 would birth %s → table %q (migration pair) [// forge:entity]\n", m.Package+"."+m.Name, table)
+			fmt.Printf("📋 would birth %s → table %q (migration) [// forge:entity]\n", m.Package+"."+m.Name, table)
 			missRPCs, missMsgs := predictQuintetCompletion(scan, m.Name, m.AppendOnly)
 			printQuintetPlan(scan, m.Name, missRPCs, missMsgs)
 		}
@@ -575,11 +575,10 @@ func reportQuintetCompletion(res *quintetCompletionResult, notes []string, err e
 // markedBirthReport is the per-item outcome of one marked-message birth,
 // consumed by the batch printer and `forge scaffold`'s summary.
 type markedBirthReport struct {
-	Message  string // fully-qualified message name
-	Table    string
-	UpPath   string
-	DownPath string
-	Quintet  *quintetCompletionResult
+	Message string // fully-qualified message name
+	Table   string
+	UpPath  string
+	Quintet *quintetCompletionResult
 	// QuintetErr records a completion failure (the migration half still
 	// landed; never fatal to the batch).
 	QuintetErr error
@@ -597,7 +596,7 @@ type markedBirthReport struct {
 }
 
 // birthMarkedEntity births one `// forge:entity`-marked message: the
-// owned migration pair rendered from the RAW proto fields (the marker
+// owned forward migration rendered from the RAW proto fields (the marker
 // and the message live in the same file — one truth, one read; a brand
 // new message need not be in the descriptor), then CRUD-quintet
 // completion into the service proto.
@@ -632,12 +631,12 @@ func birthMarkedEntity(migDir, root string, scan *codegen.RawProtoScan, m codege
 		ExistingTables: fkReg.snapshot(),
 	}
 	mig := entityscaffold.RenderEntityMigrationFromProto(spec)
-	upPath, downPath, err := writeMigrationPair(migDir, table, mig.UpSQL, mig.DownSQL)
+	upPath, err := writeBirthMigration(migDir, table, mig.UpSQL)
 	if err != nil {
 		return nil, err
 	}
 	fkReg.born(table, mig)
-	rep.UpPath, rep.DownPath = upPath, downPath
+	rep.UpPath = upPath
 	rep.Notes = append(rep.Notes, mig.Notes...)
 	for _, n := range mig.Notes {
 		if strings.Contains(n, "TODO") {
@@ -655,7 +654,6 @@ func birthMarkedEntity(migDir, root string, scan *codegen.RawProtoScan, m codege
 // printMarkedBirthReport prints one marked birth's outcome (batch form).
 func printMarkedBirthReport(rep *markedBirthReport) {
 	fmt.Printf("✅ Created %s\n", rep.UpPath)
-	fmt.Printf("✅ Created %s\n", rep.DownPath)
 	reportManagedFields(rep.Message, rep.ManagedFields, rep.ManagedFieldsErr)
 	reportQuintetCompletion(rep.Quintet, nil, rep.QuintetErr)
 	for _, n := range rep.Notes {
@@ -663,7 +661,7 @@ func printMarkedBirthReport(rep *markedBirthReport) {
 	}
 }
 
-// emitEntityFromProtoMigration renders and writes one migration pair,
+// emitEntityFromProtoMigration renders and writes one birth migration,
 // printing the per-field notes. markers carries the `// forge:append-only` /
 // `// forge:soft-delete` behavior resolved from the raw scan (zero value for
 // the descriptor-selected batch path, which never sees a marked message).
@@ -704,13 +702,12 @@ func emitEntityFromProtoMigration(e entityMigrationEmit) error {
 		ExistingTables: e.fkReg.snapshot(),
 	}
 	mig := entityscaffold.RenderEntityMigrationFromProto(spec)
-	upPath, downPath, err := writeMigrationPair(migDir, table, mig.UpSQL, mig.DownSQL)
+	upPath, err := writeBirthMigration(migDir, table, mig.UpSQL)
 	if err != nil {
 		return err
 	}
 	e.fkReg.born(table, mig)
 	fmt.Printf("✅ Created %s\n", upPath)
-	fmt.Printf("✅ Created %s\n", downPath)
 	for _, n := range mig.Notes {
 		fmt.Printf("  ℹ️  %s\n", n)
 	}
@@ -994,24 +991,21 @@ func fkKnownTables(applied map[string]bool, sd codegen.ServiceDef, scans ...*cod
 	return known
 }
 
-// writeMigrationPair writes the next-numbered NNNNN_create_<table> pair
+// writeBirthMigration writes the next-numbered NNNNN_create_<table>.up.sql
 // with pre-rendered contents — internal/scaffold's renderer owns the SQL,
-// and it is the only writer of a birth migration forge has.
-func writeMigrationPair(migDir, table, upSQL, downSQL string) (string, string, error) {
+// and it is the only writer of a birth migration forge has. Forward only:
+// forge writes no down migrations (a birth is undone, if ever, by a new
+// forward migration).
+func writeBirthMigration(migDir, table, upSQL string) (string, error) {
 	if err := os.MkdirAll(migDir, 0o755); err != nil {
-		return "", "", err
+		return "", err
 	}
 	n := nextMigrationNumber(migDir)
-	base := fmt.Sprintf("%05d_create_%s", n, table)
-	upPath := filepath.Join(migDir, base+".up.sql")
-	downPath := filepath.Join(migDir, base+".down.sql")
+	upPath := filepath.Join(migDir, fmt.Sprintf("%05d_create_%s.up.sql", n, table))
 	if err := os.WriteFile(upPath, []byte(upSQL), 0o644); err != nil {
-		return "", "", err
+		return "", err
 	}
-	if err := os.WriteFile(downPath, []byte(downSQL), 0o644); err != nil {
-		return "", "", err
-	}
-	return upPath, downPath, nil
+	return upPath, nil
 }
 
 // descriptorServiceByName resolves a descriptor service from the leaf

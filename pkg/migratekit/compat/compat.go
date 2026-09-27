@@ -20,8 +20,8 @@
 //
 //   - `forge env promote --rollback` refuses to move an environment back
 //     across a migration that does not declare it (the older release would
-//     run against a schema its code was never written for), and prints the
-//     step-down runbook instead;
+//     run against a schema its code was never written for), and says to
+//     roll forward with a hotfix instead;
 //   - the migrator records the declared versions in the database as it
 //     applies them, so an OLDER binary that meets a schema ahead of it can
 //     prove the extra versions are safe rather than hoping (see

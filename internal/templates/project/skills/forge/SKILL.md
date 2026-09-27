@@ -164,7 +164,7 @@ brief first and will not invent an aesthetic without one.
 Migrations lead; projections follow.
 
 ```bash
-forge db migration new add_login_tracking    # creates the .up.sql/.down.sql pair
+forge db migration new add_login_tracking    # creates the .up.sql only — migrations roll forward, there is no down
 # write plain postgres DDL — postgres-pinned, so ::casts, JSONB and TEXT[] all work
 forge generate                               # re-project the entity struct/ORM
 forge db migrate up --dsn "$DATABASE_URL"    # apply against a live database

@@ -83,14 +83,8 @@ func TestE2EScaffoldReadOnlyColumnTakesItsSchemaDefault(t *testing.T) {
 	up := "ALTER TABLE gadgets ALTER COLUMN priority SET DEFAULT 5;\n" +
 		"ALTER TABLE gadgets ADD CONSTRAINT gadgets_priority_range CHECK (priority BETWEEN 1 AND 10);\n" +
 		"ALTER TABLE gadgets ALTER COLUMN active SET DEFAULT true;\n"
-	down := "ALTER TABLE gadgets DROP CONSTRAINT gadgets_priority_range;\n" +
-		"ALTER TABLE gadgets ALTER COLUMN priority SET DEFAULT 0;\n" +
-		"ALTER TABLE gadgets ALTER COLUMN active SET DEFAULT false;\n"
 	if err := os.WriteFile(filepath.Join(migDir, "00002_tighten_gadgets.up.sql"), []byte(up), 0o644); err != nil {
 		t.Fatalf("write evolution migration: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(migDir, "00002_tighten_gadgets.down.sql"), []byte(down), 0o644); err != nil {
-		t.Fatalf("write evolution down migration: %v", err)
 	}
 	runCmd(t, projectDir, forgeBin, "generate")
 

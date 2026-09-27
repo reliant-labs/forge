@@ -16,8 +16,7 @@ emit: both
 ## Migration discipline
 
 - **Migrations are append-only.** Never edit a merged migration — write a new one. Everyone else's local state assumes it is immutable.
-- **Always write the down-migration.** Your test harness uses it for setup/teardown even if prod never runs it.
-- **Never migrate down against staging or prod.** Roll forward only: a wrong migration is undone by a new migration, not by running the down.
+- **Roll forward only — never write a down migration.** Recover with a new forward (hotfix) migration; write changes expand-then-contract. `forge lint` (`no-down-migration`) fails on a new down file — see `db/deploy-migrations`.
 - **Keep seed data out of migrations.** Migrations define schema; seeds populate it.
 
 <!-- @forge-only:start -->
@@ -66,7 +65,7 @@ The `--from-proto <svc>` batch form sweeps `// forge:entity`-marked messages too
 
 Everything a marker adds lands in the **user-owned birth migration**, never a forge-owned `_gen` file. Entity-level markers tablize the message, so a marked message needs no separate `// forge:entity` line. Run `forge project annotations --kind entity` (and `--kind field`) for the full list, placement and effect. The storage-side nuances:
 
-- **`// forge:append-only`** — a real **DB trigger** in the birth migration raises on any `UPDATE`/`DELETE`, so no bug or compromised caller can rewrite history; `.down.sql` drops the trigger + function. The CRUD quintet completes to Create/Get/List only.
+- **`// forge:append-only`** — a real **DB trigger** in the birth migration raises on any `UPDATE`/`DELETE`, so no bug or compromised caller can rewrite history. The CRUD quintet completes to Create/Get/List only.
 - **`// forge:secret`** — the column stays real schema truth and settable on Create/Update; only the read path (`<entity>ToProto`) drops it.
 - **`// forge:read-only`** — the input-side mirror: readable but not client-writable (status, computed price, a lifecycle timestamp). It removes the field from the write envelopes and nothing more, so give the column a DB `DEFAULT` or set it in your handler, or the first insert lands the zero. Mark it up front — the AIP-134 `Update<Entity>Request` wraps the whole entity, so excluding the field at birth also keeps it out of the born `new/page.tsx`, edit form and `handlers_crud_test.go`, and hand-stripping it later breaks those scaffold-once files.
 - **`// forge:soft-delete`** — **OPT-IN**: unmarked entities get no `deleted_at` and hard-delete. Beyond the read filter, `ListAll<Entities>` returns tombstones. The `--soft-delete` flag and a message already carrying a `deleted_at` field do the same thing.

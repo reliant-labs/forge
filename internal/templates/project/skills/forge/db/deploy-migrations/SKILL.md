@@ -107,19 +107,13 @@ such handling. That is why the deploy-side skip exists.
 **What neither does: make the older code correct on the newer schema.**
 Skipping the migration runs the older code against the CURRENT schema. That is
 safe when the newer migrations were expand-only (added columns and tables the
-old code ignores). When one removed or changed something the old code uses, step
-the schema down BEFORE the older release serves traffic, using the NEWER
-release's image (only it embeds the down SQL):
+old code ignores). When one removed or changed something the old code uses, do
+NOT roll the app back across it — there is no down to run, and the schema is
+never stepped back. Roll forward instead: ship a hotfix release built on the
+current schema.
 
-```bash
-# one step per version, newest first; read each .down.sql first — a down can discard data
-kubectl -n <ns> run schema-down --rm -i --restart=Never \
-  --image=<registry>/<app>@<NEWER release digest> --env=DATABASE_URL=... \
-  -- /app/<app> db migrate down
-```
-
-Author migrations expand/contract so a rollback never needs that: add in
-release N, stop reading the old shape in N, drop it in N+1.
+Author migrations expand/contract so rolling the app back is always safe: add
+in release N, stop reading the old shape in N, drop it in N+1.
 
 ## Where AUTO_MIGRATE still fits
 
@@ -140,3 +134,46 @@ Job, a migration initContainer, a migrate command, or `AUTO_MIGRATE=true` — it
 asserts a path exists, not which one.
 
 See also: `db` for authoring migrations, `deploy` for the rollout.
+
+## Roll forward only — there is no down
+
+Forge writes no down migration, runs none, and fails lint on a new one.
+`forge db migration new`, `forge scaffold` entity births, `forge db squash` and
+`forge project migrate import --from goose` all write `.up.sql` only; neither
+`forge db migrate` nor the scaffolded `<binary> db migrate` has a `down`.
+
+Why: a down script claims to undo a release and cannot. By the time anyone
+would run it, the release has written rows in the new shape, other services
+have read them, and jobs have acted on them. It was written before any of that,
+it is untested in the state it would run in, and the moment it is needed is
+mid-incident.
+
+What to do instead:
+
+- **Hotfix forward.** A bad migration is repaired by the next migration,
+  written against the state the database is actually in.
+- **Expand, then contract.** Add the new shape (nullable column, new table) and
+  backfill; switch readers and writers in a release; drop the old shape in a
+  LATER release. At every step the previous release still works against the
+  new schema.
+- **Roll back the app, never the schema.** `forge env deploy --rollback`
+  re-points an environment at an earlier release's images and runs no SQL — and
+  the migrate Job only ever runs `db migrate up`. Expand-then-contract is what
+  makes the older release safe to run.
+
+### Down files that predate the policy
+
+`forge lint`'s `no-down-migration` rule (in the migration-safety lane) errors on
+every `*.down.sql` and every goose `-- +goose Down` section with SQL in it. A
+project that wrote them before the rule grandfathers its history with one
+reviewable line; anything newer still fails:
+
+```yaml
+database:
+  migration_safety:
+    down_files_allowed_until: "00092"   # at or below: one folded warning; above: error
+```
+
+The line is hand-written on purpose — a baseline stamped automatically would
+grandfather whatever was written a minute before the stamp. Forge never runs
+the grandfathered files, so deleting them is always safe.

@@ -56,7 +56,7 @@ _migrate_again = fw.Workload {
 _migrate_changed = fw.Workload {
     kind = "job"
     name = "migrate"
-    command = ["/app/demo", "db", "migrate", "down"]
+    command = ["/app/demo", "db", "migrate", "status"]
 }
 
 _first = [m for m in fw.render_workloads([_migrate], _env) if m.kind == "Job"][0]

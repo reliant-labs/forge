@@ -94,10 +94,9 @@ func (e *SchemaAheadError) Error() string {
 		fmt.Fprintf(&b, "; version(s) %s are not declared backward-compatible (%q in the .up.sql), "+
 			"so this binary's code is not known to run against them", joinVersions(e.Incompatible), compat.Directive)
 	}
-	b.WriteString(". NOTHING WAS APPLIED. Either deploy the release that owns this schema, or step the schema down " +
-		"with THAT release's binary (`db migrate down`, once per version, run from the NEWER image — this binary " +
-		"does not embed those down migrations) and then retry. Stepping down runs the down SQL, which can discard data; " +
-		"read each down file first. See the forge skill db/deploy-migrations")
+	b.WriteString(". NOTHING WAS APPLIED. Forge rolls forward only: deploy the release that owns this schema (or a " +
+		"newer hotfix built on it) instead of this one. The schema is never stepped back. See the forge skill " +
+		"db/deploy-migrations")
 	return b.String()
 }
 

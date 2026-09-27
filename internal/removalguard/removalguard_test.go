@@ -381,6 +381,38 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "down-migrations",
+		Why: "Forge rolls forward only. `forge db migrate down`, the scaffolded binary's " +
+			"`db migrate down`, migratekit.Steps, pkg/orm's Rollback/Migration.Down, and every " +
+			"writer of a `.down.sql` (migration new, squash, entity birth, goose import) were " +
+			"removed: a down script cannot account for what a release already wrote, so the " +
+			"recovery is a new forward migration. `forge lint` (no-down-migration) enforces it " +
+			"in projects; this entry keeps the capability from creeping back into forge itself.",
+		Patterns: []*regexp.Regexp{
+			// The command: `migrate down`, `db migrate down`, "migrate", "down".
+			regexp.MustCompile(`migrate down\b`),
+			regexp.MustCompile(`"migrate",\s*"down"`),
+			// Stepping backwards through golang-migrate.
+			regexp.MustCompile(`\.Steps\(-`),
+			// Writers: a Go expression that BUILDS a down filename.
+			regexp.MustCompile(`\+\s*"\.down\.sql"`),
+			regexp.MustCompile(`\bDownSQL\b|\bDownPath\b|\bDownBody\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the lint rule and tests that DETECT down migrations",
+				Reason: "no-down-migration exists to find these spellings in a project, so " +
+					"its rule, its tests, and the tests pinning their absence must name them.",
+				Paths: []string{
+					"internal/linter/migrationlint/",
+					"internal/templates/db_migrate_test.go",
+					"internal/cli/db_test.go",
+					"pkg/migratekit/",
+				},
+			},
+		},
+	},
+	{
 		Name: "packs",
 		Why: "The pack subsystem was retired wholesale — there is no pack root, no pack " +
 			"manifest and no `packs` / `pack_overrides` / `features.packs` config key. What " +

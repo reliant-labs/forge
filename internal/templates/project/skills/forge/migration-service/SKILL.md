@@ -101,9 +101,9 @@ Adding or removing a collaborator means editing the component's `Deps` struct in
 
 ### Goose → golang-migrate
 
-If the source uses goose (one-file migrations with `-- +goose Up` / `-- +goose Down` markers), forge expects golang-migrate (two-file `.up.sql` + `.down.sql`). The conversion is mechanical:
+If the source uses goose (one-file migrations with `-- +goose Up` / `-- +goose Down` markers), forge expects golang-migrate's forward-only shape (one `.up.sql` per migration — forge writes, runs and accepts no down migrations; `forge lint` fails on a new `.down.sql`). `forge project migrate import --from goose` does the conversion; by hand it is mechanical:
 
-1. Split each file at the `-- +goose Down` line into two files.
+1. Keep the `-- +goose Up` section as `<N>_<name>.up.sql` and **discard** the `-- +goose Down` section (recovery is a new forward migration, never a reverse).
 2. Drop `-- +goose StatementBegin` / `-- +goose StatementEnd` markers (they wrap single statements; golang-migrate handles that natively).
 3. Files declaring `-- +goose NO TRANSACTION` translate to a golang-migrate `x-no-tx-wrap` header on that file.
 4. Renumber files starting from the next-available index AFTER any pack-installed migrations (e.g. audit-log occupies 00002, api-key occupies 00003, so source migrations start at 00004).

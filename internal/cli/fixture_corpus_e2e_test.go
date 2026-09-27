@@ -2367,8 +2367,6 @@ message Bookmark {
 ALTER TABLE bookmarks ADD COLUMN domain TEXT NOT NULL DEFAULT '';
 UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 `)
-	writeCorpusFile(t, filepath.Join(projectDir, "db", "migrations", "00003_bookmark_domain.down.sql"),
-		"ALTER TABLE bookmarks DROP COLUMN domain;\n")
 	runCmd(t, projectDir, forgeBin, "generate")
 	bookmarkORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "bookmark_orm_gen.go"))
 	// Collapse whitespace: the entity struct is gofmt-aligned, so the

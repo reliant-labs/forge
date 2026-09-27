@@ -47,15 +47,6 @@ func TestRenderEntityMigrationFromProto_AppendOnlySQL(t *testing.T) {
 			t.Errorf("up SQL missing append-only guard fragment %q:\n%s", want, mig.UpSQL)
 		}
 	}
-	for _, want := range []string{
-		"DROP TRIGGER IF EXISTS audit_logs_append_only ON audit_logs;",
-		"DROP FUNCTION IF EXISTS audit_logs_forbid_mutation();",
-		"DROP TABLE audit_logs;",
-	} {
-		if !strings.Contains(mig.DownSQL, want) {
-			t.Errorf("down SQL missing %q:\n%s", want, mig.DownSQL)
-		}
-	}
 }
 
 // A non-append-only entity gets no append-only guard — the default is opt-in
@@ -74,9 +65,6 @@ func TestRenderEntityMigrationFromProto_NoHardeningByDefault(t *testing.T) {
 	mig := RenderEntityMigrationFromProto(spec)
 	if strings.Contains(mig.UpSQL, "forbid_mutation") {
 		t.Errorf("no append-only guard expected without the marker:\n%s", mig.UpSQL)
-	}
-	if mig.DownSQL != "DROP TABLE widgets;\n" {
-		t.Errorf("down SQL should be a plain DROP TABLE, got:\n%s", mig.DownSQL)
 	}
 }
 

@@ -165,12 +165,12 @@ func resolveFKTable(column string, known map[string]bool) (string, bool) {
 	return "", false
 }
 
-// EntityFromProtoMigration is the rendered pair plus the per-field notes
+// EntityFromProtoMigration is the rendered forward migration (forge writes
+// no down migrations — it rolls forward only) plus the per-field notes
 // (skips, TODOs) the CLI prints.
 type EntityFromProtoMigration struct {
-	UpSQL   string
-	DownSQL string
-	Notes   []string
+	UpSQL string
+	Notes []string
 	// PendingRefColumns are this table's `<x>_id` columns that resolve to a
 	// known entity whose table does not exist YET, so no constraint could be
 	// emitted here. The caller carries them forward as this table's
@@ -714,31 +714,8 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 		}
 	}
 
-	down := fmt.Sprintf("DROP TABLE %s;\n", spec.Table)
-	if len(fkPlan.backfill) > 0 {
-		// The back-filled constraints live on OTHER tables, so DROP TABLE
-		// does not take them with it — it fails on them instead.
-		var d strings.Builder
-		for _, r := range fkPlan.backfill {
-			fmt.Fprintf(&d, "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s_%s_fkey;\n", r.child, r.child, r.col)
-		}
-		d.WriteString(down)
-		down = d.String()
-	}
-	if spec.AppendOnly {
-		// Drop the guard explicitly before the table (DROP TABLE would cascade
-		// it, but the explicit drop keeps the down migration self-documenting
-		// and correct if the statements are ever reordered).
-		var d strings.Builder
-		fmt.Fprintf(&d, "DROP TRIGGER IF EXISTS %s_append_only ON %s;\n", spec.Table, spec.Table)
-		fmt.Fprintf(&d, "DROP FUNCTION IF EXISTS %s_forbid_mutation();\n", spec.Table)
-		d.WriteString(down)
-		down = d.String()
-	}
-
 	return EntityFromProtoMigration{
 		UpSQL:                b.String(),
-		DownSQL:              down,
 		Notes:                notes,
 		PendingRefColumns:    fkPlan.pendingColumns(),
 		BackfilledRefColumns: fkPlan.backfilledColumns(),

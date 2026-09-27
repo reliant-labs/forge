@@ -139,13 +139,6 @@ func TestE2ECRUDFixtureSatisfiesCheckConstraints(t *testing.T) {
 		[]byte(checkConstraintMigration), 0o644); err != nil {
 		t.Fatalf("write checks migration: %v", err)
 	}
-	down := "ALTER TABLE orders DROP CONSTRAINT orders_priority_check;\n" +
-		"ALTER TABLE orders DROP CONSTRAINT orders_shipping_name_check;\n" +
-		"ALTER TABLE orders DROP CONSTRAINT orders_shipping_country_check;\n" +
-		"ALTER TABLE orders DROP CONSTRAINT orders_customer_email_check;\n"
-	if err := os.WriteFile(filepath.Join(migDir, "00090_checks.down.sql"), []byte(down), 0o644); err != nil {
-		t.Fatalf("write checks down migration: %v", err)
-	}
 
 	// The lifecycle test is scaffold-once and was born against the loose
 	// schema. Clearing its ledger record is how an author asks for a fresh
@@ -208,10 +201,6 @@ func TestE2ECRUDFixtureGuardFailsLoudlyOnUninvertibleCheck(t *testing.T) {
 		`CHECK (passcode ~ '^(?=.*[A-Z])[a-zA-Z]{8,}$');` + "\n"
 	if err := os.WriteFile(filepath.Join(migDir, "00090_passcode.up.sql"), []byte(up), 0o644); err != nil {
 		t.Fatalf("write migration: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(migDir, "00090_passcode.down.sql"),
-		[]byte("ALTER TABLE credentials DROP CONSTRAINT credentials_passcode_check;\n"), 0o644); err != nil {
-		t.Fatalf("write down migration: %v", err)
 	}
 
 	crudTestPath := filepath.Join(projectDir, "internal", "handlers", "account", "handlers_crud_test.go")

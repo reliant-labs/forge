@@ -77,12 +77,12 @@ func newEntityCmd(_ *factory.Factory) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "entity <name> --from-proto <svc>[.<Message>]",
-		Short: "Birth a database entity from its already-authored proto message: the owned migration pair + the CRUD wire contract",
+		Short: "Birth a database entity from its already-authored proto message: the owned forward migration + the CRUD wire contract",
 		Long: `Birth a database entity from the proto.
 
 The proto is where an entity is declared. Author the message, mark it
 with a leading ` + "`// forge:entity`" + ` comment, and run bare ` + "`forge scaffold`" + ` —
-that births every marked message at once (migration pair + the missing
+that births every marked message at once (migration + the missing
 CRUD quintet) and generates. This command is the same birth, narrowed to
 one named message.
 

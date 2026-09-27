@@ -5,6 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{.FrontendName}} | {{.ProjectName}}</title>
     <!--
+      Runtime configuration for THIS environment: config.js assigns
+      window.__FORGE_CONFIG__, which src/lib/config_gen.ts reads. It has to
+      be a plain, blocking, classic <script> in <head> so the global exists
+      before the module bundle evaluates. A type="module" script is deferred,
+      which is exactly too late.
+
+      This is what lets one built bundle promote between environments: Vite
+      inlines import.meta.env.VITE_* at BUILD time, which freezes an artifact
+      to the env it was built for. config.js is served beside the bundle
+      instead, so a different environment is a different file, not a rebuild.
+      In dev, `forge generate` / `forge env up` write it into public/. A
+      Firebase or own-bucket deploy writes it per env. A hosted StaticSite
+      gets it from the control plane after every sync.
+
+      %BASE_URL% is Vite's `base` (always ending in "/"), so the script
+      resolves under a sub-path mount too. Vite leaves a public-dir script
+      without type="module" untouched, so this is never bundled.
+    -->
+    <script src="%BASE_URL%config.js"></script>
+    <!--
       Theme, applied BEFORE first paint.
 
       Without this the page paints the light palette, the bundle loads, an

@@ -560,6 +560,9 @@ func readNamedValidateRules(rules protoreflect.Message, c *codegen.FieldConstrai
 // recordEnum stores an enum's declared value names (declaration order)
 // under its fully-qualified name. protojson encodes enum values as
 // their names, so this list is verbatim the JSON Schema "enum" array.
+// It records each value's declared wire number alongside (EnumNumbers),
+// because a reserved or skipped number makes declaration order diverge
+// from the number protobuf-es types the field as.
 func recordEnum(sd *codegen.ServiceDef, en *protogen.Enum) {
 	fq := string(en.Desc.FullName())
 	if strings.HasPrefix(fq, "google.protobuf.") {
@@ -572,10 +575,16 @@ func recordEnum(sd *codegen.ServiceDef, en *protogen.Enum) {
 		return
 	}
 	vals := make([]string, 0, len(en.Values))
+	nums := make([]int32, 0, len(en.Values))
 	for _, v := range en.Values {
 		vals = append(vals, string(v.Desc.Name()))
+		nums = append(nums, int32(v.Desc.Number()))
 	}
 	sd.Enums[fq] = vals
+	if sd.EnumNumbers == nil {
+		sd.EnumNumbers = make(map[string][]int32)
+	}
+	sd.EnumNumbers[fq] = nums
 }
 
 // extractMessageFields populates the Messages map with field definitions for a message.

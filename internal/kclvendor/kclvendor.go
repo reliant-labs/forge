@@ -69,6 +69,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/checksums"
 	forgekcl "github.com/reliant-labs/forge/kcl"
 )
 
@@ -281,12 +282,13 @@ func EnsureVendorDep(kclModPath, projectDir string) (Result, error) {
 	if out == string(data) {
 		return Result{}, nil
 	}
+	checksums.RecordPreWriteAbs(kclModPath)
 	if err := os.WriteFile(kclModPath, []byte(out), 0o644); err != nil {
 		return Result{}, fmt.Errorf("write %s: %w", kclModPath, err)
 	}
 	// The sibling lock pins the previous resolution; it is derived
 	// state, so drop it on a source swap and let kpm rebuild it.
-	_ = os.Remove(filepath.Join(filepath.Dir(kclModPath), "kcl.mod.lock"))
+	_ = checksums.RemoveJournaled(filepath.Join(filepath.Dir(kclModPath), "kcl.mod.lock"))
 	return Result{Changed: true}, nil
 }
 
@@ -530,6 +532,7 @@ func Materialize(projectDir string, allowDowngrade bool) (changed bool, err erro
 		if merr := os.MkdirAll(filepath.Dir(target), 0o755); merr != nil {
 			return merr
 		}
+		checksums.RecordPreWriteAbs(target)
 		if werr := os.WriteFile(target, src, 0o644); werr != nil {
 			return werr
 		}
@@ -558,7 +561,7 @@ func Materialize(projectDir string, allowDowngrade bool) (changed bool, err erro
 				return nil
 			}
 			if _, keep := want[slashRel]; !keep {
-				if rmErr := os.Remove(path); rmErr == nil {
+				if rmErr := checksums.RemoveJournaled(path); rmErr == nil {
 					changed = true
 				}
 			}
@@ -586,6 +589,7 @@ func Materialize(projectDir string, allowDowngrade bool) (changed bool, err erro
 		return false, nil
 	}
 	if stampErr != nil || !bytes.Equal(existingStamp, stamp) {
+		checksums.RecordPreWriteAbs(stampPath)
 		if werr := os.WriteFile(stampPath, stamp, 0o644); werr != nil {
 			return changed, fmt.Errorf("write %s: %w", StampFileName, werr)
 		}

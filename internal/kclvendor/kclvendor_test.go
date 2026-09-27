@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -519,6 +520,60 @@ func TestMaterialize_IdempotentRefreshesDriftAndDeletesStrays(t *testing.T) {
 	}
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Errorf("kpm lock must be tolerated, got %v", err)
+	}
+}
+
+// TestMaterialize_JournalsForRollback: a `forge generate` that fails after
+// the vendor sync must hand .forge-kcl/ back exactly as it found it. The
+// vendor sync wrote with bare os.WriteFile / os.Remove, invisible to the
+// rollback journal, so a failed run reported "no forge-written files needed
+// reverting (tree is unchanged)" while leaving the vendored schema rewritten,
+// a stray deleted and the version stamp moved.
+func TestMaterialize_JournalsForRollback(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Materialize(dir, false); err != nil {
+		t.Fatalf("seed materialize: %v", err)
+	}
+	vendor := filepath.Join(dir, VendorDirName)
+	schemaPath := filepath.Join(vendor, "schema.k")
+	strayPath := filepath.Join(vendor, "stale.k")
+	stampPath := filepath.Join(vendor, StampFileName)
+	for path, body := range map[string]string{
+		schemaPath: "# pre-run schema\n",
+		strayPath:  "# pre-run stray\n",
+		stampPath:  "v0.0.0-pre-run\n",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kclMod := filepath.Join(dir, "deploy", "kcl", "kcl.mod")
+	if err := os.MkdirAll(filepath.Dir(kclMod), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kclMod, []byte(legacyGitTagKclMod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checksums.BeginRollbackJournal(dir)
+	t.Cleanup(checksums.CommitRollback)
+	if res, err := EnsureVendorDep(kclMod, dir); err != nil || !res.Changed {
+		t.Fatalf("EnsureVendorDep = %+v, %v; want a rewrite", res, err)
+	}
+	if changed, err := Materialize(dir, true); err != nil || !changed {
+		t.Fatalf("Materialize = %v, %v; want a change", changed, err)
+	}
+	checksums.RestoreRollback(dir)
+
+	for path, want := range map[string]string{
+		schemaPath: "# pre-run schema\n",
+		strayPath:  "# pre-run stray\n",
+		stampPath:  "v0.0.0-pre-run\n",
+		kclMod:     legacyGitTagKclMod,
+	} {
+		if got := readFile(t, path); got != want {
+			t.Errorf("%s after rollback = %q, want the pre-run bytes %q", filepath.Base(path), got, want)
+		}
 	}
 }
 

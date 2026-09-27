@@ -5,6 +5,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -158,6 +160,46 @@ func TestRunRuntimeProbesTheCallerResolvedAddress(t *testing.T) {
 		t.Errorf("compose infra = %q (%s), want skip — a project with no compose file "+
 			"declares no compose stack, and doctor used to FAIL a healthy host-mode stack for it",
 			infra.Status, infra.Message)
+	}
+}
+
+// A REMOTE-ONLY env (every workload on a cluster / hosted) has no subject for
+// the machine-local checks. Measured on control-plane's GKE prod: with a
+// compose file in the project, `forge env status prod` reported the
+// developer's own dev compose stack as "Compose Infra 9/9 healthy" and told
+// the reader to `forge env up` prod. Every machine-local check must SKIP and
+// say why; the project's compose file must not be consulted at all.
+func TestRunRuntimeSkipsMachineLocalChecksForARemoteOnlyEnv(t *testing.T) {
+	dir := t.TempDir()
+	// A compose file that WOULD be inspected: the skip must not depend on
+	// its absence.
+	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := New(Deps{}).RunRuntime(context.Background(), RuntimeInput{
+		ProjectName: "demo", ProjectDir: dir, Env: "prod",
+		Target: RuntimeTarget{RemoteOnly: true},
+	})
+	if err != nil {
+		t.Fatalf("RunRuntime: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, c := range report.Checks {
+		seen[c.Name] = true
+		if !machineLocalChecks[c.Name] {
+			continue
+		}
+		if c.Status != StatusSkip || !strings.Contains(c.Message, `env "prod" runs nothing on this machine`) {
+			t.Errorf("%s = %q (%s), want a skip naming the remote-only env", c.Name, c.Status, c.Message)
+		}
+	}
+	for name := range machineLocalChecks {
+		if !seen[name] {
+			t.Errorf("machine-local check %q missing from the report: a skipped check must still be listed", name)
+		}
+	}
+	if !seen[clusterWorkloadsCheckName] {
+		t.Errorf("Cluster Workloads must still run for a remote-only env: %+v", report.Checks)
 	}
 }
 

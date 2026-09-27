@@ -43,8 +43,16 @@ const envStatusCheckTimeout = 15 * time.Second
 //     binds pprof on its own listener, so it is never the HTTP port.
 //
 // Both fields stay empty when nothing is up, which is the honest answer.
+//
+// RemoteOnly is a fact about the render, not the probe: nothing the env
+// declares runs on this machine — the SAME predicate that decides whether it
+// gets a port block (entitiesTargetThisMachine), so the two cannot disagree
+// about which envs are local. A frontend the developer may still dev-serve
+// (`forge env up prod --target reliant-web`) does not make an env local: that
+// preview is not the stack the machine-local checks probe, and its own row in
+// the status table already reports whether it is listening.
 func runtimeTargetFor(e *KCLEntities, rows []upServiceRow) doctor.RuntimeTarget {
-	var t doctor.RuntimeTarget
+	t := doctor.RuntimeTarget{RemoteOnly: e != nil && !entitiesTargetThisMachine(e)}
 	for _, r := range rows {
 		if r.Kind != "host" || !r.Listening || r.Port <= 0 {
 			continue

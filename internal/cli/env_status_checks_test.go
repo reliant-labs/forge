@@ -62,6 +62,38 @@ func TestRuntimeTargetIsEmptyWhenNothingIsListening(t *testing.T) {
 	}
 }
 
+// RemoteOnly is decided by what the env DECLARES runs on this machine. A
+// cluster-only env with a dev-servable frontend is still remote-only: the
+// frontend preview is not the stack the machine-local checks probe.
+func TestRuntimeTargetRemoteOnlyFollowsTheDeclaration(t *testing.T) {
+	cases := map[string]struct {
+		services []ServiceEntity
+		want     bool
+	}{
+		"remote cluster + simple-backend only": {[]ServiceEntity{
+			{Name: "api", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{Cluster: "gke_acme_us-central1_prod"}}},
+			{Name: "sb", Deploy: DeployConfigEntity{Type: "simple-backend", SimpleBackend: &SimpleBackendSpec{Cluster: "gke_acme_us-central1_prod"}}},
+		}, true},
+		"a local k3d cluster service": {[]ServiceEntity{
+			{Name: "api", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{Cluster: "k3d-acme"}}},
+		}, false},
+		"a host service":   {[]ServiceEntity{{Name: "api", Deploy: DeployConfigEntity{Type: "host"}}}, false},
+		"a compose unit":   {[]ServiceEntity{{Name: "pg", Deploy: DeployConfigEntity{Type: "compose"}}}, false},
+		"a host-infra one": {[]ServiceEntity{{Name: "bao", Deploy: DeployConfigEntity{Type: "host-infra"}}}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := &KCLEntities{Services: tc.services, Frontends: []FrontendEntity{{Name: "web", Port: 3100}}}
+			if got := runtimeTargetFor(e, nil).RemoteOnly; got != tc.want {
+				t.Errorf("RemoteOnly = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if runtimeTargetFor(nil, nil).RemoteOnly {
+		t.Error("RemoteOnly with no render must be false: an unknown env is not proven remote")
+	}
+}
+
 func TestPprofPortFromAddr(t *testing.T) {
 	cases := map[string]string{
 		":6060":            "6060",

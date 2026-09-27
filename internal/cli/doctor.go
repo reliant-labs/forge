@@ -111,7 +111,9 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	d := doctor.New(doctor.Deps{})
+	// DeployShaper: the deploy checks judge each env by the path that ships
+	// it — the same one `forge ci validate-kcl` wires, so the two agree.
+	d := doctor.New(doctor.Deps{DeployShaper: deployShapeOf})
 
 	if !jsonOutput {
 		fmt.Printf("\n  Checking the %s project...\n\n", store.Meta().Name)

@@ -34,7 +34,7 @@ func TestRenderDeployEnvs_PassesTheEnvNameAsAKCLOption(t *testing.T) {
 	writeEnvProbeModule(t, projectDir, "e2e")
 	writeEnvProbeModule(t, projectDir, "prod")
 
-	renders := renderDeployEnvs(projectDir)
+	renders := renderDeployEnvs(projectDir, nil)
 	if len(renders) != 2 {
 		t.Fatalf("expected both env packages to render, got %d", len(renders))
 	}

@@ -130,6 +130,11 @@ func newCIValidateKCLCmd() *cobra.Command {
 			"the properties that selection depends on: a `manifests` root exists, every\n" +
 			"document under it carries apiVersion + kind, and no other top-level key\n" +
 			"hides k8s objects no deploy would ever apply.\n\n" +
+			"A HOSTED env (its Bundle declares control_plane and deploys tiers through\n" +
+			"it) renders no manifests by design — the control plane runs it. It is\n" +
+			"judged by its own deploy path instead: every workload must be a tier the\n" +
+			"control plane would admit (the same plan `forge env deploy` runs, minus\n" +
+			"the release and the RPCs), and it must render no k8s object nothing applies.\n\n" +
 			"Shares its implementation with `forge doctor --signal deploy`, so CI and\n" +
 			"the doctor cannot disagree about whether a project can be deployed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -151,7 +156,11 @@ func newCIValidateKCLCmd() *cobra.Command {
 			}
 			fmt.Printf("Validating %s ...\n", strings.Join(envs, ", "))
 
-			res := doctor.CheckDeployManifests(cmd.Context(), &doctor.Environment{ProjectDir: projectDir})
+			// The shaper is what lets a HOSTED env pass: it is judged by the
+			// deploy path that ships it (the control plane admits its tiers)
+			// rather than failed for the empty manifest stream it renders by
+			// design.
+			res := doctor.CheckDeployManifests(cmd.Context(), &doctor.Environment{ProjectDir: projectDir, DeployShaper: deployShapeOf})
 			switch res.Status {
 			case doctor.StatusFail:
 				fmt.Fprintf(os.Stderr, "❌ %s\n", res.Message)

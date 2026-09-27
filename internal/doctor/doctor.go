@@ -104,6 +104,11 @@ type Environment struct {
 	// discovers no host ports of its own; see [RuntimeTarget].
 	Target RuntimeTarget
 
+	// DeployShaper classifies each rendered environment the way the deploy
+	// path does (see [DeployShaper]). Nil judges every environment as a
+	// kubectl-applied render.
+	DeployShaper DeployShaper
+
 	mu    sync.RWMutex
 	Ports map[string]string // "app:8080" -> "0.0.0.0:55010"
 

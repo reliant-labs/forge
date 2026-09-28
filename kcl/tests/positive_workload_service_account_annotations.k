@@ -21,8 +21,7 @@ _k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", regist
 
 output = forge.render(forge.Bundle {
     project = "demo"
-    runtime = forge.OnCluster {target = _k3d}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", image = "demo", serviceAccountAnnotations = {"${_WI}" = "api@p.iam.gserviceaccount.com"}}
         fw.Workload {
             name = "reaper"
@@ -39,7 +38,7 @@ output = forge.render(forge.Bundle {
             serviceAccountAnnotations = {"${_WI}" = "ctl@p.iam.gserviceaccount.com", "eks.amazonaws.com/role-arn" = "arn:aws:iam::1:role/raw"}
         }
         fw.Workload {name = "bare", image = "demo"}
-    ]
+    ]]
 })
 _spec = {m.metadata.name: m.spec for m in output.manifests if m.kind == "Workload"}
 

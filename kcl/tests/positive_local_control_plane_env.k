@@ -16,8 +16,7 @@ _bundle = forge.Bundle {
     env = "dev"
     control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}
     secret_provider = forge.HostedSecrets {}
-    runtime = forge.OnHost {runner = "go-run"}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnHost {runner = "go-run"}} if not _w.runtime else _w for _w in [
         fw.Workload {
             name = "api"
             build = forge.GoBuild {cmd = "./cmd/hounders"}
@@ -25,7 +24,7 @@ _bundle = forge.Bundle {
             env = {STRIPE_SECRET_KEY = forge.SecretRef {name = "app-secrets", key = "STRIPE_SECRET_KEY"}}
         }
         fw.Workload {name = "postgres", runtime = forge.OnCompose {service = "postgres"}}
-    ]
+    ]]
 }
 
 output = forge.render(_bundle)

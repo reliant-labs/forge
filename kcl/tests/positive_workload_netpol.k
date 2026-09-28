@@ -23,13 +23,12 @@ _prod = forge.ClusterTarget {cluster = "gke-prod", namespace = "demo-prod", regi
 
 output = forge.render(forge.Bundle {
     project = "demo"
-    runtime = forge.OnCluster {target = _prod}
     network_policy = forge.NetworkPolicy {
         egress_ports = [443, 5432]
         telemetry_namespace = "observability"
         ingress_namespace = "envoy-gateway-system"
     }
-    workloads = [fw.Workload {name = "api", image = "demo", ports = [fw.Port {name = "http", port = 8080, expose = True}]}]
+    workloads = [_w | {runtime = forge.OnCluster {target = _prod}} if not _w.runtime else _w for _w in [fw.Workload {name = "api", image = "demo", ports = [fw.Port {name = "http", port = 8080, expose = True}]}]]
 })
 
 assert_declared_egress = output.network_policy.egress_ports == [443, 5432]
@@ -38,5 +37,5 @@ assert_declared_ingress = output.network_policy.ingress_namespace == "envoy-gate
 assert_no_kcl_network_policies = len([m for m in output.manifests if m.kind == "NetworkPolicy"]) == 0
 
 # An env that declares none gets no env bundle (Context.Network nil).
-_bare = forge.render(forge.Bundle {project = "demo", runtime = forge.OnCluster {target = _prod}, workloads = []})
+_bare = forge.render(forge.Bundle {project = "demo", cluster_target = _prod, workloads = []})
 assert_undeclared_is_absent = "network_policy" not in _bare or _bare.network_policy == None

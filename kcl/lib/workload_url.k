@@ -44,7 +44,7 @@ AFTER the render, so the render cannot know it. Declare `listen_ports =
 resolve = lambda name: str, bundle: any, from_host: str = "localhost" -> str {
     _route_urls = [u for u in [_route_url(r, bundle) for r in (bundle.http_routes + bundle.grpc_routes) if r.service == name] if u]
     _ws = [w for w in bundle.workloads if w.name == name]
-    _rt = (_ws[0].runtime if _ws[0].runtime else bundle.runtime) if _ws else Undefined
+    _rt = _ws[0].runtime if _ws else Undefined
     _domains = [d for p in (_ws[0].ports or []) if p.expose for d in (p.domains or [])] \
         if _ws and _rt and _rt.type == "cluster" else []
     _host_ports = _rt.listen_ports if _ws and _rt and _rt.type == "host" and _rt.listen_ports else []

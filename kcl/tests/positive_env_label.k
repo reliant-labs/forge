@@ -46,16 +46,14 @@ manifests = forge.render(forge.Bundle {
     project = "myapp"
     env = "dev-k8s"
     cluster_target = _target
-    runtime = forge.OnCluster {target = _target}
-    workloads = _workloads
+    workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in _workloads]
     manifests = [forge.Manifests {objects = _raw}]
 }).manifests
 
 plain_manifests = forge.render(forge.Bundle {
     project = "myapp"
     cluster_target = _target
-    runtime = forge.OnCluster {target = _target}
-    workloads = _workloads
+    workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in _workloads]
     manifests = [forge.Manifests {objects = _raw}]
 }).manifests
 

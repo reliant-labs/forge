@@ -14,7 +14,6 @@ _build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
 output = forge.render(forge.Bundle {
     project = "acme"
     env = "dev"
-    runtime = forge.OnHost {}
     control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}
     secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
     workloads = [
@@ -25,7 +24,7 @@ output = forge.render(forge.Bundle {
             ports = [fw.Port {name = "http", port = 8080, expose = True}]
             runtime = forge.OnHost {runner = "air", air_config = ".air.toml", listen_ports = [8080]}
         }
-        fw.Workload {name = "migrate", kind = "job", build = _build, args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL]}
+        fw.Workload {name = "migrate", kind = "job", build = _build, args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL], runtime = forge.OnHost {}}
         fw.Workload {name = "nats", runtime = forge.OnCompose {}}
         fw.Workload {
             name = "search"

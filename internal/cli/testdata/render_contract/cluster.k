@@ -14,7 +14,6 @@ _build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
 output = forge.render(forge.Bundle {
     project = "acme"
     env = "dev"
-    runtime = forge.OnCluster {target = _k3d}
     network_policy = forge.NetworkPolicy {}
     workloads = [
         fw.Workload {
@@ -28,8 +27,9 @@ output = forge.render(forge.Bundle {
                 API_KEY = forge.SecretRef {name = "acme-secrets", key = "api_key", optional = True}
                 POD_NAME = forge.FieldRef {path = "metadata.name"}
             }
+            runtime = forge.OnCluster {target = _k3d}
         }
-        fw.Workload {name = "migrate", kind = "job", build = _build, args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL]}
+        fw.Workload {name = "migrate", kind = "job", build = _build, args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL], runtime = forge.OnCluster {target = _k3d}}
         fw.Workload {
             name = "nightly"
             kind = "cron"
@@ -37,8 +37,9 @@ output = forge.render(forge.Bundle {
             args = ["sweep"]
             schedule = "@daily"
             namespacedRBAC = [fw.PolicyRule {apiGroups = [""], resources = ["configmaps"], verbs = ["list", "delete"]}]
+            runtime = forge.OnCluster {target = _k3d}
         }
-        fw.Workload {name = "nats", image = "docker.io/library/nats:2.10", ports = [fw.Port {name = "client", port = 4222}]}
+        fw.Workload {name = "nats", image = "docker.io/library/nats:2.10", ports = [fw.Port {name = "client", port = 4222}], runtime = forge.OnCluster {target = _k3d}}
         fw.Workload {
             name = "workspace"
             kind = "operator"
@@ -47,6 +48,7 @@ output = forge.render(forge.Bundle {
             crds = ["Workspace"]
             leaderElection = True
             clusterRBAC = [fw.PolicyRule {apiGroups = ["acme.dev"], resources = ["workspaces"], verbs = ["get", "list", "watch"]}]
+            runtime = forge.OnCluster {target = _k3d}
         }
     ]
     databases = [forge.ManagedDatabase {name = "db"}]

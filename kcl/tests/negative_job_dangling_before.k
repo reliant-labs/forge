@@ -20,8 +20,7 @@ _t = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry
 
 output = forge.render(forge.Bundle {
     project = "demo"
-    runtime = forge.OnCluster {target = _t}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _t}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", image = "demo"}
         fw.Workload {
             kind = "job"
@@ -31,5 +30,5 @@ output = forge.render(forge.Bundle {
             # `apiserver` does not exist — the workload is called `api`.
             before = ["apiserver"]
         }
-    ]
+    ]]
 })

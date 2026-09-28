@@ -402,8 +402,7 @@ _worker = fw.Workload {
 
 output = forge.render(forge.Bundle {
     project = "proj"
-    runtime = forge.OnCluster {target = _target}
-    workloads = [_svc, _worker]
+    workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in [_svc, _worker]]
 })
 _rec = {m.metadata.name: m.spec for m in output.manifests if m.kind == "Workload"}
 _env = {e.name: e for e in _rec["demo"].env}

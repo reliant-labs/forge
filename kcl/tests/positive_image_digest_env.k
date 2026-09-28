@@ -25,15 +25,14 @@ _target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry 
 
 output = forge.render(forge.Bundle {
     project = "cp"
-    runtime = forge.OnCluster {target = _target}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "control-plane", image = "control-plane"}
         fw.Workload {name = "reliant-api-server", image = "reliant", args = ["api"]}
         fw.Workload {name = "reliant-temporal-worker", image = "reliant", args = ["worker"]}
         fw.Workload {name = "no-digest", image = "no-digest"}
         fw.Workload {name = "sidecar", image = "sidecar:v9.9.9"}
         fw.Workload {name = "litellm", image = "ghcr.io/berriai/litellm:main-v1.0"}
-    ]
+    ]]
 })
 
 _img = {m.metadata.name: m.spec.image for m in output.manifests if m.kind == "Workload"}

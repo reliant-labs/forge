@@ -1,5 +1,13 @@
 {
   "output": {
+    "cluster_target": {
+      "cluster": "k3d-acme",
+      "domain": null,
+      "image_pull_secrets": [],
+      "namespace": "acme-dev",
+      "platform": null,
+      "registry": "localhost:5050"
+    },
     "clusters": [],
     "config_maps": [],
     "control_plane": {
@@ -63,7 +71,6 @@
         "metadata": {
           "labels": {
             "app.kubernetes.io/managed-by": "forge",
-            "forge.dev/cluster": "k3d-acme",
             "forge.dev/env": "dev",
             "pod-security.kubernetes.io/audit": "restricted",
             "pod-security.kubernetes.io/enforce": "restricted",

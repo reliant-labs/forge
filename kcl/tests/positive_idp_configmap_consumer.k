@@ -20,8 +20,7 @@ _k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", regist
 
 output = forge.render(forge.Bundle {
     project = "demo"
-    runtime = forge.OnCluster {target = _k3d}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [
         fw.Workload {
             kind = "job"
             name = "idp-provision"
@@ -39,7 +38,7 @@ output = forge.render(forge.Bundle {
                 JWT_AUDIENCE = forge.ConfigMapRef {name = _CONFIGMAP, key = "audience"}
             }
         }
-    ]
+    ]]
 })
 
 _rec = {m.metadata.name: m.spec for m in output.manifests if m.kind == "Workload"}

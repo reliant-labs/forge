@@ -40,11 +40,10 @@ _bundle = forge.Bundle {
         token_env = "ACME_CP_TOKEN"
     }
     secret_provider = forge.HostedSecrets {}
-    runtime = forge.OnHosted {}
-    workloads = [fw.Workload {
+    workloads = [_w | {runtime = forge.OnHosted {}} if not _w.runtime else _w for _w in [fw.Workload {
         name = "api"
 ` + apiFields + `
-    }]
+    }]]
 }
 
 output = forge.render(_bundle)

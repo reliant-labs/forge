@@ -37,7 +37,8 @@ Missing optional fields in the runtime/build/infra/frontend blocks project as
 
 WHAT THE LOWERING DECIDES (per workload, `_lower`):
 
-  * the RUNTIME: the workload's own, else Bundle.runtime;
+  * the RUNTIME: the workload's own. There is no env-level default: an env
+    is a list of per-workload bindings (ADR 0002 §2);
   * the IMAGE: a cluster workload's image is resolved here, against the
     target's registry, the env's tag and `-D image_digests`, so the record
     names exactly what the cluster pulls; a hosted workload carries the
@@ -84,16 +85,16 @@ _TWorkloadURLRef = tiers.WorkloadURLRef
 # Runtime resolution.
 # ---------------------------------------------------------------------------
 
-# A workload's runtime: its own, else the env default. Undefined when
-# neither is set (Bundle's check names the workload).
-_bound_runtime = lambda w: any, default: any -> any {
-    w.runtime if w.runtime else default
+# A workload's runtime: its own. Undefined when unbound (Bundle's check
+# names the workload).
+_bound_runtime = lambda w: any -> any {
+    w.runtime if w.runtime else Undefined
 }
 
-# A database runs on a cluster or on the control plane. Its own runtime,
-# else Bundle.runtime when that is one of the two.
-_db_runtime = lambda db: any, default: any -> any {
-    db.runtime if db.runtime else (default if default and default.type in ["cluster", "hosted"] else Undefined)
+# A database runs on a cluster or on the control plane: its own runtime,
+# else (Undefined) the env's primary cluster target.
+_db_runtime = lambda db: any -> any {
+    db.runtime if db.runtime else Undefined
 }
 
 # The names that occur more than once, sorted.
@@ -107,23 +108,26 @@ _env_names = lambda workloads: [any], infra: [any], frontends: [any] -> [str] {
 }
 
 # Everything that is published to the control plane.
-_hosted_names = lambda workloads: [any], databases: [any], frontends: [any], default: any -> [str] {
-    [w.name for w in workloads if _bound_runtime(w, default) and _bound_runtime(w, default).type == "hosted"] \
-        + [db.name for db in databases if _db_runtime(db, default) and _db_runtime(db, default).type == "hosted"] \
+_hosted_names = lambda workloads: [any], databases: [any], frontends: [any] -> [str] {
+    [w.name for w in workloads if w.runtime and w.runtime.type == "hosted"] \
+        + [db.name for db in databases if db.runtime and db.runtime.type == "hosted"] \
         + [f.name for f in frontends if f.deploy and f.deploy.type == "static-site" and not f.deploy.bucket]
 }
 
 # A cloud-bound workload whose build produces an image, on a target that
 # states no platform (see the Bundle check).
-_cloud_build_without_platform = lambda w: any, default: any -> bool {
-    _rt = _bound_runtime(w, default)
+_cloud_build_without_platform = lambda w: any -> bool {
+    _rt = w.runtime
     bool(_rt and _rt.type == "cluster" and not _rt.target.platform \
         and not is_local_registry(_rt.target.registry) and builds_an_image(w))
 }
 
-# The env's primary cluster target: declared, else the default runtime's.
+# The env's primary cluster target: declared, else the target of the first
+# cluster-bound workload (so an env whose workloads all bind one cluster
+# need not name it twice), else none.
 _primary_target = lambda b: Bundle -> any {
-    b.cluster_target if b.cluster_target else (b.runtime.target if b.runtime and b.runtime.type == "cluster" else Undefined)
+    _bound = [w.runtime.target for w in b.workloads if w.runtime and w.runtime.type == "cluster"]
+    b.cluster_target if b.cluster_target else (_bound[0] if _bound else Undefined)
 }
 
 # ---------------------------------------------------------------------------
@@ -226,7 +230,7 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
     assert name in _names, \
         "${where}: forge.WorkloadURL names workload '${name}', which this environment does not declare. " \
         + "Declared workloads: " + ", ".join(_names) + "."
-    _hosted = _hosted_names(bundle.workloads, [], bundle.frontends, bundle.runtime)
+    _hosted = _hosted_names(bundle.workloads, [], bundle.frontends)
     assert name in _hosted, \
         "${where}: forge.WorkloadURL names '${name}', which does not run on the hosted runtime. A hosted workload's references are resolved by the control plane against workloads IT runs, and it cannot reach a host process or a cluster you operate. Bind '${name}' to forge.OnHosted {} too, or pass its URL as a literal value."
     name
@@ -353,7 +357,7 @@ _render_runtime = lambda w: any, rt: any -> any {
 
 # One output.workloads[] entry. Runs the runtime mask first.
 _lower = lambda w: any, bundle: Bundle -> any {
-    _rt = _bound_runtime(w, bundle.runtime)
+    _rt = _bound_runtime(w)
     _bad = _mask_violations(w, _rt)
     assert len(_bad) == 0, "workload '${w.name}' cannot run on the ${_rt.type} runtime:\n  - " + "\n  - ".join(_bad)
     assert _check_built_digest(w)
@@ -525,10 +529,9 @@ _render_managed_database_record = lambda db: any, part_of: str -> any {
     }
 }
 
-# A database's placement: its runtime (or the env's cluster/hosted default),
-# else the primary cluster target.
+# A database's placement: its runtime, else the primary cluster target.
 _render_database = lambda db: any, bundle: Bundle -> any {
-    _rt = _db_runtime(db, bundle.runtime)
+    _rt = _db_runtime(db)
     _target = (_rt.target if _rt.type == "cluster" else Undefined) if _rt else _primary_target(bundle)
     {
         "name": db.name

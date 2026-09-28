@@ -21,8 +21,7 @@ _bundle = forge.Bundle {
     project = "acme"
     env = "prod"
     control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
-    runtime = forge.OnHosted {}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnHosted {}} if not _w.runtime else _w for _w in [
         fw.Workload {
             name = "api"
             image = _img
@@ -34,7 +33,7 @@ _bundle = forge.Bundle {
             storageGiB = 5
         }
         fw.Workload {name = "migrate", kind = "job", image = _img, args = ["db", "migrate", "up"]}
-    ]
+    ]]
     databases = [forge.ManagedDatabase {name = "orders", runtime = forge.OnHosted {}}]
 }
 

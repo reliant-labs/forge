@@ -25,8 +25,7 @@ _pinned = "ghcr.io/acme/api@sha256:ddddddddddddddddddddddddddddddddddddddddddddd
 output = forge.render(forge.Bundle {
     project = "demo"
     control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
-    runtime = forge.OnCluster {target = _k3d}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [
         # forge-built service, cluster
         fw.Workload {name = "api", build = _build, image = "demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
         # forge-built service, HOSTED — the Hounders case
@@ -47,7 +46,7 @@ output = forge.render(forge.Bundle {
             ports = [fw.Port {name = "http", port = 8080}]
             probes = fw.Probes {readinessPath = "/ready", livenessPath = "/live", periodSeconds = 10}
         }
-    ]
+    ]]
 })
 _p = {w.name: w.spec.probes if "probes" in w.spec else None for w in output.workloads}
 

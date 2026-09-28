@@ -63,8 +63,7 @@ _all = [
 output = forge.render(forge.Bundle {
     project = "demo"
     env = "dev"
-    runtime = forge.OnCluster {target = _k3d}
-    workloads = _all + [fw.Workload {name = "local", build = forge.GoBuild {cmd = "./cmd/demo"}, args = ["local"], runtime = forge.OnHost {}}]
+    workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in _all + [fw.Workload {name = "local", build = forge.GoBuild {cmd = "./cmd/demo"}, args = ["local"], runtime = forge.OnHost {}}]]
 })
 
 _entity = {w.name: w.spec for w in output.workloads}

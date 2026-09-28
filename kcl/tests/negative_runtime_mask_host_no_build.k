@@ -15,6 +15,5 @@ import forge.workloads as fw
 
 output = forge.render(forge.Bundle {
     project = "demo"
-    runtime = forge.OnHost {runner = "go-run"}
-    workloads = [fw.Workload {name = "worker", kind = "worker", args = ["worker"]}]
+    workloads = [_w | {runtime = forge.OnHost {runner = "go-run"}} if not _w.runtime else _w for _w in [fw.Workload {name = "worker", kind = "worker", args = ["worker"]}]]
 })

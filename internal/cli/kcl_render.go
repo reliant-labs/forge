@@ -1166,7 +1166,7 @@ func manifestServiceNames(manifests []rawManifest) []string {
 func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || string(trimmed) == "null" {
-		return RuntimeEntity{}, fmt.Errorf("workload %q: no runtime (bind one on the workload or set Bundle.runtime)", name)
+		return RuntimeEntity{}, fmt.Errorf("workload %q: no runtime (every workload in an env binds its own)", name)
 	}
 	var probe struct {
 		Type string `json:"type"`

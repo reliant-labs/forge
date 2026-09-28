@@ -10,7 +10,6 @@ import forge.workloads as fw
 output = forge.render(forge.Bundle {
     project = "acme"
     env = "dev"
-    runtime = forge.BuildOnly {}
     workloads = [
         fw.Workload {
             name = "cli"
@@ -24,6 +23,7 @@ output = forge.render(forge.Bundle {
             name = "workspace-base"
             kind = "tool"
             build = forge.DockerBuild {dockerfile = "images/base/Dockerfile"}
+            runtime = forge.BuildOnly {}
         }
     ]
 })

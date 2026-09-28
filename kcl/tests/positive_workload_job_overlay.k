@@ -23,7 +23,7 @@ _workloads = [
 ]
 
 _k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
-output = forge.render(forge.Bundle {project = "demo", runtime = forge.OnCluster {target = _k3d}, workloads = _workloads})
+output = forge.render(forge.Bundle {project = "demo", workloads = [w | {runtime = forge.OnCluster {target = _k3d}} for w in _workloads]})
 _rec = {m.metadata.name: m.spec for m in output.manifests if m.kind == "Workload"}
 
 assert_overlay_ordering_applied = _rec["provision-idp"].before == ["api"]

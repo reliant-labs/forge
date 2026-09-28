@@ -59,7 +59,7 @@ _daemon = fw.Workload {
     }
 }
 
-# An operator and a cron, cluster-bound through Bundle.runtime.
+# An operator and a cron, each bound to the cluster.
 _op = fw.Workload {
     name = "workspace-controller"
     kind = "operator"
@@ -85,8 +85,7 @@ _job = fw.Workload {
 _bundle = forge.Bundle {
     project = "myapp"
     env = "dev"
-    runtime = forge.OnCluster {target = _k3d}
-    workloads = [_admin, _proxy, _daemon, _op, _cron, _job]
+    workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [_admin, _proxy, _daemon, _op, _cron, _job]]
     frontends = [forge.Frontend {name = "admin-web", path = "frontends/admin-web"}]
     config_maps = [forge.ConfigMap {name = "myapp-dev-config", data = {"LOG_LEVEL" = "info"}}]
 }

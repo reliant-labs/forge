@@ -11,7 +11,8 @@ to a runtime with the same `|` it uses for any other refinement:
 
     wl.api | {runtime = forge.OnCluster {target = _k3d}}
 
-A workload that binds none takes `Bundle.runtime`. Its runtime-independent
+Every workload in an env states its own runtime; there is no env-level
+default, and an unbound workload is a render error naming it. Its runtime-independent
 facts (command, args, ports, env, probes, build) are never re-stated per
 runtime: the host argv is derived in Go from `build` + `args`, and the
 cluster image from the build output.
@@ -227,7 +228,9 @@ schema Workload:
     # nothing for it (a third-party image, a compose service, a sibling
     # repo's binary). There is no synthesized default.
     build?: GoBuild | DockerBuild | ShellBuild | RemoteBuild
-    # WHERE it runs. Unset: Bundle.runtime.
+    # WHERE it runs. Required by the time the env renders it: the env binds
+    # it (`wl.x | {runtime = ...}`), since the base declaration in
+    # workloads.k is runtime-independent.
     runtime?: Runtime
     # The SENSITIVE config fields this workload reads, by ENV_VAR name.
     # Pass it to the generated `config_gen.<x>ConfigEnvMap(cfg,

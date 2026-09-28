@@ -24,11 +24,10 @@ output = forge.render(forge.Bundle {
     project = "cp"
     env = "dev"
     cluster_target = _primary
-    runtime = forge.OnCluster {target = _primary}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _primary}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", build = _build, args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
         fw.Workload {name = "proxy", build = _build, args = ["proxy"], ports = [fw.Port {name = "http", port = 8081}], runtime = forge.OnCluster {target = _daemon}}
-    ]
+    ]]
     manifests = [
         forge.Manifests {objects = [
             {apiVersion = "v1", kind = "ConfigMap", metadata.name = "shared-settings", data = {a = "b"}}

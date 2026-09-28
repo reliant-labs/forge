@@ -20,12 +20,12 @@ func hostedValidateBundle(api string) string {
     env = "prod"
     control_plane = forge.ControlPlane { endpoint = "http://127.0.0.1:8090" }
     secret_provider = forge.HostedSecrets {}
-    runtime = forge.OnHosted {}
     workloads = [fw.Workload {
         name = "api"
         image = "hounders"
         build = forge.GoBuild {cmd = "./cmd/hounders", output_name = "hounders"}
         args = ["api"]
+        runtime = forge.OnHosted {}
 ` + api + `
     }]
     databases = [forge.ManagedDatabase {

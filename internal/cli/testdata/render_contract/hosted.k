@@ -13,7 +13,6 @@ _build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
 output = forge.render(forge.Bundle {
     project = "acme"
     env = "prod"
-    runtime = forge.OnHosted {}
     control_plane = forge.ControlPlane {}
     secret_provider = forge.HostedSecrets {}
     workloads = [
@@ -28,6 +27,7 @@ output = forge.render(forge.Bundle {
                 DATABASE_URL = forge.DatabaseRef {name = "db"}
                 CORS_ORIGINS = forge.WorkloadURL {workload = "web"}
             }
+            runtime = forge.OnHosted {}
         }
         fw.Workload {
             name = "migrate"
@@ -36,9 +36,10 @@ output = forge.render(forge.Bundle {
             args = ["db", "migrate", "up"]
             before = [fw.BEFORE_ALL]
             env = {DATABASE_URL = forge.DatabaseRef {name = "db"}}
+            runtime = forge.OnHosted {}
         }
     ]
-    databases = [forge.ManagedDatabase {name = "db"}]
+    databases = [forge.ManagedDatabase {name = "db", runtime = forge.OnHosted {}}]
     frontends = [forge.Frontend {
         name = "web"
         type = "vite"

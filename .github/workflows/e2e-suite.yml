@@ -242,7 +242,10 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for tool in go node npm npx kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go git migrate; do
+          # docker: TestE2ENextjsDockerfileStaticImageBuilds builds a real
+          # frontend image. ubuntu-latest ships the engine; the `docker info`
+          # below proves the daemon answers, which `command -v` cannot.
+          for tool in go node npm npx kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go git migrate docker; do
             if command -v "$tool" >/dev/null 2>&1; then
               printf '  ok       %-24s %s\n' "$tool" "$(command -v "$tool")"
             else
@@ -252,6 +255,10 @@ jobs:
           done
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::e2e suite requires ${missing[*]} — a step above did not do its job"
+            exit 1
+          fi
+          if ! docker info --format '  ok       docker daemon            {{.ServerVersion}}'; then
+            echo "::error::the docker CLI is present but no daemon answers — the image build test cannot run"
             exit 1
           fi
 

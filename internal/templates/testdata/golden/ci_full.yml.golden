@@ -79,8 +79,8 @@ jobs:
           # Single source of truth: the first frontend's package.json
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
-          node-version-file: 'frontends/web/package.json'
-          cache: 'npm'
+          node-version-file: "frontends/web/package.json"
+          cache: "npm"
           cache-dependency-path: |
             frontends/web/package-lock.json
       - name: Lint web
@@ -112,8 +112,8 @@ jobs:
           # Single source of truth: the first frontend's package.json
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
-          node-version-file: 'frontends/web/package.json'
-          cache: 'npm'
+          node-version-file: "frontends/web/package.json"
+          cache: "npm"
           cache-dependency-path: |
             frontends/web/package-lock.json
       # `npm ci` (lockfile-exact install) is CI's job, not the Taskfile's —
@@ -172,8 +172,8 @@ jobs:
           # Single source of truth: the first frontend's package.json
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
-          node-version-file: 'frontends/web/package.json'
-          cache: 'npm'
+          node-version-file: "frontends/web/package.json"
+          cache: "npm"
           cache-dependency-path: |
             frontends/web/package-lock.json
       - name: Build web
@@ -234,8 +234,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: 'frontends/web/package.json'
-          cache: 'npm'
+          node-version-file: "frontends/web/package.json"
+          cache: "npm"
           cache-dependency-path: |
             frontends/web/package-lock.json
       - name: Install web dependencies
@@ -353,8 +353,8 @@ jobs:
           # Single source of truth: the first frontend's package.json
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
-          node-version-file: 'frontends/web/package.json'
-          cache: 'npm'
+          node-version-file: "frontends/web/package.json"
+          cache: "npm"
           cache-dependency-path: |
             frontends/web/package-lock.json
       - name: NPM vulnerability check
@@ -379,9 +379,9 @@ jobs:
       - name: Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'demo:ci'
+          image-ref: "demo:ci"
           format: table
-          exit-code: '1'
+          exit-code: "1"
           severity: HIGH,CRITICAL
       - name: Build web image
         uses: docker/build-push-action@v6
@@ -395,9 +395,9 @@ jobs:
       - name: Trivy scan web
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'demo/web:ci'
+          image-ref: "demo/web:ci"
           format: table
-          exit-code: '1'
+          exit-code: "1"
           severity: HIGH,CRITICAL
 
   e2e:

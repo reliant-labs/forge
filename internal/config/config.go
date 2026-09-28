@@ -1222,7 +1222,7 @@ func (c *CIConfig) EffectivePermContents() string {
 
 // DeployConfig holds deployment PIPELINE-CONTROL settings (target_arch,
 // migration_test, concurrency, frontend_deploy) plus two inputs consumed
-// by the CI-workflow generator (generate_ci.go):
+// by the CI-workflow generator (generator.CIWorkflows):
 //
 //   - the CI provider (github/gitlab/…) lives in `ci.provider`, not here
 //     — the dead `deploy.provider` field was removed (see
@@ -1234,7 +1234,7 @@ func (c *CIConfig) EffectivePermContents() string {
 //   - `deploy.environments` supplies optional per-env auto/protection/url
 //     metadata for the generated deploy.yml. When empty, the deployable
 //     environment set is derived from the on-disk deploy/kcl/<env>/
-//     directories (buildDeployWorkflowData's ListEnvs fallback).
+//     directories (generator.CIWorkflows' promotion-ordered fallback).
 type DeployConfig struct {
 	Registry       string            `yaml:"registry,omitempty"` // image registry for the generated CI workflows; overlaps docker.registry
 	Environments   []DeployEnvConfig `yaml:"environments,omitempty"`

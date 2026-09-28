@@ -40,11 +40,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
 {{- if .FrontendPath}}
-          node-version-file: '{{.FrontendPath}}/package.json'
-          cache: 'npm'
-          cache-dependency-path: '{{.FrontendPath}}/package-lock.json'
+          node-version-file: "{{.FrontendPath}}/package.json"
+          cache: "npm"
+          cache-dependency-path: "{{.FrontendPath}}/package-lock.json"
 {{- else}}
-          node-version: '20'
+          node-version: "20"
 {{- end}}
 {{- end}}
 

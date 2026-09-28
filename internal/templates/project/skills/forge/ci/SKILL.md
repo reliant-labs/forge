@@ -20,7 +20,7 @@ without forge ever touching your additions.
 | `.github/workflows/proto-breaking.yml` | Tier-1 | `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow. |
 | `.github/workflows/build-images.yml` | Tier-1 | The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml` |
 | `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge build <env> --push` + `forge env deploy <env>`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
-| `.github/workflows/e2e.yml` | Tier-1 | E2E suite (only when `ci.e2e.enabled: true`) — docker-compose or k3d runtime |
+| `.github/workflows/e2e.yml` | Tier-1 | E2E suite, label-gated on PRs (`run-e2e`) — emitted when there is a suite to run: the generated `e2e/` harness exists, or `ci.e2e.enabled: true`. docker-compose or k3d runtime |
 | `.github/workflows/pre-commit.yml` | Tier-2 | Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after) |
 | `.github/dependabot.yml` | Tier-1 | Weekly bumps for `gomod` (root + `/gen` + each frontend), `npm` (frontend), `docker`, and `github-actions` |
 | `.github/CODEOWNERS` | Tier-2 | Starter ownership rules (one-shot scaffold; yours to edit after) |
@@ -94,9 +94,16 @@ verifying its generated code with an older forge than the one that wrote it
 The verify-generated job also installs the codegen toolchain at go.mod's
 versions — `forge tools install --force` (protoc-gen-go, protoc-gen-connect-go,
 goimports) — and runs `npm ci` in each frontend, because it regenerates the
-tree and demands identical bytes. `forge ci verify-generated` refuses to run
-when a frontend's protoc-gen-es is missing rather than certify a tree whose
-TypeScript stubs it skipped.
+tree and demands identical bytes. `npm ci` is what installs
+`@bufbuild/protoc-gen-es`, from the frontend's own devDependencies and
+lockfile: `forge tools install` never runs npm and never writes a
+frontend's `package.json` or `package-lock.json` (`--force` reinstalls the
+Go tools only). It fails, naming the edit, when a frontend's buf.gen.yaml
+runs the plugin but its package.json does not declare it. `forge ci
+verify-generated` refuses to run when a frontend's protoc-gen-es is missing
+rather than certify a tree whose TypeScript stubs it skipped, and refuses
+to regenerate over a tree an earlier step already modified — naming those
+paths as changed before `forge generate` ran, not as generated-code drift.
 
 ### Deploys go through forge
 

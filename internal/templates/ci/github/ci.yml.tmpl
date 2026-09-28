@@ -61,8 +61,8 @@ jobs:
           # Single source of truth: the first frontend's package.json
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
-          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
-          cache: 'npm'
+          node-version-file: "{{(index .Frontends 0).Path}}/package.json"
+          cache: "npm"
           cache-dependency-path: |
 {{- range .Frontends}}
             {{.Path}}/package-lock.json
@@ -103,8 +103,8 @@ jobs:
           # Single source of truth: the first frontend's package.json
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
-          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
-          cache: 'npm'
+          node-version-file: "{{(index .Frontends 0).Path}}/package.json"
+          cache: "npm"
           cache-dependency-path: |
 {{- range .Frontends}}
             {{.Path}}/package-lock.json
@@ -175,8 +175,8 @@ jobs:
           # Single source of truth: the first frontend's package.json
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
-          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
-          cache: 'npm'
+          node-version-file: "{{(index .Frontends 0).Path}}/package.json"
+          cache: "npm"
           cache-dependency-path: |
 {{- range .Frontends}}
             {{.Path}}/package-lock.json
@@ -221,8 +221,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
-          cache: 'npm'
+          node-version-file: "{{(index .Frontends 0).Path}}/package.json"
+          cache: "npm"
           cache-dependency-path: |
 {{- range .Frontends}}
             {{.Path}}/package-lock.json
@@ -311,8 +311,8 @@ jobs:
           # Single source of truth: the first frontend's package.json
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
-          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
-          cache: 'npm'
+          node-version-file: "{{(index .Frontends 0).Path}}/package.json"
+          cache: "npm"
           cache-dependency-path: |
 {{- range .Frontends}}
             {{.Path}}/package-lock.json
@@ -359,9 +359,9 @@ jobs:
       - name: Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '{{.ProjectName}}:ci'
+          image-ref: "{{.ProjectName}}:ci"
           format: table
-          exit-code: '1'
+          exit-code: "1"
           severity: HIGH,CRITICAL
 {{- end}}
 {{- if .HasFrontends}}
@@ -379,9 +379,9 @@ jobs:
       - name: Trivy scan {{.Name}}
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '{{$.ProjectName}}/{{.Name}}:ci'
+          image-ref: "{{$.ProjectName}}/{{.Name}}:ci"
           format: table
-          exit-code: '1'
+          exit-code: "1"
           severity: HIGH,CRITICAL
 {{- end}}
 {{- end}}
@@ -451,32 +451,6 @@ jobs:
         with:
           name: e2e-results
           path: test-results/
-{{- end}}
-{{- end}}
-{{- range .ExtraJobs}}
-
-  {{.Name}}:
-    name: {{.Name}}
-{{- if .Needs}}
-    needs: [{{range $i, $n := .Needs}}{{if $i}}, {{end}}{{$n}}{{end}}]
-{{- end}}
-    runs-on: {{.RunsOn | default "ubuntu-latest"}}
-    steps:
-      - uses: actions/checkout@v4
-{{- range .Steps}}
-{{- if .Uses}}
-      - name: {{.Name}}
-        uses: {{.Uses}}
-{{- if .With}}
-        with:
-{{- range $k, $v := .With}}
-          {{$k}}: '{{$v}}'
-{{- end}}
-{{- end}}
-{{- else}}
-      - name: {{.Name}}
-        run: {{.Run}}
-{{- end}}
 {{- end}}
 {{- end}}{{- define "install-forge"}}
         # The version comes from the project at run time — go.mod's forge, the

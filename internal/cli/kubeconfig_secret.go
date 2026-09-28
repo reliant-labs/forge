@@ -41,11 +41,33 @@ import (
 // network `k3d-<owner>`). Derived by the caller from the env's declared
 // clusters.
 func mintKubeconfigSecrets(ctx context.Context, secrets []KubeconfigSecretEntity, ownerNetwork, defaultNamespace string) error {
+	return mintKubeconfigSecretsMode(ctx, secrets, ownerNetwork, defaultNamespace, false)
+}
+
+// mintKubeconfigSecretsMode is mintKubeconfigSecrets with an explicit
+// dry-run. Under dryRun the phase contacts NO cluster and prints the
+// objects a real run would create — the same convention the rest of the
+// deploy path follows, so `--dry-run` is a safe way to review a credential
+// declaration before it is granted.
+func mintKubeconfigSecretsMode(ctx context.Context, secrets []KubeconfigSecretEntity, ownerNetwork, defaultNamespace string, dryRun bool) error {
 	if len(secrets) == 0 {
 		return nil
 	}
-	fmt.Printf("\n[up] kubeconfig phase — minting %d cross-cluster kubeconfig(s)\n", len(secrets))
+	verb := "minting"
+	if dryRun {
+		verb = "would mint"
+	}
+	fmt.Printf("\n[up] kubeconfig phase — %s %d cross-cluster kubeconfig(s)\n", verb, len(secrets))
 	for i := range secrets {
+		if dryRun {
+			if secrets[i].ServiceAccount != nil {
+				fmt.Print(describeServiceAccountMint(secrets[i], defaultNamespace))
+				continue
+			}
+			fmt.Printf("  [dry-run] kubeconfig Secret %s (target=%s, reachability=%s)\n",
+				secrets[i].Name, secrets[i].TargetCluster, secrets[i].Reachability)
+			continue
+		}
 		if err := mintOneKubeconfigSecret(ctx, secrets[i], ownerNetwork, defaultNamespace); err != nil {
 			return fmt.Errorf("mint kubeconfig secret %q: %w", secrets[i].Name, err)
 		}
@@ -53,7 +75,50 @@ func mintKubeconfigSecrets(ctx context.Context, secrets []KubeconfigSecretEntity
 	return nil
 }
 
+// mintDeployKubeconfigSecrets runs the mint on the DEPLOY path, for the
+// declarations that belong there: the ones that mint their own credential.
+//
+// `forge env deploy` is how a cloud env ships — its clusters already exist,
+// so it never runs `env up`'s cluster phase. A k3d in-network declaration is
+// deliberately NOT handled here: it resolves a docker container address on
+// the operator's machine, which is an `env up` concern and would fail (or,
+// worse, resolve something unrelated) during a cloud deploy.
+func mintDeployKubeconfigSecrets(ctx context.Context, entities *KCLEntities, defaultNamespace string, dryRun bool) error {
+	if entities == nil {
+		return nil
+	}
+	var minted []KubeconfigSecretEntity
+	for _, k := range entities.KubeconfigSecrets {
+		if k.ServiceAccount != nil {
+			minted = append(minted, k)
+		}
+	}
+	return mintKubeconfigSecretsMode(ctx, minted, "", defaultNamespace, dryRun)
+}
+
 func mintOneKubeconfigSecret(ctx context.Context, k KubeconfigSecretEntity, ownerNetwork, defaultNamespace string) error {
+	// A declared ServiceAccount switches the whole credential model: forge
+	// MINTS a token on the target instead of copying the operator's
+	// credential out of their kubeconfig. That is the only path that works
+	// for a cluster whose kubeconfig authenticates with an exec plugin
+	// (GKE/EKS/AKS) — see kubeconfig_serviceaccount.go.
+	if k.ServiceAccount != nil {
+		return mintServiceAccountKubeconfig(ctx, k, defaultNamespace)
+	}
+	// Without one, the mint below COPIES the credential from `k3d
+	// kubeconfig get`, so it can only address a k3d cluster. Naming a
+	// target_context means the target is something else, and copying that
+	// context's credential would produce a kubeconfig no pod can use (an
+	// exec plugin, or a cert file that exists only on this machine).
+	// Refuse with the fix rather than mint something inert.
+	if strings.TrimSpace(k.TargetContext) != "" {
+		return fmt.Errorf(
+			"KubeconfigSecret %q sets target_context %q but declares no service_account: "+
+				"forge can only COPY a credential for a k3d cluster. For any other cluster it must MINT one — "+
+				"declare service_account (a ServiceAccount + rules forge creates on the target) so the minted "+
+				"kubeconfig carries an inline bearer token a pod can actually present",
+			k.Name, k.TargetContext)
+	}
 	key := k.Key
 	if key == "" {
 		key = "kubeconfig"

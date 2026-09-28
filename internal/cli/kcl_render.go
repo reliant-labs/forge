@@ -292,6 +292,44 @@ type KubeconfigSecretEntity struct {
 	Key           string `json:"key,omitempty"`
 	Namespace     string `json:"namespace,omitempty"`
 	Reachability  string `json:"reachability,omitempty"`
+
+	// TargetContext is the kubectl context addressing the target
+	// cluster. Empty means the k3d derivation (`k3d-<TargetCluster>`,
+	// resolved via `k3d kubeconfig get`). Set, it names a context in the
+	// operator's own kubeconfig — which is how a non-k3d cluster (GKE)
+	// becomes addressable at all.
+	TargetContext string `json:"target_context,omitempty"`
+
+	// ServiceAccount, when non-nil, switches the mint from COPYING the
+	// operator's credential to MINTING one on the target. See
+	// KubeconfigServiceAccountEntity.
+	ServiceAccount *KubeconfigServiceAccountEntity `json:"service_account,omitempty"`
+}
+
+// KubeconfigServiceAccountEntity mirrors kcl/schema.k's
+// KubeconfigServiceAccount — the ServiceAccount + RBAC + long-lived token
+// forge converges ON THE TARGET cluster so the minted kubeconfig carries a
+// credential a POD can present.
+//
+// This is the whole of defect F1b: a GKE kubeconfig authenticates with an
+// `exec` plugin that resolves only on the operator's machine, so copying it
+// into a Secret produces a kubeconfig no pod can use. Minting sidesteps the
+// operator's credential entirely.
+type KubeconfigServiceAccountEntity struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	// Namespaces, when non-empty, binds Rules as a Role in each listed
+	// namespace instead of one cluster-wide ClusterRole.
+	Namespaces []string                     `json:"namespaces,omitempty"`
+	Rules      []KubeconfigPolicyRuleEntity `json:"rules"`
+}
+
+// KubeconfigPolicyRuleEntity mirrors kcl/schema.k's KubeconfigPolicyRule — one
+// rbac.authorization.k8s.io/v1 PolicyRule.
+type KubeconfigPolicyRuleEntity struct {
+	APIGroups []string `json:"api_groups,omitempty"`
+	Resources []string `json:"resources"`
+	Verbs     []string `json:"verbs"`
 }
 
 // GatewayEntity mirrors the kcl/schema.k Gateway. Listeners are inlined.

@@ -774,6 +774,19 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		return err
 	}
 
+	// Minted kubeconfig Secrets, BEFORE the workloads that mount them roll
+	// out. `env up` mints at the cluster→deploy boundary, which covers dev
+	// and e2e; a cloud env is deployed with `env deploy` against clusters
+	// that already exist and never runs that phase, so the mint has to
+	// happen here too or a cloud consumer's Secret is simply never created.
+	//
+	// Only the MINTING declarations run here: a k3d in-network mint
+	// resolves a docker container address, which is meaningless on the
+	// deploy path and stays owned by `env up`.
+	if err := mintDeployKubeconfigSecrets(ctx, entities, namespace, dryRun); err != nil {
+		return fmt.Errorf("kubeconfig secrets: %w", err)
+	}
+
 	// When no K8sCluster groups are present, the rendered set carries
 	// only external / compose / host / build-only — nothing to apply
 	// via the cluster pipeline. Skip the check above (no namespace)

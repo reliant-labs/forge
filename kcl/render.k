@@ -1208,6 +1208,19 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
         "key": k.key
         "namespace": k.namespace if k.namespace else None
         "reachability": k.reachability
+        "target_context": k.target_context if k.target_context else None
+        "service_account": {
+            "name": k.service_account.name
+            "namespace": k.service_account.namespace
+            "namespaces": k.service_account.namespaces
+            "rules": [
+                {
+                    "api_groups": r.api_groups
+                    "resources": r.resources
+                    "verbs": r.verbs
+                } for r in k.service_account.rules
+            ]
+        } if k.service_account else None
     }
 }
 

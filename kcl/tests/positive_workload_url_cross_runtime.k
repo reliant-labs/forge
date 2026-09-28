@@ -9,6 +9,10 @@ A reference resolves by WHERE THE REFERENCING WORKLOAD RUNS, not env-wide
     Gateway listener, a frontend's dev port. The record and the entity carry
     the VALUE, never the reference (pkg/deploy refuses a reference on a
     cluster record).
+  * the HOST a cluster referrer dials for a host / compose / frontend
+    target is its cluster target's `host_gateway` (host.k3d.internal by
+    default): inside a pod, localhost is the pod itself. A host referrer
+    dials localhost.
   * hosted referrer → the reference is KEPT as {workloadURL: {name}} in the
     published spec; the control plane resolves it against workloads IT runs
     (hosted → hosted), and re-resolves when a hostname moves.
@@ -85,12 +89,13 @@ _rec_env = lambda w: str -> {str:} {
     {e.name: e for e in [m for m in output.manifests if m.kind == "Workload" and m.metadata.name == w][0].spec.env}
 }
 
-# cluster → host: http://localhost:<listen port>
-assert_cluster_to_host = _env("admin-api")["API_URL"].value == "http://localhost:8085"
-# cluster → frontend: http://localhost:<dev port>
-assert_cluster_to_frontend = _env("admin-api")["CORS_ORIGINS"].value == "http://localhost:5173"
+# cluster → host: http://<host_gateway>:<listen port> — a pod's localhost
+# is the pod.
+assert_cluster_to_host = _env("admin-api")["API_URL"].value == "http://host.k3d.internal:8085"
+# cluster → frontend (dev-served on the host): the same gateway.
+assert_cluster_to_frontend = _env("admin-api")["CORS_ORIGINS"].value == "http://host.k3d.internal:5173"
 # The record carries the value, never the reference.
-assert_record_resolved = _rec_env("admin-api")["API_URL"].value == "http://localhost:8085"
+assert_record_resolved = _rec_env("admin-api")["API_URL"].value == "http://host.k3d.internal:8085"
 _rec_entries = [v for _, v in _rec_env("admin-api")]
 assert_record_no_ref = len(_rec_entries) == 2 and all e in _rec_entries { "workloadURL" not in e }
 # host → cluster (behind a route): the route URL through its listener.
@@ -98,3 +103,16 @@ assert_host_to_routed_cluster = _env("worker")["ADMIN_URL"].value == "http://acm
 # hosted → hosted: the reference is kept for the control plane.
 assert_hosted_keeps_ref = _env("public-api")["PEER_URL"].workloadURL.name == "public-api-2"
 assert_hosted_no_value = "value" not in _env("public-api")["PEER_URL"]
+
+# A target that names its own host_gateway (a docker-desktop cluster, a VM)
+# is honoured: the gateway is a fact about the CLUSTER, not a forge guess.
+_dd = forge.ClusterTarget {cluster = "docker-desktop", namespace = "acme-dev", registry = "localhost:5000", host_gateway = "host.docker.internal"}
+_dd_out = forge.render(forge.Bundle {
+    project = "acme"
+    workloads = [
+        fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/acme"}, args = ["api"], runtime = forge.OnHost {listen_ports = [8085]}}
+        fw.Workload {name = "admin-api", image = "admin", env = {API_URL = forge.WorkloadURL {workload = "api"}}, runtime = forge.OnCluster {target = _dd}}
+    ]
+})
+_dd_env = [w for w in _dd_out.workloads if w.name == "admin-api"][0].spec.env
+assert_custom_host_gateway = _dd_env[0].value == "http://host.docker.internal:8085"

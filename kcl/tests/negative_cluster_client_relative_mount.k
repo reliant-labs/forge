@@ -6,7 +6,10 @@ mount_path, so a relative mount_path would yield a relative
 kubeconfigPath the workload can't resolve. The check block rejects it.
 """
 
-# expect: Volume.mount_path must be absolute
+# The refusal that fires is the generated Volume's (the derived `volume`
+# default is built before ClusterClient's own check block runs), and it names
+# the same rule: a mount path must be absolute.
+# expect: mountPath must match ^/
 
 import forge
 

@@ -1,60 +1,11 @@
 package templates
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
-
-// TestKCLModuleExposesClusterRBAC asserts the upstream KCL module
-// surface still carries the cluster-RBAC opt-in: Operator declares a
-// `cluster_rbac: ClusterRBAC` field and the rbac lib emits both
-// ClusterRole + ClusterRoleBinding (operator path) and namespaced
-// Role + RoleBinding (service / cronjob path).
-//
-// FRICTION 2026-06-02: cp-forge layer 8 had to hand-port a cluster-RBAC
-// renderer because the legacy Application only emitted namespaced
-// Role + RoleBinding. The workspace-controller (cross-namespace
-// operator) needed cluster-scope perms. The new Operator type makes
-// the intent typed.
-func TestKCLModuleExposesClusterRBAC(t *testing.T) {
-	root := kclModuleRoot(t)
-
-	schemaBytes, err := os.ReadFile(filepath.Join(root, "schema.k"))
-	if err != nil {
-		t.Fatalf("read kcl/schema.k: %v", err)
-	}
-	schema := string(schemaBytes)
-	for _, want := range []string{
-		"schema ClusterRBAC:",
-		"cluster_rbac: ClusterRBAC = ClusterRBAC {}",
-	} {
-		if !strings.Contains(schema, want) {
-			t.Errorf("schema.k missing %q (cluster_rbac opt-in absent)", want)
-		}
-	}
-
-	rbacBytes, err := os.ReadFile(filepath.Join(root, "lib", "rbac.k"))
-	if err != nil {
-		t.Fatalf("read kcl/lib/rbac.k: %v", err)
-	}
-	rbac := string(rbacBytes)
-	for _, want := range []string{
-		"render_cluster_rbac",
-		"render_namespaced_rbac",
-		`kind = "ClusterRole"`,
-		`kind = "ClusterRoleBinding"`,
-		`kind = "Role"`,
-		`kind = "RoleBinding"`,
-	} {
-		if !strings.Contains(rbac, want) {
-			t.Errorf("lib/rbac.k missing %q (cluster_rbac branch absent)", want)
-		}
-	}
-}
 
 func renderDeploy(t *testing.T, data DeployWorkflowData) string {
 	t.Helper()

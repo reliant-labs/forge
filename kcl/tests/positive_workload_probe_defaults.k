@@ -1,12 +1,10 @@
 """
 Positive test — the probe DEFAULT is written by the lowering, per ADR 0002 §5:
 
-  * a SERVICE that forge BUILDS gets a `probes` block in its spec. The
-    lowering knows `build`, so it writes the probe EXPLICITLY — every
-    runtime (and the hosted platform) sees it; nothing is inferred
-    downstream. v0 of the contract writes the timings and leaves the paths
-    and port to Probes.WithDefaults (/readyz + /healthz on the `http` port),
-    so a present `probes` means HTTP; an absent one means TCP.
+  * a SERVICE that forge BUILDS gets HTTP readiness /readyz + liveness
+    /healthz on its `http` port, written into the spec EXPLICITLY (paths and
+    port). The lowering knows `build`; every runtime (and the hosted
+    platform) sees the same probe, and nothing is inferred downstream.
   * a service with a THIRD-PARTY image (no build) gets NO probes in the
     spec: forge cannot know that image serves /readyz. Go's policy then
     gives it TCP on its first port (WorkloadSpec.EffectiveProbes).
@@ -53,18 +51,15 @@ output = forge.render(forge.Bundle {
 })
 _p = {w.name: w.spec.probes if "probes" in w.spec else None for w in output.workloads}
 
-# A forge-built service is HTTP-probed (probes present). If the lowering
-# states paths/port, they must be the ADR's: /readyz, /healthz, the port
-# NAMED http (not the first port) — otherwise Go's WithDefaults fills them
-# identically.
-_ok_http = lambda p: any, port: int -> bool {
-    p != None and (p.readinessPath == Undefined or p.readinessPath == "/readyz") \
-        and (p.livenessPath == Undefined or p.livenessPath == "/healthz") \
-        and (p.port == Undefined or p.port == port)
+# A forge-built service gets EXPLICIT HTTP probes: both paths and the port
+# are written into the spec, so a CR on the wire is self-describing. The
+# port is the one NAMED http, not merely the first.
+_explicit = lambda p: any, port: int -> bool {
+    p != None and p.readinessPath == "/readyz" and p.livenessPath == "/healthz" and p.port == port
 }
-assert_built_service_probed = _ok_http(_p["api"], 8080)
-assert_hosted_built_service_probed = _ok_http(_p["hosted-api"], 8080)
-assert_probe_port_is_http = _ok_http(_p["dual"], 8081)
+assert_built_service_probed = _explicit(_p["api"], 8080)
+assert_hosted_built_service_probed = _explicit(_p["hosted-api"], 8080)
+assert_probe_port_is_http = _explicit(_p["dual"], 8081)
 assert_default_timings = _p["api"].periodSeconds == 5 and _p["api"].failureThreshold == 3 and _p["api"].timeoutSeconds == 3
 assert_third_party_no_spec_probes = _p["redis"] == None
 assert_worker_no_default = _p["sync"] == None

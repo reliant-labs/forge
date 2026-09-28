@@ -1,184 +1,140 @@
 """
-Positive test — per-workload owned manifests (fw.Workload.manifests) for
-DECLARED-CLUSTER-ONLY routing.
+Positive test — raw objects in `Bundle.manifests`, the ONE home for anything
+that is not a typed entity (a CRD, a ClusterIssuer, a vendored chart's
+output, a DaemonSet). PLACEMENT and SELECTION are declared per group,
+never inferred from a primary-cluster heuristic:
 
-Each manifest attached to a Service is rendered tagged with the owning
-service's `app.kubernetes.io/name` label, so the deploy layer routes it to
-that service's declared cluster (no primary-cluster heuristic). Two shapes
-are exercised:
+  1. A NAMED group is its own `forge env deploy --target <name>`: every
+     object is stamped `forge.dev/workload: <name>` — forge's routing key,
+     which it always owns.
+  2. The object's own `app.kubernetes.io/*` labels SURVIVE (a selector, a
+     ServiceMonitor, an operator may key on them); forge's value is only a
+     default for a key the object does not set. A chart-decoded object whose
+     labels disagree with forge's renders (no KCL unification error).
+  3. An off-primary `cluster` stamps `forge.dev/cluster: <context>`, so the
+     multi-cluster router sends the group there. Objects on the primary
+     cluster carry no cluster label (they already route there).
+  4. `namespace` fills a NAMESPACED object that names none; an object that
+     names its own keeps it; a cluster-scoped kind never gets one.
+  5. An UNNAMED group belongs to no --target: no owner stamp.
 
-  1. A WORKLOAD service ("api", with an image) that also owns a CRD via
-     `manifests` — the CRD is stamped with api's app label and the service
-     still renders its Workload record.
-
-  2. An IMAGE-LESS infra carrier ("cp-infra", kind = "tool", no image,
-     manifests + an OnCluster runtime) that owns env-level objects — those
-     are stamped with cp-infra's label, and it renders NO Workload record
-     (a tool is never scheduled: the no-phantom-workload invariant).
-
-The carrier moved from RenderedWorkload.manifests to fw.Workload.manifests
-(an authoring-only field, never in WorkloadSpec — map §2.2).
-
-Also covers the label-merge edge cases: an existing user label on a manifest
-is PRESERVED (forge merges under it), and a manifest with NO metadata gets a
-metadata.labels created.
+Replaces the per-workload `manifests` carrier (RenderedWorkload.manifests /
+an image-less "infra service"): a raw object is an env fact, and a
+workload never applies YAML (the hosted runtime refuses rendered YAML).
 """
 
 import forge
 import forge.workloads as fw
 import yaml
 
-# Primary target.
 _target = forge.ClusterTarget {
     cluster = "k3d-control-plane"
     namespace = "control-plane-e2e"
     registry = "localhost:5051"
 }
 
-# A second cluster — one service rides this one (the multi-cluster split).
-_daemon_target = forge.ClusterTarget {
-    cluster = "k3d-cp-daemon"
-    namespace = "control-plane-e2e"
-    registry = "localhost:5051"
-}
-
 _bundle = forge.Bundle {
+    project = "control-plane"
     cluster_target = _target
-    workloads = [
-        # 1. Workload service that ALSO owns a CRD. The CRD carries a
-        # pre-existing user label to prove the merge preserves it.
-        fw.Workload {
-            name = "api"
-            image = "example"
-            ports = [fw.Port {name = "http", port = 8080}]
-            runtime = forge.OnCluster {target = _target}
-            manifests = [
+    workloads = [fw.Workload {
+        name = "api"
+        image = "example"
+        ports = [fw.Port {name = "http", port = 8080}]
+        runtime = forge.OnCluster {target = _target}
+    }]
+    manifests = [
+        # 1+4. A named group on the primary cluster: a CRD (cluster-scoped,
+        # carries a user label) and a Gateway with NO metadata namespace.
+        forge.Manifests {
+            name = "cp-infra"
+            objects = [
                 {
                     apiVersion = "apiextensions.k8s.io/v1"
                     kind = "CustomResourceDefinition"
-                    metadata = {
-                        name = "widgets.example.com"
-                        labels = {"team" = "platform"}
-                    }
+                    metadata = {name = "widgets.example.com", labels = {"team" = "platform"}}
                     spec = {group = "example.com"}
                 }
-            ]
-        }
-        # 2. Image-less infra service: owns env-level resources pinned to
-        # the control-plane cluster. One manifest deliberately has NO
-        # metadata block to exercise the create-metadata merge path.
-        fw.Workload {
-            name = "cp-infra"
-            kind = "tool"
-            runtime = forge.OnCluster {target = _target}
-            manifests = [
                 {
                     apiVersion = "gateway.networking.k8s.io/v1"
                     kind = "Gateway"
                     metadata = {name = "public-gateway"}
                     spec = {gatewayClassName = "traefik"}
                 }
-                {
-                    apiVersion = "cert-manager.io/v1"
-                    kind = "ClusterIssuer"
-                    spec = {acme = {}}
-                }
+                # No metadata at all: the stamp creates metadata.labels.
+                {apiVersion = "cert-manager.io/v1", kind = "ClusterIssuer", spec = {acme = {}}}
             ]
         }
-        # 3. A workload service on the OTHER cluster — proves the per-service
-        # manifests mechanism is orthogonal to which cluster a service uses.
-        fw.Workload {
-            name = "workspace-proxy"
-            image = "example"
-            runtime = forge.OnCluster {target = _daemon_target}
-        }
-        # 4. Chart-shaped owned manifests whose OWN app.kubernetes.io/* labels
-        # disagree with forge's stamp (control-plane's kata pre-pull and its
-        # vendored CNPG render). The DaemonSet's name label is what its
-        # selector keys on, so it must survive; the decoded doc's
-        # `managed-by: Helm` used to be a KCL unification error that failed
-        # the whole render.
-        fw.Workload {
+        # 2+3. A named group on ANOTHER cluster, chart-shaped objects whose own
+        # app.kubernetes.io labels disagree with forge's.
+        forge.Manifests {
             name = "prepull"
-            kind = "tool"
-            runtime = forge.OnCluster {target = _daemon_target}
-            manifests = [
+            cluster = "k3d-cp-daemon"
+            namespace = "prepull"
+            objects = [
                 {
                     apiVersion = "apps/v1"
                     kind = "DaemonSet"
-                    metadata = {
-                        name = "image-prepull"
-                        namespace = "prepull"
-                        labels = {"app.kubernetes.io/name" = "image-prepull"}
-                    }
+                    metadata = {name = "image-prepull", labels = {"app.kubernetes.io/name" = "image-prepull"}}
                     spec = {
                         selector.matchLabels = {"app.kubernetes.io/name" = "image-prepull"}
                         template.metadata.labels = {"app.kubernetes.io/name" = "image-prepull"}
                     }
                 }
-                yaml.decode("apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: operator\n  namespace: prepull\n  labels:\n    app.kubernetes.io/name: operator-chart\n    app.kubernetes.io/managed-by: Helm\n    forge.dev/workload: someone-else\n    helm.sh/chart: operator-1.0.0\n")
+                yaml.decode("apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: operator\n  namespace: operator-ns\n  labels:\n    app.kubernetes.io/name: operator-chart\n    app.kubernetes.io/managed-by: Helm\n    forge.dev/workload: someone-else\n    helm.sh/chart: operator-1.0.0\n")
             ]
+        }
+        # 5. An unnamed group: applies on a bare deploy, owned by no target.
+        forge.Manifests {
+            objects = [{apiVersion = "v1", kind = "ConfigMap", metadata = {name = "loose"}, data = {a = "b"}}]
         }
     ]
 }
 
 manifests = forge.render(_bundle).manifests
 
-# ── Helpers ────────────────────────────────────────────────────────
-_crds = [m for m in manifests if m.kind == "CustomResourceDefinition"]
-_gateways = [m for m in manifests if m.kind == "Gateway"]
-_issuers = [m for m in manifests if m.kind == "ClusterIssuer"]
-_deployments = [m for m in manifests if m.kind == "Workload"]
-
-# ── (1) Workload service owns a CRD, stamped with ITS label ────────
-assert_crd_count = len(_crds) == 1
-assert_crd_owner = _crds[0].metadata.labels["app.kubernetes.io/name"] == "api"
-# The pre-existing user label is preserved (merge is non-destructive).
-assert_crd_user_label = _crds[0].metadata.labels["team"] == "platform"
-# The CRD's own metadata.name survives the metadata rebuild.
-assert_crd_name = _crds[0].metadata.name == "widgets.example.com"
-assert_crd_spec = _crds[0].spec.group == "example.com"
-
-# ── (2) Infra service owns the Gateway + ClusterIssuer ─────────────
-assert_gw_count = len(_gateways) == 1
-assert_gw_owner = _gateways[0].metadata.labels["app.kubernetes.io/name"] == "cp-infra"
-assert_gw_name = _gateways[0].metadata.name == "public-gateway"
-
-# ClusterIssuer had NO metadata at all — the stamp creates metadata.labels.
-assert_issuer_count = len(_issuers) == 1
-assert_issuer_owner = _issuers[0].metadata.labels["app.kubernetes.io/name"] == "cp-infra"
-
-# ── No phantom workload for the image-less infra service ───────────
-# Only the two WORKLOAD services (api, workspace-proxy) render records;
-# cp-infra renders none.
-_deploy_names = [d.metadata.name for d in _deployments]
-assert_no_infra_deployment = len([n for n in _deploy_names if n == "cp-infra"]) == 0
-assert_workload_deployments = len([n for n in _deploy_names if n == "api"]) == 1 \
-    and len([n for n in _deploy_names if n == "workspace-proxy"]) == 1
-
-# ── (4) The owner is authoritative; the manifest's own labels survive ──
-# forge.dev/workload is the routing key --target and the cluster scoper read
-# (cluster.ManifestGroup), so it names the OWNER on every owned manifest.
-_owned = _crds + _gateways + _issuers
-assert_owner_key_everywhere = all m in _owned {
-    m.metadata.labels["forge.dev/workload"] == m.metadata.labels["app.kubernetes.io/name"]
-}
-_ds = [m for m in manifests if m.kind == "DaemonSet"][0]
+_one = lambda kind: str -> any { [m for m in manifests if m.kind == kind][0] }
+_crd = _one("CustomResourceDefinition")
+_gw = _one("Gateway")
+_issuer = _one("ClusterIssuer")
+_ds = _one("DaemonSet")
 _sa = [m for m in manifests if m.kind == "ServiceAccount" and m.metadata.name == "operator"][0]
+_loose = [m for m in manifests if m.kind == "ConfigMap" and m.metadata.name == "loose"][0]
+
+# ── (1) the named group is its own --target ────────────────────────────
+assert_crd_routed = _crd.metadata.labels["forge.dev/workload"] == "cp-infra"
+assert_gw_routed = _gw.metadata.labels["forge.dev/workload"] == "cp-infra"
+assert_issuer_routed = _issuer.metadata.labels["forge.dev/workload"] == "cp-infra"
+# The object's own metadata survives the stamp.
+assert_crd_user_label = _crd.metadata.labels["team"] == "platform"
+assert_crd_name = _crd.metadata.name == "widgets.example.com"
+assert_crd_spec = _crd.spec.group == "example.com"
+# forge's app labels are DEFAULTS where the object set none.
+assert_crd_name_defaulted = _crd.metadata.labels["app.kubernetes.io/name"] == "cp-infra"
+assert_part_of_defaulted = _gw.metadata.labels["app.kubernetes.io/part-of"] == "control-plane"
+
+# ── (2) the object's own labels win; forge's routing key always wins ───
 assert_ds_routed_to_owner = _ds.metadata.labels["forge.dev/workload"] == "prepull"
-# ...without touching the name label its selector depends on.
 assert_ds_name_label_kept = _ds.metadata.labels["app.kubernetes.io/name"] == "image-prepull"
 assert_ds_selector_untouched = _ds.spec.selector.matchLabels == {"app.kubernetes.io/name" = "image-prepull"}
-# The decoded chart doc renders (no unification error) with its own values
-# kept, forge's routing key forced, and absent defaults filled in.
 assert_decoded_routed_to_owner = _sa.metadata.labels["forge.dev/workload"] == "prepull"
 assert_decoded_managed_by_kept = _sa.metadata.labels["app.kubernetes.io/managed-by"] == "Helm"
 assert_decoded_name_kept = _sa.metadata.labels["app.kubernetes.io/name"] == "operator-chart"
 assert_decoded_other_label_kept = _sa.metadata.labels["helm.sh/chart"] == "operator-1.0.0"
-assert_decoded_part_of_defaulted = _sa.metadata.labels["app.kubernetes.io/part-of"] == "prepull"
 
-# ── (5) Owned manifests are routed to the OWNER's cluster ─────────────
-# They are emitted beside their owner's record with its forge.dev/cluster,
-# so the ExtractManifests grouping sends them where the owner runs.
-assert_crd_cluster = _crds[0].metadata.labels["forge.dev/cluster"] == "k3d-control-plane"
-assert_ds_cluster = _ds.metadata.labels["forge.dev/cluster"] == "k3d-cp-daemon"
+# ── (3) cluster placement ──────────────────────────────────────────────
+assert_off_primary_stamped = _ds.metadata.labels["forge.dev/cluster"] == "k3d-cp-daemon" and \
+    _sa.metadata.labels["forge.dev/cluster"] == "k3d-cp-daemon"
+assert_primary_unstamped = "forge.dev/cluster" not in _crd.metadata.labels and "forge.dev/cluster" not in _gw.metadata.labels
+
+# ── (4) namespace placement ────────────────────────────────────────────
+assert_ns_filled_from_group = _ds.metadata.namespace == "prepull"
+assert_own_ns_kept = _sa.metadata.namespace == "operator-ns"
+assert_ns_filled_from_primary = _gw.metadata.namespace == "control-plane-e2e"
+assert_cluster_scoped_no_ns = "namespace" not in _crd.metadata and "namespace" not in _issuer.metadata
+
+# ── (5) unnamed group: no owner ────────────────────────────────────────
+assert_unnamed_unowned = "forge.dev/workload" not in (_loose.metadata.labels or {})
+assert_unnamed_ns_filled = _loose.metadata.namespace == "control-plane-e2e"
+
+# The workload record is unaffected by the raw groups beside it.
+assert_workload_record = [m.metadata.name for m in manifests if m.kind == "Workload"] == ["api"]

@@ -47,7 +47,7 @@ manifests = forge.render(forge.Bundle {
     cluster_target = _target
     runtime = forge.OnCluster {target = _target}
     workloads = _workloads
-    additional_manifests = _raw
+    manifests = [forge.Manifests {objects = _raw}]
 }).manifests
 
 plain_manifests = forge.render(forge.Bundle {
@@ -55,7 +55,7 @@ plain_manifests = forge.render(forge.Bundle {
     cluster_target = _target
     runtime = forge.OnCluster {target = _target}
     workloads = _workloads
-    additional_manifests = _raw
+    manifests = [forge.Manifests {objects = _raw}]
 }).manifests
 
 assert_every_object_stamped = len(manifests) > 3 and all m in manifests {

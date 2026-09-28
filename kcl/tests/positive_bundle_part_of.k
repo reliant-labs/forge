@@ -8,9 +8,9 @@ control-plane's prod render matched 5 of 13 Deployments and the rollout wait
 passed vacuously on the rest. The Kubernetes objects are Go's now
 (RenderWorkloads stamps them from Context.PartOf — pkg/deploy TestEnvStamp /
 goldens), so the KCL half of the property is: every object forge.render
-emits — Workload records, owned manifests, ConfigMaps, RuntimeClasses — names
-the project, and `app.kubernetes.io/name` stays the WORKLOAD (the --target
-group).
+emits — Workload records, raw Bundle.manifests groups, ConfigMaps,
+RuntimeClasses — names the project, and `app.kubernetes.io/name` stays the
+WORKLOAD (the --target group).
 """
 
 import forge
@@ -25,17 +25,16 @@ _bundle = forge.Bundle {
     runtime = forge.OnCluster {target = _target}
     config_maps = [forge.ConfigMap {name = "app-config", data = {"KEY" = "value"}}]
     runtime_classes = [forge.RuntimeClass {name = "gvisor", handler = "runc"}]
+    # A named raw-manifest group (its own --target), stamped on the way out.
+    manifests = [forge.Manifests {
+        name = "infra"
+        objects = [{apiVersion = "v1", kind = "Secret", metadata = {name = "bootstrap", namespace = "example-prod"}}]
+    }]
     workloads = [
         fw.Workload {name = "api", image = "api-img", ports = [fw.Port {name = "http", port = 8080}]}
         fw.Workload {name = "controller", kind = "operator", image = "controller-img", crds = ["Widget"]}
         fw.Workload {name = "cleanup", kind = "cron", image = "cleanup-img", args = ["cleanup"], schedule = "0 * * * *"}
         fw.Workload {name = "migrate", kind = "job", image = "migrate-img", args = ["migrate"]}
-        # Owned raw manifests ride with their workload.
-        fw.Workload {
-            name = "infra"
-            kind = "tool"
-            manifests = [{apiVersion = "v1", kind = "Secret", metadata = {name = "bootstrap", namespace = "example-prod"}}]
-        }
     ]
 }
 

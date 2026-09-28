@@ -49,6 +49,7 @@ import (
 	"kcl-lang.io/kpm/pkg/env"
 	kclpkg "kcl-lang.io/kpm/pkg/package"
 
+	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 )
 
@@ -114,9 +115,12 @@ func Discover(projectDir, envName string) ([]Option, bool, error) {
 	}
 	extPkgs = append(extPkgs, &gpyrpc.ExternalPkg{PkgName: kclvendor.ModuleName, PkgPath: forgeDir})
 
-	res, err := kcl.ListOptions(&kcl.ListOptionsArgs{
-		Paths:        []string{kclDir},
-		ExternalPkgs: extPkgs,
+	// Serialized with every other native KCL call: see kclplugin.Serialized.
+	res, err := kclplugin.Serialized(func() (*kcl.ListOptionsResult, error) {
+		return kcl.ListOptions(&kcl.ListOptionsArgs{
+			Paths:        []string{kclDir},
+			ExternalPkgs: extPkgs,
+		})
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("list kcl options in %s: %w", kclDir, err)

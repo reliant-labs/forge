@@ -54,30 +54,31 @@ func nsProbeModule(t *testing.T, projectDir, env, base string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The Deployment rides `output.manifests` — the one applyable stream a
+	// render exports — and its cluster comes from the env-wide
+	// cluster_target, exactly where the deploy path reads them.
 	body := `_key = option("worktree") or ""
 _suffix = "-" + _key if _key else ""
 _namespace = "` + base + `" + _suffix
 
 output = {
     cluster_target = {cluster = "k3d-probe", namespace = _namespace}
-    services = [{name = "daemon-gateway", deploy = {cluster = "k3d-probe"}}]
+    manifests = [
+        {
+            apiVersion = "apps/v1"
+            kind = "Deployment"
+            metadata = {
+                name = "daemon-gateway"
+                namespace = _namespace
+                labels = {"app.kubernetes.io/name" = "daemon-gateway"}
+            }
+            spec = {
+                replicas = 1
+                template = {spec = {containers = [{name = "app", image = "x:1"}]}}
+            }
+        }
+    ]
 }
-
-manifests = [
-    {
-        apiVersion = "apps/v1"
-        kind = "Deployment"
-        metadata = {
-            name = "daemon-gateway"
-            namespace = _namespace
-            labels = {"app.kubernetes.io/name" = "daemon-gateway"}
-        }
-        spec = {
-            replicas = 1
-            template = {spec = {containers = [{name = "app", image = "x:1"}]}}
-        }
-    }
-]
 `
 	if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)

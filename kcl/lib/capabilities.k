@@ -298,4 +298,3 @@ PROBED_KINDS: [str] = [
 supports = lambda kind: str, capability: str -> bool {
     capability in KIND_CAPABILITIES[kind] if kind in KIND_CAPABILITIES else False
 }
-

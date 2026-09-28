@@ -775,13 +775,10 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	return applyRendered(ctx, opts, manifests)
 }
 
-// applyRendered is Apply after the KCL render: select, scope, apply and wait.
-//
-// Split out so the apply ORDERING — the part a production deploy's safety
-// rests on — is testable against a recorded kubectl without a KCL toolchain.
-// A test that could only reach it through a render would be testing the
-// renderer too, and would be skipped wherever KCL is unavailable.
-func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error {
+// selectAndScope narrows the rendered env stream to what THIS apply owns and
+// stamps its CRDs. It returns the helm charts the same selection keeps, the
+// narrowed stream, and the CRD owner label it stamped.
+func selectAndScope(opts ApplyOpts, manifests string) (selectedCharts []HelmChartSpec, scoped, crdOwner string) {
 	// Exclusive --target selection — ONE uniform mechanical filter over the
 	// KCL-declared service GROUP (`app.kubernetes.io/name`).
 	//
@@ -803,7 +800,7 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	// stamped with the chart Name as their group. selectHelmChartsByGroup
 	// applies that rule to the chart specs; SelectManifestsByGroup applies it
 	// to the rendered env stream.
-	selectedCharts := selectHelmChartsByGroup(opts.HelmCharts, opts.Targets)
+	selectedCharts = selectHelmChartsByGroup(opts.HelmCharts, opts.Targets)
 	if len(opts.Targets) > 0 {
 		manifests = SelectManifestsByGroup(manifests, opts.Targets)
 	}
@@ -822,8 +819,18 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 
 	// Stamp every CRD with this env's ownership label, so a later apply that
 	// stops rendering it can prove the CRD was its own (crd_prune.go).
-	crdOwner := CRDOwner(opts.Project, opts.Env)
-	manifests = StampCRDOwnership(manifests, crdOwner)
+	crdOwner = CRDOwner(opts.Project, opts.Env)
+	return selectedCharts, StampCRDOwnership(manifests, crdOwner), crdOwner
+}
+
+// applyRendered is Apply after the KCL render: select, scope, apply and wait.
+//
+// Split out so the apply ORDERING — the part a production deploy's safety
+// rests on — is testable against a recorded kubectl without a KCL toolchain.
+// A test that could only reach it through a render would be testing the
+// renderer too, and would be skipped wherever KCL is unavailable.
+func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error {
+	selectedCharts, manifests, crdOwner := selectAndScope(opts, manifests)
 
 	// Split the stream into its apply passes NOW, before the dry-run return
 	// and before any chart is fetched: an unknown deploy-phase declaration

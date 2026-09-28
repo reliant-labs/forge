@@ -40,25 +40,25 @@ public top-level var.
 
 ## What ships here
 
-| Declaration | What it is |
-| --- | --- |
-| `fw.Workload` | Everything that runs: `kind` = `service` / `worker` / `job` / `cron` / `operator` / `tool`. Field names and types are the generated `v1alpha1.WorkloadSpec`'s (camelCase), plus `name`, `build`, `runtime`, `config_secrets`. |
-| `forge.OnHost` / `OnCompose` / `OnCluster` / `OnHosted` / `BuildOnly` | The runtime a workload binds to. Every workload in an env binds its own; there is no env default. |
-| `forge.GoBuild` / `DockerBuild` / `ShellBuild` / `RemoteBuild` | How forge produces a workload's artifact. Unset = forge builds nothing. |
-| `forge.SecretRef` / `ConfigMapRef` / `FieldRef` / `ManagedSecret` / `DatabaseRef` / `WorkloadURL` | The non-literal values of `fw.Workload.env` (a map, name -> value). |
-| `forge.Bundle` | One environment: workloads, `infra` (`forge.HostInfra`), frontends, databases, gateways/routes, secrets, clusters, `manifests` (`forge.Manifests`, raw objects), `network_policy` (opt-in). |
-| `forge.Frontend` | A dev-served frontend, optionally shipped to Firebase or a `StaticSite` (a bucketless StaticSite is hosted). A containerized frontend is a workload. |
-| `forge.ManagedDatabase` | A Postgres on a cluster (CloudNativePG) or on the control plane. |
+| Declaration                                                                                       | What it is                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fw.Workload`                                                                                     | Everything that runs: `kind` = `service` / `worker` / `job` / `cron` / `operator` / `tool`. Field names and types are the generated `v1alpha1.WorkloadSpec`'s (camelCase), plus `name`, `build`, `runtime`, `config_secrets`. |
+| `forge.OnHost` / `OnCompose` / `OnCluster` / `OnHosted` / `BuildOnly`                             | The runtime a workload binds to. Every workload in an env binds its own; there is no env default.                                                                                                                             |
+| `forge.GoBuild` / `DockerBuild` / `ShellBuild` / `RemoteBuild`                                    | How forge produces a workload's artifact. Unset = forge builds nothing.                                                                                                                                                       |
+| `forge.SecretRef` / `ConfigMapRef` / `FieldRef` / `ManagedSecret` / `DatabaseRef` / `WorkloadURL` | The non-literal values of `fw.Workload.env` (a map, name -> value).                                                                                                                                                           |
+| `forge.Bundle`                                                                                    | One environment: workloads, `infra` (`forge.HostInfra`), frontends, databases, gateways/routes, secrets, clusters, `manifests` (`forge.Manifests`, raw objects), `network_policy` (opt-in).                                   |
+| `forge.Frontend`                                                                                  | A dev-served frontend, optionally shipped to Firebase or a `StaticSite` (a bucketless StaticSite is hosted). A containerized frontend is a workload.                                                                          |
+| `forge.ManagedDatabase`                                                                           | A Postgres on a cluster (CloudNativePG) or on the control plane.                                                                                                                                                              |
 
 ### What each runtime does with a workload
 
-| Runtime | forge does | spec.image |
-| --- | --- | --- |
-| `OnHost {runner}` | launches a process; the argv is derived from `build` + `args` (`go run <cmd> <args>`, `air`, `./bin/<out> <args>`, `dlv`) | `""` |
-| `OnCompose {service}` | `docker compose up` of the compose file's service; literal env feeds the compose process env | `""` |
-| `OnCluster {target}` | a `forge.dev/v1alpha1 Workload` record in `output.manifests`, expanded by `pkg/deploy.RenderWorkloads` (Full profile) | `<registry>/<image>:<tag>` or `@digest` |
-| `OnHosted {}` | publishes the spec to the control plane, which renders it (Restricted profile) | the artifact / third-party image |
-| `BuildOnly {build_variants}` | builds and ships, never runs | `""` |
+| Runtime                      | forge does                                                                                                                | spec.image                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `OnHost {runner}`            | launches a process; the argv is derived from `build` + `args` (`go run <cmd> <args>`, `air`, `./bin/<out> <args>`, `dlv`) | `""`                                    |
+| `OnCompose {service}`        | `docker compose up` of the compose file's service; literal env feeds the compose process env                              | `""`                                    |
+| `OnCluster {target}`         | a `forge.dev/v1alpha1 Workload` record in `output.manifests`, expanded by `pkg/deploy.RenderWorkloads` (Full profile)     | `<registry>/<image>:<tag>` or `@digest` |
+| `OnHosted {}`                | publishes the spec to the control plane, which renders it (Restricted profile)                                            | the artifact / third-party image        |
+| `BuildOnly {build_variants}` | builds and ships, never runs                                                                                              | `""`                                    |
 
 A workload whose runtime cannot honour a field is REFUSED at render, naming
 the workload, the field and the reason. That covers the hosted runtime's
@@ -213,12 +213,12 @@ your `main.k`. Read them through the **typed `forge` accessors** (each wraps
 `option(...)` with a default + doc) rather than raw `option()` so the whole
 set is discoverable from the `forge` surface:
 
-| `-D` key        | Accessor                   | Always passed? | What it is                                                                |
-| --------------- | -------------------------- | -------------- | ------------------------------------------------------------------------- |
-| `env`           | `forge.env(default)`       | yes            | environment name (`dev`/`staging`/`prod`/…)                               |
+| `-D` key        | Accessor                   | Always passed? | What it is                                                                                    |
+| --------------- | -------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
+| `env`           | `forge.env(default)`       | yes            | environment name (`dev`/`staging`/`prod`/…)                                                   |
 | `image_tag`     | `forge.image_tag(env)`     | yes            | resolved image tag (override > per-env default > `latest`); `Bundle.image_tag` defaults to it |
-| `namespace`     | `forge.namespace(default)` | yes            | k8s namespace to deploy into                                              |
-| `image_digests` | `forge.image_digests()`    | when deploying | JSON name→digest map (pins each image to its digest)                      |
+| `namespace`     | `forge.namespace(default)` | yes            | k8s namespace to deploy into                                                                  |
+| `image_digests` | `forge.image_digests()`    | when deploying | JSON name→digest map (pins each image to its digest)                                          |
 
 The image **registry** is not a render option. It is a field the env declares
 — `forge.ClusterTarget.registry`, or `forge.ControlPlane.registry` for a hosted

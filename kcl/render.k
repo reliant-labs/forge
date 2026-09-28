@@ -1306,4 +1306,3 @@ _render_config_map_manifest = lambda cm: ConfigMap, namespace: str, part_of: str
         data = cm.data
     }
 }
-

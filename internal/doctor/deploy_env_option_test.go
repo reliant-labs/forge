@@ -69,16 +69,20 @@ func writeEnvProbeModule(t *testing.T, projectDir, env string) {
 	// `spec` rather than a ConfigMap's `data`, because that is the field the
 	// doctor's own k8sObject parse retains — the probe has to be readable
 	// through the same struct the real checks use.
+	// Under `output.manifests`, the one applyable stream a render exports
+	// (a top-level `manifests` is a stray root no deploy reads).
 	body := `_env = option("env")
 
-manifests = [
-    {
-        apiVersion = "v1"
-        kind = "ConfigMap"
-        metadata = {name = "env-probe"}
-        spec = {observed = _env}
-    }
-]
+output = {
+    manifests = [
+        {
+            apiVersion = "v1"
+            kind = "ConfigMap"
+            metadata = {name = "env-probe"}
+            spec = {observed = _env}
+        }
+    ]
+}
 `
 	if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)

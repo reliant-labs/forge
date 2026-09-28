@@ -99,9 +99,15 @@ func TestE2EComponentsKCLDeclaredFromSources(t *testing.T) {
 		}
 	}
 	// A render that produced only scalars would still "contain" the service
-	// names via labels; require the workload objects themselves.
-	if !strings.Contains(out, "Deployment") {
-		t.Fatalf("dev KCL render carries no Deployment — the workloads did not expand:\n%s", out)
+	// names via labels; require each workload to be BOUND and lowered. The
+	// scaffolded dev env binds every workload to the host runtime (ADR 0002,
+	// #291), so the proof is the host launch line `forge env up` would run —
+	// the service subcommand of the one shared binary — not a Deployment,
+	// which a host-bound dev env correctly never renders.
+	for _, svc := range []string{"order", "intake"} {
+		if want := svc + " (service): go run ./cmd/multiapp " + svc; !strings.Contains(out, want) {
+			t.Fatalf("dev KCL render did not bind %q to a host process (want %q) — the workload did not lower:\n%s", svc, want, out)
+		}
 	}
 	assertWorkloadsKCL("fresh clone")
 }

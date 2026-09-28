@@ -74,4 +74,3 @@ assert_tool_supports_nothing = len(fw.KIND_CAPABILITIES["tool"]) == 0
 # second error from the matrix would fire first and report the capability
 # instead of the typo that caused it.
 assert_unknown_kind_supports_nothing = not fw.supports("nonesuch", fw.CAP_NAMESPACED_RBAC)
-

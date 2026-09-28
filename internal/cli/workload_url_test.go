@@ -156,8 +156,11 @@ func TestWorkloadURL_LocalEnvResolvesAtRender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render manifests (an unresolved reference would be refused here): %v", err)
 	}
-	if !strings.Contains(manifests, "name: CORS_ORIGINS\n") || !strings.Contains(manifests, "value: http://localhost:5173") {
-		t.Errorf("Deployment env does not carry the resolved frontend URL:\n%s", manifests)
+	// A CLUSTER referrer reaches a host target through its ClusterTarget's
+	// host_gateway (host.k3d.internal by default): inside the pod,
+	// localhost is the pod itself (kcl/lib/workload_url.k, #287).
+	if !strings.Contains(manifests, "name: CORS_ORIGINS\n") || !strings.Contains(manifests, "value: http://host.k3d.internal:5173") {
+		t.Errorf("Deployment env does not carry the frontend URL resolved through the cluster's host_gateway:\n%s", manifests)
 	}
 	if strings.Contains(manifests, "workloadURL") {
 		t.Errorf("a reference survived into the applied manifests:\n%s", manifests)

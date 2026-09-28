@@ -426,13 +426,13 @@ workload and field, rather than being silently dropped.
 
 Maturity is not uniform, and the docs should not pretend otherwise:
 
-| Runtime            | State                                                                      |
-| ------------------ | -------------------------------------------------------------------------- |
-| Cluster            | Production-grade; the deeply-developed path                                |
-| Hosted             | Real; the platform owns placement, probes are written into every spec     |
-| Compose            | Real, thinner; `pull` + `up -d --wait`                                     |
-| Firebase / StaticSite | Frontends only                                                          |
-| Host               | Excellent dev loop, not a deploy target                                    |
+| Runtime               | State                                                                 |
+| --------------------- | --------------------------------------------------------------------- |
+| Cluster               | Production-grade; the deeply-developed path                           |
+| Hosted                | Real; the platform owns placement, probes are written into every spec |
+| Compose               | Real, thinner; `pull` + `up -d --wait`                                |
+| Firebase / StaticSite | Frontends only                                                        |
+| Host                  | Excellent dev loop, not a deploy target                               |
 
 ### Failures move to author time
 

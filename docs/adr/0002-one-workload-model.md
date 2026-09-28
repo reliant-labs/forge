@@ -39,20 +39,20 @@ probe types. Each gap between them has shipped as a real defect:
 Everything that runs is a `fw.Workload`: kind `service | worker | job | cron |
 operator | tool`. It is declared once in `deploy/kcl/workloads.k` and shared
 by every env. There is no other authoring shape for a runnable thing. The
-schemas listed under *Supersedes* are deleted. `forge.Frontend` (static sites)
+schemas listed under _Supersedes_ are deleted. `forge.Frontend` (static sites)
 and `forge.ManagedDatabase` stay: they are not processes forge runs.
 
 ### 2. The runtime is chosen per workload
 
 A **runtime** is where a workload runs:
 
-| Runtime | Meaning |
-|---|---|
-| `forge.OnHost {runner, ...}` | a local process (go-run, air, binary, delve) |
-| `forge.OnCompose {service}` | a docker-compose service |
-| `forge.OnCluster {target}` | a Kubernetes cluster the user operates |
-| `forge.OnHosted {}` | the forge control plane (Reliant cloud or another) |
-| `forge.BuildOnly {}` | built and pushed, never run |
+| Runtime                      | Meaning                                            |
+| ---------------------------- | -------------------------------------------------- |
+| `forge.OnHost {runner, ...}` | a local process (go-run, air, binary, delve)       |
+| `forge.OnCompose {service}`  | a docker-compose service                           |
+| `forge.OnCluster {target}`   | a Kubernetes cluster the user operates             |
+| `forge.OnHosted {}`          | the forge control plane (Reliant cloud or another) |
+| `forge.BuildOnly {}`         | built and pushed, never run                        |
 
 `fw.Workload` carries `runtime?: Runtime`. An env binds workloads by
 overlaying them, the same `|` mechanism it already uses for replicas and env:
@@ -77,7 +77,7 @@ build) are never re-stated per runtime. The host command is **derived** from
 ### 3. The wire contract is a typed `Workload` CR; restriction is a profile
 
 Go `pkg/deploy/v1alpha1.WorkloadSpec` is the single source of truth for what a
-workload *is at runtime*: kind, image, command/args, replicas, resources, env,
+workload _is at runtime_: kind, image, command/args, replicas, resources, env,
 ports, probes, storage, schedule, before, RBAC, CRDs, and so on. The KCL
 `fw.Workload` schema is **generated** from it (plus the authoring-only fields
 `name`, `build`, `runtime`), as `kcl/tiers/tiers_gen.k` already is today.
@@ -89,13 +89,13 @@ so hosted policy (Kata runtime class, isolation pool, registry allowlist,
 secret scoping, routes, quota, egress) stays platform-owned and cannot be
 authored by a hosted user.
 
-**Restriction is a capability *profile*, not a separate app model.**
+**Restriction is a capability _profile_, not a separate app model.**
 `Validate(spec, profile)`:
 
-| Profile | Where | Allows |
-|---|---|---|
-| `Full` | Cluster runtime; future per-customer hosted clusters (vcluster) | every field |
-| `Restricted` | Hosted on shared nodes (today) | kinds `service`, `worker`, `job`; `replicas`, `resources`, `command`/`args`, `ports` (the platform routes `expose = true`), `probes`, `storage`, and env from `value` / `managedSecret` / `databaseRef` / `workloadURL` |
+| Profile      | Where                                                           | Allows                                                                                                                                                                                                                  |
+| ------------ | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Full`       | Cluster runtime; future per-customer hosted clusters (vcluster) | every field                                                                                                                                                                                                             |
+| `Restricted` | Hosted on shared nodes (today)                                  | kinds `service`, `worker`, `job`; `replicas`, `resources`, `command`/`args`, `ports` (the platform routes `expose = true`), `probes`, `storage`, and env from `value` / `managedSecret` / `databaseRef` / `workloadURL` |
 
 Restricted refuses RBAC, ServiceAccount annotations, CRDs/operators,
 `configMapRef`/`fieldRef`/raw `secretRef` env, and `cron` (deferred until
@@ -161,7 +161,7 @@ defaults live in Go:
 
 ## Consequences
 
-- One mental model for users: *declare a workload; bind it to a runtime*.
+- One mental model for users: _declare a workload; bind it to a runtime_.
   The scaffold's env files shrink to bindings and per-env values.
 - The control plane and the CLI render the same objects from the same code.
   Divergences like missing probes or grace periods cannot recur on one path only.

@@ -58,6 +58,8 @@ func EnvBinding(env, kind, workloadName string) string {
 // envWorkloadsList matches the scaffolded `_workloads = [` ... `]` block,
 // capturing its body. The closing bracket is the first line that is exactly
 // `]`, which is how the templates write it.
+//
+//nolint:gocritic // badRegexp misreads the second `^`: under (?m) it anchors the closing `]` at a line start.
 var envWorkloadsList = regexp.MustCompile(`(?ms)^_workloads = \[\n(.*?)^\]$`)
 
 // AppendEnvBinding adds the binding for a new workload to one env's main.k,

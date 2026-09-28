@@ -98,20 +98,21 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 // (gateDeployOnPreflight skips it when kclEntitiesHaveK8sCluster is false), so
 // the audit and the deploy agree on when a mount is undeclared:
 //
-//   - No workload placed in a cluster: the stream is rendered but never
-//     applied. The scaffolded dev env is exactly this — `manifests` renders
-//     every workload through fw.render_workloads, while the Bundle runs each
-//     one as a host process, whose secrets reach it from the secret store as
-//     env values and never as a k8s Secret. Counting those refs as cluster
-//     demand failed the audit for any project whose workload declares a
-//     `config_secrets` credential, in every checkout, whether or not the local
-//     store was populated.
+//   - Nothing placed in a cluster (no cluster-bound workload, no env-wide
+//     cluster_target, no self-managed database): nothing is applied, so
+//     there is no demand to check.
 //   - Hosted workloads: the control plane owns the cluster and materializes
 //     the Secrets it reads (forge-managed-secrets, the CNPG credential), and
 //     forge applies nothing — the deploy publishes Workload specs instead.
 //
-// Anything else that places a workload in a cluster (a Cluster runtime, a
-// self-managed database, a LOCAL control-plane env) keeps the gate.
+// Anything else (a Cluster runtime, a self-managed database, an env-wide
+// cluster_target for support objects, a LOCAL control-plane env) keeps the
+// gate. That is safe for the scaffolded dev env, whose workloads all run as
+// host processes beside a cluster_target for its Namespace and gateways: a
+// host-bound workload never enters `output.manifests`, so its secrets —
+// which reach it from the secret store as env values — are never counted
+// as cluster demand. Counting them used to fail the audit for any project
+// whose workload declares a `config_secrets` credential, on every checkout.
 func envAppliesManifestsToCluster(e *KCLEntities) bool {
 	if e == nil {
 		return false

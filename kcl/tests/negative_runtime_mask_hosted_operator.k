@@ -2,7 +2,7 @@
 Negative test — the HOSTED runtime refuses kind='operator'.
 
 An operator installs CRDs and holds cluster-scoped RBAC — the two things a
-tenant on shared nodes must never own. Restricted allows service, worker and
+hosted user on shared nodes must never own. Restricted allows service, worker and
 job only.
 """
 

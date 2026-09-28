@@ -2,7 +2,7 @@
 Negative test — the HOSTED runtime refuses `sidecars` (ADR 0002 §3, Restricted
 profile).
 
-A sidecar is a second, unmetered, unvalidated container in the tenant pod — outside the resource band the platform bills and admits.
+A sidecar is a second, unmetered, unvalidated container in the hosted pod — outside the resource band the platform bills and admits.
 
 The refusal is per WORKLOAD: its effective runtime is OnHosted (its own
 `runtime`, else Bundle.runtime), so the check lives where that is known —

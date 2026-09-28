@@ -109,7 +109,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 		errs = append(errs, fmt.Errorf("image %q contains whitespace", s.Image))
 	} else if p == ProfileRestricted {
 		// Registry-qualified and pinned only where the platform pulls
-		// from a registry the tenant does not control. A cluster the
+		// from a registry the hosted user does not control. A cluster the
 		// author operates may run a bare name imported into its nodes
 		// (k3d image import), and refusing that would break the dev loop
 		// for no safety gain.

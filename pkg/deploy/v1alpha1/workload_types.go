@@ -101,7 +101,7 @@ type WorkloadSpec struct {
 	// Image is the container image, resolved by the lowering (the build
 	// output, or an author-named third-party image). ProfileRestricted
 	// also requires it to be registry-qualified and pinned, because the
-	// platform pulls it from a registry the tenant does not control. A
+	// platform pulls it from a registry the hosted user does not control. A
 	// cluster the author operates may run a locally imported bare name.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=500

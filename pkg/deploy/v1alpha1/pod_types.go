@@ -5,7 +5,7 @@ package v1alpha1
 // something a cluster the author operates genuinely needs (control-plane
 // runs a Cloud SQL Auth Proxy sidecar under a workload-identity
 // ServiceAccount, and mounts Secret files and scratch directories). On shared
-// hosted nodes each of them would reach past the tenant's own container.
+// hosted nodes each of them would reach past the hosted user's own container.
 //
 // They are CLOSED, typed subsets, like the rest of the spec, and never a
 // PodSpec passthrough. A field a destination must not honour has to be

@@ -80,7 +80,7 @@ const (
 // Why the last two are Full-only: a Workload is one type for every runtime
 // (ADR 0002), so a cluster the author operates must be able to say
 // everything forge.K8sCluster could. A shared hosted namespace is different.
-// ConfigMapRef reads an arbitrary namespace object the tenant did not write,
+// ConfigMapRef reads an arbitrary namespace object the hosted user did not write,
 // and FieldRef exposes pod and node placement the platform owns. So
 // Validate(ProfileRestricted) refuses both, by name, through FieldProfiles.
 // That is an explicit allowlist with a default-deny test behind it, not a

@@ -155,7 +155,7 @@ func TestWorkloadValidateRestrictedProfile(t *testing.T) {
 			`kind "operator" is not allowed under the restricted profile`},
 		"tool kind": {WorkloadSpec{Kind: KindTool, Image: pinnedImage}, `kind "tool" is not allowed under the restricted profile`},
 		"namespacedRBAC": {WorkloadSpec{Image: pinnedImage, NamespacedRBAC: []PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}}},
-			"namespacedRBAC: not allowed under the restricted profile: hosted workloads have no Kubernetes API access until tenant isolation (vcluster) exists"},
+			"namespacedRBAC: not allowed under the restricted profile: hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)"},
 		"serviceAccountAnnotations": {WorkloadSpec{Image: pinnedImage, ServiceAccountAnnotations: map[string]string{"iam.gke.io/gcp-service-account": "x"}},
 			"serviceAccountAnnotations: not allowed under the restricted profile"},
 		"secretRef": {WorkloadSpec{Image: pinnedImage, Env: []EnvVar{{Name: "PW", SecretRef: &SecretKeyRef{Name: "platform-db", Key: "pw"}}}},
@@ -185,7 +185,7 @@ func TestWorkloadValidateRestrictedProfile(t *testing.T) {
 // restricted profile allows (so the EnvVar channels and Port/Probes fields
 // are reached), and fails when a JSON path has no FieldProfiles entry. A
 // field added to the spec without a classification therefore fails the
-// build instead of silently becoming tenant-writable.
+// build instead of silently becoming writable by a hosted user.
 //
 // It also fails on STALE entries (a path the spec no longer has) and on a
 // Full-only entry with no reason, since the reason is the error text.

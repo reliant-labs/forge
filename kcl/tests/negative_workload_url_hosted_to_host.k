@@ -4,7 +4,7 @@ Negative test — a HOSTED workload's forge.WorkloadURL naming a HOST workload.
 A hosted workload's references are resolved by the control plane, against
 workloads IT runs. A host workload is a process on the author's machine: the
 platform cannot reach it and cannot resolve its URL, so the reference would
-wait forever (or resolve to localhost inside the tenant pod — the platform's
+wait forever (or resolve to localhost inside the hosted pod — the platform's
 own loopback). Refused at render, naming both workloads.
 
 The legal cross-runtime directions are host/cluster -> anything forge can

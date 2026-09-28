@@ -2,7 +2,7 @@
 Negative test — the HOSTED runtime refuses `serviceAccountAnnotations` (ADR 0002 §3, Restricted
 profile).
 
-A ServiceAccount annotation binds cloud workload identity: on shared nodes that would let a tenant claim a GCP service account by naming it.
+A ServiceAccount annotation binds cloud workload identity: on shared nodes that would let a hosted user claim a GCP service account by naming it.
 
 The refusal is per WORKLOAD: its effective runtime is OnHosted (its own
 `runtime`, else Bundle.runtime), so the check lives where that is known —

@@ -12,7 +12,7 @@ import (
 // hosted control plane picks it server-side from the destination's
 // isolation. The CLI runs the same check at render time only so the author
 // sees the error before publishing. A client-chosen profile would be a
-// tenant choosing its own sandbox.
+// hosted user choosing their own sandbox.
 //
 // Profiles are ORDERED from most to least permissive. A field classified
 // at profile X is allowed under X and every more permissive profile, which
@@ -21,10 +21,10 @@ type Profile int
 
 const (
 	// ProfileFull allows every field: a cluster the author operates, and
-	// (later) a hosted tenant's own vcluster.
+	// (later) a hosted user's own vcluster.
 	ProfileFull Profile = iota
 	// ProfileRestricted is the hosted runtime on shared nodes. It allows
-	// what reaches only the tenant's own pod, and refuses anything that
+	// what reaches only the hosted user's own pod, and refuses anything that
 	// reaches the Kubernetes API, another object in the namespace, or
 	// platform-owned identity.
 	ProfileRestricted
@@ -53,7 +53,7 @@ func (p Profile) Permits(fieldProfile Profile) bool { return p <= fieldProfile }
 // refuses, under EVERY profile, any set field whose path is missing from
 // this table, and TestFieldProfilesClassifyEverySpecField fails the build when a
 // field is added to the spec without an entry. So a new field can never
-// silently become tenant-writable: someone has to write down which profile
+// silently become writable by a hosted user: someone has to write down which profile
 // allows it.
 //
 // Paths are JSON names joined with '.', and list elements share their list's
@@ -98,7 +98,7 @@ var FieldProfiles = map[string]Profile{
 	"ports.expose":   ProfileRestricted,
 	// appProtocol only sets the Service port's appProtocol, and domains are
 	// custom hostnames that hosted verifies before serving. Neither reaches
-	// past the tenant's own workload.
+	// past the hosted user's own workload.
 	"ports.appProtocol": ProfileRestricted,
 	"ports.domains":     ProfileRestricted,
 
@@ -114,7 +114,7 @@ var FieldProfiles = map[string]Profile{
 
 	"storageGiB": ProfileRestricted,
 
-	// before and deployPhase order the tenant's OWN workloads against each
+	// before and deployPhase order the hosted user's OWN workloads against each
 	// other and reach nothing outside the env. A hosted migrate job that
 	// could not be ordered is the defect ADR 0002 names ("silently
 	// ignored"), so jobs are only useful on Restricted with these.
@@ -146,21 +146,21 @@ var FieldProfiles = map[string]Profile{
 // Full-only entry.
 var fullOnlyReasons = map[string]string{
 	"env.secretRef":             "a raw Secret name in a shared hosted namespace can address platform-owned Secrets; use managedSecret, which names a value in your environment's secret store",
-	"env.configMapRef":          "a ConfigMap reference reads a namespace object the tenant did not write; use value, or managedSecret for a credential",
+	"env.configMapRef":          "a ConfigMap reference reads a namespace object you did not write; use value, or managedSecret for a credential",
 	"env.fieldRef":              "the Downward API exposes pod and node placement, which the hosted platform owns",
 	"schedule":                  "cron is not available on hosted until metering covers it",
-	"namespacedRBAC":            "hosted workloads have no Kubernetes API access until tenant isolation (vcluster) exists",
-	"clusterRBAC":               "hosted workloads have no Kubernetes API access until tenant isolation (vcluster) exists",
-	"crds":                      "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until tenant isolation (vcluster) exists",
-	"group":                     "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until tenant isolation (vcluster) exists",
-	"version":                   "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until tenant isolation (vcluster) exists",
-	"leaderElection":            "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until tenant isolation (vcluster) exists",
-	"serviceAccountAnnotations": "hosted workloads run under a platform-owned ServiceAccount; cloud workload identity is bound by the platform, never by the tenant",
-	"sidecars":                  "the hosted platform composes the pod itself (runtime class, isolation, egress), and a tenant-authored container would run outside the single-container policy it enforces",
-	"volumes":                   "a Secret, ConfigMap or PVC volume reads namespace objects the tenant did not write; use storageGiB for a persistent disk, and env for configuration",
+	"namespacedRBAC":            "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)",
+	"clusterRBAC":               "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)",
+	"crds":                      "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
+	"group":                     "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
+	"version":                   "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
+	"leaderElection":            "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
+	"serviceAccountAnnotations": "hosted workloads run under a platform-owned ServiceAccount; cloud workload identity is bound by the platform, never by the workload's author",
+	"sidecars":                  "the hosted platform composes the pod itself (runtime class, isolation, egress), and a second container you author would run outside the single-container policy it enforces",
+	"volumes":                   "a Secret, ConfigMap or PVC volume reads namespace objects you did not write; use storageGiB for a persistent disk, and env for configuration",
 	"serviceAccount":            "hosted workloads run under a platform-owned ServiceAccount; naming another one would borrow its identity",
-	"nodeSelector":              "hosted placement (the isolation pool) is decided by the platform, never by the tenant",
-	"tolerations":               "hosted placement (the isolation pool) is decided by the platform, never by the tenant; a toleration would let a pod onto nodes reserved for something else",
+	"nodeSelector":              "hosted placement (the isolation pool) is decided by the platform, never by the workload's author",
+	"tolerations":               "hosted placement (the isolation pool) is decided by the platform, never by the workload's author; a toleration would let a pod onto nodes reserved for something else",
 	"podAnnotations":            "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns",
 }
 
@@ -179,7 +179,7 @@ var KindProfiles = map[WorkloadKind]Profile{
 // ProfileRestricted.
 var fullOnlyKindReasons = map[WorkloadKind]string{
 	KindCron:     "cron is not available on hosted until metering covers it",
-	KindOperator: "an operator needs cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until tenant isolation (vcluster) exists",
+	KindOperator: "an operator needs cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
 	KindTool:     "a tool is never scheduled, so there is nothing for the hosted runtime to run",
 }
 

@@ -245,7 +245,7 @@ func TestTierKCLRejects(t *testing.T) {
 		"closed sidecar: securityContext": {`x = tiers.Container { name = "s", image = "i", securityContext = {} }`, "securityContext"},
 		"toleration effect enum":          {`x = tiers.Toleration { key = "k", effect = "Evict" }`, "Toleration.effect must be one of"},
 		"domains ceiling":                 {`x = tiers.Port { name = "http", port = 80, domains = ["a.x.io", "b.x.io", "c.x.io", "d.x.io", "e.x.io", "f.x.io", "g.x.io", "h.x.io", "i.x.io"] }`, "Port.domains allows at most 8 entries"},
-		"rbac rule needs verbs":           {`x = tiers.PolicyRule { apiGroups = [""], resources = ["pods"] }`, "verbs"},
+		"policy rule needs verbs":         {`x = tiers.PolicyRule { apiGroups = [""], resources = ["pods"] }`, "verbs"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

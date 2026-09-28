@@ -91,14 +91,14 @@ The hosted runtime accepts **only** `forge.dev/v1alpha1 Workload` CRs (plus
 YAML. The control plane validates each CR server-side and renders it itself,
 so hosted policy (Kata runtime class, isolation pool, registry allowlist,
 secret scoping, routes, quota, egress) stays platform-owned and cannot be
-authored by a tenant.
+authored by a hosted user.
 
 **Restriction is a capability *profile*, not a separate app model.**
 `Validate(spec, profile)`:
 
 | Profile | Where | Allows |
 |---|---|---|
-| `Full` | Cluster runtime; future hosted tenant clusters (vcluster) | every field |
+| `Full` | Cluster runtime; future per-customer hosted clusters (vcluster) | every field |
 | `Restricted` | Hosted on shared nodes (today) | kinds `service`, `worker`, `job`; `replicas`, `resources`, `command`/`args`, `ports` (the platform routes `expose = true`), `probes`, `storage`, and env from `value` / `managedSecret` / `databaseRef` / `workloadURL` |
 
 Restricted refuses RBAC, ServiceAccount annotations, CRDs/operators,
@@ -110,15 +110,16 @@ the error before publishing.
 
 **The profile is default-deny.** Every `WorkloadSpec` field is classified in
 one table. A reflection test fails when a field is added to the spec without
-a classification, so a new field can never silently become tenant-writable.
+a classification, so a new field can never silently become writable by a
+hosted user.
 
 Why a typed CR rather than restricted raw YAML: the spec is an allowlist by
 construction, so a new Kubernetes PodSpec field is unreachable until we add
 it; raw YAML makes the boundary a denylist over all of PodSpec that must
 chase every Kubernetes release. The platform also needs to own the render in
 order to compose isolation around it, and status (ready replicas, last-ready)
-feeds billing. Tenants never see the difference, because they author
-`fw.Workload` either way. When tenants get their own vcluster, the hosted
+feeds billing. Hosted users never see the difference, because they author
+`fw.Workload` either way. When each customer gets its own vcluster, the hosted
 runtime runs the `Full` profile inside it. That is a profile switch, not a
 new model.
 
@@ -137,7 +138,7 @@ best:
 - `terminationGracePeriodSeconds` derived from the workload's drain env;
 - soft topology spread plus a PDB above one replica;
 - non-root, read-only rootfs with a `/tmp` emptyDir, no token automount
-  unless the workload has RBAC;
+  unless the workload has Kubernetes RBAC;
 - `before` jobs as initContainers, plus standalone Jobs with a deploy phase;
 - storage: `storageGiB > 0` requires 1 replica with a `Recreate` rollout.
 

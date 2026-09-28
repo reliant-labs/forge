@@ -2,7 +2,7 @@
 Negative test — the HOSTED runtime refuses `namespacedRBAC` (ADR 0002 §3, Restricted
 profile).
 
-RBAC grants a tenant pod rights against the Kubernetes API of a namespace the platform owns. A hosted workload never talks to the API server; the platform does that for it.
+RBAC grants a hosted pod rights against the Kubernetes API of a namespace the platform owns. A hosted workload never talks to the API server; the platform does that for it.
 
 The refusal is per WORKLOAD: its effective runtime is OnHosted (its own
 `runtime`, else Bundle.runtime), so the check lives where that is known —

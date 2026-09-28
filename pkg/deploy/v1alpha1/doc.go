@@ -52,7 +52,7 @@
 // profile.go). ProfileFull is a cluster the author operates.
 // ProfileRestricted is the hosted runtime on shared nodes, and it refuses
 // RBAC, CRDs, raw Secret and ConfigMap reads and the other fields that
-// reach past the tenant's own pod. Every spec field is classified in one
+// reach past the hosted user's own pod. Every spec field is classified in one
 // table, FieldProfiles, and a reflection test fails the build when a field
 // is added without a classification. That keeps the profile default-deny.
 //

@@ -49,9 +49,9 @@ func (p Profile) Permits(fieldProfile Profile) bool { return p <= fieldProfile }
 // most restrictive profile that allows it. It is the whole profile mask, in
 // one table.
 //
-// THE TABLE IS DEFAULT-DENY. Validate(ProfileRestricted) walks a spec by
-// reflection and refuses any set field whose path is missing from this
-// table, and TestFieldProfilesClassifyEverySpecField fails the build when a
+// THE TABLE IS DEFAULT-DENY. Validate walks a spec by reflection and
+// refuses, under EVERY profile, any set field whose path is missing from
+// this table, and TestFieldProfilesClassifyEverySpecField fails the build when a
 // field is added to the spec without an entry. So a new field can never
 // silently become tenant-writable: someone has to write down which profile
 // allows it.
@@ -170,7 +170,7 @@ func profileViolations(s WorkloadSpec, p Profile) []error {
 	walkSpecFields(reflect.ValueOf(s), "", "", func(key, display string, _ reflect.Value) bool {
 		fp, ok := FieldProfiles[key]
 		if !ok {
-			errs = append(errs, fmt.Errorf("%s: this field has no profile classification, so no profile but full may set it (add it to FieldProfiles)", display))
+			errs = append(errs, fmt.Errorf("%s: this field has no profile classification, so no profile may set it (add it to FieldProfiles)", display))
 			return false
 		}
 		if !p.Permits(fp) {

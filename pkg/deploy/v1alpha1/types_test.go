@@ -41,7 +41,7 @@ func fullWorkload() *Workload {
 				{Name: "POD_NAME", FieldRef: &FieldRef{FieldPath: "metadata.name"}},
 			},
 			Resources:                 Resources{CPURequestMillicores: 500, CPULimitMillicores: 1000, MemoryRequestBytes: 2 << 30, MemoryLimitBytes: 2 << 30},
-			Ports:                     []Port{{Name: "metrics", Port: 8080, Protocol: ProtocolTCP}, {Name: "webhook", Port: 9443}},
+			Ports:                     []Port{{Name: "metrics", Port: 8080, Protocol: ProtocolTCP, AppProtocol: "http"}, {Name: "webhook", Port: 9443}},
 			Probes:                    &Probes{Port: 8081, ReadinessPath: "/readyz", LivenessPath: "/healthz", InitialDelaySeconds: 1, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 4},
 			StorageGiB:                0,
 			Schedule:                  "",
@@ -53,6 +53,23 @@ func fullWorkload() *Workload {
 			Version:                   "v1alpha1",
 			LeaderElection:            ptr(false),
 			ServiceAccountAnnotations: map[string]string{"iam.gke.io/gcp-service-account": "api@acme.iam.gserviceaccount.com"},
+			Sidecars: []Container{{
+				Name: "cloud-sql-proxy", Image: "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1",
+				Command: []string{"/cloud-sql-proxy"}, Args: []string{"--port=5432", "acme:us:db"},
+				Env:       []EnvVar{{Name: "LOG", Value: "debug"}},
+				Ports:     []Port{{Name: "proxy-health", Port: 9801}},
+				Resources: Resources{CPURequestMillicores: 10, MemoryRequestBytes: 16 << 20},
+				Probes:    &Probes{TCP: true},
+			}},
+			Volumes: []Volume{
+				{Name: "scratch", MountPath: "/scratch", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{SizeLimitBytes: 1 << 30}}},
+				{Name: "key", MountPath: "/etc/key", ReadOnly: true, Source: VolumeSource{Secret: &SecretVolumeSource{Name: "k", Items: []KeyToPath{{Key: "pem", Path: "key.pem"}}}}},
+				{Name: "cfg", MountPath: "/etc/cfg", ReadOnly: true, Source: VolumeSource{ConfigMap: &ConfigMapVolumeSource{Name: "c", Items: []KeyToPath{{Key: "a", Path: "a.yaml"}}}}},
+				{Name: "cache", MountPath: "/cache", Source: VolumeSource{PVC: &PVCVolumeSource{ClaimName: "cache"}}},
+			},
+			NodeSelector:   map[string]string{"cloud.google.com/gke-nodepool": "ops"},
+			Tolerations:    []Toleration{{Key: "dedicated", Operator: TolerationOpEqual, Value: "ops", Effect: TaintNoExecute, TolerationSeconds: ptr(int64(30))}},
+			PodAnnotations: map[string]string{"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"},
 		},
 		Status: WorkloadStatus{
 			TierStatus: TierStatus{Phase: PhaseReady, ObservedGeneration: 3, Hostname: "lively-ferret.apps.example", URL: "https://lively-ferret.apps.example", Message: "ok",
@@ -157,8 +174,16 @@ func TestDeepCopyIsIndependent(t *testing.T) {
 	b.Spec.ClusterRBAC[0].Verbs[0] = "get"
 	*b.Spec.LeaderElection = true
 	b.Spec.ServiceAccountAnnotations["x"] = "y"
+	b.Spec.Sidecars[0].Args[0] = "changed"
+	b.Spec.Sidecars[0].Probes.TCP = false
+	b.Spec.Volumes[1].Source.Secret.Items[0].Path = "changed"
+	*b.Spec.Tolerations[0].TolerationSeconds = 1
+	b.Spec.NodeSelector["x"] = "y"
+	b.Spec.PodAnnotations["x"] = "y"
 	if a.Spec.Env[3].DatabaseRef.Name != "orders" || a.Spec.Env[5].ConfigMapRef.Key != "features" || a.Spec.Ports[0].Port != 8080 ||
-		a.Spec.Probes.Port != 8081 || a.Spec.ClusterRBAC[0].Verbs[0] != "*" || *a.Spec.LeaderElection || len(a.Spec.ServiceAccountAnnotations) != 1 {
+		a.Spec.Probes.Port != 8081 || a.Spec.ClusterRBAC[0].Verbs[0] != "*" || *a.Spec.LeaderElection || len(a.Spec.ServiceAccountAnnotations) != 1 ||
+		a.Spec.Sidecars[0].Args[0] != "--port=5432" || !a.Spec.Sidecars[0].Probes.TCP || a.Spec.Volumes[1].Source.Secret.Items[0].Path != "key.pem" ||
+		*a.Spec.Tolerations[0].TolerationSeconds != 30 || len(a.Spec.NodeSelector) != 1 || len(a.Spec.PodAnnotations) != 1 {
 		t.Fatal("DeepCopy shares memory with the original")
 	}
 }

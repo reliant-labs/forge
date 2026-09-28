@@ -70,6 +70,9 @@ func TestTierKCLMatchesGoFieldForField(t *testing.T) {
 		reflect.TypeOf(v1alpha1.ConfigMapKeyRef{}), reflect.TypeOf(v1alpha1.FieldRef{}), reflect.TypeOf(v1alpha1.WorkloadURLRef{}),
 		reflect.TypeOf(v1alpha1.Resources{}), reflect.TypeOf(v1alpha1.Probes{}), reflect.TypeOf(v1alpha1.Port{}),
 		reflect.TypeOf(v1alpha1.PolicyRule{}), reflect.TypeOf(v1alpha1.StaticSiteCDN{}),
+		reflect.TypeOf(v1alpha1.Container{}), reflect.TypeOf(v1alpha1.Volume{}), reflect.TypeOf(v1alpha1.VolumeSource{}),
+		reflect.TypeOf(v1alpha1.SecretVolumeSource{}), reflect.TypeOf(v1alpha1.ConfigMapVolumeSource{}), reflect.TypeOf(v1alpha1.KeyToPath{}),
+		reflect.TypeOf(v1alpha1.EmptyDirVolumeSource{}), reflect.TypeOf(v1alpha1.PVCVolumeSource{}), reflect.TypeOf(v1alpha1.Toleration{}),
 	} {
 		name := kclSchemaName(typ.Name())
 		var goFields []string

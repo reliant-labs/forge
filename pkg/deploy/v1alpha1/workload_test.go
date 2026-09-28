@@ -350,3 +350,177 @@ func TestWorkloadDefaultsAndEffectiveHelpers(t *testing.T) {
 		t.Error("an unexposed port is not the exposed port")
 	}
 }
+
+// podSpec is a service with every Full-only pod-level field set validly.
+func podSpec() WorkloadSpec {
+	s := svc()
+	s.Ports[0].AppProtocol = "h2c"
+	s.Ports[0].Domains = []string{"api.acme.com", "www.acme.com"}
+	s.Sidecars = []Container{{Name: "cloud-sql-proxy", Image: "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1", Args: []string{"--port=5432"}}}
+	s.Volumes = []Volume{
+		{Name: "scratch", MountPath: "/scratch", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}},
+		{Name: "key", MountPath: "/etc/key", ReadOnly: true, Source: VolumeSource{Secret: &SecretVolumeSource{Name: "k"}}},
+	}
+	s.ServiceAccount = "reliant-cloudsql"
+	s.NodeSelector = map[string]string{"cloud.google.com/gke-nodepool": "general"}
+	s.Tolerations = []Toleration{{Key: "pool", Value: "general", Effect: TaintNoSchedule}}
+	s.PodAnnotations = map[string]string{"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"}
+	return s
+}
+
+// TestWorkloadPodLevelFields: the Full-only pod fields validate under Full,
+// and every structural rule on them holds under BOTH profiles.
+func TestWorkloadPodLevelFields(t *testing.T) {
+	mustPass(t, podSpec(), ProfileFull)
+	// "data" and /data are free for a stateless workload's own volume.
+	stateless := WorkloadSpec{Image: pinnedImage, Volumes: []Volume{{Name: "data", MountPath: "/data", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}}}
+	mustPass(t, stateless, ProfileFull)
+
+	vol := func(src VolumeSource) WorkloadSpec {
+		return WorkloadSpec{Image: pinnedImage, Volumes: []Volume{{Name: "v", MountPath: "/v", Source: src}}}
+	}
+	withSA := func(mut func(*WorkloadSpec)) WorkloadSpec {
+		s := WorkloadSpec{Image: pinnedImage, ServiceAccount: "existing"}
+		mut(&s)
+		return s
+	}
+	rule := []PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}}
+	cases := map[string]struct {
+		spec WorkloadSpec
+		want string
+	}{
+		// volume source: exactly one
+		"volume source none": {vol(VolumeSource{}), "exactly one of secret, configMap, emptyDir, pvc (got 0)"},
+		"volume source two": {vol(VolumeSource{EmptyDir: &EmptyDirVolumeSource{}, PVC: &PVCVolumeSource{ClaimName: "c"}}),
+			"exactly one of secret, configMap, emptyDir, pvc (got 2)"},
+		"volume source four": {vol(VolumeSource{EmptyDir: &EmptyDirVolumeSource{}, PVC: &PVCVolumeSource{ClaimName: "c"}, Secret: &SecretVolumeSource{Name: "s"}, ConfigMap: &ConfigMapVolumeSource{Name: "c"}}),
+			"(got 4)"},
+		"secret needs a name": {vol(VolumeSource{Secret: &SecretVolumeSource{}}), "source.secret.name is required"},
+		"pvc needs a claim":   {vol(VolumeSource{PVC: &PVCVolumeSource{}}), "source.pvc.claimName is required"},
+		"negative sizeLimit":  {vol(VolumeSource{EmptyDir: &EmptyDirVolumeSource{SizeLimitBytes: -1}}), "sizeLimitBytes must not be negative"},
+		"item path escapes":   {vol(VolumeSource{Secret: &SecretVolumeSource{Name: "s", Items: []KeyToPath{{Key: "k", Path: "../etc/passwd"}}}}), "must not contain '..'"},
+		"item path absolute":  {vol(VolumeSource{ConfigMap: &ConfigMapVolumeSource{Name: "c", Items: []KeyToPath{{Key: "k", Path: "/abs"}}}}), "must be relative"},
+		"item path twice":     {vol(VolumeSource{ConfigMap: &ConfigMapVolumeSource{Name: "c", Items: []KeyToPath{{Key: "a", Path: "x"}, {Key: "b", Path: "x"}}}}), "projected twice"},
+		"relative mountPath":  {WorkloadSpec{Image: pinnedImage, Volumes: []Volume{{Name: "v", MountPath: "v", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}}}, "must be absolute"},
+		"reserved tmp name":   {WorkloadSpec{Image: pinnedImage, Volumes: []Volume{{Name: "tmp", MountPath: "/x", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}}}, `"tmp" is reserved`},
+		"reserved tmp path":   {WorkloadSpec{Image: pinnedImage, Volumes: []Volume{{Name: "t", MountPath: "/tmp", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}}}, "/tmp is already mounted by volume tmp"},
+		"data reserved with storage": {WorkloadSpec{Image: pinnedImage, StorageGiB: 1, Volumes: []Volume{{Name: "data", MountPath: "/x", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}}},
+			`"data" is reserved`},
+		"duplicate volume name": {WorkloadSpec{Image: pinnedImage, Volumes: []Volume{{Name: "v", MountPath: "/a", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}, {Name: "v", MountPath: "/b", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}}},
+			"volume name is declared twice"},
+		"duplicate mountPath": {WorkloadSpec{Image: pinnedImage, Volumes: []Volume{{Name: "a", MountPath: "/m", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}, {Name: "b", MountPath: "/m", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}}},
+			"already mounted by volume a"},
+		"volumes not for tool": {WorkloadSpec{Kind: KindTool, Image: pinnedImage, Volumes: []Volume{{Name: "v", MountPath: "/v", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{}}}}},
+			`volumes is not supported for kind "tool"`},
+
+		// serviceAccount vs RBAC
+		"serviceAccount + namespacedRBAC": {withSA(func(s *WorkloadSpec) { s.NamespacedRBAC = rule }), "serviceAccount \"existing\" and namespacedRBAC are mutually exclusive"},
+		"serviceAccount + clusterRBAC": {withSA(func(s *WorkloadSpec) { s.Kind = KindOperator; s.CRDs = []string{"W"}; s.ClusterRBAC = rule }),
+			"serviceAccount \"existing\" and clusterRBAC are mutually exclusive"},
+		"serviceAccount + SA annotations": {withSA(func(s *WorkloadSpec) { s.ServiceAccountAnnotations = map[string]string{"a": "b"} }),
+			"and serviceAccountAnnotations are mutually exclusive"},
+		"serviceAccount not for tool": {WorkloadSpec{Kind: KindTool, Image: pinnedImage, ServiceAccount: "x"}, `serviceAccount is not supported for kind "tool"`},
+
+		// custom domains
+		"domains on unexposed port": {WorkloadSpec{Image: pinnedImage, Ports: []Port{{Name: "http", Port: 80, Domains: []string{"a.acme.com"}}}},
+			"domains are only meaningful on the exposed port"},
+		"domain not a hostname": {WorkloadSpec{Image: pinnedImage, Ports: []Port{{Name: "http", Port: 80, Expose: true, Domains: []string{"Not A Host"}}}},
+			"not a lowercase DNS hostname"},
+		"domain twice": {WorkloadSpec{Image: pinnedImage, Ports: []Port{{Name: "http", Port: 80, Expose: true, Domains: []string{"a.acme.com", "a.acme.com"}}}},
+			"listed twice"},
+		"too many domains": {WorkloadSpec{Image: pinnedImage, Ports: []Port{{Name: "http", Port: 80, Expose: true, Domains: []string{"a.x.io", "b.x.io", "c.x.io", "d.x.io", "e.x.io", "f.x.io", "g.x.io", "h.x.io", "i.x.io"}}}},
+			"at most 8"},
+		"bad appProtocol": {WorkloadSpec{Image: pinnedImage, Ports: []Port{{Name: "http", Port: 80, AppProtocol: "H2C!"}}}, "appProtocol"},
+
+		// sidecars
+		"sidecar needs image": {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s"}}}, "sidecars[s]: image is required"},
+		"sidecar name twice":  {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i"}, {Name: "s", Image: "i"}}}, "sidecar name is declared twice"},
+		"sidecar bad name":    {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "Proxy", Image: "i"}}}, "RFC-1123"},
+		"sidecar port collides with main": {WorkloadSpec{Image: pinnedImage, Ports: []Port{{Name: "http", Port: 8080}}, Sidecars: []Container{{Name: "s", Image: "i", Ports: []Port{{Name: "proxy", Port: 8080}}}}},
+			"port 8080/tcp is declared by both the main container and s"},
+		"sidecar port name collides": {WorkloadSpec{Image: pinnedImage, Ports: []Port{{Name: "http", Port: 8080}}, Sidecars: []Container{{Name: "s", Image: "i", Ports: []Port{{Name: "http", Port: 9000}}}}},
+			`name "http" is declared by both`},
+		"sidecar port exposed": {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Ports: []Port{{Name: "p", Port: 9000, Expose: true}}}}},
+			"container ports only"},
+		"sidecar probes need a port": {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Probes: &Probes{}}}}, "sidecars[s]: probes need a port"},
+		"sidecar env two channels":   {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Env: []EnvVar{{Name: "X", Value: "1", ManagedSecret: "X"}}}}}, "sidecars[s]: env var X sets more than one"},
+		"sidecar limit below request": {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Resources: Resources{CPURequestMillicores: 100, CPULimitMillicores: 50}}}},
+			"sidecars[s]: resources.cpuLimitMillicores"},
+
+		// placement
+		"nodeSelector bad value": {WorkloadSpec{Image: pinnedImage, NodeSelector: map[string]string{"pool": "not valid!"}}, "not a valid label value"},
+		"nodeSelector bad key":   {WorkloadSpec{Image: pinnedImage, NodeSelector: map[string]string{"bad key": "x"}}, "not a valid label key"},
+		"toleration empty key needs Exists": {WorkloadSpec{Image: pinnedImage, Tolerations: []Toleration{{Effect: TaintNoSchedule}}},
+			"requires operator Exists"},
+		"toleration Exists with value": {WorkloadSpec{Image: pinnedImage, Tolerations: []Toleration{{Key: "k", Operator: TolerationOpExists, Value: "v"}}},
+			"value must be empty"},
+		"tolerationSeconds without NoExecute": {WorkloadSpec{Image: pinnedImage, Tolerations: []Toleration{{Key: "k", Effect: TaintNoSchedule, TolerationSeconds: ptr(int64(5))}}},
+			"only applies to effect NoExecute"},
+		"toleration bad effect":  {WorkloadSpec{Image: pinnedImage, Tolerations: []Toleration{{Key: "k", Effect: "Evict"}}}, "effect \"Evict\""},
+		"podAnnotations bad key": {WorkloadSpec{Image: pinnedImage, PodAnnotations: map[string]string{"no spaces": "x"}}, "podAnnotations key"},
+	}
+	for name, c := range cases {
+		for _, p := range []Profile{ProfileFull, ProfileRestricted} {
+			t.Run(name+"/"+p.String(), func(t *testing.T) {
+				mustFail(t, c.spec.Validate(p), c.want)
+			})
+		}
+	}
+}
+
+// TestWorkloadPodLevelProfiles: every new pod-level field is refused under
+// Restricted by name, and appProtocol and domains are allowed there.
+func TestWorkloadPodLevelProfiles(t *testing.T) {
+	restrictedOK := svc()
+	restrictedOK.Ports[0].AppProtocol = "grpc"
+	restrictedOK.Ports[0].Domains = []string{"api.acme.com"}
+	mustPass(t, restrictedOK, ProfileRestricted)
+
+	err := podSpec().Validate(ProfileRestricted)
+	for field, reason := range map[string]string{
+		"sidecars":       "single-container policy",
+		"volumes":        "use storageGiB for a persistent disk",
+		"serviceAccount": "borrow its identity",
+		"nodeSelector":   "hosted placement",
+		"tolerations":    "hosted placement",
+		"podAnnotations": "platform integrations",
+	} {
+		mustFail(t, err, field+": not allowed under the restricted profile: ")
+		mustFail(t, err, reason)
+		if FieldProfiles[field] != ProfileFull {
+			t.Errorf("FieldProfiles[%q] = %s, want full", field, FieldProfiles[field])
+		}
+	}
+	for _, field := range []string{"ports.appProtocol", "ports.domains"} {
+		if FieldProfiles[field] != ProfileRestricted {
+			t.Errorf("FieldProfiles[%q] = %s, want restricted", field, FieldProfiles[field])
+		}
+	}
+	if strings.Contains(err.Error(), "appProtocol") || strings.Contains(err.Error(), "domains") {
+		t.Errorf("Restricted refused a Restricted-allowed port field: %v", err)
+	}
+}
+
+func TestPodLevelHelpers(t *testing.T) {
+	if (WorkloadSpec{ServiceAccount: "x"}).UsesGeneratedServiceAccount() || !(WorkloadSpec{}).UsesGeneratedServiceAccount() {
+		t.Error("UsesGeneratedServiceAccount must be false exactly when serviceAccount names an existing one")
+	}
+	c := Container{Ports: []Port{{Name: "admin", Port: 9000}, {Name: "http", Port: 9801}}, Probes: &Probes{TCP: true}}
+	if p := c.EffectiveProbes(); p == nil || p.Port != 9801 || p.PeriodSeconds != DefaultProbePeriodSeconds {
+		t.Errorf("sidecar EffectiveProbes = %+v, want port http=9801 with defaults", p)
+	}
+	if (Container{Ports: []Port{{Name: "http", Port: 1}}}).EffectiveProbes() != nil {
+		t.Error("a sidecar with no declared probes gets none (no implicit TCP probe)")
+	}
+	in := WorkloadSpec{Sidecars: []Container{{Name: "s", Ports: []Port{{Name: "p", Port: 1}}, Probes: &Probes{}}}}
+	d := in.WithDefaults()
+	if s := d.Sidecars[0]; s.Resources.CPURequestMillicores != DefaultCPUMillicores || s.Ports[0].Protocol != ProtocolTCP || s.Probes.PeriodSeconds != 5 {
+		t.Errorf("sidecar defaults = %+v", s)
+	}
+	if in.Sidecars[0].Ports[0].Protocol != "" || in.Sidecars[0].Probes.PeriodSeconds != 0 || in.Sidecars[0].Resources.CPURequestMillicores != 0 {
+		t.Error("WithDefaults mutated a sidecar through shared memory")
+	}
+	if p := podSpec().ExposedPort(); p == nil || len(p.Domains) != 2 {
+		t.Errorf("ExposedPort().Domains = %+v", p)
+	}
+}

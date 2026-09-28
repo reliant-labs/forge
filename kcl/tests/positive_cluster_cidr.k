@@ -172,13 +172,13 @@ assert_prod_layout_disjoint = forge.cidrs_overlap("10.16.0.0/14", "10.20.0.0/20"
 # and forge resolves that path host-side ($KUBECONFIG's first entry,
 # else ~/.kube/config) and binds it as `-D kubeconfig=`.
 #
-# Under a bare `kcl run` with no binding it is "". That is deliberate and
-# is asserted rather than worked around: the predecessor of this field
-# guessed `~/.kube/config`, which is wrong wherever $KUBECONFIG is set.
-# A guess that is usually right fails on exactly one machine, and is
-# reported there as "context does not exist" rather than as a wrong file.
-assert_kubeconfig_unbound_is_empty = _owner.kubeconfig == ""
-assert_kubeconfig_never_guesses = "/.kube/" not in _owner.kubeconfig
+# forge's render seam (kclrender.Run) ALWAYS binds `-D kubeconfig=`
+# (#277), so the field is exactly that binding — never a KCL-side guess.
+# The predecessor of this field guessed `~/.kube/config`, which is wrong
+# wherever $KUBECONFIG is set; a guess that is usually right fails on
+# exactly one machine, reported as "context does not exist". With no
+# binding (a bare `kcl run`) it would be "", never a guess.
+assert_kubeconfig_is_the_binding = _owner.kubeconfig == (option("kubeconfig") or "")
 
 # It is a per-cluster field, so a consumer names the CLUSTER it wants
 # rather than re-deriving a path — that is the whole reason this is not

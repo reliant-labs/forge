@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,13 +12,48 @@ import (
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
-// kclEnvSource mirrors the two channels of forge.EnvSource that the config
-// projection produces: an inline `value`, or a `from_secret` {name,key} ref.
-// (Value is a pointer so an explicit empty-string value is distinguishable
-// from an absent value channel.)
+// kclEnvSource is one entry of the config projection
+// (config_gen.appConfigEnvMap: `{str: str | forge.SecretRef}`): a plain
+// value, rendered as a bare JSON string, or a Secret reference, rendered as
+// the forge.SecretRef object. Exactly one of Value / Secret is set. (Value is
+// a pointer so an explicit empty-string value is distinguishable from a
+// secret-backed entry.)
 type kclEnvSource struct {
-	Value      *string           `json:"value"`
-	FromSecret map[string]string `json:"from_secret"`
+	Value  *string
+	Secret *kclEnvSecretRef
+}
+
+// kclEnvSecretRef is forge.SecretRef as the projection emits it: the k8s
+// Secret key a cluster workload reads, plus the store name it is rendered
+// from (store_key, set by config codegen).
+type kclEnvSecretRef struct {
+	Name     string `json:"name"`
+	Key      string `json:"key"`
+	StoreKey string `json:"store_key,omitempty"`
+	Optional bool   `json:"optional,omitempty"`
+}
+
+// UnmarshalJSON accepts the projection's union: a string is a plain value, an
+// object is a forge.SecretRef. Anything else is refused rather than read as an
+// absent value — an unknown shape silently dropping a config var is the drift
+// this one projection exists to prevent.
+func (s *kclEnvSource) UnmarshalJSON(b []byte) error {
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		s.Value, s.Secret = &str, nil
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	var ref kclEnvSecretRef
+	if err := dec.Decode(&ref); err != nil {
+		return fmt.Errorf("config env entry is neither a string nor a forge.SecretRef {name, key}: %s: %w", b, err)
+	}
+	if ref.Name == "" {
+		return fmt.Errorf("config env entry is a forge.SecretRef with no name: %s", b)
+	}
+	s.Value, s.Secret = nil, &ref
+	return nil
 }
 
 // loadProjectConfigEnvMap renders config_gen.appConfigEnvMap(app_config)
@@ -117,8 +153,8 @@ func configProbeSource(projectDir, envDir string) (string, error) {
 		// environment, so the honest host answer is the union — and the
 		// parity report specifically exists to compare against the cluster,
 		// which it cannot do for a var it declined to look at. Nothing is
-		// leaked by asking: a from_secret entry surfaces here as a REFERENCE
-		// (name+key), never a value, and buildForgeConfigValues records it as
+		// leaked by asking: a forge.SecretRef entry surfaces here as a
+		// REFERENCE (name+key), never a value, and buildForgeConfigValues records it as
 		// a placeholder precisely because the host cannot dereference it
 		// either.
 		fmt.Fprintf(&b, "%s.%s(appcfg.%s, %s.%s)", codegen.ConfigSchemaModule, lambda, inst.varName, codegen.ConfigSchemaModule, codegen.KCLAllSensitiveName(inst.schema))

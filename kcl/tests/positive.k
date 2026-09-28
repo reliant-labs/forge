@@ -157,7 +157,7 @@ assert_job_args = _w["db-bootstrap"].spec.args == ["db", "migrate", "up"]
 
 # ── manifests: a Workload record per CLUSTER workload, nothing else ─
 _records = {m.metadata.name: m for m in output.manifests if m.kind == "Workload"}
-assert_records_are_cluster_only = sorted(_records.keys()) == \
+assert_records_are_cluster_only = sorted([k for k in _records]) == \
     ["billing-sweeper", "db-bootstrap", "workspace-controller", "workspace-proxy"]
 assert_no_kcl_expansion = len([m for m in output.manifests if m.kind in ["Deployment", "Service", "CronJob", "Job", "ClusterRole"]]) == 0
 

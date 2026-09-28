@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -346,4 +347,83 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// spec.activeDeadlineSeconds bounds a HOST job exactly as it bounds a
+// Kubernetes Job: once the job has run that long its process is killed and
+// the run fails, naming the deadline, so the jobs it gates never start.
+//
+// The job forks a grandchild (the `go run` shape: the real program is a
+// child of the launcher) and records its pid. Killing only the direct child
+// would orphan that grandchild still running, which is a deadline in name
+// only — so the test also proves the whole tree is gone.
+func TestRunOneHostJob_ActiveDeadlineKillsTheProcessTree(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	deadline := int64(1)
+	j := job("seed", []string{"sh", "-c", "sleep 60 & echo $! > " + pidFile + "; wait"}, "api")
+	j.Spec.ActiveDeadlineSeconds = &deadline
+
+	start := time.Now()
+	err := runOneHostJob(context.Background(), nil, j, nil, "")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("a job past its activeDeadlineSeconds must fail")
+	}
+	if elapsed > 15*time.Second {
+		t.Errorf("the job ran %s; activeDeadlineSeconds=1 did not bound it", elapsed)
+	}
+	for _, want := range []string{"seed", "activeDeadlineSeconds", "1s", "killed", "api"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q:\n%s", want, err)
+		}
+	}
+
+	raw, rerr := os.ReadFile(pidFile)
+	if rerr != nil {
+		t.Fatalf("the job never started its grandchild: %v", rerr)
+	}
+	var pid int
+	if _, serr := fmt.Sscan(strings.TrimSpace(string(raw)), &pid); serr != nil || pid <= 0 {
+		t.Fatalf("bad grandchild pid %q", raw)
+	}
+	waitUntil := time.Now().Add(5 * time.Second)
+	for processAlive(pid) && time.Now().Before(waitUntil) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if processAlive(pid) {
+		_ = signalProcessGroup(pid, 9)
+		t.Fatalf("grandchild %d outlived the deadline: only the direct child was killed", pid)
+	}
+}
+
+// The deadline a host job runs under: its declared activeDeadlineSeconds,
+// else the host runner's safety ceiling.
+func TestJobDeadline(t *testing.T) {
+	j := job("seed", []string{"true"})
+	if d, declared := jobDeadline(j); d != defaultJobTimeout || declared {
+		t.Errorf("undeclared: got (%s, %v), want (%s, false)", d, declared, defaultJobTimeout)
+	}
+	secs := int64(90)
+	j.Spec.ActiveDeadlineSeconds = &secs
+	if d, declared := jobDeadline(j); d != 90*time.Second || !declared {
+		t.Errorf("declared 90: got (%s, %v), want (1m30s, true)", d, declared)
+	}
+}
+
+// A failed deadline stops the up when the job gates something, exactly like
+// any other job failure: the gated workload's job ordering never proceeds.
+func TestRunHostJobs_DeadlineFailureStopsTheGatedJobs(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "second-ran")
+	deadline := int64(1)
+	slow := job("slow", []string{"sh", "-c", "sleep 30"}, "after")
+	slow.Spec.ActiveDeadlineSeconds = &deadline
+	after := job("after", []string{"sh", "-c", "touch " + marker}, "api")
+	e := &KCLEntities{Workloads: []WorkloadEntity{slow, after, svc("api")}}
+	err := runHostJobs(context.Background(), nil, e, nil, "")
+	if err == nil || !strings.Contains(err.Error(), "activeDeadlineSeconds") {
+		t.Fatalf("err = %v, want the deadline failure", err)
+	}
+	if _, serr := os.Stat(marker); serr == nil {
+		t.Fatal("a job gated by the timed-out job ran anyway")
+	}
 }

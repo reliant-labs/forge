@@ -19,6 +19,10 @@ _fe = forge.Frontend {
     type = "vite"
     source = forge.GitSource {
         repo = "github.com/reliant-labs/reliant"
+        # Present but empty: an OMITTED required attribute is a compile
+        # error, which proves nothing about the rule. "" is what an unset
+        # `-D ref=` resolves to, and it is what GitSource's check refuses.
+        ref = ""
         subdir = "web"
     }
 }

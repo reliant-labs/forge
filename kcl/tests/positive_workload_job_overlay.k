@@ -30,4 +30,4 @@ assert_overlay_ordering_applied = _rec["provision-idp"].before == ["api"]
 assert_base_has_no_ordering = "before" not in _rec["api"]
 assert_job_argv_kept = _rec["provision-idp"].args == ["provision-idp"]
 # Both are records: the gate is expanded in Go from the WHOLE set.
-assert_both_records = sorted(_rec.keys()) == ["api", "provision-idp"]
+assert_both_records = sorted([k for k in _rec]) == ["api", "provision-idp"]

@@ -146,7 +146,7 @@ type managedProcess struct {
 // missing/unrenderable config is non-fatal — host-mode services run against
 // whatever defaults the binary's flag/env loader provides.
 //
-// Only the inline `value` channel applies on the host; `from_secret` entries
+// Only plain values apply on the host; forge.SecretRef entries
 // belong to a cluster Secret and have no host equivalent (set them in
 // `.env.<env>` or the developer shell). Reading the one KCL projection keeps
 // host-mode services from drifting off their cluster-mode counterparts.

@@ -104,7 +104,7 @@ func TestValidateKCL_BrokenHostedEnvIsStillCaught(t *testing.T) {
 			// The site's API_URL names a workload with no exposed port: the
 			// control plane's resolver refuses it permanently.
 			name: "workloadURL to an unexposed workload",
-			api: `        ports = [fw.Port {name = "http", port = 8080}]`,
+			api:  `        ports = [fw.Port {name = "http", port = 8080}]`,
 			want: "only a workload with an exposed port has a URL",
 		},
 	}

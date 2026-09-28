@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,8 +71,8 @@ func TestLoadProjectConfigEnvMap_SensitiveRoutesToSecret(t *testing.T) {
 		t.Errorf("DATABASE_URL projected an INLINE value %q — a sensitive field must route to "+
 			"the Secret channel in every environment", *db.Value)
 	}
-	if db.FromSecret["name"] != "cfgproj-secrets" || db.FromSecret["key"] != "database_url" {
-		t.Errorf("DATABASE_URL from_secret = %#v, want {name: cfgproj-secrets, key: database_url}", db.FromSecret)
+	if db.Secret == nil || db.Secret.Name != "cfgproj-secrets" || db.Secret.Key != "database_url" || db.Secret.StoreKey != "DATABASE_URL" {
+		t.Errorf("DATABASE_URL secret = %#v, want forge.SecretRef {name: cfgproj-secrets, key: database_url, store_key: DATABASE_URL}", db.Secret)
 	}
 	if env, ok := srcs["ENVIRONMENT"]; !ok || env.Value == nil || *env.Value != "development" {
 		t.Errorf("ENVIRONMENT projection = %#v, want inline \"development\"", srcs["ENVIRONMENT"])
@@ -94,5 +95,37 @@ func TestLoadProjectConfigEnvMap_SensitiveRoutesToSecret(t *testing.T) {
 	}
 	if strings.Contains(string(store), "postgres://") {
 		t.Errorf("secrets/dev.yaml carries a DSN — the dev port is KCL's fact, not this file's:\n%s", store)
+	}
+}
+
+// The projection is `{str: str | forge.SecretRef}`: a bare string is a plain
+// value, an object is a Secret reference, and any other shape is refused
+// rather than silently read as "no value".
+func TestKCLEnvSource_DecodesTheProjectionUnion(t *testing.T) {
+	var got map[string]kclEnvSource
+	if err := json.Unmarshal([]byte(`{
+		"PORT": "8080",
+		"EMPTY": "",
+		"DATABASE_URL": {"name": "app-secrets", "key": "database_url", "store_key": "DATABASE_URL"},
+		"ADMIN_PASSWORD": {"name": "app-secrets", "key": "admin_password", "optional": true}
+	}`), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if v := got["PORT"].Value; v == nil || *v != "8080" || got["PORT"].Secret != nil {
+		t.Errorf("PORT = %+v, want the plain value 8080", got["PORT"])
+	}
+	if v := got["EMPTY"].Value; v == nil || *v != "" {
+		t.Errorf("EMPTY = %+v, want an explicit empty value (not absent)", got["EMPTY"])
+	}
+	if s := got["DATABASE_URL"].Secret; s == nil || s.Name != "app-secrets" || s.Key != "database_url" || s.StoreKey != "DATABASE_URL" || got["DATABASE_URL"].Value != nil {
+		t.Errorf("DATABASE_URL = %+v, want the Secret ref", got["DATABASE_URL"])
+	}
+	if s := got["ADMIN_PASSWORD"].Secret; s == nil || !s.Optional {
+		t.Errorf("ADMIN_PASSWORD = %+v, want an optional Secret ref", got["ADMIN_PASSWORD"])
+	}
+	for _, bad := range []string{`{"X": 8080}`, `{"X": {"from_secret": {"name": "s"}}}`, `{"X": {"key": "k"}}`, `{"X": ["a"]}`} {
+		if err := json.Unmarshal([]byte(bad), &got); err == nil {
+			t.Errorf("decoded %s; want a refusal", bad)
+		}
 	}
 }

@@ -70,7 +70,7 @@ output = forge.render(forge.Bundle {
 _entity = {w.name: w.spec for w in output.workloads}
 _record = {m.metadata.name: m.spec for m in output.manifests if m.kind == "Workload"}
 
-assert_record_per_cluster_workload = sorted(_record.keys()) == sorted([w.name for w in _all])
+assert_record_per_cluster_workload = sorted([k for k in _record]) == sorted([w.name for w in _all])
 assert_no_record_for_host = "local" not in _record
 # THE invariant: byte-equal JSON, for every record.
 assert_spec_byte_equal = all n in _record {

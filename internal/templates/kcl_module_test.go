@@ -3,6 +3,7 @@ package templates
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -148,8 +149,8 @@ func kclDiagnostics(err error) string {
 // a type error, a missing attribute, a compile error — is a broken fixture
 // or a broken module, and must not pass as "the rule fired".
 var (
-	forgeRefusalRE  = regexp.MustCompile(`Check failed on the condition|EvaluationError`)
-	notARefusalREs  = []*regexp.Regexp{
+	forgeRefusalRE = regexp.MustCompile(`Check failed on the condition|EvaluationError`)
+	notARefusalREs = []*regexp.Regexp{
 		regexp.MustCompile(`TypeError`),
 		regexp.MustCompile(`CompileError`),
 		regexp.MustCompile(`CannotFindModule`),
@@ -400,35 +401,38 @@ func TestKCLModule_HarnessRefusesVacuousNegatives(t *testing.T) {
 	}
 }
 
-// renderContractDir is where P2a publishes the §9.1 contract goldens: one
-// `<case>.json` (the `output` document) per runtime shape, next to the
-// `<case>.k` source that produces it. P2b decodes the same JSON
-// (kcl_render_test.go); this test is the KCL leg of that triple — the render
-// must REPRODUCE each golden, byte-for-byte after key normalisation.
+// renderContractDir is where the §9.1 contract goldens live: one
+// `<case>.json` per runtime shape — the WHOLE document kclrender.Run emits
+// (`{"output": …}`) — next to the `<case>.k` source that produces it. P2b
+// decodes the same JSON (internal/cli kcl_render_test.go); this test is the
+// KCL leg of that triple: the render must REPRODUCE each golden.
 func renderContractDir(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(filepath.Dir(kclModuleRoot(t)), "internal", "cli", "testdata", "render_contract")
 }
 
+// renderContractUpdateEnv regenerates the goldens from the fixtures instead
+// of comparing: FORGE_UPDATE_GOLDEN=1 go test ./internal/templates -run
+// TestKCLModule_RenderContract. Review the diff as a contract change — a
+// changed key is one P2b's decoder must follow.
+const renderContractUpdateEnv = "FORGE_UPDATE_GOLDEN"
+
 // TestKCLModule_RenderContract renders each render_contract/<case>.k and
-// requires its `output` to equal <case>.json.
+// requires the rendered document to equal <case>.json.
 func TestKCLModule_RenderContract(t *testing.T) {
 	t.Parallel()
 	requireKCLRender(t)
 	dir := renderContractDir(t)
 	srcs, _ := filepath.Glob(filepath.Join(dir, "*.k"))
 	if len(srcs) == 0 {
-		t.Skipf("no render-contract goldens in %s yet (P2a publishes them)", dir)
+		t.Fatalf("no render-contract fixtures (*.k) in %s", dir)
 	}
+	update := os.Getenv(renderContractUpdateEnv) == "1"
 	sort.Strings(srcs)
 	for _, src := range srcs {
 		name := strings.TrimSuffix(filepath.Base(src), ".k")
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			golden, err := os.ReadFile(filepath.Join(dir, name+".json"))
-			if err != nil {
-				t.Fatalf("golden %s.json missing beside %s.k: %v", name, name, err)
-			}
 			args := argSets(readDirectives(t, src)["kcl-args"])[0]
 			out, err := runKCL(t, src, args...)
 			if err != nil {
@@ -438,21 +442,60 @@ func TestKCLModule_RenderContract(t *testing.T) {
 			if err := json.Unmarshal(out, &doc); err != nil {
 				t.Fatalf("unmarshal render: %v", err)
 			}
-			got, ok := doc["output"]
-			if !ok {
-				t.Fatalf("%s.k renders no top-level `output` (main.k must end with `output = forge.render(bundle)`)", name)
+			if _, ok := doc["output"]; !ok {
+				t.Fatalf("%s.k renders no top-level `output` (it must end with `output = forge.render(bundle)`)", name)
 			}
+			gb, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			gb = append(gb, '\n')
+			goldenPath := filepath.Join(dir, name+".json")
+			if update {
+				if err := os.WriteFile(goldenPath, gb, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			golden, err := os.ReadFile(goldenPath)
+			if err != nil {
+				t.Fatalf("golden %s.json missing beside %s.k (regenerate with %s=1): %v", name, name, renderContractUpdateEnv, err)
+			}
+			// Compare canonically (keys sorted by MarshalIndent of a
+			// map), so the golden's own formatting is not the contract.
 			var want any
 			if err := json.Unmarshal(golden, &want); err != nil {
 				t.Fatalf("unmarshal golden: %v", err)
 			}
-			gb, _ := json.MarshalIndent(got, "", "  ")
 			wb, _ := json.MarshalIndent(want, "", "  ")
+			wb = append(wb, '\n')
 			if string(gb) != string(wb) {
-				t.Errorf("forge.render drifted from the contract golden %s.json\n--- render ---\n%s\n--- golden ---\n%s", name, gb, wb)
+				t.Errorf("forge.render drifted from the contract golden %s.json (regenerate with %s=1 and review the diff)\n%s",
+					name, renderContractUpdateEnv, firstDiff(string(gb), string(wb)))
 			}
 		})
 	}
+}
+
+// firstDiff reports the first differing line of two renders with context,
+// so a drift names the key instead of dumping two whole documents.
+func firstDiff(got, want string) string {
+	g, w := strings.Split(got, "\n"), strings.Split(want, "\n")
+	for i := 0; i < len(g) || i < len(w); i++ {
+		var gl, wl string
+		if i < len(g) {
+			gl = g[i]
+		}
+		if i < len(w) {
+			wl = w[i]
+		}
+		if gl != wl {
+			lo := max(0, i-3)
+			ctx := strings.Join(w[lo:min(i, len(w))], "\n")
+			return fmt.Sprintf("line %d:\n%s\n--- render:  %s\n+++ golden:  %s", i+1, ctx, gl, wl)
+		}
+	}
+	return "(no line differs)"
 }
 
 // TestKCLModule_ExampleRendersOneOutput pins the single entrypoint on the

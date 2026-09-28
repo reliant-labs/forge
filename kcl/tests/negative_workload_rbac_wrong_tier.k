@@ -1,20 +1,21 @@
 """
-Negative test — a `worker` cannot declare CLUSTER-scoped RBAC.
+Negative test — a workload cannot declare BOTH RBAC tiers.
 
-The tiers are not "more permission" vs "less"; they are different scopes,
-and a workload gets one or the other. A `service` or `worker` that
-genuinely watches resources across namespaces IS an operator — declaring
-it as one is what gets it leader election and the CRD wiring too.
+clusterRBAC is allowed on every scheduled kind, but the tiers are
+EXCLUSIVE: a workload gets a namespaced Role or a ClusterRole, never both.
+Two bindings on one ServiceAccount means the wider one decides every
+outcome, so the narrower Role would describe permissions that are not the
+permissions in force — and deleting it would change nothing.
 """
 
-# expect: clusterRBAC is only supported for kind='operator'
+# expect: namespacedRBAC and clusterRBAC are exclusive
 
 import forge.workloads as fw
 
 _bad = fw.Workload {
     name = "sweeper"
     kind = "worker"
-    clusterRBAC = [
-        {apiGroups = ["reliant.dev"], resources = ["workspaces"], verbs = ["list", "watch"]}
-    ]
+    args = ["sweep"]
+    namespacedRBAC = [{apiGroups = [""], resources = ["configmaps"], verbs = ["get"]}]
+    clusterRBAC = [{apiGroups = ["reliant.dev"], resources = ["workspaces"], verbs = ["list", "watch"]}]
 }

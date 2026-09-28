@@ -2,10 +2,10 @@
 Positive test — `option("env")` plumbing.
 
 The forge CLI passes `-D env=<env>` on every render so a main.k can read the
-current environment and conditionally include manifests per env. The
-canonical use: suppress in-cluster infra (NATS / Temporal / LiteLLM) on a
-`dev-host` env where docker-compose provides it, while still shipping it on
-k3d / staging / prod.
+current environment and conditionally include objects in Bundle.manifests
+per env. The canonical use: suppress in-cluster infra (NATS / Temporal /
+LiteLLM) on a `dev-host` env where docker-compose provides it, while still
+shipping it on k3d / staging / prod.
 
 It also pins that the SAME binding makes the env-ownership stamp automatic:
 `Bundle.env` defaults to `option("env")`, so every object in output.manifests
@@ -30,7 +30,7 @@ output = forge.render(forge.Bundle {
     project = "myapp"
     cluster_target = _target
     workloads = [fw.Workload {name = "api", image = "myapp", runtime = forge.OnCluster {target = _target}}]
-    additional_manifests = _nats_manifests
+    manifests = [forge.Manifests {objects = _nats_manifests}]
 })
 
 assert_env_name = _env_name == option("env")

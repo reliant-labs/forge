@@ -375,18 +375,55 @@ func TestParseKCLEntities_RuntimeIsRequired(t *testing.T) {
 // SecretKeyRef.optional reaches KCLEnvVar.SecretOptional, so the store
 // pre-flight still exempts a config-codegen `optional: true` secret.
 func TestWorkloadEnvVars_ProjectsSecretOptional(t *testing.T) {
-	e, _ := loadContract(t, "mixed")
+	e, _ := loadContract(t, "host")
 	api := e.FindWorkload("api")
 	if api == nil {
-		t.Fatal("no api")
+		t.Fatal("no api in the host golden")
+	}
+	var found bool
+	for _, ev := range api.EnvVars() {
+		if ev.Name == "API_KEY" {
+			found = true
+			if ev.SecretRef != "acme-secrets" || ev.SecretKey != "api_key" || !ev.SecretOptional {
+				t.Fatalf("API_KEY = %+v, want the optional secret_ref acme-secrets/api_key", ev)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("API_KEY (secretRef, optional) not projected")
+	}
+}
+
+// A managedSecret decodes to its {name, optional} object and is NOT a store
+// Secret ref (the provider materializes it into forge-managed-secrets), so
+// EnvVars leaves it out. An OPTIONAL one is also not a value `forge secret
+// ensure` demands; a required one is.
+func TestWorkloadEnvVars_ManagedSecretIsNotAStoreRef(t *testing.T) {
+	e, _ := loadContract(t, "hosted")
+	api := e.FindWorkload("api")
+	if api == nil {
+		t.Fatal("no api in the hosted golden")
+	}
+	var ms *deployv1alpha1.ManagedSecretRef
+	for _, ev := range api.Spec.Env {
+		if ev.Name == "API_KEY" {
+			ms = ev.ManagedSecret
+		}
+	}
+	if ms == nil || ms.Name != "API_KEY" || !ms.Optional {
+		t.Fatalf("API_KEY managedSecret = %+v, want {API_KEY optional}", ms)
 	}
 	for _, ev := range api.EnvVars() {
 		if ev.Name == "API_KEY" {
-			if ev.SecretRef == "" || !ev.SecretOptional {
-				t.Fatalf("API_KEY = %+v, want an optional secret_ref", ev)
-			}
-			return
+			t.Fatalf("a managedSecret was projected as a store channel: %+v", ev)
 		}
 	}
-	t.Fatal("API_KEY not projected")
+	if got := managedSecretNamesForService(api); len(got) != 0 {
+		t.Errorf("optional managedSecret demanded by ensure: %v", got)
+	}
+	required := *api
+	required.Spec.Env = []deployv1alpha1.EnvVar{{Name: "K", ManagedSecret: &deployv1alpha1.ManagedSecretRef{Name: "STRIPE_KEY"}}}
+	if got := managedSecretNamesForService(&required); len(got) != 1 || got[0] != "STRIPE_KEY" {
+		t.Errorf("required managedSecret names = %v, want [STRIPE_KEY]", got)
+	}
 }

@@ -17,11 +17,10 @@ import forge.workloads as fw
 
 output = forge.render(forge.Bundle {
     project = "dev"
-    runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5050"}}
-    workloads = [fw.Workload {
+    workloads = [_w | {runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5050"}}} if not _w.runtime else _w for _w in [fw.Workload {
         name = "api"
         image = "reliant@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
         args = ["api"]
         build = forge.ShellBuild {cmd = "true"}
-    }]
+    }]]
 })

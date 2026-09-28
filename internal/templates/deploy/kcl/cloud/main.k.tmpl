@@ -1,0 +1,194 @@
+"""
+The `{{.EnvName}}` environment of {{.ProjectName}}.
+
+YOURS. forge scaffolds this file once and never rewrites it.
+
+This file BINDS; it does not declare. `deploy/kcl/workloads.k` states what
+each workload is (build, subcommand, ports, credentials). This file says
+where each one runs here — one binding per workload, all on this env's
+cluster as scaffolded — and states the values only this environment knows:
+the cluster, namespace and registry, the capacity floor, the network
+policy, and where secrets come from.
+
+Each cluster-bound workload becomes a `forge.dev/v1alpha1 Workload` record,
+and forge expands it through ONE Go renderer (pkg/deploy.RenderWorkloads,
+the same code the hosted control plane runs): a Deployment + Service with
+`/readyz` readiness and `/healthz` liveness probes, a termination grace
+period derived from the drain settings, a PodDisruptionBudget and topology
+spread above one replica, a non-root read-only pod, and the `migrate` job as
+an initContainer on every workload it gates.
+
+Render and deploy through forge — `forge env render {{.EnvName}}`,
+`forge env deploy {{.EnvName}}`. `output = forge.render(bundle)` is the one
+entrypoint; there is no separate manifest stream to pipe to kubectl.
+"""
+
+import forge
+import forge.workloads as fw
+
+# What this project RUNS — declared once, shared by every env.
+import ..workloads as wl
+
+# Per-environment config values (the typed AppConfig instance in config.k).
+import config_gen
+import .config as appcfg
+{{- if .IngressEnabled}}
+import .ingress as ing
+{{- end}}
+
+# ---------------------------------------------------------------------------
+# WHERE: the cluster this env deploys to.
+# ---------------------------------------------------------------------------
+# Every workload bound to it renders into `namespace`, pulls from `registry`,
+# and is applied to the kubectl context named by `cluster` — forge checks it
+# is the context it deploys to, never the shell's current one.
+_cluster = forge.ClusterTarget {
+    # The kubectl context name of the {{.EnvName}} cluster.
+    cluster = "{{.ProjectName}}-{{.EnvName}}"
+    namespace = "{{.ProjectName}}-{{.EnvName}}"
+    # A visibly placeholder registry, so a missing value surfaces as a wrong
+    # image reference rather than a deploy from an unrelated registry.
+    # `forge build {{.EnvName}} --push` pushes here; `-D registry=` overrides.
+    registry = forge.registry("ghcr.io/OWNER")
+    # The node arch images are built for. Required on a cloud target:
+    # without it a build on an arm64 laptop ships arm64 images to amd64 nodes.
+    platform = "amd64"
+}
+
+# ---------------------------------------------------------------------------
+# HOW MUCH: the {{.EnvName}} capacity floor (cluster-bound workloads).
+# ---------------------------------------------------------------------------
+# `_replicas` is a FLOOR for the long-running kinds: a workload refined
+# higher keeps its own count. Above one replica forge adds a
+# PodDisruptionBudget and spreads the pods across nodes.
+_replicas = {{.Replicas}}
+_resources = fw.Resources {
+    cpuRequestMillicores = forge.cpu({{.CPURequest}})
+    memoryRequestBytes = forge.mib({{.MemoryRequestMiB}})
+    cpuLimitMillicores = forge.cpu({{.CPULimit}})
+    memoryLimitBytes = forge.mib({{.MemoryLimitMiB}})
+}
+
+_LONG_RUNNING = ["service", "worker", "operator"]
+
+# This env's layer over a workload: the typed config projected into its env
+# (a credential only into the workloads that list it in `config_secrets`)
+# and the replica floor.
+_configured = lambda w: fw.Workload -> fw.Workload {
+    w | {
+        env = config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | {OTEL_SERVICE_NAME = w.name}
+        if w.kind in _LONG_RUNNING:
+            replicas = w.replicas if w.replicas > _replicas else _replicas
+    }
+}
+
+# ---------------------------------------------------------------------------
+# THE BINDINGS: where each workload runs in this env.
+# ---------------------------------------------------------------------------
+# There is no env-wide runtime. Every workload below states its own, through
+# one of these binders. Rebinding a workload is editing its one line — to run
+# one on the forge control plane instead of this cluster:
+#
+#     _hosted(wl.{{.PrimaryIdent}})
+#
+# which also needs `control_plane = forge.ControlPlane {}` on the Bundle
+# below (Reliant cloud, or name an `endpoint`). The platform then admits the
+# workload under its Restricted profile: kinds service/worker/job, no RBAC,
+# sidecars, volumes, or raw secretRef env — see the `deploy` skill.
+
+# A Deployment (or Job) on this env's cluster, from the image
+# `forge build {{.EnvName}} --push` pushes.
+_on_cluster = lambda w: fw.Workload -> fw.Workload {
+    _configured(w) | {resources = _resources, runtime = forge.OnCluster {target = _cluster}}
+}
+# A Workload CR on the forge control plane, rendered by the platform. Its
+# resources are the workload's own, not the cluster floor above: hosted
+# shapes sit on a fixed 4 GiB-per-vCPU band (250m → 1Gi, 500m → 2Gi, 1 → 4Gi)
+# and an off-band request is refused rather than silently repriced.
+_hosted = lambda w: fw.Workload -> fw.Workload {
+    _configured(w) | {runtime = forge.OnHosted {}}
+}
+# Built, never run.
+_build_only = lambda w: fw.Workload -> fw.Workload {
+    w | {runtime = forge.BuildOnly {}}
+}
+
+# Every workload this env runs, one binding each. `forge scaffold` appends
+# a line here when it adds a workload; drop a line to not run it here.
+# (The dev-IdP convergence job is not here: this env's issuer is a real
+# one, with its applications registered out of band.)
+_workloads = [
+{{.Bindings}}
+]
+
+_bundle = forge.Bundle {
+    project = "{{.ProjectName}}"
+    # Where the env's support objects (Namespace, gateways, routes) land.
+    cluster_target = _cluster
+    workloads = _workloads
+    # DEFAULT-DENY NETWORKING, opted in. Every pod's egress is blocked except
+    # DNS, its own namespace, the ports below, the telemetry collector and
+    # the ingress controller; every workload admits ingress only on its
+    # declared ports. Remove the block to run without NetworkPolicies.
+    network_policy = forge.NetworkPolicy {
+        # 443: HTTPS (JWKS, object storage, third-party APIs). 5432: a managed
+        # Postgres outside the cluster. Add any other external dependency.
+        egress_ports = [443, 5432]
+        # The namespace of the OTLP collector OTEL_EXPORTER_OTLP_ENDPOINT
+        # names. Clear it if you export telemetry elsewhere.
+        telemetry_namespace = "observability"
+        # Where the Gateway controller terminating public traffic runs
+        # (`forge cluster up` installs Envoy Gateway here).
+        ingress_namespace = "envoy-gateway-system"
+    }
+{{- if .HasFrontend}}
+    # THIS FRONTEND SHIPS NOWHERE UNTIL YOU CHOOSE A `deploy` TARGET. forge
+    # does not guess where it belongs: a wrong default deploys somewhere
+    # plausible and costs money there. Uncomment the one you want.
+    #
+    #   * StaticSite — the static export to your object-storage bucket, with
+    #     an immutable `releases/<digest>/` archive and a mutable `live/`
+    #     prefix, so a promotion re-points at bytes that already exist:
+    #
+    #         deploy = forge.StaticSite {bucket = "{{.ProjectName}}-{{.EnvName}}-web", public_dir = "out"}
+    #
+    #   * FirebaseHosting — the same shape against Firebase:
+    #
+    #         deploy = forge.FirebaseHosting {project = "{{.ProjectName}}-{{.EnvName}}"}
+    #
+    # A frontend that needs a server at runtime (SSR, middleware) is a
+    # WORKLOAD instead: `fw.Workload {build = forge.DockerBuild {...}}` in
+    # workloads.k, deployed like any other.
+    #
+    # `forge env deploy {{.EnvName}} --frontends-only` ships just this.
+    frontends = [forge.Frontend {
+        name = "{{.FrontendName}}"
+        path = "frontends/{{.FrontendName}}"
+    }]
+{{- end}}
+    # SECRET VALUES come from OUTSIDE forge. A `sensitive` config field is a
+    # secretKeyRef to the `{{.ProjectName}}-secrets` Secret; forge validates the
+    # wiring but never sees a value. Provision it out of band (External
+    # Secrets Operator, sealed secrets, your cloud's secret manager, or once
+    # by hand):
+    #
+    #   kubectl -n {{.ProjectName}}-{{.EnvName}} create secret generic {{.ProjectName}}-secrets \
+    #     --from-literal=database_url='postgres://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require'
+    #
+    # `required_secrets` turns "it is missing" from a silent
+    # CreateContainerConfigError after a green apply into a pre-apply BLOCK.
+    secret_provider = forge.ExternalSecrets {}
+    required_secrets = [forge.ExternalSecret {
+        name = "{{.ProjectName}}-secrets"
+        namespace = _cluster.namespace
+        keys = ["database_url"]
+        reason = "backs every `sensitive` config field (DATABASE_URL); the workloads read it via secretKeyRef and will not start without it"
+    }]
+{{- if .IngressEnabled}}
+    gateways = ing.GATEWAYS
+    http_routes = ing.HTTP_ROUTES
+    grpc_routes = ing.GRPC_ROUTES
+{{- end}}
+}
+
+output = forge.render(_bundle)

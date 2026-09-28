@@ -30,8 +30,7 @@ _daemon = forge.ClusterTarget {
 output = forge.render(forge.Bundle {
     project = "control-plane"
     cluster_target = _app
-    runtime = forge.OnCluster {target = _app}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _app}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "admin", image = "control-plane", ports = [fw.Port {name = "http", port = 8090}]}
         fw.Workload {
             name = "workspace-proxy"
@@ -39,7 +38,7 @@ output = forge.render(forge.Bundle {
             ports = [fw.Port {name = "http", port = 8080}]
             runtime = forge.OnCluster {target = _daemon}
         }
-    ]
+    ]]
 })
 
 _rt = {w.name: w.runtime for w in output.workloads}

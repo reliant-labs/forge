@@ -80,13 +80,13 @@ schema AppConfig:
 
 APP_CONFIG_SENSITIVE_ENV: [str] = ["DATABASE_URL"]
 
-appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: forge.EnvSource} {
-    _sensitive: {str: forge.EnvSource} = {
-        "DATABASE_URL" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}
+appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {
+    _sensitive: {str: forge.SecretRef} = {
+        "DATABASE_URL" = forge.SecretRef {name = c.database_url.name, key = c.database_url.key, store_key = "DATABASE_URL"}
     }
     assert all _n in config_secrets { _n in _sensitive }, "unknown config_secrets name"
     {
-        "PORT" = {value = str(c.port)}
+        "PORT" = str(c.port)
     } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}
 }
 `

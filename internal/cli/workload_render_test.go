@@ -258,11 +258,10 @@ _k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", regist
 
 output = forge.render(forge.Bundle {
     project = "demo"
-    runtime = forge.OnCluster {target = _k3d}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}, image = "demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
         fw.Workload {name = "redis", image = "redis:7.2", ports = [fw.Port {name = "redis", port = 6379}]}
-    ]
+    ]]
 })
 `))
 	deployments := map[string]map[string]any{}

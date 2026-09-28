@@ -33,8 +33,7 @@ _shell = forge.ShellBuild {cmd = r"echo ${REGISTRY}/${IMAGE}:${TAG}"}
 
 output = forge.render(forge.Bundle {
     project = "dev"
-    runtime = forge.OnCluster {target = _target}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", image = "api"}
         fw.Workload {name = "reliant", image = "reliant:v1.4.2"}
         fw.Workload {name = "vendor", image = "ghcr.io/acme/vendor:3.0.0"}
@@ -50,7 +49,7 @@ output = forge.render(forge.Bundle {
         fw.Workload {name = "untagged-built", image = "demo", args = ["x"], build = _shell}
         fw.Workload {name = "docker-built", image = "gw:v7", args = ["x"], build = forge.DockerBuild {output_name = "not-this"}}
         fw.Workload {name = "derived", args = ["x"], build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo-bin"}}
-    ]
+    ]]
 })
 
 _img = {m.metadata.name: m.spec.image for m in output.manifests if m.kind == "Workload"}

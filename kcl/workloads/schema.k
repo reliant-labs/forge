@@ -15,11 +15,14 @@ dozen Connect services is ONE workload (ADR 0002).
         ports = [fw.Port {name = "http", port = 8080, expose = True}]
     }
 
-    # an env binds it to a runtime with the same `|` it uses for any refinement
+    # an env binds EACH workload to a runtime with the same `|` it uses for
+    # any refinement; there is no env-level default
     output = forge.render(forge.Bundle {
         project = "acme"
-        runtime = forge.OnHost {runner = "air"}
-        workloads = [api, wl.search | {runtime = forge.OnCluster {target = _k3d}}]
+        workloads = [
+            api | {runtime = forge.OnHost {runner = "air"}}
+            wl.search | {runtime = forge.OnCluster {target = _k3d}}
+        ]
     })
 
 WHY THE SCHEMA LIVES IN THE ROOT `forge` PACKAGE

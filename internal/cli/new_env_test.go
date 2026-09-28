@@ -262,3 +262,61 @@ func TestLineHasLivePlaceholder(t *testing.T) {
 		}
 	}
 }
+
+// --bind rebinds one workload's line in the derived env; a malformed or
+// unknown target names the accepted forms, and a workload the env does not
+// bind is refused rather than silently ignored.
+func TestNewEnv_BindRebindsOneWorkload(t *testing.T) {
+	dir := writeProjectFixture(t, "staging")
+	stagingMain := filepath.Join(dir, "deploy", "kcl", "staging", "main.k")
+	b, _ := os.ReadFile(stagingMain)
+	bindings := "\n_workloads = [\n    _on_cluster(wl.api)\n    _on_cluster(wl.migrate)\n]\n\n_bundle = {\n    project = \"fixture\"\n}\n"
+	if err := os.WriteFile(stagingMain, append(b, bindings...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, dir, func() {
+		run := func(args ...string) error {
+			cmd := newEnvNewCmd()
+			cmd.SetArgs(args)
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			return cmd.Execute()
+		}
+		if err := run("preview", "--from", "staging", "--bind", "api=hosted"); err != nil {
+			t.Fatalf("--bind api=hosted: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(dir, "deploy", "kcl", "preview", "main.k"))
+		for _, want := range []string{"_hosted(wl.api)", "_on_cluster(wl.migrate)", "control_plane = forge.ControlPlane {}"} {
+			if !strings.Contains(string(got), want) {
+				t.Errorf("derived env lacks %q:\n%s", want, got)
+			}
+		}
+		for _, bad := range []string{"api", "api=serverless"} {
+			if err := run("p2", "--from", "staging", "--bind", bad); err == nil || !strings.Contains(err.Error(), "hosted") {
+				t.Errorf("--bind %q: err = %v, want the accepted forms", bad, err)
+			}
+		}
+		if err := run("p3", "--from", "staging", "--bind", "billing=hosted"); err == nil || !strings.Contains(err.Error(), "wl.billing") {
+			t.Errorf("--bind of an unbound workload: err = %v, want a refusal naming it", err)
+		}
+	})
+}
+
+// The scaffolded envs write the cluster target's namespace and registry as
+// LITERALS (`namespace = "acme-prod"`, `registry = forge.registry("...")`),
+// not the option() form the transform first knew. Copied verbatim, a derived
+// env deploys into the template env's namespace — the exact hazard `env new`
+// exists to prevent.
+func TestNewEnv_NeutralizesLiteralNamespaceAndRegistry(t *testing.T) {
+	body := "_cluster = forge.ClusterTarget {\n    cluster = \"acme-prod\"\n    namespace = \"acme-prod\"\n    registry = forge.registry(\"ghcr.io/acme\")\n    platform = \"amd64\"\n}\n"
+	out := transformEnvFile(body, "prod", "cloud")
+	for _, gone := range []string{`"acme-prod"`, `ghcr.io/acme`} {
+		if strings.Contains(out, gone) {
+			t.Errorf("derived env still carries %s:\n%s", gone, out)
+		}
+	}
+	for _, want := range []string{`namespace = "REPLACE_ME_NAMESPACE"`, `registry = forge.registry("REPLACE_ME_REGISTRY")`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("derived env lacks %s:\n%s", want, out)
+		}
+	}
+}

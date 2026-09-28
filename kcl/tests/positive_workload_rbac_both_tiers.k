@@ -26,8 +26,7 @@ _cluster_rule = {apiGroups = ["reliant.dev"], resources = ["workspaces"], verbs 
 
 output = forge.render(forge.Bundle {
     project = "dev"
-    runtime = forge.OnCluster {target = _target}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in [
         fw.Workload {
             name = "sweeper"
             kind = "worker"
@@ -44,7 +43,7 @@ output = forge.render(forge.Bundle {
             group = "acme.dev"
             namespacedRBAC = [_ns_rule]
         }
-    ]
+    ]]
 })
 
 _spec = {w.name: w.spec for w in output.workloads}

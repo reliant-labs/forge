@@ -22,7 +22,6 @@ _target = forge.ClusterTarget {cluster = "k3d-example", namespace = "example-pro
 _bundle = forge.Bundle {
     project = _project
     cluster_target = _target
-    runtime = forge.OnCluster {target = _target}
     config_maps = [forge.ConfigMap {name = "app-config", data = {"KEY" = "value"}}]
     runtime_classes = [forge.RuntimeClass {name = "gvisor", handler = "runc"}]
     # A named raw-manifest group (its own --target), stamped on the way out.
@@ -30,12 +29,12 @@ _bundle = forge.Bundle {
         name = "infra"
         objects = [{apiVersion = "v1", kind = "Secret", metadata = {name = "bootstrap", namespace = "example-prod"}}]
     }]
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", image = "api-img", ports = [fw.Port {name = "http", port = 8080}]}
         fw.Workload {name = "controller", kind = "operator", image = "controller-img", crds = ["Widget"]}
         fw.Workload {name = "cleanup", kind = "cron", image = "cleanup-img", args = ["cleanup"], schedule = "0 * * * *"}
         fw.Workload {name = "migrate", kind = "job", image = "migrate-img", args = ["migrate"]}
-    ]
+    ]]
 }
 
 _manifests = forge.render(_bundle).manifests

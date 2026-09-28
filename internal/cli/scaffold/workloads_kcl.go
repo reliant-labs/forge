@@ -2,11 +2,14 @@ package scaffold
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // declareWorkloadInKCL appends the freshly-scaffolded workload to the
@@ -56,6 +59,50 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 		// where an append is unambiguous. Either way: show, do not guess.
 		fmt.Printf("\n📝 %s\n", codegen.WorkloadStanzaHint(cfg.Name, comp))
 	}
+	bindWorkloadInEnvs(root, comp)
+}
+
+// bindWorkloadInEnvs adds the new workload's binding to every env's
+// `_workloads` list. There is no env-level runtime (ADR 0002 §2), so a
+// workload declared in workloads.k runs nowhere until an env binds it; the
+// scaffold binds it the way that env binds its siblings of the same kind.
+// Advisory like the declaration: an env that cannot be edited
+// unambiguously gets the line printed instead.
+func bindWorkloadInEnvs(root string, comp config.ComponentConfig) {
+	envs, err := os.ReadDir(filepath.Join(root, "deploy", "kcl"))
+	if err != nil {
+		return
+	}
+	kind := codegen.WorkloadKindFor(comp.EffectiveKind())
+	for _, e := range envs {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, "deploy", "kcl", e.Name(), "main.k")); err != nil {
+			continue
+		}
+		applied, err := codegen.AppendEnvBinding(root, e.Name(), kind, comp.Name)
+		switch {
+		case err != nil:
+			fmt.Printf("\n⚠️  could not update deploy/kcl/%s/main.k: %v\n\n%s\n", e.Name(), err, codegen.EnvBindingHint(e.Name(), kind, comp.Name))
+		case applied:
+			fmt.Printf("   - deploy/kcl/%s/main.k (%s bound)\n", e.Name(), comp.Name)
+		default:
+			if !envBindsWorkload(root, e.Name(), comp.Name) {
+				fmt.Printf("\n📝 %s\n", codegen.EnvBindingHint(e.Name(), kind, comp.Name))
+			}
+		}
+	}
+}
+
+// envBindsWorkload reports whether an env's main.k already names the
+// workload (`wl.<ident>`), so an already-bound workload prints no hint.
+func envBindsWorkload(root, env, name string) bool {
+	raw, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", env, "main.k"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(codegen.StripKCLProse(string(raw)), "wl."+naming.KCLIdentifier(name))
 }
 
 // kindFromCtxLabel recovers the component kind from the "forge scaffold

@@ -42,8 +42,7 @@ _bundle = forge.Bundle {
     project = "control-plane"
     env = "prod"
     cluster_target = _prod
-    runtime = forge.OnCluster {target = _prod}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _prod}} if not _w.runtime else _w for _w in [
         fw.Workload {
             name = "admin-server"
             image = "control-plane"
@@ -55,7 +54,7 @@ _bundle = forge.Bundle {
             image = "control-plane"
             ports = [fw.Port {name = "http", port = 8080}]
         }
-    ]
+    ]]
 }
 
 output = forge.render(_bundle)

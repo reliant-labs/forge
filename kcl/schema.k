@@ -585,8 +585,8 @@ schema ClusterTarget:
 
     `Bundle.cluster_target` is the env's PRIMARY target: where its support
     objects (Namespace, ConfigMaps, gateways and routes, rendered Secrets)
-    land. It defaults to the target of `Bundle.runtime` when that is a
-    cluster runtime.
+    land. It defaults to the target of the env's first cluster-bound
+    workload.
     """
     cluster: str
     namespace: str
@@ -636,8 +636,7 @@ schema ManagedDatabase:
     "<this name>"}}`, which reads the credential CloudNativePG publishes as
     "<name>-app" in the same namespace.
 
-    WHERE IT RUNS is its `runtime`, like a workload's, and defaults to
-    `Bundle.runtime` when that is a cluster or hosted runtime:
+    WHERE IT RUNS is its `runtime`, like a workload's:
 
       * `forge.OnCluster {target}` — `output.manifests` carries ONE
         forge.dev/v1alpha1 ManagedDatabase record in the target's namespace
@@ -648,8 +647,9 @@ schema ManagedDatabase:
       * `forge.OnHosted {}` — published to the control plane, which
         allocates the namespace. `namespace` is refused.
 
-    With neither `runtime` nor a cluster/hosted `Bundle.runtime`, a
-    database lands on `Bundle.cluster_target` (in `namespace`, when set).
+    With no `runtime`, a database lands on the env's primary cluster target
+    (`Bundle.cluster_target`, else the first cluster-bound workload's), in
+    `namespace` when set.
     """
     name: str
     runtime?: OnCluster | OnHosted
@@ -2775,16 +2775,16 @@ schema Bundle:
 
     A project's `deploy/kcl/<env>/main.k` builds ONE Bundle and ends with
     `output = forge.render(bundle)`, the single entrypoint (kcl/render.k
-    documents the output). Env names mean nothing to forge: any env may bind
-    any workload to any runtime, and one env may mix them.
+    documents the output). An env is a list of per-workload bindings, not a
+    runtime: every workload states its own. Env names mean nothing to forge:
+    any env may bind any workload to any runtime, and one env may mix them.
 
         output = forge.render(forge.Bundle {
             project = "hounders"
-            runtime = forge.OnHost {runner = "air"}      # the env's default
             workloads = [
-                wl.membership
-                wl.migrate
-                wl.search | {runtime = forge.OnCluster {target = _k3d}}
+                wl.membership | {runtime = forge.OnHost {runner = "air"}}
+                wl.migrate    | {runtime = forge.OnHost {}}
+                wl.search     | {runtime = forge.OnCluster {target = _k3d}}
             ]
         })
     """
@@ -2831,12 +2831,13 @@ schema Bundle:
     # Defaults to "", and each object then falls back to labelling itself.
     # The generated per-env main.k always sets it.
     project: str = ""
-    # The DEFAULT runtime for every workload that binds none. Unset: every
-    # workload must bind its own.
-    runtime?: Runtime
+    # There is NO env-level runtime. Every workload in `workloads` states its
+    # own (`wl.api | {runtime = forge.OnHost {}}`): an env is a list of
+    # per-workload bindings, not a runtime (ADR 0002 §2).
+    #
     # The env's PRIMARY cluster: where its support objects (Namespace,
     # ConfigMaps, gateways and routes, rendered Secrets, RuntimeClasses)
-    # land. Unset: the target of `runtime` when that is `forge.OnCluster`.
+    # land. Unset: the target of the first cluster-bound workload.
     cluster_target?: ClusterTarget
     # The image tag every forge-built cluster image carries (a per-image
     # digest from `-D image_digests` wins over it). Default: the
@@ -2934,16 +2935,16 @@ schema Bundle:
     required_dns: [DNSRecord] = []
 
     check:
-        # EVERY WORKLOAD RESOLVES A RUNTIME: its own, or the env default.
-        all w in workloads { _bound_runtime(w, runtime) }, \
-            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w, runtime)]} bind no runtime and the Bundle declares no default: set `runtime = forge.OnHost {...} | OnCompose | OnCluster | OnHosted | BuildOnly` on the workload, or Bundle.runtime"
+        # EVERY WORKLOAD STATES ITS RUNTIME. There is no env default.
+        all w in workloads { _bound_runtime(w) }, \
+            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {}}`"
         # One name per env: the name is the WorkloadURL namespace, the
         # `--target` group and every rendered object's name.
         len(_duplicates(_env_names(workloads, infra, frontends))) == 0, \
             "Bundle: a name is declared twice across workloads, infra and frontends: ${_duplicates(_env_names(workloads, infra, frontends))}. The name is how the env refers to it (--target, forge.WorkloadURL), so it must be unique"
         # HOSTED IS PER WORKLOAD, and it needs a control plane to publish to.
-        control_plane or not _hosted_names(workloads, databases, [], runtime), \
-            "${_hosted_names(workloads, databases, [], runtime)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
+        control_plane or not _hosted_names(workloads, databases, []), \
+            "${_hosted_names(workloads, databases, [])} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
         # A hosted StaticSite is published INTO the platform's bucket, behind
         # the platform's CDN: naming a URL map would be a user choosing what
         # the platform's credential purges, and cache_control has no carrier
@@ -2953,10 +2954,9 @@ schema Bundle:
             "StaticSite with no bucket is HOSTED (${[f.name for f in frontends if f.deploy and f.deploy.type == 'static-site' and not f.deploy.bucket and (f.deploy.cdn or f.deploy.cache_control)]}): .cdn and .cache_control must NOT be set, because the platform owns the bucket and the CDN and the hosted release carries no cache rules yet. Remove them, or set `bucket` to publish to your own"
         control_plane or all f in frontends { not (f.deploy and f.deploy.type == "static-site") or f.deploy.bucket }, \
             "StaticSite.bucket is required unless the env declares control_plane: a StaticSite with no bucket is published to the control plane, and ${[f.name for f in frontends if f.deploy and f.deploy.type == 'static-site' and not f.deploy.bucket]} has neither. Set bucket (gs://name or a bare bucket name)"
-        # A database resolves a runtime (its own, or a cluster/hosted
-        # Bundle.runtime) and a cluster one lands in a namespace.
-        all db in databases { _db_runtime(db, runtime) or cluster_target }, \
-            "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db, runtime)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"
+        # A database binds a runtime, or lands on the env's cluster_target.
+        all db in databases { _db_runtime(db) or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
+            "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"
         # HostedSecrets names no endpoint of its own — the values live in THIS
         # env's control plane — so without one there is nowhere to put them.
         not (secret_provider and secret_provider.type == "hosted") or control_plane, \
@@ -3006,5 +3006,5 @@ schema Bundle:
         # nodes have a FIXED arch must state it. Using the registry (not the
         # cluster name) keeps the signal reliable: a localhost registry can
         # only be served to the host's own cluster, period.
-        all w in workloads { not _cloud_build_without_platform(w, runtime) }, \
-            "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w, runtime)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."
+        all w in workloads { not _cloud_build_without_platform(w) }, \
+            "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

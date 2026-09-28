@@ -84,8 +84,7 @@ _k3d = forge.ClusterTarget {
 output = forge.render(forge.Bundle {
     project = "example"
     env = "dev"
-    # The default: a local process under air.
-    runtime = forge.OnHost {runner = "air", air_config = ".air.toml"}
+    # WHERE each one runs, stated per workload: an env is a list of bindings.
     workloads = [
         _api | {runtime = forge.OnHost {runner = "air", air_config = ".air.toml", listen_ports = [8080]}}
         _migrate | {runtime = forge.OnHost {}}

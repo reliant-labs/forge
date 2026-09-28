@@ -51,12 +51,10 @@ COPY . .
 #
 # ONE image, EVERY binary. Each `cmd/<bin>/` entrypoint (the primary
 # server plus any `forge scaffold binary` siblings — proxy / ctl / worker-style
-# processes) builds into /app/bin/<bin>. The production stage runs the
-# primary by default; secondary binaries are launched by overriding the
-# container command to /app/<bin> per-workload (KCL emits one Deployment
-# per binary, each with its own command). Building them all into a single
-# image keeps one build + one push + one registry tag for the whole
-# project; the per-binary entrypoints differ only at run time.
+# processes) builds into /app/bin/<bin>. The production stage's ENTRYPOINT
+# is the primary binary, and a workload's `args` (deploy/kcl/workloads.k)
+# pick its subcommand. Building them all into a single image keeps one
+# build + one push + one registry tag for the whole project.
 {{- range .Binaries }}
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
@@ -115,7 +113,12 @@ EXPOSE 8080 2345
 # hang. Debuggers can still attach later via :2345 because
 # --accept-multiclient stays connected after continue. To debug from
 # boot (pause until attach), drop --continue locally.
-CMD ["dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "./{{.Name}}", "--", "server"]
+#
+# The same ENTRYPOINT/CMD split as production: a workload's `args` replace
+# CMD and reach the program after `--`, so one debug image debugs any
+# subcommand.
+ENTRYPOINT ["dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "/app/{{.Name}}", "--"]
+CMD ["server"]
 
 # ── Production stage (default) ──
 FROM alpine:3.21 AS production
@@ -124,10 +127,8 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
-# Copy EVERY built binary into the image. The default entrypoint runs the
-# primary server (CMD below); secondary binaries are run by overriding the
-# container command to ./<bin> per-workload at deploy time (KCL emits one
-# Deployment per binary with command = ["/app/<bin>"]).
+# Copy EVERY built binary into the image. A secondary binary runs by
+# naming it as the workload's `command` (["/app/<bin>"]).
 {{- range .Binaries }}
 COPY --from=builder /app/bin/{{.Dir}} ./{{.Dir}}
 {{- end }}
@@ -139,4 +140,11 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -qO- http://localhost:8080/healthz || exit 1
 
-CMD ["./{{.Name}}", "server"]
+# ENTRYPOINT is the binary; CMD is its DEFAULT subcommand. A workload's
+# `args` in deploy/kcl/workloads.k replace CMD — `["item"]` runs one
+# service, `["db", "migrate", "up"]` the migration job — so the same args
+# select the subcommand here that `go run ./cmd/{{.Name}} <args>` runs on the
+# host. `docker run <image>` with no args runs `server`: every service,
+# worker and operator in one process.
+ENTRYPOINT ["/app/{{.Name}}"]
+CMD ["server"]

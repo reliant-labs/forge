@@ -30,8 +30,7 @@ _t = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "lo
 
 output = forge.render(forge.Bundle {
     project = "cp"
-    runtime = forge.OnCluster {target = _t}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _t}} if not _w.runtime else _w for _w in [
         fw.Workload {
             name = "api-server"
             image = "reliant:e2e"
@@ -50,7 +49,7 @@ output = forge.render(forge.Bundle {
             args = ["gw"]
             build = forge.DockerBuild {output_name = "ignored-by-a-declared-image"}
         }
-    ]
+    ]]
 })
 `
 
@@ -113,13 +112,12 @@ _t = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "lo
 
 output = forge.render(forge.Bundle {
     project = "cp"
-    runtime = forge.OnCluster {target = _t}
-    workloads = [fw.Workload {
+    workloads = [_w | {runtime = forge.OnCluster {target = _t}} if not _w.runtime else _w for _w in [fw.Workload {
         name = "api-server"
         image = "reliant@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
         args = ["api"]
         build = forge.ShellBuild {cmd = "true"}
-    }]
+    }]]
 })
 `
 	dir := writeKCLProject(t, bundle)

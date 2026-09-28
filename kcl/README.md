@@ -26,11 +26,10 @@ _k3d = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-dev", regi
 
 output = forge.render(forge.Bundle {
     project = "myapp"
-    runtime = forge.OnHost {runner = "air"}                    # the env default
     workloads = [
-        wl.api
-        wl.migrate
-        wl.search | {runtime = forge.OnCluster {target = _k3d}}  # one workload elsewhere
+        wl.api | {runtime = forge.OnHost {runner = "air"}}
+        wl.migrate | {runtime = forge.OnHost {}}
+        wl.search | {runtime = forge.OnCluster {target = _k3d}}    # one workload elsewhere
     ]
     frontends = [forge.Frontend {name = "web", type = "vite", path = "frontends/web"}]
 })
@@ -44,7 +43,7 @@ public top-level var.
 | Declaration | What it is |
 | --- | --- |
 | `fw.Workload` | Everything that runs: `kind` = `service` / `worker` / `job` / `cron` / `operator` / `tool`. Field names and types are the generated `v1alpha1.WorkloadSpec`'s (camelCase), plus `name`, `build`, `runtime`, `config_secrets`. |
-| `forge.OnHost` / `OnCompose` / `OnCluster` / `OnHosted` / `BuildOnly` | The runtime a workload binds to (per workload, else `Bundle.runtime`). |
+| `forge.OnHost` / `OnCompose` / `OnCluster` / `OnHosted` / `BuildOnly` | The runtime a workload binds to. Every workload in an env binds its own; there is no env default. |
 | `forge.GoBuild` / `DockerBuild` / `ShellBuild` / `RemoteBuild` | How forge produces a workload's artifact. Unset = forge builds nothing. |
 | `forge.SecretRef` / `ConfigMapRef` / `FieldRef` / `ManagedSecret` / `DatabaseRef` / `WorkloadURL` | The non-literal values of `fw.Workload.env` (a map, name -> value). |
 | `forge.Bundle` | One environment: workloads, `infra` (`forge.HostInfra`), frontends, databases, gateways/routes, secrets, clusters, `manifests` (`forge.Manifests`, raw objects), `network_policy` (opt-in). |
@@ -195,8 +194,10 @@ import ..workloads as wl
 
 output = forge.render(forge.Bundle {
     project = "myapp"
-    runtime = forge.OnHost {runner = "air"}
-    workloads = [wl.api, wl.migrate]
+    workloads = [
+        wl.api | {runtime = forge.OnHost {runner = "air"}}
+        wl.migrate | {runtime = forge.OnHost {}}
+    ]
     frontends = [forge.Frontend {name = "admin-web", path = "frontends/admin-web"}]
 })
 ```

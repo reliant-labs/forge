@@ -11,11 +11,10 @@ import forge
 import forge.workloads as fw
 
 _bundle = forge.Bundle {
-    runtime = forge.OnHost {runner = "go-run"}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnHost {runner = "go-run"}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/api"}, args = ["server"]}
         fw.Workload {name = "postgres", runtime = forge.OnCompose {service = "postgres"}}
-    ]
+    ]]
     secret_provider = forge.HostedSecrets {}
 }
 

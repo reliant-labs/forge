@@ -12,7 +12,6 @@ _build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
 output = forge.render(forge.Bundle {
     project = "acme"
     env = "dev"
-    runtime = forge.OnHost {}
     workloads = [
         fw.Workload {
             name = "api"
@@ -33,6 +32,7 @@ output = forge.render(forge.Bundle {
             args = ["db", "migrate", "up"]
             before = [fw.BEFORE_ALL]
             env = {DATABASE_URL = "postgres://postgres:postgres@localhost:5433/acme"}
+            runtime = forge.OnHost {}
         }
     ]
     infra = [forge.HostInfra {name = "postgres", port = 5433, database = "acme"}]

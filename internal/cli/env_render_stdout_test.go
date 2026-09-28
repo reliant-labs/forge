@@ -62,12 +62,11 @@ _target = forge.ClusterTarget {
 _bundle = forge.Bundle {
     project = "rendertest"
     cluster_target = _target
-    runtime = forge.OnCluster {target = _target}
-    workloads = [
+    workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", image = "rendertest"}
         # A standalone job (no before): a batch/v1 Job in the stream.
         fw.Workload {name = "migrate", kind = "job", image = "rendertest", args = ["db", "migrate", "up"]}
-    ]
+    ]]
 }
 
 output = forge.render(_bundle)

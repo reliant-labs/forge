@@ -48,10 +48,10 @@ A **runtime** is where a workload runs:
 
 | Runtime | Meaning |
 |---|---|
-| `forge.Host {runner, ...}` | a local process (go-run, air, binary, delve) |
-| `forge.Compose {service}` | a docker-compose service |
-| `forge.Cluster {target}` | a Kubernetes cluster the user operates |
-| `forge.Hosted {}` | the forge control plane (Reliant cloud or another) |
+| `forge.OnHost {runner, ...}` | a local process (go-run, air, binary, delve) |
+| `forge.OnCompose {service}` | a docker-compose service |
+| `forge.OnCluster {target}` | a Kubernetes cluster the user operates |
+| `forge.OnHosted {}` | the forge control plane (Reliant cloud or another) |
 | `forge.BuildOnly {}` | built and pushed, never run |
 
 `fw.Workload` carries `runtime?: Runtime`. An env binds workloads by
@@ -60,19 +60,15 @@ overlaying them, the same `|` mechanism it already uses for replicas and env:
 ```kcl
 bundle = forge.Bundle {
     project = "hounders"
-    runtime = forge.Host {runner = "air"}             # default for this env
     workloads = [
-        wl.membership
-        wl.migrate
-        wl.search | {runtime = forge.Cluster {target = _k3d}}
+        wl.membership | {runtime = forge.OnHost {runner = "air"}}
+        wl.migrate    | {runtime = forge.OnHost {}}
+        wl.search     | {runtime = forge.OnCluster {target = _k3d}}
     ]
 }
 ```
 
-Env names mean nothing to forge. Any env can use any runtime for any
-workload: a self-hosted staging with a hosted prod, the reverse, or a
-mixed env. `control_plane` is required only when a workload binds `Hosted`.
-It is no longer an env mode.
+Every workload states its own runtime; there is no env-level default. An env is a list of bindings, not a runtime. Env names mean nothing to forge: any env can use any runtime for any workload, and a self-hosted staging with a hosted prod, the reverse, or a mixed env are all just different bindings. `control_plane` is required only when some workload binds `OnHosted`.
 
 A workload's runtime-independent facts (command, args, ports, env, probes,
 build) are never re-stated per runtime. The host command is **derived** from

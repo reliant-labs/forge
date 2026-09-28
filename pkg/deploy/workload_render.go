@@ -1,0 +1,1199 @@
+package deploy
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+)
+
+// RenderWorkloads renders an environment's whole workload SET into the
+// Kubernetes objects that run it. It is the ONE Kubernetes renderer (ADR 0002
+// §4): the CLI calls it for Cluster-bound workloads under ProfileFull, and
+// the control plane's operator calls it for Hosted ones under
+// ProfileRestricted.
+//
+// It takes the set rather than one workload because two of its policies are
+// relations BETWEEN workloads: a job's `before` becomes an initContainer on
+// the workloads it gates, and a `before` that names nothing is refused. A
+// per-workload entry point could not see either.
+//
+// It is the port of kcl/workloads/expand.k (with capabilities.k, render.k and
+// lib/{rbac,netpol,labels}.k), which it replaces. Every policy cites the KCL
+// it came from. Where it deliberately differs, the comment says so, and
+// .scratch/parity.md lists every difference.
+//
+// Per kind:
+//
+//	service   Deployment + Service (+ PDB, PVC) + ServiceAccount [+ Role] + NetworkPolicy
+//	worker    Deployment (+ PDB, PVC) + ServiceAccount [+ Role] + NetworkPolicy
+//	operator  Deployment (+ PDB, PVC) + ServiceAccount + ClusterRole + ClusterRoleBinding
+//	job       standalone: Job + ServiceAccount [+ Role] + NetworkPolicy;
+//	          with `before`: nothing of its own, an initContainer on each gated pod
+//	cron      CronJob + ServiceAccount [+ Role] + NetworkPolicy
+//	tool      nothing (built into the image, never scheduled)
+//
+// Every spec is validated under p FIRST, all-or-nothing: no object is
+// emitted for a set with any error, and every error is reported together.
+//
+// It is PURE and DETERMINISTIC. Same input, byte-identical output. Two
+// executors apply its output against the same objects, and a renderer that
+// disagreed with itself would make them fight forever.
+//
+// What it does NOT do, because it is hosted policy the operator composes
+// around the result: RuntimeClass and node isolation, the registry
+// allowlist, the image pull secret, the SecretRef customer-prefix rule,
+// hostname routes, quota and the shape band. It also does not render the
+// Namespace. The namespace belongs to the environment (hosted: to the
+// platform), not to any workload in it.
+func RenderWorkloads(ws []v1alpha1.Workload, p v1alpha1.Profile, ctx Context) ([]*unstructured.Unstructured, error) {
+	if err := ctx.validate(); err != nil {
+		return nil, err
+	}
+	set, err := prepareSet(ws, p)
+	if err != nil {
+		return nil, err
+	}
+	var objs []runtime.Object
+	for _, w := range set.list {
+		o, err := set.render(w, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("workload %s: %w", w.name, err)
+		}
+		objs = append(objs, o...)
+	}
+	if ctx.Network != nil {
+		objs = append(objs, envNetworkPolicies(ctx.Namespace, *ctx.Network)...)
+	}
+	out, err := toUnstructured(objs)
+	if err != nil {
+		return nil, err
+	}
+	stampEnv(out, ctx.Env)
+	if p == v1alpha1.ProfileRestricted {
+		// Defense in depth behind Validate. The profile refuses every field
+		// that would produce these, so this can only fire on a renderer bug.
+		// That is exactly when it must fire, rather than hand a tenant RBAC.
+		for _, o := range out {
+			if !RestrictedKinds[o.GetKind()] {
+				return nil, fmt.Errorf("renderer produced %s/%s under the restricted profile, which may only emit %v: refusing the whole set", o.GetKind(), o.GetName(), sortedKindNames(RestrictedKinds))
+			}
+		}
+	}
+	return out, nil
+}
+
+// RestrictedKinds is every object kind RenderWorkloads may emit under
+// ProfileRestricted: the objects that reach only the tenant's own pods. No
+// RBAC kind is in it, ever. A gating job is an initContainer inside a
+// Deployment or Job, so it needs no kind of its own.
+var RestrictedKinds = map[string]bool{
+	"Deployment":            true,
+	"Service":               true,
+	"ServiceAccount":        true,
+	"PersistentVolumeClaim": true,
+	"NetworkPolicy":         true,
+	"PodDisruptionBudget":   true,
+	"Job":                   true,
+}
+
+func sortedKindNames(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// PVCName is the claim backing a workload's storageGiB. The name is exported
+// because an observer must read back the claim this package emitted.
+func PVCName(workloadName string) string { return workloadName + "-data" }
+
+// Defaults the renderer owns (the spec's own defaults are v1alpha1's).
+const (
+	// DefaultServicePort is the `http` port a service that declares none
+	// listens on (kcl/workloads/expand.k:502, schema.k:154-155): serverkit's
+	// standard mux.
+	DefaultServicePort int32 = 8080
+	// Drain defaults when the workload's env does not state them: serverkit's
+	// own (pkg/serverkit/serverkit.go:507-512).
+	defaultPreStopDelaySeconds    = 5
+	defaultShutdownTimeoutSeconds = 30
+	// graceMarginSeconds is expand.k:252's margin above the app's drain.
+	graceMarginSeconds = 5
+	// Job lifecycle (expand.k:720-725).
+	jobBackoffLimit            int32 = 6
+	jobTTLSecondsAfterFinished int32 = 86400
+	jobHashLen                       = 10
+)
+
+// gatedKinds are the kinds a job may gate: capabilities.k CAP_GATED
+// (BROADCAST_GATED_KINDS, capabilities.k:273-275). cron is excluded because
+// a CronJob pod fires on a SCHEDULE, so an initContainer there would re-run
+// the one-shot on every tick (capabilities.k:188-190); tool has no pod.
+var gatedKinds = map[v1alpha1.WorkloadKind]bool{
+	v1alpha1.KindService: true, v1alpha1.KindWorker: true, v1alpha1.KindJob: true, v1alpha1.KindOperator: true,
+}
+
+// workload is one prepared entry: its name and its DEFAULTED spec.
+type workload struct {
+	name string
+	kind v1alpha1.WorkloadKind
+	spec v1alpha1.WorkloadSpec
+}
+
+func (w *workload) gatingJob() bool { return w.kind == v1alpha1.KindJob && len(w.spec.Before) > 0 }
+
+func (w *workload) broadcast() bool { return slices.Contains(w.spec.Before, v1alpha1.BeforeAll) }
+
+type workloadSet struct {
+	list   []*workload
+	byName map[string]*workload
+}
+
+// prepareSet validates every spec under p and the cross-workload rules, and
+// returns the defaulted set. All errors are collected (validate.go's
+// all-or-nothing convention).
+func prepareSet(ws []v1alpha1.Workload, p v1alpha1.Profile) (*workloadSet, error) {
+	set := &workloadSet{byName: map[string]*workload{}}
+	var errs []error
+	for i := range ws {
+		name := ws[i].Name
+		spec := ws[i].Spec
+		fail := func(err error) { errs = append(errs, fmt.Errorf("workload %s: %w", name, err)) }
+		if !isDNSLabel(name) {
+			fail(fmt.Errorf("name %q must be an RFC-1123 label of at most 63 characters: it is every rendered object's name", name))
+		}
+		if _, dup := set.byName[name]; dup {
+			fail(errors.New("declared twice in this environment"))
+			continue
+		}
+		if err := spec.Validate(p); err != nil {
+			fail(err)
+		}
+		// A workloadURL is a reference, and a pod can only carry a value.
+		// Rendering it as an empty variable would start a workload whose
+		// CORS_ORIGINS silently admits nothing. The caller resolves it
+		// first (ResolveEnvWorkloadURLs), where the target's URL is known.
+		for _, env := range append([][]v1alpha1.EnvVar{spec.Env}, sidecarEnvs(spec)...) {
+			for _, e := range env {
+				if e.WorkloadURL != nil {
+					fail(fmt.Errorf("env var %s holds an unresolved workloadURL %q: resolve it (deploy.ResolveEnvWorkloadURLs) before rendering", e.Name, e.WorkloadURL.Name))
+				}
+			}
+		}
+		w := &workload{name: name, spec: spec.WithDefaults()}
+		w.kind = w.spec.EffectiveKind()
+		// A service that declares no ports serves the standard mux on
+		// `http` :8080 (expand.k:502). NOT exposed: expand.k's default
+		// carried expose=True, but expose now asks for a PUBLIC hostname
+		// (Port.Expose), and a service that declared nothing must not
+		// become public by omission.
+		if w.kind == v1alpha1.KindService && len(w.spec.Ports) == 0 {
+			w.spec.Ports = []v1alpha1.Port{{Name: v1alpha1.DefaultHTTPPortName, Port: DefaultServicePort, Protocol: v1alpha1.ProtocolTCP}}
+		}
+		if w.kind == v1alpha1.KindJob && len(w.spec.Before) == 0 && len(name)+1+jobHashLen > 63 {
+			fail(fmt.Errorf("a standalone job's name is at most %d characters: its Job is named <name>-<%d-char spec hash>", 63-1-jobHashLen, jobHashLen))
+		}
+		if w.gatingJob() {
+			errs = append(errs, gatingJobPodFields(w)...)
+		}
+		set.byName[name] = w
+		set.list = append(set.list, w)
+	}
+	errs = append(errs, set.validateBefore()...)
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return set, nil
+}
+
+func sidecarEnvs(s v1alpha1.WorkloadSpec) [][]v1alpha1.EnvVar {
+	out := make([][]v1alpha1.EnvVar, 0, len(s.Sidecars))
+	for _, c := range s.Sidecars {
+		out = append(out, c.Env)
+	}
+	return out
+}
+
+// gatingJobPodFields refuses the pod-level fields a gating job cannot honour.
+// A job with `before` runs as an initContainer INSIDE the pods it gates
+// (expand.k:318-330), under their ServiceAccount, on their nodes. It has no
+// pod of its own for these to describe. expand.k rendered an orphan
+// ServiceAccount (and Role) for such a job, which nothing bound, so a
+// migrate job's `namespaced_rbac` looked granted and was not.
+func gatingJobPodFields(w *workload) []error {
+	s := w.spec
+	var errs []error
+	for field, set := range map[string]bool{
+		"namespacedRBAC":            len(s.NamespacedRBAC) > 0,
+		"serviceAccount":            s.ServiceAccount != "",
+		"serviceAccountAnnotations": len(s.ServiceAccountAnnotations) > 0,
+		"sidecars":                  len(s.Sidecars) > 0,
+		"volumes":                   len(s.Volumes) > 0,
+		"nodeSelector":              len(s.NodeSelector) > 0,
+		"tolerations":               len(s.Tolerations) > 0,
+		"podAnnotations":            len(s.PodAnnotations) > 0,
+	} {
+		if set {
+			errs = append(errs, fmt.Errorf("workload %s: %s is not allowed on a job with before: it runs as an initContainer in the pods it gates, under their identity and placement, so it has no pod of its own for %s to apply to (drop before to run it as a standalone Job)", w.name, field, field))
+		}
+	}
+	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
+	return errs
+}
+
+// validateBefore ports kcl/workloads/render.k:147-162 (a `before` naming a
+// workload that does not exist is refused, BEFORE_ALL exempt) and adds the
+// checks the KCL could not make and silently dropped instead:
+//
+//   - a job naming ITSELF (schema.k:379);
+//   - a job naming a kind that cannot be gated. expand.k:798 rendered cron
+//     without gating and tool as nothing, so `before = ["nightly"]`
+//     rendered, passed, and ordered nothing;
+//   - a cycle between jobs, which is not an ordering.
+func (set *workloadSet) validateBefore() []error {
+	var errs []error
+	names := make([]string, 0, len(set.list))
+	for _, w := range set.list {
+		names = append(names, w.name)
+	}
+	for _, j := range set.list {
+		if j.kind != v1alpha1.KindJob {
+			continue
+		}
+		for _, d := range j.spec.Before {
+			if d == v1alpha1.BeforeAll {
+				continue
+			}
+			t, ok := set.byName[d]
+			switch {
+			case d == j.name:
+				errs = append(errs, fmt.Errorf("workload %s: before names the job itself", j.name))
+			case !ok:
+				errs = append(errs, fmt.Errorf("workload %s: before names %q, which does not exist in this environment (declared: %s); fix the name, use [%q] to gate every workload, or drop before to render a standalone Job", j.name, d, strings.Join(names, ", "), v1alpha1.BeforeAll))
+			case !gatedKinds[t.kind]:
+				errs = append(errs, fmt.Errorf("workload %s: before names %q, a %s, which cannot be gated: a cron fires on a schedule, so gating it would re-run the job on every tick, and a tool is never scheduled", j.name, d, t.kind))
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	// Cycle detection over job→job gating edges.
+	const (
+		unvisited = iota
+		visiting
+		done
+	)
+	state := map[string]int{}
+	var visit func(j *workload, path []string) error
+	visit = func(j *workload, path []string) error {
+		switch state[j.name] {
+		case visiting:
+			return fmt.Errorf("jobs gate each other in a cycle (%s -> %s), which is not an ordering", strings.Join(path, " -> "), j.name)
+		case done:
+			return nil
+		}
+		state[j.name] = visiting
+		for _, t := range set.list {
+			if t.kind == v1alpha1.KindJob && jobGates(j, t) {
+				if err := visit(t, append(path, j.name)); err != nil {
+					return err
+				}
+			}
+		}
+		state[j.name] = done
+		return nil
+	}
+	for _, j := range set.list {
+		if j.kind == v1alpha1.KindJob && state[j.name] == unvisited {
+			if err := visit(j, nil); err != nil {
+				return []error{err}
+			}
+		}
+	}
+	return nil
+}
+
+// jobGates ports expand.k:412-417 job_gates. An enumerated `before` gates
+// exactly the named workloads. The broadcast form gates every workload of a
+// gateable kind, except itself and another broadcast job: two broadcast jobs
+// are peers, each claiming to precede the other, which is not an ordering.
+func jobGates(j, target *workload) bool {
+	if !j.gatingJob() {
+		return false
+	}
+	if j.broadcast() {
+		return target.name != j.name && gatedKinds[target.kind] &&
+			!(target.kind == v1alpha1.KindJob && target.broadcast())
+	}
+	return slices.Contains(j.spec.Before, target.name)
+}
+
+// gatingJobs ports expand.k:429-431 _gating_jobs: the jobs that gate target,
+// as initContainers. Declaration order is the ordering contract
+// (expand.k:423-428): Kubernetes runs initContainers in list order, so a
+// migration declared first runs first.
+//
+// One refinement over expand.k. When one gating job ALSO gates another
+// (migrate broadcast-gates a seed job, and both gate `api`), the gate runs
+// first whatever the declaration order. In expand.k a seed declared before
+// migrate ran before it on every pod they both gated, which is the race
+// `before` exists to remove.
+func (set *workloadSet) gatingJobs(target *workload) []*workload {
+	var gates []*workload
+	for _, j := range set.list {
+		if jobGates(j, target) {
+			gates = append(gates, j)
+		}
+	}
+	// Stable topological order: repeatedly take the first job (in
+	// declaration order) none of whose remaining peers gate it. The set is
+	// acyclic (validateBefore), so this always makes progress.
+	ordered := make([]*workload, 0, len(gates))
+	for len(gates) > 0 {
+		for i, j := range gates {
+			blocked := false
+			for _, k := range gates {
+				if k != j && jobGates(k, j) {
+					blocked = true
+					break
+				}
+			}
+			if !blocked {
+				ordered = append(ordered, j)
+				gates = append(gates[:i], gates[i+1:]...)
+				break
+			}
+		}
+	}
+	return ordered
+}
+
+// render dispatches one workload on its kind (expand.k:795-801).
+func (set *workloadSet) render(w *workload, ctx Context) ([]runtime.Object, error) {
+	switch w.kind {
+	case v1alpha1.KindService, v1alpha1.KindWorker, v1alpha1.KindOperator:
+		return set.renderLongRunning(w, ctx), nil
+	case v1alpha1.KindJob:
+		if w.gatingJob() {
+			// expand.k:731: a job with `before` renders NO standalone Job.
+			// Rendering both would run it twice, once unordered. It also
+			// renders no identity: see gatingJobPodFields.
+			return nil, nil
+		}
+		return set.renderJob(w, ctx)
+	case v1alpha1.KindCron:
+		return set.renderCron(w, ctx), nil
+	case v1alpha1.KindTool:
+		// expand.k:782-784: built into the image and never scheduled.
+		return nil, nil
+	}
+	return nil, fmt.Errorf("kind %q has no renderer", w.kind)
+}
+
+// renderLongRunning renders service / worker / operator (expand.k:440-533,
+// :748-777): a Deployment, the service's Service, the PDB, the PVC, the
+// identity and the ingress NetworkPolicy.
+func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Object {
+	s := w.spec
+	labels := managedLabels(w.name, ctx.PartOf)
+	selector := map[string]string{LabelName: w.name}
+
+	var extraEnv []corev1.EnvVar
+	// expand.k:751: an operator's manager is told to elect a leader. An
+	// explicitly declared LEADER_ELECTION wins, rather than rendering the
+	// name twice (which the API server rejects as a duplicate).
+	if s.EffectiveLeaderElection() && !declaresEnv(s.Env, "LEADER_ELECTION") {
+		extraEnv = append(extraEnv, corev1.EnvVar{Name: "LEADER_ELECTION", Value: "true"})
+	}
+	pod := set.podSpec(w, ctx, extraEnv)
+	pod.TerminationGracePeriodSeconds = new(gracePeriodSeconds(s.Env))
+	if s.Replicas > 1 {
+		pod.TopologySpreadConstraints = spreadConstraints(w.name)
+	}
+
+	replicas := s.Replicas
+	dep := &appsv1.Deployment{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: copyLabels(selector)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: s.PodAnnotations},
+				Spec:       pod,
+			},
+		},
+	}
+	// A ReadWriteOnce volume is mounted by one pod at a time. A rolling
+	// update starts the new pod while the old one still holds it, and
+	// wedges. Validate guarantees one replica; Recreate is the rollout.
+	if s.StorageGiB > 0 {
+		dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+	}
+	objs := []runtime.Object{dep}
+
+	// expand.k:507-515: only a service is dialled by name. A worker has
+	// nothing to dial, and an operator's ports are documentary
+	// (capabilities.k:232-240): forge does not conjure a routable name for
+	// a manager on the strength of a port number.
+	if w.kind == v1alpha1.KindService {
+		svc := &corev1.Service{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+			ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
+			Spec:       corev1.ServiceSpec{Selector: copyLabels(selector)},
+		}
+		for _, p := range s.Ports {
+			sp := corev1.ServicePort{Name: p.Name, Port: p.Port, TargetPort: intstr.FromInt32(p.Port), Protocol: k8sProtocol(p.Protocol)}
+			if p.AppProtocol != "" {
+				sp.AppProtocol = new(p.AppProtocol)
+			}
+			svc.Spec.Ports = append(svc.Spec.Ports, sp)
+		}
+		objs = append(objs, svc)
+	}
+	// expand.k:272-282: a PDB above one replica, so a drain takes one at a
+	// time. Omitted at one replica, where it would be vacuous or block the
+	// drain forever.
+	if s.Replicas > 1 {
+		objs = append(objs, &policyv1.PodDisruptionBudget{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "policy/v1", Kind: "PodDisruptionBudget"},
+			ObjectMeta: objectMeta(w.name+"-pdb", ctx.Namespace, labels),
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MaxUnavailable: new(intstr.FromInt32(1)),
+				Selector:       &metav1.LabelSelector{MatchLabels: copyLabels(selector)},
+			},
+		})
+	}
+	if s.StorageGiB > 0 {
+		objs = append(objs, &corev1.PersistentVolumeClaim{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+			ObjectMeta: objectMeta(PVCName(w.name), ctx.Namespace, labels),
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{
+					corev1.ResourceStorage: *resource.NewQuantity(int64(s.StorageGiB)<<30, resource.BinarySI),
+				}},
+			},
+		})
+	}
+	objs = append(objs, identity(w, ctx)...)
+	if np := ingressPolicy(w, ctx); np != nil {
+		objs = append(objs, np)
+	}
+	return objs
+}
+
+// renderJob renders a STANDALONE one-shot (expand.k:638-744).
+func (set *workloadSet) renderJob(w *workload, ctx Context) ([]runtime.Object, error) {
+	pod := set.podSpec(w, ctx, nil)
+	// expand.k:629-632: OnFailure + backoffLimit retry a transient failure
+	// (the database still starting) without retrying a broken command
+	// forever.
+	pod.RestartPolicy = corev1.RestartPolicyOnFailure
+
+	// expand.k:665-698: a Job's spec.template is IMMUTABLE, so a fixed name
+	// makes re-applying an unchanged Job fail at the END of a whole-manifest
+	// apply, after every Deployment rolled. The spec hash in the NAME makes
+	// an unchanged spec a true no-op and a changed one a new Job. It is
+	// taken over the emitted pod spec, so it covers every field without a
+	// hand-kept list, and it hashes the image as resolved.
+	podMap, err := toMap(&pod)
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(podMap) // encoding/json sorts map keys: stable
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(b)
+	hash := hex.EncodeToString(sum[:])[:jobHashLen]
+
+	labels := managedLabels(w.name, ctx.PartOf)
+	jobLabels := copyLabels(labels)
+	jobLabels[LabelJobName] = w.name
+	jobLabels[LabelSpecHash] = hash
+	podLabels := copyLabels(labels)
+	podLabels[LabelJobName] = w.name
+
+	meta := objectMeta(w.name+"-"+hash, ctx.Namespace, jobLabels)
+	// expand.k:714-718: WHEN this Job runs relative to the deploy's
+	// workloads. On metadata, so it never moves the hash.
+	meta.Annotations = map[string]string{AnnotationDeployPhase: string(w.spec.EffectiveDeployPhase())}
+	job := &batchv1.Job{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "batch/v1", Kind: "Job"},
+		ObjectMeta: meta,
+		Spec: batchv1.JobSpec{
+			BackoffLimit:            new(jobBackoffLimit),
+			TTLSecondsAfterFinished: new(jobTTLSecondsAfterFinished),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: w.spec.PodAnnotations},
+				Spec:       pod,
+			},
+		},
+	}
+	objs := []runtime.Object{job}
+	objs = append(objs, identity(w, ctx)...)
+	objs = append(objs, ingressPolicy(w, ctx))
+	return objs, nil
+}
+
+// renderCron renders a CronJob (expand.k:536-619). expand.k sets no
+// concurrencyPolicy, startingDeadlineSeconds or history limits, and neither
+// does this: Kubernetes' defaults (Allow, none, 3/1) apply. A cron is never
+// gated (capabilities.k:188-190).
+func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
+	pod := set.podSpec(w, ctx, nil)
+	pod.RestartPolicy = corev1.RestartPolicyOnFailure
+	labels := managedLabels(w.name, ctx.PartOf)
+	cj := &batchv1.CronJob{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "batch/v1", Kind: "CronJob"},
+		ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
+		Spec: batchv1.CronJobSpec{
+			Schedule: w.spec.Schedule,
+			JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: w.spec.PodAnnotations},
+					Spec:       pod,
+				},
+			}},
+		},
+	}
+	objs := []runtime.Object{cj}
+	objs = append(objs, identity(w, ctx)...)
+	objs = append(objs, ingressPolicy(w, ctx))
+	return objs
+}
+
+// podSpec is the pod every kind shares: identity, hardening, the main
+// container and its sidecars, the gating initContainers, volumes and
+// placement.
+func (set *workloadSet) podSpec(w *workload, ctx Context, extraEnv []corev1.EnvVar) corev1.PodSpec {
+	s := w.spec
+	main := mainContainer(w, extraEnv)
+	containers := []corev1.Container{main}
+	for _, sc := range s.Sidecars {
+		containers = append(containers, sidecarContainer(sc))
+	}
+
+	// cron never receives gating (expand.k:791-793): jobGates excludes it
+	// through gatedKinds, and validateBefore refuses naming one.
+	var inits []corev1.Container
+	for _, j := range set.gatingJobs(w) {
+		inits = append(inits, initContainer(j))
+	}
+
+	volumes := []corev1.Volume{{Name: v1alpha1.TmpVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+	if s.StorageGiB > 0 {
+		volumes = append(volumes, corev1.Volume{Name: v1alpha1.DataVolumeName, VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: PVCName(w.name)},
+		}})
+	}
+	for _, v := range s.Volumes {
+		volumes = append(volumes, corev1.Volume{Name: v.Name, VolumeSource: volumeSource(v.Source)})
+	}
+
+	pod := corev1.PodSpec{
+		// Bind the workload's own ServiceAccount. Leaving it unset ran every
+		// pod as the namespace `default` (expand.k:504-505, :553-558).
+		ServiceAccountName: w.name,
+		SecurityContext:    podSecurityContext(needsFSGroup(s)),
+		InitContainers:     inits,
+		Containers:         containers,
+		Volumes:            volumes,
+		NodeSelector:       s.NodeSelector,
+		Tolerations:        tolerations(s.Tolerations),
+	}
+	if s.UsesGeneratedServiceAccount() {
+		// An API token mounted into a process that never calls the API is
+		// pure blast radius (lib/rbac.k:78-79). A workload gets one only
+		// when it has RBAC to use it with.
+		pod.AutomountServiceAccountToken = new(hasRBAC(w))
+	} else {
+		// The override names a ServiceAccount forge does not own. Its owner
+		// decides whether its token mounts (the ServiceAccount's own
+		// automountServiceAccountToken): forge cannot know whether that
+		// identity calls the API, and a pod-level false would silently
+		// disable an identity that does.
+		pod.ServiceAccountName = s.ServiceAccount
+	}
+	return pod
+}
+
+// mainContainer is the workload's own container (expand.k:454-466).
+func mainContainer(w *workload, extraEnv []corev1.EnvVar) corev1.Container {
+	s := w.spec
+	c := corev1.Container{
+		Name:            w.name,
+		Image:           s.Image,
+		ImagePullPolicy: pullPolicy(s.Image),
+		Command:         s.Command,
+		Args:            s.Args,
+		Env:             append(renderEnv(s.Env), extraEnv...),
+		Resources:       resourceRequirements(s.Resources),
+		SecurityContext: containerSecurityContext(),
+		VolumeMounts:    []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}},
+	}
+	if len(c.Env) == 0 {
+		c.Env = nil
+	}
+	c.Ports = containerPorts(s.Ports)
+	probes := s.EffectiveProbes()
+	// expand.k:445-452: a probed workload always declares the port it
+	// answers on, even when nothing routes to it (a worker probed on
+	// probes.port with no ports declared).
+	if len(c.Ports) == 0 && probes != nil {
+		c.Ports = []corev1.ContainerPort{{Name: v1alpha1.DefaultHTTPPortName, ContainerPort: probes.Port, Protocol: corev1.ProtocolTCP}}
+	}
+	c.ReadinessProbe, c.LivenessProbe = probePair(probes)
+	if s.StorageGiB > 0 {
+		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: v1alpha1.DataVolumeName, MountPath: v1alpha1.DataMountPath})
+	}
+	for _, v := range s.Volumes {
+		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: v.Name, MountPath: v.MountPath, ReadOnly: v.ReadOnly})
+	}
+	return c
+}
+
+// sidecarContainer renders a sidecar with the SAME hardening as the main
+// container. The type has no securityContext field, on purpose: a sidecar
+// that could loosen it would make the main container's hardening a
+// suggestion. It shares /tmp and nothing else (v1alpha1.Container's doc).
+func sidecarContainer(sc v1alpha1.Container) corev1.Container {
+	c := corev1.Container{
+		Name:            sc.Name,
+		Image:           sc.Image,
+		ImagePullPolicy: pullPolicy(sc.Image),
+		Command:         sc.Command,
+		Args:            sc.Args,
+		Env:             renderEnv(sc.Env),
+		Ports:           containerPorts(sc.Ports),
+		Resources:       resourceRequirements(sc.Resources),
+		SecurityContext: containerSecurityContext(),
+		VolumeMounts:    []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}},
+	}
+	c.ReadinessProbe, c.LivenessProbe = probePair(sc.EffectiveProbes())
+	return c
+}
+
+// initContainer lowers a gating job onto a dependent (expand.k:318-330).
+//
+// It runs with ITS OWN command, env and image. Two deliberate differences
+// from expand.k:
+//
+//   - the image is the job's own spec.image. expand.k used the DEPENDENT's,
+//     because every workload of a project shared one image name there; the
+//     lowering now resolves each workload's image explicitly, and running a
+//     job under an image it did not declare would be a guess.
+//   - resources are the job's own (defaulted). expand.k used a fixed
+//     100m/128Mi block so as not to INHERIT THE DEPENDENT's per-env block;
+//     that intent holds. A job's own declaration is what it needs, and
+//     Kubernetes charges a pod max(largest init request, sum of containers),
+//     so it does not inflate a dependent that already requests as much.
+//
+// It mounts the pod's /tmp: the root filesystem is read-only here too, and
+// a migration tool writing a temp file would otherwise fail.
+func initContainer(j *workload) corev1.Container {
+	return corev1.Container{
+		Name:            j.name,
+		Image:           j.spec.Image,
+		ImagePullPolicy: pullPolicy(j.spec.Image),
+		Command:         j.spec.Command,
+		Args:            j.spec.Args,
+		Env:             renderEnv(j.spec.Env),
+		Resources:       resourceRequirements(j.spec.Resources),
+		SecurityContext: containerSecurityContext(),
+		VolumeMounts:    []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}},
+	}
+}
+
+func containerPorts(ports []v1alpha1.Port) []corev1.ContainerPort {
+	var out []corev1.ContainerPort
+	for _, p := range ports {
+		out = append(out, corev1.ContainerPort{Name: p.Name, ContainerPort: p.Port, Protocol: k8sProtocol(p.Protocol)})
+	}
+	return out
+}
+
+// k8sProtocol upper-cases the spec's lowercase authoring value.
+func k8sProtocol(p v1alpha1.PortProtocol) corev1.Protocol {
+	if p == "" {
+		p = v1alpha1.DefaultPortProtocol
+	}
+	return corev1.Protocol(strings.ToUpper(string(p)))
+}
+
+// probePair renders the readiness and liveness probes from ONE resolved
+// Probes (v1alpha1.WorkloadSpec.EffectiveProbes), as two separate objects:
+// readiness gates traffic and never restarts, liveness restarts on timings
+// DERIVED from the readiness budget (expand.k:198-237). The arithmetic lives
+// in v1alpha1 (Readiness / Liveness) and is not restated here.
+func probePair(p *v1alpha1.Probes) (readiness, liveness *corev1.Probe) {
+	if p == nil {
+		return nil, nil
+	}
+	port := intstr.FromInt32(p.Port)
+	handler := func(path string) corev1.ProbeHandler {
+		if p.TCP {
+			return corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: port}}
+		}
+		return corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: path, Port: port}}
+	}
+	probe := func(h corev1.ProbeHandler, t v1alpha1.ProbeTimings) *corev1.Probe {
+		return &corev1.Probe{
+			ProbeHandler:        h,
+			InitialDelaySeconds: t.InitialDelaySeconds,
+			PeriodSeconds:       t.PeriodSeconds,
+			TimeoutSeconds:      t.TimeoutSeconds,
+			FailureThreshold:    t.FailureThreshold,
+		}
+	}
+	return probe(handler(p.ReadinessPath), p.Readiness()), probe(handler(p.LivenessPath), p.Liveness())
+}
+
+// renderEnv projects every channel (expand.k:104-116). Exactly one source is
+// ever emitted per entry: Validate refuses two, and Kubernetes rejects
+// value+valueFrom only server-side, after a client dry-run passed.
+// WorkloadURL never reaches here (prepareSet refuses it unresolved).
+func renderEnv(env []v1alpha1.EnvVar) []corev1.EnvVar {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]corev1.EnvVar, 0, len(env))
+	for _, e := range env {
+		ev := corev1.EnvVar{Name: e.Name}
+		switch {
+		case e.SecretRef != nil:
+			ev.ValueFrom = secretKey(e.SecretRef.Name, e.SecretRef.Key)
+		case e.ManagedSecret != "":
+			ev.ValueFrom = secretKey(v1alpha1.ManagedSecretsSecretName, e.ManagedSecret)
+		case e.DatabaseRef != nil:
+			ev.ValueFrom = secretKey(DatabaseCredentialSecretName(e.DatabaseRef.Name), string(e.DatabaseRef.EffectiveKey()))
+		case e.ConfigMapRef != nil:
+			ev.ValueFrom = &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: e.ConfigMapRef.Name}, Key: e.ConfigMapRef.Key,
+			}}
+		case e.FieldRef != nil:
+			ev.ValueFrom = &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: e.FieldRef.FieldPath}}
+		default:
+			ev.Value = e.Value
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+func secretKey(name, key string) *corev1.EnvVarSource {
+	return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: name}, Key: key,
+	}}
+}
+
+func declaresEnv(env []v1alpha1.EnvVar, name string) bool {
+	return slices.ContainsFunc(env, func(e v1alpha1.EnvVar) bool { return e.Name == name })
+}
+
+// envLiteral ports expand.k:149-154 _env_literal: the last literal value of
+// key in the workload's env, else fallback. A key bound to a reference has no
+// literal to read.
+func envLiteral(env []v1alpha1.EnvVar, key, fallback string) string {
+	v := ""
+	for _, e := range env {
+		if e.Name == key && e.Value != "" {
+			v = e.Value
+		}
+	}
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+// durationSeconds ports expand.k:159-163 _duration_seconds: seconds from a
+// plain <int><s|m|h> Go duration literal. Anything else ("1m30s", "500ms")
+// falls back rather than rendering a nonsense number.
+func durationSeconds(raw string, fallback int64) int64 {
+	num, mult := raw, int64(1)
+	switch {
+	case strings.HasSuffix(raw, "s"):
+		num = raw[:len(raw)-1]
+	case strings.HasSuffix(raw, "m"):
+		num, mult = raw[:len(raw)-1], 60
+	case strings.HasSuffix(raw, "h"):
+		num, mult = raw[:len(raw)-1], 3600
+	}
+	if num == "" || strings.Trim(num, "0123456789") != "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n * mult
+}
+
+// gracePeriodSeconds ports expand.k:239-253 _grace_period. On SIGTERM
+// serverkit flips /readyz, sleeps PRE_STOP_DELAY, then shuts down bounded by
+// SHUTDOWN_TIMEOUT. Its defaults (5s + 30s) exceed Kubernetes' implicit 30s,
+// so without this the kubelet SIGKILLs mid-drain on every rollout. Derived
+// from the workload's OWN env, so retuning either knob cannot reintroduce
+// the truncation. No preStop hook: the app owns the drain.
+func gracePeriodSeconds(env []v1alpha1.EnvVar) int64 {
+	pre := durationSeconds(envLiteral(env, "PRE_STOP_DELAY", ""), defaultPreStopDelaySeconds)
+	shutdown := durationSeconds(envLiteral(env, "SHUTDOWN_TIMEOUT", ""), defaultShutdownTimeoutSeconds)
+	return pre + shutdown + graceMarginSeconds
+}
+
+// spreadConstraints ports expand.k:255-266: soft (ScheduleAnyway), because a
+// hard constraint leaves replicas Pending forever on a one-node dev cluster.
+func spreadConstraints(name string) []corev1.TopologySpreadConstraint {
+	return []corev1.TopologySpreadConstraint{{
+		MaxSkew:           1,
+		TopologyKey:       "kubernetes.io/hostname",
+		WhenUnsatisfiable: corev1.ScheduleAnyway,
+		LabelSelector:     &metav1.LabelSelector{MatchLabels: map[string]string{LabelName: name}},
+	}}
+}
+
+// pullPolicy ports expand.k:73-79: Always for a mutable tag (`latest`, no
+// tag, or a `-dirty` dev build), else IfNotPresent.
+func pullPolicy(image string) corev1.PullPolicy {
+	tail := image[strings.LastIndex(image, "/")+1:]
+	tag := "latest"
+	if i := strings.LastIndex(tail, ":"); i >= 0 {
+		tag = tail[i+1:]
+	}
+	if strings.HasSuffix(tag, "-dirty") || tag == "latest" {
+		return corev1.PullAlways
+	}
+	return corev1.PullIfNotPresent
+}
+
+// resourceRequirements formats neutral millicores/bytes as Kubernetes
+// quantities (expand.k:83-88 via lib/quantity.k). Defaults are v1alpha1's
+// 250m / 1 GiB entry shape, limits equal to requests.
+func resourceRequirements(r v1alpha1.Resources) corev1.ResourceRequirements {
+	r = r.WithDefaults()
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    *resource.NewMilliQuantity(r.CPURequestMillicores, resource.DecimalSI),
+			corev1.ResourceMemory: *resource.NewQuantity(r.MemoryRequestBytes, resource.BinarySI),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    *resource.NewMilliQuantity(r.CPULimitMillicores, resource.DecimalSI),
+			corev1.ResourceMemory: *resource.NewQuantity(r.MemoryLimitBytes, resource.BinarySI),
+		},
+	}
+}
+
+// podSecurityContext ports expand.k:45-50 plus fsGroup. Restricted Pod
+// Security: non-root, seccomp RuntimeDefault. fsGroup makes a mounted
+// PersistentVolumeClaim group-writable by 65532; without it most
+// provisioners hand the non-root container a root-owned volume.
+func podSecurityContext(fsGroup bool) *corev1.PodSecurityContext {
+	uid := RunAsUser
+	sc := &corev1.PodSecurityContext{
+		RunAsNonRoot:   new(true),
+		RunAsUser:      &uid,
+		RunAsGroup:     &uid,
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+	if fsGroup {
+		sc.FSGroup = &uid
+	}
+	return sc
+}
+
+// needsFSGroup: the pod mounts a PVC, forge's own (storageGiB) or a declared
+// one.
+func needsFSGroup(s v1alpha1.WorkloadSpec) bool {
+	return s.StorageGiB > 0 || slices.ContainsFunc(s.Volumes, func(v v1alpha1.Volume) bool { return v.Source.PVC != nil })
+}
+
+// containerSecurityContext ports expand.k:52-59: every container forge
+// renders (main, sidecar, init) gets it, unconditionally.
+func containerSecurityContext() *corev1.SecurityContext {
+	uid := RunAsUser
+	return &corev1.SecurityContext{
+		RunAsNonRoot:             new(true),
+		RunAsUser:                &uid,
+		RunAsGroup:               &uid,
+		ReadOnlyRootFilesystem:   new(true),
+		AllowPrivilegeEscalation: new(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
+}
+
+func volumeSource(src v1alpha1.VolumeSource) corev1.VolumeSource {
+	items := func(in []v1alpha1.KeyToPath) []corev1.KeyToPath {
+		var out []corev1.KeyToPath
+		for _, it := range in {
+			out = append(out, corev1.KeyToPath{Key: it.Key, Path: it.Path})
+		}
+		return out
+	}
+	switch {
+	case src.Secret != nil:
+		return corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: src.Secret.Name, Items: items(src.Secret.Items)}}
+	case src.ConfigMap != nil:
+		return corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: src.ConfigMap.Name}, Items: items(src.ConfigMap.Items),
+		}}
+	case src.PVC != nil:
+		return corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: src.PVC.ClaimName}}
+	default:
+		ed := &corev1.EmptyDirVolumeSource{}
+		if src.EmptyDir != nil && src.EmptyDir.SizeLimitBytes > 0 {
+			ed.SizeLimit = resource.NewQuantity(src.EmptyDir.SizeLimitBytes, resource.BinarySI)
+		}
+		return corev1.VolumeSource{EmptyDir: ed}
+	}
+}
+
+func tolerations(in []v1alpha1.Toleration) []corev1.Toleration {
+	var out []corev1.Toleration
+	for _, t := range in {
+		out = append(out, corev1.Toleration{
+			Key: t.Key, Operator: corev1.TolerationOperator(t.Operator), Value: t.Value,
+			Effect: corev1.TaintEffect(t.Effect), TolerationSeconds: t.TolerationSeconds,
+		})
+	}
+	return out
+}
+
+// defaultRBACRules are lib/rbac.k:35-41: read the namespace's ConfigMaps and
+// Secrets. Granted with every Role and ClusterRole forge renders, never to a
+// workload that asked for none.
+var defaultRBACRules = []rbacv1.PolicyRule{{
+	APIGroups: []string{""}, Resources: []string{"configmaps", "secrets"}, Verbs: []string{"get", "list", "watch"},
+}}
+
+// hasRBAC ports capabilities.k:304-307 rbac_tier plus expand.k:370-380: an
+// operator always gets its ClusterRole (a manager cannot start without the
+// config-read defaults); a namespaced-tier kind gets a Role only when it
+// declares rules.
+func hasRBAC(w *workload) bool {
+	return w.kind == v1alpha1.KindOperator || len(w.spec.NamespacedRBAC) > 0
+}
+
+// identity ports expand.k:381-394 _workload_rbac with lib/rbac.k: exactly ONE
+// ServiceAccount per workload, and at most one tier of RBAC bound to it. The
+// tiers are EXCLUSIVE: an operator's ClusterRole REPLACES a Role rather than
+// adding one (schema.k:337-341), because two bindings on one ServiceAccount
+// let the wider decide every outcome and make the narrower an audit-log lie.
+//
+// With a ServiceAccount override forge renders nothing: it does not own an
+// identity it was told already exists, and a copy without the real one's
+// annotations would strip them on apply (lib/rbac.k:125-131).
+func identity(w *workload, ctx Context) []runtime.Object {
+	s := w.spec
+	if !s.UsesGeneratedServiceAccount() {
+		return nil
+	}
+	labels := managedLabels(w.name, ctx.PartOf)
+	sa := &corev1.ServiceAccount{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
+		ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
+	}
+	// Workload identity (iam.gke.io/gcp-service-account) is read off the
+	// SA the pod runs as, so the annotations go HERE and on nothing else
+	// (lib/rbac.k:43-67).
+	if len(s.ServiceAccountAnnotations) > 0 {
+		sa.Annotations = s.ServiceAccountAnnotations
+	}
+	if !hasRBAC(w) {
+		// lib/rbac.k:69-99: identity without permission, and no token.
+		sa.AutomountServiceAccountToken = new(false)
+		return []runtime.Object{sa}
+	}
+	subject := []rbacv1.Subject{{Kind: "ServiceAccount", Name: w.name, Namespace: ctx.Namespace}}
+	if w.kind == v1alpha1.KindOperator {
+		// lib/rbac.k:230-267. Cluster-scoped names carry the NAMESPACE:
+		// with an env-invariant name every env in a shared cluster writes
+		// the same binding, and the last deploy silently repoints it at
+		// its own namespace (lib/rbac.k:198-222).
+		roleName := fmt.Sprintf("%s-%s-clusterrole", w.name, ctx.Namespace)
+		return []runtime.Object{
+			sa,
+			&rbacv1.ClusterRole{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
+				ObjectMeta: metav1.ObjectMeta{Name: roleName, Labels: copyLabels(labels)},
+				Rules:      append(slices.Clone(defaultRBACRules), policyRules(s.ClusterRBAC)...),
+			},
+			&rbacv1.ClusterRoleBinding{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
+				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%s-clusterrolebinding", w.name, ctx.Namespace), Labels: copyLabels(labels)},
+				Subjects:   subject,
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: roleName},
+			},
+		}
+	}
+	// lib/rbac.k:149-191.
+	roleName := w.name + "-role"
+	return []runtime.Object{
+		sa,
+		&rbacv1.Role{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+			ObjectMeta: objectMeta(roleName, ctx.Namespace, labels),
+			Rules:      append(slices.Clone(defaultRBACRules), policyRules(s.NamespacedRBAC)...),
+		},
+		&rbacv1.RoleBinding{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
+			ObjectMeta: objectMeta(w.name+"-rolebinding", ctx.Namespace, labels),
+			Subjects:   subject,
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: roleName},
+		},
+	}
+}
+
+func policyRules(in []v1alpha1.PolicyRule) []rbacv1.PolicyRule {
+	var out []rbacv1.PolicyRule
+	for _, r := range in {
+		out = append(out, rbacv1.PolicyRule{APIGroups: r.APIGroups, Resources: r.Resources, Verbs: r.Verbs, ResourceNames: r.ResourceNames})
+	}
+	return out
+}
+
+// ingressPolicy is the per-workload ingress NetworkPolicy (ported from the
+// retired RenderSimpleBackend; expand.k had none). It selects the workload's
+// own pods and allows:
+//
+//   - its declared ports from every pod in the SAME namespace (an empty
+//     podSelector peer with no namespaceSelector);
+//   - its exposed port (Port.Expose) from anywhere, since a gateway in
+//     another namespace, or the platform's router, delivers the public
+//     traffic.
+//
+// Everything else is denied ingress. A batch pod or a worker with no ports
+// gets the policy with no rules at all: ingress default-deny. Egress is
+// deliberately unrestricted here. It is the namespace's control (Context.
+// Network, or the control plane's per-customer rules).
+//
+// An operator gets NONE. Its inbound traffic is the API server calling its
+// webhook and a monitoring stack in another namespace scraping metrics,
+// neither of which a namespace peer can express, and a policy that selects
+// its pods would deny both. Its isolation comes from the env-wide bundle.
+func ingressPolicy(w *workload, ctx Context) runtime.Object {
+	if w.kind == v1alpha1.KindOperator {
+		return nil
+	}
+	np := &networkingv1.NetworkPolicy{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
+		ObjectMeta: objectMeta(w.name+"-ingress", ctx.Namespace, managedLabels(w.name, ctx.PartOf)),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{LabelName: w.name}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+		},
+	}
+	// Batch kinds declare no ports (Validate), so they get no rules.
+	var private, public []networkingv1.NetworkPolicyPort
+	for _, p := range w.spec.Ports {
+		proto := k8sProtocol(p.Protocol)
+		port := intstr.FromInt32(p.Port)
+		npp := networkingv1.NetworkPolicyPort{Protocol: &proto, Port: &port}
+		if p.Expose {
+			public = append(public, npp)
+		} else {
+			private = append(private, npp)
+		}
+	}
+	if len(private) > 0 {
+		np.Spec.Ingress = append(np.Spec.Ingress, networkingv1.NetworkPolicyIngressRule{
+			Ports: private,
+			From:  []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{}}},
+		})
+	}
+	if len(public) > 0 {
+		np.Spec.Ingress = append(np.Spec.Ingress, networkingv1.NetworkPolicyIngressRule{Ports: public})
+	}
+	return np
+}
+
+// envNetworkPolicies ports kcl/lib/netpol.k:53-122 render_network_policies:
+// namespace default-deny (ingress AND egress) plus the allow-list that keeps
+// an env's own DNS, pods, external dependencies, collector and gateway
+// reachable. See Context.Network for why this is an env-scope input.
+func envNetworkPolicies(namespace string, n EnvNetworkPolicy) []runtime.Object {
+	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
+	port := func(p int32, proto *corev1.Protocol) networkingv1.NetworkPolicyPort {
+		v := intstr.FromInt32(p)
+		return networkingv1.NetworkPolicyPort{Protocol: proto, Port: &v}
+	}
+	nsPeer := func(ns string) networkingv1.NetworkPolicyPeer {
+		return networkingv1.NetworkPolicyPeer{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": ns}}}
+	}
+	policy := func(name string, spec networkingv1.NetworkPolicySpec) *networkingv1.NetworkPolicy {
+		return &networkingv1.NetworkPolicy{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec:       spec,
+		}
+	}
+	ingress, egress := networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress
+	out := []runtime.Object{
+		policy("default-deny", networkingv1.NetworkPolicySpec{PolicyTypes: []networkingv1.PolicyType{ingress, egress}}),
+		policy("allow-dns", networkingv1.NetworkPolicySpec{
+			PolicyTypes: []networkingv1.PolicyType{egress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To:    []networkingv1.NetworkPolicyPeer{nsPeer("kube-system")},
+				Ports: []networkingv1.NetworkPolicyPort{port(53, &udp), port(53, &tcp)},
+			}},
+		}),
+		policy("allow-internal", networkingv1.NetworkPolicySpec{
+			PolicyTypes: []networkingv1.PolicyType{ingress, egress},
+			Ingress:     []networkingv1.NetworkPolicyIngressRule{{From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{}}}}},
+			Egress:      []networkingv1.NetworkPolicyEgressRule{{To: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{}}}}},
+		}),
+	}
+	if len(n.EgressPorts) > 0 {
+		var ports []networkingv1.NetworkPolicyPort
+		for _, p := range n.EgressPorts {
+			ports = append(ports, port(p, &tcp))
+		}
+		out = append(out, policy("allow-egress-external", networkingv1.NetworkPolicySpec{
+			PolicyTypes: []networkingv1.PolicyType{egress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To:    []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}}},
+				Ports: ports,
+			}},
+		}))
+	}
+	if n.TelemetryNamespace != "" {
+		out = append(out, policy("allow-egress-telemetry", networkingv1.NetworkPolicySpec{
+			PolicyTypes: []networkingv1.PolicyType{egress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To:    []networkingv1.NetworkPolicyPeer{nsPeer(n.TelemetryNamespace)},
+				Ports: []networkingv1.NetworkPolicyPort{port(4317, &tcp), port(4318, &tcp)},
+			}},
+		}))
+	}
+	if n.IngressNamespace != "" {
+		out = append(out, policy("allow-ingress-controller", networkingv1.NetworkPolicySpec{
+			PolicyTypes: []networkingv1.PolicyType{ingress},
+			Ingress:     []networkingv1.NetworkPolicyIngressRule{{From: []networkingv1.NetworkPolicyPeer{nsPeer(n.IngressNamespace)}}},
+		}))
+	}
+	return out
+}

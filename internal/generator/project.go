@@ -572,18 +572,20 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		}
 	}
 
+	// Generate E2E test harness (server-shaped — services only). BEFORE the
+	// CI files: whether e2e.yml exists is read off this tree (CIWorkflows),
+	// and `forge generate` sees the harness, so the scaffold must too.
+	if g.isService() && g.Features.CodegenEnabled() && g.ServiceName != "" {
+		if err := g.generateE2ETests(); err != nil {
+			return fmt.Errorf("failed to generate E2E tests: %w", err)
+		}
+	}
+
 	// Generate CI/CD workflow files. CLI projects get a kind-aware CI
 	// (no docker/deploy/proto-breaking jobs); libraries inherit the same.
 	if g.Features.CIEnabled() {
 		if err := g.generateCIFiles(); err != nil {
 			return fmt.Errorf("failed to generate CI files: %w", err)
-		}
-	}
-
-	// Generate E2E test harness (server-shaped — services only)
-	if g.isService() && g.Features.CodegenEnabled() && g.ServiceName != "" {
-		if err := g.generateE2ETests(); err != nil {
-			return fmt.Errorf("failed to generate E2E tests: %w", err)
 		}
 	}
 

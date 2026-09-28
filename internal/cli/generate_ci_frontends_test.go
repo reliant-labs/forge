@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // writeKCLEnvs creates deploy/kcl/<env>/main.k under root so ListEnvs
@@ -68,7 +70,13 @@ func TestDiscoverCIFrontends_DerivedFromKCLWithNoForgeYAMLKey(t *testing.T) {
 		t.Fatalf("frontend must come from KCL, got %+v", got[0])
 	}
 
-	e2e := buildE2EWorkflowData(cfg, root)
+	// Every workflow that drives Node must see it. e2e.yml needs an opt-in
+	// (or an e2e/ harness) to exist at all.
+	cfg.Kind = config.ProjectKindService
+	cfg.CI.E2E.Enabled = true
+	files := ciWorkflowData(root, cfg)
+
+	e2e := files[".github/workflows/e2e.yml"].(templates.E2EWorkflowData)
 	if !e2e.HasFrontends {
 		t.Fatal("e2e workflow must see the KCL-declared frontend (HasFrontends was false — the setup-node block would be dropped entirely)")
 	}
@@ -76,15 +84,25 @@ func TestDiscoverCIFrontends_DerivedFromKCLWithNoForgeYAMLKey(t *testing.T) {
 		t.Fatalf("e2e FrontendPath = %q, want frontends/internal-console", e2e.FrontendPath)
 	}
 
-	ci := buildCIWorkflowData(cfg, root)
+	ci := files[".github/workflows/ci.yml"].(templates.CIWorkflowData)
 	if len(ci.Frontends) != 1 || ci.Frontends[0].Path != "frontends/internal-console" {
 		t.Fatalf("ci.yml frontends = %+v, want one entry at frontends/internal-console", ci.Frontends)
 	}
 
-	dep := buildDependabotData(cfg, root)
+	dep := files[".github/dependabot.yml"].(struct{ FrontendName string })
 	if dep.FrontendName != "internal-console" {
 		t.Fatalf("dependabot FrontendName = %q, want internal-console", dep.FrontendName)
 	}
+}
+
+// ciWorkflowData is what `forge generate` renders each CI file with, keyed
+// by destination.
+func ciWorkflowData(root string, cfg *config.ProjectConfig) map[string]any {
+	out := map[string]any{}
+	for _, f := range generator.CIWorkflows(root, cfg, ciFrontends(root, cfg)) {
+		out[f.Dest] = f.Data
+	}
+	return out
 }
 
 // A rename in the KCL must re-derive on the next generate. This is the
@@ -99,8 +117,10 @@ func TestDiscoverCIFrontends_RenameReDerives(t *testing.T) {
 	  ]
 	}`)
 
-	cfg := &config.ProjectConfig{Name: "control-plane"}
-	if p := buildE2EWorkflowData(cfg, root).FrontendPath; p != "frontends/internal-console" {
+	cfg := &config.ProjectConfig{Name: "control-plane", Kind: config.ProjectKindService}
+	cfg.CI.E2E.Enabled = true
+	e2e := ciWorkflowData(root, cfg)[".github/workflows/e2e.yml"].(templates.E2EWorkflowData)
+	if p := e2e.FrontendPath; p != "frontends/internal-console" {
 		t.Fatalf("after rename, e2e FrontendPath = %q, want the NEW name", p)
 	}
 }

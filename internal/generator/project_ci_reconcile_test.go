@@ -18,16 +18,35 @@ import (
 // fails every hour, forever, and a repository with a permanently red scheduled
 // workflow is one where people stop reading workflow failures at all.
 
+// ciGenerator returns a service-kind generator whose project dir already
+// holds what generateCIFiles reads, as it does mid-scaffold: the forge.yaml
+// (CI data is derived from the loaded config) and a deploy/kcl tree (the
+// kind a service project is read back as). Callers that change Kind or
+// Features after this must call writeCIProjectConfig again.
 func ciGenerator(t *testing.T, features config.FeaturesConfig) (*ProjectGenerator, string) {
 	t.Helper()
 	dir := t.TempDir()
-	return &ProjectGenerator{
+	g := &ProjectGenerator{
 		Name:       "myapp",
 		Path:       dir,
 		ModulePath: "github.com/example/myapp",
 		Kind:       "service",
 		Features:   features,
-	}, dir
+	}
+	writeCIProjectConfig(t, g)
+	return g, dir
+}
+
+// writeCIProjectConfig writes g's forge.yaml, plus the deploy/kcl/dev env
+// a service scaffold always has (kind is derived from the tree on load).
+func writeCIProjectConfig(t *testing.T, g *ProjectGenerator) {
+	t.Helper()
+	if g.isService() {
+		writeEnvMain(t, g.Path, "dev")
+	}
+	if err := g.writeProjectConfig(); err != nil {
+		t.Fatalf("writeProjectConfig: %v", err)
+	}
 }
 
 func TestCIFiles_ReconcileWorkflowIsOffByDefault(t *testing.T) {
@@ -92,10 +111,20 @@ func TestCIFiles_ReconcileWorkflowWhenEnabled(t *testing.T) {
 // Dockerfile to build an image from and nothing to deploy, so a reconcile
 // workflow would observe an empty set.
 func TestCIFiles_NonServiceKindsGetNoReconcileWorkflow(t *testing.T) {
-	g, dir := ciGenerator(t, config.FeaturesConfig{
-		Experimental: config.ExperimentalConfig{Reconcile: true},
-	})
-	g.Kind = "cli"
+	// A fresh dir, not ciGenerator's: kind is read off the tree on load, so
+	// a CLI project is one with a cmd/<name>/main.go and no service sources.
+	dir := t.TempDir()
+	// The loader refuses reconcile on a CLI outright (it requires deploy), so
+	// the forge.yaml carries no flag; TestCIWorkflows_CLIIgnoresReconcileFlag
+	// pins the kind gate against the flag itself.
+	g := &ProjectGenerator{Name: "myapp", Path: dir, ModulePath: "github.com/example/myapp", Kind: "cli"}
+	if err := os.MkdirAll(filepath.Join(dir, "cmd", "myapp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cmd", "myapp", "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeCIProjectConfig(t, g)
 	if err := g.generateCIFiles(); err != nil {
 		t.Fatalf("generateCIFiles: %v", err)
 	}

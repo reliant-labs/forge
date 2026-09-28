@@ -204,6 +204,44 @@ func TestReleaseForgeScript_TagsOnceAtTheReleaseCommit(t *testing.T) {
 	}
 }
 
+// TestReleaseForgeScript_ReleasesFromABranchThatIsNotMain pins the push
+// refspec. The script used to push `origin main v0.2.0`, which sends the LOCAL
+// `main` ref — the release commit only when the script runs on a checked-out,
+// up-to-date main. Released from a worktree on another branch (how v0.1.18 was
+// cut), local main lagged origin, the remote rejected the stale tip as
+// non-fast-forward, and the atomic push dropped the tag with it.
+func TestReleaseForgeScript_ReleasesFromABranchThatIsNotMain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a git push")
+	}
+	repo := newForgeFixtureRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
+	gitIn(t, repo, "remote", "add", "origin", origin)
+
+	// origin/main moves ahead; the release is cut from a branch based on it
+	// while the local `main` ref stays behind.
+	gitIn(t, repo, "checkout", "-q", "-b", "release/v0.2.0")
+	if err := os.WriteFile(filepath.Join(repo, "CHANGES"), []byte("merged work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "CHANGES")
+	gitIn(t, repo, "commit", "-q", "-m", "merged work")
+	gitIn(t, repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+	if out, err := runForgeScript(t, repo, "v0.2.0"); err != nil {
+		t.Fatalf("release from a non-main branch failed: %v\n%s", err, out)
+	}
+
+	release := gitOut(t, repo, "rev-parse", "HEAD")
+	if remoteMain := gitOut(t, origin, "rev-parse", "refs/heads/main"); remoteMain != release {
+		t.Errorf("origin main = %s, want the release commit %s", remoteMain, release)
+	}
+	if remoteTag := gitOut(t, origin, "rev-parse", "v0.2.0^{commit}"); remoteTag != release {
+		t.Errorf("origin tag v0.2.0 -> %s, want the release commit %s", remoteTag, release)
+	}
+}
+
 func TestReleaseForgeScript_RejectsBadVersions(t *testing.T) {
 	repo := newForgeFixtureRepo(t)
 	for _, bad := range []string{"0.2.0", "pkg/v0.2.0", "v1.2", "latest", "v1.2.3+meta"} {

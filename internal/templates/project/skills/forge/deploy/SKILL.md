@@ -214,12 +214,42 @@ initContainer on every workload, so no new pod serves against an old
 schema. A job that needs this release's workloads running declares
 `deployPhase = "post-rollout"`.
 
+### Frontends bind a runtime too
+
+A `forge.Frontend` states where it runs per env, like a workload — there is
+no default, and a frontend with no `runtime` is a render error naming it:
+
+| `runtime =`                                   | `forge env deploy` does                                                       |
+| --------------------------------------------- | ----------------------------------------------------------------------------- |
+| `forge.OnHost {}`                             | nothing (the dev server; `forge env up` runs it)                              |
+| `forge.OnHosted {}`                           | publishes the site to the control plane's static hosting (below)             |
+| `forge.OnBucket {bucket, cdn?, keep_releases}` | uploads to YOUR bucket: `releases/<digest>/` + `live/`, then CDN invalidation |
+| `forge.OnFirebase {project, site, ...}`       | `firebase deploy`                                                             |
+| `forge.BuildOnly {}`                          | builds it for a sibling frontend's `bundle`; ships nothing                    |
+
+The build facts are the frontend's, the same on every runtime:
+`public_dir` (default `out` for Next.js, `dist` otherwise), `base_path`,
+`bundle`, `cache_control` (OnBucket only). A Next.js frontend published
+statically needs `output: static` in forge.yaml; a server-rendered one is a
+workload with a `forge.DockerBuild` instead.
+
+```kcl
+_web = forge.Frontend {name = "web", path = "frontends/web", public_dir = "out"}
+
+frontends = [_web | {runtime = forge.OnBucket {bucket = "acme-prod-web"}}]
+```
+
+`forge env new cloud --from prod --bind web=hosted` rebinds a scaffolded
+frontend's line (`_on_bucket(_web_frontend)` → `_hosted_frontend(...)`).
+`forge env deploy <env> --frontends-only` ships only the bucket / Firebase
+frontends.
+
 ### Hosted static sites
 
-On a hosted env a `forge.StaticSite` with no `bucket` is published into the
-platform's bucket and CDN, as an OCI release with **no `config.js` in it**,
-so `forge env promote` moves one digest everywhere. The frontend's
-`runtime_config` becomes the spec's `runtimeConfig`:
+A frontend on `forge.OnHosted {}` is published into the platform's bucket
+and CDN, as an OCI release with **no `config.js` in it**, so `forge env
+promote` moves one digest everywhere. `forge build <env> --push` pushes it.
+The frontend's `runtime_config` becomes the spec's `runtimeConfig`:
 
 ```yaml
 runtimeConfig:

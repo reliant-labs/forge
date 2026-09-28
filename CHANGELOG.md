@@ -119,6 +119,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already-modified tree and lists those paths as changed before
   `forge generate` ran, instead of reporting them as out-of-date generated
   code.
+- **A Next.js frontend's tsconfig peer pins no longer split packages in the
+  bundle.** The pins named package DIRECTORIES, and Next's webpack resolver
+  applies tsconfig `paths` to app code: wherever a pin resolved (an ordinary
+  `npm ci` in the frontend, or a Docker build at `/app`), app code bundled
+  `@tanstack/react-query`'s `build/legacy` while
+  `@reliantlabs/forge-web-runtime` bundled `build/modern`. Two module instances
+  are two React contexts, and prerender failed with `No QueryClient set, use
+  QueryClientProvider to set one`. Every pin now names the package's
+  declaration file (e.g. `…/@tanstack/react-query/build/modern/index.d.ts`,
+  `react` → `@types/react/index.d.ts`), derived from the INSTALLED manifest,
+  never hardcoded, because the entry moves inside the declared ranges
+  (`@opentelemetry/sdk-trace-base` 2.0 → 2.11). Next's resolver skips a `.d.ts`
+  target and Vite ignores `paths`, so bundles resolve through `exports`, while
+  tsc still binds one copy of the types — which the pins remain necessary for.
+  `forge project new` and `forge scaffold frontend` write them after their
+  install; `forge generate` heals an existing project's directory pins
+  wherever they resolve, once, and never rewrites a declaration pin.
+- **The Next.js frontend Dockerfile follows `frontends[].output`.** It always
+  copied `.next-prod/standalone`, which only `output: standalone` produces, so
+  a `static` frontend's image (and a `server` one's) failed with
+  `COPY .next-prod/standalone: not found` — and CI builds an image for every
+  frontend. `static` now serves `out/` from `nginxinc/nginx-unprivileged`
+  (uid 101, port 8080, mounted under `base_path`), `server` runs `next start`,
+  and `standalone` keeps the node server. The build runs at the frontend's
+  repository path (`/src/frontends/<name>`) instead of `/app`, installs with
+  `npm ci`, and the node runners drop the bundled npm/corepack trees, which
+  carried every HIGH CVE in `node:22-alpine`. The scaffold ships a
+  frontend-level `.dockerignore`, since the build context is the frontend
+  directory. The Dockerfile is scaffold-once: `forge project upgrade --check`
+  reports the new one to existing projects.
 
 ### Removed
 

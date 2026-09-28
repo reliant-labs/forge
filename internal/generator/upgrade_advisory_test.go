@@ -324,7 +324,10 @@ func TestAdvisories_SetIsEveryTemplateWrittenFile(t *testing.T) {
 		// belongs to, and which was equally invisible before.
 		"src/lib/connect.ts",
 		"next.config.ts",
-		"tsconfig.json",
+		// The frontend image, rendered from the frontend's output mode —
+		// how an existing project learns its Dockerfile is behind.
+		"Dockerfile",
+		".dockerignore",
 	} {
 		if !got[base+want] {
 			t.Errorf("%s is written from a template but has no advisory row, so its drift "+
@@ -343,6 +346,12 @@ func TestAdvisories_SetIsEveryTemplateWrittenFile(t *testing.T) {
 		// Reconciled after render by EnsureWebRuntimeDependency, whose
 		// web-runtime specifier differs between a released and a dev forge.
 		"package.json",
+		// Its peer pins are reconciled after render to the installed layout
+		// and DECLARATION FILES. A plain render names package directories,
+		// so this row would report every correctly-scaffolded tsconfig as
+		// diverged — and adopting it would write the directory pins back,
+		// the ones that split the webpack bundle ("No QueryClient set").
+		"tsconfig.json",
 		// Claimed by the MANAGED lane, which refreshes a pristine copy and
 		// offers `disown`. It was registered in both lanes at once, so
 		// `upgrade --check` listed it twice with two different remedies.

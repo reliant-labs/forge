@@ -150,11 +150,17 @@ func AdvisoryPaths(files []AdvisoryFile) []string {
 // is expected to grow into, and a shared root is forge's own declaration
 // of "this file is mechanism I own the design of" — which is exactly the
 // set worth reporting on.
-func AdvisoryFilesFor(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
+//
+// projectDir is the project root: the typed-config presence set a frontend's
+// session-provider.ts / connect.ts render from is read from its proto/config.
+// It used to be read from the process working directory, so `forge project
+// upgrade -C <dir>` — or any caller not sitting in the project — rendered the
+// untyped variant of those files and reported (or adopted!) the wrong bytes.
+func AdvisoryFilesFor(projectDir string, cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 	if cfg == nil {
 		return nil, nil
 	}
-	rows, err := frontendAdvisoryFiles(cfg)
+	rows, err := frontendAdvisoryFiles(projectDir, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +205,7 @@ func githubStarterAdvisoryFiles(cfg *config.ProjectConfig) []AdvisoryFile {
 
 // frontendAdvisoryFiles returns the shared-root mechanism rows for every
 // frontend the project declares.
-func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
+func frontendAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 	layout := NewFrontendWorkspaceLayout(cfg.Name)
 	workspaces := cfg.IsFrontendWorkspacesEnabled()
 
@@ -232,7 +238,7 @@ func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 		// render the build-time env-var form against a scaffold that emitted
 		// the typed-module form — a diff on every fresh project, which is
 		// exactly the false positive this lane must never produce.
-		tc := frontendAdvisoryTypedConfig(cfg, fe.Name)
+		tc := frontendAdvisoryTypedConfig(projectDir, fe.Name)
 		data.HasTypedConfig = tc.Bound
 		data.HasMockAPI = tc.HasMockAPI
 		if workspaces {
@@ -310,12 +316,7 @@ func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 // declaration. A project with no frontend config proto at all (one
 // scaffolded by an older forge) correctly gets the zero value and compares
 // against the build-time env-var form its file still has.
-func frontendAdvisoryTypedConfig(cfg *config.ProjectConfig, frontend string) FrontendTypedConfig {
-	root, err := os.Getwd()
-	if err != nil {
-		return FrontendTypedConfig{}
-	}
-
+func frontendAdvisoryTypedConfig(root, frontend string) FrontendTypedConfig {
 	if messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(root, "proto", "config")); err == nil {
 		for _, fc := range codegen.FrontendConfigsFromMessages(messages) {
 			if fc.Frontend != frontend {

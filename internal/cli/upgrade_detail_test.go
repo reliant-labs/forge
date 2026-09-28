@@ -156,7 +156,7 @@ func TestUpgradeCheck_AllRevealsEveryTruncatedPath(t *testing.T) {
 	cfg := loadAdvisoryConfig(t, dir)
 
 	// Make enough advisory rows stale to force truncation.
-	files, err := generator.AdvisoryFilesFor(cfg)
+	files, err := generator.AdvisoryFilesFor(dir, cfg)
 	if err != nil {
 		t.Fatalf("AdvisoryFilesFor: %v", err)
 	}

@@ -128,7 +128,7 @@ func runUpgradeWithView(check, force, showAll bool, forcePaths []string, toVersi
 		return runUpgradeDetail(projectDir, cfg, forcePaths)
 	}
 
-	selection, err := resolveForceSelection(cfg, force, forcePaths)
+	selection, err := resolveForceSelection(projectDir, cfg, force, forcePaths)
 	if err != nil {
 		return err
 	}
@@ -340,7 +340,7 @@ func describeVersion(v string) string {
 // rows (upgrade_advisory.go). Bare --force still means only the Tier-2 set:
 // the advisory tier is adoptable one named path at a time and never in bulk,
 // because those files are the user's from birth.
-func resolveForceSelection(cfg *config.ProjectConfig, force bool, paths []string) (generator.ForceSelection, error) {
+func resolveForceSelection(projectDir string, cfg *config.ProjectConfig, force bool, paths []string) (generator.ForceSelection, error) {
 	if len(paths) == 0 {
 		if force {
 			return generator.ForceAll(), nil
@@ -358,7 +358,7 @@ func resolveForceSelection(cfg *config.ProjectConfig, force bool, paths []string
 	}
 
 	managed := generator.ManagedPathsFor(cfg)
-	advisory, err := generator.AdvisoryFilesFor(cfg)
+	advisory, err := generator.AdvisoryFilesFor(projectDir, cfg)
 	if err != nil {
 		return generator.ForceNone(), err
 	}

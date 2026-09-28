@@ -27,7 +27,7 @@ func forceTestConfig() *config.ProjectConfig {
 func TestResolveForceSelection(t *testing.T) {
 	cfg := forceTestConfig()
 
-	sel, err := resolveForceSelection(cfg, false, nil)
+	sel, err := resolveForceSelection(t.TempDir(), cfg, false, nil)
 	if err != nil {
 		t.Fatalf("no flags: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestResolveForceSelection(t *testing.T) {
 		t.Error("no --force must overwrite nothing")
 	}
 
-	sel, err = resolveForceSelection(cfg, true, nil)
+	sel, err = resolveForceSelection(t.TempDir(), cfg, true, nil)
 	if err != nil {
 		t.Fatalf("bare --force: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestResolveForceSelection(t *testing.T) {
 		t.Error("bare --force must cover every managed file")
 	}
 
-	sel, err = resolveForceSelection(cfg, true, []string{"Dockerfile"})
+	sel, err = resolveForceSelection(t.TempDir(), cfg, true, []string{"Dockerfile"})
 	if err != nil {
 		t.Fatalf("--force Dockerfile: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestResolveForceSelection(t *testing.T) {
 // TestResolveForceSelection_PathsNeedForce: a path list only ever narrows a
 // destructive act, so it must not arm one on its own.
 func TestResolveForceSelection_PathsNeedForce(t *testing.T) {
-	sel, err := resolveForceSelection(forceTestConfig(), false, []string{"Dockerfile"})
+	sel, err := resolveForceSelection(t.TempDir(), forceTestConfig(), false, []string{"Dockerfile"})
 	if err == nil {
 		t.Fatal("expected an error for paths without --force")
 	}
@@ -74,7 +74,7 @@ func TestResolveForceSelection_PathsNeedForce(t *testing.T) {
 // upgrade does not manage would report "nothing forced" while the user
 // believes the file was adopted.
 func TestResolveForceSelection_UnknownPathRejected(t *testing.T) {
-	_, err := resolveForceSelection(forceTestConfig(), true, []string{"internal/app/setup.go"})
+	_, err := resolveForceSelection(t.TempDir(), forceTestConfig(), true, []string{"internal/app/setup.go"})
 	if err == nil {
 		t.Fatal("expected an error for a path upgrade does not manage")
 	}
@@ -95,7 +95,7 @@ func TestResolveForceSelection_UnknownPathRejected(t *testing.T) {
 func TestResolveForceSelection_ManagedPathsAreProjectShaped(t *testing.T) {
 	cfg := forceTestConfig()
 	rel := filepath.Join("cmd", "test-project", "cmd", "commands.go")
-	sel, err := resolveForceSelection(cfg, true, []string{rel})
+	sel, err := resolveForceSelection(t.TempDir(), cfg, true, []string{rel})
 	if err != nil {
 		t.Fatalf("--force %s: %v", rel, err)
 	}

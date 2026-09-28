@@ -47,7 +47,7 @@ func perKindFrontendCfg(tree string) *config.ProjectConfig {
 // paths as a set.
 func advisoryPathSet(t *testing.T, cfg *config.ProjectConfig) map[string]bool {
 	t.Helper()
-	rows, err := AdvisoryFilesFor(cfg)
+	rows, err := AdvisoryFilesFor(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("AdvisoryFilesFor: %v", err)
 	}

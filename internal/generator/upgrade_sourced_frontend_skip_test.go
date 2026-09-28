@@ -52,7 +52,7 @@ func TestFrontendManagedSkipsSourcedFrontend(t *testing.T) {
 // noise, and it is noise about files this project does not own.
 func TestFrontendAdvisorySkipsSourcedFrontend(t *testing.T) {
 	t.Parallel()
-	rows, err := frontendAdvisoryFiles(sourcedFrontendCfg())
+	rows, err := frontendAdvisoryFiles(t.TempDir(), sourcedFrontendCfg())
 	if err != nil {
 		t.Fatalf("frontendAdvisoryFiles: %v", err)
 	}

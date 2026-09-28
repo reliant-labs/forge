@@ -41,9 +41,9 @@ func advisoryTestProject(t *testing.T) (string, *config.ProjectConfig) {
 
 // advisoryRows renders the advisory set for a project, failing the test on
 // any render error.
-func advisoryRows(t *testing.T, cfg *config.ProjectConfig) []AdvisoryFile {
+func advisoryRows(t *testing.T, dir string, cfg *config.ProjectConfig) []AdvisoryFile {
 	t.Helper()
-	rows, err := AdvisoryFilesFor(cfg)
+	rows, err := AdvisoryFilesFor(dir, cfg)
 	if err != nil {
 		t.Fatalf("AdvisoryFilesFor: %v", err)
 	}
@@ -60,7 +60,7 @@ func inspect(t *testing.T, dir string, cfg *config.ProjectConfig, force ForceSel
 	if err != nil {
 		t.Fatalf("LoadChecksums: %v", err)
 	}
-	results, err := InspectAdvisories(dir, cs, advisoryRows(t, cfg), force, checkOnly)
+	results, err := InspectAdvisories(dir, cs, advisoryRows(t, dir, cfg), force, checkOnly)
 	if err != nil {
 		t.Fatalf("InspectAdvisories: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestAdvisories_DisownedIsNeverOffered(t *testing.T) {
 	if err := cs.DisownPaths(dir, []string{rel}, "hand-tuned retry policy"); err != nil {
 		t.Fatalf("DisownPaths: %v", err)
 	}
-	out, err := InspectAdvisories(dir, cs, advisoryRows(t, cfg), ForcePaths(rel), false)
+	out, err := InspectAdvisories(dir, cs, advisoryRows(t, dir, cfg), ForcePaths(rel), false)
 	if err != nil {
 		t.Fatalf("InspectAdvisories: %v", err)
 	}
@@ -308,9 +308,9 @@ func TestAdvisories_AbsentFileIsReported(t *testing.T) {
 // set, each entry of which fails the lane's standing "exactly ONE renderer"
 // admission rule.
 func TestAdvisories_SetIsEveryTemplateWrittenFile(t *testing.T) {
-	_, cfg := advisoryTestProject(t)
+	dir, cfg := advisoryTestProject(t)
 	got := map[string]bool{}
-	for _, row := range advisoryRows(t, cfg) {
+	for _, row := range advisoryRows(t, dir, cfg) {
 		got[filepath.ToSlash(row.Path)] = true
 	}
 	base := filepath.ToSlash(cfg.Frontends[0].DeclaredDir()) + "/"

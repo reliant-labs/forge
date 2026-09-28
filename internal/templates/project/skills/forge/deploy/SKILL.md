@@ -260,6 +260,67 @@ runtimeConfig:
 After every sync the control plane writes `config.js`, resolving references
 against workloads in the same environment.
 
+### Custom domains
+
+Every hosted site and exposed hosted port already answers on a hostname the
+platform allocates — you never declare that one. To ALSO serve your own,
+declare `domains`: on an `OnHosted` frontend, and on the workload's
+`expose = True` port.
+
+```kcl
+frontends = [forge.Frontend {
+    name = "web"
+    path = "web"
+    domains = ["hounders.club", "www.hounders.club"]
+    runtime = forge.OnHosted {}
+}]
+workloads = [fw.Workload {
+    name = "membership"
+    ports = [fw.Port {name = "http", port = 8080, expose = True, domains = ["api.hounders.club"]}]
+    runtime = forge.OnHosted {}
+}]
+```
+
+Rules, both halves the same: at most 8 names, each a lowercase DNS
+hostname, no wildcards, no duplicates. An apex and its `www` are two names —
+declare both. A wildcard is refused because the platform verifies ownership
+per name, and a wildcard names a set nobody can prove they own.
+
+**OnHosted only.** The platform is the one runtime that can verify a name it
+does not own and issue its certificate. On `OnBucket` / `OnFirebase` the
+domain belongs where the certificate and the DNS record already live (your
+CDN; the Firebase console); `OnHost` is localhost and `BuildOnly` serves
+nothing. Declaring it there is a render error naming the runtime — forge
+never drops it quietly.
+
+**Declaration only, never a command.** There is no imperative add-a-domain
+subcommand: KCL is the source of truth, and the control plane converges it —
+records the claim, verifies ownership from DNS, issues the certificate, then
+serves the name.
+
+So a deploy against a control plane that does NOT serve custom domains is
+**refused before anything is published**, naming every domain you declared.
+Publishing anyway is the one outcome nobody can debug: the spec is accepted,
+the deploy goes green, and the hostname never resolves. `--dry-run` reports
+the same.
+
+`forge env status <env>` and the post-deploy summary print each domain's
+state — `pending_dns` | `verifying` | `issuing` | `live` | `failed` |
+`conflict` — with the DNS records still to set and the last error:
+
+```
+custom domains (prod):
+  web:
+    hounders.club: pending_dns
+      DNS record to set: A hounders.club → 34.63.203.181
+      DNS record to set: TXT _forge-challenge.hounders.club → tok-123
+    www.hounders.club: live since 2026-02-01T10:00:00Z
+```
+
+A domain that is not live is not a failed deploy: setting the record at your
+registrar is your step, which is why forge prints the record rather than
+blocking on it. `--json` carries the same under each workload's `domains`.
+
 ## forge env up — the local loop
 
 ```

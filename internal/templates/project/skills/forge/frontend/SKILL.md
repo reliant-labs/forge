@@ -163,6 +163,8 @@ Name the workload, never the hostname:
 
 Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
 
+Your own hostname on a hosted site: `domains` — see `deploy`.
+
 The backend half uses the same reference. A workload's `CORS_ORIGINS` names the site, not its URL:
 
 ```kcl

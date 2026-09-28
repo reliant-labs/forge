@@ -376,6 +376,11 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 		// of one fact that can drift apart.
 		renderUpSummary(os.Stdout, env, rows, "down", true, nil, nil)
 	}
+	// Custom domains, for a hosted env that declares any. Printed here
+	// rather than folded into a runtime check because it is not a
+	// pass/fail signal: a domain waiting on DNS is waiting on the author,
+	// and the answer they need is the exact record to set.
+	writeHostedDomainStatus(ctx, os.Stdout, env, entities, readHostedStatusFromDeclaration)
 	// Printed AFTER the table: the table is the answer most invocations
 	// want, and the checks read as its detail. A project with no host rows
 	// still gets them — its compose infra is runtime state too.

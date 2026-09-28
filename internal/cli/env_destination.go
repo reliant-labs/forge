@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -174,4 +176,37 @@ func resolveEnvDestination(ctx context.Context, envName string, e *KCLEntities, 
 	out.Workloads = st.Workloads
 	sort.Slice(out.Workloads, func(i, j int) bool { return out.Workloads[i].Name < out.Workloads[j].Name })
 	return out
+}
+
+// writeHostedDomainStatus prints the custom-domain block for a hosted env:
+// per workload, each declared hostname's state, the DNS records still
+// required, and the last error. Silent for an env that is not hosted, that
+// declares no domains, or whose control plane could not be read — the JSON
+// path carries the read failure in `hosted_note`, and repeating it here
+// would put a network error in the middle of a domain report.
+//
+// It exists because a custom domain is the one piece of hosted state whose
+// next action belongs to the AUTHOR, not to forge and not to the platform:
+// until they set the record at their registrar, nothing converges. `forge
+// env status` is where they come to find out what is wrong.
+func writeHostedDomainStatus(ctx context.Context, w io.Writer, envName string, e *KCLEntities, read hostedStatusReader) {
+	if e == nil || read == nil || destinationOf(e) != destinationHosted {
+		return
+	}
+	st, err := read(ctx, envName, e)
+	if err != nil {
+		return
+	}
+	var printed bool
+	for _, ws := range st.Workloads {
+		if len(ws.Domains) == 0 {
+			continue
+		}
+		if !printed {
+			fmt.Fprintf(w, "\ncustom domains (%s):\n", envName)
+			printed = true
+		}
+		fmt.Fprintf(w, "  %s:\n", ws.Name)
+		fmt.Fprint(w, deploytarget.FormatCustomDomains("    ", ws.Domains))
+	}
 }

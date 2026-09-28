@@ -30,93 +30,87 @@ permissions:
   id-token: write
   attestations: write
 
-env:
-  {{- if eq .Registry "ghcr"}}
-  REGISTRY: "ghcr.io/${{"{{"}} github.repository_owner {{"}}"}}"
-  {{- else if eq .Registry "gar"}}
-  REGISTRY: "${{"{{"}} vars.GAR_REGISTRY {{"}}"}}"
-  {{- else if eq .Registry "ecr"}}
-  REGISTRY: "${{"{{"}} vars.ECR_REGISTRY {{"}}"}}"
-  {{- else}}
-  REGISTRY: "ghcr.io/${{"{{"}} github.repository_owner {{"}}"}}"
-  {{- end}}
-
 jobs:
   build-push:
     name: Build & Push
     runs-on: ubuntu-latest
-    {{- if .CutRelease}}
-    # The digest is published as a job output so the release-cut job below can
-    # read it. It is the IMMUTABLE digest build-push-action reported, the same
-    # value the cosign/SBOM/attestation steps bind to — never the tag, which
-    # is a mutable pointer and would void the promotion guarantee the moment
-    # anyone re-pushed it.
+    # Built for the first env in the promotion order — the one deploy.yml
+    # auto-deploys — through forge, so the image lands in the registry THAT
+    # env's KCL declares (deploy/kcl/{{.BuildEnv}}/main.k). This workflow names
+    # no registry: forge reads it from the declaration, and so does the deploy
+    # that pulls it.
+    env:
+      FORGE_ENV: {{.BuildEnv}}
+    # The pushed image's digest-pinned ref, from `forge registry ref` — what
+    # the build recorded, never a literal here. The digest is IMMUTABLE, the
+    # value every later step binds to — never the tag, which is a mutable
+    # pointer anyone could re-push.
     outputs:
-      digest: ${{"{{"}} steps.build.outputs.digest {{"}}"}}
-    {{- end}}
+      ref: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+      digest: ${{"{{"}} steps.ref.outputs.digest {{"}}"}}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+{{- if .HasFrontends}}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: "{{.FrontendPath}}/package.json"
+          cache: "npm"
+          cache-dependency-path: "{{.FrontendPath}}/package-lock.json"
+{{- end}}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to registry
-        uses: docker/login-action@v3
-        with:
-          {{- if eq .Registry "ghcr"}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: ${{"{{"}} github.actor {{"}}"}}
-          password: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-          {{- else if eq .Registry "gar"}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: _json_key
-          password: ${{"{{"}} secrets.GAR_JSON_KEY {{"}}"}}
-          {{- else}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: ${{"{{"}} github.actor {{"}}"}}
-          password: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-          {{- end}}
+      - name: Install forge
+        # The version comes from the project at run time — go.mod's forge, the
+        # one this code compiles against — so bumping forge in go.mod is the
+        # whole upgrade.
+{{installForgeRun 8}}
+{{- if .HasFrontends}}
 
-      - name: Determine image tag
-        id: tag
-        run: |
-          if [ -n "${{"{{"}} github.event.inputs.image_tag {{"}}"}}" ]; then
-            echo "custom=true" >> "$GITHUB_OUTPUT"
-            echo "tag=${{"{{"}} github.event.inputs.image_tag {{"}}"}}" >> "$GITHUB_OUTPUT"
-          else
-            echo "custom=false" >> "$GITHUB_OUTPUT"
-            echo "tag=sha-$(echo ${{"{{"}} github.sha {{"}}"}} | cut -c1-7)" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Install frontend dependencies
+        working-directory: {{.FrontendPath}}
+        run: npm ci
+{{- end}}
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{"{{"}} env.REGISTRY {{"}}"}}/{{.ProjectName}}
-          tags: |
-            type=sha,prefix=sha-
-            type=ref,event=branch
-            type=raw,value=latest,enable=${{"{{"}} github.ref == format('refs/heads/{0}', 'main') {{"}}"}}
-            type=semver,pattern={{"{{"}}version{{"}}"}}
-            type=raw,value=${{"{{"}} steps.tag.outputs.tag {{"}}"}},enable=${{"{{"}} steps.tag.outputs.custom {{"}}"}}
+      - name: Log in to the declared registry
+        # forge logs docker in to the registry deploy/kcl/$FORGE_ENV/main.k
+        # declares; the workflow supplies only the credential. GITHUB_TOKEN
+        # (with `packages: write`) is the credential for GitHub's container
+        # registry. For another registry, pipe its credential instead — a GAR
+        # key with --username _json_key, an ECR token with --username AWS —
+        # from a repository SECRET.
+        env:
+          LOGIN_TOKEN: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
+        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "$FORGE_ENV" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
 
       - name: Build and push
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          push: true
-          tags: ${{"{{"}} steps.meta.outputs.tags {{"}}"}}
-          labels: ${{"{{"}} steps.meta.outputs.labels {{"}}"}}
-          cache-from: type=gha,scope={{.ProjectName}}
-          cache-to: type=gha,scope={{.ProjectName}},mode=max
+        # `forge build <env> --push` pushes to the env's declared registry
+        # and records the tag and digest in .forge/state/. `--target
+        # {{.ProjectName}}` builds the project image alone: frontend images
+        # are per-env (each renders that env's config.js), so deploy.yml
+        # builds them. The tag is the commit's sha-<short> (or the
+        # dispatch's override).
+        env:
+          IMAGE_TAG_OVERRIDE: ${{"{{"}} github.event.inputs.image_tag {{"}}"}}
+        run: |
+          tag="${IMAGE_TAG_OVERRIDE:-sha-${GITHUB_SHA::7}}"
+          forge build "$FORGE_ENV" --target {{.ProjectName}} --push --tag "$tag"
+
+      - name: Pushed image ref
+        id: ref
+        # <registry>/<image>@<digest>, from what the build just recorded.
+        run: forge registry ref "$FORGE_ENV" --github-output
 
       # ── Supply chain: SBOM + signing + provenance (M-12) ────────────
-      # These steps run AFTER the image is pushed and use the immutable
-      # digest reported by build-push-action. Using the digest (not a
-      # mutable tag) ensures the SBOM/signature/attestation are bound to
-      # the exact bytes we pushed.
+      # These steps run AFTER the image is pushed and act on the immutable
+      # digest forge recorded. Using the digest (not a mutable tag) binds the
+      # SBOM/signature/attestation to the exact bytes pushed.
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -126,14 +120,13 @@ jobs:
           # `--yes` skips the interactive transparency-log confirmation;
           # required for non-interactive CI runs.
           COSIGN_EXPERIMENTAL: "1"
-          DIGEST: ${{"{{"}} steps.build.outputs.digest {{"}}"}}
-          IMAGE: ${{"{{"}} env.REGISTRY {{"}}"}}/{{.ProjectName}}
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+          IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+        run: cosign sign --yes "$IMAGE_REF"
 
       - name: Generate SBOM (SPDX JSON)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{"{{"}} env.REGISTRY {{"}}"}}/{{.ProjectName}}@${{"{{"}} steps.build.outputs.digest {{"}}"}}
+          image: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
           format: spdx-json
           artifact-name: sbom-{{.ProjectName}}.spdx.json
           output-file: sbom-{{.ProjectName}}.spdx.json
@@ -155,8 +148,8 @@ jobs:
         if: ${{"{{"}} !github.event.repository.private {{"}}"}}
         uses: actions/attest-build-provenance@v1
         with:
-          subject-name: ${{"{{"}} env.REGISTRY {{"}}"}}/{{.ProjectName}}
-          subject-digest: ${{"{{"}} steps.build.outputs.digest {{"}}"}}
+          subject-name: ${{"{{"}} steps.ref.outputs.image {{"}}"}}
+          subject-digest: ${{"{{"}} steps.ref.outputs.digest {{"}}"}}
           push-to-registry: true
 {{- if .VulnDocker}}
 
@@ -165,14 +158,22 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     steps:
-      - name: Get short SHA
-        id: sha
-        run: echo "short=$(echo ${{"{{"}} github.sha {{"}}"}} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+
+      - name: Install forge
+{{installForgeRun 8}}
+
+      - name: Log in to the declared registry
+        # The scanner pulls the image, so it needs the same read access.
+        env:
+          LOGIN_TOKEN: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
+        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "{{.BuildEnv}}" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.35.0
         with:
-          image-ref: ${{"{{"}} env.REGISTRY {{"}}"}}/{{.ProjectName}}:sha-${{"{{"}} steps.sha.outputs.short {{"}}"}}
+          # The digest-pinned ref the build pushed — the exact bytes scanned.
+          image-ref: ${{"{{"}} needs.build-push.outputs.ref {{"}}"}}
           format: table
           exit-code: "1"
           severity: CRITICAL,HIGH

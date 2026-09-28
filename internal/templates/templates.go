@@ -330,7 +330,6 @@ type CIWorkflowData struct {
 
 	// Legacy fields used by other CI templates (build-images, deploy, dependabot)
 	Module       string
-	Registry     string // "ghcr", "gar", "ecr"
 	FrontendName string // first frontend name for dependabot
 
 	// GitHubOwner is the inferred GitHub owner for default CODEOWNERS entries.
@@ -382,7 +381,6 @@ type DeployWorkflowData struct {
 	// dev excluded), ordered along the promotion path. Never a hard-coded
 	// list: a job for an env with no main.k fails on every run.
 	Environments []DeployEnv
-	Registry     string // "ghcr", "gar", "ecr"
 	HasFrontends bool
 	// FrontendPath is the first frontend's directory: setup-node reads its
 	// package.json `engines.node`, and `npm ci` there installs what
@@ -397,11 +395,19 @@ type DeployWorkflowData struct {
 // BuildImagesWorkflowData holds data for the build-images workflow template.
 type BuildImagesWorkflowData struct {
 	ProjectName string
-	Registry    string // "ghcr", "gar"
-	// No frontend field: frontend images are per-env (each renders that
-	// env's config.js into the build), so deploy.yml builds them with
-	// `forge build <env> --push`, not this once-per-commit workflow.
-	VulnDocker bool // trivy scanning
+	// BuildEnv is the env the once-per-commit image is built for: the first
+	// deploy env in promotion order, whose KCL-declared registry the image
+	// is pushed to. The workflow names no registry — forge reads it from
+	// deploy/kcl/<BuildEnv>/main.k.
+	BuildEnv string
+	// Frontend IMAGES are per-env (each renders that env's config.js), so
+	// deploy.yml builds them; this workflow builds the project image alone.
+	// But `forge build --target <project>` still runs each frontend's
+	// `npm run build`, so the job installs the first frontend's
+	// dependencies, exactly as deploy.yml does.
+	HasFrontends bool
+	FrontendPath string
+	VulnDocker   bool // trivy scanning
 
 	// CutRelease emits the job that records a release against a control
 	// plane and promotes an environment to it — the step between "the image

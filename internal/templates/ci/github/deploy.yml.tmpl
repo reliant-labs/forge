@@ -58,17 +58,6 @@ permissions:
   contents: read
   packages: write
 
-env:
-  {{- if eq .Registry "ghcr"}}
-  REGISTRY: "ghcr.io/${{"{{"}} github.repository_owner {{"}}"}}"
-  {{- else if eq .Registry "gar"}}
-  REGISTRY: "${{"{{"}} vars.GAR_REGISTRY {{"}}"}}"
-  {{- else if eq .Registry "ecr"}}
-  REGISTRY: "${{"{{"}} vars.ECR_REGISTRY {{"}}"}}"
-  {{- else}}
-  REGISTRY: "ghcr.io/${{"{{"}} github.repository_owner {{"}}"}}"
-  {{- end}}
-
 jobs:
   deploy:
     name: Deploy to ${{"{{"}} matrix.env {{"}}"}}
@@ -153,19 +142,17 @@ jobs:
         run: npm ci
 {{- end}}
 
-      - name: Log in to registry
+      - name: Log in to the declared registry
         if: steps.select.outputs.run == 'true'
-        uses: docker/login-action@v3
-        with:
-          {{- if eq .Registry "gar"}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: _json_key
-          password: ${{"{{"}} secrets.GAR_JSON_KEY {{"}}"}}
-          {{- else}}
-          registry: ${{"{{"}} env.REGISTRY {{"}}"}}
-          username: ${{"{{"}} github.actor {{"}}"}}
-          password: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-          {{- end}}
+        # forge logs docker in to the registry this env's KCL declares
+        # (deploy/kcl/<env>/main.k); the workflow supplies only the
+        # credential. GITHUB_TOKEN (with `packages: write`) is the credential
+        # for GitHub's container registry. For another registry, pipe its
+        # credential instead — a GAR key with --username _json_key, an ECR
+        # token with --username AWS — from a repository or environment SECRET.
+        env:
+          LOGIN_TOKEN: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
+        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "${{"{{"}} matrix.env {{"}}"}}" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
 
       - name: Set kubeconfig
         # Only an env with forge.OnCluster workloads needs one; a hosted env deploys through

@@ -107,9 +107,31 @@ rather than certify a tree whose TypeScript stubs it skipped, and refuses
 to regenerate over a tree an earlier step already modified — naming those
 paths as changed before `forge generate` ran, not as generated-code drift.
 
+### No workflow names a registry
+
+An image registry is declared in the env's KCL (`forge.ClusterTarget.registry`,
+or `forge.ControlPlane.registry` for a hosted env) and nowhere else — no
+`REGISTRY` env or repository variable, no value after `--push`, no
+`docker/login-action` or `docker/metadata-action` input. The workflows reach
+it through forge:
+
+```bash
+printf '%s' "$TOKEN" | forge registry login <env> --username <user> --password-stdin
+forge build <env> --push                    # pushes to the declared registry
+forge registry ref <env> --github-output    # ref= image= digest= for later steps
+```
+
+`build-images.yml` builds once per commit on main for the first deploy env
+(the one `deploy.yml` auto-deploys), then signs, SBOMs, attests and scans the
+digest-pinned ref `forge registry ref` read back — never a tag and never a
+YAML literal. The login credential is `GITHUB_TOKEN` (GitHub's container
+registry); for another registry, pipe its credential from a secret (a GAR
+key with `--username _json_key`, an ECR token with `--username AWS`).
+
 ### Deploys go through forge
 
-`deploy.yml` runs, per env, `forge build <env> --push` (to the registry the env's KCL declares) then
+`deploy.yml` runs, per env, `forge registry login <env>`, `forge build <env>
+--push` (to the registry the env's KCL declares), then
 `forge env deploy <env>` — never `kcl run | kubectl apply`, which cannot
 resolve `kcl_plugin.forge` and skips the declared-context binding, the
 per-env frontend `config.js` render, digest pinning and the live preflight.

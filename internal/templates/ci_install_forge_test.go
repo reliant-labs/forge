@@ -90,7 +90,7 @@ func TestCIWorkflows_InstallForgeFromProjectAtRunTime(t *testing.T) {
 			ProjectName: "demo", Environments: []DeployEnv{{Name: "staging"}},
 		}),
 		"deploy.yml": render("deploy.yml.tmpl", DeployWorkflowData{
-			ProjectName: "demo", Environments: []DeployEnv{{Name: "prod", Protection: true}}, Registry: "ghcr",
+			ProjectName: "demo", Environments: []DeployEnv{{Name: "prod", Protection: true}},
 		}),
 		"e2e.yml": render("e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "k3d"}),
 	}

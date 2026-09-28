@@ -197,7 +197,6 @@ func TestGoldenSnapshots(t *testing.T) {
 					TestRace:            true,
 					PermContents:        "read",
 					Module:              "github.com/example/demo",
-					Registry:            "ghcr",
 					HasDocker:           true,
 					VerifyGenerated:     true,
 				}
@@ -233,7 +232,6 @@ func TestGoldenSnapshots(t *testing.T) {
 					VerifyGenerated:     true,
 					Environments:        []string{"dev", "staging", "prod"},
 					Module:              "github.com/example/demo",
-					Registry:            "ghcr",
 					FrontendName:        "web",
 				}
 				return renderCI(t, "github", "ci.yml.tmpl", data)
@@ -252,7 +250,7 @@ func TestGoldenSnapshots(t *testing.T) {
 		{
 			name: "build-images.yml",
 			render: func(t *testing.T) []byte {
-				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", Registry: "ghcr", VulnDocker: true})
+				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true})
 			},
 		},
 		{
@@ -261,7 +259,6 @@ func TestGoldenSnapshots(t *testing.T) {
 				return renderCI(t, "github", "deploy.yml.tmpl", DeployWorkflowData{
 					ProjectName:  "demo",
 					Environments: []DeployEnv{{Name: "staging", Auto: true}, {Name: "prod", Protection: true}},
-					Registry:     "ghcr",
 					HasFrontends: true,
 					FrontendPath: "frontends/web",
 					Concurrency:  true,

@@ -28,7 +28,6 @@ func deployFixture() DeployWorkflowData {
 			{Name: "preprod", Protection: true},
 			{Name: "prod", Protection: true},
 		},
-		Registry:         "ghcr",
 		HasFrontends:     true,
 		FrontendPath:     "frontends/web",
 		Concurrency:      true,
@@ -85,7 +84,6 @@ func TestDeployTemplate_TargetsOnlyTheGivenEnvs(t *testing.T) {
 	s := renderDeploy(t, DeployWorkflowData{
 		ProjectName:  "hounders",
 		Environments: []DeployEnv{{Name: "prod", Protection: true}},
-		Registry:     "ghcr",
 	})
 	var wf struct {
 		On struct {
@@ -130,7 +128,6 @@ func TestDeployTemplate_EmptyEnvironments(t *testing.T) {
 	data := DeployWorkflowData{
 		ProjectName:  "myapp",
 		Environments: nil,
-		Registry:     "ghcr",
 	}
 
 	out, err := CITemplates("github").Render("deploy.yml.tmpl", data)
@@ -149,31 +146,9 @@ func TestDeployTemplate_EmptyEnvironments(t *testing.T) {
 	}
 }
 
-func TestDeployTemplate_GARRegistry(t *testing.T) {
-	data := DeployWorkflowData{
-		ProjectName: "myapp",
-		Environments: []DeployEnv{
-			{Name: "staging", Auto: true},
-		},
-		Registry: "gar",
-	}
-	_ = renderDeploy(t, data)
-
-	out, err := CITemplates("github").Render("deploy.yml.tmpl", data)
-	if err != nil {
-		t.Fatalf("render error: %v", err)
-	}
-
-	s := string(out)
-	if !strings.Contains(s, "vars.GAR_REGISTRY") {
-		t.Error("should use GAR_REGISTRY variable for gar registry")
-	}
-}
-
 func TestBuildImagesTemplate_Full(t *testing.T) {
 	data := BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "ghcr",
 		VulnDocker:  true,
 	}
 
@@ -229,12 +204,10 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 		t.Errorf("provenance attestation is not gated off for private repositories:\n%s", step)
 	}
 
-	// Proper tagging
-	if !strings.Contains(s, "type=sha,prefix=sha-") {
-		t.Error("missing sha tag")
-	}
-	if !strings.Contains(s, "type=semver") {
-		t.Error("missing semver tag")
+	// The image is built and tagged by forge — sha-<short>, or the
+	// dispatch's override — not by docker/metadata-action.
+	if !strings.Contains(s, `tag="${IMAGE_TAG_OVERRIDE:-sha-${GITHUB_SHA::7}}"`) {
+		t.Error("missing the sha-<short> tag passed to forge build")
 	}
 
 	// Summary includes all jobs
@@ -246,7 +219,6 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 func TestBuildImagesTemplate_Minimal(t *testing.T) {
 	data := BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "gar",
 		VulnDocker:  false,
 	}
 
@@ -260,10 +232,5 @@ func TestBuildImagesTemplate_Minimal(t *testing.T) {
 	// Should NOT have trivy
 	if strings.Contains(s, "trivy-scan:") {
 		t.Error("should not have trivy-scan when VulnDocker=false")
-	}
-
-	// Should use GAR registry
-	if !strings.Contains(s, "vars.GAR_REGISTRY") {
-		t.Error("should use GAR_REGISTRY for gar registry")
 	}
 }

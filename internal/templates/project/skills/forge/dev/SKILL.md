@@ -318,8 +318,12 @@ primitives above:
 # guard: did we forget to run forge generate?
 forge generate --check
 
-# build + push to registry in one shot
-forge build --push ghcr.io/acme
+# build + push to the registry deploy/kcl/staging/main.k declares
+# (cluster_target.registry — the one `forge env deploy staging` pulls from)
+forge build staging --push
+
+# or push somewhere else explicitly (warns if it differs from the declared one)
+forge build staging --push=ghcr.io/acme
 
 # deploy with context guard
 forge env deploy staging

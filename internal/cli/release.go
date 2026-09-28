@@ -410,7 +410,7 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		"  These are declared in deploy/kcl/%s/main.k but no digest or commit was captured for them,\n"+
 		"  so promoting this release would deploy them from a mutable tag (or leave them on whatever the\n"+
 		"  previous binding pinned) while every other artifact advanced — one version, two releases.\n"+
-		"  Build the full set (drop --target, and pass --push <registry> so images are digest-addressable),\n"+
+		"  Build the full set (drop --target, and pass --push so images are digest-addressable),\n"+
 		"  or remove what the environment no longer ships",
 		opts.release, envName, strings.Join(missing, "\n    "), envName)
 }
@@ -474,7 +474,7 @@ func resolveReleaseDigests(r release.Release) (map[string]string, error) {
 			return nil, fmt.Errorf(
 				"release %q was cut with no image digests. This can happen if:\n"+
 					"  (1) no docker images were built (check --env and that KCL declares services),\n"+
-					"  (2) digests were not captured (re-run the build with --push <registry>), or\n"+
+					"  (2) digests were not captured (re-run the build with --push: forge build <env> --release <version> --push), or\n"+
 					"  (3) all external builds were skipped due to a missing build_cwd.\n"+
 					"Inspect the release file with `forge project audit` to see what was recorded",
 				r.Version)

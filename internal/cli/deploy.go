@@ -2206,7 +2206,7 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		// deploy and an unchanged app, with nothing connecting the two.
 		if built, ok := base[image]; ok && built != digest {
 			fmt.Printf("  Note: %s was just built as %s, but release %s pins %s — deploying the RELEASE.\n"+
-				"        To ship the build instead: forge build %s --release <version> --push <registry> && forge env promote <version> --to %s\n"+
+				"        To ship the build instead: forge build %s --release <version> --push && forge env promote <version> --to %s\n"+
 				"        Or deploy the built image directly: forge env deploy %s --no-digest --tag <tag>\n",
 				image, shortDigest(built), binding.Release, shortDigest(digest), envName, envName, envName)
 		}
@@ -2263,7 +2263,7 @@ func (a freshnessAnchor) describe() string {
 // again), where an unbound env just rebuilds from HEAD.
 func (a freshnessAnchor) remedy(envName string) string {
 	if a.Release != "" {
-		return fmt.Sprintf("rebuild the release (forge build %s --release %s --push <registry>), then re-promote and deploy", envName, a.Release)
+		return fmt.Sprintf("rebuild the release (forge build %s --release %s --push), then re-promote and deploy", envName, a.Release)
 	}
 	return "rebuild from HEAD (forge build --docker ...), then deploy"
 }

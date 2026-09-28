@@ -61,7 +61,7 @@ The release is recorded in --env's ledger — the control plane its KCL declares
 over the same artifacts is a no-op; over DIFFERENT artifacts it is refused.
 
 Examples:
-  forge build prod --docker --push ghcr.io/acme   # CI job 1: build and push
+  forge build prod --push                         # CI job 1: build and push (prod's declared registry)
   forge release cut v1.4.0 --env prod             # CI job 2: record the release
   forge env promote v1.4.0 --to prod              # bind prod to it`,
 		Args:         cobra.ExactArgs(1),
@@ -268,7 +268,7 @@ func runReleaseVerify(ctx context.Context, version string, opts verifyOptions) e
 	}
 	if rel == nil {
 		return fmt.Errorf("release %q not found at %s.\n"+
-			"  Cut it first with: forge build --release %s --push <registry>",
+			"  Cut it first with: forge build <env> --release %s --push",
 			version, releasePath(projectDir, version), version)
 	}
 	if len(rel.Artifacts) == 0 {
@@ -276,7 +276,7 @@ func runReleaseVerify(ctx context.Context, version string, opts verifyOptions) e
 		// would read as success. It is a defective release in its own right.
 		return fmt.Errorf("release %q names no artifacts — there is nothing to verify.\n"+
 			"  A release is cut empty when no images were pushed and no packages were harvested;\n"+
-			"  re-cut it with: forge build --release %s --push <registry>", version, version)
+			"  re-cut it with: forge build <env> --release %s --push", version, version)
 	}
 
 	fetcher := newHTTPFetcher(opts.Timeout)

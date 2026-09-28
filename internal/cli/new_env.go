@@ -409,7 +409,7 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 			return knobLines(indent, "_registry", `option("registry") or "REPLACE_ME_REGISTRY"`,
 				"the image registry forge PUSHES to and the deploy PULLS from",
 				"a wrong/stale value SILENTLY ImagePullBackOff's at deploy time",
-				`run 'forge build `+name+` --push <registry>' and confirm the pushed ref matches the deploy ref`)
+				`run 'forge build `+name+` --push' (it pushes to this declared registry) and confirm the pushed ref matches the deploy ref`)
 		case "namespace":
 			return knobLines(indent, "_namespace", `option("namespace") or "REPLACE_ME_NAMESPACE"`,
 				"the k8s namespace every workload in this env deploys into",

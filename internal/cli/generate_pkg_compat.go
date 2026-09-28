@@ -44,7 +44,12 @@ var legacyForgePkgRequireRE = regexp.MustCompile(
 // forge requirement, or a toolchain that won't tell us how forge resolved.
 // generate's existing validate step remains the backstop for those.
 func checkPkgCompat(projectDir string) error {
-	warnForgeVersionPinMismatch(os.Stderr, projectForgeVersionAt(projectDir), buildinfo.Version())
+	// A project whose go.mod requires forge has its pin converged to that
+	// require later in this run (stepReconcileForgePin), so a pin that
+	// differs from the RUNNING binary says nothing actionable about it.
+	if _, followsGoMod := goModForgeRequire(projectDir); !followsGoMod {
+		warnForgeVersionPinMismatch(os.Stderr, projectForgeVersionAt(projectDir), buildinfo.Version())
+	}
 	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
 		return nil // no module → nothing to check; not our error to raise
@@ -261,12 +266,16 @@ func retiredPkgModuleErr(projectDir string, retired []retiredPkgRequire) error {
 // is not the one the project pins in forge.yaml — and that generate will NOT
 // change that.
 //
-// Generate never re-pins a project. forge_version, the go.mod require and the
-// vendored KCL stamp move only when someone decides to move them (`forge
-// project upgrade` bumps forge_version; the go.mod pin is a `go get`). A
-// generate that silently wrote its own version into those files turned "which
-// forge does this project use" into "whichever forge last ran generate" — a
-// `+dirty` local build no one else can fetch, committed as the project's pin.
+// It applies only to projects whose go.mod does not require forge (a CLI or
+// library that never links it), where forge.yaml's forge_version is the pin
+// itself. A project that requires forge has its pin converged to go.mod's
+// require by stepReconcileForgePin instead — a version somebody chose with
+// `go get`, never this binary's.
+//
+// Generate never writes the RUNNING binary's version into a project. A
+// generate that did turned "which forge does this project use" into
+// "whichever forge last ran generate" — a `+dirty` local build no one else
+// can fetch, committed as the project's pin.
 //
 // It is a warning, not a refusal: running a newer or local forge against a
 // pinned project is ordinary development, and the real incompatibilities are

@@ -48,6 +48,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"migrate legacy checksums manifest",
 		"check Tier-1 file-stomp guard",
 		"snapshot Tier-1 exports",
+		"reconcile forge_version with go.mod",
 		"announce project",
 		"sync forge KCL module vendor",
 		"detect proto directories",

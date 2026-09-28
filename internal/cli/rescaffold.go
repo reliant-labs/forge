@@ -371,7 +371,7 @@ func presentFileRemedy(root string, cfg *config.ProjectConfig, present []string)
 			strings.Join(upgradable, ", "), Name(), strings.Join(upgradable, " ")))
 	}
 	if len(other) > 0 {
-		parts = append(parts, fmt.Sprintf("to get forge's version of %s, delete it and run `%s` (keep a copy of anything of yours first)",
+		parts = append(parts, fmt.Sprintf("to get forge's version of %s, delete it and run %#q (keep a copy of anything of yours first)",
 			strings.Join(other, ", "), rescaffoldCmd(other...)))
 	}
 	return strings.Join(parts, "; ")

@@ -445,6 +445,7 @@ func TestIdentity(t *testing.T) {
 func TestBefore(t *testing.T) {
 	migrate := wl("migrate", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Command: []string{"/app/x", "migrate"}, Before: []string{v1alpha1.BeforeAll}})
 	migrate.Spec.Image = "ghcr.io/acme/migrate:v1"
+	migrate.Spec.Env = []v1alpha1.EnvVar{{Name: "DATABASE_URL", DatabaseRef: &v1alpha1.DatabaseRef{Name: "orders"}}}
 	seed := wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"seed"}, Before: []string{"api"}})
 	provision := wl("provision", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"provision"}})
 	cron := wl("nightly", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"}})
@@ -454,7 +455,9 @@ func TestBefore(t *testing.T) {
 
 	// seed declared BEFORE migrate: migrate still runs first on api,
 	// because migrate gates seed.
-	o := objects(t, render(t, v1alpha1.ProfileFull, seed, svc("api"), migrate, provision, cron, op, worker, tool))
+	api := svc("api")
+	api.Spec.Env = []v1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "info"}}
+	o := objects(t, render(t, v1alpha1.ProfileFull, seed, api, migrate, provision, cron, op, worker, tool))
 	inits := func(key string) []string {
 		var names []string
 		for _, c := range asSlice(get(podOf(o[key]), "initContainers")) {
@@ -485,6 +488,12 @@ func TestBefore(t *testing.T) {
 	init := get(podOf(o["Deployment/api"]), "initContainers", 0)
 	if get(init, "image") != "ghcr.io/acme/migrate:v1" || !reflect.DeepEqual(get(init, "command"), []any{"/app/x", "migrate"}) {
 		t.Errorf("init runs the JOB's image and command: %v", init)
+	}
+	// The init carries the JOB's env, never the dependent's
+	// (positive_workload_job.k).
+	wantEnv := []any{map[string]any{"name": "DATABASE_URL", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "orders-app", "key": "uri"}}}}
+	if got := get(init, "env"); !reflect.DeepEqual(got, wantEnv) {
+		t.Errorf("init env = %v, want the job's own %v", got, wantEnv)
 	}
 	if get(init, "volumeMounts", 0, "mountPath") != "/tmp" || get(init, "securityContext", "readOnlyRootFilesystem") != true {
 		t.Errorf("init hardening/tmp: %v", init)
@@ -576,10 +585,15 @@ func TestPodEscapeHatches(t *testing.T) {
 	if get(o["Service/api"], "spec", "ports", 0, "appProtocol") != "h2c" {
 		t.Error("appProtocol lost")
 	}
+	// Service port only: a containerPort has no appProtocol field
+	// (positive_service_app_protocol.k).
+	if get(pod, "containers", 0, "ports", 0, "appProtocol") != nil {
+		t.Error("appProtocol leaked onto the containerPort")
+	}
 }
 
 // TestRestrictedKindSet renders the widest set ProfileRestricted accepts and
-// asserts the EXACT object kinds: only what reaches the tenant's own pods.
+// asserts the EXACT object kinds: only what reaches the hosted user's own pods.
 // No RBAC, ever.
 func TestRestrictedKindSet(t *testing.T) {
 	objs := render(t, v1alpha1.ProfileRestricted, restrictedSet()...)
@@ -679,7 +693,7 @@ func TestRestrictedRefusesFullOnly(t *testing.T) {
 
 // TestEveryPodIsPSARestricted checks every pod template RenderWorkloads
 // emits, under both profiles, against the Pod Security `restricted`
-// standard the control plane enforces on tenant namespaces (and forge's own
+// standard the control plane enforces on hosted namespaces (and forge's own
 // namespaces label): runAsNonRoot, seccomp RuntimeDefault, and for every
 // container (main, sidecar, init) no privilege escalation and ALL
 // capabilities dropped; no hostPath and no host namespaces.
@@ -758,6 +772,9 @@ func TestPullPolicy(t *testing.T) {
 	for img, want := range map[string]string{
 		"ghcr.io/a/b:v1": "IfNotPresent", "ghcr.io/a/b:latest": "Always", "ghcr.io/a/b": "Always",
 		"ghcr.io/a/b:abc123-dirty": "Always", "localhost:5000/b": "Always", "localhost:5000/b:v2": "IfNotPresent",
+		// "dirty" mid-tag is a name, not the dev-build suffix
+		// (positive_image_pull_policy.k).
+		"ghcr.io/a/b:dirty-feature-v1": "IfNotPresent",
 	} {
 		if got := string(pullPolicy(img)); got != want {
 			t.Errorf("pullPolicy(%s) = %s, want %s", img, got, want)
@@ -838,17 +855,47 @@ func TestRenderRefusesInvalid(t *testing.T) {
 // TestJobHashTracksSpec: an unchanged spec keeps its Job name (a re-apply is
 // a no-op); a changed one gets a new name.
 func TestJobHashTracksSpec(t *testing.T) {
-	name := func(args ...string) string {
-		for _, o := range render(t, v1alpha1.ProfileFull, wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: args})) {
-			if o.GetKind() == "Job" {
-				return o.GetName()
+	job := func(spec v1alpha1.WorkloadSpec) map[string]any {
+		t.Helper()
+		spec.Kind = v1alpha1.KindJob
+		for k, o := range objects(t, render(t, v1alpha1.ProfileFull, wl("seed", spec))) {
+			if strings.HasPrefix(k, "Job/") {
+				return o
 			}
 		}
-		return ""
+		t.Fatal("no Job rendered")
+		return nil
 	}
-	a, b, c := name("seed"), name("seed"), name("seed", "--all")
-	if a != b || a == c || !strings.HasPrefix(a, "seed-") || len(a) != len("seed-")+v1alpha1.StandaloneJobHashLength {
-		t.Errorf("job names %q %q %q", a, b, c)
+	name := func(o map[string]any) string { return get(o, "metadata", "name").(string) }
+	a := job(v1alpha1.WorkloadSpec{Args: []string{"seed"}})
+	b := job(v1alpha1.WorkloadSpec{Args: []string{"seed"}})
+	c := job(v1alpha1.WorkloadSpec{Args: []string{"seed", "--all"}})
+	if name(a) != name(b) || name(a) == name(c) || len(name(a)) != len("seed-")+v1alpha1.StandaloneJobHashLength {
+		t.Errorf("job names %q %q %q", name(a), name(b), name(c))
+	}
+	// The name IS <name>-<spec-hash label>, and the stable handle and the
+	// ServiceAccount are NOT hashed (positive_job_spec_hash.k).
+	for _, o := range []map[string]any{a, c} {
+		if want := "seed-" + get(o, "metadata", "labels", LabelSpecHash).(string); name(o) != want {
+			t.Errorf("job name %q != seed-<spec-hash label> %q", name(o), want)
+		}
+		if get(o, "metadata", "labels", LabelJobName) != "seed" || get(podOf(o), "serviceAccountName") != "seed" {
+			t.Errorf("job-name label / pod SA must be the stable unhashed name: %v / %v", get(o, "metadata", "labels", LabelJobName), get(podOf(o), "serviceAccountName"))
+		}
+	}
+	// deployPhase is metadata: it neither moves the hash nor appears on the
+	// pod template (positive_job_deploy_phase.k).
+	post := job(v1alpha1.WorkloadSpec{Args: []string{"seed"}, DeployPhase: v1alpha1.DeployPhasePostRollout})
+	if name(post) != name(a) {
+		t.Errorf("deployPhase moved the hash: %q vs %q", name(post), name(a))
+	}
+	if get(post, "metadata", "annotations", AnnotationDeployPhase) != "post-rollout" || get(a, "metadata", "annotations", AnnotationDeployPhase) != "pre-rollout" {
+		t.Errorf("phase annotations: post %v, default %v", get(post, "metadata", "annotations"), get(a, "metadata", "annotations"))
+	}
+	for _, o := range []map[string]any{a, post} {
+		if get(o, "spec", "template", "metadata", "annotations") != nil {
+			t.Errorf("the pod template must carry no annotation: %v", get(o, "spec", "template", "metadata", "annotations"))
+		}
 	}
 }
 
@@ -916,5 +963,222 @@ func TestRenderDispatch(t *testing.T) {
 	mustErr(t, err, "RenderWorkloads")
 	if _, err := Render(&v1alpha1.WorkloadList{}, ctx); err == nil {
 		t.Error("a non-tier object must be refused")
+	}
+}
+
+// TestImagePullSecrets: Context.ImagePullSecrets land on EVERY ServiceAccount
+// forge generates, and NOT on the pod spec (lib/rbac.k, pinned by
+// positive_service_sa_pullsecrets_rbac.k). A workload with a serviceAccount
+// override gets them on the POD instead, since forge does not own that SA
+// (lib/services.k:487). Unset means no imagePullSecrets key anywhere.
+func TestImagePullSecrets(t *testing.T) {
+	rule := []v1alpha1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}}
+	ov := svc("proxy")
+	ov.Spec.ServiceAccount = "reliant-cloudsql"
+	ws := []v1alpha1.Workload{
+		svc("api"),
+		wl("reaper", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, NamespacedRBAC: rule}),
+		wl("mgr", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"Widget"}, Group: "example.com"}),
+		wl("nightly", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"}}),
+		wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"seed"}}),
+		wl("migrate", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"migrate"}, Before: []string{v1alpha1.BeforeAll}}),
+		ov,
+	}
+	c := ctx
+	c.ImagePullSecrets = []string{"ghcr-creds", "extra-creds"}
+	objs, err := RenderWorkloads(ws, v1alpha1.ProfileFull, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []any{map[string]any{"name": "ghcr-creds"}, map[string]any{"name": "extra-creds"}}
+	sas := 0
+	for k, o := range objects(t, objs) {
+		if strings.HasPrefix(k, "ServiceAccount/") {
+			sas++
+			if got := get(o, "imagePullSecrets"); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s imagePullSecrets = %v, want %v", k, got, want)
+			}
+		}
+		pod := podOf(o)
+		if pod == nil {
+			continue
+		}
+		if k == "Deployment/proxy" {
+			if got := get(pod, "imagePullSecrets"); !reflect.DeepEqual(got, want) {
+				t.Errorf("override pod imagePullSecrets = %v, want %v (forge does not own its SA)", got, want)
+			}
+		} else if get(pod, "imagePullSecrets") != nil {
+			t.Errorf("%s: pull secrets on the pod; they belong on its generated SA", k)
+		}
+	}
+	// api, reaper, mgr, nightly, seed: the gating migrate and the override
+	// render none.
+	if sas != 5 {
+		t.Errorf("checked %d ServiceAccounts, want 5", sas)
+	}
+
+	for k, o := range objects(t, render(t, v1alpha1.ProfileFull, ws...)) {
+		if get(o, "imagePullSecrets") != nil || get(podOf(o), "imagePullSecrets") != nil {
+			t.Errorf("%s: imagePullSecrets rendered with none configured", k)
+		}
+	}
+}
+
+// TestOperatorClusterRBACDisjointAcrossNamespaces: the SAME operator rendered
+// into two namespaces of one cluster must share NO cluster-scoped object name,
+// or the second deploy silently repoints the first's binding at its own
+// namespace (lib/rbac.k:198-222; positive_operator_cluster_rbac_per_env.k).
+// Each binding's roleRef resolves to its own ClusterRole and its subject names
+// its own namespace; the ServiceAccount name stays bare.
+func TestOperatorClusterRBACDisjointAcrossNamespaces(t *testing.T) {
+	op := wl("mgr", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"Widget"}, Group: "example.com"})
+	clusterScoped := func(ns string) map[string]map[string]any {
+		c := ctx
+		c.Namespace = ns
+		objs, err := RenderWorkloads([]v1alpha1.Workload{op}, v1alpha1.ProfileFull, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]map[string]any{}
+		for k, o := range objects(t, objs) {
+			if o["kind"] == "ServiceAccount" && get(o, "metadata", "name") != "mgr" {
+				t.Errorf("%s: SA name must be bare, got %v", ns, get(o, "metadata", "name"))
+			}
+			if o["kind"] == "ClusterRole" || o["kind"] == "ClusterRoleBinding" {
+				out[k] = o
+			}
+		}
+		if len(out) != 2 {
+			t.Fatalf("%s: want one ClusterRole + one binding, got %v", ns, keysOf(out))
+		}
+		for k, o := range out {
+			if o["kind"] != "ClusterRoleBinding" {
+				continue
+			}
+			role := "ClusterRole/" + get(o, "roleRef", "name").(string)
+			if out[role] == nil {
+				t.Errorf("%s: %s roleRef does not resolve to this render's ClusterRole", ns, k)
+			}
+			if get(o, "subjects", 0, "namespace") != ns || get(o, "subjects", 0, "name") != "mgr" {
+				t.Errorf("%s: %s subject = %v", ns, k, get(o, "subjects", 0))
+			}
+		}
+		return out
+	}
+	a, b := clusterScoped("team-a"), clusterScoped("team-b")
+	for k := range a {
+		if b[k] != nil {
+			t.Errorf("cluster-scoped %s is rendered by both namespaces: the later deploy would take it over", k)
+		}
+	}
+}
+
+// TestOperatorClusterRoleDerivesCRDRules: an operator's ClusterRole grants
+// what its manager needs on the CRDs it declares, the same rules the
+// scaffolded controller's kubebuilder markers state
+// (internal/templates/crd/controller.go.tmpl:56-58), plus leases for leader
+// election. Declared clusterRBAC is appended, never replacing them.
+// expand.k derived none, so an operator declaring crds without restating them
+// in cluster_rbac could not watch its own resources.
+func TestOperatorClusterRoleDerivesCRDRules(t *testing.T) {
+	extra := v1alpha1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"list"}}
+	op := wl("mgr", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, Group: "reliant.dev", CRDs: []string{"Workspace", "Policy"}, ClusterRBAC: []v1alpha1.PolicyRule{extra}})
+	role := objects(t, render(t, v1alpha1.ProfileFull, op))["ClusterRole/mgr-acme-prod-clusterrole"]
+	want := []any{
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps", "secrets"}, "verbs": []any{"get", "list", "watch"}},
+		map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces", "policies"}, "verbs": []any{"get", "list", "watch", "create", "update", "patch", "delete"}},
+		map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces/status", "policies/status"}, "verbs": []any{"get", "update", "patch"}},
+		map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces/finalizers", "policies/finalizers"}, "verbs": []any{"update"}},
+		map[string]any{"apiGroups": []any{"coordination.k8s.io"}, "resources": []any{"leases"}, "verbs": []any{"get", "list", "watch", "create", "update", "patch", "delete"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list"}},
+	}
+	if got := get(role, "rules"); !reflect.DeepEqual(got, want) {
+		gb, _ := json.MarshalIndent(got, "", " ")
+		t.Fatalf("ClusterRole rules =\n%s", gb)
+	}
+
+	// No leader election: no leases. No group: nothing to derive (a CRD
+	// needs its group to be addressable), so only defaults + declared.
+	off := false
+	op.Spec.LeaderElection = &off
+	op.Spec.Group = ""
+	role = objects(t, render(t, v1alpha1.ProfileFull, op))["ClusterRole/mgr-acme-prod-clusterrole"]
+	if got := get(role, "rules"); !reflect.DeepEqual(got, []any{want[0], want[5]}) {
+		t.Errorf("without group or leader election, rules = %v", got)
+	}
+}
+
+// TestIdentityJobAndAnnotationsNoLeak covers the job-kind RBAC tier
+// (positive_job_namespaced_rbac.k) and sweeps EVERY rendered object for
+// ServiceAccount annotations leaking off the SA
+// (positive_service_account_annotations.k).
+func TestIdentityJobAndAnnotationsNoLeak(t *testing.T) {
+	rule := v1alpha1.PolicyRule{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"create"}}
+	plain := objects(t, render(t, v1alpha1.ProfileFull, wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}})))
+	for k := range plain {
+		if strings.HasPrefix(k, "Role/") || strings.HasPrefix(k, "RoleBinding/") {
+			t.Errorf("a plain job must get no %s", k)
+		}
+	}
+	const key = "iam.gke.io/gcp-service-account"
+	ann := map[string]string{key: "x@p.iam.gserviceaccount.com"}
+	for _, w := range []v1alpha1.Workload{
+		wl("idp", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}, NamespacedRBAC: []v1alpha1.PolicyRule{rule}, ServiceAccountAnnotations: ann}),
+		wl("api", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, ServiceAccountAnnotations: ann}),
+		wl("mgr", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"W"}, Group: "e.com", ServiceAccountAnnotations: ann}),
+	} {
+		o := objects(t, render(t, v1alpha1.ProfileFull, w))
+		for k, obj := range o {
+			onSA := strings.HasPrefix(k, "ServiceAccount/")
+			has := get(obj, "metadata", "annotations", key) != nil
+			if onSA != has {
+				t.Errorf("%s: SA annotation present=%v (want only on the ServiceAccount)", k, has)
+			}
+			for _, path := range [][]any{{"spec", "template", "metadata", "annotations", key}, {"spec", "jobTemplate", "spec", "template", "metadata", "annotations", key}} {
+				if get(obj, path...) != nil {
+					t.Errorf("%s: SA annotation leaked onto the pod template", k)
+				}
+			}
+		}
+		if w.Name == "idp" {
+			role := o["Role/idp-role"]
+			if len(asSlice(get(role, "rules"))) != 2 || get(o["RoleBinding/idp-rolebinding"], "subjects", 0, "name") != "idp" {
+				t.Errorf("job Role/binding: %v / %v", get(role, "rules"), get(o["RoleBinding/idp-rolebinding"], "subjects"))
+			}
+			for k, obj := range o {
+				if strings.HasPrefix(k, "Job/") && get(podOf(obj), "serviceAccountName") != "idp" {
+					t.Error("the job pod must bind its SA")
+				}
+			}
+		}
+	}
+}
+
+// TestBatchResources: a CronJob's and a standalone Job's container always
+// carry requests AND limits (never BestEffort), and a declared override lands
+// exactly (positive_cronjob_resources.k).
+func TestBatchResources(t *testing.T) {
+	override := v1alpha1.Resources{CPURequestMillicores: 500, CPULimitMillicores: 2000, MemoryRequestBytes: 512 << 20, MemoryLimitBytes: 2 << 30}
+	for _, kind := range []v1alpha1.WorkloadKind{v1alpha1.KindCron, v1alpha1.KindJob} {
+		for _, r := range []v1alpha1.Resources{{}, override} {
+			spec := v1alpha1.WorkloadSpec{Kind: kind, Args: []string{"x"}, Resources: r}
+			if kind == v1alpha1.KindCron {
+				spec.Schedule = "@daily"
+			}
+			for k, o := range objects(t, render(t, v1alpha1.ProfileFull, wl("b", spec))) {
+				pod := podOf(o)
+				if pod == nil {
+					continue
+				}
+				res := get(pod, "containers", 0, "resources")
+				want := map[string]any{"requests": map[string]any{"cpu": "250m", "memory": "1Gi"}, "limits": map[string]any{"cpu": "250m", "memory": "1Gi"}}
+				if r != (v1alpha1.Resources{}) {
+					want = map[string]any{"requests": map[string]any{"cpu": "500m", "memory": "512Mi"}, "limits": map[string]any{"cpu": "2", "memory": "2Gi"}}
+				}
+				if !reflect.DeepEqual(res, want) {
+					t.Errorf("%s resources = %v, want %v", k, res, want)
+				}
+			}
+		}
 	}
 }

@@ -105,6 +105,44 @@ rules:
   - get
   - list
   - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - example.com
+  resources:
+  - widgets/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - example.com
+  resources:
+  - widgets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - example.com
+  resources:
+  - widgets
+  verbs:
+  - get
+  - list
+  - watch
   - update
 ---
 apiVersion: rbac.authorization.k8s.io/v1

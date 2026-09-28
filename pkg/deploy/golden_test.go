@@ -39,6 +39,7 @@ type goldenCase struct {
 	name    string
 	profile v1alpha1.Profile
 	network *EnvNetworkPolicy
+	pull    []string
 	ws      []v1alpha1.Workload
 }
 
@@ -107,6 +108,16 @@ func goldenCases() []goldenCase {
 			gw("nightly", cronSpec),
 			gw("report", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Command: []string{"/app/demo", "report"}, DeployPhase: v1alpha1.DeployPhasePostRollout}),
 		}},
+		// Pull secrets ride each generated SA; the override pod carries them
+		// itself.
+		{name: "pull_secrets", pull: []string{"ghcr-creds"}, ws: []v1alpha1.Workload{
+			scaffoldAPI(),
+			func() v1alpha1.Workload {
+				w := gw("proxy", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Command: []string{"/app/demo", "proxy"}})
+				w.Spec.ServiceAccount = "reliant-cloudsql"
+				return w
+			}(),
+		}},
 		{name: "netpol", network: &EnvNetworkPolicy{EgressPorts: []int32{443, 5432}, TelemetryNamespace: "observability", IngressNamespace: "gateway-system"},
 			ws: []v1alpha1.Workload{scaffoldAPI()}},
 		{name: "mixed_env", ws: []v1alpha1.Workload{func() v1alpha1.Workload {
@@ -131,6 +142,7 @@ func TestGolden(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			rctx := goldenCtx
 			rctx.Network = c.network
+			rctx.ImagePullSecrets = c.pull
 			objs, err := RenderWorkloads(c.ws, c.profile, rctx)
 			if err != nil {
 				t.Fatal(err)

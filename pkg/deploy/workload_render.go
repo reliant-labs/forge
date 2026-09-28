@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jinzhu/inflection"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -92,7 +93,8 @@ func RenderWorkloads(ws []v1alpha1.Workload, p v1alpha1.Profile, ctx Context) ([
 	if p == v1alpha1.ProfileRestricted {
 		// Defense in depth behind Validate. The profile refuses every field
 		// that would produce these, so this can only fire on a renderer bug.
-		// That is exactly when it must fire, rather than hand a tenant RBAC.
+		// That is exactly when it must fire, rather than hand a hosted
+		// workload Kubernetes RBAC.
 		for _, o := range out {
 			if !RestrictedKinds[o.GetKind()] {
 				return nil, fmt.Errorf("renderer produced %s/%s under the restricted profile, which may only emit %v: refusing the whole set", o.GetKind(), o.GetName(), sortedKindNames(RestrictedKinds))
@@ -103,7 +105,7 @@ func RenderWorkloads(ws []v1alpha1.Workload, p v1alpha1.Profile, ctx Context) ([
 }
 
 // RestrictedKinds is every object kind RenderWorkloads may emit under
-// ProfileRestricted: the objects that reach only the tenant's own pods. No
+// ProfileRestricted: the objects that reach only the hosted user's own pods. No
 // RBAC kind is in it, ever. A gating job is an initContainer inside a
 // Deployment or Job, so it needs no kind of its own.
 var RestrictedKinds = map[string]bool{
@@ -609,6 +611,10 @@ func (set *workloadSet) podSpec(w *workload, ctx Context, extraEnv []corev1.EnvV
 		// identity calls the API, and a pod-level false would silently
 		// disable an identity that does.
 		pod.ServiceAccountName = s.ServiceAccount
+		// The env's pull secrets cannot ride that ServiceAccount, so they
+		// go on the pod, where Kubernetes unions them with the SA's own
+		// (lib/services.k:487). See Context.ImagePullSecrets.
+		pod.ImagePullSecrets = pullSecrets(ctx.ImagePullSecrets)
 	}
 	return pod
 }
@@ -1005,6 +1011,9 @@ func identity(w *workload, ctx Context) []runtime.Object {
 	if len(s.ServiceAccountAnnotations) > 0 {
 		sa.Annotations = s.ServiceAccountAnnotations
 	}
+	// The env's registry credentials ride the SA, so every pod, Job and
+	// CronJob bound to it pulls with them (lib/rbac.k:90-98, :159-160).
+	sa.ImagePullSecrets = pullSecrets(ctx.ImagePullSecrets)
 	if !hasRBAC(w) {
 		// lib/rbac.k:69-99: identity without permission, and no token.
 		sa.AutomountServiceAccountToken = new(false)
@@ -1022,7 +1031,7 @@ func identity(w *workload, ctx Context) []runtime.Object {
 			&rbacv1.ClusterRole{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
 				ObjectMeta: metav1.ObjectMeta{Name: roleName, Labels: copyLabels(labels)},
-				Rules:      append(slices.Clone(defaultRBACRules), policyRules(s.ClusterRBAC)...),
+				Rules:      operatorRules(s),
 			},
 			&rbacv1.ClusterRoleBinding{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
@@ -1048,6 +1057,65 @@ func identity(w *workload, ctx Context) []runtime.Object {
 			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: roleName},
 		},
 	}
+}
+
+// crdVerbs / crdStatusVerbs / crdFinalizerVerbs are what the scaffolded
+// controller's kubebuilder markers grant (internal/templates/crd/
+// controller.go.tmpl:56-58), so a forge operator's ClusterRole and its code
+// agree without either restating the other.
+var (
+	crdVerbs          = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
+	crdStatusVerbs    = []string{"get", "update", "patch"}
+	crdFinalizerVerbs = []string{"update"}
+	leaseVerbs        = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
+)
+
+// operatorRules is an operator's ClusterRole: the lib/rbac.k config-read
+// defaults, then the rules its manager needs on the CRDs it declares (the
+// resource, /status and /finalizers in Group), then coordination.k8s.io
+// leases when it elects a leader, then its declared ClusterRBAC.
+//
+// expand.k derived none of the middle part (it passed only cluster_rbac), so
+// an operator declaring crds, but not restating them as rules, rendered a
+// ClusterRole that could not watch its own resources, and the manager
+// failed its first list with "forbidden". Without a Group the CRDs are not
+// addressable, so nothing is derived; declared rules still apply.
+func operatorRules(s v1alpha1.WorkloadSpec) []rbacv1.PolicyRule {
+	rules := slices.Clone(defaultRBACRules)
+	if s.Group != "" && len(s.CRDs) > 0 {
+		var res, status, finalizers []string
+		for _, kind := range s.CRDs {
+			plural := crdPlural(kind)
+			res = append(res, plural)
+			status = append(status, plural+"/status")
+			finalizers = append(finalizers, plural+"/finalizers")
+		}
+		group := []string{s.Group}
+		rules = append(rules,
+			rbacv1.PolicyRule{APIGroups: group, Resources: res, Verbs: crdVerbs},
+			rbacv1.PolicyRule{APIGroups: group, Resources: status, Verbs: crdStatusVerbs},
+			rbacv1.PolicyRule{APIGroups: group, Resources: finalizers, Verbs: crdFinalizerVerbs},
+		)
+	}
+	if s.EffectiveLeaderElection() {
+		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: leaseVerbs})
+	}
+	return append(rules, policyRules(s.ClusterRBAC)...)
+}
+
+// crdPlural is the lowercase plural resource name of a CRD kind, derived
+// exactly as forge's CRD scaffold names it (internal/generator/crd_gen.go:
+// strings.ToLower(naming.Pluralize(kind)), i.e. jinzhu/inflection). A
+// divergent pluralizer would grant access to a resource the CRD does not
+// define.
+func crdPlural(kind string) string { return strings.ToLower(inflection.Plural(kind)) }
+
+func pullSecrets(names []string) []corev1.LocalObjectReference {
+	var out []corev1.LocalObjectReference
+	for _, n := range names {
+		out = append(out, corev1.LocalObjectReference{Name: n})
+	}
+	return out
 }
 
 func policyRules(in []v1alpha1.PolicyRule) []rbacv1.PolicyRule {

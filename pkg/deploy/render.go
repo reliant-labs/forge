@@ -47,6 +47,18 @@ type Context struct {
 	// egress here, while the hosted control plane passes nil and layers its
 	// own per-customer egress rules on the namespace it owns.
 	Network *EnvNetworkPolicy
+	// ImagePullSecrets are names of EXISTING image-pull Secrets in Namespace
+	// (a private registry's credentials, e.g. ghcr-creds). An environment
+	// fact, not a workload one: the same workload pulls anonymously from a
+	// local registry in dev and with a credential in prod.
+	//
+	// PLACEMENT, as lib/rbac.k and lib/services.k:487 had it: on every
+	// ServiceAccount forge generates (so every pod, Job and CronJob bound to
+	// it pulls with them, and the pod spec stays untouched), and on the POD
+	// SPEC only for a workload with a serviceAccount override, because forge
+	// does not own that ServiceAccount and Kubernetes unions pod-level pull
+	// secrets with the SA's own.
+	ImagePullSecrets []string
 }
 
 // EnvNetworkPolicy is the input to the env-wide NetworkPolicy bundle

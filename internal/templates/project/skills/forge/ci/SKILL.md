@@ -79,7 +79,9 @@ verifying its generated code with an older forge than the one that wrote it
 
 - WHETHER go.mod requires forge is read from the file, never inferred from a
   lookup failing. Only a module that does not require forge at all (a
-  `--kind cli` / `library` project) uses forge.yaml's `forge_version`.
+  `--kind cli` / `library` project) uses forge.yaml's `forge_version`. (For a
+  module that does, `forge generate` keeps `forge_version` equal to go.mod's
+  require, so the two never disagree in a generated tree.)
 - If go.mod requires forge and the version cannot be resolved, the step FAILS
   with go's own error. It never falls back to forge.yaml — installing a
   different forge than the code compiles against is the drift this exists to
@@ -292,9 +294,14 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
 
 ## Rules
 
-- Tier-1 workflows are regenerated. Don't hand-edit `ci.yml`,
-  `proto-breaking.yml`, `build-images.yml`, `deploy.yml`, `e2e.yml`,
-  `dependabot.yml` — change forge.yaml or add a Tier-2 workflow.
+- forge's workflows (`ci.yml`, `proto-breaking.yml`, `build-images.yml`,
+  `deploy.yml`, `e2e.yml`, `reconcile.yml`, `pre-commit.yml`,
+  `dependabot.yml`) are scaffold-once: written once, then yours to edit.
+  Deleting one sticks — `.forge/scaffolded.json` records it, so `forge
+  generate` does not bring it back. To get forge's current version of one,
+  delete it and run `forge project rescaffold .github/workflows/<name>.yml`
+  (only workflows this project has: e2e.yml needs an e2e suite,
+  reconcile.yml the reconcile feature).
 - Tier-2 workflows live alongside Tier-1 in `.github/workflows/`. Use
   any name forge doesn't own; open with `# yours: scaffolded once,
   never touched again — forge will not overwrite this file` so the

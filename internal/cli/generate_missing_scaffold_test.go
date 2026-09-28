@@ -70,13 +70,14 @@ func TestMissingScaffoldNotice_NamesFileAndAction(t *testing.T) {
 		t.Errorf("notice does not NAME the absent file %q — a notice that says "+
 			"something drifted without naming the file is not actionable:\n%s", rel, got)
 	}
-	if !strings.Contains(got, checksums.ScaffoldedFile) {
-		t.Errorf("notice does not name %s, the only edit that re-scaffolds the file. "+
-			"Deleting the file, the proto rpcs, db/migrations or the handler dir all "+
-			"fail to bring it back — the run tried each:\n%s", checksums.ScaffoldedFile, got)
+	// The remedy is a COMMAND, runnable verbatim for the one absent file.
+	// Deleting the file, the proto rpcs, db/migrations or the handler dir
+	// all fail to bring it back — the run tried each.
+	if want := "project rescaffold " + rel; !strings.Contains(got, want) {
+		t.Errorf("notice does not name the command that re-creates the file (%q):\n%s", want, got)
 	}
-	if !strings.Contains(got, "forge generate") {
-		t.Errorf("notice does not name the command to re-run after the ledger edit:\n%s", got)
+	if strings.Contains(got, "jq ") {
+		t.Errorf("notice still tells the reader to hand-edit %s:\n%s", checksums.ScaffoldedFile, got)
 	}
 }
 

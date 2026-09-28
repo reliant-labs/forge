@@ -254,10 +254,10 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		// to the primary alone — exactly right for a fresh `forge project new`. Once
 		// the user runs `forge scaffold binary`, the upgrade/regenerate lane
 		// (forUpgrade) re-scans cmd/ and the Dockerfile picks up every binary.
-		Binaries: discoverBinaries(g.Path, g.binaryName()),
+		Binaries: discoverBinaries(g.treeDir(), g.binaryName()),
 		// A fresh scaffold ships no .sql yet — db/embed.go is not written,
 		// so the db command tree must not reference forgedb.
-		HasMigrations: codegen.ProjectHasSQLMigrations(g.Path),
+		HasMigrations: codegen.ProjectHasSQLMigrations(g.treeDir()),
 	}
 
 	// Strip migration-related config fields when migrations are disabled.

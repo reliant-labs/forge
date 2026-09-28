@@ -401,6 +401,7 @@ var knownDotForgeEntries = map[string]bool{
 	"checksums.json":        true,
 	"disowned.json":         true,
 	"hashes.json":           true,
+	"scaffolded.json":       true, // the scaffold-once birth ledger (internal/checksums/scaffoldledger.go)
 	"render":                true,
 	"friction.jsonl":        true,
 	"skills":                true,

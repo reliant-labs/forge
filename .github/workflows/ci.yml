@@ -89,6 +89,30 @@ jobs:
           # 20k lines, so large PRs silently fell back to whole-repo regardless.
           only-new-issues: false
 
+  # ── Go tests: two jobs, partitioned by scripts/ci-test-packages.sh ──────
+  #
+  # `test` runs every package under -race EXCEPT the repo-wide guards
+  # (internal/tierguard, internal/removalguard); `test-guards` runs exactly
+  # those, on a runner of their own. The script is the single list and each
+  # job's first step proves the two sets partition `go list ./...`, so a
+  # package can neither drop out of both jobs nor run in both.
+  #
+  # WHY. The guards are the two slowest packages by a wide margin (~980s and
+  # ~700s under -race; the next is ~410s) and the two largest in memory.
+  # Inside `go test -race ./...` they co-resided with every other test binary
+  # on one 16 GB runner, and the job was OOM-killed about one run in three —
+  # "The runner has received a shutdown signal", exit 143, no test failed.
+  # A job boundary bounds that by construction; go test's package
+  # scheduling only ever bounded it by luck. Measured numbers are in the PR
+  # that introduced this split (#304).
+  #
+  # WHY NO -race FOR THE GUARDS. Their own code has no concurrency worth
+  # detecting — removalguard is a regex scan over files, tierguard diffs
+  # rendered trees — and the render work happens in child processes. The
+  # production code those renders exercise (generate, codegen, cli) is
+  # race-tested by its own packages in `test`. -race cost them ~100x in
+  # removalguard (10s → ~980s) and ~5x in tierguard. e2e-suite.yml omits
+  # -race for the same reason.
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -139,18 +163,55 @@ jobs:
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
 
+      - name: Check the test-job partition
+        run: scripts/ci-test-packages.sh check
       - name: Go tests
         # -timeout is explicit rather than left to `go test`'s 10-minute
-        # default. Under -race the removalguard scan alone once exceeded that
-        # default and PANICKED, which fails the whole job and hides every
+        # default. A panicking timeout fails the whole job and hides every
         # other package's result behind something that reads as a hang rather
         # than as one slow package. A generous explicit budget keeps a genuine
         # deadlock detectable while making the failure mode legible.
-        run: go test -race -count=1 -timeout 30m ./...
+        run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
+
+  test-guards:
+    name: Test (guards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
+      # Its own key: this job builds WITHOUT -race, a different artifact set
+      # from `test`'s, so sharing a key would have each job evict the other's.
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-test-guards-${{ runner.os }}-
+      # tierguard's fixture renders run the generate pipeline's buf step; it
+      # fails without buf rather than reporting an empty inventory as a pass.
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          # Authenticated for the rate limit; see the same step in `test`.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install golang-migrate CLI
+        uses: ./.github/actions/install-migrate
+      - name: Check the test-job partition
+        run: scripts/ci-test-packages.sh check
+      - name: Go tests (guards)
+        run: go test -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)
 
   build:
     name: Build
-    needs: [lint, test]
+    needs: [lint, test, test-guards]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -276,7 +337,7 @@ jobs:
 
   vuln-scan:
     name: Vulnerability Scan
-    needs: [lint, test]
+    needs: [lint, test, test-guards]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

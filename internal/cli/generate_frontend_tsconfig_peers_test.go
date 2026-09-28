@@ -76,7 +76,7 @@ func TestAddPeerPinsToTsconfig_LegacyProject(t *testing.T) {
 		// EXACTLY ONE element, aimed at this project's layout. Not a
 		// candidate list: SWC asserts the single-element rule for a
 		// non-wildcard key and panics `next build` on anything longer.
-		want := webruntimepeers.TypePinPath(pkg, false)
+		want := webruntimepeers.TypePinPath(pkg, false, "")
 		got, ok := paths[pkg]
 		if !ok {
 			t.Errorf("paths has no entry for %q — tsc resolves it from the linked runtime "+
@@ -201,7 +201,7 @@ func TestAddPeerPinsToTsconfig_RetargetsStaleLayout(t *testing.T) {
 
 	paths := parseTsconfig(t, mustReadTsconfig(t, path))
 	for _, pkg := range tsconfigPeerPins() {
-		want := webruntimepeers.TypePinPath(pkg, true)
+		want := webruntimepeers.TypePinPath(pkg, true, "")
 		got, ok := paths[pkg]
 		if !ok {
 			t.Errorf("paths lost its entry for %q; paths=%v", pkg, paths)

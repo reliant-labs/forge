@@ -89,13 +89,15 @@ func tsconfigPinEntryRe(pkg string) *regexp.Regexp {
 }
 
 // ReconcileFrontendTsconfigPeers retargets every frontend's tsconfig peer pins
-// to the node_modules layout the install forge just ran produced. It is the
-// SCAFFOLD-time pass (`forge scaffold frontend`, right after its npm install)
-// and reads node_modules on purpose — see ObserveInstalledPinLayout. `forge
-// generate` has its own pass that reads declarations only. Best-effort and
-// non-fatal: a missing or unrecognised tsconfig is skipped rather than failed,
-// a project whose layout cannot be identified is left untouched, and a file
-// already correct is left byte-identical so a re-run reports nothing.
+// to the node_modules layout the install forge just ran produced, and aims
+// each at its package's installed declaration entry. It is the SCAFFOLD-time
+// pass (`forge project new --frontend` and `forge scaffold frontend`, right
+// after their npm install) and reads node_modules on purpose — see
+// ObserveInstalledPinLayout. `forge generate` has its own pass that reads
+// declarations only. Best-effort and non-fatal: a missing or unrecognised
+// tsconfig is skipped rather than failed, a project whose layout cannot be
+// identified is left untouched, and a file already correct is left
+// byte-identical so a re-run reports nothing.
 func ReconcileFrontendTsconfigPeers(projectDir string) {
 	entries, err := os.ReadDir(filepath.Join(projectDir, "frontends"))
 	if err != nil {
@@ -120,7 +122,7 @@ func ReconcileFrontendTsconfigPeers(projectDir string) {
 		}
 	}
 	if len(touched) > 0 {
-		fmt.Printf("  ♻️  retargeted web-runtime peer pins for %s (npm hoisted this project's dependencies)\n",
+		fmt.Printf("  ♻️  aimed web-runtime peer pins for %s at the installed layout and declaration files\n",
 			strings.Join(touched, ", "))
 	}
 }
@@ -268,20 +270,80 @@ func frontendDeclaresWorkspaceMember(feDir string) bool {
 }
 
 // retargetTsconfigPins rewrites each present peer pin in path to the layout
-// hoisted selects. Reports whether the file changed.
+// hoisted selects, and aims it at the package's DECLARATION ENTRY as read from
+// the install forge just ran. Reports whether the file changed.
+//
+// The entry is read here — at scaffold time, right after forge's own
+// `npm install` — because this is the one moment the installed manifest is
+// the authority on it: the tsconfig is being created and nothing is committed
+// yet. See webruntimepeers.DeclarationEntry for why the entry must be derived
+// rather than written as a literal, and ReconcileTsconfigPins for why a
+// directory pin is the value this pass exists to replace.
 func retargetTsconfigPins(path string, hoisted bool) bool {
+	feDir := filepath.Dir(path)
+	return ReconcileTsconfigPins(path, func(pkg string, _ bool, currentEntry string) (bool, string) {
+		entry := InstalledDeclarationEntry(feDir, pkg, hoisted)
+		if entry == "" {
+			// Nothing installed to read (an install that failed, or a
+			// package npm put somewhere unexpected). Keep what the file
+			// already says rather than regressing a known entry to a
+			// directory pin.
+			entry = currentEntry
+		}
+		return hoisted, entry
+	})
+}
+
+// InstalledDeclarationEntry reads the declaration entry of pkg's TYPES package
+// as installed under feDir's node_modules for the given layout, or "" when no
+// manifest is there to read.
+func InstalledDeclarationEntry(feDir, pkg string, hoisted bool) string {
+	pkgDir := filepath.Join(feDir, filepath.FromSlash(webruntimepeers.PinPackageDir(pkg, hoisted)))
+	manifest, err := os.ReadFile(filepath.Join(pkgDir, "package.json"))
+	if err != nil {
+		return ""
+	}
+	// Only a file that is really in the installed package may be pinned: a
+	// pin naming a missing file resolves to nothing, and tsc falls back to
+	// the ordinary walk without a word.
+	return webruntimepeers.DeclarationEntry(manifest, func(rel string) bool {
+		info, statErr := os.Stat(filepath.Join(pkgDir, filepath.FromSlash(rel)))
+		return statErr == nil && !info.IsDir()
+	})
+}
+
+// PinDecision is what a reconcile wants one existing pin to become, given the
+// layout and declaration entry the pin currently carries.
+type PinDecision func(pkg string, hoisted bool, entry string) (wantHoisted bool, wantEntry string)
+
+// ReconcileTsconfigPins rewrites every present, forge-shaped peer pin in path
+// to whatever decide returns for it, leaving every other byte of the file
+// alone. Reports whether the file changed.
+//
+// A pin forge does not recognise (another prefix, several candidates, a
+// multi-line value) is left exactly as written: it is a shape a human chose.
+func ReconcileTsconfigPins(path string, decide PinDecision) bool {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
 	changed := false
 	for _, pkg := range webruntimepeers.TypePins() {
-		want := webruntimepeers.TypePinPath(pkg, hoisted)
 		re := tsconfigPinEntryRe(pkg)
 		loc := re.FindSubmatchIndex(body)
 		// len < 6 means the value group did not participate, so loc[4:6] is
 		// not addressable — the pin is absent or in a shape this does not own.
-		if len(loc) < 6 || string(body[loc[4]:loc[5]]) == want {
+		if len(loc) < 6 {
+			continue
+		}
+		current := string(body[loc[4]:loc[5]])
+		hoisted, entry, ok := webruntimepeers.SplitPinPath(pkg, current)
+		if !ok {
+			continue
+		}
+		wantHoisted, wantEntry := decide(pkg, hoisted, entry)
+		want := webruntimepeers.TypePinPath(pkg, wantHoisted, wantEntry)
+		if current == want {
 			continue
 		}
 		body = re.ReplaceAll(body, []byte(`${1}"`+want+`"${3}`))

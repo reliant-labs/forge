@@ -99,6 +99,20 @@ var perKindAdvisoryExclusions = map[string]string{
 	"package.json": "reconciled after render by EnsureWebRuntimeDependency (published vs dev web-runtime specifier)",
 }
 
+// webTsconfigRel is the browser frontends' tsconfig, whose web-runtime peer
+// pins are reconciled after the render — by the post-install pass
+// (ReconcileFrontendTsconfigPeers) and by `forge generate`
+// (reconcileFrontendTsconfigPeers). The template names package DIRECTORIES
+// because nothing is installed when it renders; the reconcile aims each pin at
+// the layout npm produced and at the package's installed DECLARATION FILE. So a
+// plain render differs from every correctly-scaffolded tsconfig — the
+// two-renderer condition — and adopting that render would write back the very
+// directory pins that split the webpack bundle ("No QueryClient set").
+//
+// Web trees only: the React Native tsconfig carries no peer pins, has exactly
+// one renderer, and stays reported.
+const webTsconfigRel = "tsconfig.json"
+
 // perKindAdvisoryEligible reports whether a per-kind template file should
 // get an advisory row.
 //
@@ -108,6 +122,9 @@ func perKindAdvisoryEligible(tree, rel string) bool {
 	dest := strings.TrimSuffix(rel, ".tmpl")
 
 	if _, excluded := perKindAdvisoryExclusions[dest]; excluded {
+		return false
+	}
+	if dest == webTsconfigRel && FrontendTypeHasMockSurface(tree) {
 		return false
 	}
 	// Claimed by the managed lane, which tracks and refreshes it. Asked of

@@ -268,6 +268,10 @@ func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 			continue
 		}
 		base := filepath.FromSlash(dir)
+		// The Dockerfile builds at the frontend's repo path, so the
+		// comparison copy must be rendered for the directory the file
+		// actually sits in.
+		data.RepoPath = dir
 		for _, file := range files {
 			root := templateRootOf(file.Path)
 			// A shared root is forge declaring "this file is mechanism I

@@ -25,7 +25,7 @@ func writeLayoutFixture(t *testing.T, workspaceRoot bool) string {
 
 	var pins strings.Builder
 	for _, pkg := range webruntimepeers.TypePins() {
-		pins.WriteString(`      "` + pkg + `": ["` + webruntimepeers.TypePinPath(pkg, false) + `"],` + "\n")
+		pins.WriteString(`      "` + pkg + `": ["` + webruntimepeers.TypePinPath(pkg, false, "") + `"],` + "\n")
 	}
 	tsconfig := "{\n  \"compilerOptions\": {\n    \"paths\": {\n" + pins.String() +
 		"      \"@/*\": [\"./src/*\"]\n    }\n  }\n}\n"
@@ -79,7 +79,7 @@ func TestReconcileFrontendTsconfigPeers_RetargetsOnWorkspaceHoist(t *testing.T) 
 
 	paths := readPinPaths(t, root)
 	for _, pkg := range webruntimepeers.TypePins() {
-		want := webruntimepeers.TypePinPath(pkg, true)
+		want := webruntimepeers.TypePinPath(pkg, true, "")
 		got, ok := paths[pkg]
 		if !ok {
 			t.Errorf("paths lost its entry for %q", pkg)
@@ -111,7 +111,7 @@ func TestReconcileFrontendTsconfigPeers_NestedInstallWins(t *testing.T) {
 	ReconcileFrontendTsconfigPeers(root)
 
 	paths := readPinPaths(t, root)
-	want := webruntimepeers.TypePinPath("@connectrpc/connect", false)
+	want := webruntimepeers.TypePinPath("@connectrpc/connect", false, "")
 	if got := paths["@connectrpc/connect"]; len(got) != 1 || got[0] != want {
 		t.Errorf("paths[@connectrpc/connect] = %v, want exactly [%q] — a real nested install "+
 			"is the nearest copy and must not be retargeted at the root", got, want)
@@ -146,7 +146,7 @@ func TestReconcileFrontendTsconfigPeers_PartialNestedInstall(t *testing.T) {
 
 	ReconcileFrontendTsconfigPeers(root)
 
-	want := webruntimepeers.TypePinPath("@connectrpc/connect", true)
+	want := webruntimepeers.TypePinPath("@connectrpc/connect", true, "")
 	if got := readPinPaths(t, root)["@connectrpc/connect"]; len(got) != 1 || got[0] != want {
 		t.Errorf("paths[@connectrpc/connect] = %v, want exactly [%q] — the frontend's own "+
 			"node_modules exists but does NOT hold the peer, so the pin must point at the root",

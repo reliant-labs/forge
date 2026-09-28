@@ -216,6 +216,9 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		Workspaces:   opts.Workspaces,
 		Output:       output,
 		BasePath:     opts.BasePath,
+		// Where this function writes the frontend, relative to the project
+		// root — the path the Dockerfile builds at.
+		RepoPath: "frontends/" + frontendName,
 
 		// Typed frontend config, when the project declares a config message
 		// bound to THIS frontend. Gated per-field because a template cannot

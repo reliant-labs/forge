@@ -127,6 +127,27 @@ func TestGoldenSnapshots(t *testing.T) {
 				return renderProject(t, "Dockerfile.tmpl", projectData())
 			},
 		},
+		// The Next.js frontend image, once per `frontends[].output` mode:
+		// each copies a different build artifact and runs a different
+		// server, so a regression in one mode is invisible in the others.
+		{
+			name: "nextjs_Dockerfile_standalone",
+			render: func(t *testing.T) []byte {
+				return renderNextjsDockerfile(t, FrontendTemplateData{FrontendName: "web", Output: "standalone"})
+			},
+		},
+		{
+			name: "nextjs_Dockerfile_static",
+			render: func(t *testing.T) []byte {
+				return renderNextjsDockerfile(t, FrontendTemplateData{FrontendName: "web", Output: "static", BasePath: "/admin"})
+			},
+		},
+		{
+			name: "nextjs_Dockerfile_server",
+			render: func(t *testing.T) []byte {
+				return renderNextjsDockerfile(t, FrontendTemplateData{FrontendName: "web", Output: "server"})
+			},
+		},
 
 		{
 			name: "handlers_methods.go",

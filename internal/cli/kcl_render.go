@@ -481,6 +481,12 @@ type WorkloadEntity struct {
 	// into ("" = no artifact of its own). It is the build-state / release
 	// ledger key. Spec.Image is the RESOLVED reference a runtime pulls.
 	Image string
+	// BuildImage is Image plus the tag the workload's own image pins
+	// ("workspace-base:dev-per-daemon"), else Image. It is the BUILD's
+	// identity and so independent of the runtime: a BuildOnly or host
+	// workload resolves no Spec.Image, and its pin must still reach
+	// `forge build`. Read it through PinnedBuildTag.
+	BuildImage string
 	// Build is the typed build declaration. Type=="" means forge does not
 	// build this workload (a third-party image, a compose service, a
 	// sibling binary): there is no synthesized default.
@@ -914,12 +920,15 @@ type kclRenderRaw struct {
 
 // kclWorkloadRaw is one `output.workloads[]` entry before dispatch.
 type kclWorkloadRaw struct {
-	Name    string          `json:"name"`
-	Kind    string          `json:"kind"`
-	Image   string          `json:"image"`
-	Build   json.RawMessage `json:"build"`
-	Runtime json.RawMessage `json:"runtime"`
-	Spec    json.RawMessage `json:"spec"`
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
+	Image string `json:"image"`
+	// BuildImage is the build identity: Image plus the tag the workload
+	// pins, if any. Emitted for every built workload on every runtime.
+	BuildImage string          `json:"build_image"`
+	Build      json.RawMessage `json:"build"`
+	Runtime    json.RawMessage `json:"runtime"`
+	Spec       json.RawMessage `json:"spec"`
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
@@ -1161,7 +1170,7 @@ func decodeWorkload(w kclWorkloadRaw) (WorkloadEntity, error) {
 	if w.Kind != "" && w.Kind != kind {
 		return WorkloadEntity{}, fmt.Errorf("workload %q: kind %q disagrees with spec.kind %q", w.Name, w.Kind, kind)
 	}
-	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, Build: build, Runtime: rt, Spec: spec}, nil
+	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, Spec: spec}, nil
 }
 
 // manifestNamespace returns the namespace that dominates the rendered

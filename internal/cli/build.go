@@ -2612,8 +2612,8 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile str
 // The repository is the workload's artifact (`image` with any tag stripped;
 // unset, the output_name, else the workload name — kcl/render.k `_artifact`).
 // The tag is the release version for a release build (never a shared tag),
-// else the workload's own pin when its resolved spec.image carries one
-// (`image = "gw:v7"` builds gw:v7), else the build-wide resolvedTag. The
+// else the workload's own pin (`image = "gw:v7"` builds gw:v7, read off the
+// runtime-independent build identity, WorkloadEntity.BuildImage), else the build-wide resolvedTag. The
 // pin wins over the build-wide tag because it IS the deploy ref: building
 // anything else is an image no pod pulls.
 func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions) (name, tag string) {
@@ -2627,7 +2627,7 @@ func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions)
 	if rt := releaseImageTag(opts); rt != "" {
 		return name, rt
 	}
-	if pin, ok := pinnedTagOf(w.Spec.Image, name); ok {
+	if pin, ok := w.PinnedBuildTag(); ok {
 		return name, pin
 	}
 	return name, resolvedTag

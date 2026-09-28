@@ -83,6 +83,7 @@
           "tags": [],
           "type": "go"
         },
+        "build_image": "acme",
         "image": "acme",
         "kind": "service",
         "name": "api",
@@ -156,6 +157,7 @@
           "tags": [],
           "type": "go"
         },
+        "build_image": "acme",
         "image": "acme",
         "kind": "job",
         "name": "migrate",

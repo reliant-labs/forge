@@ -389,9 +389,8 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
 // shared tag for its image — both of which are exactly the shared tags a
 // failed cut must not move (reliant/workspace-base `:stable` in v1.7.0).
 func TestExternalBuildTag_ReleaseOverridesSharedTags(t *testing.T) {
-	pinned := WorkloadEntity{Name: "workspace-base", Image: "workspace-base",
-		Spec: deployv1alpha1.WorkloadSpec{Image: "workspace-base:dev-per-daemon"}}
-	envTagged := WorkloadEntity{Name: "reliant-api-server", Image: "reliant",
+	pinned := WorkloadEntity{Name: "workspace-base", Image: "workspace-base", BuildImage: "workspace-base:dev-per-daemon"}
+	envTagged := WorkloadEntity{Name: "reliant-api-server", Image: "reliant", BuildImage: "reliant",
 		Spec: deployv1alpha1.WorkloadSpec{Image: "registry.example/reliant:stable"}}
 	ents := &KCLEntities{ImageTag: "stable", Workloads: []WorkloadEntity{pinned, envTagged}}
 

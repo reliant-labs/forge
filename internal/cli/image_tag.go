@@ -60,14 +60,12 @@ func resolveImageTag(ctx context.Context, _ string) (string, error) {
 // references for that image, so `forge build <env>` defaults its build tag to
 // it — build and deploy then push/pull the SAME tag by construction.
 //
-// A workload built into that image whose resolved spec.image carries a tag
-// answers with it (a per-workload pin wins: `image = "reliant:e2e"` renders
-// spec.image `<registry>/reliant:e2e` and artifact `reliant`, so the build is
-// IMAGE=reliant TAG=e2e); otherwise the env's own resolved image_tag
-// (`output.image_tag`). A digest-pinned spec.image carries no tag and falls
-// through to the env tag — the render refuses a digest on a workload forge
-// builds, so this is only a digest `forge env deploy` pinned from a previous
-// build of the same image.
+// A workload built into that image whose own image pins a tag answers with
+// it (`image = "reliant:e2e"` is built as IMAGE=reliant TAG=e2e); otherwise
+// the env's own resolved image_tag (`output.image_tag`). The pin is read off
+// the workload's BUILD identity (WorkloadEntity.BuildImage), never off
+// spec.image: the build is the same whichever runtime the workload binds, and
+// a BuildOnly or host workload resolves no spec.image at all.
 //
 // Returns "" when entities is nil (no --env / KCL render failed) or the name
 // is empty — every such case falls the caller back to git-derived tagging.
@@ -79,11 +77,21 @@ func envImageTagFor(entities *KCLEntities, image string) string {
 		if w.Image != image {
 			continue
 		}
-		if tag, ok := pinnedTagOf(w.Spec.Image, image); ok {
+		if tag, ok := w.PinnedBuildTag(); ok {
 			return tag
 		}
 	}
 	return entities.ImageTag
+}
+
+// PinnedBuildTag is the tag the workload's own image pins for its build
+// ("workspace-base:dev-per-daemon" answers dev-per-daemon). ok=false when it
+// pins none (the env tag applies) or forge builds nothing for it.
+func (w WorkloadEntity) PinnedBuildTag() (string, bool) {
+	if w.Image == "" {
+		return "", false
+	}
+	return pinnedTagOf(w.BuildImage, w.Image)
 }
 
 // pinnedTagOf is the tag of a resolved ref when that ref names the artifact

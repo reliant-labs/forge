@@ -22,6 +22,7 @@
     "workloads": [
       {
         "build": null,
+        "build_image": null,
         "image": "",
         "kind": "service",
         "name": "postgres",
@@ -54,6 +55,7 @@
       },
       {
         "build": null,
+        "build_image": null,
         "image": "",
         "kind": "service",
         "name": "nats",

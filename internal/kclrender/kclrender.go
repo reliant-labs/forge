@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	kcl "kcl-lang.io/kcl-go"
 	"kcl-lang.io/kpm/pkg/client"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -229,13 +230,18 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kpm client: %w", err)
 	}
-	res, err := c.Run(
-		client.WithRunSourceUrl(source),
-		client.WithWorkDir(workDir),
-		client.WithArguments(withKubeconfigDArg(withDevStackDArgs(dArgs))),
-		client.WithExternalPkgs([]string{forgeArg}),
-		client.WithLogger(os.Stderr),
-	)
+	// Serialized: concurrent evaluations in one process corrupt each other's
+	// refusals (a refused render can come back as success, or carrying
+	// another render's message). See kclplugin.Serialized.
+	res, err := kclplugin.Serialized(func() (*kcl.KCLResultList, error) {
+		return c.Run(
+			client.WithRunSourceUrl(source),
+			client.WithWorkDir(workDir),
+			client.WithArguments(withKubeconfigDArg(withDevStackDArgs(dArgs))),
+			client.WithExternalPkgs([]string{forgeArg}),
+			client.WithLogger(os.Stderr),
+		)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("kpm run %s: %w", source, err)
 	}

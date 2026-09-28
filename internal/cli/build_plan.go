@@ -88,7 +88,9 @@ type planInputs struct {
 	targets     buildTargetSet
 	opts        buildOptions
 	resolvedTag string
-	projectDir  string
+	// projectTag is the project image's tag (buildTagFor over its pin).
+	projectTag string
+	projectDir string
 	// goPackageName answers `go list -f {{.Name}} <pkg>` for a go-build
 	// target: the package's name, or an error when it does not load. A
 	// seam so tests do not shell out to the go toolchain.
@@ -98,13 +100,14 @@ type planInputs struct {
 // runBuildPlan is `forge build --plan`: print the resolved build and fail on
 // anything the real build would fail on. Called from runBuild once the target
 // set is resolved and before anything is written.
-func runBuildPlan(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, targets buildTargetSet, opts buildOptions, resolvedTag string) error {
+func runBuildPlan(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, targets buildTargetSet, opts buildOptions, resolvedTag, projectTag string) error {
 	report := planBuild(ctx, planInputs{
 		cfg:           cfg,
 		entities:      entities,
 		targets:       targets,
 		opts:          opts,
 		resolvedTag:   resolvedTag,
+		projectTag:    projectTag,
 		projectDir:    projectDirForKCL(),
 		goPackageName: goListPackageName,
 	})
@@ -153,7 +156,7 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 	if opts.buildDocker {
 		registry := opts.envRegistry
 		if len(in.targets.goTargets) > 0 && !in.targets.skipProjectDocker {
-			tags := imageTagSet(registry, in.cfg.Name, opts.pushRegistry, in.resolvedTag, releaseScoped)
+			tags := imageTagSet(registry, in.cfg.Name, opts.pushRegistry, in.projectTag, releaseScoped)
 			// A missing root Dockerfile is a SKIP in the real build
 			// (dockerBuildProject), not a failure — the completeness gate
 			// below is what refuses a release that lacks the image.
@@ -315,7 +318,7 @@ func planExternalBuilds(in planInputs) []buildPlanStep {
 	}
 	var out []buildPlanStep
 	for _, svc := range svcs {
-		tag := externalBuildTag(svc, in.entities, in.resolvedTag, in.opts)
+		tag := externalBuildTag(svc, in.resolvedTag, in.opts)
 		spec := buildtarget.Spec{
 			Service:    svc.Name,
 			Image:      svc.Image,

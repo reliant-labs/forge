@@ -74,7 +74,7 @@ func TestPinnedImageBuildPushesTheRenderedRef(t *testing.T) {
 	// the build-wide tag, and read back the ref each command was handed.
 	projDir := t.TempDir()
 	results := buildExternalServices(context.Background(), externalBuildServices(ents),
-		buildOptions{env: "dev"}, "localhost:5051", "abc1234-dirty", projDir, "amd64", ents)
+		buildOptions{env: "dev"}, "localhost:5051", "abc1234-dirty", projDir, "amd64")
 	for _, r := range results {
 		if r.err != nil {
 			t.Fatalf("external build %s: %v", r.name, r.err)

@@ -290,7 +290,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
 	cmd.Flags().BoolVar(&opts.push, "push", false, "Push docker images after build (implies --docker) to the registry the env's KCL declares (forge.ClusterTarget.registry, or forge.ControlPlane.registry for a hosted env, in deploy/kcl/<env>/main.k). Requires the environment argument; takes no value")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
-	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge env deploy uses the same value.")
+	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
 	// as the flag's argument-name placeholder, so a quoted command rendered
 	// as `--no-generate forge build` in --help.
@@ -425,6 +425,11 @@ type buildResult struct {
 	// Set by the frontend docker path; the project image derives its own name
 	// from cfg.Name.
 	image string
+	// tag is the tag this result's image was BUILT and pushed as — the one
+	// its build state records. Carried on the result rather than recomputed
+	// by the state writer, so the two cannot disagree. Empty for non-image
+	// results.
+	tag string
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -460,20 +465,44 @@ func prepareBuild(opts buildOptions) (*config.ProjectConfig, error) {
 	return store.Config(), nil
 }
 
-// resolveBuildImageTag picks the one image tag this build writes, and says
-// where it came from. The priority is documented at the call site in runBuild.
-func resolveBuildImageTag(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions) (tag, source string, err error) {
+// resolveProjectImageTag is the project image's tag (buildTagFor over its
+// pin), after refusing an explicit --tag that contradicts the pin of any
+// workload this build — narrowed by --target — actually produces.
+func resolveProjectImageTag(cfg *config.ProjectConfig, entities *KCLEntities, targets buildTargetSet, opts buildOptions, resolvedTag string) (string, error) {
+	projectImageBuilt := opts.buildDocker && len(targets.goTargets) > 0 && !targets.skipProjectDocker
+	if err := checkExplicitTagAgainstPins(entities, opts, cfg.Name, projectImageBuilt); err != nil {
+		return "", err
+	}
+	projectTag := buildTagFor(opts, imagePinFor(entities, cfg.Name), resolvedTag)
+	if projectImageBuilt && projectTag != resolvedTag {
+		fmt.Printf("[build]   %s image tag: %s (pinned by its declared image)\n", cfg.Name, projectTag)
+	}
+	return projectTag, nil
+}
+
+// resolveBuildImageTag picks the BUILD-WIDE image tag — the tag every image
+// this build writes carries unless its own workload pins one (buildTagFor) —
+// and says where it came from. The priority is documented at the call site
+// in runBuild.
+//
+// It is deliberately not any one image's tag: the project image's pin used to
+// be folded in here, so every other lane inherited a tag that was never
+// theirs.
+func resolveBuildImageTag(ctx context.Context, entities *KCLEntities, opts buildOptions) (tag, source string, err error) {
 	if rt := releaseImageTag(opts); rt != "" {
 		// A release pushes ONLY its own version tag — never the env's
 		// shared tag (see releaseImageTag). validateReleaseFlags already
 		// refused a conflicting --tag.
 		return rt, "release version (release-scoped; no shared tag is moved)", nil
 	}
-	if opts.tag != "" || !opts.buildDocker {
+	if opts.tag != "" {
 		return opts.tag, "explicit --tag flag", nil
 	}
-	if envTag := envImageTagFor(entities, cfg.Name); envTag != "" {
-		return envTag, fmt.Sprintf("env %q image_tag (deploy ref)", opts.env), nil
+	if entities != nil && entities.ImageTag != "" {
+		return entities.ImageTag, fmt.Sprintf("env %q image_tag (deploy ref)", opts.env), nil
+	}
+	if !opts.buildDocker {
+		return "", "", nil
 	}
 	// Only resolve from git when we'll actually use a tag — avoids
 	// surfacing "not a git repo" errors on a plain `forge build`
@@ -513,18 +542,21 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// equals the tag that lands in .forge/state/build-<env>.json and the
 	// tag that subsequent `forge env deploy` reads back. Override priority:
 	//
-	//  1. --tag flag (explicit; always wins).
-	//  2. With --env: the env's RESOLVED image_tag for the PROJECT image
-	//     (cfg.Name), read off the rendered manifests. This is the exact
-	//     tag `forge env deploy <env>` references — so `forge build --env
-	//     <env> --push` then `forge env deploy <env>` push and deploy the
-	//     SAME tag by construction, instead of build tagging from
-	//     git-describe while the manifests bake the env literal (e.g.
-	//     "staging") → ImagePullBackOff.
-	//  3. git-describe (resolveImageTag) — the standalone fallback when
-	//     no --env, or the env render carries no tag for the project
-	//     image.
-	resolvedTag, tagSource, err := resolveBuildImageTag(ctx, cfg, entities, opts)
+	//  1. --release: the release version, and nothing else.
+	//  2. --tag flag (explicit).
+	//  3. With --env: the env's RESOLVED image_tag, read off the rendered
+	//     manifests. This is the exact tag `forge env deploy <env>`
+	//     references — so `forge build --env <env> --push` then `forge env
+	//     deploy <env>` push and deploy the SAME tag by construction, instead
+	//     of build tagging from git-describe while the manifests bake the env
+	//     literal (e.g. "staging") → ImagePullBackOff.
+	//  4. git-describe (resolveImageTag) — the standalone fallback when
+	//     no --env, or the env render carries no image_tag.
+	//
+	// That is the BUILD-WIDE tag. A workload whose image pins a tag builds
+	// that pin in place of (3)/(4) — buildTagFor is the one precedence every
+	// lane applies — and a --tag that contradicts a pin is refused below.
+	resolvedTag, tagSource, err := resolveBuildImageTag(ctx, entities, opts)
 	if err != nil {
 		return err
 	}
@@ -546,7 +578,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if opts.env != "" {
 		fmt.Printf("[build]   Env:      %s\n", opts.env)
 	}
-	if opts.buildDocker {
+	if opts.buildDocker && resolvedTag != "" {
 		fmt.Printf("[build]   Tag:      %s (%s)\n", resolvedTag, tagSource)
 	}
 	push.printHeader()
@@ -569,11 +601,19 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 
+	// An explicit --tag over a pinned workload this build produces would
+	// push a ref nothing deploys. Refused here — after --target narrowing,
+	// before anything is built — so a plan refuses it too.
+	projectTag, err := resolveProjectImageTag(cfg, entities, targets, opts, resolvedTag)
+	if err != nil {
+		return err
+	}
+
 	// --plan stops HERE: the build set is fully resolved by the same
 	// discovery every real build runs, and nothing has been written, built
 	// or pushed. See runBuildPlan.
 	if opts.plan {
-		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag)
+		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
 
 	// Create output directory
@@ -634,6 +674,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		skipProjectDocker: skipProjectDocker,
 		cfgArchForDocker:  cfgArchForDocker,
 		resolvedTag:       resolvedTag,
+		projectTag:        projectTag,
 		resolvedVersion:   resolvedVersion,
 		opts:              opts,
 		memCaps:           memCaps,
@@ -697,17 +738,19 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// it is not what makes the handoff worth recording. Skipped only when
 	// no docker image was built (host-only env / no --docker / no
 	// Dockerfile) or the docker build failed.
-	if opts.buildDocker && resolvedTag != "" && !skipProjectDocker {
-		persistProjectBuildState(ctx, cfg, opts, resolvedTag, succeeded)
+	//
+	// Each state records the tag its result was BUILT as (buildResult.tag),
+	// never a tag recomputed here — so the recorded tag cannot drift from
+	// the pushed ref or the digest captured for it.
+	if opts.buildDocker && !skipProjectDocker {
+		persistProjectBuildState(ctx, cfg, opts, succeeded)
 	}
 
-	// The same handoff for every non-project image (cluster-deployed
-	// frontends). Deliberately NOT gated on skipProjectDocker: a
+	// The same handoff for every non-project image (frontends and
+	// DockerBuild workloads). Deliberately NOT gated on skipProjectDocker: a
 	// `--target <frontend>` build skips the project image by design, and
 	// that is exactly the case where the frontend's own state was missing.
-	if opts.buildDocker && resolvedTag != "" {
-		persistImageBuildStates(opts, resolvedTag, succeeded)
-	}
+	persistImageBuildStates(opts, succeeded)
 
 	// Print summary
 	fmt.Println()
@@ -1127,7 +1170,7 @@ func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg
 	}
 	externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
 	projDir := projectDirForKCL()
-	return buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities), nil
+	return buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch), nil
 }
 
 // persistProjectBuildState records the build→deploy tag handoff for a
@@ -1135,25 +1178,26 @@ func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg
 // project image, and on a hit writes .forge/state/build-<env>.json. Failure to
 // write is non-fatal (warned): the build already succeeded and deploy can fall
 // back to git provenance.
-func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions, resolvedTag string, succeeded []buildResult) {
+func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions, succeeded []buildResult) {
 	projectDockerSucceeded := false
-	var projectDigest string
+	var projectDigest, projectTag string
 	var projectPlatforms []string
 	for _, r := range succeeded {
 		if r.kind == "docker" && r.name == cfg.Name+" (docker)" {
 			projectDockerSucceeded = true
 			projectDigest = r.digest
 			projectPlatforms = r.platforms
+			projectTag = r.tag
 			break
 		}
 	}
-	if !projectDockerSucceeded {
+	if !projectDockerSucceeded || projectTag == "" {
 		return
 	}
 	commit, gitTag, dirty := gitBuildProvenance(ctx)
 	state := BuildState{
 		Image:     cfg.Name,
-		Tag:       resolvedTag,
+		Tag:       projectTag,
 		Registry:  opts.pushRegistry,
 		Pushed:    opts.pushRegistry != "",
 		Commit:    commit,
@@ -1192,19 +1236,19 @@ func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, op
 //
 // Failure to write is non-fatal (warned): the build already succeeded, and the
 // worst case is the tag-fallback deploy path that existed before.
-func persistImageBuildStates(opts buildOptions, resolvedTag string, succeeded []buildResult) {
+func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 	projDir := projectDirForKCL()
 	for _, r := range succeeded {
 		// Only docker results carry an image name, and only a pushed one has a
 		// registry-addressable digest worth recording. A build with no digest
 		// still records the tag handoff, which non-registry transports need.
-		if r.kind != "docker" || r.image == "" {
+		if r.kind != "docker" || r.image == "" || r.tag == "" {
 			continue
 		}
 		state := buildtarget.State{
 			Service:   r.image,
 			Image:     r.image,
-			Tag:       resolvedTag,
+			Tag:       r.tag,
 			Registry:  opts.pushRegistry,
 			PushedAt:  nowRFC3339(),
 			Digest:    r.digest,
@@ -1337,8 +1381,11 @@ type buildPlan struct {
 	skipProjectDocker bool
 	cfgArchForDocker  string
 	resolvedTag       string
-	resolvedVersion   versionInfo
-	opts              buildOptions
+	// projectTag is the project image's tag: resolvedTag unless the project
+	// image is pinned (buildTagFor).
+	projectTag      string
+	resolvedVersion versionInfo
+	opts            buildOptions
 	// memCaps are the child-compiler memory caps to apply under a
 	// constrained memory budget (empty => apply nothing). Threaded into
 	// buildGoTarget (GOMEMLIMIT/GOMAXPROCS) and buildFrontend (NODE_OPTIONS).
@@ -1426,7 +1473,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, resolvedTag), projectImageArch, resolvedVersion, guard)
+				r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -1488,7 +1535,7 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			// Image platform == the arch the project binaries were built for.
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
-			r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, resolvedTag), projectImageArch, resolvedVersion, guard)
+			r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -1988,6 +2035,7 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 		kind:      "docker",
 		duration:  time.Since(start),
 		err:       nil,
+		tag:       tags.tag,
 		digest:    digest,
 		platforms: platforms,
 	}
@@ -1999,6 +2047,9 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 type dockerImageTags struct {
 	local []string
 	push  []string
+	// tag is the version tag the set carries (the non-`latest` one): the tag
+	// the image's build state records.
+	tag string
 }
 
 // imageTagSet computes the tags one forge-built image gets, for all three
@@ -2017,7 +2068,7 @@ type dockerImageTags struct {
 // fails after its first push leaves every shared tag exactly where it was.
 // See releaseImageTag for the incident this closes.
 func imageTagSet(registry, image, pushRegistry, resolvedTag string, releaseScoped bool) dockerImageTags {
-	var out dockerImageTags
+	out := dockerImageTags{tag: resolvedTag}
 	seen := map[string]bool{}
 	add := func(reg string, pushed bool) {
 		repo := image
@@ -2182,6 +2233,7 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 		duration:  time.Since(start),
 		err:       nil,
 		image:     name,
+		tag:       tags.tag,
 		digest:    digest,
 		platforms: platforms,
 	}
@@ -2599,11 +2651,12 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile str
 //
 // The repository is the workload's artifact (`image` with any tag stripped;
 // unset, the output_name, else the workload name — kcl/render.k `_artifact`).
-// The tag is the release version for a release build (never a shared tag),
-// else the workload's own pin (`image = "gw:v7"` builds gw:v7, read off the
-// runtime-independent build identity, WorkloadEntity.BuildImage), else the build-wide resolvedTag. The
-// pin wins over the build-wide tag because it IS the deploy ref: building
-// anything else is an image no pod pulls.
+// The tag is the shared precedence (buildTagFor): the release version, else
+// an explicit --tag, else the workload's own pin (`image = "gw:v7"` builds
+// gw:v7, read off the runtime-independent build identity,
+// WorkloadEntity.BuildImage), else the build-wide resolvedTag. The pin wins
+// over the build-wide tag because it IS the deploy ref; a --tag that
+// contradicts it is refused up front (checkExplicitTagAgainstPins).
 func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions) (name, tag string) {
 	name = w.Image
 	if name == "" {
@@ -2612,13 +2665,8 @@ func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions)
 			name = d.OutputName
 		}
 	}
-	if rt := releaseImageTag(opts); rt != "" {
-		return name, rt
-	}
-	if pin, ok := w.PinnedBuildTag(); ok {
-		return name, pin
-	}
-	return name, resolvedTag
+	pin, _ := w.PinnedBuildTag()
+	return name, buildTagFor(opts, pin, resolvedTag)
 }
 
 // buildServiceDocker runs `docker build` for a DockerBuild service. It
@@ -2635,6 +2683,8 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 
 	if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
+		// No image was built, so the result carries no image: nothing is
+		// recorded for a build that did not happen.
 		fmt.Printf("[build] %s: skipping docker (no %s)\n", svcName, dockerfile)
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
 	}
@@ -2657,5 +2707,23 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 			return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: fmt.Errorf("docker push %s: %w", t, err)}
 		}
 	}
-	return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
+
+	// Capture the pushed digest, exactly as the project and frontend images
+	// do, and carry the image + tag so persistImageBuildStates records this
+	// build. Without it a DockerBuild recorded nothing: deploy could not pin
+	// it and a release cut refused the env as incomplete.
+	digest, platforms := "", []string(nil)
+	if len(pushTags) > 0 {
+		ref := pushTags[len(pushTags)-1]
+		if dg, p, derr := imageRepoDigest(ctx, ref); derr == nil {
+			digest, platforms = dg, p
+			fmt.Printf("[build] %s: pushed digest %s\n", svcName, digest)
+		} else {
+			fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", ref, derr)
+		}
+	}
+	return buildResult{
+		name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
+		image: imageName, tag: resolvedTag, digest: digest, platforms: platforms,
+	}
 }

@@ -214,7 +214,6 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 		"v1.2.3",         // tag
 		projDir,
 		"amd64",
-		nil, // no rendered entities → env-wide tag applies
 	)
 	if len(results) != 1 {
 		t.Fatalf("results: got %d, want 1", len(results))
@@ -260,9 +259,7 @@ func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 		"localhost:5051",
 		"v1",
 		projDir,
-		"amd64",
-		nil,
-	)
+		"amd64")
 	if len(results) != 1 {
 		t.Fatalf("results: got %d, want 1", len(results))
 	}
@@ -311,7 +308,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 		return priorDigest, []string{"linux/amd64"}, nil
 	}
 	if r := buildExternalServices(context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "prod", projDir, "amd64", nil); len(r) != 1 || r[0].err != nil {
+		"ghcr.io/reliant-labs", "prod", projDir, "amd64"); len(r) != 1 || r[0].err != nil {
 		t.Fatalf("first build: %+v", r)
 	}
 	if dst, err := ReadBuildState(projDir, "prod"); err != nil || dst == nil || dst.Digest != priorDigest {
@@ -324,7 +321,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 		return "", nil, fmt.Errorf("not in registry: %s", ref)
 	}
 	if r := buildExternalServices(context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "prod", projDir, "amd64", nil); len(r) != 1 || r[0].err != nil {
+		"ghcr.io/reliant-labs", "prod", projDir, "amd64"); len(r) != 1 || r[0].err != nil {
 		t.Fatalf("second build: %+v", r)
 	}
 
@@ -438,8 +435,7 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 	opts := buildOptions{env: "staging", parallel: false}
 	results := buildExternalServices(
 		context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "staging", projDir, "amd64", nil,
-	)
+		"ghcr.io/reliant-labs", "staging", projDir, "amd64")
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -514,7 +510,7 @@ func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
 	opts := buildOptions{env: "e2e", parallel: false}
 	results := buildExternalServices(
 		context.Background(), services, opts,
-		"", "e2e", projDir, "amd64", nil, // empty registry → local ref
+		"", "e2e", projDir, "amd64", // empty registry → local ref
 	)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("build must still succeed on a digest miss: %+v", results)

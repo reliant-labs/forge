@@ -127,7 +127,7 @@ func externalBuildServices(e *KCLEntities) []WorkloadEntity {
 // single source of truth a subsequent `forge env deploy <env>` reads to
 // pin the image tag — eliminating the build/deploy tag divergence
 // the External (deploy) provider already closes for the deploy side.
-func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts buildOptions, registry, tag, projectDir, targetArch string, entities *KCLEntities) []buildResult {
+func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts buildOptions, registry, tag, projectDir, targetArch string) []buildResult {
 	if len(services) == 0 {
 		return nil
 	}
@@ -137,7 +137,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 	dispatch := func(svc WorkloadEntity) {
 		// Per-service tag — see externalBuildTag for the precedence and for
 		// why a release build overrides it with the release version.
-		svcTag := externalBuildTag(svc, entities, tag, opts)
+		svcTag := externalBuildTag(svc, tag, opts)
 		spec := buildtarget.Spec{
 			Service:    svc.Name,
 			Image:      svc.Image,
@@ -284,27 +284,18 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 	return results
 }
 
-// externalBuildTag is the ${TAG} one ShellBuild service is handed.
+// externalBuildTag is the ${TAG} one ShellBuild service is handed: the
+// shared precedence (buildTagFor) over the workload's own pin and the
+// build-wide tag.
 //
-// Ordinarily: the env's resolved tag for the workload's image (its own pin
-// when its resolved spec.image carries one, else the env's image_tag), else
-// the build-wide tag — so the external build pushes exactly the tag the env's
-// deploy pulls.
-//
-// A `--release` build overrides all three with the release version. The
-// user's build_cmd owns its own push, so ${TAG} IS the tag it writes to the
-// registry, and every one of the three ordinary answers is a SHARED tag
-// (prod's `stable`, e2e's `e2e`, a pinned `dev-per-daemon`): handing one of
-// them to a cut moves it the moment that one image finishes, whether or not
-// the cut ever records a release. See releaseImageTag.
-func externalBuildTag(svc WorkloadEntity, entities *KCLEntities, buildTag string, opts buildOptions) string {
-	if rt := releaseImageTag(opts); rt != "" {
-		return rt
-	}
-	if envTag := envImageTagFor(entities, svc.Image); envTag != "" {
-		return envTag
-	}
-	return buildTag
+// The user's build_cmd owns its own push, so ${TAG} IS the tag it writes to
+// the registry and the one its state records. That is why a release version
+// beats even the pin: every ordinary answer is a SHARED tag (prod's
+// `stable`, e2e's `e2e`, a pinned `dev-per-daemon`), and handing one to a cut
+// moves it the moment that one image finishes. See releaseImageTag.
+func externalBuildTag(svc WorkloadEntity, buildTag string, opts buildOptions) string {
+	pin, _ := svc.PinnedBuildTag()
+	return buildTagFor(opts, pin, buildTag)
 }
 
 // externalPushedRef reconstructs the image ref the external build_cmd was

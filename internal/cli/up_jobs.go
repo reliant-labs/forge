@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -27,7 +28,8 @@ import (
 // k8s feature with a compose shim. The declaration is identical across
 // the three; only the enforcement mechanism differs.
 
-// defaultJobTimeout bounds the wait for a host one-shot.
+// defaultJobTimeout bounds the wait for a host one-shot that declares no
+// spec.activeDeadlineSeconds (see jobDeadline).
 //
 // A one-shot that never exits is indistinguishable, from the outside,
 // from one that is merely slow — and the failure mode of guessing wrong
@@ -335,6 +337,17 @@ func hostJobs(e *KCLEntities) []WorkloadEntity {
 	return out
 }
 
+// jobDeadline is how long a host job may run: its declared
+// spec.activeDeadlineSeconds — the same bound Kubernetes enforces on the
+// cluster Job, so the job fails the same way on every runtime — else the
+// host runner's safety ceiling, defaultJobTimeout. declared reports which.
+func jobDeadline(j WorkloadEntity) (d time.Duration, declared bool) {
+	if s := j.Spec.ActiveDeadlineSeconds; s != nil && *s > 0 {
+		return time.Duration(*s) * time.Second, true
+	}
+	return defaultJobTimeout, false
+}
+
 // runOneHostJob runs a single one-shot to completion and reports whether
 // it exited 0. Its argv is derived exactly as a host service's is
 // (hostlaunch.BuildCmd: `go run <build.cmd> db migrate up` for a job whose
@@ -343,7 +356,7 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	if len(j.Spec.Command) == 0 && len(j.Spec.Args) == 0 {
 		return fmt.Errorf("job %s: no command or args declared — a one-shot with nothing to run has nothing to run to completion", j.Name)
 	}
-	timeout := defaultJobTimeout
+	timeout, declared := jobDeadline(j)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -354,6 +367,20 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	if cmd.Dir == "" {
 		cmd.Dir = projectDirForKCL()
 	}
+	// On expiry, kill the job's WHOLE process tree. exec.CommandContext's
+	// default kills only the direct child, and under `go run` that is the go
+	// tool: the compiled program is its child and would be left running —
+	// a deadline in name only, still holding whatever it was holding.
+	startInOwnProcessGroup(cmd)
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			killProcessTree(cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	// Bound the wait for the output pipes once the tree is dead, so a
+	// straggler holding stdout cannot turn a fired deadline back into a hang.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -408,11 +435,18 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	case err == nil:
 		fmt.Printf("[up] job %s: completed in %s\n", j.Name, elapsed)
 		return nil
+	case errors.Is(runCtx.Err(), context.DeadlineExceeded) && declared:
+		return fmt.Errorf(
+			"job %s exceeded its activeDeadlineSeconds (%s) and was killed\n"+
+				"  it gates: %s — none of them were started\n"+
+				"  the job's own spec.activeDeadlineSeconds bounds every runtime (a Kubernetes Job fails the same way); raise it if the job legitimately needs longer",
+			j.Name, timeout, gated)
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		return fmt.Errorf(
 			"job %s did not finish within %s and was killed\n"+
 				"  it gates: %s\n"+
-				"  a one-shot must RUN TO COMPLETION; a host job that needs longer than this is doing a deploy's work in a dev loop",
+				"  a one-shot must RUN TO COMPLETION; a host job that needs longer than this is doing a deploy's work in a dev loop\n"+
+				"  (declare spec.activeDeadlineSeconds on the job to set its bound explicitly)",
 			j.Name, timeout, gated)
 	default:
 		return fmt.Errorf(

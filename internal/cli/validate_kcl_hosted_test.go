@@ -11,25 +11,26 @@ import (
 )
 
 // hostedValidateBundle is hounders' prod shape (deploy/kcl/prod/main.k at
-// houndersclub PR #1): a SimpleBackend this project builds, a StaticSite and
-// a ManagedDatabase, all through a control plane, with cross-workload
-// references in both directions and a managed secret. `api` is spliced in so
-// a test can break exactly one thing.
+// houndersclub PR #1) on the workload model: a workload this project builds,
+// a StaticSite and a ManagedDatabase, all hosted, with cross-workload
+// references in both directions and a managed secret. `api` is the
+// fw.Workload's body, spliced in so a test can break exactly one thing.
 func hostedValidateBundle(api string) string {
 	return `    project = "hounders"
     env = "prod"
     control_plane = forge.ControlPlane { endpoint = "http://127.0.0.1:8090" }
     secret_provider = forge.HostedSecrets {}
-    services = [forge.RenderedWorkload {
+    runtime = forge.OnHosted {}
+    workloads = [fw.Workload {
         name = "api"
         image = "hounders"
-        build = forge.build_of({type = "go", cmd = "./cmd/hounders", output_name = "hounders"})
-        deploy = forge.SimpleBackend {
-            spec = ` + api + `
-        }
+        build = forge.GoBuild {cmd = "./cmd/hounders", output_name = "hounders"}
+        args = ["api"]
+` + api + `
     }]
     databases = [forge.ManagedDatabase {
         name = "hounders"
+        runtime = forge.OnHosted {}
         spec = tiers.ManagedDatabase {storageGiB = 1}
     }]
     frontends = [forge.Frontend {
@@ -43,18 +44,13 @@ func hostedValidateBundle(api string) string {
     }]`
 }
 
-const hostedValidateAPI = `tiers.SimpleBackend {
-                image = "hounders"
-                ports = [8080]
-                network = "public"
-                healthCheck = tiers.HealthCheck {port = 8080, path = "/healthz", initialDelaySeconds = 10}
-                env = [
-                    tiers.EnvVar {name = "AUTO_MIGRATE", value = "true"}
-                    tiers.EnvVar {name = "CORS_ORIGINS", workloadURL = forge.WorkloadURL {workload = "web"}}
-                    tiers.EnvVar {name = "DATABASE_URL", databaseRef = tiers.DatabaseRef {name = "hounders"}}
-                    tiers.EnvVar {name = "STRIPE_SECRET_KEY", managedSecret = "STRIPE_SECRET_KEY"}
-                ]
-            }`
+const hostedValidateAPI = `        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+        env = {
+            AUTO_MIGRATE = "true"
+            CORS_ORIGINS = forge.WorkloadURL {workload = "web"}
+            DATABASE_URL = forge.DatabaseRef {name = "hounders"}
+            STRIPE_SECRET_KEY = forge.ManagedSecret {name = "STRIPE_SECRET_KEY"}
+        }`
 
 // TestValidateKCL_HostedEnvIsJudgedByItsDeployPath is the houndersclub
 // Deployability failure: `forge ci validate-kcl` reported
@@ -74,7 +70,7 @@ func TestValidateKCL_HostedEnvIsJudgedByItsDeployPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate-kcl refused a hosted env the deploy path admits: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "1 hosted env(s), 3 tier workload(s) the control plane would admit") {
+	if !strings.Contains(out, "1 env(s) with hosted workloads, 3 hosted item(s) the control plane would admit") {
 		t.Errorf("validate-kcl passed without saying what it validated for the hosted env:\n%s", out)
 	}
 }
@@ -93,35 +89,23 @@ func TestValidateKCL_BrokenHostedEnvIsStillCaught(t *testing.T) {
 		{
 			// Off the hosted shape band: planHosted's CheckShapeBand.
 			name: "off-band resources",
-			api: `tiers.SimpleBackend {
-                image = "hounders"
-                ports = [8080]
-                network = "public"
-                resources = tiers.Resources {cpuRequestMillicores = 250, memoryRequestBytes = 134217728}
-            }`,
+			api: `        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+        resources = fw.Resources {cpuRequestMillicores = 250, memoryRequestBytes = 134217728}`,
 			want: "shape band",
 		},
 		{
 			// A databaseRef nothing publishes: the pod would never start.
 			name: "dangling databaseRef",
-			api: `tiers.SimpleBackend {
-                image = "hounders"
-                ports = [8080]
-                network = "public"
-                env = [tiers.EnvVar {name = "DATABASE_URL", databaseRef = tiers.DatabaseRef {name = "orders"}}]
-            }`,
+			api: `        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+        env = {DATABASE_URL = forge.DatabaseRef {name = "orders"}}`,
 			want: `databaseRef "orders"`,
 		},
 		{
-			// The site's API_URL names a private backend: the control
-			// plane's resolver refuses it permanently.
-			name: "workloadURL to a private backend",
-			api: `tiers.SimpleBackend {
-                image = "hounders"
-                ports = [8080]
-                network = "private"
-            }`,
-			want: "only a public backend has a URL",
+			// The site's API_URL names a workload with no exposed port: the
+			// control plane's resolver refuses it permanently.
+			name: "workloadURL to an unexposed workload",
+			api: `        ports = [fw.Port {name = "http", port = 8080}]`,
+			want: "only a workload with an exposed port has a URL",
 		},
 	}
 	for _, tc := range cases {
@@ -143,61 +127,52 @@ func TestValidateKCL_BrokenHostedEnvIsStillCaught(t *testing.T) {
 }
 
 // TestValidateKCL_HostedEnvRenderingManifestsFails: a hosted deploy applies
-// NOTHING, so a k8s object in a hosted env's `manifests` is one no deploy
-// will ever create — the silent-drop shape CheckDeployManifests exists for.
+// NOTHING to a cluster of forge's own, so a raw k8s object in an all-hosted
+// env's output.manifests is one no deploy will ever create — the silent-drop
+// shape CheckDeployManifests exists for.
 func TestValidateKCL_HostedEnvRenderingManifestsFails(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
 	}
-	dir := workloadURLProject(t, "prod", hostedValidateBundle(hostedValidateAPI))
-	rewriteFile(t, filepath.Join(dir, "deploy", "kcl", "prod", "main.k"), func(body string) string {
-		i := strings.Index(body, "manifests = ")
-		if i < 0 {
-			t.Fatal("fixture main.k has no manifests root")
-		}
-		return body[:i] + "manifests = [{apiVersion = \"v1\", kind = \"ConfigMap\", metadata = {name = \"stray\"}}]\n"
-	})
+	dir := workloadURLProject(t, "prod", hostedValidateBundle(hostedValidateAPI)+
+		"\n    additional_manifests = [{apiVersion = \"v1\", kind = \"ConfigMap\", metadata = {name = \"stray\"}}]")
 	t.Chdir(dir)
 	res := doctor.CheckDeployManifests(context.Background(), &doctor.Environment{ProjectDir: dir, DeployShaper: deployShapeOf})
-	if res.Status != doctor.StatusFail || !strings.Contains(res.Evidence, "a hosted deploy applies none of them") {
+	if res.Status != doctor.StatusFail || !strings.Contains(res.Evidence, "stray") {
 		t.Fatalf("status = %s, evidence:\n%s\nwant a failure naming the object no hosted deploy applies", res.Status, res.Evidence)
 	}
 }
 
 // TestDoctorDeploy_HostedEnvContentChecksReadThePlatformObjects: the content
-// checks judge a hosted env by what the control plane RUNS (pkg/deploy
-// .Render of each tier), never by its empty stream — so a hosted backend
-// with no healthCheck fails Deploy Probes, and one with a /healthz check
-// for both probes (hounders' deliberate choice: a DB-backed readiness probe
-// as liveness would restart every replica on a DB blip) passes.
+// checks judge a hosted env by what the control plane RUNS
+// (pkg/deploy.RenderWorkloads(Restricted) of each hosted workload), never by
+// its empty stream.
+//
+// The Hounders defect was a hosted `api` that shipped with NO probes: the
+// hosted path had no default. ADR 0002 §5 puts the default in one place, so a
+// forge-built hosted service that declares nothing is probed (HTTP
+// /readyz + /healthz), and so is a declared one — both pass Deploy Probes.
 func TestDoctorDeploy_HostedEnvContentChecksReadThePlatformObjects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
 	}
-	unprobed := strings.Replace(hostedValidateAPI,
-		`healthCheck = tiers.HealthCheck {port = 8080, path = "/healthz", initialDelaySeconds = 10}`, "", 1)
-	for _, tc := range []struct {
-		name, api string
-		want      doctor.Status
-	}{
-		{"healthz for both probes passes", hostedValidateAPI, doctor.StatusPass},
-		{"no healthCheck fails", unprobed, doctor.StatusFail},
+	declared := hostedValidateAPI + `
+        probes = fw.Probes {readinessPath = "/healthz", livenessPath = "/healthz"}`
+	for _, tc := range []struct{ name, api string }{
+		{"defaulted probes pass", hostedValidateAPI},
+		{"declared /healthz for both passes", declared},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := workloadURLProject(t, "prod", hostedValidateBundle(tc.api))
 			// A real migration, so Deploy Migrations has to FIND the hosted
-			// backend's AUTO_MIGRATE rather than skip for want of SQL.
+			// workload's AUTO_MIGRATE rather than skip for want of SQL.
 			writeTestFile(t, filepath.Join(dir, "db", "migrations", "00001_init.up.sql"), "CREATE TABLE t (id TEXT PRIMARY KEY);\n")
 			t.Chdir(dir)
 			env := &doctor.Environment{ProjectDir: dir, DeployShaper: deployShapeOf}
-			probes := doctor.CheckDeployProbes(context.Background(), env)
-			if probes.Status != tc.want {
-				t.Fatalf("Deploy Probes = %s (%s)\n%s", probes.Status, probes.Message, probes.Evidence)
+			if probes := doctor.CheckDeployProbes(context.Background(), env); probes.Status != doctor.StatusPass {
+				t.Fatalf("Deploy Probes = %s (%s)\n%s — a forge-built hosted service must ship probes", probes.Status, probes.Message, probes.Evidence)
 			}
-			if tc.want == doctor.StatusFail && !strings.Contains(probes.Evidence, "healthCheck = tiers.HealthCheck") {
-				t.Errorf("a hosted probe failure must name the tier field to set:\n%s", probes.Evidence)
-			}
-			// Everything else the platform runs for this tier is on the
+			// Everything else the platform runs for this workload is on the
 			// happy path: forge's renderer sets requests/limits, sources
 			// every credential from a Secret and binds its own SA.
 			for name, check := range map[string]doctor.CheckFunc{
@@ -212,10 +187,10 @@ func TestDoctorDeploy_HostedEnvContentChecksReadThePlatformObjects(t *testing.T)
 				}
 			}
 			if res := doctor.CheckDeploySecrets(context.Background(), env); !strings.Contains(res.Message, "all sourced from a Secret") {
-				t.Errorf("Deploy Secrets did not read the hosted backend's credentials (managedSecret, databaseRef): %s", res.Message)
+				t.Errorf("Deploy Secrets did not read the hosted workload's credentials (managedSecret, databaseRef): %s", res.Message)
 			}
 			if res := doctor.CheckDeployMigrations(context.Background(), env); res.Status != doctor.StatusPass {
-				t.Errorf("Deploy Migrations = %s: the hosted backend's AUTO_MIGRATE was not read: %s", res.Status, res.Message)
+				t.Errorf("Deploy Migrations = %s: the hosted workload's AUTO_MIGRATE was not read: %s", res.Status, res.Message)
 			}
 		})
 	}

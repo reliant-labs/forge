@@ -21,7 +21,6 @@ _bundle = forge.Bundle {
     project = "acme"
     env = "prod"
     control_plane = ` + controlPlane + `
-    services = []
 }
 
 output = forge.render(_bundle)

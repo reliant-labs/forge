@@ -13,12 +13,13 @@ import (
 // project through the same seam `forge env render` / `forge env deploy` use
 // (kclrender.Run, then cluster.ExtractManifests — the stream kubectl reads)
 // and asserts the workload-identity annotation declared on
-// K8sOverrides.service_account_annotations arrives on the generated
+// fw.Workload.serviceAccountAnnotations arrives on the generated
 // ServiceAccount, on that object only.
 //
-// The KCL fixtures (kcl/tests/positive_service_account_annotations.k) pin the
-// render layer; this pins that nothing between it and kubectl — the manifest
-// extraction, the env-label stamp — drops or relocates the annotation. GKE
+// The KCL fixture (kcl/tests/positive_workload_service_account_annotations.k)
+// pins the authoring side; this pins that nothing between it and kubectl —
+// the Workload record, ExtractManifests' RenderWorkloads expansion, the
+// env-label stamp — drops or relocates the annotation. GKE
 // Workload Identity fails silently when it is missing: the pod starts, and
 // every GCP call is made as the node's identity instead.
 func TestServiceAccountAnnotations_ReachTheAppliedStream(t *testing.T) {
@@ -26,36 +27,38 @@ func TestServiceAccountAnnotations_ReachTheAppliedStream(t *testing.T) {
 	const gsa = "deploy-publisher@reliant-labs-475814.iam.gserviceaccount.com"
 
 	dir := t.TempDir()
-	kclMod := "[package]\nname = \"saannotations\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
+	kclMod := "[package]\nname = \"saannotations\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n"
 	main := `import forge
+import forge.workloads as fw
+
+_prod = forge.ClusterTarget {
+    cluster = "gke_reliant-labs-475814_us-central1_prod"
+    namespace = "control-plane-prod"
+    registry = "us-docker.pkg.dev/reliant-labs-475814/reliant-prod"
+    platform = "amd64"
+}
 
 _bundle = forge.Bundle {
     project = "control-plane"
     env = "prod"
-    cluster_target = forge.ClusterTarget {
-        cluster = "gke_reliant-labs-475814_us-central1_prod"
-        namespace = "control-plane-prod"
-        registry = "us-docker.pkg.dev/reliant-labs-475814/reliant-prod"
-    }
+    cluster_target = _prod
+    runtime = forge.OnCluster {target = _prod}
     workloads = [
-        forge.Service {
+        fw.Workload {
             name = "admin-server"
             image = "control-plane"
-            ports = [8090]
-            k8s = forge.K8sOverrides {
-                service_account_annotations = {"` + gsaKey + `" = "` + gsa + `"}
-            }
+            ports = [fw.Port {name = "http", port = 8090}]
+            serviceAccountAnnotations = {"` + gsaKey + `" = "` + gsa + `"}
         }
-        forge.Service {
+        fw.Workload {
             name = "plain"
             image = "control-plane"
-            ports = [8080]
+            ports = [fw.Port {name = "http", port = 8080}]
         }
     ]
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, "v1", {}, False)
 `
 	for f, c := range map[string]string{"kcl.mod": kclMod, "main.k": main} {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o644); err != nil {

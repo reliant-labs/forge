@@ -49,31 +49,28 @@ func writeRenderStdoutProject(t *testing.T) string {
 		}
 	}
 	write("forge.yaml", "name: rendertest\nmodule_path: github.com/example/rendertest\nversion: \"0.1.0\"\n")
-	write("deploy/kcl/kcl.mod", "[package]\nname = \"rendertest-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n")
+	write("deploy/kcl/kcl.mod", "[package]\nname = \"rendertest-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n")
 	write("deploy/kcl/prod/main.k", `import forge
+import forge.workloads as fw
+
+_target = forge.ClusterTarget {
+    cluster = "k3d-rendertest"
+    namespace = "rendertest-prod"
+    registry = "reg.example.com"
+}
 
 _bundle = forge.Bundle {
     project = "rendertest"
-    cluster_target = forge.ClusterTarget {
-        cluster = "k3d-rendertest"
-        namespace = "rendertest-prod"
-        registry = "reg.example.com"
-    }
-    services = [forge.RenderedWorkload {
-        name = "api"
-        image = "rendertest"
-        deploy = forge.K8sCluster {cluster = "k3d-rendertest", namespace = "rendertest-prod", registry = "reg.example.com"}
-    }]
-    cronjobs = [forge.CronJob {
-        name = "migrate"
-        schedule = ""
-        image = "rendertest"
-        command = ["/app", "db", "migrate", "up"]
-    }]
+    cluster_target = _target
+    runtime = forge.OnCluster {target = _target}
+    workloads = [
+        fw.Workload {name = "api", image = "rendertest"}
+        # A standalone job (no before): a batch/v1 Job in the stream.
+        fw.Workload {name = "migrate", kind = "job", image = "rendertest", args = ["db", "migrate", "up"]}
+    ]
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, option("image_tag") or "latest", forge.image_digests(), False)
 `)
 	write(".forge/state/build-prod.json", `{"image": "rendertest", "tag": "abc1234", "registry": "reg.example.com", "pushed": true, "pushed_at": "2026-09-24T00:00:00Z", "digest": "`+renderBuiltDigest+`"}`)
 	if _, err := newFileBindingStore(dir).Append(context.Background(), releasepkg.Promotion{

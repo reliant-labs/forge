@@ -225,67 +225,62 @@ spec: {}
 	}
 }
 
-// TestExtractManifests_SiblingOutputIsSilent confirms that when the
-// generated `main.k` exports both `manifests` (the YAML manifest list
-// we consume) AND `output` (the JSON contract the forge build/run/
-// deploy pipeline consumes via a separate kcl invocation), the
-// `output` sibling is silently skipped rather than emitting a noisy
-// "extra top-level KCL var" warning on every `forge env deploy` /
-// `forge env up`. Pins the dual-output contract documented at the top of
-// the canonical main.k template.
-func TestExtractManifests_SiblingOutputIsSilent(t *testing.T) {
-	// Mirrors the shape kcl emits when main.k declares both
-	// `output = forge.render(_bundle)` and
-	// `manifests = forge.render_manifests(_bundle, _env)`.
-	in := `manifests:
-- apiVersion: v1
-  kind: Namespace
-  metadata:
-    name: example-dev
-- apiVersion: apps/v1
-  kind: Deployment
-  metadata:
-    name: workspace-proxy
-  spec: {}
-output:
-  services:
-  - name: workspace-proxy
-    deploy:
-      type: cluster
-  operators: []
+// TestExtractManifests_ReadsOutputManifests confirms the applyable stream is
+// `output.manifests` — the ONE entrypoint (`output = forge.render(bundle)`) —
+// and that the rest of `output` (the §9.1 entity contract: workloads,
+// frontends, …) is not mistaken for manifests. Plain objects pass through
+// in order, `---`-separated.
+func TestExtractManifests_ReadsOutputManifests(t *testing.T) {
+	in := `output:
+  project: example
+  workloads:
+  - name: local
+    kind: service
+    runtime: {type: host}
+    spec: {kind: service}
   frontends: []
-  cronjobs: []
-  config_maps: []
+  manifests:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: example-dev
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: app-config
 `
 	got, err := extractManifests([]byte(in))
 	if err != nil {
 		t.Fatalf("extractManifests: %v", err)
 	}
-	if !strings.Contains(got, "kind: Namespace") || !strings.Contains(got, "kind: Deployment") {
-		t.Errorf("expected Namespace + Deployment in output, got:\n%s", got)
+	if !strings.Contains(got, "kind: Namespace") || !strings.Contains(got, "kind: ConfigMap") {
+		t.Errorf("expected Namespace + ConfigMap in output, got:\n%s", got)
 	}
-	// Two manifest items should be `---`-separated.
+	if strings.Index(got, "kind: Namespace") > strings.Index(got, "kind: ConfigMap") {
+		t.Errorf("stream order not preserved:\n%s", got)
+	}
 	if !strings.Contains(got, "---") {
 		t.Errorf("expected `---` document separator, got:\n%s", got)
 	}
+	if strings.Contains(got, "runtime") || strings.Contains(got, "name: local") {
+		t.Errorf("an output.workloads entry leaked into the applyable stream:\n%s", got)
+	}
 }
 
-// TestExtractManifests_UnexpectedSiblingStillWarns confirms we only
-// silence the documented `output` sibling — any OTHER unexpected
-// top-level var still triggers the helpful warning so projects don't
-// silently drop manifest content into a stray top-level binding.
+// TestExtractManifests_UnexpectedSiblingStillWarns confirms a stray public
+// top-level var beside `output` does not break extraction (it warns — fire
+// and forget — so a project doesn't silently lose content into a binding
+// nothing reads), while output.manifests is still extracted.
 func TestExtractManifests_UnexpectedSiblingStillWarns(t *testing.T) {
-	in := `manifests:
-- apiVersion: v1
-  kind: Namespace
-  metadata:
-    name: example-dev
+	in := `output:
+  manifests:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: example-dev
 stray_var:
   something: else
 `
-	// We can't capture os.Stderr without plumbing without changing the
-	// production signature; instead, assert success (warning is fire-
-	// and-forget) and that the function does still extract manifests.
 	got, err := extractManifests([]byte(in))
 	if err != nil {
 		t.Fatalf("extractManifests: %v", err)

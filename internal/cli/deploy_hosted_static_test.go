@@ -112,7 +112,6 @@ _bundle = forge.Bundle {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
     }
-    services = []
     frontends = [forge.Frontend {
         name = "web"
         path = "frontends/web"
@@ -122,7 +121,6 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, forge.image_tag("hosted"), forge.image_digests(), False)
 `,
 	}
 	for rel, body := range files {

@@ -754,6 +754,11 @@ func renderEnv(env []v1alpha1.EnvVar) []corev1.EnvVar {
 		switch {
 		case e.SecretRef != nil:
 			ev.ValueFrom = secretKey(e.SecretRef.Name, e.SecretRef.Key)
+			// Only true is stated: `optional: false` is the API default and
+			// would add a line to every required reference for nothing.
+			if e.SecretRef.Optional {
+				ev.ValueFrom.SecretKeyRef.Optional = new(true)
+			}
 		case e.ManagedSecret != "":
 			ev.ValueFrom = secretKey(v1alpha1.ManagedSecretsSecretName, e.ManagedSecret)
 		case e.DatabaseRef != nil:

@@ -215,6 +215,14 @@ type SecretKeyRef struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Key string `json:"key"`
+	// Optional lets the pod start when the Secret or the key does not exist;
+	// the variable is then simply unset. It is what the config projection
+	// emits for an OPTIONAL sensitive field, whose absence the app already
+	// handles. A required reference to a missing key holds the pod in
+	// CreateContainerConfigError, with no application log, which is the
+	// right outcome only when the value really is required.
+	// +optional
+	Optional bool `json:"optional,omitempty"`
 }
 
 // DatabaseCredentialKey selects one part of a ManagedDatabase credential.

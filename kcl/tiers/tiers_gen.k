@@ -500,6 +500,7 @@ schema SecretKeyRef:
     """SecretKeyRef names one key of a Secret in the workload's own namespace."""
     key: str
     name: str
+    optional?: bool
 
     check:
         len(key) >= 1, "SecretKeyRef.key must be at least 1 characters"
@@ -511,6 +512,7 @@ secret_key_ref_json = lambda v: SecretKeyRef -> {str:} {
     _d = {
         "key": v.key
         "name": v.name
+        "optional": v.optional
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

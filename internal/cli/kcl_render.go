@@ -38,8 +38,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
@@ -143,6 +145,13 @@ type KCLEntities struct {
 	// known-backend set so a route targeting such a Service resolves
 	// instead of false-erroring "unknown service".
 	ManifestServiceNames []string `json:"-"`
+
+	// ManifestClusters are the kubectl contexts the rendered stream stamps
+	// objects onto (forge.dev/cluster). Each is a deploy destination:
+	// buildDeployGroups gives one that no workload runs on a k8s group of
+	// its own, so a forge.Manifests group on an otherwise empty cluster is
+	// applied there instead of silently never applied.
+	ManifestClusters []ManifestClusterEntity `json:"-"`
 }
 
 // SecretProviderEntity is the parsed bundle-level secret provider
@@ -918,9 +927,41 @@ type kclWorkloadRaw struct {
 type rawManifest struct {
 	Kind     string `json:"kind,omitempty"`
 	Metadata struct {
-		Name      string `json:"name,omitempty"`
-		Namespace string `json:"namespace,omitempty"`
+		Name      string            `json:"name,omitempty"`
+		Namespace string            `json:"namespace,omitempty"`
+		Labels    map[string]string `json:"labels,omitempty"`
 	} `json:"metadata,omitempty"`
+}
+
+// ManifestClusterEntity is one kubectl context the rendered stream stamps an
+// object onto (`forge.dev/cluster`), with the namespace its namespaced objects
+// dominate there ("" when every object on it is cluster-scoped).
+type ManifestClusterEntity struct {
+	Cluster   string
+	Namespace string
+}
+
+// manifestClusters returns every distinct `forge.dev/cluster` stamped on the
+// rendered stream, sorted by context. The stamp is what the deploy router
+// sends an object by, so every stamped context is a place the deploy WRITES —
+// whether or not a workload runs there (a forge.Manifests group, a cluster
+// database, a secondary cluster's Namespace).
+func manifestClusters(manifests []rawManifest) []ManifestClusterEntity {
+	byCluster := map[string][]rawManifest{}
+	for _, m := range manifests {
+		if c := strings.TrimSpace(m.Metadata.Labels[cluster.ClusterRoutingLabel]); c != "" {
+			byCluster[c] = append(byCluster[c], m)
+		}
+	}
+	out := make([]ManifestClusterEntity, 0, len(byCluster))
+	for c, ms := range byCluster {
+		out = append(out, ManifestClusterEntity{Cluster: c, Namespace: manifestNamespace(ms)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Cluster < out[j].Cluster })
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ClusterTargetEntity is the rendered `cluster_target` (kcl/render.k
@@ -1074,6 +1115,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		RequiredDNS:          raw.RequiredDNS,
 		ManifestNamespace:    manifestNamespace(raw.Manifests),
 		ManifestServiceNames: manifestServiceNames(raw.Manifests),
+		ManifestClusters:     manifestClusters(raw.Manifests),
 	}
 	seen := map[string]bool{}
 	for _, w := range raw.Workloads {

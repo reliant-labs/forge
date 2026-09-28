@@ -70,7 +70,7 @@ func envAppliesLocally(e *KCLEntities) bool {
 	if len(e.WorkloadsOn(RuntimeCluster)) > 0 || len(e.WorkloadsOn(RuntimeCompose)) > 0 || len(e.Infra) > 0 {
 		return true
 	}
-	if e.ClusterTarget.field("cluster") != "" {
+	if e.ClusterTarget.field("cluster") != "" || len(e.ManifestClusters) > 0 {
 		return true
 	}
 	for _, d := range e.Databases {

@@ -132,6 +132,24 @@ func TestParseRender(t *testing.T) {
 	}
 }
 
+// A cluster no workload runs on, reached only by a forge.Manifests group's
+// forge.dev/cluster stamp, is still a cluster the env deploys to: the deploy
+// gives it a group of its own, so doctor's cluster set must include it.
+func TestParseRender_StampedClusterJoinsTheEnvClusters(t *testing.T) {
+	body := `{"output":{
+		"cluster_target":{"cluster":"ctx-hub"},
+		"workloads":[],
+		"manifests":[{"apiVersion":"scheduling.k8s.io/v1","kind":"PriorityClass",
+			"metadata":{"name":"x","labels":{"forge.dev/cluster":"ctx-daemon"}}}]}}`
+	r := parseRender([]byte(body))
+	if r.err != nil {
+		t.Fatalf("parseRender: %v", r.err)
+	}
+	if got := strings.Join(r.clusters, ","); got != "ctx-daemon,ctx-hub" {
+		t.Errorf("clusters = %q, want ctx-daemon,ctx-hub", got)
+	}
+}
+
 func TestCheckDeployManifests(t *testing.T) {
 	tests := []struct {
 		name     string

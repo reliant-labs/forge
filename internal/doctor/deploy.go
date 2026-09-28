@@ -568,8 +568,33 @@ func parseRender(raw []byte) envRender {
 		}
 		out.objects = append(out.objects, o)
 	}
+	out.clusters = withStampedClusters(out.clusters, out.objects)
 	out.invalid = invalidObjects(manifestRootKey, out.objects)
 	return out
+}
+
+// withStampedClusters adds every context an object is stamped onto
+// (`forge.dev/cluster`) to the env's cluster set. The deploy gives each such
+// context a group of its own even when no workload runs there (a
+// forge.Manifests group on an otherwise empty cluster), so it is a cluster
+// the env deploys to — and one an unattributed object is replicated onto.
+func withStampedClusters(clusters []string, objects []k8sObject) []string {
+	seen := map[string]bool{}
+	for _, c := range clusters {
+		seen[c] = true
+	}
+	added := false
+	for _, o := range objects {
+		if c := o.Metadata.Labels[cluster.ClusterRoutingLabel]; c != "" && !seen[c] {
+			seen[c] = true
+			clusters = append(clusters, c)
+			added = true
+		}
+	}
+	if added {
+		sort.Strings(clusters)
+	}
+	return clusters
 }
 
 // invalidObjects names the entries kubectl would reject outright.

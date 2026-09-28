@@ -48,19 +48,7 @@ var hostedStaticPusher = func(ctx context.Context, projectDir, repository string
 // document is spec instead: the StaticSite's runtimeConfig, which the
 // control plane resolves and writes after each sync (hostedStaticSpec).
 func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KCLEntities, opts buildOptions) error {
-	if entities == nil {
-		return nil
-	}
-	var sites []FrontendEntity
-	for _, f := range entities.Frontends {
-		if !frontendIsHosted(f) {
-			continue
-		}
-		if opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != f.Name {
-			continue
-		}
-		sites = append(sites, f)
-	}
+	sites := hostedStaticSites(entities, opts)
 	if len(sites) == 0 {
 		return nil
 	}
@@ -69,9 +57,7 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		for _, f := range sites {
 			names = append(names, f.Name)
 		}
-		return fmt.Errorf("env %q binds frontend(s) %s to forge.OnHosted: a hosted site ships as an OCI release artifact, "+
-			"so the build must push — run `forge build %s --push`, which pushes to the registry deploy/kcl/%s/main.k declares on forge.ControlPlane",
-			opts.env, strings.Join(names, ", "), opts.env, opts.env)
+		return errHostedSiteMustPush(opts.env, names)
 	}
 	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
 		return err
@@ -106,4 +92,35 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		fmt.Printf("[build]   %s release %s\n", f.Name, digest)
 	}
 	return nil
+}
+
+// hostedStaticSites is the set of frontends a build publishes as hosted
+// static sites: every frontend bound to forge.OnHosted that --target does not
+// narrow away. The ONE selection both the build (buildHostedStaticSites) and
+// the plan (planHostedStaticSites) read, so `forge build --plan` lists exactly
+// the sites the cut would push.
+func hostedStaticSites(entities *KCLEntities, opts buildOptions) []FrontendEntity {
+	if entities == nil {
+		return nil
+	}
+	var sites []FrontendEntity
+	for _, f := range entities.Frontends {
+		if !frontendIsHosted(f) {
+			continue
+		}
+		if opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != f.Name {
+			continue
+		}
+		sites = append(sites, f)
+	}
+	return sites
+}
+
+// errHostedSiteMustPush is the refusal a build without --push hits when the
+// env binds a frontend to forge.OnHosted. Shared with the plan so the two
+// report the same remedy.
+func errHostedSiteMustPush(env string, names []string) error {
+	return fmt.Errorf("env %q binds frontend(s) %s to forge.OnHosted: a hosted site ships as an OCI release artifact, "+
+		"so the build must push — run `forge build %s --push`, which pushes to the registry deploy/kcl/%s/main.k declares on forge.ControlPlane",
+		env, strings.Join(names, ", "), env, env)
 }

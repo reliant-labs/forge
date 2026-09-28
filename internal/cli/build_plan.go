@@ -12,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -183,6 +184,9 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 		report.steps = append(report.steps, planKCLDockerRemote(in)...)
 		report.steps = append(report.steps, planBuildOnlyVariants(ctx, in)...)
 		report.steps = append(report.steps, planExternalBuilds(in)...)
+		// Last, as in the real build: finishReleaseArtifacts publishes the
+		// hosted sites after every other build has succeeded.
+		report.steps = append(report.steps, planHostedStaticSites(in)...)
 	}
 
 	if opts.release != "" {
@@ -339,11 +343,47 @@ func planExternalBuilds(in planInputs) []buildPlanStep {
 	return out
 }
 
+// planHostedStaticSites mirrors buildHostedStaticSites: each frontend bound
+// to forge.OnHosted is built (`npm run build` → its public_dir), packed, and
+// pushed as an OCI artifact to <registry>/static.v1/<name>. The step carries
+// the refusals the real publish would hit before it starts: a build with no
+// --push (a hosted site is only deployable by digest), a mock build, and a
+// frontend dir that cannot `npm run build`.
+func planHostedStaticSites(in planInputs) []buildPlanStep {
+	var out []buildPlanStep
+	for _, f := range hostedStaticSites(in.entities, in.opts) {
+		publicDir := f.PublicDir
+		if publicDir == "" {
+			publicDir = "<public_dir>"
+		}
+		step := buildPlanStep{kind: "static", name: f.Name}
+		if f.Source != nil && f.Source.Repo != "" {
+			// A cross-repo frontend has no directory here until the real
+			// build resolves its source, so there is nothing to preflight.
+			step.what = fmt.Sprintf("npm run build in %s@%s → %s; push OCI static site", f.Source.Repo, f.Source.Ref, publicDir)
+		} else {
+			step.what = fmt.Sprintf("npm run build in %s → %s; push OCI static site", f.Path, publicDir)
+			step.problem = planFrontendBuild(resolveProjectPath(in.projectDir, f.Path))
+		}
+		if err := checkDeployableFrontendMock(f); err != nil {
+			step.problem = err.Error()
+		}
+		if in.opts.pushRegistry == "" {
+			step.problem = errHostedSiteMustPush(in.opts.env, []string{f.Name}).Error()
+		} else {
+			step.pushes = []string{deploytarget.HostedStaticRepository(in.opts.pushRegistry, f.Name)}
+		}
+		out = append(out, step)
+	}
+	return out
+}
+
 // planReleaseCoverage runs the release's completeness gate against the
 // artifacts this build WOULD capture: every image a planned docker step or
-// external build would push, plus every source-pinned frontend (whose commit
-// the real cut resolves). It is the same checkReleaseCoversEnv the cut runs
-// after building — so a declared image nothing builds fails here, on the PR.
+// external build would push, every hosted static site a planned static step
+// would push, plus every source-pinned frontend (whose commit the real cut
+// resolves). It is the same checkReleaseCoversEnv the cut runs after
+// building — so a declared image nothing builds fails here, on the PR.
 func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error) {
 	would := map[string]release.Artifact{}
 	placeholder := release.Artifact{Kind: release.KindOCI, Mode: release.ModeShared}
@@ -359,6 +399,12 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 		case "external":
 			if svc := in.entities.FindWorkload(s.name); svc != nil && svc.Image != "" {
 				would[svc.Image] = placeholder
+			}
+		case "static":
+			// Recorded under the frontend's name, as buildHostedStaticSites
+			// writes its build state.
+			if len(s.pushes) > 0 {
+				would[s.name] = placeholder
 			}
 		}
 	}

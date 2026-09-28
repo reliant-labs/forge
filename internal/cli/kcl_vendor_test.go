@@ -129,3 +129,32 @@ path = "../../.forge-kcl"
 		t.Errorf("unmanaged kcl.mod was edited:\n%s", got)
 	}
 }
+
+// TestSyncForgeKCL_MigratesTheRetiredRegistryHelper: `forge generate` rewrites
+// an existing project's forge.registry("X") calls to the literal "X" — the
+// value each call already evaluated to — so a project scaffolded against the
+// old module renders unchanged instead of failing on a missing attribute.
+func TestSyncForgeKCL_MigratesTheRetiredRegistryHelper(t *testing.T) {
+	dir := t.TempDir()
+	main := writeProjectFile(t, dir, "deploy/kcl/prod/main.k",
+		"import forge\n_registry = forge.registry(\"ghcr.io/acme\")\n")
+	if err := kclvendor.CheckRegistryHelper(dir); err == nil {
+		t.Fatal("fixture precondition: CheckRegistryHelper must refuse the unmigrated project")
+	}
+
+	out := captureStdout(t, func() {
+		if err := syncForgeKCL(dir); err != nil {
+			t.Fatalf("syncForgeKCL: %v", err)
+		}
+	})
+	got, _ := os.ReadFile(main)
+	if !strings.Contains(string(got), `_registry = "ghcr.io/acme"`) || strings.Contains(string(got), "forge.registry") {
+		t.Errorf("prod/main.k not migrated to the literal:\n%s", got)
+	}
+	if !strings.Contains(out, "deploy/kcl/prod/main.k") {
+		t.Errorf("generate should name the migrated file; output:\n%s", out)
+	}
+	if err := kclvendor.CheckRegistryHelper(dir); err != nil {
+		t.Errorf("after the migration the render check must pass; got %v", err)
+	}
+}

@@ -101,6 +101,35 @@ out = {a = _env, b = _ns, c = _tag, d = _digests}
 	}
 }
 
+// forge gives the image registry NO special treatment: it is declared in the
+// env's KCL like any other field, and forge neither binds `-D registry=` nor
+// owns an option of that name. A project that CHOOSES to read
+// `option("registry")` in its own main.k has written an ordinary project
+// option, which Discover must list like any other.
+func TestDiscoverTreatsAProjectRegistryOptionAsTheProjects(t *testing.T) {
+	if _, reserved := Reserved["registry"]; reserved {
+		t.Fatal(`"registry" is in Reserved — forge does not derive or bind a registry, so the name is the project's`)
+	}
+	root := writeEnvProject(t, "prod", `import forge
+
+_env = forge.env()
+_registry = option("registry") or "ghcr.io/acme"
+
+out = {env = _env, registry = _registry}
+`)
+
+	opts, discoverable, err := Discover(root, "prod")
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if !discoverable {
+		t.Fatal("discoverable = false")
+	}
+	if len(opts) != 1 || opts[0].Name != "registry" {
+		t.Fatalf("Discover() = %+v, want exactly the project's own `registry` option", opts)
+	}
+}
+
 // A project that reads an option from several places declares it once. The
 // merge must not let a bare call site erase metadata declared elsewhere.
 func TestDiscoverMergesDuplicateCallSitesKeepingMetadata(t *testing.T) {

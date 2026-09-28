@@ -101,11 +101,25 @@ func TestParseRenderOptions(t *testing.T) {
 // derived value.
 func TestParseRenderOptionsRefusesEveryReservedName(t *testing.T) {
 	for _, name := range []string{
-		"env", "namespace", "registry", "image_tag", "image_digests", "worktree", "branch",
+		"env", "namespace", "image_tag", "image_digests", "worktree", "branch",
 	} {
 		if _, err := parseRenderOptions([]string{name + "=x"}); err == nil {
 			t.Errorf("-D %s=x was accepted; it is derived by forge", name)
 		}
+	}
+}
+
+// `registry` is NOT forge's: forge declares no option of that name and binds
+// none. A project whose own main.k reads `option("registry")` gets `-D
+// registry=…` relayed like any other project option — neither refused as
+// reserved nor given any other special treatment.
+func TestParseRenderOptionsRelaysAProjectRegistryOption(t *testing.T) {
+	got, err := parseRenderOptions([]string{"registry=ghcr.io/acme"})
+	if err != nil {
+		t.Fatalf("-D registry=ghcr.io/acme was refused: %v — a project-declared option must be relayed", err)
+	}
+	if len(got) != 1 || got[0] != `registry="ghcr.io/acme"` {
+		t.Errorf("parseRenderOptions = %q, want the value relayed verbatim", got)
 	}
 }
 

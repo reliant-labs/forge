@@ -142,7 +142,9 @@ _env = lambda w: fw.Workload -> {str:} {
 _k3d = forge.ClusterTarget {
     cluster = "k3d-{{.ProjectName}}"
     namespace = "{{.ProjectName}}-{{.EnvName}}"
-    registry = forge.registry("localhost:5050")
+    # The k3d registry deploy/k3d.yaml creates: `forge env up {{.EnvName}}`
+    # pushes here and the cluster pulls from here.
+    registry = "localhost:5050"
 }
 
 # ---------------------------------------------------------------------------

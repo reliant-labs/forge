@@ -62,7 +62,6 @@ import (
 var Reserved = map[string]string{
 	"env":           "the environment name — comes from the `forge env up <env>` argument",
 	"namespace":     "the k8s namespace — derived from the env's cluster target",
-	"registry":      "the image registry — declared per-env in your main.k",
 	"image_tag":     "the resolved image tag — derived from the env and the build",
 	"image_digests": "the built images' content digests — captured by `forge env deploy`",
 	"worktree":      "the git worktree basename — resolved by the parallel-dev-stack primitives",

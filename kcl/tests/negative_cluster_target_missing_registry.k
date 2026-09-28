@@ -1,6 +1,6 @@
 """
-Negative test — ClusterTarget.registry is a REQUIRED input. An unset / typo'd
-`-D registry=` that resolves to empty must fail at KCL LOAD, not produce an
+Negative test — ClusterTarget.registry is a REQUIRED declaration. A registry
+that resolves to empty must fail at KCL LOAD, not produce an
 ImagePullBackOff at deploy (a manifest whose image reference is missing its
 registry).
 """

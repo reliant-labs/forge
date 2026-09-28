@@ -51,9 +51,9 @@ func runDevInfo(configPath string) error {
 	ns := devNamespace(clusterName)
 	expectedCtx := "k3d-" + clusterName
 
-	registry := "localhost:5050"
-	if reg := k8sClusterRegistryForEnv(context.Background(), "dev"); reg != "" {
-		registry = reg
+	registry := declaredRegistryForEnv(context.Background(), "dev")
+	if registry == "" {
+		registry = "(none declared in deploy/kcl/dev/main.k)"
 	}
 
 	fmt.Printf("Project:                    %s\n", store.Meta().Name)

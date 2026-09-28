@@ -426,7 +426,19 @@ func identSegment(env string) string {
 func transformLine(line, template, name, tIdent, nIdent string) []string {
 	indent := leadingWhitespace(line)
 
-	// 1. option("X") or "<default>" — image_tag / registry / namespace.
+	// 0. The registry declaration — the `_registry` var or a ClusterTarget
+	// `registry` field — in whichever spelling the template uses: a literal,
+	// a project `option("registry") or "…"`, or the retired forge.registry
+	// helper. The derived env declares it as a plain literal: forge emits no
+	// option of its own for it.
+	if m := registryAssignRe.FindStringSubmatch(line); m != nil {
+		return knobLines(indent, m[1], `"REPLACE_ME_REGISTRY"`,
+			"the image registry forge PUSHES to and the deploy PULLS from",
+			"a wrong/stale value SILENTLY ImagePullBackOff's at deploy time",
+			`run 'forge build `+name+` --push' (it pushes to this declared registry) and confirm the pushed ref matches the deploy ref`)
+	}
+
+	// 1. option("X") or "<default>" — image_tag / namespace.
 	if m := optionDefaultRe.FindStringSubmatch(line); m != nil {
 		opt := m[2]
 		switch opt {
@@ -435,11 +447,6 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 			// safe, non-dangerous default (it's just a tag string), so we set
 			// it to the new env name rather than forcing a placeholder.
 			return []string{fmt.Sprintf(`%s_image_tag = option("image_tag") or %q`, indent, name)}
-		case "registry":
-			return knobLines(indent, "_registry", `option("registry") or "REPLACE_ME_REGISTRY"`,
-				"the image registry forge PUSHES to and the deploy PULLS from",
-				"a wrong/stale value SILENTLY ImagePullBackOff's at deploy time",
-				`run 'forge build `+name+` --push' (it pushes to this declared registry) and confirm the pushed ref matches the deploy ref`)
 		case "namespace":
 			return knobLines(indent, "_namespace", `option("namespace") or "REPLACE_ME_NAMESPACE"`,
 				"the k8s namespace every workload in this env deploys into",
@@ -448,21 +455,14 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 		}
 	}
 
-	// 1b. The literal forms the scaffolded envs write: `namespace = "<ns>"`
-	//     and `registry = forge.registry("<default>")` on a ClusterTarget.
-	//     Copied verbatim they deploy INTO the template env's namespace and
-	//     push to its registry.
+	// 1b. The literal form the scaffolded envs write on a ClusterTarget:
+	//     `namespace = "<ns>"`. Copied verbatim it deploys INTO the template
+	//     env's namespace.
 	if namespaceAssignRe.MatchString(line) {
 		return knobLines(indent, "namespace", `"REPLACE_ME_NAMESPACE"`,
 			"the k8s namespace every workload in this env deploys into",
 			"inheriting a sibling's namespace deploys INTO that sibling environment",
 			`kubectl get ns | grep `+name+` — the namespace must be unique to this env`)
-	}
-	if registryCallRe.MatchString(line) {
-		return knobLines(indent, "registry", `forge.registry("REPLACE_ME_REGISTRY")`,
-			"the image registry forge PUSHES to and the deploy PULLS from",
-			"a wrong/stale value SILENTLY ImagePullBackOff's at deploy time",
-			`run 'forge build `+name+` --push' (it pushes to this declared registry) and confirm the pushed ref matches the deploy ref`)
 	}
 
 	// 2. cluster = "<context>" inside a ClusterTarget/K8sCluster block.
@@ -527,10 +527,13 @@ func knobLines(indent, knob, assignRHS, what, danger, check string) []string {
 var (
 	// option("X") or "<default>" assigned to a top-level _var.
 	optionDefaultRe = regexp.MustCompile(`^\s*(_\w+)\s*=\s*option\("(\w+)"\)\s*or\s*"[^"]*"`)
-	// namespace = "<value>" and registry = forge.registry("<value>") — the
-	// literal ClusterTarget fields the scaffolded envs write.
+	// namespace = "<value>" — the literal ClusterTarget field the scaffolded
+	// envs write.
 	namespaceAssignRe = regexp.MustCompile(`^\s*namespace\s*=\s*"[^"]*"\s*$`)
-	registryCallRe    = regexp.MustCompile(`^\s*registry\s*=\s*forge\.registry\("[^"]*"\)\s*$`)
+	// A registry declaration: the `_registry` var or a ClusterTarget
+	// `registry` field, set to a literal, a project `option("registry") or
+	// "…"`, or the retired `forge.registry("…")`. Group 1 is the name.
+	registryAssignRe = regexp.MustCompile(`^\s*(_registry|registry)\s*=\s*(?:"[^"]*"|option\("registry"\)\s*or\s*"[^"]*"|forge\.registry\("[^"]*"\))\s*(?:#.*)?$`)
 	// cluster = "<value>" (inside a ClusterTarget / K8sCluster block).
 	clusterAssignRe = regexp.MustCompile(`^\s*cluster\s*=\s*"[^"]*"`)
 	// platform = "<value>".

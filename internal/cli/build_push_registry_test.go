@@ -7,16 +7,15 @@ import (
 	"testing"
 )
 
-// The defect these tests pin: `forge build <env> --push` demanded the registry
-// as the flag's argument even when the env's KCL already declares it
-// (cluster_target.registry / forge.K8sCluster.registry) — the value `forge env
-// up` and `forge env deploy` read. So every CI workflow restated the registry
-// as `--push "$REGISTRY"`, a second source of truth that drifts from the KCL
-// the deploy actually pulls from.
+// The rule these tests pin: an image registry is DECLARED in the env's KCL
+// (deploy/kcl/<env>/main.k) and nowhere else. `--push` is a switch — "push
+// this build" — never a carrier for a registry value, so there is exactly one
+// place the destination can come from and `forge env deploy` pulls from the
+// same one by construction.
 
 // declaredRegistryFixture is a cluster env whose ClusterTarget declares the
-// registry. The service block carries it too, exactly as render.k projects the
-// target onto each workload's K8sCluster.
+// registry. The workload's runtime carries it too, exactly as render.k
+// projects the target onto each workload.
 const declaredRegistryFixture = `{
   "output": {
     "cluster_target": {
@@ -48,9 +47,47 @@ const declaredRegistryFixture = `{
   }
 }`
 
-// runBuildCommand drives the REAL cobra command — flag parsing included, which
-// is where the defect lived — and returns what it printed. --plan keeps it
-// from building or pushing anything.
+// hostedPushFixture is a hosted env (its Bundle declares forge.ControlPlane) with
+// one workload bound to the control plane. registry is the ControlPlane's
+// declared registry, "" for none.
+func hostedPushFixture(registry string) string {
+	reg := ""
+	if registry != "" {
+		reg = `,
+      "registry": "` + registry + `"`
+	}
+	return `{
+  "output": {
+    "control_plane": {
+      "type": "control_plane",
+      "endpoint": "http://127.0.0.1:1",
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN"` + reg + `
+    },
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "hosted"
+        },
+        "spec": {
+          "kind": "service",
+          "image": "pt"
+        }
+      }
+    ]
+  }
+}`
+}
+
+// runBuildCommand drives the REAL cobra command — flag parsing included — and
+// returns what it printed. --plan keeps it from building or pushing anything.
 func runBuildCommand(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var runErr error
@@ -64,87 +101,99 @@ func runBuildCommand(t *testing.T, args ...string) (string, error) {
 	return out, runErr
 }
 
-// TestBuildCmd_BarePushResolvesTheEnvDeclaredRegistry is the regression:
-// `forge build prod --push` with no value pushes to the registry prod's KCL
-// declares. Before the fix, pflag refused the bare flag ("flag needs an
-// argument: --push"), so the only way to push was to restate the registry.
-func TestBuildCmd_BarePushResolvesTheEnvDeclaredRegistry(t *testing.T) {
-	planProject(t, declaredRegistryFixture)
-
-	out, err := runBuildCommand(t, "prod", "--plan", "--no-generate", "--tag", "t1", "--push")
-	if err != nil {
-		t.Fatalf("forge build prod --push (env declares its registry): want the declared registry, got error: %v", err)
+// TestBuildCmd_PushIsABooleanSwitch: --push carries no value. A bool flag is
+// what makes `--push <anything>` impossible to express, rather than a value
+// the code has to remember to ignore.
+func TestBuildCmd_PushIsABooleanSwitch(t *testing.T) {
+	f := newBuildCmd().Flags().Lookup("push")
+	if f == nil {
+		t.Fatal("--push is not registered on forge build")
 	}
-	if !strings.Contains(out, "push registry.example/prod/pt:t1") {
-		t.Errorf("bare --push should push to the env-declared registry registry.example/prod; plan output:\n%s", out)
-	}
-	if !strings.Contains(out, "Push:     registry.example/prod (declared in deploy/kcl/prod/main.k)") {
-		t.Errorf("the build header should say where the registry came from; plan output:\n%s", out)
+	if f.Value.Type() != "bool" {
+		t.Fatalf("--push is a %s flag; it must be a bool — the registry is declared in deploy/kcl/<env>/main.k, never passed", f.Value.Type())
 	}
 }
 
-// TestBuildCmd_BarePushBeforeAnotherFlag: under the old StringVar, a --push
-// followed by another flag SWALLOWED it — `--push --tag t1` pushed to a
-// registry literally named "--tag". A bare --push must leave the next flag
-// alone.
-func TestBuildCmd_BarePushBeforeAnotherFlag(t *testing.T) {
+// TestBuildCmd_PushResolvesTheEnvDeclaredRegistry: `forge build prod --push`
+// pushes to the registry prod's KCL declares, and says where it came from.
+func TestBuildCmd_PushResolvesTheEnvDeclaredRegistry(t *testing.T) {
 	planProject(t, declaredRegistryFixture)
 
-	out, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
-	if err != nil {
-		t.Fatalf("forge build prod --push --plan ...: %v", err)
-	}
-	if !strings.Contains(out, "push registry.example/prod/pt:t1") {
-		t.Errorf("bare --push before another flag should still resolve the declared registry; plan output:\n%s", out)
-	}
-}
-
-// TestBuildCmd_ExplicitPushOverridesTheDeclaredRegistry pins precedence step
-// 1: an explicit registry wins over the env's declaration, in both spellings,
-// and warns — `forge env deploy` pulls from the DECLARED registry, so an
-// override that silently disagrees ships an image the deploy never reads.
-func TestBuildCmd_ExplicitPushOverridesTheDeclaredRegistry(t *testing.T) {
 	for name, args := range map[string][]string{
-		"space":  {"prod", "--push", "override.example/team", "--plan", "--no-generate", "--tag", "t1"},
-		"equals": {"prod", "--push=override.example/team", "--plan", "--no-generate", "--tag", "t1"},
-		"first":  {"--push", "override.example/team", "prod", "--plan", "--no-generate", "--tag", "t1"},
+		"push last":  {"prod", "--plan", "--no-generate", "--tag", "t1", "--push"},
+		"push first": {"--push", "prod", "--plan", "--no-generate", "--tag", "t1"},
+		"push=true":  {"prod", "--push=true", "--plan", "--no-generate", "--tag", "t1"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			planProject(t, declaredRegistryFixture)
 			out, err := runBuildCommand(t, args...)
 			if err != nil {
 				t.Fatalf("forge build %s: %v", strings.Join(args, " "), err)
 			}
-			if !strings.Contains(out, "push override.example/team/pt:t1") {
-				t.Errorf("explicit --push should win over the declared registry; plan output:\n%s", out)
+			if !strings.Contains(out, "push registry.example/prod/pt:t1") {
+				t.Errorf("--push should push to the env-declared registry registry.example/prod; plan output:\n%s", out)
 			}
-			if strings.Contains(out, "push registry.example/prod/") {
-				t.Errorf("explicit --push must not ALSO push to the declared registry; plan output:\n%s", out)
-			}
-			if !strings.Contains(out, "Warning: --push override.example/team overrides the registry deploy/kcl/prod/main.k declares (registry.example/prod)") {
-				t.Errorf("an override that differs from the declaration should warn; plan output:\n%s", out)
+			if !strings.Contains(out, "Push:     registry.example/prod (declared in deploy/kcl/prod/main.k)") {
+				t.Errorf("the build header should say where the registry came from; plan output:\n%s", out)
 			}
 		})
 	}
 }
 
-// TestBuildCmd_ExplicitPushMatchingTheDeclarationDoesNotWarn: restating the
-// declared registry (the pre-fix CI spelling) is not an override.
-func TestBuildCmd_ExplicitPushMatchingTheDeclarationDoesNotWarn(t *testing.T) {
+// TestBuildCmd_PushRefusesARegistryValue: every spelling that used to carry a
+// registry is now a usage error, so a stale script fails loudly instead of
+// silently pushing somewhere its env does not deploy from.
+func TestBuildCmd_PushRefusesARegistryValue(t *testing.T) {
 	planProject(t, declaredRegistryFixture)
-	out, err := runBuildCommand(t, "prod", "--push", "registry.example/prod/", "--plan", "--no-generate", "--tag", "t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out, "Warning: --push") {
-		t.Errorf("--push equal to the declared registry must not warn; plan output:\n%s", out)
+
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"equals":         {[]string{"prod", "--push=ghcr.io/acme", "--plan", "--no-generate"}, `invalid argument "ghcr.io/acme" for "--push"`},
+		"space after":    {[]string{"prod", "--push", "ghcr.io/acme", "--plan", "--no-generate"}, "accepts at most 1 arg"},
+		"space, no env":  {[]string{"--push", "localhost:5051", "--plan", "--no-generate"}, "forge build takes no registry"},
+		"space, first":   {[]string{"--push", "ghcr.io/acme", "prod", "--plan", "--no-generate"}, "accepts at most 1 arg"},
+		"env-like value": {[]string{"prod", "--push", "acme", "--plan", "--no-generate"}, "accepts at most 1 arg"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := runBuildCommand(t, tc.args...)
+			if err == nil {
+				t.Fatalf("forge build %s: want a usage error, got success:\n%s", strings.Join(tc.args, " "), out)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("forge build %s: error should contain %q, got: %v", strings.Join(tc.args, " "), tc.want, err)
+			}
+			if strings.Contains(out, "push ") {
+				t.Errorf("a refused --push value must not reach the build plan; output:\n%s", out)
+			}
+		})
 	}
 }
 
-// TestBuildCmd_BarePushUndeclaredRegistryFails: a cluster env that declares
-// no registry fails a bare --push with a runbook naming the file and the
-// field to set — never a silent local-only build.
-func TestBuildCmd_BarePushUndeclaredRegistryFails(t *testing.T) {
+// TestValidateBuildEnvArg: a positional that cannot be an env name is refused
+// before anything renders, and one that looks like a registry says the
+// registry is declared, not passed.
+func TestValidateBuildEnvArg(t *testing.T) {
+	for _, ok := range []string{"dev", "prod", "dev-k8s", "e2e", "eu-west"} {
+		if err := validateBuildEnvArg(ok); err != nil {
+			t.Errorf("validateBuildEnvArg(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, reg := range []string{"ghcr.io/acme", "localhost:5051", "us-central1-docker.pkg.dev/p/r"} {
+		err := validateBuildEnvArg(reg)
+		if err == nil || !strings.Contains(err.Error(), "takes no registry") || !strings.Contains(err.Error(), "deploy/kcl/<env>/main.k") {
+			t.Errorf("validateBuildEnvArg(%q) = %v, want the declared-registry runbook", reg, err)
+		}
+	}
+	if err := validateBuildEnvArg("Prod_1"); err == nil || !strings.Contains(err.Error(), "invalid environment name") {
+		t.Errorf("validateBuildEnvArg(%q) = %v, want an invalid-name error", "Prod_1", err)
+	}
+}
+
+// TestBuildCmd_PushUndeclaredRegistryFails: a cluster env that declares no
+// registry fails --push with a runbook naming the file and the field — and
+// never offers a flag as the way out.
+func TestBuildCmd_PushUndeclaredRegistryFails(t *testing.T) {
 	planProject(t, `{
   "output": {
     "workloads": [
@@ -172,82 +221,72 @@ func TestBuildCmd_BarePushUndeclaredRegistryFails(t *testing.T) {
 
 	_, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
 	if err == nil {
-		t.Fatal("bare --push against an env that declares no registry: want an error, got nil")
+		t.Fatal("--push against an env that declares no registry: want an error, got nil")
 	}
-	for _, want := range []string{"deploy/kcl/prod/main.k", "registry", "forge.ClusterTarget", "forge build prod --push <registry>"} {
+	for _, want := range []string{"deploy/kcl/prod/main.k", "registry", "forge.ClusterTarget"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("runbook error should name %q; got: %v", want, err)
 		}
 	}
+	if strings.Contains(err.Error(), "--push <") || strings.Contains(err.Error(), "--push=") {
+		t.Errorf("the runbook must not offer a registry flag as the fix; got: %v", err)
+	}
 }
 
-// TestBuildCmd_BarePushHostedEnvFails: a HOSTED env (Bundle declares
-// forge.ControlPlane) declares no registry in its KCL, and until the platform
-// default lands (platformDefaultRegistry) forge must not invent one. A bare
-// --push refuses and asks for the image push base explicitly.
-func TestBuildCmd_BarePushHostedEnvFails(t *testing.T) {
-	planProject(t, `{
-  "output": {
-    "control_plane": {
-      "type": "control_plane",
-      "endpoint": "http://127.0.0.1:1",
-      "token_env": "FORGE_CONTROL_PLANE_TOKEN"
-    },
-    "workloads": [
-      {
-        "name": "api",
-        "kind": "service",
-        "image": "pt",
-        "build": {
-          "type": "go",
-          "cmd": "./cmd/pt",
-          "output_name": "pt"
-        },
-        "runtime": {
-          "type": "hosted"
-        },
-        "spec": {
-          "kind": "service",
-          "image": "pt"
-        }
-      }
-    ]
-  }
-}`)
+// TestBuildCmd_PushWithoutEnvFails: with no env there is no declaration to
+// read, so --push asks for the env instead of building without pushing.
+func TestBuildCmd_PushWithoutEnvFails(t *testing.T) {
+	planProject(t, declaredRegistryFixture)
+	_, err := runBuildCommand(t, "--push", "--plan", "--no-generate")
+	if err == nil || !strings.Contains(err.Error(), "forge build <env> --push") {
+		t.Fatalf("--push with no env: want a runbook naming `forge build <env> --push`, got %v", err)
+	}
+}
+
+// TestBuildCmd_HostedEnvPushesToTheControlPlaneRegistry: a hosted env declares
+// its registry on forge.ControlPlane, and --push resolves it from there.
+func TestBuildCmd_HostedEnvPushesToTheControlPlaneRegistry(t *testing.T) {
+	planProject(t, hostedPushFixture("registry.example/org-7"))
+
+	out, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
+	if err != nil {
+		t.Fatalf("forge build prod --push (hosted env declaring ControlPlane.registry): %v", err)
+	}
+	if !strings.Contains(out, "Push:     registry.example/org-7 (declared in deploy/kcl/prod/main.k)") {
+		t.Errorf("hosted --push should resolve forge.ControlPlane.registry; plan output:\n%s", out)
+	}
+}
+
+// TestBuildCmd_HostedEnvWithoutRegistryFails: a hosted env that declares no
+// registry fails with a runbook naming forge.ControlPlane's `registry` — the
+// control plane's advertised push base is not consulted yet, and forge never
+// invents a default.
+func TestBuildCmd_HostedEnvWithoutRegistryFails(t *testing.T) {
+	planProject(t, hostedPushFixture(""))
 
 	_, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
 	if err == nil {
-		t.Fatal("bare --push against a hosted env: want an error, got nil")
+		t.Fatal("--push against a hosted env that declares no registry: want an error, got nil")
 	}
-	for _, want := range []string{"hosted", "forge.ControlPlane", "forge build prod --push <image push base>"} {
+	for _, want := range []string{"hosted", "forge.ControlPlane", "registry", "deploy/kcl/prod/main.k"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("hosted runbook error should name %q; got: %v", want, err)
 		}
 	}
 }
 
-// TestBuildCmd_BarePushWithoutEnvFails: with no env there is no declaration
-// to read, so a bare --push says so instead of building without pushing.
-func TestBuildCmd_BarePushWithoutEnvFails(t *testing.T) {
-	planProject(t, declaredRegistryFixture)
-	_, err := runBuildCommand(t, "--push", "--plan", "--no-generate")
-	if err == nil || !strings.Contains(err.Error(), "forge build <env> --push") {
-		t.Fatalf("bare --push with no env: want a runbook naming `forge build <env> --push`, got %v", err)
-	}
-}
-
-// TestResolvePushRegistry_TargetNarrowingKeepsTheDeclaredRegistry: the
-// registry is an env-wide fact. A contract with no cluster_target states it
-// only on its services, and `--target <frontend>` narrows those away — the
-// resolver reads the FULL render, so the registry survives.
-func TestResolvePushRegistry_TargetNarrowingKeepsTheDeclaredRegistry(t *testing.T) {
+// TestDeclaredPushRegistry_TargetNarrowingKeepsTheRegistry: the registry is an
+// env-wide fact. A contract with no cluster_target states it only on its
+// workloads, and `--target <frontend>` narrows those away — the resolver reads
+// the FULL render, so the registry survives.
+func TestDeclaredPushRegistry_TargetNarrowingKeepsTheRegistry(t *testing.T) {
 	full := &KCLEntities{Workloads: []WorkloadEntity{clusterWL("api", "c", "n", func(w *WorkloadEntity) {
 		w.Runtime.Cluster.Registry = "registry.example/prod"
 	})}}
-	if narrowed := filterEntitiesByTarget(full, []string{"web"}); k8sClusterFieldFromEntities(narrowed, "registry") != "" {
-		t.Fatal("fixture precondition: narrowing to a frontend should drop the only service stating the registry")
+	if narrowed := filterEntitiesByTarget(full, []string{"web"}); declaredRegistry(narrowed) != "" {
+		t.Fatal("fixture precondition: narrowing to a frontend should drop the only workload stating the registry")
 	}
-	got, err := resolvePushRegistry(context.Background(), buildOptions{env: "prod", pushDeclared: true, targets: []string{"web"}}, full)
+	got, err := resolvePushRegistry(buildOptions{env: "prod", push: true, targets: []string{"web"}}, full)
 	if err != nil || got.registry != "registry.example/prod" {
 		t.Fatalf("resolvePushRegistry = (%+v, %v), want registry.example/prod", got, err)
 	}
@@ -256,67 +295,29 @@ func TestResolvePushRegistry_TargetNarrowingKeepsTheDeclaredRegistry(t *testing.
 // TestResolvePushRegistry_NoPushIsANoOp: a build without --push resolves no
 // registry and never errors, even against an env that declares none.
 func TestResolvePushRegistry_NoPushIsANoOp(t *testing.T) {
-	got, err := resolvePushRegistry(context.Background(), buildOptions{env: "prod"}, &KCLEntities{})
+	got, err := resolvePushRegistry(buildOptions{env: "prod"}, &KCLEntities{})
 	if err != nil || got != (pushRegistryChoice{}) {
 		t.Fatalf("resolvePushRegistry(no --push) = (%+v, %v), want zero, nil", got, err)
 	}
 }
 
-// TestPlatformDefaultRegistry_ProvidesNothingYet pins the seam's contract
-// until the Reliant-hosted registry fills it: no default, no error, for a
-// hosted env and a cluster env alike. When that lands, this test changes
-// with it — deliberately.
-func TestPlatformDefaultRegistry_ProvidesNothingYet(t *testing.T) {
-	for name, ents := range map[string]*KCLEntities{
-		"hosted":  {ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example"}},
-		"cluster": {},
-		"none":    nil,
-	} {
-		if reg, ok, err := platformDefaultRegistry(context.Background(), "prod", ents); reg != "" || ok || err != nil {
-			t.Errorf("%s: platformDefaultRegistry = (%q, %v, %v), want (\"\", false, nil)", name, reg, ok, err)
-		}
-	}
-}
-
-// TestSplitBuildArgs covers the positional disambiguation a bare --push
-// needs: a registry written with a space arrives as a positional, and env
-// names ([a-z][a-z0-9-]*) never look like one.
-func TestSplitBuildArgs(t *testing.T) {
-	cases := []struct {
-		name              string
-		args              []string
-		barePush          bool
-		wantEnv, wantReg  string
-		wantErrSubstrings []string
+// TestDeclaredRegistry_Precedence: ClusterTarget.registry first (it is the env
+// target), then a cluster workload's, then forge.ControlPlane.registry. One
+// resolution, shared by --push, `forge registry login` and `forge env up`.
+func TestDeclaredRegistry_Precedence(t *testing.T) {
+	cp := &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example", Registry: "cp.example/org"}
+	cases := map[string]struct {
+		ents *KCLEntities
+		want string
 	}{
-		{name: "env only", args: []string{"prod"}, wantEnv: "prod"},
-		{name: "nothing", args: nil},
-		{name: "two positionals without bare push", args: []string{"prod", "staging"}, wantErrSubstrings: []string{"at most 1"}},
-		{name: "bare push, env only", args: []string{"prod"}, barePush: true, wantEnv: "prod"},
-		{name: "spaced registry after env", args: []string{"prod", "ghcr.io/acme"}, barePush: true, wantEnv: "prod", wantReg: "ghcr.io/acme"},
-		{name: "spaced registry before env", args: []string{"ghcr.io/acme", "prod"}, barePush: true, wantEnv: "prod", wantReg: "ghcr.io/acme"},
-		{name: "spaced registry, no env", args: []string{"localhost:5051"}, barePush: true, wantReg: "localhost:5051"},
-		{name: "bare localhost", args: []string{"localhost"}, barePush: true, wantReg: "localhost"},
-		{name: "two registries", args: []string{"a.io", "b.io"}, barePush: true, wantErrSubstrings: []string{"one registry"}},
-		{name: "ambiguous bare names", args: []string{"prod", "acme"}, barePush: true, wantErrSubstrings: []string{"--push=<registry>"}},
+		"nil":                {nil, ""},
+		"none":               {&KCLEntities{}, ""},
+		"cluster target":     {&KCLEntities{ClusterTarget: &ClusterTargetEntity{Registry: "ct.example/x"}, ControlPlane: cp}, "ct.example/x"},
+		"control plane only": {&KCLEntities{ControlPlane: cp}, "cp.example/org"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			env, reg, err := splitBuildArgs(tc.args, tc.barePush)
-			if len(tc.wantErrSubstrings) > 0 {
-				if err == nil {
-					t.Fatalf("splitBuildArgs(%v) = (%q, %q), want an error", tc.args, env, reg)
-				}
-				for _, s := range tc.wantErrSubstrings {
-					if !strings.Contains(err.Error(), s) {
-						t.Errorf("error should contain %q, got: %v", s, err)
-					}
-				}
-				return
-			}
-			if err != nil || env != tc.wantEnv || reg != tc.wantReg {
-				t.Fatalf("splitBuildArgs(%v) = (%q, %q, %v), want (%q, %q, nil)", tc.args, env, reg, err, tc.wantEnv, tc.wantReg)
-			}
-		})
+	for name, tc := range cases {
+		if got := declaredRegistry(tc.ents); got != tc.want {
+			t.Errorf("%s: declaredRegistry = %q, want %q", name, got, tc.want)
+		}
 	}
 }

@@ -17,7 +17,7 @@ const hostedStaticDigest = "sha256:222222222222222222222222222222222222222222222
 // TestHostedStaticSiteCLIEndToEnd drives a hosted StaticSite through the real
 // commands against an httptest control plane:
 //
-//	forge build hosted --push <push base>   (site → OCI artifact, stubbed push)
+//	forge build hosted --push               (site → OCI artifact, stubbed push)
 //	forge release cut v1 --env hosted       (records web@<digest>)
 //	forge env promote v1 --to hosted
 //	forge env deploy hosted                 (ensure → STATIC deployment pinned
@@ -54,7 +54,7 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() { hostedStaticPusher = prevPush })
 
-	if out, err := runForge(t, "build", "hosted", "--push", "localhost:5051/org1", "--tag", "t1"); err != nil {
+	if out, err := runForge(t, "build", "hosted", "--push", "--tag", "t1"); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	if pushedTo != "localhost:5051/org1/static.v1/web" {
@@ -111,6 +111,7 @@ _bundle = forge.Bundle {
     control_plane = forge.ControlPlane {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
+        registry = "localhost:5051/org1"
     }
     frontends = [forge.Frontend {
         name = "web"

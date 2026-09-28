@@ -165,7 +165,7 @@ One project image carries every binary. Its ENTRYPOINT is the binary and
 its CMD the default subcommand (`server`), so a workload's `args` select
 what the pod runs, the same subcommand the host runtime runs.
 
-A hosted env declares no registry: pass `--push <image push base>`.
+A hosted env declares its registry on `forge.ControlPlane` (`registry = "<registry-host>/<org>"`); `forge build <env> --push` pushes there.
 
 ### Multi-source Docker builds (`docker.build_contexts`)
 

@@ -84,6 +84,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			HasFrontend:     hasFrontend,
 			FrontendName:    g.FrontendName,
 			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
+			CloudRegistry:   scaffoldCloudRegistry(g.ModulePath),
 		}
 		content, err := templates.DeployTemplates().Render(e.template, data)
 		if err != nil {
@@ -365,4 +366,16 @@ func (g *ProjectGenerator) generateIDPSteps() error {
 		return fmt.Errorf("render idp-steps.yaml: %w", err)
 	}
 	return os.WriteFile(filepath.Join(g.Path, "idp-steps.yaml"), content, 0644)
+}
+
+// scaffoldCloudRegistry is the image registry a scaffolded cloud env declares
+// by default: GitHub's container registry under the module path's owner
+// (github.com/acme/shop → ghcr.io/acme), which a GitHub-hosted project can
+// push to with nothing but its workflow token. "" when the module path names
+// no GitHub owner, and the template writes a visible placeholder instead.
+func scaffoldCloudRegistry(modulePath string) string {
+	if owner := githubOwnerFromModulePath(modulePath); owner != "" {
+		return "ghcr.io/" + strings.ToLower(owner)
+	}
+	return ""
 }

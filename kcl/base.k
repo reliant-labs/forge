@@ -190,10 +190,10 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 #   image_digests -> JSON name→digest map `forge env deploy` pins so each image
 #                   resolves to ITS content-addressed digest. forge.image_digests().
 #                   Absent on the local-registry / `kcl run` path (→ {}).
-#   registry      -> the image registry. Note: the forge CLI does NOT pass
-#                   this by default — your main.k owns the per-env registry
-#                   value (a literal or `forge.registry(default)`); the option
-#                   exists so a one-off `kcl run -D registry=…` can override it.
+#
+# The image REGISTRY is not among them: it is a field your main.k declares
+# (forge.ClusterTarget.registry / forge.ControlPlane.registry), like any
+# other. forge binds no option for it and owns no accessor.
 #
 # Per-env app config is NOT passed via `-D`: it lives in the typed AppConfig
 # instance in `deploy/kcl/<env>/config.k` and is projected into each workload's
@@ -216,14 +216,6 @@ env = lambda default: str = "dev" -> str {
 # `kcl run`.
 namespace = lambda default: str -> str {
     option("namespace") or default
-}
-
-# registry(default) — the image registry. The forge CLI does NOT pass
-# `-D registry=` by default (the per-env registry is yours to declare), so
-# this exists for the one-off override `kcl run -D registry=<reg>`; `default`
-# is your per-env registry literal.
-registry = lambda default: str -> str {
-    option("registry") or default
 }
 
 # default_kubeconfig() — the path to the DEFAULT kubeconfig on the machine

@@ -53,7 +53,7 @@ func TestDeployTemplate_DeploysThroughForge(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`forge build "${{ matrix.env }}" --push "$REGISTRY"`,
+		`forge build "${{ matrix.env }}" --push` + "\n",
 		`forge env deploy "${{ matrix.env }}"`,
 		// The same run-time install every CI job uses.
 		installForgeRun(8),

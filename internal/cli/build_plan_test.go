@@ -13,7 +13,7 @@ import (
 )
 
 // The regression these tests pin: control-plane's v1.7.0 release cut
-// (`forge build prod --release v1.7.0 --push <prod GAR>`) spent eleven minutes
+// (`forge build prod --release v1.7.0 --push`, pushing to prod's GAR) spent eleven minutes
 // building and PUSHING images, then failed on `go build
 // ./cmd/prod-daemon-cluster` — a package that never existed, synthesized for
 // an image-less infra service. The PRs that introduced that shape were green,
@@ -68,7 +68,8 @@ const imagelessInfraFixture = `{
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "registry": "registry.example/prod"
         },
         "spec": {
           "kind": "service"
@@ -98,7 +99,7 @@ func TestBuildPlan_PassesTheReleaseSetWithoutBuildingAnything(t *testing.T) {
 
 	err := runBuild(context.Background(), buildOptions{
 		env: "prod", buildTarget: "all", outputDir: "bin", buildDocker: true,
-		pushRegistry: "registry.example/prod", release: "v9.9.9", plan: true, skipGenerate: true,
+		push: true, release: "v9.9.9", plan: true, skipGenerate: true,
 	})
 	if err != nil {
 		t.Fatalf("--plan on a buildable release set: want nil, got %v", err)
@@ -131,7 +132,8 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "registry": "registry.example/prod"
         },
         "spec": {
           "kind": "service"
@@ -149,7 +151,8 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "registry": "registry.example/prod"
         },
         "spec": {
           "kind": "service"
@@ -161,7 +164,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
 
 	err := runBuild(context.Background(), buildOptions{
 		env: "prod", buildTarget: "all", outputDir: "bin", buildDocker: true,
-		pushRegistry: "registry.example/prod", release: "v9.9.9", plan: true, skipGenerate: true,
+		push: true, release: "v9.9.9", plan: true, skipGenerate: true,
 	})
 	if err == nil {
 		t.Fatal("--plan with a go-build package that does not exist: want an error, got nil")
@@ -207,7 +210,8 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "registry": "registry.example/prod"
         },
         "spec": {
           "kind": "service"
@@ -225,7 +229,8 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "registry": "registry.example/prod"
         },
         "spec": {
           "kind": "service"
@@ -236,7 +241,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
 }`)
 	err := runBuild(context.Background(), buildOptions{
 		env: "prod", buildTarget: "all", outputDir: "bin", buildDocker: true,
-		pushRegistry: "registry.example/prod", release: "v9.9.9", plan: true, skipGenerate: true,
+		push: true, release: "v9.9.9", plan: true, skipGenerate: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "no-such-sibling") {
 		t.Fatalf("missing ShellBuild cwd: want the plan to fail naming it, got %v", err)
@@ -262,7 +267,8 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "registry": "registry.example/prod"
         },
         "spec": {
           "kind": "service"
@@ -280,7 +286,8 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "registry": "registry.example/prod"
         },
         "spec": {
           "kind": "service"
@@ -291,7 +298,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
 }`)
 	err := runBuild(context.Background(), buildOptions{
 		env: "prod", buildTarget: "all", outputDir: "bin", buildDocker: true,
-		pushRegistry: "registry.example/prod", release: "v9.9.9", plan: true, skipGenerate: true,
+		push: true, release: "v9.9.9", plan: true, skipGenerate: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "somebody-elses") || !strings.Contains(err.Error(), "does not cover") {
 		t.Fatalf("declared image nothing builds: want the release coverage error naming it, got %v", err)
@@ -348,7 +355,8 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "registry": "registry.example/prod"
         },
         "spec": {
           "kind": "service"
@@ -368,7 +376,7 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
 	out := captureStdout(t, func() {
 		if err := runBuild(context.Background(), buildOptions{
 			env: "prod", buildTarget: "all", outputDir: "bin", buildDocker: true,
-			pushRegistry: "registry.example/prod", release: "v1.7.0", plan: true, skipGenerate: true,
+			push: true, release: "v1.7.0", plan: true, skipGenerate: true,
 		}); err != nil {
 			t.Errorf("runBuild --plan: %v", err)
 		}

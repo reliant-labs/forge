@@ -117,8 +117,8 @@ type HostedTarget struct {
 	// Registries is the bound release's artifact → registry map: where each
 	// image was pushed (the release artifact's URI). It locates the bytes of
 	// a workload whose image THIS project builds, which is declared
-	// registry-less (`image = "api"`) because the registry is a push-time
-	// fact (`forge build --push <image push base>`), not a declaration.
+	// registry-less (`image = "api"`): the registry is declared once, on the
+	// env's forge.ControlPlane, and recorded here by `forge build <env> --push`.
 	Registries map[string]string
 }
 
@@ -394,7 +394,7 @@ func hostedWorkloadRepository(image, artifact string, group ServiceGroup) (strin
 	}
 	if registry == "" {
 		return "", fmt.Errorf("image %q names no registry, and release %s recorded none for artifact %q — it was built without a push.\n"+
-			"  fix: forge build %s --push <image push base>, re-cut the release (forge release cut <version> --env %s), then promote it",
+			"  fix: forge build %s --push, re-cut the release (forge release cut <version> --env %s), then promote it",
 			image, group.Hosted.Release, artifact, group.Env, group.Env)
 	}
 	return registry + "/" + artifact, nil
@@ -514,7 +514,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no static site artifact %q.\n"+
-					"  fix: build and push the site (forge build %s --push <image push base>), re-cut the release "+
+					"  fix: build and push the site (forge build %s --push), re-cut the release "+
 					"(forge release cut <version> --env %s), then promote it",
 					svc.Name, group.Hosted.Release, artifact, group.Env, group.Env))
 				continue

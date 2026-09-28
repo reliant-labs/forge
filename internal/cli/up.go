@@ -2354,23 +2354,22 @@ func entitiesEmpty(e *KCLEntities) bool {
 	return e == nil || (len(e.Workloads) == 0 && len(e.Infra) == 0 && len(e.Frontends) == 0)
 }
 
-// upBuildCluster builds + pushes the project docker image with the
-// per-env KCL filter applied (deliverable 3's runBuild path). The
-// registry comes from the rendered KCL's K8sCluster.registry —
-// defaults to localhost:5050 for dev (the canonical k3d mirror).
+// upBuildCluster builds the project docker image with the per-env KCL filter
+// applied (deliverable 3's runBuild path) and pushes it to the registry the
+// env's KCL declares (declaredRegistryForEnv — the same resolution
+// `forge build <env> --push` uses). An env that declares no registry has no
+// cluster to pull from, so its images are built locally and nothing is
+// pushed; forge never substitutes a registry of its own.
 func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, noGenerate bool, targets []string) error {
-	registry := "localhost:5050"
-	if reg := k8sClusterRegistryForEnv(ctx, env); reg != "" {
-		registry = reg
-	}
-	return runBuild(ctx, upBuildOptionsFor(env, registry, noGenerate, targets))
+	return runBuild(ctx, upBuildOptionsFor(env, declaredRegistryForEnv(ctx, env), noGenerate, targets))
 }
 
 // upBuildOptionsFor is the pure construction of `forge env up`'s build-phase
 // options, split out from upBuildCluster so the wiring is unit-testable
-// without a cluster to query for a registry. targets is the load-bearing
-// field: it is what scopes the docker build+push to the apps this run is
-// actually bringing up, so a `--target <frontend>` builds no images at all.
+// without a render to read a registry from. registry is the env's declared
+// registry ("" pushes nothing). targets is the load-bearing field: it is what
+// scopes the docker build+push to the apps this run is actually bringing up,
+// so a `--target <frontend>` builds no images at all.
 func upBuildOptionsFor(env, registry string, noGenerate bool, targets []string) buildOptions {
 	return buildOptions{
 		outputDir:     "bin",

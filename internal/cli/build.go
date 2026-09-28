@@ -106,16 +106,15 @@ type buildOptions struct {
 	parallelSet bool
 	buildDocker bool
 	debug       bool
-	// pushRegistry, when non-empty, retags built docker images to
-	// <registry>/<name>:<tag> and pushes them after build. Implies
-	// --docker so users don't have to pass both flags. After
-	// resolvePushRegistry it holds the resolved destination, whichever
-	// precedence step chose it.
+	// push is --push: push the built images to the registry the env's KCL
+	// declares. Implies --docker. It carries no value — the destination is
+	// resolved from the declaration (resolvePushRegistry), never passed.
+	push bool
+	// pushRegistry is the RESOLVED push destination: set by
+	// resolvePushRegistry from the env's declaration when push is on (and
+	// by `forge env up`, from the same declaration). When non-empty, built
+	// docker images are retagged to <registry>/<name>:<tag> and pushed.
 	pushRegistry string
-	// pushDeclared is a BARE --push: push to the registry the env declares
-	// (resolvePushRegistry). Only meaningful while pushRegistry is empty —
-	// an explicit --push <registry> always wins.
-	pushDeclared bool
 	// targetArch overrides the GOARCH used for the Go binary build
 	// AND the docker buildx --platform when --docker / --push is set.
 	// Empty means "use host arch for plain go build; use forge.yaml
@@ -207,9 +206,7 @@ func newBuildCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "build [environment]",
 		Short: "Build the project binary and frontends",
-		// Two positionals are accepted only for `--push <registry>` written
-		// with a space; splitBuildArgs enforces the real arity.
-		Args: cobra.MaximumNArgs(2),
+		Args:  cobra.MaximumNArgs(1),
 		Long: `Build the project's services and frontends.
 
 This command is a PURE EXECUTOR of the per-service, per-env build
@@ -232,46 +229,32 @@ Examples:
   forge build --docker                       # Also build Docker images
   forge build --debug                        # Build with debug symbols for Delve
   forge build prod --push                    # Build + push to the registry deploy/kcl/prod/main.k declares
-  forge build --push ghcr.io/acme            # Build + retag + docker push to an explicit registry
-  forge build prod --push=ghcr.io/acme       # Explicit registry overrides prod's declared one
-  forge build --push localhost:5051          # k3d: auto-mirrors to registry.localhost:5051
 
-Where --push pushes, in order:
-  1. --push <registry>  explicit; always wins. Warns when it differs from
-                        the env's declared registry, because forge env
-                        deploy pulls from the declared one.
-  2. the env's declared registry: cluster_target.registry (else the first
-     forge.K8sCluster.registry) in deploy/kcl/<env>/main.k, the same value
-     forge env up and forge env deploy read.
-  3. otherwise a bare --push fails, naming the file and field to set.
-A hosted env (forge.ControlPlane) declares no registry in its KCL: pass its
-image push base explicitly.
+--push takes no value. The registry is DECLARED in the env's KCL — the
+env's forge.ClusterTarget.registry, or forge.ControlPlane.registry for a
+hosted env — the same value forge env up and forge env deploy read, so what
+is pushed is what is deployed. An env that declares none fails with the file
+and field to set; --push without an env asks for one.
 
-For k3d clusters, --push localhost:<port> also tags the image as
-registry.localhost:<port>/<name> (LOCAL alias only — the host can't
-DNS-resolve registry.localhost, so we don't push it; the containerd
-mirror config inside k3d resolves the manifest reference at pull time).
-This lets deployed manifests reference the in-cluster-resolvable name
-without forcing the user to add /etc/hosts entries on the host.`,
+When the declared registry is a k3d-local localhost:<port>, the image is
+also tagged registry.localhost:<port>/<name> (LOCAL alias only — the host
+can't DNS-resolve registry.localhost, so it isn't pushed; the containerd
+mirror config inside k3d resolves that reference at pull time).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			barePush := opts.pushRegistry == pushDeclaredSentinel
-			env, spacedRegistry, err := splitBuildArgs(args, barePush)
-			if err != nil {
-				return err
+			if len(args) == 1 {
+				if err := validateBuildEnvArg(args[0]); err != nil {
+					return err
+				}
+				opts.env = args[0]
 			}
-			opts.env = env
-			if barePush {
-				opts.pushRegistry = spacedRegistry
-				opts.pushDeclared = spacedRegistry == ""
-			}
-			if opts.pushDeclared && opts.env == "" {
-				return errBarePushNeedsEnv()
+			if opts.push && opts.env == "" {
+				return errPushNeedsEnv()
 			}
 			if _, err := requireFeature(config.FeatureBuild); err != nil {
 				return err
 			}
 			// --push implies --docker so users don't have to pass both.
-			if opts.pushRegistry != "" || opts.pushDeclared {
+			if opts.push {
 				opts.buildDocker = true
 			}
 			// --release pins immutable image digests, which only a docker
@@ -299,11 +282,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
-	// The backticked span is the placeholder cobra prints: --push registry.
-	cmd.Flags().StringVar(&opts.pushRegistry, "push", "", "Push docker images after build (implies --docker). A bare --push pushes to the registry the env declares (cluster_target.registry in deploy/kcl/<env>/main.k); --push `registry` pushes there instead, and warns when it differs from the declared one")
-	// A bare --push records the sentinel instead of failing with "flag needs
-	// an argument". RunE turns it into opts.pushDeclared.
-	cmd.Flags().Lookup("push").NoOptDefVal = pushDeclaredSentinel
+	cmd.Flags().BoolVar(&opts.push, "push", false, "Push docker images after build (implies --docker) to the registry the env's KCL declares (forge.ClusterTarget.registry, or forge.ControlPlane.registry for a hosted env, in deploy/kcl/<env>/main.k). Requires the environment argument; takes no value")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
@@ -515,8 +494,8 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// default build tag.
 	//
 	// The same step decides where this build pushes (resolvePushRegistry:
-	// flag > env declaration > platform default) and writes it back into
-	// opts.pushRegistry, so everything below reads one resolved value.
+	// the registry the env's KCL declares, or a runbook) and writes it back
+	// into opts.pushRegistry, so everything below reads one resolved value.
 	entities, push, err := renderBuildInputs(ctx, cfg, &opts)
 	if err != nil {
 		return err
@@ -1293,7 +1272,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	if len(artifacts) == 0 {
 		return release.Release{}, fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
 			"  A release pins immutable digests, which require a registry push — re-run with --push\n"+
-			"  (forge build %s --release %s --push pushes to the registry the env declares; --push <registry> overrides it).\n"+
+			"  (forge build %s --release %s --push pushes to the registry the env's KCL declares).\n"+
 			"  A release built without --push has only a local tag, which can't be promoted across envs", version, env, version)
 	}
 

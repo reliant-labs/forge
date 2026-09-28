@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bytes"
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,17 +12,23 @@ import (
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
+// updateGolden rewrites testdata/*.golden.yaml from the current render. A
+// flag, not an env var: forge/pkg must not read the ambient environment
+// (internal/pkgguard), tests included.
+var updateGolden = flag.Bool("update", false, "rewrite testdata/*.golden.yaml from the current render")
+
 // The golden suite pins RenderWorkloads' COMPLETE output for representative
 // environments, so any change to a rendered object is a reviewed diff in
 // testdata/*.golden.yaml rather than a silent drift.
 //
 // Regenerate with:
 //
-//	FORGE_UPDATE_GOLDEN=1 go test ./pkg/deploy -run TestGolden
+//	go test ./pkg/deploy -run TestGolden -update
 //
 // The same sets, rendered through the retired KCL renderer
-// (kcl/workloads/expand.k @ 9c739754), are the parity baseline; every
-// intentional difference is listed in .scratch/parity.md.
+// (kcl/workloads/expand.k @ 9c739754), are the parity baseline for the
+// intentional differences recorded in the PR (probe timeout 3s, /tmp mount,
+// no token automount, no Namespace object, per-workload NetworkPolicy, …).
 
 // goldenImage is what the lowering resolves a forge-built workload's image to.
 const goldenImage = "ghcr.io/acme/demo:v1.2.3"
@@ -119,7 +126,7 @@ func goldenCases() []goldenCase {
 }
 
 func TestGolden(t *testing.T) {
-	update := os.Getenv("FORGE_UPDATE_GOLDEN") == "1"
+	update := *updateGolden
 	for _, c := range goldenCases() {
 		t.Run(c.name, func(t *testing.T) {
 			rctx := goldenCtx
@@ -149,10 +156,10 @@ func TestGolden(t *testing.T) {
 			}
 			want, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("%v (regenerate with FORGE_UPDATE_GOLDEN=1)", err)
+				t.Fatalf("%v (regenerate with -update)", err)
 			}
 			if !bytes.Equal(want, buf.Bytes()) {
-				t.Errorf("%s differs from the render (FORGE_UPDATE_GOLDEN=1 to accept):\n--- got\n%s", path, buf.String())
+				t.Errorf("%s differs from the render (-update to accept):\n--- got\n%s", path, buf.String())
 			}
 		})
 	}

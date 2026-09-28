@@ -183,6 +183,16 @@ var fullOnlyKindReasons = map[WorkloadKind]string{
 	KindTool:     "a tool is never scheduled, so there is nothing for the hosted runtime to run",
 }
 
+// FullOnlyReason is why a ProfileFull field path (a FieldProfiles key) is
+// refused under ProfileRestricted, or "" when the path is not Full-only.
+// Exported so author-time checks (the generated KCL runtime mask) state the
+// same reason admission does, from the one table.
+func FullOnlyReason(path string) string { return fullOnlyReasons[path] }
+
+// FullOnlyKindReason is why a Full-only kind is refused under
+// ProfileRestricted, or "" when the kind is allowed there.
+func FullOnlyKindReason(k WorkloadKind) string { return fullOnlyKindReasons[k] }
+
 // profileViolations walks a spec and returns one error per set field that
 // profile p does not permit, including fields FieldProfiles does not
 // classify at all (default-deny).

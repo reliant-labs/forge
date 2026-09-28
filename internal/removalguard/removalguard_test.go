@@ -1503,32 +1503,23 @@ func TestRemovedFeaturesLeaveNoReferences(t *testing.T) {
 	}
 
 	hitsCh := make(chan fileHits, len(scanned))
-	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
-	var wg sync.WaitGroup
-	for idx, f := range scanned {
-		wg.Add(1)
-		go func(idx int, rel string, content []byte) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			local := map[string][]finding{}
-			lines := strings.Split(string(content), "\n")
-			for ri, rm := range removals {
-				for i, line := range lines {
-					for _, hit := range matchLine(root, line, rm, allowedFor[ri], rel) {
-						hit.feature, hit.path, hit.line = rm.Name, rel, i+1
-						hit.snippet = strings.TrimSpace(line)
-						local[rm.Name] = append(local[rm.Name], hit)
-					}
+	forEachIndex(len(scanned), func(idx int) {
+		rel, content := scanned[idx].rel, scanned[idx].content
+		local := map[string][]finding{}
+		lines := strings.Split(string(content), "\n")
+		for ri, rm := range removals {
+			for i, line := range lines {
+				for _, hit := range matchLine(root, line, rm, allowedFor[ri], rel) {
+					hit.feature, hit.path, hit.line = rm.Name, rel, i+1
+					hit.snippet = strings.TrimSpace(line)
+					local[rm.Name] = append(local[rm.Name], hit)
 				}
 			}
-			if len(local) > 0 {
-				hitsCh <- fileHits{idx: idx, byFeature: local}
-			}
-		}(idx, f.rel, f.content)
-	}
-	wg.Wait()
+		}
+		if len(local) > 0 {
+			hitsCh <- fileHits{idx: idx, byFeature: local}
+		}
+	})
 	close(hitsCh)
 
 	perFile := make([]map[string][]finding, len(scanned))
@@ -1895,19 +1886,11 @@ func forEachScannedFile(t *testing.T, root string, fn func(rel string, content [
 		err     error
 	}
 	results := make([]readResult, len(files))
-	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
-	var wg sync.WaitGroup
-	for i, rel := range files {
-		wg.Add(1)
-		go func(i int, rel string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-			results[i] = readResult{rel: rel, content: content, err: err}
-		}(i, rel)
-	}
-	wg.Wait()
+	forEachIndex(len(files), func(i int) {
+		rel := files[i]
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		results[i] = readResult{rel: rel, content: content, err: err}
+	})
 
 	for _, res := range results {
 		rel, content := res.rel, res.content
@@ -1919,6 +1902,33 @@ func forEachScannedFile(t *testing.T, root string, fn func(rel string, content [
 		}
 		fn(rel, content)
 	}
+}
+
+// forEachIndex calls fn(i) for every i in [0, n) on a FIXED pool of
+// GOMAXPROCS workers, and returns when all calls have.
+//
+// A fixed pool, not a goroutine per item behind a semaphore: the latter
+// creates every goroutine up front and only bounds how many RUN, so the live
+// goroutine count — and the stacks, closures and captured slices they hold —
+// grows with the size of the repository rather than with the machine. The
+// work is CPU-bound regex matching, so GOMAXPROCS is the useful width.
+func forEachIndex(n int, fn func(i int)) {
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), n) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				fn(i)
+			}
+		}()
+	}
+	for i := range n {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
 }
 
 // isBinary reports whether content looks like a binary file. A NUL byte in the

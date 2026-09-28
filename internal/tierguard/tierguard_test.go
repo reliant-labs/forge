@@ -48,6 +48,23 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// maxConcurrentRenders bounds how many fixture render children run at once.
+//
+// Each child is a whole forge pipeline — project new, scaffold, generate,
+// buf, sqlc, go mod tidy — plus the go toolchain processes it spawns, so a
+// render's memory is the price of a real project build, and the guard's peak
+// is this number times that price. Leaving it at len(specs) made the peak
+// grow with every fixture added and co-reside with whatever else the runner
+// was doing; with all four at once the package alone peaked at 6.7 GB RSS
+// on a 16 GB CI runner, which is how the Test job came to be OOM-killed
+// ("The runner has received a shutdown signal", exit 143).
+//
+// It is a FIXED number rather than GOMAXPROCS on purpose: the renders are
+// memory-bound, not CPU-bound, and a bigger machine does not make a render
+// smaller. Two keeps most of #167's wall-clock win (the renders are ~30s
+// each, so two slots cost roughly one extra render over four).
+const maxConcurrentRenders = 2
+
 // renderOnce memoizes the fixture renders. Each costs ~20s of real
 // codegen (buf, sqlc, go mod tidy), and every test in this package wants
 // the same set, so they are built once per binary.
@@ -102,11 +119,15 @@ func renders(t *testing.T) (inputs []*renderResult, identity *renderResult) {
 
 		results := make([]*renderResult, len(specs))
 		errs := make([]error, len(specs))
+		// At most maxConcurrentRenders children at once: see its doc.
+		slots := make(chan struct{}, maxConcurrentRenders)
 		var wg sync.WaitGroup
 		for i, spec := range specs {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				slots <- struct{}{}
+				defer func() { <-slots }()
 				r, rerr := renderInChild(filepath.Join(base, spec.dir), spec.fx)
 				if rerr != nil {
 					errs[i] = fmt.Errorf("fixture %s: %w", spec.fx.Label, rerr)

@@ -2356,31 +2356,32 @@ func entitiesEmpty(e *KCLEntities) bool {
 
 // upBuildCluster builds the project docker image with the per-env KCL filter
 // applied (deliverable 3's runBuild path) and pushes it to the registry the
-// env's KCL declares (declaredRegistryForEnv — the same resolution
-// `forge build <env> --push` uses). An env that declares no registry has no
-// cluster to pull from, so its images are built locally and nothing is
-// pushed; forge never substitutes a registry of its own.
+// env's KCL declares — resolved inside runBuild by resolvePushRegistry, the
+// same resolution `forge build <env> --push` uses. An env that declares no
+// registry has no cluster to pull from, so its images are built locally and
+// nothing is pushed; forge never substitutes a registry of its own.
 func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, noGenerate bool, targets []string) error {
-	return runBuild(ctx, upBuildOptionsFor(env, declaredRegistryForEnv(ctx, env), noGenerate, targets))
+	return runBuild(ctx, upBuildOptionsFor(env, noGenerate, targets))
 }
 
 // upBuildOptionsFor is the pure construction of `forge env up`'s build-phase
-// options, split out from upBuildCluster so the wiring is unit-testable
-// without a render to read a registry from. registry is the env's declared
-// registry ("" pushes nothing). targets is the load-bearing field: it is what
-// scopes the docker build+push to the apps this run is actually bringing up,
-// so a `--target <frontend>` builds no images at all.
-func upBuildOptionsFor(env, registry string, noGenerate bool, targets []string) buildOptions {
+// options, split out from upBuildCluster so the wiring is unit-testable.
+// pushIfDeclared is what makes the cluster run the code just built: without
+// it the image is only tagged locally and the cluster keeps pulling whatever
+// last sat at that tag. targets is the other load-bearing field: it scopes the
+// docker build+push to the apps this run is actually bringing up, so a
+// `--target <frontend>` builds no images at all.
+func upBuildOptionsFor(env string, noGenerate bool, targets []string) buildOptions {
 	return buildOptions{
-		outputDir:     "bin",
-		buildTarget:   "all",
-		parallel:      true,
-		buildDocker:   true,
-		pushRegistry:  registry,
-		env:           env,
-		skipFrontends: true,
-		skipGenerate:  noGenerate,
-		targets:       targets,
+		outputDir:      "bin",
+		buildTarget:    "all",
+		parallel:       true,
+		buildDocker:    true,
+		pushIfDeclared: true,
+		env:            env,
+		skipFrontends:  true,
+		skipGenerate:   noGenerate,
+		targets:        targets,
 	}
 }
 

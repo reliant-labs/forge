@@ -451,14 +451,18 @@ _workload_record = lambda entity: any, part_of: str -> any {
     }
 }
 
-# One forge.Manifests group, placed and (when named) owned. The cluster
-# label is written only off the primary cluster, which is what every
-# unlabelled object already routes to.
+# One forge.Manifests group, placed and (when named) owned. Every object is
+# stamped with the group's RESOLVED cluster (its own, else the primary's),
+# including on the primary: the deploy router replicates an object with no
+# forge.dev/cluster to EVERY cluster of a multi-cluster env (it never guesses
+# a primary for an unattributed object), so leaving the primary's objects
+# unstamped put a primary-only ClusterIssuer on every cluster. Only an env
+# with no cluster at all leaves the label off.
 _raw_manifests = lambda g: any, primary: any, part_of: str -> [any] {
     _cluster = g.cluster if g.cluster else (primary.cluster if primary else "")
     _ns = g.namespace if g.namespace else (primary.namespace if primary else "")
     [_stamp_cluster(_default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns), _cluster) \
-        if primary == Undefined or _cluster != primary.cluster else _default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns) \
+        if _cluster else _default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns) \
         for m in g.objects]
 }
 

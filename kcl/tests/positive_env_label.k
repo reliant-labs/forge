@@ -15,8 +15,9 @@ Pinned here (the KCL half):
      (pkg/deploy TestEnvStamp).
   2. A hand-written label on a raw manifest WINS: the stamp merges UNDER
      existing labels.
-  3. No binding, no drill-in ⇒ no label at all, and a raw manifest with no
-     labels keeps no `labels` block.
+  3. No binding, no drill-in ⇒ no env label at all: a raw manifest with no
+     labels gains only its group's cluster routing label (forge.dev/cluster,
+     positive_service_owned_manifests.k), nothing env-related.
 
 The `-D env=` DEFAULT path is positive_env_option.k.
 """
@@ -71,4 +72,4 @@ assert_hand_written_label_wins = _labels_of([m for m in manifests if m.metadata.
 assert_no_env_no_label = all m in plain_manifests {
     _KEY not in _labels_of(m) or m.metadata.name == "pinned"
 }
-assert_no_env_no_labels_block = "labels" not in [m for m in plain_manifests if m.kind == "ClusterIssuer"][0].metadata
+assert_no_env_only_cluster_label = _labels_of([m for m in plain_manifests if m.kind == "ClusterIssuer"][0]) == {"forge.dev/cluster" = "k3d-myapp"}

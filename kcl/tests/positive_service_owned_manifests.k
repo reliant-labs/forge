@@ -11,9 +11,10 @@ never inferred from a primary-cluster heuristic:
      ServiceMonitor, an operator may key on them); forge's value is only a
      default for a key the object does not set. A chart-decoded object whose
      labels disagree with forge's renders (no KCL unification error).
-  3. An off-primary `cluster` stamps `forge.dev/cluster: <context>`, so the
-     multi-cluster router sends the group there. Objects on the primary
-     cluster carry no cluster label (they already route there).
+  3. Every group stamps its resolved cluster, `forge.dev/cluster: <context>`
+     (its own `cluster`, else the primary's), so the multi-cluster router
+     sends it there and ONLY there. An unstamped object is replicated to
+     every cluster, so a primary group must be stamped too.
   4. `namespace` fills a NAMESPACED object that names none; an object that
      names its own keeps it; a cluster-scoped kind never gets one.
   5. An UNNAMED group belongs to no --target: no owner stamp.
@@ -124,7 +125,9 @@ assert_decoded_other_label_kept = _sa.metadata.labels["helm.sh/chart"] == "opera
 # ── (3) cluster placement ──────────────────────────────────────────────
 assert_off_primary_stamped = _ds.metadata.labels["forge.dev/cluster"] == "k3d-cp-daemon" and \
     _sa.metadata.labels["forge.dev/cluster"] == "k3d-cp-daemon"
-assert_primary_unstamped = "forge.dev/cluster" not in _crd.metadata.labels and "forge.dev/cluster" not in _gw.metadata.labels
+assert_primary_stamped = _crd.metadata.labels["forge.dev/cluster"] == "k3d-control-plane" and \
+    _gw.metadata.labels["forge.dev/cluster"] == "k3d-control-plane" and \
+    _loose.metadata.labels["forge.dev/cluster"] == "k3d-control-plane"
 
 # ── (4) namespace placement ────────────────────────────────────────────
 assert_ns_filled_from_group = _ds.metadata.namespace == "prepull"

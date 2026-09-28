@@ -29,6 +29,10 @@ import (
 //
 //	# kcl-args: env=dev              -D bindings for the render. Several
 //	# kcl-args: env=dev | env=e2e    `|`-separated sets run once each.
+//	                                 Bindings are whitespace-separated, so a
+//	                                 value may not contain a space or `|`;
+//	                                 a string is a KCL literal, quoted the
+//	                                 way forge quotes it (image_tag="3826648").
 //	# reject-args: env=prod          also render under these bindings and
 //	# reject-expect: <substring>     require a refusal naming <substring>.
 //	# expect: <substring>            (negative_* / closedschema_*) the

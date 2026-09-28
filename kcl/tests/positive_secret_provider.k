@@ -6,14 +6,14 @@ KCL only emits the DECLARATION (type + path) — secret VALUES never
 enter KCL render output. The declaration rides in the ENTITY output
 (forge.render) alongside `services`, and is ABSENT (not null) when the
 bundle declares no provider. It is NEVER emitted into the k8s manifest
-stream (forge.render_manifests).
+stream (output.manifests).
 
 Exercises:
 
   * FileSecrets projects {type:"dir", path:...} into output.
   * ExternalSecrets projects {type:"external"} into output.
   * No provider => `secret_provider` key absent from output.
-  * Provider declaration never appears in render_manifests.
+  * Provider declaration never appears in output.manifests.
 """
 
 # kcl-args: env=dev | env=e2e

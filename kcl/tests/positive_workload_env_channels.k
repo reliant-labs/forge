@@ -1,66 +1,72 @@
 """
-Positive test — a container env entry carries EXACTLY ONE source, and
-every declared source channel actually renders.
+Positive test — a workload's `env` is a MAP of name → value | reference, and
+every channel lowers to its WorkloadSpec wire shape with EXACTLY ONE source.
 
-Two defects this pins closed, both invisible to
-`kubectl apply --dry-run=client` and both fatal against a real cluster:
+Two defects the map shape makes structurally impossible, and this pins:
 
-  * an EnvVar with a literal `value` AND a `secret_ref` rendered BOTH
-    `value:` and `valueFrom:`. The API server rejects that entry
-    ("may not be specified when `value` is not empty"), so the deploy
-    died server-side after CI went green.
+  * an entry with a literal AND a reference (the old EnvVar rendered both
+    `value:` and `valueFrom:`, which the API server rejects server-side
+    after client dry-run passed). A map value is ONE thing.
+  * a duplicate name from `base + overrides` list concatenation (kubectl
+    rejects it). A map cannot hold one; `|` is last-wins.
 
-  * `field_ref` — the Downward API channel, declared on EnvVar and
-    honoured by the legacy render path — was dropped by the component
-    expander. The entry rendered as a bare `{name: POD_IP}`, which k8s
-    accepts as an EMPTY variable. Silently empty is worse than either
-    of the other outcomes.
+Plus the fieldRef channel that the old component expander silently dropped
+(rendering `{name: POD_IP}` — an EMPTY variable).
 """
 
+import forge
 import forge.workloads as fw
 
-_components = [
-    fw.Workload {
-        kind = "service"
-        name = "api"
-        ports = [fw.Port {name = "http", port = 8080, expose = True}]
-        env_vars = [
-            {name = "DATABASE_URL", secret_ref = "db-credentials", secret_key = "database-url"}
-            {name = "FEATURE_MAP", config_map_ref = "features", config_map_key = "map"}
-            {name = "POD_IP", field_ref = "status.podIP"}
-            {name = "LOG_LEVEL", value = "info"}
-            # A literal AND a reference. The reference wins: the literal
-            # is the placeholder the config projection emits before a
-            # field is bound to a Secret, and the binding is the intent.
-            {name = "API_TOKEN", value = "", secret_ref = "app-secrets", secret_key = "api-token"}
-        ]
+_base = fw.Workload {
+    name = "api"
+    image = "demo"
+    ports = [fw.Port {name = "http", port = 8080}]
+    env = {
+        LOG_LEVEL = "info"
+        DATABASE_URL = forge.SecretRef {name = "db-credentials", key = "database-url"}
+        FEATURE_MAP = forge.ConfigMapRef {name = "features", key = "map"}
+        POD_IP = forge.FieldRef {path = "status.podIP"}
+        STRIPE_KEY = forge.ManagedSecret {name = "STRIPE_KEY"}
+        SENTRY_DSN = forge.ManagedSecret {name = "SENTRY_DSN", optional = True}
+        ORDERS_DB = forge.DatabaseRef {name = "orders"}
+        RUNTIME_CLASS_NAME = ""
     }
-]
-
-_env = fw.WorkloadEnv {
-    namespace = "demo-prod"
-    project = "demo"
-    network_policies = False
 }
 
-manifests = fw.render_workloads(_components, _env)
+# A per-env refinement: `|` on the env map overrides by name, last wins,
+# and a REFERENCE can replace a LITERAL (and vice versa) with no residue.
+_prod = _base | {env = _base.env | {
+    LOG_LEVEL = "warn"
+    RUNTIME_CLASS_NAME = forge.ConfigMapRef {name = "runtime", key = "class"}
+    NEW_FLAG = "on"
+}}
 
-_container = [m for m in manifests if m.kind == "Deployment"][0].spec.template.spec.containers[0]
-_by_name = {e.name: e for e in _container.env}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-prod", registry = "localhost:5050"}
+output = forge.render(forge.Bundle {
+    project = "demo"
+    workloads = [_prod | {runtime = forge.OnCluster {target = _k3d}}]
+})
+_spec_env = output.workloads[0].spec.env
+_env = {e.name: e for e in _spec_env}
 
-# --- Every channel renders its k8s source ---
-assert_secret_channel = _by_name["DATABASE_URL"].valueFrom.secretKeyRef == {name = "db-credentials", key = "database-url"}
-assert_config_map_channel = _by_name["FEATURE_MAP"].valueFrom.configMapKeyRef == {name = "features", key = "map"}
-assert_field_ref_channel = _by_name["POD_IP"].valueFrom.fieldRef == {fieldPath = "status.podIP"}
-assert_literal_channel = _by_name["LOG_LEVEL"].value == "info"
+assert_value_channel = _env["LOG_LEVEL"] == {name = "LOG_LEVEL", value = "warn"}
+assert_secret_channel = _env["DATABASE_URL"].secretRef == {name = "db-credentials", key = "database-url"}
+assert_config_map_channel = _env["FEATURE_MAP"].configMapRef == {name = "features", key = "map"}
+assert_field_ref_channel = _env["POD_IP"].fieldRef == {fieldPath = "status.podIP"}
+assert_managed_secret_channel = _env["STRIPE_KEY"].managedSecret == {name = "STRIPE_KEY"}
+assert_managed_secret_optional = _env["SENTRY_DSN"].managedSecret == {name = "SENTRY_DSN", optional = True}
+assert_database_ref_channel = _env["ORDERS_DB"].databaseRef == {name = "orders"}
 
-# --- Never two sources on one entry ---
-# k8s rejects `value` + `valueFrom` together, and rejects it only
-# SERVER-side — client dry-run waves it through.
-_dual = [e for e in _container.env if "value" in e and "valueFrom" in e]
-assert_never_two_sources = len(_dual) == 0
-assert_reference_wins_over_literal = _by_name["API_TOKEN"].valueFrom.secretKeyRef.name == "app-secrets"
+# Last-wins override: literal → reference leaves no literal behind.
+assert_override_to_reference = _env["RUNTIME_CLASS_NAME"].configMapRef.name == "runtime" and "value" not in _env["RUNTIME_CLASS_NAME"]
+assert_added = _env["NEW_FLAG"].value == "on"
 
-# --- And no entry is left with NO source at all ---
-_sourceless = [e for e in _container.env if "value" not in e and "valueFrom" not in e]
-assert_no_sourceless_entries = len(_sourceless) == 0
+# Exactly one source on every entry; no sourceless entries; no duplicates.
+_channels = ["value", "secretRef", "configMapRef", "fieldRef", "managedSecret", "databaseRef", "workloadURL"]
+assert_exactly_one_source = all e in _spec_env {
+    len([c for c in _channels if c in e]) == 1
+}
+assert_no_duplicate_names = len(_env) == len(_spec_env)
+# Overriding keeps the base's insertion order; additions go last.
+assert_order_preserved = [e.name for e in _spec_env][:3] == ["LOG_LEVEL", "DATABASE_URL", "FEATURE_MAP"]
+assert_addition_last = _spec_env[-1].name == "NEW_FLAG"

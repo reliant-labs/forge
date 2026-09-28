@@ -4,7 +4,7 @@ Positive test — the ManagedDatabase tier on the KCL surface.
 A database is a Bundle entry (`databases`), not a Service deploy variant: it
 has no image, no build and no ports. Its spec is the generated
 tiers.ManagedDatabase (from forge's Go type
-pkg/deploy/v1alpha1.ManagedDatabaseSpec). render_manifests emits one
+pkg/deploy/v1alpha1.ManagedDatabaseSpec). output.manifests carries one
 forge.dev/v1alpha1 declaration record per database, which forge's manifest
 extraction expands through the Go renderer into a CloudNativePG Cluster.
 

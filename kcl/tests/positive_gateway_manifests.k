@@ -2,7 +2,7 @@
 Positive test — Gateway API resources render to the correct
 gateway.networking.k8s.io/v1 manifests.
 
-Asserts that render_manifests emits a Gateway with the expected
+Asserts that output.manifests carries a Gateway with the expected
 listeners and an HTTPRoute with the expected parentRefs +
 backendRefs.
 """

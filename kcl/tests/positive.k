@@ -1,51 +1,57 @@
 """
-Positive tests — each typed entity constructs cleanly and produces
-the expected JSON shape.
+Positive test — the kitchen sink: one Bundle, every runtime, and the §9.1
+`output` contract shape each one projects to.
 
-These are not unit tests in the `kcl test` framework (which doesn't
-exist yet at v0.11). Instead each test sets an `assert_*` identifier
-to a boolean; the test runner (`tests/run.sh` or the Go-side test in
-`internal/templates/`) checks every `assert_*` is `True` and that
-`output` matches the expected JSON.
+Each `assert_*` identifier must be true (see internal/templates/
+kcl_module_test.go). What this pins is the SHAPE Go decodes
+(internal/cli/kcl_render.go WorkloadEntity / RuntimeEntity), so a KCL-side
+rename breaks here, loudly, instead of as an empty field in the CLI.
 """
 
 import forge
+import forge.workloads as fw
 
-# A Service with HostDeploy. env_vars carries KCL-declared per-env
-# config; secret VALUES come from the bundle secret_provider.
-# working_dir pins the cross-repo case — a sibling repo whose Air
-# config resolves build paths relative to ITS own root.
-_svc_host = forge.RenderedWorkload {
+_k3d = forge.ClusterTarget {
+    cluster = "k3d-myapp"
+    namespace = "myapp-dev"
+    registry = "localhost:5050"
+}
+
+# Host: air, cross-repo working_dir, declared listen port. No env on the
+# runtime — env is the workload's own `env`, the same on every runtime.
+_admin = fw.Workload {
     name = "admin-server"
-    image = "myapp:dev"
-    deploy = forge.HostDeploy {
+    build = forge.GoBuild {cmd = "./cmd/myapp", output_name = "myapp"}
+    args = ["admin"]
+    env = {LOG_LEVEL = "debug"}
+    runtime = forge.OnHost {
         runner = "air"
         air_config = "../reliant/.cloud-dev/air.api-server.toml"
-        env_vars = [
-            forge.EnvVar { name = "LOG_LEVEL", value = "debug" }
-        ]
         working_dir = "../reliant"
+        listen_ports = [8085]
     }
 }
 
-# A Service with K8sCluster. Ingress is owned by the Gateway/HTTPRoute
-# blocks on the Bundle, not the service's deploy block.
-_svc_cluster = forge.RenderedWorkload {
+# Cluster: two replicas, two named ports.
+_proxy = fw.Workload {
     name = "workspace-proxy"
-    image = "myapp:dev"
-    deploy = forge.K8sCluster {
-        cluster = "k3d-myapp"
-        namespace = "myapp-dev"
-        registry = "localhost:5050"
-        replicas = 2
-        ports = [8080, 9090]
-    }
+    build = forge.GoBuild {cmd = "./cmd/myapp", output_name = "myapp"}
+    image = "myapp"
+    args = ["proxy"]
+    replicas = 2
+    ports = [
+        fw.Port {name = "http", port = 8080, expose = True}
+        fw.Port {name = "grpc", port = 9090}
+    ]
+    runtime = forge.OnCluster {target = _k3d}
 }
 
-# A Service with BuildOnly + variants.
-_svc_build = forge.RenderedWorkload {
+# Build-only with variants: built and shipped, never run.
+_daemon = fw.Workload {
     name = "reliant-daemon"
-    deploy = forge.BuildOnly {
+    kind = "tool"
+    build = forge.GoBuild {cmd = "./cmd/daemon"}
+    runtime = forge.BuildOnly {
         build_variants = [
             forge.BuildVariant {name = "dev"}
             forge.BuildVariant {name = "prod", ldflags = ["-X main.Env=prod"]}
@@ -53,80 +59,108 @@ _svc_build = forge.RenderedWorkload {
     }
 }
 
-# An Operator.
-_op = forge.Operator {
+# An operator and a cron, cluster-bound through Bundle.runtime.
+_op = fw.Workload {
     name = "workspace-controller"
-    image = "myapp:dev"
+    kind = "operator"
+    image = "myapp"
+    args = ["controller"]
     crds = ["Workspace"]
-    cluster_rbac = forge.ClusterRBAC {rules = [{apiGroups = ["forge.io"], resources = ["workspaces"], verbs = ["*"]}]}
+    clusterRBAC = [{apiGroups = ["forge.io"], resources = ["workspaces"], verbs = ["*"]}]
 }
-
-# A Frontend.
-_fe = forge.Frontend {
-    name = "admin-web"
-    path = "frontends/admin-web"
-}
-
-# A scheduled CronJob.
-_cron = forge.CronJob {
+_cron = fw.Workload {
     name = "billing-sweeper"
+    kind = "cron"
+    image = "myapp"
+    args = ["cron", "billing-sweep"]
     schedule = "@hourly"
-    image = "myapp:prod"
-    command = ["./myapp", "cron", "billing-sweep"]
 }
-
-# A one-shot Job (no schedule).
-_job = forge.CronJob {
+_job = fw.Workload {
     name = "db-bootstrap"
-    image = "myapp:prod"
-    command = ["./myapp", "migrate", "up"]
-}
-
-_cm = forge.ConfigMap {
-    name = "myapp-dev-config"
-    data = {"LOG_LEVEL" = "info"}
+    kind = "job"
+    image = "myapp"
+    args = ["db", "migrate", "up"]
 }
 
 _bundle = forge.Bundle {
-    services = [_svc_host, _svc_cluster, _svc_build]
-    operators = [_op]
-    frontends = [_fe]
-    cronjobs = [_cron, _job]
-    config_maps = [_cm]
+    project = "myapp"
+    env = "dev"
+    runtime = forge.OnCluster {target = _k3d}
+    workloads = [_admin, _proxy, _daemon, _op, _cron, _job]
+    frontends = [forge.Frontend {name = "admin-web", path = "frontends/admin-web"}]
+    config_maps = [forge.ConfigMap {name = "myapp-dev-config", data = {"LOG_LEVEL" = "info"}}]
 }
 
 output = forge.render(_bundle)
 
-# ── Invariants ─────────────────────────────────────────────────────
+_w = {w.name: w for w in output.workloads}
 
-# Service.deploy discriminator dispatches correctly.
-assert_host_discriminator = output.services[0].deploy.type == "host"
-assert_cluster_discriminator = output.services[1].deploy.type == "cluster"
-assert_buildonly_discriminator = output.services[2].deploy.type == "build-only"
+# ── Top-level contract keys (§9.1) ──────────────────────────────────
+assert_project = output.project == "myapp"
+assert_env = output.env == "dev"
+assert_image_tag_is_str = typeof(output.image_tag) == "str"
+assert_buckets_present = all k in ["workloads", "infra", "frontends", "databases", "config_maps", "gateways", "http_routes", "grpc_routes", "runtime_classes", "helm_charts", "required_secrets", "required_dns", "rendered_secrets", "manifests", "clusters", "kubeconfig_secrets"] {
+    k in output
+}
+# The deleted buckets are GONE, not empty: a Go decoder that still reads
+# `services` must fail loudly, not see [].
+assert_no_legacy_buckets = all k in ["services", "operators", "cronjobs", "jobs"] {
+    k not in output
+}
 
-# Missing optional fields project as null (not omitted).
-assert_host_runner_present = output.services[0].deploy.runner == "air"
-assert_host_env_vars_one = len(output.services[0].deploy.env_vars) == 1
-assert_host_env_vars_name = output.services[0].deploy.env_vars[0].name == "LOG_LEVEL"
-assert_host_delve_port_default = output.services[0].deploy.delve_port == 2345
-assert_host_working_dir_set = output.services[0].deploy.working_dir == "../reliant"
-assert_cluster_resources_null = output.services[1].deploy.resources == None
-assert_cluster_platform_null = output.services[1].deploy.platform == None
+# ── Every workload of every runtime is in output.workloads ─────────
+assert_all_workloads = len(output.workloads) == 6
+assert_runtime_types = [_w[n].runtime.type for n in ["admin-server", "workspace-proxy", "reliant-daemon", "workspace-controller", "billing-sweeper", "db-bootstrap"]] == \
+    ["host", "cluster", "build-only", "cluster", "cluster", "cluster"]
+assert_kinds = [_w[n].kind for n in ["admin-server", "workspace-controller", "billing-sweeper", "db-bootstrap", "reliant-daemon"]] == \
+    ["service", "operator", "cron", "job", "tool"]
 
-# Buckets are present even when empty.
-assert_bucket_services_count = len(output.services) == 3
-assert_bucket_operators_count = len(output.operators) == 1
-assert_bucket_frontends_count = len(output.frontends) == 1
-assert_bucket_cronjobs_count = len(output.cronjobs) == 2
+# ── Host runtime block ──────────────────────────────────────────────
+_h = _w["admin-server"].runtime
+assert_host_runner = _h.runner == "air"
+assert_host_air_config = _h.air_config == "../reliant/.cloud-dev/air.api-server.toml"
+assert_host_working_dir = _h.working_dir == "../reliant"
+assert_host_listen_ports = _h.listen_ports == [8085]
+assert_host_delve_default = _h.delve_port == 2345
+# No command, no env on the runtime: the host argv is derived in Go from
+# build + args, and env is the spec's.
+assert_host_runtime_has_no_command = "command" not in _h and "env_vars" not in _h
+assert_host_env_in_spec = [e for e in _w["admin-server"].spec.env if e.name == "LOG_LEVEL"][0].value == "debug"
+assert_host_args_in_spec = _w["admin-server"].spec.args == ["admin"]
+# A host workload runs no image.
+assert_host_spec_image_empty = "image" not in _w["admin-server"].spec or _w["admin-server"].spec.image == ""
 
-# CronJob with empty schedule projects as schedule: null.
-assert_oneshot_schedule_null = output.cronjobs[1].schedule == None
-assert_scheduled_schedule_set = output.cronjobs[0].schedule == "@hourly"
+# ── Cluster runtime block: the target's coordinates, resolved ──────
+_c = _w["workspace-proxy"].runtime
+assert_cluster_coords = _c.cluster == "k3d-myapp" and _c.namespace == "myapp-dev" and _c.registry == "localhost:5050"
+assert_cluster_optional_null = _c.domain == None and _c.platform == None
+assert_cluster_replicas_in_spec = _w["workspace-proxy"].spec.replicas == 2
+assert_cluster_ports_in_spec = [p.name for p in _w["workspace-proxy"].spec.ports] == ["http", "grpc"]
+assert_cluster_expose = _w["workspace-proxy"].spec.ports[0].expose == True
 
-# Operator has its CRDs + cluster_rbac populated.
-assert_operator_crds = output.operators[0].crds == ["Workspace"]
-assert_operator_rbac_rules_count = len(output.operators[0].cluster_rbac.rules) == 1
+# ── Build-only runtime block ────────────────────────────────────────
+_b = _w["reliant-daemon"].runtime
+assert_build_only_variants = [v.name for v in _b.build_variants] == ["dev", "prod"]
+assert_build_only_ldflags = _b.build_variants[1].ldflags == ["-X main.Env=prod"]
 
-# config_maps bucket projects cleanly.
-assert_config_maps_count = len(output.config_maps) == 1
-assert_config_map_data = output.config_maps[0].data["LOG_LEVEL"] == "info"
+# ── Build is typed and explicit on every forge-built workload ──────
+assert_build_typed = _w["admin-server"].build.type == "go" and _w["admin-server"].build.cmd == "./cmd/myapp"
+assert_output_name = _w["admin-server"].build.output_name == "myapp"
+# A workload that names only an image is NOT built here: build is null.
+assert_image_only_not_built = _w["workspace-controller"].build == None
+
+# ── Operator / cron / job facts ride the spec ───────────────────────
+assert_operator_crds = _w["workspace-controller"].spec.crds == ["Workspace"]
+assert_operator_rbac = len(_w["workspace-controller"].spec.clusterRBAC) == 1
+assert_cron_schedule = _w["billing-sweeper"].spec.schedule == "@hourly"
+assert_job_args = _w["db-bootstrap"].spec.args == ["db", "migrate", "up"]
+
+# ── manifests: a Workload record per CLUSTER workload, nothing else ─
+_records = {m.metadata.name: m for m in output.manifests if m.kind == "Workload"}
+assert_records_are_cluster_only = sorted(_records.keys()) == \
+    ["billing-sweeper", "db-bootstrap", "workspace-controller", "workspace-proxy"]
+assert_no_kcl_expansion = len([m for m in output.manifests if m.kind in ["Deployment", "Service", "CronJob", "Job", "ClusterRole"]]) == 0
+
+# ── Frontend and config map buckets unchanged ───────────────────────
+assert_frontends = len(output.frontends) == 1 and output.frontends[0].name == "admin-web"
+assert_config_map = output.config_maps[0].data["LOG_LEVEL"] == "info"

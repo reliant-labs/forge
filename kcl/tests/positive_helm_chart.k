@@ -11,7 +11,7 @@ this `output.helm_charts` list and runs `helm template <chart|oci>
 
 cert-manager + Envoy Gateway are the two motivating deps: one repo chart,
 one OCI chart — both rendered here. HelmChart NEVER appears in
-render_manifests (its expansion is a Go-side helm shell-out, not a KCL
+output.manifests (its expansion is a Go-side helm shell-out, not a KCL
 render).
 """
 
@@ -89,7 +89,7 @@ assert_hc_eg_values_empty = len(output.helm_charts[1].values) == 0
 
 # ── HelmChart NEVER renders into the k8s manifest stream ───────────
 # Its expansion is a Go-side `helm template` shell-out; KCL emits only
-# the declaration. No chart manifest leaks into render_manifests.
+# the declaration. No chart manifest leaks into output.manifests.
 manifests = forge.render(_bundle).manifests
 _helmish = [m for m in manifests if "envoyproxy" in str(m) or m.kind == "ClusterIssuer"]
 assert_no_helm_manifests_in_render = len(_helmish) == 0

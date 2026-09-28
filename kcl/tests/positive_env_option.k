@@ -1,87 +1,42 @@
 """
 Positive test — `option("env")` plumbing.
 
-The forge CLI passes `-D env=<env>` on every `kcl run` invocation so
-user main.k files can read the current environment via the KCL
-`option()` builtin and conditionally include manifests per-env. The
-canonical use is suppressing in-cluster infra (NATS / Temporal /
-LiteLLM) on `dev-host` envs where docker-compose provides those
-services, while still shipping them on k3d / staging / prod.
+The forge CLI passes `-D env=<env>` on every render so a main.k can read the
+current environment and conditionally include manifests per env. The
+canonical use: suppress in-cluster infra (NATS / Temporal / LiteLLM) on a
+`dev-host` env where docker-compose provides it, while still shipping it on
+k3d / staging / prod.
 
-Run me with:
-
-    kcl run -D env=dev-host kcl/tests/positive_env_option.k
-
-The asserts below pin the conditional-include pattern documented in
-kcl/README.md.
+It also pins that the SAME binding makes the env-ownership stamp automatic:
+`Bundle.env` defaults to `option("env")`, so every object in output.manifests
+carries `forge.dev/env: <env>` without the project writing a line of KCL.
 """
 
-import forge
+# kcl-args: env=dev | env=dev-host
 
-# The canonical conditional pattern. _env_name reads the -D env=<name>
-# binding the forge CLI passes; downstream branches gate
-# `additional_manifests` (or any other field) on its value.
+import forge
+import forge.workloads as fw
+
 _env_name = option("env") or "dev"
 _is_dev_host = _env_name == "dev-host"
 
-# In-cluster NATS — only shipped to envs that DON'T already provide
-# NATS via docker-compose. Real projects expand this to a list of
-# Deployment/Service/ConfigMap manifests; the exact contents don't
-# matter for this test, only the conditional inclusion.
 _nats_manifests = [] if _is_dev_host else [
-    {
-        apiVersion = "v1"
-        kind = "Service"
-        metadata = {name = "nats"}
-    }
+    {apiVersion = "v1", kind = "Service", metadata = {name = "nats"}}
 ]
 
-# A Service so the bundle isn't empty (forge.Bundle requires nothing
-# but the renderer's downstream consumers do).
-_svc = forge.RenderedWorkload {
-    name = "api"
-    image = "myapp:dev"
-    deploy = forge.HostDeploy {runner = "go-run"}
-}
+_target = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-" + _env_name, registry = "localhost:5050"}
 
-_target = forge.ClusterTarget {
-    cluster = "k3d-myapp"
-    namespace = "myapp-" + _env_name
-    registry = "localhost:5050"
-}
-
-_bundle = forge.Bundle {
+output = forge.render(forge.Bundle {
+    project = "myapp"
     cluster_target = _target
-    services = [_svc]
+    workloads = [fw.Workload {name = "api", image = "myapp", runtime = forge.OnCluster {target = _target}}]
     additional_manifests = _nats_manifests
+})
+
+assert_env_name = _env_name == option("env")
+assert_output_env = output.env == _env_name
+_nats_count = len([m for m in output.manifests if m.kind == "Service" and m.metadata.name == "nats"])
+assert_nats_in_manifests_iff_not_dev_host = _nats_count == (0 if _is_dev_host else 1)
+assert_env_label_on_every_manifest = all m in output.manifests {
+    m.metadata.labels["forge.dev/env"] == _env_name
 }
-
-output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle)
-
-# ── Invariants ─────────────────────────────────────────────────────
-
-# option("env") flows through.
-assert_env_name = _env_name == option("env") or _env_name == "dev"
-
-# Conditional include matches the env.
-assert_nats_included_iff_not_dev_host = len(_nats_manifests) == (0 if _is_dev_host else 1)
-
-# additional_manifests propagates through the manifest renderer too.
-# Count NATS Service entries; conditional skip on dev-host drops it to
-# zero, non-dev-host envs see exactly one.
-_nats_in_manifests_count = sum([1 if (m.kind == "Service" and m.metadata.name == "nats") else 0 for m in manifests])
-assert_nats_in_manifests_iff_not_dev_host = _nats_in_manifests_count == (0 if _is_dev_host else 1)
-
-# The SAME `-D env=` binding is what makes the env-ownership stamp
-# automatic: `Bundle.env` defaults to `option("env")`, so every rendered
-# object carries `forge.dev/env: <env>` without the project writing a
-# line of KCL. This is the DEFAULT half of the drill-in (the override
-# half — an explicitly-set `Bundle.env` — is pinned by
-# tests/positive_env_label.k, which needs no binding).
-_env_label_key = "forge.dev/env"
-_env_labelled = [
-    1 for m in manifests
-    if m.metadata and m.metadata.labels and m.metadata.labels[_env_label_key] == _env_name
-]
-assert_env_label_on_every_manifest = len(_env_labelled) == len(manifests)

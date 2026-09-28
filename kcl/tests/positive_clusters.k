@@ -21,7 +21,7 @@ Exercises:
   * `.context` is the computed kubectl context on every cluster.
   * No clusters declared => `clusters` is an EMPTY list (stable key).
   * Clusters NEVER appear in the k8s manifest stream
-    (forge.render_manifests).
+    (output.manifests).
 """
 
 import forge

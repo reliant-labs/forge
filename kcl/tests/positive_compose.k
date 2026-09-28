@@ -1,32 +1,41 @@
 """
-Positive test — Compose schema renders cleanly. Declarative-only;
-the Go-side dispatch ships as a stub in this release.
+Positive test — the COMPOSE runtime.
+
+A compose-bound workload's container is defined by the compose file; the
+workload contributes its name, its runtime block and its env. Its env is
+merged into the compose PROCESS env (for `${VAR}` interpolation), so a value
+declared once in KCL still reaches the file.
 """
 
 import forge
+import forge.workloads as fw
 
-_svc = forge.RenderedWorkload {
+_worker = fw.Workload {
     name = "worker"
-    deploy = forge.Compose {
-        compose_file = "deploy/docker-compose.prod.yml"
+    env = {QUEUE = "jobs"}
+    runtime = forge.OnCompose {
+        file = "deploy/docker-compose.prod.yml"
         service = "worker-prod"
         env_file = ".env.prod"
     }
 }
 
-_bundle = forge.Bundle { services = [_svc] }
-output = forge.render(_bundle)
+# Defaults: file docker-compose.yml, service = workload name, wait on.
+_alt = fw.Workload {name = "alt", runtime = forge.OnCompose {}}
 
-assert_discriminator = output.services[0].deploy.type == "compose"
-assert_compose_file = output.services[0].deploy.compose_file == "deploy/docker-compose.prod.yml"
-assert_service = output.services[0].deploy.service == "worker-prod"
-assert_env_file = output.services[0].deploy.env_file == ".env.prod"
+output = forge.render(forge.Bundle {project = "demo", workloads = [_worker, _alt]})
+_w = {w.name: w for w in output.workloads}
 
-# Default compose_file when unset.
-_default = forge.RenderedWorkload {
-    name = "alt"
-    deploy = forge.Compose {}
-}
-_b = forge.Bundle { services = [_default] }
-_default_out = forge.render(_b)
-assert_default_compose_file = _default_out.services[0].deploy.compose_file == "docker-compose.yml"
+assert_discriminator = _w["worker"].runtime.type == "compose"
+assert_file = _w["worker"].runtime.file == "deploy/docker-compose.prod.yml"
+assert_service = _w["worker"].runtime.service == "worker-prod"
+assert_env_file = _w["worker"].runtime.env_file == ".env.prod"
+assert_spec_env_into_compose_env = _w["worker"].runtime.env["QUEUE"] == "jobs"
+
+assert_default_file = _w["alt"].runtime.file == "docker-compose.yml"
+assert_default_service = _w["alt"].runtime.service == "alt"
+assert_default_wait = _w["alt"].runtime.wait == True
+
+# Compose workloads are not built by forge and render no record.
+assert_not_built = _w["worker"].build == None
+assert_no_record = len([m for m in output.manifests if m.kind == "Workload"]) == 0

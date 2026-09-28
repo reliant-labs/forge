@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,13 +14,19 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // frontendTSPluginPackage is the npm package providing the local TS codegen
 // binary that buf invokes via `local: ./<frontend>/node_modules/.bin/protoc-gen-es`.
-// Pin the major to keep parity with @bufbuild/protobuf in scaffolded
-// package.json templates (currently ^2.5.0).
 const frontendTSPluginPackage = "@bufbuild/protoc-gen-es"
+
+// frontendTSPluginRange is the devDependency range every scaffolded
+// frontend's package.json declares for frontendTSPluginPackage — the major
+// kept in step with @bufbuild/protobuf. It is what the undeclared-plugin
+// runbook tells a user to add, so a test pins it to the templates.
+const frontendTSPluginRange = "^2.5.0"
 
 // requiredProtoTools lists the proto codegen plugins forge expects on PATH
 // when buf.gen.yaml uses `local:` plugins (the default since the BSR-auth
@@ -89,7 +98,8 @@ func newToolsCmd() *cobra.Command {
 Subcommands:
   install   Install the codegen tools forge runs (protoc-gen-go,
             protoc-gen-connect-go, goimports) via 'go install', at the
-            versions this project's go.mod resolves.
+            versions this project's go.mod resolves, and check that every
+            frontend declares its TypeScript plugin.
 
 Forge scaffolds buf.gen.yaml with 'local:' plugins by default so that
 'forge generate' works without any BSR (buf.build) authentication.
@@ -121,91 +131,121 @@ the version the committed generated code was produced with — falling back to
 every tool.
 
 By default, tools already present on PATH are skipped. Use --force to
-re-install.
+re-install them.
+
+The TypeScript plugin, @bufbuild/protoc-gen-es, is not installed here. It
+is an ordinary devDependency of each frontend, so the frontend's own
+'npm ci' installs it at the version its lockfile pins. This command only
+checks that every frontend whose buf.gen.yaml runs it declares it, and
+fails with the edit to make when one does not. It never runs npm and never
+writes a frontend's package.json or package-lock.json — with or without
+--force.
 
 Examples:
   forge tools install
   forge tools install --version v1.34.2
   forge tools install --force`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := runToolsInstall(cmd.Context(), version, force); err != nil {
-				return err
-			}
-			// Also install the local TS plugin in any scaffolded frontend
-			// dirs we can find under cwd. Best-effort — never fatal because
-			// many forge projects (cli/library kinds) have no frontends.
-			installFrontendTSPlugin(cmd.Context(), ".", force)
-			return nil
+			goErr := runToolsInstall(cmd.Context(), version, force)
+			return errors.Join(goErr, checkFrontendTSPlugins())
 		},
 	}
 
 	cmd.Flags().StringVar(&version, "version", "", "Version passed to 'go install' for every tool (e.g. latest, v1.34.2); default: the version go.mod resolves, else latest")
-	cmd.Flags().BoolVar(&force, "force", false, "Reinstall even when the binary is already on PATH")
+	cmd.Flags().BoolVar(&force, "force", false, "Reinstall the Go tools even when already on PATH (never touches a frontend's npm dependencies)")
 
 	return cmd
 }
 
-// installFrontendTSPlugin walks <projectDir>/frontends/* and runs
-// `npm install --save-dev @bufbuild/protoc-gen-es` in each frontend that
-// has a package.json but no node_modules/.bin/protoc-gen-es. Skips silently
-// when npm is not on PATH (with a one-line message) so this doesn't block
-// users on no-frontend projects.
-func installFrontendTSPlugin(ctx context.Context, projectDir string, force bool) {
-	frontendsDir := filepath.Join(projectDir, "frontends")
-	entries, err := os.ReadDir(frontendsDir)
+// checkFrontendTSPlugins checks the TypeScript plugin of every frontend in
+// the enclosing forge project. Outside a project there is nothing to check.
+func checkFrontendTSPlugins() error {
+	configPath, err := findProjectConfigFile()
+	if errors.Is(err, ErrProjectConfigNotFound) {
+		return nil
+	}
 	if err != nil {
-		// No frontends/ dir → nothing to do, no message needed.
-		return
+		return err
 	}
+	store, err := loadProjectStoreFrom(configPath)
+	if err != nil {
+		return err
+	}
+	return checkFrontendTSPluginsIn(filepath.Dir(configPath), store.Config().Frontends)
+}
 
-	// At least one frontend dir present — check npm before iterating.
-	if _, err := exec.LookPath("npm"); err != nil {
-		fmt.Println("ℹ️  Skipping frontend TS plugin install — `npm` not on PATH.")
-		fmt.Println("    Install Node.js + npm, then run `npm install` in each frontends/<name>/.")
-		return
+// checkFrontendTSPluginsIn verifies that each frontend whose buf.gen.yaml
+// runs the local protoc-gen-es DECLARES it, and installs nothing.
+//
+// It used to run `npm install --save-dev @bufbuild/protoc-gen-es` — in every
+// frontend under --force, which the scaffolded verify-generated job passes.
+// npm re-resolves the whole tree when it saves, so on a Linux runner it
+// rewrote a lockfile a macOS npm had written (dropping its "libc" entries),
+// and verify-generated reported the user's package-lock.json as generated
+// code drift. Committing either OS's lockfile only moved the failure to the
+// other OS. A frontend's manifest and lockfile are the user's: a declared
+// plugin is installed by the frontend's own `npm ci`, and an undeclared one
+// is an edit for the user to make and commit, not one forge makes for them.
+func checkFrontendTSPluginsIn(root string, frontends []config.FrontendConfig) error {
+	var undeclared []string
+	for _, feDir := range localTSPluginFrontendDirs(root, frontends) {
+		manifest := feDir + "/package.json"
+		declared, err := declaresTSPlugin(filepath.Join(root, manifest))
+		if err != nil {
+			return fmt.Errorf("read %s: %w", manifest, err)
+		}
+		if !declared {
+			undeclared = append(undeclared, manifest)
+			continue
+		}
+		// Both npm layouts count: under forge's dev workspace bridge npm
+		// hoists the plugin to <project>/node_modules and creates no
+		// frontend-local node_modules at all. resolveLocalTSPluginRel is
+		// the resolver the buf pass uses, so the two cannot disagree.
+		if _, ok := resolveLocalTSPluginRel(root, feDir); ok {
+			fmt.Printf("✅ %-26s declared and installed for %s/\n", "protoc-gen-es", feDir)
+		} else {
+			fmt.Printf("ℹ️  %-26s declared in %s, not installed yet — `npm ci` in %s/ installs it\n", "protoc-gen-es", manifest, feDir)
+		}
 	}
+	if len(undeclared) == 0 {
+		return nil
+	}
+	verb := "does not declare"
+	if len(undeclared) > 1 {
+		verb = "do not declare"
+	}
+	return cliutil.UserErr("forge tools install",
+		fmt.Sprintf("%s %s %s, the plugin its buf.gen.yaml runs to generate TypeScript stubs "+
+			"(forge never edits a frontend's package.json or lockfile, so it will not add it)",
+			strings.Join(undeclared, ", "), verb, frontendTSPluginPackage),
+		"",
+		fmt.Sprintf("add %q: %q to devDependencies in %s, run `npm install` beside it, "+
+			"and commit package.json together with package-lock.json",
+			frontendTSPluginPackage, frontendTSPluginRange, strings.Join(undeclared, " and ")))
+}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		feDir := filepath.Join(frontendsDir, entry.Name())
-		pkgJSON := filepath.Join(feDir, "package.json")
-		if _, err := os.Stat(pkgJSON); err != nil {
-			continue
-		}
-		// Ask both layouts, not just the frontend-local one. Under forge's dev
-		// workspace bridge npm HOISTS every member's dependencies to
-		// <project>/node_modules and creates no frontends/<name>/node_modules
-		// at all, so a frontend-local-only probe reports the plugin missing
-		// when it is installed one directory up — reinstalling it on every
-		// run and then warning that the binary it just installed is "not
-		// found". resolveLocalTSPluginRel is the same resolver the buf pass
-		// uses, so the two cannot disagree about where the plugin lives.
-		feRel := filepath.Join("frontends", entry.Name())
-		if !force {
-			if _, ok := resolveLocalTSPluginRel(projectDir, feRel); ok {
-				fmt.Printf("✅ %-26s already installed for frontends/%s/ (use --force to reinstall)\n", "protoc-gen-es", entry.Name())
-				continue
-			}
-		}
-		fmt.Printf("📦 Installing %-26s in frontends/%s/ (npm install --save-dev %s)\n", "protoc-gen-es", entry.Name(), frontendTSPluginPackage)
-		cmd := exec.CommandContext(ctx, "npm", "install", "--save-dev", "--no-audit", "--no-fund", frontendTSPluginPackage)
-		cmd.Dir = feDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠️  npm install in frontends/%s/ failed: %v\n", entry.Name(), err)
-			continue
-		}
-		if _, ok := resolveLocalTSPluginRel(projectDir, feRel); !ok {
-			fmt.Fprintf(os.Stderr, "  ⚠️  Installed %s but protoc-gen-es is in neither "+
-				"frontends/%s/node_modules/.bin nor the workspace root's node_modules/.bin.\n",
-				frontendTSPluginPackage, entry.Name())
-			continue
-		}
-		fmt.Printf("  ✅ protoc-gen-es installed in frontends/%s/\n", entry.Name())
+// declaresTSPlugin reports whether the package.json at path lists the
+// protoc-gen-es package as a dependency of either kind — both are installed
+// by `npm ci`. A missing package.json declares nothing.
+func declaresTSPlugin(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
+	var manifest struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return false, err
+	}
+	_, dev := manifest.DevDependencies[frontendTSPluginPackage]
+	_, prod := manifest.Dependencies[frontendTSPluginPackage]
+	return dev || prod, nil
 }
 
 // runToolsInstall installs the required proto plugins. Returns the first

@@ -100,6 +100,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bump all existed only because the root module required an unpushed submodule
   version. `scripts/release-pkg.sh` and `task release:pkg` are removed.
 
+### Fixed
+
+- **`forge tools install` never mutates a frontend's `package.json` or
+  lockfile.** It used to run `npm install --save-dev @bufbuild/protoc-gen-es`
+  in every frontend under `--force` — which the scaffolded verify-generated
+  job passes — and in any frontend without `node_modules` yet. On a Linux
+  runner npm re-saved a macOS-written `package-lock.json` without its `libc`
+  entries, and `forge ci verify-generated` reported that user-owned file as
+  generated-code drift; committing either OS's lockfile moved the failure to
+  the other OS. The plugin is now installed only by the frontend's own
+  `npm ci`, from its declared devDependency. `forge tools install` checks
+  that every frontend whose buf.gen.yaml runs the local plugin declares it,
+  and fails with the edit to make when one does not. `--force` reinstalls the
+  Go tools only.
+- **`forge ci verify-generated` no longer blames `forge generate` for a file
+  an earlier step changed.** It refuses to regenerate over an
+  already-modified tree and lists those paths as changed before
+  `forge generate` ran, instead of reporting them as out-of-date generated
+  code.
+
 ### Removed
 
 - `database.migration_safety.down_files_allowed_until` and the

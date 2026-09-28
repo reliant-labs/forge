@@ -76,8 +76,6 @@ ci:
           api/types/versions; forge never performs plugin privilege
           validation.
         expires: "2026-12-31"
-docker:
-  registry: ""
 k8s:
   kcl_dir: ""
 lint:

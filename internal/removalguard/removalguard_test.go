@@ -1270,6 +1270,11 @@ var removals = []removal{
 			// / `:`. A following flag (`--push --plan`) is not a value.
 			regexp.MustCompile(`--push=\S`),
 			regexp.MustCompile(`--push\s+(?:["'$<]|[A-Za-z0-9-]+[.:/])`),
+			// forge.yaml's registry keys and the Go that read them. The
+			// dotted key path is how docs and messages name them; the loader
+			// refuses them (config.refusedSchemaKeys) with the runbook.
+			regexp.MustCompile(`\b(?:docker|deploy)\.registry\b`),
+			regexp.MustCompile(`\b(?:Docker|Deploy)\.Registry\b|\bEffectiveRegistry\b`),
 		},
 		Allowances: []allowance{
 			{
@@ -1289,6 +1294,12 @@ var removals = []removal{
 					"migration; its registry regexp names the call so it can neutralise it.",
 				Token: regexp.MustCompile(`forge\.registry\("…"\)|forge\.registry\("ghcr\.io/acme"\)|forge\.registry\(\\"ghcr\.io/acme\\"\)`),
 				Paths: []string{"internal/cli/new_env.go", "internal/cli/new_env_test.go"},
+			},
+			{
+				Name: "the loader's refusal of the retired forge.yaml keys, and its tests",
+				Reason: "refusedSchemaKeys must name the keys it refuses, and its tests " +
+					"must write them to prove each one fails the load.",
+				Paths: []string{"internal/config/validate.go", "internal/config/validate_test.go"},
 			},
 			{
 				Name:   "the tests that pin --push refusing a value",

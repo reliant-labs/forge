@@ -71,8 +71,6 @@ database:
   migrations_dir: db/migrations
 ci:
   provider: github
-docker:
-  registry: ghcr.io
 k8s:
   kcl_dir: deploy/kcl
 lint:

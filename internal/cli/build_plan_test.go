@@ -421,7 +421,7 @@ func TestExternalBuildTag_ReleaseOverridesSharedTags(t *testing.T) {
 // TestServiceDockerBuildArgs_ReleaseDropsLatest: the per-service DockerBuild
 // path shares imageTagSet, so a release never tags it `:latest` either.
 func TestServiceDockerBuildArgs_ReleaseDropsLatest(t *testing.T) {
-	cfg := &config.ProjectConfig{Name: "control-plane", Docker: config.DockerConfig{Registry: "reg.local"}}
+	cfg := &config.ProjectConfig{Name: "control-plane"}
 	args, push := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{},
 		buildOptions{release: "v1.7.0", pushRegistry: "gar.example/prod"}, "", "v1.7.0")
 	for _, a := range args {

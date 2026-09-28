@@ -321,3 +321,34 @@ func TestDeclaredRegistry_Precedence(t *testing.T) {
 		}
 	}
 }
+
+// TestImageTagSet_LocalTagIsTheDeclaredRegistryOrBare: a build's LOCAL tag is
+// the image under the registry the env declares — so a `forge env deploy`
+// against a k3d-local registry finds what was built — and, with no declared
+// registry, the bare image. Never a forge.yaml registry, never the project
+// name standing in for one.
+func TestImageTagSet_LocalTagIsTheDeclaredRegistryOrBare(t *testing.T) {
+	if got := imageTagSet("", "web", "", "t1", false).local; strings.Join(got, ",") != "web:latest,web:t1" {
+		t.Errorf("no declared registry: local tags = %v, want the bare image", got)
+	}
+	if got := imageTagSet("ghcr.io/acme", "web", "", "t1", false).local; strings.Join(got, ",") != "ghcr.io/acme/web:latest,ghcr.io/acme/web:t1" {
+		t.Errorf("declared registry: local tags = %v, want it under ghcr.io/acme", got)
+	}
+}
+
+// TestBuildCmd_LocalBuildTagsUnderTheDeclaredRegistry: `forge build prod
+// --docker` (no push) tags the image under prod's declared registry — read
+// from the env's KCL, not forge.yaml — and pushes nothing.
+func TestBuildCmd_LocalBuildTagsUnderTheDeclaredRegistry(t *testing.T) {
+	planProject(t, declaredRegistryFixture)
+	out, err := runBuildCommand(t, "prod", "--docker", "--plan", "--no-generate", "--tag", "t1")
+	if err != nil {
+		t.Fatalf("forge build prod --docker --plan: %v", err)
+	}
+	if strings.Contains(out, "push ") {
+		t.Errorf("a build without --push must push nothing; plan output:\n%s", out)
+	}
+	if !strings.Contains(out, "Registry: registry.example/prod (declared in deploy/kcl/prod/main.k; tagged locally, not pushed)") {
+		t.Errorf("the build header should name the env-declared registry the image is tagged under; plan output:\n%s", out)
+	}
+}

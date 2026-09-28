@@ -104,7 +104,6 @@ type sectionDefaultsSet struct {
 	Database DatabaseConfig
 	CI       CIConfig
 	Deploy   DeployConfig
-	Docker   DockerConfig
 	K8s      K8sConfig
 	Lint     LintConfig
 }
@@ -153,10 +152,9 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 		}
 		// Deploy carries only pipeline-control knobs now; its zero value is
 		// the canonical default (the dead `provider` field was removed — the
-		// CI provider derives to "github" via cfg.CI). Registry lives on
-		// Docker.
+		// CI provider derives to "github" via cfg.CI). No section carries a
+		// registry: it is declared in the env's KCL.
 		d.Deploy = DeployConfig{}
-		d.Docker = DockerConfig{Registry: "ghcr.io"}
 		d.K8s = K8sConfig{KCLDir: "deploy/kcl"}
 	}
 	return d
@@ -198,7 +196,6 @@ func ApplyDerivedDefaultsFromNode(c *ProjectConfig, root *yaml.Node) {
 	fillSectionDefaults(&c.Database, d.Database, "database", present)
 	fillSectionDefaults(&c.CI, d.CI, "ci", present)
 	fillSectionDefaults(&c.Deploy, d.Deploy, "deploy", present)
-	fillSectionDefaults(&c.Docker, d.Docker, "docker", present)
 	fillSectionDefaults(&c.K8s, d.K8s, "k8s", present)
 	fillSectionDefaults(&c.Lint, d.Lint, "lint", present)
 	// Features derivation runs AFTER the database fill — the orm /
@@ -224,7 +221,6 @@ func NormalizeForWrite(c *ProjectConfig) *ProjectConfig {
 	stripSectionDefaults(&out.Database, d.Database)
 	stripSectionDefaults(&out.CI, d.CI)
 	stripSectionDefaults(&out.Deploy, d.Deploy)
-	stripSectionDefaults(&out.Docker, d.Docker)
 	stripSectionDefaults(&out.K8s, d.K8s)
 	stripSectionDefaults(&out.Lint, d.Lint)
 

@@ -61,7 +61,12 @@ func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.F
 
 	kclEnvs := declaredKCLEnvs(root)
 	deployEnvs := ciDeployEnvs(cfg, kclEnvs)
-	registry := cfg.Deploy.EffectiveRegistry()
+	// The workflow templates still branch on a registry FLAVOUR (ghcr/gar/ecr)
+	// for their login step; forge.yaml no longer carries one (a registry is
+	// declared in the env's KCL), so every project gets the ghcr branch it
+	// defaulted to. The next change drops the registry from the workflows
+	// entirely.
+	registry := "ghcr"
 	e2eRuntime := cfg.CI.E2E.Runtime
 	if e2eRuntime == "" {
 		e2eRuntime = "docker-compose"

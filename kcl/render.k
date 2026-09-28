@@ -841,8 +841,9 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "platform": b.platform if b.platform else None
         "target": b.target if b.target else None
         "build_args": b.build_args if b.build_args else {}
-        # The per-workload push target and named build contexts. Empty
-        # falls back to forge.yaml's docker.registry / build_contexts.
+        # The per-workload tag registry and named build contexts. An empty
+        # registry is the env's declared one; empty build_contexts fall back
+        # to forge.yaml's docker.build_contexts.
         "registry": b.registry if b.registry else None
         "build_contexts": b.build_contexts if b.build_contexts else {}
     }

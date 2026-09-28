@@ -28,20 +28,16 @@ outside the two were the same shrug.
 WHAT THIS FILE IS
 =================
 The matrix, stated ONCE, as data. `KIND_CAPABILITIES` maps each kind to
-the capabilities it can express. Both halves of the system read it:
+the capabilities it can express. The authoring schema's checks
+(kcl/workload.k) read it: a workload that declares a capability its kind
+cannot express is REJECTED at render time, naming the field and the kind,
+instead of having the declaration silently dropped on the floor.
 
-  * the RENDERERS (expand.k) — a shared builder asks the matrix rather
-    than each expansion re-deciding, so a capability is wired in ONE
-    place and every kind that claims it gets it;
-  * the SCHEMA CHECKS (schema.k) — a workload that declares a
-    capability its kind cannot express is REJECTED at render time,
-    naming the field and the kind, instead of having the declaration
-    silently dropped on the floor.
-
-The property that buys: adding a capability to forge is an edit to the
-matrix plus the shared builder. It is no longer five renderers and a
-hope that you remembered all five. And a kind that genuinely cannot do
-something now SAYS SO, out loud, at the point of declaration.
+The Kubernetes renderer is Go (pkg/deploy.RenderWorkloads, ADR 0002 §4),
+and it applies the same kind semantics to the WorkloadSpec. This table is
+the AUTHOR-TIME half: it answers "may this kind say that?" at the line
+that says it, before any renderer runs. A kind that genuinely cannot do
+something SAYS SO, out loud, at the point of declaration.
 
 WHY A MATRIX RATHER THAN A SCHEMA HIERARCHY
 ===========================================
@@ -103,8 +99,8 @@ CAP_PORTS: str = "ports"
 # Honors `replicas` (and, above 1, topology spread).
 CAP_REPLICAS: str = "replicas"
 
-# Gets liveness + readiness probes BY CONSTRUCTION — the kind serves HTTP
-# health endpoints whether or not it declares `health_check`.
+# May be probed. A service or worker serves /readyz + /healthz through
+# serverkit; a batch pod runs to completion, so probing it is meaningless.
 CAP_PROBES: str = "probes"
 
 # Gets a PodDisruptionBudget when `replicas > 1`, so a node drain takes one
@@ -274,10 +270,9 @@ BROADCAST_GATED_KINDS: [str] = [
     _k for _k in KIND_CAPABILITIES if CAP_GATED in KIND_CAPABILITIES[_k]
 ]
 
-# The kinds that serve HTTP health endpoints BY CONSTRUCTION. A workload of
-# any other kind is probed only when it DECLARES a `health_check` — an HTTP
-# probe against a process that serves no HTTP is not a safety net, it is a
-# guaranteed CrashLoopBackOff.
+# The kinds that may carry probes. The DEFAULT probe policy (a forge-built
+# service gets HTTP /readyz + /healthz) is kcl/workload.k's
+# `_default_probes`, and Go's WorkloadSpec.EffectiveProbes applies the rest.
 PROBED_KINDS: [str] = [
     _k for _k in KIND_CAPABILITIES if CAP_PROBES in KIND_CAPABILITIES[_k]
 ]

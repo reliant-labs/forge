@@ -46,6 +46,8 @@ import (
 	"sigs.k8s.io/controller-tools/pkg/crd"
 	"sigs.k8s.io/controller-tools/pkg/loader"
 	"sigs.k8s.io/controller-tools/pkg/markers"
+
+	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // TierSpecPackage is the Go package the tier specs live in.
@@ -289,11 +291,55 @@ import regex
 			return "", fmt.Errorf("%s: %w", goName, err)
 		}
 	}
+	writeRestrictedMask(&b)
 	// Each schema ends with a blank separator line, so the last one would
 	// leave the file ending in "\n\n". End it with exactly one newline — what
 	// end-of-file-fixer (and every editor) writes — so the committed file is
 	// never "fixed" into something the generator does not produce.
 	return strings.TrimRight(b.String(), "\n") + "\n", nil
+}
+
+// writeRestrictedMask emits the hosted runtime's author-time mask: every
+// WorkloadSpec field path and kind that v1alpha1.FieldProfiles /
+// KindProfiles allow ONLY under ProfileFull, each with the reason admission
+// gives. forge.render refuses a hosted-bound workload that sets one, naming
+// the field, the workload and the reason (kcl/render.k _mask_violations).
+//
+// Generated from the same table the control plane admits with, so the two
+// cannot disagree, and a spec field Go has not classified (default-deny) is
+// never in the table as allowed: it is absent from the authoring schema
+// until someone adds it there too, and the reflection test in
+// pkg/deploy/v1alpha1 already refuses an unclassified field.
+func writeRestrictedMask(b *strings.Builder) {
+	var fields []string
+	for path, p := range v1alpha1.FieldProfiles {
+		if p == v1alpha1.ProfileFull {
+			fields = append(fields, path)
+		}
+	}
+	sort.Strings(fields)
+	var kinds []string
+	for k, p := range v1alpha1.KindProfiles {
+		if p == v1alpha1.ProfileFull {
+			kinds = append(kinds, string(k))
+		}
+	}
+	sort.Strings(kinds)
+
+	b.WriteString("# The hosted (Restricted-profile) mask: every WorkloadSpec field path and\n")
+	b.WriteString("# kind v1alpha1.FieldProfiles / KindProfiles allow ONLY under the Full\n")
+	b.WriteString("# profile, with the reason admission gives. Paths are JSON names joined\n")
+	b.WriteString(`# with "."; a list element shares its list's path ("env.secretRef").` + "\n")
+	b.WriteString("RESTRICTED_FIELD_REASONS: {str:str} = {\n")
+	for _, f := range fields {
+		fmt.Fprintf(b, "    %s = %s\n", strconv.Quote(f), strconv.Quote(v1alpha1.FullOnlyReason(f)))
+	}
+	b.WriteString("}\n\n")
+	b.WriteString("RESTRICTED_KIND_REASONS: {str:str} = {\n")
+	for _, k := range kinds {
+		fmt.Fprintf(b, "    %s = %s\n", strconv.Quote(k), strconv.Quote(v1alpha1.FullOnlyKindReason(v1alpha1.WorkloadKind(k))))
+	}
+	b.WriteString("}\n")
 }
 
 func writeTierSchema(b *strings.Builder, goName string, s apiext.JSONSchemaProps, doc, pkgPath string, all map[string]apiext.JSONSchemaProps, pointers map[string]bool) error {

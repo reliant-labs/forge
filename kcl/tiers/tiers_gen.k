@@ -656,3 +656,33 @@ workload_url_ref_json = lambda v: WorkloadURLRef -> {str:} {
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
+
+# The hosted (Restricted-profile) mask: every WorkloadSpec field path and
+# kind v1alpha1.FieldProfiles / KindProfiles allow ONLY under the Full
+# profile, with the reason admission gives. Paths are JSON names joined
+# with "."; a list element shares its list's path ("env.secretRef").
+RESTRICTED_FIELD_REASONS: {str:str} = {
+    "clusterRBAC" = "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)"
+    "crds" = "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)"
+    "env.configMapRef" = "a ConfigMap reference reads a namespace object you did not write; use value, or managedSecret for a credential"
+    "env.fieldRef" = "the Downward API exposes pod and node placement, which the hosted platform owns"
+    "env.secretRef" = "a raw Secret name in a shared hosted namespace can address platform-owned Secrets; use managedSecret, which names a value in your environment's secret store"
+    "group" = "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)"
+    "leaderElection" = "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)"
+    "namespacedRBAC" = "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)"
+    "nodeSelector" = "hosted placement (the isolation pool) is decided by the platform, never by the workload's author"
+    "podAnnotations" = "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns"
+    "schedule" = "cron is not available on hosted until metering covers it"
+    "serviceAccount" = "hosted workloads run under a platform-owned ServiceAccount; naming another one would borrow its identity"
+    "serviceAccountAnnotations" = "hosted workloads run under a platform-owned ServiceAccount; cloud workload identity is bound by the platform, never by the workload's author"
+    "sidecars" = "the hosted platform composes the pod itself (runtime class, isolation, egress), and a second container you author would run outside the single-container policy it enforces"
+    "tolerations" = "hosted placement (the isolation pool) is decided by the platform, never by the workload's author; a toleration would let a pod onto nodes reserved for something else"
+    "version" = "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)"
+    "volumes" = "a Secret, ConfigMap or PVC volume reads namespace objects you did not write; use storageGiB for a persistent disk, and env for configuration"
+}
+
+RESTRICTED_KIND_REASONS: {str:str} = {
+    "cron" = "cron is not available on hosted until metering covers it"
+    "operator" = "an operator needs cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)"
+    "tool" = "a tool is never scheduled, so there is nothing for the hosted runtime to run"
+}

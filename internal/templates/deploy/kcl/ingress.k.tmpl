@@ -9,8 +9,10 @@ cleanly).
 
 The env's `main.k` wires `GATEWAYS` / `HTTP_ROUTES` / `GRPC_ROUTES` into
 the Bundle's `gateways` / `http_routes` / `grpc_routes` fields, and
-forge.render_manifests emits the gateway.networking.k8s.io/v1
-resources alongside the typed entities.
+`forge.render(bundle)` emits the gateway.networking.k8s.io/v1 resources
+into the env's primary cluster namespace. A route's `service` names a
+workload in deploy/kcl/workloads.k; its Service carries the named `http`
+port the workload declares.
 
 GatewayClass is NOT declared here — it's cluster-scoped and installed
 by `forge cluster up` (in dev) or by the user's cloud Gateway
@@ -50,9 +52,10 @@ PUBLIC = forge.Gateway {
 
 GATEWAYS: [forge.Gateway] = [PUBLIC]
 
-# Routes attach to a Gateway+listener and forward traffic to a backend
-# Service (matched by `service` name in the env's Bundle). Uncomment a
-# route to expose the corresponding service.
+# Routes attach to a Gateway+listener and forward traffic to a workload's
+# Service (matched by the workload's `name`). Uncomment a route to expose
+# it. A hosted env ignores these: the platform routes each workload's
+# `expose = True` port itself.
 HTTP_ROUTES: [forge.HTTPRoute] = [
     # forge.HTTPRoute {
     #     name = "{{.ProjectName}}"

@@ -7,10 +7,8 @@ local k3d loop, so a cloud env that inherits them unchanged is
 unreachable and unencrypted. Flipped to the cloud shape and wired into
 GATEWAYS below.
 
-Set the hostname before the first staging deploy — edit _PUBLIC_HOST's
-fallback, or pass it per render:
-
-    kcl run deploy/kcl/staging -D public_host=api.staging.acme.com -S manifests
+Set the hostname before the first staging deploy: edit _PUBLIC_HOST below.
+`forge env render staging` shows the Gateway it produces.
 """
 
 import ..ingress as base
@@ -19,7 +17,7 @@ import forge
 # TODO: replace with this environment's real public hostname. Until it
 # is real, cert-manager cannot issue a certificate for it and the HTTPS
 # listener never becomes ready.
-_PUBLIC_HOST = option("public_host") or "staging.{{.ProjectName}}.example.com"
+_PUBLIC_HOST = "staging.{{.ProjectName}}.example.com"
 
 _STAGING_PUBLIC = base.PUBLIC | {
     host = _PUBLIC_HOST

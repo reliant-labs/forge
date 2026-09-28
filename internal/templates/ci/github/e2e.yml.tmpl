@@ -101,8 +101,10 @@ jobs:
       # Everything below goes through forge — never a raw KCL render piped to
       # kubectl, which cannot resolve kcl_plugin.forge and skips the declared
       # context binding. This requires the project to declare an `e2e`
-      # environment (deploy/kcl/e2e/main.k). Create one with:
-      #   forge env new e2e --from dev
+      # environment (deploy/kcl/e2e/main.k). Create one on the local cluster:
+      #   forge env new e2e --runtime cluster
+      # then point its ClusterTarget at k3d (cluster = "k3d-e2e",
+      # registry = "localhost:5050") in place of the REPLACE_ME values.
       - name: Create the e2e cluster
         # Ensures every cluster the e2e env's KCL declares (CIDRs, API port,
         # registry) exactly as its deploy expects them.
@@ -111,8 +113,8 @@ jobs:
       - name: Build images
         # Builds what the e2e env declares, renders its frontend config.js
         # into the build, and pushes to the cluster-local registry the env
-        # declares (forge.K8sCluster.registry — localhost:5050 in the
-        # scaffolded dev env it was copied from; keep the two in step).
+        # declares (its forge.ClusterTarget.registry — localhost:5050 for a
+        # k3d target; keep the two in step).
         run: forge build e2e --push localhost:5050
 
       - name: Deploy to the cluster

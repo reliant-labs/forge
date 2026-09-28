@@ -423,32 +423,27 @@ jobs:
 {{- else if eq .E2ERuntime "k3d"}}
       - name: Install forge
 {{- template "install-forge" .}}
-      - name: Create k3d cluster
-        uses: AbsaOSS/k3d-action@v2
-        with:
-          cluster-name: e2e
-      - name: Build and load images
-        run: |
-          docker build -t {{.ProjectName}}:ci .
-          k3d image import {{.ProjectName}}:ci -c e2e
-{{- range .Frontends}}
-          if [ -f "{{.Path}}/Dockerfile" ]; then
-            docker build -t {{$.ProjectName}}/{{.Name}}:ci {{.Path}}
-            k3d image import {{$.ProjectName}}/{{.Name}}:ci -c e2e
-          fi
-{{- end}}
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+      # Everything below goes THROUGH forge, exactly as .github/workflows/e2e.yml
+      # does: the cluster the e2e env declares, the images it builds, the
+      # context and namespace it deploys to, and the rollout wait. A raw
+      # `docker build` + `k3d image import` + label-selected `kubectl wait`
+      # re-states each of those and drifts from all of them.
+      #
+      # This requires the project to declare an `e2e` environment
+      # (deploy/kcl/e2e/main.k). Create one on the local cluster with:
+      #   forge env new e2e --runtime cluster
+      # and point its ClusterTarget at k3d (cluster = "k3d-e2e",
+      # registry = "localhost:5050").
+      - name: Create the e2e cluster
+        run: forge cluster up e2e --wait
+      - name: Build images
+        run: forge build e2e --push localhost:5050
       - name: Deploy and test
-        # Manifests come from `forge env deploy e2e`, which renders
-        # deploy/kcl/e2e/. The previous `kubectl apply -f deploy/k8s/e2e/`
-        # pointed at a directory forge has never produced — it survived the
-        # move to KCL unread, so this job could not have passed.
-        #
-        # This requires the project to declare an `e2e` environment
-        # (deploy/kcl/e2e/main.k). Create one with:
-        #   forge env new e2e --from dev
+        # `forge env deploy` waits for every workload to become ready.
         run: |
           forge env deploy e2e
-          kubectl wait --for=condition=ready pod -l app={{.ProjectName}} --timeout=120s
           task test:e2e
       - name: Upload test artifacts
         if: failure()

@@ -135,7 +135,10 @@ _primary_target = lambda b: Bundle -> any {
 #
 # A SERVICE that forge BUILDS serves /readyz + /healthz through serverkit, so
 # the lowering writes that probe into the spec EXPLICITLY — paths and port —
-# unless the author declared one. A CR on the wire is then self-describing:
+# unless the author declared one. A forge-built OPERATOR that declares ports
+# gets the same: its subcommand runs the manager under serverkit.Run, which
+# serves /healthz + /readyz on the process PORT (its http port) whatever it
+# mounts. With no ports there is no listener to name, so none is written. A CR on the wire is then self-describing:
 # the hosted platform, the CLI renderer and a human reading the record all
 # see the same probe, and nothing is inferred downstream. A third-party
 # image (no build) gets none here: forge cannot know it serves /readyz, and
@@ -147,7 +150,7 @@ _default_probes = lambda w: any -> any {
         readinessPath = "/readyz"
         livenessPath = "/healthz"
         port = _http_port(w)
-    } if w.build and w.kind == "service" else Undefined)
+    } if w.build and (w.kind == "service" or (w.kind == "operator" and w.ports)) else Undefined)
 }
 
 # The port a default probe targets: the one named `http`, else the first,
@@ -253,6 +256,17 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 _artifact = lambda w: any -> str {
     (img_lib.repository(w.image) if w.image \
         else (w.build.output_name if w.build.output_name else w.name)) if w.build else ""
+}
+
+# The build identity: the registry-less artifact plus the tag the workload's
+# own image pins, if it pins one ("workspace-base:dev-per-daemon", "api"). It
+# is a fact about the BUILD, so it is the same on every runtime — a BuildOnly
+# or host workload's spec.image resolves no pull ref, and a pin read back off
+# spec.image was silently lost there. "" when forge builds nothing for it.
+_build_image = lambda w: any -> str {
+    _name = _artifact(w)
+    _tail = w.image[w.image.rfind("/") + 1:] if w.image else ""
+    (_name + _tail[_tail.rfind(":"):] if _name and w.image and "@" not in w.image and ":" in _tail else _name)
 }
 
 # A build cannot produce a digest chosen in advance: a digest names bytes
@@ -365,6 +379,7 @@ _lower = lambda w: any, bundle: Bundle -> any {
         "name": w.name
         "kind": w.kind
         "image": _artifact(w)
+        "build_image": _build_image(w) or None
         "build": _render_build(w.build)
         "runtime": _render_runtime(w, _rt)
         "spec": _spec_json(w, _rt, bundle)

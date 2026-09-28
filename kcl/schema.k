@@ -2828,9 +2828,11 @@ schema Bundle:
     # matched nothing and the post-deploy rollout wait iterated an EMPTY
     # list and passed vacuously while deployments never rolled.
     #
-    # Defaults to "", and each object then falls back to labelling itself.
-    # The generated per-env main.k always sets it.
-    project: str = ""
+    # REQUIRED. There is no default: a guessed part-of (each object's own
+    # name, or the first workload's) is worse than a render error, because
+    # the selector above then silently matches the wrong set. The generated
+    # per-env main.k always sets it.
+    project: str
     # There is NO env-level runtime. Every workload in `workloads` states its
     # own (`wl.api | {runtime = forge.OnHost {}}`): an env is a list of
     # per-workload bindings, not a runtime (ADR 0002 §2).
@@ -2935,6 +2937,9 @@ schema Bundle:
     required_dns: [DNSRecord] = []
 
     check:
+        # THE PROJECT IS DECLARED: it is every object's part-of, the handle a
+        # CD pipeline selects one release's workloads by.
+        project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"
         # EVERY WORKLOAD STATES ITS RUNTIME. There is no env default.
         all w in workloads { _bound_runtime(w) }, \
             "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {}}`"

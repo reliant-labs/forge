@@ -48,6 +48,7 @@ _route_grpc = forge.GRPCRoute {
 }
 
 _bundle = forge.Bundle {
+    project = "fixture"
     gateways = [_public]
     http_routes = [_route_http]
     grpc_routes = [_route_grpc]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -141,6 +142,7 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 	if err != nil {
 		return nil, err
 	}
+	groups = joinManifestClusterGroups(envName, groups, entities, fallbackNamespace)
 	hosted, err := buildHostedGroup(envName, entities)
 	if err != nil {
 		return nil, err
@@ -149,6 +151,69 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 		groups = append(groups, *hosted)
 	}
 	return groups, nil
+}
+
+// joinManifestClusterGroups makes every kubectl context the rendered stream
+// stamps an object onto (forge.dev/cluster) a deploy destination. A context
+// that already has a k8s group (a workload runs there) is joined as-is; one
+// with no workload — a forge.Manifests group, a cluster database or a
+// secondary Namespace on an otherwise empty cluster — gets a k8s group of its
+// own with no services. Without it the router has no group for that cluster,
+// the render attributes its objects to another cluster, and the deploy never
+// applies them anywhere.
+//
+// The group needs only a context and a namespace: registry and domain belong
+// to images and routes, which a manifests-only cluster has none of. The
+// namespace is the one its objects name, else the primary target's, else the
+// deploy's fallback.
+func joinManifestClusterGroups(envName string, groups []deploytarget.ServiceGroup, entities *KCLEntities, fallbackNamespace string) []deploytarget.ServiceGroup {
+	if entities == nil || len(entities.ManifestClusters) == 0 {
+		return groups
+	}
+	covered := map[string]bool{}
+	for _, g := range groups {
+		if g.ProviderID == "k8s-cluster" && g.Cluster != "" {
+			covered[g.Cluster] = true
+		}
+	}
+	added := false
+	for _, mc := range entities.ManifestClusters {
+		if covered[mc.Cluster] {
+			continue
+		}
+		covered[mc.Cluster] = true
+		namespace := mc.Namespace
+		if namespace == "" {
+			namespace = entities.ClusterTarget.field("namespace")
+		}
+		if namespace == "" {
+			namespace = fallbackNamespace
+		}
+		groups = append(groups, deploytarget.ServiceGroup{
+			Env:        envName,
+			ProviderID: "k8s-cluster",
+			Cluster:    mc.Cluster,
+			Namespace:  namespace,
+		})
+		added = true
+	}
+	if added {
+		// Same order GroupServices produces (provider|cluster|…), so a
+		// manifests-only cluster sorts among the others deterministically.
+		sort.SliceStable(groups, func(i, j int) bool {
+			return groupSortKey(groups[i]) < groupSortKey(groups[j])
+		})
+	}
+	return groups
+}
+
+// groupSortKey is the key deploytarget.GroupServices orders k8s groups by;
+// other providers keep their relative order behind it.
+func groupSortKey(g deploytarget.ServiceGroup) string {
+	if g.ProviderID == "k8s-cluster" {
+		return "k8s-cluster|" + g.Cluster + "|" + g.Namespace + "|" + g.Registry
+	}
+	return g.ProviderID
 }
 
 // workloadOwnedClaims names the PersistentVolumeClaims forge emits for one

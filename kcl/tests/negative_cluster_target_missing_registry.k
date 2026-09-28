@@ -19,5 +19,6 @@ _prod = forge.ClusterTarget {
 }
 
 output = forge.render(forge.Bundle {
+    project = "fixture"
     workloads = [fw.Workload {name = "api", image = "api", runtime = forge.OnCluster {target = _prod}}]
 })

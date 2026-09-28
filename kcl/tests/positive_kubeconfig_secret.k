@@ -42,6 +42,7 @@ _target = forge.ClusterTarget {
     registry = "localhost:5051"
 }
 _bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = _target
     clusters = [
         _cp
@@ -51,7 +52,7 @@ _bundle = forge.Bundle {
     workloads = []
 }
 
-_no_kubeconfig_bundle = forge.Bundle { workloads = [] }
+_no_kubeconfig_bundle = forge.Bundle { project = "fixture", workloads = [] }
 
 output = forge.render(_bundle)
 output_none = forge.render(_no_kubeconfig_bundle)

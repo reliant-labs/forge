@@ -13,6 +13,7 @@ REJECTS the literal (see negative_rendered_secrets_literal_prod.k).
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     workloads = []
     secret_provider = forge.RenderedSecrets {
         secrets = [

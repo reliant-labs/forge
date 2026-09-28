@@ -55,6 +55,7 @@ _consumer = fw.Workload {
 # The external client emits NO secret into kubeconfig_secrets (it's
 # Undefined). The Bundle's list is left empty.
 _bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = _target
     clusters = [_cp, _prod]
     workloads = [_consumer]

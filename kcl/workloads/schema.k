@@ -87,6 +87,15 @@ EmptyDirVolumeSource = tiers.EmptyDirVolumeSource
 PVCVolumeSource = tiers.PVCVolumeSource
 KeyToPath = tiers.KeyToPath
 Toleration = tiers.Toleration
+PodSecurity = tiers.PodSecurity
+# A sidecar's (Container.env) env var and its value sources.
+EnvVar = tiers.EnvVar
+SecretKeyRef = tiers.SecretKeyRef
+ConfigMapKeyRef = tiers.ConfigMapKeyRef
+FieldRef = tiers.FieldRef
+ManagedSecretRef = tiers.ManagedSecretRef
+DatabaseRef = tiers.DatabaseRef
+WorkloadURLRef = tiers.WorkloadURLRef
 
 # The BROADCAST selector for `Workload.before` (v1alpha1.BeforeAll): gate
 # every workload in the environment without naming any of them. Schema

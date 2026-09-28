@@ -17,4 +17,4 @@ _fe = forge.Frontend {
     type = "nextjs"
 }
 
-output = forge.render(forge.Bundle { frontends = [_fe] })
+output = forge.render(forge.Bundle { project = "fixture", frontends = [_fe] })

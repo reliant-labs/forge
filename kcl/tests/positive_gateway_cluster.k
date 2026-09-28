@@ -87,6 +87,7 @@ _target = forge.ClusterTarget {
     registry = "localhost:5050"
 }
 _bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = _target
     gateways = [_public]
     http_routes = [_route_http]

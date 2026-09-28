@@ -214,6 +214,7 @@ _target = forge.ClusterTarget {
 }
 
 _bundle = forge.Bundle {
+    project = "acme"
     cluster_target = _target
     secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
     rendered_secrets = [

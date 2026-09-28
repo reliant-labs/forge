@@ -41,6 +41,7 @@ func TestFrontendFirebaseDeployRoundTrip(t *testing.T) {
 	}
 	main := `import forge
 _bundle = forge.Bundle {
+    project = "acme"
     frontends = [forge.Frontend {
         name = "admin-web"
         type = "nextjs"
@@ -169,6 +170,7 @@ func TestFrontendDeployNoneRendersBuildOnly(t *testing.T) {
 	}
 	main := `import forge
 _bundle = forge.Bundle {
+    project = "acme"
     frontends = [forge.Frontend {
         name = "admin-web"
         type = "nextjs"

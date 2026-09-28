@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestPinnedTagOf: a resolved ref answers its tag only for the artifact
@@ -48,10 +51,10 @@ const envImageTagFixture = `{"output": {
   ]
 }}`
 
-// TestEnvImageTagFor_FromImageTagAndSpecImage confirms the env's resolved
-// image tag is what `forge build <env>` defaults to: a workload's resolved
-// spec.image tag when it carries one, else the env's output.image_tag.
-func TestEnvImageTagFor_FromImageTagAndSpecImage(t *testing.T) {
+// TestEnvImageTagFor_FromImageTagAndBuildImage confirms the env's resolved
+// image tag is what `forge build <env>` defaults to: a workload's pinned
+// build_image tag when it carries one, else the env's output.image_tag.
+func TestEnvImageTagFor_FromImageTagAndBuildImage(t *testing.T) {
 	ents, err := parseKCLEntities([]byte(envImageTagFixture))
 	if err != nil {
 		t.Fatalf("parseKCLEntities: %v", err)
@@ -59,20 +62,21 @@ func TestEnvImageTagFor_FromImageTagAndSpecImage(t *testing.T) {
 	if got := envImageTagFor(ents, "control-plane"); got != "staging" {
 		t.Errorf("envImageTagFor(control-plane): got %q, want staging", got)
 	}
-	// A per-workload pin in spec.image wins over the env tag.
-	ents.Workloads[0].Spec.Image = "ghcr.io/reliant-labs/reliant:v1.4.2"
+	// A per-workload pin on the build identity wins over the env tag.
+	ents.Workloads[0].BuildImage = "reliant:v1.4.2"
 	if got := envImageTagFor(ents, "reliant"); got != "v1.4.2" {
-		t.Errorf("envImageTagFor(reliant) with a pinned spec.image: got %q, want v1.4.2", got)
+		t.Errorf("envImageTagFor(reliant) with a pinned build_image: got %q, want v1.4.2", got)
 	}
-	// A digest-pinned spec.image carries no tag and falls through to the env tag.
-	ents.Workloads[0].Spec.Image = "ghcr.io/reliant-labs/reliant@sha256:abc"
+	// A pin on the resolved spec.image alone is NOT the build's: build
+	// identity is read off the entity, the same on every runtime.
+	ents.Workloads[0].BuildImage = "reliant"
+	ents.Workloads[0].Spec.Image = "ghcr.io/reliant-labs/reliant:v1.4.2"
 	if got := envImageTagFor(ents, "reliant"); got != "staging" {
-		t.Errorf("envImageTagFor(reliant) digest-pinned: got %q, want the env tag staging", got)
+		t.Errorf("envImageTagFor(reliant) unpinned build_image: got %q, want the env tag staging", got)
 	}
-	// An artifact with an org path matches the resolved ref's whole path
-	// suffix, not only its last segment.
+	// An artifact with an org path matches the whole path.
 	ents.Workloads[0].Image = "acme/reliant"
-	ents.Workloads[0].Spec.Image = "localhost:5051/acme/reliant:e2e"
+	ents.Workloads[0].BuildImage = "acme/reliant:e2e"
 	if got := envImageTagFor(ents, "acme/reliant"); got != "e2e" {
 		t.Errorf("envImageTagFor(acme/reliant): got %q, want the pin e2e", got)
 	}
@@ -126,7 +130,7 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 }
 
 // TestBuildExternalServices_PerServicePinWins confirms an explicit
-// per-workload tag pin in the resolved spec.image (e2e's
+// per-workload tag pin on the build identity (build_image) (e2e's
 // reliant_image_tag="e2e" / workspace-base "dev-per-daemon") OVERRIDES both
 // the env-wide build tag and the env's image_tag — so e2e's pinned tags keep building exactly
 // what the daemon pods pull. This is the property that keeps
@@ -136,7 +140,7 @@ func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	// The env's tag is :staging, but the workload's resolved image pins
 	// "dev-per-daemon".
 	wsbase := shellSvc("workspace-base", "workspace-base", "true", "", nil)
-	wsbase.Spec.Image = "registry.localhost:5051/workspace-base:dev-per-daemon" // the per-workload pin
+	wsbase.BuildImage = "workspace-base:dev-per-daemon" // the per-workload pin
 	ents := &KCLEntities{ImageTag: "staging", Workloads: []WorkloadEntity{wsbase}}
 	services := []WorkloadEntity{wsbase}
 	opts := buildOptions{env: "e2e", parallel: false}
@@ -153,5 +157,73 @@ func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	}
 	if st == nil || st.Tag != "dev-per-daemon" {
 		t.Errorf("deploy build-state tag: got %+v, want dev-per-daemon (the per-service pin)", st)
+	}
+}
+
+// buildOnlyPinMain is control-plane e2e's workspace-base: a ShellBuild tool
+// bound to BuildOnly whose image pins its own tag. Its spec.image is "-" (a
+// build-only workload runs nowhere, so nothing resolves a pull ref), which is
+// exactly why the pin must ride the entity rather than spec.image.
+const buildOnlyPinMain = `
+import forge
+import forge.workloads as fw
+
+_k3d = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-e2e", registry = "localhost:5051"}
+
+output = forge.render(forge.Bundle {
+    project = "cp"
+    cluster_target = _k3d
+    image_tag = "e2e"
+    workloads = [
+        fw.Workload {
+            name = "workspace-base"
+            kind = "tool"
+            image = "workspace-base:dev-per-daemon"
+            build = forge.ShellBuild {cmd = "true"}
+            runtime = forge.BuildOnly {}
+        }
+        fw.Workload {
+            name = "hostapp"
+            image = "hostapp:v3"
+            build = forge.ShellBuild {cmd = "true"}
+            command = ["./bin/hostapp"]
+            runtime = forge.OnHost {}
+        }
+        fw.Workload {name = "api", build = forge.ShellBuild {cmd = "true"}, runtime = forge.OnCluster {target = _k3d}}
+    ]
+})
+`
+
+// TestBuildPlan_BuildOnlyPinnedTagIsTheTag: build identity does not depend on
+// the runtime. A pinned tag on a BuildOnly (or host) workload is the ${TAG}
+// its build is handed; an unpinned one gets the env tag.
+func TestBuildPlan_BuildOnlyPinnedTagIsTheTag(t *testing.T) {
+	out := renderKCLProject(t, writeKCLProject(t, buildOnlyPinMain), "env=e2e")
+	ents, err := parseKCLEntities(out)
+	if err != nil {
+		t.Fatalf("parseKCLEntities: %v", err)
+	}
+	for image, want := range map[string]string{"workspace-base": "dev-per-daemon", "hostapp": "v3", "api": "e2e"} {
+		if got := envImageTagFor(ents, image); got != want {
+			t.Errorf("envImageTagFor(%s) = %q, want %q", image, got, want)
+		}
+	}
+	report := planBuild(context.Background(), planInputs{
+		cfg:         &config.ProjectConfig{Name: "cp"},
+		entities:    ents,
+		opts:        buildOptions{env: "e2e"},
+		resolvedTag: "e2e",
+		projectDir:  t.TempDir(),
+	})
+	whats := map[string]string{}
+	for _, s := range report.steps {
+		if s.kind == "external" {
+			whats[s.name] = s.what
+		}
+	}
+	for name, want := range map[string]string{"workspace-base": "${TAG}=dev-per-daemon", "hostapp": "${TAG}=v3", "api": "${TAG}=e2e"} {
+		if !strings.Contains(whats[name], want) {
+			t.Errorf("plan step %s = %q, want it to carry %s", name, whats[name], want)
+		}
 	}
 }

@@ -46,6 +46,7 @@ func staticSiteRenderProject(t *testing.T, deployBody string) FrontendEntity {
 
 	main := `import forge
 _bundle = forge.Bundle {
+    project = "acme"
     frontends = [forge.Frontend {
         name = "admin-web"
         type = "nextjs"

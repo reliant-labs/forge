@@ -1237,7 +1237,7 @@ func prepareDeployCluster(ctx context.Context, in deployClusterInput) error {
 // compose envs declare no cluster and are skipped.
 func resolveDeployKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envName string, entities *KCLEntities, groups []deploytarget.ServiceGroup, hasK8sServices bool) (string, error) {
 	if hasK8sServices {
-		if err := verifyDeclaredContextsExist(ctx, groups); err != nil {
+		if err := verifyDeclaredContextsExist(ctx, envName, groups); err != nil {
 			return "", err
 		}
 	}
@@ -1866,6 +1866,11 @@ func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
 	out.Workloads = ws
 	out.Infra = infra
 	out.Frontends = fes
+	// A targeted deploy's destinations come from the objects it selects,
+	// routed by the WHOLE env's topology (targetedK8sGroups) — not from every
+	// cluster the env stamps an object onto, which would apply `--target api`
+	// to a cluster that holds only another group's manifests.
+	out.ManifestClusters = nil
 	return &out
 }
 
@@ -1892,6 +1897,7 @@ func filterEntitiesToFrontendsOnly(e *KCLEntities) *KCLEntities {
 	out.KubeconfigSecrets = nil
 	out.RequiredSecrets = nil
 	out.RenderedSecrets = nil
+	out.ManifestClusters = nil
 	// Frontends carried through unchanged — the Firebase deploy + any
 	// build-only frontends it bundles.
 	return &out
@@ -1913,7 +1919,7 @@ func kclEntitiesHaveK8sCluster(entities *KCLEntities) bool {
 	if entities == nil {
 		return false
 	}
-	if len(entities.WorkloadsOn(RuntimeCluster)) > 0 || entities.ClusterTarget.field("cluster") != "" {
+	if len(entities.WorkloadsOn(RuntimeCluster)) > 0 || entities.ClusterTarget.field("cluster") != "" || len(entities.ManifestClusters) > 0 {
 		return true
 	}
 	for _, d := range entities.Databases {
@@ -3144,7 +3150,7 @@ func declaredContextExistsVerdict(envName, declared string, available []string) 
 			"\n"+
 			"refusing to deploy (the declared cluster is the kubectl context — this is what makes wrong-cluster deploys impossible). Fix with one of:\n"+
 			"  - add the context to your kubeconfig (e.g. `gcloud container clusters get-credentials ...`)\n"+
-			"  - correct forge.K8sCluster.cluster in the env's KCL to match an existing context",
+			"  - correct the cluster the env's KCL declares (a ClusterTarget, OnCluster runtime or forge.Manifests group) to match an existing context",
 		envName, declared, emptyAs(strings.Join(available, ", "), "(none)"))
 }
 
@@ -3161,7 +3167,7 @@ func declaredContextExistsVerdict(envName, declared string, available []string) 
 // There is no CLI override. Groups without a declared cluster (host-only
 // / compose, dev env with blank cluster) are skipped — those run no
 // kubectl writes, so there's nothing to guard.
-func verifyDeclaredContextsExist(ctx context.Context, groups []deploytarget.ServiceGroup) error {
+func verifyDeclaredContextsExist(ctx context.Context, envName string, groups []deploytarget.ServiceGroup) error {
 	// Collect the distinct declared clusters across the K8sCluster
 	// groups (a multi-cluster env applies each group to its own).
 	declared := map[string]struct{}{}
@@ -3184,7 +3190,7 @@ func verifyDeclaredContextsExist(ctx context.Context, groups []deploytarget.Serv
 	}
 	sort.Strings(declaredList)
 	for _, c := range declaredList {
-		if verr := declaredContextExistsVerdict("(deploy)", c, available); verr != nil {
+		if verr := declaredContextExistsVerdict(envName, c, available); verr != nil {
 			return verr
 		}
 	}

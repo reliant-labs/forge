@@ -1390,6 +1390,16 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 			leaders[i] = key
 		} else {
 			skip[i] = true
+			// The group renders with ONE part-of and ONE env stamp, so
+			// every record in it must carry the same ones. Taking the
+			// first record's would silently relabel the rest — part-of is
+			// the handle a CD pipeline selects a release's workloads by.
+			for _, label := range []string{deploy.LabelPartOf, deploy.LabelEnv} {
+				if got, want := w.Labels[label], g.labels[label]; got != want {
+					return nil, fmt.Errorf("manifest item %d: workload %q has %s=%q but %q in the same group (cluster %q, namespace %s) has %q: every workload record in a group must agree (set Bundle.project / Bundle.env once, not per record)",
+						i, w.Name, label, got, g.records[0].Name, key.cluster, key.namespace, want)
+				}
+			}
 		}
 		g.records = append(g.records, w)
 	}

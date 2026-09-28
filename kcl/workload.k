@@ -333,7 +333,7 @@ schema Workload:
         replicas == 1 or caps.supports(kind, caps.CAP_REPLICAS), \
             "Workload.replicas is not supported for kind='${kind}' — a tool is never scheduled, and a batch pod's concurrency belongs to the batch object, so Kubernetes has nowhere to put this value."
         not probes or caps.supports(kind, caps.CAP_PROBES), \
-            "Workload.probes is not supported for kind='${kind}' — a batch pod runs to completion, so a liveness probe would restart work that is merely still running."
+            "Workload.probes is not supported for kind='${kind}' — a batch pod runs to completion, so a liveness probe would restart work that is merely still running, and a tool is never scheduled."
         not serviceAccountAnnotations or caps.supports(kind, caps.CAP_WORKLOAD), \
             "Workload.serviceAccountAnnotations is not supported for kind='${kind}' — a tool is never scheduled, so forge renders no ServiceAccount to annotate."
         len(_invalid_annotation_keys(serviceAccountAnnotations)) == 0, \

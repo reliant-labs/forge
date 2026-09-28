@@ -16,6 +16,7 @@ what selects self-hosted.)
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
     frontends = [forge.Frontend {
         name = "web"

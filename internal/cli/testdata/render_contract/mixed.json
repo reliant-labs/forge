@@ -152,6 +152,7 @@
           "tags": [],
           "type": "go"
         },
+        "build_image": "acme",
         "image": "acme",
         "kind": "service",
         "name": "api",
@@ -207,6 +208,7 @@
           "tags": [],
           "type": "go"
         },
+        "build_image": "acme",
         "image": "acme",
         "kind": "job",
         "name": "migrate",
@@ -238,6 +240,7 @@
       },
       {
         "build": null,
+        "build_image": null,
         "image": "",
         "kind": "service",
         "name": "nats",
@@ -272,6 +275,7 @@
           "tags": [],
           "type": "go"
         },
+        "build_image": "acme",
         "image": "acme",
         "kind": "service",
         "name": "search",
@@ -331,6 +335,7 @@
           "tags": [],
           "type": "go"
         },
+        "build_image": "acme",
         "image": "acme",
         "kind": "worker",
         "name": "billing",
@@ -370,6 +375,7 @@
           "tags": [],
           "type": "go"
         },
+        "build_image": "acme-cli",
         "image": "acme-cli",
         "kind": "tool",
         "name": "cli",

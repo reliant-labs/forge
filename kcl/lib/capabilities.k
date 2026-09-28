@@ -99,8 +99,9 @@ CAP_PORTS: str = "ports"
 # Honors `replicas` (and, above 1, topology spread).
 CAP_REPLICAS: str = "replicas"
 
-# May be probed. A service or worker serves /readyz + /healthz through
-# serverkit; a batch pod runs to completion, so probing it is meaningless.
+# May be probed. A service, worker or operator serves /readyz + /healthz
+# through serverkit; a batch pod runs to completion, so probing it is
+# meaningless.
 CAP_PROBES: str = "probes"
 
 # Gets a PodDisruptionBudget when `replicas > 1`, so a node drain takes one
@@ -239,8 +240,14 @@ KIND_CAPABILITIES: {str: [str]} = {
     # `Port.expose` is inert on an operator — see the report accompanying
     # this change, which leaves that gap open deliberately rather than
     # quietly inventing a Service object for every operator in existence.)
+    #
+    # CAP_PROBES: an operator's manager answers /healthz + /readyz — under
+    # serverkit on its PORT (a forge-built operator, which the lowering
+    # defaults exactly like a service), or on controller-runtime's own probe
+    # listener. An unprobed manager that wedges is otherwise never
+    # restarted, and doctor rightly fails the pod for it.
     "operator" = [
-        CAP_WORKLOAD, CAP_DEPLOYMENT, CAP_PORTS, CAP_REPLICAS, CAP_PDB,
+        CAP_WORKLOAD, CAP_DEPLOYMENT, CAP_PORTS, CAP_REPLICAS, CAP_PROBES, CAP_PDB,
         CAP_NAMESPACED_RBAC, CAP_CLUSTER_RBAC, CAP_CRDS, CAP_RESOURCES, CAP_GATED,
     ]
 
@@ -276,7 +283,7 @@ BROADCAST_GATED_KINDS: [str] = [
 ]
 
 # The kinds that may carry probes. The DEFAULT probe policy (a forge-built
-# service gets HTTP /readyz + /healthz) is kcl/workload.k's
+# service, or operator with ports, gets HTTP /readyz + /healthz) is kcl/workload.k's
 # `_default_probes`, and Go's WorkloadSpec.EffectiveProbes applies the rest.
 PROBED_KINDS: [str] = [
     _k for _k in KIND_CAPABILITIES if CAP_PROBES in KIND_CAPABILITIES[_k]

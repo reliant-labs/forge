@@ -10,6 +10,7 @@ never applied.
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     rendered_secrets = [forge.RenderedSecret {
         name = "orphan"
         keys = {"k" = forge.RenderedSecretKey {key = "SOME_KEY"}}

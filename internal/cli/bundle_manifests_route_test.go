@@ -130,3 +130,129 @@ func TestBundleManifests_RouteByClusterAndTargetByName(t *testing.T) {
 		}
 	}
 }
+
+// manifestsOnlyClusterMain puts a forge.Manifests group on a cluster that NO
+// workload runs on (ctx-daemon), next to a primary-cluster group. ctx-hub
+// carries both a workload and a group, so its group must be JOINED, not
+// duplicated.
+const manifestsOnlyClusterMain = `
+import forge
+import forge.workloads as fw
+
+_hub = forge.ClusterTarget {cluster = "ctx-hub", namespace = "app", registry = "ghcr.io/acme"}
+
+output = forge.render(forge.Bundle {
+    project = "repro"
+    cluster_target = _hub
+    workloads = [fw.Workload {name = "api", image = "docker.io/library/busybox:1", ports = [fw.Port {name = "http", port = 8080}], runtime = forge.OnCluster {target = _hub}}]
+    manifests = [
+        forge.Manifests {
+            name = "daemon-side"
+            cluster = "ctx-daemon"
+            objects = [{apiVersion = "scheduling.k8s.io/v1", kind = "PriorityClass", metadata.name = "x", value = 10}]
+        }
+        forge.Manifests {
+            name = "hub-side"
+            objects = [{apiVersion = "v1", kind = "ConfigMap", metadata.name = "hub-settings", data = {a = "b"}}]
+        }
+    ]
+})
+`
+
+// A forge.Manifests group whose cluster no workload runs on is still a deploy
+// destination: it creates its own k8s group (keyed by the kubectl context,
+// namespace from the primary target), the render attributes its objects to
+// that cluster, and `--target <group>` applies there. A cluster that already
+// has a workload group is joined, never given a second group.
+func TestBundleManifests_ManifestsOnlyClusterIsADeployGroup(t *testing.T) {
+	out := renderKCLProject(t, writeKCLProject(t, manifestsOnlyClusterMain), "env=prod")
+	entities, err := parseKCLEntities(out)
+	if err != nil {
+		t.Fatalf("parseKCLEntities: %v", err)
+	}
+	stream, err := cluster.ExtractManifests(out)
+	if err != nil {
+		t.Fatalf("ExtractManifests: %v", err)
+	}
+	groups, err := buildDeployGroups("prod", entities, "app")
+	if err != nil {
+		t.Fatalf("buildDeployGroups: %v", err)
+	}
+
+	var k8s []string
+	for _, g := range groups {
+		if g.ProviderID != "k8s-cluster" {
+			continue
+		}
+		var names []string
+		for _, s := range g.Services {
+			names = append(names, s.Name)
+		}
+		k8s = append(k8s, g.Cluster+"/"+g.Namespace+"["+strings.Join(names, ",")+"]")
+	}
+	if got, want := strings.Join(k8s, " "), "ctx-daemon/app[] ctx-hub/app[api]"; got != want {
+		t.Fatalf("k8s deploy groups = %q, want %q", got, want)
+	}
+
+	objects, clusters := attributeRenderedObjects(stream, groups, entities)
+	if got := strings.Join(clusters, ","); got != "ctx-daemon,ctx-hub" {
+		t.Fatalf("env clusters = %v, want [ctx-daemon ctx-hub]", clusters)
+	}
+	want := map[string]string{
+		"PriorityClass/x":        "ctx-daemon",
+		"ConfigMap/hub-settings": "ctx-hub",
+		"Deployment/api":         "ctx-hub",
+	}
+	for _, o := range objects {
+		w, ok := want[o.Kind+"/"+o.Name]
+		if !ok {
+			continue
+		}
+		delete(want, o.Kind+"/"+o.Name)
+		if strings.Join(o.Clusters, ",") != w {
+			t.Errorf("%s/%s lands on %v, want only [%s]", o.Kind, o.Name, o.Clusters, w)
+		}
+	}
+	for k := range want {
+		t.Errorf("%s missing from the applied stream", k)
+	}
+
+	// The named manifests-only group is its own --target, applied to its
+	// declared cluster and nowhere else.
+	if err := validateTargetsAgainstRender(entities, []string{"daemon-side"}, stream); err != nil {
+		t.Fatalf("--target daemon-side refused: %v", err)
+	}
+	selected := cluster.SelectManifestsByGroup(stream, []string{"daemon-side"})
+	targeted, err := buildDeployGroups("prod", filterEntitiesByTarget(entities, []string{"daemon-side"}), "app")
+	if err != nil {
+		t.Fatalf("targeted groups: %v", err)
+	}
+	var got []string
+	for _, g := range targetedK8sGroups(selected, groups, targeted, entities) {
+		got = append(got, g.Cluster)
+	}
+	if strings.Join(got, ",") != "ctx-daemon" {
+		t.Errorf("--target daemon-side applies to %v, want [ctx-daemon]", got)
+	}
+	// And a workload target does not drag the manifests-only cluster along.
+	targeted, err = buildDeployGroups("prod", filterEntitiesByTarget(entities, []string{"api"}), "app")
+	if err != nil {
+		t.Fatalf("targeted groups: %v", err)
+	}
+	got = nil
+	for _, g := range targetedK8sGroups(cluster.SelectManifestsByGroup(stream, []string{"api"}), groups, targeted, entities) {
+		got = append(got, g.Cluster)
+	}
+	if strings.Join(got, ",") != "ctx-hub" {
+		t.Errorf("--target api applies to %v, want [ctx-hub]", got)
+	}
+
+	// The context guard sees the manifests-only cluster: a kubeconfig
+	// without it is refused by name.
+	if !kclEntitiesHaveK8sCluster(entities) {
+		t.Errorf("kclEntitiesHaveK8sCluster = false for an env that applies to two clusters")
+	}
+	if got := strings.Join(declaredClusterContexts(entities, "ctx-hub", groups), ","); got != "ctx-hub,ctx-daemon" {
+		t.Errorf("declaredClusterContexts = %q, want ctx-hub,ctx-daemon", got)
+	}
+}

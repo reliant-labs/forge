@@ -9,6 +9,7 @@ preflight can't verify (no key to check), so it's rejected at parse time.
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = forge.ClusterTarget {
         cluster = "prod", namespace = "ns", registry = "ghcr.io/x"
     }

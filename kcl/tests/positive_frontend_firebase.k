@@ -26,6 +26,7 @@ _fe = forge.Frontend {
 }
 
 _bundle = forge.Bundle {
+    project = "fixture"
     frontends = [_fe]
 }
 

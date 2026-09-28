@@ -154,7 +154,8 @@ type WorkloadSpec struct {
 	// Probes are the readiness and liveness probes. Omitted means the
 	// policy in EffectiveProbes: TCP on the first port for a service that
 	// declares ports, and none for anything else. The lowering writes HTTP
-	// /readyz + /healthz explicitly for a service forge built.
+	// /readyz + /healthz explicitly for a service forge built, and for a
+	// forge-built operator that declares ports.
 	// +optional
 	Probes *Probes `json:"probes,omitempty"`
 
@@ -775,17 +776,18 @@ func (s WorkloadSpec) UsesGeneratedServiceAccount() bool { return s.ServiceAccou
 //   - a service that declares ports but no probes gets a TCP probe on its
 //     first port, because a Service routing to a pod nobody checks is how a
 //     hosted API ran unprobed;
-//   - anything else gets none: a worker's or job's health is its own
-//     business unless it says otherwise.
+//   - anything else gets none: a worker's, operator's or job's health is
+//     its own business unless it says otherwise.
 //
-// A service that forge BUILT gets HTTP /readyz + /healthz. The lowering
+// A service or operator that forge BUILT gets HTTP /readyz + /healthz: both
+// run under serverkit, which serves them on the process's PORT. The lowering
 // knows the build, so it writes that probe into the spec explicitly, and it
 // arrives here as declared.
 //
 // The returned probe has Port resolved, so a renderer never re-derives it.
 func (s WorkloadSpec) EffectiveProbes() *Probes {
 	kind := s.EffectiveKind()
-	if kind != KindService && kind != KindWorker {
+	if kind != KindService && kind != KindWorker && kind != KindOperator {
 		return nil
 	}
 	if s.Probes != nil {

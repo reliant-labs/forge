@@ -88,6 +88,7 @@ _target = forge.ClusterTarget {
 }
 
 _bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = _target
     clusters = [_plain, _owner, _secondary, _wide, _pods_only]
     workloads = [fw.Workload {

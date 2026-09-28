@@ -10,6 +10,7 @@ and — like every provider — never reaches the manifest stream.
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     workloads = []
     control_plane = forge.ControlPlane {
         endpoint = "https://api.example.com"

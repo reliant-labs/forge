@@ -37,6 +37,7 @@ func TestFrontendEnvVarsRoundTrip(t *testing.T) {
 import kcl_plugin.forge as fp
 _port = fp.resolve_port("reliant-web", 3000)
 _bundle = forge.Bundle {
+    project = "acme"
     frontends = [forge.Frontend {
         name = "reliant-web"
         type = "vite"

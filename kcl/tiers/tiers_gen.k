@@ -21,6 +21,7 @@ import regex
 
 schema Workload:
     """WorkloadSpec is everything that runs, as ONE declaration (ADR 0002)."""
+    activeDeadlineSeconds?: int
     args?: [str]
     before?: [str]
     clusterRBAC?: [PolicyRule]
@@ -40,15 +41,18 @@ schema Workload:
     replicas: int = 1
     resources: Resources = Resources {}
     schedule?: str
+    securityContext?: PodSecurity
     serviceAccount?: str
     serviceAccountAnnotations?: {str:str}
     sidecars?: [Container]
     storageGiB?: int
+    terminationGracePeriodSeconds?: int
     tolerations?: [Toleration]
     version?: str
     volumes?: [Volume]
 
     check:
+        activeDeadlineSeconds == Undefined or activeDeadlineSeconds >= 1, "Workload.activeDeadlineSeconds must be at least 1"
         args == Undefined or len(args) <= 64, "Workload.args allows at most 64 entries"
         args == Undefined or all _x in args { len(_x) <= 4096 }, "Workload.args[] must be at most 4096 characters"
         before == Undefined or len(before) <= 64, "Workload.before allows at most 64 entries"
@@ -75,6 +79,8 @@ schema Workload:
         serviceAccountAnnotations == Undefined or len(serviceAccountAnnotations) <= 32, "Workload.serviceAccountAnnotations allows at most 32 entries"
         sidecars == Undefined or len(sidecars) <= 8, "Workload.sidecars allows at most 8 entries"
         storageGiB == Undefined or storageGiB >= 0, "Workload.storageGiB must be at least 0"
+        terminationGracePeriodSeconds == Undefined or terminationGracePeriodSeconds >= 0, "Workload.terminationGracePeriodSeconds must be at least 0"
+        terminationGracePeriodSeconds == Undefined or terminationGracePeriodSeconds <= 3600, "Workload.terminationGracePeriodSeconds must be at most 3600"
         tolerations == Undefined or len(tolerations) <= 32, "Workload.tolerations allows at most 32 entries"
         version == Undefined or regex.match(version, "^v[0-9]+((alpha|beta)[0-9]+)?$"), "Workload.version must match ^v[0-9]+((alpha|beta)[0-9]+)?$"
         version == Undefined or len(version) <= 63, "Workload.version must be at most 63 characters"
@@ -82,6 +88,7 @@ schema Workload:
 
 workload_json = lambda v: Workload -> {str:} {
     _d = {
+        "activeDeadlineSeconds": v.activeDeadlineSeconds
         "args": v.args
         "before": v.before
         "clusterRBAC": [policy_rule_json(_i) for _i in v.clusterRBAC] if v.clusterRBAC else Undefined
@@ -101,10 +108,12 @@ workload_json = lambda v: Workload -> {str:} {
         "replicas": v.replicas
         "resources": resources_json(v.resources) if v.resources else Undefined
         "schedule": v.schedule
+        "securityContext": pod_security_json(v.securityContext) if v.securityContext else Undefined
         "serviceAccount": v.serviceAccount
         "serviceAccountAnnotations": v.serviceAccountAnnotations
         "sidecars": [container_json(_i) for _i in v.sidecars] if v.sidecars else Undefined
         "storageGiB": v.storageGiB
+        "terminationGracePeriodSeconds": v.terminationGracePeriodSeconds
         "tolerations": [toleration_json(_i) for _i in v.tolerations] if v.tolerations else Undefined
         "version": v.version
         "volumes": [volume_json(_i) for _i in v.volumes] if v.volumes else Undefined
@@ -377,6 +386,28 @@ schema PVCVolumeSource:
 pvc_volume_source_json = lambda v: PVCVolumeSource -> {str:} {
     _d = {
         "claimName": v.claimName
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema PodSecurity:
+    """PodSecurity is the closed set of pod-identity knobs forge lets a workload change. Each unset field keeps forge's default (uid/gid 65532, fsGroup only when a volume needs it, a read-only root filesystem). The overrides apply to the pod AND to every container forge renders in it (main, sidecar, gating initContainer), so the pod has one identity."""
+    fsGroup?: int
+    readOnlyRootFilesystem?: bool
+    runAsGroup?: int
+    runAsUser?: int
+
+    check:
+        fsGroup == Undefined or fsGroup >= 1, "PodSecurity.fsGroup must be at least 1"
+        runAsGroup == Undefined or runAsGroup >= 1, "PodSecurity.runAsGroup must be at least 1"
+        runAsUser == Undefined or runAsUser >= 1, "PodSecurity.runAsUser must be at least 1"
+
+pod_security_json = lambda v: PodSecurity -> {str:} {
+    _d = {
+        "fsGroup": v.fsGroup
+        "readOnlyRootFilesystem": v.readOnlyRootFilesystem
+        "runAsGroup": v.runAsGroup
+        "runAsUser": v.runAsUser
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
@@ -673,9 +704,11 @@ RESTRICTED_FIELD_REASONS: {str:str} = {
     "nodeSelector" = "hosted placement (the isolation pool) is decided by the platform, never by the workload's author"
     "podAnnotations" = "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns"
     "schedule" = "cron is not available on hosted until metering covers it"
+    "securityContext" = "the hosted platform owns the pod identity (uid, gid, filesystem) its isolation depends on"
     "serviceAccount" = "hosted workloads run under a platform-owned ServiceAccount; naming another one would borrow its identity"
     "serviceAccountAnnotations" = "hosted workloads run under a platform-owned ServiceAccount; cloud workload identity is bound by the platform, never by the workload's author"
     "sidecars" = "the hosted platform composes the pod itself (runtime class, isolation, egress), and a second container you author would run outside the single-container policy it enforces"
+    "terminationGracePeriodSeconds" = "the hosted platform sets the grace period, because it holds shared node capacity past SIGTERM; tune PRE_STOP_DELAY and SHUTDOWN_TIMEOUT, which it derives from"
     "tolerations" = "hosted placement (the isolation pool) is decided by the platform, never by the workload's author; a toleration would let a pod onto nodes reserved for something else"
     "version" = "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)"
     "volumes" = "a Secret, ConfigMap or PVC volume reads namespace objects you did not write; use storageGiB for a persistent disk, and env for configuration"

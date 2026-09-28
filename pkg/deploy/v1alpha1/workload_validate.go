@@ -34,26 +34,29 @@ const MaxDomains = 8
 // wrote down, and the manifest looks fine because it is the thing that lost
 // the information.
 var kindCapabilities = map[string]map[WorkloadKind]bool{
-	"ports":                     {KindService: true, KindWorker: true, KindOperator: true},
-	"replicas":                  {KindService: true, KindWorker: true, KindOperator: true},
-	"probes":                    {KindService: true, KindWorker: true},
-	"storageGiB":                {KindService: true, KindWorker: true, KindOperator: true},
-	"namespacedRBAC":            {KindService: true, KindWorker: true, KindJob: true, KindCron: true},
-	"clusterRBAC":               {KindOperator: true},
-	"crds":                      {KindOperator: true},
-	"group":                     {KindOperator: true},
-	"version":                   {KindOperator: true},
-	"leaderElection":            {KindOperator: true},
-	"schedule":                  {KindCron: true},
-	"before":                    {KindJob: true},
-	"deployPhase":               {KindJob: true},
-	"serviceAccountAnnotations": {KindService: true, KindWorker: true, KindJob: true, KindCron: true, KindOperator: true},
-	"sidecars":                  scheduledKinds,
-	"volumes":                   scheduledKinds,
-	"serviceAccount":            scheduledKinds,
-	"nodeSelector":              scheduledKinds,
-	"tolerations":               scheduledKinds,
-	"podAnnotations":            scheduledKinds,
+	"ports":                         {KindService: true, KindWorker: true, KindOperator: true},
+	"replicas":                      {KindService: true, KindWorker: true, KindOperator: true},
+	"probes":                        {KindService: true, KindWorker: true},
+	"storageGiB":                    {KindService: true, KindWorker: true, KindOperator: true},
+	"namespacedRBAC":                {KindService: true, KindWorker: true, KindJob: true, KindCron: true},
+	"clusterRBAC":                   scheduledKinds,
+	"crds":                          {KindOperator: true},
+	"group":                         {KindOperator: true},
+	"version":                       {KindOperator: true},
+	"leaderElection":                {KindOperator: true},
+	"schedule":                      {KindCron: true},
+	"before":                        {KindJob: true},
+	"deployPhase":                   {KindJob: true},
+	"serviceAccountAnnotations":     {KindService: true, KindWorker: true, KindJob: true, KindCron: true, KindOperator: true},
+	"sidecars":                      scheduledKinds,
+	"volumes":                       scheduledKinds,
+	"serviceAccount":                scheduledKinds,
+	"nodeSelector":                  scheduledKinds,
+	"tolerations":                   scheduledKinds,
+	"podAnnotations":                scheduledKinds,
+	"terminationGracePeriodSeconds": scheduledKinds,
+	"activeDeadlineSeconds":         {KindJob: true, KindCron: true},
+	"securityContext":               scheduledKinds,
 }
 
 // scheduledKinds are the kinds that render a pod. A tool is never scheduled,
@@ -62,26 +65,29 @@ var scheduledKinds = map[WorkloadKind]bool{KindService: true, KindWorker: true, 
 
 // kindCapabilityReasons explains each refusal, naming the alternative.
 var kindCapabilityReasons = map[string]string{
-	"ports":                     "a batch kind (job/cron) runs to completion and a tool is never scheduled, so there is no pod anything can dial; use kind service or worker",
-	"replicas":                  "a batch pod's concurrency belongs to its Job or CronJob and a tool is never scheduled, so Kubernetes has nowhere to put this value",
-	"probes":                    "probes gate traffic and restart long-running pods; a batch pod runs to completion, an operator's manager serves its own health, and a tool is never scheduled",
-	"storageGiB":                "a ReadWriteOnce volume is mounted by a long-running pod; a batch pod or a tool has nothing to keep it for",
-	"namespacedRBAC":            "an operator's permissions are cluster-scoped, so it uses clusterRBAC; a tool is never scheduled",
-	"clusterRBAC":               "watching resources across namespaces is what makes a workload an operator; use namespacedRBAC for access in the workload's own namespace, or declare kind operator",
-	"crds":                      "crds names the custom resources a controller-runtime manager owns; declare kind operator",
-	"group":                     "group is the API group of an operator's CRDs; declare kind operator",
-	"version":                   "version is the API version of an operator's CRDs; declare kind operator",
-	"leaderElection":            "only an operator's manager elects a leader",
-	"schedule":                  "only a cron runs on a schedule; a one-shot is kind job",
-	"before":                    "before orders a one-shot job ahead of other workloads; it is only valid for kind job",
-	"deployPhase":               "deployPhase places a standalone job in the deploy; it is only valid for kind job",
-	"serviceAccountAnnotations": "a tool is never scheduled, so forge renders no ServiceAccount to annotate",
-	"sidecars":                  "a tool is never scheduled, so it has no pod to add a container to",
-	"volumes":                   "a tool is never scheduled, so it has no pod to mount a volume in",
-	"serviceAccount":            "a tool is never scheduled, so it has no pod to run as a ServiceAccount",
-	"nodeSelector":              "a tool is never scheduled, so there is no pod to place",
-	"tolerations":               "a tool is never scheduled, so there is no pod to place",
-	"podAnnotations":            "a tool is never scheduled, so there is no pod to annotate",
+	"ports":                         "a batch kind (job/cron) runs to completion and a tool is never scheduled, so there is no pod anything can dial; use kind service or worker",
+	"replicas":                      "a batch pod's concurrency belongs to its Job or CronJob and a tool is never scheduled, so Kubernetes has nowhere to put this value",
+	"probes":                        "probes gate traffic and restart long-running pods; a batch pod runs to completion, an operator's manager serves its own health, and a tool is never scheduled",
+	"storageGiB":                    "a ReadWriteOnce volume is mounted by a long-running pod; a batch pod or a tool has nothing to keep it for",
+	"namespacedRBAC":                "an operator's permissions are cluster-scoped, so it uses clusterRBAC; a tool is never scheduled",
+	"clusterRBAC":                   "a tool is never scheduled, so it has no pod to grant permission to",
+	"crds":                          "crds names the custom resources a controller-runtime manager owns; declare kind operator",
+	"group":                         "group is the API group of an operator's CRDs; declare kind operator",
+	"version":                       "version is the API version of an operator's CRDs; declare kind operator",
+	"leaderElection":                "only an operator's manager elects a leader",
+	"schedule":                      "only a cron runs on a schedule; a one-shot is kind job",
+	"before":                        "before orders a one-shot job ahead of other workloads; it is only valid for kind job",
+	"deployPhase":                   "deployPhase places a standalone job in the deploy; it is only valid for kind job",
+	"serviceAccountAnnotations":     "a tool is never scheduled, so forge renders no ServiceAccount to annotate",
+	"sidecars":                      "a tool is never scheduled, so it has no pod to add a container to",
+	"volumes":                       "a tool is never scheduled, so it has no pod to mount a volume in",
+	"serviceAccount":                "a tool is never scheduled, so it has no pod to run as a ServiceAccount",
+	"nodeSelector":                  "a tool is never scheduled, so there is no pod to place",
+	"tolerations":                   "a tool is never scheduled, so there is no pod to place",
+	"podAnnotations":                "a tool is never scheduled, so there is no pod to annotate",
+	"terminationGracePeriodSeconds": "a tool is never scheduled, so there is no pod to stop",
+	"activeDeadlineSeconds":         "a deadline bounds a run to completion; a long-running kind never completes, so use probes, and a tool is never scheduled",
+	"securityContext":               "a tool is never scheduled, so there is no pod to run",
 }
 
 // Validate checks a Workload spec against the invariants every destination
@@ -124,6 +130,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 			"ports", "replicas", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
 			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
 			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
+			"terminationGracePeriodSeconds", "activeDeadlineSeconds", "securityContext",
 		} {
 			if s.declares(field) && !kindCapabilities[field][kind] {
 				errs = append(errs, fmt.Errorf("%s is not supported for kind %q: %s", field, kind, kindCapabilityReasons[field]))
@@ -252,6 +259,26 @@ func (s WorkloadSpec) Validate(p Profile) error {
 		}
 	}
 
+	// --- RBAC tier, grace, deadline, security ---
+	// The tiers are exclusive: a ClusterRole REPLACES the Role (see
+	// ClusterRBAC), so both on one workload has no correct rendering.
+	if len(s.NamespacedRBAC) > 0 && len(s.ClusterRBAC) > 0 {
+		errs = append(errs, errors.New("namespacedRBAC and clusterRBAC are exclusive: one ServiceAccount gets one binding tier, and a ClusterRole already covers the workload's own namespace; move the namespaced rules into clusterRBAC"))
+	}
+	if g := s.TerminationGracePeriodSeconds; g != nil && (*g < 0 || *g > 3600) {
+		errs = append(errs, fmt.Errorf("terminationGracePeriodSeconds must be 0-3600 (got %d)", *g))
+	}
+	if d := s.ActiveDeadlineSeconds; d != nil && *d < 1 {
+		errs = append(errs, fmt.Errorf("activeDeadlineSeconds must be positive (got %d): omit it for no deadline", *d))
+	}
+	if sc := s.SecurityContext; sc != nil {
+		for field, v := range map[string]*int64{"runAsUser": sc.RunAsUser, "runAsGroup": sc.RunAsGroup, "fsGroup": sc.FSGroup} {
+			if v != nil && *v < 1 {
+				errs = append(errs, fmt.Errorf("securityContext.%s must be at least 1 (got %d): every forge pod runs as non-root", field, *v))
+			}
+		}
+	}
+
 	// --- profile ---
 	errs = append(errs, profileViolations(s, p)...)
 	return errors.Join(errs...)
@@ -263,11 +290,11 @@ func (s WorkloadSpec) Validate(p Profile) error {
 // So each of these on a gating job describes nothing, and expand.k's old
 // behaviour (an orphan ServiceAccount and Role that nothing bound) made a
 // migrate job's namespacedRBAC look granted when it was not. Ordered for
-// deterministic errors. clusterRBAC is absent because it is refused for
-// every job already (kindCapabilities).
+// deterministic errors.
 var gatingPodFields = []string{
-	"namespacedRBAC", "serviceAccount", "serviceAccountAnnotations", "sidecars",
+	"namespacedRBAC", "clusterRBAC", "serviceAccount", "serviceAccountAnnotations", "sidecars",
 	"volumes", "nodeSelector", "tolerations", "podAnnotations",
+	"terminationGracePeriodSeconds", "activeDeadlineSeconds", "securityContext",
 }
 
 // gatingJobPodFieldErrors refuses each pod-level field set on a gating job.
@@ -327,6 +354,12 @@ func (s WorkloadSpec) declares(field string) bool {
 		return len(s.Tolerations) > 0
 	case "podAnnotations":
 		return len(s.PodAnnotations) > 0
+	case "terminationGracePeriodSeconds":
+		return s.TerminationGracePeriodSeconds != nil
+	case "activeDeadlineSeconds":
+		return s.ActiveDeadlineSeconds != nil
+	case "securityContext":
+		return s.SecurityContext != nil
 	}
 	return false
 }

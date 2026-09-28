@@ -5,52 +5,45 @@
 //
 // Where config_schema_gen.go projects the SHAPE (`schema AppConfig`), this
 // emitter projects the BEHAVIOR: one generated KCL function that turns a
-// typed `AppConfig` value into the agnostic-core env model an agnostic
-// `forge.Service` consumes —
+// typed `AppConfig` value into entries of a workload's env map
+// (fw.Workload.env, kcl/workload.k) —
 //
-//   - appConfigEnvMap(c, config_secrets) -> {str: forge.EnvSource}
-//     the agnostic-core env MAP (kcl/core.k), keyed by ENV_VAR name, one
-//     entry per config field with a non-empty env_var:
-//   - non-sensitive -> {value = <the value read off c>}
-//     (lowered INLINE — the typed field converted to a
-//     string, no ConfigMap object or reference. Projected
-//     for EVERY caller: no credential, no start-time
-//     dependency, so broadcasting them is free.)
-//   - sensitive     -> {from_secret = {name = c.<field>.name,
-//     key  = c.<field>.key}}
-//     (reads the typed ConfigSecretRef off the value.
-//     Projected ONLY when `config_secrets` names it — see
-//     renderConfigEnvMapNamed for the outage that rule
-//     exists to prevent.)
+//   - appConfigEnvMap(c, config_secrets) -> {str: str | forge.SecretRef}
+//     keyed by ENV_VAR name, one entry per config field with a non-empty
+//     env_var:
+//   - non-sensitive -> the value read off c, as a string (INLINE: no
+//     ConfigMap object or reference). Projected for EVERY caller: no
+//     credential, no start-time dependency, so broadcasting it is free.
+//   - sensitive     -> forge.SecretRef {name = c.<field>.name, key =
+//     c.<field>.key, store_key = "<ENV_VAR>", optional?}
+//     (reads the typed ConfigSecretRef off the value. Projected ONLY when
+//     `config_secrets` names it — see renderConfigEnvMapNamed for the
+//     outage that rule exists to prevent.)
 //
-// The env MAP is the idiomatic authoring shape: a service consumes config the
-// native way —
+// A workload consumes it the native way:
 //
-//	env = appConfigEnvMap(app_config, w.config_secrets) | { <service extras> }
+//	env = appConfigEnvMap(app_config, config_secrets) | { <workload extras> }
 //
-// — composing config-first with native KCL map-merge `|` (last-wins), so a
-// service extra of the same env-var NAME overrides the config entry, and
-// duplicate keys are structurally impossible (no `env_merge`). The k8s
-// adapter then projects the map to `[EnvVar]` via `env_project` (core.k).
+// — config first, composed with map-merge `|` (last-wins), so a workload
+// extra of the same NAME overrides the config entry, and a duplicate name
+// is structurally impossible.
 //
-// Non-sensitive config values are lowered INLINE as `{value = ...}` rather
-// than through a ConfigMap object + reference — simpler is better: it drops
-// the whole ConfigMap object and its cross-reference wiring. Only sensitive
-// fields still route out-of-band, through `from_secret`.
+// ONE entry serves every runtime. forge.render lowers a SecretRef to the
+// wire's `secretRef` for a cluster or host workload, and — via `store_key`,
+// the key the env's secret store holds the value under — to a
+// `managedSecret {name = store_key}` for a HOSTED one, carrying `optional`
+// through both. So an author never re-states a credential per runtime.
 //
-// The per-field metadata (env-var name, sensitive flag, value expression)
-// is BAKED into the generated code from the proto — the function is
-// generated, not generic — so the emitted KCL is a straight-line map/dict
-// literal with no runtime reflection. The runtime Go loader
-// (pkg/config/loader.go, which binds env by each field's env_var) reads the
-// SAME projected env vars, so the two stay coherent by construction.
+// The per-field metadata (env-var name, sensitive flag, value expression) is
+// BAKED into the generated code from the proto, so the emitted KCL is a
+// straight-line map literal. The runtime Go loader (pkg/config/loader.go,
+// which binds env by each field's env_var) reads the SAME projected env vars,
+// so the two stay coherent by construction.
 //
-// The sensitive branch reads the typed ConfigSecretRef off the AppConfig value
-// (from_secret.name = c.<field>.name, key = c.<field>.key). The default backend
-// (name = "<project>-secrets", key = lower(env_var)) is supplied by the
-// AppConfig field's SCHEMA DEFAULT (see config_schema_gen.go), and a per-env
-// override flows through as a ConfigSecretRef the author writes into config.k —
-// so an author who overrides the backing Secret/key gets that here unchanged.
+// The default Secret backend (name = "<project>-secrets", key =
+// lower(env_var)) is supplied by the AppConfig field's SCHEMA DEFAULT (see
+// config_schema_gen.go), and a per-env override flows through as a
+// ConfigSecretRef the author writes into config.k.
 package codegen
 
 import (
@@ -65,8 +58,8 @@ import (
 //
 // They were two files (config_schema.k + config_projection.k) on the
 // premise that a KCL module cannot hold a schema and a lambda together.
-// It can — forge's own kcl/core.k interleaves `schema EnvSource`,
-// `env_project = lambda ...`, `schema EnvFrom` in one file. Since both
+// It can — forge's own kcl/workload.k interleaves schemas and lambdas in
+// one file. Since both
 // halves are projected from the same proto by the same run and are only
 // ever valid as a pair, splitting them bought nothing and cost a second
 // Tier-1 file, a second hash guard and a second diff entry in every
@@ -87,7 +80,7 @@ func GenerateConfigKCL(fields []ConfigField, projectName string) (string, error)
 	b.WriteString("# Code generated by forge. DO NOT EDIT.\n")
 	b.WriteString("# Typed config schema + env projection, both projected from proto/config/v1/config.proto — author per-env values in deploy/kcl/<env>/config.k as an `AppConfig { ... }` instance; add or change fields in the PROTO, never here.\n\n")
 
-	// forge.EnvSource is the projection's return type; the schemas below
+	// forge.SecretRef is in the projection's return type; the schemas below
 	// need no import (they are declared here).
 	b.WriteString("import forge\n\n")
 
@@ -247,19 +240,11 @@ func BinaryConfigFieldsFrom(messages []ConfigMessage) []BinaryConfigFields {
 	return out
 }
 
-// renderAppConfigEnvMap emits the appConfigEnvMap lambda: the agnostic-core
-// env MAP `{str: forge.EnvSource}` (kcl/core.k) keyed by ENV_VAR name, one
-// entry per field with a non-empty env_var. Sensitive fields route to the
-// `from_secret` channel (reading the typed ConfigSecretRef off the value);
-// non-sensitive fields lower INLINE to the `value` channel — the typed field
-// read off `c` and converted to a string (see kclConfigValueExpr), NOT a
-// ConfigMap reference. Simpler is better: there is no ConfigMap object or
-// cross-reference to maintain.
+// renderAppConfigEnvMap emits the appConfigEnvMap lambda: env-map entries
+// `{str: str | forge.SecretRef}` keyed by ENV_VAR name, one per field with a
+// non-empty env_var (see the file comment).
 //
-// A service consumes this the idiomatic way — config first, service extras
-// merged/overriding via native map-merge:
-//
-//	env = appConfigEnvMap(app_config) | { "EXTRA" = {value = "x"} }
+//	env = appConfigEnvMap(app_config, config_secrets) | {EXTRA = "x"}
 func renderAppConfigEnvMap(fields []ConfigField) string {
 	return renderConfigEnvMapNamed(fields, "AppConfig", "appConfigEnvMap")
 }
@@ -333,20 +318,24 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 		}
 		if f.Sensitive {
 			// Read the typed ConfigSecretRef off the AppConfig value: its
-			// name/key ARE the from_secret name/key. The AppConfig field's
+			// name/key ARE the SecretRef name/key. The AppConfig field's
 			// SCHEMA DEFAULT supplies the default backend (<project>-secrets /
 			// lower(env_var)); an author who set a ConfigSecretRef override
 			// (the ${NAME#KEY} case) flows through here unchanged.
-			// secret_optional rides ON the EnvSource so it survives the
-			// projection into EnvVar and reaches the store pre-flight, which
-			// reads rendered entities and has no proto in hand. Emitted only
-			// when true: an explicit `secret_optional = False` on every
-			// credential would be noise in the generated module and says
-			// nothing the schema default does not.
-			expr := fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}}`, f.KCLPath(), f.KCLPath())
+			// `optional` rides ON the SecretRef so it reaches the wire
+			// (secretRef.optional / managedSecret.optional) and the store
+			// pre-flight. Emitted only when true.
+			//
+			// `store_key` is the ENV_VAR name, which is the key the env's
+			// secret store holds the value under. It is what lets ONE entry
+			// serve every runtime: a cluster or host workload reads the
+			// Secret key (secretRef), and a hosted workload reads the stored
+			// value by that name (managedSecret) — forge.render picks.
+			opt := ""
 			if f.Optional {
-				expr = fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}, secret_optional = True}`, f.KCLPath(), f.KCLPath())
+				opt = ", optional = True"
 			}
+			expr := fmt.Sprintf(`forge.SecretRef {name = c.%s.name, key = c.%s.key, store_key = %q%s}`, f.KCLPath(), f.KCLPath(), f.EnvVar, opt)
 			secrets = append(secrets, kv{
 				key:      f.EnvVar,
 				expr:     expr,
@@ -354,10 +343,9 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 			})
 			continue
 		}
-		// Non-sensitive -> INLINE value channel. The typed field is read off
-		// `c` and converted to a string via kclConfigValueExpr (the SAME
-		// value-formatting that previously fed the ConfigMap data), lowered
-		// directly as `{value = ...}` — no ConfigMap object, no reference.
+		// Non-sensitive -> an INLINE value: the typed field read off `c` and
+		// converted to a string via kclConfigValueExpr — no ConfigMap object,
+		// no reference.
 		//
 		// An OPTIONAL non-sensitive field is projected only when its value
 		// differs from its schema default. This is lossless — the runtime
@@ -371,7 +359,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 		// its presence in the manifest is part of what an operator audits.
 		entry := kv{
 			key:  f.EnvVar,
-			expr: fmt.Sprintf(`{value = %s}`, kclConfigValueExpr(f, "c")),
+			expr: kclConfigValueExpr(f, "c"),
 		}
 		if f.Optional {
 			if def, ok := kclConfigDefaultLiteral(f); ok {
@@ -428,9 +416,9 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	}
 	b.WriteString("]\n\n")
 
-	fmt.Fprintf(&b, "# %s projects a typed %s into the agnostic-core env\n", lambdaName, schemaName)
-	b.WriteString("# MAP — one forge.EnvSource per field that declares an env_var, keyed by\n")
-	b.WriteString("# ENV_VAR name.\n")
+	fmt.Fprintf(&b, "# %s projects a typed %s into a workload's env MAP (fw.Workload.env):\n", lambdaName, schemaName)
+	b.WriteString("# one entry per field that declares an env_var, keyed by ENV_VAR name — a\n")
+	b.WriteString("# string for an ordinary field, a forge.SecretRef for a sensitive one.\n")
 	b.WriteString("#\n")
 	b.WriteString("# Non-sensitive fields are projected for EVERY caller: they are inline\n")
 	b.WriteString("# values, so they carry no credential and no start-time dependency.\n")
@@ -440,18 +428,18 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	b.WriteString("# in CreateContainerConfigError with no application log — so a credential\n")
 	b.WriteString("# broadcast to workloads that never read it turns one feature's missing\n")
 	b.WriteString("# secret into a whole namespace outage.\n")
-	fmt.Fprintf(&b, "#\n#     env = forge.env_project(%s(cfg, w.config_secrets))\n", lambdaName)
+	fmt.Fprintf(&b, "#\n#     env = %s(cfg, config_secrets) | {EXTRA = \"value\"}\n", lambdaName)
 	// The schema is declared above in this same file, so the parameter type
 	// is the bare name — no module qualifier.
 	//
 	// `config_secrets` has NO default. A one-arg call is a compile error that
 	// names the file and line; a default would render green and silently
 	// ship pods with no credentials.
-	fmt.Fprintf(&b, "%s = lambda c: %s, config_secrets: [str] -> {str: forge.EnvSource} {\n", lambdaName, schemaName)
+	fmt.Fprintf(&b, "%s = lambda c: %s, config_secrets: [str] -> {str: str | forge.SecretRef} {\n", lambdaName, schemaName)
 
 	// The sensitive half is bound first so the assert can name what IS
 	// available when an entry does not resolve.
-	b.WriteString("    _sensitive: {str: forge.EnvSource} = {\n")
+	b.WriteString("    _sensitive: {str: forge.SecretRef} = {\n")
 	for _, e := range secrets {
 		fmt.Fprintf(&b, "        %q = %s\n", e.key, e.expr)
 	}
@@ -460,9 +448,9 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	fmt.Fprintf(&b, "        \"%s: config_secrets names ${[_n for _n in config_secrets if _n not in _sensitive]}, which is not a `sensitive` field of %s. Sensitive fields: ${sorted([_k for _k in _sensitive])}. Add `sensitive: true` to the field in proto/config/v1/config.proto, or drop the name from this workload's config_secrets.\"\n", lambdaName, schemaName)
 
 	// Inline half first, then the selected secrets. `|` on disjoint key sets
-	// is the ADD-only use of the operator (see kcl/core.k env_override): no
-	// EnvSource is ever fused, and base-key insertion order is preserved,
-	// which env_project relies on for k8s `$(VAR)` interpolation.
+	// only ADDS keys, so no entry is ever merged into another, and insertion
+	// order is preserved (Kubernetes `$(VAR)` expansion reads only EARLIER
+	// entries).
 	if len(inline) == 0 {
 		b.WriteString("    {} | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n")
 	} else {

@@ -45,13 +45,19 @@ import (
 //
 // Per kind:
 //
-//	service   Deployment + Service (+ PDB, PVC) + ServiceAccount [+ Role] + NetworkPolicy
-//	worker    Deployment (+ PDB, PVC) + ServiceAccount [+ Role] + NetworkPolicy
-//	operator  Deployment (+ PDB, PVC) + ServiceAccount + ClusterRole + ClusterRoleBinding
-//	job       standalone: Job + ServiceAccount [+ Role] + NetworkPolicy;
+//	service   Deployment + Service (+ PDB, PVC) + ServiceAccount [+ RBAC] [+ NetworkPolicy]
+//	worker    Deployment (+ PDB, PVC) + ServiceAccount [+ RBAC] [+ NetworkPolicy]
+//	operator  Deployment [+ Service when it declares ports] (+ PDB, PVC) + ServiceAccount
+//	          + ClusterRole + ClusterRoleBinding (CRD rules and leases derived)
+//	job       standalone: Job + ServiceAccount [+ RBAC] [+ NetworkPolicy];
 //	          with `before`: nothing of its own, an initContainer on each gated pod
-//	cron      CronJob + ServiceAccount [+ Role] + NetworkPolicy
+//	cron      CronJob + ServiceAccount [+ RBAC] [+ NetworkPolicy]
 //	tool      nothing (built into the image, never scheduled)
+//
+// [+ RBAC] is a Role + RoleBinding (namespacedRBAC) or, under the Full
+// profile, a ClusterRole + ClusterRoleBinding (clusterRBAC), never both.
+// [+ NetworkPolicy] is the per-workload ingress policy: always under
+// ProfileRestricted, and under ProfileFull only when Context.Network is set.
 //
 // Every spec is validated under p FIRST, all-or-nothing: no object is
 // emitted for a set with any error, and every error is reported together.
@@ -173,15 +179,16 @@ func (w *workload) gatingJob() bool { return w.kind == v1alpha1.KindJob && len(w
 func (w *workload) broadcast() bool { return slices.Contains(w.spec.Before, v1alpha1.BeforeAll) }
 
 type workloadSet struct {
-	list   []*workload
-	byName map[string]*workload
+	list    []*workload
+	byName  map[string]*workload
+	profile v1alpha1.Profile
 }
 
 // prepareSet validates every spec under p and the cross-workload rules, and
 // returns the defaulted set. All errors are collected (validate.go's
 // all-or-nothing convention).
 func prepareSet(ws []v1alpha1.Workload, p v1alpha1.Profile) (*workloadSet, error) {
-	set := &workloadSet{byName: map[string]*workload{}}
+	set := &workloadSet{byName: map[string]*workload{}, profile: p}
 	var errs []error
 	for i := range ws {
 		name := ws[i].Name
@@ -403,7 +410,9 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 		extraEnv = append(extraEnv, corev1.EnvVar{Name: "LEADER_ELECTION", Value: "true"})
 	}
 	pod := set.podSpec(w, ctx, extraEnv)
-	pod.TerminationGracePeriodSeconds = new(gracePeriodSeconds(s.Env))
+	if pod.TerminationGracePeriodSeconds == nil {
+		pod.TerminationGracePeriodSeconds = new(gracePeriodSeconds(s.Env))
+	}
 	if s.Replicas > 1 {
 		pod.TopologySpreadConstraints = spreadConstraints(w.name)
 	}
@@ -429,11 +438,13 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 	}
 	objs := []runtime.Object{dep}
 
-	// expand.k:507-515: only a service is dialled by name. A worker has
-	// nothing to dial, and an operator's ports are documentary
-	// (capabilities.k:232-240): forge does not conjure a routable name for
-	// a manager on the strength of a port number.
-	if w.kind == v1alpha1.KindService {
+	// expand.k:507-515: a service is dialled by name. So is an operator
+	// that declares ports: they are its webhook, metrics or API endpoint
+	// (control-plane's workspace-controller serves :9191), and capabilities.k:
+	// 232-240's "documentary only" left every such operator to hand-write a
+	// Service that forge's renderer should own. A worker still gets none:
+	// nothing resolves it by name.
+	if w.kind == v1alpha1.KindService || (w.kind == v1alpha1.KindOperator && len(s.Ports) > 0) {
 		svc := &corev1.Service{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
 			ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
@@ -474,7 +485,7 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 		})
 	}
 	objs = append(objs, identity(w, ctx)...)
-	if np := ingressPolicy(w, ctx); np != nil {
+	if np := set.ingressPolicy(w, ctx); np != nil {
 		objs = append(objs, np)
 	}
 	return objs
@@ -520,7 +531,8 @@ func (set *workloadSet) renderJob(w *workload, ctx Context) ([]runtime.Object, e
 		TypeMeta:   metav1.TypeMeta{APIVersion: "batch/v1", Kind: "Job"},
 		ObjectMeta: meta,
 		Spec: batchv1.JobSpec{
-			BackoffLimit: new(jobBackoffLimit),
+			BackoffLimit:          new(jobBackoffLimit),
+			ActiveDeadlineSeconds: w.spec.ActiveDeadlineSeconds,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: w.spec.PodAnnotations},
 				Spec:       pod,
@@ -529,7 +541,9 @@ func (set *workloadSet) renderJob(w *workload, ctx Context) ([]runtime.Object, e
 	}
 	objs := []runtime.Object{job}
 	objs = append(objs, identity(w, ctx)...)
-	objs = append(objs, ingressPolicy(w, ctx))
+	if np := set.ingressPolicy(w, ctx); np != nil {
+		objs = append(objs, np)
+	}
 	return objs, nil
 }
 
@@ -547,6 +561,7 @@ func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 		Spec: batchv1.CronJobSpec{
 			Schedule: w.spec.Schedule,
 			JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{
+				ActiveDeadlineSeconds: w.spec.ActiveDeadlineSeconds,
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: w.spec.PodAnnotations},
 					Spec:       pod,
@@ -556,7 +571,9 @@ func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 	}
 	objs := []runtime.Object{cj}
 	objs = append(objs, identity(w, ctx)...)
-	objs = append(objs, ingressPolicy(w, ctx))
+	if np := set.ingressPolicy(w, ctx); np != nil {
+		objs = append(objs, np)
+	}
 	return objs
 }
 
@@ -568,14 +585,15 @@ func (set *workloadSet) podSpec(w *workload, ctx Context, extraEnv []corev1.EnvV
 	main := mainContainer(w, extraEnv)
 	containers := []corev1.Container{main}
 	for _, sc := range s.Sidecars {
-		containers = append(containers, sidecarContainer(sc))
+		containers = append(containers, sidecarContainer(sc, s.SecurityContext))
 	}
 
 	// cron never receives gating (expand.k:791-793): jobGates excludes it
 	// through gatedKinds, and validateBefore refuses naming one.
 	var inits []corev1.Container
 	for _, j := range set.gatingJobs(w) {
-		inits = append(inits, initContainer(j))
+		// The init runs in THIS pod, so it takes this pod's identity.
+		inits = append(inits, initContainer(j, s.SecurityContext))
 	}
 
 	volumes := []corev1.Volume{{Name: v1alpha1.TmpVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
@@ -592,12 +610,17 @@ func (set *workloadSet) podSpec(w *workload, ctx Context, extraEnv []corev1.EnvV
 		// Bind the workload's own ServiceAccount. Leaving it unset ran every
 		// pod as the namespace `default` (expand.k:504-505, :553-558).
 		ServiceAccountName: w.name,
-		SecurityContext:    podSecurityContext(needsFSGroup(s)),
+		SecurityContext:    podSecurityContext(needsFSGroup(s), s.SecurityContext),
 		InitContainers:     inits,
 		Containers:         containers,
 		Volumes:            volumes,
 		NodeSelector:       s.NodeSelector,
 		Tolerations:        tolerations(s.Tolerations),
+	}
+	// An explicit grace period (Full only) wins over the drain-derived one a
+	// long-running kind gets, and is the only one a batch pod gets.
+	if s.TerminationGracePeriodSeconds != nil {
+		pod.TerminationGracePeriodSeconds = new(int64(*s.TerminationGracePeriodSeconds))
 	}
 	if s.UsesGeneratedServiceAccount() {
 		// An API token mounted into a process that never calls the API is
@@ -630,7 +653,7 @@ func mainContainer(w *workload, extraEnv []corev1.EnvVar) corev1.Container {
 		Args:            s.Args,
 		Env:             append(renderEnv(s.Env), extraEnv...),
 		Resources:       resourceRequirements(s.Resources),
-		SecurityContext: containerSecurityContext(),
+		SecurityContext: containerSecurityContext(s.SecurityContext),
 		VolumeMounts:    []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}},
 	}
 	if len(c.Env) == 0 {
@@ -658,7 +681,7 @@ func mainContainer(w *workload, extraEnv []corev1.EnvVar) corev1.Container {
 // container. The type has no securityContext field, on purpose: a sidecar
 // that could loosen it would make the main container's hardening a
 // suggestion. It shares /tmp and nothing else (v1alpha1.Container's doc).
-func sidecarContainer(sc v1alpha1.Container) corev1.Container {
+func sidecarContainer(sc v1alpha1.Container, podSec *v1alpha1.PodSecurity) corev1.Container {
 	c := corev1.Container{
 		Name:            sc.Name,
 		Image:           sc.Image,
@@ -668,7 +691,7 @@ func sidecarContainer(sc v1alpha1.Container) corev1.Container {
 		Env:             renderEnv(sc.Env),
 		Ports:           containerPorts(sc.Ports),
 		Resources:       resourceRequirements(sc.Resources),
-		SecurityContext: containerSecurityContext(),
+		SecurityContext: containerSecurityContext(podSec),
 		VolumeMounts:    []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}},
 	}
 	c.ReadinessProbe, c.LivenessProbe = probePair(sc.EffectiveProbes())
@@ -692,7 +715,7 @@ func sidecarContainer(sc v1alpha1.Container) corev1.Container {
 //
 // It mounts the pod's /tmp: the root filesystem is read-only here too, and
 // a migration tool writing a temp file would otherwise fail.
-func initContainer(j *workload) corev1.Container {
+func initContainer(j *workload, podSec *v1alpha1.PodSecurity) corev1.Container {
 	return corev1.Container{
 		Name:            j.name,
 		Image:           j.spec.Image,
@@ -701,7 +724,7 @@ func initContainer(j *workload) corev1.Container {
 		Args:            j.spec.Args,
 		Env:             renderEnv(j.spec.Env),
 		Resources:       resourceRequirements(j.spec.Resources),
-		SecurityContext: containerSecurityContext(),
+		SecurityContext: containerSecurityContext(podSec),
 		VolumeMounts:    []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}},
 	}
 }
@@ -900,18 +923,35 @@ func resourceRequirements(r v1alpha1.Resources) corev1.ResourceRequirements {
 // Security: non-root, seccomp RuntimeDefault. fsGroup makes a mounted
 // PersistentVolumeClaim group-writable by 65532; without it most
 // provisioners hand the non-root container a root-owned volume.
-func podSecurityContext(fsGroup bool) *corev1.PodSecurityContext {
-	uid := RunAsUser
-	sc := &corev1.PodSecurityContext{
+//
+// o is the workload's PodSecurity override (Full only): it replaces uid, gid
+// and fsGroup, each independently. An explicit FSGroup is always set. It
+// never touches runAsNonRoot or seccomp, so the pod stays Pod Security
+// `restricted` (Validate refuses a zero id).
+func podSecurityContext(fsGroup bool, o *v1alpha1.PodSecurity) *corev1.PodSecurityContext {
+	uid, gid := RunAsUser, RunAsUser
+	var fs *int64
+	if fsGroup {
+		fs = new(RunAsUser)
+	}
+	if o != nil {
+		if o.RunAsUser != nil {
+			uid = *o.RunAsUser
+		}
+		if o.RunAsGroup != nil {
+			gid = *o.RunAsGroup
+		}
+		if o.FSGroup != nil {
+			fs = new(*o.FSGroup)
+		}
+	}
+	return &corev1.PodSecurityContext{
 		RunAsNonRoot:   new(true),
 		RunAsUser:      &uid,
-		RunAsGroup:     &uid,
+		RunAsGroup:     &gid,
+		FSGroup:        fs,
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
-	if fsGroup {
-		sc.FSGroup = &uid
-	}
-	return sc
 }
 
 // needsFSGroup: the pod mounts a PVC, forge's own (storageGiB) or a declared
@@ -921,14 +961,28 @@ func needsFSGroup(s v1alpha1.WorkloadSpec) bool {
 }
 
 // containerSecurityContext ports expand.k:52-59: every container forge
-// renders (main, sidecar, init) gets it, unconditionally.
-func containerSecurityContext() *corev1.SecurityContext {
-	uid := RunAsUser
+// renders (main, sidecar, init) gets it, unconditionally. The pod's
+// PodSecurity override (uid, gid, a writable root filesystem) applies to
+// every container alike, so the pod has one identity. No escalation, drop
+// ALL and runAsNonRoot are never overridable.
+func containerSecurityContext(o *v1alpha1.PodSecurity) *corev1.SecurityContext {
+	uid, gid, ro := RunAsUser, RunAsUser, true
+	if o != nil {
+		if o.RunAsUser != nil {
+			uid = *o.RunAsUser
+		}
+		if o.RunAsGroup != nil {
+			gid = *o.RunAsGroup
+		}
+		if o.ReadOnlyRootFilesystem != nil {
+			ro = *o.ReadOnlyRootFilesystem
+		}
+	}
 	return &corev1.SecurityContext{
 		RunAsNonRoot:             new(true),
 		RunAsUser:                &uid,
-		RunAsGroup:               &uid,
-		ReadOnlyRootFilesystem:   new(true),
+		RunAsGroup:               &gid,
+		ReadOnlyRootFilesystem:   &ro,
 		AllowPrivilegeEscalation: new(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
@@ -980,10 +1034,17 @@ var defaultRBACRules = []rbacv1.PolicyRule{{
 
 // hasRBAC ports capabilities.k:304-307 rbac_tier plus expand.k:370-380: an
 // operator always gets its ClusterRole (a manager cannot start without the
-// config-read defaults); a namespaced-tier kind gets a Role only when it
-// declares rules.
+// config-read defaults); any other kind gets a Role or a ClusterRole only
+// when it declares rules. A workload with RBAC also gets its token mounted.
 func hasRBAC(w *workload) bool {
-	return w.kind == v1alpha1.KindOperator || len(w.spec.NamespacedRBAC) > 0
+	return w.kind == v1alpha1.KindOperator || hasClusterRole(w) || len(w.spec.NamespacedRBAC) > 0
+}
+
+// hasClusterRole: the cluster tier. An operator always; any other kind when
+// it declares clusterRBAC (Full only), which REPLACES the Role (Validate
+// refuses declaring both).
+func hasClusterRole(w *workload) bool {
+	return w.kind == v1alpha1.KindOperator || len(w.spec.ClusterRBAC) > 0
 }
 
 // identity ports expand.k:381-394 _workload_rbac with lib/rbac.k: exactly ONE
@@ -1020,7 +1081,7 @@ func identity(w *workload, ctx Context) []runtime.Object {
 		return []runtime.Object{sa}
 	}
 	subject := []rbacv1.Subject{{Kind: "ServiceAccount", Name: w.name, Namespace: ctx.Namespace}}
-	if w.kind == v1alpha1.KindOperator {
+	if hasClusterRole(w) {
 		// lib/rbac.k:230-267. Cluster-scoped names carry the NAMESPACE:
 		// with an env-invariant name every env in a shared cluster writes
 		// the same binding, and the last deploy silently repoints it at
@@ -1031,7 +1092,7 @@ func identity(w *workload, ctx Context) []runtime.Object {
 			&rbacv1.ClusterRole{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
 				ObjectMeta: metav1.ObjectMeta{Name: roleName, Labels: copyLabels(labels)},
-				Rules:      operatorRules(s),
+				Rules:      clusterRules(w),
 			},
 			&rbacv1.ClusterRoleBinding{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
@@ -1069,6 +1130,16 @@ var (
 	crdFinalizerVerbs = []string{"update"}
 	leaseVerbs        = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
 )
+
+// clusterRules is a ClusterRole's rules: an operator's (operatorRules), or,
+// for any other kind, the config-read defaults plus its declared
+// clusterRBAC. Only a controller gets CRD rules and leases.
+func clusterRules(w *workload) []rbacv1.PolicyRule {
+	if w.kind == v1alpha1.KindOperator {
+		return operatorRules(w.spec)
+	}
+	return append(slices.Clone(defaultRBACRules), policyRules(w.spec.ClusterRBAC)...)
+}
 
 // operatorRules is an operator's ClusterRole: the lib/rbac.k config-read
 // defaults, then the rules its manager needs on the CRDs it declares (the
@@ -1145,8 +1216,20 @@ func policyRules(in []v1alpha1.PolicyRule) []rbacv1.PolicyRule {
 // webhook and a monitoring stack in another namespace scraping metrics,
 // neither of which a namespace peer can express, and a policy that selects
 // its pods would deny both. Its isolation comes from the env-wide bundle.
-func ingressPolicy(w *workload, ctx Context) runtime.Object {
+//
+// WHEN IT IS EMITTED. Under ProfileRestricted, always: it is the hosted
+// boundary, and the platform relies on it. Under ProfileFull only when the
+// environment opted into network policy (Context.Network != nil). A cluster
+// the author operates had no per-workload policy under the KCL renderer, and
+// one appearing unasked would cut off every caller the author has not
+// modelled (a gateway in another namespace dialling a non-exposed port, a
+// cross-namespace scraper), which is a silent outage on upgrade rather than
+// a hardening.
+func (set *workloadSet) ingressPolicy(w *workload, ctx Context) runtime.Object {
 	if w.kind == v1alpha1.KindOperator {
+		return nil
+	}
+	if set.profile != v1alpha1.ProfileRestricted && ctx.Network == nil {
 		return nil
 	}
 	np := &networkingv1.NetworkPolicy{

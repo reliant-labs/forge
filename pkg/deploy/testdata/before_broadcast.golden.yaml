@@ -161,27 +161,6 @@ metadata:
   name: api
   namespace: demo-prod
 ---
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: forge
-    app.kubernetes.io/name: api
-    app.kubernetes.io/part-of: demo
-    forge.dev/env: prod
-  name: api-ingress
-  namespace: demo-prod
-spec:
-  ingress:
-  - ports:
-    - port: 8080
-      protocol: TCP
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: api
-  policyTypes:
-  - Ingress
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -284,23 +263,6 @@ metadata:
   name: reconciler
   namespace: demo-prod
 ---
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: forge
-    app.kubernetes.io/name: reconciler
-    app.kubernetes.io/part-of: demo
-    forge.dev/env: prod
-  name: reconciler-ingress
-  namespace: demo-prod
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: reconciler
-  policyTypes:
-  - Ingress
----
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -373,23 +335,6 @@ metadata:
     forge.dev/env: prod
   name: nightly
   namespace: demo-prod
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: forge
-    app.kubernetes.io/name: nightly
-    app.kubernetes.io/part-of: demo
-    forge.dev/env: prod
-  name: nightly-ingress
-  namespace: demo-prod
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: nightly
-  policyTypes:
-  - Ingress
 ---
 apiVersion: batch/v1
 kind: Job
@@ -494,20 +439,3 @@ metadata:
     forge.dev/env: prod
   name: report
   namespace: demo-prod
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: forge
-    app.kubernetes.io/name: report
-    app.kubernetes.io/part-of: demo
-    forge.dev/env: prod
-  name: report-ingress
-  namespace: demo-prod
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: report
-  policyTypes:
-  - Ingress

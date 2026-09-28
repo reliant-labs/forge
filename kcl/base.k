@@ -205,7 +205,7 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 # binding. Use for per-env conditional manifests:
 #
 #     _is_dev_host = forge.env() == "dev-host"
-#     additional_manifests = [] if _is_dev_host else [ ...in-cluster infra... ]
+#     manifests = [] if _is_dev_host else [forge.Manifests {objects = [...in-cluster infra...]}]
 env = lambda default: str = "dev" -> str {
     option("env") or default
 }

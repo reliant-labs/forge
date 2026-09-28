@@ -237,13 +237,6 @@ schema Workload:
     # (CreateContainerConfigError, no application log). Non-sensitive
     # config needs no entry: it projects to every workload as a value.
     config_secrets: [str] = []
-    # Raw Kubernetes objects OWNED by this workload (a CRD, extra RBAC, an
-    # infra bundle on a `kind = "tool"` workload). Cluster runtime only.
-    # Each is stamped `forge.dev/workload: <name>` and `forge.dev/cluster`,
-    # so `--target <name>` selects it and it lands on this workload's
-    # cluster; its own `app.kubernetes.io/*` labels are kept (a selector
-    # may depend on them). See lib/labels.k owner_labels.
-    manifests: [any] = []
 
     # --- v1alpha1.WorkloadSpec ---
     kind: str = "service"

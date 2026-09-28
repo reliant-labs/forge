@@ -1,199 +1,116 @@
 """
-Tiny example project illustrating every typed entity.
+A small env that uses every runtime once (ADR 0002).
 
-Run:
+Render it through forge, which supplies `import forge` from its own binary:
 
-    cd kcl/example
-    kcl run dev -S output --format json
+    forge env render dev          # in a project
+    # or, in this repo, the module test:
+    go test ./internal/templates -run TestKCLModule_ExampleRendersOneOutput
 
-…which should print the JSON contract shape documented at the top of
-`kcl/schema.k`.
+In a project the workload declarations live in deploy/kcl/workloads.k and
+every env imports them. They are inlined here to keep the example one file.
+Top-level names are underscore-prefixed, so the render projects only
+`output`.
 """
 
 import forge
+import forge.workloads as fw
 
-# Top-level identifiers stay underscore-prefixed so KCL's default
-# output projects only `output` and nothing else. The forge CLI then
-# selects `-S output` for the clean shape.
+# ── Declarations: WHAT runs. Complete on their own, shared by every env. ──
 
-# SCHEMA INHERITANCE — a project may declare `schema X(forge.RenderedWorkload)` to
-# add its OWN typed/required fields while forge renders the result exactly
-# like a plain forge.RenderedWorkload. The render layer is typed on the base schema,
-# so the subtype passes through and projects the same JSON contract; the
-# extra fields ride on the typed value but aren't part of the contract.
-schema BillingService(forge.RenderedWorkload):
-    # An extra REQUIRED field (no default) — enforced at parse time.
-    region: str
-    tier: "free" | "pro" = "free"
+_build = forge.GoBuild {cmd = "./cmd/example", output_name = "example"}
 
-    check:
-        region, "BillingService.region is required"
-
-_bundle = forge.Bundle {
-    services = [
-        # An app schema inheriting forge.RenderedWorkload — renders identically to a
-        # plain forge.RenderedWorkload (Deployment + Service + RBAC), plus enforces
-        # its own required `region` at parse time.
-        BillingService {
-            name = "billing-api"
-            image = "example"
-            region = "us-east-1"
-            tier = "pro"
-            deploy = forge.K8sCluster {
-                cluster = "k3d-example"
-                namespace = "example-dev"
-                registry = "localhost:5050"
-                ports = [8081]
-            }
-        }
-        # Host-mode dev server with live-reload.
-        #
-        # env_vars carries reproducible per-env config (DATABASE_URL,
-        # LOG_LEVEL, …). Secret VALUES come from the bundle's
-        # secret_provider (FileSecrets — secrets/dev/), scoped to the keys
-        # this service DECLARES via EnvVar.secret_ref. forge run /
-        # forge env up load secrets first, then layer env_vars on top so
-        # KCL wins.
-        forge.RenderedWorkload {
-            name = "admin-server"
-            image = "example"
-            deploy = forge.HostDeploy {
-                runner = "air"
-                air_config = ".air.toml"
-                env_vars = [
-                    forge.EnvVar { name = "LOG_LEVEL", value = "debug" }
-                    forge.EnvVar { name = "DATABASE_URL", value = "postgres://localhost:5432/example_dev?sslmode=disable" }
-                ]
-            }
-        }
-        # Cluster-deployed proxy. Routed via Gateway API — see the
-        # `gateways` and `http_routes` blocks below.
-        forge.RenderedWorkload {
-            name = "workspace-proxy"
-            image = "example"
-            deploy = forge.K8sCluster {
-                cluster = "k3d-example"
-                namespace = "example-dev"
-                registry = "localhost:5050"
-                replicas = 1
-                ports = [8080]
-            }
-        }
-        # Build-only CLI with two ldflag variants.
-        forge.RenderedWorkload {
-            name = "reliant-daemon"
-            deploy = forge.BuildOnly {
-                build_variants = [
-                    forge.BuildVariant {
-                        name = "dev"
-                        ldflags = ["-X main.Env=dev"]
-                    }
-                    forge.BuildVariant {
-                        name = "prod"
-                        ldflags = ["-X main.Env=prod"]
-                    }
-                ]
-            }
-        }
-        # Build-only IMAGE via `deploy = None`: forge builds + pushes the
-        # image but renders no Deployment/Service. Use it for a base image
-        # other workloads reference at runtime (e.g. per-user pods pull it).
-        forge.RenderedWorkload {
-            name = "workspace-base"
-            image = "workspace-base"
-            deploy = None
-            build = forge.DockerBuild {
-                dockerfile = "docker/Dockerfile.workspace-base"
-            }
-        }
-    ]
-    operators = [
-        forge.Operator {
-            name = "workspace-controller"
-            image = "example"
-            crds = ["Workspace"]
-            cluster_rbac = forge.ClusterRBAC {
-                rules = [
-                    {
-                        apiGroups = ["forge.io"]
-                        resources = ["workspaces"]
-                        verbs = ["get", "list", "watch", "update", "patch"]
-                    }
-                ]
-            }
-            leader_election = True
-        }
-    ]
-    frontends = [
-        forge.Frontend {
-            name = "admin-web"
-            type = "nextjs"
-            path = "frontends/admin-web"
-            dev_runner = "npm"
-        }
-    ]
-    cronjobs = [
-        # Scheduled CronJob.
-        forge.CronJob {
-            name = "billing-sweeper"
-            schedule = "@hourly"
-            image = "example"
-            command = ["./example", "cron", "billing-sweep"]
-        }
-        # One-shot Job (schedule omitted).
-        forge.CronJob {
-            name = "db-bootstrap"
-            image = "example"
-            command = ["./example", "migrate", "up"]
-        }
-    ]
-    # Gateway API ingress topology. In a real project this block lives
-    # in deploy/kcl/ingress.k and per-env files re-export with
-    # overrides; inlined here for the single-file example.
-    gateways = [
-        forge.Gateway {
-            name = "public"
-            listeners = [
-                forge.GatewayListener {
-                    name = "http"
-                    port = 18080
-                    protocol = "HTTP"
-                }
-            ]
-        }
-    ]
-    http_routes = [
-        forge.HTTPRoute {
-            name = "workspace-proxy"
-            gateway = "public"
-            listener = "http"
-            service = "workspace-proxy"
-            port = 8080
-        }
-    ]
-    # DECLARED external PREREQUISITES — out-of-band facts this env depends
-    # on that forge does NOT create. Modeling them (vs a docstring) makes
-    # them a render-time checklist + a deploy preflight (a declared-required
-    # ExternalSecret that's absent on the live target BLOCKS).
-    required_secrets = [
-        # cert-manager's DNS-01 ClusterIssuer reads this Secret out-of-band
-        # in the cert-manager namespace; its absence hangs ACME silently.
-        forge.ExternalSecret {
-            name = "cloudflare-api-token"
-            namespace = "cert-manager"
-            keys = ["api-token"]
-            reason = "cert-manager DNS-01 Cloudflare API token"
-        }
-    ]
-    required_dns = [
-        # The load-bearing wildcard — its omission hangs both the DNS-01
-        # wildcard cert and all workspace-proxy traffic. Target is an
-        # ephemeral LB IP, unknown at author time.
-        forge.DNSRecord {
-            host = "*.workspaces.example.com"
-            reason = "DNS-01 wildcard cert + workspace-proxy traffic"
-        }
-    ]
+# A service built from this repo. `args` select the subcommand on every
+# runtime: `go run ./cmd/example api` on the host, `example api` in a pod.
+# forge writes its /readyz + /healthz probes into the spec.
+_api = fw.Workload {
+    name = "api"
+    build = _build
+    args = ["api"]
+    ports = [fw.Port {name = "http", port = 8080, expose = True}]
+    env = {
+        LOG_LEVEL = "info"
+        DATABASE_URL = forge.SecretRef {name = "example-secrets", key = "database_url"}
+        WEB_URL = forge.WorkloadURL {workload = "admin-web"}
+    }
 }
 
-output = forge.render(_bundle)
+# A one-shot that gates every other workload: schema migration.
+_migrate = fw.Workload {
+    name = "migrate"
+    kind = "job"
+    build = _build
+    args = ["db", "migrate", "up"]
+    before = [fw.BEFORE_ALL]
+}
+
+# A controller: cluster-scoped RBAC and the CRDs it owns.
+_controller = fw.Workload {
+    name = "workspace-controller"
+    kind = "operator"
+    build = _build
+    args = ["workspace-controller"]
+    crds = ["Workspace"]
+    clusterRBAC = [fw.PolicyRule {apiGroups = ["example.dev"], resources = ["workspaces"], verbs = ["get", "list", "watch", "update", "patch"]}]
+}
+
+# A scheduled sweep.
+_sweeper = fw.Workload {
+    name = "billing-sweeper"
+    kind = "cron"
+    build = _build
+    args = ["cron", "billing-sweep"]
+    schedule = "@hourly"
+}
+
+# Third-party infrastructure the compose file defines.
+_nats = fw.Workload {name = "nats"}
+
+# A CLI shipped in the release, never run: two ldflag variants.
+_cli = fw.Workload {
+    name = "example-cli"
+    kind = "tool"
+    build = forge.GoBuild {cmd = "./cmd/example-cli"}
+}
+
+# ── The env: WHERE each one runs. ──
+
+_k3d = forge.ClusterTarget {
+    cluster = "k3d-example"
+    namespace = "example-dev"
+    registry = "localhost:5050"
+}
+
+output = forge.render(forge.Bundle {
+    project = "example"
+    env = "dev"
+    # The default: a local process under air.
+    runtime = forge.OnHost {runner = "air", air_config = ".air.toml"}
+    workloads = [
+        _api | {runtime = forge.OnHost {runner = "air", air_config = ".air.toml", listen_ports = [8080]}}
+        _migrate | {runtime = forge.OnHost {}}
+        _controller | {runtime = forge.OnCluster {target = _k3d}}
+        _sweeper | {runtime = forge.OnCluster {target = _k3d}}
+        _nats | {runtime = forge.OnCompose {service = "nats"}}
+        _cli | {runtime = forge.BuildOnly {build_variants = [
+            forge.BuildVariant {name = "dev", ldflags = ["-X main.Env=dev"]}
+            forge.BuildVariant {name = "prod", ldflags = ["-X main.Env=prod"]}
+        ]}}
+    ]
+    # A host-run postgres the api dials; forge fetches and supervises it.
+    infra = [forge.HostInfra {name = "postgres", port = 5433, database = "example"}]
+    frontends = [forge.Frontend {name = "admin-web", type = "nextjs", path = "frontends/admin-web"}]
+    secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
+    # Gateway API ingress. In a project this lives in deploy/kcl/ingress.k.
+    gateways = [forge.Gateway {
+        name = "public"
+        listeners = [forge.GatewayListener {name = "http", port = 18080, protocol = "HTTP"}]
+    }]
+    # A raw object forge applies with the env, on the primary cluster.
+    manifests = [forge.Manifests {objects = [
+        forge.crd("example.dev", "Workspace", "workspaces", "workspace")
+    ]}]
+    # External prerequisites forge does NOT create: a render-time checklist,
+    # and a deploy preflight that BLOCKS on a missing required Secret.
+    required_dns = [forge.DNSRecord {host = "*.workspaces.example.com", reason = "workspace-proxy wildcard"}]
+})

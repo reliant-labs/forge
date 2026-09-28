@@ -197,10 +197,15 @@ type WorkloadSpec struct {
 	// +kubebuilder:validation:MaxItems=64
 	NamespacedRBAC []PolicyRule `json:"namespacedRBAC,omitempty"`
 
-	// ClusterRBAC grants a ClusterRole + ClusterRoleBinding. Operator
-	// only. It REPLACES the namespaced Role rather than adding to it: two
-	// bindings on one ServiceAccount would leave the narrower one
-	// describing permissions that are not the ones in force.
+	// ClusterRBAC grants a ClusterRole + ClusterRoleBinding. Any scheduled
+	// kind may declare it (Full profile only): an operator watches its CRDs
+	// cluster-wide, and a service may legitimately resolve resources across
+	// namespaces (a proxy routing to per-workspace objects) without being a
+	// controller. It REPLACES the namespaced Role rather than adding to it,
+	// so NamespacedRBAC and ClusterRBAC are exclusive: two bindings on one
+	// ServiceAccount would leave the narrower one describing permissions
+	// that are not the ones in force. Only an operator's ClusterRole also
+	// gets rules derived from its CRDs and leader-election leases.
 	// +optional
 	// +kubebuilder:validation:MaxItems=64
 	ClusterRBAC []PolicyRule `json:"clusterRBAC,omitempty"`
@@ -290,6 +295,59 @@ type WorkloadSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
+	// TerminationGracePeriodSeconds overrides the drain-derived grace
+	// period (PRE_STOP_DELAY + SHUTDOWN_TIMEOUT + 5 from the workload's env).
+	// For a process whose shutdown budget is not expressed in those env
+	// vars: a Temporal worker finishing in-flight activities needs 60s.
+	// Full profile only. 0 is honoured (SIGKILL immediately).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3600
+	TerminationGracePeriodSeconds *int32 `json:"terminationGracePeriodSeconds,omitempty"`
+
+	// ActiveDeadlineSeconds bounds a job or cron run: Kubernetes fails the
+	// Job (Job.spec.activeDeadlineSeconds) once it has run this long, and
+	// the host runtime kills the process. A one-shot that can hang would
+	// otherwise block a deploy or `forge env up` forever. Allowed under
+	// every profile: a timeout only ever shortens what runs.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ActiveDeadlineSeconds *int64 `json:"activeDeadlineSeconds,omitempty"`
+
+	// SecurityContext loosens forge's pod identity defaults for an image
+	// that needs it: a Next.js standalone image that runs as uid 1000 and
+	// writes into its own tree. Full profile only. It is deliberately
+	// NOT a Kubernetes securityContext passthrough: no privileged, no
+	// capabilities, no host namespaces, and runAsNonRoot stays forced, so
+	// every pod is still Pod Security `restricted`.
+	// +optional
+	SecurityContext *PodSecurity `json:"securityContext,omitempty"`
+}
+
+// PodSecurity is the closed set of pod-identity knobs forge lets a workload
+// change. Each unset field keeps forge's default (uid/gid 65532, fsGroup only
+// when a volume needs it, a read-only root filesystem). The overrides apply to
+// the pod AND to every container forge renders in it (main, sidecar,
+// gating initContainer), so the pod has one identity.
+type PodSecurity struct {
+	// RunAsUser is the uid every container runs as. Must not be 0:
+	// runAsNonRoot is always true.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
+	// RunAsGroup is the primary gid. Must not be 0.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	RunAsGroup *int64 `json:"runAsGroup,omitempty"`
+	// FSGroup owns mounted volumes. Must not be 0.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	FSGroup *int64 `json:"fsGroup,omitempty"`
+	// ReadOnlyRootFilesystem false gives the containers a writable root
+	// filesystem. Default true.
+	// +optional
+	ReadOnlyRootFilesystem *bool `json:"readOnlyRootFilesystem,omitempty"`
 }
 
 // Port is one named port a workload listens on.

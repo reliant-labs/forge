@@ -137,6 +137,13 @@ var FieldProfiles = map[string]Profile{
 	"nodeSelector":   ProfileFull,
 	"tolerations":    ProfileFull,
 	"podAnnotations": ProfileFull,
+
+	// A timeout only ever shortens what runs, so it is not an escalation.
+	"activeDeadlineSeconds": ProfileRestricted,
+	// The grace period holds a node's capacity past SIGTERM, and the pod
+	// identity is the platform's to set.
+	"terminationGracePeriodSeconds": ProfileFull,
+	"securityContext":               ProfileFull,
 }
 
 // fullOnlyReasons is WHY each ProfileFull field is refused under
@@ -145,23 +152,25 @@ var FieldProfiles = map[string]Profile{
 // TestFieldProfilesClassifyEverySpecField requires a reason for every
 // Full-only entry.
 var fullOnlyReasons = map[string]string{
-	"env.secretRef":             "a raw Secret name in a shared hosted namespace can address platform-owned Secrets; use managedSecret, which names a value in your environment's secret store",
-	"env.configMapRef":          "a ConfigMap reference reads a namespace object you did not write; use value, or managedSecret for a credential",
-	"env.fieldRef":              "the Downward API exposes pod and node placement, which the hosted platform owns",
-	"schedule":                  "cron is not available on hosted until metering covers it",
-	"namespacedRBAC":            "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)",
-	"clusterRBAC":               "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)",
-	"crds":                      "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
-	"group":                     "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
-	"version":                   "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
-	"leaderElection":            "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
-	"serviceAccountAnnotations": "hosted workloads run under a platform-owned ServiceAccount; cloud workload identity is bound by the platform, never by the workload's author",
-	"sidecars":                  "the hosted platform composes the pod itself (runtime class, isolation, egress), and a second container you author would run outside the single-container policy it enforces",
-	"volumes":                   "a Secret, ConfigMap or PVC volume reads namespace objects you did not write; use storageGiB for a persistent disk, and env for configuration",
-	"serviceAccount":            "hosted workloads run under a platform-owned ServiceAccount; naming another one would borrow its identity",
-	"nodeSelector":              "hosted placement (the isolation pool) is decided by the platform, never by the workload's author",
-	"tolerations":               "hosted placement (the isolation pool) is decided by the platform, never by the workload's author; a toleration would let a pod onto nodes reserved for something else",
-	"podAnnotations":            "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns",
+	"env.secretRef":                 "a raw Secret name in a shared hosted namespace can address platform-owned Secrets; use managedSecret, which names a value in your environment's secret store",
+	"env.configMapRef":              "a ConfigMap reference reads a namespace object you did not write; use value, or managedSecret for a credential",
+	"env.fieldRef":                  "the Downward API exposes pod and node placement, which the hosted platform owns",
+	"schedule":                      "cron is not available on hosted until metering covers it",
+	"namespacedRBAC":                "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)",
+	"clusterRBAC":                   "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)",
+	"crds":                          "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
+	"group":                         "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
+	"version":                       "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
+	"leaderElection":                "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)",
+	"serviceAccountAnnotations":     "hosted workloads run under a platform-owned ServiceAccount; cloud workload identity is bound by the platform, never by the workload's author",
+	"sidecars":                      "the hosted platform composes the pod itself (runtime class, isolation, egress), and a second container you author would run outside the single-container policy it enforces",
+	"volumes":                       "a Secret, ConfigMap or PVC volume reads namespace objects you did not write; use storageGiB for a persistent disk, and env for configuration",
+	"serviceAccount":                "hosted workloads run under a platform-owned ServiceAccount; naming another one would borrow its identity",
+	"nodeSelector":                  "hosted placement (the isolation pool) is decided by the platform, never by the workload's author",
+	"tolerations":                   "hosted placement (the isolation pool) is decided by the platform, never by the workload's author; a toleration would let a pod onto nodes reserved for something else",
+	"podAnnotations":                "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns",
+	"terminationGracePeriodSeconds": "the hosted platform sets the grace period, because it holds shared node capacity past SIGTERM; tune PRE_STOP_DELAY and SHUTDOWN_TIMEOUT, which it derives from",
+	"securityContext":               "the hosted platform owns the pod identity (uid, gid, filesystem) its isolation depends on",
 }
 
 // KindProfiles is the kind mask: the most restrictive profile each kind is

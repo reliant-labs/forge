@@ -102,8 +102,8 @@ func TestCollidingLeavesAreDistinctSchemaFields(t *testing.T) {
 		"schema AppConfigSimpleBackend:",
 		"    static_site: AppConfigStaticSite = AppConfigStaticSite {}",
 		"    simple_backend: AppConfigSimpleBackend = AppConfigSimpleBackend {}",
-		`"STATIC_SITE_BASE_DOMAIN" = {value = c.static_site.base_domain}`,
-		`"SIMPLE_BACKEND_BASE_DOMAIN" = {value = c.simple_backend.base_domain}`,
+		`"STATIC_SITE_BASE_DOMAIN" = c.static_site.base_domain`,
+		`"SIMPLE_BACKEND_BASE_DOMAIN" = c.simple_backend.base_domain`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("projection missing %q:\n%s", want, out)

@@ -26,10 +26,11 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
     helm_charts, required_secrets, required_dns, secret_provider,
     rendered_secrets, control_plane
     manifests[]               the applyable stream: RuntimeClasses,
-                              Namespaces, ConfigMaps, additional_manifests,
-                              one `forge.dev/v1alpha1 Workload` record per
-                              CLUSTER-bound workload (+ its owned manifests),
-                              ManagedDatabase records, Gateway API objects
+                              Namespaces, ConfigMaps, one `forge.dev/v1alpha1
+                              Workload` record per CLUSTER-bound workload
+                              (a tool is never scheduled, so has none),
+                              ManagedDatabase records, Gateway API objects,
+                              then Bundle.manifests (forge.Manifests)
 
 Missing optional fields in the runtime/build/infra/frontend blocks project as
 `null`, not omitted, so the consumer sees stable keys.
@@ -66,6 +67,7 @@ import .lib.labels as labels_lib
 import .lib.workload_url as wurl_lib
 import .lib.images as img_lib
 import .lib.capabilities as caps
+import .lib.crd as crd_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -168,10 +170,12 @@ _channel = lambda v: any -> str {
     }[typeof(v)]
 }
 
-# One map entry -> one tiers.EnvVar. `hosted` selects the hosted lowering of
-# a config-projected secret (its store key as a managedSecret), and whether
-# a WorkloadURL is kept (hosted) or resolved (everything else).
-_env_var = lambda name: str, v: any, where: str, hosted: bool, bundle: Bundle -> any {
+# One map entry -> one tiers.EnvVar, lowered for the referrer's runtime
+# `rt`: a hosted referrer lowers a config-projected secret to its store key
+# as a managedSecret and KEEPS a WorkloadURL; every other referrer resolves
+# the WorkloadURL, through its cluster's host gateway when it is a pod.
+_env_var = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> any {
+    hosted = rt.type == "hosted"
     _c = _channel(v)
     _TEnvVar {
         name = name
@@ -192,7 +196,7 @@ _env_var = lambda name: str, v: any, where: str, hosted: bool, bundle: Bundle ->
         if _c == "workloadURL" and hosted:
             workloadURL = _TWorkloadURLRef {name = _require_hosted_url_target(v.name, where, bundle)}
         if _c == "workloadURL" and not hosted:
-            value = _require_workload_url(v.name, where, bundle)
+            value = _require_workload_url(v.name, where, bundle, rt.target.host_gateway if rt.type == "cluster" else "localhost")
     }
 }
 
@@ -201,12 +205,12 @@ _env_var = lambda name: str, v: any, where: str, hosted: bool, bundle: Bundle ->
 # ---------------------------------------------------------------------------
 
 # The URL a reference resolves to at render, or a refusal naming it.
-_require_workload_url = lambda name: str, where: str, bundle: Bundle -> str {
+_require_workload_url = lambda name: str, where: str, bundle: Bundle, from_host: str = "localhost" -> str {
     _names = _env_names(bundle.workloads, bundle.infra, bundle.frontends)
     assert name in _names, \
         "${where}: forge.WorkloadURL names workload '${name}', which this environment does not declare. " \
         + "Declared workloads: " + ", ".join(_names) + "."
-    _url = wurl_lib.resolve(name, bundle)
+    _url = wurl_lib.resolve(name, bundle, from_host)
     assert _url, \
         "${where}: forge.WorkloadURL '${name}' has no URL forge can know at render time. " \
         + "Give it one: an HTTPRoute to it, a custom domain on its exposed port, `listen_ports` on its host runtime " \
@@ -248,7 +252,6 @@ _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
 
 # The spec, as the generated tiers.Workload. `rt` is the resolved runtime.
 _spec = lambda w: any, rt: any, bundle: Bundle -> any {
-    _hosted = rt.type == "hosted"
     _TWorkload {
         kind = w.kind
         image = _spec_image(w, rt, bundle) or "-"
@@ -257,7 +260,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         replicas = w.replicas
         if w.resources:
             resources = w.resources
-        env = [_env_var(k, v, "workload '${w.name}' env ${k}", _hosted, bundle) for k, v in w.env] if w.env else Undefined
+        env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env] if w.env else Undefined
         ports = w.ports
         probes = _default_probes(w)
         storageGiB = w.storageGiB
@@ -405,7 +408,7 @@ _set = lambda w: any, f: str -> bool {
 
 _mask_violations = lambda w: any, rt: any -> [str] {
     _hosted = ["${f}: ${tiers.RESTRICTED_FIELD_REASONS[f]}" for f in tiers.RESTRICTED_FIELD_REASONS if f in w and _set(w, f)] \
-        + ["env ${k}: ${tiers.RESTRICTED_FIELD_REASONS['env.' + _channel(v)]}" for k, v in w.env if "env." + _channel(v) in tiers.RESTRICTED_FIELD_REASONS and not (_channel(v) == "secretRef" and v.store_key)] \
+        + ["env ${k} (${_channel(v)}): ${tiers.RESTRICTED_FIELD_REASONS['env.' + _channel(v)]}" for k, v in w.env if "env." + _channel(v) in tiers.RESTRICTED_FIELD_REASONS and not (_channel(v) == "secretRef" and v.store_key)] \
         + (["kind '${w.kind}' (${tiers.RESTRICTED_KIND_REASONS[w.kind]})"] if w.kind in tiers.RESTRICTED_KIND_REASONS else []) \
         + (["image: a hosted workload needs a build or an image to run"] if not w.build and not w.image else []) \
         if rt.type == "hosted" else []
@@ -420,9 +423,7 @@ _mask_violations = lambda w: any, rt: any -> [str] {
     _build_only = ["${f}: ${_BUILD_ONLY_REFUSED[f]}" for f in _BUILD_ONLY_REFUSED if _set(w, f)] \
         + (["build: a build-only workload with no build has nothing to produce"] if not w.build else []) \
         if rt.type == "build-only" else []
-    _cluster = ["manifests: owned manifests are Kubernetes objects, applied to the workload's cluster; bind it to forge.OnCluster"] \
-        if rt.type != "cluster" and w.manifests else []
-    _hosted + _host + _compose + _build_only + _cluster
+    _hosted + _host + _compose + _build_only
 }
 
 # ---------------------------------------------------------------------------
@@ -445,10 +446,28 @@ _workload_record = lambda entity: any, part_of: str -> any {
     }
 }
 
-# A cluster workload's owned manifests: stamped with the owner
-# (forge.dev/workload, so `--target <name>` selects them) and its cluster.
-_owned_manifests = lambda w: any, rt: any, part_of: str -> [any] {
-    [_stamp_cluster(_stamp_owner(m, w.name, part_of), rt.target.cluster) for m in w.manifests]
+# One forge.Manifests group, placed and (when named) owned. The cluster
+# label is written only off the primary cluster, which is what every
+# unlabelled object already routes to.
+_raw_manifests = lambda g: any, primary: any, part_of: str -> [any] {
+    _cluster = g.cluster if g.cluster else (primary.cluster if primary else "")
+    _ns = g.namespace if g.namespace else (primary.namespace if primary else "")
+    [_stamp_cluster(_default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns), _cluster) \
+        if primary == Undefined or _cluster != primary.cluster else _default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns) \
+        for m in g.objects]
+}
+
+# Cluster-scoped kinds a namespace must never be written onto.
+_CLUSTER_SCOPED: [str] = [
+    "Namespace", "CustomResourceDefinition", "ClusterRole", "ClusterRoleBinding",
+    "ClusterIssuer", "StorageClass", "PriorityClass", "RuntimeClass",
+    "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "APIService",
+    "PersistentVolume", "GatewayClass", "IngressClass", "CSIDriver", "Node",
+]
+
+_default_namespace = lambda m: any, ns: str -> any {
+    _meta = m.metadata if m.metadata else {}
+    m if not ns or _meta.namespace or m.kind in _CLUSTER_SCOPED else m | {metadata = _meta | {namespace = ns}}
 }
 
 _stamp_owner = lambda manifest: any, name: str, part_of: str -> any {
@@ -475,14 +494,16 @@ _render_managed_database_record = lambda db: any, part_of: str -> any {
     }
 }
 
-_render_database = lambda db: any, default: any -> any {
-    _rt = _db_runtime(db, default)
-    _cluster = _rt.type == "cluster"
+# A database's placement: its runtime (or the env's cluster/hosted default),
+# else the primary cluster target.
+_render_database = lambda db: any, bundle: Bundle -> any {
+    _rt = _db_runtime(db, bundle.runtime)
+    _target = (_rt.target if _rt.type == "cluster" else Undefined) if _rt else _primary_target(bundle)
     {
         "name": db.name
-        "runtime": _rt.type
-        "cluster": _rt.target.cluster if _cluster else None
-        "namespace": (db.namespace if db.namespace else _rt.target.namespace) if _cluster else None
+        "runtime": "hosted" if _rt and _rt.type == "hosted" else "cluster"
+        "cluster": _target.cluster if _target else None
+        "namespace": (db.namespace if db.namespace else _target.namespace) if _target else None
         "spec": tiers.managed_database_json(db.spec)
     }
 }
@@ -519,20 +540,18 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
     _pt = _primary_target(b)
     _ns = _pt.namespace if _pt else ""
     _project = b.project
-    _by_name = {w.name: w for w in b.workloads}
-    _dbs = [_render_database(db, b.runtime) for db in b.databases]
+    _dbs = [_render_database(db, b) for db in b.databases]
     labels_lib.stamp_env_all(
         [_render_runtime_class_manifest(rc, _ns, _project) for rc in b.runtime_classes] \
         + _namespaces(b, entities) \
         + [_render_config_map_manifest(cm, _ns, _project) for cm in b.config_maps] \
-        + b.additional_manifests \
-        + [item for e in entities if e.runtime.type == "cluster" for item in [_workload_record(e, _project)] \
-            + _owned_manifests(_by_name[e.name], _bound_runtime(_by_name[e.name], b.runtime), _project)] \
+        + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
         + [item for g in b.gateways for item in gw_lib.render_gateway(g, _ns)] \
         + [item for g in b.gateways for item in gw_lib.render_certificate(g, _ns)] \
         + [item for r in b.http_routes for item in gw_lib.render_http_route(r, b.gateways, _ns)] \
-        + [item for r in b.grpc_routes for item in gw_lib.render_grpc_route(r, b.gateways, _ns)],
+        + [item for r in b.grpc_routes for item in gw_lib.render_grpc_route(r, b.gateways, _ns)] \
+        + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)],
         b.env,
     )
 }
@@ -561,7 +580,7 @@ render = lambda bundle: Bundle -> any {
         "workloads": _entities
         "infra": [_render_host_infra(i) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
-        "databases": [_render_database(db, bundle.runtime) for db in bundle.databases]
+        "databases": [_render_database(db, bundle) for db in bundle.databases]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
         "gateways": [_render_gateway(g) for g in bundle.gateways]
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]
@@ -1100,10 +1119,13 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
     }
 }
 
+# crd — a minimal apiextensions/v1 CRD object (lib/crd.k), for a
+# `forge.Manifests {objects = [...]}` entry.
+crd = crd_lib.crd
+
 # test_jwks_manifests — top-level re-export of the lib builder so user
 # code calls `forge.test_jwks_manifests(jwks, namespace, public_jwk)`
-# directly in a Bundle's additional_manifests or a service's owned
-# manifests. Emits ConfigMap + static-file Deployment + Service serving
+# inside a `forge.Manifests {objects = ...}` of Bundle.manifests. Emits ConfigMap + static-file Deployment + Service serving
 # `/.well-known/jwks.json`.
 #
 # `public_jwk` is the derived PUBLIC JWK. The caller derives it from the
@@ -1139,7 +1161,7 @@ test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [an
 #         name = "cp-public", cluster = _cp
 #         listeners = [forge.GatewayListener { name = "http", port = 80, protocol = "HTTP" }]
 #     }
-#     manifests = forge.render_gateway(_gw, "my-ns")
+#     manifests = [forge.Manifests {objects = forge.render_gateway(_gw, "my-ns")}]
 #
 # render_http_route / render_grpc_route take the route plus the list of
 # gateways (so the builder can resolve the parent listener + host) and
@@ -1160,20 +1182,6 @@ render_grpc_route = lambda route: GRPCRoute, gateways: [Gateway], namespace: str
     gw_lib.render_grpc_route(route, gateways, namespace)
 }
 
-# stamp_env — top-level re-export of the env-ownership stamp
-# (lib/labels.k). `render_manifests` / `render_support` already apply it
-# to everything they emit, so a project that renders through them needs
-# NOTHING here. It is exposed for the one case those two miss: a main.k
-# that concatenates manifests of its own AFTER the render call
-# (`manifests = forge.render_manifests(...) + _extra`) — hand those
-# through `forge.stamp_env(_extra)` so they carry the same ownership tag.
-# Prefer `Bundle.additional_manifests`, which is stamped for you.
-#
-# `env` is the same drill-in as `Bundle.env`: empty falls back to the
-# `-D env=` binding the CLI passes on every render.
-stamp_env = lambda manifests: [any], env: str = "" -> [any] {
-    labels_lib.stamp_env_all(manifests, env)
-}
 
 
 # Render a RuntimeClass as a node.k8s.io/v1 manifest. Cluster-scoped

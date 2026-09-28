@@ -16,7 +16,7 @@ import (
 // for the representative field set (reused from the Phase-1 test): a mix of
 // non-sensitive string/int/bool/duration/float fields plus one required
 // sensitive string. It asserts the exact projection function, which
-// implicitly covers every branch (from_secret vs inline value, str vs str(...)
+// implicitly covers every branch (SecretRef vs inline value, str vs str(...)
 // vs the bool conditional).
 func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 	got, err := GenerateConfigKCL(representativeConfigFields(), "myproj")
@@ -61,9 +61,9 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"# credential only some environments own).\n" +
 		"APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = []\n" +
 		"\n" +
-		"# appConfigEnvMap projects a typed AppConfig into the agnostic-core env\n" +
-		"# MAP — one forge.EnvSource per field that declares an env_var, keyed by\n" +
-		"# ENV_VAR name.\n" +
+		"# appConfigEnvMap projects a typed AppConfig into a workload's env MAP (fw.Workload.env):\n" +
+		"# one entry per field that declares an env_var, keyed by ENV_VAR name — a\n" +
+		"# string for an ordinary field, a forge.SecretRef for a sensitive one.\n" +
 		"#\n" +
 		"# Non-sensitive fields are projected for EVERY caller: they are inline\n" +
 		"# values, so they carry no credential and no start-time dependency.\n" +
@@ -74,19 +74,19 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"# broadcast to workloads that never read it turns one feature's missing\n" +
 		"# secret into a whole namespace outage.\n" +
 		"#\n" +
-		"#     env = forge.env_project(appConfigEnvMap(cfg, w.config_secrets))\n" +
-		"appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: forge.EnvSource} {\n" +
-		"    _sensitive: {str: forge.EnvSource} = {\n" +
-		"        \"DATABASE_URL\" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}\n" +
+		"#     env = appConfigEnvMap(cfg, config_secrets) | {EXTRA = \"value\"}\n" +
+		"appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {\n" +
+		"    _sensitive: {str: forge.SecretRef} = {\n" +
+		"        \"DATABASE_URL\" = forge.SecretRef {name = c.database_url.name, key = c.database_url.key, store_key = \"DATABASE_URL\"}\n" +
 		"    }\n" +
 		"    assert all _n in config_secrets { _n in _sensitive }, \\\n" +
 		"        \"appConfigEnvMap: config_secrets names ${[_n for _n in config_secrets if _n not in _sensitive]}, which is not a `sensitive` field of AppConfig. Sensitive fields: ${sorted([_k for _k in _sensitive])}. Add `sensitive: true` to the field in proto/config/v1/config.proto, or drop the name from this workload's config_secrets.\"\n" +
 		"    {\n" +
-		"        \"LOG_LEVEL\" = {value = c.log_level}\n" +
-		"        \"PORT\" = {value = str(c.port)}\n" +
-		"        \"CORS_ALLOW_CREDENTIALS\" = {value = \"true\" if c.cors_allow_credentials else \"false\"}\n" +
-		"        \"SHUTDOWN_TIMEOUT\" = {value = c.shutdown_timeout}\n" +
-		"        \"SAMPLE_RATE\" = {value = str(c.sample_rate)}\n" +
+		"        \"LOG_LEVEL\" = c.log_level\n" +
+		"        \"PORT\" = str(c.port)\n" +
+		"        \"CORS_ALLOW_CREDENTIALS\" = \"true\" if c.cors_allow_credentials else \"false\"\n" +
+		"        \"SHUTDOWN_TIMEOUT\" = c.shutdown_timeout\n" +
+		"        \"SAMPLE_RATE\" = str(c.sample_rate)\n" +
 		"    } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n" +
 		"}\n"
 
@@ -112,8 +112,8 @@ func TestGenerateConfigKCL_EnvVarNameDivergence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`"TRADER_MAX_PER_TICK_OVERRIDE" = {value = str(c.trader_max_per_tick)}`,
-		`"SERVICE_AUTH_TOKEN" = {from_secret = {name = c.svc_token.name, key = c.svc_token.key}}`,
+		`"TRADER_MAX_PER_TICK_OVERRIDE" = str(c.trader_max_per_tick)`,
+		`"SERVICE_AUTH_TOKEN" = forge.SecretRef {name = c.svc_token.name, key = c.svc_token.key, store_key = "SERVICE_AUTH_TOKEN"}`,
 		`svc_token: ConfigSecretRef = ConfigSecretRef { name = "proj-secrets", key = "service_auth_token" }`,
 	} {
 		if !strings.Contains(got, want) {
@@ -121,13 +121,13 @@ func TestGenerateConfigKCL_EnvVarNameDivergence(t *testing.T) {
 		}
 	}
 	// The sensitive field must never be projected as an inline value.
-	if strings.Contains(got, `{value = c.svc_token}`) {
+	if strings.Contains(got, `= c.svc_token\n`) {
 		t.Errorf("sensitive field projected inline:\n%s", got)
 	}
 }
 
 // TestGenerateConfigProjectionKCL_SensitiveBranch isolates the sensitive
-// path: a from_secret channel whose name/key read off the typed
+// path: a forge.SecretRef whose name/key read off the typed
 // ConfigSecretRef on the AppConfig value, keyed by the env_var, and NEVER an
 // inline value for the field (secrets never land in the env-map literal).
 func TestGenerateConfigProjectionKCL_SensitiveBranch(t *testing.T) {
@@ -138,8 +138,8 @@ func TestGenerateConfigProjectionKCL_SensitiveBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, `"API_KEY" = {from_secret = {name = c.api_key.name, key = c.api_key.key}}`) {
-		t.Fatalf("sensitive field should project to a from_secret channel read off the typed ConfigSecretRef:\n%s", got)
+	if !strings.Contains(got, `"API_KEY" = forge.SecretRef {name = c.api_key.name, key = c.api_key.key, store_key = "API_KEY"}`) {
+		t.Fatalf("sensitive field should project to a forge.SecretRef read off the typed ConfigSecretRef:\n%s", got)
 	}
 	// A sensitive field must NOT be lowered inline as a value.
 	if strings.Contains(got, `"API_KEY" = {value`) {
@@ -194,7 +194,7 @@ func TestGenerateConfigProjectionKCL_SkipsEmptyEnvVar(t *testing.T) {
 	if strings.Contains(envMap, "trader") || strings.Contains(envMap, "unbound") {
 		t.Fatalf("fields without env_var must be skipped from the env map:\n%s", envMap)
 	}
-	if !strings.Contains(envMap, `"PORT" = {value = str(c.port)}`) {
+	if !strings.Contains(envMap, `"PORT" = str(c.port)`) {
 		t.Fatalf("the env-bound field must still be projected inline:\n%s", envMap)
 	}
 }
@@ -214,7 +214,7 @@ func TestGenerateConfigProjectionKCL_EmptyFields(t *testing.T) {
 	// sensitive-selection merge still runs, so the lambda compiles and
 	// returns {} for any caller.
 	if !strings.Contains(got, "    {} | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n") {
-		t.Fatalf("empty field set should emit an empty EnvSource map:\n%s", got)
+		t.Fatalf("empty field set should emit an empty env map:\n%s", got)
 	}
 	// The sensitive-var constant is emitted even when empty, so forge's
 	// host-mode probe can reference it in a project with no credentials.
@@ -301,9 +301,9 @@ _unset = cg.appConfigEnvMap(cg.AppConfig {}, [])
 _set = cg.appConfigEnvMap(cg.AppConfig {storage_endpoint = "http://fake:4443", anonymous = True, replicas = 3}, [])
 unset_keys = sorted([k for k in _unset])
 set_keys = sorted([k for k in _set])
-set_endpoint = _set["STORAGE_ENDPOINT"].value
-set_anonymous = _set["ANONYMOUS"].value
-set_replicas = _set["REPLICAS"].value
+set_endpoint = _set["STORAGE_ENDPOINT"]
+set_anonymous = _set["ANONYMOUS"]
+set_replicas = _set["REPLICAS"]
 `, ConfigSchemaModule))
 
 	out, err := kcltest.Run(t.Context(), dir, "run", ".", "--format", "json")

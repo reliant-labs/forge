@@ -118,20 +118,3 @@ subjects:
 - kind: ServiceAccount
   name: reconciler
   namespace: demo-prod
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: forge
-    app.kubernetes.io/name: reconciler
-    app.kubernetes.io/part-of: demo
-    forge.dev/env: prod
-  name: reconciler-ingress
-  namespace: demo-prod
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: reconciler
-  policyTypes:
-  - Ingress

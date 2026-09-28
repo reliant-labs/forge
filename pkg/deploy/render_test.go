@@ -106,12 +106,21 @@ func TestPerKindObjects(t *testing.T) {
 		w    v1alpha1.Workload
 		want []string
 	}{
-		{svc("api", httpPort(true)), []string{"Deployment/api", "NetworkPolicy/api-ingress", "Service/api", "ServiceAccount/api"}},
-		{wl("w", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker}), []string{"Deployment/w", "NetworkPolicy/w-ingress", "ServiceAccount/w"}},
-		{wl("c", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"sweep"}}), []string{"CronJob/c", "NetworkPolicy/c-ingress", "ServiceAccount/c"}},
+		// Full with no Context.Network: no per-workload NetworkPolicy
+		// (TestIngressPolicyOptIn).
+		{svc("api", httpPort(true)), []string{"Deployment/api", "Service/api", "ServiceAccount/api"}},
+		{wl("w", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker}), []string{"Deployment/w", "ServiceAccount/w"}},
+		{wl("c", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"sweep"}}), []string{"CronJob/c", "ServiceAccount/c"}},
 		{wl("op", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"Widget"}}), []string{
 			"ClusterRole/op-acme-prod-clusterrole", "ClusterRoleBinding/op-acme-prod-clusterrolebinding", "Deployment/op", "ServiceAccount/op",
 		}},
+		// An operator that declares ports is dialled (webhook, metrics,
+		// workspace-controller's :9191), so it gets a Service. A worker
+		// with ports still does not: nothing resolves it by name.
+		{wl("op2", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"Widget"}, Ports: []v1alpha1.Port{{Name: "http", Port: 9191}}}), []string{
+			"ClusterRole/op2-acme-prod-clusterrole", "ClusterRoleBinding/op2-acme-prod-clusterrolebinding", "Deployment/op2", "Service/op2", "ServiceAccount/op2",
+		}},
+		{wl("w2", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Ports: []v1alpha1.Port{{Name: "http", Port: 8080}}}), []string{"Deployment/w2", "ServiceAccount/w2"}},
 		{wl("cli", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindTool}), nil},
 	}
 	for _, c := range cases {
@@ -133,8 +142,8 @@ func TestPerKindObjects(t *testing.T) {
 			job = o
 		}
 	}
-	if job == nil || len(objs) != 3 {
-		t.Fatalf("standalone job: want Job/seed-<hash> + SA + NetworkPolicy, got %v", keysOf(objs))
+	if job == nil || len(objs) != 2 {
+		t.Fatalf("standalone job: want Job/seed-<hash> + SA, got %v", keysOf(objs))
 	}
 	if get(job, "metadata", "annotations", AnnotationDeployPhase) != "pre-rollout" || get(job, "metadata", "labels", LabelJobName) != "seed" {
 		t.Errorf("job metadata = %v", get(job, "metadata"))
@@ -147,7 +156,8 @@ func TestPerKindObjects(t *testing.T) {
 // TestServiceDefaultPort: a service that declares no ports serves `http`
 // :8080 (expand.k:502), and is NOT made public by omission.
 func TestServiceDefaultPort(t *testing.T) {
-	o := objects(t, render(t, v1alpha1.ProfileFull, svc("api")))
+	// Restricted, so the per-workload NetworkPolicy is emitted.
+	o := objects(t, render(t, v1alpha1.ProfileRestricted, svc("api")))
 	want := []any{map[string]any{"name": "http", "port": float64(8080), "targetPort": float64(8080), "protocol": "TCP"}}
 	if got := get(o["Service/api"], "spec", "ports"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("service ports = %v", got)
@@ -274,7 +284,7 @@ func TestStorage(t *testing.T) {
 // TestKeepsSemanticEmptyMaps guards the pruning trap: in Kubernetes an empty
 // map is often the meaning.
 func TestKeepsSemanticEmptyMaps(t *testing.T) {
-	o := objects(t, render(t, v1alpha1.ProfileFull, svc("api", httpPort(false))))
+	o := objects(t, render(t, v1alpha1.ProfileRestricted, svc("api", httpPort(false))))
 	if peer := get(o["NetworkPolicy/api-ingress"], "spec", "ingress", 0, "from", 0); !reflect.DeepEqual(peer, map[string]any{"podSelector": map[string]any{}}) {
 		t.Fatalf("private workload's same-namespace peer was lost: %#v", peer)
 	}
@@ -292,8 +302,18 @@ func TestKeepsSemanticEmptyMaps(t *testing.T) {
 // on the exposed port, default-deny for a pod with no ports, none for an
 // operator.
 func TestNetworkPolicy(t *testing.T) {
+	withNet := ctx
+	withNet.Network = &EnvNetworkPolicy{}
+	renderNet := func(w v1alpha1.Workload) map[string]map[string]any {
+		t.Helper()
+		objs, err := RenderWorkloads([]v1alpha1.Workload{w}, v1alpha1.ProfileFull, withNet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return objects(t, objs)
+	}
 	api := svc("api", httpPort(true), v1alpha1.Port{Name: "grpc", Port: 9090})
-	np := objects(t, render(t, v1alpha1.ProfileFull, api))["NetworkPolicy/api-ingress"]
+	np := renderNet(api)["NetworkPolicy/api-ingress"]
 	if got := get(np, "spec", "policyTypes"); !reflect.DeepEqual(got, []any{"Ingress"}) {
 		t.Errorf("policyTypes = %v; egress is the namespace's control", got)
 	}
@@ -304,9 +324,42 @@ func TestNetworkPolicy(t *testing.T) {
 	if get(public, "ports", 0, "port") != float64(8080) || get(public, "from") != nil {
 		t.Errorf("public rule = %v (want from anywhere)", public)
 	}
-	np = objects(t, render(t, v1alpha1.ProfileFull, wl("w", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker})))["NetworkPolicy/w-ingress"]
+	np = renderNet(wl("w", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker}))["NetworkPolicy/w-ingress"]
 	if np == nil || get(np, "spec", "ingress") != nil {
 		t.Errorf("a worker with no ports must get an ingress default-deny policy, got %v", np)
+	}
+}
+
+// TestIngressPolicyOptIn: the per-workload ingress NetworkPolicy is the
+// hosted boundary, so ProfileRestricted ALWAYS emits it. Under ProfileFull it
+// is emitted only when the env opted into network policy (Context.Network),
+// so a self-hosted cluster keeps its prior behaviour (no policy) unless the
+// env declares one.
+func TestIngressPolicyOptIn(t *testing.T) {
+	count := func(p v1alpha1.Profile, c Context) int {
+		t.Helper()
+		objs, err := RenderWorkloads([]v1alpha1.Workload{svc("api", httpPort(true))}, p, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for k := range objects(t, objs) {
+			if k == "NetworkPolicy/api-ingress" {
+				n++
+			}
+		}
+		return n
+	}
+	withNet := ctx
+	withNet.Network = &EnvNetworkPolicy{}
+	if n := count(v1alpha1.ProfileFull, ctx); n != 0 {
+		t.Error("Full without Context.Network must emit no per-workload policy")
+	}
+	if n := count(v1alpha1.ProfileFull, withNet); n != 1 {
+		t.Error("Full with Context.Network must emit the per-workload policy")
+	}
+	if n := count(v1alpha1.ProfileRestricted, ctx); n != 1 {
+		t.Error("Restricted must ALWAYS emit the per-workload policy")
 	}
 }
 
@@ -703,6 +756,11 @@ func TestEveryPodIsPSARestricted(t *testing.T) {
 		wl("mgr", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"W"}}),
 	)
 	full[1].Spec.Sidecars = []v1alpha1.Container{{Name: "proxy", Image: "gcr.io/p/proxy:1"}}
+	// N3: the securityContext override (uid 1000, writable rootfs) must
+	// stay Pod Security restricted-compliant.
+	full = append(full, wl("console", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, SecurityContext: &v1alpha1.PodSecurity{
+		RunAsUser: new(int64(1000)), RunAsGroup: new(int64(1000)), FSGroup: new(int64(1000)), ReadOnlyRootFilesystem: new(false),
+	}}))
 	for profile, ws := range map[v1alpha1.Profile][]v1alpha1.Workload{v1alpha1.ProfileFull: full, v1alpha1.ProfileRestricted: restrictedSet()} {
 		pods := 0
 		for k, o := range objects(t, render(t, profile, ws...)) {
@@ -1180,5 +1238,108 @@ func TestBatchResources(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestClusterRBACOnService: a non-operator with clusterRBAC gets a
+// ClusterRole INSTEAD of a Role (one binding tier per SA), its token mounted,
+// and none of an operator's derivations (no CRD rules, no leases,
+// no LEADER_ELECTION).
+func TestClusterRBACOnService(t *testing.T) {
+	rule := v1alpha1.PolicyRule{APIGroups: []string{"reliant.dev"}, Resources: []string{"workspaces"}, Verbs: []string{"get", "list", "watch"}}
+	w := wl("workspace-proxy", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, ClusterRBAC: []v1alpha1.PolicyRule{rule}})
+	o := objects(t, render(t, v1alpha1.ProfileFull, w))
+	want := []string{
+		"ClusterRole/workspace-proxy-acme-prod-clusterrole", "ClusterRoleBinding/workspace-proxy-acme-prod-clusterrolebinding",
+		"Deployment/workspace-proxy", "Service/workspace-proxy", "ServiceAccount/workspace-proxy",
+	}
+	if got := keysOf(o); !reflect.DeepEqual(got, want) {
+		t.Fatalf("objects = %v\nwant      %v", got, want)
+	}
+	rules := get(o["ClusterRole/workspace-proxy-acme-prod-clusterrole"], "rules")
+	wantRules := []any{
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps", "secrets"}, "verbs": []any{"get", "list", "watch"}},
+		map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces"}, "verbs": []any{"get", "list", "watch"}},
+	}
+	if !reflect.DeepEqual(rules, wantRules) {
+		t.Errorf("rules = %v, want defaults + declared only", rules)
+	}
+	pod := podOf(o["Deployment/workspace-proxy"])
+	if get(pod, "automountServiceAccountToken") != true || get(o["ServiceAccount/workspace-proxy"], "automountServiceAccountToken") != nil {
+		t.Error("clusterRBAC needs the token mounted")
+	}
+	if get(pod, "containers", 0, "env") != nil {
+		t.Error("a non-operator must not get LEADER_ELECTION")
+	}
+}
+
+// TestTerminationGraceOverride (N1): an explicit value wins over the
+// drain-derived one, including 0.
+func TestTerminationGraceOverride(t *testing.T) {
+	w := wl("temporal", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, TerminationGracePeriodSeconds: new(int32(60)),
+		Env: []v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "10s"}}})
+	if got := get(podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/temporal"]), "terminationGracePeriodSeconds"); got != float64(60) {
+		t.Errorf("grace = %v, want the explicit 60", got)
+	}
+	w.Spec.TerminationGracePeriodSeconds = new(int32(0))
+	if got := get(podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/temporal"]), "terminationGracePeriodSeconds"); got != float64(0) {
+		t.Errorf("grace = %v, want an explicit 0 honoured", got)
+	}
+	// A batch pod gets it too when declared (it has none by default).
+	j := wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}, TerminationGracePeriodSeconds: new(int32(90))})
+	for k, o := range objects(t, render(t, v1alpha1.ProfileFull, j)) {
+		if strings.HasPrefix(k, "Job/") && get(podOf(o), "terminationGracePeriodSeconds") != float64(90) {
+			t.Errorf("job grace = %v", get(podOf(o), "terminationGracePeriodSeconds"))
+		}
+	}
+}
+
+// TestActiveDeadline (N2): Job.spec.activeDeadlineSeconds on a standalone
+// Job, and on a CronJob's jobTemplate.
+func TestActiveDeadline(t *testing.T) {
+	j := wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}, ActiveDeadlineSeconds: new(int64(60))})
+	for k, o := range objects(t, render(t, v1alpha1.ProfileRestricted, j)) {
+		if strings.HasPrefix(k, "Job/") && get(o, "spec", "activeDeadlineSeconds") != float64(60) {
+			t.Errorf("job activeDeadlineSeconds = %v", get(o, "spec", "activeDeadlineSeconds"))
+		}
+	}
+	c := wl("nightly", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"}, ActiveDeadlineSeconds: new(int64(600))})
+	if got := get(objects(t, render(t, v1alpha1.ProfileFull, c))["CronJob/nightly"], "spec", "jobTemplate", "spec", "activeDeadlineSeconds"); got != float64(600) {
+		t.Errorf("cron activeDeadlineSeconds = %v", got)
+	}
+	// Unset: no key (no deadline).
+	for k, o := range objects(t, render(t, v1alpha1.ProfileFull, wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}}))) {
+		if strings.HasPrefix(k, "Job/") && get(o, "spec", "activeDeadlineSeconds") != nil {
+			t.Error("an unset deadline must render none")
+		}
+	}
+}
+
+// TestPodSecurityOverrideRender (N3): uid/gid/fsGroup/readOnlyRootFilesystem
+// land on the pod and on EVERY container (main, sidecar, init), and
+// runAsNonRoot stays true.
+func TestPodSecurityOverrideRender(t *testing.T) {
+	sc := &v1alpha1.PodSecurity{RunAsUser: new(int64(1000)), RunAsGroup: new(int64(1001)), FSGroup: new(int64(1002)), ReadOnlyRootFilesystem: new(false)}
+	w := wl("console", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, SecurityContext: sc,
+		Sidecars: []v1alpha1.Container{{Name: "proxy", Image: "gcr.io/p/proxy:1"}}})
+	migrate := wl("migrate", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"m"}, Before: []string{v1alpha1.BeforeAll}})
+	pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w, migrate))["Deployment/console"])
+	if get(pod, "securityContext", "runAsUser") != float64(1000) || get(pod, "securityContext", "runAsGroup") != float64(1001) ||
+		get(pod, "securityContext", "fsGroup") != float64(1002) || get(pod, "securityContext", "runAsNonRoot") != true {
+		t.Errorf("pod securityContext = %v", get(pod, "securityContext"))
+	}
+	for i, c := range append(asSlice(get(pod, "containers")), asSlice(get(pod, "initContainers"))...) {
+		sc := get(c, "securityContext")
+		if get(sc, "runAsUser") != float64(1000) || get(sc, "runAsGroup") != float64(1001) || get(sc, "readOnlyRootFilesystem") != false || get(sc, "runAsNonRoot") != true {
+			t.Errorf("container %d (%v) securityContext = %v", i, get(c, "name"), sc)
+		}
+	}
+	if len(asSlice(get(pod, "initContainers"))) != 1 || len(asSlice(get(pod, "containers"))) != 2 {
+		t.Fatal("expected one init and two containers to check")
+	}
+	// Unset: forge's defaults unchanged.
+	pod = podOf(objects(t, render(t, v1alpha1.ProfileFull, svc("api")))["Deployment/api"])
+	if get(pod, "securityContext", "runAsUser") != float64(RunAsUser) || get(pod, "containers", 0, "securityContext", "readOnlyRootFilesystem") != true || get(pod, "securityContext", "fsGroup") != nil {
+		t.Errorf("default securityContext changed: %v", get(pod, "securityContext"))
 	}
 }

@@ -32,19 +32,18 @@ has_registry_host = lambda image: str -> bool {
 
 # The full reference for `image`:
 #
-#   1. It names its own registry host: passed through (a third party's).
-#   2. It pins its own tag or digest: `<registry>/<image>`, verbatim tag.
+#   1. It names its own registry host: no registry prefix (it is a third
+#      party's, or already fully qualified).
+#   2. It pins its own tag or digest: kept verbatim.
 #   3. `image_digests` has a digest for this BARE name (the map
 #      `forge env deploy` passes, keyed on the image name, so two workloads
 #      sharing an image share its digest): `<registry>/<image>@<digest>`.
-#   4. Else `<registry>/<image>:<tag>`.
+#   4. Else the env tag: `[<registry>/]<image>:<tag>`.
 image_ref = lambda image: str, registry: str, tag: str, digests: {str:str} -> str {
-    _own = has_registry_host(image)
-    _reg = "" if _own else registry
+    _reg = "" if has_registry_host(image) else registry
+    _base = "${_reg}/${image}" if _reg else image
     _digest = digests[image] if (image in digests) else ""
-    image if _own \
-        else ("${_reg}/${image}" if has_tag_or_digest(image) and _reg \
-        else (image if has_tag_or_digest(image) \
-        else ("${_reg}/${image}@${_digest}" if _digest and _reg \
-        else ("${_reg}/${image}:${tag}" if _reg else "${image}:${tag}"))))
+    _base if has_tag_or_digest(image) \
+        else ("${_base}@${_digest}" if _digest \
+        else "${_base}:${tag}")
 }

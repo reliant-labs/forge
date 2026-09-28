@@ -140,24 +140,3 @@ metadata:
     forge.dev/env: prod
   name: api
   namespace: demo-prod
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: forge
-    app.kubernetes.io/name: api
-    app.kubernetes.io/part-of: demo
-    forge.dev/env: prod
-  name: api-ingress
-  namespace: demo-prod
-spec:
-  ingress:
-  - ports:
-    - port: 8080
-      protocol: TCP
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: api
-  policyTypes:
-  - Ingress

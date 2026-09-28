@@ -596,6 +596,11 @@ schema ClusterTarget:
     # workload the env renders. Unset => the build falls through to the
     # host arch.
     platform?: str
+    # The hostname a POD in this cluster dials to reach the machine running
+    # it: where a `forge.WorkloadURL` from a workload here to a HOST or
+    # COMPOSE workload resolves. k3d publishes the host as
+    # host.k3d.internal; Docker Desktop's is host.docker.internal.
+    host_gateway: str = "host.k3d.internal"
     # Names of EXISTING image-pull Secrets, applied to every workload's
     # generated ServiceAccount. Env-wide (the registry is env-wide, so its
     # pull secret is too). Unset => no imagePullSecrets.
@@ -642,11 +647,16 @@ schema ManagedDatabase:
         installs it.
       * `forge.OnHosted {}` — published to the control plane, which
         allocates the namespace. `namespace` is refused.
+
+    With neither `runtime` nor a cluster/hosted `Bundle.runtime`, a
+    database lands on `Bundle.cluster_target` (in `namespace`, when set).
     """
     name: str
     runtime?: OnCluster | OnHosted
     # Overrides the cluster target's namespace. Refused when hosted.
-    namespace?: str
+    # Defaulted rather than optional: an unset attribute read by bare name
+    # in a check falls through to the module's `namespace` lambda.
+    namespace: str = ""
     spec: tiers.ManagedDatabase = tiers.ManagedDatabase {}
 
     check:
@@ -965,7 +975,7 @@ schema RenderedSecret:
       * In `Bundle.rendered_secrets` both default to the Bundle's
         `cluster_target`, so a Secret is always placed by declaration —
         never inferred. This is the form for a Secret whose consumer is a
-        PLAIN manifest (a raw Deployment/Job in `additional_manifests`),
+        PLAIN manifest (a raw Deployment/Job in `Bundle.manifests`),
         which no service `secret_ref` names.
       * In `RenderedSecrets.secrets` (the provider) an entry with no
         `cluster` keeps the provider's inference: it lands in each cluster
@@ -1045,8 +1055,8 @@ schema TestJWKS:
     rendered output (only the derived public JWK does).
 
     Render with `forge.test_jwks_manifests(jwks, namespace, private_pem)`
-    in a Bundle's `additional_manifests` (or a service's owned
-    `manifests`, to pin it to a specific cluster) — it emits a ConfigMap
+    in a `forge.Manifests {objects = ...}` of `Bundle.manifests` (set its
+    `cluster` to pin it to a specific cluster) — it emits a ConfigMap
     (the JWKS JSON) + a tiny static-file Deployment + Service serving
     `/.well-known/jwks.json`.
 
@@ -1389,7 +1399,7 @@ schema KubeconfigSecret:
     target_cluster: str
     context_name: str
     key: str = "kubeconfig"
-    namespace?: str
+    namespace: str = ""
     reachability: str = "in-network"
 
     check:
@@ -1499,7 +1509,7 @@ schema ClusterClient:
     in_cluster: Cluster
     mount_path: str
     key: str = "kubeconfig"
-    namespace?: str
+    namespace: str = ""
     reachability: str = "in-network"
     # external = True references a pre-existing Secret (no k3d mint); the
     # default keeps the minting behaviour the e2e path relies on.
@@ -2564,7 +2574,7 @@ schema HelmChart:
     # before its instances). The natural home for the small cluster-scoped
     # instances a chart's controller reconciles but the chart itself does not
     # ship — e.g. the `eg` GatewayClass for envoy-gateway, or cert-manager
-    # ClusterIssuers. UNLIKE Bundle.additional_manifests (which renders into
+    # ClusterIssuers. UNLIKE Bundle.manifests (forge.Manifests) (which renders into
     # the env's main stream and so DOES apply on a bare app deploy), these are
     # platform-only: a bare `forge env deploy <env>` renders none of them. Each
     # entry is a raw manifest dict. Empty => none.
@@ -2701,6 +2711,40 @@ schema DNSRecord:
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
+schema Manifests:
+    """Raw Kubernetes objects forge applies with the env: the ONE home for
+    anything that is not a typed entity (a CRD, a ClusterIssuer, a vendored
+    chart's output, a DaemonSet).
+
+        manifests = [
+            forge.Manifests {objects = [_issuer, _crd]}              # the primary cluster
+            forge.Manifests {
+                name = "kata-prepull"                                 # its own --target
+                cluster = "k3d-cp-daemon"
+                namespace = "kube-system"
+                objects = [_prepull_daemonset]
+            }
+        ]
+
+    PLACEMENT is declared, never inferred: `cluster` is the kubectl
+    context (default: the env's primary cluster), and `namespace` fills in
+    a namespaced object that names none (default: the primary target's).
+    An object that names its own namespace keeps it.
+
+    SELECTION. A group with a `name` is its own `forge env deploy --target
+    <name>`: each object is stamped `forge.dev/workload: <name>` (its own
+    `app.kubernetes.io/*` labels are kept, since a selector may depend on
+    them; lib/labels.k owner_labels). A group with no name belongs to no
+    target and applies on a bare `forge env deploy`.
+    """
+    name?: str
+    cluster?: str
+    namespace?: str
+    objects: [any] = []
+
+    check:
+        not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"
+
 schema NetworkPolicy:
     """The inputs of the env-wide NetworkPolicy bundle: default-deny, plus
     DNS, same-namespace, external-egress, telemetry and ingress-controller
@@ -2822,17 +2866,18 @@ schema Bundle:
     gateways: [Gateway] = []
     http_routes: [HTTPRoute] = []
     grpc_routes: [GRPCRoute] = []
-    # Arbitrary extra k8s resources rendered alongside the typed
-    # entities, env-scoped (no `--target` selects them): ClusterIssuers,
-    # SealedSecrets, hand-typed CRDs. A manifest that belongs to one
-    # workload goes on that workload's `manifests` instead.
-    additional_manifests: [any] = []
+    # Every Kubernetes object that is not a typed entity: CRDs,
+    # ClusterIssuers, a vendored chart's output, a DaemonSet. The ONE home
+    # for raw objects; see forge.Manifests.
+    manifests: [Manifests] = []
     # The env-wide NetworkPolicy bundle (default-deny plus the DNS,
     # same-namespace, external-egress, telemetry and ingress-controller
-    # allows), rendered by Go per cluster group. Default: ON with
-    # NetworkPolicy {} when any workload binds a cluster runtime; set
-    # `None` to opt out.
-    network_policy?: NetworkPolicy = NetworkPolicy {} if any w in workloads { _bound_runtime(w, runtime) and _bound_runtime(w, runtime).type == "cluster" } else None
+    # allows) and the per-workload ingress policies, rendered by Go per
+    # cluster group. OPT-IN: unset renders no NetworkPolicy at all, so a
+    # dev cluster's pods keep reaching the host (host.k3d.internal) and
+    # sibling namespaces. Set `network_policy = forge.NetworkPolicy {...}`
+    # for an env that should run default-deny.
+    network_policy?: NetworkPolicy
     # Per-env secret PROVIDER declaration: WHERE secret values come from.
     # Absent = no provider. "file" (dev/e2e) lets forge resolve declared
     # secret_refs from a gitignored secrets/<env>.yaml file and render
@@ -2897,8 +2942,8 @@ schema Bundle:
         len(_duplicates(_env_names(workloads, infra, frontends))) == 0, \
             "Bundle: a name is declared twice across workloads, infra and frontends: ${_duplicates(_env_names(workloads, infra, frontends))}. The name is how the env refers to it (--target, forge.WorkloadURL), so it must be unique"
         # HOSTED IS PER WORKLOAD, and it needs a control plane to publish to.
-        control_plane or not _hosted_names(workloads, databases, frontends, runtime), \
-            "${_hosted_names(workloads, databases, frontends, runtime)} run on the hosted runtime (forge.OnHosted, or a StaticSite with no bucket), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
+        control_plane or not _hosted_names(workloads, databases, [], runtime), \
+            "${_hosted_names(workloads, databases, [], runtime)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
         # A hosted StaticSite is published INTO the platform's bucket, behind
         # the platform's CDN: naming a URL map would be a user choosing what
         # the platform's credential purges, and cache_control has no carrier
@@ -2910,7 +2955,7 @@ schema Bundle:
             "StaticSite.bucket is required unless the env declares control_plane: a StaticSite with no bucket is published to the control plane, and ${[f.name for f in frontends if f.deploy and f.deploy.type == 'static-site' and not f.deploy.bucket]} has neither. Set bucket (gs://name or a bare bucket name)"
         # A database resolves a runtime (its own, or a cluster/hosted
         # Bundle.runtime) and a cluster one lands in a namespace.
-        all db in databases { _db_runtime(db, runtime) }, \
+        all db in databases { _db_runtime(db, runtime) or cluster_target }, \
             "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db, runtime)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"
         # HostedSecrets names no endpoint of its own — the values live in THIS
         # env's control plane — so without one there is nowhere to put them.

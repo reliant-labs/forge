@@ -45,7 +45,7 @@ At the render ENTRY POINTS (`forge.render_manifests`,
 `forge.render_support`, `forge.workloads.render_workloads`), over the
 FINAL manifest list. That placement — rather than threading an `env`
 argument through every builder — is what makes the guarantee total: it
-also covers `Bundle.additional_manifests`, hand-written raw dicts, the
+also covers `Bundle.manifests (forge.Manifests)`, hand-written raw dicts, the
 NetworkPolicy bundle and CRDs, none of which pass through a forge
 label builder at all.
 

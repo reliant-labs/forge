@@ -59,9 +59,9 @@ func (g *ProjectGenerator) effectiveBinary() string {
 	return config.EffectiveProjectBinary(g.Binary)
 }
 
-// isBinaryShared reports whether this project uses the shared-binary
-// codegen (one Go binary, cobra subcommand per service, KCL
-// MultiServiceApplication for deploy). Only meaningful for services.
+// isBinaryShared reports whether this project records the shared-binary
+// mode in forge.yaml. Only meaningful for services; the deploy scaffold is
+// the same in both modes (every component is a subcommand of the binary).
 func (g *ProjectGenerator) isBinaryShared() bool {
 	return g.isService() && g.effectiveBinary() == config.ProjectBinaryShared
 }

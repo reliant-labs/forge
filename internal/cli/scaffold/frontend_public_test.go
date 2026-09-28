@@ -20,7 +20,7 @@ func writeDevMainK(t *testing.T, root string, withIDP bool) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	content := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl")
+	content := renderNoFrontendEnv(t, "kcl/env/host.k.tmpl", "dev")
 	if withIDP {
 		// The same declaration the HasFrontend template renders.
 		content += "\n_idp = forge.HostInfra {\n    engine = \"zitadel\"\n    port = 8080\n}\n"

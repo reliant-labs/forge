@@ -88,13 +88,13 @@ schema AppConfig:
 
 APP_CONFIG_SENSITIVE_ENV: [str] = ["DATABASE_URL"]
 
-appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: forge.EnvSource} {
-    _sensitive: {str: forge.EnvSource} = {
-        "DATABASE_URL" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}
+appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {
+    _sensitive: {str: forge.SecretRef} = {
+        "DATABASE_URL" = forge.SecretRef {name = c.database_url.name, key = c.database_url.key, store_key = "DATABASE_URL"}
     }
     assert all _n in config_secrets { _n in _sensitive }, "unknown config_secrets name"
     {
-        "PORT" = {value = str(c.port)}
+        "PORT" = str(c.port)
     } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}
 }
 `
@@ -125,13 +125,22 @@ app_config: config_gen.AppConfig = {
 			t.Fatalf("unmarshal %s render: %v\n%s", env, err, out)
 		}
 		// Rendering "successfully" to nothing would satisfy a weaker
-		// check, so require the manifests the deploy path consumes.
-		manifests, ok := doc["manifests"].([]any)
-		if !ok || len(manifests) == 0 {
-			t.Fatalf("%s render produced no manifests:\n%s", env, out)
-		}
-		if _, ok := doc["output"].(map[string]any); !ok {
+		// check, so require the contract and the applyable stream the deploy
+		// path consumes: `output = forge.render(bundle)` is the one
+		// entrypoint, and its `manifests` must not be empty.
+		output, ok := doc["output"].(map[string]any)
+		if !ok {
 			t.Fatalf("%s render has no `output` contract:\n%s", env, out)
+		}
+		if _, legacy := doc["manifests"]; legacy {
+			t.Fatalf("%s render has a top-level `manifests` var; output.manifests is the only stream", env)
+		}
+		manifests, ok := output["manifests"].([]any)
+		if !ok || len(manifests) == 0 {
+			t.Fatalf("%s render produced no output.manifests:\n%s", env, out)
+		}
+		if ws, _ := output["workloads"].([]any); len(ws) == 0 {
+			t.Fatalf("%s render declares no workloads:\n%s", env, out)
 		}
 	}
 }

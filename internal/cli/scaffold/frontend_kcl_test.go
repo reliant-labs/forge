@@ -11,15 +11,9 @@ import (
 
 // renderNoFrontendEnv renders the env main.k a project scaffolded WITHOUT
 // --frontend carries — the file `forge scaffold frontend` has to extend.
-func renderNoFrontendEnv(t *testing.T, tmpl string) string {
+func renderNoFrontendEnv(t *testing.T, tmpl, env string) string {
 	t.Helper()
-	data := struct {
-		ProjectName     string
-		IngressEnabled  bool
-		HasFrontend     bool
-		PrimaryWorkload string
-		FrontendName    string
-	}{ProjectName: "acme", IngressEnabled: true, PrimaryWorkload: "acme"}
+	data := templates.EnvTemplateData{ProjectName: "acme", EnvName: env, IngressEnabled: true, PrimaryWorkload: "acme"}
 	out, err := templates.DeployTemplates().Render(tmpl, data)
 	if err != nil {
 		t.Fatalf("render %s: %v", tmpl, err)
@@ -27,9 +21,18 @@ func renderNoFrontendEnv(t *testing.T, tmpl string) string {
 	return string(out)
 }
 
+// scaffoldedEnvTemplate is the template `forge project new` renders an env
+// from: dev on the host runtime, every other env on the cluster runtime.
+func scaffoldedEnvTemplate(env string) string {
+	if env == "dev" {
+		return "kcl/env/host.k.tmpl"
+	}
+	return "kcl/env/cluster.k.tmpl"
+}
+
 // TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv pins that the splice finds
-// its anchors in every env template forge ships (per-service AND shared
-// binary), for a project born without a frontend. A template edit that moves
+// its anchors in every env template forge ships (one per runtime), for a
+// project born without a frontend. A template edit that moves
 // or renames an anchor must fail here, not silently degrade the scaffold
 // into printing a hint nobody reads.
 func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
@@ -37,15 +40,13 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 		tmpl string
 		env  string
 	}{
-		{"kcl/dev/main.k.tmpl", "dev"},
-		{"kcl/staging/main.k.tmpl", "staging"},
-		{"kcl/prod/main.k.tmpl", "prod"},
-		{"kcl/dev/main-shared.k.tmpl", "dev"},
-		{"kcl/staging/main-shared.k.tmpl", "staging"},
-		{"kcl/prod/main-shared.k.tmpl", "prod"},
+		{"kcl/env/host.k.tmpl", "dev"},
+		{"kcl/env/cluster.k.tmpl", "staging"},
+		{"kcl/env/cluster.k.tmpl", "prod"},
+		{"kcl/env/hosted.k.tmpl", "preview"},
 	} {
-		t.Run(tc.tmpl, func(t *testing.T) {
-			in := renderNoFrontendEnv(t, tc.tmpl)
+		t.Run(tc.tmpl+"/"+tc.env, func(t *testing.T) {
+			in := renderNoFrontendEnv(t, tc.tmpl, tc.env)
 			if strings.Contains(in, "forge.Frontend") {
 				t.Fatalf("precondition: a no-frontend %s should declare no frontend", tc.tmpl)
 			}
@@ -80,7 +81,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 // TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend pins that a
 // second frontend is added beside the first rather than replacing it.
 func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
-	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl")
+	in := renderNoFrontendEnv(t, "kcl/env/host.k.tmpl", "dev")
 	one, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 0)
 	two, status := spliceFrontendIntoEnvKCL(one, "acme", "dev", "admin", true, 0)
 	if status != frontendKCLApplied {
@@ -96,7 +97,7 @@ func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
 // TestSpliceFrontendIntoEnvKCL_PinnedPort pins that --port lands in KCL as
 // the literal, with no resolve_port that could step it elsewhere.
 func TestSpliceFrontendIntoEnvKCL_PinnedPort(t *testing.T) {
-	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl")
+	in := renderNoFrontendEnv(t, "kcl/env/host.k.tmpl", "dev")
 	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 4123)
 	if status != frontendKCLApplied {
 		t.Fatalf("status %d", status)
@@ -132,7 +133,7 @@ func TestRunAddFrontend_DeclaresFrontendInKCL(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte(renderNoFrontendEnv(t, "kcl/"+env+"/main.k.tmpl")), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte(renderNoFrontendEnv(t, scaffoldedEnvTemplate(env), env)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

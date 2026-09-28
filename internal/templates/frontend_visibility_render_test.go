@@ -9,7 +9,7 @@ import (
 // deploy templates exist to carry, and it is a UX property rather than a
 // correctness one — which is exactly why it needs a test.
 //
-// forge.Frontend.deploy accepts FirebaseHosting, StaticSite or K8sCluster.
+// forge.Frontend.deploy accepts FirebaseHosting or StaticSite.
 // That capability was real long before this test, and was declared in the DEV
 // template only: staging and prod emitted no frontend workload at all. So the
 // only way to discover it was to read kcl/schema.k, and a user who never did
@@ -21,18 +21,12 @@ import (
 func TestEveryEnvDeclaresTheFrontendCapability(t *testing.T) {
 	t.Parallel()
 
-	data := struct {
-		ProjectName     string
-		IngressEnabled  bool
-		HasFrontend     bool
-		PrimaryWorkload string
-		FrontendName    string
-	}{ProjectName: "acme", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
+	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
 
 	for _, tmpl := range []string{
-		"kcl/dev/main.k.tmpl",
-		"kcl/staging/main.k.tmpl",
-		"kcl/prod/main.k.tmpl",
+		"kcl/env/host.k.tmpl",
+		"kcl/env/cluster.k.tmpl",
+		"kcl/env/hosted.k.tmpl",
 	} {
 		t.Run(tmpl, func(t *testing.T) {
 			t.Parallel()
@@ -62,18 +56,12 @@ func TestEveryEnvDeclaresTheFrontendCapability(t *testing.T) {
 func TestFrontendBlockIsAbsentWithoutAFrontend(t *testing.T) {
 	t.Parallel()
 
-	data := struct {
-		ProjectName     string
-		IngressEnabled  bool
-		HasFrontend     bool
-		PrimaryWorkload string
-		FrontendName    string
-	}{ProjectName: "acme", IngressEnabled: true, HasFrontend: false, PrimaryWorkload: "acme"}
+	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: false, PrimaryWorkload: "acme"}
 
 	for _, tmpl := range []string{
-		"kcl/dev/main.k.tmpl",
-		"kcl/staging/main.k.tmpl",
-		"kcl/prod/main.k.tmpl",
+		"kcl/env/host.k.tmpl",
+		"kcl/env/cluster.k.tmpl",
+		"kcl/env/hosted.k.tmpl",
 	} {
 		out, err := DeployTemplates().Render(tmpl, data)
 		if err != nil {
@@ -95,15 +83,11 @@ func TestFrontendBlockIsAbsentWithoutAFrontend(t *testing.T) {
 func TestFrontendScaffoldChoosesNoDeployTarget(t *testing.T) {
 	t.Parallel()
 
-	data := struct {
-		ProjectName     string
-		IngressEnabled  bool
-		HasFrontend     bool
-		PrimaryWorkload string
-		FrontendName    string
-	}{ProjectName: "acme", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
+	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
 
-	for _, tmpl := range []string{"kcl/staging/main.k.tmpl", "kcl/prod/main.k.tmpl"} {
+	// The hosted env is the exception by design: it has exactly one place a
+	// hosted frontend can go (the platform's static site), so it chooses it.
+	for _, tmpl := range []string{"kcl/env/cluster.k.tmpl"} {
 		out, err := DeployTemplates().Render(tmpl, data)
 		if err != nil {
 			t.Fatalf("rendering %s: %v", tmpl, err)

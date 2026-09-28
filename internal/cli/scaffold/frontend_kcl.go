@@ -31,7 +31,7 @@ import (
 //     (not allocate_port) because nothing outside this project has been told
 //     the number: it takes 3000 when free, steps when not, and remembers.
 //   - every env: `frontends += [forge.Frontend {...}]` just before the
-//     bundle's `jobs = [` line. `+=` rather than `=` so the edit composes with
+//     bundle's `secret_provider = ` line. `+=` rather than `=` so the edit composes with
 //     a list the file already declares — an earlier frontend, or one the user
 //     wrote by hand — instead of replacing it.
 //
@@ -80,10 +80,11 @@ const (
 	frontendKCLNoAnchor
 )
 
-// bundleJobsLine is the `jobs = [` entry of the env's bundle literal — the one
-// list every scaffolded env declares, at four-space indentation, directly
-// inside `_bundle = forge.Bundle {`. It anchors the frontends insertion.
-var bundleJobsLine = regexp.MustCompile(`(?m)^    jobs = \[`)
+// bundleSecretProviderLine is the `secret_provider = ` entry of the env's
+// bundle literal — the one field every scaffolded env declares, at
+// four-space indentation, directly inside `_bundle = forge.Bundle {`. It
+// anchors the frontends insertion.
+var bundleSecretProviderLine = regexp.MustCompile(`(?m)^    secret_provider = `)
 
 // databaseURLLine anchors the dev port declaration: the scaffolded dev env
 // declares every port first and then composes `_database_url` from them.
@@ -135,7 +136,7 @@ func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName string, de
 	if frontendDeclaredIn(content, frontendName) {
 		return content, frontendKCLAlreadyDeclared
 	}
-	jobs := bundleJobsLine.FindAllStringIndex(content, -1)
+	jobs := bundleSecretProviderLine.FindAllStringIndex(content, -1)
 	if len(jobs) != 1 {
 		return content, frontendKCLNoAnchor
 	}
@@ -161,7 +162,7 @@ func frontendKCLStanzaHint(projectName, env, frontendName string, dev bool, pinn
 	if dev && pinnedPort <= 0 {
 		b.WriteString(frontendKCLPortDecl(projectName, env, frontendName))
 	}
-	b.WriteString("    # inside the bundle, alongside services/jobs:\n")
+	b.WriteString("    # inside the bundle, alongside workloads:\n")
 	b.WriteString(frontendKCLEntry(frontendName, dev, pinnedPort))
 	return b.String()
 }

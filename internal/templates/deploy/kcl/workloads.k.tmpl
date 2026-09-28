@@ -1,10 +1,33 @@
 """
-What {{.ProjectName}} DEPLOYS — the workload declarations.
+What {{.ProjectName}} RUNS — every workload, declared ONCE.
 
 YOURS. forge scaffolds this file once and never rewrites it. `forge
 scaffold service|worker|binary|operator` APPENDS a new declaration to the
 end; nothing else forge does touches what is already here. Edit it
 freely — reorder it, comment it, delete a workload you no longer ship.
+
+DECLARE ONCE, BIND PER ENV
+==========================
+A declaration here states the facts that are true WHEREVER the workload
+runs: how it is built, the subcommand it runs (`args`), its ports, and the
+credentials it reads (`config_secrets`). It says nothing about WHERE it
+runs. Each environment's `deploy/kcl/<env>/main.k` binds it to a runtime:
+
+    forge.OnHost {runner = "go-run"}      a local process (the dev loop)
+    forge.OnCluster {target = _prod}      a Kubernetes cluster you operate
+    forge.OnHosted {}                     the forge control plane
+    forge.OnCompose {service = "nats"}    a docker-compose service
+    forge.BuildOnly {}                    built and shipped, never run
+
+The same `args` select the subcommand on every runtime: forge derives
+`go run ./cmd/{{.ProjectName}} <args>` on the host, and a pod runs the
+image's ENTRYPOINT (`/app/{{.ProjectName}}`) with `<args>`. Nothing about a
+workload is re-stated per runtime, so the dev loop and prod cannot drift.
+
+Probes are not declared here, and do not need to be: forge writes a
+`/readyz` readiness and a `/healthz` liveness probe on the `http` port into
+the spec of every service it builds, on every runtime. That is exactly what
+the scaffolded server serves. Declare `probes` only to change them.
 
 WHAT A WORKLOAD IS
 ==================
@@ -13,87 +36,49 @@ and where it runs. In Kubernetes terms, what becomes ONE Deployment.
 
 A workload is NOT a proto service. One binary can mount a dozen Connect
 services on a shared mux and still be ONE workload, because it is one
-process with one image and one set of args. Declaring a workload per
-proto service renders N Deployments for what is really one process —
-that is the single most expensive mistake this file's vocabulary
-exists to prevent.
+process with one image and one set of args. `args = ["server"]` runs
+every service, worker and operator in one process; `args = ["<name>"]`
+runs exactly one.
 
   kind = "service"   Deployment + Service (named ports)
   kind = "worker"    Deployment, no Service (nothing dials it)
-  kind = "cron"      CronJob on `schedule`
+  kind = "cron"      CronJob on `schedule` (a process that runs to completion)
   kind = "job"       one-shot; `before` names who waits on it
-  kind = "operator"  manager Deployment + cluster RBAC
-  kind = "tool"      built into the image, never scheduled
+  kind = "operator"  controller Deployment + cluster RBAC
+  kind = "tool"      built, never scheduled
 
-WHAT EACH KIND CAN EXPRESS
-==========================
-A kind does not merely select an expansion; it decides which fields are
-MEANINGFUL. `forge.workloads` declares that as data — the kind ×
-capability matrix in the forge module's `workloads/capabilities.k` — and
-both the schema checks and the renderers read the same table.
+A field a kind or a runtime cannot honour is REJECTED at render, naming
+the field and the reason, rather than silently dropped: `replicas` on a
+job, `namespacedRBAC` on a host process, `clusterRBAC` on the hosted
+runtime.
 
-The practical consequence: a field your kind cannot express is REJECTED
-at render time, naming the field and the kind, rather than being
-silently dropped. `replicas` on a cron fails (a CronJob's concurrency is
-concurrencyPolicy, not a replica count); `crds` on a worker fails and
-points you at declaring the workload an operator, the kind whose manager
-owns custom resources.
+REFINE PER ENV
+==============
+An environment refines a declaration with KCL's `|` merge and states only
+the difference:
 
-RBAC is the capability most often needed and most often forgotten. Any
-scheduled kind can ask for in-namespace permission:
+    wl.{{.PrimaryIdent}} | {replicas = 3}
+    wl.{{.PrimaryIdent}} | {runtime = forge.OnCluster {target = _k3d}}
 
-    reaper = fw.Workload {
-        name = "reaper"
-        kind = "worker"
-        namespaced_rbac = [
-            {apiGroups = ["example.com"], resources = ["widgets"], verbs = ["list", "watch"]}
-        ]
-    }
-
-Declare nothing and you get a ServiceAccount with no Role and no mounted
-token — the right default, because most workloads never call the
-Kubernetes API and a blanket Role would hand an RCE a credential dump.
-A permission that genuinely spans namespaces goes in `cluster_rbac`; it
-ADDS a ClusterRole beside the Role rather than replacing it. The default
-config read never goes cluster-wide: that would be every Secret in the
-cluster.
-
-DECLARE COMPLETE, REFINE PER ENV
-================================
-Each declaration below is a COMPLETE, valid workload — ports and all —
-not a fragment awaiting assembly. That is what makes it readable on its
-own: this file answers "what is this thing?" in full.
-
-An environment then REFINES what it needs with KCL's `|` merge operator,
-in `deploy/kcl/<env>/main.k`:
-
-    _api = wl.{{.PrimaryIdent}} | {replicas = 3}
-
-Only the difference is stated, the rest is inherited, and because `|`
-preserves the schema type, every `check:` in forge.workloads re-runs on
-the merged result. An env that sets `replicas = 0` is rejected AT THAT
-ENV, naming the field — a base declaration cannot be refined into an
-invalid one.
+`|` preserves the schema type, so every check re-runs on the merged
+result: a bad override fails at that env, naming the field.
 
 ADDING SOMETHING THAT ISN'T GO CODE
 ===================================
-Anything can be a workload, whether or not forge generated it. Declare
-it in the env that HAS it rather than here, and only that env gets it:
+Anything can be a workload. Declare it in the env that HAS it rather than
+here, and only that env gets it. A third-party image names its registry
+host, or forge treats it as its own artifact and prefixes the env registry:
 
     # in deploy/kcl/dev/main.k
     _nats = fw.Workload {
         name = "nats"
-        kind = "service"
-        image = "nats"
-        registry = "docker.io/library"
-        ports = [fw.Port {name = "client", port = 4222, expose = True}]
+        image = "docker.io/library/nats:2.10"
+        ports = [fw.Port {name = "client", port = 4222}]
+        runtime = forge.OnCluster {target = _k3d}
     }
-    _workloads = [_api, _nats]
-
-That is how you run a containerized database locally while prod points
-at a hosted one.
 """
 
+import forge
 import forge.workloads as fw
 
 # One NAMED declaration per deployable unit. The name is what each
@@ -109,14 +94,15 @@ import forge.workloads as fw
 #
 #     billing = fw.Workload {
 #         name = "billing"
-#         kind = "service"
+#         build = forge.GoBuild {cmd = "./cmd/{{.ProjectName}}", output_name = "{{.ProjectName}}"}
+#         args = ["billing"]
 #         ports = [fw.Port {name = "http", port = 8080, expose = True}]
-#         build = {type = "go", cmd = "./cmd/{{.ProjectName}}", output_name = "{{.ProjectName}}"}
+#         config_secrets = ["DATABASE_URL"]
 #     }
 {{- end}}
 
 # Every workload this project ships. `forge scaffold` appends to this
-# list, and each environment imports it as its starting set.
+# list, and each environment starts from it.
 #
 # An environment is NOT obliged to deploy all of them — `deploy/kcl/<env>/main.k`
 # names what IT runs, so an env can drop one, refine one, or add a workload

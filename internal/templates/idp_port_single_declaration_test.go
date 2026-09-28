@@ -31,13 +31,9 @@ import (
 // that ships a frontend — the only shape that scaffolds an IdP at all.
 func renderDevMainK(t *testing.T, template string) string {
 	t.Helper()
-	out, err := DeployTemplates().Render(template, struct {
-		ProjectName     string
-		IngressEnabled  bool
-		HasFrontend     bool
-		PrimaryWorkload string
-		FrontendName    string
-	}{ProjectName: "demo", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "api", FrontendName: "web"})
+	out, err := DeployTemplates().Render(template, EnvTemplateData{
+		ProjectName: "demo", EnvName: "dev", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "api", FrontendName: "web",
+	})
 	if err != nil {
 		t.Fatalf("render %s: %v", template, err)
 	}
@@ -48,11 +44,10 @@ func renderDevMainK(t *testing.T, template string) string {
 // independent hardcodings.
 //
 // It asserts the dev KCL binds the port to ONE variable and that both
-// consumers reference that variable — the compose service through
-// `Compose.env` (which is what feeds docker compose's own `${IDP_PORT}`
-// interpolation) and the idp-provision job through its `env_vars`.
+// consumers reference that variable — the host-run IdP (forge.HostInfra's
+// `port`) and the idp-provision job through its env.
 func TestIdPPort_DeclaredOnceInKCL(t *testing.T) {
-	for _, tmpl := range []string{"kcl/dev/main.k.tmpl", "kcl/dev/main-shared.k.tmpl"} {
+	for _, tmpl := range []string{"kcl/env/host.k.tmpl"} {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
 
@@ -69,19 +64,16 @@ func TestIdPPort_DeclaredOnceInKCL(t *testing.T) {
 					"and the issuer cannot float)")
 			}
 
-			// 2. The COMPOSE service reads it. Without this the container
-			//    falls back to the compose file's own `${IDP_PORT:-8080}`
-			//    default and the declaration moves nothing.
-			if !regexp.MustCompile(`"IDP_PORT"\s*:\s*str\(_idp_port\)`).MatchString(src) {
-				t.Errorf("the idp compose service does not receive IDP_PORT from _idp_port — " +
-					"the container would keep publishing on the compose file's own default, " +
-					"so moving the declaration would move nothing")
+			// 2. The IdP itself binds it. Without this the declaration moves
+			//    nothing: the server would keep its own default.
+			if !regexp.MustCompile(`engine\s*=\s*"zitadel"\s*\n\s*port\s*=\s*_idp_port`).MatchString(src) {
+				t.Errorf("the host-run IdP does not bind _idp_port — moving the declaration would move nothing")
 			}
 
 			// 3. The JOB reads it, for both the address it dials and the
 			//    origin it registers.
 			for _, name := range []string{"IDP_BASE", "IDP_BROWSER_ORIGIN"} {
-				pattern := regexp.MustCompile(`name\s*=\s*"` + name + `",\s*value\s*=\s*_idp_origin`)
+				pattern := regexp.MustCompile(`(?m)^\s*` + name + `\s*=\s*_idp_origin\s*$`)
 				if !pattern.MatchString(src) {
 					t.Errorf("the idp-provision job does not receive %s from the declared port — "+
 						"it would fall back to the literal http://localhost:8080 baked into its flag "+
@@ -126,15 +118,15 @@ func TestIdPPort_ComposeFileInterpolatesTheDeclaration(t *testing.T) {
 // The compose `postgres` service still EXISTS — this is a default, not a
 // removal — but the dev env must not be the thing that names it.
 func TestDevStack_PostgresRunsOnTheHostByDefault(t *testing.T) {
-	for _, tmpl := range []string{"kcl/dev/main.k.tmpl", "kcl/dev/main-shared.k.tmpl"} {
+	for _, tmpl := range []string{"kcl/env/host.k.tmpl"} {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
-			if !regexp.MustCompile(`name\s*=\s*"postgres"\s*\n\s*deploy\s*=\s*forge\.HostInfra\s*\{`).MatchString(src) {
+			if !regexp.MustCompile(`forge\.HostInfra\s*\{\s*\n\s*name\s*=\s*"postgres"`).MatchString(src) {
 				t.Errorf("the dev env does not declare postgres as forge.HostInfra — " +
 					"dev would require docker for a database the host can run natively")
 			}
-			if regexp.MustCompile(`name\s*=\s*"postgres"\s*\n\s*deploy\s*=\s*forge\.Compose`).MatchString(src) {
-				t.Errorf("the dev env still declares postgres as a compose service")
+			if regexp.MustCompile(`(?m)^[^#]*name\s*=\s*"postgres",\s*runtime\s*=\s*forge\.OnCompose`).MatchString(src) {
+				t.Errorf("the dev env still runs postgres as a compose service")
 			}
 			// The DSN must be composed from the declared port. A literal
 			// would be a second spelling of the port, which is the whole
@@ -152,11 +144,11 @@ func TestDevStack_PostgresRunsOnTheHostByDefault(t *testing.T) {
 // host-native infra exists to serve. It must stay defined in compose (so it
 // is two lines to enable) but absent from what dev actually runs.
 func TestDevStack_ObservabilityIsOptIn(t *testing.T) {
-	for _, tmpl := range []string{"kcl/dev/main.k.tmpl", "kcl/dev/main-shared.k.tmpl"} {
+	for _, tmpl := range []string{"kcl/env/host.k.tmpl"} {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
 			for _, svc := range []string{"lgtm", "alloy"} {
-				live := regexp.MustCompile(`(?m)^\s{8}forge\.RenderedWorkload\s*\{\s*\n\s*name\s*=\s*"` + svc + `"`)
+				live := regexp.MustCompile(`(?m)^[^#\n]*name\s*=\s*"` + svc + `"`)
 				if live.MatchString(src) {
 					t.Errorf("%s is in the dev env's live service list — an LGTM stack is ~1 GB "+
 						"resident and should be opt-in on the machines this default is for", svc)

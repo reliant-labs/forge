@@ -47,95 +47,61 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// files were retired in favor of the upstream `forge` KCL module.
 	// Projects now `import forge` from each env's main.k.
 
-	// Templated per-env files. binary=shared projects emit a parallel
-	// set of templates that produce a single MultiServiceApplication
-	// (one image, N Deployments) instead of N copies of Application.
-	// Both shapes pin to the same schema/render lambdas; only the
-	// composition at the env level differs.
-	envTemplates := []struct {
-		templateName string
-		dest         string
-	}{
-		{"kcl/dev/main.k.tmpl", "dev/main.k"},
-		{"kcl/staging/main.k.tmpl", "staging/main.k"},
-		{"kcl/prod/main.k.tmpl", "prod/main.k"},
-	}
-	if g.isBinaryShared() {
-		envTemplates = []struct {
-			templateName string
-			dest         string
-		}{
-			{"kcl/dev/main-shared.k.tmpl", "dev/main.k"},
-			{"kcl/staging/main-shared.k.tmpl", "staging/main.k"},
-			{"kcl/prod/main-shared.k.tmpl", "prod/main.k"},
-		}
-	}
-
-	// The per-env main.k imports the project's own `deploy/kcl/workloads.k`
-	// and lets the forge.workloads KCL schema expand each declaration.
-	// The only data the env templates need is the project name, the ingress
-	// toggle, and the scaffold-time migrate default.
-
-	// Ingress is experimental but we still scaffold the wiring files at
-	// `forge project new` so the user has a complete starting point. The
-	// runtime gate (cert-manager install, audit category) lives on the
-	// `forge cluster up` / `forge cluster urls` paths and reads
-	// IngressEnabled() at call time. Setting IngressEnabled: true here
-	// flips the wiring lines in main.k so an opt-in just needs the
-	// experimental.ingress: true flag with no rescaffold.
+	// The per-env main.k files. Each env BINDS the workloads declared once in
+	// deploy/kcl/workloads.k to a runtime and states its own values; it
+	// re-describes no workload (ADR 0002). One template per RUNTIME, not per
+	// env name: dev is the host runtime (the local loop), staging and prod
+	// the cluster runtime with their own capacity floors. `forge env new
+	// --runtime` renders the same templates, hosted included.
 	//
-	// HasFrontend rides along for the same reason docker-compose.yml
-	// takes it: dev/main.k names this environment's compose services
-	// one by one, and the dev IdP is only among them when the project
-	// ships a browser. The two files must agree — a KCL declaration of
-	// a compose service that was never scaffolded would fail the deploy
-	// — so both derive the answer from the same place.
-	ingressOn := true
-
-	// The workload named in each env file's worked refinement example. Using
-	// a workload the project ACTUALLY has makes the commented line
-	// copy-pasteable; with none yet it falls back to the project name, which
-	// is what the primary service will be called.
-	primaryWorkload := g.Name
-	if born := g.bornComponents(); len(born) > 0 {
-		primaryWorkload = born[0].Name
-	}
-
-	// No MigrateCommand here any more. The deploy-time migration step is an
-	// ordinary workload now (codegen.MigrateWorkloadStanza), declared once in
-	// deploy/kcl/workloads.k and inherited by every env through `wl.ALL` —
-	// rather than a literal re-emitted into each env's main.k.
-	templateData := struct {
-		ProjectName     string
-		IngressEnabled  bool
-		HasFrontend     bool
-		PrimaryWorkload string
-		// FrontendName lets the dev env declare the frontend's dev server,
-		// so its port is allocated in KCL alongside every other port this
-		// environment owns. Empty when the project has no frontend, which
-		// is exactly when the template's HasFrontend branch is skipped.
-		FrontendName string
-	}{
-		ProjectName:     g.Name,
-		IngressEnabled:  ingressOn,
-		HasFrontend:     g.forScaffold().HasFrontend,
-		PrimaryWorkload: primaryWorkload,
-		FrontendName:    g.FrontendName,
-	}
-
-	for _, f := range envTemplates {
-		content, err := templates.DeployTemplates().Render(f.templateName, templateData)
-		if err != nil {
-			return fmt.Errorf("render deploy template %s: %w", f.templateName, err)
+	// The project's binary mode does not reach these files. Every component
+	// is a subcommand of the project binary in both modes (`<bin> <name>`),
+	// and a workload's `args` select it on every runtime.
+	//
+	// Ingress is experimental but the wiring is scaffolded at `forge project
+	// new` so an opt-in needs no rescaffold; the runtime gate reads
+	// IngressEnabled() at call time.
+	primaryWorkload, hasPrimaryService := g.Name, false
+	for _, c := range g.bornComponents() {
+		if codegen.WorkloadKindFor(c.EffectiveKind()) == codegen.WorkloadKindService {
+			primaryWorkload, hasPrimaryService = c.Name, true
+			break
 		}
-		destPath := filepath.Join(deployDir, f.dest)
+	}
+	envData := func(env string) templates.EnvTemplateData {
+		return templates.EnvTemplateData{
+			ProjectName:       g.Name,
+			EnvName:           env,
+			PrimaryWorkload:   primaryWorkload,
+			HasPrimaryService: hasPrimaryService,
+			IngressEnabled:    true,
+			HasFrontend:       g.forScaffold().HasFrontend,
+			FrontendName:      g.FrontendName,
+		}
+	}
+	for _, e := range []struct{ env, runtime string }{
+		{"dev", templates.EnvRuntimeHost},
+		{"staging", templates.EnvRuntimeCluster},
+		{"prod", templates.EnvRuntimeCluster},
+	} {
+		tmpl, err := templates.EnvTemplateName(e.runtime)
+		if err != nil {
+			return err
+		}
+		content, err := templates.DeployTemplates().Render(tmpl, envData(e.env))
+		if err != nil {
+			return fmt.Errorf("render deploy template %s for %s: %w", tmpl, e.env, err)
+		}
+		destPath := filepath.Join(deployDir, e.env, "main.k")
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			return err
 		}
 		if err := os.WriteFile(destPath, content, 0644); err != nil {
-			return fmt.Errorf("write %s: %w", f.dest, err)
+			return fmt.Errorf("write %s/main.k: %w", e.env, err)
 		}
 	}
+	ingressOn := true
+	templateData := struct{ ProjectName string }{ProjectName: g.Name}
 
 	// Gateway API ingress scaffolding. The base topology
 	// (`deploy/kcl/ingress.k`) is user-owned and shared across envs;

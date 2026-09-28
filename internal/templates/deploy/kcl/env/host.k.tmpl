@@ -1,0 +1,246 @@
+"""
+The `{{.EnvName}}` environment of {{.ProjectName}}: the local dev loop.
+
+YOURS. forge scaffolds this file once and never rewrites it.
+
+This file BINDS; it does not declare. `deploy/kcl/workloads.k` states what
+each workload is (build, subcommand, ports, credentials). This file says
+where each one runs HERE, and states the values only this environment
+knows: ports on this machine, the dev database, the dev identity provider.
+
+Every workload runs as a HOST PROCESS (`forge.OnHost`): `forge env up`
+derives `go run ./cmd/{{.ProjectName}} <args>` from the declaration, so
+there is no docker build in the loop and no container runtime required.
+The Dockerfile is still there and still correct; the cluster and hosted
+envs ship the image built from it. A workload the host runtime cannot run
+(a cron or an operator) is refused at render, naming it; bind it to the
+local cluster instead (see WANT A CONTAINER below).
+
+RENDER THIS THROUGH FORGE (`forge env render {{.EnvName}}`, `forge env up
+{{.EnvName}}`), not a bare `kcl run`: the ports below are declared with forge
+builtins (`plugin.resolve_port` / `plugin.allocate_port`) that exist only
+when forge evaluates the file. `output = forge.render(bundle)` is the one
+entrypoint.
+"""
+
+import forge
+import forge.workloads as fw
+
+# The port primitives — forge builtins, imported from the plugin namespace.
+import kcl_plugin.forge as plugin
+
+# What this project RUNS — declared once, shared by every env.
+import ..workloads as wl
+
+# Per-environment config values (the typed AppConfig instance in config.k,
+# next to this file); `config_gen.appConfigEnvMap` projects them into each
+# workload's env.
+import config_gen
+import .config as appcfg
+{{- if .IngressEnabled}}
+
+# Gateway API ingress topology — user-owned. Base lives in
+# `deploy/kcl/ingress.k`; this env may override hosts, ports, or TLS.
+import .ingress as ing
+{{- end}}
+
+# ---------------------------------------------------------------------------
+# PORTS — declared HERE, once, and referenced everywhere else.
+# ---------------------------------------------------------------------------
+# A port is a fact TWO things have to agree on: whatever binds it and
+# whatever dials it. Each one is a variable, and every reference reads it.
+#
+#   plugin.resolve_port(name, preferred) is AVAILABILITY-CHECKED: it takes
+#   `preferred` when free, steps to the next free port when not, and
+#   remembers the answer (.forge/ports-{{.EnvName}}.json). Use it for a port
+#   only this project's own declarations name.
+#
+#   plugin.allocate_port(base, key) is DETERMINISTIC: it does NOT step off a
+#   busy port. Use it when something outside these declarations was already
+#   told the number (the IdP's issuer, baked into every token it mints).
+
+# The dev database. On a machine already running another stack on 5432 this
+# steps to 5433 and stays there, and the DSN below follows it.
+_postgres_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-postgres", 5432)
+
+# The port each long-running host process BINDS (a service's mux, a
+# worker's or operator's health endpoint). Host processes share this
+# machine, so each one gets its own availability-checked port instead of the
+# container convention (every pod owns :8080). The first service keeps the
+# `{{.ProjectName}}-{{.EnvName}}-api` key, which the frontend's dev config
+# (config.k) reads to find the API.
+_port_of = lambda name: str -> int {
+    plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-api" if name == "{{.PrimaryWorkload}}" else "{{.ProjectName}}-{{.EnvName}}-" + name, 8085)
+}
+{{- if .HasFrontend}}
+
+# The dev IdP cannot float: Zitadel derives the `iss` of every token it
+# mints from the origin it is reached on. allocate_port keeps it at 8080 for
+# this checkout and gives a second worktree its own stable block (8180, ...).
+# If 8080 is taken on your machine, change the base here.
+_idp_port = plugin.allocate_port(8080, option("worktree") or "")
+_idp_origin = "http://localhost:${_idp_port}"
+
+# The frontend's dev-server port. resolve_port: the one external consumer
+# (the issuer's registered login URI) is re-told by the idp-provision job
+# on the same run, so stepping off a busy 3000 is safe.
+_frontend_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-web", 3000)
+_frontend_origin = "http://localhost:${_frontend_port}"
+{{- end}}
+
+# The dev database's connection string, composed from the port declared
+# above rather than written out a second time.
+_database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.ProjectName}}?sslmode=disable"
+
+# ---------------------------------------------------------------------------
+# WHAT THIS ENVIRONMENT RUNS, and each workload's env here.
+# ---------------------------------------------------------------------------
+# `wl.ALL` is every workload the project declares. This list is yours: drop
+# one this env does not run, or append one only it has.
+_workloads = wl.ALL
+
+# The kinds that run as a long-lived process (and so bind a port).
+_LONG_RUNNING = ["service", "worker", "operator"]
+
+# The env every workload sees here, layered LAST-wins (a map, so a later
+# layer replaces an earlier one by name):
+#
+#   1. the typed per-env config (config.k), projecting a credential only
+#      into the workloads that list it in `config_secrets`;
+#   2. the workload's own declared env;
+#   3. this machine's facts. DATABASE_URL is composed from the port above
+#      and overrides the secret reference: a DSN seeded into the secret
+#      store at scaffold time names whatever port was free THEN, and a stale
+#      port is exactly what connects an app to another project's database.
+_env = lambda w: fw.Workload -> {str:} {
+    _machine = {
+        OTEL_SERVICE_NAME = w.name
+        DATABASE_URL = _database_url
+    }
+    _port = {PORT = str(_port_of(w.name))} if w.kind in _LONG_RUNNING else {}
+{{- if .HasFrontend}}
+    # NATIVE SIGN-IN's redirect URI, and where the server reaches the issuer.
+    # Composed from the origins above, which this file owns.
+    _sign_in = {
+        OIDC_REDIRECT_URI = _frontend_origin + "/auth/callback"
+        IDP_BASE = _idp_origin
+    } if w.kind == "service" else {}
+    # The idp-provision job is TOLD where the IdP is, from the same
+    # `_idp_port` it is published on. IDP_LOGIN_URI is the API-only sign-in
+    # switch: delete it to go back to the issuer's own login pages.
+    _idp_job = {
+        IDP_BASE = _idp_origin
+        IDP_BROWSER_ORIGIN = _idp_origin
+        FRONTEND_ORIGIN_GLOB = _frontend_origin
+        IDP_LOGIN_URI = _frontend_origin + "/auth/sign-in"
+    } if w.name == "idp-provision" else {}
+    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port | _sign_in | _idp_job
+{{- else}}
+    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port
+{{- end}}
+}
+
+# The local k3d cluster (deploy/k3d.yaml, created by `forge cluster up`).
+# Nothing runs on it by default except what cannot run on the host: an
+# operator watches the Kubernetes API, and a cron is scheduled by it. It is
+# also where this env's ingress Gateway lands.
+_k3d = forge.ClusterTarget {
+    cluster = "k3d-{{.ProjectName}}"
+    namespace = "{{.ProjectName}}-{{.EnvName}}"
+    registry = forge.registry("localhost:5050")
+}
+
+# The per-workload binding. Env for everyone; `listen_ports` on a
+# long-running host process so the port pre-flight names a collision before
+# anything starts; the local cluster for the kinds a host process cannot be.
+# A runtime the workload already binds (in workloads.k, or above) wins.
+_bind = lambda w: fw.Workload -> fw.Workload {
+    w | {
+        env = _env(w)
+        if not w.runtime and w.kind in ["operator", "cron"]:
+            runtime = forge.OnCluster {target = _k3d}
+        elif not w.runtime and w.kind in _LONG_RUNNING:
+            runtime = forge.OnHost {runner = "go-run", listen_ports = [_port_of(w.name)]}
+    }
+}
+
+# WANT A CONTAINER for another workload? Bind it to the same cluster, by
+# name — the build, args and env carry over unchanged:
+#
+#     _workloads = [w | {runtime = forge.OnCluster {target = _k3d}} if w.name == "{{.PrimaryWorkload}}" else w for w in wl.ALL]
+#
+# A pod reaches the host processes through the target's `host_gateway`
+# (host.k3d.internal) when a workload names them with forge.WorkloadURL.
+
+_bundle = forge.Bundle {
+    project = "{{.ProjectName}}"
+    # The DEFAULT runtime: a local `go run` of the project binary with the
+    # workload's `args`. A workload binds its own runtime to differ.
+    runtime = forge.OnHost {runner = "go-run"}
+    # Where the env's support objects (Namespace, gateways, routes) land.
+    cluster_target = _k3d
+    workloads = [_bind(w) for w in _workloads]
+    # ── THIS ENVIRONMENT'S INFRASTRUCTURE ─────────────────────────────────
+    #
+    # The servers the app DIALS but does not build, as HOST PROCESSES: forge
+    # fetches a pinned, checksummed binary once, caches it, supervises it,
+    # and reports it up only once it accepts connections. A REAL postgres
+    # (the one forge introspects your migrations with), with its data dir
+    # (.forge/hostinfra/postgres) persisting across runs.
+    #
+    # WANT CONTAINERS INSTEAD? docker-compose.yml still defines them; drop
+    # the entry here and add a compose-bound workload:
+    #
+    #     fw.Workload {name = "postgres", runtime = forge.OnCompose {service = "postgres"}}
+    infra = [
+        forge.HostInfra {
+            name = "postgres"
+            port = _postgres_port
+            database = "{{.ProjectName}}"
+        }
+{{- if .HasFrontend}}
+        # The dev identity provider — a single static binary, supervised the
+        # same way. `idp-steps.yaml` is its declarative bootstrap; its state
+        # lives in its OWN database on the postgres above.
+        #
+        # NO SIGN-IN LOOP AT ALL? Drop this entry and the `idp-provision`
+        # workload; the frontend then runs against its mock auth provider.
+        forge.HostInfra {
+            name = "idp"
+            engine = "zitadel"
+            port = _idp_port
+            idp_database_port = _postgres_port
+        }
+{{- end}}
+    ]
+    # ── OBSERVABILITY — OPT-IN ───────────────────────────────────────────
+    #
+    # docker-compose.yml also defines `lgtm` (Grafana + Loki + Tempo + Mimir)
+    # and `alloy`. They are not run by default: an LGTM stack is ~1 GB
+    # resident to look at a service running in your terminal. To add them,
+    # append to `_workloads`:
+    #
+    #     fw.Workload {name = "lgtm", runtime = forge.OnCompose {service = "lgtm"}}
+    #     fw.Workload {name = "alloy", runtime = forge.OnCompose {service = "alloy"}}
+{{- if .HasFrontend}}
+    # The frontend's dev server, with its port declared above so everything
+    # that must agree on it reads one variable.
+    frontends = [forge.Frontend {
+        name = "{{.FrontendName}}"
+        path = "frontends/{{.FrontendName}}"
+        port = _frontend_port
+    }]
+{{- end}}
+    # SECRET VALUES for this env: the gitignored `secrets/{{.EnvName}}.yaml`, a
+    # flat map of env-var name to value. A value reaches only a workload that
+    # names it (`config_secrets`, or a forge.SecretRef in its env). Populate
+    # it with `forge secret set --env {{.EnvName}} <KEY>` (value on stdin).
+    secret_provider = forge.FileSecrets {path = "secrets/{{.EnvName}}.yaml"}
+{{- if .IngressEnabled}}
+    gateways = ing.GATEWAYS
+    http_routes = ing.HTTP_ROUTES
+    grpc_routes = ing.GRPC_ROUTES
+{{- end}}
+}
+
+output = forge.render(_bundle)

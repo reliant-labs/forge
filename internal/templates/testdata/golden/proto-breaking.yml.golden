@@ -15,10 +15,10 @@ on:
       - "buf.gen.yaml"
 
 permissions:
-  contents: {{.PermContents | default "read"}}
+  contents: read
 
 concurrency:
-  group: proto-breaking-${{"{{"}} github.ref {{"}}"}}
+  group: proto-breaking-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
       - name: Check the base branch has protos
         id: base
         env:
-          BASE_REF: ${{"{{"}} github.base_ref {{"}}"}}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           if git ls-tree -r --name-only "origin/${BASE_REF}" | grep -q '\.proto$'; then
             echo "has_protos=true" >> "$GITHUB_OUTPUT"
@@ -56,7 +56,7 @@ jobs:
         if: steps.base.outputs.has_protos == 'true'
         with:
           breaking: true
-          breaking_against: "https://github.com/${{"{{"}} github.repository {{"}}"}}.git#branch=${{"{{"}} github.base_ref {{"}}"}}"
+          breaking_against: "https://github.com/${{ github.repository }}.git#branch=${{ github.base_ref }}"
           lint: false
           format: false
           push: false

@@ -218,6 +218,41 @@ func TestGoldenSnapshots(t *testing.T) {
 				return renderCI(t, "github", "ci.yml.tmpl", data)
 			},
 		},
+		// The rest of the scaffolded workflow set, so a PR that changes any
+		// of them shows the diff. Each is also run through the scaffold's
+		// pinned prettier below: a golden that prettier would rewrite is a
+		// fresh project failing its own pre-commit hook.
+		{
+			name: "proto-breaking.yml",
+			render: func(t *testing.T) []byte {
+				return renderCI(t, "github", "proto-breaking.yml.tmpl", CIWorkflowData{ProjectName: "demo", PermContents: "read"})
+			},
+		},
+		{
+			name: "build-images.yml",
+			render: func(t *testing.T) []byte {
+				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", Registry: "ghcr", VulnDocker: true})
+			},
+		},
+		{
+			name: "deploy.yml",
+			render: func(t *testing.T) []byte {
+				return renderCI(t, "github", "deploy.yml.tmpl", DeployWorkflowData{
+					ProjectName:  "demo",
+					Environments: []DeployEnv{{Name: "staging", Auto: true}, {Name: "prod", Protection: true}},
+					Registry:     "ghcr",
+					HasFrontends: true,
+					FrontendPath: "frontends/web",
+					Concurrency:  true,
+				})
+			},
+		},
+		{
+			name: "e2e.yml",
+			render: func(t *testing.T) []byte {
+				return renderCI(t, "github", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "docker-compose", HasFrontends: true, FrontendPath: "frontends/web"})
+			},
+		},
 	}
 
 	for _, tc := range cases {

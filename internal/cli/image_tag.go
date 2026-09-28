@@ -55,21 +55,46 @@ func resolveImageTag(ctx context.Context, _ string) (string, error) {
 	return tag, nil
 }
 
-// envImageTagFor returns the env's RESOLVED image tag for a given
-// (registry-less) image name. This is the tag `forge env deploy <env>`
-// references for that image, so `forge build <env>` defaults its build tag to
-// it — build and deploy then push/pull the SAME tag by construction.
+// buildTagFor is THE tag precedence for an image forge builds, for every
+// lane — ShellBuild, DockerBuild, the project image and frontend images:
 //
-// A workload built into that image whose own image pins a tag answers with
-// it (`image = "reliant:e2e"` is built as IMAGE=reliant TAG=e2e); otherwise
-// the env's own resolved image_tag (`output.image_tag`). The pin is read off
-// the workload's BUILD identity (WorkloadEntity.BuildImage), never off
-// spec.image: the build is the same whichever runtime the workload binds, and
-// a BuildOnly or host workload resolves no spec.image at all.
+//  1. a release version (`--release`): a cut never writes a shared tag;
+//  2. an explicit `--tag`;
+//  3. the tag the workload's declared image pins (`image = "reliant:e2e"`);
+//  4. buildWide — the env's image_tag, else the git-derived default
+//     (resolveBuildImageTag).
 //
-// Returns "" when entities is nil (no --env / KCL render failed) or the name
-// is empty — every such case falls the caller back to git-derived tagging.
-func envImageTagFor(entities *KCLEntities, image string) string {
+// (2) over (3) never builds a ref nothing deploys: a --tag that differs from
+// a selected workload's pin is refused before anything runs
+// (checkExplicitTagAgainstPins), so reaching here with both set means they
+// agree or the workload is not pinned.
+//
+// Before this was one function, each lane ordered the sources itself and the
+// ShellBuild lane put the env's image_tag above --tag: `forge build prod
+// --tag t1 --push` printed `Tag: t1` and then built and recorded `:latest`.
+func buildTagFor(opts buildOptions, pin, buildWide string) string {
+	if rt := releaseImageTag(opts); rt != "" {
+		return rt
+	}
+	if opts.tag != "" {
+		return opts.tag
+	}
+	if pin != "" {
+		return pin
+	}
+	return buildWide
+}
+
+// imagePinFor is the tag a workload built into image pins, if any — the pin
+// the PROJECT image builds as, since that one image is shared by many
+// workloads and so is not any one workload's build. A ShellBuild or
+// DockerBuild workload reads its own pin (PinnedBuildTag) instead: a
+// workload sharing an image with a pinned one still deploys the env's tag.
+//
+// The pin is read off the BUILD identity (WorkloadEntity.BuildImage), never
+// off spec.image: the build is the same whichever runtime the workload
+// binds, and a BuildOnly or host workload resolves no spec.image at all.
+func imagePinFor(entities *KCLEntities, image string) string {
 	if entities == nil || image == "" {
 		return ""
 	}
@@ -81,7 +106,51 @@ func envImageTagFor(entities *KCLEntities, image string) string {
 			return tag
 		}
 	}
-	return entities.ImageTag
+	return ""
+}
+
+// checkExplicitTagAgainstPins refuses an explicit --tag that would build a
+// pinned workload's image under a tag its deploy does not pull.
+//
+// A workload whose declared image pins a tag (`image = "reliant:e2e"`)
+// deploys that exact ref. Building `reliant:t1` for it pushes a ref no pod
+// ever pulls, while the deploy keeps pulling whatever `:e2e` last was — the
+// build looks like it shipped and nothing changed. Silently preferring the
+// pin instead would ignore a flag the user typed. So it is refused, naming
+// every conflicting workload and both tags.
+//
+// Scoped to what THIS build produces: entities is already narrowed by
+// --target, so a --target that selects only unpinned workloads is no
+// conflict. A GoBuild workload counts only when the project image is built.
+func checkExplicitTagAgainstPins(entities *KCLEntities, opts buildOptions, projectImage string, projectImageBuilt bool) error {
+	if entities == nil || opts.tag == "" || releaseImageTag(opts) != "" {
+		return nil
+	}
+	var conflicts []string
+	for _, w := range entities.Workloads {
+		pin, ok := w.PinnedBuildTag()
+		if !ok || pin == opts.tag {
+			continue
+		}
+		switch w.Build.Type {
+		case "shell", "docker":
+		case "go":
+			if !projectImageBuilt || w.Image != projectImage {
+				continue
+			}
+		default:
+			continue
+		}
+		conflicts = append(conflicts, fmt.Sprintf("workload %q declares image %s, so its deploy pulls tag %q, not %q",
+			w.Name, w.BuildImage, pin, opts.tag))
+	}
+	if len(conflicts) == 0 {
+		return nil
+	}
+	return fmt.Errorf("--tag %q conflicts with a pinned image:\n  %s\n"+
+		"Building under --tag would push a ref nothing deploys. Drop --tag to build the pinned tag, "+
+		"narrow --target to workloads whose image pins no tag, or change the pin in deploy/kcl/%s/",
+		opts.tag, strings.Join(conflicts, "\n  "), envNameOr(opts.env))
 }
 
 // PinnedBuildTag is the tag the workload's own image pins for its build

@@ -60,11 +60,11 @@ func TestPersistImageBuildStates_WritesFrontendState(t *testing.T) {
 
 	persistImageBuildStates(
 		buildOptions{env: "prod", pushRegistry: "us-central1-docker.pkg.dev/acme/prod"},
-		tag,
 		[]buildResult{{
 			name:      image + " (docker)",
 			kind:      "docker",
 			image:     image,
+			tag:       tag,
 			digest:    digest,
 			platforms: []string{"linux/amd64"},
 		}},
@@ -173,7 +173,6 @@ func TestPersistImageBuildStates_SkipsNonImageResults(t *testing.T) {
 
 	persistImageBuildStates(
 		buildOptions{env: "prod"},
-		"v1",
 		[]buildResult{
 			{name: "internal-console", kind: "frontend"},
 			{name: "control-plane (docker)", kind: "docker"}, // project image: no bare image name

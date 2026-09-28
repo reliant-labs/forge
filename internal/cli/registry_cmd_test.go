@@ -211,8 +211,8 @@ func TestRegistryRef_UnpushedBuildFails(t *testing.T) {
 // TestRegistryRef_NamedImage reads a per-image state (a frontend, a DockerBuild).
 func TestRegistryRef_NamedImage(t *testing.T) {
 	planProject(t, declaredRegistryFixture)
-	persistImageBuildStates(buildOptions{env: "prod", pushRegistry: "registry.example/prod"}, "t1",
-		[]buildResult{{kind: "docker", image: "web", digest: refDigest}})
+	persistImageBuildStates(buildOptions{env: "prod", pushRegistry: "registry.example/prod"},
+		[]buildResult{{kind: "docker", image: "web", tag: "t1", digest: refDigest}})
 	out, err := runRegistryCommand(t, "", "ref", "prod", "--image", "web")
 	if err != nil {
 		t.Fatalf("forge registry ref prod --image web: %v", err)

@@ -44,7 +44,7 @@ func TestShellBuild_CwdAndSubstitution(t *testing.T) {
 
 	opts := buildOptions{env: "dev", parallel: false, outputDir: "bin"}
 	results := buildExternalServices(context.Background(), svcs, opts,
-		"reg.example.com", "v1.2.3", projDir, "arm64", nil)
+		"reg.example.com", "v1.2.3", projDir, "arm64")
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("buildExternalServices: %+v", results)
 	}
@@ -88,7 +88,7 @@ func TestShellBuild_NoopTrue(t *testing.T) {
 	svcs := []WorkloadEntity{shellSvc("reliant-noop", "reliant", "true  # built upstream; nothing to do here", "", nil)}
 	results := buildExternalServices(context.Background(), svcs,
 		buildOptions{env: "dev", outputDir: "bin"},
-		"reg", "dev", projDir, "amd64", nil)
+		"reg", "dev", projDir, "amd64")
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("no-op ShellBuild should succeed, got: %+v", results)
 	}

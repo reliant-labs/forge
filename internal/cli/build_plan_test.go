@@ -369,7 +369,7 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := envImageTagFor(ents, "pt"); got != "stable" {
+	if got := ents.ImageTag; got != "stable" {
 		t.Fatalf("fixture precondition: env tag for pt = %q, want stable", got)
 	}
 
@@ -404,16 +404,17 @@ func TestExternalBuildTag_ReleaseOverridesSharedTags(t *testing.T) {
 
 	rel := buildOptions{release: "v1.7.0"}
 	for _, svc := range []WorkloadEntity{pinned, envTagged} {
-		if got := externalBuildTag(svc, ents, "v1.7.0", rel); got != "v1.7.0" {
+		if got := externalBuildTag(svc, "v1.7.0", rel); got != "v1.7.0" {
 			t.Errorf("release build: %s ${TAG} = %q, want the release version v1.7.0", svc.Name, got)
 		}
 	}
 
-	// Ordinary builds keep the deploy-alignment precedence.
-	if got := externalBuildTag(pinned, ents, "sha-abc", buildOptions{}); got != "dev-per-daemon" {
+	// Ordinary builds keep the deploy-alignment precedence: the pin, else
+	// the build-wide tag (which resolveBuildImageTag makes the env's tag).
+	if got := externalBuildTag(pinned, ents.ImageTag, buildOptions{}); got != "dev-per-daemon" {
 		t.Errorf("ordinary build: pinned image_tag = %q, want dev-per-daemon", got)
 	}
-	if got := externalBuildTag(envTagged, ents, "sha-abc", buildOptions{}); got != "stable" {
+	if got := externalBuildTag(envTagged, ents.ImageTag, buildOptions{}); got != "stable" {
 		t.Errorf("ordinary build: env tag = %q, want stable", got)
 	}
 }

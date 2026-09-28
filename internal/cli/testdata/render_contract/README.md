@@ -1,48 +1,67 @@
 # render contract goldens
 
-One file per runtime, plus a mixed env: each is the JSON a
-`deploy/kcl/<env>/main.k` ending in `output = forge.render(bundle)` evaluates
-to (`{"output": {...}}`). This is the §9.1 contract between the KCL lowering
-(`kcl/`, owner P2a) and its Go consumers (`internal/cli` decode, owner P2b;
-KCL behaviour tests, owner P2c).
+Each `<case>.json` is the document the KCL fixture `<case>.k` beside it
+renders: `{"output": <forge.render(bundle)>}`, which is exactly what forge's
+render seam (kclrender.Run) hands to `parseKCLEntities` and
+`cluster.ExtractManifests`. There is one golden per runtime, plus
+one mixed env. Together they are the §9.1 contract between three parties:
 
-| File | What it pins |
+- the KCL lowering (`kcl/`, owner P2a), which produces the object;
+- its Go decoder (`internal/cli` `parseKCLEntities`, owner P2b), which reads it;
+- the KCL behaviour tests (owner P2c), which check the render reproduces it.
+
+| Case | What it pins |
 |---|---|
-| `host.json` | `forge.OnHost` workloads (air service with `listen_ports`, a go-run migrate job), a `HostInfra` infra entry, a dev frontend |
-| `compose.json` | `forge.OnCompose` third-party services: no build, `spec.image` empty |
-| `cluster.json` | `forge.OnCluster` workloads of every scheduled kind, a cluster `ManagedDatabase`, `network_policy`, and the `forge.dev/v1alpha1 Workload` records in `manifests` |
-| `hosted.json` | `forge.OnHosted` service + job, a hosted database, a bucketless StaticSite; env refs (`managedSecret`, `databaseRef`, `workloadURL`) kept as references |
-| `build-only.json` | `forge.BuildOnly` (`kind = tool`) with build variants, and a docker-built image |
-| `mixed.json` | one env binding host, compose, cluster, hosted and build-only workloads side by side |
+| `host` | `forge.OnHost` workloads: an air service with `listen_ports`, a go-run migrate job. Also a `HostInfra` infra entry, a dev frontend, a `SecretRef` with `optional`, and a WorkloadURL resolved to `localhost` |
+| `compose` | `forge.OnCompose` third-party services: no build, `spec.image` is `""`, and literal env is merged into the compose process `env` |
+| `cluster` | `forge.OnCluster` workloads of every scheduled kind, a third-party image, a cluster `ManagedDatabase`, an opted-in `network_policy`, and the `forge.dev/v1alpha1 Workload` records in `manifests` |
+| `hosted` | `forge.OnHosted` service and job, a hosted database, and a bucketless (hosted) StaticSite. References stay references: `managedSecret` (from a config `SecretRef`'s `store_key`), `databaseRef`, `workloadURL` |
+| `build-only` | `forge.BuildOnly` tools: a Go CLI with a build variant, and a docker-built image |
+| `mixed` | One env binding host (the default), compose, cluster, hosted and build-only side by side. The cluster workload reaches the host `api` through the cluster's `host_gateway` |
 
 ## Invariants
 
-- `workloads[].spec` is `pkg/deploy/v1alpha1.WorkloadSpec` JSON and decodes
+- `workloads[].spec` is `pkg/deploy/v1alpha1.WorkloadSpec` JSON. It decodes
   with `DisallowUnknownFields`.
-- Every `runtime.type == "cluster"` workload has exactly one
-  `manifests[kind=Workload]` record, whose `spec` equals `workloads[].spec`
-  byte for byte, and whose labels carry `forge.dev/cluster` (the kubectl
-  context), `app.kubernetes.io/part-of` (the project) and `forge.dev/env`.
-  No other runtime produces a record.
-- `spec.image` is the resolved reference for a cluster workload
-  (`<registry>/<image>:<tag>` or `@<digest>`), the bare artifact name for a
-  hosted one (the hosted publish pins it to `repo@digest`), and `""` for
-  host / compose / build-only.
-- `forge.WorkloadURL` env is resolved to a `value` for host and cluster
-  workloads, and kept as `{"workloadURL": {"name": ...}}` for hosted ones.
-- `network_policy` is non-null iff some workload is cluster-bound (unless
-  the Bundle overrides it); Go passes it as `deploy.Context.Network`.
-- Optional values project as `null`, not omitted, where the key is part of
-  the contract (runtime/build/infra/frontend blocks).
+- Every cluster-bound workload except `kind = "tool"` has exactly ONE
+  `manifests[kind=Workload]` record. The record's `spec` equals
+  `workloads[].spec` byte for byte. Its labels carry:
+  - `forge.dev/cluster`: the kubectl context;
+  - `app.kubernetes.io/part-of`: the project;
+  - `forge.dev/env`.
+
+  A tool is never scheduled, so it has no record, and no other runtime
+  produces one.
+- `workloads[].image` is the registry-less artifact name forge builds the
+  workload into, or `""` when forge builds nothing for it.
+- `spec.image` depends on the runtime:
+  - cluster: the resolved reference (`<registry>/<image>:<tag>`, or
+    `@<digest>` when `-D image_digests` has one);
+  - hosted: the artifact name (the hosted publish pins it to `repo@digest`)
+    or the author's third-party image;
+  - host, compose and build-only: `""`.
+- A forge-built `service` carries explicit probes: `/readyz` + `/healthz` on
+  its `http` port (ADR 0002 §5). A third-party image gets none, and Go then
+  defaults a TCP probe.
+- How a `forge.WorkloadURL` in env lowers depends on the referrer:
+  - host referrer: resolved to a value through `localhost`;
+  - cluster referrer: resolved through its target's `host_gateway` when the
+    target runs on the host (default `host.k3d.internal`);
+  - hosted referrer: kept as `{"workloadURL": {"name": ...}}`.
+- `network_policy` is `null` unless the Bundle sets `forge.NetworkPolicy`
+  (opt-in). Go passes it as `deploy.Context.Network`.
+- `databases[]` is `{name, runtime: cluster|hosted, cluster, namespace, spec}`.
+- Optional values in the runtime, build, infra and frontend blocks project as
+  `null` rather than being omitted.
 
 ## Regenerating
 
-v0 of these files was hand-written (`.scratch/p2a/gen_v0.py`) so the
-consumers could start before the lowering existed. From v1 on they are
-generated from the KCL fixtures beside them (`<name>.k`, one per golden):
+The goldens are GENERATED from the `.k` fixtures. Never hand-edit them.
+`TestKCLModule_RenderContract` (internal/templates) renders each fixture and
+compares the whole document against its golden. The comparison is key-sorted
+with 2-space indentation. To regenerate:
 
-    FORGE_UPDATE_GOLDEN=1 go test ./internal/codegen -run TestRenderContractGoldens
+    FORGE_UPDATE_GOLDEN=1 go test ./internal/templates -run TestKCLModule_RenderContract
 
-Without the variable the same test fails when `forge.render` of a fixture
-differs from its golden. Review a regenerated diff as a contract change: a
-changed key here is a change P2b's decoder and P2c's assertions must follow.
+Review a regenerated diff as a contract change. A changed key here is a
+change that P2b's decoder and every consumer of `output` must follow.

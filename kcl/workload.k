@@ -272,6 +272,14 @@ schema Workload:
     nodeSelector?: {str:str}
     tolerations?: [tiers.Toleration]
     podAnnotations?: {str:str}
+    # Pod-identity overrides (uid/gid, fsGroup, read-only root filesystem).
+    securityContext?: tiers.PodSecurity
+    # Overrides the grace period Go derives from the drain env
+    # (PRE_STOP_DELAY + SHUTDOWN_TIMEOUT). Full profile only.
+    terminationGracePeriodSeconds?: int
+    # A job or cron run's deadline. On the host runtime it is the process
+    # timeout.
+    activeDeadlineSeconds?: int
 
     check:
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 63, \
@@ -314,7 +322,11 @@ schema Workload:
         not namespacedRBAC or not before, \
             "Workload.namespacedRBAC is not supported on a gating job (before = ${before}): it runs as an initContainer in each dependent's pod, under the DEPENDENT's ServiceAccount, so a Role for '${name}' would bind nothing. Grant the rules on the dependents, or drop `before` to run '${name}' as a standalone Job with its own identity."
         not clusterRBAC or caps.supports(kind, caps.CAP_CLUSTER_RBAC), \
-            "Workload.clusterRBAC is only supported for kind='operator' — got '${kind}'. Watching resources ACROSS namespaces is what makes a workload an operator; for access within its own namespace use `namespacedRBAC`."
+            "Workload.clusterRBAC is not supported for kind='${kind}' — a tool is never scheduled, so it has no pod to grant permission to."
+        not (namespacedRBAC and clusterRBAC), \
+            "Workload '${name}': namespacedRBAC and clusterRBAC are exclusive — one ServiceAccount gets one binding tier, and a ClusterRole already covers the workload's own namespace. Move the namespaced rules into clusterRBAC."
+        not activeDeadlineSeconds or kind in ["job", "cron"], \
+            "Workload.activeDeadlineSeconds bounds a run to completion — only kind='job' or 'cron' completes; '${name}' is a '${kind}'"
         not ports or caps.supports(kind, caps.CAP_PORTS), \
             "Workload.ports is not supported for kind='${kind}' — a tool is never scheduled and a batch kind (cron/job) runs to completion, so there is no pod anything can dial. Use kind='service'."
         replicas == 1 or caps.supports(kind, caps.CAP_REPLICAS), \

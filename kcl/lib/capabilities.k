@@ -111,9 +111,11 @@ CAP_PDB: str = "pdb"
 # namespace, on top of the default config-read rules.
 CAP_NAMESPACED_RBAC: str = "namespaced_rbac"
 
-# Honors `cluster_rbac` — a ClusterRole + ClusterRoleBinding. Cluster-scoped
-# permission is a different tier from namespaced, not more of it, so a kind
-# carries one or the other and never both (see rbac_tier below).
+# Honors `clusterRBAC` — a ClusterRole + ClusterRoleBinding. Any scheduled
+# kind may declare it (a worker that reads nodes, a job that installs a
+# CRD); an operator can ONLY use this tier. A workload carries one tier or
+# the other, never both: one ServiceAccount gets one binding (see
+# rbac_tier below).
 CAP_CLUSTER_RBAC: str = "cluster_rbac"
 
 # Honors `resources` (CPU/memory requests + limits).
@@ -151,7 +153,7 @@ KIND_CAPABILITIES: {str: [str]} = {
     "service" = [
         CAP_WORKLOAD, CAP_DEPLOYMENT, CAP_SERVICE_OBJECT, CAP_PORTS,
         CAP_REPLICAS, CAP_PROBES, CAP_PDB, CAP_NAMESPACED_RBAC,
-        CAP_RESOURCES, CAP_GATED,
+        CAP_CLUSTER_RBAC, CAP_RESOURCES, CAP_GATED,
     ]
 
     # A long-running process nothing dials — a queue consumer, a reconcile
@@ -170,7 +172,7 @@ KIND_CAPABILITIES: {str: [str]} = {
     # server by definition.
     "worker" = [
         CAP_WORKLOAD, CAP_DEPLOYMENT, CAP_PORTS, CAP_REPLICAS, CAP_PROBES,
-        CAP_PDB, CAP_NAMESPACED_RBAC, CAP_RESOURCES, CAP_GATED,
+        CAP_PDB, CAP_NAMESPACED_RBAC, CAP_CLUSTER_RBAC, CAP_RESOURCES, CAP_GATED,
     ]
 
     # A recurring batch job on a cron schedule.
@@ -189,7 +191,8 @@ KIND_CAPABILITIES: {str: [str]} = {
     # stale objects on a schedule is the textbook cron, and reaping means
     # list + delete against the API server.
     "cron" = [
-        CAP_WORKLOAD, CAP_SCHEDULE, CAP_NAMESPACED_RBAC, CAP_RESOURCES,
+        CAP_WORKLOAD, CAP_SCHEDULE, CAP_NAMESPACED_RBAC, CAP_CLUSTER_RBAC,
+        CAP_RESOURCES,
     ]
 
     # A one-shot that runs to completion, optionally gating others.
@@ -202,8 +205,8 @@ KIND_CAPABILITIES: {str: [str]} = {
     # forge's jobs are the run-once kind. No CAP_PROBES / CAP_PDB /
     # CAP_SERVICE_OBJECT for the same reason as cron.
     "job" = [
-        CAP_WORKLOAD, CAP_NAMESPACED_RBAC, CAP_RESOURCES, CAP_ORDERING,
-        CAP_GATED,
+        CAP_WORKLOAD, CAP_NAMESPACED_RBAC, CAP_CLUSTER_RBAC, CAP_RESOURCES,
+        CAP_ORDERING, CAP_GATED,
     ]
 
     # A controller-runtime manager that watches the API server.
@@ -297,6 +300,6 @@ supports = lambda kind: str, capability: str -> bool {
 # permission — see lib/rbac.k::render_service_account); it does not mean the
 # pod runs as the namespace `default`.
 rbac_tier = lambda kind: str -> str {
-    "cluster" if supports(kind, CAP_CLUSTER_RBAC) \
+    "cluster" if supports(kind, CAP_CLUSTER_RBAC) and not supports(kind, CAP_NAMESPACED_RBAC) \
         else ("namespaced" if supports(kind, CAP_NAMESPACED_RBAC) else "none")
 }

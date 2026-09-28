@@ -1,41 +1,54 @@
 {
   "output": {
-    "project": "acme",
-    "env": "dev",
-    "image_tag": "latest",
     "clusters": [],
+    "config_maps": [],
+    "databases": [],
+    "env": "dev",
+    "frontends": [],
+    "gateways": [],
+    "grpc_routes": [],
+    "helm_charts": [],
+    "http_routes": [],
+    "image_tag": "latest",
+    "infra": [],
     "kubeconfig_secrets": [],
+    "manifests": [],
     "network_policy": null,
+    "project": "acme",
+    "rendered_secrets": [],
+    "required_dns": [],
+    "required_secrets": [],
+    "runtime_classes": [],
     "workloads": [
       {
-        "name": "cli",
-        "kind": "tool",
-        "image": "",
         "build": {
-          "type": "go",
-          "output_name": "acme-cli",
           "cmd": "./cmd/acme-cli",
-          "goos": null,
-          "goarch": null,
-          "ldflags": [],
-          "tags": [],
+          "env": {},
           "flags": [],
-          "env": {}
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme-cli",
+          "tags": [],
+          "type": "go"
         },
+        "image": "acme-cli",
+        "kind": "tool",
+        "name": "cli",
         "runtime": {
-          "type": "build-only",
           "build_variants": [
             {
-              "name": "acme-cli-linux",
+              "goarch": "amd64",
+              "goos": "linux",
               "ldflags": [
                 "-s",
                 "-w"
               ],
-              "tags": [],
-              "goos": "linux",
-              "goarch": "amd64"
+              "name": "acme-cli-linux",
+              "tags": []
             }
-          ]
+          ],
+          "type": "build-only"
         },
         "spec": {
           "image": "",
@@ -48,22 +61,22 @@
         }
       },
       {
-        "name": "workspace-base",
-        "kind": "tool",
-        "image": "workspace-base",
         "build": {
-          "type": "docker",
-          "output_name": null,
-          "dockerfile": "images/base/Dockerfile",
-          "platform": null,
-          "target": null,
           "build_args": {},
+          "build_contexts": {},
+          "dockerfile": "images/base/Dockerfile",
+          "output_name": null,
+          "platform": null,
           "registry": null,
-          "build_contexts": {}
+          "target": null,
+          "type": "docker"
         },
+        "image": "workspace-base",
+        "kind": "tool",
+        "name": "workspace-base",
         "runtime": {
-          "type": "build-only",
-          "build_variants": []
+          "build_variants": [],
+          "type": "build-only"
         },
         "spec": {
           "image": "",
@@ -75,19 +88,6 @@
           }
         }
       }
-    ],
-    "infra": [],
-    "frontends": [],
-    "databases": [],
-    "config_maps": [],
-    "gateways": [],
-    "http_routes": [],
-    "grpc_routes": [],
-    "runtime_classes": [],
-    "helm_charts": [],
-    "required_secrets": [],
-    "required_dns": [],
-    "rendered_secrets": [],
-    "manifests": []
+    ]
   }
 }

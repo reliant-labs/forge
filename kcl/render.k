@@ -280,6 +280,9 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         nodeSelector = w.nodeSelector
         tolerations = w.tolerations
         podAnnotations = w.podAnnotations
+        securityContext = w.securityContext
+        terminationGracePeriodSeconds = w.terminationGracePeriodSeconds
+        activeDeadlineSeconds = w.activeDeadlineSeconds
     }
 }
 
@@ -380,6 +383,8 @@ _LOCAL_REFUSED: {str:str} = {
     "nodeSelector": "a local process is not scheduled onto nodes"
     "tolerations": "a local process is not scheduled onto nodes"
     "podAnnotations": "a local process has no pod to annotate"
+    "securityContext": "a local process runs as the user who started it"
+    "terminationGracePeriodSeconds": "a local process is stopped by forge env down, not by a kubelet"
 }
 
 _COMPOSE_REFUSED: {str:str} = _LOCAL_REFUSED | {

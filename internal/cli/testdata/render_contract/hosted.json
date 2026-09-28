@@ -1,27 +1,91 @@
 {
   "output": {
-    "project": "acme",
-    "env": "prod",
-    "image_tag": "stable",
     "clusters": [],
+    "config_maps": [],
+    "control_plane": {
+      "endpoint": "https://admin.reliantapi.com",
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN",
+      "type": "control_plane"
+    },
+    "databases": [
+      {
+        "cluster": null,
+        "name": "db",
+        "namespace": null,
+        "runtime": "hosted",
+        "spec": {
+          "deletionPolicy": "retain",
+          "engine": "postgres",
+          "instances": 1,
+          "storageGiB": 10
+        }
+      }
+    ],
+    "env": "prod",
+    "frontends": [
+      {
+        "config": null,
+        "deploy": {
+          "base_path": null,
+          "bucket": "",
+          "bundle": [],
+          "cache_control": [],
+          "cdn": null,
+          "keep_releases": 10,
+          "public_dir": "dist",
+          "type": "static-site"
+        },
+        "dev_runner": "npm",
+        "env_file": null,
+        "env_vars": [],
+        "name": "web",
+        "path": "frontends/web",
+        "port": 3000,
+        "runtime_config": {},
+        "runtime_config_spec": {
+          "API_URL": {
+            "workloadURL": {
+              "name": "api"
+            }
+          }
+        },
+        "source": null,
+        "type": "vite"
+      }
+    ],
+    "gateways": [],
+    "grpc_routes": [],
+    "helm_charts": [],
+    "http_routes": [],
+    "image_tag": "stable",
+    "infra": [],
     "kubeconfig_secrets": [],
+    "manifests": [],
     "network_policy": null,
+    "project": "acme",
+    "rendered_secrets": [],
+    "required_dns": [],
+    "required_secrets": [],
+    "runtime_classes": [],
+    "secret_provider": {
+      "type": "hosted"
+    },
     "workloads": [
       {
-        "name": "api",
-        "kind": "service",
-        "image": "acme",
         "build": {
-          "type": "go",
-          "output_name": "acme",
           "cmd": "./cmd/acme",
-          "goos": null,
-          "goarch": null,
-          "ldflags": [],
-          "tags": [],
+          "env": {},
           "flags": [],
-          "env": {}
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme",
+          "tags": [],
+          "type": "go"
         },
+        "image": "acme",
+        "kind": "service",
+        "name": "api",
         "runtime": {
           "type": "hosted"
         },
@@ -35,17 +99,17 @@
               "value": "info"
             },
             {
-              "name": "API_KEY",
               "managedSecret": {
                 "name": "API_KEY",
                 "optional": true
-              }
+              },
+              "name": "API_KEY"
             },
             {
-              "name": "DATABASE_URL",
               "databaseRef": {
                 "name": "db"
-              }
+              },
+              "name": "DATABASE_URL"
             },
             {
               "name": "CORS_ORIGINS",
@@ -67,7 +131,10 @@
           "probes": {
             "failureThreshold": 3,
             "initialDelaySeconds": 0,
+            "livenessPath": "/healthz",
             "periodSeconds": 5,
+            "port": 8080,
+            "readinessPath": "/readyz",
             "timeoutSeconds": 3
           },
           "replicas": 1,
@@ -78,20 +145,20 @@
         }
       },
       {
-        "name": "migrate",
-        "kind": "job",
-        "image": "acme",
         "build": {
-          "type": "go",
-          "output_name": "acme",
           "cmd": "./cmd/acme",
-          "goos": null,
-          "goarch": null,
-          "ldflags": [],
-          "tags": [],
+          "env": {},
           "flags": [],
-          "env": {}
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme",
+          "tags": [],
+          "type": "go"
         },
+        "image": "acme",
+        "kind": "job",
+        "name": "migrate",
         "runtime": {
           "type": "hosted"
         },
@@ -106,10 +173,10 @@
           ],
           "env": [
             {
-              "name": "DATABASE_URL",
               "databaseRef": {
                 "name": "db"
-              }
+              },
+              "name": "DATABASE_URL"
             }
           ],
           "image": "acme",
@@ -121,70 +188,6 @@
           }
         }
       }
-    ],
-    "infra": [],
-    "frontends": [
-      {
-        "name": "web",
-        "type": "vite",
-        "path": "frontends/web",
-        "source": null,
-        "dev_runner": "npm",
-        "port": 3000,
-        "env_file": null,
-        "env_vars": [],
-        "config": null,
-        "deploy": {
-          "type": "static-site",
-          "bucket": "",
-          "public_dir": "dist",
-          "base_path": null,
-          "bundle": [],
-          "cache_control": [],
-          "cdn": null,
-          "keep_releases": 10
-        },
-        "runtime_config": {},
-        "runtime_config_spec": {
-          "API_URL": {
-            "workloadURL": {
-              "name": "api"
-            }
-          }
-        }
-      }
-    ],
-    "databases": [
-      {
-        "name": "db",
-        "runtime": "hosted",
-        "cluster": null,
-        "namespace": null,
-        "spec": {
-          "deletionPolicy": "retain",
-          "engine": "postgres",
-          "instances": 1,
-          "storageGiB": 10
-        }
-      }
-    ],
-    "config_maps": [],
-    "gateways": [],
-    "http_routes": [],
-    "grpc_routes": [],
-    "runtime_classes": [],
-    "helm_charts": [],
-    "required_secrets": [],
-    "required_dns": [],
-    "secret_provider": {
-      "type": "hosted"
-    },
-    "rendered_secrets": [],
-    "control_plane": {
-      "type": "control_plane",
-      "endpoint": "https://admin.reliantapi.com",
-      "token_env": "FORGE_CONTROL_PLANE_TOKEN"
-    },
-    "manifests": []
+    ]
   }
 }

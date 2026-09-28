@@ -1,27 +1,40 @@
 {
   "output": {
-    "project": "acme",
-    "env": "dev",
-    "image_tag": "latest",
     "clusters": [],
+    "config_maps": [],
+    "databases": [],
+    "env": "dev",
+    "frontends": [],
+    "gateways": [],
+    "grpc_routes": [],
+    "helm_charts": [],
+    "http_routes": [],
+    "image_tag": "latest",
+    "infra": [],
     "kubeconfig_secrets": [],
+    "manifests": [],
     "network_policy": null,
+    "project": "acme",
+    "rendered_secrets": [],
+    "required_dns": [],
+    "required_secrets": [],
+    "runtime_classes": [],
     "workloads": [
       {
-        "name": "postgres",
-        "kind": "service",
-        "image": "",
         "build": null,
+        "image": "",
+        "kind": "service",
+        "name": "postgres",
         "runtime": {
-          "type": "compose",
-          "service": "postgres",
-          "file": "docker-compose.yml",
-          "env_file": null,
-          "wait": true,
-          "wait_timeout": 0,
           "env": {
             "POSTGRES_PORT": "5433"
-          }
+          },
+          "env_file": null,
+          "file": "docker-compose.yml",
+          "service": "postgres",
+          "type": "compose",
+          "wait": true,
+          "wait_timeout": 0
         },
         "spec": {
           "env": [
@@ -40,18 +53,18 @@
         }
       },
       {
-        "name": "nats",
-        "kind": "service",
-        "image": "",
         "build": null,
+        "image": "",
+        "kind": "service",
+        "name": "nats",
         "runtime": {
-          "type": "compose",
-          "service": "nats",
-          "file": "docker-compose.yml",
+          "env": {},
           "env_file": ".env.dev",
+          "file": "docker-compose.yml",
+          "service": "nats",
+          "type": "compose",
           "wait": true,
-          "wait_timeout": 0,
-          "env": {}
+          "wait_timeout": 0
         },
         "spec": {
           "image": "",
@@ -63,19 +76,6 @@
           }
         }
       }
-    ],
-    "infra": [],
-    "frontends": [],
-    "databases": [],
-    "config_maps": [],
-    "gateways": [],
-    "http_routes": [],
-    "grpc_routes": [],
-    "runtime_classes": [],
-    "helm_charts": [],
-    "required_secrets": [],
-    "required_dns": [],
-    "rendered_secrets": [],
-    "manifests": []
+    ]
   }
 }

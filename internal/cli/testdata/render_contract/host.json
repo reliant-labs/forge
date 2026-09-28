@@ -1,36 +1,84 @@
 {
   "output": {
-    "project": "acme",
-    "env": "dev",
-    "image_tag": "latest",
     "clusters": [],
+    "config_maps": [],
+    "databases": [],
+    "env": "dev",
+    "frontends": [
+      {
+        "config": null,
+        "deploy": null,
+        "dev_runner": "npm",
+        "env_file": null,
+        "env_vars": [],
+        "name": "web",
+        "path": "frontends/web",
+        "port": 3000,
+        "runtime_config": {},
+        "runtime_config_spec": {},
+        "source": null,
+        "type": "vite"
+      }
+    ],
+    "gateways": [],
+    "grpc_routes": [],
+    "helm_charts": [],
+    "http_routes": [],
+    "image_tag": "latest",
+    "infra": [
+      {
+        "data_dir": null,
+        "database": "acme",
+        "engine": "postgres",
+        "idp_database": "zitadel",
+        "idp_database_port": null,
+        "idp_masterkey": "MasterkeyNeedsToHave32Characters",
+        "idp_pat_path": ".forge/idp/pat.txt",
+        "idp_steps_file": "idp-steps.yaml",
+        "name": "postgres",
+        "password": "postgres",
+        "port": 5433,
+        "user": "postgres",
+        "version": null
+      }
+    ],
     "kubeconfig_secrets": [],
+    "manifests": [],
     "network_policy": null,
+    "project": "acme",
+    "rendered_secrets": [],
+    "required_dns": [],
+    "required_secrets": [],
+    "runtime_classes": [],
+    "secret_provider": {
+      "path": "secrets/dev.yaml",
+      "type": "file"
+    },
     "workloads": [
       {
-        "name": "api",
-        "kind": "service",
-        "image": "acme",
         "build": {
-          "type": "go",
-          "output_name": "acme",
           "cmd": "./cmd/acme",
-          "goos": null,
-          "goarch": null,
-          "ldflags": [],
-          "tags": [],
+          "env": {},
           "flags": [],
-          "env": {}
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme",
+          "tags": [],
+          "type": "go"
         },
+        "image": "acme",
+        "kind": "service",
+        "name": "api",
         "runtime": {
-          "type": "host",
-          "runner": "air",
           "air_config": ".air.toml",
-          "working_dir": null,
+          "delve_port": 2345,
           "listen_ports": [
             8080
           ],
-          "delve_port": 2345
+          "runner": "air",
+          "type": "host",
+          "working_dir": null
         },
         "spec": {
           "args": [
@@ -67,7 +115,10 @@
           "probes": {
             "failureThreshold": 3,
             "initialDelaySeconds": 0,
+            "livenessPath": "/healthz",
             "periodSeconds": 5,
+            "port": 8080,
+            "readinessPath": "/readyz",
             "timeoutSeconds": 3
           },
           "replicas": 1,
@@ -78,27 +129,27 @@
         }
       },
       {
-        "name": "migrate",
-        "kind": "job",
-        "image": "acme",
         "build": {
-          "type": "go",
-          "output_name": "acme",
           "cmd": "./cmd/acme",
-          "goos": null,
-          "goarch": null,
-          "ldflags": [],
-          "tags": [],
+          "env": {},
           "flags": [],
-          "env": {}
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme",
+          "tags": [],
+          "type": "go"
         },
+        "image": "acme",
+        "kind": "job",
+        "name": "migrate",
         "runtime": {
-          "type": "host",
-          "runner": "go-run",
           "air_config": null,
-          "working_dir": null,
+          "delve_port": 2345,
           "listen_ports": null,
-          "delve_port": 2345
+          "runner": "go-run",
+          "type": "host",
+          "working_dir": null
         },
         "spec": {
           "args": [
@@ -124,54 +175,6 @@
           }
         }
       }
-    ],
-    "infra": [
-      {
-        "name": "postgres",
-        "engine": "postgres",
-        "port": 5433,
-        "database": "acme",
-        "user": "postgres",
-        "password": "postgres",
-        "data_dir": null,
-        "version": null,
-        "idp_database": "zitadel",
-        "idp_database_port": null,
-        "idp_masterkey": "MasterkeyNeedsToHave32Characters",
-        "idp_steps_file": "idp-steps.yaml",
-        "idp_pat_path": ".forge/idp/pat.txt"
-      }
-    ],
-    "frontends": [
-      {
-        "name": "web",
-        "type": "vite",
-        "path": "frontends/web",
-        "source": null,
-        "dev_runner": "npm",
-        "port": 3000,
-        "env_file": null,
-        "env_vars": [],
-        "config": null,
-        "deploy": null,
-        "runtime_config": {},
-        "runtime_config_spec": {}
-      }
-    ],
-    "databases": [],
-    "config_maps": [],
-    "gateways": [],
-    "http_routes": [],
-    "grpc_routes": [],
-    "runtime_classes": [],
-    "helm_charts": [],
-    "required_secrets": [],
-    "required_dns": [],
-    "secret_provider": {
-      "type": "file",
-      "path": "secrets/dev.yaml"
-    },
-    "rendered_secrets": [],
-    "manifests": []
+    ]
   }
 }

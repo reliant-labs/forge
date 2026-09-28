@@ -144,6 +144,13 @@ type wireEnvironment struct {
 	// control plane admits this org's images from. Empty means it admits
 	// none (no registry base is configured), so every workload publish fails.
 	ImagePushBase string `json:"imagePushBase,omitempty"`
+	// Capabilities are the optional behaviours this control plane converges
+	// for the environment, by name (HostedCapabilityCustomDomains, ...).
+	// A capability forge does not recognise is ignored; a capability a
+	// declaration NEEDS and the environment does not advertise is a
+	// refusal, never a silent drop. An empty list is the honest answer
+	// from a control plane that advertises none.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type wireObserved struct {
@@ -153,6 +160,12 @@ type wireObserved struct {
 	LastError   string     `json:"lastError,omitempty"`
 	URL         string     `json:"url,omitempty"`
 	StableSince *time.Time `json:"stableSince,omitempty"`
+	// Domains is the per-domain convergence state for every custom
+	// hostname this deployment declares. Absent from a control plane that
+	// does not serve custom domains — which is also the one that does not
+	// advertise the capability, so forge refused the declaration before
+	// ever publishing it.
+	Domains []wireCustomDomainStatus `json:"domains,omitempty"`
 }
 
 type wireDeployment struct {
@@ -836,6 +849,12 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if err := checkImagePushBase(group.Env, env.ImagePushBase, plan); err != nil {
 		return err
 	}
+	// Before the first EnsureDeployment: a domain this control plane will
+	// not serve must not reach a published spec, because from there on it
+	// is indistinguishable from one that simply has not converged yet.
+	if err := checkCustomDomains(group.Env, env.Capabilities, plan); err != nil {
+		return err
+	}
 	return p.publish(ctx, c, group, envID, plan)
 }
 
@@ -907,16 +926,22 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	deadline := time.Now().Add(policy.Timeout)
 	var last map[string]string
 	for {
-		pending, reasons, err := p.pollOnce(ctx, c, envID, plan, ids)
+		pending, reasons, domains, err := p.pollOnce(ctx, c, envID, plan, ids)
 		if err == nil && len(pending) == 0 {
 			for _, item := range plan {
 				p.observe(item.Name, cluster.RolloutStateReady, nil)
 			}
 			fmt.Printf("  readiness: all %d workload(s) ready\n", len(plan))
+			printHostedDomains(plan, domains)
 			return nil
 		}
 		if err == nil {
 			last = reasons
+			// Printed on the way past, not only at the end: a domain
+			// waiting on a DNS record the author has not set yet is
+			// exactly what a deploy that looks stuck is waiting for,
+			// and the record is actionable right now.
+			printHostedDomains(plan, domains)
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			var lines []string
@@ -949,10 +974,10 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 
 // pollOnce reads status once and returns the names still not ready, with a
 // reason for each.
-func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID string, plan []hostedPlanItem, ids map[string]string) ([]string, map[string]string, error) {
+func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID string, plan []hostedPlanItem, ids map[string]string) ([]string, map[string]string, map[string][]HostedCustomDomain, error) {
 	var resp wireStatusResponse
 	if err := c.Call(ctx, procGetStatus, map[string]any{"environmentId": envID}, &resp); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	envConverged := resp.EnvironmentVerdict == wireVerdictConverged
 	byID := map[string]wireDeploymentStatus{}
@@ -961,6 +986,7 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 	}
 	var pending []string
 	reasons := map[string]string{}
+	domains := map[string][]HostedCustomDomain{}
 	for _, item := range plan {
 		st, ok := byID[ids[item.Name]]
 		if !ok {
@@ -968,13 +994,44 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 			reasons[item.Name] = "not in the environment's status yet"
 			continue
 		}
+		if d := customDomainsOf(st.Deployment.Observed); len(d) > 0 {
+			domains[item.Name] = d
+		}
 		if envConverged || hostedDeploymentReady(st, item.DesiredDigest) {
 			continue
 		}
 		pending = append(pending, item.Name)
 		reasons[item.Name] = describeHostedStatus(st)
 	}
-	return pending, reasons, nil
+	return pending, reasons, domains, nil
+}
+
+// printHostedDomains is the deploy summary's custom-domain block: per
+// workload, each declared hostname's state and the DNS records still to be
+// set. Silent for a deploy that declares none, and printed in plan order so
+// it reads alongside the readiness line above it.
+//
+// A domain that is not yet live is NOT a deploy failure — the author has to
+// go and edit DNS at their registrar, which forge cannot do and must not
+// block on. Printing the exact record is what turns "not live" into a next
+// step.
+func printHostedDomains(plan []hostedPlanItem, domains map[string][]HostedCustomDomain) {
+	if len(domains) == 0 {
+		return
+	}
+	var printed bool
+	for _, item := range plan {
+		d := domains[item.Name]
+		if len(d) == 0 {
+			continue
+		}
+		if !printed {
+			fmt.Println("  custom domains:")
+			printed = true
+		}
+		fmt.Printf("    %s:\n", item.Name)
+		fmt.Print(FormatCustomDomains("      ", d))
+	}
 }
 
 func hostedDeploymentReady(st wireDeploymentStatus, desiredDigest string) bool {
@@ -1022,6 +1079,17 @@ func printHostedPlan(group ServiceGroup, plan []hostedPlanItem) {
 		raw, _ := json.Marshal(item.Spec)
 		fmt.Printf("    %s (%s): %s\n", item.Name, item.Tier, raw)
 	}
+	// A dry run makes no calls, so it cannot know the environment's
+	// capabilities — and reporting the declaration as if it were settled
+	// would make --dry-run the one path that hides the refusal a real
+	// deploy produces. Name what was declared and what has to be true.
+	if claims := hostedDomainClaims(plan); len(claims) > 0 {
+		fmt.Printf("  [dry-run] custom domains declared (served only if the control plane advertises the %q capability; a real deploy REFUSES otherwise):\n",
+			HostedCapabilityCustomDomains)
+		for _, c := range claims {
+			fmt.Printf("    %s (%s): %s\n", c.Workload, c.Tier, strings.Join(c.Domains, ", "))
+		}
+	}
 }
 
 // ─── Status (shared by Observe and the CLI's topology/status JSON) ───────────
@@ -1046,6 +1114,10 @@ type HostedWorkloadStatus struct {
 	DesiredDigest  string `json:"desired_digest,omitempty"`
 	Drifted        bool   `json:"drifted,omitempty"`
 	LastError      string `json:"last_error,omitempty"`
+	// Domains is the per-domain state of every custom hostname this
+	// deployment declares — what it is doing, and what DNS the author
+	// still owes. Empty for a deployment that declares none.
+	Domains []HostedCustomDomain `json:"domains,omitempty"`
 }
 
 // HostedEnvStatus is one environment's hosted status.
@@ -1092,6 +1164,7 @@ func ReadHostedStatus(ctx context.Context, c HostedCaller, project, envName stri
 			if u, perr := url.Parse(obs.URL); perr == nil {
 				ws.Hostname = u.Hostname()
 			}
+			ws.Domains = customDomainsOf(obs)
 		}
 		out.Workloads = append(out.Workloads, ws)
 	}

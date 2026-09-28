@@ -762,7 +762,9 @@ _frontend_violations = lambda f: Frontend -> [str] {
         + (["build_variants: a frontend has one build"] if _t == "build-only" and _rt.build_variants else []) \
         + (["bundle: the dev server assembles nothing; bundle dirs are assembled into a PUBLISHED site"] if _host and f.bundle else []) \
         + (["cache_control: forge sets Cache-Control only on the objects it uploads to your bucket (forge.OnBucket); ${'the platform owns the CDN and its headers' if _t == 'hosted' else ('Firebase owns the headers' if _t == 'firebase' else 'nothing here serves the build')}"] \
-            if f.cache_control and _t != "bucket" else [])
+            if f.cache_control and _t != "bucket" else []) \
+        + (["domains ${f.domains}: only forge.OnHosted can serve a custom hostname, because only the platform verifies ownership and issues the certificate; ${'your bucket/CDN serves this site, so declare the domain there — that is where the certificate and the DNS record live' if _t == 'bucket' else ('Firebase Hosting serves this site, so add the custom domain in the Firebase console (firebase hosting:sites)' if _t == 'firebase' else ('a dev server answers on localhost and serves no public hostname' if _host else 'a build-only frontend is never served'))}"] \
+            if f.domains and _t != "hosted" else [])
 }
 
 # A frontend's runtime_config as the StaticSite spec's `runtimeConfig` wire
@@ -828,6 +830,11 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # builds and assembles the same way.
         "public_dir": _public_dir(f)
         "base_path": f.base_path if f.base_path else None
+        # The custom hostnames the platform serves this site on, in the
+        # order declared. OnHosted only (_frontend_violations refuses it
+        # elsewhere), so an absent key means "no custom domain", never
+        # "declared and dropped".
+        "domains": f.domains if f.domains else []
         "bundle": [_render_bundle_dir(b) for b in f.bundle]
         "cache_control": [_render_cache_rule(r) for r in f.cache_control]
         # The browser's runtime config, as DECLARED (references kept) and as

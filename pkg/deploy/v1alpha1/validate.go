@@ -191,7 +191,14 @@ func validateDomains(field string, domains []string) error {
 	var errs []error
 	seen := map[string]bool{}
 	for _, d := range domains {
-		if !hostnameRE.MatchString(d) || len(d) > 253 {
+		switch {
+		case strings.Contains(d, "*"):
+			// Named separately from the generic hostname refusal because a
+			// wildcard is a DELIBERATE request, not a typo: the platform
+			// verifies ownership of each name it serves, and a wildcard
+			// names an unbounded set nobody can prove ownership of.
+			errs = append(errs, fmt.Errorf("%s: %q is a wildcard; declare each hostname you want served, because ownership is verified per name", field, d))
+		case !hostnameRE.MatchString(d) || len(d) > 253:
 			errs = append(errs, fmt.Errorf("%s: %q is not a lowercase DNS hostname", field, d))
 		}
 		if seen[d] {
@@ -243,6 +250,9 @@ func (s StaticSiteSpec) Validate() error {
 				errs = append(errs, fmt.Errorf("cdn.extraInvalidatePaths entry %q must be an absolute site path", p))
 			}
 		}
+	}
+	if len(s.Domains) > MaxDomains {
+		errs = append(errs, fmt.Errorf("domains: %d declared; at most %d are allowed", len(s.Domains), MaxDomains))
 	}
 	if err := validateDomains("domains", s.Domains); err != nil {
 		errs = append(errs, err)

@@ -847,6 +847,11 @@ type FrontendEntity struct {
 	// BasePath mounts the frontend under a sub-path ("/admin"); empty is
 	// the site root.
 	BasePath string `json:"base_path,omitempty"`
+	// Domains are the CUSTOM hostnames the platform serves this site on,
+	// in addition to the one it allocates. OnHosted only — the render
+	// refuses them on every other runtime — and published as the
+	// StaticSite spec's `domains`.
+	Domains []string `json:"domains,omitempty"`
 	// Bundle is the extra pre-built static dirs assembled into the site.
 	Bundle []BundleDir `json:"bundle,omitempty"`
 	// CacheControl is the ordered Cache-Control rules forge applies to the

@@ -264,6 +264,13 @@ type WorkloadSpec struct {
 	// exclusive with NamespacedRBAC, ClusterRBAC and
 	// ServiceAccountAnnotations: each of those describes the generated
 	// ServiceAccount, which no longer exists.
+	//
+	// The renderer leaves the pod's automountServiceAccountToken UNSET when
+	// this is set, so the named ServiceAccount's own
+	// automountServiceAccountToken decides and its owner controls it. forge
+	// cannot know whether that identity calls the Kubernetes API, and a
+	// pod-level false would silently disable one that does. (A generated
+	// ServiceAccount's token mounts only when the workload has RBAC.)
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`

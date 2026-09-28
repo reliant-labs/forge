@@ -167,6 +167,11 @@ func (s WorkloadSpec) Validate(p Profile) error {
 		errs = append(errs, errors.New("deployPhase is only for a standalone job: a job with before runs as an initContainer of the workloads it gates, so pod ordering already is its phase"))
 	}
 
+	// --- gating job ---
+	if kind == KindJob && len(s.Before) > 0 {
+		errs = append(errs, s.gatingJobPodFieldErrors()...)
+	}
+
 	// --- operator ---
 	if kind == KindOperator && len(s.CRDs) == 0 {
 		errs = append(errs, errors.New("kind operator must list at least one CRD kind in crds"))
@@ -250,6 +255,32 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	// --- profile ---
 	errs = append(errs, profileViolations(s, p)...)
 	return errors.Join(errs...)
+}
+
+// gatingPodFields are the fields that describe a pod of the workload's OWN.
+// A job with `before` has none: it runs as an initContainer INSIDE the pods
+// it gates, under their ServiceAccount, on their nodes, with their volumes.
+// So each of these on a gating job describes nothing, and expand.k's old
+// behaviour (an orphan ServiceAccount and Role that nothing bound) made a
+// migrate job's namespacedRBAC look granted when it was not. Ordered for
+// deterministic errors. clusterRBAC is absent because it is refused for
+// every job already (kindCapabilities).
+var gatingPodFields = []string{
+	"namespacedRBAC", "serviceAccount", "serviceAccountAnnotations", "sidecars",
+	"volumes", "nodeSelector", "tolerations", "podAnnotations",
+}
+
+// gatingJobPodFieldErrors refuses each pod-level field set on a gating job.
+// pkg/deploy's renderer carries the same check as defence in depth. This is
+// the gate: the control plane admits with Validate before rendering.
+func (s WorkloadSpec) gatingJobPodFieldErrors() []error {
+	var errs []error
+	for _, field := range gatingPodFields {
+		if s.declares(field) {
+			errs = append(errs, fmt.Errorf("%s is not allowed on a job with before: it runs as an initContainer in the pods it gates, under their identity and placement, so it has no pod of its own for %s to apply to (drop before to run it as a standalone Job)", field, field))
+		}
+	}
+	return errs
 }
 
 // declares reports whether the spec sets a kind-specific field. Replicas 1

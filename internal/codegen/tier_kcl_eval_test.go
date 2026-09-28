@@ -221,7 +221,8 @@ func TestTierKCLRejects(t *testing.T) {
 		t.Skip("runs kcl; full mode only")
 	}
 	cases := map[string]struct{ decl, want string }{
-		"closed schema: securityContext":  {`x = tiers.Workload { image = "ghcr.io/a/b:v1", securityContext = {} }`, "securityContext"},
+		"security context: never root":    {`x = tiers.PodSecurity { runAsUser = 0 }`, "PodSecurity.runAsUser must be at least 1"},
+		"closed schema: privileged":       {`x = tiers.PodSecurity { privileged = True }`, "privileged"},
 		"closed schema: cluster":          {`x = tiers.Workload { image = "ghcr.io/a/b:v1", cluster = "c" }`, "cluster"},
 		"closed schema: config_map_ref":   {`x = tiers.EnvVar { name = "A", config_map_ref = "c" }`, "config_map_ref"},
 		"closed schema: org":              {`x = tiers.ManagedDatabase { orgId = "o" }`, "orgId"},

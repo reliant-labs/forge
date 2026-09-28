@@ -144,7 +144,6 @@ const (
 	// Job lifecycle (expand.k:720-725).
 	jobBackoffLimit            int32 = 6
 	jobTTLSecondsAfterFinished int32 = 86400
-	jobHashLen                       = 10
 )
 
 // gatedKinds are the kinds a job may gate: capabilities.k CAP_GATED
@@ -181,14 +180,14 @@ func prepareSet(ws []v1alpha1.Workload, p v1alpha1.Profile) (*workloadSet, error
 		name := ws[i].Name
 		spec := ws[i].Spec
 		fail := func(err error) { errs = append(errs, fmt.Errorf("workload %s: %w", name, err)) }
-		if !isDNSLabel(name) {
-			fail(fmt.Errorf("name %q must be an RFC-1123 label of at most 63 characters: it is every rendered object's name", name))
-		}
 		if _, dup := set.byName[name]; dup {
 			fail(errors.New("declared twice in this environment"))
 			continue
 		}
-		if err := spec.Validate(p); err != nil {
+		// The admission entrypoint: the name rules (DNS label, a standalone
+		// job's 52-character cap, sidecar names), then every spec rule
+		// including the gating-job pod fields. Each is reported once, here.
+		if err := ws[i].Validate(p); err != nil {
 			fail(err)
 		}
 		// A workloadURL is a reference, and a pod can only carry a value.
@@ -212,12 +211,6 @@ func prepareSet(ws []v1alpha1.Workload, p v1alpha1.Profile) (*workloadSet, error
 		if w.kind == v1alpha1.KindService && len(w.spec.Ports) == 0 {
 			w.spec.Ports = []v1alpha1.Port{{Name: v1alpha1.DefaultHTTPPortName, Port: DefaultServicePort, Protocol: v1alpha1.ProtocolTCP}}
 		}
-		if w.kind == v1alpha1.KindJob && len(w.spec.Before) == 0 && len(name)+1+jobHashLen > 63 {
-			fail(fmt.Errorf("a standalone job's name is at most %d characters: its Job is named <name>-<%d-char spec hash>", 63-1-jobHashLen, jobHashLen))
-		}
-		if w.gatingJob() {
-			errs = append(errs, gatingJobPodFields(w)...)
-		}
 		set.byName[name] = w
 		set.list = append(set.list, w)
 	}
@@ -234,33 +227,6 @@ func sidecarEnvs(s v1alpha1.WorkloadSpec) [][]v1alpha1.EnvVar {
 		out = append(out, c.Env)
 	}
 	return out
-}
-
-// gatingJobPodFields refuses the pod-level fields a gating job cannot honour.
-// A job with `before` runs as an initContainer INSIDE the pods it gates
-// (expand.k:318-330), under their ServiceAccount, on their nodes. It has no
-// pod of its own for these to describe. expand.k rendered an orphan
-// ServiceAccount (and Role) for such a job, which nothing bound, so a
-// migrate job's `namespaced_rbac` looked granted and was not.
-func gatingJobPodFields(w *workload) []error {
-	s := w.spec
-	var errs []error
-	for field, set := range map[string]bool{
-		"namespacedRBAC":            len(s.NamespacedRBAC) > 0,
-		"serviceAccount":            s.ServiceAccount != "",
-		"serviceAccountAnnotations": len(s.ServiceAccountAnnotations) > 0,
-		"sidecars":                  len(s.Sidecars) > 0,
-		"volumes":                   len(s.Volumes) > 0,
-		"nodeSelector":              len(s.NodeSelector) > 0,
-		"tolerations":               len(s.Tolerations) > 0,
-		"podAnnotations":            len(s.PodAnnotations) > 0,
-	} {
-		if set {
-			errs = append(errs, fmt.Errorf("workload %s: %s is not allowed on a job with before: it runs as an initContainer in the pods it gates, under their identity and placement, so it has no pod of its own for %s to apply to (drop before to run it as a standalone Job)", w.name, field, field))
-		}
-	}
-	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
-	return errs
 }
 
 // validateBefore ports kcl/workloads/render.k:147-162 (a `before` naming a
@@ -400,7 +366,8 @@ func (set *workloadSet) render(w *workload, ctx Context) ([]runtime.Object, erro
 		if w.gatingJob() {
 			// expand.k:731: a job with `before` renders NO standalone Job.
 			// Rendering both would run it twice, once unordered. It also
-			// renders no identity: see gatingJobPodFields.
+			// renders no identity: it runs under the gated pods' own, and
+			// Validate refuses the pod-level fields on it.
 			return nil, nil
 		}
 		return set.renderJob(w, ctx)
@@ -529,7 +496,7 @@ func (set *workloadSet) renderJob(w *workload, ctx Context) ([]runtime.Object, e
 		return nil, err
 	}
 	sum := sha256.Sum256(b)
-	hash := hex.EncodeToString(sum[:])[:jobHashLen]
+	hash := hex.EncodeToString(sum[:])[:v1alpha1.StandaloneJobHashLength]
 
 	labels := managedLabels(w.name, ctx.PartOf)
 	jobLabels := copyLabels(labels)

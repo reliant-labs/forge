@@ -359,16 +359,3 @@ func copyLabels(in map[string]string) map[string]string {
 func objectMeta(name, namespace string, labels map[string]string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: copyLabels(labels)}
 }
-
-func isDNSLabel(s string) bool {
-	if s == "" || len(s) > 63 {
-		return false
-	}
-	for i, r := range s {
-		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' && i > 0 && i < len(s)-1
-		if !ok {
-			return false
-		}
-	}
-	return true
-}

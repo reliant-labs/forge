@@ -511,6 +511,30 @@ func TestBefore(t *testing.T) {
 	}
 }
 
+// TestErrorsReportedOnce: RenderWorkloads admits through Workload.Validate
+// and does not re-check what it already checks, so each violation appears in
+// the error exactly once. A duplicated message reads as two problems, and an
+// author fixing the first finds the second was the same one.
+func TestErrorsReportedOnce(t *testing.T) {
+	gating := wl("j", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}, Before: []string{"api"},
+		NamespacedRBAC: []v1alpha1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}}})
+	long := wl(strings.Repeat("s", 53), v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}})
+	bad := svc("Bad_Name")
+	_, err := RenderWorkloads([]v1alpha1.Workload{svc("api"), gating, long, bad}, v1alpha1.ProfileFull, ctx)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, want := range []string{
+		"namespacedRBAC is not allowed on a job with before",
+		"a standalone job's name is at most 52 characters",
+		`name "Bad_Name" must be an RFC-1123 label`,
+	} {
+		if n := strings.Count(err.Error(), want); n != 1 {
+			t.Errorf("%q appears %d times in the error, want exactly once:\n%v", want, n, err)
+		}
+	}
+}
+
 func asSlice(v any) []any { s, _ := v.([]any); return s }
 
 // TestPodEscapeHatches: sidecars get the same hardening, volumes mount on
@@ -819,7 +843,7 @@ func TestJobHashTracksSpec(t *testing.T) {
 		return ""
 	}
 	a, b, c := name("seed"), name("seed"), name("seed", "--all")
-	if a != b || a == c || !strings.HasPrefix(a, "seed-") || len(a) != len("seed-")+jobHashLen {
+	if a != b || a == c || !strings.HasPrefix(a, "seed-") || len(a) != len("seed-")+v1alpha1.StandaloneJobHashLength {
 		t.Errorf("job names %q %q %q", a, b, c)
 	}
 }

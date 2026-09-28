@@ -609,15 +609,15 @@ schema ClusterTarget:
     check:
         cluster, "ClusterTarget.cluster is required (kubectl context name)"
         namespace, "ClusterTarget.namespace is required"
-        # registry is a REQUIRED input — empty is a load-time failure, NOT a
-        # deploy-time ImagePullBackOff. This is the guard that bites the
-        # cloud-env footgun: a typo'd / unset `-D registry=` that resolves to
-        # "" (no consumer-side `or <default>` to mask it) is rejected HERE,
-        # at KCL load, instead of rendering manifests with an image reference
-        # missing its registry that only fails when kubelet tries to pull.
+        # registry is a REQUIRED declaration — empty is a load-time failure,
+        # NOT a deploy-time ImagePullBackOff. A registry that resolves to ""
+        # (an unfilled value, or a project's own option() with no default) is
+        # rejected HERE, at KCL load, instead of rendering manifests with an
+        # image reference missing its registry that only fails when kubelet
+        # tries to pull.
         # The companion build-platform guard lives on Bundle (it needs the
         # workloads to see whether any external image build is declared).
-        registry, "ClusterTarget.registry is required (image registry, e.g. ghcr.io/org/proj) — a cloud env MUST state it; an unset/typo'd `-D registry=` that resolves to empty is rejected here rather than producing an ImagePullBackOff at deploy"
+        registry, "ClusterTarget.registry is required (image registry, e.g. ghcr.io/org/proj) — declare it in deploy/kcl/<env>/main.k; an empty registry is rejected here rather than producing an ImagePullBackOff at deploy"
 
 schema ManagedDatabase:
     """A dedicated Postgres: the managed-database tier, as a Bundle entry.
@@ -918,9 +918,20 @@ schema ControlPlane:
     # internal/removalguard, which is why the word that used to be here is
     # not.
     organization?: str
+    # The image registry this hosted environment pushes to — the registry
+    # subtree the control plane admits this org's images from
+    # (`<registry-host>/<org>`). It is DECLARED here, beside the endpoint,
+    # exactly as a cluster env declares ClusterTarget.registry: `forge build
+    # <env> --push` pushes to it and `forge registry login <env>` logs in to
+    # it, and nothing — no flag, no `-D`, no environment variable — can
+    # supply it instead. Unset => the env declares no registry, and a push
+    # refuses with the fix.
+    registry?: str
 
     check:
         type == "control_plane", "ControlPlane.type must be 'control_plane'"
+        not registry or not registry.startswith("http"), \
+            "ControlPlane.registry is an image registry reference (host[/path], e.g. ghcr.io/acme), not a URL"
         endpoint, "ControlPlane.endpoint must not be empty — omit it for Reliant cloud (forge.RELIANT_CLOUD_ENDPOINT), or set the base URL of another control plane"
         endpoint.startswith("http://") or endpoint.startswith("https://"), \
             "ControlPlane.endpoint must be an absolute http(s) URL"

@@ -2537,9 +2537,9 @@ func writeFallbackRegistriesYAML() (string, error) {
 }
 
 func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targetArchFlag string) error {
-	registry := "localhost:5050"
-	if reg := k8sClusterRegistryForEnv(ctx, "dev"); reg != "" {
-		registry = reg
+	registry := declaredRegistryForEnv(ctx, "dev")
+	if registry == "" {
+		return undeclaredRegistryError("forge env deploy dev", "dev", &KCLEntities{})
 	}
 
 	// Build and push the single project image from root Dockerfile.
@@ -3067,11 +3067,18 @@ func k8sClusterNamespaceForEnv(ctx context.Context, envName string) string {
 	return firstK8sClusterField(ctx, envName, "namespace")
 }
 
-// k8sClusterRegistryForEnv reads the rendered KCL and returns the
-// first K8sCluster.registry declared for env. Returns "" when no
-// cluster-shaped service is declared or the field is unset.
-func k8sClusterRegistryForEnv(ctx context.Context, envName string) string {
-	return firstK8sClusterField(ctx, envName, "registry")
+// declaredRegistryForEnv renders env and returns the image registry its KCL
+// declares (declaredRegistry). "" when the env declares none or cannot be
+// rendered.
+func declaredRegistryForEnv(ctx context.Context, envName string) string {
+	if envName == "" {
+		return ""
+	}
+	entities, err := RenderKCL(ctx, projectDirForKCL(), envName)
+	if err != nil {
+		return ""
+	}
+	return declaredRegistry(entities)
 }
 
 // verifyKubectlContext is the DECLARATIVE env-cluster guard. The env's

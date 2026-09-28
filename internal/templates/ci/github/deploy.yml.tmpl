@@ -189,7 +189,7 @@ jobs:
         # rendered into the build, and pushes it. The pushed tag (and digest)
         # land in .forge/state/build-<env>.json, which the deploy below pins.
         if: steps.select.outputs.run == 'true'
-        run: forge build "${{"{{"}} matrix.env {{"}}"}}" --push "$REGISTRY"
+        run: forge build "${{"{{"}} matrix.env {{"}}"}}" --push
 
       - name: Deploy ${{"{{"}} matrix.env {{"}}"}}
         # Applies to exactly the target the env declares and waits for every

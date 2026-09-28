@@ -115,7 +115,7 @@ jobs:
         # into the build, and pushes to the cluster-local registry the env
         # declares (its forge.ClusterTarget.registry — localhost:5050 for a
         # k3d target; keep the two in step).
-        run: forge build e2e --push localhost:5050
+        run: forge build e2e --push
 
       - name: Deploy to the cluster
         # Applies to the context the e2e env declares and waits for every

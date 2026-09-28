@@ -274,9 +274,9 @@ func TestHostedImagePushBase(t *testing.T) {
 }
 
 // TestHostedForgeBuiltBackendPinsTheRecordedRegistry: a backend whose image
-// THIS project builds declares it registry-less (`image = "api"`), because the
-// registry is a push-time fact (`forge build --push <image push base>`), not a
-// declaration. The release recorded where the bytes went; the pin must use it.
+// THIS project builds declares it registry-less (`image = "api"`): the registry
+// is declared once, on the env's forge.ControlPlane, and `forge build <env>
+// --push` records where the bytes went. The pin must use that record.
 // Before, the pin re-derived the repository from the bare spec image and the
 // deploy refused "hounders@sha256:… must name its registry host explicitly".
 func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {

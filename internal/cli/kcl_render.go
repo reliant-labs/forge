@@ -179,6 +179,10 @@ type ControlPlaneEntity struct {
 	Endpoint     string `json:"endpoint"`
 	TokenEnv     string `json:"token_env,omitempty"`
 	Organization string `json:"organization,omitempty"`
+	// Registry is the image registry a hosted env declares: where
+	// `forge build <env> --push` pushes and what `forge registry login <env>`
+	// logs in to (declaredRegistry). Empty when the env declares none.
+	Registry string `json:"registry,omitempty"`
 }
 
 // RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s

@@ -48,7 +48,7 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(prodMain, []byte(strings.Replace(string(b), `registry = forge.registry("ghcr.io/OWNER")`, `registry = forge.registry("ghcr.io/acme")`, 1)), 0o644); err != nil {
+	if err := os.WriteFile(prodMain, []byte(strings.Replace(string(b), `registry = "ghcr.io/OWNER"`, `registry = "ghcr.io/acme"`, 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

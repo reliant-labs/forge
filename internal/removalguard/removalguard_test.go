@@ -1248,6 +1248,55 @@ var removals = []removal{
 			regexp.MustCompile(`\bmcp_callable\b|\bMCPCallable\b`),
 		},
 	},
+	{
+		Name: "passing an image registry to forge instead of declaring it",
+		Why: "An image registry is DECLARED in the env's KCL (forge.ClusterTarget.registry, or " +
+			"forge.ControlPlane.registry for a hosted env, in deploy/kcl/<env>/main.k) and nowhere " +
+			"else. `forge build --push` became a boolean that pushes to that declaration; the " +
+			"`--push <registry>` / `--push=<registry>` value forms are gone, as is the " +
+			"forge.registry(default) KCL helper (an `option(\"registry\")` forge owned so " +
+			"`-D registry=` could outrank the declaration). `forge generate` rewrites " +
+			"forge.registry(\"X\") to \"X\". A project that reads option(\"registry\") in its OWN " +
+			"KCL has written an ordinary project option — forge neither owns nor blocks it — so " +
+			"that spelling is not policed here. What is policed is forge TELLING anyone to pass a " +
+			"registry, or calling the helper that no longer exists.",
+		Patterns: []*regexp.Regexp{
+			// The retired KCL helper. `\(` keeps prose about "the forge.registry
+			// helper" out; a call is what fails to render.
+			regexp.MustCompile(`\bforge\.registry\(`),
+			// --push carrying a value: `--push=ghcr.io/x`, `--push "$REGISTRY"`,
+			// `--push <registry>`, `--push localhost:5050`. A value is a word
+			// starting with a quote, `$`, `<`, or containing a registry's `.`
+			// / `:`. A following flag (`--push --plan`) is not a value.
+			regexp.MustCompile(`--push=\S`),
+			regexp.MustCompile(`--push\s+(?:["'$<]|[A-Za-z0-9-]+[.:/])`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the migration that removes the helper, and its tests",
+				Reason: "MigrateRegistryHelper / CheckRegistryHelper exist to find and rewrite " +
+					"forge.registry( calls in existing projects, so they must spell the call.",
+				Paths: []string{
+					"internal/kclvendor/registry_helper.go",
+					"internal/kclvendor/registry_helper_test.go",
+					"internal/cli/kcl_vendor.go",
+					"internal/cli/kcl_vendor_test.go",
+				},
+			},
+			{
+				Name: "env new recognising a template env's retired helper call",
+				Reason: "`forge env new` derives from an existing env that may predate the " +
+					"migration; its registry regexp names the call so it can neutralise it.",
+				Token: regexp.MustCompile(`forge\.registry\("…"\)|forge\.registry\("ghcr\.io/acme"\)|forge\.registry\(\\"ghcr\.io/acme\\"\)`),
+				Paths: []string{"internal/cli/new_env.go", "internal/cli/new_env_test.go"},
+			},
+			{
+				Name:   "the tests that pin --push refusing a value",
+				Reason: "They must write the refused spellings to prove each one fails.",
+				Paths:  []string{"internal/cli/build_push_registry_test.go"},
+			},
+		},
+	},
 }
 
 // packOnDisk implements the "a referenced pack must exist" rule for the packs

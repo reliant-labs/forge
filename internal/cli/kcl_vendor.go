@@ -53,6 +53,16 @@ func syncForgeKCL(projectDir string) error {
 	if err != nil {
 		return err
 	}
+	// The retired forge.registry(default) helper: the registry is a literal
+	// the env declares, so each call becomes the literal it evaluated to.
+	registryMigrated, err := kclvendor.MigrateRegistryHelper(projectDir)
+	if err != nil {
+		return err
+	}
+	if len(registryMigrated) > 0 {
+		fmt.Printf("  ✅ %s: forge.registry(\"…\") → the literal registry — the registry is declared in the env's KCL, not overridden at render\n",
+			strings.Join(registryMigrated, ", "))
+	}
 	if len(migrated) > 0 {
 		fmt.Printf("  ✅ %s no longer declares the forge KCL module — forge supplies it from the running binary\n",
 			strings.Join(migrated, ", "))

@@ -46,10 +46,16 @@ _cluster = forge.ClusterTarget {
     # The kubectl context name of the {{.EnvName}} cluster.
     cluster = "{{.ProjectName}}-{{.EnvName}}"
     namespace = "{{.ProjectName}}-{{.EnvName}}"
-    # A visibly placeholder registry, so a missing value surfaces as a wrong
-    # image reference rather than a deploy from an unrelated registry.
-    # `forge build {{.EnvName}} --push` pushes here; `-D registry=` overrides.
-    registry = forge.registry("ghcr.io/OWNER")
+    # The image registry this env pushes to and pulls from — declared here,
+    # and only here: `forge build {{.EnvName}} --push`, `forge registry login
+    # {{.EnvName}}` and `forge env deploy {{.EnvName}}` all read this one value.
+{{- if .CloudRegistry}}
+    registry = "{{.CloudRegistry}}"
+{{- else}}
+    # A visibly placeholder registry: set it to yours (ghcr.io/<owner>,
+    # <region>-docker.pkg.dev/<project>/<repo>, …).
+    registry = "ghcr.io/OWNER"
+{{- end}}
     # The node arch images are built for. Required on a cloud target:
     # without it a build on an arm64 laptop ships arm64 images to amd64 nodes.
     platform = "amd64"

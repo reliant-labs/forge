@@ -70,8 +70,8 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 			names = append(names, f.Name)
 		}
 		return fmt.Errorf("env %q is hosted and declares forge.StaticSite frontend(s) %s: a hosted site ships as an OCI release artifact, "+
-			"so the build needs --push <image push base> (the registry subtree the control plane admits this org's artifacts from)",
-			opts.env, strings.Join(names, ", "))
+			"so the build must push — run `forge build %s --push`, which pushes to the registry deploy/kcl/%s/main.k declares on forge.ControlPlane",
+			opts.env, strings.Join(names, ", "), opts.env, opts.env)
 	}
 	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
 		return err

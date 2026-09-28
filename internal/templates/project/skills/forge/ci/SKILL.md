@@ -107,7 +107,7 @@ paths as changed before `forge generate` ran, not as generated-code drift.
 
 ### Deploys go through forge
 
-`deploy.yml` runs, per env, `forge build <env> --push "$REGISTRY"` then
+`deploy.yml` runs, per env, `forge build <env> --push` (to the registry the env's KCL declares) then
 `forge env deploy <env>` — never `kcl run | kubectl apply`, which cannot
 resolve `kcl_plugin.forge` and skips the declared-context binding, the
 per-env frontend `config.js` render, digest pinning and the live preflight.

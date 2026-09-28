@@ -45,6 +45,12 @@ func forgeModuleArg(workDir string) (string, error) {
 	if err := kclvendor.CheckKclMods(workDir); err != nil {
 		return "", err
 	}
+	// Same seam, same reason: a project still calling the retired
+	// forge.registry helper would otherwise fail on KCL's "attribute
+	// 'registry' not found in module 'forge'", which names no fix.
+	if err := kclvendor.CheckRegistryHelper(workDir); err != nil {
+		return "", err
+	}
 	arg, err := kclvendor.ExternalPkgArg()
 	if err != nil {
 		return "", fmt.Errorf("materialize the forge KCL module: %w", err)

@@ -439,7 +439,8 @@ jobs:
       - name: Create the e2e cluster
         run: forge cluster up e2e --wait
       - name: Build images
-        run: forge build e2e --push localhost:5050
+        # Pushes to the registry deploy/kcl/e2e/main.k declares.
+        run: forge build e2e --push
       - name: Deploy and test
         # `forge env deploy` waits for every workload to become ready.
         run: |

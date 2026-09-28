@@ -385,7 +385,7 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		// as liveDigest, so a release without it cannot deploy the site.
 		if frontendIsHosted(fe) {
 			if _, ok := artifacts[fe.Name]; !ok {
-				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge build %s --push <image push base>)", fe.Name, envNameOr(opts.env)))
+				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge build %s --push)", fe.Name, envNameOr(opts.env)))
 			}
 			continue
 		}

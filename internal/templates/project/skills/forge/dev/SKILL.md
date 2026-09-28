@@ -260,7 +260,7 @@ declares `k3d-<project>`; staging/prod declare their own:
 _cluster = forge.ClusterTarget {
     cluster = "gke_acme-prod_us-central1_cluster-1"
     namespace = "myapp-prod"
-    registry = forge.registry("ghcr.io/acme")
+    registry = "ghcr.io/acme"
     platform = "amd64"
 }
 ```
@@ -298,11 +298,9 @@ primitives above:
 forge generate --check
 
 # build + push to the registry deploy/kcl/staging/main.k declares
-# (cluster_target.registry — the one `forge env deploy staging` pulls from)
+# (cluster_target.registry — the one `forge env deploy staging` pulls from).
+# --push takes no value: to push elsewhere, change the declaration.
 forge build staging --push
-
-# or push somewhere else explicitly (warns if it differs from the declared one)
-forge build staging --push=ghcr.io/acme
 
 # deploy with context guard
 forge env deploy staging

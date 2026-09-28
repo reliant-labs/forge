@@ -109,24 +109,19 @@ var quarantine = []quarantined{
 	},
 
 	// ── Test-only injection seams ───────────────────────────────────────
-	// These three are the rule's honest edge: production registers the
+	// This is the rule's honest edge: production registers the
 	// provider as a zero value, so the field only ever carries a test's
 	// value. That is a real constraint on production (it cannot point the
 	// provider anywhere but "."), but it is a deliberate seam rather than a
-	// dead branch. They are quarantined rather than exempted because the
+	// dead branch. It is quarantined rather than exempted because the
 	// distinction is a judgement about intent that no rule can make, and
 	// burying it in an exemption would hide the next one that is NOT a seam.
 	{
 		Rule: RulePhantomField,
-		Key:  "internal/deploytarget.ExternalProvider.ProjectDir",
-		Cost: "deploytarget.go registers ExternalProvider{}, so projectDir() always returns \".\" in " +
-			"production; only external_test.go supplies a value. Deliberate test seam — but production " +
-			"cannot deploy from anywhere but the process working directory. Owner: internal/deploytarget.",
-	},
-	{
-		Rule: RulePhantomField,
 		Key:  "internal/deploytarget.FirebaseProvider.StagingRoot",
-		Cost: "Same shape: firebase.go reads StagingRoot, only firebase tests set it. Owner: internal/deploytarget.",
+		Cost: "deploytarget.go registers FirebaseProvider{}, so firebase.go's StagingRoot is only ever a " +
+			"test's value. Deliberate test seam — but production cannot stage anywhere but the default " +
+			"root. Owner: internal/deploytarget.",
 	},
 
 	// ── No-op functions with live callers ───────────────────────────────

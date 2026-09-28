@@ -70,113 +70,180 @@ func fullCIData() CIWorkflowData {
 
 var stampedForgeRefRE = regexp.MustCompile(`cmd/forge@[^"$\s]`)
 
-// No install site may carry a literal ref, and every site installs the same
-// way — a second, divergent install recipe is how one job ends up checking
-// with a different forge than its neighbour.
+// Every workflow that installs forge — every such job in ci.yml, deploy.yml,
+// e2e.yml's k3d runtime and reconcile.yml — runs installForgeScript, byte for
+// byte, and none carries a literal ref. A second, divergent install recipe is
+// how one job ends up checking with a different forge than its neighbour, and
+// how a fix lands in three copies of a script and misses the fourth.
 func TestCIWorkflows_InstallForgeFromProjectAtRunTime(t *testing.T) {
-	ci, err := CITemplates("github").Render("ci.yml.tmpl", fullCIData())
-	if err != nil {
-		t.Fatalf("render ci.yml: %v", err)
+	render := func(name string, data any) []byte {
+		t.Helper()
+		out, err := CITemplates("github").Render(name, data)
+		if err != nil {
+			t.Fatalf("render %s: %v", name, err)
+		}
+		return out
 	}
-	reconcile, err := CITemplates("github").Render("reconcile.yml.tmpl", ReconcileWorkflowData{
-		ProjectName:  "demo",
-		Environments: []DeployEnv{{Name: "staging"}},
-	})
-	if err != nil {
-		t.Fatalf("render reconcile.yml: %v", err)
+	workflows := map[string][]byte{
+		"ci.yml": render("ci.yml.tmpl", fullCIData()),
+		"reconcile.yml": render("reconcile.yml.tmpl", ReconcileWorkflowData{
+			ProjectName: "demo", Environments: []DeployEnv{{Name: "staging"}},
+		}),
+		"deploy.yml": render("deploy.yml.tmpl", DeployWorkflowData{
+			ProjectName: "demo", Environments: []DeployEnv{{Name: "prod", Protection: true}}, Registry: "ghcr",
+		}),
+		"e2e.yml": render("e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "k3d"}),
 	}
-
-	for name, wf := range map[string][]byte{"ci.yml": ci, "reconcile.yml": reconcile} {
+	want := map[string]int{"ci.yml": 5, "reconcile.yml": 1, "deploy.yml": 1, "e2e.yml": 1}
+	for name, wf := range workflows {
 		if m := stampedForgeRefRE.Find(wf); m != nil {
 			t.Errorf("%s stamps a forge ref at scaffold time (%q) — it will drift from go.mod on the next forge bump", name, m)
 		}
-	}
-
-	ciScripts := installForgeScripts(t, ci)
-	// lint (migration safety), verify-generated, deployability, vuln-scan, e2e (k3d).
-	if len(ciScripts) != 5 {
-		t.Fatalf("ci.yml has %d Install forge steps, want 5 (one per job that runs forge)", len(ciScripts))
-	}
-	scripts := append(ciScripts, installForgeScripts(t, reconcile)...)
-	for i, s := range scripts {
-		if s != scripts[0] {
-			t.Errorf("Install forge step %d differs from step 0:\n--- step 0\n%s\n--- step %d\n%s", i, scripts[0], i, s)
+		scripts := installForgeScripts(t, wf)
+		if len(scripts) != want[name] {
+			t.Errorf("%s has %d Install forge steps, want %d", name, len(scripts), want[name])
 		}
-		for _, want := range []string{
-			// The exact read the houndersclub workflow uses, so a project
-			// whose workflow was hand-fixed and one scaffolded fresh agree.
-			`v=$(GOWORK=off go list -m -f '{{.Version}}' github.com/reliant-labs/forge`,
-			`CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"`,
-		} {
-			if !strings.Contains(s, want) {
-				t.Errorf("Install forge step %d is missing %q:\n%s", i, want, s)
+		for i, s := range scripts {
+			if s != installForgeScript {
+				t.Errorf("%s Install forge step %d is not installForgeScript:\n%s", name, i, s)
 			}
 		}
 	}
 }
 
-// Runs the rendered install script against real modules, with `go install`
-// stubbed to print what it WOULD install. `go list` is the real toolchain —
-// the script's correctness is exactly how it reads go.mod.
-func TestCIWorkflows_InstallForgeScriptResolvesFromProject(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs the go toolchain against fixture modules")
+// forgeTestPin is a real forge pseudo-version, served below from a local
+// file:// module proxy — never from the network or the developer's cache.
+const forgeTestPin = "v0.1.18-0.20260927181843-7355bcb3af9c"
+
+// hermeticGoEnv is an environment in which the go command can resolve
+// github.com/reliant-labs/forge ONLY from proxyURL: an empty module cache,
+// and none of the developer's GOPRIVATE / GONOSUMDB / GOFLAGS, which (on a
+// forge maintainer's machine, GOPRIVATE=github.com/reliant-labs/*) make the
+// go command fetch forge over git and silently defeat GOPROXY=off. That is
+// how this test once passed locally and failed on a clean runner.
+func hermeticGoEnv(t *testing.T, proxyURL string, extraPath string) []string {
+	t.Helper()
+	var env []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		switch k {
+		case "GOPRIVATE", "GONOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOFLAGS", "GOPROXY",
+			"GOSUMDB", "GOMODCACHE", "GOWORK", "GOTOOLCHAIN", "GOENV", "PATH":
+			continue
+		}
+		env = append(env, kv)
 	}
+	return append(env,
+		"PATH="+extraPath+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GOPROXY="+proxyURL,
+		"GOSUMDB=off",
+		"GOMODCACHE="+t.TempDir(),
+		"GOTOOLCHAIN=local",
+		"GOENV=off",
+	)
+}
+
+// writeForgeModuleProxy lays out a file:// GOPROXY holding exactly the
+// metadata `go list -m github.com/reliant-labs/forge` reads for forgeTestPin.
+func writeForgeModuleProxy(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "github.com", "reliant-labs", "forge", "@v")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		forgeTestPin + ".mod":  "module github.com/reliant-labs/forge\n\ngo 1.24\n",
+		forgeTestPin + ".info": `{"Version":"` + forgeTestPin + `","Time":"2026-09-27T18:18:43Z"}`,
+		"list":                 forgeTestPin + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return "file://" + filepath.ToSlash(root)
+}
+
+// Runs installForgeScript against real modules with the real go toolchain,
+// with `go install` stubbed to print what it WOULD install, in an environment
+// where forge resolves only from a local proxy (or not at all).
+//
+// The load-bearing case is "go.mod requires forge, and it does not resolve":
+// the previous script read `go list -m … 2>/dev/null || <forge.yaml>`, so on a
+// clean CI runner the failed lookup silently installed forge.yaml's OLDER
+// forge — exactly the drift the script exists to prevent (#273's first CI
+// run). A failed resolution must fail the step and install nothing.
+func TestCIWorkflows_InstallForgeScriptResolvesFromProject(t *testing.T) {
 	goBin, err := exec.LookPath("go")
 	if err != nil {
-		t.Skip("go not on PATH")
+		t.Fatal("go not on PATH")
 	}
-	ci, err := CITemplates("github").Render("ci.yml.tmpl", fullCIData())
+	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Fatalf("render ci.yml: %v", err)
+		t.Fatal("bash not on PATH")
 	}
-	scripts := installForgeScripts(t, ci)
-	if len(scripts) == 0 {
-		t.Fatal("ci.yml has no Install forge step")
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Fatal("jq not on PATH — installForgeScript requires it (GitHub-hosted runners ship it)")
 	}
-	script := scripts[0]
 
-	// A `go` shim: `go install` reports its argument, everything else is
-	// the real toolchain. Resolution happens offline: every fixture's
-	// requirement is satisfied by `replace`-free pins go list can answer
-	// from go.mod alone (-m on a direct requirement reads no module source).
+	// `go install` reports its target; every other go subcommand is real.
 	shimDir := t.TempDir()
 	shim := "#!/bin/sh\nif [ \"$1\" = install ]; then echo \"INSTALL $2\"; exit 0; fi\nexec " + goBin + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	proxy := writeForgeModuleProxy(t)
 
-	const pin = "v0.1.18-0.20260927181843-7355bcb3af9c"
+	requires := "module example.com/svc\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge " + forgeTestPin + "\n"
 	cases := []struct {
 		name      string
 		goMod     string
 		forgeYAML string
+		proxy     string
 		want      string // INSTALL line, or "" when the step must fail
 		wantErr   string
 	}{
 		{
 			name:      "service: the version go.mod requires, not forge.yaml's",
-			goMod:     "module example.com/svc\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge " + pin + "\n",
+			goMod:     requires,
 			forgeYAML: "forge_version: v0.1.17\n",
-			want:      "INSTALL github.com/reliant-labs/forge/cmd/forge@" + pin,
+			proxy:     proxy,
+			want:      "INSTALL github.com/reliant-labs/forge/cmd/forge@" + forgeTestPin,
+		},
+		{
+			name:      "service whose forge cannot be resolved FAILS, never falls back to forge.yaml",
+			goMod:     requires,
+			forgeYAML: "forge_version: v0.1.17\n",
+			proxy:     "off",
+			wantErr:   "module lookup disabled by GOPROXY=off",
+		},
+		{
+			name:      "an indirect requirement still pins forge from go.mod",
+			goMod:     "module example.com/svc\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge " + forgeTestPin + " // indirect\n",
+			forgeYAML: "forge_version: v0.1.17\n",
+			proxy:     proxy,
+			want:      "INSTALL github.com/reliant-labs/forge/cmd/forge@" + forgeTestPin,
 		},
 		{
 			name:      "cli/library: go.mod does not require forge, forge.yaml pins it",
 			goMod:     "module example.com/cli\n\ngo 1.24\n",
-			forgeYAML: "name: cli\nforge_version: " + pin + "\n",
-			want:      "INSTALL github.com/reliant-labs/forge/cmd/forge@" + pin,
+			forgeYAML: "name: cli\nforge_version: " + forgeTestPin + "\n",
+			proxy:     "off",
+			want:      "INSTALL github.com/reliant-labs/forge/cmd/forge@" + forgeTestPin,
 		},
 		{
 			name:      "replace: refuses rather than installing a different forge",
-			goMod:     "module example.com/svc\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge " + pin + "\n\nreplace github.com/reliant-labs/forge => ../forge\n",
-			forgeYAML: "forge_version: " + pin + "\n",
+			goMod:     requires + "\nreplace github.com/reliant-labs/forge => ../forge\n",
+			forgeYAML: "forge_version: " + forgeTestPin + "\n",
+			proxy:     "off",
 			wantErr:   "::error file=go.mod::go.mod replaces github.com/reliant-labs/forge with ../forge",
 		},
 		{
 			name:      "an uninstallable (+dirty) forge_version fails by name",
 			goMod:     "module example.com/cli\n\ngo 1.24\n",
-			forgeYAML: "forge_version: " + pin + "+dirty\n",
-			wantErr:   "::error file=go.mod::no installable forge version (got '" + pin + "+dirty')",
+			forgeYAML: "forge_version: " + forgeTestPin + "+dirty\n",
+			proxy:     "off",
+			wantErr:   "::error file=go.mod::no installable forge version (got '" + forgeTestPin + "+dirty')",
 		},
 	}
 	for _, c := range cases {
@@ -188,11 +255,11 @@ func TestCIWorkflows_InstallForgeScriptResolvesFromProject(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(c.forgeYAML), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.Command("bash", "-e", "-o", "pipefail", "-c", script)
+			// GitHub Actions runs `run:` blocks with `bash -e {0}`; the
+			// script sets its own -euo pipefail on top.
+			cmd := exec.Command(bash, "-e", "-c", installForgeScript)
 			cmd.Dir = dir
-			cmd.Env = append(os.Environ(),
-				"PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"GOFLAGS=-mod=mod", "GOPROXY=off", "GOTOOLCHAIN=local")
+			cmd.Env = hermeticGoEnv(t, c.proxy, shimDir)
 			out, err := cmd.CombinedOutput()
 			got := strings.TrimSpace(string(out))
 			if c.wantErr != "" {
@@ -203,7 +270,7 @@ func TestCIWorkflows_InstallForgeScriptResolvesFromProject(t *testing.T) {
 					t.Fatalf("install step failed without naming the cause; want %q in:\n%s", c.wantErr, got)
 				}
 				if strings.Contains(got, "INSTALL ") {
-					t.Fatalf("install step installed something despite refusing:\n%s", got)
+					t.Fatalf("install step installed a forge despite failing:\n%s", got)
 				}
 				return
 			}

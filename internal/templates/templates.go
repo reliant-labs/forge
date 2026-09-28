@@ -53,6 +53,9 @@ func FuncMap() template.FuncMap {
 		"last":         lastStringSlice,
 		"tableFromFK":  tableFromFK,
 		"columnFromFK": columnFromFK,
+		// installForgeRun renders the one forge-install script every
+		// scaffolded workflow shares — see installForgeScript.
+		"installForgeRun": installForgeRun,
 	}
 }
 

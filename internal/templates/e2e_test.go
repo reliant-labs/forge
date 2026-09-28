@@ -60,7 +60,7 @@ func TestE2EWorkflowTemplate_K3d(t *testing.T) {
 		"forge cluster up e2e --wait",
 		"forge build e2e --push",
 		"forge env deploy e2e",
-		`CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"`,
+		installForgeRun(8),
 		"frontends/web/package.json",
 		"task test:e2e",
 		"run-e2e",

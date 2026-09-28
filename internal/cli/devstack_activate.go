@@ -302,16 +302,15 @@ func entitiesTargetThisMachine(e *KCLEntities) bool {
 			return true
 		}
 	}
-	for _, svc := range e.Services {
-		switch svc.Deploy.Type {
-		case "host", "compose", "host-infra":
+	if len(e.Infra) > 0 {
+		return true
+	}
+	for _, w := range e.Workloads {
+		switch w.Runtime.Type {
+		case RuntimeHost, RuntimeCompose:
 			return true
-		case "cluster":
-			if c := svc.Deploy.Cluster; c != nil && isLocalCluster(c.Cluster) {
-				return true
-			}
-		case "simple-backend":
-			if sb := svc.Deploy.SimpleBackend; sb != nil && isLocalCluster(sb.Cluster) {
+		case RuntimeCluster:
+			if isLocalCluster(w.Runtime.Cluster.Cluster) {
 				return true
 			}
 		}

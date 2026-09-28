@@ -695,11 +695,17 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if gerr != nil {
 		return gerr
 	}
+	// The hosted group (workloads bound to forge.OnHosted, hosted databases,
+	// bucketless static sites) is PUBLISHED, not applied: it rides the
+	// control plane, after the local apply below. Hosting is per workload,
+	// so the same env's cluster part deploys in the same run.
+	groups, hostedGroups := splitHostedGroups(groups)
 	topology := groups
 	if len(targets) > 0 && !opts.frontendsOnly && fullEntities != nil {
 		if topology, gerr = buildDeployGroupsForEnv(envName, fullEntities, namespace, plainTag, dryRun); gerr != nil {
 			return gerr
 		}
+		topology, _ = splitHostedGroups(topology)
 		full, rerr := renderFull()
 		if rerr != nil {
 			return fmt.Errorf("render %s: %w", mainK, rerr)
@@ -789,6 +795,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	}); err != nil {
 		return err
 	}
+	// The hosted part, AFTER the local apply: a hosted workload may
+	// reference a cluster workload's URL, never the reverse.
+	if len(hostedGroups) > 0 {
+		if err := runHostedDeploy(ctx, envName, entities, hostedGroups, opts); err != nil {
+			return err
+		}
+	}
+
 	// Under rollout mode skip forge applied the manifests and waited for
 	// nothing, so no observation arrived for any resource. Their readiness is
 	// genuinely unknown rather than fine, and the document says so explicitly
@@ -1014,15 +1028,14 @@ type deployApplyInput struct {
 
 // applyDeployGroups applies the rendered deploy groups. With no groups (and not
 // a frontend-only env) it falls back to one direct cluster.Apply against the
-// env's main.k — historical behaviour that still catches host-only entities
-// that produce manifests (CronJobs etc.). With groups present it dispatches
+// env's main.k — the env's support stream (cluster_target Namespace,
+// ConfigMaps, additional manifests) when no workload groups exist. With groups present it dispatches
 // each through its provider (the K8sCluster provider wraps cluster.Apply via
 // the builder closure). A frontend-only env has nothing for the cluster
 // pipeline, so both branches are skipped and the frontend dispatch does the
 // real work.
 func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
-	frontendOnly := len(in.groups) == 0 && !in.hasK8sServices && hasShippableFrontend(in.entities) &&
-		in.entities != nil && len(in.entities.Operators) == 0 && len(in.entities.CronJobs) == 0
+	frontendOnly := len(in.groups) == 0 && !in.hasK8sServices && hasShippableFrontend(in.entities)
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{
 			MainK:        in.mainK,
@@ -1035,7 +1048,8 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			DryRun:       in.dryRun,
 			DryRunFramed: true,
 			Prune:        in.prune,
-			HostSkip:     hostDeploymentSkipSetFromKCL(in.cfg, in.entities),
+			Project:      projectNameOf(in.cfg),
+			PruneCRDs:    true,
 			Targets:      in.targets,
 			HelmCharts:   in.helmSpecs,
 			Rollout:      in.rollout,
@@ -1044,10 +1058,9 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 		})
 	}
 	if len(in.groups) > 0 {
-		hostSkip := hostDeploymentSkipSetFromKCL(in.cfg, in.entities)
 		builder := applyOptsBuilderFromContext(applyOptsContext{
 			MainK: in.mainK, ImageTag: in.imageTag, FallbackNamespace: in.namespace, Env: in.envName,
-			EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
+			EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, Project: projectNameOf(in.cfg),
 			Targets: in.targets, Groups: in.groups, Entities: in.entities,
 			Topology: in.topology, TopologyEntities: in.topologyEntities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
@@ -1753,22 +1766,17 @@ func inferPublicDir(frontendType string) string {
 }
 
 // validateDeployTargets checks every name passed to --target against
-// the set of deployable app names in the rendered KCL (services +
-// operators + frontends). A target that matches nothing is almost
+// the set of deployable app names in the rendered KCL (workloads of every
+// kind + infra + frontends). A target that matches nothing is almost
 // always a typo; erroring here — with the list of available app names —
 // is far friendlier than silently deploying nothing (group filter
 // empties out) or applying a shared-only manifest bundle. Reuses
 // inTargetSet's membership semantics indirectly via a name set.
 //
-// Operators are first-class --target subjects: each renders as a
-// Deployment + cluster RBAC (ServiceAccount / ClusterRole /
-// ClusterRoleBinding) all carrying `app.kubernetes.io/name = <op>`, so
-// naming an operator scopes the K8sCluster apply to that operator's
-// workload exactly the way a Service target does
+// Every workload kind is a first-class --target subject: RenderWorkloads
+// stamps `app.kubernetes.io/name = <workload>` on everything it renders for
+// one, so naming it scopes the cluster apply to that workload exactly
 // (cluster.SelectManifestsByGroup is group-label-driven, not kind-driven).
-// Without operators in this set, `forge env deploy <env> --target <op>`
-// errored "unknown --target" because operators were absent from the
-// available-groups list — you couldn't deploy just an operator.
 //
 // manifestGroups extends the set with every GROUP the rendered stream
 // attributes an object to (cluster.ManifestGroups over the FULL render) — the
@@ -1780,11 +1788,11 @@ func inferPublicDir(frontendType string) string {
 // name to target and stay addressable only by a bare deploy.
 func validateDeployTargets(e *KCLEntities, targets []string, manifestGroups ...string) error {
 	avail := map[string]struct{}{}
-	for _, s := range e.Services {
-		avail[s.Name] = struct{}{}
+	for _, w := range e.Workloads {
+		avail[w.Name] = struct{}{}
 	}
-	for _, o := range e.Operators {
-		avail[o.Name] = struct{}{}
+	for _, hi := range e.Infra {
+		avail[hi.Name] = struct{}{}
 	}
 	for _, f := range e.Frontends {
 		avail[f.Name] = struct{}{}
@@ -1829,38 +1837,24 @@ func validateDeployTargets(e *KCLEntities, targets []string, manifestGroups ...s
 	return errUnknownTargets(unknown, names, manifestOnly)
 }
 
-// filterEntitiesByTarget returns a shallow copy of e with Services,
-// Operators, and Frontends narrowed to the names in targets (reusing
-// inTargetSet from up.go for the membership test). The remaining entity
-// slices — cronjobs, gateways, routes — are carried through UNCHANGED:
-// those carry their own group label, and the K8sCluster apply's exclusive
-// cluster.SelectManifestsByGroup is what actually drops the non-targeted
-// ones from the rendered stream.
-//
-// Narrowing Operators here (not just Services/Frontends) is what makes
-// an operator a first-class --target. It scopes the entity-derived sets
-// that key off the operator slice — chiefly the frontendOnly gate in
-// runDeploy (which checks len(entities.Operators)) — so `forge env deploy
-// <env> --target <operator>` doesn't accidentally look like a
-// frontend-only env. The K8sCluster apply does the load-bearing scoping
-// at the manifest level: with the operator name in opts.Targets,
-// cluster.SelectManifestsByGroup keeps EXACTLY that operator's Deployment +
-// RBAC (all carry the operator's group) and drops every other group —
-// other apps AND the env-shared manifests (unless their group is also
-// targeted). Operators have no External/Compose/host dispatch, so there's
-// nothing else to scope.
+// filterEntitiesByTarget returns a shallow copy of e with Workloads, Infra and
+// Frontends narrowed to the names in targets (inTargetSet from up.go for the
+// membership test). The remaining entity slices — gateways, routes, charts —
+// are carried through UNCHANGED: those carry their own group label, and the
+// cluster apply's exclusive cluster.SelectManifestsByGroup is what actually
+// drops the non-targeted ones from the rendered stream.
 func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
 	out := *e // shallow copy; slices below are rebuilt, the rest shared
-	var svcs []ServiceEntity
-	for _, s := range e.Services {
-		if inTargetSet(targets, s.Name) {
-			svcs = append(svcs, s)
+	var ws []WorkloadEntity
+	for _, w := range e.Workloads {
+		if inTargetSet(targets, w.Name) {
+			ws = append(ws, w)
 		}
 	}
-	var ops []OperatorEntity
-	for _, o := range e.Operators {
-		if inTargetSet(targets, o.Name) {
-			ops = append(ops, o)
+	var infra []HostInfraEntity
+	for _, hi := range e.Infra {
+		if inTargetSet(targets, hi.Name) {
+			infra = append(infra, hi)
 		}
 	}
 	var fes []FrontendEntity
@@ -1869,8 +1863,8 @@ func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
 			fes = append(fes, f)
 		}
 	}
-	out.Services = svcs
-	out.Operators = ops
+	out.Workloads = ws
+	out.Infra = infra
 	out.Frontends = fes
 	return &out
 }
@@ -1878,25 +1872,18 @@ func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
 // filterEntitiesToFrontendsOnly returns a shallow copy of e narrowed to
 // its Frontends — EVERY frontend kept (the Firebase-deploying one PLUS
 // any `deploy = None` build-only frontends it bundles), and every other
-// entity kind dropped: Services, Operators, CronJobs, Gateways,
-// HTTP/GRPC routes, HelmCharts, Clusters, and the secret/manifest prereqs
-// that only matter to the k8s apply.
+// entity kind dropped: Workloads, Infra, Databases, Gateways, HTTP/GRPC
+// routes, HelmCharts, Clusters, and the secret/manifest prereqs that only
+// matter to the k8s apply.
 //
-// This is the load-bearing half of `--frontends-only`. Dropping CronJobs
-// here (which filterEntitiesByTarget deliberately does NOT do — a CronJob
-// can be a --target) is what lets the frontendOnly guard in runDeploy
-// engage: that guard requires len(entities.CronJobs)==0 &&
-// len(entities.Operators)==0 && !hasK8sServices, and a project declaring a
-// forge.CronJob (e.g. a one-shot schema-migration Job) would otherwise
-// keep it non-empty, leave frontendOnly false, and drive an empty-manifest
-// cluster.Apply that errors "no objects passed to apply". With everything
-// but Frontends stripped, the cluster pipeline is skipped entirely and
-// only the Firebase dispatch runs.
+// This is the load-bearing half of `--frontends-only`: with everything but
+// Frontends stripped, the cluster pipeline is skipped entirely and only the
+// frontend dispatch runs.
 func filterEntitiesToFrontendsOnly(e *KCLEntities) *KCLEntities {
 	out := *e // shallow copy; non-frontend slices are zeroed below
-	out.Services = nil
-	out.Operators = nil
-	out.CronJobs = nil
+	out.Workloads = nil
+	out.Infra = nil
+	out.Databases = nil
 	out.Gateways = nil
 	out.HTTPRoutes = nil
 	out.GRPCRoutes = nil
@@ -1910,8 +1897,9 @@ func filterEntitiesToFrontendsOnly(e *KCLEntities) *KCLEntities {
 	return &out
 }
 
-// kclEntitiesHaveK8sCluster returns true when at least one service in
-// the rendered KCL declares `deploy: cluster`. Used to gate the
+// kclEntitiesHaveK8sCluster returns true when the env applies anything to a
+// cluster forge addresses: a workload or database bound to a cluster, or a
+// declared cluster_target (whose support resources forge applies). Used to gate the
 // kubectl-context guard, the "Namespace:" banner, and the dev-cluster
 // bootstrap so external-only / compose-only projects don't print
 // cluster-flavored boilerplate or refuse a deploy because kubectl
@@ -1925,41 +1913,15 @@ func kclEntitiesHaveK8sCluster(entities *KCLEntities) bool {
 	if entities == nil {
 		return false
 	}
-	for _, svc := range entities.Services {
-		// simple-backend counts: it renders a Deployment + Service into a
-		// cluster through the same apply path, so every guard this
-		// predicate gates — the namespace-mismatch check, the rendered
-		// Secret wiring, the declared-context verification — applies to
-		// it. Answering false for an env whose only workloads are
-		// SimpleBackends would skip all three and deploy anyway.
-		if svc.Deploy.Type == "cluster" || svc.Deploy.Type == "simple-backend" {
+	if len(entities.WorkloadsOn(RuntimeCluster)) > 0 || entities.ClusterTarget.field("cluster") != "" {
+		return true
+	}
+	for _, d := range entities.Databases {
+		if !d.Hosted() {
 			return true
 		}
 	}
 	return false
-}
-
-// hostDeploymentSkipSetFromKCL returns the set of Deployment names that
-// the deploy's rollout wait should skip — services declared `deploy: host`
-// in the rendered KCL. Each host service name expands to two keys:
-//
-//   - the bare name ("admin-server"), matching per-service-binary mode
-//   - the project-prefixed name ("<project>-admin-server"), matching
-//     shared-binary mode where KCL renders `<project>-<svc>` Deployments
-//
-// Returning both is cheap and lets the caller iterate over actually-
-// applied Deployment names without re-deriving the project-prefix rule.
-// Empty entity set → empty skip set (legacy behaviour preserved).
-func hostDeploymentSkipSetFromKCL(cfg *config.ProjectConfig, e *KCLEntities) map[string]struct{} {
-	out := map[string]struct{}{}
-	if cfg == nil || e == nil {
-		return out
-	}
-	for _, name := range e.HostServiceNames() {
-		out[name] = struct{}{}
-		out[cfg.Name+"-"+name] = struct{}{}
-	}
-	return out
 }
 
 // resolveDeployImageTag is the precedence chain `forge env deploy <env>`
@@ -3032,7 +2994,7 @@ func expectedClusterForEnv(ctx context.Context, cfg *config.ProjectConfig, envNa
 // firstK8sClusterField reads the rendered KCL for env and returns the
 // requested field ("cluster" / "namespace" / "registry" / "domain")
 // from the env's declared cluster_target, falling back to the first
-// service whose Deploy is K8sCluster-shaped. Returns "" when KCL can't be
+// Cluster-bound workload's runtime. Returns "" when KCL can't be
 // rendered or the field is declared nowhere.
 func firstK8sClusterField(ctx context.Context, envName, field string) string {
 	if envName == "" {
@@ -3055,76 +3017,37 @@ func k8sClusterFieldFromEntities(entities *KCLEntities, field string) string {
 		return ""
 	}
 	// The Bundle's declared env-wide target is the answer whenever it
-	// states the field. Walking services for it is only a fallback for a
-	// contract with no cluster_target: services render as
-	// `bundle.services + projected(bundle.workloads)`, so the first
-	// cluster-shaped one can be a lone infra service pinned to ANOTHER
-	// cluster — which is how an env's whole render once moved into that
-	// service's namespace.
+	// states the field. Walking workloads for it is only a fallback for a
+	// contract with no cluster_target: the first Cluster-bound workload can
+	// be one pinned to ANOTHER cluster, which is how an env's whole render
+	// once moved into that workload's namespace.
 	if v := entities.ClusterTarget.field(field); v != "" {
 		return v
 	}
-	for _, svc := range entities.Services {
-		// A SimpleBackend carries cluster / namespace / domain of its own
-		// and answers for them here, so an env whose only workloads are
-		// SimpleBackends still resolves a kubectl context — without which
-		// the apply chokepoint refuses the write. It has NO registry: its
-		// image is fully qualified and forge pushes nothing for it, so
-		// the "registry" field falls through to a later service rather
-		// than returning an empty string that reads like a declared one.
-		if sb := svc.Deploy.SimpleBackend; svc.Deploy.Type == "simple-backend" && sb != nil {
-			switch field {
-			case "cluster":
-				if sb.Cluster != "" {
-					return sb.Cluster
-				}
-			case "namespace":
-				if sb.Namespace != "" {
-					return sb.Namespace
-				}
-			case "domain":
-				// The FIRST custom domain. A public backend with none has
-				// an allocated or gateway-derived hostname instead, which
-				// is observed status, not something this declaration knows.
-				if len(sb.Spec.Domains) > 0 {
-					return sb.Spec.Domains[0]
-				}
-			}
-			continue
-		}
-		if svc.Deploy.Type != "cluster" || svc.Deploy.Cluster == nil {
-			continue
-		}
-		c := svc.Deploy.Cluster
+	for _, w := range entities.WorkloadsOn(RuntimeCluster) {
+		c := w.Runtime.Cluster
+		var v string
 		switch field {
 		case "cluster":
-			if c.Cluster != "" {
-				return c.Cluster
-			}
+			v = c.Cluster
 		case "namespace":
-			if c.Namespace != "" {
-				return c.Namespace
-			}
+			v = c.Namespace
 		case "registry":
-			if c.Registry != "" {
-				return c.Registry
-			}
+			v = c.Registry
 		case "domain":
-			if c.Domain != "" {
-				return c.Domain
-			}
+			v = c.Domain
+		case "platform":
+			v = c.Platform
+		}
+		if v != "" {
+			return v
 		}
 	}
-	// Fallback for the manifests-only render shape: a project whose
-	// main.k emits only `manifests` (no `output = forge.render(_bundle)`
-	// entity echo) yields no cluster-shaped service entity above, so the
-	// loop finds nothing. The namespace is still recoverable from the
-	// rendered objects' metadata.namespace; the cluster (kubectl context)
-	// is not — it isn't a field on any k8s object — so only "namespace"
-	// has a manifest fallback. A project in this shape that wants the
-	// declared-context guard (and any k8s write at all) must echo `output`
-	// so forge.K8sCluster.cluster is recoverable; there is no CLI escape
-	// hatch, and the apply chokepoint refuses an empty context.
+	// Fallback: an env with no cluster_target and no Cluster-bound workload
+	// (only additional manifests) still names a namespace in its stream's
+	// objects. The cluster (kubectl context) is not a field on any k8s
+	// object, so only "namespace" has a manifest fallback; the apply
+	// chokepoint refuses an empty context.
 	if field == "namespace" && entities.ManifestNamespace != "" {
 		return entities.ManifestNamespace
 	}
@@ -3542,18 +3465,18 @@ func declaredSecretEntities(entities *KCLEntities) []RenderedSecretEntity {
 }
 
 // referencedSecretNamesForGroup returns the set of Secret names the
-// group's services reference via their env-var secret_refs. This is the
+// group's workloads reference via their env-var secretRefs. This is the
 // scoping key: a declared Secret lands in a cluster ONLY when one of that
-// cluster's services names it. The group carries service names; the
-// entities carry each service's secret_refs.
+// cluster's workloads names it. The group carries workload names; the
+// entities carry each workload's spec.env.
 func referencedSecretNamesForGroup(entities *KCLEntities, g deploytarget.ServiceGroup) map[string]struct{} {
 	inGroup := map[string]struct{}{}
 	for _, rs := range g.Services {
 		inGroup[rs.Name] = struct{}{}
 	}
 	names := map[string]struct{}{}
-	for i := range entities.Services {
-		s := &entities.Services[i]
+	for i := range entities.Workloads {
+		s := &entities.Workloads[i]
 		if _, ok := inGroup[s.Name]; !ok {
 			continue
 		}
@@ -3605,4 +3528,12 @@ func isLocalCluster(name string) bool {
 		}
 	}
 	return false
+}
+
+// projectNameOf is the forge project name, "" for a nil config.
+func projectNameOf(cfg *config.ProjectConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Name
 }

@@ -110,9 +110,8 @@ func devDatabaseDSNs(entities *KCLEntities, primary string) []string {
 }
 
 // declaredDatabaseURLs returns every DATABASE_URL declared across the env's
-// services, in declaration order, including duplicates — the caller
-// de-duplicates. Both the service's own env_vars and its deploy block's are
-// walked, matching resolveSeedDSN's view of where a DSN can be declared.
+// workloads, in declaration order, including duplicates — the caller
+// de-duplicates.
 func declaredDatabaseURLs(entities *KCLEntities) []string {
 	if entities == nil {
 		return nil
@@ -123,14 +122,8 @@ func declaredDatabaseURLs(entities *KCLEntities) []string {
 			out = append(out, v)
 		}
 	}
-	for _, s := range entities.Services {
-		add(s.EnvVars)
-		if s.Deploy.Host != nil {
-			add(s.Deploy.Host.EnvVars)
-		}
-		if s.Deploy.Cluster != nil {
-			add(s.Deploy.Cluster.EnvVars)
-		}
+	for _, w := range entities.Workloads {
+		add(w.EnvVars())
 	}
 	return out
 }
@@ -232,9 +225,8 @@ func declaresHostInfraPostgres(entities *KCLEntities) bool {
 	if entities == nil {
 		return false
 	}
-	for _, s := range entities.Services {
-		if s.Deploy.Type == "host-infra" && s.Deploy.HostInfra != nil &&
-			s.Deploy.HostInfra.Engine == hostinfra.EnginePostgres {
+	for _, hi := range entities.Infra {
+		if hi.Engine == hostinfra.EnginePostgres {
 			return true
 		}
 	}
@@ -253,14 +245,11 @@ func postgresComposeEnvFiles(entities *KCLEntities) []string {
 	if entities == nil {
 		return nil
 	}
-	for _, s := range entities.Services {
-		if s.Deploy.Type != "compose" || s.Deploy.Compose == nil {
+	for _, w := range entities.WorkloadsOn(RuntimeCompose) {
+		if w.Runtime.Compose.Service != "postgres" && w.Name != "postgres" {
 			continue
 		}
-		if s.Deploy.Compose.Service != "postgres" && s.Name != "postgres" {
-			continue
-		}
-		if f := s.Deploy.Compose.EnvFile; f != "" {
+		if f := w.Runtime.Compose.EnvFile; f != "" {
 			return []string{f}
 		}
 	}
@@ -473,22 +462,12 @@ func resolveSeedDSN(entities *KCLEntities, cfg *config.ProjectConfig, env string
 	if v := os.Getenv("DATABASE_URL"); v != "" {
 		return v
 	}
-	// The KCL-declared value, from the same env stream the host services
-	// get. A service's own env_vars first, then its deploy block's.
+	// The KCL-declared value, from the same env stream the host workloads
+	// get.
 	if entities != nil {
-		for _, s := range entities.Services {
-			if v := envVarValue(s.EnvVars, "DATABASE_URL"); v != "" {
+		for _, w := range entities.Workloads {
+			if v := envVarValue(w.EnvVars(), "DATABASE_URL"); v != "" {
 				return v
-			}
-			if s.Deploy.Host != nil {
-				if v := envVarValue(s.Deploy.Host.EnvVars, "DATABASE_URL"); v != "" {
-					return v
-				}
-			}
-			if s.Deploy.Cluster != nil {
-				if v := envVarValue(s.Deploy.Cluster.EnvVars, "DATABASE_URL"); v != "" {
-					return v
-				}
 			}
 		}
 	}

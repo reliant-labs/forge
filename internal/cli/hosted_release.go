@@ -16,13 +16,13 @@ var hostedBackendDigestResolver = func(ctx context.Context, ref string) (string,
 	return externalImageDigestResolver(ctx, ref)
 }
 
-// harvestHostedBackendArtifacts records, for a HOSTED env, the image every
-// SimpleBackend declares — so `forge release cut` covers the workloads a
-// hosted deploy ships, and `forge env deploy` can pin them from the binding.
+// harvestHostedBackendArtifacts records the image every HOSTED workload that
+// forge does not build declares — so `forge release cut` covers the workloads
+// a hosted deploy ships, and `forge env deploy` can pin them from the binding.
 //
-// WHY THIS IS SEPARATE FROM THE BUILD-STATE HARVEST. A SimpleBackend names an
-// image forge usually did not build (CI pushed it, or it is a third-party
-// image), so there is no .forge/state record to project. The declaration is
+// WHY THIS IS SEPARATE FROM THE BUILD-STATE HARVEST. Such a workload names an
+// image forge did not build (CI pushed it, or it is a third-party image), so
+// there is no .forge/state record to project. The declaration is
 // the source of truth for WHICH image; the registry is the source of truth for
 // WHICH BYTES:
 //
@@ -36,16 +36,19 @@ var hostedBackendDigestResolver = func(ctx context.Context, ref string) (string,
 // Artifacts are keyed by hostedArtifactKey, the same rule the hosted provider
 // pins by, so the cut and the deploy cannot disagree.
 func harvestHostedBackendArtifacts(ctx context.Context, entities *KCLEntities, out map[string]release.Artifact) error {
-	if entities == nil || entities.ControlPlane == nil {
+	if entities == nil {
 		return nil
 	}
 	var errs []string
-	for _, svc := range entities.Services {
-		if svc.Deploy.Type != "simple-backend" || svc.Deploy.SimpleBackend == nil {
+	for _, svc := range entities.WorkloadsOn(RuntimeHosted) {
+		name := hostedArtifactKey(svc)
+		if _, have := out[name]; have || svc.Image != "" {
+			// forge built and pushed it (the build state's digest wins), or
+			// forge builds it and this cut simply did not — the release
+			// coverage check names that, with the build command.
 			continue
 		}
-		image := svc.Deploy.SimpleBackend.Spec.Image
-		name := hostedArtifactKey(svc)
+		image := svc.Spec.Image
 		if _, have := out[name]; have {
 			// forge built and pushed it: the build state's digest wins.
 			continue

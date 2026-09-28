@@ -48,6 +48,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -60,10 +61,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // renderedObject is one document of the env's rendered manifest stream,
@@ -394,6 +398,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		namespace:    namespace,
 	}, clusters, objects, totalRendered)
 	writeChartSummary(errOut, charts)
+	writeHostedAndHostSummary(errOut, envName, entities)
 
 	// The write report runs in the deferred close, so the fail-on-write
 	// verdict has to be taken after it — hence the sentinel here and the
@@ -976,5 +981,60 @@ func reportDeclinedWrites(w io.Writer, paths []string) {
 	fmt.Fprintf(w, "[render] %d generated file(s) not written — `forge env up` materializes them:\n", len(uniq))
 	for _, p := range uniq {
 		fmt.Fprintf(w, "[render]   %s\n", p)
+	}
+}
+
+// writeHostedAndHostSummary reports the two parts of an env that are NOT in
+// the applied stream above, so `forge env render` shows the whole env:
+//
+//   - the forge.dev Workload CRs (and StaticSite / ManagedDatabase specs) the
+//     env PUBLISHES to its control plane, each admitted — or refused, with
+//     the deploy path's own words — by deploytarget.PreflightHosted, which is
+//     Workload.Validate(ProfileRestricted) per workload plus a restricted
+//     render of the set;
+//   - the argv each HOST workload runs, as hostlaunch.BuildCmd derives it.
+func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
+	if e == nil {
+		return
+	}
+	if e.HasHosted() {
+		fmt.Fprintf(w, "\nhosted (published to the control plane, not applied):\n")
+		hosted, err := buildHostedGroup(envName, e)
+		if err != nil {
+			fmt.Fprintf(w, "  refused: %v\n", err)
+		} else if items, perr := deploytarget.PreflightHosted(*hosted); perr != nil {
+			fmt.Fprintf(w, "  refused: %v\n", perr)
+		} else {
+			for _, it := range items {
+				switch {
+				case it.Workload != nil:
+					doc, _ := json.Marshal(v1alpha1.Workload{
+						TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.GroupVersion.String(), Kind: "Workload"},
+						ObjectMeta: metav1.ObjectMeta{Name: it.Name},
+						Spec:       *it.Workload,
+					})
+					fmt.Fprintf(w, "  %s (%s): %s\n", it.Name, it.Workload.EffectiveKind(), doc)
+				default:
+					fmt.Fprintf(w, "  %s (%s)\n", it.Name, it.Tier)
+				}
+			}
+		}
+	}
+	hosts := e.WorkloadsOn(RuntimeHost)
+	if len(hosts) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nhost (run on this machine by `forge env up`):\n")
+	for _, h := range hosts {
+		cmd, err := hostlaunch.BuildCmd(context.Background(), h.Name, hostRunnerSpec(h))
+		if err != nil {
+			fmt.Fprintf(w, "  %s: %v\n", h.Name, err)
+			continue
+		}
+		dir := ""
+		if cmd.Dir != "" {
+			dir = "  (in " + cmd.Dir + ")"
+		}
+		fmt.Fprintf(w, "  %s (%s): %s%s\n", h.Name, h.Kind, strings.Join(cmd.Args, " "), dir)
 	}
 }

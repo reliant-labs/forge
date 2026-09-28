@@ -380,11 +380,8 @@ func harvestFileArtifacts(projectDir, outputDir string, entities *KCLEntities) m
 		outputDir = filepath.Join(projectDir, outputDir)
 	}
 
-	for _, svc := range entities.Services {
-		if svc.Deploy.Type != "build-only" || svc.Deploy.BuildOnly == nil {
-			continue
-		}
-		for _, v := range svc.Deploy.BuildOnly.BuildVariants {
+	for _, svc := range entities.WorkloadsOn(RuntimeBuildOnly) {
+		for _, v := range svc.Runtime.BuildOnly.BuildVariants {
 			name := v.OutputName
 			if name == "" {
 				name = svc.Name + "-" + v.Name

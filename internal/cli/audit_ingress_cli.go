@@ -62,15 +62,13 @@ func auditIngress(cfg *config.ProjectConfig, projectDir string) audittype.Catego
 	// A route may legally target any Service in the env namespace — not
 	// just the ones forge scaffolds. Union the KCL-RENDERED
 	// Service names so hand-authored Services resolve as known backends:
-	//   - entities.Services — typed forge.Service objects.
+	//   - entities.Workloads — every declared workload.
 	//   - entities.ManifestServiceNames — raw k8s Service manifests injected
 	//     via `additional_manifests` (e.g. the Service fronting a
 	//     forge.Operator, which forge itself emits no Service for).
 	// Without this the cross-check false-errors "route X references unknown
 	// service X" for any operator-fronting or hand-authored Service.
-	for _, s := range entities.Services {
-		backends = append(backends, s.Name)
-	}
+	backends = append(backends, entities.WorkloadNames("")...)
 	backends = append(backends, entities.ManifestServiceNames...)
 	return crossCheckIngress(components, backends, entities.Gateways, entities.HTTPRoutes, entities.GRPCRoutes)
 }

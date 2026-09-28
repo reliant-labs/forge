@@ -357,8 +357,11 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 	// one fact into nine lines and reads like nine separate problems.
 	missingImages := map[string][]string{}
 	var imageOrder []string
-	for _, s := range entities.Services {
-		if s.Image == "" {
+	for _, s := range entities.Workloads {
+		// An artifact a release must carry: an image forge builds for a
+		// workload that runs FROM an image (cluster, hosted, build-only).
+		// A host or compose workload is never released as an image.
+		if s.Image == "" || s.Build.Type == "" || s.OnRuntime(RuntimeHost) || s.OnRuntime(RuntimeCompose) {
 			continue
 		}
 		if _, ok := artifacts[s.Image]; ok {
@@ -380,15 +383,13 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		// A hosted StaticSite ships as an OCI release artifact keyed by the
 		// frontend name (buildHostedStaticSites); the hosted deploy pins it
 		// as liveDigest, so a release without it cannot deploy the site.
-		if entities.ControlPlane != nil && fe.Deploy != nil && fe.Deploy.Type == frontendDeployStaticSite {
+		if frontendIsHosted(fe) {
 			if _, ok := artifacts[fe.Name]; !ok {
 				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge build %s --push <image push base>)", fe.Name, envNameOr(opts.env)))
 			}
 			continue
 		}
-		// Cluster frontends ship as images and are covered by the image
-		// sweep above under their image name; source-pinned frontends are
-		// keyed by frontend name. Only the latter are checked here.
+		// Source-pinned frontends are keyed by frontend name.
 		if fe.Source == nil || fe.Source.Repo == "" {
 			continue
 		}

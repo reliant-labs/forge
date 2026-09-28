@@ -21,60 +21,92 @@ var hostedDeployClient = func(ep cloud.Endpoint, cred cloud.Credential) deployta
 // hostedPollInterval is the readiness poll cadence; tests shorten it.
 var hostedPollInterval = 3 * time.Second
 
-// dispatchHostedDeploy routes a HOSTED env (its Bundle declares
-// control_plane) to runHostedDeploy and reports that it did. A hosted env
-// takes a different path from here on: no tag resolution, no kubectl, no
-// cluster. Decided from the env's own render, before anything cluster-shaped
-// runs. hosted=false means the caller continues down the cluster path.
+// dispatchHostedDeploy handles the envs whose deploy is decided before any
+// cluster-shaped step runs, and reports whether it did:
+//
+//   - an env with NOTHING applied from this machine but hosted items (every
+//     workload bound to forge.OnHosted, plus hosted databases / static
+//     sites) is published by runHostedDeploy alone: no tag resolution, no
+//     kubectl, no cluster;
+//   - a LOCAL control-plane env (control_plane is only its secret store,
+//     nothing hosted) is refused for a direct `forge env deploy`: the
+//     platform never deploys to it. `forge env up` (renderToLaunch)
+//     continues down the ordinary path.
+//
+// A MIXED env (hosted items AND a cluster / compose / infra part) returns
+// false: runDeploy applies the local part first and then publishes the
+// hosted group (publishHostedGroups), in the same deploy. Hosting is per
+// workload, never an env mode.
 func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts deployOptions) (hosted bool, err error) {
 	entities, rerr := RenderKCL(ctx, projectDir, envName)
-	if rerr != nil || entities == nil || entities.ControlPlane == nil {
+	if rerr != nil || entities == nil {
 		return false, nil
 	}
-	if isLocalControlPlaneEnv(entities) {
-		// A LOCAL env is not hosted: its control plane is only its secret
-		// store, and its workloads run here. `forge env up`'s deploy phase
-		// (renderToLaunch) continues down the ordinary path — compose,
-		// external, local clusters; a direct `forge env deploy` of it is
-		// refused BEFORE any RPC, because the platform never deploys to it.
-		if opts.purpose == renderToLaunch {
-			return false, nil
+	if !entities.HasHosted() {
+		if entities.ControlPlane != nil && opts.purpose != renderToLaunch && !envAppliesLocally(entities) {
+			return true, refuseLocalEnvDeploy(envName)
 		}
-		return true, refuseLocalEnvDeploy(envName)
+		return false, nil
+	}
+	if envAppliesLocally(entities) {
+		return false, nil
 	}
 	if opts.frontendsOnly {
 		return true, fmt.Errorf("--frontends-only is not supported on hosted env %q", envName)
 	}
-	return true, runHostedDeploy(ctx, envName, entities, opts)
+	groups, err := buildDeployGroups(envName, entities, "")
+	if err != nil {
+		return true, err
+	}
+	_, hostedGroups := splitHostedGroups(groups)
+	return true, runHostedDeploy(ctx, envName, entities, hostedGroups, opts)
 }
 
-// runHostedDeploy is `forge env deploy <env>` for an env whose Bundle declares
-// control_plane.
+// envAppliesLocally reports whether any part of the env is applied FROM THIS
+// MACHINE: a Cluster- or Compose-bound workload, host infra, a cluster
+// database, a declared cluster_target (support resources), or a frontend
+// shipped by its own provider (Firebase, a bucketed StaticSite).
+func envAppliesLocally(e *KCLEntities) bool {
+	if len(e.WorkloadsOn(RuntimeCluster)) > 0 || len(e.WorkloadsOn(RuntimeCompose)) > 0 || len(e.Infra) > 0 {
+		return true
+	}
+	if e.ClusterTarget.field("cluster") != "" {
+		return true
+	}
+	for _, d := range e.Databases {
+		if !d.Hosted() {
+			return true
+		}
+	}
+	for _, f := range e.Frontends {
+		if f.Deploy != nil && f.Deploy.Type != "" && !frontendIsHosted(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// runHostedDeploy is `forge env deploy <env>` for the HOSTED part of an env:
+// it publishes groups (the one hosted group buildDeployGroups built) to the
+// env's control plane.
 //
 // IT TOUCHES NO CLUSTER. There is no ClusterProvider.Ensure, no kubectl
 // context guard, no local image build, no preflight against a kubeconfig and
 // no manifest apply: the control plane owns the cluster, and forge's job ends
-// at publishing admissible specs and confirming they converged. Every one of
-// the skipped steps would either fail (there is no context to address) or,
-// worse, succeed against whatever cluster happened to be current.
+// at publishing admissible specs and confirming they converged.
 //
 // The order, and why it is this order, is documented on the provider
 // (internal/deploytarget/hosted.go). This function only resolves the inputs:
 // the endpoint and credential from the env's own declaration, and the release
-// binding from the env's ledger — which, for a hosted env, is that same
-// control plane.
-func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities, opts deployOptions) error {
+// binding from the env's ledger — which, for an env with hosted items, is that
+// same control plane.
+func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities, groups []deploytarget.ServiceGroup, opts deployOptions) error {
 	report := opts.report
 	if len(opts.targets) > 0 {
-		// A partial publish of a hosted env would leave the platform running
-		// a mix of two releases under one binding — the state the release
-		// model exists to rule out.
-		return fmt.Errorf("--target is not supported on hosted env %q: a hosted deploy publishes the whole env at its bound release", envName)
-	}
-
-	groups, err := buildDeployGroups(envName, entities, "")
-	if err != nil {
-		return err
+		// A partial publish would leave the platform running a mix of two
+		// releases under one binding — the state the release model exists
+		// to rule out.
+		return fmt.Errorf("--target is not supported for the hosted workloads of env %q: a hosted deploy publishes them all at the bound release", envName)
 	}
 	decl := declarationFromEntities(entities)
 	ep, err := cloud.ResolveEndpoint(envName, decl)
@@ -91,13 +123,16 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	// The guard, stated for a hosted destination: the declared "context" is
 	// the endpoint. A consumer that keys its confirmation on where the bytes
 	// land (the reliant console refuses a deploy whose declared context
-	// changed between preview and confirm) gets the same guarantee.
-	report.setGuard(deployJSONGuard{
-		DeclaredContext: ep.URL,
-		Verdict:         deployGuardVerdictAllow,
-		Reason:          deployGuardReasonControlPlaneDeclared,
-	})
-	report.clearKubeContexts()
+	// changed between preview and confirm) gets the same guarantee. A MIXED
+	// env keeps the cluster guard its local apply recorded.
+	if !envAppliesLocally(entities) {
+		report.setGuard(deployJSONGuard{
+			DeclaredContext: ep.URL,
+			Verdict:         deployGuardVerdictAllow,
+			Reason:          deployGuardReasonControlPlaneDeclared,
+		})
+		report.clearKubeContexts()
+	}
 	envID := ""
 	if id, lerr := deploytarget.LookupHostedEnvironment(ctx, client, ref.Project, envName); lerr == nil {
 		envID = id
@@ -119,24 +154,26 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	if bound {
 		release, digests = binding.Release, binding.Resolved
 		// The promotion froze digests; WHERE each was pushed lives on the
-		// (immutable) release. A backend this project builds is declared
-		// registry-less and is pinned under that recorded registry.
+		// (immutable) release. A workload this project builds is published
+		// by its artifact name and pinned under that recorded registry.
 		rel, rerr := ledger.Releases.Get(ctx, release)
 		if rerr != nil {
 			return fmt.Errorf("read release %s from %s: %w", release, ep.URL, rerr)
 		}
 		registries = releaseRegistries(rel)
 	}
-	report.setTags("", "release "+emptyAs(release, "(none)")+" (promoted; "+ep.URL+")", release, false)
+	if !envAppliesLocally(entities) {
+		report.setTags("", "release "+emptyAs(release, "(none)")+" (promoted; "+ep.URL+")", release, false)
+	}
 
-	fmt.Printf("Deploying env %s to the control plane at %s\n", envName, ep.URL)
+	fmt.Printf("Publishing env %s's hosted workloads to the control plane at %s\n", envName, ep.URL)
 	if release != "" {
 		fmt.Printf("  Release:     %s  (pinning its digests)\n", release)
 	}
 	fmt.Printf("  Dry run:     %v\n\n", opts.dryRun)
 
 	if len(groups) == 0 {
-		fmt.Println("Nothing to deploy — the env declares no deploy tiers.")
+		fmt.Println("Nothing to publish — the env binds nothing to the control plane.")
 		return nil
 	}
 	for i := range groups {
@@ -159,7 +196,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		return err
 	}
 	if !opts.dryRun {
-		fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
+		fmt.Printf("\nPublish completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	}
 	return nil
 }

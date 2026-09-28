@@ -171,32 +171,6 @@ func loadProjectConfigEnv(_ *config.ProjectConfig, env string) map[string]string
 	return out
 }
 
-// hostEnvVarsToMap projects the HostDeploy.EnvVars slice to a flat
-// NAME→VALUE map for layering onto the subprocess env.
-//
-// Only the inline `value` channel applies on the host — KCLEnvVar's
-// other channels (secret_ref, config_map_ref) are cluster-mode
-// projections (Deployment.env.valueFrom.secretKeyRef etc.) with no
-// meaningful host equivalent. Those projection channels stay in KCL
-// for K8sCluster services; on the host, secrets come from the
-// gitignored secrets_file.
-//
-// Returns an empty map (not nil) on a nil host, so callers can pass
-// the result straight to [hostlaunch.LayerHostEnv] without guarding.
-func hostEnvVarsToMap(host *HostDeploy) map[string]string {
-	if host == nil || len(host.EnvVars) == 0 {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(host.EnvVars))
-	for _, ev := range host.EnvVars {
-		if ev.Name == "" || ev.Value == "" {
-			continue
-		}
-		out[ev.Name] = ev.Value
-	}
-	return out
-}
-
 // declaredServiceNames returns the names of every declared component,
 // used by error paths that point users at the right spelling when they
 // typo a service name. The inventory is enumerated from the REAL sources
@@ -322,81 +296,60 @@ func resolveEphemeralFrontendPorts(cfg *config.ProjectConfig, e *KCLEntities) {
 	}
 }
 
-// resolveEphemeralHostPorts assigns a free OS port to every host service that
-// declares no bind port of its own, so two host-only dev stacks never both
-// fall back to the architectural backend default (:8080 — forge strips
-// per-service ports from forge.yaml, so a freshly-scaffolded backend has no
-// declared port and would otherwise collide with every other one). The
-// allocated port is stamped as BOTH the service's ListenPorts[0] AND a PORT
-// env literal, so every downstream reader stays consistent off one value:
-// the pre-flight port-conflict guard and readiness gate (hostEnvPorts), the
-// summary URL (hostEnvPort), and the launched process env (buildHostServiceCmd
-// injects PORT via hostEnvVarsToMap, which the app binds). A service that DOES
-// declare a port keeps it verbatim, so existing projects are unaffected.
+// resolveEphemeralHostPorts assigns a free OS port to every long-running host
+// workload that declares no port of its own, so two host-only dev stacks never
+// both fall back to the architectural backend default (:8080). The allocated
+// port is recorded as BOTH the workload's ListenPorts[0] AND a PORT in its
+// per-run LaunchEnv, so every downstream reader stays consistent off one
+// value: the pre-flight port-conflict guard and readiness gate (HostPorts),
+// the summary URL (HostPort), and the launched process env (HostEnv, which
+// the app binds). A workload that DOES declare a port keeps it verbatim.
 //
-// Returns the base URL of the primary (first) resolved host service so the
+// Returns the base URL of the primary (first) resolved host workload so the
 // caller can wire the frontends at the ephemeral backend; empty when no host
-// service exposes a port.
+// workload exposes a port.
 func resolveEphemeralHostPorts(e *KCLEntities) string {
 	if e == nil {
 		return ""
 	}
 	backendURL := ""
-	for i := range e.Services {
-		svc := &e.Services[i]
-		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+	for i := range e.Workloads {
+		w := &e.Workloads[i]
+		if !w.OnRuntime(RuntimeHost) || !w.LongRunning() {
 			continue
 		}
-		host := svc.Deploy.Host
-		// An explicitly EMPTY listen_ports means "this service binds nothing".
-		// Allocating an ephemeral port for it publishes a port the process will
-		// never bind, and the readiness gate then fails a run that in fact
-		// succeeded — observed with the packaged desktop app, which launched
-		// correctly and was still reported as "nothing is listening".
+		host := w.Runtime.Host
+		// An explicitly EMPTY listen_ports means "this workload binds
+		// nothing". Allocating an ephemeral port for it publishes a port the
+		// process will never bind, and the readiness gate then fails a run
+		// that in fact succeeded — observed with the packaged desktop app.
 		if host.ListenPorts != nil && len(*host.ListenPorts) == 0 {
 			continue
 		}
-		if len(hostEnvPorts(svc.Name, host)) > 0 {
+		if p := w.HostPort(); p > 0 {
 			// Already binds a declared port — leave it, but adopt it as the
 			// backend URL if we don't have one yet.
 			if backendURL == "" {
-				if p := hostEnvPort(svc.Name, host); p != "" {
-					backendURL = "http://localhost:" + p
-				}
+				backendURL = fmt.Sprintf("http://localhost:%d", p)
 			}
 			continue
 		}
 		port, err := freeTCPPort()
 		if err != nil {
-			fmt.Printf("[up] host %s: could not allocate an ephemeral port (%v); falling back to the default\n", svc.Name, err)
+			fmt.Printf("[up] host %s: could not allocate an ephemeral port (%v); falling back to the default\n", w.Name, err)
 			continue
 		}
 		host.ListenPorts = &[]int{port}
-		host.EnvVars = upsertEnvVarValue(host.EnvVars, "PORT", fmt.Sprintf("%d", port))
-		fmt.Printf("[up] host %s: ephemeral dev port %d\n", svc.Name, port)
+		if host.LaunchEnv == nil {
+			host.LaunchEnv = map[string]string{}
+		}
+		host.LaunchEnv["PORT"] = fmt.Sprintf("%d", port)
+		fmt.Printf("[up] host %s: ephemeral dev port %d\n", w.Name, port)
 		if backendURL == "" {
 			backendURL = fmt.Sprintf("http://localhost:%d", port)
 		}
 	}
 	return backendURL
-}
-
-// upsertEnvVarValue sets an inline name=value env var on a host service's KCL
-// env list, replacing any existing entry for name (and clearing its ref
-// channels so the inline value is authoritative). Used to stamp the allocated
-// ephemeral PORT onto the host service the app binds.
-func upsertEnvVarValue(vars []KCLEnvVar, name, value string) []KCLEnvVar {
-	for i := range vars {
-		if vars[i].Name == name {
-			vars[i].Value = value
-			vars[i].SecretRef = ""
-			vars[i].SecretKey = ""
-			vars[i].ConfigMapRef = ""
-			vars[i].ConfigMapKey = ""
-			return vars
-		}
-	}
-	return append(vars, KCLEnvVar{Name: name, Value: value})
 }
 
 // frontendEnvPrefix returns the public-env-var prefix a frontend of the
@@ -506,48 +459,4 @@ func frontendConfigMockValue(cfg *FrontendConfigEntity) string {
 		return ""
 	}
 	return frontendMockValue(cfg.Mock)
-}
-
-// collapseJobsToHost rewrites each one-shot job's argv from the IN-IMAGE
-// form to something runnable on this machine.
-//
-// This is NOT the deleted deploy-type collapse. That one rewrote a
-// cluster-declared SERVICE into a host process, overruling the environment's
-// own placement decision from a CLI flag. This rewrites only argv[0], for
-// jobs forge is about to exec on the host through runHostJobs — which runs on
-// every `forge env up`, so the translation is unconditional rather than
-// gated on a flag.
-//
-// A job's `command` is written for the CONTAINER: `/app/<project> db
-// migrate up` is where the Dockerfile's production stage puts the binary.
-// That path does not exist on the developer's laptop, so exec'ing it
-// verbatim fails with "no such file or directory" — naming a path the
-// reader never wrote and cannot find, for a job whose declaration looks
-// completely correct.
-//
-// The translation is the one the host runner already makes for services:
-// the argv's first element is the project binary, and on the host the
-// project binary is `go run ./cmd/<project>`. Everything after argv[0] is
-// the subcommand selection (`db migrate up`) and passes through
-// untouched, because that half means the same thing in both worlds.
-//
-// A job whose argv is NOT the in-image project binary is left ALONE. It
-// is something else the author wired deliberately — a shell script, a
-// vendored tool, an absolute path they meant — and rewriting it would be
-// forge overruling an explicit choice.
-func collapseJobsToHost(e *KCLEntities, projectName string) {
-	if e == nil || projectName == "" {
-		return
-	}
-	inImage := "/app/" + projectName
-	for i := range e.Jobs {
-		cmd := e.Jobs[i].Command
-		if len(cmd) == 0 || cmd[0] != inImage {
-			continue
-		}
-		host := make([]string, 0, 3+len(cmd)-1)
-		host = append(host, "go", "run", "./cmd/"+projectName)
-		host = append(host, cmd[1:]...)
-		e.Jobs[i].Command = host
-	}
 }

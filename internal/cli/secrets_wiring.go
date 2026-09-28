@@ -117,48 +117,37 @@ func secretRefsFromEntities(e *KCLEntities) []secrets.SecretRef {
 		return nil
 	}
 	var refs []secrets.SecretRef
-	for i := range e.Services {
-		refs = append(refs, secretRefsForService(&e.Services[i])...)
+	for i := range e.Workloads {
+		refs = append(refs, secretRefsForService(&e.Workloads[i])...)
 	}
 	return refs
 }
 
 // secretRefsForK8sServices is like secretRefsFromEntities but ONLY for
-// services that land IN a cluster — Deploy.Type "cluster" or
-// "simple-backend" — since those are the refs that need rendered Secret
-// objects. Host/compose/external refs are injected as env values, not
-// k8s Secrets.
-//
-// simple-backend counts because it is a cluster workload: KCL projects it
-// onto the same Deployment shape (_project_simple_backend), so its
-// secret_ref env vars become secretKeyRefs that need a Secret to exist.
+// workloads bound to a cluster forge applies to — those are the refs that
+// need rendered Secret objects. Host refs are resolved at launch, compose
+// refs are injected as env values, and a HOSTED workload's secrets are the
+// control plane's to materialize: none of them need a k8s Secret from forge.
 func secretRefsForK8sServices(e *KCLEntities) []secrets.SecretRef {
-	if e == nil {
-		return nil
-	}
-	var refs []secrets.SecretRef
-	for i := range e.Services {
-		if t := e.Services[i].Deploy.Type; t != "cluster" && t != "simple-backend" {
-			continue
-		}
-		refs = append(refs, secretRefsForService(&e.Services[i])...)
-	}
-	return refs
+	return secretRefsOnRuntime(e, RuntimeCluster)
 }
 
-// secretRefsForHostServices returns the declared secret refs for host-mode
-// services only — the set a host launch must be able to resolve from the
+// secretRefsForHostServices returns the declared secret refs for host-bound
+// workloads only — the set a host launch must be able to resolve from the
 // provider (for fail-fast validation before starting the process).
 func secretRefsForHostServices(e *KCLEntities) []secrets.SecretRef {
+	return secretRefsOnRuntime(e, RuntimeHost)
+}
+
+func secretRefsOnRuntime(e *KCLEntities, runtime string) []secrets.SecretRef {
 	if e == nil {
 		return nil
 	}
 	var refs []secrets.SecretRef
-	for i := range e.Services {
-		if e.Services[i].Deploy.Type != "host" {
-			continue
+	for i := range e.Workloads {
+		if e.Workloads[i].OnRuntime(runtime) {
+			refs = append(refs, secretRefsForService(&e.Workloads[i])...)
 		}
-		refs = append(refs, secretRefsForService(&e.Services[i])...)
 	}
 	return refs
 }
@@ -189,33 +178,6 @@ func withEnvInSecretFix(err error, env string) error {
 		return err
 	}
 	return errors.New(strings.ReplaceAll(err.Error(), "--env <env>", "--env "+env))
-}
-
-// serviceEnvVars returns every EnvVar a service declares, across BOTH the
-// top-level `env_vars` and the deploy-block `env_vars`. Projects declare
-// per-env config/secret refs on the deploy block (e.g. HostDeploy.env_vars
-// = _cp_host_env, K8sCluster.env_vars = …), not the top-level field — so a
-// collector that read only ServiceEntity.EnvVars would miss every
-// secret_ref. Compose/External carry env via env_file / an env map, not an
-// EnvVar list, so they contribute no secret_ref entries here.
-func serviceEnvVars(s *ServiceEntity) []KCLEnvVar {
-	out := append([]KCLEnvVar(nil), s.EnvVars...)
-	switch {
-	case s.Deploy.Host != nil:
-		out = append(out, s.Deploy.Host.EnvVars...)
-	case s.Deploy.Cluster != nil:
-		out = append(out, s.Deploy.Cluster.EnvVars...)
-	case s.Deploy.SimpleBackend != nil:
-		// A SimpleBackend's secretRef env is the same secret_ref channel
-		// (see SimpleBackendSpec.EnvVars), and it lands in a cluster, so it needs
-		// rendered Secret objects exactly as a K8sCluster service does.
-		// Omitting it here would not fail loudly: the deploy would apply
-		// a pod whose secretKeyRef names a Secret nothing created, and
-		// the pod would sit in CreateContainerConfigError with the
-		// declaration looking correct.
-		out = append(out, s.Deploy.SimpleBackend.EnvVars()...)
-	}
-	return out
 }
 
 // renderedSecretsValueSource builds the provider that resolves
@@ -288,7 +250,7 @@ func scopeSecretsToEnvVars(all map[string]string, vars []KCLEnvVar) map[string]s
 }
 
 // scopeSecretsToService narrows the env-wide secret map to the keys this
-// service DECLARES via EnvVar.secret_ref.
+// workload DECLARES via a secretRef env var.
 //
 // This is the trust boundary for host services: the provider resolves the
 // whole store once per run, but a process only ever sees what its own KCL
@@ -296,9 +258,8 @@ func scopeSecretsToEnvVars(all map[string]string, vars []KCLEnvVar) map[string]s
 // reaches nothing — so KCL stays the single place a value becomes live,
 // and one service cannot read another's credentials.
 //
-// A nil/empty store returns nil so the caller's legacy secrets_file
-// fallback still triggers on "no provider declared".
-func scopeSecretsToService(all map[string]string, svc *ServiceEntity) map[string]string {
+// A nil/empty store returns nil.
+func scopeSecretsToService(all map[string]string, svc *WorkloadEntity) map[string]string {
 	if len(all) == 0 || svc == nil {
 		return nil
 	}
@@ -321,12 +282,11 @@ func scopeSecretsToService(all map[string]string, svc *ServiceEntity) map[string
 }
 
 // secretRefsForService extracts the declared secret references from one
-// service's EnvVars (top-level + deploy block). A ref is "declared" when
-// SecretRef is non-empty. SecretKey falls back to EnvName (matching the
-// KCL _env_source lambda, which defaults secret_key to the env-var name).
-func secretRefsForService(s *ServiceEntity) []secrets.SecretRef {
+// workload's spec.env. A ref is "declared" when SecretRef is non-empty.
+// SecretKey falls back to EnvName.
+func secretRefsForService(s *WorkloadEntity) []secrets.SecretRef {
 	var refs []secrets.SecretRef
-	for _, ev := range serviceEnvVars(s) {
+	for _, ev := range s.EnvVars() {
 		if ev.SecretRef == "" {
 			continue
 		}

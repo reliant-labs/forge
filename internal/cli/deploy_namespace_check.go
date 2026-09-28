@@ -88,42 +88,17 @@ func checkNamespaceReferences(entities *KCLEntities, projectName, resolvedNamesp
 		}
 	}
 
-	// Service env_vars live at the top-level ServiceEntity slot AND
-	// inside the polymorphic deploy block (Host/Cluster/External all
-	// carry their own). We scan both — a downstream renderer is free
-	// to populate either, and missing one would leave a class of
-	// mismatches uncaught.
-	for _, s := range entities.Services {
-		owner := fmt.Sprintf("service %q", s.Name)
-		collect(owner, s.EnvVars)
-		switch s.Deploy.Type {
-		case "host":
-			if s.Deploy.Host != nil {
-				collect(owner+" (host deploy)", s.Deploy.Host.EnvVars)
-			}
-		case "cluster":
-			if s.Deploy.Cluster != nil {
-				collect(owner+" (cluster deploy)", s.Deploy.Cluster.EnvVars)
-			}
-		case "simple-backend":
-			// In scope for the same reason "cluster" is: a SimpleBackend
-			// runs in a namespace, so a hardcoded
-			// `*.svc.cluster.local` in its env that names a DIFFERENT
-			// namespace produces exactly the silent CrashLoop this guard
-			// exists to catch.
-			if s.Deploy.SimpleBackend != nil {
-				collect(owner+" (simple-backend deploy)", s.Deploy.SimpleBackend.EnvVars())
-			}
+	// A workload's env is its spec.env, the same on every runtime. Host
+	// workloads are in scope too: a host process dialing
+	// `*.svc.cluster.local` is the same mistake from the other side.
+	// Hosted and build-only workloads are out of scope — the platform owns
+	// a hosted workload's namespace, and a build-only one never runs.
+	for _, w := range entities.Workloads {
+		switch w.Runtime.Type {
+		case RuntimeHosted, RuntimeBuildOnly:
+			continue
 		}
-		// External and build-only deploys are intentionally out of scope.
-		// External targets a non-k8s runner so in-cluster DNS doesn't
-		// apply; build-only services have no runtime env vars to check.
-	}
-	for _, o := range entities.Operators {
-		collect(fmt.Sprintf("operator %q", o.Name), o.EnvVars)
-	}
-	for _, c := range entities.CronJobs {
-		collect(fmt.Sprintf("cronjob %q", c.Name), c.EnvVars)
+		collect(fmt.Sprintf("%s %q (%s)", w.Kind, w.Name, w.Runtime.Type), w.EnvVars())
 	}
 
 	if len(hits) == 0 {

@@ -114,7 +114,7 @@ func runExternalBuildDoctorChecks(ctx context.Context, cfg *config.ProjectConfig
 // resolved-command preview, so a user troubleshooting "why does my
 // build_cmd fail" sees both the substituted shell command AND why
 // any prerequisite is missing in one place.
-func buildExternalBuildDoctorChecks(services []ServiceEntity, projectDir string, lookup binaryLookupFunc, stat statFunc) []doctor.CheckResult {
+func buildExternalBuildDoctorChecks(services []WorkloadEntity, projectDir string, lookup binaryLookupFunc, stat statFunc) []doctor.CheckResult {
 	results := make([]doctor.CheckResult, 0, len(services))
 	for _, svc := range services {
 		results = append(results, evaluateExternalBuildCheck(svc, projectDir, lookup, stat))
@@ -125,7 +125,7 @@ func buildExternalBuildDoctorChecks(services []ServiceEntity, projectDir string,
 // evaluateExternalBuildCheck is the per-service decision. Split out
 // so buildExternalBuildDoctorChecks reads as "for every service,
 // evaluate" and this function holds the heuristic branches.
-func evaluateExternalBuildCheck(svc ServiceEntity, projectDir string, lookup binaryLookupFunc, stat statFunc) doctor.CheckResult {
+func evaluateExternalBuildCheck(svc WorkloadEntity, projectDir string, lookup binaryLookupFunc, stat statFunc) doctor.CheckResult {
 	name := "external-build: " + svc.Name
 	result := doctor.CheckResult{Name: name, Status: doctor.StatusPass}
 

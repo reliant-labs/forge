@@ -526,6 +526,12 @@ type HostRuntime struct {
 	// and gate on nothing.
 	ListenPorts *[]int `json:"listen_ports,omitempty"`
 	DelvePort   int    `json:"delve_port,omitempty"` // runner delve; default 2345
+
+	// LaunchEnv is RUN state, not contract: env forge decides for this one
+	// launch (the ephemeral PORT resolveEphemeralHostPorts allocates) and
+	// layers over the workload's declared spec.env. It is never part of
+	// the render — a per-run value must not look like a declaration.
+	LaunchEnv map[string]string `json:"-"`
 }
 
 // ComposeRuntime is forge.Compose: the workload is a docker-compose service.
@@ -1328,6 +1334,22 @@ func (w WorkloadEntity) GoBuild() *GoBuild {
 	return nil
 }
 
+// LongRunning reports whether the workload is a process that stays up
+// (service, worker, operator) rather than one that runs to completion (job,
+// cron) or never runs (tool).
+func (w WorkloadEntity) LongRunning() bool {
+	switch deployv1alpha1.WorkloadKind(w.Kind) {
+	case deployv1alpha1.KindService, deployv1alpha1.KindWorker, deployv1alpha1.KindOperator:
+		return true
+	}
+	return false
+}
+
+// IsJob reports whether the workload is a one-shot job.
+func (w WorkloadEntity) IsJob() bool {
+	return deployv1alpha1.WorkloadKind(w.Kind) == deployv1alpha1.KindJob
+}
+
 // OnRuntime reports whether the workload is bound to the named runtime.
 func (w WorkloadEntity) OnRuntime(runtime string) bool { return w.Runtime.Type == runtime }
 
@@ -1348,14 +1370,83 @@ func (w WorkloadEntity) EnvVars() []KCLEnvVar {
 	for _, e := range w.Spec.Env {
 		switch {
 		case e.SecretRef != nil:
-			out = append(out, KCLEnvVar{Name: e.Name, SecretRef: e.SecretRef.Name, SecretKey: e.SecretRef.Key})
+			out = append(out, KCLEnvVar{Name: e.Name, SecretRef: e.SecretRef.Name, SecretKey: e.SecretRef.Key, SecretOptional: e.SecretRef.Optional})
 		case e.ConfigMapRef != nil:
 			out = append(out, KCLEnvVar{Name: e.Name, ConfigMapRef: e.ConfigMapRef.Name, ConfigMapKey: e.ConfigMapRef.Key})
-		case e.ManagedSecret == "" && e.DatabaseRef == nil && e.WorkloadURL == nil && e.FieldRef == nil:
+		case e.ManagedSecret == nil && e.DatabaseRef == nil && e.WorkloadURL == nil && e.FieldRef == nil:
 			out = append(out, KCLEnvVar{Name: e.Name, Value: e.Value})
 		}
 	}
 	return out
+}
+
+// HostEnv is the literal env a HOST launch of this workload receives from its
+// declaration: every spec.env value channel, with the runtime's per-run
+// LaunchEnv layered on top. Secret channels resolve separately (scoped
+// through the secret provider), and a reference with no host literal
+// (ConfigMapRef, FieldRef, DatabaseRef, ManagedSecret, WorkloadURL) has
+// nothing to contribute here.
+func (w WorkloadEntity) HostEnv() map[string]string {
+	out := map[string]string{}
+	for _, ev := range w.EnvVars() {
+		if ev.Name != "" && ev.Value != "" && ev.SecretRef == "" && ev.ConfigMapRef == "" {
+			out[ev.Name] = ev.Value
+		}
+	}
+	if w.Runtime.Host != nil {
+		for k, v := range w.Runtime.Host.LaunchEnv {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// HostPorts is every TCP port a HOST launch of this workload binds, in
+// declaration order and de-duplicated: the runtime's listen_ports when
+// declared (an EMPTY list is the statement "binds nothing"), else the
+// workload's spec.ports. There is no env-var heuristic: a workload declares
+// its ports, and guessing them from *_PORT variables misread dependency
+// addresses (TEMPORAL_PORT) as bind ports.
+func (w WorkloadEntity) HostPorts() []int {
+	var in []int
+	if h := w.Runtime.Host; h != nil && h.ListenPorts != nil {
+		in = *h.ListenPorts
+	} else {
+		for _, p := range w.Spec.Ports {
+			in = append(in, int(p.Port))
+		}
+	}
+	var out []int
+	seen := map[int]bool{}
+	for _, p := range in {
+		if p <= 0 || p >= 65536 || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+// HostPort is the workload's canonical (summary / URL) host port: the first
+// declared listen port, else its `http` port, else its first port. 0 when it
+// binds nothing.
+func (w WorkloadEntity) HostPort() int {
+	if h := w.Runtime.Host; h != nil && h.ListenPorts != nil {
+		if ps := w.HostPorts(); len(ps) > 0 {
+			return ps[0]
+		}
+		return 0
+	}
+	for _, p := range w.Spec.Ports {
+		if p.Name == deployv1alpha1.DefaultHTTPPortName {
+			return int(p.Port)
+		}
+	}
+	if ps := w.HostPorts(); len(ps) > 0 {
+		return ps[0]
+	}
+	return 0
 }
 
 // FindWorkload returns the named workload, or nil.

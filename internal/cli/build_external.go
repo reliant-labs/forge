@@ -60,7 +60,7 @@ func kclHasExternalBuildService(e *KCLEntities) bool {
 	if e == nil {
 		return false
 	}
-	for _, s := range e.Services {
+	for _, s := range e.Workloads {
 		if s.EffectiveBuildCmd() != "" {
 			return true
 		}
@@ -80,7 +80,7 @@ func kclHasServiceNamed(e *KCLEntities, name string) bool {
 	if e == nil || name == "" {
 		return false
 	}
-	for _, s := range e.Services {
+	for _, s := range e.Workloads {
 		if s.Name == name {
 			return true
 		}
@@ -96,12 +96,12 @@ func kclHasServiceNamed(e *KCLEntities, name string) bool {
 // Returns nil (not an empty slice) when no shell-build services are
 // declared so the parallel/sequential dispatch loops can use the
 // idiomatic `len(s) > 0` guard.
-func externalBuildServices(e *KCLEntities) []ServiceEntity {
+func externalBuildServices(e *KCLEntities) []WorkloadEntity {
 	if e == nil {
 		return nil
 	}
-	var out []ServiceEntity
-	for _, s := range e.Services {
+	var out []WorkloadEntity
+	for _, s := range e.Workloads {
 		if s.EffectiveBuildCmd() != "" {
 			out = append(out, s)
 		}
@@ -127,14 +127,14 @@ func externalBuildServices(e *KCLEntities) []ServiceEntity {
 // single source of truth a subsequent `forge env deploy <env>` reads to
 // pin the image tag — eliminating the build/deploy tag divergence
 // the External (deploy) provider already closes for the deploy side.
-func buildExternalServices(ctx context.Context, services []ServiceEntity, opts buildOptions, registry, tag, projectDir, targetArch string, entities *KCLEntities) []buildResult {
+func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts buildOptions, registry, tag, projectDir, targetArch string, entities *KCLEntities) []buildResult {
 	if len(services) == 0 {
 		return nil
 	}
 	runner := buildtarget.NewRunner()
 	resultCh := make(chan buildResult, len(services))
 
-	dispatch := func(svc ServiceEntity) {
+	dispatch := func(svc WorkloadEntity) {
 		// Per-service tag — see externalBuildTag for the precedence and for
 		// why a release build overrides it with the release version.
 		svcTag := externalBuildTag(svc, entities, tag, opts)
@@ -265,7 +265,7 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 		var wg sync.WaitGroup
 		for _, svc := range services {
 			wg.Add(1)
-			go func(s ServiceEntity) {
+			go func(s WorkloadEntity) {
 				defer wg.Done()
 				dispatch(s)
 			}(svc)
@@ -286,9 +286,10 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 
 // externalBuildTag is the ${TAG} one ShellBuild service is handed.
 //
-// Ordinarily: the service's own KCL `image_tag` pin, else the env's resolved
-// tag for its image off the rendered manifests, else the build-wide tag — so
-// the external build pushes exactly the tag the env's deploy pulls.
+// Ordinarily: the env's resolved tag for the workload's image (its own pin
+// when its resolved spec.image carries one, else the env's image_tag), else
+// the build-wide tag — so the external build pushes exactly the tag the env's
+// deploy pulls.
 //
 // A `--release` build overrides all three with the release version. The
 // user's build_cmd owns its own push, so ${TAG} IS the tag it writes to the
@@ -296,12 +297,9 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 // (prod's `stable`, e2e's `e2e`, a pinned `dev-per-daemon`): handing one of
 // them to a cut moves it the moment that one image finishes, whether or not
 // the cut ever records a release. See releaseImageTag.
-func externalBuildTag(svc ServiceEntity, entities *KCLEntities, buildTag string, opts buildOptions) string {
+func externalBuildTag(svc WorkloadEntity, entities *KCLEntities, buildTag string, opts buildOptions) string {
 	if rt := releaseImageTag(opts); rt != "" {
 		return rt
-	}
-	if svc.ImageTag != "" {
-		return svc.ImageTag
 	}
 	if envTag := envImageTagFor(entities, svc.Image); envTag != "" {
 		return envTag

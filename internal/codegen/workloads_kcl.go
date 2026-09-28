@@ -305,6 +305,7 @@ const (
 //
 //   - config.ComponentKindServer names a Connect-RPC surface — a code fact.
 //     It deploys as a `service` (Deployment + Service).
+//
 //   - config.ComponentKindBinary names a second cmd/<name>/main.go — a build
 //     fact. It deploys as a `tool`: forge builds it into the image, but
 //     nothing schedules it. It is run on demand (`kubectl exec`, a CI step),

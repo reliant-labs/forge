@@ -2503,7 +2503,8 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	for _, w := range e.Workloads {
 		switch w.Build.Type {
 		case "docker":
-			out = append(out, buildServiceDocker(ctx, cfg, w.Name, w.Build.Docker, opts, cfgArchForDocker, resolvedTag))
+			imageName, imageTag := serviceDockerImage(w, resolvedTag, opts)
+			out = append(out, buildServiceDocker(ctx, cfg, w.Name, imageName, w.Build.Docker, opts, cfgArchForDocker, imageTag))
 		case "remote":
 			out = append(out, buildServiceRemote(w.Name))
 		}
@@ -2604,23 +2605,45 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile str
 	return dockerArgs, pushTags
 }
 
+// serviceDockerImage is the repository and tag a DockerBuild workload's image
+// is built as — the SAME ref the render resolved into its spec.image, so the
+// deploy pulls what the build pushed.
+//
+// The repository is the workload's artifact (`image` with any tag stripped;
+// unset, the output_name, else the workload name — kcl/render.k `_artifact`).
+// The tag is the release version for a release build (never a shared tag),
+// else the workload's own pin when its resolved spec.image carries one
+// (`image = "gw:v7"` builds gw:v7), else the build-wide resolvedTag. The
+// pin wins over the build-wide tag because it IS the deploy ref: building
+// anything else is an image no pod pulls.
+func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions) (name, tag string) {
+	name = w.Image
+	if name == "" {
+		name = w.Name
+		if d := w.Build.Docker; d != nil && d.OutputName != "" {
+			name = d.OutputName
+		}
+	}
+	if rt := releaseImageTag(opts); rt != "" {
+		return name, rt
+	}
+	if pin, ok := pinnedTagOf(w.Spec.Image, name); ok {
+		return name, pin
+	}
+	return name, resolvedTag
+}
+
 // buildServiceDocker runs `docker build` for a DockerBuild service. It
 // reuses the same tag/registry/push/build-context primitives the project
 // image build uses (resolveBuildContext / appendBuildContexts /
 // expandPushRegistries) so a per-service image is tagged and pushed the
-// same way. The image basename is the service name (or DockerBuild
-// output_name override). platform overrides the env-wide arch.
-func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
+// same way. imageName/resolvedTag come from serviceDockerImage. platform
+// overrides the env-wide arch.
+func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, imageName string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
 	start := time.Now()
-	imageName := svcName
 	dockerfile := "Dockerfile"
-	if d != nil {
-		if d.OutputName != "" {
-			imageName = d.OutputName
-		}
-		if d.Dockerfile != "" {
-			dockerfile = d.Dockerfile
-		}
+	if d != nil && d.Dockerfile != "" {
+		dockerfile = d.Dockerfile
 	}
 
 	if _, err := os.Stat(dockerfile); os.IsNotExist(err) {

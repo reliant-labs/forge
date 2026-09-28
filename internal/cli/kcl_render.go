@@ -1159,44 +1159,6 @@ func manifestServiceNames(manifests []rawManifest) []string {
 	return names
 }
 
-// splitImageNameTag parses a container image ref into its registry-less
-// NAME and TAG, mirroring how KCL composes `${registry}/${image}:${tag}`.
-// "ghcr.io/reliant-labs/reliant:staging" → ("reliant", "staging", true).
-//
-// Returns ok=false for digest refs ("…@sha256:…"), tagless refs (no
-// ":"), or an empty/whitespace tag — none of which carry an env tag to
-// align a build to. The name is the final path segment (the registry +
-// org prefix is stripped) so it matches the KCL Service.image string a
-// build_cmd interpolates as ${IMAGE}.
-func splitImageNameTag(image string) (name, tag string, ok bool) {
-	image = strings.TrimSpace(image)
-	if image == "" || strings.Contains(image, "@") {
-		return "", "", false
-	}
-	// The tag is the substring after the LAST colon — but only when that
-	// colon is in the final path segment, so a registry "host:port/img"
-	// (colon before a slash) isn't mistaken for a tag.
-	lastColon := strings.LastIndex(image, ":")
-	if lastColon < 0 || strings.Contains(image[lastColon+1:], "/") {
-		return "", "", false
-	}
-	tag = strings.TrimSpace(image[lastColon+1:])
-	if tag == "" {
-		return "", "", false
-	}
-	ref := image[:lastColon]
-	// Strip the registry/org prefix: the build-side ${IMAGE} is the bare
-	// image name (the KCL Service.image), not the fully-qualified ref.
-	name = ref
-	if slash := strings.LastIndex(ref, "/"); slash >= 0 {
-		name = ref[slash+1:]
-	}
-	if name == "" {
-		return "", "", false
-	}
-	return name, tag, true
-}
-
 // dispatchRuntime decodes a workload's resolved runtime block by its `type`
 // tag. A missing or unknown runtime fails loud: a workload with no runtime is
 // a workload nothing runs, and guessing one would put it somewhere its author

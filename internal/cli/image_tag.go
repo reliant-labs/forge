@@ -61,9 +61,13 @@ func resolveImageTag(ctx context.Context, _ string) (string, error) {
 // it — build and deploy then push/pull the SAME tag by construction.
 //
 // A workload built into that image whose resolved spec.image carries a tag
-// answers with it (a per-workload pin wins); otherwise the env's own resolved
-// image_tag (`output.image_tag`). A digest-pinned spec.image carries no tag
-// and falls through to the env tag.
+// answers with it (a per-workload pin wins: `image = "reliant:e2e"` renders
+// spec.image `<registry>/reliant:e2e` and artifact `reliant`, so the build is
+// IMAGE=reliant TAG=e2e); otherwise the env's own resolved image_tag
+// (`output.image_tag`). A digest-pinned spec.image carries no tag and falls
+// through to the env tag — the render refuses a digest on a workload forge
+// builds, so this is only a digest `forge env deploy` pinned from a previous
+// build of the same image.
 //
 // Returns "" when entities is nil (no --env / KCL render failed) or the name
 // is empty — every such case falls the caller back to git-derived tagging.
@@ -75,9 +79,30 @@ func envImageTagFor(entities *KCLEntities, image string) string {
 		if w.Image != image {
 			continue
 		}
-		if name, tag, ok := splitImageNameTag(w.Spec.Image); ok && name == image {
+		if tag, ok := pinnedTagOf(w.Spec.Image, image); ok {
 			return tag
 		}
 	}
 	return entities.ImageTag
+}
+
+// pinnedTagOf is the tag of a resolved ref when that ref names the artifact
+// repository — `localhost:5051/acme/app:v2` for `acme/app` answers v2. The
+// repository must end the ref's path at a `/` boundary, so `app` does not
+// claim `myapp:v1`'s tag (the org path is kept on both sides; the registry
+// prefix is whatever the target resolved). ok=false for a digest, a tagless
+// ref, or a different repository.
+func pinnedTagOf(ref, repository string) (tag string, ok bool) {
+	if strings.Contains(ref, "@") {
+		return "", false
+	}
+	lastColon := strings.LastIndex(ref, ":")
+	if lastColon < 0 || strings.Contains(ref[lastColon+1:], "/") {
+		return "", false
+	}
+	path, tag := ref[:lastColon], ref[lastColon+1:]
+	if tag == "" || (path != repository && !strings.HasSuffix(path, "/"+repository)) {
+		return "", false
+	}
+	return tag, true
 }

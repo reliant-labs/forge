@@ -30,6 +30,19 @@ has_registry_host = lambda image: str -> bool {
     _head != "" and (("." in _head) or (":" in _head) or (_head == "localhost"))
 }
 
+# `image` without its own registry host and without any `:tag` / `@digest`
+# — the REPOSITORY a build pushes to under `${REGISTRY}/${IMAGE}:${TAG}`,
+# and the key build state and the release ledger record. The org path is
+# kept (`acme/app:v2` -> `acme/app`), because image_ref keeps it too: build
+# and deploy name the same repository only if both keep it.
+repository = lambda image: str -> str {
+    _no_digest = image.split("@")[0]
+    _last_slash = _no_digest.rfind("/")
+    _colon = _no_digest.rfind(":")
+    _untagged = _no_digest[:_colon] if _colon > _last_slash else _no_digest
+    _untagged[_untagged.find("/") + 1:] if has_registry_host(_untagged) else _untagged
+}
+
 # The full reference for `image`:
 #
 #   1. It names its own registry host: no registry prefix (it is a third

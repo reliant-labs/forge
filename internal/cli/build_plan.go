@@ -262,16 +262,12 @@ func planKCLDockerRemote(in planInputs) []buildPlanStep {
 		b := svc.Build
 		switch b.Type {
 		case "docker":
-			imageName, dockerfile := svc.Name, "Dockerfile"
-			if b.Docker != nil {
-				if b.Docker.OutputName != "" {
-					imageName = b.Docker.OutputName
-				}
-				if b.Docker.Dockerfile != "" {
-					dockerfile = b.Docker.Dockerfile
-				}
+			dockerfile := "Dockerfile"
+			if b.Docker != nil && b.Docker.Dockerfile != "" {
+				dockerfile = b.Docker.Dockerfile
 			}
-			_, pushes := serviceDockerBuildArgs(in.cfg, imageName, dockerfile, b.Docker, in.opts, in.targets.cfgArchForDocker, in.resolvedTag)
+			imageName, imageTag := serviceDockerImage(svc, in.resolvedTag, in.opts)
+			_, pushes := serviceDockerBuildArgs(in.cfg, imageName, dockerfile, b.Docker, in.opts, in.targets.cfgArchForDocker, imageTag)
 			step := buildPlanStep{kind: "docker", name: svc.Name, what: "docker build -f " + dockerfile, pushes: pushes}
 			if !fileExists(resolveProjectPath(in.projectDir, dockerfile)) {
 				// A skip in the real build (buildServiceDocker), not a
@@ -389,12 +385,11 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 }
 
 // imageNameOfPlanStep returns the image a docker plan step builds: the project
-// image, a frontend, or a DockerBuild's output_name.
+// image, a frontend, or a DockerBuild workload's artifact (serviceDockerImage).
 func imageNameOfPlanStep(in planInputs, s buildPlanStep) string {
-	if svc := in.entities.FindWorkload(s.name); svc != nil {
-		if b := svc.Build; b.Type == "docker" && b.Docker != nil && b.Docker.OutputName != "" {
-			return b.Docker.OutputName
-		}
+	if svc := in.entities.FindWorkload(s.name); svc != nil && svc.Build.Type == "docker" {
+		name, _ := serviceDockerImage(*svc, in.resolvedTag, in.opts)
+		return name
 	}
 	return s.name
 }

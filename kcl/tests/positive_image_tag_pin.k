@@ -13,6 +13,14 @@ plumbing stays in one place).
   * An `@sha256:` digest ref passes through verbatim.
   * A registry PORT colon is not a tag (`localhost:5050/foo` gets the tag).
   * Jobs, crons and operators resolve the same way (one rule, every kind).
+
+And the BUILD side of the same pin: a forge-built workload's artifact (the
+entity's `image`, the ${IMAGE} its build pushes) is the declared image's
+repository with the tag stripped, so `${REGISTRY}/${IMAGE}:${TAG}` rebuilds
+exactly the spec.image above. `image = "reliant:e2e"` on a workload named
+`api-server` builds IMAGE=reliant (TAG=e2e, read back off spec.image in
+Go), never IMAGE=api-server — the ErrImagePull the control-plane migration
+hit. An unset image still derives from the build (output_name, else name).
 """
 
 # kcl-args: image_tag="abc1234-dirty"
@@ -21,6 +29,7 @@ import forge
 import forge.workloads as fw
 
 _target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5050"}
+_shell = forge.ShellBuild {cmd = r"echo ${REGISTRY}/${IMAGE}:${TAG}"}
 
 output = forge.render(forge.Bundle {
     project = "dev"
@@ -35,10 +44,17 @@ output = forge.render(forge.Bundle {
         fw.Workload {name = "migrate", kind = "job", image = "reliant:v1.4.2", args = ["db", "migrate", "up"]}
         fw.Workload {name = "nightly", kind = "cron", image = "api", args = ["sweep"], schedule = "@daily"}
         fw.Workload {name = "ctrl", kind = "operator", image = "ctrl:v9.9.9", crds = ["Widget"]}
+        # Built workloads (P5's shape): the artifact is the image's repository.
+        fw.Workload {name = "api-server", image = "reliant:e2e", args = ["api"], build = _shell}
+        fw.Workload {name = "org-built", image = "acme/app:v2", args = ["x"], build = _shell}
+        fw.Workload {name = "untagged-built", image = "demo", args = ["x"], build = _shell}
+        fw.Workload {name = "docker-built", image = "gw:v7", args = ["x"], build = forge.DockerBuild {output_name = "not-this"}}
+        fw.Workload {name = "derived", args = ["x"], build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo-bin"}}
     ]
 })
 
 _img = {m.metadata.name: m.spec.image for m in output.manifests if m.kind == "Workload"}
+_artifact = {w.name: w.image for w in output.workloads}
 
 assert_image_tag_is_env_tag = output.image_tag == "abc1234-dirty"
 assert_env_tag = _img["api"] == "localhost:5050/api:abc1234-dirty"
@@ -53,3 +69,14 @@ assert_cron_env_tag = _img["nightly"] == "localhost:5050/api:abc1234-dirty"
 assert_operator_pinned = _img["ctrl"] == "localhost:5050/ctrl:v9.9.9"
 # The entity carries the same resolved ref (the release ledger reads it).
 assert_entity_matches_record = all w in output.workloads { w.spec.image == _img[w.name] }
+
+# The build artifact is the pinned image's repository, and REGISTRY/IMAGE
+# plus the pinned tag is the deploy ref.
+assert_pinned_built_spec = _img["api-server"] == "localhost:5050/reliant:e2e"
+assert_pinned_built_artifact = _artifact["api-server"] == "reliant"
+assert_org_built_artifact = _artifact["org-built"] == "acme/app" and _img["org-built"] == "localhost:5050/acme/app:v2"
+assert_untagged_built_artifact = _artifact["untagged-built"] == "demo" and _img["untagged-built"] == "localhost:5050/demo:abc1234-dirty"
+assert_docker_built_artifact = _artifact["docker-built"] == "gw" and _img["docker-built"] == "localhost:5050/gw:v7"
+assert_derived_artifact = _artifact["derived"] == "demo-bin" and _img["derived"] == "localhost:5050/demo-bin:abc1234-dirty"
+# A workload forge does not build has no artifact.
+assert_unbuilt_has_no_artifact = _artifact["reliant"] == ""

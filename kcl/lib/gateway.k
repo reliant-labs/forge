@@ -52,6 +52,15 @@ _cluster_label = lambda context: str -> {str: str} {
     {"${_cluster_routing_label_key}" = context} if context else {}
 }
 
+# A route lands where it says, else where its parent Gateway lands: a route
+# is attached to exactly one Gateway, and on any other cluster its parentRef
+# resolves to nothing. Without the inheritance an unpinned route beside a
+# pinned Gateway was replicated to every cluster of a multi-cluster env.
+_route_cluster_context = lambda route: any, gw: any -> str {
+    _own = _cluster_context(route.cluster)
+    _own if _own else (_cluster_context(gw.cluster) if gw else "")
+}
+
 # Map a GatewayListener.protocol to the Gateway API spec value.
 # H2C maps to Gateway API's HTTP protocol (HTTP/2 cleartext is
 # expressed via the listener's underlying behavior; Envoy Gateway
@@ -247,7 +256,11 @@ _render_one_certificate = lambda gw: any, namespace: str, group: [any] -> any {
         metadata = {
             name = _name
             namespace = namespace
-            labels = _managed_labels(gw.name)
+            # The Certificate fills the Secret its Gateway's listener
+            # references, so it lands on the Gateway's cluster and nowhere
+            # else — a copy elsewhere is a second ACME order for the same
+            # hosts, against the issuer's rate limit.
+            labels = _managed_labels(gw.name) | _cluster_label(_cluster_context(gw.cluster))
         }
         spec = {
             secretName = _first.tls.secret_name
@@ -304,7 +317,7 @@ render_http_route = lambda route: any, gateways: [any], namespace: str -> [any] 
     _listener = _lookup_listener(_gw, route.listener) if _gw else None
     _host = _route_host(route, _gw, _listener) if _gw else ""
     _path = _route_path(route, _listener) if _listener else "/"
-    _labels = _managed_labels(route.name) | _cluster_label(_cluster_context(route.cluster))
+    _labels = _managed_labels(route.name) | _cluster_label(_route_cluster_context(route, _gw))
     [{
         apiVersion = "gateway.networking.k8s.io/v1"
         kind = "HTTPRoute"
@@ -348,7 +361,7 @@ render_grpc_route = lambda route: any, gateways: [any], namespace: str -> [any] 
     _gw = _lookup_gateway(gateways, route.gateway)
     _listener = _lookup_listener(_gw, route.listener) if _gw else None
     _host = _route_host(route, _gw, _listener) if _gw else ""
-    _labels = _managed_labels(route.name) | _cluster_label(_cluster_context(route.cluster))
+    _labels = _managed_labels(route.name) | _cluster_label(_route_cluster_context(route, _gw))
     # GRPCRoute path matches a gRPC service+method. Empty path means
     # match-everything; explicit path is interpreted as a method match
     # when prefixed with "/".

@@ -525,6 +525,28 @@ _stamp_owner = lambda manifest: any, name: str, part_of: str -> any {
     manifest | {metadata = _meta | {labels = labels_lib.owner_labels(_meta.labels if _meta.labels else {}, name, part_of)}}
 }
 
+# The Bundle's ingress: Gateways, their Certificates, and the routes on them.
+# All of it is rendered into the PRIMARY namespace.
+_ingress = lambda b: Bundle, ns: str -> [any] {
+    [item for g in b.gateways for item in gw_lib.render_gateway(g, ns)] \
+        + [item for g in b.gateways for item in gw_lib.render_certificate(g, ns)] \
+        + [item for r in b.http_routes for item in gw_lib.render_http_route(r, b.gateways, ns)] \
+        + [item for r in b.grpc_routes for item in gw_lib.render_grpc_route(r, b.gateways, ns)]
+}
+
+# An object with no cluster of its own lands on the PRIMARY target — the same
+# rule _raw_manifests applies, for the same reason: the deploy router
+# replicates an unattributed object to EVERY cluster of a multi-cluster env.
+# Ingress is never env-wide: a Gateway claims one load balancer (often a
+# reserved static IP), its Certificate is one ACME order, and a route's
+# backend is a Service on one cluster. Unstamped, a Manifests-only secondary
+# cluster received a second Gateway on prod's IP and duplicate certificates.
+_place_on_primary = lambda manifest: any, primary: any -> any {
+    _meta = manifest.metadata if manifest.metadata else {}
+    _labels = _meta.labels if _meta.labels else {}
+    manifest if not primary or _labels["forge.dev/cluster"] else _stamp_cluster(manifest, primary.cluster)
+}
+
 _stamp_cluster = lambda manifest: any, context: str -> any {
     _meta = manifest.metadata if manifest.metadata else {}
     _labels = _meta.labels if _meta.labels else {}
@@ -596,10 +618,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
         + [_render_config_map_manifest(cm, _ns, _project) for cm in b.config_maps] \
         + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
-        + [item for g in b.gateways for item in gw_lib.render_gateway(g, _ns)] \
-        + [item for g in b.gateways for item in gw_lib.render_certificate(g, _ns)] \
-        + [item for r in b.http_routes for item in gw_lib.render_http_route(r, b.gateways, _ns)] \
-        + [item for r in b.grpc_routes for item in gw_lib.render_grpc_route(r, b.gateways, _ns)] \
+        + [_place_on_primary(item, _pt) for item in _ingress(b, _ns)] \
         + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)],
         b.env,
     )

@@ -291,7 +291,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "DRY RUN: would stage: ${TOUCHED[*]}"
   echo "DRY RUN: would commit: chore: release $VERSION"
   echo "DRY RUN: would tag $RELEASE_TAG at that commit"
-  echo "DRY RUN: would push:   git push --atomic origin $BRANCH $RELEASE_TAG"
+  echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
   echo ""
   echo "DRY RUN: restoring the working tree; no commit, tag or push was created."
   exit 0
@@ -319,7 +319,15 @@ echo ""
 echo "→ pushing atomically (branch + tag, all-or-nothing)"
 # --atomic keeps the branch and the tag from landing separately: a tag without
 # its commit on the branch is a release nobody can reproduce.
-git push --atomic origin "$BRANCH" "$RELEASE_TAG"
+#
+# Push the RELEASE COMMIT to the remote branch, not the local branch of that
+# name. A bare "$BRANCH" refspec pushes whatever the local `main` points at,
+# which is the release commit only when the script runs on a checked-out,
+# up-to-date `main`. Run from a worktree on another branch, or from a shared
+# checkout whose `main` lags origin, it pushed a stale tip; the remote rejected
+# it as non-fast-forward and the atomic push dropped the tag with it (v0.1.18
+# hit exactly this).
+git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"
 
 echo ""
 echo "✅ released $VERSION at $RELEASE_SHA"

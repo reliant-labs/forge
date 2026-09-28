@@ -94,9 +94,16 @@ verifying its generated code with an older forge than the one that wrote it
 The verify-generated job also installs the codegen toolchain at go.mod's
 versions — `forge tools install --force` (protoc-gen-go, protoc-gen-connect-go,
 goimports) — and runs `npm ci` in each frontend, because it regenerates the
-tree and demands identical bytes. `forge ci verify-generated` refuses to run
-when a frontend's protoc-gen-es is missing rather than certify a tree whose
-TypeScript stubs it skipped.
+tree and demands identical bytes. `npm ci` is what installs
+`@bufbuild/protoc-gen-es`, from the frontend's own devDependencies and
+lockfile: `forge tools install` never runs npm and never writes a
+frontend's `package.json` or `package-lock.json` (`--force` reinstalls the
+Go tools only). It fails, naming the edit, when a frontend's buf.gen.yaml
+runs the plugin but its package.json does not declare it. `forge ci
+verify-generated` refuses to run when a frontend's protoc-gen-es is missing
+rather than certify a tree whose TypeScript stubs it skipped, and refuses
+to regenerate over a tree an earlier step already modified — naming those
+paths as changed before `forge generate` ran, not as generated-code drift.
 
 ### Deploys go through forge
 

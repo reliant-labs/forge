@@ -143,8 +143,7 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 		return rescaffoldErr(paths,
 			fmt.Sprintf("%s still %s — rescaffold only re-creates files that are absent, so it never overwrites yours",
 				strings.Join(present, ", "), plural(len(present), "exists", "exist")),
-			fmt.Sprintf("to replace your copy with the current template, run `%s project upgrade --force %s` (it shows the diff first); "+
-				"or delete the file and re-run rescaffold", Name(), strings.Join(present, " ")))
+			presentFileRemedy(root, cfg, present))
 	}
 
 	// A service proto is not a scaffold of the project — it IS the service.
@@ -348,6 +347,34 @@ func normalizeRescaffoldPaths(root string, raw []string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// presentFileRemedy names how to replace files the user still has.
+//
+// `forge project upgrade --force <path>` shows the diff before adopting, so
+// it is the better tool — but only for paths upgrade manages. Suggesting it
+// for anything else (a CI workflow, the pre-commit config) sends the user
+// straight into upgrade's "not upgrade-managed" refusal; for those the
+// remedy is delete-then-rescaffold.
+func presentFileRemedy(root string, cfg *config.ProjectConfig, present []string) string {
+	var upgradable, other []string
+	for _, p := range present {
+		if rescaffoldRenderableByUpgrade(root, cfg, p) {
+			upgradable = append(upgradable, p)
+		} else {
+			other = append(other, p)
+		}
+	}
+	var parts []string
+	if len(upgradable) > 0 {
+		parts = append(parts, fmt.Sprintf("to replace %s with the current template, run `%s project upgrade --force %s` (it shows the diff first)",
+			strings.Join(upgradable, ", "), Name(), strings.Join(upgradable, " ")))
+	}
+	if len(other) > 0 {
+		parts = append(parts, fmt.Sprintf("to get forge's version of %s, delete it and run `%s` (keep a copy of anything of yours first)",
+			strings.Join(other, ", "), rescaffoldCmd(other...)))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // serviceProtoOf reports whether p is a scaffolded service proto

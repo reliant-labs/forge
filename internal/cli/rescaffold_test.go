@@ -196,6 +196,18 @@ func TestRescaffold_RefusesAPresentFile(t *testing.T) {
 	if got := readRescaffoldFile(t, root, rel); !bytes.Equal(got, edited) {
 		t.Errorf("rescaffold rewrote a present file the user owns:\n%s", got)
 	}
+	// The pre-commit config is not upgrade-managed, so pointing at
+	// `upgrade --force` would send the user into upgrade's refusal.
+	if strings.Contains(err.Error(), "upgrade --force") {
+		t.Errorf("remedy names `upgrade --force` for a path upgrade does not manage: %v", err)
+	}
+
+	// Taskfile.yml IS upgrade-managed: there the diff-first adopt is the
+	// better remedy and must be the one named.
+	err = rescaffoldPaths(&w, root, cfg, []string{"Taskfile.yml"}, ciStepOnly(root, cfg))
+	if err == nil || !strings.Contains(err.Error(), "upgrade --force Taskfile.yml") {
+		t.Errorf("remedy for an upgrade-managed present file should name `upgrade --force`, got: %v", err)
+	}
 }
 
 // A deleted service proto took the service with it; the refusal names the

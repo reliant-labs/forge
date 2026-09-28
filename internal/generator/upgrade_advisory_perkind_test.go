@@ -126,6 +126,13 @@ func TestAdvisories_CoverEveryRenderableTemplateFile(t *testing.T) {
 				if advisoryExemptRel(rel) {
 					continue
 				}
+				// A browser frontend's tsconfig peer pins are reconciled after
+				// render to the installed layout and declaration files — a
+				// second renderer (see webTsconfigRel). React Native's carries
+				// no pins and stays covered, which this loop still asserts.
+				if rel == webTsconfigRel && tree != "react-native" {
+					continue
+				}
 				want := "frontends/web/" + rel
 				if !got[want] {
 					missing = append(missing, rel)

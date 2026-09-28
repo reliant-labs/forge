@@ -724,6 +724,15 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'npm install' in each frontends/<name>/ before 'forge generate'.")
 			fmt.Println("    CI also requires package-lock.json to exist.")
 		}
+		// The install just decided the node_modules layout AND made each
+		// pinned package's manifest readable, so this is the one moment the
+		// tsconfig peer pins can be aimed at real declaration files. Until
+		// then the template could only name package DIRECTORIES, which
+		// Next's webpack resolver honours for app code, splitting every
+		// pinned package with an exports/module mismatch into two module
+		// instances (prerender: "No QueryClient set"). `forge scaffold
+		// frontend` runs the same pass after its install.
+		generator.ReconcileFrontendTsconfigPeers(in.targetPath)
 	}
 
 	// Service projects bootstrap proto/Connect codegen immediately so the

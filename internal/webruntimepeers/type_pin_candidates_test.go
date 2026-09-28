@@ -25,7 +25,7 @@ import (
 func TestTypePinPath_HoistedLayout(t *testing.T) {
 	t.Parallel()
 
-	got := webruntimepeers.TypePinPath("@connectrpc/connect", true)
+	got := webruntimepeers.TypePinPath("@connectrpc/connect", true, "")
 	if want := "../../node_modules/@connectrpc/connect"; got != want {
 		t.Errorf("TypePinPath(hoisted) = %q, want %q", got, want)
 	}
@@ -36,7 +36,7 @@ func TestTypePinPath_HoistedLayout(t *testing.T) {
 func TestTypePinPath_LocalLayout(t *testing.T) {
 	t.Parallel()
 
-	got := webruntimepeers.TypePinPath("@connectrpc/connect", false)
+	got := webruntimepeers.TypePinPath("@connectrpc/connect", false, "")
 	if want := "./node_modules/@connectrpc/connect"; got != want {
 		t.Errorf("TypePinPath(local) = %q, want %q", got, want)
 	}
@@ -49,10 +49,10 @@ func TestTypePinPath_LocalLayout(t *testing.T) {
 func TestTypePinPath_HonoursTheTypesRedirect(t *testing.T) {
 	t.Parallel()
 
-	if got, want := webruntimepeers.TypePinPath("react", false), "./node_modules/@types/react"; got != want {
+	if got, want := webruntimepeers.TypePinPath("react", false, ""), "./node_modules/@types/react"; got != want {
 		t.Errorf("TypePinPath(react, local) = %q, want %q", got, want)
 	}
-	if got, want := webruntimepeers.TypePinPath("react", true), "../../node_modules/@types/react"; got != want {
+	if got, want := webruntimepeers.TypePinPath("react", true, ""), "../../node_modules/@types/react"; got != want {
 		t.Errorf("TypePinPath(react, hoisted) = %q, want %q", got, want)
 	}
 }
@@ -65,7 +65,7 @@ func TestTypePinPath_EveryPinHasAPathInBothLayouts(t *testing.T) {
 
 	for _, pkg := range webruntimepeers.TypePins() {
 		for _, hoisted := range []bool{false, true} {
-			got := webruntimepeers.TypePinPath(pkg, hoisted)
+			got := webruntimepeers.TypePinPath(pkg, hoisted, "")
 			if got == "./node_modules/" || got == "../../node_modules/" || got == "" {
 				t.Errorf("TypePinPath(%q, hoisted=%v) = %q — resolves to nothing", pkg, hoisted, got)
 			}

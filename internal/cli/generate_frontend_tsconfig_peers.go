@@ -104,7 +104,7 @@ func reconcileFrontendTsconfigPeers(cfg *config.ProjectConfig, projectDir string
 	}
 
 	if len(touched) > 0 {
-		fmt.Printf("  ♻️  pinned web-runtime peers in %d tsconfig(s) — one copy of @connectrpc/@bufbuild under tsc\n", len(touched))
+		fmt.Printf("  ♻️  reconciled web-runtime peer pins in %d tsconfig(s) — one copy of each peer's types under tsc, none of its code in the bundle\n", len(touched))
 		for _, rel := range touched {
 			fmt.Printf("      - %s\n", rel)
 		}
@@ -112,8 +112,10 @@ func reconcileFrontendTsconfigPeers(cfg *config.ProjectConfig, projectDir string
 }
 
 // addPeerPinsToTsconfig reconciles one tsconfig's `paths` peer pins: it adds
-// any that are missing and RETARGETS any that name the wrong node_modules for
-// this project's layout. Returns true when the file changed.
+// any that are missing, RETARGETS any that name the wrong node_modules for
+// this project's layout, and HEALS a directory pin that resolves into the
+// declaration-file pin it should always have been. Returns true when the file
+// changed.
 //
 // Retargeting matters as much as adding. tsconfig.json is scaffold-once, so a
 // project whose layout changed — most commonly because a dev forge build wrote
@@ -122,36 +124,33 @@ func reconcileFrontendTsconfigPeers(cfg *config.ProjectConfig, projectDir string
 // silently falls back to the ordinary walk and finds the linked runtime's own
 // copy, which is the TS2322 this pass exists to prevent.
 func addPeerPinsToTsconfig(path string, layout generator.PinLayout) bool {
+	// First pass: rewrite present pins. Done before the insert so `missing`
+	// below sees the final shape.
+	//
+	// The LAYOUT is changed only when it is known. A committed pin is itself
+	// a reviewed declaration of this project's layout, and it is better
+	// evidence than anything forge can infer from a tree that has not been
+	// installed — so when forge cannot identify the layout it defers to the
+	// file rather than rewriting it to a guess.
+	//
+	// The ENTRY is kept once a pin has one: it is a committed statement of
+	// which declaration file this project's tsc binds, and generate never
+	// second-guesses it from node_modules (see healDirectoryPin for the one
+	// exception, and why it cannot flip-flop).
+	feDir := filepath.Dir(path)
+	retargeted := generator.ReconcileTsconfigPins(path, func(pkg string, hoisted bool, entry string) (bool, string) {
+		if layout.Known {
+			hoisted = layout.Hoisted
+		}
+		if entry == "" {
+			entry = healDirectoryPin(feDir, pkg, hoisted)
+		}
+		return hoisted, entry
+	})
+
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return false // no tsconfig here — nothing to reconcile
-	}
-
-	// First pass: retarget pins that are present but aimed at the other
-	// layout. Done before the insert so `missing` below sees the final shape.
-	//
-	// Skipped entirely when the layout is unknown. A committed pin is itself a
-	// reviewed declaration of this project's layout, and it is better evidence
-	// than anything forge can infer from a tree that has not been installed —
-	// so when forge cannot identify the layout it defers to the file rather
-	// than rewriting it to a guess. Adding a MISSING pin below still happens:
-	// a key that is absent says nothing, so writing the default there costs
-	// nothing that was not already lost.
-	retargeted := false
-	if layout.Known {
-		for _, pkg := range tsconfigPeerPins() {
-			want := webruntimepeers.TypePinPath(pkg, layout.Hoisted)
-			re := pathsEntryRe(pkg)
-			loc := re.FindSubmatchIndex(body)
-			if loc == nil {
-				continue // absent, or a shape this does not own — leave it
-			}
-			if string(body[loc[4]:loc[5]]) == want {
-				continue // already correct
-			}
-			body = re.ReplaceAll(body, []byte(`${1}"`+want+`"${3}`))
-			retargeted = true
-		}
 	}
 
 	missing := make([]string, 0, len(tsconfigPeerPins()))
@@ -161,10 +160,7 @@ func addPeerPinsToTsconfig(path string, layout generator.PinLayout) bool {
 		}
 	}
 	if len(missing) == 0 {
-		if !retargeted {
-			return false // already handled
-		}
-		return writeTsconfig(path, body)
+		return retargeted // any rewrite above has already been written
 	}
 
 	loc := pathsOpenRe.FindSubmatchIndex(body)
@@ -199,11 +195,42 @@ func addPeerPinsToTsconfig(path string, layout generator.PinLayout) bool {
 		// value for a non-wildcard key, so the pin names the one layout this
 		// project has rather than listing both. See
 		// webruntimepeers.TypePinPath.
-		fmt.Fprintf(&out, "\n%s  %q: [%q],", indent, pkg, webruntimepeers.TypePinPath(pkg, layout.Hoisted || !layout.Known))
+		//
+		// And a DECLARATION FILE when one can be read, for the reason in
+		// healDirectoryPin: a directory pin that resolves splits the bundle.
+		hoisted := layout.Hoisted || !layout.Known
+		entry := healDirectoryPin(feDir, pkg, hoisted)
+		fmt.Fprintf(&out, "\n%s  %q: [%q],", indent, pkg, webruntimepeers.TypePinPath(pkg, hoisted, entry))
 	}
 	out.Write(body[insertAt:])
 
 	return writeTsconfig(path, out.Bytes())
+}
+
+// healDirectoryPin returns the declaration entry a DIRECTORY pin for pkg at
+// this layout must be upgraded to, or "" to leave it a directory pin.
+//
+// A directory pin is correct for tsc and wrong for the bundle. Next's webpack
+// resolver applies tsconfig `paths` to app code, and a pin naming a package
+// directory is a directory request that skips `exports` — so whenever the pin
+// RESOLVES, app code and @reliantlabs/forge-web-runtime bind different files
+// of the same package (react-query's build/legacy vs build/modern), and
+// prerender fails with "No QueryClient set" because two module instances are
+// two React contexts. A pin naming a `.d.ts` is skipped by that resolver and
+// ignored by Vite, so the bundle resolves through `exports` while tsc still
+// binds one copy of the types. See webruntimepeers.DeclarationEntry.
+//
+// This reads node_modules, which `forge generate` otherwise never does (see
+// generator.DetectFrontendPinLayout), and it is safe for one reason: it is a
+// ONE-WAY heal. It fires only on a directory pin that resolves — the only
+// state in which the pin is harmful — and what it writes is a pin it will
+// never touch again (an entry pin is kept verbatim above, installed or not).
+// So a fresh clone leaves an inert directory pin alone, an installed tree
+// fixes it once, and from then on every environment generates the same bytes.
+// The flip-flop #248 removed was two states each rewriting the other; this
+// has one absorbing state.
+func healDirectoryPin(feDir, pkg string, hoisted bool) string {
+	return generator.InstalledDeclarationEntry(feDir, pkg, hoisted)
 }
 
 // writeTsconfig writes body back to path, preserving the file's own mode.
@@ -213,20 +240,6 @@ func writeTsconfig(path string, body []byte) bool {
 		mode = info.Mode().Perm()
 	}
 	return os.WriteFile(path, body, mode) == nil
-}
-
-// pathsEntryRe matches a single-element `paths` mapping for pkg, capturing the
-// key-and-bracket prefix in group 1 and the bare path VALUE in group 2 so a
-// rewrite can replace the value alone.
-//
-// Deliberately matches only the single-element form. A hand-written entry with
-// several candidates, or one spread over multiple lines, is a shape forge did
-// not write and does not rewrite.
-func pathsEntryRe(pkg string) *regexp.Regexp {
-	// Group 3 carries the closing bracket and any whitespace before it, so a
-	// rewrite can put back exactly what it matched. Dropping it produced a
-	// truncated entry and an unparseable tsconfig.
-	return regexp.MustCompile(`("` + regexp.QuoteMeta(pkg) + `"\s*:\s*\[\s*)"([^"]*)"(\s*\])`)
 }
 
 // pathsKeyRe matches an existing mapping for pkg anywhere in the file — the

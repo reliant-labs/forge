@@ -46,7 +46,15 @@ func FuncMap() template.FuncMap {
 		// aimed at whichever node_modules the project actually has. One
 		// element, never a list: SWC panics `next build` on a multi-element
 		// value for a non-wildcard key. See webruntimepeers.TypePinPath.
-		"typePinPath":  webruntimepeers.TypePinPath,
+		//
+		// It names the package DIRECTORY because a template renders before
+		// any install exists to read a declaration entry from. The install
+		// that follows every scaffold replaces it with the package's `.d.ts`
+		// (generator.ReconcileFrontendTsconfigPeers) — a directory pin that
+		// resolves splits the webpack bundle, so it must not outlive it.
+		"typePinPath": func(name string, hoisted bool) string {
+			return webruntimepeers.TypePinPath(name, hoisted, "")
+		},
 		"joinStrings":  strings.Join,
 		"default":      getDefault,
 		"add":          add,
@@ -624,11 +632,20 @@ type FrontendTemplateData struct {
 	//     canonical env var NEXT_PUBLIC_BASE_PATH).
 	//   - src/lib/basepath_gen.ts.tmpl bakes it as the fallback for
 	//     BASE_PATH / joinBasePath().
+	//   - Dockerfile mounts a static export under it, as the StaticSite
+	//     deploy does.
 	//
 	// Already validated by config.LoadStrict (leading "/", no trailing
 	// "/", [A-Za-z0-9._-] segments) — templates splice it verbatim into
 	// TypeScript string literals.
 	BasePath string
+	// RepoPath is the frontend's directory relative to the project root
+	// ("frontends/web"), slash-separated. The nextjs Dockerfile builds at
+	// /src/<RepoPath> so every relative path the committed config carries —
+	// tsconfig's `../../node_modules/…` pins above all — means inside the
+	// image what it means in the repository. Empty falls back to
+	// frontends/<FrontendName>, where the scaffolder writes every frontend.
+	RepoPath string
 	// Public renders the frontend WITHOUT a sign-in gate (auth_mode: none):
 	// providers.tsx / routes.tsx mount no RouteGuard and the Vite tree
 	// declares no /auth/sign-in route. See generator.FrontendGenOptions.Public.
@@ -646,6 +663,12 @@ type FrontendTemplateData struct {
 func (d FrontendTemplateData) withDefaults() interface{} {
 	if d.WebRuntimeTypePins == nil {
 		d.WebRuntimeTypePins = webruntimepeers.TypePins()
+	}
+	// The same "forgot it" argument, for the Dockerfile: a payload without
+	// a build path would render `WORKDIR /src/` and quietly bring back the
+	// /app-shaped build the field exists to end.
+	if d.RepoPath == "" && d.FrontendName != "" {
+		d.RepoPath = "frontends/" + d.FrontendName
 	}
 	return d
 }

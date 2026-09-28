@@ -33,6 +33,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"sort"
+	"strings"
 )
 
 //go:embed peers.json
@@ -126,9 +127,9 @@ const (
 	hoistedPinPrefix = "../../node_modules/"
 )
 
-// TypePinTarget returns the node_modules-relative directory a tsconfig `paths`
-// entry for name should resolve to. It is the package itself for anything that
-// bundles its typings, and the @types/ package for anything that does not.
+// TypePinTarget returns the node_modules-relative PACKAGE a tsconfig `paths`
+// entry for name takes its typings from. It is the package itself for anything
+// that bundles its typings, and the @types/ package for anything that does not.
 func TypePinTarget(name string) string {
 	if types, ok := typesOnlyDir[name]; ok {
 		return types
@@ -136,20 +137,226 @@ func TypePinTarget(name string) string {
 	return name
 }
 
+// WHY A PIN NAMES A DECLARATION FILE, NOT A DIRECTORY.
+//
+// tsconfig `paths` is not read by tsc alone. Next.js's webpack resolver
+// (JsConfigPathsPlugin) applies the same mappings to APP code — requests from
+// inside node_modules are exempt. A pin whose target is a package DIRECTORY
+// is, to webpack, a directory request: it skips the package's `exports` map
+// and falls back to `module`/`main`. So whenever such a pin resolves (the
+// frontend-local layout in any ordinary checkout; the hoisted layout inside a
+// Docker build at /app, where ../../node_modules re-roots onto
+// /app/node_modules) app code and the runtime bind DIFFERENT files of one
+// package:
+//
+//	src/app/providers.tsx          => @tanstack/react-query/build/legacy/index.js  (module)
+//	forge-web-runtime/service-hooks => @tanstack/react-query/build/modern/index.js  (exports)
+//
+// Two module instances are two React contexts. The QueryClientProvider the
+// app mounts is invisible to the runtime's hooks, and prerender fails with
+// "No QueryClient set, use QueryClientProvider to set one". Every pinned
+// package whose `exports` disagrees with `module` splits the same way
+// (@tanstack/*, @connectrpc/connect, @opentelemetry/api, …).
+//
+// Next's resolver explicitly skips a `.d.ts` candidate ("Ensure .d.ts is not
+// matched"), and Vite does not read `paths` at all, so a pin that names the
+// package's DECLARATION ENTRY is invisible to every bundler — they resolve
+// through `exports` like any other import — while tsc still binds exactly one
+// copy of the types, which is the only job the pin has.
+//
+// The pins are still needed: with a linked runtime carrying its own
+// node_modules and no pins, `tsc --noEmit` fails mock-transport_gen.ts with
+// TS2322 (measured). Deleting them is not the fix; retargeting them is.
+
+// DeclarationEntry returns the package-relative path of the declaration file
+// a package presents to a `moduleResolution: bundler` importer, read from its
+// package.json — or "" when the manifest names none.
+//
+// DERIVED, never hardcoded: the entry moves between releases inside the
+// ranges forge declares. @opentelemetry/sdk-trace-base 2.0.0 ships
+// build/src/index.d.ts and 2.11.0 only build/src/index-shim.d.ts, so a literal
+// path is right for one install and dangles for the next.
+//
+// Order follows what tsc itself consults under `bundler` resolution with the
+// `import` condition: exports["."] first (its `types`, then the `import`
+// branch, then `default`), then the top-level `types`/`typings`, then `main`.
+// A package whose only declaration is an ESM entry under exports
+// (react-query's build/modern/index.d.ts) and a legacy one at `types`
+// (build/legacy) resolves to the former — the same file every importer's tsc
+// already binds, which is what keeps the pin a no-op for the types it dedupes.
+//
+// An implementation target (`.js`/`.mjs`/`.cjs`) stands for its sibling
+// declaration file, as it does for tsc: @connectrpc/connect declares no
+// `types` anywhere and is typed by the dist/esm/index.d.ts beside its
+// exports import target.
+//
+// exists reports whether a package-relative path is a file in the installed
+// package. Every candidate is checked, so a manifest naming a file the tarball
+// does not ship yields the next candidate rather than a pin that dangles. A
+// nil exists trusts the manifest.
+func DeclarationEntry(manifest []byte, exists func(rel string) bool) string {
+	var doc struct {
+		Types   string          `json:"types"`
+		Typings string          `json:"typings"`
+		Main    string          `json:"main"`
+		Exports json.RawMessage `json:"exports"`
+	}
+	if err := json.Unmarshal(manifest, &doc); err != nil {
+		return ""
+	}
+	candidates := exportsCandidates(doc.Exports)
+	candidates = append(candidates, doc.Types, doc.Typings, doc.Main)
+	for _, c := range candidates {
+		entry := cleanEntry(declarationFor(c))
+		if entry == "" {
+			continue
+		}
+		if exists == nil || exists(entry) {
+			return entry
+		}
+	}
+	return ""
+}
+
+// exportsCandidates lists the paths for "." in an `exports` field, in the
+// order tsc tries them, for any of the shapes npm allows: a bare string, a
+// condition map, or a subpath map whose "." is either.
+func exportsCandidates(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var asMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &asMap); err != nil {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return []string{s}
+		}
+		return nil
+	}
+	if dot, ok := asMap["."]; ok {
+		return conditionCandidates(dot)
+	}
+	for key := range asMap {
+		if strings.HasPrefix(key, ".") {
+			return nil // a subpath map with no "." entry exports no root
+		}
+	}
+	return conditionCandidates(raw)
+}
+
+// conditionCandidates flattens a condition map into its paths, trying the
+// conditions tsc applies under `bundler` + import: `types`, then `import`,
+// then `default`. Other conditions (require, node, custom ones) are not the
+// branch a browser bundle's tsc takes, so they are not candidates.
+func conditionCandidates(raw json.RawMessage) []string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return []string{s}
+	}
+	var cond map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &cond); err != nil {
+		return nil
+	}
+	var out []string
+	for _, key := range []string{"types", "import", "default"} {
+		if v, ok := cond[key]; ok {
+			out = append(out, conditionCandidates(v)...)
+		}
+	}
+	return out
+}
+
+// declarationFor maps a manifest path to the declaration file tsc would read
+// for it: a declaration stays as it is, and an implementation file stands for
+// its sibling (.js → .d.ts, .mjs → .d.mts, .cjs → .d.cts).
+func declarationFor(p string) string {
+	switch {
+	case isDeclarationFile(p):
+		return p
+	case strings.HasSuffix(p, ".mjs"):
+		return strings.TrimSuffix(p, ".mjs") + ".d.mts"
+	case strings.HasSuffix(p, ".cjs"):
+		return strings.TrimSuffix(p, ".cjs") + ".d.cts"
+	case strings.HasSuffix(p, ".js"):
+		return strings.TrimSuffix(p, ".js") + ".d.ts"
+	}
+	return ""
+}
+
+func isDeclarationFile(p string) bool {
+	return strings.HasSuffix(p, ".d.ts") || strings.HasSuffix(p, ".d.mts") || strings.HasSuffix(p, ".d.cts")
+}
+
+// cleanEntry normalises a manifest path ("./build/x.d.ts", "build/x.d.ts")
+// to the bare package-relative form a pin appends.
+func cleanEntry(p string) string {
+	p = strings.TrimPrefix(strings.TrimSpace(p), "./")
+	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "..") || !isDeclarationFile(p) {
+		return ""
+	}
+	return p
+}
+
 // TypePinPath returns the single `paths` value for one pinned package, for a
 // frontend whose dependencies are hoisted to the project root when hoisted is
 // true and installed locally otherwise.
+//
+// entry is the package-relative declaration file (DeclarationEntry of the
+// installed manifest). An empty entry yields the bare package DIRECTORY, which
+// is what a template must emit before any install exists to read — and is
+// precisely the value the scaffold-time reconcile replaces once `npm install`
+// has run (see generator.ReconcileFrontendTsconfigPeers). A directory pin is
+// correct for tsc and wrong for webpack; see the note above TypePinTarget's
+// neighbour DeclarationEntry.
 //
 // Exactly one element, never two — see the layout constants above for why a
 // candidate list panics `next build`. Every emitter goes through this so the
 // layout decision lands in one place rather than in each template's inline
 // string.
-func TypePinPath(name string, hoisted bool) string {
+func TypePinPath(name string, hoisted bool, entry string) string {
 	prefix := localPinPrefix
 	if hoisted {
 		prefix = hoistedPinPrefix
 	}
-	return prefix + TypePinTarget(name)
+	dir := prefix + TypePinTarget(name)
+	if entry == "" {
+		return dir
+	}
+	return dir + "/" + entry
+}
+
+// SplitPinPath takes an existing pin value apart into its layout and
+// declaration entry, so a reconcile can change one without disturbing the
+// other. ok is false for a value forge did not write (another prefix, another
+// package).
+//
+// The implementation directory of a package typed under @types/ (react's
+// "./node_modules/react", which an older forge emitted and which fails every
+// .tsx with TS7016) is recognised too, with an empty entry: it is forge's own
+// stale value, and naming it lets the reconcile heal it to the @types/ target.
+func SplitPinPath(name, value string) (hoisted bool, entry string, ok bool) {
+	for _, candidate := range []struct {
+		prefix  string
+		hoisted bool
+	}{{localPinPrefix, false}, {hoistedPinPrefix, true}} {
+		dir := candidate.prefix + TypePinTarget(name)
+		switch {
+		case value == dir:
+			return candidate.hoisted, "", true
+		case strings.HasPrefix(value, dir+"/"):
+			return candidate.hoisted, strings.TrimPrefix(value, dir+"/"), true
+		case value == candidate.prefix+name:
+			return candidate.hoisted, "", true
+		}
+	}
+	return false, "", false
+}
+
+// PinPackageDir returns where a pin's PACKAGE lives relative to a frontend
+// directory, for the given layout — the directory whose package.json
+// DeclarationEntry reads.
+func PinPackageDir(name string, hoisted bool) string {
+	return TypePinPath(name, hoisted, "")
 }
 
 // decodePeers returns the runtime's declared peer dependency names.

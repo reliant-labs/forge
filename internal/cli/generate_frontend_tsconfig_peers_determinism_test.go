@@ -212,7 +212,7 @@ func TestReconcileStillHealsStalePinsWhenLayoutKnown(t *testing.T) {
 
 			paths := parseTsconfig(t, mustReadTsconfig(t, path))
 			for _, pkg := range tsconfigPeerPins() {
-				want := webruntimepeers.TypePinPath(pkg, tc.wantHoisted)
+				want := webruntimepeers.TypePinPath(pkg, tc.wantHoisted, "")
 				if got := paths[pkg]; len(got) != 1 || got[0] != want {
 					t.Errorf("paths[%q] = %v, want exactly [%q]", pkg, got, want)
 				}
@@ -230,7 +230,7 @@ func TestReconcileStillHealsStalePinsWhenLayoutKnown(t *testing.T) {
 func tsconfigWithPins(hoisted bool) string {
 	out := "{\n  \"compilerOptions\": {\n    \"paths\": {\n"
 	for _, pkg := range webruntimepeers.TypePins() {
-		out += `      "` + pkg + `": ["` + webruntimepeers.TypePinPath(pkg, hoisted) + `"],` + "\n"
+		out += `      "` + pkg + `": ["` + webruntimepeers.TypePinPath(pkg, hoisted, "") + `"],` + "\n"
 	}
 	return out + "      \"@/*\": [\"./src/*\"]\n    }\n  }\n}\n"
 }

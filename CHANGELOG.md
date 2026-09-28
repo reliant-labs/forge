@@ -102,6 +102,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The frontend bundle and image tests run in the e2e lane, on a minimal
+  fixture.** The `next build` peer-pin test scaffolded a whole frontend
+  (OpenTelemetry web instrumentation included) inside the unit lane's
+  `go test -race ./...`, where the 7GB runner OOM-killed it (`signal: killed`
+  after up to 1029s) and failed the Test job on unrelated PRs. It and the
+  static-image `docker build` test now live in `internal/cli` under
+  `-tags e2e`, on the e2e shards' own runners, where a missing tool is a
+  failure rather than a skip. The pin test installs only what its claim
+  needs (33 packages; ~35s locally for both of its builds) and still proves
+  both halves: directory pins fail with `No QueryClient set`, and forge's
+  post-install reconcile makes the build prerender. Each node process is
+  capped at `--max-old-space-size=2048`. The e2e shard now verifies a docker
+  daemon answers before the suite runs.
 - **`forge tools install` never mutates a frontend's `package.json` or
   lockfile.** It used to run `npm install --save-dev @bufbuild/protoc-gen-es`
   in every frontend under `--force` — which the scaffolded verify-generated

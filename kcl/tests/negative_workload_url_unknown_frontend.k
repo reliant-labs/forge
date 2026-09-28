@@ -11,6 +11,7 @@ import forge
 import forge.workloads as fw
 
 _bundle = forge.Bundle {
+    project = "fixture"
     workloads = [_w | {runtime = forge.OnHost {listen_ports = [8085]}} if not _w.runtime else _w for _w in [fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/api"}, args = ["server"]}]]
     frontends = [forge.Frontend {
         name = "web"

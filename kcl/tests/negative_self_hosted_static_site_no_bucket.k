@@ -11,6 +11,7 @@ nowhere to publish. The rule is per frontend now, not env-wide.
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     frontends = [forge.Frontend {
         name = "web"
         path = "frontends/web"

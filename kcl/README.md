@@ -126,6 +126,7 @@ them as first-class prerequisites on the Bundle so they're MODELED:
 
 ```kcl
 _bundle = forge.Bundle {
+    project = "acme"
     # ... workloads / gateways / ...
     required_secrets = [
         forge.ExternalSecret {
@@ -235,6 +236,7 @@ services:
 _is_dev_host = forge.env() == "dev-host"
 
 _bundle = forge.Bundle {
+    project = "acme"
     workloads = [...]
     manifests = [] if _is_dev_host else [forge.Manifests {objects = [
         # in-cluster NATS, Temporal, LiteLLM, etc.
@@ -269,6 +271,7 @@ passes on every render, so a project gets it without editing any KCL.
 
 ```kcl
 _bundle = forge.Bundle {
+    project = "acme"
     env = "dev-k8s"        # this render's ownership tag
     cluster_target = _target
     workloads = [...]

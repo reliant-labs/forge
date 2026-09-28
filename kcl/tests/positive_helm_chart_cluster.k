@@ -52,6 +52,7 @@ _target = forge.ClusterTarget {
 }
 
 _bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = _target
     clusters = [_control_plane, _cp_daemon]
     workloads = [

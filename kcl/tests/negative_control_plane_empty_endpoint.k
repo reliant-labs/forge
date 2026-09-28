@@ -12,6 +12,7 @@ declaration forge would later treat as absent.
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     control_plane = forge.ControlPlane {endpoint = ""}
 }
 

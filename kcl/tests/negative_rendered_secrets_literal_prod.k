@@ -11,6 +11,7 @@ reject-args directive on positive_rendered_secrets_literal.k.)
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     secret_provider = forge.RenderedSecrets {
         secrets = [
             forge.RenderedSecret {

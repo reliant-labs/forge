@@ -65,6 +65,7 @@ _consumer = fw.Workload {
 }
 
 _bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = _target
     clusters = [_cp, _daemon]
     kubeconfig_secrets = [_daemon_link.secret, _cp_link.secret]

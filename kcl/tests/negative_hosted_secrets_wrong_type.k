@@ -11,6 +11,7 @@ provider. The schema check pins it to "hosted".
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     control_plane = forge.ControlPlane {
         endpoint = "https://api.example.com"
     }

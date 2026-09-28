@@ -27,4 +27,4 @@ _fe = forge.Frontend {
     }
 }
 
-output = forge.render(forge.Bundle { frontends = [_fe] })
+output = forge.render(forge.Bundle { project = "fixture", frontends = [_fe] })

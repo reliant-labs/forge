@@ -33,6 +33,7 @@ _target = forge.ClusterTarget {
 }
 
 _dir_bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = _target
     workloads = [fw.Workload {
         name = "api"
@@ -49,6 +50,7 @@ _dir_bundle = forge.Bundle {
 # that is identical on every machine (so it belongs in version control,
 # not in anyone's local store).
 _rendered_bundle = forge.Bundle {
+    project = "fixture"
     workloads = []
     secret_provider = forge.RenderedSecrets {
         secrets = [forge.RenderedSecret {

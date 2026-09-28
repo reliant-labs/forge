@@ -12,6 +12,7 @@ so the Bundle check must reject the declaration at load rather than let
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     secret_provider = forge.HostedSecrets {}
 }
 

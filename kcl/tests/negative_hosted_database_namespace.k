@@ -9,6 +9,7 @@ unverified opinion about where the data lands. Refused, per database.
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
     databases = [forge.ManagedDatabase {
         name = "orders"

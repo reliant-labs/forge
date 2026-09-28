@@ -205,6 +205,32 @@ func TestExtractManifests_OneEntrypoint(t *testing.T) {
 	}
 }
 
+// TestExtractManifests_RefusesDisagreeingPartOf: a (cluster, namespace)
+// group renders with ONE part-of, so two records that disagree on it are an
+// error — never "the first record's label wins" for the whole group.
+func TestExtractManifests_RefusesDisagreeingPartOf(t *testing.T) {
+	// migrate shares api's group (k3d-acme / acme-dev); relabel it.
+	i := strings.Index(workloadRecords, "      name: migrate\n")
+	in := workloadRecords[:i] + strings.Replace(workloadRecords[i:], "app.kubernetes.io/part-of: acme", "app.kubernetes.io/part-of: migrate", 1)
+	_, err := ExtractManifests([]byte(in))
+	if err == nil {
+		t.Fatal("records with different part-of in one group: want an error, got nil")
+	}
+	for _, want := range []string{"migrate", "app.kubernetes.io/part-of", "api", "acme"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name %q, got: %v", want, err)
+		}
+	}
+	// And every record agreeing (the fixture as written) renders that value.
+	for _, o := range extractObjs(t, workloadRecords) {
+		if o.Kind == "Deployment" || o.Kind == "Job" {
+			if got := o.Metadata.Labels["app.kubernetes.io/part-of"]; got != "acme" {
+				t.Errorf("%s/%s part-of = %q, want acme", o.Kind, o.Metadata.Name, got)
+			}
+		}
+	}
+}
+
 // TestExtractManifests_RefusesUnknownSpecField: records decode strictly.
 func TestExtractManifests_RefusesUnknownSpecField(t *testing.T) {
 	in := strings.Replace(workloadRecords, "      kind: worker\n", "      kind: worker\n      network: public\n", 1)

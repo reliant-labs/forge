@@ -30,6 +30,7 @@ _target = forge.ClusterTarget {
 }
 
 _store_bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = _target
     workloads = [fw.Workload {
         name = "api"
@@ -42,11 +43,13 @@ _store_bundle = forge.Bundle {
 }
 
 _external_bundle = forge.Bundle {
+    project = "fixture"
     workloads = []
     secret_provider = forge.ExternalSecrets {}
 }
 
 _no_provider_bundle = forge.Bundle {
+    project = "fixture"
     workloads = []
 }
 

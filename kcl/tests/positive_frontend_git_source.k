@@ -51,6 +51,7 @@ _local = forge.Frontend {
 }
 
 _bundle = forge.Bundle {
+    project = "fixture"
     frontends = [_sourced, _root_sourced, _local]
 }
 

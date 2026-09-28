@@ -10,6 +10,7 @@ keys can't be byte-matched, so the Bundle check rejects it at parse time.
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     cluster_target = forge.ClusterTarget {
         cluster = "prod", namespace = "ns", registry = "ghcr.io/x"
     }

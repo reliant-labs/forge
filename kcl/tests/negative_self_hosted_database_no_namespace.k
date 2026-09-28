@@ -9,6 +9,7 @@ one from. Self-hosted there is no platform to allocate one.
 import forge
 
 _bundle = forge.Bundle {
+    project = "fixture"
     databases = [forge.ManagedDatabase {name = "orders"}]
 }
 

@@ -1,81 +1,77 @@
 # forge — KCL module
 
-Typed schemas + manifest render layer that forge projects import.
+The typed authoring surface and the lowering that forge projects import
+(ADR 0002, `docs/adr/0002-one-workload-model.md`). A workload is declared
+ONCE and each env binds it to a runtime:
 
 ```kcl
 import forge
+import forge.workloads as fw
 
-# The env-wide Kubernetes facts, stated ONCE. Carried on the Bundle's
-# `cluster_target`, so no workload restates cluster/namespace/registry.
-_k8s = forge.ClusterTarget {
-    cluster = "k3d-myapp"
-    namespace = "myapp-dev"
-    registry = "localhost:5050"
-}
-
-# Target-agnostic workloads. There is NO `deploy` field: the presence of a
-# `host` block routes this one through the host adapter, and its absence
-# means k8s. One builder can therefore serve both the host dev env and the
-# cluster envs from a single definition.
-forge.Service {
-    name = "admin-server"
-    image = "myapp:dev"
-    host = forge.HostOverrides { runner = "air", air_config = ".air.toml" }
-}
-
-forge.Service {
-    name = "workspace-proxy"
-    image = "myapp:dev"
-    ports = [8080]
-    replicas = 1
-}
-
-forge.Operator {
-    name = "workspace-controller"
-    image = "myapp:dev"
-    crds = ["Workspace"]
-    cluster_rbac = forge.ClusterRBAC {
-        rules = [{ apiGroups = ["forge.io"], resources = ["workspaces"], verbs = ["*"] }]
+# deploy/kcl/workloads.k — WHAT runs, complete on its own
+api = fw.Workload {
+    name = "api"
+    build = forge.GoBuild {cmd = "./cmd/myapp", output_name = "myapp"}
+    args = ["api"]                     # the subcommand, on every runtime
+    ports = [fw.Port {name = "http", port = 8080, expose = True}]
+    env = {
+        LOG_LEVEL = "info"
+        DATABASE_URL = forge.SecretRef {name = "myapp-secrets", key = "database_url"}
+        WEB_URL = forge.WorkloadURL {workload = "web"}
     }
 }
 
-forge.Frontend {
-    name = "admin-web"
-    path = "frontends/admin-web"
-}
+# deploy/kcl/dev/main.k — WHERE it runs, in this env
+_k3d = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-dev", registry = "localhost:5050"}
 
-# A frontend whose code lives in ANOTHER repository, pinned to a ref —
-# builds in CI (where only this repo is checked out) and builds the same
-# bytes on every machine. See "Cross-repo sources" below.
-forge.Frontend {
-    name = "reliant-web"
-    type = "vite"
-    source = forge.GitSource {
-        repo = "github.com/reliant-labs/reliant"
-        ref = "v1.6.3"
-        subdir = "web"
-    }
-}
-
-forge.CronJob {
-    name = "billing-sweep"
-    schedule = "@hourly"
-    image = "myapp:prod"
-    command = ["./myapp", "cron", "billing-sweep"]
-}
+output = forge.render(forge.Bundle {
+    project = "myapp"
+    runtime = forge.OnHost {runner = "air"}                    # the env default
+    workloads = [
+        wl.api
+        wl.migrate
+        wl.search | {runtime = forge.OnCluster {target = _k3d}}  # one workload elsewhere
+    ]
+    frontends = [forge.Frontend {name = "web", type = "vite", path = "frontends/web"}]
+})
 ```
+
+`output = forge.render(bundle)` is the ONE entrypoint; there is no other
+public top-level var.
 
 ## What ships here
 
-Four typed entity schemas — each captures ONE orchestration shape so the
-forge CLI can dispatch on intent rather than infer it:
+| Declaration | What it is |
+| --- | --- |
+| `fw.Workload` | Everything that runs: `kind` = `service` / `worker` / `job` / `cron` / `operator` / `tool`. Field names and types are the generated `v1alpha1.WorkloadSpec`'s (camelCase), plus `name`, `build`, `runtime`, `config_secrets`. |
+| `forge.OnHost` / `OnCompose` / `OnCluster` / `OnHosted` / `BuildOnly` | The runtime a workload binds to (per workload, else `Bundle.runtime`). |
+| `forge.GoBuild` / `DockerBuild` / `ShellBuild` / `RemoteBuild` | How forge produces a workload's artifact. Unset = forge builds nothing. |
+| `forge.SecretRef` / `ConfigMapRef` / `FieldRef` / `ManagedSecret` / `DatabaseRef` / `WorkloadURL` | The non-literal values of `fw.Workload.env` (a map, name -> value). |
+| `forge.Bundle` | One environment: workloads, `infra` (`forge.HostInfra`), frontends, databases, gateways/routes, secrets, clusters, `manifests` (`forge.Manifests`, raw objects), `network_policy` (opt-in). |
+| `forge.Frontend` | A dev-served frontend, optionally shipped to Firebase or a `StaticSite` (a bucketless StaticSite is hosted). A containerized frontend is a workload. |
+| `forge.ManagedDatabase` | A Postgres on a cluster (CloudNativePG) or on the control plane. |
 
-| Schema     | Purpose                                               | JSON bucket   |
-| ---------- | ----------------------------------------------------- | ------------- |
-| `Service`  | Long-running server (RPC / HTTP). Host or in-cluster. | `services[]`  |
-| `Operator` | Cluster-scoped controller that reconciles CRDs.       | `operators[]` |
-| `Frontend` | Web or mobile frontend (Next.js / Vite / RN).         | `frontends[]` |
-| `CronJob`  | Scheduled job. Omit `schedule` → renders a Job.       | `cronjobs[]`  |
+### What each runtime does with a workload
+
+| Runtime | forge does | spec.image |
+| --- | --- | --- |
+| `OnHost {runner}` | launches a process; the argv is derived from `build` + `args` (`go run <cmd> <args>`, `air`, `./bin/<out> <args>`, `dlv`) | `""` |
+| `OnCompose {service}` | `docker compose up` of the compose file's service; literal env feeds the compose process env | `""` |
+| `OnCluster {target}` | a `forge.dev/v1alpha1 Workload` record in `output.manifests`, expanded by `pkg/deploy.RenderWorkloads` (Full profile) | `<registry>/<image>:<tag>` or `@digest` |
+| `OnHosted {}` | publishes the spec to the control plane, which renders it (Restricted profile) | the artifact / third-party image |
+| `BuildOnly {build_variants}` | builds and ships, never runs | `""` |
+
+A workload whose runtime cannot honour a field is REFUSED at render, naming
+the workload, the field and the reason. That covers the hosted runtime's
+Restricted profile (generated from `v1alpha1.FieldProfiles` into
+`tiers/tiers_gen.k`) and forge's own host/compose/build-only rules
+(`render.k` `_mask_violations`).
+
+A forge-built `service` gets explicit `/readyz` + `/healthz` probes on its
+`http` port in the spec (ADR 0002 §5). A `forge.WorkloadURL` is resolved at
+render for host and cluster referrers (a cluster pod reaches a host process
+through its target's `host_gateway`, default `host.k3d.internal`) and kept as
+a reference for hosted ones. See `kcl/lib/workload_url.k`.
 
 ### Cross-repo sources
 
@@ -93,77 +89,15 @@ maps a repo to a working copy for local iteration.
 
 See `docs/cross-repo-sources.md` for the full model.
 
-### Two `Service` schemas: which one you write
-
-`Service` (in `core.k`) is **the one you author** — target-agnostic, with
-zero k8s vocabulary. Put these in `Bundle.workloads`. It has **no `deploy`
-field**: target selection is _structural_, by which override block is
-present.
-
-| You write       | Renders to                                           |
-| --------------- | ---------------------------------------------------- |
-| a `host` block  | the host adapter (`go-run` / `air` / binary / delve) |
-| no `host` block | k8s (Deployment + Service), the default              |
-| a `k8s` block   | k8s, plus that escape hatch's overrides              |
-
-A host-targeted `Service` that also sets k8s-only fields fails at KCL load
-rather than silently dropping them.
-
-`RenderedWorkload` (in `schema.k`) is the **k8s-shaped projection carrier**
-the adapters produce. It is what `Bundle.services` holds, and it is
-adapter-internal — you generally do not hand-author it. It carries the
-polymorphic `deploy` union (`HostDeploy` / `K8sCluster` / `External` /
-`Compose` / `BuildOnly`) whose `type` discriminator makes the JSON output
-self-describing, so forge's CLI can tell whether to run on host, schedule in
-cluster, shell out to a custom CLI, or just produce a build artifact.
-
-Both are supported today: the agnostic `Service` is the path forward for
-host and k8s, while compose, external and build-only targets still flow
-through `RenderedWorkload` until they are folded into the core.
-
-`External` is the escape hatch for any deploy target driven by a CLI
-(Fly.io / Cloudflare Workers / Cloud Run / ECS / Vercel / systemd VM
-/ …). The provider exec's `deploy_cmd` with substitution tokens
-(`${IMAGE}`, `${TAG}`, `${LAST_TAG}`, `${SERVICE}`, `${ENV}`,
-`${ENV_FILE}`, `${PROJECT_DIR}`, plus any keys declared in `env`).
-See the `external-deploy-recipes` skill for ready-to-paste KCL blocks
-for the common providers.
-
-`HostDeploy` splits per-env config from secrets:
-
-| Field          | Source            | Reproducible?            |
-| -------------- | ----------------- | ------------------------ |
-| `env_vars`     | KCL (this file)   | Yes — version-controlled |
-| `secrets_file` | gitignored dotenv | No — per developer       |
-
-Forge's `forge env up` host phase loads `secrets_file` first
-(if set), then layers `env_vars` on top so KCL-declared config wins on
-conflict. Host services see the same per-env config source that
-`K8sCluster` services see via the Deployment's `env` block — the split
-keeps host and cluster from drifting.
-
-`CLI` / `Job` collapse:
-
-- A CLI tool is a workload whose projection carries `deploy =
-forge.BuildOnly{...}` — build the artifact, deploy nothing.
-- A one-shot Job is a `CronJob` with `schedule = ""` (renders as a Job
-  instead of a CronJob).
-
-`Operator` stays separate even though it could fit `Service` because
-its intent (reconcile CRDs, needs cluster-scoped RBAC, no host story)
-is meaningfully different and the JSON consumer benefits from a
-typed bucket.
-
-## Extending a typed entity — `schema MyService(forge.Service)`
+## Extending a workload — `schema MyService(fw.Workload)`
 
 A project can use KCL-native inheritance to add its OWN typed/required
-fields to a forge entity while forge renders the result EXACTLY like the
-base entity:
+fields to a workload while forge renders the result EXACTLY like the base:
 
 ```kcl
-import forge
+import forge.workloads as fw
 
-schema BillingService(forge.Service):
+schema BillingService(fw.Workload):
     region: str               # extra REQUIRED field — enforced at parse time
     tier: "free" | "pro" = "free"
 
@@ -171,15 +105,13 @@ schema BillingService(forge.Service):
         region, "BillingService.region is required"
 
 _svc = BillingService {
-    name = "billing-api", image = "billing-api", region = "us-east-1"
-    ports = [8080]
+    name = "billing-api", region = "us-east-1"
+    ports = [fw.Port {name = "http", port = 8080}]
 }
 ```
 
-This works because the render layer's lambdas are typed on the BASE
-schema (`lambda s: Service -> ...`), which accepts any subtype: the
-subtype passes through `forge.render` / `forge.render_manifests` and
-projects the same JSON contract + k8s manifests a plain `forge.Service`
+This works because the lowering is typed on the BASE schema, which accepts
+any subtype: the subtype renders the same `output` a plain `fw.Workload`
 would. The app's extra fields ride on the typed value but are NOT part of
 the rendered contract (they're yours, for your own KCL logic). An extra
 field with no default — or a `check:` the value violates — fails at KCL
@@ -195,7 +127,7 @@ them as first-class prerequisites on the Bundle so they're MODELED:
 
 ```kcl
 _bundle = forge.Bundle {
-    # ... services / gateways / ...
+    # ... workloads / gateways / ...
     required_secrets = [
         forge.ExternalSecret {
             name = "cloudflare-api-token"
@@ -255,37 +187,21 @@ pinned forge, and the binary IS the module. No network, no git, nothing to
 commit. Because kpm does not know about the module, the stock `kcl` CLI cannot
 render a project on its own; render through forge (`forge env render <env>`).
 
-Project's `deploy/kcl/dev/main.k`:
+Project's `deploy/kcl/dev/main.k` ends with the one entrypoint:
 
 ```kcl
 import forge
+import ..workloads as wl
 
-entities = forge.Bundle {
-    # `workloads` is the agnostic authoring entry. (`services` still accepts
-    # pre-projected RenderedWorkloads for the targets not yet folded in.)
-    workloads = [
-        forge.Service {
-            name = "admin-server"
-            image = "myapp:dev"
-            host = forge.HostOverrides { runner = "air" }
-        }
-    ]
-    operators = []
-    frontends = [
-        forge.Frontend { name = "admin-web", path = "frontends/admin-web" }
-    ]
-    cronjobs = []
-}
-
-# Render the JSON contract that forge build/run/deploy consumes.
-output = forge.render(entities)
+output = forge.render(forge.Bundle {
+    project = "myapp"
+    runtime = forge.OnHost {runner = "air"}
+    workloads = [wl.api, wl.migrate]
+    frontends = [forge.Frontend {name = "admin-web", path = "frontends/admin-web"}]
+})
 ```
 
-Then:
-
-```bash
-kcl run deploy/kcl/dev/ -S output --format json
-```
+Then `forge env render dev` prints it, and every forge command reads it.
 
 ## Standard `-D` render options
 
@@ -298,7 +214,7 @@ set is discoverable from the `forge` surface:
 | `-D` key        | Accessor                   | Always passed? | What it is                                                                |
 | --------------- | -------------------------- | -------------- | ------------------------------------------------------------------------- |
 | `env`           | `forge.env(default)`       | yes            | environment name (`dev`/`staging`/`prod`/…)                               |
-| `image_tag`     | `forge.image_tag(env)`     | yes            | resolved image tag (override > per-env default > `latest`)                |
+| `image_tag`     | `forge.image_tag(env)`     | yes            | resolved image tag (override > per-env default > `latest`); `Bundle.image_tag` defaults to it |
 | `namespace`     | `forge.namespace(default)` | yes            | k8s namespace to deploy into                                              |
 | `image_digests` | `forge.image_digests()`    | when deploying | JSON name→digest map (pins each image to its digest)                      |
 | `registry`      | `forge.registry(default)`  | no (override)  | image registry; the per-env literal is yours, `-D registry=` overrides it |
@@ -318,10 +234,10 @@ services:
 _is_dev_host = forge.env() == "dev-host"
 
 _bundle = forge.Bundle {
-    services = [...]
-    additional_manifests = [] if _is_dev_host else [
+    workloads = [...]
+    manifests = [] if _is_dev_host else [forge.Manifests {objects = [
         # in-cluster NATS, Temporal, LiteLLM, etc.
-    ]
+    ]}]
 }
 ```
 
@@ -354,12 +270,11 @@ passes on every render, so a project gets it without editing any KCL.
 _bundle = forge.Bundle {
     env = "dev-k8s"        # this render's ownership tag
     cluster_target = _target
-    services = [...]
+    workloads = [...]
 }
 ```
 
-`forge.workloads.WorkloadEnv` carries the same `env` field for the workloads
-render path. A single object can also opt out by naming the label itself —
+A single object can also opt out by naming the label itself —
 the stamp merges UNDER labels you already set, so an explicit
 `metadata.labels."forge.dev/env"` always wins.
 
@@ -371,17 +286,19 @@ one-key `app.kubernetes.io/name` literal. Rendering with no `-D env=` binding
 and no drill-in emits no label at all, so a plain `kcl run` is byte-identical
 to the pre-stamp output. See `lib/labels.k`.
 
-Manifests you concatenate AFTER the render call (`forge.render_manifests(...) +
-_extra`) bypass the gate — put them in `Bundle.additional_manifests` (stamped
-for you) or pass them through `forge.stamp_env(_extra)`.
+Raw objects go in `Bundle.manifests` (`forge.Manifests`), which the same
+gate stamps. Cluster workloads' Kubernetes objects are rendered by Go from
+their Workload records and carry the record's labels.
 
 ## Secrets — the `ConfigSecretRef` config-contract override
 
 For a SENSITIVE config field (`sensitive: true` in the config proto), forge's
 config codegen types the field as a `ConfigSecretRef` on the generated
 `AppConfig` schema, defaulting to the `<project>-secrets` Secret and a
-`<env_var lowercased>` key; `config_gen.appConfigEnvMap` projects it to a
-`from_secret` EnvSource. To bind a field to a DIFFERENT existing cluster
+`<env_var lowercased>` key; `config_gen.appConfigEnvMap(cfg, config_secrets)`
+projects it to a `forge.SecretRef` entry of the workload's `env` map (a
+`secretRef` on a cluster or host workload, a `managedSecret` of the same
+store key on a hosted one). To bind a field to a DIFFERENT existing cluster
 Secret/key, set its `ConfigSecretRef` in the per-env `deploy/kcl/<env>/config.k`:
 
 ```kcl
@@ -395,9 +312,8 @@ app_config: config_gen.AppConfig = {
 
 Use a kebab-case `key` for cluster secrets whose keys don't match forge's
 lowercase-env-var default (e.g. `key = "database-url"`). The Secret itself is
-provisioned out-of-band (ESO / sealed-secrets / `kubectl create secret`). Same
-`secret_ref`/`secret_key` fields exist on a hand-written `forge.EnvVar` — see
-the `EnvVar` schema doc in `schema.k`.
+provisioned out-of-band (ESO / sealed-secrets / `kubectl create secret`). A
+hand-written credential is `env = {X = forge.SecretRef {name = ..., key = ...}}`.
 
 ## Versioning
 
@@ -418,18 +334,22 @@ copy it replaced).
 
 ```
 kcl/
-  kcl.mod              # module declaration (this file)
+  kcl.mod              # module declaration
   README.md            # you are here
-  schema.k             # all typed schemas (Service / Operator / Frontend / CronJob, deploy union)
-  base.k               # shared helpers (env vars, init containers)
-  render.k             # entities → JSON contract + k8s manifests
+  workload.k           # fw.Workload, env references, the runtimes
+  schema.k             # the Bundle and every env-level declaration
+  render.k             # the lowering: Bundle -> output (forge.render)
+  core.k               # env-map helpers for [EnvVar] lists (frontends)
+  base.k               # -D option accessors, env groups, helpers
+  workloads/schema.k   # `forge.workloads` (fw): re-exports for authors
+  tiers/tiers_gen.k    # GENERATED from pkg/deploy/v1alpha1 (+ the hosted mask)
   lib/
-    services.k         # service-specific manifest builders
-    crd.k              # CRD builders
-    rbac.k             # RBAC builders (namespaced + cluster)
-    netpol.k           # NetworkPolicy builders
-    labels.k           # the `forge.dev/env` ownership stamp (applied at every render entry point)
-  example/             # tiny example project consumed by tests
-    dev/main.k
-  tests/               # KCL-level invariant tests (`kcl run tests/*.k`)
+    capabilities.k     # kind x capability matrix
+    images.k           # cluster image reference resolution
+    workload_url.k     # forge.WorkloadURL resolution
+    gateway.k          # Gateway API builders
+    labels.k           # label sets and the forge.dev/env stamp
+    crd.k, jwks.k, annotations.k
+  example/dev/main.k   # one env using every runtime
+  tests/               # KCL-level invariant tests (go test ./internal/templates -run TestKCLModule)
 ```

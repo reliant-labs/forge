@@ -58,7 +58,8 @@ _api = tiers.Workload {
     env = [
         tiers.EnvVar { name = "LOG_LEVEL", value = "info" }
         tiers.EnvVar { name = "DATABASE_URL", databaseRef = tiers.DatabaseRef { name = "orders" } }
-        tiers.EnvVar { name = "STRIPE_KEY", managedSecret = "STRIPE_KEY" }
+        tiers.EnvVar { name = "STRIPE_KEY", managedSecret = tiers.ManagedSecretRef { name = "STRIPE_KEY" } }
+        tiers.EnvVar { name = "SENTRY_DSN", managedSecret = tiers.ManagedSecretRef { name = "SENTRY_DSN", optional = True } }
         tiers.EnvVar { name = "PW", secretRef = tiers.SecretKeyRef { name = "s", key = "k" } }
         tiers.EnvVar { name = "CFG", configMapRef = tiers.ConfigMapKeyRef { name = "c", key = "k" } }
         tiers.EnvVar { name = "POD", fieldRef = tiers.FieldRef { fieldPath = "metadata.name" } }
@@ -230,7 +231,8 @@ func TestTierKCLRejects(t *testing.T) {
 		"port name":                       {`x = tiers.Port { name = "HTTP_PORT", port = 80 }`, "Port.name must match"},
 		"deploy phase enum":               {`x = tiers.Workload { image = "ghcr.io/a/b:v1", deployPhase = "during" }`, "Workload.deployPhase must be one of"},
 		"env name pattern":                {`x = tiers.EnvVar { name = "1BAD" }`, "EnvVar.name must match"},
-		"managed secret no path":          {`x = tiers.EnvVar { name = "A", managedSecret = "other/secret" }`, "EnvVar.managedSecret must match"},
+		"managed secret no path":          {`x = tiers.ManagedSecretRef { name = "other/secret" }`, "ManagedSecretRef.name must match"},
+		"managed secret is a ref":         {`x = tiers.EnvVar { name = "A", managedSecret = "BARE" }`, "expected ManagedSecretRef"},
 		"db key enum":                     {`x = tiers.DatabaseRef { name = "db", key = "dsn" }`, "DatabaseRef.key must be one of"},
 		"digest not tag":                  {`x = tiers.StaticSite { liveDigest = "latest" }`, "StaticSite.liveDigest must match"},
 		"invalidate enum":                 {`x = tiers.StaticSiteCDN { urlMap = "m", invalidate = "some" }`, "StaticSiteCDN.invalidate must be one of"},

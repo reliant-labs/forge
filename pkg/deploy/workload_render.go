@@ -141,9 +141,14 @@ const (
 	defaultShutdownTimeoutSeconds = 30
 	// graceMarginSeconds is expand.k:252's margin above the app's drain.
 	graceMarginSeconds = 5
-	// Job lifecycle (expand.k:720-725).
-	jobBackoffLimit            int32 = 6
-	jobTTLSecondsAfterFinished int32 = 86400
+	// Job lifecycle (expand.k:720-725). There is deliberately NO
+	// ttlSecondsAfterFinished: a finished Job IS the record that this spec
+	// already ran. Once the TTL controller deletes it, the next apply — a
+	// GitOps reconciler, the hosted operator, or `forge env deploy` — sees the
+	// Job missing and creates it again, re-running a migration every TTL
+	// period. Superseded Jobs are removed by the spec-hash name plus prune,
+	// never by a timer.
+	jobBackoffLimit int32 = 6
 )
 
 // gatedKinds are the kinds a job may gate: capabilities.k CAP_GATED
@@ -513,8 +518,7 @@ func (set *workloadSet) renderJob(w *workload, ctx Context) ([]runtime.Object, e
 		TypeMeta:   metav1.TypeMeta{APIVersion: "batch/v1", Kind: "Job"},
 		ObjectMeta: meta,
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            new(jobBackoffLimit),
-			TTLSecondsAfterFinished: new(jobTTLSecondsAfterFinished),
+			BackoffLimit: new(jobBackoffLimit),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: w.spec.PodAnnotations},
 				Spec:       pod,

@@ -249,7 +249,6 @@ spec:
       volumes:
       - emptyDir: {}
         name: tmp
-  ttlSecondsAfterFinished: 86400
 ---
 apiVersion: v1
 kind: ServiceAccount

@@ -852,6 +852,23 @@ func TestJobHashTracksSpec(t *testing.T) {
 	}
 }
 
+// TestJobHasNoTTL: a finished Job must persist. It is the record that this
+// spec already ran; if the TTL controller deletes it, the next apply (a GitOps
+// reconciler, the hosted operator, a redeploy) re-creates it and the
+// migration runs again. Superseded Jobs go away by spec-hash name + prune.
+func TestJobHasNoTTL(t *testing.T) {
+	for _, o := range render(t, v1alpha1.ProfileFull, wl("migrate", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"migrate"}})) {
+		if o.GetKind() != "Job" {
+			continue
+		}
+		if ttl := get(objects(t, []*unstructured.Unstructured{o})["Job/"+o.GetName()], "spec", "ttlSecondsAfterFinished"); ttl != nil {
+			t.Errorf("Job %s sets ttlSecondsAfterFinished=%v: a garbage-collected Job is re-created by the next apply and RUNS AGAIN", o.GetName(), ttl)
+		}
+		return
+	}
+	t.Fatal("no Job rendered for a standalone job workload")
+}
+
 // TestRenderManagedDatabase pins control-plane's live-proven CNPG Cluster
 // shape (manageddatabase.BuildClusterPlan) and the names DatabaseRef depends
 // on.

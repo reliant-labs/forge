@@ -1361,6 +1361,96 @@ schema Cluster:
             "failure appears later as unroutable Services. Give them disjoint blocks " \
             "(k3s's own defaults are 10.42.0.0/16 pods, 10.43.0.0/16 services)"
 
+schema KubeconfigPolicyRule:
+    """One authorization rule the minted ServiceAccount is granted on the target
+    cluster. Mirrors rbac.authorization.k8s.io/v1 PolicyRule.
+
+    Fields:
+      * `api_groups` — API groups the rule covers. Default [""] (the core
+                       group), matching kubectl's own default. Use ["*"]
+                       for every group.
+      * `resources`  — resource plurals ("namespaces", "tiers", "*").
+      * `verbs`      — verbs granted ("get", "list", "create", "*").
+    """
+    api_groups: [str] = [""]
+    resources: [str]
+    verbs: [str]
+
+    check:
+        len(resources) > 0, "KubeconfigPolicyRule.resources is required"
+        len(verbs) > 0, "KubeconfigPolicyRule.verbs is required"
+
+
+schema KubeconfigServiceAccount:
+    """The credential a KubeconfigSecret MINTS on the target cluster,
+    instead of copying the operator's.
+
+    WHY THIS EXISTS. Without it, a minted kubeconfig carries whatever
+    credential the operator's own kubeconfig holds for the target. For a
+    k3d cluster that is a client certificate, which works anywhere. For
+    a managed cluster (GKE, EKS, AKS) it is an `exec` plugin — the
+    kubeconfig says "run gke-gcloud-auth-plugin and use what it prints".
+    A pod has no gcloud, no plugin binary and no operator credentials, so
+    a kubeconfig minted that way cannot authenticate at all. That is the
+    whole reason a hub kubeconfig used to be a hand-made out-of-band
+    Secret.
+
+    Declaring `service_account` says: forge, mint a credential that a POD
+    can use. On every deploy forge converges, ON THE TARGET CLUSTER:
+
+      1. a ServiceAccount `name` in `namespace`;
+      2. the `rules` as a ClusterRole + ClusterRoleBinding (cluster-wide),
+         or — when `namespaces` is set — a Role + RoleBinding in each
+         listed namespace;
+      3. a long-lived `kubernetes.io/service-account-token` Secret bound
+         to that ServiceAccount.
+
+    It then reads the token and the cluster CA out of (3) and assembles a
+    kubeconfig whose ONLY credential is that token, inline. No exec
+    plugin, no token file, no client certificate.
+
+    Everything forge creates here carries
+    `app.kubernetes.io/managed-by: forge`, and forge REFUSES to adopt a
+    pre-existing object that lacks it — a shared cluster is the normal
+    case, and silently taking ownership of someone else's ServiceAccount
+    is how a mint becomes an incident.
+
+    ROTATION. The token is long-lived by construction (a
+    service-account-token Secret, not a TokenRequest), so a Secret minted
+    once keeps working until the ServiceAccount is deleted. It does not
+    expire between deploys and there is no refresh deadline to miss. To
+    rotate, delete the token Secret on the target and deploy: the
+    controller issues a new token and forge re-projects it. A bounded
+    TokenRequest was considered and rejected — it ties credential
+    validity to deploy cadence, so a service that simply is not deployed
+    for a while stops working, which is a time bomb rather than a
+    security control. Scope the credential with `rules` instead.
+
+    Fields:
+      * `name`       — ServiceAccount name on the target cluster.
+      * `namespace`  — namespace the ServiceAccount and its token Secret
+                       live in, on the TARGET cluster. This is where the
+                       credential is held, not where it may act.
+      * `rules`      — the permissions granted. Required: a mint with no
+                       rules is a credential that can do nothing, which
+                       is a declaration mistake, never an intent.
+      * `namespaces` — bind the rules as a Role in each of these
+                       namespaces instead of a cluster-wide ClusterRole.
+                       Default [] (cluster-wide). Prefer listing
+                       namespaces when the consumer's reach is known.
+    """
+    name: str
+    namespace: str
+    rules: [KubeconfigPolicyRule]
+    namespaces: [str] = []
+
+    check:
+        name, "KubeconfigServiceAccount.name is required"
+        namespace, "KubeconfigServiceAccount.namespace is required (where the SA and its token Secret live on the target)"
+        len(rules) > 0, \
+            "KubeconfigServiceAccount.rules is required — a minted credential with no rules can do nothing"
+
+
 schema KubeconfigSecret:
     """A cross-cluster kubeconfig, minted FRESH each `forge env up` and
     stored as a k8s Secret so a workload in one cluster can talk to
@@ -1373,8 +1463,30 @@ schema KubeconfigSecret:
     Instead forge resolves the endpoint at mint time (never persisting
     the IP) and writes the kubeconfig into a Secret the workload mounts.
 
+    Two credential models, and the reason there are two
+    ====================================================
+
+    A minted kubeconfig needs a credential for the target. Where it comes
+    from depends on what the target is:
+
+      * `service_account` UNSET (default) — COPY the operator's
+        credential out of their kubeconfig for the target. Correct for
+        k3d, whose kubeconfig holds a client certificate that works from
+        anywhere. Wrong for a managed cluster, whose kubeconfig holds an
+        `exec` plugin that only resolves on the operator's own machine.
+      * `service_account` SET — MINT a credential: a ServiceAccount, the
+        declared permissions, and a long-lived token Secret ON THE TARGET, then
+        project the token inline into the kubeconfig. Works for ANY
+        cluster forge can reach through a kubectl context, GKE included,
+        and the result is pod-usable by construction. See
+        KubeconfigServiceAccount for the rotation story.
+
     Minting (at the cluster→deploy boundary, after clusters exist):
-      1. `k3d kubeconfig get <target_cluster>`.
+      1. Resolve the target's kubeconfig: `k3d kubeconfig get
+         <target_cluster>`, or — when `target_context` is set — the named
+         context from the operator's own kubeconfig.
+      1b. When `service_account` is set, converge SA + permissions + token
+         Secret on the target and read the token + CA back out.
       2. For reachability == "in-network", resolve the target's API
          endpoint FRESH from docker — the serverlb container's IP on the
          OWNER network — and rewrite the kubeconfig's cluster.server to
@@ -1398,12 +1510,38 @@ schema KubeconfigSecret:
                            YAML (default "kubeconfig").
       * `namespace`      — namespace for the Secret in `in_cluster`
                            (default: the env's namespace).
-      * `reachability`   — "in-network" (default): in-docker-network IP
-                           rewrite + insecure TLS (the dev/e2e seam).
-                           "endpoint": use the kubeconfig's own endpoint
-                           verbatim (prod, where the API server has a
-                           stable reachable address + valid cert). Only
-                           "in-network" needs the insecure rewrite path.
+      * `reachability`   — where the READER sits, which is what picks the
+                           kubeconfig's `server`:
+                             "in-network" (default) — the reader is a pod
+                               on the shared docker network; dial the k3d
+                               container by NAME and verify the cert
+                               against the cluster CA (dev/e2e).
+                             "endpoint" — the reader reaches the target's
+                               own advertised endpoint; use the
+                               kubeconfig's server + CA verbatim.
+                             "in-cluster" — the reader runs INSIDE the
+                               target cluster; server is
+                               `https://kubernetes.default.svc` and the
+                               CA is the target's own. Requires
+                               `service_account` (a pod reading its own
+                               API server still needs a credential it can
+                               actually present).
+      * `service_account`— MINT a ServiceAccount credential on the target
+                           instead of copying the operator's. Required
+                           for any cluster whose kubeconfig authenticates
+                           with an `exec` plugin (GKE/EKS/AKS), because
+                           that credential is unusable from a pod. See
+                           KubeconfigServiceAccount. Unset (default) keeps
+                           the copy-the-kubeconfig behaviour, which is
+                           correct for k3d.
+      * `target_context` — kubectl context for the TARGET cluster. Unset
+                           (default) derives `k3d-<target_cluster>` and
+                           resolves it with `k3d kubeconfig get`, which is
+                           the k3d-only path. Set it to address a cluster
+                           forge did not create — a GKE context, a shared
+                           cluster, anything already in the operator's
+                           kubeconfig. Required when `service_account` is
+                           set and the target is not a k3d cluster.
     """
     name: str
     in_cluster: str
@@ -1412,14 +1550,23 @@ schema KubeconfigSecret:
     key: str = "kubeconfig"
     namespace: str = ""
     reachability: str = "in-network"
+    # Mint a credential on the target rather than copying the operator's.
+    # This is what makes a non-k3d target (GKE) work at all.
+    service_account?: KubeconfigServiceAccount
+    # The target's kubectl context. Unset => the k3d derivation.
+    target_context?: str
 
     check:
         name, "KubeconfigSecret.name is required"
         in_cluster, "KubeconfigSecret.in_cluster is required (kubectl context the Secret lands in)"
         target_cluster, "KubeconfigSecret.target_cluster is required (k3d cluster to mint a kubeconfig for)"
         context_name, "KubeconfigSecret.context_name is required (stable context name the workload selects)"
-        reachability in ["in-network", "endpoint"], \
-            "KubeconfigSecret.reachability must be 'in-network' (dev/e2e IP rewrite) or 'endpoint' (verbatim)"
+        reachability in ["in-network", "endpoint", "in-cluster"], \
+            "KubeconfigSecret.reachability must be 'in-network' (dev/e2e IP rewrite), 'endpoint' (verbatim), or 'in-cluster' (server = https://kubernetes.default.svc)"
+        reachability != "in-cluster" or service_account, \
+            "KubeconfigSecret.reachability = 'in-cluster' requires service_account: the reader is a pod, and a pod cannot present the operator's credential (an exec plugin or a client cert it has no access to)"
+        reachability != "in-network" or not service_account, \
+            "KubeconfigSecret.service_account is not supported with reachability = 'in-network': the in-network rewrite is a k3d docker-network seam that mints no credential. Use 'endpoint' or 'in-cluster'"
 
 schema ClusterClient:
     """A workload's cross-cluster client wiring, stated ONCE.

@@ -272,9 +272,12 @@ func (s WorkloadSpec) Validate(p Profile) error {
 		errs = append(errs, fmt.Errorf("activeDeadlineSeconds must be positive (got %d): omit it for no deadline", *d))
 	}
 	if sc := s.SecurityContext; sc != nil {
-		for field, v := range map[string]*int64{"runAsUser": sc.RunAsUser, "runAsGroup": sc.RunAsGroup, "fsGroup": sc.FSGroup} {
-			if v != nil && *v < 1 {
-				errs = append(errs, fmt.Errorf("securityContext.%s must be at least 1 (got %d): every forge pod runs as non-root", field, *v))
+		for _, id := range []struct {
+			field string
+			v     *int64
+		}{{"runAsUser", sc.RunAsUser}, {"runAsGroup", sc.RunAsGroup}, {"fsGroup", sc.FSGroup}} {
+			if id.v != nil && *id.v < 1 {
+				errs = append(errs, fmt.Errorf("securityContext.%s must be at least 1 (got %d): every forge pod runs as non-root", id.field, *id.v))
 			}
 		}
 	}

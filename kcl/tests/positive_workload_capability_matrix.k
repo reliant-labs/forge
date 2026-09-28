@@ -64,7 +64,10 @@ assert_broadcast_does_not_gate_tool = "tool" not in fw.BROADCAST_GATED_KINDS
 # consult, so it is pinned directly rather than only through its effects.
 assert_supports_worker_namespaced_rbac = fw.supports("worker", fw.CAP_NAMESPACED_RBAC)
 assert_supports_operator_cluster_rbac = fw.supports("operator", fw.CAP_CLUSTER_RBAC)
-assert_operator_does_not_support_namespaced_rbac = not fw.supports("operator", fw.CAP_NAMESPACED_RBAC)
+# An operator's config read and lease are namespace-local, so it has the
+# namespaced tier too; the tiers add, they do not replace each other.
+assert_operator_supports_namespaced_rbac = fw.supports("operator", fw.CAP_NAMESPACED_RBAC)
+assert_tool_does_not_support_namespaced_rbac = not fw.supports("tool", fw.CAP_NAMESPACED_RBAC)
 assert_tool_supports_nothing = len(fw.KIND_CAPABILITIES["tool"]) == 0
 # An unknown kind supports nothing rather than erroring — Workload.check
 # already rejects a bad kind with a message naming the valid ones, and a
@@ -72,8 +75,3 @@ assert_tool_supports_nothing = len(fw.KIND_CAPABILITIES["tool"]) == 0
 # instead of the typo that caused it.
 assert_unknown_kind_supports_nothing = not fw.supports("nonesuch", fw.CAP_NAMESPACED_RBAC)
 
-# The RBAC tier is a single function because the tiers are EXCLUSIVE, and
-# that exclusivity is the property worth centralizing.
-assert_worker_rbac_tier_is_namespaced = fw.rbac_tier("worker") == "namespaced"
-assert_operator_rbac_tier_is_cluster = fw.rbac_tier("operator") == "cluster"
-assert_tool_rbac_tier_is_none = fw.rbac_tier("tool") == "none"

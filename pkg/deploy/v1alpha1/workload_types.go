@@ -191,8 +191,9 @@ type WorkloadSpec struct {
 	DeployPhase DeployPhase `json:"deployPhase,omitempty"`
 
 	// NamespacedRBAC grants a Role + RoleBinding in the workload's own
-	// namespace, in addition to forge's default config-read rules. Unset
-	// means no Role at all, and no mounted token.
+	// namespace, in addition to forge's default config-read rules. The Role
+	// is rendered whenever the workload has ANY RBAC (either tier, or kind
+	// operator); with none, there is no Role at all and no mounted token.
 	// +optional
 	// +kubebuilder:validation:MaxItems=64
 	NamespacedRBAC []PolicyRule `json:"namespacedRBAC,omitempty"`
@@ -201,11 +202,12 @@ type WorkloadSpec struct {
 	// kind may declare it (Full profile only): an operator watches its CRDs
 	// cluster-wide, and a service may legitimately resolve resources across
 	// namespaces (a proxy routing to per-workspace objects) without being a
-	// controller. It REPLACES the namespaced Role rather than adding to it,
-	// so NamespacedRBAC and ClusterRBAC are exclusive: two bindings on one
-	// ServiceAccount would leave the narrower one describing permissions
-	// that are not the ones in force. Only an operator's ClusterRole also
-	// gets rules derived from its CRDs and leader-election leases.
+	// controller. It ADDS to the namespaced Role rather than replacing it:
+	// the ClusterRole carries only cluster-scoped intent (these rules, and an
+	// operator's CRD-derived rules), while the config-read defaults and an
+	// operator's leader-election lease stay in the namespaced Role. Both
+	// bind the one ServiceAccount, so NamespacedRBAC and ClusterRBAC may be
+	// declared together, each at its own scope.
 	// +optional
 	// +kubebuilder:validation:MaxItems=64
 	ClusterRBAC []PolicyRule `json:"clusterRBAC,omitempty"`

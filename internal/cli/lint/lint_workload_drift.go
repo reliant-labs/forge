@@ -76,12 +76,106 @@ func declaredWorkloadNames(src string) map[string]bool {
 	return out
 }
 
+// declaredWorkload is what one `<ident> = fw.Workload {...}` literal runs:
+// its name, the cmd of its GoBuild (empty when it builds nothing forge
+// compiles), and its args.
+type declaredWorkload struct {
+	name     string
+	buildCmd string
+	args     []string
+}
+
+var (
+	// workloadLiteral matches the opening of a top-level workload binding.
+	workloadLiteral = regexp.MustCompile(`(?m)^[A-Za-z_][A-Za-z0-9_]*\s*=\s*fw\.Workload\s*\{`)
+	// goBuildCmd captures the cmd of a GoBuild inside a workload literal.
+	goBuildCmd = regexp.MustCompile(`GoBuild\s*\{[^}]*\bcmd\s*=\s*"([^"]+)"`)
+	// argsList captures the contents of a workload's `args = [...]`.
+	argsList = regexp.MustCompile(`(?m)^\s*args\s*=\s*\[([^\]]*)\]`)
+	// kclString matches one double-quoted KCL string.
+	kclString = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+)
+
+// declaredWorkloads parses each workload literal in a workloads.k, keyed by
+// its declared name, so the drift lint can judge a workload by what it RUNS
+// rather than by what it is called. Prose is stripped first, for the reason
+// declaredWorkloadNames gives. A literal this cannot read is simply absent —
+// its name still reaches the lint through declaredWorkloadNames and is
+// judged by name alone.
+func declaredWorkloads(src string) map[string]declaredWorkload {
+	src = codegen.StripKCLProse(src)
+	out := map[string]declaredWorkload{}
+	for _, loc := range workloadLiteral.FindAllStringIndex(src, -1) {
+		body, ok := kclBlockBody(src, loc[1])
+		if !ok {
+			continue
+		}
+		m := workloadNameInKCL.FindStringSubmatch(body)
+		if m == nil {
+			continue
+		}
+		w := declaredWorkload{name: m[1]}
+		if b := goBuildCmd.FindStringSubmatch(body); b != nil {
+			w.buildCmd = b[1]
+		}
+		if a := argsList.FindStringSubmatch(body); a != nil {
+			for _, s := range kclString.FindAllStringSubmatch(a[1], -1) {
+				w.args = append(w.args, s[1])
+			}
+		}
+		out[w.name] = w
+	}
+	return out
+}
+
+// kclBlockBody returns the text between the `{` that ends at open and its
+// matching `}`, skipping braces inside string literals.
+func kclBlockBody(src string, open int) (string, bool) {
+	depth := 1
+	inString := false
+	for i := open; i < len(src); i++ {
+		c := src[i]
+		switch {
+		case inString:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inString = false
+			}
+		case c == '"':
+			inString = true
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return src[open:i], true
+			}
+		}
+	}
+	return "", false
+}
+
+// runsBuiltinCommand reports whether a declared workload is one of the
+// project binary's OWN commands — the scaffolded `db migrate up` job, the
+// `auth idp-provision` job, an all-in-one `server` — rather than a
+// component. Such a workload is neither a component nor drift: nothing in
+// the code is missing, and nothing about it is stale.
+func runsBuiltinCommand(w declaredWorkload, projectName string) bool {
+	return codegen.ProjectBinaryRuns(projectName, w.buildCmd) && codegen.RunsBuiltinSubcommand(w.args)
+}
+
 // collectComponentDrift compares the project's discovered components against
 // the names declared in deploy/kcl/workloads.k.
 //
 // A project with no workloads.k yields NO findings: that is a project whose
 // deploy is not scaffolded (features.deploy off, or a CLI/library kind), and
 // reporting every component as undeclared there would be noise.
+//
+// A declared workload is judged by what it RUNS. One that runs a built-in
+// command of the project binary (runsBuiltinCommand) matches no component by
+// design, so it is never reported as an orphan — which is what kept every
+// fresh scaffold warning about its own `migrate` job.
 func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]componentDriftFinding, error) {
 	if cfg == nil {
 		return nil, nil
@@ -96,6 +190,7 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 	}
 
 	declared := declaredWorkloadNames(string(raw))
+	runs := declaredWorkloads(string(raw))
 
 	inCode := map[string]bool{}
 	var findings []componentDriftFinding
@@ -117,9 +212,13 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 	// generated is a SUPPORTED use of this file, not a mistake.
 	var orphans []string
 	for name := range declared {
-		if !inCode[name] {
-			orphans = append(orphans, name)
+		if inCode[name] {
+			continue
 		}
+		if w, ok := runs[name]; ok && runsBuiltinCommand(w, cfg.Name) {
+			continue
+		}
+		orphans = append(orphans, name)
 	}
 	sort.Strings(orphans)
 	for _, name := range orphans {

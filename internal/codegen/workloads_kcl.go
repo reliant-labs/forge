@@ -139,6 +139,30 @@ func IDPProvisionArgs() []string {
 	return []string{"auth", "idp-provision"}
 }
 
+// ProjectBinaryRuns reports whether a workload declared with build command
+// buildCmd runs the project's primary binary — the `./cmd/<project>` GoBuild
+// every scaffolded stanza names (projectGoBuild).
+func ProjectBinaryRuns(projectName, buildCmd string) bool {
+	return strings.TrimPrefix(strings.TrimSuffix(buildCmd, "/"), "./") == "cmd/"+projectName
+}
+
+// RunsBuiltinSubcommand reports whether args, handed to the project binary,
+// select a command the generated cmd tree itself owns rather than a
+// component: `server` (every component in one process), `version`, `db …`
+// (the scaffolded migrate job), `auth …` (the scaffolded idp-provision job).
+//
+// Judged by the FIRST arg, the top-level subcommand, so every leaf under a
+// built-in (`db migrate status`, a later `auth` verb) counts without being
+// listed. The set is derived, not restated: the top-level names the cmd tree
+// reserves (reservedSubcommandNames) plus the command each scaffolded job's
+// args select (MigrateArgs, IDPProvisionArgs).
+func RunsBuiltinSubcommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	return reservedSubcommandNames[args[0]] || args[0] == MigrateArgs()[0] || args[0] == IDPProvisionArgs()[0]
+}
+
 // IDPProvisionWorkloadName is the name of the scaffolded IdP-convergence
 // workload, and the ConfigMap a cluster target's consumers reference by
 // name (see the Role grant this stanza also declares).

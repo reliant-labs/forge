@@ -305,6 +305,100 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
 	}
 }
 
+// hostedStaticPlanFixture is a hosted env: a project workload and a frontend
+// both bound to the control plane, which declares the push registry.
+const hostedStaticPlanFixture = `{
+  "output": {
+    "control_plane": {
+      "type": "control_plane",
+      "endpoint": "http://127.0.0.1:1",
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN",
+      "registry": "ghcr.io/x"
+    },
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "image": "pt",
+        "build": {"type": "go", "cmd": "./cmd/pt", "output_name": "pt"},
+        "runtime": {"type": "hosted"},
+        "spec": {"kind": "service", "image": "pt"}
+      }
+    ],
+    "frontends": [
+      {
+        "name": "web",
+        "type": "nextjs",
+        "path": "frontends/web",
+        "public_dir": "out",
+        "runtime": {"type": "hosted"}
+      }
+    ]
+  }
+}`
+
+// writeWebFrontend gives the fixture's hosted frontend a buildable package.json.
+func writeWebFrontend(t *testing.T, dir string) {
+	t.Helper()
+	fe := filepath.Join(dir, "frontends", "web")
+	if err := os.MkdirAll(fe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fe, "package.json"), []byte(`{"scripts":{"build":"next build"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestBuildPlan_HostedStaticSiteIsAStep: the real build publishes every
+// forge.OnHosted frontend (buildHostedStaticSites) and records it in the
+// release. The plan must list that step, name the repository it pushes, and
+// count it toward --release coverage — otherwise every project with a hosted
+// site fails its own release plan with "Missing from the ledger: web".
+func TestBuildPlan_HostedStaticSiteIsAStep(t *testing.T) {
+	dir := planProject(t, hostedStaticPlanFixture)
+	writeWebFrontend(t, dir)
+
+	out, err := runBuildCommand(t, "prod", "--plan", "--no-generate", "--push", "--release", "v0.0.1")
+	if err != nil {
+		t.Fatalf("--plan --push --release on a hosted env: want nil, got %v\n%s", err, out)
+	}
+	for _, want := range []string{"static", "npm run build in frontends/web → out", "push ghcr.io/x/static.v1/web"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan output lacks %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "would record: ") || !strings.Contains(out, "web") {
+		t.Errorf("release should record the hosted site:\n%s", out)
+	}
+}
+
+// TestBuildPlan_HostedStaticSiteRefusesWithoutPush: the real publish refuses
+// a build with no --push (a hosted site deploys only by digest). The plan
+// must surface that refusal on the step rather than report OK.
+func TestBuildPlan_HostedStaticSiteRefusesWithoutPush(t *testing.T) {
+	dir := planProject(t, hostedStaticPlanFixture)
+	writeWebFrontend(t, dir)
+
+	out, err := runBuildCommand(t, "prod", "--plan", "--no-generate", "--tag", "t1")
+	if err == nil {
+		t.Fatalf("--plan without --push on a hosted site: want the must-push refusal, got nil\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "static web") || !strings.Contains(err.Error(), "the build must push") {
+		t.Errorf("plan error should name the static step and the push remedy, got: %v", err)
+	}
+}
+
+// TestBuildPlan_HostedStaticSiteMissingPackageJSON: a hosted frontend whose
+// directory cannot `npm run build` fails the plan on that step.
+func TestBuildPlan_HostedStaticSiteMissingPackageJSON(t *testing.T) {
+	planProject(t, hostedStaticPlanFixture)
+
+	_, err := runBuildCommand(t, "prod", "--plan", "--no-generate", "--tag", "t1", "--push")
+	if err == nil || !strings.Contains(err.Error(), "no package.json") {
+		t.Fatalf("hosted frontend with no package.json: want the plan to fail on it, got %v", err)
+	}
+}
+
 // ── Release-scoped tags ─────────────────────────────────────────────────────
 
 // TestImageTagSet_ReleaseWritesOnlyTheVersion is the `:stable` regression.

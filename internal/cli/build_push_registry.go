@@ -68,8 +68,17 @@ func (c pushRegistryChoice) printHeader() {
 //
 // declared is the env's FULL render, before --target narrowing. nil when there
 // is no env or the env has no KCL directory.
+//
+// `forge env up` (opts.pushIfDeclared) pushes to the same declaration, but an
+// env that declares none builds locally instead of failing: a host-only env
+// has no cluster to pull from.
 func resolvePushRegistry(opts buildOptions, declared *KCLEntities) (pushRegistryChoice, error) {
 	if !opts.push {
+		if opts.pushIfDeclared && opts.env != "" {
+			if registry := declaredRegistry(declared); registry != "" {
+				return pushRegistryChoice{registry: registry, source: fmt.Sprintf("declared in deploy/kcl/%s/main.k", opts.env)}, nil
+			}
+		}
 		return pushRegistryChoice{}, nil
 	}
 	if opts.env == "" {

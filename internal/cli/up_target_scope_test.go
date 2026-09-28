@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -67,7 +68,7 @@ func TestUpTargetReachesTheBuildPhase(t *testing.T) {
 	// upBuildCluster is the up path's entry into runBuild. Its options are
 	// what decide whether the build phase can scope at all; a targets field
 	// that never arrives is the bug.
-	opts := upBuildOptionsFor("dev", "localhost:5051", false, []string{"reliant-web"})
+	opts := upBuildOptionsFor("dev", false, []string{"reliant-web"})
 
 	if len(opts.targets) != 1 || opts.targets[0] != "reliant-web" {
 		t.Fatalf("--target never reached the build phase (buildOptions.targets = %v); "+
@@ -76,8 +77,71 @@ func TestUpTargetReachesTheBuildPhase(t *testing.T) {
 
 	// And with no target, the build stays unscoped — a bare `forge env up`
 	// must still build everything.
-	if got := upBuildOptionsFor("dev", "localhost:5051", false, nil); len(got.targets) != 0 {
+	if got := upBuildOptionsFor("dev", false, nil); len(got.targets) != 0 {
 		t.Errorf("unscoped run picked up targets %v", got.targets)
+	}
+}
+
+// TestUpBuildPushesToTheDeclaredRegistry pins that `forge env up` PUSHES the
+// image it builds to the registry the env declares — the one its cluster
+// pulls from. Asserted on the real runBuild (in --plan mode), not on the
+// options struct, because the regression lived between the two: env up handed
+// runBuild a registry but never switched push on, and runBuild's one resolver
+// (resolvePushRegistry) reads "no --push" as "push nothing" and overwrote it.
+// The build then printed "tagged locally, not pushed", the cluster kept
+// pulling whatever image last sat at that tag, and the rollout ran the old
+// code with nothing in the output saying so.
+func TestUpBuildPushesToTheDeclaredRegistry(t *testing.T) {
+	planProject(t, declaredRegistryFixture)
+
+	opts := upBuildOptionsFor("prod", true, nil)
+	opts.plan = true
+	opts.tag = "t1"
+
+	var runErr error
+	out := captureStdout(t, func() { runErr = runBuild(context.Background(), opts) })
+	if runErr != nil {
+		t.Fatalf("env up's build phase: %v\n%s", runErr, out)
+	}
+	if !strings.Contains(out, "push registry.example/prod/pt:t1") {
+		t.Errorf("env up built the image but did not push it to the env-declared registry; plan output:\n%s", out)
+	}
+	if strings.Contains(out, "not pushed") {
+		t.Errorf("env up's build header says the image is not pushed; plan output:\n%s", out)
+	}
+}
+
+// TestUpBuildWithoutDeclaredRegistryBuildsLocally is the other half: env up
+// is also the host-only dev loop, and an env that declares no registry has no
+// cluster to pull from. Its build must succeed and push nothing — unlike
+// `forge build <env> --push`, where an undeclared registry is a runbook error.
+func TestUpBuildWithoutDeclaredRegistryBuildsLocally(t *testing.T) {
+	planProject(t, `{
+  "output": {
+    "workloads": [
+      {
+        "name": "pt",
+        "kind": "service",
+        "image": "pt",
+        "build": {"type": "go", "cmd": "./cmd/pt", "output_name": "pt"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
+        "spec": {"kind": "service"}
+      }
+    ]
+  }
+}`)
+
+	opts := upBuildOptionsFor("dev", true, nil)
+	opts.plan = true
+	opts.tag = "t1"
+
+	var runErr error
+	out := captureStdout(t, func() { runErr = runBuild(context.Background(), opts) })
+	if runErr != nil {
+		t.Fatalf("env up against an env that declares no registry must build locally, got: %v\n%s", runErr, out)
+	}
+	if strings.Contains(out, "push ") {
+		t.Errorf("an env that declares no registry must push nothing; plan output:\n%s", out)
 	}
 }
 

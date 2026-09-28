@@ -110,10 +110,17 @@ type buildOptions struct {
 	// declares. Implies --docker. It carries no value — the destination is
 	// resolved from the declaration (resolvePushRegistry), never passed.
 	push bool
-	// pushRegistry is the RESOLVED push destination: set by
-	// resolvePushRegistry from the env's declaration when push is on (and
-	// by `forge env up`, from the same declaration). When non-empty, built
-	// docker images are retagged to <registry>/<name>:<tag> and pushed.
+	// pushIfDeclared is `forge env up`'s push mode: push to the registry the
+	// env's KCL declares when it declares one, and build locally (no error)
+	// when it declares none — a host-only env has no cluster to pull from.
+	// Unlike push, an undeclared registry is not a failure. Resolved by
+	// resolvePushRegistry like push; never set by a flag.
+	pushIfDeclared bool
+	// pushRegistry is the RESOLVED push destination, written by
+	// resolvePushRegistry from the env's declaration when push or
+	// pushIfDeclared is on. Never set by a caller: any value is overwritten.
+	// When non-empty, built docker images are retagged to
+	// <registry>/<name>:<tag> and pushed.
 	pushRegistry string
 	// envRegistry is the registry the env's KCL declares (declaredRegistry),
 	// resolved with the render whether or not this build pushes. It is the

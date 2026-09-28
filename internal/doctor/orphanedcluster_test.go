@@ -525,7 +525,7 @@ func TestOrphanedClusterReportsOrphansEvenWhenAnotherClusterIsUnreachable(t *tes
 // `--kind cli` / library projects must stay quiet.
 func TestOrphanedClusterSkipsProjectWithNoClusters(t *testing.T) {
 	env := envWithRender([]envRender{
-		renderFromJSON(t, "dev", `{"manifests":[`+clusterScopedJSON("ClusterRole", "x", "dev")+`]}`),
+		renderFromJSON(t, "dev", `{"output":{"manifests":[`+clusterScopedJSON("ClusterRole", "x", "dev")+`]}}`),
 	})
 	probe := fakeProbe(nil)
 

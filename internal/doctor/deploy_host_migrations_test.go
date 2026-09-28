@@ -12,7 +12,7 @@ import (
 // Job, an initContainer, a migrate command, or AUTO_MIGRATE=true.
 //
 // That misses the app entirely in a HOST-mode environment. A host env
-// (forge.Service with a `host` block) runs its services as processes on the
+// (workloads bound to forge.OnHost) runs its services as processes on the
 // developer's machine and gives the cluster only the pieces that must be in
 // it — an operator that needs a projected SA token, a proxy sidecar. Those
 // in-cluster pieces are real containers sharing the same database, so the env
@@ -24,27 +24,27 @@ import (
 // schema", with a fix instructing the author to add a migration Job to an
 // environment whose app does not run in the cluster.
 //
-// A host service is visible in the `output` JSON contract — the same document
-// `forge env deploy` consumes — so the fix is to read it, and to judge it by
-// the same two mechanisms the manifest path accepts.
+// A host workload is visible in the `output` JSON contract
+// (`workloads[runtime.type=host]`) — the same document `forge env deploy`
+// consumes — so the fix is to read it, and to judge it by the same two
+// mechanisms the manifest path accepts.
 func TestCheckDeployMigrations_HostServiceWithAutoMigrateCounts(t *testing.T) {
 	dir := t.TempDir()
 	writeMigrationFile(t, dir)
 
 	// A host-mode render: an in-cluster operator (a real container, no
 	// migration step) plus the host-deployed app that carries AUTO_MIGRATE.
-	body := `{
+	body := `{"output":{
 	  "manifests":[
 	    {"apiVersion":"apps/v1","kind":"Deployment",
 	     "metadata":{"name":"controller","namespace":"dev"},
 	     "spec":{"template":{"spec":{"containers":[{"name":"controller","image":"c:1"}]}}}}
 	  ],
-	  "output":{"services":[
-	    {"name":"admin-server","command":["server"],
-	     "deploy":{"type":"host"},
-	     "env_vars":[{"name":"AUTO_MIGRATE","value":"true"}]}
-	  ]}
-	}`
+	  "workloads":[
+	    {"name":"admin-server","runtime":{"type":"host","runner":"air"},
+	     "spec":{"kind":"service","args":["server"],"env":[{"name":"AUTO_MIGRATE","value":"true"}]}}
+	  ]
+	}}`
 
 	env := envWithRender([]envRender{renderFromJSON(t, "dev", body)})
 	env.ProjectDir = dir
@@ -58,56 +58,50 @@ func TestCheckDeployMigrations_HostServiceWithAutoMigrateCounts(t *testing.T) {
 	}
 }
 
-// The shape a REAL render actually emits, and the one a first cut of this fix
-// missed: a host service's environment is composed onto its DEPLOY block, the
-// way a cluster service's env lands on the container. Its own top-level
-// `env_vars` is empty. Reading only the outer list finds nothing on every host
-// service in every project, so the fix would have looked right and changed
-// nothing.
-func TestCheckDeployMigrations_HostEnvLivesOnTheDeployBlock(t *testing.T) {
+// A host workload's env is its spec.env, read among its other variables —
+// the same list its container would get on any runtime.
+func TestCheckDeployMigrations_HostEnvLivesOnTheSpec(t *testing.T) {
 	dir := t.TempDir()
 	writeMigrationFile(t, dir)
 
-	body := `{
+	body := `{"output":{
 	  "manifests":[
 	    {"apiVersion":"apps/v1","kind":"Deployment",
 	     "metadata":{"name":"controller","namespace":"dev"},
 	     "spec":{"template":{"spec":{"containers":[{"name":"controller","image":"c:1"}]}}}}
 	  ],
-	  "output":{"services":[
-	    {"name":"admin-server","command":["./control-plane","server"],"env_vars":[],
-	     "deploy":{"type":"host","runner":"air",
-	       "env_vars":[{"name":"PORT","value":"8090"},
-	                   {"name":"AUTO_MIGRATE","value":"true"}]}}
-	  ]}
-	}`
+	  "workloads":[
+	    {"name":"admin-server","runtime":{"type":"host","runner":"air"},
+	     "spec":{"kind":"service","args":["server"],
+	       "env":[{"name":"PORT","value":"8090"},{"name":"AUTO_MIGRATE","value":"true"}]}}
+	  ]
+	}}`
 
 	env := envWithRender([]envRender{renderFromJSON(t, "dev", body)})
 	env.ProjectDir = dir
 
 	if got := CheckDeployMigrations(context.Background(), env); got.Status == StatusFail {
-		t.Fatalf("AUTO_MIGRATE on the host deploy block is where a real render puts "+
-			"it — this is the shape that must count.\nevidence: %s", got.Evidence)
+		t.Fatalf("AUTO_MIGRATE in a host workload's spec.env must count.\nevidence: %s", got.Evidence)
 	}
 }
 
-// A host service whose COMMAND is the migrate step counts too — the same
+// A host workload whose ARGS are the migrate step counts too — the same
 // mechanism the manifest path accepts via a container command.
 func TestCheckDeployMigrations_HostMigrateCommandCounts(t *testing.T) {
 	dir := t.TempDir()
 	writeMigrationFile(t, dir)
 
-	body := `{
+	body := `{"output":{
 	  "manifests":[
 	    {"apiVersion":"apps/v1","kind":"Deployment",
 	     "metadata":{"name":"controller","namespace":"dev"},
 	     "spec":{"template":{"spec":{"containers":[{"name":"controller","image":"c:1"}]}}}}
 	  ],
-	  "output":{"services":[
-	    {"name":"schema","command":["/app/cp","db","migrate","up"],
-	     "deploy":{"type":"host"},"env_vars":[]}
-	  ]}
-	}`
+	  "workloads":[
+	    {"name":"schema","runtime":{"type":"host"},
+	     "spec":{"kind":"job","args":["db","migrate","up"]}}
+	  ]
+	}}`
 
 	env := envWithRender([]envRender{renderFromJSON(t, "dev", body)})
 	env.ProjectDir = dir
@@ -136,19 +130,19 @@ func TestCheckDeployMigrations_StillFailsWithoutARealStep(t *testing.T) {
 	}{
 		{
 			name: "host service with AUTO_MIGRATE=false",
-			body: `{"manifests":[` + clusterDeployment + `],"output":{"services":[` +
-				`{"name":"app","command":["server"],"deploy":{"type":"host"},` +
-				`"env_vars":[{"name":"AUTO_MIGRATE","value":"false"}]}]}}`,
+			body: `{"output":{"manifests":[` + clusterDeployment + `],"workloads":[` +
+				`{"name":"app","runtime":{"type":"host"},` +
+				`"spec":{"args":["server"],"env":[{"name":"AUTO_MIGRATE","value":"false"}]}}]}}`,
 		},
 		{
 			name: "AUTO_MIGRATE on a cluster service in the contract",
-			body: `{"manifests":[` + clusterDeployment + `],"output":{"services":[` +
-				`{"name":"api","command":["server"],"deploy":{"type":"cluster"},` +
-				`"env_vars":[{"name":"AUTO_MIGRATE","value":"true"}]}]}}`,
+			body: `{"output":{"manifests":[` + clusterDeployment + `],"workloads":[` +
+				`{"name":"api","runtime":{"type":"cluster","cluster":"k3d-x"},` +
+				`"spec":{"args":["server"],"env":[{"name":"AUTO_MIGRATE","value":"true"}]}}]}}`,
 		},
 		{
 			name: "no contract at all",
-			body: `{"manifests":[` + clusterDeployment + `]}`,
+			body: `{"output":{"manifests":[` + clusterDeployment + `]}}`,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

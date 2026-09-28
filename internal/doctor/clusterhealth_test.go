@@ -131,16 +131,16 @@ func cwJob(name, ns string) string {
 // corner one.
 func cwRender(t *testing.T, env, defaultCluster string, perApp map[string]string, objs ...string) envRender {
 	t.Helper()
-	var services []string
+	var workloads []string
 	for app, c := range perApp {
-		services = append(services, fmt.Sprintf(`{"name":%q,"deploy":{"cluster":%q}}`, app, c))
+		workloads = append(workloads, fmt.Sprintf(`{"name":%q,"runtime":{"type":"cluster","cluster":%q}}`, app, c))
 	}
 	target := "null"
 	if defaultCluster != "" {
 		target = fmt.Sprintf(`{"cluster":%q,"namespace":"ignored"}`, defaultCluster)
 	}
-	body := fmt.Sprintf(`{"output":{"cluster_target":%s,"services":[%s]},"manifests":[%s]}`,
-		target, strings.Join(services, ","), strings.Join(objs, ","))
+	body := fmt.Sprintf(`{"output":{"cluster_target":%s,"workloads":[%s],"manifests":[%s]}}`,
+		target, strings.Join(workloads, ","), strings.Join(objs, ","))
 	return renderFromJSON(t, env, body)
 }
 

@@ -52,17 +52,17 @@ func TestCheckDeployServiceAccount_ReadsJobPodSpecs(t *testing.T) {
 	}{
 		{
 			name: "job that binds the SA passes",
-			body: `{"manifests":[` + jobSA + `,` + jobWith(`"serviceAccountName":"migrate",`, `{"name":"migrate"}`) + `]}`,
+			body: `{"output":{"manifests":[` + jobSA + `,` + jobWith(`"serviceAccountName":"migrate",`, `{"name":"migrate"}`) + `]}}`,
 			want: StatusPass,
 		},
 		{
 			name: "cronjob that binds the SA passes",
-			body: `{"manifests":[` + jobSA + `,` + cronJobWith(`"serviceAccountName":"migrate",`, `{"name":"migrate"}`) + `]}`,
+			body: `{"output":{"manifests":[` + jobSA + `,` + cronJobWith(`"serviceAccountName":"migrate",`, `{"name":"migrate"}`) + `]}}`,
 			want: StatusPass,
 		},
 		{
 			name: "job that does not bind the SA still fails",
-			body: `{"manifests":[` + jobSA + `,` + jobWith("", `{"name":"migrate"}`) + `]}`,
+			body: `{"output":{"manifests":[` + jobSA + `,` + jobWith("", `{"name":"migrate"}`) + `]}}`,
 			want: StatusFail,
 		},
 	}
@@ -87,8 +87,8 @@ func TestCheckDeploySecrets_ReadsJobPodSpecs(t *testing.T) {
 		name string
 		body string
 	}{
-		{"job", `{"manifests":[` + jobWith("", leaky) + `]}`},
-		{"cronjob", `{"manifests":[` + cronJobWith("", leaky) + `]}`},
+		{"job", `{"output":{"manifests":[` + jobWith("", leaky) + `]}}`},
+		{"cronjob", `{"output":{"manifests":[` + cronJobWith("", leaky) + `]}}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			env := envWithRender([]envRender{renderFromJSON(t, "prod", tt.body)})
@@ -118,9 +118,9 @@ func TestCheckDeploySecrets_NameAndPathAreNotCredentials(t *testing.T) {
 	refs := `{"name":"api","env":[` +
 		`{"name":"IMAGE_PULL_SECRET_NAME","value":"ghcr-pull"},` +
 		`{"name":"IMAGE_PULL_SECRET_PATH","value":"/var/run/secrets/pull.json"}]}`
-	body := `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+	body := `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 		`"metadata":{"name":"api","namespace":"proj-prod"},` +
-		`"spec":{"template":{"spec":{"containers":[` + refs + `]}}}}]}`
+		`"spec":{"template":{"spec":{"containers":[` + refs + `]}}}}]}}`
 
 	env := envWithRender([]envRender{renderFromJSON(t, "prod", body)})
 	got := CheckDeploySecrets(context.Background(), env)
@@ -141,9 +141,9 @@ func TestCheckDeploySecrets_StillCatchesRealCredentials(t *testing.T) {
 		// merely mentions a name is not.
 		`{"name":"SECRET_NAME_ENCRYPTION_KEY","value":"k"}`,
 	} {
-		body := `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+		body := `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 			`"metadata":{"name":"api","namespace":"proj-prod"},` +
-			`"spec":{"template":{"spec":{"containers":[{"name":"api","env":[` + envVar + `]}]}}}}]}`
+			`"spec":{"template":{"spec":{"containers":[{"name":"api","env":[` + envVar + `]}]}}}}]}}`
 		env := envWithRender([]envRender{renderFromJSON(t, "prod", body)})
 		got := CheckDeploySecrets(context.Background(), env)
 		if got.Status != StatusFail {

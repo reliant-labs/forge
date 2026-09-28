@@ -137,7 +137,7 @@ func TestDockerBuildResult_CarriesImageName(t *testing.T) {
 	// result's SHAPE — the display name keeps its suffix, and nothing here
 	// may claim a digest it never captured.
 	res := dockerBuild(t.Context(), &config.ProjectConfig{Name: "control-plane"},
-		"internal-console", filepath.Join(dir, "frontends", "internal-console"), "", "", "v1", false)
+		"internal-console", filepath.Join(dir, "frontends", "internal-console"), imageTagSet("", "internal-console", "", "v1", false), "")
 
 	if res.err != nil {
 		t.Fatalf("no-Dockerfile build should skip cleanly, got %v", res.err)

@@ -80,9 +80,9 @@ type Spec struct {
 	// buildx without re-deriving the arch.
 	TargetArch string
 
-	// Registry is the configured docker registry (from forge.yaml
-	// docker.registry or the resolved push target). Used as the
-	// ${REGISTRY} substitution token.
+	// Registry is the registry the env's KCL declares (the resolved push
+	// destination when the build pushes). Used as the ${REGISTRY}
+	// substitution token.
 	Registry string
 
 	// ProjectDir is the project root containing forge.yaml. Used as

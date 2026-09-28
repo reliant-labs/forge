@@ -30,16 +30,12 @@ func countFlag(args []string, tok string) int {
 }
 
 // TestServiceDockerBuildArgs_PerServiceRegistryWins asserts the per-service
-// DockerBuild.registry overrides the project-level forge.yaml docker.registry
-// for THIS service's image tags (the build fact that is NOT expressible in the
-// Dockerfile and so lives on the KCL DockerBuild block, per env).
+// DockerBuild.registry — a KCL declaration, per service and per env — tags
+// THIS service's image instead of the env-wide declared registry.
 func TestServiceDockerBuildArgs_PerServiceRegistryWins(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name:   "control-plane",
-		Docker: config.DockerConfig{Registry: "ghcr.io/project-default"},
-	}
+	cfg := &config.ProjectConfig{Name: "control-plane"}
 	d := &DockerBuild{Registry: "us-docker.pkg.dev/svc-specific"}
-	opts := buildOptions{}
+	opts := buildOptions{envRegistry: "ghcr.io/project-default"}
 
 	args, _ := serviceDockerBuildArgs(cfg, "workspace-base", "Dockerfile", d, opts, "", "v1.2.3")
 
@@ -58,24 +54,27 @@ func TestServiceDockerBuildArgs_PerServiceRegistryWins(t *testing.T) {
 }
 
 // TestServiceDockerBuildArgs_RegistryFallback asserts a DockerBuild with no
-// registry falls back to forge.yaml docker.registry, then to the project name.
+// registry of its own is tagged under the registry the env's KCL declares,
+// and — with no env, or an env that declares none — as a bare local image.
+// There is no forge.yaml registry and no project-name stand-in.
 func TestServiceDockerBuildArgs_RegistryFallback(t *testing.T) {
-	t.Run("falls back to project-level docker.registry", func(t *testing.T) {
-		cfg := &config.ProjectConfig{
-			Name:   "control-plane",
-			Docker: config.DockerConfig{Registry: "ghcr.io/project-default"},
-		}
-		args, _ := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{}, buildOptions{}, "", "")
-		if !argsHave(args, "-t", "ghcr.io/project-default/svc:latest") {
-			t.Errorf("expected project-level registry fallback; args=%v", args)
+	cfg := &config.ProjectConfig{Name: "control-plane"}
+	t.Run("the env's declared registry", func(t *testing.T) {
+		args, _ := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{}, buildOptions{envRegistry: "ghcr.io/acme"}, "", "")
+		if !argsHave(args, "-t", "ghcr.io/acme/svc:latest") {
+			t.Errorf("expected the env-declared registry; args=%v", args)
 		}
 	})
 
-	t.Run("falls back to project name when no registry anywhere", func(t *testing.T) {
-		cfg := &config.ProjectConfig{Name: "control-plane"}
+	t.Run("a bare local image when nothing is declared", func(t *testing.T) {
 		args, _ := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{}, buildOptions{}, "", "")
-		if !argsHave(args, "-t", "control-plane/svc:latest") {
-			t.Errorf("expected project-name fallback; args=%v", args)
+		if !argsHave(args, "-t", "svc:latest") {
+			t.Errorf("expected a bare local tag; args=%v", args)
+		}
+		for _, a := range args {
+			if strings.HasPrefix(a, "control-plane/") {
+				t.Errorf("the project name is not a registry; got tag %q", a)
+			}
 		}
 	})
 }
@@ -88,7 +87,6 @@ func TestServiceDockerBuildArgs_PerServiceBuildContextsWin(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name: "control-plane",
 		Docker: config.DockerConfig{
-			Registry:      "ghcr.io/p",
 			BuildContexts: map[string]string{"projectwide": "../should-not-appear"},
 		},
 	}
@@ -124,7 +122,6 @@ func TestServiceDockerBuildArgs_BuildContextsFallToProject(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name: "control-plane",
 		Docker: config.DockerConfig{
-			Registry:      "ghcr.io/p",
 			BuildContexts: map[string]string{"forge": "../forge"},
 		},
 	}
@@ -143,8 +140,7 @@ func TestServiceDockerBuildArgs_BuildContextsFallToProject(t *testing.T) {
 // are the service's explicit DockerBuild.build_args.
 func TestServiceDockerBuildArgs_NoBaseImageInjection(t *testing.T) {
 	cfg := &config.ProjectConfig{
-		Name:   "control-plane",
-		Docker: config.DockerConfig{Registry: "ghcr.io/p"},
+		Name: "control-plane",
 	}
 
 	t.Run("vanilla service: no --build-arg at all", func(t *testing.T) {

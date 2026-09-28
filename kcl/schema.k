@@ -1767,9 +1767,9 @@ schema DockerBuild(Build):
     `--build-context name=value` entries THIS service's Dockerfile
     `COPY --from=`s) — live HERE because they are NOT expressible in the
     Dockerfile itself, and KCL renders per env so they are per-service AND
-    per-env. Each is OPTIONAL and falls back to the project-level
-    forge.yaml `docker.registry` / `docker.build_contexts` when unset, so a
-    single-image project declares them once at the top level.
+    per-env. Each is OPTIONAL: an unset `registry` is the registry the env
+    declares (its ClusterTarget / ControlPlane), and unset `build_contexts`
+    fall back to forge.yaml `docker.build_contexts`.
 
     forge is base-image-AGNOSTIC: it does NOT discover, mirror, pin, or
     inject base images. A Dockerfile's `FROM` lines are the whole story —
@@ -1780,8 +1780,8 @@ schema DockerBuild(Build):
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}
-    # Push/tag target for THIS service's image (registry-host[/namespace]).
-    # Empty falls back to forge.yaml docker.registry (then the project name).
+    # Tag registry for THIS service's image (registry-host[/namespace]).
+    # Empty is the registry the env declares; with none, a bare local tag.
     registry: str = ""
     # Named build contexts THIS service's Dockerfile needs, each a
     # `docker buildx --build-context name=value` entry (a sibling-checkout

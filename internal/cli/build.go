@@ -115,6 +115,12 @@ type buildOptions struct {
 	// by `forge env up`, from the same declaration). When non-empty, built
 	// docker images are retagged to <registry>/<name>:<tag> and pushed.
 	pushRegistry string
+	// envRegistry is the registry the env's KCL declares (declaredRegistry),
+	// resolved with the render whether or not this build pushes. It is the
+	// registry a locally-built image is TAGGED under, and a ShellBuild's
+	// ${REGISTRY}. "" with no env, or an env that declares none — a local
+	// image is then tagged bare (<image>:<tag>).
+	envRegistry string
 	// targetArch overrides the GOARCH used for the Go binary build
 	// AND the docker buildx --platform when --docker / --push is set.
 	// Empty means "use host arch for plain go build; use forge.yaml
@@ -1104,7 +1110,7 @@ func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg
 	}
 	externalRegistry := opts.pushRegistry
 	if externalRegistry == "" {
-		externalRegistry = cfg.Docker.Registry
+		externalRegistry = opts.envRegistry
 	}
 	externalTag := resolvedTag
 	if externalTag == "" {
@@ -1420,7 +1426,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, releaseImageTag(opts) != "", resolvedVersion, guard)
+				r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, resolvedTag), projectImageArch, resolvedVersion, guard)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -1430,7 +1436,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
-				r := dockerBuild(ctx, cfg, f.Name, f.DeclaredDir(), opts.pushRegistry, dockerArch, resolvedTag, releaseImageTag(opts) != "")
+				r := dockerBuild(ctx, cfg, f.Name, f.DeclaredDir(), opts.imageTags(f.Name, resolvedTag), dockerArch)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -1482,14 +1488,14 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			// Image platform == the arch the project binaries were built for.
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
-			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, releaseImageTag(opts) != "", resolvedVersion, guard)
+			r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, resolvedTag), projectImageArch, resolvedVersion, guard)
 			results = append(results, r)
 			if r.err != nil {
 				return results
 			}
 		}
 		for _, fe := range dockerFrontends {
-			r := dockerBuild(ctx, cfg, fe.Name, fe.DeclaredDir(), opts.pushRegistry, dockerArch, resolvedTag, releaseImageTag(opts) != "")
+			r := dockerBuild(ctx, cfg, fe.Name, fe.DeclaredDir(), opts.imageTags(fe.Name, resolvedTag), dockerArch)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -1857,19 +1863,17 @@ func projectImageBinaryNames(goTargets []goBuildTarget) []string {
 }
 
 // dockerBuildProject builds the single project Docker image from the
-// root Dockerfile. When pushRegistry is non-empty, the image is also
-// tagged with <pushRegistry>/<name>:<tag> and pushed after a successful
-// build (one docker build + one docker push per image in forge.yaml,
-// matching the MultiServiceApplication pattern).
+// root Dockerfile, tagged with every tag in tags.local, and pushes
+// tags.push after a successful build (buildOptions.imageTags computes both).
 //
 // crossArch, when non-empty, drives `docker buildx build --platform=linux/<arch>`
 // so the resulting image runs on a node whose arch matches the deploy
 // target rather than the build host. Empty means "let docker use the
 // host arch" — appropriate when host == target.
 //
-// releaseScoped (a `--release` build) tags and pushes resolvedTag ONLY — no
-// `:latest` — so a cut never moves a shared tag. See imageTagSet.
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string, releaseScoped bool, resolvedVersion versionInfo, guard projectImageGuard) buildResult {
+// A `--release` build's tags carry the release version ONLY — no `:latest` —
+// so a cut never moves a shared tag. See imageTagSet.
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags dockerImageTags, crossArch string, resolvedVersion versionInfo, guard projectImageGuard) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -1901,12 +1905,6 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 			err:      err,
 		}
 	}
-
-	registry := cfg.Docker.Registry
-	if registry == "" {
-		registry = cfg.Name
-	}
-	tags := imageTagSet(registry, cfg.Name, pushRegistry, resolvedTag, releaseScoped)
 
 	dockerArgs := []string{"build"}
 	// Pass the resolved build version into the image build as build-args.
@@ -2009,9 +2007,10 @@ type dockerImageTags struct {
 // in step by hand.
 //
 // Ordinarily an image is tagged `:latest` plus resolvedTag, locally under
-// registry and again under each push registry (the k3d `registry.localhost`
-// mirror is tagged but never pushed — the host cannot resolve it). The version
-// tag is pushed LAST because the digest capture inspects the last pushed ref.
+// registry — the registry the env declares, or none (a bare `<image>:<tag>`)
+// — and again under each push registry (the k3d `registry.localhost` mirror
+// is tagged but never pushed — the host cannot resolve it). The version tag is
+// pushed LAST because the digest capture inspects the last pushed ref.
 //
 // releaseScoped (a `--release` build) drops `:latest` entirely. A release
 // writes its images under the release version and NOTHING else, so a cut that
@@ -2019,25 +2018,43 @@ type dockerImageTags struct {
 // See releaseImageTag for the incident this closes.
 func imageTagSet(registry, image, pushRegistry, resolvedTag string, releaseScoped bool) dockerImageTags {
 	var out dockerImageTags
+	seen := map[string]bool{}
 	add := func(reg string, pushed bool) {
+		repo := image
+		if reg != "" {
+			repo = reg + "/" + image
+		}
 		refs := make([]string, 0, 2)
 		if !releaseScoped {
-			refs = append(refs, fmt.Sprintf("%s/%s:latest", reg, image))
+			refs = append(refs, repo+":latest")
 		}
 		if resolvedTag != "" {
-			refs = append(refs, fmt.Sprintf("%s/%s:%s", reg, image, resolvedTag))
+			refs = append(refs, repo+":"+resolvedTag)
 		}
-		out.local = append(out.local, refs...)
+		for _, r := range refs {
+			if !seen[r] {
+				seen[r] = true
+				out.local = append(out.local, r)
+			}
+		}
 		if pushed {
 			out.push = append(out.push, refs...)
 		}
 	}
 	add(registry, false)
 	for i, reg := range expandPushRegistries(pushRegistry) {
-		// Only the first (user-specified) registry is pushed.
+		// Only the first (the resolved push destination) is pushed.
 		add(reg, i == 0)
 	}
 	return out
+}
+
+// imageTags is the tag set this build writes for image: tagged under the
+// env's declared registry, pushed to the resolved push destination, and
+// release-scoped when --release is set. The one place a build's options turn
+// into an image's tags.
+func (opts buildOptions) imageTags(image, resolvedTag string) dockerImageTags {
+	return imageTagSet(opts.envRegistry, image, opts.pushRegistry, resolvedTag, releaseImageTag(opts) != "")
 }
 
 // expandPushRegistries returns the set of registries to tag a built
@@ -2072,14 +2089,14 @@ func countTags(args []string) int {
 }
 
 // dockerBuild builds a Docker image for a frontend from its own
-// Dockerfile. When pushRegistry is non-empty, the image is also tagged
-// with <pushRegistry>/<name>:<tag> and pushed after a successful build.
+// Dockerfile, tagged with tags.local, and pushes tags.push after a
+// successful build.
 //
 // crossArch, when non-empty, drives `docker buildx build --platform=linux/<arch>`
 // so frontends destined for the deploy-target node arch are built
 // correctly even on a different host arch. Same semantics as
-// dockerBuildProject, including releaseScoped (see imageTagSet).
-func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pushRegistry, crossArch, resolvedTag string, releaseScoped bool) buildResult {
+// dockerBuildProject, including release-scoped tags (see imageTagSet).
+func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path string, tags dockerImageTags, crossArch string) buildResult {
 	start := time.Now()
 	dockerfile := filepath.Join(path, "Dockerfile")
 
@@ -2093,12 +2110,6 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 			err:      nil,
 		}
 	}
-
-	registry := cfg.Docker.Registry
-	if registry == "" {
-		registry = cfg.Name
-	}
-	tags := imageTagSet(registry, name, pushRegistry, resolvedTag, releaseScoped)
 
 	dockerArgs := []string{"build"}
 	if crossArch != "" {
@@ -2469,7 +2480,7 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 // escape hatch; there is no separate shell branch here anymore.
 //
 //   - docker → `docker build` reusing forge's existing image-build
-//     primitives (tags via cfg.Docker.Registry + resolvedTag, push when
+//     primitives (tags via the env-declared registry + resolvedTag, push when
 //     --push, build-contexts) with the service's dockerfile / platform /
 //     target / build_args. A DockerBuild is the ONLY per-service image
 //     build — there is no unconditional auto-docker step for these.
@@ -2528,8 +2539,9 @@ func buildServiceRemote(svcName string) buildResult {
 // The two per-service `docker` facts NOT expressible in a Dockerfile resolve
 // here:
 //
-//   - registry — the push/tag target. DockerBuild.registry wins, then the
-//     project-level forge.yaml docker.registry, then the project name.
+//   - registry — the local tag's registry. DockerBuild.registry (a KCL
+//     declaration) wins, then the registry the env declares; with neither the
+//     image is tagged bare.
 //   - build_contexts — DockerBuild.build_contexts win when set, else the
 //     project-level forge.yaml docker.build_contexts.
 //
@@ -2538,12 +2550,9 @@ func buildServiceRemote(svcName string) buildResult {
 // the whole story. The only `--build-arg`s are the service's explicit
 // DockerBuild.build_args.
 func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
-	registry := cfg.Docker.Registry
+	registry := opts.envRegistry
 	if d != nil && d.Registry != "" {
 		registry = d.Registry
-	}
-	if registry == "" {
-		registry = cfg.Name
 	}
 
 	dockerArgs = []string{"build"}

@@ -209,24 +209,6 @@ func TestFrontendConfig_KindYAMLRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDeployConfig_EffectiveRegistry(t *testing.T) {
-	tests := []struct {
-		reg  string
-		want string
-	}{
-		{"", "ghcr"},
-		{"ecr", "ecr"},
-		{"gar", "gar"},
-	}
-	for _, tt := range tests {
-		cfg := &DeployConfig{Registry: tt.reg}
-		got := cfg.EffectiveRegistry()
-		if got != tt.want {
-			t.Errorf("EffectiveRegistry() with reg=%q: got %q, want %q", tt.reg, got, tt.want)
-		}
-	}
-}
-
 func TestDeployConfig_IsConcurrencyEnabled(t *testing.T) {
 	tests := []struct {
 		name string
@@ -351,7 +333,6 @@ func TestDockerConfig_BuildContextsYAMLRoundTrip(t *testing.T) {
 		"name: p\n" +
 		"module_path: example.com/p\n" +
 		"docker:\n" +
-		"  registry: ghcr.io/acme\n" +
 		"  build_contexts:\n" +
 		"    shared: ../shared-libs\n" +
 		"    base: docker-image://my-base:latest\n" +
@@ -400,7 +381,6 @@ func TestDockerConfig_BuildContextsOmittedWhenEmpty(t *testing.T) {
 	cfg := ProjectConfig{
 		Name:       "p",
 		ModulePath: "example.com/p",
-		Docker:     DockerConfig{Registry: "ghcr.io/acme"},
 	}
 	out, err := yaml.Marshal(&cfg)
 	if err != nil {

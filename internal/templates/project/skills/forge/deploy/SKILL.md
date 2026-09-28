@@ -175,7 +175,6 @@ a base image to pin), declare the extra contexts in `forge.yaml`:
 
 ```yaml
 docker:
-  registry: ghcr.io/acme
   build_contexts:
     shared: ../shared-libs            # relative path, resolved against forge.yaml's dir
     base: docker-image://acme/base:v3  # registry image — pin or local-override a FROM

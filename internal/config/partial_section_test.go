@@ -149,16 +149,13 @@ func TestPartialSectionsFillPerField(t *testing.T) {
 		check func(t *testing.T, cfg *ProjectConfig)
 	}{
 		{
-			name: "docker_registry_survives_partial_block",
+			name: "docker_build_contexts_survive_partial_block",
 			src: `
 docker:
     build_contexts:
         forgepkg: ../forge/pkg
 `,
 			check: func(t *testing.T, cfg *ProjectConfig) {
-				if got := cfg.Docker.Registry; got != "ghcr.io" {
-					t.Errorf("Docker.Registry = %q, want ghcr.io — declaring a build context must not unset the registry", got)
-				}
 				if got := cfg.Docker.BuildContexts["forgepkg"]; got != "../forge/pkg" {
 					t.Errorf("BuildContexts[forgepkg] = %q, want the user's value", got)
 				}

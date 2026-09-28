@@ -23,6 +23,10 @@ type pushRegistryChoice struct {
 	registry string
 	// source names the declaration it came from, for the build header.
 	source string
+	// env and local describe a build that pushes nothing: the env, and the
+	// registry it declares (which its images are tagged under), for the
+	// header.
+	env, local string
 }
 
 // renderBuildInputs renders the env (renderBuildEntities) and resolves where
@@ -41,14 +45,19 @@ func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *bui
 		return nil, pushRegistryChoice{}, err
 	}
 	opts.pushRegistry = push.registry
+	opts.envRegistry = declaredRegistry(declared)
+	push.env, push.local = opts.env, opts.envRegistry
 	return entities, push, nil
 }
 
-// printHeader prints the build header's push line. Nothing when the build
-// pushes nothing.
+// printHeader prints where this build's images are tagged and pushed.
+// Nothing when the env declares no registry and the build pushes nothing.
 func (c pushRegistryChoice) printHeader() {
-	if c.registry != "" {
+	switch {
+	case c.registry != "":
 		fmt.Printf("[build]   Push:     %s (%s)\n", c.registry, c.source)
+	case c.local != "":
+		fmt.Printf("[build]   Registry: %s (declared in deploy/kcl/%s/main.k; tagged locally, not pushed)\n", c.local, c.env)
 	}
 }
 

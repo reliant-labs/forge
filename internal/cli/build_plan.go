@@ -151,10 +151,7 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 	// 3. Project image + image frontends (only with --docker; same gate as
 	// buildParallel's `opts.buildDocker`).
 	if opts.buildDocker {
-		registry := in.cfg.Docker.Registry
-		if registry == "" {
-			registry = in.cfg.Name
-		}
+		registry := opts.envRegistry
 		if len(in.targets.goTargets) > 0 && !in.targets.skipProjectDocker {
 			tags := imageTagSet(registry, in.cfg.Name, opts.pushRegistry, in.resolvedTag, releaseScoped)
 			// A missing root Dockerfile is a SKIP in the real build
@@ -314,7 +311,7 @@ func planExternalBuilds(in planInputs) []buildPlanStep {
 	}
 	registry := in.opts.pushRegistry
 	if registry == "" {
-		registry = in.cfg.Docker.Registry
+		registry = in.opts.envRegistry
 	}
 	var out []buildPlanStep
 	for _, svc := range svcs {

@@ -652,9 +652,9 @@ type DockerBuild struct {
 	Platform   string            `json:"platform,omitempty"`
 	Target     string            `json:"target,omitempty"`
 	BuildArgs  map[string]string `json:"build_args,omitempty"`
-	// Registry is the push/tag target for THIS service's image
-	// (registry-host[/namespace]). Empty falls back to the project-level
-	// forge.yaml docker.registry (then the project name).
+	// Registry is the tag registry for THIS service's image
+	// (registry-host[/namespace]). Empty is the registry the env declares
+	// (buildOptions.envRegistry); with none, the image is tagged bare.
 	Registry string `json:"registry,omitempty"`
 	// BuildContexts maps a `docker buildx --build-context name=value` entry
 	// THIS service's Dockerfile needs (a sibling-checkout path the Dockerfile

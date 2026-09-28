@@ -1221,22 +1221,19 @@ func (c *CIConfig) EffectivePermContents() string {
 }
 
 // DeployConfig holds deployment PIPELINE-CONTROL settings (target_arch,
-// migration_test, concurrency, frontend_deploy) plus two inputs consumed
-// by the CI-workflow generator (generator.CIWorkflows):
+// migration_test, concurrency, frontend_deploy) plus an input consumed by the
+// CI-workflow generator (generator.CIWorkflows):
 //
 //   - the CI provider (github/gitlab/…) lives in `ci.provider`, not here
 //     — the dead `deploy.provider` field was removed (see
 //     removedSchemaKeys); generate_ci.go reads cfg.CI.Provider.
-//   - `deploy.registry` is the image registry stamped into the generated
-//     build-images.yml / deploy.yml workflows (EffectiveRegistry, default
-//     "ghcr"). It overlaps `docker.registry` (the registry `forge build`
-//     uses); the two are independent fields that can disagree.
+//   - there is no registry here: an image registry is declared in the env's
+//     KCL and nowhere else (see refusedSchemaKeys).
 //   - `deploy.environments` supplies optional per-env auto/protection/url
 //     metadata for the generated deploy.yml. When empty, the deployable
 //     environment set is derived from the on-disk deploy/kcl/<env>/
 //     directories (generator.CIWorkflows' promotion-ordered fallback).
 type DeployConfig struct {
-	Registry       string            `yaml:"registry,omitempty"` // image registry for the generated CI workflows; overlaps docker.registry
 	Environments   []DeployEnvConfig `yaml:"environments,omitempty"`
 	Concurrency    DeployConcurrency `yaml:"concurrency,omitempty"`
 	FrontendDeploy string            `yaml:"frontend_deploy,omitempty"` // "firebase", "vercel", "none"
@@ -1349,14 +1346,6 @@ func (c SmokeFlowCheck) RunsInEnv(env string) bool {
 	return false
 }
 
-// EffectiveRegistry returns the deploy registry, defaulting to "ghcr".
-func (d *DeployConfig) EffectiveRegistry() string {
-	if d.Registry != "" {
-		return d.Registry
-	}
-	return "ghcr"
-}
-
 // IsConcurrencyEnabled returns true if deploy concurrency is enabled.
 // Zero value is treated as enabled.
 func (d *DeployConfig) IsConcurrencyEnabled() bool {
@@ -1371,8 +1360,13 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 
 // DockerConfig holds Docker build configuration for the PROJECT image (the
 // root `Dockerfile` built by `forge build`). Per-service DockerBuild services
-// declared in KCL carry their OWN registry + build_contexts on the KCL
-// DockerBuild block; these are the project-image defaults / fallback.
+// declared in KCL carry their OWN build_contexts on the KCL DockerBuild block;
+// these are the project-image defaults / fallback.
+//
+// There is no registry here: an image registry is declared in the env's KCL
+// (forge.ClusterTarget.registry / forge.ControlPlane.registry) and nowhere
+// else, so the project image is tagged and pushed under the registry the
+// env it is built for declares.
 //
 // forge is FULLY base-image-AGNOSTIC: it does NOT discover, mirror, pin, or
 // inject base images, and offers no mirror/pull-through setting. A Dockerfile's
@@ -1381,7 +1375,6 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 // `FROM` ref directly (e.g. `FROM us-docker.pkg.dev/<p>/dockerhub/alpine:3.21`).
 // forge never rewrites a FROM.
 type DockerConfig struct {
-	Registry string `yaml:"registry"`
 	// BuildContexts maps a build-context name to anything `docker buildx
 	// --build-context name=value` accepts:
 	//
@@ -2161,7 +2154,7 @@ func (f FeaturesConfig) StrictWiringEnabled() bool {
 // database, proto, deploy, ci) of "forward-looking declarations". Five of
 // those (backend/database/proto/deploy/ci) were never consumed by any
 // codegen path and merely DUPLICATED the canonical sources — `database.driver`,
-// `ci.provider`, `docker.registry` + per-env KCL — so they were removed in
+// `ci.provider`, per-env KCL — so they were removed in
 // the forge.yaml schema cleanup (FORGE_SHAPE_REDESIGN §4). Old keys parse
 // with a migration warning (see removedSchemaKeys: stack.backend etc.).
 //

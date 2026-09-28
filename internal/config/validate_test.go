@@ -21,7 +21,8 @@ database:
 ci:
   provider: github
 docker:
-  registry: ghcr.io
+  build_contexts:
+    shared: ../shared
 k8s:
   kcl_dir: deploy/kcl
 lint:
@@ -131,8 +132,8 @@ func TestLoadProject_ConfigGuard_EnforceComponentObserveAbsentDefaultsToError(t 
 // is the complete source of truth for bases/mirrors/pins now.)
 func TestLoadProject_DockerBaseImages_RejectedAsUnknownKey(t *testing.T) {
 	in := strings.Replace(validBaseYAML,
-		"docker:\n  registry: ghcr.io\n",
-		"docker:\n  registry: ghcr.io\n  base_images:\n    mirror_prefix: us-docker.pkg.dev/p/dockerhub\n    tags:\n      - alpine:3.21\n",
+		"docker:\n  build_contexts:\n    shared: ../shared\n",
+		"docker:\n  build_contexts:\n    shared: ../shared\n  base_images:\n    mirror_prefix: us-docker.pkg.dev/p/dockerhub\n    tags:\n      - alpine:3.21\n",
 		1)
 	_, err := LoadProject([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
@@ -485,8 +486,8 @@ func TestLoadProject_StackDeploy_RemovedKeyWarns(t *testing.T) {
 		t.Fatalf("removed `stack.deploy` must load (warn, not fail) so mid-migration projects aren't stranded. err=%v", err)
 	}
 	got := sink.String()
-	if !containsAll(got, `"stack.deploy" is no longer a forge.yaml key`, "docker.registry") {
-		t.Errorf("expected stack.deploy→docker.registry migration warning, got:\n%s", got)
+	if !containsAll(got, `"stack.deploy" is no longer a forge.yaml key`, "deploy/kcl/<env>/main.k") {
+		t.Errorf("expected stack.deploy→per-env KCL migration warning, got:\n%s", got)
 	}
 }
 
@@ -887,4 +888,43 @@ func lineOf(t *testing.T, input, marker string) int {
 	}
 	t.Fatalf("marker %q not found in input", marker)
 	return 0
+}
+
+// TestLoadProject_RegistryKeysAreRefused: an image registry is declared in the
+// env's KCL and nowhere else, so forge.yaml's `docker.registry` and
+// `deploy.registry` are gone — and a forge.yaml still carrying one FAILS to
+// load with the runbook, rather than warning. A warning would let the key
+// linger while the build silently stopped honouring it, which is exactly the
+// quiet change of push destination the refusal exists to prevent.
+func TestLoadProject_RegistryKeysAreRefused(t *testing.T) {
+	for _, tc := range []struct{ name, in, key string }{
+		{"docker.registry", strings.Replace(validBaseYAML, "docker:\n  build_contexts:", "docker:\n  registry: ghcr.io\n  build_contexts:", 1), "docker.registry"},
+		{"deploy.registry", validBaseYAML + "deploy:\n  registry: gar\n", "deploy.registry"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.Contains(tc.in, strings.SplitN(tc.key, ".", 2)[0]+":\n  registry:") {
+				t.Fatalf("fixture precondition: input does not carry %s:\n%s", tc.key, tc.in)
+			}
+			_, err := LoadProject([]byte(tc.in), "forge.yaml")
+			ve := requireValidationError(t, err)
+			if !containsAll(ve.Error(), `"`+tc.key+`"`, "deploy/kcl/<env>/main.k", "forge.ClusterTarget") {
+				t.Errorf("%s: want a refusal naming the key and where the registry is declared, got:\n%s", tc.key, ve.Error())
+			}
+			if strings.Contains(ve.Error(), "did you mean") {
+				t.Errorf("%s: a retired key must get its runbook, not a typo suggestion:\n%s", tc.key, ve.Error())
+			}
+		})
+	}
+}
+
+// docker.build_contexts is NOT a registry and stays: a docker block that
+// carries only it loads cleanly.
+func TestLoadProject_DockerBuildContextsStay(t *testing.T) {
+	cfg, err := LoadProject([]byte(validBaseYAML), "forge.yaml")
+	if err != nil {
+		t.Fatalf("docker.build_contexts alone must load: %v", err)
+	}
+	if cfg.Docker.BuildContexts["shared"] != "../shared" {
+		t.Errorf("BuildContexts = %v, want the declared context", cfg.Docker.BuildContexts)
+	}
 }

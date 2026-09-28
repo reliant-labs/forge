@@ -307,6 +307,28 @@ type validationIssue struct {
 	warning bool
 }
 
+// refusedSchemaKeys are retired forge.yaml keys that FAIL the load, with their
+// runbook, instead of warning like removedSchemaKeys.
+//
+// A removed key normally warns: forge wrote it, and a forge.yaml forge
+// authored must keep loading across a schema removal. A key lands here
+// instead when silently ignoring it would change what forge DOES — a stale
+// value that used to steer a build keeps sitting in the file, the build stops
+// honouring it, and nothing says so. A registry is the case in point: a
+// project whose images went to `docker.registry` would start pushing to the
+// registry its env declares (or stop pushing), with a warning scrolled past
+// on a CI log as the only trace.
+var refusedSchemaKeys = map[string]string{
+	// An image registry is declared in the env's KCL, and nowhere else: no
+	// flag, no forge-owned `-D`, no environment variable, no forge.yaml key.
+	"docker.registry": "delete the key and declare the registry in each env's KCL — " +
+		"`registry = \"<registry>\"` on the env's forge.ClusterTarget (or forge.ControlPlane for a " +
+		"hosted env) in deploy/kcl/<env>/main.k. `forge build <env> --push` pushes there.",
+	"deploy.registry": "delete the key: the generated CI workflows name no registry. Declare it in " +
+		"each env's KCL — `registry = \"<registry>\"` on the env's forge.ClusterTarget (or " +
+		"forge.ControlPlane for a hosted env) in deploy/kcl/<env>/main.k.",
+}
+
 // removedSchemaKeys maps a normalized key path of a forge.yaml key that
 // was deliberately removed from the schema (as opposed to a typo) to the
 // one-line "what to do instead" guidance emitted as the issue's Fix:
@@ -473,8 +495,8 @@ var removedSchemaKeys = map[string]string{
 		"forge projects are Go + Connect RPC.",
 	"stack.database": "delete the key and set the driver under `database.driver` (postgres | none).",
 	"stack.proto":    "delete the key — the proto toolchain is buf; there is no per-project toggle.",
-	"stack.deploy": "delete the key — the image registry lives in `docker.registry`, and the " +
-		"deploy target/cluster is declared per-env in `deploy/kcl/<env>/main.k` (forge.K8sCluster).",
+	"stack.deploy": "delete the key — the image registry and the deploy target/cluster are " +
+		"declared per-env in `deploy/kcl/<env>/main.k` (forge.ClusterTarget).",
 	"stack.ci": "delete the key and set the CI provider under `ci.provider` (github is the default).",
 	// down_files_allowed_until grandfathered pre-policy down migrations as a
 	// warning. There is nothing to grandfather: forge never runs a down file,
@@ -586,6 +608,15 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 			// the deprecation is visible and self-healing. Genuine typos
 			// (NOT in removedSchemaKeys) stay fatal below — that distinction
 			// is the whole point of the map.
+			if fix, refused := refusedSchemaKeys[normalizeKeyPath(full)]; refused {
+				out = append(out, validationIssue{
+					line:   keyNode.Line,
+					column: keyNode.Column,
+					msg:    fmt.Sprintf("%q is no longer a forge.yaml key", full),
+					fix:    fix,
+				})
+				continue
+			}
 			if fix, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
 				out = append(out, validationIssue{
 					line:    keyNode.Line,

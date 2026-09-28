@@ -24,9 +24,8 @@ func TestEveryEnvDeclaresTheFrontendCapability(t *testing.T) {
 	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
 
 	for _, tmpl := range []string{
-		"kcl/env/host.k.tmpl",
-		"kcl/env/cluster.k.tmpl",
-		"kcl/env/hosted.k.tmpl",
+		"kcl/dev/main.k.tmpl",
+		"kcl/cloud/main.k.tmpl",
 	} {
 		t.Run(tmpl, func(t *testing.T) {
 			t.Parallel()
@@ -59,9 +58,8 @@ func TestFrontendBlockIsAbsentWithoutAFrontend(t *testing.T) {
 	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: false, PrimaryWorkload: "acme"}
 
 	for _, tmpl := range []string{
-		"kcl/env/host.k.tmpl",
-		"kcl/env/cluster.k.tmpl",
-		"kcl/env/hosted.k.tmpl",
+		"kcl/dev/main.k.tmpl",
+		"kcl/cloud/main.k.tmpl",
 	} {
 		out, err := DeployTemplates().Render(tmpl, data)
 		if err != nil {
@@ -85,9 +83,7 @@ func TestFrontendScaffoldChoosesNoDeployTarget(t *testing.T) {
 
 	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
 
-	// The hosted env is the exception by design: it has exactly one place a
-	// hosted frontend can go (the platform's static site), so it chooses it.
-	for _, tmpl := range []string{"kcl/env/cluster.k.tmpl"} {
+	for _, tmpl := range []string{"kcl/cloud/main.k.tmpl"} {
 		out, err := DeployTemplates().Render(tmpl, data)
 		if err != nil {
 			t.Fatalf("rendering %s: %v", tmpl, err)

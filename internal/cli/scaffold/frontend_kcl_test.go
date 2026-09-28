@@ -25,9 +25,9 @@ func renderNoFrontendEnv(t *testing.T, tmpl, env string) string {
 // from: dev on the host runtime, every other env on the cluster runtime.
 func scaffoldedEnvTemplate(env string) string {
 	if env == "dev" {
-		return "kcl/env/host.k.tmpl"
+		return "kcl/dev/main.k.tmpl"
 	}
-	return "kcl/env/cluster.k.tmpl"
+	return "kcl/cloud/main.k.tmpl"
 }
 
 // TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv pins that the splice finds
@@ -40,10 +40,9 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 		tmpl string
 		env  string
 	}{
-		{"kcl/env/host.k.tmpl", "dev"},
-		{"kcl/env/cluster.k.tmpl", "staging"},
-		{"kcl/env/cluster.k.tmpl", "prod"},
-		{"kcl/env/hosted.k.tmpl", "preview"},
+		{"kcl/dev/main.k.tmpl", "dev"},
+		{"kcl/cloud/main.k.tmpl", "staging"},
+		{"kcl/cloud/main.k.tmpl", "prod"},
 	} {
 		t.Run(tc.tmpl+"/"+tc.env, func(t *testing.T) {
 			in := renderNoFrontendEnv(t, tc.tmpl, tc.env)
@@ -81,7 +80,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 // TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend pins that a
 // second frontend is added beside the first rather than replacing it.
 func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
-	in := renderNoFrontendEnv(t, "kcl/env/host.k.tmpl", "dev")
+	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
 	one, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 0)
 	two, status := spliceFrontendIntoEnvKCL(one, "acme", "dev", "admin", true, 0)
 	if status != frontendKCLApplied {
@@ -97,7 +96,7 @@ func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
 // TestSpliceFrontendIntoEnvKCL_PinnedPort pins that --port lands in KCL as
 // the literal, with no resolve_port that could step it elsewhere.
 func TestSpliceFrontendIntoEnvKCL_PinnedPort(t *testing.T) {
-	in := renderNoFrontendEnv(t, "kcl/env/host.k.tmpl", "dev")
+	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
 	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 4123)
 	if status != frontendKCLApplied {
 		t.Fatalf("status %d", status)

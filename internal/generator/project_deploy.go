@@ -47,12 +47,12 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// files were retired in favor of the upstream `forge` KCL module.
 	// Projects now `import forge` from each env's main.k.
 
-	// The per-env main.k files. Each env BINDS the workloads declared once in
-	// deploy/kcl/workloads.k to a runtime and states its own values; it
-	// re-describes no workload (ADR 0002). One template per RUNTIME, not per
-	// env name: dev is the host runtime (the local loop), staging and prod
-	// the cluster runtime with their own capacity floors. `forge env new
-	// --runtime` renders the same templates, hosted included.
+	// The per-env main.k files. An env BINDS each workload declared once in
+	// deploy/kcl/workloads.k to where it runs — one line per workload, since
+	// there is no env-level runtime (ADR 0002 §2) — and states its own
+	// values. dev renders from the local-loop template (host processes, the
+	// local k3d cluster, host-run postgres); staging and prod from the cloud
+	// template (each workload on the env's cluster, with a capacity floor).
 	//
 	// The project's binary mode does not reach these files. Every component
 	// is a subcommand of the project binary in both modes (`<bin> <name>`),
@@ -61,36 +61,33 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// Ingress is experimental but the wiring is scaffolded at `forge project
 	// new` so an opt-in needs no rescaffold; the runtime gate reads
 	// IngressEnabled() at call time.
-	primaryWorkload, hasPrimaryService := g.Name, false
-	for _, c := range g.bornComponents() {
+	born := g.bornComponents()
+	hasFrontend := g.forScaffold().HasFrontend
+	primaryWorkload := g.Name
+	for _, c := range born {
 		if codegen.WorkloadKindFor(c.EffectiveKind()) == codegen.WorkloadKindService {
-			primaryWorkload, hasPrimaryService = c.Name, true
+			primaryWorkload = c.Name
 			break
 		}
 	}
-	envData := func(env string) templates.EnvTemplateData {
-		return templates.EnvTemplateData{
-			ProjectName:       g.Name,
-			EnvName:           env,
-			PrimaryWorkload:   primaryWorkload,
-			HasPrimaryService: hasPrimaryService,
-			IngressEnabled:    true,
-			HasFrontend:       g.forScaffold().HasFrontend,
-			FrontendName:      g.FrontendName,
-		}
-	}
-	for _, e := range []struct{ env, runtime string }{
-		{"dev", templates.EnvRuntimeHost},
-		{"staging", templates.EnvRuntimeCluster},
-		{"prod", templates.EnvRuntimeCluster},
+	for _, e := range []struct{ env, template string }{
+		{"dev", "kcl/dev/main.k.tmpl"},
+		{"staging", "kcl/cloud/main.k.tmpl"},
+		{"prod", "kcl/cloud/main.k.tmpl"},
 	} {
-		tmpl, err := templates.EnvTemplateName(e.runtime)
-		if err != nil {
-			return err
+		data := templates.EnvTemplateData{
+			ProjectName:     g.Name,
+			EnvName:         e.env,
+			PrimaryWorkload: primaryWorkload,
+			PrimaryIdent:    naming.KCLIdentifier(primaryWorkload),
+			IngressEnabled:  true,
+			HasFrontend:     hasFrontend,
+			FrontendName:    g.FrontendName,
+			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
 		}
-		content, err := templates.DeployTemplates().Render(tmpl, envData(e.env))
+		content, err := templates.DeployTemplates().Render(e.template, data)
 		if err != nil {
-			return fmt.Errorf("render deploy template %s for %s: %w", tmpl, e.env, err)
+			return fmt.Errorf("render deploy template %s for %s: %w", e.template, e.env, err)
 		}
 		destPath := filepath.Join(deployDir, e.env, "main.k")
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
@@ -160,6 +157,21 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	}
 
 	return nil
+}
+
+// scaffoldEnvBindings is the body of a scaffolded env's `_workloads` list:
+// one binding per workload workloads.k declares, in the same order as its
+// ALL list (migrate first — it gates the rest). The dev-IdP convergence job
+// is bound only in dev, whose IdP it registers against.
+func scaffoldEnvBindings(env string, components codegen.Inventory, hasFrontend bool) string {
+	lines := []string{codegen.EnvBinding(env, codegen.WorkloadKindJob, codegen.MigrateWorkloadName)}
+	if hasFrontend && env == codegen.DevEnvName {
+		lines = append(lines, codegen.EnvBinding(env, codegen.WorkloadKindJob, codegen.IDPProvisionWorkloadName))
+	}
+	for _, c := range components {
+		lines = append(lines, codegen.EnvBinding(env, codegen.WorkloadKindFor(c.EffectiveKind()), c.Name))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // bornComponents is the component set a freshly-scaffolded project declares:

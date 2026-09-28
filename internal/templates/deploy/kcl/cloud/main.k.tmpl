@@ -1,15 +1,16 @@
 """
-The `{{.EnvName}}` environment of {{.ProjectName}}: a Kubernetes cluster you operate.
+The `{{.EnvName}}` environment of {{.ProjectName}}.
 
 YOURS. forge scaffolds this file once and never rewrites it.
 
 This file BINDS; it does not declare. `deploy/kcl/workloads.k` states what
 each workload is (build, subcommand, ports, credentials). This file says
-where they run here — `forge.OnCluster {target = _cluster}` — and states the
-values only this environment knows: the cluster, namespace and registry,
-the capacity floor, the network policy, and where secrets come from.
+where each one runs here — one binding per workload, all on this env's
+cluster as scaffolded — and states the values only this environment knows:
+the cluster, namespace and registry, the capacity floor, the network
+policy, and where secrets come from.
 
-Each workload becomes a `forge.dev/v1alpha1 Workload` record in the render,
+Each cluster-bound workload becomes a `forge.dev/v1alpha1 Workload` record,
 and forge expands it through ONE Go renderer (pkg/deploy.RenderWorkloads,
 the same code the hosted control plane runs): a Deployment + Service with
 `/readyz` readiness and `/healthz` liveness probes, a termination grace
@@ -55,7 +56,7 @@ _cluster = forge.ClusterTarget {
 }
 
 # ---------------------------------------------------------------------------
-# HOW MUCH: the {{.EnvName}} capacity floor.
+# HOW MUCH: the {{.EnvName}} capacity floor (cluster-bound workloads).
 # ---------------------------------------------------------------------------
 # `_replicas` is a FLOOR for the long-running kinds: a workload refined
 # higher keeps its own count. Above one replica forge adds a
@@ -68,37 +69,63 @@ _resources = fw.Resources {
     memoryLimitBytes = forge.mib({{.MemoryLimitMiB}})
 }
 
-# ---------------------------------------------------------------------------
-# WHAT THIS ENVIRONMENT RUNS.
-# ---------------------------------------------------------------------------
-# Every declared workload except the dev-IdP convergence job: this env's
-# issuer is a real one, with its applications registered out of band. Drop
-# or append workloads here; refine one by name:
-#
-#     _workloads = [w | {replicas = 5} if w.name == "{{.PrimaryWorkload}}" else w for w in _declared]
-_declared = [w for w in wl.ALL if w.name != "idp-provision"]
-_workloads = _declared
-
 _LONG_RUNNING = ["service", "worker", "operator"]
 
-# The per-workload binding for this env: the typed config projected into
-# its env (a credential only into the workloads that list it in
-# `config_secrets`), the capacity floor, and the cluster runtime.
-_bind = lambda w: fw.Workload -> fw.Workload {
+# This env's layer over a workload: the typed config projected into its env
+# (a credential only into the workloads that list it in `config_secrets`)
+# and the replica floor.
+_configured = lambda w: fw.Workload -> fw.Workload {
     w | {
         env = config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | {OTEL_SERVICE_NAME = w.name}
-        if w.kind != "tool":
-            resources = _resources
         if w.kind in _LONG_RUNNING:
             replicas = w.replicas if w.replicas > _replicas else _replicas
     }
 }
 
+# ---------------------------------------------------------------------------
+# THE BINDINGS: where each workload runs in this env.
+# ---------------------------------------------------------------------------
+# There is no env-wide runtime. Every workload below states its own, through
+# one of these binders. Rebinding a workload is editing its one line — to run
+# one on the forge control plane instead of this cluster:
+#
+#     _hosted(wl.{{.PrimaryIdent}})
+#
+# which also needs `control_plane = forge.ControlPlane {}` on the Bundle
+# below (Reliant cloud, or name an `endpoint`). The platform then admits the
+# workload under its Restricted profile: kinds service/worker/job, no RBAC,
+# sidecars, volumes, or raw secretRef env — see the `deploy` skill.
+
+# A Deployment (or Job) on this env's cluster, from the image
+# `forge build {{.EnvName}} --push` pushes.
+_on_cluster = lambda w: fw.Workload -> fw.Workload {
+    _configured(w) | {resources = _resources, runtime = forge.OnCluster {target = _cluster}}
+}
+# A Workload CR on the forge control plane, rendered by the platform. Its
+# resources are the workload's own, not the cluster floor above: hosted
+# shapes sit on a fixed 4 GiB-per-vCPU band (250m → 1Gi, 500m → 2Gi, 1 → 4Gi)
+# and an off-band request is refused rather than silently repriced.
+_hosted = lambda w: fw.Workload -> fw.Workload {
+    _configured(w) | {runtime = forge.OnHosted {}}
+}
+# Built, never run.
+_build_only = lambda w: fw.Workload -> fw.Workload {
+    w | {runtime = forge.BuildOnly {}}
+}
+
+# Every workload this env runs, one binding each. `forge scaffold` appends
+# a line here when it adds a workload; drop a line to not run it here.
+# (The dev-IdP convergence job is not here: this env's issuer is a real
+# one, with its applications registered out of band.)
+_workloads = [
+{{.Bindings}}
+]
+
 _bundle = forge.Bundle {
     project = "{{.ProjectName}}"
-    # Every workload runs on this cluster unless it binds its own runtime.
-    runtime = forge.OnCluster {target = _cluster}
-    workloads = [_bind(w) for w in _workloads]
+    # Where the env's support objects (Namespace, gateways, routes) land.
+    cluster_target = _cluster
+    workloads = _workloads
     # DEFAULT-DENY NETWORKING, opted in. Every pod's egress is blocked except
     # DNS, its own namespace, the ports below, the telemetry collector and
     # the ingress controller; every workload admits ingress only on its

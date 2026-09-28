@@ -18,12 +18,13 @@ import (
 
 // ONE declaration, every runtime (ADR 0002), end to end from a real scaffold.
 //
-// `forge project new` writes deploy/kcl/workloads.k once. This scaffolds a
-// project, then renders that SAME file under each runtime the scaffold and
-// `forge env new --runtime` offer — host (dev), cluster (prod), hosted — plus
-// a MIXED env that binds one workload to a cluster and leaves the rest on the
-// host. Each render goes through the production decoder and the consumer the
-// deploy path runs for that runtime:
+// `forge project new` writes deploy/kcl/workloads.k once, and every env binds
+// each workload to where it runs, one line per workload. This scaffolds a
+// project, then renders that SAME declaration bound three ways: dev (host
+// processes), prod (its cluster), and a MIXED env derived from prod with
+// `forge env new cloud --from prod --bind item=hosted` — item on the forge
+// control plane beside migrate on the cluster. Each render goes through the
+// production decoder and the consumer the deploy path runs for that runtime:
 //
 //   - hosted: the spec is admitted under ProfileRestricted (Workload.Validate
 //     plus a restricted render of the set), exactly as the control plane
@@ -40,41 +41,54 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	}
 	dir := scaffoldWorkloadModelProject(t)
 
-	// The hosted env, through the real command (`forge env new --runtime
-	// hosted`), and its --check gate: no placeholder, compiles, admitted.
+	// prod's cluster knobs are placeholders a user fills; fill them so the
+	// derived env starts from a deployable file.
+	prodMain := filepath.Join(dir, "deploy", "kcl", "prod", "main.k")
+	b, err := os.ReadFile(prodMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prodMain, []byte(strings.Replace(string(b), `registry = forge.registry("ghcr.io/OWNER")`, `registry = forge.registry("ghcr.io/acme")`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The MIXED env, through the real command: derived from prod, item
+	// rebound to the control plane. Then its --check gate: no placeholder
+	// once the knobs are filled, compiles, and admitted by the hosted plan.
 	withCwd(t, dir, func() {
-		if err := runNewEnvForRuntime(context.Background(), "cloud", "hosted", false); err != nil {
-			t.Fatalf("forge env new cloud --runtime hosted: %v", err)
+		cmd := newEnvNewCmd()
+		cmd.SetArgs([]string{"cloud", "--from", "prod", "--bind", "item=hosted"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("forge env new cloud --from prod --bind item=hosted: %v", err)
 		}
+	})
+	cloudDir := filepath.Join(dir, "deploy", "kcl", "cloud")
+	cloud, err := os.ReadFile(filepath.Join(cloudDir, "main.k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"_hosted(wl.item)", "_on_cluster(wl.migrate)", "control_plane = forge.ControlPlane {}"} {
+		if !strings.Contains(string(cloud), want) {
+			t.Fatalf("derived cloud/main.k lacks %q:\n%s", want, cloud)
+		}
+	}
+	filled := placeholderRe.ReplaceAllStringFunc(string(cloud), func(p string) string {
+		return map[string]string{
+			"REPLACE_ME_CLUSTER_CONTEXT": "gke_acme_cloud", "REPLACE_ME_PLATFORM": "amd64",
+			"REPLACE_ME_NAMESPACE": "acme-cloud", "REPLACE_ME_REGISTRY": "ghcr.io/acme",
+		}[p]
+	})
+	writeEnv(t, dir, "cloud", filled, filepath.Join(dir, "deploy", "kcl", "prod"))
+	withCwd(t, dir, func() {
 		if err := runNewEnv(context.Background(), "cloud", "", true, false); err != nil {
 			t.Fatalf("forge env new cloud --check: %v", err)
 		}
 	})
 
-	// The MIXED env: dev's file with the primary service rebound to the local
-	// cluster. The declaration is untouched; only the binding changes.
-	devMain, err := os.ReadFile(filepath.Join(dir, "deploy", "kcl", "dev", "main.k"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	mixedMain := strings.Replace(string(devMain), "_workloads = wl.ALL\n",
-		`_workloads = [w | {runtime = forge.OnCluster {target = _k3d}} if w.name == "item" else w for w in wl.ALL]`+"\n", 1)
-	if mixedMain == string(devMain) {
-		t.Fatal("dev/main.k no longer has the `_workloads = wl.ALL` line the mixed binding rewrites")
-	}
-	writeEnv(t, dir, "mixed", mixedMain, filepath.Join(dir, "deploy", "kcl", "dev"))
-
-	// The mixed env IS a dev env (a local loop with one workload in k3d), so
-	// it renders under the dev binding: FileSecrets is dev/e2e-only.
-	renderAs := map[string]string{"mixed": "dev"}
 	render := func(env string) (*KCLEntities, []byte) {
 		t.Helper()
-		as := env
-		if a, ok := renderAs[env]; ok {
-			as = a
-		}
-		kclplugin.UsePortStoreReadOnly(filepath.Join(dir, ".forge", "ports-"+as+".json"))
-		raw, err := kclrender.Run(dir, filepath.Join(dir, "deploy", "kcl", env), []string{"env=" + as})
+		kclplugin.UsePortStoreReadOnly(filepath.Join(dir, ".forge", "ports-"+env+".json"))
+		raw, err := kclrender.Run(dir, filepath.Join(dir, "deploy", "kcl", env), []string{"env=" + env})
 		if err != nil {
 			t.Fatalf("render %s: %v", env, err)
 		}
@@ -92,9 +106,13 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 		return out
 	}
 
-	// ── hosted: admitted under Restricted, probes present ────────────────
-	hosted, _ := render("cloud")
-	group, err := buildHostedGroup("cloud", hosted)
+	// ── mixed: item hosted, admitted under Restricted, probes present ────
+	mixed, mixedRaw := render("cloud")
+	mw := byName(mixed)
+	if mw["item"].Runtime.Type != RuntimeHosted || mw["migrate"].Runtime.Type != RuntimeCluster {
+		t.Fatalf("cloud runtimes: item=%q migrate=%q, want hosted/cluster", mw["item"].Runtime.Type, mw["migrate"].Runtime.Type)
+	}
+	group, err := buildHostedGroup("cloud", mixed)
 	if err != nil || group == nil {
 		t.Fatalf("buildHostedGroup: %v", err)
 	}
@@ -137,17 +155,18 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 		t.Errorf("dev migrate args = %q", got)
 	}
 
-	// ── mixed: one workload on the cluster, the rest on the host ─────────
-	mixed, mixedRaw := render("mixed")
-	mw := byName(mixed)
-	if mw["item"].Runtime.Type != RuntimeCluster || mw["migrate"].Runtime.Type != RuntimeHost {
-		t.Fatalf("mixed runtimes: item=%q migrate=%q, want cluster/host", mw["item"].Runtime.Type, mw["migrate"].Runtime.Type)
-	}
 	// The binding changed nothing about WHAT item is.
 	if strings.Join(mw["item"].Spec.Args, " ") != strings.Join(devW["item"].Spec.Args, " ") {
-		t.Errorf("rebinding item to a cluster changed its args")
+		t.Errorf("rebinding item to hosted changed its args")
 	}
-	assertClusterDeploymentProbed(t, "mixed", mixedRaw)
+	// The cluster half of the mixed env still renders through RenderWorkloads:
+	// migrate is a job there, so no Deployment, but no Workload record of
+	// the hosted item may reach the cluster.
+	if stream, err := cluster.ExtractManifests(mixedRaw); err != nil {
+		t.Fatalf("cloud: expand output.manifests: %v", err)
+	} else if strings.Contains(stream, "name: item\n") {
+		t.Errorf("cloud: the hosted item leaked into the cluster stream:\n%s", stream)
+	}
 }
 
 // scaffoldWorkloadModelProject scaffolds a service project with one service

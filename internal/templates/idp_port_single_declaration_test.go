@@ -47,7 +47,7 @@ func renderDevMainK(t *testing.T, template string) string {
 // consumers reference that variable — the host-run IdP (forge.HostInfra's
 // `port`) and the idp-provision job through its env.
 func TestIdPPort_DeclaredOnceInKCL(t *testing.T) {
-	for _, tmpl := range []string{"kcl/env/host.k.tmpl"} {
+	for _, tmpl := range []string{"kcl/dev/main.k.tmpl"} {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
 
@@ -118,7 +118,7 @@ func TestIdPPort_ComposeFileInterpolatesTheDeclaration(t *testing.T) {
 // The compose `postgres` service still EXISTS — this is a default, not a
 // removal — but the dev env must not be the thing that names it.
 func TestDevStack_PostgresRunsOnTheHostByDefault(t *testing.T) {
-	for _, tmpl := range []string{"kcl/env/host.k.tmpl"} {
+	for _, tmpl := range []string{"kcl/dev/main.k.tmpl"} {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
 			if !regexp.MustCompile(`forge\.HostInfra\s*\{\s*\n\s*name\s*=\s*"postgres"`).MatchString(src) {
@@ -144,7 +144,7 @@ func TestDevStack_PostgresRunsOnTheHostByDefault(t *testing.T) {
 // host-native infra exists to serve. It must stay defined in compose (so it
 // is two lines to enable) but absent from what dev actually runs.
 func TestDevStack_ObservabilityIsOptIn(t *testing.T) {
-	for _, tmpl := range []string{"kcl/env/host.k.tmpl"} {
+	for _, tmpl := range []string{"kcl/dev/main.k.tmpl"} {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
 			for _, svc := range []string{"lgtm", "alloy"} {

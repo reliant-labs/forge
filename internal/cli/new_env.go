@@ -41,39 +41,23 @@ import (
 // guard a project can wire around it) FAILS while any placeholder remains, so
 // an un-filled env can't ship.
 //
-// `--runtime host|cluster|hosted` is the other way in: it renders a FRESH env
-// from forge's per-runtime template (the same one `forge project new` uses)
-// instead of copying a sibling. The runtime is the env's DEFAULT binding
-// (`Bundle.runtime`); the workloads come from deploy/kcl/workloads.k either
-// way, and any env may still bind one workload elsewhere.
+// The runtime is chosen PER WORKLOAD, never per env (ADR 0002 §2): the new env
+// copies each workload's binding line (`_on_cluster(wl.api)`) from the
+// template env. `--bind api=hosted` rebinds one workload in the copy — the
+// same one-line edit a user would make by hand.
 func newEnvNewCmd() *cobra.Command {
 	var (
 		fromEnv string
-		runtime string
+		binds   []string
 		check   bool
 		force   bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "new <name>",
-		Short: "Scaffold a new deploy environment for a runtime, or from an existing one",
-		Long: `Scaffold deploy/kcl/<name>/ for a new environment.
-
-With --runtime, the env is rendered fresh from forge's template for that
-runtime, binding every workload in deploy/kcl/workloads.k:
-
-  host     local processes (forge env up), host-run postgres
-  cluster  a Kubernetes cluster you operate (forge.OnCluster), default-deny
-           NetworkPolicy, a capacity floor; the cluster context, registry
-           and platform are REPLACE_ME placeholders
-  hosted   the forge control plane (forge.OnHosted): Reliant cloud unless
-           you name another endpoint, hosted secrets, a managed database
-           when the project has migrations, the frontend as a hosted
-           static site. Probes, grace period and placement come from the
-           platform; the Restricted profile it enforces is checked here.
-
-Without --runtime, the env is derived from one of the project's existing
-envs (instead of hand-copying a sibling).
+		Short: "Scaffold a new deploy environment from an existing one",
+		Long: `Scaffold deploy/kcl/<name>/ for a new environment by deriving it
+from one of the project's existing envs (instead of hand-copying a sibling).
 
 The boilerplate — the full_stack / ClusterTarget wiring, sibling-repo
 build commands, frontends, in-cluster infra — is copied verbatim from the
@@ -92,29 +76,40 @@ or chosen explicitly with --from. After filling the placeholders, run
 'forge env new <name> --check' (or just re-run with --check) to confirm
 no placeholder remains and the env KCL-compiles.
 
+Each workload's binding — where it runs — is copied from the template env,
+one line per workload (` + "`_on_cluster(wl.api)`" + `). There is no env-level
+runtime: to run a workload somewhere else, edit its line, or rebind it as the
+env is created with --bind <workload>=<binder>:
+
+  --bind api=hosted       run api on the forge control plane (adds
+                          control_plane = forge.ControlPlane {} when the env
+                          has none; the platform admits it under its
+                          Restricted profile)
+  --bind api=cluster      run api on the env's cluster
+
 Examples:
-  forge env new cloud --runtime hosted  # a hosted env on Reliant cloud
-  forge env new eu --runtime cluster    # a cluster env; fill the placeholders
   forge env new preview                 # derive from an auto-picked cloud sibling
+  forge env new cloud --from prod --bind api=hosted --bind migrate=hosted
   forge env new preview --from staging  # derive explicitly from staging
   forge env new preview --check         # verify no REPLACE_ME_* remains + it compiles`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if runtime != "" {
-				if fromEnv != "" {
-					return cliutil.UserErr("forge env new", "--runtime and --from are exclusive", "",
-						"pass --runtime to scaffold a fresh env for that runtime, or --from to copy an existing env")
-				}
-				if check {
-					return runNewEnv(cmd.Context(), args[0], "", true, false)
-				}
-				return runNewEnvForRuntime(cmd.Context(), args[0], runtime, force)
+			if check && len(binds) > 0 {
+				return cliutil.UserErr("forge env new", "--bind rebinds workloads while scaffolding; --check only verifies", "",
+					"run 'forge env new <name> --bind ...' first, then --check")
 			}
-			return runNewEnv(cmd.Context(), args[0], fromEnv, check, force)
+			if err := validateEnvBinds(binds); err != nil {
+				return err
+			}
+			if err := runNewEnv(cmd.Context(), args[0], fromEnv, check, force); err != nil || check || len(binds) == 0 {
+				return err
+			}
+			return applyEnvBinds(args[0], binds)
 		},
 	}
 
-	cmd.Flags().StringVar(&runtime, "runtime", "", "Scaffold a fresh env whose default runtime is host, cluster or hosted (instead of deriving one)")
+	cmd.Flags().StringArrayVar(&binds, "bind", nil, "Rebind a workload in the new env: <workload>=hosted|cluster (repeatable)")
+
 	cmd.Flags().StringVar(&fromEnv, "from", "", "Existing env to derive the new env from (default: auto-pick a cloud-shaped sibling)")
 	cmd.Flags().BoolVar(&check, "check", false, "Don't scaffold; verify the existing env has no REPLACE_ME_* placeholders left and KCL-compiles (CI gate)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite deploy/kcl/<name>/ if it already exists")
@@ -453,6 +448,23 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 		}
 	}
 
+	// 1b. The literal forms the scaffolded envs write: `namespace = "<ns>"`
+	//     and `registry = forge.registry("<default>")` on a ClusterTarget.
+	//     Copied verbatim they deploy INTO the template env's namespace and
+	//     push to its registry.
+	if namespaceAssignRe.MatchString(line) {
+		return knobLines(indent, "namespace", `"REPLACE_ME_NAMESPACE"`,
+			"the k8s namespace every workload in this env deploys into",
+			"inheriting a sibling's namespace deploys INTO that sibling environment",
+			`kubectl get ns | grep `+name+` — the namespace must be unique to this env`)
+	}
+	if registryCallRe.MatchString(line) {
+		return knobLines(indent, "registry", `forge.registry("REPLACE_ME_REGISTRY")`,
+			"the image registry forge PUSHES to and the deploy PULLS from",
+			"a wrong/stale value SILENTLY ImagePullBackOff's at deploy time",
+			`run 'forge build `+name+` --push' (it pushes to this declared registry) and confirm the pushed ref matches the deploy ref`)
+	}
+
 	// 2. cluster = "<context>" inside a ClusterTarget/K8sCluster block.
 	if m := clusterAssignRe.FindStringSubmatch(line); m != nil {
 		return knobLines(indent, "cluster", `"REPLACE_ME_CLUSTER_CONTEXT"`,
@@ -515,6 +527,10 @@ func knobLines(indent, knob, assignRHS, what, danger, check string) []string {
 var (
 	// option("X") or "<default>" assigned to a top-level _var.
 	optionDefaultRe = regexp.MustCompile(`^\s*(_\w+)\s*=\s*option\("(\w+)"\)\s*or\s*"[^"]*"`)
+	// namespace = "<value>" and registry = forge.registry("<value>") — the
+	// literal ClusterTarget fields the scaffolded envs write.
+	namespaceAssignRe = regexp.MustCompile(`^\s*namespace\s*=\s*"[^"]*"\s*$`)
+	registryCallRe    = regexp.MustCompile(`^\s*registry\s*=\s*forge\.registry\("[^"]*"\)\s*$`)
 	// cluster = "<value>" (inside a ClusterTarget / K8sCluster block).
 	clusterAssignRe = regexp.MustCompile(`^\s*cluster\s*=\s*"[^"]*"`)
 	// platform = "<value>".
@@ -577,8 +593,8 @@ func checkEnv(ctx context.Context, projectDir, name, envDir string) error {
 	// 3. What the env publishes to a control plane must be ADMISSIBLE: the
 	//    deploy path's own plan (Workload.Validate(ProfileRestricted) per
 	//    workload plus a restricted render of the set), run offline against
-	//    placeholder digests. A hosted env that compiles but would be refused
-	//    at publish is not a finished env.
+	//    placeholder digests. An env that compiles but binds a workload the
+	//    control plane would refuse is not a finished env.
 	if err := checkHostedAdmissible(name, raw); err != nil {
 		return err
 	}

@@ -1,69 +1,41 @@
 """
-Forge KCL — typed entity schemas.
+Forge KCL — the env-level entity schemas.
 
-Four typed entities (Service / Operator / Frontend / CronJob) capture
-the orchestration shapes a forge project deploys. Plus six shared
-sub-schemas (EnvVar / Resources / Ingress / ClusterRBAC / HealthCheck /
-BuildVariant / SecurityContext) and a polymorphic deploy union
-(HostDeploy | K8sCluster | External | Compose | HostInfra | BuildOnly) discriminated
-by a `type` field on the deploy subschema itself — KCL emits the
-discriminator into JSON automatically so the consumer can dispatch
-without a side channel.
+A project's `deploy/kcl/<env>/main.k` builds ONE `Bundle` and ends with
 
-JSON contract (stable; missing optional fields project as `null`):
+    output = forge.render(bundle)
 
-    {
-      "services": [
-        { "name", "image", "deploy", "env_vars", "command", "ports",
-          "namespaced_rbac" }
-      ],
-      "operators": [
-        { "name", "image", "crds", "cluster_rbac", "leader_election",
-          "replicas", "platform", "env_vars" }
-      ],
-      "frontends": [
-        { "name", "type", "path", "dev_runner", "port", "env_file" }
-      ],
-      "cronjobs": [
-        { "name", "schedule", "image", "platform", "command", "env_vars" }
-      ]
-    }
+`output` is the whole contract (kcl/render.k documents every key):
+workloads of every runtime, infra, frontends, databases, support entities,
+and `manifests`, the applyable stream. There is no other public top-level
+var.
 
-For Service.deploy the dispatch keys are:
+What lives where:
 
-    { "type": "host",       "runner", "air_config",
-                            "env_vars", "delve_port",
-                            "working_dir" }
-    { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports",
-                            "app_protocols", "cluster_rbac", "image_pull_secrets" }
-    { "type": "build-only", "build_variants" }
+  * kcl/workload.k — the ONE workload declaration (`fw.Workload`), its env
+    references, and the runtimes it binds to (`forge.OnHost | OnCompose |
+    OnCluster | OnHosted | BuildOnly`).
+  * this file     — everything else an env declares: the Bundle, the
+    cluster target, infra, frontends, databases, secrets, gateways and
+    routes, clusters, builds.
+  * kcl/render.k  — the lowering: Bundle -> `output`.
+  * kcl/tiers/    — GENERATED from pkg/deploy/v1alpha1 (the wire types).
 
-HostDeploy splits per-env config from secrets:
-
-  * `env_vars` — KCL-declared, version-controlled config (DATABASE_URL,
-    NATS_URL, LOG_LEVEL, …). Composes with `base.DB_ENV` /
-    `cfg.APP_ENV` the same way K8sCluster services do, so host and
-    cluster services see the same per-env config source.
-  Secret VALUES come from the BUNDLE's secret_provider (FileSecrets), not
-  from a per-service file, and only the keys a service DECLARES via
-  `EnvVar.secret_ref` are injected into it.
+Every union carries its discriminator as a `type` field ON the member, so
+the JSON is self-describing and the Go consumer dispatches on `type`.
 
 KCL v0.11 quirk — schema literals in lambda bodies
 ==================================================
 
-KCL v0.11 rejects fully-qualified schema literals
-(e.g. `schema.X { ... }`) inside lambda bodies. The parser only
-accepts bare identifiers for schema instantiation there. Module-level
-helpers in this module use `_X = X` aliases to work around it. Project
-code that imports `forge` and references `forge.Service { ... }`
-OUTSIDE a lambda body is fine; only lambda-internal instantiation
-needs the alias trick.
+KCL v0.11 rejects fully-qualified schema literals (`tiers.X { ... }`)
+inside lambda bodies; only bare identifiers instantiate there. Module-level
+helpers therefore use `_X = tiers.X` aliases. Project code that references
+`forge.X { ... }` OUTSIDE a lambda body is unaffected.
 """
 
 import json
 import regex
 import .tiers
-import .lib.annotations as annotations_lib
 
 # ---------------------------------------------------------------------------
 # Shared sub-structures.
@@ -159,115 +131,14 @@ schema EnvVar:
         len([c for c in [1 if value != Undefined else 0, 1 if secret_ref else 0, 1 if config_map_ref else 0, 1 if field_ref else 0] if c == 1]) == 1, \
             "EnvVar '${name}' sets more than one source — pick exactly one of value / secret_ref / config_map_ref / field_ref (k8s rejects an env entry with both value and valueFrom)"
 
-schema EnvFromSource:
-    """A whole Secret / ConfigMap imported into a container's env — the k8s
-    `envFrom[]` entry shape.
-
-    Where `EnvVar` names ONE variable (from a literal, or one KEY of a
-    secret/configmap), `EnvFromSource` bulk-imports EVERY key of a whole
-    Secret or ConfigMap as env vars. It is the k8s-adapter target of the
-    agnostic-core `core.EnvFrom` (kcl/core/service.k).
-
-      * `secret_ref`     — a Secret NAME; projects to `envFrom.secretRef`.
-      * `config_map_ref` — a ConfigMap NAME; projects to
-                           `envFrom.configMapRef`.
-      * `prefix`         — optional string prepended to every imported key
-                           (k8s `envFrom[].prefix`). Empty => no prefix.
-
-    EXACTLY ONE of secret_ref / config_map_ref must be set. Precedence:
-    container `env` (env_vars) overrides an `envFrom` value of the same
-    name — native k8s semantics, so the renderer emits both untouched.
-    """
-    secret_ref: str = ""
-    config_map_ref: str = ""
-    prefix: str = ""
-
-    check:
-        len([_c for _c in [secret_ref, config_map_ref] if _c]) == 1, \
-            "EnvFromSource must set EXACTLY ONE of: secret_ref | config_map_ref"
-
-schema Volume:
-    """A pod volume + its single container mount.
-
-    The escape hatch for forge's restricted-PSA securityContext, which
-    sets `readOnlyRootFilesystem = true` on every container. A workload
-    that legitimately writes to disk (a service writing TLS certs to
-    /data, a tool populating ~/.config, a scratch cache) dies at runtime
-    with "mkdir <path>: read-only file system" unless it is given a
-    WRITABLE volume mounted at that path. `type = "empty_dir"` (the
-    default) is exactly that — a pod-lifetime scratch volume — and is
-    the critical case. `config_map` / `secret` cover the read-only
-    projection of forge-generated ConfigMaps / out-of-band Secrets onto
-    a path (e.g. a config file the app reads from /etc/app).
-
-    One `Volume` models BOTH the pod-level `spec.volumes[*]` entry and
-    the container's `spec.containers[*].volumeMounts[*]` entry — they
-    share a `name`, so collapsing them into one declaration keeps the
-    common one-mount-per-volume case a single line. The render layer
-    (lib/services.k) splits it back into the two k8s arrays.
-
-    Fields:
-      * `name`       — volume name; ties the pod volume to its mount.
-      * `mount_path` — absolute container path the volume mounts at.
-      * `sub_path`   — optional sub-path WITHIN the volume to mount (k8s
-                       `subPath`); omit to mount the volume root.
-      * `read_only`  — mount read-only. Defaults False for empty_dir
-                       (the writable-scratch case), but config_map /
-                       secret mounts are conventionally read-only — set
-                       it True for those.
-      * `type`       — "empty_dir" (default) | "config_map" | "secret" |
-                       "pvc" (an existing PersistentVolumeClaim, for
-                       durable per-workload storage).
-      * `source`     — ConfigMap / Secret / PVC NAME to project. Required
-                       when type != "empty_dir"; must be empty for empty_dir.
-    """
-    name: str
-    mount_path: str
-    sub_path?: str
-    read_only: bool = False
-    type: str = "empty_dir"
-    source?: str
-
-    check:
-        name, "Volume.name is required"
-        mount_path, "Volume.mount_path is required"
-        mount_path.startswith("/"), "Volume.mount_path must be absolute (start with '/')"
-        type in ["empty_dir", "config_map", "secret", "pvc"], \
-            "Volume.type must be 'empty_dir' | 'config_map' | 'secret' | 'pvc'"
-        type == "empty_dir" or source, \
-            "Volume.source (ConfigMap/Secret/PVC name) is required when type is 'config_map', 'secret', or 'pvc'"
-        type != "empty_dir" or source == Undefined, \
-            "Volume.source must be unset when type is 'empty_dir'"
-
-schema Resources:
-    """CPU / memory requests + limits in TARGET-NEUTRAL units.
-
-    CPU is MILLICORES (int); memory is BYTES (int). Neither carries a target
-    dialect — k8s milli-cpu + Mi/Gi binary suffixes and compose decimal cores
-    are BOTH adapter concerns, so each adapter FORMATS these neutral values
-    for its target (lib/quantity.k), exactly as env is a neutral map each
-    adapter projects. Bytes is the unambiguous neutral memory unit (Mi is
-    k8s-binary, M is compose-decimal); storing bytes lets each adapter choose.
-
-    Author with the helpers rather than raw millicores / bytes:
-        resources = forge.Resources {
-            cpu_request_millicores = forge.cpu(0.25)   # 250
-            cpu_limit_millicores   = forge.cpu(1)      # 1000
-            memory_request_bytes   = forge.mib(256)    # 268435456
-            memory_limit_bytes     = forge.gib(1)      # 1073741824
-        }
-
-    Defaults are 100m / 500m CPU and 128Mi / 512Mi memory expressed neutrally.
-    """
-    cpu_request_millicores: int = 100
-    cpu_limit_millicores: int = 500
-    memory_request_bytes: int = 134217728   # 128 * 1024 * 1024  (128Mi)
-    memory_limit_bytes: int = 536870912     # 512 * 1024 * 1024  (512Mi)
-
-# Author-facing helpers that PRODUCE Resources' neutral values, so nobody
-# writes raw millicores / bytes. Surfaced top-level as forge.cpu / forge.mcpu
-# / forge.mib / forge.gib. The adapter-facing inverse (neutral -> target
-# string) is lib/quantity.k's formatters.
+# Author-facing helpers that PRODUCE fw.Resources' neutral values (CPU in
+# millicores, memory in BYTES), so nobody writes raw numbers:
+#
+#     resources = fw.Resources {
+#         cpuRequestMillicores = forge.cpu(0.25)    # 250
+#         memoryRequestBytes = forge.mib(256)       # 268435456
+#         memoryLimitBytes = forge.gib(1)
+#     }
 #
 #   cpu(0.25) = 250 millicores   mcpu(250) = 250 (millicores passthrough)
 #   mib(256)  = 268435456 bytes  gib(1)    = 1073741824 bytes
@@ -321,39 +192,6 @@ schema RuntimeClass:
     check:
         name, "RuntimeClass.name is required"
         handler, "RuntimeClass.handler is required (e.g. 'runc', 'gvisor', 'kata-qemu')"
-
-schema ClusterRBAC:
-    """Cluster-scoped RBAC for Operators that watch resources
-    across namespaces. `rules` are PolicyRule dicts in the standard
-    rbac.authorization.k8s.io/v1 shape:
-        { apiGroups: [...], resources: [...], verbs: [...] }
-    Forge always adds a default rule for reading the operator's own
-    config (configmaps/secrets get/list/watch) so callers usually only
-    need to supply CRD-specific rules.
-    """
-    rules: [{str: any}] = []
-
-schema HealthCheck:
-    """Liveness + readiness probe configuration.
-
-    For non-HTTP workloads (workers / brokers) set
-    `exec_command = ["pgrep", "-f", "..."]` — the render layer emits
-    an `exec:` probe and ignores the HTTP fields.
-    """
-    liveness_path: str = "/healthz"
-    readiness_path: str = "/readyz"
-    http_port: int = 8080
-    exec_command: [str] = []
-    initial_delay: int = 5
-    period: int = 10
-    timeout: int = 3
-    failure_threshold: int = 3
-
-    check:
-        initial_delay >= 0, "initial_delay must be non-negative"
-        period > 0, "period must be positive"
-        timeout > 0, "timeout must be positive"
-        failure_threshold > 0, "failure_threshold must be positive"
 
 schema BuildVariant:
     """One Go build variant. Used by Service.deploy = BuildOnly for
@@ -721,105 +559,34 @@ schema GRPCRoute:
         path == "" or path.startswith("/"), \
             "GRPCRoute.path must start with '/' when set"
 
-schema SecurityContext:
-    """Pod + container security settings. Sane forge defaults
-    (non-root, RO root FS, drop-all caps, RuntimeDefault seccomp)
-    are applied automatically by render.k when not overridden."""
-    run_as_non_root: bool = True
-    run_as_user: int = 65532
-    run_as_group: int = 65532
-    read_only_root_filesystem: bool = True
-    allow_privilege_escalation: bool = False
-    drop_capabilities: [str] = ["ALL"]
-    seccomp_profile: str = "RuntimeDefault"
-
 # ---------------------------------------------------------------------------
-# Polymorphic deploy union.
-#
-# The `type` discriminator lives on the deploy subschema so the JSON
-# output is self-describing. KCL union types let `Service.deploy:
-# HostDeploy | K8sCluster | External | Compose | HostInfra | BuildOnly` accept any
-# of the variants at instantiation; the consumer dispatches on
-# `deploy.type`.
+# Kubernetes targets, infra and databases.
 # ---------------------------------------------------------------------------
-
-schema HostDeploy:
-    """Service runs on the developer's host machine (outside k8s).
-
-    Forge's `forge run`/`forge env up` loop launches this directly:
-      * runner = "go-run" — `go run ./cmd/...`
-      * runner = "air"    — `air -c <air_config>` for live-reload
-      * runner = "binary" — pre-built binary in ./bin
-      * runner = "delve"  — `dlv exec --headless` for debugging
-
-    Env composition splits config from secrets:
-      * `env_vars` — KCL-declared per-env config. Reproducible,
-        version-controlled, mergeable with `base.DB_ENV`/`cfg.APP_ENV`.
-        Same source K8sCluster services see via the Deployment's `env`.
-      * secrets — from the bundle's secret_provider (FileSecrets),
-        scoped to the keys this service DECLARES via
-        `EnvVar.secret_ref`. Loaded first by the runner; `env_vars`
-        is layered on top (KCL wins on conflict so per-env config
-        can't drift between developer machines).
-    """
-    type: str = "host"
-    runner: str = "go-run"
-    air_config?: str
-    env_vars: [EnvVar] = []
-    delve_port: int = 2345
-    working_dir?: str
-    """Working directory for the launched process. Relative paths are resolved against the project root. Use this for cross-repo binaries whose runner config (e.g. Air's build_cmd paths) resolves relative to a sibling repo. Default: project root."""
-    listen_ports?: [int]
-    """Host TCP ports this service itself BINDS. `forge env up`'s port-conflict pre-flight checks EXACTLY these when declared; when unset it infers bind ports from `*_PORT` env vars, which misfires on dependency-address vars (TEMPORAL_PORT etc.). See HostOverrides.listen_ports."""
-
-    check:
-        type == "host", "HostDeploy.type must be 'host'"
-        runner in ["go-run", "air", "binary", "delve"], \
-            "HostDeploy.runner must be 'go-run' | 'air' | 'binary' | 'delve'"
-        air_config == Undefined or runner == "air", \
-            "HostDeploy.air_config is only valid when runner = 'air'"
-        delve_port > 0 and delve_port < 65536, \
-            "HostDeploy.delve_port must be 1..65535"
-        listen_ports == Undefined or all p in listen_ports {
-            p > 0 and p < 65536
-        }, "HostDeploy.listen_ports entries must be 1..65535"
 
 schema ClusterTarget:
-    """The env-wide Kubernetes facts, stated ONCE.
-
-    A `ClusterTarget` is the single source of truth for the coordinates
-    that are identical across every workload in a deploy group: the
-    kubectl `cluster` context, the `namespace`, the image `registry`, the
-    `image_pull_secrets`, the build `platform`, and the env-wide
-    `image_tag`. The `Bundle` carries it once (`Bundle.cluster_target`);
-    every service REFERENCES it for its per-service `deploy` block rather
-    than restating those facts:
+    """A Kubernetes cluster you operate, as a deploy target: the kubectl
+    `cluster` context, the `namespace`, the image `registry`, the build
+    `platform` and the `image_pull_secrets`, stated ONCE.
 
         _prod = forge.ClusterTarget {
-            cluster = "prod-cluster"
-            namespace = "kalshi-prod"
-            registry = "ghcr.io/reliant/kalshi"
-            domain = "kalshi.com"
+            cluster = "gke_acme_us-central1_prod"
+            namespace = "acme-prod"
+            registry = "ghcr.io/acme"
+            platform = "amd64"
         }
 
-        forge.Service { name = "trader", deploy = _prod.deploy }
-        forge.Service { name = "admin",  deploy = _prod.deploy | { replicas = 5 } }
+        wl.api | {runtime = forge.OnCluster {target = _prod}}
 
-        forge.Bundle { cluster_target = _prod, services = [...] }
+    A workload bound to `forge.OnCluster {target}` renders into the
+    target's namespace, pulls from its registry, and is labelled with its
+    context (`forge.dev/cluster`), which is what routes it at apply. A
+    second target is a second cluster: one workload rides it without the
+    env-wide facts drifting.
 
-    This replaces the old normalize→denormalize inversion (the env-wide
-    knobs copied into every service's `K8sCluster` block, then re-derived
-    by a Go "pull them off the first service in the group" heuristic): the
-    env-wide facts are first-class on the Bundle, and `render_manifests`
-    reads namespace/registry/tag/platform/pull_secrets straight off the
-    target. A second target (a different cluster) lets ONE service ride a
-    different group — the multi-cluster split — without the env-wide facts
-    drifting, because each service still references a single target.
-
-    `deploy` is the DERIVED per-service `K8sCluster` this target seeds:
-    its env-wide fields are pre-filled from the target, its per-service
-    knobs (replicas/resources/ports/env_vars/…) keep their defaults so a
-    service overlays only what differs (`_prod.deploy | { ports = [...] }`).
+    `Bundle.cluster_target` is the env's PRIMARY target: where its support
+    objects (Namespace, ConfigMaps, gateways and routes, rendered Secrets)
+    land. It defaults to the target of `Bundle.runtime` when that is a
+    cluster runtime.
     """
     cluster: str
     namespace: str
@@ -829,25 +596,15 @@ schema ClusterTarget:
     # workload the env renders. Unset => the build falls through to the
     # host arch.
     platform?: str
+    # The hostname a POD in this cluster dials to reach the machine running
+    # it: where a `forge.WorkloadURL` from a workload here to a HOST or
+    # COMPOSE workload resolves. k3d publishes the host as
+    # host.k3d.internal; Docker Desktop's is host.docker.internal.
+    host_gateway: str = "host.k3d.internal"
     # Names of EXISTING image-pull Secrets, applied to every workload's
     # generated ServiceAccount. Env-wide (the registry is env-wide, so its
     # pull secret is too). Unset => no imagePullSecrets.
     image_pull_secrets?: [str]
-    # Env-wide image tag (the per-build override CI passes via
-    # `-D image_tag=<sha>`). A per-service `image_tag` pin still wins (a
-    # no-op sibling image pinned to the tag it WAS pushed under).
-    image_tag: str = "latest"
-    # Derived: the per-service K8sCluster deploy block this target seeds,
-    # pre-filled with the env-wide coordinates. A service references it
-    # (`target.deploy | { ports = [...] }`) instead of restating them.
-    deploy: K8sCluster = K8sCluster {
-        cluster = cluster
-        namespace = namespace
-        registry = registry
-        domain = domain if domain else Undefined
-        platform = platform if platform else Undefined
-        image_pull_secrets = image_pull_secrets if image_pull_secrets else Undefined
-    }
 
     check:
         cluster, "ClusterTarget.cluster is required (kubectl context name)"
@@ -859,134 +616,8 @@ schema ClusterTarget:
         # at KCL load, instead of rendering manifests with an image reference
         # missing its registry that only fails when kubelet tries to pull.
         # The companion build-platform guard lives on Bundle (it needs the
-        # services list to see whether any external image build is declared).
+        # workloads to see whether any external image build is declared).
         registry, "ClusterTarget.registry is required (image registry, e.g. ghcr.io/org/proj) — a cloud env MUST state it; an unset/typo'd `-D registry=` that resolves to empty is rejected here rather than producing an ImagePullBackOff at deploy"
-
-schema K8sCluster:
-    """Service runs in-cluster as a Deployment + Service on a specific
-    Kubernetes cluster. The PER-SERVICE deploy block: it carries the
-    per-service knobs (replicas/resources/ports/env_vars/…) AND the
-    env-wide coordinates (cluster/namespace/registry/domain/platform/
-    image_pull_secrets) that route + identify it.
-
-    Don't construct this directly with the env-wide coordinates spelled
-    out per service — that's the denormalization the `ClusterTarget` split
-    removes. Instead declare a `ClusterTarget` once and reference its
-    derived `.deploy`:
-
-        _prod = forge.ClusterTarget {
-            cluster = "prod-cluster"
-            namespace = "kalshi-prod"
-            registry = "ghcr.io/reliant/kalshi"
-        }
-
-        forge.Service { name = "trader", deploy = _prod.deploy }
-        forge.Service { name = "admin",  deploy = _prod.deploy | { replicas = 5 } }
-
-    The env-wide fields remain ON this block because the rendered JSON
-    contract is per-service (the Go deploy dispatcher reads each service's
-    cluster/namespace/registry to group + route it, which is what lets ONE
-    service ride a second `ClusterTarget` — the multi-cluster split). They
-    are SOURCED from the target, not restated.
-    """
-    type: str = "cluster"
-    # Env-wide coordinates — sourced from a ClusterTarget (the SSOT), NOT
-    # restated per service. Present on the per-service block because the
-    # rendered JSON contract is per-service: the deploy dispatcher routes
-    # each service by them.
-    cluster: str
-    namespace: str
-    registry: str
-    domain?: str
-    # Per-service knobs.
-    replicas: int = 1
-    resources?: Resources
-    health_check?: HealthCheck
-    security_context?: SecurityContext
-    env_vars: [EnvVar] = []
-    ports: [int] = []
-    # Optional per-port `appProtocol` for the generated Service ports,
-    # keyed by port number (as a string — KCL dict keys must be strings).
-    # `appProtocol` is a Kubernetes-standard hint the Service exposes so
-    # Gateway/Ingress controllers negotiate the backend wire protocol —
-    # e.g. `kubernetes.io/h2c` for an h2c/gRPC backend sitting behind a
-    # cloud Gateway controller:
-    #
-    #     ports = [8080]
-    #     app_protocols = {"8080" = "kubernetes.io/h2c"}
-    #
-    # Keyed by port so the int-shorthand `ports = [int]` stays untouched;
-    # a port absent from this map renders exactly as before (no
-    # `appProtocol` field). appProtocol is a Service-port-only concept —
-    # it is NOT projected onto the Deployment's containerPorts.
-    # Unset/empty => omitted.
-    app_protocols: {str: str} = {}
-    platform?: str
-    cluster_rbac?: ClusterRBAC
-    # Names of EXISTING image-pull Secrets (kubernetes.io/dockerconfigjson)
-    # used to pull this deploy group's images from a private registry.
-    # forge does NOT create these Secrets — provision them out-of-band
-    # (the same out-of-band model EnvVar.secret_ref uses). Env-wide:
-    # because the registry is an env-wide knob, the pull secret is too,
-    # so it's declared once on the K8sCluster ref and applied to every
-    # workload (Service / Operator / CronJob) in the group.
-    #
-    # Injection point: the forge-GENERATED ServiceAccount each workload
-    # binds (see lib/rbac.k). Putting `imagePullSecrets` on the SA
-    # rather than each pod spec is the durable choice — it also covers
-    # the Jobs/CronJobs an operator or the workload may spawn, which a
-    # pod-spec-only injection would miss. Unset => field omitted entirely.
-    image_pull_secrets?: [str]
-
-    check:
-        type == "cluster", "K8sCluster.type must be 'cluster'"
-        cluster, "K8sCluster.cluster is required (kubectl context name)"
-        namespace, "K8sCluster.namespace is required"
-        registry, "K8sCluster.registry is required (image registry, e.g. ghcr.io/org/proj)"
-        replicas > 0, "K8sCluster.replicas must be positive"
-
-schema SimpleBackend:
-    """A single container — the entry deploy tier — as a Service's deploy target.
-
-    THE SPEC IS GENERATED. Everything an app author declares about the
-    backend lives in `spec`, whose schema (`tiers.SimpleBackend`) is
-    generated from forge's Go type pkg/deploy/v1alpha1.SimpleBackendSpec. That
-    Go type is also the control plane's forge.dev CRD, so one declaration
-    deploys to either destination unchanged. Every rule about the spec
-    (pinned, registry-qualified image; ports vs network; one env channel;
-    request <= limit) is enforced in Go by SimpleBackendSpec.Validate, which
-    every path runs. See the Go type's doc for the full reasoning, including
-    why there is no replicas field and why custom `domains` are optional (a
-    public backend's default hostname is allocated, not authored).
-
-    This wrapper adds only the TARGET: `cluster` (the kubectl context) and
-    `namespace`. Those describe where the declaration lands, not the app, so
-    they are deliberately not part of the spec.
-
-    ON A HOSTED ENV (the Bundle declares `control_plane`) BOTH ARE ABSENT, and
-    the Bundle refuses them if set. The control plane allocates the namespace
-    and owns the cluster; a coordinate the author wrote could only disagree
-    with the one the platform assigns. Self-hosted, both are required — the
-    Bundle check enforces that too, so one schema serves both destinations and
-    the rule lives in one place.
-
-    HOW IT RENDERS. render_manifests emits the backend as ONE declaration
-    record, `forge.dev/v1alpha1 SimpleBackend { metadata, spec }`, which is
-    exactly the CR the hosted path publishes. forge's manifest extraction
-    expands that record through the Go renderer (pkg/deploy.Render) into its
-    Deployment, Service, ServiceAccount, PVC and NetworkPolicy. So self-hosted
-    and hosted run the same declaration through the same renderer.
-
-    The 4 GiB-per-vCPU shape band is NOT checked here. It is a hosted
-    billing rule (pkg/deploy.CheckShapeBand), run by the hosted path only.
-    """
-    type: str = "simple-backend"
-    cluster?: str
-    namespace?: str
-    spec: tiers.SimpleBackend
-
-    check:
-        type == "simple-backend", "SimpleBackend.type must be 'simple-backend'"
 
 schema ManagedDatabase:
     """A dedicated Postgres: the managed-database tier, as a Bundle entry.
@@ -999,157 +630,61 @@ schema ManagedDatabase:
     name and, hyphens folded, the Postgres database) and the target
     namespace.
 
-    It is a Bundle entry rather than a Service deploy variant, because a
-    database is not a service: it has no image, no build and no ports. A
-    SimpleBackend reaches it with an env var
-    `databaseRef = tiers.DatabaseRef { name = "<this name>" }`, which reads the
-    credential CloudNativePG publishes as "<name>-app" in the same namespace.
+    It is a Bundle entry rather than a workload, because a database is not
+    a process forge runs: it has no image, no build and no ports. A workload
+    reaches it with `env = {DATABASE_URL = forge.DatabaseRef {name =
+    "<this name>"}}`, which reads the credential CloudNativePG publishes as
+    "<name>-app" in the same namespace.
 
-    HOW IT RENDERS. render_manifests emits ONE forge.dev/v1alpha1
-    ManagedDatabase record. forge's manifest extraction expands it through the
-    Go renderer (pkg/deploy.Render) into a postgresql.cnpg.io/v1 Cluster. The
-    target cluster must run the CloudNativePG operator. The render never
-    installs it.
+    WHERE IT RUNS is its `runtime`, like a workload's, and defaults to
+    `Bundle.runtime` when that is a cluster or hosted runtime:
+
+      * `forge.OnCluster {target}` — `output.manifests` carries ONE
+        forge.dev/v1alpha1 ManagedDatabase record in the target's namespace
+        (or `namespace`, when set), which forge's manifest extraction expands
+        through the Go renderer into a postgresql.cnpg.io/v1 Cluster. The
+        cluster must run the CloudNativePG operator; the render never
+        installs it.
+      * `forge.OnHosted {}` — published to the control plane, which
+        allocates the namespace. `namespace` is refused.
+
+    With neither `runtime` nor a cluster/hosted `Bundle.runtime`, a
+    database lands on `Bundle.cluster_target` (in `namespace`, when set).
     """
     name: str
-    # Required self-hosted, REFUSED on a hosted env (the control plane
-    # allocates it). Both halves are enforced by the Bundle check.
-    namespace?: str
+    runtime?: OnCluster | OnHosted
+    # Overrides the cluster target's namespace. Refused when hosted.
+    # Defaulted rather than optional: an unset attribute read by bare name
+    # in a check falls through to the module's `namespace` lambda.
+    namespace: str = ""
     spec: tiers.ManagedDatabase = tiers.ManagedDatabase {}
 
     check:
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 40, \
             "ManagedDatabase.name '${name}' must be an RFC-1123 label of at most 40 characters: it becomes the Cluster name and, hyphens folded, the Postgres database name, which Postgres would silently truncate past 63 bytes"
-
-schema External:
-    """Generic shell-command deploy target. Use this for any deploy
-    target driven by a CLI: Fly.io (`flyctl`), Cloudflare Workers
-    (`wrangler`), Cloud Run (`gcloud run`), AWS ECS (`aws ecs`),
-    Vercel, Railway, systemd-on-VM, etc.
-
-    The provider exec's `deploy_cmd` via `sh -c` after substituting
-    the following tokens:
-
-      * ${IMAGE}        forge-built image name
-      * ${TAG}          current tag (build-resolved or overridden)
-      * ${CODE_VERSION} == ${TAG}; the canonical version to stamp into
-                        the running container (e.g.
-                        `docker run -e CODE_VERSION=${CODE_VERSION}` or a
-                        `--label`) so the binary's reported code_version
-                        always matches the image tag.
-      * ${PIPELINE}     deployer id ("forge"); label the container with it
-                        (`--label forge.pipeline=${PIPELINE}`) to keep a
-                        forge-deployed container distinguishable from one a
-                        manual script placed under the same name.
-      * ${LAST_TAG}     previously deployed tag from the state file (the
-                        prior forge env deploy). Empty on the first deploy.
-      * ${SERVICE}      Service.name
-      * ${ENV}          env name (e.g. dev, staging, prod)
-      * ${ENV_FILE}     path declared in env_file (if any)
-      * ${PROJECT_DIR}  project root
-      * Any keys declared in `env`.
-
-    There is no rollback command: recovery is roll forward (deploy a
-    newer tag). `health_cmd` runs after a successful deploy; failures
-    short-circuit before the state-file write so the recorded tag stays
-    the last one that came up healthy.
-
-    BUILD side: to build (and push) this service's image via a shell
-    command, declare a `build = forge.ShellBuild { cmd = ... }` on the
-    Service — build and deploy are orthogonal, so the build hatch lives on
-    `Service.build` (the polymorphic build union) regardless of deploy
-    target. (This replaces the former `External.build_cmd` deploy-block
-    mirror, which was a second shell escape hatch with the same semantics
-    as ShellBuild; there is now ONE.)
-    """
-    type: str = "external"
-    deploy_cmd: str
-    health_cmd?: str
-    env_file?: str
-    env?: {str: str}
-
-    check:
-        type == "external", "External.type must be 'external'"
-        deploy_cmd, "External.deploy_cmd is required"
-
-schema Compose:
-    """Service runs under docker-compose on the target host. forge
-    invokes `docker compose pull` + `docker compose up -d --wait`
-    against the declared compose file.
-
-    `service` defaults to the parent Service.name when unset.
-
-    `wait` (default True) makes the deploy READINESS-GATED: compose
-    blocks until the service passes the healthcheck it declares in the
-    compose file, so a workload that depends on this one can be started
-    knowing it is actually serving — not merely created. This is what
-    lets an environment declare `postgres` and an app that dials it as
-    two ordinary services and still get the ordering right.
-
-    A service with NO healthcheck cannot be waited on in any meaningful
-    sense; compose treats "running" as ready and returns immediately, so
-    leaving `wait` on costs such a service nothing. Give a service a
-    `healthcheck:` block in the compose file to make the gate real.
-
-    `wait_timeout` is a CEILING, not the mechanism. Readiness decides
-    when forge proceeds; this only bounds how long it tolerates a
-    service that never gets there, so a wedged container fails loudly
-    instead of hanging the deploy forever. 0 means no explicit ceiling
-    — the healthcheck's own retries x interval bound it.
-
-    Requires docker compose v2.17.0+; older versions fail with an
-    explicit message rather than silently not waiting.
-    """
-    type: str = "compose"
-    compose_file: str = "docker-compose.yml"
-    service?: str
-    env_file?: str
-    wait: bool = True
-    wait_timeout: int = 0
-    # Values forge puts in the `docker compose` PROCESS environment before
-    # it shells out — which is where compose reads the `${VAR}` references
-    # in the compose file itself from (an --env-file only forwards values
-    # to CONTAINERS; it does not feed the file's own interpolation).
-    #
-    # This is what lets a port be declared ONCE in KCL and reach a
-    # container. `docker-compose.yml` publishes the dev IdP on
-    # `${IDP_PORT:-8080}`; the env that owns the number binds it to a
-    # variable, sets `env = {"IDP_PORT": str(_idp_port)}` here, and hands
-    # the SAME `_idp_port` to everything else that has to agree with it
-    # (the provisioning job's env_vars, the issuer URL both halves of auth
-    # enforce). Before this field the number lived in the compose file's
-    # `:-` default AND in a flag default baked into a generated binary,
-    # with nothing connecting them: moving one moved only one, and the
-    # other kept dialling a port nothing answered on.
-    #
-    # These values WIN over the inherited shell environment, which is the
-    # opposite of how compose resolves its own `${VAR:-default}` — and the
-    # reason is the bug above. A shell override reaches the compose file
-    # but NOT the KCL variable, so honouring it here would move the
-    # container while every other reference to the same port stayed put:
-    # precisely the divergence this field exists to make unrepresentable.
-    # The port is declared in KCL now, so KCL is where it is changed.
-    env?: {str: str}
-
-    check:
-        type == "compose", "Compose.type must be 'compose'"
-        wait_timeout >= 0, "Compose.wait_timeout must be >= 0 (0 = no explicit ceiling)"
+        not (runtime and runtime.type == "hosted" and namespace), \
+            "ManagedDatabase.namespace must NOT be set on the hosted runtime ('${name}'): the control plane allocates it. Remove it"
 
 schema HostInfra:
     """A third-party server forge runs as a HOST PROCESS — no container,
     no daemon, nothing to install first.
 
-    This is the DEFAULT shape for a dev dependency, and `Compose` is the
-    opt-in. That ordering is deliberate. Docker is not free: on a small
+    This is the DEFAULT shape for a dev dependency, and a workload on
+    `forge.OnCompose` is the opt-in. That ordering is deliberate. Docker is not free: on a small
     cloud VM — the machine a lot of people actually develop on — a
     container runtime is a multi-hundred-megabyte resident cost before the
     project has started, and on some of them it is not installable at all.
     A dev loop that cannot run without it is a dev loop that excludes
     those machines, for infrastructure that has a perfectly good native
-    binary. So `forge run` brings the declared HostInfra up directly, and
-    a project that genuinely wants containerized infra keeps saying
-    `forge.Compose {}` — the escape hatch did not go anywhere, it stopped
-    being the only door.
+    binary. So `forge env up` brings the declared HostInfra up directly,
+    and a project that genuinely wants containerized infra binds a workload
+    to `forge.OnCompose {}` — the escape hatch did not go anywhere, it
+    stopped being the only door.
+
+    It is an env INFRA entry (`Bundle.infra`), not a workload: forge fetches
+    a pinned, checksummed binary rather than building one, and readiness is
+    engine-specific. `name` is how workloads and `forge.WorkloadURL` refer
+    to it and must be unique across the env.
 
     `engine` selects the implementation forge supervises.
 
@@ -1187,13 +722,13 @@ schema HostInfra:
     project knows it) and `forge.allocate_port(...)` when it may not.
 
     WHAT THIS IS NOT. It is not a way to run YOUR service on the host —
-    that is `HostDeploy`, whose runner compiles and launches this
-    project's own code. HostInfra is for the dependency underneath it: a
+    that is a workload on `forge.OnHost`, whose runner compiles and launches
+    this project's own code. HostInfra is for the dependency underneath it: a
     server forge fetches and supervises but does not build. The split
     matters because they fail differently, and a single "runs on the host"
     target would have to guess which failure it was looking at.
     """
-    type: str = "host-infra"
+    name: str
     engine: str = "postgres"
     port: int
     # The database created on first boot, and the credentials the DSN uses.
@@ -1230,7 +765,7 @@ schema HostInfra:
     idp_pat_path: str = ".forge/idp/pat.txt"
 
     check:
-        type == "host-infra", "HostInfra.type must be 'host-infra'"
+        regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "HostInfra.name '${name}' must be an RFC-1123 label"
         engine in ["postgres", "zitadel"], \
             "HostInfra.engine must be 'postgres' or 'zitadel' (the engines forge supervises natively)"
         port > 0 and port < 65536, "HostInfra.port must be 1..65535"
@@ -1440,7 +975,7 @@ schema RenderedSecret:
       * In `Bundle.rendered_secrets` both default to the Bundle's
         `cluster_target`, so a Secret is always placed by declaration —
         never inferred. This is the form for a Secret whose consumer is a
-        PLAIN manifest (a raw Deployment/Job in `additional_manifests`),
+        PLAIN manifest (a raw Deployment/Job in `Bundle.manifests`),
         which no service `secret_ref` names.
       * In `RenderedSecrets.secrets` (the provider) an entry with no
         `cluster` keeps the provider's inference: it lands in each cluster
@@ -1520,8 +1055,8 @@ schema TestJWKS:
     rendered output (only the derived public JWK does).
 
     Render with `forge.test_jwks_manifests(jwks, namespace, private_pem)`
-    in a Bundle's `additional_manifests` (or a service's owned
-    `manifests`, to pin it to a specific cluster) — it emits a ConfigMap
+    in a `forge.Manifests {objects = ...}` of `Bundle.manifests` (set its
+    `cluster` to pin it to a specific cluster) — it emits a ConfigMap
     (the JWKS JSON) + a tiny static-file Deployment + Service serving
     `/.well-known/jwks.json`.
 
@@ -1864,7 +1399,7 @@ schema KubeconfigSecret:
     target_cluster: str
     context_name: str
     key: str = "kubeconfig"
-    namespace?: str
+    namespace: str = ""
     reachability: str = "in-network"
 
     check:
@@ -1974,7 +1509,7 @@ schema ClusterClient:
     in_cluster: Cluster
     mount_path: str
     key: str = "kubeconfig"
-    namespace?: str
+    namespace: str = ""
     reachability: str = "in-network"
     # external = True references a pre-existing Secret (no k3d mint); the
     # default keeps the minting behaviour the e2e path relies on.
@@ -2011,12 +1546,11 @@ schema ClusterClient:
     # is `_volume_name`; it SOURCES the Secret `_secret_name` (the minted Secret
     # in minting mode, the pre-existing Secret in external mode). The two default
     # equal, so unset secret_name keeps name == source render-equivalent to before.
-    volume: Volume = Volume {
+    volume: tiers.Volume = tiers.Volume {
         name = _volume_name
-        mount_path = mount_path
-        type = "secret"
-        source = _secret_name
-        read_only = True
+        mountPath = mount_path
+        readOnly = True
+        source = tiers.VolumeSource {secret = tiers.SecretVolumeSource {name = _secret_name}}
     }
     # ── THE IN-NETWORK API-SERVER ADDRESS ────────────────────────────────
     #
@@ -2159,18 +1693,6 @@ schema ClusterClient:
         not host_kubeconfig_path or host_kubeconfig_path.startswith("/"), \
             "ClusterClient.host_kubeconfig_path must be absolute (start with '/') — a host " \
             "process resolves it from its own working directory, which forge does not control"
-
-schema BuildOnly:
-    """Service is built but not auto-orchestrated.
-
-    Use for CLIs and library binaries — forge builds the artifact
-    (optionally with multiple ldflag variants) but never schedules it.
-    """
-    type: str = "build-only"
-    build_variants: [BuildVariant] = []
-
-    check:
-        type == "build-only", "BuildOnly.type must be 'build-only'"
 
 # ---------------------------------------------------------------------------
 # Polymorphic BUILD union.
@@ -2687,269 +2209,6 @@ schema StaticSite:
 # Typed entities — each captures ONE orchestration shape.
 # ---------------------------------------------------------------------------
 
-schema RenderedWorkload:
-    """DEMOTED / ADAPTER-INTERNAL — the k8s-shaped projection target.
-
-    This is the OLD user-facing `forge.Service` shape, renamed and demoted
-    by the agnostic-core collapse (docs/design/FORGE_KCL_IDIOMS.md). It is NO LONGER what
-    a user authors: the ONE user-facing workload schema is now the
-    target-agnostic `forge.Service` (kcl/core.k). This schema is the k8s
-    ADAPTER's projection target — `forge._service_to_k8s` (kcl/core.k)
-    projects an agnostic `forge.Service` onto a `RenderedWorkload`, and the render
-    pipeline (render_manifests / render) consumes `RenderedWorkload` unchanged.
-
-    It stays EXPORTED (not `_`-prefixed) because it is still the carrier of
-    the full deploy/build machinery the JSON contract + Go CLI depend on
-    (host / external / compose / build-only deploy modes, the polymorphic
-    `build`, `image_tag`, `namespaced_rbac`, `volumes`, owned `manifests`) —
-    machinery the agnostic Service deliberately does NOT model. A KCL
-    `_`-private schema is not importable cross-package, which would break
-    forge's own example/fixtures and any hand-authored Bundle. Treat it as
-    plumbing: author agnostic `forge.Service`s (into `Bundle.workloads`); the
-    render layer projects them here for you.
-
-    The `deploy` field's runtime type decides intent:
-      * HostDeploy  — forge launches it on the host.
-      * K8sCluster  — forge deploys to a Kubernetes cluster as
-                       Deployment + Service.
-      * External    — forge runs a user-supplied CLI command
-                       (Fly.io, Cloud Run, Cloudflare Workers, ECS, …).
-      * Compose     — forge runs docker-compose up -d.
-      * BuildOnly   — forge builds the artifact only (CLI shape).
-
-    `deploy = None` (or omitting `deploy` entirely) is the explicit
-    BUILD-ONLY mode: forge runs this service's `build` (building AND
-    pushing its image when the build is a DockerBuild/ShellBuild) but
-    renders NO Deployment / Service / RBAC / owned manifests — it is not
-    orchestrated. Use it for an IMAGE other workloads reference at
-    runtime (a base image baked once and pulled by per-user pods, a
-    sidecar image), or a CLI binary shipped in a release artifact. The
-    render layer projects an explicit `{ "type": "build-only" }` deploy
-    block so the Go consumer dispatches it the same way as a
-    `forge.BuildOnly` deploy: in the build set, out of the deploy set.
-
-    This is distinct from the IMAGE-LESS infra-bundle path (a service
-    with a `K8sCluster` deploy and NO `image`, which renders only its
-    owned `manifests` onto a specific cluster). `deploy = None` skips the
-    deploy phase ENTIRELY; an image-less cluster service still
-    participates in the deploy phase to pin its owned manifests.
-
-    Build side — `build` (the polymorphic build union):
-
-      `build` declares HOW this service's artifact is produced — one of
-      GoBuild (the default: `go build ./cmd/<name>`), DockerBuild (an
-      image via `docker build`), or ShellBuild (a verbatim `sh -c`
-      command that owns the whole build + push). ShellBuild is the SINGLE
-      shell escape hatch for sibling-repo binaries forge doesn't compile,
-      third-party pre-built images re-pushed under your registry, and
-      language runtimes forge doesn't natively build — see ShellBuild for
-      its cwd / substitution / env / digest contract.
-    """
-    name: str
-    image?: str
-    # Per-service image-tag PIN. When set, this service's rendered image
-    # is tagged with THIS value instead of the env-wide tag
-    # (RenderEnv.image_tag, typically `git describe --dirty`). Use it for
-    # a sibling image that forge does NOT build under the env-wide tag —
-    # e.g. a no-op ShellBuild service whose image was pushed under its own
-    # release tag. Without the pin, deploy fans the env-wide git tag onto
-    # every image, producing a tag that was never pushed for that image →
-    # ErrImagePull. Ignored when `image` already carries its own
-    # `:tag`/`@sha256:` (an explicitly-pinned reference always wins).
-    # Unset => the service uses the env-wide tag (single-image envs
-    # unchanged).
-    image_tag?: str
-    command: [str] = []
-    env_vars: [EnvVar] = []
-    # Whole Secrets / ConfigMaps bulk-imported into the container env (k8s
-    # `envFrom`). Additive: default empty => the container renders exactly
-    # as before (no `envFrom` key). Each entry imports EVERY key of one
-    # Secret/ConfigMap; per-var `env_vars` entries override same-named keys
-    # (native k8s precedence). Only meaningful for a K8sCluster deploy.
-    env_from: [EnvFromSource] = []
-    # SimpleBackend is a member so a Bundle may CARRY one; no KCL manifest
-    # builder expands it. render_manifests emits it as one forge.dev
-    # declaration record, which forge's Go renderer (pkg/deploy.Render)
-    # expands at extraction time. See SimpleBackend.
-    deploy?: HostDeploy | K8sCluster | SimpleBackend | External | Compose | HostInfra | BuildOnly
-    # Polymorphic build declaration — HOW this service's artifact is
-    # produced. One of GoBuild | DockerBuild | ShellBuild | RemoteBuild, discriminated
-    # by `build.type` in the rendered JSON (mirrors the deploy union).
-    # forge build dispatches on it; there is no hardcoded `./cmd` and no
-    # auto-docker step. Per-env overridable via the deploy/kcl/<env>/
-    # overlay (an env can switch the build type or tune flags/arch).
-    # Optional at the schema level: the deploy-as-data bridge supplies a
-    # `GoBuild { cmd = "./cmd/<name>" }` default per component so a plain
-    # service never has to spell it out, while a hand-authored
-    # forge.Service may set it explicitly.
-    build?: GoBuild | DockerBuild | ShellBuild | RemoteBuild
-    # Extra namespaced RBAC rules appended to this Service's forge-
-    # generated Role (lib/rbac.k always grants configmaps/secrets read;
-    # these rules add to that). Use it when a Service runs a controller-
-    # runtime manager or otherwise needs in-namespace perms beyond config
-    # reads — e.g. coordination.k8s.io/leases for leader election. Same
-    # PolicyRule dict shape as Operator.cluster_rbac.rules:
-    #   { apiGroups: [...], resources: [...], verbs: [...] }
-    # This is the namespaced-Role analogue of Operator.cluster_rbac;
-    # Operators get cluster-scoped rules, Services get namespaced ones.
-    # Only valid for a K8sCluster (cluster) deploy — ignored otherwise.
-    # Unset => no extra rules (Role keeps just the default config-read).
-    namespaced_rbac?: [{str: any}]
-    # ── OPERATOR tail (projection targets of Service.k8s.operator) ───────
-    # The k8s adapter (`_service_to_k8s`) projects an agnostic
-    # `Service.k8s.operator` (OperatorSpec, kcl/core.k) onto these two
-    # fields. Their PRESENCE marks this workload a Kubernetes OPERATOR:
-    # `_render_cluster_service` (render.k) branches on `operator_cluster_rbac`
-    # and emits a cluster-scoped ClusterRole + ClusterRoleBinding (via
-    # render_cluster_rbac, named `${name}-${namespace}-clusterrole`) INSTEAD OF the
-    # namespaced Role a plain Service gets. `operator_cluster_rbac` are
-    # CLUSTER-scoped PolicyRule dicts (same `{apiGroups, resources, verbs}`
-    # shape as namespaced_rbac). `operator_crds` are the CRD *kind names*
-    # this operator owns — a NAME LIST that rides the deploy-as-data JSON
-    # (_render_service) as the codegen (AddToScheme/SetupWithManager)
-    # bridge; the CRD manifest itself keeps riding `manifests`/raw. Both
-    # unset => a plain Service (namespaced RBAC, byte-identical to before).
-    # Only meaningful for a K8sCluster (cluster) deploy.
-    operator_cluster_rbac?: [{str: any}]
-    operator_crds?: [str]
-    # ── k8s pod-spec escape-hatch knobs ─────────────────────────────────
-    # These are the projection targets of the agnostic `Service.k8s`
-    # (K8sOverrides) block — the k8s adapter (`_service_to_k8s`) maps the
-    # typed overrides onto these fields; render_k8s_service threads them
-    # into the Deployment pod spec. They are ALSO settable directly on a
-    # hand-authored RenderedWorkload. All default to "absent" so a workload that
-    # sets none renders byte-identically to before.
-    #
-    # `service_account` overrides the pod's serviceAccountName (default:
-    # the workload name — the forge-generated per-service SA). Use it to
-    # bind an EXISTING out-of-band SA (e.g. one with a cloud IAM
-    # workload-identity annotation). When set, forge emits NO
-    # ServiceAccount object for this workload and points the generated
-    # Role/RoleBinding's subject at the override, so the ROLE, the
-    # BINDING and the POD all name one identity; image pull secrets move
-    # to the pod spec because there is no generated SA to hold them.
-    # `pod_annotations` are stamped on the
-    # pod template metadata (GKE / mesh / prometheus hints).
-    # `node_selector` + `tolerations` pin the pod to a node pool (the
-    # control-plane kata daemon-pool pinning case). Only meaningful for a
-    # K8sCluster deploy.
-    service_account?: str
-    # `service_account_annotations` are stamped on the ServiceAccount forge
-    # GENERATES for this workload (lib/rbac.k _sa_metadata) and on no other
-    # object — the cloud workload-identity binding (GKE
-    # `iam.gke.io/gcp-service-account`) that must sit on the KSA itself.
-    # Refused with `service_account`, since forge then generates no SA.
-    # Empty => no `annotations` on the SA, byte-identical to before.
-    service_account_annotations: {str: str} = {}
-    pod_annotations: {str: str} = {}
-    node_selector: {str: str} = {}
-    tolerations: [{str: any}] = []
-    # `termination_grace_period_seconds` overrides the pod's
-    # terminationGracePeriodSeconds for workloads whose graceful drain
-    # exceeds the k8s 30s default (e.g. a Temporal worker releasing
-    # in-flight activities on SIGTERM). Unset => field omitted (k8s
-    # default 30s), byte-identical to before.
-    termination_grace_period_seconds?: int
-    # Pod volumes + their container mounts (see Volume). The escape
-    # hatch for the restricted-PSA `readOnlyRootFilesystem = true`
-    # baseline: declare an empty_dir volume at the writable path the
-    # service needs (e.g. /data for TLS certs, ~/.config for a tool's
-    # state). The render layer emits pod-level `spec.volumes` +
-    # container `volumeMounts`; the readOnlyRootFilesystem container
-    # securityContext is UNCHANGED, so only the mounted paths are
-    # writable. Only meaningful for a K8sCluster (cluster) deploy.
-    # Unset => no volumes (field omitted from the manifest entirely).
-    volumes?: [Volume]
-    # Raw k8s manifests OWNED by this service. Each is rendered tagged with
-    # `forge.dev/workload: <this service>` (lib/services.k
-    # render_owned_manifests), which `--target <this service>` selects and
-    # the deploy layer routes to this service's DECLARED cluster. The
-    # manifest's own `app.kubernetes.io/*` labels are kept as written (a
-    # selector may depend on them) and only defaulted when absent — see
-    # lib/labels.k owner_labels. This is the load-bearing primitive for
-    # declared-cluster-only multi-cluster routing (there is NO
-    # primary-cluster / most-services heuristic; a manifest lands on the
-    # cluster of its owning service, nowhere else).
-    #
-    # Two ownership shapes:
-    #   1. A workload service attaches its CRD / extra RBAC here — those
-    #      land on the SAME cluster as the workload.
-    #   2. An IMAGE-LESS "infra service" (this field + a
-    #      `deploy = forge.K8sCluster {...}` and NO `image`) declares
-    #      env-level / ownerless resources (Namespace, Gateways,
-    #      ClusterIssuers, bootstrap) onto a specific cluster. An
-    #      image-less cluster service renders NO Deployment/Service/RBAC —
-    #      only its stamped manifests (see render.k render_manifests).
-    #
-    # Each entry is a raw manifest dict (same shape as
-    # Bundle.additional_manifests). Unset => no owned manifests.
-    manifests: [any] = []
-    # ── securityContext override (projection target of Service.security) ──
-    # A SecurityOverrides (kcl/core.k) carrying OPTIONAL pod/container
-    # securityContext deltas. render_k8s_service merges each set field over
-    # the restricted-PSA default; unset => the hardcoded default is emitted
-    # UNCHANGED (byte-identical to before). The single knob that lets NATS
-    # (fsGroup), temporal (root), and litellm (writable rootfs) fold into the
-    # agnostic model instead of being raw Deployments.
-    security_override?: SecurityOverrides
-    # ── health probe (projection target of Service.health) ──
-    # A HealthProbe (kcl/core.k) rendered by render_k8s_service as BOTH
-    # livenessProbe and readinessProbe on the primary container. Unset =>
-    # NO probes emitted (byte-identical to before — closes the red-team's
-    # dead-HealthCheck / zero-probe gap for the agnostic path).
-    health_probe?: HealthProbe
-    # ── sidecar / init containers (projection targets of Service.sidecars /
-    # Service.init) ──
-    # Each entry is the neutral dict `_project_container` emits: {name, image,
-    # command (folded argv), env_vars: [EnvVar], ports: [int],
-    # resources: Resources?}.
-    # render_k8s_service (`_render_extra_container`) resolves each image ref +
-    # pull policy + the restricted-PSA container securityContext, appends
-    # `sidecars` to the pod's `containers` AFTER the primary, and emits `init`
-    # as `initContainers`. Both default empty => a single-container workload
-    # renders BYTE-IDENTICALLY (containers == [primary], no initContainers).
-    sidecars: [any] = []
-    init_containers: [any] = []
-
-    check:
-        name, "RenderedWorkload.name is required"
-        not (service_account and service_account_annotations), \
-            "RenderedWorkload '${name}': service_account_annotations annotate the ServiceAccount forge GENERATES, and `service_account = \"${service_account}\"` means forge generates none — the annotations would land nowhere. Put them on '${service_account}' where it is provisioned, or drop `service_account`"
-        len(annotations_lib.invalid_keys(service_account_annotations)) == 0, \
-            "RenderedWorkload '${name}': service_account_annotations has invalid annotation key(s) ${annotations_lib.invalid_keys(service_account_annotations)}: a key is `[prefix/]name`, where name is <= 63 chars of [A-Za-z0-9-_.] starting and ending alphanumeric, and prefix is a DNS subdomain (e.g. iam.gke.io/gcp-service-account)"
-
-schema Operator:
-    """A cluster-scoped controller that reconciles CRDs.
-
-    Always cluster-deployed — the host story doesn't apply to
-    controllers that watch the API server. The `crds` list is the
-    set of CRD kind names this operator owns (e.g. ["Workspace"]).
-    `cluster_rbac` is required because operators by definition need
-    cluster-scoped RBAC.
-    """
-    name: str
-    image: str
-    # Per-operator image-tag pin (see Service.image_tag). Unset => the
-    # env-wide tag.
-    image_tag?: str
-    replicas: int = 1
-    platform?: str
-    crds: [str] = []
-    cluster_rbac: ClusterRBAC = ClusterRBAC {}
-    leader_election: bool = True
-    env_vars: [EnvVar] = []
-    # Pod volumes + container mounts — same escape hatch as
-    # Service.volumes (writable empty_dir paths under the
-    # readOnlyRootFilesystem baseline, or config_map / secret
-    # projections). Unset => no volumes. See Volume.
-    volumes?: [Volume]
-
-    check:
-        name, "Operator.name is required"
-        image, "Operator.image is required"
-        len(crds) > 0, \
-            "Operator.crds must list at least one CRD kind"
-
 schema FrontendConfig:
     """Typed, well-known frontend knobs forge maps to the framework-specific
     build/runtime env var names a frontend's transport reads
@@ -3067,25 +2326,28 @@ schema WorkloadURL(tiers.WorkloadURLRef):
     """The public URL of another workload in this environment, by NAME.
 
         runtime_config = {API_URL = forge.WorkloadURL { workload = "api" }}
-
-        spec = tiers.SimpleBackend {
-            env = [tiers.EnvVar {
-                name = "CORS_ORIGINS"
-                workloadURL = forge.WorkloadURL { workload = "web" }
-            }]
-        }
+        env = {CORS_ORIGINS = forge.WorkloadURL { workload = "web" }}
 
     It IS a tiers.WorkloadURLRef (the generated reference type the Go spec
     and the control plane's CRD share), with `workload` as the author-facing
     spelling of `name`. So the same value drops into a frontend's
-    `runtime_config` and a SimpleBackend env var's `workloadURL` slot.
+    `runtime_config` and a workload's `env`.
 
-    A reference, not a URL: on a HOSTED env the control plane resolves it
-    (the platform allocates hostnames, and re-resolves when one moves). On
-    every other env forge resolves it at RENDER time from what the env
-    declares — a route, a custom domain, a host service's listen port, a
-    frontend's port — and refuses when it cannot. See kcl/lib/workload_url.k
-    for the exact order. An unknown name is refused at load either way.
+    A reference, not a URL, and WHO resolves it depends on where the
+    REFERRING thing runs:
+
+      * a HOSTED workload or StaticSite keeps the reference; the control
+        plane resolves it against what IT runs (hostnames are allocated
+        there, and re-resolved when one moves). It may therefore name only
+        a hosted workload or hosted frontend: a host process or a cluster
+        you operate is unreachable from the platform, and that reference is
+        refused at render, naming both ends.
+      * everything else is resolved at RENDER time from what the env
+        declares — a route, a custom domain on an exposed port, a host
+        workload's listen port, a frontend's dev port — and refused when it
+        cannot be. See kcl/lib/workload_url.k for the exact order.
+
+    An unknown name is refused at load either way.
     """
     workload: str
     name: str = workload
@@ -3113,23 +2375,19 @@ schema Frontend:
                           under a content digest so promotion
                           re-points at existing bytes rather
                           than rebuilding.
-      * K8sCluster      — ships as a container image and runs as an
-                          in-cluster Deployment + Service, exactly like a
-                          forge.Service. Use for a frontend that must NOT
-                          be publicly hosted (an internal operator
-                          console), or for a server-rendered Next.js app
-                          that needs a running Node process rather than a
-                          static export.
 
     Omit `deploy` to keep the legacy behaviour — the frontend is
     dev-served / built only, never auto-shipped by `forge env deploy`.
 
-    A K8sCluster frontend needs a Dockerfile at `path` (Next.js: set
-    `output: "standalone"`), and its `port` is the container port the
-    Service targets. It is NOT exposed publicly by virtue of being
-    deployed: like any workload, reachability is whatever the project's
-    ingress (HTTPRoute/Gateway) and NetworkPolicies say — declare no route
-    and it is reachable only in-cluster / via `kubectl port-forward`.
+    A frontend that ships as a CONTAINER (a server-rendered Next.js app,
+    an internal console) is a process forge runs, so it is a workload:
+    `fw.Workload {build = forge.DockerBuild {dockerfile =
+    "frontends/<n>/Dockerfile"}, ports = [...], runtime = forge.OnCluster
+    {...}}`. It gets the same probes, drain and rollout policy as any
+    other workload. This schema is the dev server plus static hosting.
+
+    A StaticSite WITHOUT a `bucket` is HOSTED (published to the control
+    plane, which owns the bucket and CDN). With a bucket it is yours.
     """
     name: str
     type: str = "nextjs"
@@ -3181,7 +2439,7 @@ schema Frontend:
     # time and writes config.js itself (the dev server's public/, a
     # Firebase / own-bucket deploy).
     runtime_config: {str:str | WorkloadURL} = {}
-    deploy?: FirebaseHosting | StaticSite | K8sCluster
+    deploy?: FirebaseHosting | StaticSite
 
     check:
         name, "Frontend.name is required"
@@ -3197,137 +2455,6 @@ schema Frontend:
         dev_runner in ["npm", "pnpm", "yarn"], \
             "Frontend.dev_runner must be 'npm' | 'pnpm' | 'yarn'"
         port > 0 and port < 65536, "Frontend.port must be 1..65535"
-
-schema OneShotJob:
-    """A ONE-SHOT job in the JSON contract the forge CLI consumes — the
-    bundle-level carrier for the `job` component kind.
-
-    This is the HOST lowering's channel. The k8s lowering happens
-    entirely in KCL (forge.workloads lowers `before` to init containers)
-    and the compose lowering is a document fragment, but the host runner
-    is a Go process launcher: it has to be TOLD "run this argv, wait for
-    exit 0, and only then start these services", because there is no
-    orchestrator underneath it to enforce the ordering.
-
-    `before` names the services that must not launch until this job
-    exits 0. Empty means "run it, don't gate anything".
-
-    Distinct from `CronJob` with an empty schedule, deliberately. A
-    CronJob is a SCHEDULE that happens to have fired once; it carries no
-    ordering and nothing waits for it. Collapsing the two would make
-    "runs on a schedule" and "gates a startup sequence" the same
-    declaration, and they have opposite failure modes: a cron that does
-    not run is a missed tick, a gate that does not hold is a service
-    talking to an unprovisioned world.
-    """
-    name: str
-    image: str
-    # The argv to run to completion. Required — see the KCL component
-    # Job schema for why a one-shot has no sensible default entrypoint.
-    command: [str]
-    # Services that must not start until this job exits 0.
-    before: [str] = []
-    env_vars: [EnvVar] = []
-    # How long the host runner waits for exit 0 before giving up. A
-    # one-shot that never exits would otherwise hang `forge env up`
-    # forever with no signal. 0 => the runner's default ceiling.
-    timeout_seconds: int = 0
-
-    check:
-        name, "OneShotJob.name is required"
-        len(command) > 0, \
-            "OneShotJob.command is required — a one-shot with no command has nothing to run to completion"
-        name not in before, "OneShotJob.before must not name the job itself"
-        timeout_seconds >= 0, "OneShotJob.timeout_seconds must be >= 0 (0 = runner default)"
-
-schema CronJob:
-    """A scheduled or one-shot job.
-
-    With `schedule` set — renders as a Kubernetes CronJob.
-    With `schedule = ""` — renders as a one-shot Kubernetes Job.
-
-    `schedule` accepts standard cron syntax ("0 * * * *") or named
-    expressions ("@hourly", "@daily", "@weekly", "@monthly", "@yearly").
-    """
-    name: str
-    image: str
-    # Per-cronjob image-tag pin (see Service.image_tag). Unset => the
-    # env-wide tag.
-    image_tag?: str
-    schedule: str = ""
-    platform?: str
-    command: [str] = []
-    env_vars: [EnvVar] = []
-    # Pod volumes + container mounts — same escape hatch as
-    # Service.volumes (writable empty_dir paths under the
-    # readOnlyRootFilesystem baseline, or config_map / secret
-    # projections). Unset => no volumes. See Volume.
-    volumes?: [Volume]
-    # CPU / memory requests + limits, in the same neutral units a
-    # Service's deploy.resources takes. Unset => the same defaults a
-    # Service gets (100m/500m, 128Mi/512Mi).
-    #
-    # A Job with NO resources is BestEffort: the first thing the kubelet
-    # evicts under node pressure. That is the wrong QoS for the job this
-    # kind most often expresses — a schema migration gating a release —
-    # where being evicted mid-run is how a deploy half-applies. Defaulting
-    # rather than leaving it absent also stops `forge doctor` failing a
-    # project on a container the project has no knob to size, which is
-    # what happened before this field existed.
-    resources?: Resources
-    # Extra namespaced RBAC rules appended to this CronJob's forge-generated
-    # Role — the same PolicyRule dict shape, and the same additive contract,
-    # as `RenderedWorkload.namespaced_rbac`:
-    #   { apiGroups: [...], resources: [...], verbs: [...] }
-    #
-    # This is the BUNDLE path's half of the RBAC gap the workload capability
-    # matrix closes for the expander path (kcl/workloads/capabilities.k). The
-    # two paths are independent — a project either composes agnostic
-    # `forge.Service` / `forge.CronJob` values into a Bundle, or declares
-    # `forge.workloads.Workload`s and renders them through the expander — so
-    # a capability added to one is NOT thereby available in the other, and
-    # this one was missing here for the same reason it was missing on
-    # `worker` there: nobody threaded it through.
-    #
-    # A scheduled sweeper is the case. `_render_cronjob_manifests` already
-    # emitted a Role (via render_namespaced_rbac) and already bound its
-    # ServiceAccount, so the identity and the binding were in place and only
-    # the RULES were unreachable — the Role existed and could never say
-    # anything beyond the config-read default. Unset => exactly that default,
-    # byte-identical to before this field existed.
-    namespaced_rbac?: [{str: any}]
-    # WHEN a one-shot Job (schedule = "") runs relative to the workloads
-    # deployed beside it. `forge env deploy` reads it from the Job's
-    # `forge.dev/deploy-phase` annotation.
-    #
-    #   "pre-rollout" (the default) — applied, and required to COMPLETE,
-    #     before any Deployment / StatefulSet / CronJob in the same deploy is
-    #     applied. A Job that fails or times out aborts the deploy with no
-    #     workload changed, so the previous release keeps serving. This is
-    #     what a schema migration needs: new code never serves against a
-    #     schema it does not have.
-    #   "post-rollout" — applied with the workloads and awaited after they
-    #     roll out. For a Job that needs THIS release's workloads running,
-    #     e.g. a provisioner that configures an identity provider deployed in
-    #     the same env. Declared pre-rollout, such a Job would wait on a
-    #     workload the gate is holding back, and the deploy would abort.
-    #
-    # Pre-rollout is the default because the two mistakes are not equal: a
-    # Job wrongly held back stops the deploy loudly with nothing changed; a
-    # Job wrongly let through ships code ahead of its migration, silently.
-    #
-    # Meaningless on a scheduled CronJob (nothing waits for a schedule), so
-    # setting it there is refused rather than ignored.
-    deploy_phase?: "pre-rollout" | "post-rollout"
-
-    check:
-        name, "CronJob.name is required"
-        image, "CronJob.image is required"
-        schedule == "" or schedule in ["@hourly", "@daily", "@weekly", "@monthly", "@yearly"] or \
-            len(schedule.split(" ")) == 5, \
-            "CronJob.schedule must be '' (one-shot Job), a named expression ('@hourly', ...), or a 5-field cron expression"
-        not deploy_phase or schedule == "", \
-            "CronJob.deploy_phase orders a ONE-SHOT Job (schedule = \"\") against the deploy's workloads; a scheduled CronJob '${name}' runs on its own cadence and nothing waits for it — remove deploy_phase"
 
 # ---------------------------------------------------------------------------
 # Platform dependency — a helm chart rendered (NOT installed) by forge.
@@ -3447,7 +2574,7 @@ schema HelmChart:
     # before its instances). The natural home for the small cluster-scoped
     # instances a chart's controller reconciles but the chart itself does not
     # ship — e.g. the `eg` GatewayClass for envoy-gateway, or cert-manager
-    # ClusterIssuers. UNLIKE Bundle.additional_manifests (which renders into
+    # ClusterIssuers. UNLIKE Bundle.manifests (forge.Manifests) (which renders into
     # the env's main stream and so DOES apply on a bare app deploy), these are
     # platform-only: a bare `forge env deploy <env>` renders none of them. Each
     # entry is a raw manifest dict. Empty => none.
@@ -3584,12 +2711,82 @@ schema DNSRecord:
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
-schema Bundle:
-    """The set of typed entities a project declares per environment.
+schema Manifests:
+    """Raw Kubernetes objects forge applies with the env: the ONE home for
+    anything that is not a typed entity (a CRD, a ClusterIssuer, a vendored
+    chart's output, a DaemonSet).
 
-    A project's `deploy/kcl/<env>/main.k` constructs a Bundle and
-    passes it to `forge.render(...)`. The output is the JSON contract
-    documented at the top of this file.
+        manifests = [
+            forge.Manifests {objects = [_issuer, _crd]}              # the primary cluster
+            forge.Manifests {
+                name = "kata-prepull"                                 # its own --target
+                cluster = "k3d-cp-daemon"
+                namespace = "kube-system"
+                objects = [_prepull_daemonset]
+            }
+        ]
+
+    PLACEMENT is declared, never inferred: `cluster` is the kubectl
+    context (default: the env's primary cluster), and `namespace` fills in
+    a namespaced object that names none (default: the primary target's).
+    An object that names its own namespace keeps it.
+
+    SELECTION. A group with a `name` is its own `forge env deploy --target
+    <name>`: each object is stamped `forge.dev/workload: <name>` (its own
+    `app.kubernetes.io/*` labels are kept, since a selector may depend on
+    them; lib/labels.k owner_labels). A group with no name belongs to no
+    target and applies on a bare `forge env deploy`.
+    """
+    name?: str
+    cluster?: str
+    namespace?: str
+    objects: [any] = []
+
+    check:
+        not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"
+
+schema NetworkPolicy:
+    """The inputs of the env-wide NetworkPolicy bundle: default-deny, plus
+    DNS, same-namespace, external-egress, telemetry and ingress-controller
+    allows. Go renders it (pkg/deploy.RenderWorkloads, Context.Network)
+    into every namespace the env's cluster workloads run in; the per-workload
+    ingress policies are rendered there too.
+
+    `default-deny` blackholes every egress the allow-list misses, so these
+    are what keep the env's own database, collector and ingress reachable.
+    They are DECLARED rather than guessed: an empty namespace omits its
+    policy instead of rendering one against a namespace that may not exist.
+    """
+    # TCP ports every pod may dial anywhere: 443 (HTTPS: JWKS, object
+    # storage, third-party APIs) and 5432 (a managed Postgres outside the
+    # cluster). Add any other external dependency's port.
+    egress_ports: [int] = [443, 5432]
+    # The namespace running the OTLP collector. "" = no telemetry policy.
+    telemetry_namespace: str = ""
+    # The namespace running the Gateway API / ingress controller that
+    # terminates public traffic. "" = no ingress-controller policy.
+    ingress_namespace: str = ""
+
+    check:
+        all p in egress_ports { p > 0 and p < 65536 }, "NetworkPolicy.egress_ports entries must be 1..65535"
+
+schema Bundle:
+    """Everything one environment runs and declares.
+
+    A project's `deploy/kcl/<env>/main.k` builds ONE Bundle and ends with
+    `output = forge.render(bundle)`, the single entrypoint (kcl/render.k
+    documents the output). Env names mean nothing to forge: any env may bind
+    any workload to any runtime, and one env may mix them.
+
+        output = forge.render(forge.Bundle {
+            project = "hounders"
+            runtime = forge.OnHost {runner = "air"}      # the env's default
+            workloads = [
+                wl.membership
+                wl.migrate
+                wl.search | {runtime = forge.OnCluster {target = _k3d}}
+            ]
+        })
     """
     # k3d clusters forge ensures exist before deploying. An env that
     # stands up several clusters (a control-plane cluster + a workload
@@ -3631,50 +2828,35 @@ schema Bundle:
     # matched nothing and the post-deploy rollout wait iterated an EMPTY
     # list and passed vacuously while deployments never rolled.
     #
-    # The twin of `workloads.WorkloadEnv.project` (the workload path's
-    # spelling of the same fact); both feed the one label renderer in
-    # lib/labels.k. Defaults to "" — each object then falls back to
-    # labelling itself, which is the pre-existing behavior — so a Bundle
-    # that does not set it renders byte-identically. The generated per-env
-    # main.k always sets it.
+    # Defaults to "", and each object then falls back to labelling itself.
+    # The generated per-env main.k always sets it.
     project: str = ""
-    # The env-wide Kubernetes facts, stated ONCE (cluster context /
-    # namespace / registry / image_pull_secrets / platform / image_tag).
-    # `render_manifests` reads namespace/registry/platform/pull_secrets off
-    # this target instead of the old "pull them off the first cluster
-    # service" heuristic, and each service references `cluster_target.deploy`
-    # for its per-service deploy block. Optional so a manifests-free /
-    # host-only / External-only Bundle (no in-cluster workloads) need not
-    # declare one; `render_manifests` requires it.
+    # The DEFAULT runtime for every workload that binds none. Unset: every
+    # workload must bind its own.
+    runtime?: Runtime
+    # The env's PRIMARY cluster: where its support objects (Namespace,
+    # ConfigMaps, gateways and routes, rendered Secrets, RuntimeClasses)
+    # land. Unset: the target of `runtime` when that is `forge.OnCluster`.
     cluster_target?: ClusterTarget
+    # The image tag every forge-built cluster image carries (a per-image
+    # digest from `-D image_digests` wins over it). Default: the
+    # `-D image_tag=` binding forge passes on every render, else the per-env
+    # default (forge.image_tag).
+    image_tag: str = str(option("image_tag")) if option("image_tag") else ({"staging" = "staging", "prod" = "stable"}[env] if env in ["staging", "prod"] else "latest")
     # Cross-cluster kubeconfigs minted FRESH each `forge env up` and stored
     # as k8s Secrets (so a workload in one cluster can reach another's
     # API server without a committed, IP-drifting kubeconfig). Minted at
     # the cluster→deploy boundary. Empty => none. See KubeconfigSecret.
     kubeconfig_secrets: [KubeconfigSecret] = []
-    # AGNOSTIC user-facing workloads (the ONE user Service — kcl/core.k). The
-    # render layer projects each onto a `RenderedWorkload` INTERNALLY via
-    # `forge._service_to_k8s(w, cluster_target)` before emitting manifests /
-    # the JSON contract, so the user NEVER calls the adapter. This is the
-    # authoring entry a project uses now.
-    workloads: [Service] = []
-    # DEMOTED / adapter-internal: the k8s-shaped projection carrier (host /
-    # external / compose / build-only deploy modes + build machinery the
-    # agnostic Service doesn't model). `_service_to_k8s` emits these from
-    # `workloads`; a project may still place pre-projected `RenderedWorkload`s here
-    # for the non-cluster deploy modes until those are folded into the core.
-    services: [RenderedWorkload] = []
-    operators: [Operator] = []
+    # Everything that runs (fw.Workload), of every kind and runtime.
+    workloads: [Workload] = []
+    # Host-run third-party servers the workloads dial (forge.HostInfra:
+    # postgres, zitadel). Not workloads: forge fetches them, it does not
+    # build them.
+    infra: [HostInfra] = []
     frontends: [Frontend] = []
-    cronjobs: [CronJob] = []
-    # One-shot jobs (the `job` component kind). Each runs to completion
-    # before the services it names in `before` are launched. Empty => the
-    # env declares none and every consumer behaves exactly as it did
-    # before this bucket existed.
-    jobs: [OneShotJob] = []
-    # Generated by `forge generate` from `(forge.v1.config)`-annotated
-    # config proto fields and `forge.yaml -> environments[*].config`.
-    # Rendered into ConfigMap manifests by `forge.render_manifests`.
+    # ConfigMaps rendered into the primary cluster (or their own
+    # `namespace`).
     config_maps: [ConfigMap] = []
     # Gateway API ingress topology. Declared in `deploy/kcl/ingress.k`
     # at project level and per-env-overridden in
@@ -3684,11 +2866,18 @@ schema Bundle:
     gateways: [Gateway] = []
     http_routes: [HTTPRoute] = []
     grpc_routes: [GRPCRoute] = []
-    # Arbitrary extra k8s resources rendered alongside the typed
-    # entities. Use for ClusterIssuers, SealedSecrets, hand-typed CRDs
-    # — anything that doesn't fit a typed entity. Each entry is a
-    # raw manifest dict.
-    additional_manifests: [any] = []
+    # Every Kubernetes object that is not a typed entity: CRDs,
+    # ClusterIssuers, a vendored chart's output, a DaemonSet. The ONE home
+    # for raw objects; see forge.Manifests.
+    manifests: [Manifests] = []
+    # The env-wide NetworkPolicy bundle (default-deny plus the DNS,
+    # same-namespace, external-egress, telemetry and ingress-controller
+    # allows) and the per-workload ingress policies, rendered by Go per
+    # cluster group. OPT-IN: unset renders no NetworkPolicy at all, so a
+    # dev cluster's pods keep reaching the host (host.k3d.internal) and
+    # sibling namespaces. Set `network_policy = forge.NetworkPolicy {...}`
+    # for an env that should run default-deny.
+    network_policy?: NetworkPolicy
     # Per-env secret PROVIDER declaration: WHERE secret values come from.
     # Absent = no provider. "file" (dev/e2e) lets forge resolve declared
     # secret_refs from a gitignored secrets/<env>.yaml file and render
@@ -3745,32 +2934,29 @@ schema Bundle:
     required_dns: [DNSRecord] = []
 
     check:
-        # HOSTED vs SELF-HOSTED TARGET COORDINATES. A Bundle that declares
-        # `control_plane` deploys its tiers THROUGH that control plane, which
-        # allocates the namespace and owns the cluster. A coordinate written
-        # here would be a second, unverified opinion about where the workload
-        # lands, so it is refused rather than ignored. Self-hosted there is no
-        # platform to allocate one, so both are required. One rule, stated
-        # once, for both destinations.
-        not control_plane or all s in services { not (s.deploy and s.deploy.type == "simple-backend") or (not s.deploy.cluster and not s.deploy.namespace) }, \
-            "SimpleBackend.cluster/namespace must NOT be set on a hosted env (this Bundle declares control_plane): the control plane allocates the namespace and owns the cluster. Remove them"
-        control_plane or all s in services { not (s.deploy and s.deploy.type == "simple-backend") or (s.deploy.cluster and s.deploy.namespace) }, \
-            "SimpleBackend.cluster (kubectl context name) and SimpleBackend.namespace are required on a self-hosted env (no control_plane declared)"
-        not control_plane or all db in databases { not db.namespace }, \
-            "ManagedDatabase.namespace must NOT be set on a hosted env (this Bundle declares control_plane): the control plane allocates it. Remove it"
-        control_plane or all db in databases { db.namespace }, \
-            "ManagedDatabase.namespace is required on a self-hosted env (no control_plane declared)"
+        # EVERY WORKLOAD RESOLVES A RUNTIME: its own, or the env default.
+        all w in workloads { _bound_runtime(w, runtime) }, \
+            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w, runtime)]} bind no runtime and the Bundle declares no default: set `runtime = forge.OnHost {...} | OnCompose | OnCluster | OnHosted | BuildOnly` on the workload, or Bundle.runtime"
+        # One name per env: the name is the WorkloadURL namespace, the
+        # `--target` group and every rendered object's name.
+        len(_duplicates(_env_names(workloads, infra, frontends))) == 0, \
+            "Bundle: a name is declared twice across workloads, infra and frontends: ${_duplicates(_env_names(workloads, infra, frontends))}. The name is how the env refers to it (--target, forge.WorkloadURL), so it must be unique"
+        # HOSTED IS PER WORKLOAD, and it needs a control plane to publish to.
+        control_plane or not _hosted_names(workloads, databases, [], runtime), \
+            "${_hosted_names(workloads, databases, [], runtime)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
         # A hosted StaticSite is published INTO the platform's bucket, behind
-        # the platform's CDN: naming a bucket or a URL map would be a user
-        # choosing where the platform's credential writes or what it purges.
-        # cache_control has no carrier on the hosted path yet (the release
-        # artifact holds bytes only), so it is refused rather than ignored.
-        not control_plane or all f in frontends { not (f.deploy and f.deploy.type == "static-site") or (not f.deploy.bucket and not f.deploy.cdn and not f.deploy.cache_control) }, \
-            "StaticSite.bucket, .cdn and .cache_control must NOT be set on a hosted env (this Bundle declares control_plane): the platform owns the bucket and the CDN, and the hosted release carries no cache rules yet. Remove them"
+        # the platform's CDN: naming a URL map would be a user choosing what
+        # the platform's credential purges, and cache_control has no carrier
+        # on the hosted release (it holds bytes only). A StaticSite with no
+        # bucket IS the hosted one, so the rule is per frontend.
+        all f in frontends { not (f.deploy and f.deploy.type == "static-site" and not f.deploy.bucket) or (not f.deploy.cdn and not f.deploy.cache_control) }, \
+            "StaticSite with no bucket is HOSTED (${[f.name for f in frontends if f.deploy and f.deploy.type == 'static-site' and not f.deploy.bucket and (f.deploy.cdn or f.deploy.cache_control)]}): .cdn and .cache_control must NOT be set, because the platform owns the bucket and the CDN and the hosted release carries no cache rules yet. Remove them, or set `bucket` to publish to your own"
         control_plane or all f in frontends { not (f.deploy and f.deploy.type == "static-site") or f.deploy.bucket }, \
-            "StaticSite.bucket is required on a self-hosted env (no control_plane declared): gs://name or a bare bucket name"
-        not control_plane or not cluster_target, \
-            "Bundle.cluster_target must NOT be set on a hosted env (this Bundle declares control_plane): hosted tiers run on the control plane's infrastructure, and forge applies nothing to a cluster of its own"
+            "StaticSite.bucket is required unless the env declares control_plane: a StaticSite with no bucket is published to the control plane, and ${[f.name for f in frontends if f.deploy and f.deploy.type == 'static-site' and not f.deploy.bucket]} has neither. Set bucket (gs://name or a bare bucket name)"
+        # A database resolves a runtime (its own, or a cluster/hosted
+        # Bundle.runtime) and a cluster one lands in a namespace.
+        all db in databases { _db_runtime(db, runtime) or cluster_target }, \
+            "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db, runtime)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"
         # HostedSecrets names no endpoint of its own — the values live in THIS
         # env's control plane — so without one there is nowhere to put them.
         not (secret_provider and secret_provider.type == "hosted") or control_plane, \
@@ -3784,17 +2970,6 @@ schema Bundle:
         # Secret would apply in turn and the last would silently win.
         not cluster_target or len({"${s.cluster or cluster_target.cluster}/${s.namespace or cluster_target.namespace}/${s.name}": 0 for s in rendered_secrets}) == len(rendered_secrets), \
             "Bundle.rendered_secrets: a Secret name is declared twice for the same cluster/namespace — the later apply would silently overwrite the earlier one"
-        # A cluster_target is required iff at least one workload resolves to
-        # the k8s target — i.e. any workload WITHOUT a `host` block (target
-        # polymorphism, docs/design/FORGE_TARGET_POLYMORPHISM.md §1.4). The k8s adapter
-        # (`_service_to_k8s`) seeds each such workload's RenderedWorkload from
-        # `cluster_target`, so a workload without a target would dereference
-        # an Undefined `target.deploy` and fail deep in the adapter; reject it
-        # at load with a clear message instead. A host-targeted workload
-        # (`svc.host` present) projects via `_service_to_host`, which never
-        # touches `cluster_target` — so a purely-host Bundle needs none.
-        len([w for w in workloads if w.host == Undefined]) == 0 or cluster_target, \
-            "Bundle.workloads that render to k8s require a cluster_target: an agnostic workload with no `host` block is projected onto the env-wide ClusterTarget. Declare Bundle.cluster_target, attach a `host` block to make it host-targeted, or use Bundle.services for pre-projected RenderedWorkload workloads."
         # value_group consistency: every ExternalSecret in a byte-match group
         # must agree on the KEY SET it projects, so the cross-secret byte
         # comparison (preflight) compares like for like. A group whose members
@@ -3811,8 +2986,8 @@ schema Bundle:
         } {
             len({sig: sig for sig in sigs}) == 1
         }, "Bundle.required_secrets: ExternalSecrets sharing a value_group must declare the SAME key set (the bytes under those keys are compared across the group); a group whose members project different keys can't be byte-matched"
-        # `platform` is REQUIRED on a CLOUD cluster_target whenever ANY
-        # service ships a REAL external image build (a DockerBuild or a
+        # `platform` is REQUIRED on a CLOUD target whenever a workload bound
+        # to it ships a REAL external image build (a DockerBuild or a
         # non-no-op ShellBuild — see forge.builds_an_image). Those builds
         # interpolate the env's `platform` as ${TARGETARCH} / the docker
         # `--platform`; WITHOUT it the build pipeline falls through to the
@@ -3831,7 +3006,5 @@ schema Bundle:
         # nodes have a FIXED arch must state it. Using the registry (not the
         # cluster name) keeps the signal reliable: a localhost registry can
         # only be served to the host's own cluster, period.
-        not cluster_target or cluster_target.platform \
-            or is_local_registry(cluster_target.registry) \
-            or all s in services { not builds_an_image(s) }, \
-            "Bundle.cluster_target.platform is required: this env deploys to a cloud target (a non-local registry) AND declares a service with a real external image build (DockerBuild / non-no-op ShellBuild), but states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so external builds cross-compile for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."
+        all w in workloads { not _cloud_build_without_platform(w, runtime) }, \
+            "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w, runtime)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

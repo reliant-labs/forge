@@ -6,7 +6,7 @@ Exercises:
 
   * The public re-exports `forge.render_gateway` / `forge.render_http_route`
     / `forge.render_grpc_route` render the SAME manifest a consumer would
-    otherwise hand-reimplement, AND the same one render_manifests emits.
+    otherwise hand-reimplement, AND the same one output.manifests carries.
   * Setting `cluster = <forge.Cluster>` on a Gateway / HTTPRoute / GRPCRoute
     stamps a `forge.dev/cluster: k3d-<name>` label on the rendered manifest
     — the DENORMALIZED kubectl context (NOT the bare name), which is the
@@ -78,8 +78,8 @@ _unpinned_manifests = forge.render_gateway(_unpinned, "cp-ns")
 
 _routing_key = "forge.dev/cluster"
 
-# ── Re-exports match render_manifests' output ───────────────────────
-# render_manifests walks the same lib builders; the re-exported builder
+# ── Re-exports match output.manifests ───────────────────────
+# forge.render walks the same lib builders; the re-exported builder
 # must produce a byte-identical Gateway manifest.
 _target = forge.ClusterTarget {
     cluster = "control-plane"
@@ -92,7 +92,7 @@ _bundle = forge.Bundle {
     http_routes = [_route_http]
     grpc_routes = [_route_grpc]
 }
-_full = forge.render_manifests(_bundle, "latest", {}, False)
+_full = forge.render(_bundle).manifests
 _full_gw = [m for m in _full if m.kind == "Gateway"][0]
 
 # ── Invariants ──────────────────────────────────────────────────────

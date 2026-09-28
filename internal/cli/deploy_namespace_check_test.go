@@ -24,23 +24,26 @@ import (
 	"testing"
 )
 
-func mkServiceWithEnv(name string, envs ...KCLEnvVar) ServiceEntity {
-	return ServiceEntity{Name: name, EnvVars: envs}
+// withKCLEnv sets literal spec.env values from KCLEnvVar pairs.
+func withKCLEnv(envs ...KCLEnvVar) func(*WorkloadEntity) {
+	return func(w *WorkloadEntity) {
+		for _, e := range envs {
+			withEnv(e.Name, e.Value)(w)
+		}
+	}
 }
 
-func mkClusterService(name string, envs ...KCLEnvVar) ServiceEntity {
-	return ServiceEntity{
-		Name: name,
-		Deploy: DeployConfigEntity{
-			Type:    "cluster",
-			Cluster: &K8sCluster{EnvVars: envs},
-		},
-	}
+func mkServiceWithEnv(name string, envs ...KCLEnvVar) WorkloadEntity {
+	return hostWL(name, withKCLEnv(envs...))
+}
+
+func mkClusterService(name string, envs ...KCLEnvVar) WorkloadEntity {
+	return clusterWL(name, "k3d-dev", "myapp-dev", withKCLEnv(envs...))
 }
 
 func TestCheckNamespaceReferences_NoEnvVars(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{{Name: "api"}},
+		Workloads: []WorkloadEntity{{Name: "api"}},
 	}
 	if err := checkNamespaceReferences(entities, "myapp", "myapp-dev"); err != nil {
 		t.Errorf("expected nil error, got: %v", err)
@@ -49,7 +52,7 @@ func TestCheckNamespaceReferences_NoEnvVars(t *testing.T) {
 
 func TestCheckNamespaceReferences_ExactMatch(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			mkServiceWithEnv("api",
 				KCLEnvVar{Name: "NATS_URL", Value: "nats://nats.myapp-dev.svc.cluster.local:4222"},
 				KCLEnvVar{Name: "TEMPORAL_HOST", Value: "temporal.myapp-dev.svc.cluster.local:7233"},
@@ -67,7 +70,7 @@ func TestCheckNamespaceReferences_ExactMatch(t *testing.T) {
 // step itself silently succeeds. This must error LOUD.
 func TestCheckNamespaceReferences_ProjectPrefixedMismatch(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			mkServiceWithEnv("api",
 				KCLEnvVar{Name: "NATS_URL", Value: "nats://nats.cp-forge-dev.svc.cluster.local:4222"},
 			),
@@ -107,7 +110,7 @@ func TestCheckNamespaceReferences_ProjectPrefixedMismatch(t *testing.T) {
 // foreign namespaces.
 func TestCheckNamespaceReferences_ForeignNamespaceAllowed(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			mkServiceWithEnv("api",
 				KCLEnvVar{Name: "NATS_URL", Value: "nats://nats.nats-system.svc.cluster.local:4222"},
 				KCLEnvVar{Name: "VAULT_ADDR", Value: "https://vault.security.svc.cluster.local"},
@@ -125,7 +128,7 @@ func TestCheckNamespaceReferences_ForeignNamespaceAllowed(t *testing.T) {
 // would noise up the message and lose the actual signal.
 func TestCheckNamespaceReferences_MixedForeignAndProjectMismatch(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			mkServiceWithEnv("api",
 				KCLEnvVar{Name: "NATS_URL", Value: "nats://nats.nats-system.svc.cluster.local:4222"},
 				KCLEnvVar{Name: "TEMPORAL_HOST", Value: "temporal.myapp-staging.svc.cluster.local:7233"},
@@ -145,45 +148,36 @@ func TestCheckNamespaceReferences_MixedForeignAndProjectMismatch(t *testing.T) {
 	}
 }
 
-// TestCheckNamespaceReferences_OperatorsAndCronjobs: env_vars on
-// Operators and CronJobs are scanned too — they share the same
+// TestCheckNamespaceReferences_OperatorsAndCronjobs: the env of an
+// operator and a cron workload is scanned too — they share the same
 // in-cluster DNS resolution path so the same foot-gun applies.
 func TestCheckNamespaceReferences_OperatorsAndCronjobs(t *testing.T) {
-	entities := &KCLEntities{
-		Operators: []OperatorEntity{{
-			Name: "scaler",
-			EnvVars: []KCLEnvVar{
-				{Name: "METRICS_URL", Value: "http://metrics.myapp-dev.svc.cluster.local"},
-			},
-		}},
-		CronJobs: []CronJobEntity{{
-			Name: "nightly-reaper",
-			EnvVars: []KCLEnvVar{
-				{Name: "DB_URL", Value: "postgres://postgres.myapp-dev.svc.cluster.local/db"},
-			},
-		}},
-	}
+	scaler := mkClusterService("scaler", KCLEnvVar{Name: "METRICS_URL", Value: "http://metrics.myapp-dev.svc.cluster.local"})
+	scaler.Kind = "operator"
+	reaper := mkClusterService("nightly-reaper", KCLEnvVar{Name: "DB_URL", Value: "postgres://postgres.myapp-dev.svc.cluster.local/db"})
+	reaper.Kind = "cron"
+	entities := &KCLEntities{Workloads: []WorkloadEntity{scaler, reaper}}
 	err := checkNamespaceReferences(entities, "myapp", "myapp-prod")
 	if err == nil {
 		t.Fatal("expected mismatch error from operator/cronjob env_vars, got nil")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, `operator "scaler"`) {
+	if !strings.Contains(msg, `operator "scaler" (cluster)`) {
 		t.Errorf("error must name owning operator, got: %s", msg)
 	}
-	if !strings.Contains(msg, `cronjob "nightly-reaper"`) {
+	if !strings.Contains(msg, `cron "nightly-reaper" (cluster)`) {
 		t.Errorf("error must name owning cronjob, got: %s", msg)
 	}
 }
 
 // TestCheckNamespaceReferences_ClusterDeployEnvVarsScanned: KCL
 // renders env_vars on the K8sCluster deploy block too (not just at
-// the top-level ServiceEntity). Missing this case would silently
+// the top-level WorkloadEntity). Missing this case would silently
 // skip the bulk of the failure surface — cluster-deploy is where
 // service-to-service DNS lives.
 func TestCheckNamespaceReferences_ClusterDeployEnvVarsScanned(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			mkClusterService("api",
 				KCLEnvVar{Name: "NATS_URL", Value: "nats://nats.myapp-staging.svc.cluster.local"},
 			),
@@ -193,8 +187,8 @@ func TestCheckNamespaceReferences_ClusterDeployEnvVarsScanned(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected mismatch error from cluster-deploy env_vars, got nil")
 	}
-	if !strings.Contains(err.Error(), "cluster deploy") {
-		t.Errorf("error owner label should identify cluster deploy, got: %v", err)
+	if !strings.Contains(err.Error(), `service "api" (cluster)`) {
+		t.Errorf("error owner label should name the workload and its cluster runtime, got: %v", err)
 	}
 }
 
@@ -204,7 +198,7 @@ func TestCheckNamespaceReferences_ClusterDeployEnvVarsScanned(t *testing.T) {
 func TestCheckNamespaceReferences_DeduplicatesByOwnerAndName(t *testing.T) {
 	dupValue := "nats://nats.myapp-dev.svc.cluster.local"
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			mkServiceWithEnv("api",
 				KCLEnvVar{Name: "NATS_URL", Value: dupValue},
 				KCLEnvVar{Name: "NATS_URL", Value: dupValue}, // exact dup
@@ -229,7 +223,7 @@ func TestCheckNamespaceReferences_GuardClauses(t *testing.T) {
 	if err := checkNamespaceReferences(nil, "myapp", "myapp-prod"); err != nil {
 		t.Errorf("nil entities should not error, got: %v", err)
 	}
-	entities := &KCLEntities{Services: []ServiceEntity{mkServiceWithEnv("api",
+	entities := &KCLEntities{Workloads: []WorkloadEntity{mkServiceWithEnv("api",
 		KCLEnvVar{Name: "X", Value: "x.myapp-dev.svc.cluster.local"},
 	)}}
 	if err := checkNamespaceReferences(entities, "", "myapp-prod"); err != nil {

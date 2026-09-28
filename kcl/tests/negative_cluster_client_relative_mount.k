@@ -6,6 +6,8 @@ mount_path, so a relative mount_path would yield a relative
 kubeconfigPath the workload can't resolve. The check block rejects it.
 """
 
+# expect: Volume.mount_path must be absolute
+
 import forge
 
 _cp = forge.Cluster { name = "cp" }

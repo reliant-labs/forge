@@ -442,13 +442,12 @@ type metaReader interface {
 
 func upDeployNamespace(entities *KCLEntities, store metaReader, env string) string {
 	if entities != nil {
-		for i := range entities.Services {
-			s := &entities.Services[i]
-			if s.Deploy.Type == "cluster" && s.Deploy.Cluster != nil && s.Deploy.Cluster.Namespace != "" {
-				return s.Deploy.Cluster.Namespace
-			}
-			if s.Deploy.Type == "simple-backend" && s.Deploy.SimpleBackend != nil && s.Deploy.SimpleBackend.Namespace != "" {
-				return s.Deploy.SimpleBackend.Namespace
+		if ns := entities.ClusterTarget.field("namespace"); ns != "" {
+			return ns
+		}
+		for _, w := range entities.WorkloadsOn(RuntimeCluster) {
+			if w.Runtime.Cluster.Namespace != "" {
+				return w.Runtime.Cluster.Namespace
 			}
 		}
 		if entities.ManifestNamespace != "" {
@@ -520,11 +519,16 @@ func goModuleDirs(e *KCLEntities, projectDir string) []string {
 	}
 	add(projectDir)
 	if e != nil {
-		for _, svc := range e.Services {
-			// EffectiveBuildCwd, not Build.Shell.Cwd: BuildConfigEntity is
-			// `json:"-"`, so the raw field is empty on entities that came from
-			// the render — the accessor is what resolves the declaration.
-			add(svc.EffectiveBuildCwd())
+		for _, w := range e.Workloads {
+			add(w.EffectiveBuildCwd())
+			// A host workload run from a sibling checkout builds THERE.
+			if w.Runtime.Host != nil && w.Runtime.Host.WorkingDir != "" {
+				dir := w.Runtime.Host.WorkingDir
+				if !filepath.IsAbs(dir) {
+					dir = filepath.Join(projectDir, dir)
+				}
+				add(dir)
+			}
 		}
 	}
 	return out
@@ -748,20 +752,15 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 
 	// `forge env up` always runs the whole dev loop — cluster build+deploy,
 	// host, frontend — with --target narrowing WHICH entities inside each
-	// phase, never which phases run. A service that should run as a host
-	// process during dev says so declaratively in its KCL
-	// (`host = forge.HostOverrides {...}`, e.g. `-D host_runner=go-run` to
-	// switch the launch runner); forge never rewrites a cluster-declared
-	// entity's deploy type based on a flag.
+	// phase, never which phases run. A workload that should run as a host
+	// process during dev says so declaratively in its KCL (its runtime is
+	// forge.OnHost); forge never rewrites a workload's runtime from a flag.
 
-	// One-shot jobs are the exception that proves that rule, and it is an
-	// argv translation rather than a placement decision: runHostJobs execs
-	// them HERE, on this machine, but their `command` is written for the
-	// image (`/app/<project> db migrate up`) — a path that does not exist on
-	// a developer's laptop. Rewriting argv[0] to the go-run target does not
-	// move a workload anywhere; it just spells the same binary the way the
-	// host can reach it.
-	collapseJobsToHost(entities, cfg.Name)
+	// A host job needs no argv translation: its command is DERIVED from its
+	// build + args (hostlaunch.BuildCmd), the same rule every host workload
+	// follows, so `args = ["db", "migrate", "up"]` runs as
+	// `go run ./cmd/<p> db migrate up` here and as `/app/<p> db migrate up`
+	// in its image.
 
 	// apiBaseURL is the ephemeral backend base URL wired into the frontends
 	// (via NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL) so they
@@ -1314,45 +1313,32 @@ type upPhaseRequirements struct {
 // reconcile. With targets, only selected entities contribute requirements.
 //
 // Frontends are dev-served by `env up`, so they do not invoke their production
-// deploy provider here. A cluster frontend is the exception: it also renders a
-// target-labelled Kubernetes workload, which the existing targeted apply path
-// must continue to reconcile.
+// deploy provider here.
 func targetPhaseRequirements(e *KCLEntities, targets []string) upPhaseRequirements {
 	if len(targets) == 0 {
 		return upPhaseRequirements{deploy: true, cluster: true}
 	}
 
 	var out upPhaseRequirements
-	for _, svc := range e.Services {
-		if !inTargetSet(targets, svc.Name) {
+	for _, w := range e.Workloads {
+		if !inTargetSet(targets, w.Name) {
 			continue
 		}
-		switch svc.Deploy.Type {
-		case "cluster", "simple-backend":
-			// Both need the cluster phase: a SimpleBackend renders a
-			// Deployment through the same apply path, so `forge env up
-			// --target <a-simple-backend>` must reconcile the cluster or
-			// the apply has nothing to write to.
+		switch w.Runtime.Type {
+		case RuntimeCluster:
 			out.deploy = true
 			out.cluster = true
-		case "compose", "external", "host-infra":
+		case RuntimeCompose:
 			out.deploy = true
 		}
 	}
-	for _, op := range e.Operators {
-		if inTargetSet(targets, op.Name) {
+	for _, hi := range e.Infra {
+		if inTargetSet(targets, hi.Name) {
 			out.deploy = true
-			out.cluster = true
 		}
 	}
 	for _, chart := range e.HelmCharts {
 		if inTargetSet(targets, chart.Name) {
-			out.deploy = true
-			out.cluster = true
-		}
-	}
-	for _, frontend := range e.Frontends {
-		if inTargetSet(targets, frontend.Name) && frontend.Deploy != nil && frontend.Deploy.Type == "cluster" {
 			out.deploy = true
 			out.cluster = true
 		}
@@ -1517,8 +1503,8 @@ type upServicesReport struct {
 // `services` command: the port liveness probe is injected so the
 // collection is unit-testable without real sockets (pass nil to skip it).
 //
-// Host-service ports come from the KCL PORT convention (hostEnvPort); a
-// service declaring no inline PORT is listed without a URL. EVERY declared
+// Host-workload ports are the workload's declared ports (WorkloadEntity
+// .HostPort); a workload that binds nothing is listed without a URL. EVERY declared
 // frontend is emitted (a project may declare several, each with its own
 // port) — never collapsed to one.
 func collectUpServices(e *KCLEntities, env string, targets []string, frontendsOn bool, probe func(int) bool) []upServiceRow {
@@ -1526,19 +1512,14 @@ func collectUpServices(e *KCLEntities, env string, targets []string, frontendsOn
 		return nil
 	}
 	var rows []upServiceRow
-	for _, svc := range e.Services {
-		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+	for _, w := range e.WorkloadsOn(RuntimeHost) {
+		if !inTargetSet(targets, w.Name) {
 			continue
 		}
-		if !inTargetSet(targets, svc.Name) {
-			continue
-		}
-		r := upServiceRow{Name: svc.Name, Kind: "host", Log: summaryLogPath(env, svc.Name)}
-		if p := hostEnvPort(svc.Name, svc.Deploy.Host); p != "" {
-			if port, err := strconv.Atoi(p); err == nil && port > 0 {
-				r.Port = port
-				r.URL = "http://localhost:" + p
-			}
+		r := upServiceRow{Name: w.Name, Kind: "host", Log: summaryLogPath(env, w.Name)}
+		if port := w.HostPort(); port > 0 {
+			r.Port = port
+			r.URL = fmt.Sprintf("http://localhost:%d", port)
 		}
 		rows = append(rows, r)
 	}
@@ -1828,127 +1809,6 @@ func summaryLogPath(env, name string) string {
 	return filepath.Join(upLogDir(env), safe+".log")
 }
 
-// hostEnvPort returns the host service's declared listen port from its
-// env vars, or "" when none is declared. It prefers a service-specific
-// <NAME>_PORT (e.g. ADMIN_SERVER_PORT for "admin-server") over the
-// generic PORT: a service that declares both usually binds the specific
-// one, and the generic PORT is often a vestigial default the binary
-// ignores (cp-forge's admin-server sets PORT=8080 but actually binds
-// ADMIN_SERVER_PORT=8090). Only the inline `value` channel applies —
-// config_map_ref / secret_ref ports have no host-side literal to show.
-func hostEnvPort(name string, host *HostDeploy) string {
-	if host == nil {
-		return ""
-	}
-	// Explicit contract first (same preference as hostEnvPorts): the first
-	// declared listen port is the service's canonical/summary port. Falling
-	// through to the env heuristic here would surface a port the service
-	// never binds (e.g. a vestigial k8s-convention PORT), and the summary /
-	// status probe would then report whatever foreign process holds it.
-	if host.ListenPorts != nil {
-		// Declared — including declared EMPTY, which means "binds nothing" and
-		// must not fall through to the env heuristic (that would invent a port
-		// for a service that has none, e.g. a packaged desktop app).
-		if len(*host.ListenPorts) > 0 && (*host.ListenPorts)[0] > 0 {
-			return strconv.Itoa((*host.ListenPorts)[0])
-		}
-		return ""
-	}
-	specific := strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_PORT"
-	generic := ""
-	for _, ev := range host.EnvVars {
-		if ev.Value == "" {
-			continue
-		}
-		switch ev.Name {
-		case specific:
-			return ev.Value
-		case "PORT":
-			generic = ev.Value
-		}
-	}
-	return generic
-}
-
-// hostEnvPorts returns EVERY TCP port a host service will bind, derived
-// from its inline env literals — not just the single canonical one
-// hostEnvPort surfaces for the summary URL. A service commonly binds
-// several ports (an API port, a metrics/pprof port, a debug port), each
-// declared as its own `<...>_PORT` env var; probing only one of them let a
-// real conflict slip past the pre-flight guard, so it launched a second
-// stack on top of a stale one. This enumerates the full set instead.
-//
-// Ports come from:
-//   - every `<...>_PORT`-suffixed env var with an inline value, and
-//   - the generic `PORT`, but ONLY when the service declares no
-//     service-specific `<NAME>_PORT` — a service that declares both binds
-//     the specific one and treats generic PORT as a vestigial default (the
-//     same heuristic hostEnvPort uses). Including a vestigial PORT would
-//     over-detect: a false pre-flight conflict, or a readiness gate waiting
-//     for a port the binary never binds.
-//
-// Only the inline `value` channel is visible host-side; config_map_ref /
-// secret_ref ports carry no literal here and cannot be probed. Returned in
-// declaration order, deduplicated. Empty when nothing declares a port.
-func hostEnvPorts(name string, host *HostDeploy) []int {
-	if host == nil {
-		return nil
-	}
-	// Explicit contract first: a service that declares listen_ports has
-	// stated exactly which host ports it binds — trust it and skip the env
-	// heuristic below entirely. The heuristic sweeps EVERY *_PORT env var,
-	// which misclassifies dependency-address vars (TEMPORAL_PORT,
-	// WORKSPACE_URL_PORT, a leftover k8s-convention PORT) as bind ports and
-	// then refuses `up` because healthy infra (docker temporal, the k3d
-	// gateway LB) legitimately holds them.
-	// nil means "not declared" (infer below); non-nil means the KCL stated the
-	// set exactly — an EMPTY set is a legitimate statement that this service
-	// binds no port at all, and must return empty rather than fall through.
-	if host.ListenPorts != nil {
-		var declared []int
-		seenDeclared := map[int]bool{}
-		for _, p := range *host.ListenPorts {
-			if p <= 0 || p >= 65536 || seenDeclared[p] {
-				continue
-			}
-			seenDeclared[p] = true
-			declared = append(declared, p)
-		}
-		return declared
-	}
-	specific := strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_PORT"
-	var ports []int
-	seen := map[int]bool{}
-	add := func(v string) {
-		p, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil || p <= 0 || seen[p] {
-			return
-		}
-		seen[p] = true
-		ports = append(ports, p)
-	}
-	hasSpecific := false
-	generic := ""
-	for _, ev := range host.EnvVars {
-		if ev.Value == "" {
-			continue
-		}
-		switch {
-		case ev.Name == specific:
-			hasSpecific = true
-			add(ev.Value)
-		case ev.Name == "PORT":
-			generic = ev.Value // deferred: only the bind port when no <NAME>_PORT
-		case strings.HasSuffix(ev.Name, "_PORT"):
-			add(ev.Value)
-		}
-	}
-	if !hasSpecific && generic != "" {
-		add(generic)
-	}
-	return ports
-}
-
 // portConflict names a service/frontend the current `forge env up` would
 // start whose expected listen port is already bound by something else.
 type portConflict struct {
@@ -1991,16 +1851,13 @@ func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe 
 		return nil
 	}
 	var conflicts []portConflict
-	for _, svc := range e.Services {
-		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+	for _, w := range e.WorkloadsOn(RuntimeHost) {
+		if !inTargetSet(targets, w.Name) {
 			continue
 		}
-		if !inTargetSet(targets, svc.Name) {
-			continue
-		}
-		for _, port := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
+		for _, port := range w.HostPorts() {
 			if probe(port) {
-				conflicts = append(conflicts, portConflict{name: svc.Name, port: port})
+				conflicts = append(conflicts, portConflict{name: w.Name, port: port})
 			}
 		}
 	}
@@ -2144,16 +2001,13 @@ func evalHostReadiness(e *KCLEntities, projectID, envName string, targets []stri
 		return nil
 	}
 	var out []hostReadyResult
-	for _, svc := range e.Services {
-		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+	for _, w := range e.WorkloadsOn(RuntimeHost) {
+		if !inTargetSet(targets, w.Name) {
 			continue
 		}
-		if !inTargetSet(targets, svc.Name) {
-			continue
-		}
-		for _, port := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
+		for _, port := range w.HostPorts() {
 			row := hostReadyResult{
-				name:  svc.Name,
+				name:  w.Name,
 				port:  port,
 				state: classifyPortReadiness(port, projectID, envName, listening, resolvePID, f),
 			}
@@ -2235,13 +2089,13 @@ func portAlsoDeclaredBy(e *KCLEntities, port int, except string) []string {
 			out = append(out, fmt.Sprintf("frontend %q", fe.Name))
 		}
 	}
-	for _, svc := range e.Services {
-		if svc.Name == except {
+	for _, w := range e.WorkloadsOn(RuntimeHost) {
+		if w.Name == except {
 			continue
 		}
-		for _, p := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
+		for _, p := range w.HostPorts() {
 			if p == port {
-				out = append(out, fmt.Sprintf("service %q", svc.Name))
+				out = append(out, fmt.Sprintf("service %q", w.Name))
 				break
 			}
 		}
@@ -2497,7 +2351,7 @@ func renderClusterWorkloads(w io.Writer, bar, env string, s *clusterWorkloadSumm
 // entitiesEmpty reports whether the entity set has zero declarations
 // of every kind.
 func entitiesEmpty(e *KCLEntities) bool {
-	return e == nil || (len(e.Services) == 0 && len(e.Operators) == 0 && len(e.Frontends) == 0 && len(e.CronJobs) == 0)
+	return e == nil || (len(e.Workloads) == 0 && len(e.Infra) == 0 && len(e.Frontends) == 0)
 }
 
 // upBuildCluster builds + pushes the project docker image with the
@@ -2576,23 +2430,12 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 	// adding an application provider would make `forge env up` publish a
 	// production artifact during dev bring-up.
 	//
-	// SIMPLE-BACKEND is absent too, and unlike the others it is worth
-	// stating why, because it IS a long-running server and so looks at
-	// first glance like infrastructure. Two reasons it is not:
-	//
-	//   * It is a DEPLOYED application on a hosted cluster, not a server
-	//     this project's host processes dial. Nothing in the dev loop
-	//     connects to it, which is the entire criterion for this map.
-	//   * Prewarming it would do precisely what the paragraph above
-	//     forbids — publish a production workload to a real cluster
-	//     during `forge env up`, before the deploy phase the user
-	//     actually asked for.
-	//
-	// Mechanically it needs no entry regardless: buildDeployGroups routes
-	// a SimpleBackend into a "k8s-cluster" group (see deploy_dispatch.go),
-	// which this map already omits. The point of saying so here is that
-	// the omission is a DECISION and stays correct if that routing ever
-	// changes — at which point this comment is the thing to re-read.
+	// HOSTED is absent too, and it is worth stating why: a hosted workload
+	// IS a long-running server and so looks at first glance like
+	// infrastructure. It is not — it is published to the control plane,
+	// nothing in the dev loop dials it, and prewarming it would publish a
+	// production workload during `forge env up`, before the deploy the
+	// user asked for. The omission is a DECISION.
 	return deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
 		"host-infra": deploytarget.HostInfraProvider{ProjectDir: projectDir},
 		"compose":    deploytarget.ComposeProvider{ProjectDir: projectDir},
@@ -2654,8 +2497,8 @@ func reconcileCluster(ctx context.Context, env string, opts deployOptions) error
 	return runDeploy(ctx, env, opts)
 }
 
-// upHostServices starts every host-mode service as a child process,
-// dispatching on deploy.Host.Runner. Returns the count of services that
+// upHostServices starts every host-bound workload that is not a job as a
+// child process, its argv derived by hostlaunch.BuildCmd. Returns the count of services that
 // failed to start (logged but not fatal — the orchestrator brings up as
 // many as it can rather than bailing on the first failure).
 func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, prov secrets.Provider, env string, background bool, targets []string, procs *procRegistry) int {
@@ -2666,21 +2509,23 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 	// per-service secrets_file fallback) onto each service's env.
 	secretsLayer := prov.All()
 	failures := 0
-	for _, svc := range e.Services {
-		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+	for _, w := range e.WorkloadsOn(RuntimeHost) {
+		if !w.LongRunning() {
+			// Jobs run to completion in runHostJobs, before this phase; a
+			// tool is never scheduled.
 			continue
 		}
-		if !inTargetSet(targets, svc.Name) {
+		if !inTargetSet(targets, w.Name) {
 			continue
 		}
-		cmd, name, err := buildHostServiceCmd(ctx, cfg, svc, secretsLayer, env)
+		cmd, name, err := buildHostServiceCmd(ctx, cfg, w, secretsLayer, env)
 		if err != nil {
-			fmt.Printf("[up] host %s: %v\n", svc.Name, err)
+			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
 			continue
 		}
 		if err := procs.start(name, cmd, background); err != nil {
-			fmt.Printf("[up] host %s: %v\n", svc.Name, err)
+			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
 		}
 	}
@@ -2704,91 +2549,77 @@ func reportEnvConflicts(service string, conflicts []envutil.EnvConflict) {
 	}
 }
 
-// buildHostServiceCmd composes the exec.Cmd for a host-mode service
-// based on its deploy.Host.Runner. Thin shim over hostlaunch.BuildCmd
-// with the secrets_file + env_vars + forge.yaml config composition done
-// here. cfg / env feed the projectConfig layer (forge.yaml
-// environments[<env>].config); a nil cfg or empty env skips that layer
-// without erroring.
+// buildHostServiceCmd composes the exec.Cmd for a host workload. The argv is
+// DERIVED by hostlaunch.BuildCmd from the runtime's runner, the workload's
+// Go build and its spec args (a spec.command runs verbatim); the env is
+// composed here.
 //
 // Env layering matches `forge run <svc>` exactly: projectConfig →
-// secrets → env_vars → os.Environ() wins last. See
+// secrets → the workload's declared env → os.Environ() wins last. See
 // hostlaunch.LayerHostEnv for the full precedence rationale.
 //
 // secretsLayer is the per-env secret provider's resolved map (the dotenv
-// provider's full map; nil for external/none). It is the authoritative
-// secrets source when a provider is declared. When it is empty (no
-// provider declared) the legacy per-service secrets_file is loaded as a
-// backward-compat fallback so projects that haven't adopted a provider
-// keep working.
-//
-// Unlike `forge run <svc>`, `forge env up` is strict about unknown runners:
-// a typo in KCL is fail-loud here because the orchestrator owns the
-// whole environment and silent fallback to go-run could mask a deploy
-// pin the user meant to apply. The hostlaunch package itself falls
-// through to go-run on unknown runners; the explicit IsKnownRunner
-// gate is what makes this call site strict.
-func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc ServiceEntity, secretsLayer map[string]string, env string) (*exec.Cmd, string, error) {
-	host := svc.Deploy.Host
-	// An explicit `command` overrides the runner convention (sibling-repo
-	// binaries, non-standard entrypoints), so the strict runner-name check
-	// only applies when no command is given.
-	if len(svc.Command) == 0 && !hostlaunch.IsKnownRunner(host.Runner) {
-		return nil, "", fmt.Errorf("unknown host runner %q (expected go-run/air/binary/delve)", host.Runner)
+// provider's full map; nil for external/none), scoped to the secrets this
+// workload declares.
+func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, secretsLayer map[string]string, env string) (*exec.Cmd, string, error) {
+	spec := hostRunnerSpec(w)
+	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
+	if err != nil {
+		return nil, "", err
 	}
-	spec := hostlaunch.RunnerSpec{
-		Runner:     host.Runner,
-		AirConfig:  host.AirConfig,
-		DelvePort:  host.DelvePort,
-		WorkingDir: host.WorkingDir,
-		ProjectDir: projectDirForKCL(),
-		Command:    svc.Command,
-		// go-run target = the service's KCL GoBuild.cmd (the same package
-		// `forge build` compiles), not a hardcoded ./cmd.
-		GoRunCmd: goRunCmdForService(svc),
+	if spec.IgnoresArgs() {
+		fmt.Printf("[up] host %s: runner air takes its argv from %s (full_bin / args_bin); the workload's args %v are not passed\n",
+			w.Name, emptyAs(spec.AirConfig, hostlaunch.DefaultAirConfig), spec.Args)
 	}
-	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 
-	// Env composition: projectConfig → secrets → env_vars →
+	// Env composition: projectConfig → secrets → declared env →
 	// os.Environ() wins last.
 	//
 	// Secrets come from the env's bundle secret_provider, SCOPED to what
-	// this service DECLARES: the provider map is the whole store, and a
-	// service receives only the keys it names via EnvVar.secret_ref.
-	// Injecting the whole store was how an undeclared value reached every
-	// process — which made dropping a line in the secrets file, rather
-	// than declaring it in KCL, the path of least resistance, and is why
-	// non-secret config drifted out of version control. An undeclared
-	// secret now reaches nothing.
-	//
-	// (The legacy per-service `secrets_file` dotenv fallback was removed
-	// with the dotenv provider: it was the same wholesale injection with a
-	// per-service path.)
-	secretVals := scopeSecretsToService(secretsLayer, &svc)
-	envVars := hostEnvVarsToMap(host)
+	// this workload DECLARES: the provider map is the whole store, and a
+	// workload receives only the keys it names via a secretRef. An
+	// undeclared secret reaches nothing.
+	secretVals := scopeSecretsToService(secretsLayer, &w)
+	envVars := w.HostEnv()
 	// projectConfig layer: forge.yaml environments[<env>].config projected
 	// to env-var strings. Same source the cluster ConfigMap projection
-	// uses; layering it here keeps `forge env up` host services in sync with
-	// `forge run <svc>`. nil cfg / empty env collapses to an empty map.
+	// uses; layering it here keeps `forge env up` host workloads in sync
+	// with `forge run <svc>`. nil cfg / empty env collapses to an empty map.
 	var projectConfigEnv map[string]string
 	if cfg != nil && env != "" {
 		projectConfigEnv = loadProjectConfigEnv(cfg, env)
 	}
 	// Dev-run defaults: on a dev env, `forge run` marks the runtime as
 	// development AND auto-applies migrations on boot, so a fresh dev DB
-	// comes up with its schema without any hand-set env vars. Authentication
-	// is untouched here — a real validator is built in every mode. Lowest
-	// precedence — overridden by project config, secrets,
-	// KCL env_vars, and the shell (see withDevRunDefaults). The env is
-	// classified via the same config source the seed gate reads.
+	// comes up with its schema without any hand-set env vars. Lowest
+	// precedence — overridden by project config, secrets, the declared env
+	// and the shell (see withDevRunDefaults).
 	dev, _ := seedTargetIsDev(env)
 	projectConfigEnv = withDevRunDefaults(projectConfigEnv, dev)
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), projectConfigEnv, secretVals, envVars)
-	reportEnvConflicts(svc.Name, envConflicts)
+	reportEnvConflicts(w.Name, envConflicts)
 	cmd.Env = hostEnv
-	cmd.Env = forceHostBindPorts(cmd.Env, svc.Name, envVars)
+	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
 
-	return cmd, svc.Name, nil
+	return cmd, w.Name, nil
+}
+
+// hostRunnerSpec is the hostlaunch input for a host workload: its runtime
+// block plus the two runtime-independent facts the argv is derived from —
+// its Go build and its spec command/args.
+func hostRunnerSpec(w WorkloadEntity) hostlaunch.RunnerSpec {
+	spec := hostlaunch.RunnerSpec{
+		ProjectDir: projectDirForKCL(),
+		Command:    w.Spec.Command,
+		Args:       w.Spec.Args,
+	}
+	if h := w.Runtime.Host; h != nil {
+		spec.Runner, spec.AirConfig, spec.DelvePort, spec.WorkingDir = h.Runner, h.AirConfig, h.DelvePort, h.WorkingDir
+	}
+	if g := w.GoBuild(); g != nil {
+		spec.GoPkg, spec.OutputName = g.Cmd, g.OutputName
+	}
+	return spec
 }
 
 // forceHostBindPorts makes the port the process BINDS the same port forge
@@ -2803,8 +2634,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 // readiness probe passes against whatever else holds the published one.
 //
 // Only the bind-port names are forced: the generic PORT and any
-// `<...>_PORT`-suffixed var forge declared inline, i.e. exactly the set
-// hostEnvPorts treats as ports this service binds. A shell value that is
+// `<...>_PORT`-suffixed var forge declared inline. A shell value that is
 // being overridden is reported rather than dropped in silence.
 func forceHostBindPorts(env []string, svcName string, declared map[string]string) []string {
 	inherited := map[string]string{}
@@ -3771,13 +3601,9 @@ func stopHostInfra(env string) (int, error) {
 	}
 	var failures []error
 	count := 0
-	for _, svc := range entities.Services {
-		if svc.Deploy.Type != "host-infra" || svc.Deploy.HostInfra == nil {
-			continue
-		}
-		hi := svc.Deploy.HostInfra
+	for _, hi := range entities.Infra {
 		spec := hostinfra.Spec{
-			Name:            svc.Name,
+			Name:            hi.Name,
 			Engine:          hi.Engine,
 			Port:            hi.Port,
 			Database:        hi.Database,

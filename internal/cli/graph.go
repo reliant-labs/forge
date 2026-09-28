@@ -308,10 +308,10 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 	}
 
 	// Index KCL services by name so we can attach deploy_type + env_vars.
-	kclSvcByName := map[string]*ServiceEntity{}
+	kclSvcByName := map[string]*WorkloadEntity{}
 	if kcl != nil {
-		for i := range kcl.Services {
-			kclSvcByName[kcl.Services[i].Name] = &kcl.Services[i]
+		for i := range kcl.Workloads {
+			kclSvcByName[kcl.Workloads[i].Name] = &kcl.Workloads[i]
 		}
 	}
 
@@ -378,7 +378,7 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 // read-only inspection surface and must not die mid-migration), and a Deps
 // parse error is recorded as a warning rather than aborting. No-op when cfg is
 // nil.
-func graphAppendServices(doc *graphDoc, cfg *config.ProjectConfig, projectDir string, kclSvcByName map[string]*ServiceEntity, rpcsByService map[string][]graphRPC, pkgByName map[string]graphPackage) {
+func graphAppendServices(doc *graphDoc, cfg *config.ProjectConfig, projectDir string, kclSvcByName map[string]*WorkloadEntity, rpcsByService map[string][]graphRPC, pkgByName map[string]graphPackage) {
 	if cfg == nil {
 		return
 	}
@@ -406,8 +406,8 @@ func graphAppendServices(doc *graphDoc, cfg *config.ProjectConfig, projectDir st
 			gs.Served = &notServed
 		}
 		if k, ok := kclSvcByName[s.Name]; ok {
-			gs.DeployType = k.Deploy.Type
-			for _, ev := range k.EnvVars {
+			gs.DeployType = k.Runtime.Type
+			for _, ev := range k.EnvVars() {
 				gs.EnvVars = append(gs.EnvVars, graphEnvVar{
 					Name:   ev.Name,
 					Source: "kcl",

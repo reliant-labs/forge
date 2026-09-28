@@ -241,20 +241,17 @@ func TestHostedSecretListCountsManagedSecrets(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		e.Services = []ServiceEntity{{
-			Name: "api",
-			Deploy: DeployConfigEntity{Type: "simple-backend", SimpleBackend: &SimpleBackendSpec{
-				Spec: deployv1alpha1.SimpleBackendSpec{Env: []deployv1alpha1.EnvVar{
-					{Name: "LOG_FORMAT", Value: "json"},
-					{Name: "STRIPE_SECRET_KEY", ManagedSecret: "STRIPE_SECRET_KEY"},
-					// The env var and the store name differ: the STORE name
-					// is what gets declared, because that is what `forge
-					// secret set` writes and the control plane resolves.
-					{Name: "WEBHOOK_SECRET", ManagedSecret: "STRIPE_WEBHOOK_SECRET"},
-					{Name: "DATABASE_URL", DatabaseRef: &deployv1alpha1.DatabaseRef{Name: "db"}},
-				}},
-			}},
-		}}
+		e.Workloads = []WorkloadEntity{hostedWL("api", func(w *WorkloadEntity) {
+			w.Spec.Env = []deployv1alpha1.EnvVar{
+				{Name: "LOG_FORMAT", Value: "json"},
+				{Name: "STRIPE_SECRET_KEY", ManagedSecret: &deployv1alpha1.ManagedSecretRef{Name: "STRIPE_SECRET_KEY"}},
+				// The env var and the store name differ: the STORE name
+				// is what gets declared, because that is what `forge
+				// secret set` writes and the control plane resolves.
+				{Name: "WEBHOOK_SECRET", ManagedSecret: &deployv1alpha1.ManagedSecretRef{Name: "STRIPE_WEBHOOK_SECRET"}},
+				{Name: "DATABASE_URL", DatabaseRef: &deployv1alpha1.DatabaseRef{Name: "db"}},
+			}
+		})}
 		return e, nil
 	}
 	t.Cleanup(func() { renderEntitiesForSecrets = prevRender })
@@ -389,8 +386,7 @@ func TestHostedSecretSetCreatesAFreshEnv(t *testing.T) {
 func TestHostedSecretListNeverCreates(t *testing.T) {
 	fake, _ := hostedFixture(t, nil)
 	e, _ := renderEntitiesForSecrets(context.Background(), "prod")
-	e.Services = []ServiceEntity{{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-		EnvVars: []KCLEnvVar{{Name: "K", SecretRef: "s"}}}}}}
+	e.Workloads = []WorkloadEntity{hostWL("api", withSecretRef("K", "s", ""))}
 	r, err := collectSecretListFacts(context.Background(), "prod")
 	if err != nil {
 		t.Fatalf("list of an env the control plane has not seen: %v", err)

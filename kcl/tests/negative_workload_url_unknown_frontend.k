@@ -5,14 +5,18 @@ names listed. A dangling reference would otherwise ship a config.js whose
 API_URL is empty, and the app would call its own origin.
 """
 
+# expect: forge.WorkloadURL names workload 'apiserver'
+
 import forge
+import forge.workloads as fw
 
 _bundle = forge.Bundle {
-    services = [forge.RenderedWorkload { name = "api", deploy = forge.HostDeploy { listen_ports = [8085] } }]
+    runtime = forge.OnHost {listen_ports = [8085]}
+    workloads = [fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/api"}, args = ["server"]}]
     frontends = [forge.Frontend {
         name = "web"
         path = "frontends/web"
-        runtime_config = { API_URL = forge.WorkloadURL { workload = "apiserver" } }
+        runtime_config = {API_URL = forge.WorkloadURL {workload = "apiserver"}}
     }]
 }
 

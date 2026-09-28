@@ -126,8 +126,9 @@ func hostedGroup(release string, digests map[string]string, resources v1alpha1.R
 		ProviderID: HostedProviderID,
 		Hosted:     &HostedTarget{Endpoint: "https://cp.example", Release: release, Digests: digests},
 		Services: []ResolvedService{
-			{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierBackend, Backend: &v1alpha1.SimpleBackendSpec{
-				Image: "ghcr.io/acme/api:v1", Ports: []int32{8080}, Resources: resources,
+			{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierWorkload, Workload: &v1alpha1.WorkloadSpec{
+				Kind: v1alpha1.KindService, Image: "ghcr.io/acme/api:v1", Args: []string{"api"},
+				Ports: []v1alpha1.Port{{Name: "http", Port: 8080, Expose: true}}, Probes: &v1alpha1.Probes{}, Resources: resources,
 			}}},
 			{Name: "orders", Hosted: &HostedWorkload{Tier: HostedTierDatabase, Database: &v1alpha1.ManagedDatabaseSpec{}}},
 		},
@@ -282,7 +283,7 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 	group := func(registries map[string]string) ServiceGroup {
 		g := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
 		g.Hosted.Registries = registries
-		g.Services[0].Hosted.Backend.Image = "api"
+		g.Services[0].Hosted.Workload.Image = "api"
 		return g
 	}
 
@@ -312,7 +313,7 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 
 	t.Run("an explicit registry in the spec wins", func(t *testing.T) {
 		g := group(map[string]string{"api": "localhost:5051/org-1"})
-		g.Services[0].Hosted.Backend.Image = "ghcr.io/acme/api:v1"
+		g.Services[0].Hosted.Workload.Image = "ghcr.io/acme/api:v1"
 		cp := &fakeCP{status: readyStatus(digestA), pushBase: "ghcr.io/acme"}
 		if err := (HostedProvider{Client: cp, PollInterval: time.Millisecond}).Deploy(context.Background(), g); err != nil {
 			t.Fatalf("deploy: %v", err)

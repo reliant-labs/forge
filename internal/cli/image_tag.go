@@ -56,19 +56,28 @@ func resolveImageTag(ctx context.Context, _ string) (string, error) {
 }
 
 // envImageTagFor returns the env's RESOLVED image tag for a given
-// (registry-less) image name, recovered from the rendered KCL manifests
-// (see KCLEntities.ManifestImageTags). This is the tag `forge env deploy
-// <env>` references for that image, so `forge build <env>` defaults
-// its build tag to it — build and deploy then push/pull the SAME tag by
-// construction.
+// (registry-less) image name. This is the tag `forge env deploy <env>`
+// references for that image, so `forge build <env>` defaults its build tag to
+// it — build and deploy then push/pull the SAME tag by construction.
 //
-// Returns "" when entities is nil (no --env / KCL render failed), the
-// render carried no tagged workload image for that name, or the name is
-// empty — every such case falls the caller back to git-derived tagging,
-// preserving the prior behavior.
+// A workload built into that image whose resolved spec.image carries a tag
+// answers with it (a per-workload pin wins); otherwise the env's own resolved
+// image_tag (`output.image_tag`). A digest-pinned spec.image carries no tag
+// and falls through to the env tag.
+//
+// Returns "" when entities is nil (no --env / KCL render failed) or the name
+// is empty — every such case falls the caller back to git-derived tagging.
 func envImageTagFor(entities *KCLEntities, image string) string {
 	if entities == nil || image == "" {
 		return ""
 	}
-	return entities.ManifestImageTags[image]
+	for _, w := range entities.Workloads {
+		if w.Image != image {
+			continue
+		}
+		if name, tag, ok := splitImageNameTag(w.Spec.Image); ok && name == image {
+			return tag
+		}
+	}
+	return entities.ImageTag
 }

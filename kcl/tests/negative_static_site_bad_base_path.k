@@ -5,6 +5,8 @@ FirebaseHosting (see negative_firebase_bad_base_path.k). The two static
 targets must agree on base_path syntax: they feed the SAME assembler.
 """
 
+# expect: StaticSite.base_path must start with '/'
+
 import forge
 
 _fe = forge.Frontend {

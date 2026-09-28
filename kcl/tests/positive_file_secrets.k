@@ -19,7 +19,12 @@ Exercises:
   * A RenderedSecrets bundle mixing dir + literal sources projects both.
 """
 
+# kcl-args: env=dev | env=e2e
+# reject-args: env=prod
+# reject-expect: FileSecrets is dev/e2e only
+
 import forge
+import forge.workloads as fw
 
 _target = forge.ClusterTarget {
     cluster = "k3d-dev"
@@ -29,10 +34,10 @@ _target = forge.ClusterTarget {
 
 _dir_bundle = forge.Bundle {
     cluster_target = _target
-    services = [forge.RenderedWorkload {
+    workloads = [fw.Workload {
         name = "api"
         image = "api:dev"
-        deploy = _target.deploy
+        runtime = forge.OnCluster {target = _target}
     }]
     secret_provider = forge.FileSecrets {
         path = "secrets/dev.yaml"
@@ -44,7 +49,7 @@ _dir_bundle = forge.Bundle {
 # that is identical on every machine (so it belongs in version control,
 # not in anyone's local store).
 _rendered_bundle = forge.Bundle {
-    services = []
+    workloads = []
     secret_provider = forge.RenderedSecrets {
         secrets = [forge.RenderedSecret {
             name = "app-secrets"
@@ -58,7 +63,7 @@ _rendered_bundle = forge.Bundle {
 
 output_store = forge.render(_dir_bundle)
 output_rendered = forge.render(_rendered_bundle)
-manifests_dir = forge.render_manifests(_dir_bundle)
+manifests_dir = forge.render(_dir_bundle).manifests
 
 # ── Invariants ─────────────────────────────────────────────────────
 

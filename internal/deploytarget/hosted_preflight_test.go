@@ -8,14 +8,14 @@ import (
 )
 
 // preflightGroup is hounders' hosted shape as a group: a registry-less
-// backend this project builds (it has no release yet, so no digest and no
+// workload this project builds (it has no release yet, so no digest and no
 // registry), a static site and a database, with references between them.
-func preflightGroup(backend v1alpha1.SimpleBackendSpec) ServiceGroup {
+func preflightGroup(api v1alpha1.WorkloadSpec) ServiceGroup {
 	return ServiceGroup{
 		Env:        "prod",
 		ProviderID: HostedProviderID,
 		Services: []ResolvedService{
-			{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierBackend, Artifact: "hounders", Backend: &backend}},
+			{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierWorkload, Artifact: "hounders", Workload: &api}},
 			{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Static: &v1alpha1.StaticSiteSpec{
 				RuntimeConfig: map[string]v1alpha1.RuntimeConfigValue{"API_URL": {WorkloadURL: &v1alpha1.WorkloadURLRef{Name: "api"}}},
 			}}},
@@ -24,9 +24,11 @@ func preflightGroup(backend v1alpha1.SimpleBackendSpec) ServiceGroup {
 	}
 }
 
-func publicBackend() v1alpha1.SimpleBackendSpec {
-	return v1alpha1.SimpleBackendSpec{
-		Image: "hounders", Ports: []int32{8080}, Network: v1alpha1.NetworkPublic,
+func publicBackend() v1alpha1.WorkloadSpec {
+	return v1alpha1.WorkloadSpec{
+		Kind: v1alpha1.KindService, Image: "hounders", Args: []string{"api"},
+		Ports:  []v1alpha1.Port{{Name: "http", Port: 8080, Expose: true}},
+		Probes: &v1alpha1.Probes{},
 		Env: []v1alpha1.EnvVar{
 			{Name: "CORS_ORIGINS", WorkloadURL: &v1alpha1.WorkloadURLRef{Name: "web"}},
 			{Name: "DATABASE_URL", DatabaseRef: &v1alpha1.DatabaseRef{Name: "hounders"}},
@@ -46,8 +48,8 @@ func TestPreflightHostedAdmitsWithoutARelease(t *testing.T) {
 		t.Fatalf("admitted %d workload(s), want 3", len(items))
 	}
 	for _, it := range items {
-		if it.Backend != nil && !strings.HasPrefix(it.Backend.Image, preflightRegistry+"/hounders@"+preflightDigest) {
-			t.Errorf("backend image = %q, want the placeholder pin", it.Backend.Image)
+		if it.Workload != nil && !strings.HasPrefix(it.Workload.Image, preflightRegistry+"/hounders@"+preflightDigest) {
+			t.Errorf("workload image = %q, want the placeholder pin", it.Workload.Image)
 		}
 	}
 }
@@ -63,7 +65,7 @@ func TestPreflightHostedRefusesWhatTheDeployWould(t *testing.T) {
 		"off the shape band": {
 			func(g *ServiceGroup) {
 				// On the 125m grid, off the 4 GiB-per-vCPU band (250m needs 1 GiB).
-				g.Services[0].Hosted.Backend.Resources = v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 128 << 20, MemoryLimitBytes: 128 << 20}
+				g.Services[0].Hosted.Workload.Resources = v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 128 << 20, MemoryLimitBytes: 128 << 20}
 			},
 			"shape band",
 		},
@@ -71,19 +73,45 @@ func TestPreflightHostedRefusesWhatTheDeployWould(t *testing.T) {
 			func(g *ServiceGroup) { g.Services = g.Services[:2] },
 			`databaseRef "hounders"`,
 		},
-		"workloadURL to a private backend": {
-			func(g *ServiceGroup) { g.Services[0].Hosted.Backend.Network = v1alpha1.NetworkPrivate },
-			"only a public backend has a URL",
+		"workloadURL to a workload that exposes nothing": {
+			func(g *ServiceGroup) { g.Services[0].Hosted.Workload.Ports[0].Expose = false },
+			"only a workload with an exposed port has a URL",
 		},
 		"workloadURL to an undeclared workload": {
 			func(g *ServiceGroup) {
-				g.Services[0].Hosted.Backend.Env[0].WorkloadURL.Name = "admin"
+				g.Services[0].Hosted.Workload.Env[0].WorkloadURL.Name = "admin"
 			},
 			`references workload "admin", which this env does not publish`,
 		},
-		"invalid spec": {
-			func(g *ServiceGroup) { g.Services[0].Hosted.Backend.Ports = []int32{0} },
-			"port 0 must be 1-65535",
+		"a Full-only field (restricted profile)": {
+			func(g *ServiceGroup) {
+				g.Services[0].Hosted.Workload.NamespacedRBAC = []v1alpha1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}}
+			},
+			"namespacedRBAC",
+		},
+		"a kind the platform does not run": {
+			func(g *ServiceGroup) {
+				g.Services[0].Hosted.Workload.Kind = v1alpha1.KindCron
+				g.Services[0].Hosted.Workload.Schedule = "@hourly"
+				g.Services[0].Hosted.Workload.Ports = nil
+				g.Services[0].Hosted.Workload.Probes = nil
+				g.Services = g.Services[:1]
+				g.Services[0].Hosted.Workload.Env = nil
+			},
+			"cron",
+		},
+		"a workload name the CR cannot carry": {
+			func(g *ServiceGroup) {
+				g.Services[0].Name = "API_Server"
+			},
+			"RFC-1123",
+		},
+		"a gating job naming a workload the hosted set lacks": {
+			func(g *ServiceGroup) {
+				g.Services = append(g.Services, ResolvedService{Name: "migrate", Hosted: &HostedWorkload{Tier: HostedTierWorkload, Artifact: "hounders",
+					Workload: &v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Image: "hounders", Args: []string{"db", "migrate", "up"}, Before: []string{"worker"}}}})
+			},
+			"worker",
 		},
 	}
 	for name, tc := range cases {
@@ -95,6 +123,31 @@ func TestPreflightHostedRefusesWhatTheDeployWould(t *testing.T) {
 				t.Fatalf("err = %v, want the plan's refusal naming %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A hosted JOB is published, not dropped: it is admitted as a Workload CR of
+// kind job, pinned like any other workload, and rendered with the set, so
+// its `before` gate resolves against the hosted workloads it names.
+func TestPreflightHostedAdmitsAHostedJob(t *testing.T) {
+	g := preflightGroup(publicBackend())
+	g.Services = append(g.Services, ResolvedService{Name: "migrate", Hosted: &HostedWorkload{Tier: HostedTierWorkload, Artifact: "hounders",
+		Workload: &v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Image: "hounders", Args: []string{"db", "migrate", "up"}, Before: []string{"api"}}}})
+	items, err := PreflightHosted(g)
+	if err != nil {
+		t.Fatalf("PreflightHosted refused a hosted gating job: %v", err)
+	}
+	var job *HostedPreflightItem
+	for i := range items {
+		if items[i].Name == "migrate" {
+			job = &items[i]
+		}
+	}
+	if job == nil || job.Tier != HostedTierWorkload || job.Workload == nil || job.Workload.Kind != v1alpha1.KindJob {
+		t.Fatalf("migrate not admitted as a workload-tier job: %+v", items)
+	}
+	if !strings.HasSuffix(job.Workload.Image, "@"+preflightDigest) {
+		t.Errorf("job image %q is not digest-pinned", job.Workload.Image)
 	}
 }
 

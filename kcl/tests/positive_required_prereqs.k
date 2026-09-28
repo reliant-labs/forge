@@ -16,6 +16,7 @@ create it; the declaration drives the checklist + preflight only.
 """
 
 import forge
+import forge.workloads as fw
 
 _target = forge.ClusterTarget {
     cluster = "prod-cluster"
@@ -26,11 +27,12 @@ _target = forge.ClusterTarget {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [
-        forge.RenderedWorkload {
+    workloads = [
+        fw.Workload {
             name = "api"
             image = "api"
-            deploy = _target.deploy | {ports = [8080]}
+            ports = [fw.Port {name = "http", port = 8080}]
+            runtime = forge.OnCluster {target = _target}
         }
     ]
     required_secrets = [
@@ -101,6 +103,6 @@ assert_dns_api_target = output.required_dns[1].target == "203.0.113.10"
 # ── a prerequisite NEVER renders into the k8s manifest stream ─────────
 # forge doesn't create these; the declaration drives the checklist +
 # preflight only. No Secret object for the out-of-band Secret leaks in.
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
+manifests = forge.render(_bundle).manifests
 _leaked = [m for m in manifests if m.kind == "Secret" and m.metadata.name == "cloudflare-api-token"]
 assert_no_prereq_secret_in_render = len(_leaked) == 0

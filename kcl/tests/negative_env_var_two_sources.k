@@ -9,6 +9,8 @@ and the deploy dies against the real cluster. Caught here instead, at
 the point the ambiguity is written.
 """
 
+# expect: EnvVar 'API_TOKEN' sets more than one source
+
 import forge
 
 _bad = forge.EnvVar {

@@ -19,28 +19,60 @@ func ptr[T any](v T) *T { return &v }
 const digestA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const digestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-// fullBackend sets EVERY field, so a round-trip that drops one is visible.
-func fullBackend() *SimpleBackend {
-	return &SimpleBackend{
-		TypeMeta:   metav1.TypeMeta{APIVersion: GroupVersion.String(), Kind: "SimpleBackend"},
+// fullWorkload sets EVERY field, so a round-trip that drops one is visible.
+// It is a Full-profile spec: every field is set, including the Full-only ones.
+func fullWorkload() *Workload {
+	return &Workload{
+		TypeMeta:   metav1.TypeMeta{APIVersion: GroupVersion.String(), Kind: "Workload"},
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "acme-prod", Labels: map[string]string{LabelOrgID: "org_1"}},
-		Spec: SimpleBackendSpec{
-			Image:   "ghcr.io/acme/api:v1.4.2",
-			Ports:   []int32{8080, 9090},
-			Network: NetworkPublic,
-			Domains: []string{"api.acme.com"},
+		Spec: WorkloadSpec{
+			Kind:     KindOperator,
+			Image:    "ghcr.io/acme/api:v1.4.2",
+			Command:  []string{"/app/api"},
+			Args:     []string{"operator"},
+			Replicas: 2,
 			Env: []EnvVar{
 				{Name: "LOG_LEVEL", Value: "info"},
 				{Name: "DB_PASSWORD", SecretRef: &SecretKeyRef{Name: "db", Key: "password"}},
-				{Name: "STRIPE_KEY", ManagedSecret: "STRIPE_KEY"},
+				{Name: "STRIPE_KEY", ManagedSecret: &ManagedSecretRef{Name: "STRIPE_KEY", Optional: true}},
 				{Name: "DATABASE_URL", DatabaseRef: &DatabaseRef{Name: "orders", Key: DatabaseKeyURI}},
+				{Name: "CORS_ORIGINS", WorkloadURL: &WorkloadURLRef{Name: "web"}},
+				{Name: "FEATURES", ConfigMapRef: &ConfigMapKeyRef{Name: "flags", Key: "features"}},
+				{Name: "POD_NAME", FieldRef: &FieldRef{FieldPath: "metadata.name"}},
 			},
-			Resources:   Resources{CPURequestMillicores: 500, CPULimitMillicores: 1000, MemoryRequestBytes: 2 << 30, MemoryLimitBytes: 2 << 30},
-			HealthCheck: &HealthCheck{Port: 8080, Path: "/healthz", InitialDelaySeconds: 7, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 3},
-			StorageGiB:  20,
+			Resources:                 Resources{CPURequestMillicores: 500, CPULimitMillicores: 1000, MemoryRequestBytes: 2 << 30, MemoryLimitBytes: 2 << 30},
+			Ports:                     []Port{{Name: "metrics", Port: 8080, Protocol: ProtocolTCP, AppProtocol: "http"}, {Name: "webhook", Port: 9443}},
+			Probes:                    &Probes{Port: 8081, ReadinessPath: "/readyz", LivenessPath: "/healthz", InitialDelaySeconds: 1, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 4},
+			StorageGiB:                0,
+			Schedule:                  "",
+			Before:                    nil,
+			DeployPhase:               "",
+			ClusterRBAC:               []PolicyRule{{APIGroups: []string{"acme.dev"}, Resources: []string{"widgets", "widgets/status"}, Verbs: []string{"*"}, ResourceNames: []string{"w1"}}},
+			CRDs:                      []string{"Widget"},
+			Group:                     "acme.dev",
+			Version:                   "v1alpha1",
+			LeaderElection:            ptr(false),
+			ServiceAccountAnnotations: map[string]string{"iam.gke.io/gcp-service-account": "api@acme.iam.gserviceaccount.com"},
+			Sidecars: []Container{{
+				Name: "cloud-sql-proxy", Image: "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1",
+				Command: []string{"/cloud-sql-proxy"}, Args: []string{"--port=5432", "acme:us:db"},
+				Env:       []EnvVar{{Name: "LOG", Value: "debug"}},
+				Ports:     []Port{{Name: "proxy-health", Port: 9801}},
+				Resources: Resources{CPURequestMillicores: 10, MemoryRequestBytes: 16 << 20},
+				Probes:    &Probes{TCP: true},
+			}},
+			Volumes: []Volume{
+				{Name: "scratch", MountPath: "/scratch", Source: VolumeSource{EmptyDir: &EmptyDirVolumeSource{SizeLimitBytes: 1 << 30}}},
+				{Name: "key", MountPath: "/etc/key", ReadOnly: true, Source: VolumeSource{Secret: &SecretVolumeSource{Name: "k", Items: []KeyToPath{{Key: "pem", Path: "key.pem"}}}}},
+				{Name: "cfg", MountPath: "/etc/cfg", ReadOnly: true, Source: VolumeSource{ConfigMap: &ConfigMapVolumeSource{Name: "c", Items: []KeyToPath{{Key: "a", Path: "a.yaml"}}}}},
+				{Name: "cache", MountPath: "/cache", Source: VolumeSource{PVC: &PVCVolumeSource{ClaimName: "cache"}}},
+			},
+			NodeSelector:   map[string]string{"cloud.google.com/gke-nodepool": "ops"},
+			Tolerations:    []Toleration{{Key: "dedicated", Operator: TolerationOpEqual, Value: "ops", Effect: TaintNoExecute, TolerationSeconds: ptr(int64(30))}},
+			PodAnnotations: map[string]string{"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"},
 		},
-		Status: SimpleBackendStatus{
-			WorkloadStatus: WorkloadStatus{Phase: PhaseReady, ObservedGeneration: 3, Hostname: "lively-ferret.apps.example", URL: "https://lively-ferret.apps.example", Message: "ok",
+		Status: WorkloadStatus{
+			TierStatus: TierStatus{Phase: PhaseReady, ObservedGeneration: 3, Hostname: "lively-ferret.apps.example", URL: "https://lively-ferret.apps.example", Message: "ok",
 				Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Unix(1700000000, 0)}}},
 			ServiceName: "api", WorkloadName: "api", ReadyReplicas: 1, ObservedImage: "ghcr.io/acme/api:v1.4.2", LastReadyAt: ptr(metav1.Unix(1700000000, 0)),
 		},
@@ -61,7 +93,7 @@ func fullSite() *StaticSite {
 				"FLAG":    {Value: ptr("")},
 			},
 		},
-		Status: StaticSiteStatus{WorkloadStatus: WorkloadStatus{Phase: PhaseProgressing}, BucketPrefix: "sites/web", LiveDigest: digestB, PreviousDigest: digestA, ReleaseCount: 4, LastSyncedAt: ptr(metav1.Unix(1700000000, 0))},
+		Status: StaticSiteStatus{TierStatus: TierStatus{Phase: PhaseProgressing}, BucketPrefix: "sites/web", LiveDigest: digestB, PreviousDigest: digestA, ReleaseCount: 4, LastSyncedAt: ptr(metav1.Unix(1700000000, 0))},
 	}
 }
 
@@ -78,7 +110,7 @@ func fullDatabase() *ManagedDatabase {
 // TestTierTypesRoundTripJSON: every kind survives encode→decode unchanged, and
 // the encoding re-encodes byte-identically (no field lost to a tag mismatch).
 func TestTierTypesRoundTripJSON(t *testing.T) {
-	for name, obj := range map[string]runtime.Object{"SimpleBackend": fullBackend(), "StaticSite": fullSite(), "ManagedDatabase": fullDatabase()} {
+	for name, obj := range map[string]runtime.Object{"Workload": fullWorkload(), "StaticSite": fullSite(), "ManagedDatabase": fullDatabase()} {
 		t.Run(name, func(t *testing.T) {
 			b, err := json.Marshal(obj)
 			if err != nil {
@@ -101,12 +133,13 @@ func TestTierTypesRoundTripJSON(t *testing.T) {
 
 // TestSpecCarriesNoHostedIdentity pins the design rule that ownership is
 // labels, never spec: an author-writable org id is the defect it prevents.
+// (NamespacedRBAC / ClusterRBAC are RBAC tiers, not target coordinates.)
 func TestSpecCarriesNoHostedIdentity(t *testing.T) {
-	forbidden := regexp.MustCompile(`(?i)^(org|tena|environment|deployment|namespace|cluster|replicas)`)
-	for _, typ := range []reflect.Type{reflect.TypeOf(SimpleBackendSpec{}), reflect.TypeOf(StaticSiteSpec{}), reflect.TypeOf(ManagedDatabaseSpec{})} {
+	forbidden := regexp.MustCompile(`(?i)^(org|tena|environment|deployment|namespace($|name)|cluster($|name|id))`)
+	for _, typ := range []reflect.Type{reflect.TypeOf(WorkloadSpec{}), reflect.TypeOf(StaticSiteSpec{}), reflect.TypeOf(ManagedDatabaseSpec{})} {
 		for i := 0; i < typ.NumField(); i++ {
 			if f := typ.Field(i); forbidden.MatchString(f.Name) {
-				t.Errorf("%s.%s: hosted identity, target coordinates and replicas are not spec", typ.Name(), f.Name)
+				t.Errorf("%s.%s: hosted identity and target coordinates are not spec", typ.Name(), f.Name)
 			}
 		}
 	}
@@ -119,7 +152,7 @@ func TestSchemeRegistersAllKinds(t *testing.T) {
 	if err := AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"SimpleBackend", "SimpleBackendList", "StaticSite", "StaticSiteList", "ManagedDatabase", "ManagedDatabaseList"} {
+	for _, k := range []string{"Workload", "WorkloadList", "StaticSite", "StaticSiteList", "ManagedDatabase", "ManagedDatabaseList"} {
 		if !s.Recognizes(GroupVersion.WithKind(k)) {
 			t.Errorf("%s not registered under %s", k, GroupVersion)
 		}
@@ -132,12 +165,25 @@ func TestSchemeRegistersAllKinds(t *testing.T) {
 // TestDeepCopyIsIndependent: mutating a copy's nested pointer/slice must not
 // reach the original.
 func TestDeepCopyIsIndependent(t *testing.T) {
-	a := fullBackend()
+	a := fullWorkload()
 	b := a.DeepCopy()
 	b.Spec.Env[3].DatabaseRef.Name = "changed"
-	b.Spec.Ports[0] = 1
-	b.Spec.HealthCheck.Port = 1
-	if a.Spec.Env[3].DatabaseRef.Name != "orders" || a.Spec.Ports[0] != 8080 || a.Spec.HealthCheck.Port != 8080 {
+	b.Spec.Env[5].ConfigMapRef.Key = "changed"
+	b.Spec.Ports[0].Port = 1
+	b.Spec.Probes.Port = 1
+	b.Spec.ClusterRBAC[0].Verbs[0] = "get"
+	*b.Spec.LeaderElection = true
+	b.Spec.ServiceAccountAnnotations["x"] = "y"
+	b.Spec.Sidecars[0].Args[0] = "changed"
+	b.Spec.Sidecars[0].Probes.TCP = false
+	b.Spec.Volumes[1].Source.Secret.Items[0].Path = "changed"
+	*b.Spec.Tolerations[0].TolerationSeconds = 1
+	b.Spec.NodeSelector["x"] = "y"
+	b.Spec.PodAnnotations["x"] = "y"
+	if a.Spec.Env[3].DatabaseRef.Name != "orders" || a.Spec.Env[5].ConfigMapRef.Key != "features" || a.Spec.Ports[0].Port != 8080 ||
+		a.Spec.Probes.Port != 8081 || a.Spec.ClusterRBAC[0].Verbs[0] != "*" || *a.Spec.LeaderElection || len(a.Spec.ServiceAccountAnnotations) != 1 ||
+		a.Spec.Sidecars[0].Args[0] != "--port=5432" || !a.Spec.Sidecars[0].Probes.TCP || a.Spec.Volumes[1].Source.Secret.Items[0].Path != "key.pem" ||
+		*a.Spec.Tolerations[0].TolerationSeconds != 30 || len(a.Spec.NodeSelector) != 1 || len(a.Spec.PodAnnotations) != 1 {
 		t.Fatal("DeepCopy shares memory with the original")
 	}
 }
@@ -149,67 +195,6 @@ func mustFail(t *testing.T, err error, want string) {
 	}
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("error %q does not contain %q", err, want)
-	}
-}
-
-func TestSimpleBackendValidate(t *testing.T) {
-	if err := fullBackend().Spec.Validate(); err != nil {
-		t.Fatalf("the full fixture must validate: %v", err)
-	}
-	minimal := SimpleBackendSpec{Image: "ghcr.io/acme/api@sha256:" + strings.Repeat("a", 64), Ports: []int32{8080}}
-	if err := minimal.Validate(); err != nil {
-		t.Fatalf("a minimal private backend with defaults must validate (working defaults): %v", err)
-	}
-	// A public backend no longer needs a domain: the hostname is allocated.
-	pub := minimal
-	pub.Network = NetworkPublic
-	if err := pub.Validate(); err != nil {
-		t.Fatalf("public with no domains must validate (hostname is allocated): %v", err)
-	}
-
-	cases := map[string]struct {
-		mut  func(*SimpleBackendSpec)
-		want string
-	}{
-		"bare image":        {func(s *SimpleBackendSpec) { s.Image = "api:v1" }, "registry host"},
-		"unpinned":          {func(s *SimpleBackendSpec) { s.Image = "ghcr.io/acme/api" }, "pinned"},
-		"port-in-host only": {func(s *SimpleBackendSpec) { s.Image = "localhost:5000/api" }, "pinned"},
-		"bad network":       {func(s *SimpleBackendSpec) { s.Network = "internet" }, "network"},
-		"private no ports":  {func(s *SimpleBackendSpec) { s.Ports = nil }, "at least one port"},
-		"none with ports":   {func(s *SimpleBackendSpec) { s.Network = NetworkNone }, "no ports"},
-		"domain on private": {func(s *SimpleBackendSpec) { s.Domains = []string{"a.example.com"} }, "only meaningful for network public"},
-		"bad domain":        {func(s *SimpleBackendSpec) { s.Network = NetworkPublic; s.Domains = []string{"Not A Host"} }, "not a lowercase DNS hostname"},
-		"two env channels":  {func(s *SimpleBackendSpec) { s.Env = []EnvVar{{Name: "X", Value: "1", ManagedSecret: "X"}} }, "more than one"},
-		"dup env":           {func(s *SimpleBackendSpec) { s.Env = []EnvVar{{Name: "X"}, {Name: "X"}} }, "declared twice"},
-		"traversal secret":  {func(s *SimpleBackendSpec) { s.Env = []EnvVar{{Name: "X", ManagedSecret: "other/secret"}} }, "bare logical name"},
-		"db ref bad key": {func(s *SimpleBackendSpec) {
-			s.Env = []EnvVar{{Name: "X", DatabaseRef: &DatabaseRef{Name: "db", Key: "dsn"}}}
-		}, "databaseRef.key"},
-		"limit below req": {func(s *SimpleBackendSpec) {
-			s.Resources = Resources{CPURequestMillicores: 500, CPULimitMillicores: 250}
-		}, "at least the request"},
-		"negative resources": {func(s *SimpleBackendSpec) { s.Resources.MemoryRequestBytes = -1 }, "must not be negative"},
-		"bad probe port":     {func(s *SimpleBackendSpec) { s.HealthCheck = &HealthCheck{Port: 0} }, "healthCheck.port"},
-		"negative storage":   {func(s *SimpleBackendSpec) { s.StorageGiB = -1 }, "storageGiB"},
-		"value and workloadURL": {func(s *SimpleBackendSpec) {
-			s.Env = []EnvVar{{Name: "CORS_ORIGINS", Value: "x", WorkloadURL: &WorkloadURLRef{Name: "web"}}}
-		}, "more than one"},
-		"bad workloadURL name": {func(s *SimpleBackendSpec) {
-			s.Env = []EnvVar{{Name: "CORS_ORIGINS", WorkloadURL: &WorkloadURLRef{Name: "Web_Site"}}}
-		}, "workloadURL.name"},
-	}
-	for name, c := range cases {
-		t.Run(name, func(t *testing.T) {
-			s := minimal
-			c.mut(&s)
-			mustFail(t, s.Validate(), c.want)
-		})
-	}
-
-	// Collected, not first-error-only: one pass surfaces every mistake.
-	bad := SimpleBackendSpec{Image: "api", Network: "x", StorageGiB: -1}
-	if n := strings.Count(bad.Validate().Error(), "\n") + 1; n < 3 {
-		t.Errorf("want every violation reported together, got %d: %v", n, bad.Validate())
 	}
 }
 
@@ -330,10 +315,17 @@ func TestResourcesLimitDefaultsToRequest(t *testing.T) {
 // inherit the same wrong default. So for these fields the only correct
 // marker is none.
 func TestDefaultMarkersMatchGoDefaults(t *testing.T) {
-	mustHaveNoMarker := []string{"CPULimitMillicores", "MemoryLimitBytes"}
+	// DeployPhase and LeaderElection default by KIND (a standalone job's
+	// phase, an operator's election), so a static marker would stamp them
+	// on every kind and Validate would refuse the CR. Probes' absence is
+	// the declaration.
+	mustHaveNoMarker := []string{"CPULimitMillicores", "MemoryLimitBytes", "DeployPhase", "LeaderElection", "Probes"}
 	want := map[string]string{
 		"CPURequestMillicores": strconv.FormatInt(DefaultCPUMillicores, 10),
 		"MemoryRequestBytes":   strconv.FormatInt(DefaultMemoryBytes, 10),
+		"Kind":                 string(DefaultWorkloadKind),
+		"Replicas":             strconv.Itoa(int(DefaultReplicas)),
+		"Protocol":             string(DefaultPortProtocol),
 		"InitialDelaySeconds":  strconv.Itoa(int(DefaultProbeInitialDelaySeconds)),
 		"PeriodSeconds":        strconv.Itoa(int(DefaultProbePeriodSeconds)),
 		"TimeoutSeconds":       strconv.Itoa(int(DefaultProbeTimeoutSeconds)),
@@ -342,14 +334,13 @@ func TestDefaultMarkersMatchGoDefaults(t *testing.T) {
 		"StorageGiB":           strconv.Itoa(int(DefaultDatabaseStorageGiB)),
 		"DeletionPolicy":       string(DeletionPolicyRetain),
 		"Engine":               string(EnginePostgres),
-		"Network":              string(NetworkPrivate),
 		"Invalidate":           string(InvalidateEntrypoints),
 	}
 	// A default marker applies to the next non-comment line, which is the field.
 	marker := regexp.MustCompile(`^\s*// \+kubebuilder:default=(\S+)$`)
 	fieldLine := regexp.MustCompile(`^\s*(\w+)\s`)
 	found := map[string]string{}
-	for _, f := range []string{"common.go", "simplebackend_types.go", "staticsite_types.go", "manageddatabase_types.go"} {
+	for _, f := range []string{"common.go", "workload_types.go", "staticsite_types.go", "manageddatabase_types.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)

@@ -1,17 +1,13 @@
 """
-Negative test — HostDeploy.runner must be one of the four enum
-values. Picking "bogus" should fail KCL's `check` block.
-
-The test runner expects this file to produce a non-zero exit code
-when run with `kcl run`.
+Negative test — OnHost.runner must be one of the four runners forge knows
+how to launch. Picking "bogus-runner" fails the check block, naming the
+allowed values.
 """
+
+# expect: runner must be 'go-run' | 'air' | 'binary' | 'delve'
 
 import forge
 
-_svc = forge.RenderedWorkload {
-    name = "bad-runner"
-    image = "x"
-    deploy = forge.HostDeploy {
-        runner = "bogus-runner"
-    }
+_rt = forge.OnHost {
+    runner = "bogus-runner"
 }

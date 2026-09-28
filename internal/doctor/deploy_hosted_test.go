@@ -16,11 +16,12 @@ func shapedRender(t *testing.T, env, body string, shape DeployShape) envRender {
 	return r
 }
 
-// The houndersclub Deployability failure, at the unit level: a hosted env's
-// `manifests` is empty by design, and the check used to call that "render
-// produced no k8s objects". The shape says it is hosted and admitted.
+// The houndersclub Deployability failure, at the unit level: an env whose
+// every workload is hosted renders an empty `output.manifests` by design, and
+// the check used to call that "render produced no k8s objects". The shape
+// says it is hosted and admitted.
 func TestCheckDeployManifests_HostedEnvIsJudgedByItsDeployPath(t *testing.T) {
-	empty := `{"manifests":[],"output":{"services":[]}}`
+	empty := `{"output":{"manifests":[],"workloads":[]}}`
 	cases := []struct {
 		name     string
 		shape    DeployShape
@@ -43,11 +44,26 @@ func TestCheckDeployManifests_HostedEnvIsJudgedByItsDeployPath(t *testing.T) {
 			evidence: "off the shape band",
 		},
 		{
-			name:     "a hosted env rendering k8s objects fails: no hosted deploy applies them",
+			name:     "an all-hosted env rendering k8s objects fails: nothing applies them",
 			shape:    DeployShape{Destinations: []string{"hosted"}, Hosted: true, Workloads: 1},
-			body:     `{"manifests":[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"stray"}}],"output":{}}`,
+			body:     `{"output":{"manifests":[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"stray"}}]}}`,
 			want:     StatusFail,
-			evidence: "a hosted deploy applies none of them",
+			evidence: "this env applies nothing to a cluster",
+		},
+		{
+			// Hosting is per workload: a MIXED env's cluster part is judged
+			// like any other cluster env, and its hosted part by admission.
+			name:  "a mixed env's cluster stream is applyable",
+			shape: DeployShape{Destinations: []string{"cluster", "hosted"}, Hosted: true, Workloads: 1},
+			body:  `{"output":{"manifests":[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cfg"}}]}}`,
+			want:  StatusPass,
+		},
+		{
+			name:     "a mixed env with an empty cluster stream still fails",
+			shape:    DeployShape{Destinations: []string{"cluster", "hosted"}, Hosted: true, Workloads: 1},
+			body:     `{"output":{"manifests":[]}}`,
+			want:     StatusFail,
+			evidence: "no k8s objects",
 		},
 		{
 			// An env the deploy path runs entirely on this machine applies
@@ -70,7 +86,7 @@ func TestCheckDeployManifests_HostedEnvIsJudgedByItsDeployPath(t *testing.T) {
 			// reading: nothing has shown it exempt.
 			name:     "unclassified env with an empty stream still fails",
 			shape:    DeployShape{},
-			body:     `{"manifests":[]}`,
+			body:     `{"output":{"manifests":[]}}`,
 			want:     StatusFail,
 			evidence: "no k8s objects",
 		},
@@ -101,13 +117,13 @@ func TestHostedPlatformObjectsFeedContentChecksOnly(t *testing.T) {
 	// and a placeholder namespace, which is NOT a collision — the platform
 	// gives each env its own namespace.
 	env := envWithRender([]envRender{
-		shapedRender(t, "prod", `{"manifests":[],"output":{}}`, shape),
-		shapedRender(t, "staging", `{"manifests":[],"output":{}}`, shape),
+		shapedRender(t, "prod", `{"output":{"manifests":[]}}`, shape),
+		shapedRender(t, "staging", `{"output":{"manifests":[]}}`, shape),
 	})
 
 	probes := CheckDeployProbes(context.Background(), env)
-	if probes.Status != StatusFail || !strings.Contains(probes.Evidence, "hosted tier") ||
-		!strings.Contains(probes.Evidence, "healthCheck = tiers.HealthCheck") {
+	if probes.Status != StatusFail || !strings.Contains(probes.Evidence, "hosted") ||
+		!strings.Contains(probes.Evidence, "probes = tiers.Probes") {
 		t.Errorf("Deploy Probes did not judge the hosted backend the platform runs: %s\n%s", probes.Status, probes.Evidence)
 	}
 	if res := CheckDeployResources(context.Background(), env); res.Status != StatusPass {
@@ -122,7 +138,7 @@ func TestHostedPlatformObjectsFeedContentChecksOnly(t *testing.T) {
 // unreadable (UNDETERMINED for content checks), never judged on half its
 // workloads.
 func TestHostedUndecodablePlatformObjectsAreUnread(t *testing.T) {
-	r := shapedRender(t, "prod", `{"manifests":[],"output":{}}`,
+	r := shapedRender(t, "prod", `{"output":{"manifests":[]}}`,
 		DeployShape{Destinations: []string{"hosted"}, Hosted: true, PlatformObjects: []byte("{not json")})
 	if r.err == nil {
 		t.Fatal("an undecodable platform object list was accepted")
@@ -131,4 +147,42 @@ func TestHostedUndecodablePlatformObjectsAreUnread(t *testing.T) {
 	if res := CheckDeployProbes(context.Background(), env); res.Status != StatusUnknown {
 		t.Errorf("Deploy Probes = %s over an env it could not read, want unknown", res.Status)
 	}
+}
+
+// The applied stream is judged EXPANDED. A Cluster workload reaches the
+// render as a forge.dev Workload record, and the probes, resources and
+// ServiceAccount a check reads exist only after pkg/deploy.RenderWorkloads
+// expands it — which is exactly what forge applies. Judging the record
+// itself would report "no workload containers" for every forge-built env.
+func TestParseRender_JudgesTheExpandedStream(t *testing.T) {
+	body := `{"output":{"manifests":[
+	  {"apiVersion":"forge.dev/v1alpha1","kind":"Workload",
+	   "metadata":{"name":"api","namespace":"acme-prod","labels":{"forge.dev/cluster":"gke_prod"}},
+	   "spec":{"kind":"service","image":"ghcr.io/acme/api:v1","args":["api"],
+	           "ports":[{"name":"http","port":8080}],"probes":{}}}]}}`
+	r := renderFromJSON(t, "prod", body)
+	var deploy *k8sObject
+	for i, o := range r.objects {
+		if o.Kind == "Workload" {
+			t.Fatalf("a Workload record reached the judged stream unexpanded")
+		}
+		if o.Kind == "Deployment" && o.Metadata.Name == "api" {
+			deploy = &r.objects[i]
+		}
+	}
+	if deploy == nil {
+		t.Fatalf("no expanded Deployment; kinds judged: %v", kindsOf(r.objects))
+	}
+	env := envWithRender([]envRender{r})
+	if got := CheckDeployProbes(context.Background(), env); got.Status != StatusPass {
+		t.Errorf("Deploy Probes = %s over a workload RenderWorkloads gives /readyz + /healthz: %s\n%s", got.Status, got.Message, got.Evidence)
+	}
+}
+
+func kindsOf(objs []k8sObject) []string {
+	out := make([]string, len(objs))
+	for i, o := range objs {
+		out[i] = o.Kind
+	}
+	return out
 }

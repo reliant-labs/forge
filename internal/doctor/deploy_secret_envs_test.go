@@ -29,9 +29,9 @@ import (
 // prod, sitting in the same list.
 func TestCheckDeploySecrets_LiteralsAllowedInDevAndE2E(t *testing.T) {
 	leaky := `{"name":"api","env":[{"name":"DATABASE_URL","value":"postgres://postgres:postgres@localhost:5434/app"}]}`
-	body := `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+	body := `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 		`"metadata":{"name":"api","namespace":"dev"},` +
-		`"spec":{"template":{"spec":{"containers":[` + leaky + `]}}}}]}`
+		`"spec":{"template":{"spec":{"containers":[` + leaky + `]}}}}]}}`
 
 	for _, envName := range []string{"dev", "e2e"} {
 		t.Run(envName, func(t *testing.T) {
@@ -54,9 +54,9 @@ func TestCheckDeploySecrets_LiteralsStillFailInDeployedEnvs(t *testing.T) {
 
 	for _, envName := range []string{"prod", "preprod", "staging", "dev-k8s", "production"} {
 		t.Run(envName, func(t *testing.T) {
-			body := `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+			body := `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 				`"metadata":{"name":"api","namespace":"` + envName + `"},` +
-				`"spec":{"template":{"spec":{"containers":[` + leaky + `]}}}}]}`
+				`"spec":{"template":{"spec":{"containers":[` + leaky + `]}}}}]}}`
 			env := envWithRender([]envRender{renderFromJSON(t, envName, body)})
 			got := CheckDeploySecrets(context.Background(), env)
 			if got.Status != StatusFail {

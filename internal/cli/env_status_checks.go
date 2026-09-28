@@ -64,12 +64,8 @@ func runtimeTargetFor(e *KCLEntities, rows []upServiceRow) doctor.RuntimeTarget 
 	if t.Service == "" || e == nil {
 		return t
 	}
-	for i := range e.Services {
-		s := &e.Services[i]
-		if s.Name != t.Service || s.Deploy.Host == nil {
-			continue
-		}
-		if p := pprofPortFromAddr(envVarValue(s.Deploy.Host.EnvVars, "PPROF_ADDR")); p != "" {
+	if w := e.FindWorkload(t.Service); w != nil && w.OnRuntime(RuntimeHost) {
+		if p := pprofPortFromAddr(w.HostEnv()["PPROF_ADDR"]); p != "" {
 			t.Pprof = "localhost:" + p
 		}
 	}

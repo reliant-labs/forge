@@ -12,6 +12,8 @@ The octet bound is what is exercised here rather than obvious garbage:
 address, so it is the case a regex-only check would let through.
 """
 
+# expect: Cluster.cluster_cidr must be an IPv4 CIDR
+
 import forge
 
 _bad = forge.Cluster {

@@ -27,7 +27,7 @@ func TestForgeTierCRDsProject(t *testing.T) {
 	for _, d := range docs {
 		kinds[d.Kind] = d
 	}
-	for _, k := range []string{"SimpleBackend", "StaticSite", "ManagedDatabase"} {
+	for _, k := range []string{"Workload", "StaticSite", "ManagedDatabase"} {
 		d, ok := kinds[k]
 		if !ok {
 			t.Fatalf("no CRD projected for %s (got %d docs)", k, len(docs))
@@ -45,7 +45,32 @@ func TestForgeTierCRDsProject(t *testing.T) {
 			}
 		}
 	}
-	res := kinds["SimpleBackend"].CRD.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["resources"]
+	wl := kinds["Workload"].CRD
+	if names := wl.Spec.Names; names.Plural != "workloads" || len(names.ShortNames) != 1 || names.ShortNames[0] != "wl" || len(names.Categories) != 1 || names.Categories[0] != "forge" {
+		t.Errorf("Workload names = %+v, want plural workloads, shortName wl, category forge", names)
+	}
+	wlSpec := wl.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	if d := wlSpec.Properties["kind"].Default; d == nil || string(d.Raw) != `"service"` {
+		t.Errorf("spec.kind default = %v, want service", d)
+	}
+	if d := wlSpec.Properties["replicas"].Default; d == nil || string(d.Raw) != "1" {
+		t.Errorf("spec.replicas default = %v, want 1", d)
+	}
+	// Kind-dependent defaults must NOT be static: the API server would stamp
+	// them on every kind, and Validate would then refuse the CR it was handed.
+	for _, f := range []string{"deployPhase", "leaderElection", "probes"} {
+		if d := wlSpec.Properties[f].Default; d != nil {
+			t.Errorf("spec.%s default = %s, want none — its default depends on the kind", f, d.Raw)
+		}
+	}
+	// The status keeps the billing inputs.
+	wlStatus := wl.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
+	for _, f := range []string{"readyReplicas", "observedImage", "lastReadyAt", "serviceName", "workloadName", "hostname", "phase"} {
+		if _, ok := wlStatus.Properties[f]; !ok {
+			t.Errorf("Workload status lacks %q", f)
+		}
+	}
+	res := wlSpec.Properties["resources"]
 	if d := res.Properties["cpuRequestMillicores"].Default; d == nil || string(d.Raw) != "250" {
 		t.Errorf("resources.cpuRequestMillicores default = %v, want 250 — the API server must apply the same working default as Go and KCL", d)
 	}

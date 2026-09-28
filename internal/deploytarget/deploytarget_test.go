@@ -60,7 +60,7 @@ func TestGroupServices_K8sClusterMixed(t *testing.T) {
 // host / build-only / no-deploy, owned by forge run / forge build.
 func TestGroupServices_SkipsHostAndBuildOnly(t *testing.T) {
 	groups, err := GroupServices("dev", []RawService{
-		{Name: "host-svc"},  // no K8sCluster/External/Compose → skipped
+		{Name: "host-svc"},  // no K8sCluster/Compose/HostInfra → skipped
 		{Name: "build-svc"}, // same
 		{Name: "deployable", K8sCluster: &RawK8sCluster{Cluster: "c", Namespace: "n", Registry: "r", Spec: &K8sClusterSpec{}}},
 	})
@@ -72,23 +72,6 @@ func TestGroupServices_SkipsHostAndBuildOnly(t *testing.T) {
 	}
 	if len(groups[0].Services) != 1 || groups[0].Services[0].Name != "deployable" {
 		t.Errorf("group should contain only 'deployable', got %+v", groups[0].Services)
-	}
-}
-
-// TestGroupServices_ExternalByDeployCmd: external services grouped by
-// identical deploy_cmd — the natural batching signal for a shared KCL
-// ref that points at one External value.
-func TestGroupServices_ExternalByDeployCmd(t *testing.T) {
-	groups, err := GroupServices("prod", []RawService{
-		{Name: "a", External: &ExternalSpec{DeployCmd: "flyctl deploy"}},
-		{Name: "b", External: &ExternalSpec{DeployCmd: "flyctl deploy"}},
-		{Name: "c", External: &ExternalSpec{DeployCmd: "gcloud run deploy"}},
-	})
-	if err != nil {
-		t.Fatalf("GroupServices: %v", err)
-	}
-	if len(groups) != 2 {
-		t.Fatalf("want 2 groups (split by deploy_cmd), got %d", len(groups))
 	}
 }
 
@@ -111,7 +94,7 @@ func TestGroupServices_ComposeByFile(t *testing.T) {
 // pre-populated with the providers forge ships in this release.
 func TestRegistry_DefaultProviders(t *testing.T) {
 	r := NewRegistry()
-	for _, id := range []string{"k8s-cluster", "external", "compose", "firebase"} {
+	for _, id := range []string{"k8s-cluster", "compose", "host-infra", "hosted", "firebase", "static-site"} {
 		if r.Lookup(id) == nil {
 			t.Errorf("Registry missing provider %q", id)
 		}

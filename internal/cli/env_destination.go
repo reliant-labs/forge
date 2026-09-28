@@ -15,13 +15,13 @@ import (
 // fields on their env-level object. They are ADDITIVE: no existing field
 // changes meaning, and a consumer that ignores them sees the old document.
 //
-//   - destination     hosted | cluster | compose | host | external | static | mixed
+//   - destination     hosted | cluster | compose | host | static | mixed
 //     Always set for an env declared in this checkout. Derived from the
 //     env's own render, never from machine state.
 //   - control_plane_kind  local | persistent — set for every env that
-//     declares control_plane. persistent ⇔ destination "hosted"; a LOCAL env
-//     keeps its secrets on the control plane but its destination is derived
-//     from its workloads (host / compose / mixed …).
+//     declares control_plane. persistent ⇔ something in the env is hosted
+//     (destination "hosted", or "mixed" with a hosted vote); a LOCAL env keeps
+//     its secrets on the control plane and runs nothing on it.
 //   - endpoint        any env declaring control_plane: the control plane's
 //     normalized base URL.
 //   - environment_id  hosted only: the control plane's id for the env. EMPTY
@@ -35,13 +35,12 @@ import (
 
 // The destination vocabulary.
 const (
-	destinationHosted   = "hosted"
-	destinationCluster  = "cluster"
-	destinationCompose  = "compose"
-	destinationHost     = "host"
-	destinationExternal = "external"
-	destinationStatic   = "static"
-	destinationMixed    = "mixed"
+	destinationHosted  = "hosted"
+	destinationCluster = "cluster"
+	destinationCompose = "compose"
+	destinationHost    = "host"
+	destinationStatic  = "static"
+	destinationMixed   = "mixed"
 )
 
 // envDestination is where one env runs, as the contract above reports it.
@@ -61,47 +60,20 @@ type envDestination struct {
 
 // destinationOf classifies a rendered env. Pure.
 //
-// A Bundle declaring control_plane AND at least one hosted tier is hosted —
-// the platform runs it (hostedEnvKindOf: PERSISTENT). A control_plane env with
-// no hosted tier is LOCAL: the control plane is only its secret store, so it
-// is classified by its workloads like any other env. Every deployable thing
-// votes for its target kind; one kind is that kind, several are "mixed". An
-// env that declares nothing deployable runs nothing anywhere but the local
+// Every deployable thing votes for where it runs: each workload by its own
+// runtime (hosted, cluster, compose, host), each database by its runtime,
+// host infra for "host", each frontend by its deploy target (a bucketless
+// StaticSite is hosted, other static sites and Firebase are "static"). One
+// kind is that kind, several are "mixed". Hosted is one vote among them, not
+// an env mode: an env whose every workload is hosted is "hosted", and an env
+// that runs one workload on the platform and another on a cluster is "mixed".
+// An env that declares nothing deployable runs nothing anywhere but the local
 // machine, which is "host".
 func destinationOf(e *KCLEntities) string {
 	if e == nil {
 		return ""
 	}
-	if e.ControlPlane != nil && !isLocalControlPlaneEnv(e) {
-		return destinationHosted
-	}
-	kinds := map[string]bool{}
-	for _, s := range e.Services {
-		switch s.Deploy.Type {
-		case "cluster", "simple-backend":
-			kinds[destinationCluster] = true
-		case "compose":
-			kinds[destinationCompose] = true
-		case "host", "host-infra":
-			kinds[destinationHost] = true
-		case "external":
-			kinds[destinationExternal] = true
-		}
-	}
-	if len(e.Operators) > 0 || len(e.CronJobs) > 0 || len(e.Databases) > 0 {
-		kinds[destinationCluster] = true
-	}
-	for _, f := range e.Frontends {
-		if f.Deploy == nil {
-			continue
-		}
-		switch f.Deploy.Type {
-		case "firebase", "static-site":
-			kinds[destinationStatic] = true
-		case "cluster":
-			kinds[destinationCluster] = true
-		}
-	}
+	kinds := destinationKindSet(e)
 	switch len(kinds) {
 	case 0:
 		return destinationHost
@@ -111,6 +83,43 @@ func destinationOf(e *KCLEntities) string {
 		}
 	}
 	return destinationMixed
+}
+
+// destinationKindSet is every destination kind the env deploys to.
+func destinationKindSet(e *KCLEntities) map[string]bool {
+	kinds := map[string]bool{}
+	for _, w := range e.Workloads {
+		switch w.Runtime.Type {
+		case RuntimeHosted:
+			kinds[destinationHosted] = true
+		case RuntimeCluster:
+			kinds[destinationCluster] = true
+		case RuntimeCompose:
+			kinds[destinationCompose] = true
+		case RuntimeHost:
+			kinds[destinationHost] = true
+		}
+	}
+	if len(e.Infra) > 0 {
+		kinds[destinationHost] = true
+	}
+	for _, d := range e.Databases {
+		if d.Hosted() {
+			kinds[destinationHosted] = true
+		} else {
+			kinds[destinationCluster] = true
+		}
+	}
+	for _, f := range e.Frontends {
+		switch {
+		case f.Deploy == nil:
+		case frontendIsHosted(f):
+			kinds[destinationHosted] = true
+		case f.Deploy.Type == "firebase", f.Deploy.Type == frontendDeployStaticSite:
+			kinds[destinationStatic] = true
+		}
+	}
+	return kinds
 }
 
 // hostedStatusReader reads a hosted env's status. A seam so topology/status

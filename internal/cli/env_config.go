@@ -135,29 +135,12 @@ func collectEnvConfigWorkloads(e *KCLEntities) []envConfigWorkload {
 	add := func(name, kind string, vars []KCLEnvVar) {
 		out = append(out, envConfigWorkload{Name: name, Kind: kind, Env: envVarMap(vars)})
 	}
-	for _, s := range e.Services {
-		// A service carries config in two places: the top-level block (the
-		// merged per-env set every lowering sees) and, for a host process,
-		// the host deploy block that `forge env up` layers on at launch.
-		// Report the union, host last, because that is the order the
-		// launched process resolves them in.
-		vars := append([]KCLEnvVar{}, s.EnvVars...)
-		if s.Deploy.Host != nil {
-			vars = append(vars, s.Deploy.Host.EnvVars...)
-		}
-		add(s.Name, "service", vars)
-	}
-	for _, j := range e.Jobs {
-		add(j.Name, "job", j.EnvVars)
+	for _, w := range e.Workloads {
+		// A workload declares ONE env for every runtime (spec.env).
+		add(w.Name, w.Kind, w.EnvVars())
 	}
 	for _, f := range e.Frontends {
 		add(f.Name, "frontend", f.EffectiveEnvVars())
-	}
-	for _, o := range e.Operators {
-		add(o.Name, "operator", o.EnvVars)
-	}
-	for _, c := range e.CronJobs {
-		add(c.Name, "cronjob", c.EnvVars)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Kind != out[j].Kind {

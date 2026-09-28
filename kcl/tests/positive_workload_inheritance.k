@@ -1,82 +1,47 @@
 """
-Positive test — a base workload declaration is COMPLETE, and each
-environment REFINES it with `|` rather than reconstructing it.
+Positive test — DECLARE COMPLETE, REFINE PER ENV.
 
-This is the property the workload vocabulary exists to provide, and it
-is the one a per-env overlay comprehension could not give:
+A fw.Workload literal in deploy/kcl/workloads.k is a COMPLETE workload.
+Each env binds and refines it with `|`, and — because `|` preserves the
+schema type — the Workload checks re-run on the merged value (the
+companion negative is negative_workload_bad_refinement.k).
 
-  1. The base is valid and complete ON ITS OWN — ports and all. It is
-     not a fragment awaiting assembly by an env file.
-  2. An env states ONLY the difference. Everything else is inherited.
-  3. `|` preserves the SCHEMA TYPE, so the `check:` rules in
-     forge.workloads re-run on the merged result. That is what makes
-     refinement safe: an env cannot refine a valid base into an invalid
-     workload without failing at render time, in that env.
-     (The rejection half is negative_workload_bad_refinement.k — a
-      check that fires cannot be asserted from inside the same file.)
-
-Together these are why a base declaration is a schema instance rather
-than a plain value: a value cannot carry the checks.
+dev binds the base unchanged to a local cluster; prod refines replicas and
+the port. The base is untouched, and every refinement reaches its own env's
+record.
 """
 
+import forge
 import forge.workloads as fw
 
-# --- The BASE declaration, as `deploy/kcl/workloads.k` states it. -----------
-# Complete: it names its own port and is a valid workload with no help
-# from any environment.
 api = fw.Workload {
     name = "api"
     kind = "service"
+    image = "demo"
+    args = ["api"]
     ports = [fw.Port {name = "http", port = 8080, expose = True}]
-    build = {type = "go", cmd = "./cmd/demo", output_name = "demo"}
+    build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
 }
 
-# --- DEV refines nothing but placement. -------------------------------------
-_dev = [api | {image = "demo", registry = "localhost:5050", namespace = "demo-dev"}]
+_dev_t = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_prod_t = forge.ClusterTarget {cluster = "gke-demo", namespace = "demo-prod", registry = "ghcr.io/acme", platform = "amd64"}
 
-# --- PROD refines the port AND the replica count. ---------------------------
-_prod = [api | {
-    image = "demo"
-    registry = "ghcr.io/acme"
-    namespace = "demo-prod"
+_dev = forge.render(forge.Bundle {project = "demo", workloads = [api | {runtime = forge.OnCluster {target = _dev_t}}]})
+_prod = forge.render(forge.Bundle {project = "demo", workloads = [api | {
     replicas = 3
     ports = [fw.Port {name = "http", port = 9090, expose = True}]
-}]
+    runtime = forge.OnCluster {target = _prod_t}
+}]})
 
-_dev_env = fw.WorkloadEnv {namespace = "demo-dev", project = "demo", network_policies = False}
-_prod_env = fw.WorkloadEnv {namespace = "demo-prod", project = "demo", network_policies = False}
+_rec = lambda out: any -> any { [m for m in out.manifests if m.kind == "Workload"][0] }
 
-dev_manifests = fw.render_workloads(_dev, _dev_env)
-prod_manifests = fw.render_workloads(_prod, _prod_env)
-
-_dev_deploy = [m for m in dev_manifests if m.kind == "Deployment" and m.metadata.name == "api"][0]
-_prod_deploy = [m for m in prod_manifests if m.kind == "Deployment" and m.metadata.name == "api"][0]
-_dev_svc = [m for m in dev_manifests if m.kind == "Service" and m.metadata.name == "api"][0]
-_prod_svc = [m for m in prod_manifests if m.kind == "Service" and m.metadata.name == "api"][0]
-
-# (1) The base is complete: dev overrode NO port, and still gets the real
-# one the base declared — not a fallback the expansion invented.
-assert_dev_port_inherited = _dev_svc.spec.ports[0].port == 8080
-assert_dev_container_port_inherited = \
-    _dev_deploy.spec.template.spec.containers[0].ports[0].containerPort == 8080
-
-# (2) Prod's refinement took effect, on BOTH the Service and the container.
-assert_prod_port_overridden = _prod_svc.spec.ports[0].port == 9090
-assert_prod_container_port_overridden = \
-    _prod_deploy.spec.template.spec.containers[0].ports[0].containerPort == 9090
-assert_prod_replicas_overridden = _prod_deploy.spec.replicas == 3
-
-# (3) Refining prod did NOT mutate the base or leak into dev. Each env
-# renders from the same declaration independently.
-assert_dev_replicas_untouched = _dev_deploy.spec.replicas == 1
-assert_base_unchanged = api.ports[0].port == 8080
-
-# (4) Everything NOT refined is inherited rather than restated: prod never
-# mentions `kind`, `name` or `build`, and has them all.
-assert_kind_inherited = len([m for m in prod_manifests if m.kind == "Service"]) == 1
-assert_name_inherited = _prod_deploy.metadata.name == "api"
-
-# (5) The merged result is still a Workload, which is WHY the checks
-# re-run on it. A plain dict would type-check as `{str:any}` and enforce
-# nothing.
+assert_dev_port_inherited = _rec(_dev).spec.ports[0].port == 8080
+assert_dev_replicas_untouched = _rec(_dev).spec.replicas == 1
+assert_prod_port_overridden = _rec(_prod).spec.ports[0].port == 9090
+assert_prod_replicas_overridden = _rec(_prod).spec.replicas == 3
+assert_prod_namespace = _rec(_prod).metadata.namespace == "demo-prod"
+assert_base_unchanged = api.ports[0].port == 8080 and api.replicas == 1
+assert_name_inherited = _rec(_prod).metadata.name == "api"
+assert_kind_inherited = _rec(_prod).spec.kind == "service"
+assert_build_inherited = _prod.workloads[0].build.cmd == "./cmd/demo"
 assert_refinement_preserves_schema = typeof(api | {replicas = 2}) == "Workload"

@@ -60,7 +60,7 @@ const CRDKCLModule = "crd_gen"
 // CRDDoc is one CRD's projected form: the kind it declares and the fully
 // rendered apiextensions.k8s.io/v1 object, ready to lower into KCL.
 type CRDDoc struct {
-	// Kind is the CR kind ("SimpleBackend"), used for the lambda name and
+	// Kind is the CR kind ("Workload"), used for the lambda name and
 	// for deterministic ordering.
 	Kind string
 	// Lambda is the generated KCL lambda name ("simplebackend_crd"). It

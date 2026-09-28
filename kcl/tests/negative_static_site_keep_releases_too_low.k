@@ -10,6 +10,8 @@ ignored is worse than an error, because it reads as accepted.
 positive_frontend_static_site_defaults.k pins that 0 survives.
 """
 
+# expect: StaticSite.keep_releases must be 0
+
 import forge
 
 _fe = forge.Frontend {

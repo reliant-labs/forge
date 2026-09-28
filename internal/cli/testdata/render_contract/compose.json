@@ -1,0 +1,81 @@
+{
+  "output": {
+    "clusters": [],
+    "config_maps": [],
+    "databases": [],
+    "env": "dev",
+    "frontends": [],
+    "gateways": [],
+    "grpc_routes": [],
+    "helm_charts": [],
+    "http_routes": [],
+    "image_tag": "latest",
+    "infra": [],
+    "kubeconfig_secrets": [],
+    "manifests": [],
+    "network_policy": null,
+    "project": "acme",
+    "rendered_secrets": [],
+    "required_dns": [],
+    "required_secrets": [],
+    "runtime_classes": [],
+    "workloads": [
+      {
+        "build": null,
+        "image": "",
+        "kind": "service",
+        "name": "postgres",
+        "runtime": {
+          "env": {
+            "POSTGRES_PORT": "5433"
+          },
+          "env_file": null,
+          "file": "docker-compose.yml",
+          "service": "postgres",
+          "type": "compose",
+          "wait": true,
+          "wait_timeout": 0
+        },
+        "spec": {
+          "env": [
+            {
+              "name": "POSTGRES_PORT",
+              "value": "5433"
+            }
+          ],
+          "image": "",
+          "kind": "service",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "build": null,
+        "image": "",
+        "kind": "service",
+        "name": "nats",
+        "runtime": {
+          "env": {},
+          "env_file": ".env.dev",
+          "file": "docker-compose.yml",
+          "service": "nats",
+          "type": "compose",
+          "wait": true,
+          "wait_timeout": 0
+        },
+        "spec": {
+          "image": "",
+          "kind": "service",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      }
+    ]
+  }
+}

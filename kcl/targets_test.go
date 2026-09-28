@@ -2,7 +2,6 @@ package kcl
 
 import (
 	"bufio"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,9 +23,9 @@ import (
 // the commit that legitimately adds StaticSite, teaching whoever hits it to
 // paste the new name in rather than to check the parser.
 func TestDeployTargetsMatchSchemaSource(t *testing.T) {
-	want := grepDeployUnions(t, "schema.k")
+	want := grepDeployUnions(t, "schema.k", "workload.k")
 	if len(want) == 0 {
-		t.Fatal("no `deploy?:` union found in schema.k — the grep oracle is broken, not the parser")
+		t.Fatal("no `deploy?:` / `runtime?:` union found — the grep oracle is broken, not the parser")
 	}
 
 	targets, err := DeployTargets()
@@ -50,7 +49,7 @@ func TestDeployTargetsMatchSchemaSource(t *testing.T) {
 		sort.Strings(wantMembers)
 		gotMembers := got[owner]
 		if strings.Join(gotMembers, ",") != strings.Join(wantMembers, ",") {
-			t.Errorf("%s.deploy union: got %v, want %v", owner, gotMembers, wantMembers)
+			t.Errorf("%s deploy/runtime union: got %v, want %v", owner, gotMembers, wantMembers)
 		}
 	}
 }
@@ -121,83 +120,6 @@ func TestDeployTargetsForIsPerWorkload(t *testing.T) {
 
 	if none, err := DeployTargetsFor("NoSuchSchema"); err != nil || len(none) != 0 {
 		t.Errorf("unknown workload schema: got %v, %v; want empty, nil", none, err)
-	}
-}
-
-// TestForwardCompatibleWithForgeDeploySchema is the single-source-of-truth
-// proof: the SAME parser, with zero code changes, is pointed at the
-// forge-deploy branch's schema.k — which adds StaticSite and SimpleBackend
-// and rewrites the frontend union to `FirebaseHosting | StaticSite |
-// K8sCluster`. If the reflection is real, the new targets simply appear.
-//
-// The fixture is a copy of that branch's schema.k under testdata/, not a
-// hand-written excerpt: an excerpt would test the parser against a tidied
-// file rather than against the 3,364-line real one.
-func TestForwardCompatibleWithForgeDeploySchema(t *testing.T) {
-	src, err := os.ReadFile("testdata/forge-deploy-schema.k")
-	if err != nil {
-		t.Fatalf("read forge-deploy fixture: %v", err)
-	}
-	fsys := fstest.MapFS{"schema.k": {Data: src}}
-
-	targets, err := deployTargetsFrom(fsys)
-	if err != nil {
-		t.Fatal(err)
-	}
-	byName := map[string]DeployTarget{}
-	for _, tgt := range targets {
-		byName[tgt.Name] = tgt
-	}
-
-	// Derive what that file's unions declare, by the independent grep
-	// oracle, and require the parser to have found all of it.
-	want := grepDeployUnionsSrc(t, string(src))
-	for owner, members := range want {
-		for _, m := range members {
-			tgt, ok := byName[m]
-			if !ok {
-				t.Errorf("%s.deploy names %q but the parser did not report it", owner, m)
-				continue
-			}
-			found := false
-			for _, w := range tgt.Workloads {
-				if w == owner {
-					found = true
-				}
-			}
-			if !found {
-				t.Errorf("%s: Workloads=%v does not include %q", m, tgt.Workloads, owner)
-			}
-		}
-	}
-
-	// The fixture's whole reason for existing: these two are absent from
-	// main's schema.k, so seeing them here proves the set came from the
-	// file rather than from anything compiled in. Naming them is legitimate
-	// HERE (unlike in the anti-drift test) because they are the specific
-	// historical fact this test asserts about a frozen fixture.
-	for _, added := range []string{"StaticSite", "SimpleBackend"} {
-		tgt, ok := byName[added]
-		if !ok {
-			t.Errorf("%s not picked up from the forge-deploy schema", added)
-			continue
-		}
-		if tgt.Doc == "" || len(tgt.Fields) == 0 || tgt.Line == 0 {
-			t.Errorf("%s resolved incompletely: line=%d doc=%q fields=%d",
-				added, tgt.Line, tgt.Doc, len(tgt.Fields))
-		}
-	}
-
-	// And they must be absent from the module compiled into THIS binary,
-	// or the test above proves nothing.
-	live, err := DeployTargets()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tgt := range live {
-		if tgt.Name == "StaticSite" || tgt.Name == "SimpleBackend" {
-			t.Skipf("%s has landed on main — this fixture is no longer a forward-compatibility test and should be refreshed", tgt.Name)
-		}
 	}
 }
 
@@ -299,25 +221,37 @@ func TestNonUnionDeployFieldYieldsNoTargets(t *testing.T) {
 	}
 }
 
-var reDeployUnionLine = regexp.MustCompile(`^    deploy\??:\s*(.+)$`)
+var (
+	reDeployUnionLine = regexp.MustCompile(`^    (?:deploy|runtime)\??:\s*(.+)$`)
+	reAliasLine       = regexp.MustCompile(`^type\s+(\w+)\s*=\s*(.+)$`)
+)
 
-// grepDeployUnions is the independent oracle: a dumb line grep over a file in
-// the real module, owner-attributed by the nearest preceding `schema X:`.
-func grepDeployUnions(t *testing.T, name string) map[string][]string {
+// grepDeployUnions is the independent oracle: a dumb line grep over files in
+// the real module, owner-attributed by the nearest preceding `schema X:`,
+// with `type X = A | B` aliases substituted textually.
+func grepDeployUnions(t *testing.T, names ...string) map[string][]string {
 	t.Helper()
-	f, err := Module.Open(name)
-	if err != nil {
-		t.Fatalf("open %s: %v", name, err)
-	}
-	defer func() { _ = f.Close() }()
 	var b strings.Builder
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		b.WriteString(sc.Text())
-		b.WriteByte('\n')
+	for _, name := range names {
+		f, err := Module.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for sc.Scan() {
+			b.WriteString(sc.Text())
+			b.WriteByte('\n')
+		}
+		_ = f.Close()
 	}
-	return grepDeployUnionsSrc(t, b.String())
+	src := b.String()
+	for _, line := range strings.Split(src, "\n") {
+		if m := reAliasLine.FindStringSubmatch(line); m != nil {
+			src = regexp.MustCompile(`(?m)^(    (?:deploy|runtime)\??:\s*)`+m[1]+`\s*$`).ReplaceAllString(src, "${1}"+m[2])
+		}
+	}
+	return grepDeployUnionsSrc(t, src)
 }
 
 func grepDeployUnionsSrc(t *testing.T, src string) map[string][]string {

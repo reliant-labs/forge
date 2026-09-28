@@ -1,0 +1,563 @@
+{
+  "output": {
+    "cluster_target": {
+      "cluster": "k3d-acme",
+      "domain": null,
+      "image_pull_secrets": [],
+      "namespace": "acme-dev",
+      "platform": null,
+      "registry": "localhost:5050"
+    },
+    "clusters": [],
+    "config_maps": [],
+    "databases": [
+      {
+        "cluster": "k3d-acme",
+        "name": "db",
+        "namespace": "acme-dev",
+        "runtime": "cluster",
+        "spec": {
+          "deletionPolicy": "retain",
+          "engine": "postgres",
+          "instances": 1,
+          "storageGiB": 10
+        }
+      }
+    ],
+    "env": "dev",
+    "frontends": [],
+    "gateways": [],
+    "grpc_routes": [],
+    "helm_charts": [],
+    "http_routes": [],
+    "image_tag": "latest",
+    "infra": [],
+    "kubeconfig_secrets": [],
+    "manifests": [
+      {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "forge",
+            "forge.dev/env": "dev",
+            "pod-security.kubernetes.io/audit": "restricted",
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted"
+          },
+          "name": "acme-dev"
+        }
+      },
+      {
+        "apiVersion": "forge.dev/v1alpha1",
+        "kind": "Workload",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "forge",
+            "app.kubernetes.io/name": "api",
+            "app.kubernetes.io/part-of": "acme",
+            "forge.dev/cluster": "k3d-acme",
+            "forge.dev/env": "dev"
+          },
+          "name": "api",
+          "namespace": "acme-dev"
+        },
+        "spec": {
+          "args": [
+            "api"
+          ],
+          "env": [
+            {
+              "name": "LOG_LEVEL",
+              "value": "info"
+            },
+            {
+              "name": "API_KEY",
+              "secretRef": {
+                "key": "api_key",
+                "name": "acme-secrets",
+                "optional": true
+              }
+            },
+            {
+              "fieldRef": {
+                "fieldPath": "metadata.name"
+              },
+              "name": "POD_NAME"
+            }
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "service",
+          "ports": [
+            {
+              "expose": true,
+              "name": "http",
+              "port": 8080,
+              "protocol": "tcp"
+            }
+          ],
+          "probes": {
+            "failureThreshold": 3,
+            "initialDelaySeconds": 0,
+            "livenessPath": "/healthz",
+            "periodSeconds": 5,
+            "port": 8080,
+            "readinessPath": "/readyz",
+            "timeoutSeconds": 3
+          },
+          "replicas": 2,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "apiVersion": "forge.dev/v1alpha1",
+        "kind": "Workload",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "forge",
+            "app.kubernetes.io/name": "migrate",
+            "app.kubernetes.io/part-of": "acme",
+            "forge.dev/cluster": "k3d-acme",
+            "forge.dev/env": "dev"
+          },
+          "name": "migrate",
+          "namespace": "acme-dev"
+        },
+        "spec": {
+          "args": [
+            "db",
+            "migrate",
+            "up"
+          ],
+          "before": [
+            "*"
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "job",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "apiVersion": "forge.dev/v1alpha1",
+        "kind": "Workload",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "forge",
+            "app.kubernetes.io/name": "nightly",
+            "app.kubernetes.io/part-of": "acme",
+            "forge.dev/cluster": "k3d-acme",
+            "forge.dev/env": "dev"
+          },
+          "name": "nightly",
+          "namespace": "acme-dev"
+        },
+        "spec": {
+          "args": [
+            "sweep"
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "cron",
+          "namespacedRBAC": [
+            {
+              "apiGroups": [
+                ""
+              ],
+              "resources": [
+                "configmaps"
+              ],
+              "verbs": [
+                "list",
+                "delete"
+              ]
+            }
+          ],
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          },
+          "schedule": "@daily"
+        }
+      },
+      {
+        "apiVersion": "forge.dev/v1alpha1",
+        "kind": "Workload",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "forge",
+            "app.kubernetes.io/name": "nats",
+            "app.kubernetes.io/part-of": "acme",
+            "forge.dev/cluster": "k3d-acme",
+            "forge.dev/env": "dev"
+          },
+          "name": "nats",
+          "namespace": "acme-dev"
+        },
+        "spec": {
+          "image": "docker.io/library/nats:2.10",
+          "kind": "service",
+          "ports": [
+            {
+              "name": "client",
+              "port": 4222,
+              "protocol": "tcp"
+            }
+          ],
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "apiVersion": "forge.dev/v1alpha1",
+        "kind": "Workload",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "forge",
+            "app.kubernetes.io/name": "workspace",
+            "app.kubernetes.io/part-of": "acme",
+            "forge.dev/cluster": "k3d-acme",
+            "forge.dev/env": "dev"
+          },
+          "name": "workspace",
+          "namespace": "acme-dev"
+        },
+        "spec": {
+          "args": [
+            "workspace-controller"
+          ],
+          "clusterRBAC": [
+            {
+              "apiGroups": [
+                "acme.dev"
+              ],
+              "resources": [
+                "workspaces"
+              ],
+              "verbs": [
+                "get",
+                "list",
+                "watch"
+              ]
+            }
+          ],
+          "crds": [
+            "Workspace"
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "operator",
+          "leaderElection": true,
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "apiVersion": "forge.dev/v1alpha1",
+        "kind": "ManagedDatabase",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "forge",
+            "app.kubernetes.io/name": "db",
+            "app.kubernetes.io/part-of": "acme",
+            "forge.dev/cluster": "k3d-acme",
+            "forge.dev/env": "dev"
+          },
+          "name": "db",
+          "namespace": "acme-dev"
+        },
+        "spec": {
+          "deletionPolicy": "retain",
+          "engine": "postgres",
+          "instances": 1,
+          "storageGiB": 10
+        }
+      }
+    ],
+    "network_policy": {
+      "egress_ports": [
+        443,
+        5432
+      ],
+      "ingress_namespace": "",
+      "telemetry_namespace": ""
+    },
+    "project": "acme",
+    "rendered_secrets": [],
+    "required_dns": [],
+    "required_secrets": [],
+    "runtime_classes": [],
+    "secret_provider": {
+      "path": "secrets/dev.yaml",
+      "type": "file"
+    },
+    "workloads": [
+      {
+        "build": {
+          "cmd": "./cmd/acme",
+          "env": {},
+          "flags": [],
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme",
+          "tags": [],
+          "type": "go"
+        },
+        "image": "acme",
+        "kind": "service",
+        "name": "api",
+        "runtime": {
+          "cluster": "k3d-acme",
+          "domain": null,
+          "image_pull_secrets": [],
+          "namespace": "acme-dev",
+          "platform": null,
+          "registry": "localhost:5050",
+          "type": "cluster"
+        },
+        "spec": {
+          "args": [
+            "api"
+          ],
+          "env": [
+            {
+              "name": "LOG_LEVEL",
+              "value": "info"
+            },
+            {
+              "name": "API_KEY",
+              "secretRef": {
+                "key": "api_key",
+                "name": "acme-secrets",
+                "optional": true
+              }
+            },
+            {
+              "fieldRef": {
+                "fieldPath": "metadata.name"
+              },
+              "name": "POD_NAME"
+            }
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "service",
+          "ports": [
+            {
+              "expose": true,
+              "name": "http",
+              "port": 8080,
+              "protocol": "tcp"
+            }
+          ],
+          "probes": {
+            "failureThreshold": 3,
+            "initialDelaySeconds": 0,
+            "livenessPath": "/healthz",
+            "periodSeconds": 5,
+            "port": 8080,
+            "readinessPath": "/readyz",
+            "timeoutSeconds": 3
+          },
+          "replicas": 2,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "build": {
+          "cmd": "./cmd/acme",
+          "env": {},
+          "flags": [],
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme",
+          "tags": [],
+          "type": "go"
+        },
+        "image": "acme",
+        "kind": "job",
+        "name": "migrate",
+        "runtime": {
+          "cluster": "k3d-acme",
+          "domain": null,
+          "image_pull_secrets": [],
+          "namespace": "acme-dev",
+          "platform": null,
+          "registry": "localhost:5050",
+          "type": "cluster"
+        },
+        "spec": {
+          "args": [
+            "db",
+            "migrate",
+            "up"
+          ],
+          "before": [
+            "*"
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "job",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "build": {
+          "cmd": "./cmd/acme",
+          "env": {},
+          "flags": [],
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme",
+          "tags": [],
+          "type": "go"
+        },
+        "image": "acme",
+        "kind": "cron",
+        "name": "nightly",
+        "runtime": {
+          "cluster": "k3d-acme",
+          "domain": null,
+          "image_pull_secrets": [],
+          "namespace": "acme-dev",
+          "platform": null,
+          "registry": "localhost:5050",
+          "type": "cluster"
+        },
+        "spec": {
+          "args": [
+            "sweep"
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "cron",
+          "namespacedRBAC": [
+            {
+              "apiGroups": [
+                ""
+              ],
+              "resources": [
+                "configmaps"
+              ],
+              "verbs": [
+                "list",
+                "delete"
+              ]
+            }
+          ],
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          },
+          "schedule": "@daily"
+        }
+      },
+      {
+        "build": null,
+        "image": "",
+        "kind": "service",
+        "name": "nats",
+        "runtime": {
+          "cluster": "k3d-acme",
+          "domain": null,
+          "image_pull_secrets": [],
+          "namespace": "acme-dev",
+          "platform": null,
+          "registry": "localhost:5050",
+          "type": "cluster"
+        },
+        "spec": {
+          "image": "docker.io/library/nats:2.10",
+          "kind": "service",
+          "ports": [
+            {
+              "name": "client",
+              "port": 4222,
+              "protocol": "tcp"
+            }
+          ],
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "build": {
+          "cmd": "./cmd/acme",
+          "env": {},
+          "flags": [],
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme",
+          "tags": [],
+          "type": "go"
+        },
+        "image": "acme",
+        "kind": "operator",
+        "name": "workspace",
+        "runtime": {
+          "cluster": "k3d-acme",
+          "domain": null,
+          "image_pull_secrets": [],
+          "namespace": "acme-dev",
+          "platform": null,
+          "registry": "localhost:5050",
+          "type": "cluster"
+        },
+        "spec": {
+          "args": [
+            "workspace-controller"
+          ],
+          "clusterRBAC": [
+            {
+              "apiGroups": [
+                "acme.dev"
+              ],
+              "resources": [
+                "workspaces"
+              ],
+              "verbs": [
+                "get",
+                "list",
+                "watch"
+              ]
+            }
+          ],
+          "crds": [
+            "Workspace"
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "operator",
+          "leaderElection": true,
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      }
+    ]
+  }
+}

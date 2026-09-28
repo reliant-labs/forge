@@ -13,6 +13,8 @@ GCP Certificate Manager map supplies a cert per hostname — exempted by
 the check and covered by positive_gateway_certmap.k.)
 """
 
+# expect: HTTPS listener(s) [https] resolve to no hostname
+
 import forge
 
 _gw = forge.Gateway {

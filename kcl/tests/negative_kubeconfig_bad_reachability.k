@@ -3,6 +3,8 @@ Negative test — KubeconfigSecret.reachability must be 'in-network' or
 'endpoint'. Any other value should fail the check block.
 """
 
+# expect: KubeconfigSecret.reachability must be 'in-network'
+
 import forge
 
 _k = forge.KubeconfigSecret {

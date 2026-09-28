@@ -16,7 +16,7 @@ import (
 // for the representative field set (reused from the Phase-1 test): a mix of
 // non-sensitive string/int/bool/duration/float fields plus one required
 // sensitive string. It asserts the exact projection function, which
-// implicitly covers every branch (from_secret vs inline value, str vs str(...)
+// implicitly covers every branch (SecretRef vs inline value, str vs str(...)
 // vs the bool conditional).
 func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 	got, err := GenerateConfigKCL(representativeConfigFields(), "myproj")
@@ -61,9 +61,9 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"# credential only some environments own).\n" +
 		"APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = []\n" +
 		"\n" +
-		"# appConfigEnvMap projects a typed AppConfig into the agnostic-core env\n" +
-		"# MAP — one forge.EnvSource per field that declares an env_var, keyed by\n" +
-		"# ENV_VAR name.\n" +
+		"# appConfigEnvMap projects a typed AppConfig into a workload's env MAP (fw.Workload.env):\n" +
+		"# one entry per field that declares an env_var, keyed by ENV_VAR name — a\n" +
+		"# string for an ordinary field, a forge.SecretRef for a sensitive one.\n" +
 		"#\n" +
 		"# Non-sensitive fields are projected for EVERY caller: they are inline\n" +
 		"# values, so they carry no credential and no start-time dependency.\n" +
@@ -74,19 +74,19 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"# broadcast to workloads that never read it turns one feature's missing\n" +
 		"# secret into a whole namespace outage.\n" +
 		"#\n" +
-		"#     env = forge.env_project(appConfigEnvMap(cfg, w.config_secrets))\n" +
-		"appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: forge.EnvSource} {\n" +
-		"    _sensitive: {str: forge.EnvSource} = {\n" +
-		"        \"DATABASE_URL\" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}\n" +
+		"#     env = appConfigEnvMap(cfg, config_secrets) | {EXTRA = \"value\"}\n" +
+		"appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {\n" +
+		"    _sensitive: {str: forge.SecretRef} = {\n" +
+		"        \"DATABASE_URL\" = forge.SecretRef {name = c.database_url.name, key = c.database_url.key, store_key = \"DATABASE_URL\"}\n" +
 		"    }\n" +
 		"    assert all _n in config_secrets { _n in _sensitive }, \\\n" +
 		"        \"appConfigEnvMap: config_secrets names ${[_n for _n in config_secrets if _n not in _sensitive]}, which is not a `sensitive` field of AppConfig. Sensitive fields: ${sorted([_k for _k in _sensitive])}. Add `sensitive: true` to the field in proto/config/v1/config.proto, or drop the name from this workload's config_secrets.\"\n" +
 		"    {\n" +
-		"        \"LOG_LEVEL\" = {value = c.log_level}\n" +
-		"        \"PORT\" = {value = str(c.port)}\n" +
-		"        \"CORS_ALLOW_CREDENTIALS\" = {value = \"true\" if c.cors_allow_credentials else \"false\"}\n" +
-		"        \"SHUTDOWN_TIMEOUT\" = {value = c.shutdown_timeout}\n" +
-		"        \"SAMPLE_RATE\" = {value = str(c.sample_rate)}\n" +
+		"        \"LOG_LEVEL\" = c.log_level\n" +
+		"        \"PORT\" = str(c.port)\n" +
+		"        \"CORS_ALLOW_CREDENTIALS\" = \"true\" if c.cors_allow_credentials else \"false\"\n" +
+		"        \"SHUTDOWN_TIMEOUT\" = c.shutdown_timeout\n" +
+		"        \"SAMPLE_RATE\" = str(c.sample_rate)\n" +
 		"    } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n" +
 		"}\n"
 
@@ -112,8 +112,8 @@ func TestGenerateConfigKCL_EnvVarNameDivergence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`"TRADER_MAX_PER_TICK_OVERRIDE" = {value = str(c.trader_max_per_tick)}`,
-		`"SERVICE_AUTH_TOKEN" = {from_secret = {name = c.svc_token.name, key = c.svc_token.key}}`,
+		`"TRADER_MAX_PER_TICK_OVERRIDE" = str(c.trader_max_per_tick)`,
+		`"SERVICE_AUTH_TOKEN" = forge.SecretRef {name = c.svc_token.name, key = c.svc_token.key, store_key = "SERVICE_AUTH_TOKEN"}`,
 		`svc_token: ConfigSecretRef = ConfigSecretRef { name = "proj-secrets", key = "service_auth_token" }`,
 	} {
 		if !strings.Contains(got, want) {
@@ -121,13 +121,13 @@ func TestGenerateConfigKCL_EnvVarNameDivergence(t *testing.T) {
 		}
 	}
 	// The sensitive field must never be projected as an inline value.
-	if strings.Contains(got, `{value = c.svc_token}`) {
+	if strings.Contains(got, `= c.svc_token\n`) {
 		t.Errorf("sensitive field projected inline:\n%s", got)
 	}
 }
 
 // TestGenerateConfigProjectionKCL_SensitiveBranch isolates the sensitive
-// path: a from_secret channel whose name/key read off the typed
+// path: a forge.SecretRef whose name/key read off the typed
 // ConfigSecretRef on the AppConfig value, keyed by the env_var, and NEVER an
 // inline value for the field (secrets never land in the env-map literal).
 func TestGenerateConfigProjectionKCL_SensitiveBranch(t *testing.T) {
@@ -138,8 +138,8 @@ func TestGenerateConfigProjectionKCL_SensitiveBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, `"API_KEY" = {from_secret = {name = c.api_key.name, key = c.api_key.key}}`) {
-		t.Fatalf("sensitive field should project to a from_secret channel read off the typed ConfigSecretRef:\n%s", got)
+	if !strings.Contains(got, `"API_KEY" = forge.SecretRef {name = c.api_key.name, key = c.api_key.key, store_key = "API_KEY"}`) {
+		t.Fatalf("sensitive field should project to a forge.SecretRef read off the typed ConfigSecretRef:\n%s", got)
 	}
 	// A sensitive field must NOT be lowered inline as a value.
 	if strings.Contains(got, `"API_KEY" = {value`) {
@@ -194,7 +194,7 @@ func TestGenerateConfigProjectionKCL_SkipsEmptyEnvVar(t *testing.T) {
 	if strings.Contains(envMap, "trader") || strings.Contains(envMap, "unbound") {
 		t.Fatalf("fields without env_var must be skipped from the env map:\n%s", envMap)
 	}
-	if !strings.Contains(envMap, `"PORT" = {value = str(c.port)}`) {
+	if !strings.Contains(envMap, `"PORT" = str(c.port)`) {
 		t.Fatalf("the env-bound field must still be projected inline:\n%s", envMap)
 	}
 }
@@ -214,7 +214,7 @@ func TestGenerateConfigProjectionKCL_EmptyFields(t *testing.T) {
 	// sensitive-selection merge still runs, so the lambda compiles and
 	// returns {} for any caller.
 	if !strings.Contains(got, "    {} | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n") {
-		t.Fatalf("empty field set should emit an empty EnvSource map:\n%s", got)
+		t.Fatalf("empty field set should emit an empty env map:\n%s", got)
 	}
 	// The sensitive-var constant is emitted even when empty, so forge's
 	// host-mode probe can reference it in a project with no credentials.
@@ -250,19 +250,19 @@ func forgeKCLModuleRoot(t *testing.T) string {
 // TestGenerateConfigProjectionKCL_EndToEndEnvMap is the hermetic e2e proof:
 // it assembles a synthetic AppConfig (a non-sensitive string, a non-sensitive
 // bool, and a required sensitive string) from the REAL schema + projection
-// generators, has an agnostic `schema Svc(forge.Service)` consume the env map
-// the idiomatic way — config first, service extras merged/overriding via
-// native map-merge `|` — renders it through `Bundle.workloads`, and asserts
-// against the rendered Deployment that:
-//   - the sensitive field lowers to a secretKeyRef,
+// generators, has two fw.Workloads consume the env map the idiomatic way —
+// config first, workload extras merged/overriding via native map-merge `|` —
+// renders them through forge.render, and asserts against the Workload
+// records' spec.env (what pkg/deploy.RenderWorkloads expands) that:
+//   - the sensitive field lowers to a secretRef,
 //   - a non-sensitive field lowers to an INLINE value (no ConfigMap),
-//   - the service's own EXTRA env var is present, and
-//   - the service's override of a config key WINS (map-merge last-wins),
-//     replacing that var's inline value.
+//   - the workload's own EXTRA env var is present,
+//   - the workload's override of a config key WINS (map-merge last-wins),
+//     replacing that var's inline value, and
+//   - a workload that declares no config_secrets carries no secret at all.
 //
-// This exercises the generator OUTPUT end-to-end through the forge kcl module,
-// with no dependency on control-plane's (blocked) `forge generate`. Skips when
-// kcl is not on PATH.
+// The env map is `{str: str | forge.SecretRef}` — the fw.Workload.env shape
+// (ADR 0002) — so the generated projection plugs straight into a workload.
 // TestGenerateConfigProjectionKCL_OptionalInlineOmittedAtDefault pins the
 // projection of an OPTIONAL non-sensitive field, evaluated by real KCL: absent
 // from the env map while it holds its schema default, present once an env sets
@@ -301,9 +301,9 @@ _unset = cg.appConfigEnvMap(cg.AppConfig {}, [])
 _set = cg.appConfigEnvMap(cg.AppConfig {storage_endpoint = "http://fake:4443", anonymous = True, replicas = 3}, [])
 unset_keys = sorted([k for k in _unset])
 set_keys = sorted([k for k in _set])
-set_endpoint = _set["STORAGE_ENDPOINT"].value
-set_anonymous = _set["ANONYMOUS"].value
-set_replicas = _set["REPLICAS"].value
+set_endpoint = _set["STORAGE_ENDPOINT"]
+set_anonymous = _set["ANONYMOUS"]
+set_replicas = _set["REPLICAS"]
 `, ConfigSchemaModule))
 
 	out, err := kcltest.Run(t.Context(), dir, "run", ".", "--format", "json")
@@ -363,42 +363,13 @@ func TestGenerateConfigProjectionKCL_EndToEndEnvMap(t *testing.T) {
 	// flows, api_key keeps the default-backend ConfigSecretRef.
 	write("config.k", fmt.Sprintf("import %[1]s\n\napp_config = %[1]s.AppConfig {\n    log_level = \"debug\"\n}\n", ConfigSchemaModule))
 
-	// The consuming service: env = config map | service extras (last-wins).
-	// "EXTRA" is a service-only var; "LOG_LEVEL" collides with a config key
-	// and must WIN, replacing the config's inline value.
-	// NOTE the QUALIFIED call. KCL gives a schema a distinct identity per
-	// access path: a value built as `config_gen.AppConfig` (what config.k
-	// constructs) does not satisfy a parameter reached bare, even though
-	// both name the same declaration — the checker reports the memorable
-	// "expected AppConfig, got AppConfig". Importing the module and calling
-	// `config_gen.appConfigEnvMap(...)` keeps the construction and the call
-	// on the same path, which is exactly what the env main.k templates do.
+	// NOTE the QUALIFIED call: KCL gives a schema a distinct identity per
+	// access path ("expected AppConfig, got AppConfig"), so construction and
+	// call stay on the same path, exactly as the env main.k templates do.
 	main := fmt.Sprintf(`import forge
+import forge.workloads as fw
 import %s as config_gen
 import .config as appcfg
-
-schema Svc(forge.Service):
-    name: str = "demo"
-    image: str = "demo-image"
-    ports: [int] = [8080]
-
-_svc = Svc {
-    env = config_gen.appConfigEnvMap(appcfg.app_config, ["API_KEY"]) | {`, ConfigSchemaModule) + `
-        "EXTRA" = {value = "extra-val"}
-        "LOG_LEVEL" = {value = "override-wins"}
-    }
-}
-
-# A SECOND workload that declares no credentials — the whole point of the
-# change. Both are rendered from the SAME config, so if the projection ever
-# goes back to broadcasting, API_KEY appears here too and the assertion at the
-# bottom fails. Before the per-workload gate this pod carried a secretKeyRef
-# for a credential it never read, and a secretKeyRef naming a missing key
-# leaves the pod in CreateContainerConfigError with no application log.
-_worker = Svc {
-    name = "worker"
-    env = config_gen.appConfigEnvMap(appcfg.app_config, [])
-}
 
 _target = forge.ClusterTarget {
     cluster = "c"
@@ -406,49 +377,56 @@ _target = forge.ClusterTarget {
     registry = "reg"
     platform = "amd64"
 }
-_bundle = forge.Bundle {
-    cluster_target = _target
-    workloads = [_svc, _worker]
+
+_svc = fw.Workload {
+    name = "demo"
+    image = "demo-image"
+    ports = [fw.Port {name = "http", port = 8080}]
+    env = config_gen.appConfigEnvMap(appcfg.app_config, ["API_KEY"]) | {`, ConfigSchemaModule) + `
+        EXTRA = "extra-val"
+        LOG_LEVEL = "override-wins"
+    }
 }
-manifests = forge.render_manifests(_bundle, "v1", {}, False)
-_deps = [m for m in manifests if m.kind == "Deployment"]
-_dep = [m for m in _deps if m.metadata.name == "demo"][0]
-_ctr = _dep.spec.template.spec.containers[0]
-_env = {e.name: e for e in _ctr.env}
 
-_worker_dep = [m for m in _deps if m.metadata.name == "worker"][0]
-_worker_env = {e.name: e for e in _worker_dep.spec.template.spec.containers[0].env}
+# A SECOND workload that declares no credentials — the whole point of the
+# per-workload gate. Both are rendered from the SAME config, so if the
+# projection ever goes back to broadcasting, API_KEY appears here too. A
+# secretKeyRef naming a missing key leaves the pod in
+# CreateContainerConfigError with no application log.
+_worker = fw.Workload {
+    name = "worker"
+    kind = "worker"
+    image = "demo-image"
+    env = config_gen.appConfigEnvMap(appcfg.app_config, [])
+}
 
-# THE FIX, asserted on rendered manifests. The credential is present on the
-# workload that declared it and ABSENT from the one that did not — not merely
-# unread there, but not in the manifest at all, so a missing Secret key cannot
-# stall a pod that has no business holding the value.
+output = forge.render(forge.Bundle {
+    project = "proj"
+    runtime = forge.OnCluster {target = _target}
+    workloads = [_svc, _worker]
+})
+_rec = {m.metadata.name: m.spec for m in output.manifests if m.kind == "Workload"}
+_env = {e.name: e for e in _rec["demo"].env}
+_worker_env = {e.name: e for e in _rec["worker"].env}
+
 assert_declared_gets_secret = "API_KEY" in _env
 assert_undeclared_has_no_secret = "API_KEY" not in _worker_env
-# Non-sensitive config still reaches BOTH workloads: inline values carry no
-# credential and no start-time dependency, so gating them would tax every
-# ordinary config field for no security gain.
+# Non-sensitive config still reaches BOTH workloads.
 assert_worker_still_gets_config = _worker_env["DEBUG_MODE"].value == "false"
-
-# sensitive config field -> secretKeyRef (reads the typed ConfigSecretRef).
-assert_secret = _env["API_KEY"].valueFrom.secretKeyRef == {name = "proj-secrets", key = "api_key"}
-# non-sensitive config field -> INLINE value (no ConfigMap reference). The
-# bool default lowers to the lowercase "false" string.
-assert_config = _env["DEBUG_MODE"].value == "false"
-assert_config_channel = "valueFrom" not in _env["DEBUG_MODE"]
-# the service's own EXTRA env var survives the merge.
+# sensitive config field -> secretRef (reads the typed ConfigSecretRef).
+assert_secret = _env["API_KEY"].secretRef.name == "proj-secrets" and _env["API_KEY"].secretRef.key == "api_key"
+# non-sensitive config field -> INLINE value; the bool default lowers to "false".
+assert_config = _env["DEBUG_MODE"] == {name = "DEBUG_MODE", value = "false"}
+# the workload's own EXTRA env var survives the merge.
 assert_extra = _env["EXTRA"].value == "extra-val"
-# the service override of a config key WINS (map-merge last-wins) ...
-assert_override = _env["LOG_LEVEL"].value == "override-wins"
-# ... and stays an inline value channel.
-assert_override_channel = "valueFrom" not in _env["LOG_LEVEL"]
+# the workload's override of a config key WINS and stays an inline value.
+assert_override = _env["LOG_LEVEL"] == {name = "LOG_LEVEL", value = "override-wins"}
 `
 	write("main.k", main)
 
 	// kcltest.Run, not exec+CombinedOutput: under a parallel `go test ./...`
 	// kcl prints "waiting for package-cache lock..." on stdout ahead of the
-	// JSON, which made this assertion fail with `invalid character 'w'`
-	// against a render that was actually correct. See internal/kcltest.
+	// JSON. See internal/kcltest.
 	out, err := kcltest.Run(t.Context(), dir, "run", ".", "--format", "json")
 	if err != nil {
 		t.Fatalf("kcl run failed: %v\n%s", err, out)
@@ -463,13 +441,8 @@ assert_override_channel = "valueFrom" not in _env["LOG_LEVEL"]
 			continue
 		}
 		sawAssert = true
-		b, ok := v.(bool)
-		if !ok {
-			t.Errorf("identifier %q not a bool: %v", k, v)
-			continue
-		}
-		if !b {
-			t.Errorf("assertion %q is false", k)
+		if b, ok := v.(bool); !ok || !b {
+			t.Errorf("assertion %q = %v, want true", k, v)
 		}
 	}
 	if !sawAssert {

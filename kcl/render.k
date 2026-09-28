@@ -1,51 +1,726 @@
 """
-Forge KCL — render layer.
+Forge KCL — the lowering: `output = forge.render(bundle)`.
 
-Two responsibilities:
+`render` is the ONE entrypoint (ADR 0002). A project's env main.k ends with
+`output = forge.render(bundle)`; there is no other public top-level var, and
+in particular no top-level `manifests` a bare `kcl run -S manifests |
+kubectl apply` could consume: the cluster-bound workloads in the applyable
+stream are forge.dev Workload RECORDS that forge expands in Go, so an apply
+that bypasses forge could never be correct.
 
-  1. `render(bundle)` — project a typed `Bundle` to the stable JSON
-     contract documented in `schema.k`. This is what the forge CLI
-     (`forge build`, `forge run`, `forge env deploy`, etc.) consumes via
-     `kcl run deploy/kcl/<env>/ -S output --format json`.
+THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
 
-  2. `render_manifests(bundle, env)` — emit the Kubernetes manifest
-     list for the cluster-targeted entities (K8sCluster services,
-     operators, scheduled cronjobs). Host-mode services and BuildOnly
-     services are skipped — those live outside the cluster manifest
-     boundary.
+    project, env, image_tag
+    clusters, cluster_target, kubeconfig_secrets
+    network_policy            the env NetworkPolicy bundle's inputs, or null
+    workloads[]               EVERY workload, of every runtime:
+        {name, kind, image, build, runtime, spec}
+          image   — the registry-less artifact name forge builds it into
+                    ("" when it builds none): the build-state / ledger key
+          build   — the typed build, or null (forge builds nothing)
+          runtime — {type: host|compose|cluster|hosted|build-only, ...}
+          spec    — v1alpha1.WorkloadSpec JSON (the generated
+                    tiers.workload_json), identical to the record's spec
+    infra[], frontends[], databases[]
+    config_maps, gateways, http_routes, grpc_routes, runtime_classes,
+    helm_charts, required_secrets, required_dns, secret_provider,
+    rendered_secrets, control_plane
+    manifests[]               the applyable stream: RuntimeClasses,
+                              Namespaces, ConfigMaps, one `forge.dev/v1alpha1
+                              Workload` record per CLUSTER-bound workload
+                              (a tool is never scheduled, so has none),
+                              ManagedDatabase records, Gateway API objects,
+                              then Bundle.manifests (forge.Manifests)
 
-Missing optional fields project as JSON `null` (not omitted) so the
-consumer sees stable keys.
+Missing optional fields in the runtime/build/infra/frontend blocks project as
+`null`, not omitted, so the consumer sees stable keys.
 
-This file is a SIBLING of `schema.k` so it can reference Bundle,
-Service, etc. as bare names — no `import .schema` (which would
-fork the type identity, blocking project code that does `import
-forge`).
+WHAT THE LOWERING DECIDES (per workload, `_lower`):
 
-KCL union-type dispatch
-=======================
+  * the RUNTIME: the workload's own, else Bundle.runtime;
+  * the IMAGE: a cluster workload's image is resolved here, against the
+    target's registry, the env's tag and `-D image_digests`, so the record
+    names exactly what the cluster pulls; a hosted workload carries the
+    artifact name (forge's hosted publish pins it to repo@digest) or the
+    author's third-party image; host / compose / build-only run no image;
+  * ENV: the map becomes the wire's list, with each reference in its
+    channel; a forge.WorkloadURL is RESOLVED to a value for a host or
+    cluster referrer and KEPT as a reference for a hosted one;
+  * PROBES: `_default_probes`, ADR 0002 §5;
+  * the RUNTIME MASK: `_mask_violations` refuses, naming the workload, the
+    field and the reason, what the bound runtime cannot honour.
 
-`Service.deploy: HostDeploy | K8sCluster | External | Compose | HostInfra | BuildOnly`.
-The discriminator field (`type`) is declared ON each variant subschema,
-so the JSON projection is self-describing — the consumer dispatches
-on `deploy.type` directly. The render lambdas here mirror that
-contract: one branch per discriminator value, always producing a
-fully-populated dict so the JSON shape is stable.
+The Kubernetes objects a cluster workload becomes (Deployment, Service,
+Jobs, RBAC, PDB, NetworkPolicy, ...) are NOT rendered here: that is
+pkg/deploy.RenderWorkloads, the one renderer, which the CLI and the control
+plane both run.
+
+This file is a SIBLING of schema.k and workload.k so it references Bundle,
+Workload etc. as bare names; `import .schema` would fork type identity.
 """
 
-import .lib.services as svc_lib
-import .lib.rbac as rbac_lib
-import .lib.netpol as netpol_lib
+import json
+import .tiers
 import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
-import .lib.quantity as qty_lib
 import .lib.labels as labels_lib
 import .lib.workload_url as wurl_lib
-import .tiers
+import .lib.images as img_lib
+import .lib.capabilities as caps
+import .lib.crd as crd_lib
+
+# Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
+_TWorkload = tiers.Workload
+_TEnvVar = tiers.EnvVar
+_TProbes = tiers.Probes
+_TSecretKeyRef = tiers.SecretKeyRef
+_TConfigMapKeyRef = tiers.ConfigMapKeyRef
+_TFieldRef = tiers.FieldRef
+_TManagedSecretRef = tiers.ManagedSecretRef
+_TDatabaseRef = tiers.DatabaseRef
+_TWorkloadURLRef = tiers.WorkloadURLRef
 
 # ---------------------------------------------------------------------------
-# JSON contract render — typed Bundle -> stable dict shape.
+# Runtime resolution.
 # ---------------------------------------------------------------------------
+
+# A workload's runtime: its own, else the env default. Undefined when
+# neither is set (Bundle's check names the workload).
+_bound_runtime = lambda w: any, default: any -> any {
+    w.runtime if w.runtime else default
+}
+
+# A database runs on a cluster or on the control plane. Its own runtime,
+# else Bundle.runtime when that is one of the two.
+_db_runtime = lambda db: any, default: any -> any {
+    db.runtime if db.runtime else (default if default and default.type in ["cluster", "hosted"] else Undefined)
+}
+
+# The names that occur more than once, sorted.
+_duplicates = lambda names: [str] -> [str] {
+    sorted([n for n in {x: 0 for x in names} if len([y for y in names if y == n]) > 1])
+}
+
+# Every name the env declares: the WorkloadURL namespace and `--target` set.
+_env_names = lambda workloads: [any], infra: [any], frontends: [any] -> [str] {
+    [w.name for w in workloads] + [i.name for i in infra] + [f.name for f in frontends]
+}
+
+# Everything that is published to the control plane.
+_hosted_names = lambda workloads: [any], databases: [any], frontends: [any], default: any -> [str] {
+    [w.name for w in workloads if _bound_runtime(w, default) and _bound_runtime(w, default).type == "hosted"] \
+        + [db.name for db in databases if _db_runtime(db, default) and _db_runtime(db, default).type == "hosted"] \
+        + [f.name for f in frontends if f.deploy and f.deploy.type == "static-site" and not f.deploy.bucket]
+}
+
+# A cloud-bound workload whose build produces an image, on a target that
+# states no platform (see the Bundle check).
+_cloud_build_without_platform = lambda w: any, default: any -> bool {
+    _rt = _bound_runtime(w, default)
+    bool(_rt and _rt.type == "cluster" and not _rt.target.platform \
+        and not is_local_registry(_rt.target.registry) and builds_an_image(w))
+}
+
+# The env's primary cluster target: declared, else the default runtime's.
+_primary_target = lambda b: Bundle -> any {
+    b.cluster_target if b.cluster_target else (b.runtime.target if b.runtime and b.runtime.type == "cluster" else Undefined)
+}
+
+# ---------------------------------------------------------------------------
+# Probe policy (ADR 0002 §5), in ONE place.
+#
+# A SERVICE that forge BUILDS serves /readyz + /healthz through serverkit, so
+# the lowering writes that probe into the spec EXPLICITLY — paths and port —
+# unless the author declared one. A CR on the wire is then self-describing:
+# the hosted platform, the CLI renderer and a human reading the record all
+# see the same probe, and nothing is inferred downstream. A third-party
+# image (no build) gets none here: forge cannot know it serves /readyz, and
+# Go's WorkloadSpec.EffectiveProbes gives a service with ports TCP on its
+# first one. A worker or job gets none unless it declares one.
+# ---------------------------------------------------------------------------
+_default_probes = lambda w: any -> any {
+    w.probes if w.probes else (_TProbes {
+        readinessPath = "/readyz"
+        livenessPath = "/healthz"
+        port = _http_port(w)
+    } if w.build and w.kind == "service" else Undefined)
+}
+
+# The port a default probe targets: the one named `http`, else the first,
+# else pkg/deploy's DefaultServicePort (a service with no ports is given
+# `http` :8080 by the renderer).
+_http_port = lambda w: any -> int {
+    _named = [p.port for p in (w.ports or []) if p.name == "http"]
+    _named[0] if _named else ((w.ports or [])[0].port if w.ports else 8080)
+}
+
+# ---------------------------------------------------------------------------
+# Env: the authoring map -> the wire's list, one channel per entry.
+# ---------------------------------------------------------------------------
+
+# The channel of one env value, by its declared type.
+_channel = lambda v: any -> str {
+    "value" if typeof(v) == "str" else {
+        "SecretRef" = "secretRef"
+        "ConfigMapRef" = "configMapRef"
+        "FieldRef" = "fieldRef"
+        "ManagedSecret" = "managedSecret"
+        "DatabaseRef" = "databaseRef"
+        "WorkloadURL" = "workloadURL"
+    }[typeof(v)]
+}
+
+# One map entry -> one tiers.EnvVar, lowered for the referrer's runtime
+# `rt`: a hosted referrer lowers a config-projected secret to its store key
+# as a managedSecret and KEEPS a WorkloadURL; every other referrer resolves
+# the WorkloadURL, through its cluster's host gateway when it is a pod.
+_env_var = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> any {
+    hosted = rt.type == "hosted"
+    _c = _channel(v)
+    _TEnvVar {
+        name = name
+        if _c == "value":
+            value = v
+        if _c == "secretRef" and hosted and v.store_key:
+            managedSecret = _TManagedSecretRef {name = v.store_key, optional = v.optional if v.optional else Undefined}
+        if _c == "secretRef" and not (hosted and v.store_key):
+            secretRef = _TSecretKeyRef {name = v.name, key = v.key, optional = v.optional if v.optional else Undefined}
+        if _c == "configMapRef":
+            configMapRef = _TConfigMapKeyRef {name = v.name, key = v.key}
+        if _c == "fieldRef":
+            fieldRef = _TFieldRef {fieldPath = v.path}
+        if _c == "managedSecret":
+            managedSecret = _TManagedSecretRef {name = v.name, optional = v.optional if v.optional else Undefined}
+        if _c == "databaseRef":
+            databaseRef = _TDatabaseRef {name = v.name, key = v.key if v.key else Undefined}
+        if _c == "workloadURL" and hosted:
+            workloadURL = _TWorkloadURLRef {name = _require_hosted_url_target(v.name, where, bundle)}
+        if _c == "workloadURL" and not hosted:
+            value = _require_workload_url(v.name, where, bundle, rt.target.host_gateway if rt.type == "cluster" else "localhost")
+    }
+}
+
+# ---------------------------------------------------------------------------
+# forge.WorkloadURL resolution (lib/workload_url.k has the order).
+# ---------------------------------------------------------------------------
+
+# The URL a reference resolves to at render, or a refusal naming it.
+_require_workload_url = lambda name: str, where: str, bundle: Bundle, from_host: str = "localhost" -> str {
+    _names = _env_names(bundle.workloads, bundle.infra, bundle.frontends)
+    assert name in _names, \
+        "${where}: forge.WorkloadURL names workload '${name}', which this environment does not declare. " \
+        + "Declared workloads: " + ", ".join(_names) + "."
+    _url = wurl_lib.resolve(name, bundle, from_host)
+    assert _url, \
+        "${where}: forge.WorkloadURL '${name}' has no URL forge can know at render time. " \
+        + "Give it one: an HTTPRoute to it, a custom domain on its exposed port, `listen_ports` on its host runtime " \
+        + "(forge env up assigns an undeclared host port only after rendering), or a frontend `port`."
+    _url
+}
+
+# A HOSTED referrer keeps the reference, and the control plane resolves it
+# against what IT runs. So the target must be hosted too: a host process or
+# a cluster you operate is unreachable from the platform.
+_require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str {
+    _names = _env_names(bundle.workloads, bundle.infra, bundle.frontends)
+    assert name in _names, \
+        "${where}: forge.WorkloadURL names workload '${name}', which this environment does not declare. " \
+        + "Declared workloads: " + ", ".join(_names) + "."
+    _hosted = _hosted_names(bundle.workloads, [], bundle.frontends, bundle.runtime)
+    assert name in _hosted, \
+        "${where}: forge.WorkloadURL names '${name}', which does not run on the hosted runtime. A hosted workload's references are resolved by the control plane against workloads IT runs, and it cannot reach a host process or a cluster you operate. Bind '${name}' to forge.OnHosted {} too, or pass its URL as a literal value."
+    name
+}
+
+# ---------------------------------------------------------------------------
+# The workload lowering.
+# ---------------------------------------------------------------------------
+
+# The registry-less artifact name a forge-built workload is built into —
+# the build-state / release-ledger key. "" when forge builds nothing for it.
+_artifact = lambda w: any -> str {
+    (w.image if w.image and not img_lib.has_registry_host(w.image) and not img_lib.has_tag_or_digest(w.image) \
+        else (w.build.output_name if w.build and w.build.output_name else w.name)) if w.build else ""
+}
+
+# The image a runtime runs, resolved per runtime (module docstring).
+_spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
+    _name = w.image if w.image else _artifact(w)
+    img_lib.image_ref(_name, rt.target.registry, bundle.image_tag, image_digests()) if rt.type == "cluster" and _name \
+        else (_name if rt.type == "hosted" else "")
+}
+
+# The spec, as the generated tiers.Workload. `rt` is the resolved runtime.
+_spec = lambda w: any, rt: any, bundle: Bundle -> any {
+    _TWorkload {
+        kind = w.kind
+        image = _spec_image(w, rt, bundle) or "-"
+        command = w.command
+        args = w.args
+        replicas = w.replicas
+        if w.resources:
+            resources = w.resources
+        env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env] if w.env else Undefined
+        ports = w.ports
+        probes = _default_probes(w)
+        storageGiB = w.storageGiB
+        schedule = w.schedule
+        before = w.before
+        deployPhase = w.deployPhase
+        namespacedRBAC = w.namespacedRBAC
+        clusterRBAC = w.clusterRBAC
+        crds = w.crds
+        group = w.group
+        version = w.version
+        leaderElection = w.leaderElection
+        serviceAccount = w.serviceAccount
+        serviceAccountAnnotations = w.serviceAccountAnnotations
+        sidecars = w.sidecars
+        volumes = w.volumes
+        nodeSelector = w.nodeSelector
+        tolerations = w.tolerations
+        podAnnotations = w.podAnnotations
+        securityContext = w.securityContext
+        terminationGracePeriodSeconds = w.terminationGracePeriodSeconds
+        activeDeadlineSeconds = w.activeDeadlineSeconds
+    }
+}
+
+# The spec JSON: the generated projection, with the placeholder image of a
+# runtime that runs none emptied. (tiers.Workload requires an image, which is
+# right for the wire; host / compose / build-only have none to state.)
+_spec_json = lambda w: any, rt: any, bundle: Bundle -> {str:} {
+    _j = tiers.workload_json(_spec(w, rt, bundle))
+    {k: ("" if k == "image" and v == "-" else v) for k, v in _j}
+}
+
+_render_runtime = lambda w: any, rt: any -> any {
+    {
+        "type": "host"
+        "runner": rt.runner
+        "air_config": rt.air_config if rt.air_config else None
+        "working_dir": rt.working_dir if rt.working_dir else None
+        # `is not Undefined`, NOT truthiness: an explicitly EMPTY list means
+        # "binds nothing" and must reach Go distinct from "not declared".
+        "listen_ports": rt.listen_ports if rt.listen_ports is not Undefined else None
+        "delve_port": rt.delve_port
+    } if rt.type == "host" else ({
+        "type": "compose"
+        "service": rt.service if rt.service else w.name
+        "file": rt.file
+        "env_file": rt.env_file if rt.env_file else None
+        "wait": rt.wait
+        "wait_timeout": rt.wait_timeout
+        # The compose PROCESS env: the workload's literal env under the
+        # runtime's own (the runtime block is the more specific statement).
+        "env": {k: v for k, v in w.env if typeof(v) == "str"} | rt.env
+    } if rt.type == "compose" else ({
+        "type": "cluster"
+        "cluster": rt.target.cluster
+        "namespace": rt.target.namespace
+        "registry": rt.target.registry
+        "domain": rt.target.domain if rt.target.domain else None
+        "platform": rt.target.platform if rt.target.platform else None
+        "image_pull_secrets": rt.target.image_pull_secrets if rt.target.image_pull_secrets else []
+    } if rt.type == "cluster" else ({
+        "type": "hosted"
+    } if rt.type == "hosted" else {
+        "type": "build-only"
+        "build_variants": [_render_build_variant(bv) for bv in rt.build_variants]
+    })))
+}
+
+# One output.workloads[] entry. Runs the runtime mask first.
+_lower = lambda w: any, bundle: Bundle -> any {
+    _rt = _bound_runtime(w, bundle.runtime)
+    _bad = _mask_violations(w, _rt)
+    assert len(_bad) == 0, "workload '${w.name}' cannot run on the ${_rt.type} runtime:\n  - " + "\n  - ".join(_bad)
+    {
+        "name": w.name
+        "kind": w.kind
+        "image": _artifact(w)
+        "build": _render_build(w.build)
+        "runtime": _render_runtime(w, _rt)
+        "spec": _spec_json(w, _rt, bundle)
+    }
+}
+
+# `before` names a workload the env declares, on the same runtime set that
+# orders it (a Go renderer / host runner orders within the env).
+_check_before = lambda workloads: [any] -> bool {
+    _names = [w.name for w in workloads]
+    _dangling = ["${w.name} -> ${b}" for w in workloads for b in (w.before or []) if b != BEFORE_ALL and b not in _names]
+    assert len(_dangling) == 0, \
+        "Workload.before names a workload this environment does not declare: " + ", ".join(_dangling) \
+        + ". Declared workloads: " + ", ".join(_names) + "."
+    True
+}
+
+# ---------------------------------------------------------------------------
+# The RUNTIME MASK (ADR 0002 §3; P2 map §6.2).
+#
+# What each runtime can honour. `hosted` is GENERATED from Go's
+# v1alpha1.FieldProfiles / KindProfiles (tiers/profiles_gen.k), so the
+# default-deny table that gates the control plane also gates the author, and
+# a field added to the spec is refused on hosted until Go classifies it.
+# The Go gate (Workload.Validate(Restricted), server-side) stays the real
+# one; this is the same answer at the line that caused it.
+#
+# host / compose / build-only are forge's own: each field they refuse would
+# otherwise be silently ignored by the runtime.
+# ---------------------------------------------------------------------------
+
+# Spec fields a runtime that runs a local process or a compose service
+# cannot honour, and why.
+_LOCAL_REFUSED: {str:str} = {
+    "storageGiB": "a local process has no volume to provision; use a host path in its config"
+    "namespacedRBAC": "a local process has no Kubernetes identity to grant it to"
+    "clusterRBAC": "a local process has no Kubernetes identity to grant it to"
+    "serviceAccount": "a local process has no Kubernetes identity"
+    "serviceAccountAnnotations": "a local process has no Kubernetes identity to annotate"
+    "sidecars": "a local process has no pod to add a container to"
+    "volumes": "a local process has no pod to mount into; it reads the host filesystem"
+    "nodeSelector": "a local process is not scheduled onto nodes"
+    "tolerations": "a local process is not scheduled onto nodes"
+    "podAnnotations": "a local process has no pod to annotate"
+    "securityContext": "a local process runs as the user who started it"
+    "terminationGracePeriodSeconds": "a local process is stopped by forge env down, not by a kubelet"
+}
+
+_COMPOSE_REFUSED: {str:str} = _LOCAL_REFUSED | {
+    "build": "compose builds its own image from the compose file; drop `build`, or bind a runtime forge builds for"
+    "ports": "the compose file owns the published ports; declare them there"
+    "probes": "the compose file owns the healthcheck; declare it there"
+    "replicas": "the compose file owns the scale"
+    "command": "the compose file owns the container's command"
+    "args": "the compose file owns the container's command"
+    "resources": "the compose file owns the container's resources"
+    "schedule": "compose has no cron"
+    "crds": "compose has no Kubernetes API"
+}
+
+_BUILD_ONLY_REFUSED: {str:str} = {
+    "ports": "a build-only workload is never run, so nothing listens"
+    "probes": "a build-only workload is never run, so there is nothing to probe"
+    "replicas": "a build-only workload is never run"
+    "storageGiB": "a build-only workload is never run"
+}
+
+_set = lambda w: any, f: str -> bool {
+    _v = w[f]
+    bool(_v) if f != "replicas" else _v != 1
+}
+
+_mask_violations = lambda w: any, rt: any -> [str] {
+    _hosted = ["${f}: ${tiers.RESTRICTED_FIELD_REASONS[f]}" for f in tiers.RESTRICTED_FIELD_REASONS if f in w and _set(w, f)] \
+        + ["env ${k} (${_channel(v)}): ${tiers.RESTRICTED_FIELD_REASONS['env.' + _channel(v)]}" for k, v in w.env if "env." + _channel(v) in tiers.RESTRICTED_FIELD_REASONS and not (_channel(v) == "secretRef" and v.store_key)] \
+        + (["kind '${w.kind}' (${tiers.RESTRICTED_KIND_REASONS[w.kind]})"] if w.kind in tiers.RESTRICTED_KIND_REASONS else []) \
+        + (["image: a hosted workload needs a build or an image to run"] if not w.build and not w.image else []) \
+        if rt.type == "hosted" else []
+    _host = ["${f}: ${_LOCAL_REFUSED[f]}" for f in _LOCAL_REFUSED if _set(w, f)] \
+        + (["replicas: a host workload is one local process; forge env up launches it once"] if w.replicas != 1 else []) \
+        + (["build: the ${rt.runner} runner derives its command from a forge.GoBuild; add `build = forge.GoBuild {cmd = ...}`, or set `command` to run a binary verbatim"] \
+            if rt.runner in ["go-run", "binary", "delve"] and not (w.build and w.build.type == "go") and not w.command else []) \
+        + (["kind '${w.kind}': a local process cannot ${'run on a schedule' if w.kind == 'cron' else 'be a controller-runtime manager'}; bind it to forge.OnCluster"] if w.kind in ["cron", "operator"] else []) \
+        if rt.type == "host" else []
+    _compose = ["${f}: ${_COMPOSE_REFUSED[f]}" for f in _COMPOSE_REFUSED if _set(w, f)] \
+        if rt.type == "compose" else []
+    _build_only = ["${f}: ${_BUILD_ONLY_REFUSED[f]}" for f in _BUILD_ONLY_REFUSED if _set(w, f)] \
+        + (["build: a build-only workload with no build has nothing to produce"] if not w.build else []) \
+        if rt.type == "build-only" else []
+    _hosted + _host + _compose + _build_only
+}
+
+# ---------------------------------------------------------------------------
+# The applyable stream.
+# ---------------------------------------------------------------------------
+
+# One forge.dev/v1alpha1 Workload record: what pkg/deploy.RenderWorkloads
+# expands (grouped by forge.dev/cluster + namespace), and the same spec the
+# hosted path publishes. The spec is THE SAME VALUE as the entity's.
+_workload_record = lambda entity: any, part_of: str -> any {
+    {
+        apiVersion = "forge.dev/v1alpha1"
+        kind = "Workload"
+        metadata = {
+            name = entity.name
+            namespace = entity.runtime.namespace
+            labels = labels_lib.managed_labels(entity.name, part_of) | {"forge.dev/cluster" = entity.runtime.cluster}
+        }
+        spec = entity.spec
+    }
+}
+
+# One forge.Manifests group, placed and (when named) owned. The cluster
+# label is written only off the primary cluster, which is what every
+# unlabelled object already routes to.
+_raw_manifests = lambda g: any, primary: any, part_of: str -> [any] {
+    _cluster = g.cluster if g.cluster else (primary.cluster if primary else "")
+    _ns = g.namespace if g.namespace else (primary.namespace if primary else "")
+    [_stamp_cluster(_default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns), _cluster) \
+        if primary == Undefined or _cluster != primary.cluster else _default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns) \
+        for m in g.objects]
+}
+
+# Cluster-scoped kinds a namespace must never be written onto.
+_CLUSTER_SCOPED: [str] = [
+    "Namespace", "CustomResourceDefinition", "ClusterRole", "ClusterRoleBinding",
+    "ClusterIssuer", "StorageClass", "PriorityClass", "RuntimeClass",
+    "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "APIService",
+    "PersistentVolume", "GatewayClass", "IngressClass", "CSIDriver", "Node",
+]
+
+_default_namespace = lambda m: any, ns: str -> any {
+    _meta = m.metadata if m.metadata else {}
+    m if not ns or _meta.namespace or m.kind in _CLUSTER_SCOPED else m | {metadata = _meta | {namespace = ns}}
+}
+
+_stamp_owner = lambda manifest: any, name: str, part_of: str -> any {
+    _meta = manifest.metadata if manifest.metadata else {}
+    manifest | {metadata = _meta | {labels = labels_lib.owner_labels(_meta.labels if _meta.labels else {}, name, part_of)}}
+}
+
+_stamp_cluster = lambda manifest: any, context: str -> any {
+    _meta = manifest.metadata if manifest.metadata else {}
+    _labels = _meta.labels if _meta.labels else {}
+    manifest | {metadata = _meta | {labels = {k: v for k, v in _labels if k != "forge.dev/cluster"} | {"forge.dev/cluster" = context}}}
+}
+
+_render_managed_database_record = lambda db: any, part_of: str -> any {
+    {
+        apiVersion = "forge.dev/v1alpha1"
+        kind = "ManagedDatabase"
+        metadata = {
+            name = db.name
+            namespace = db.namespace
+            labels = labels_lib.managed_labels(db.name, part_of) | {"forge.dev/cluster" = db.cluster}
+        }
+        spec = db.spec
+    }
+}
+
+# A database's placement: its runtime (or the env's cluster/hosted default),
+# else the primary cluster target.
+_render_database = lambda db: any, bundle: Bundle -> any {
+    _rt = _db_runtime(db, bundle.runtime)
+    _target = (_rt.target if _rt.type == "cluster" else Undefined) if _rt else _primary_target(bundle)
+    {
+        "name": db.name
+        "runtime": "hosted" if _rt and _rt.type == "hosted" else "cluster"
+        "cluster": _target.cluster if _target else None
+        "namespace": (db.namespace if db.namespace else _target.namespace) if _target else None
+        "spec": tiers.managed_database_json(db.spec)
+    }
+}
+
+# The Namespaces the cluster runtime deploys into, one per (cluster,
+# namespace), primary target first. RenderWorkloads does not emit them: the
+# namespace belongs to the ENV (restricted PSA, forge.dev/env), not to a
+# workload.
+_namespaces = lambda b: Bundle, entities: [any] -> [any] {
+    _pt = _primary_target(b)
+    _pairs = ([[_pt.cluster, _pt.namespace]] if _pt else []) \
+        + [[e.runtime.cluster, e.runtime.namespace] for e in entities if e.runtime.type == "cluster"]
+    _uniq = {"${p[0]}/${p[1]}": p for p in _pairs}
+    [_render_namespace(p[1], p[0], _pt) for _, p in _uniq]
+}
+
+_render_namespace = lambda namespace: str, context: str, primary: any -> any {
+    {
+        apiVersion = "v1"
+        kind = "Namespace"
+        metadata = {
+            name = namespace
+            labels = {
+                "app.kubernetes.io/managed-by" = "forge"
+                "pod-security.kubernetes.io/enforce" = "restricted"
+                "pod-security.kubernetes.io/audit" = "restricted"
+                "pod-security.kubernetes.io/warn" = "restricted"
+            } | ({} if primary and primary.cluster == context else {"forge.dev/cluster" = context})
+        }
+    }
+}
+
+_manifests = lambda b: Bundle, entities: [any] -> [any] {
+    _pt = _primary_target(b)
+    _ns = _pt.namespace if _pt else ""
+    _project = b.project
+    _dbs = [_render_database(db, b) for db in b.databases]
+    labels_lib.stamp_env_all(
+        [_render_runtime_class_manifest(rc, _ns, _project) for rc in b.runtime_classes] \
+        + _namespaces(b, entities) \
+        + [_render_config_map_manifest(cm, _ns, _project) for cm in b.config_maps] \
+        + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
+        + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
+        + [item for g in b.gateways for item in gw_lib.render_gateway(g, _ns)] \
+        + [item for g in b.gateways for item in gw_lib.render_certificate(g, _ns)] \
+        + [item for r in b.http_routes for item in gw_lib.render_http_route(r, b.gateways, _ns)] \
+        + [item for r in b.grpc_routes for item in gw_lib.render_grpc_route(r, b.gateways, _ns)] \
+        + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)],
+        b.env,
+    )
+}
+
+# ---------------------------------------------------------------------------
+# The entrypoint.
+# ---------------------------------------------------------------------------
+
+render = lambda bundle: Bundle -> any {
+    _ok = _check_before(bundle.workloads)
+    _entities = [_lower(w, bundle) for w in bundle.workloads]
+    _pt = _primary_target(bundle)
+    {
+        "project": bundle.project
+        "env": bundle.env
+        "image_tag": bundle.image_tag
+        "clusters": [_render_cluster(c) for c in bundle.clusters]
+        if _pt:
+            "cluster_target": _render_cluster_target(_pt)
+        "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
+        "network_policy": {
+            "egress_ports": bundle.network_policy.egress_ports
+            "telemetry_namespace": bundle.network_policy.telemetry_namespace
+            "ingress_namespace": bundle.network_policy.ingress_namespace
+        } if bundle.network_policy else None
+        "workloads": _entities
+        "infra": [_render_host_infra(i) for i in bundle.infra]
+        "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
+        "databases": [_render_database(db, bundle) for db in bundle.databases]
+        "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
+        "gateways": [_render_gateway(g) for g in bundle.gateways]
+        "http_routes": [_render_http_route(r) for r in bundle.http_routes]
+        "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
+        "runtime_classes": [_render_runtime_class(rc) for rc in bundle.runtime_classes]
+        # Platform deps (helm-as-a-RENDERER): the CLI expands each via `helm
+        # template --skip-crds` and folds the result into the apply stream,
+        # selected by `--target <name>`. Not in `manifests`.
+        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts]
+        # Declared external PREREQUISITES forge does NOT create: a render-time
+        # checklist, and the preflight BLOCK on a required-but-absent Secret.
+        "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
+        "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
+        # WHERE secret values come from. A declaration only: no secret VALUE
+        # ever enters this output.
+        if bundle.secret_provider:
+            "secret_provider": bundle.secret_provider
+        # Explicitly-placed Secrets, placement RESOLVED here (own
+        # cluster/namespace, else the primary target's) so the CLI applies
+        # each exactly where it says. A `from = "file"` key carries only the
+        # store KEY; its value is resolved CLI-side.
+        "rendered_secrets": [{
+            "name": s.name
+            "keys": s.keys
+            "cluster": s.cluster or _pt.cluster
+            "namespace": s.namespace or (_pt.namespace if _pt else None)
+        } for s in bundle.rendered_secrets]
+        # The control plane this env talks to: endpoint + the env var NAME
+        # its credential is read from. Declaration only.
+        if bundle.control_plane:
+            "control_plane": bundle.control_plane
+        "manifests": _manifests(bundle, _entities)
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Projections of the declarations the lowering does not transform. Each
+# returns a fully-populated dict so the Go consumer sees stable keys.
+# ---------------------------------------------------------------------------
+
+_render_host_infra = lambda d: HostInfra -> any {
+    {
+        "name": d.name
+        "engine": d.engine
+        "port": d.port
+        "database": d.database
+        "user": d.user
+        "password": d.password
+        "data_dir": d.data_dir if d.data_dir else None
+        "version": d.version if d.version else None
+        # engine = "zitadel" only: where the dev IdP keeps its state, and the
+        # declarative bootstrap it converges to. Projected unconditionally:
+        # this lambda is a whitelist, so a field omitted here never reaches
+        # the consumer however correctly the env declares it.
+        "idp_database": d.idp_database
+        "idp_database_port": d.idp_database_port if d.idp_database_port else None
+        "idp_masterkey": d.idp_masterkey
+        "idp_steps_file": d.idp_steps_file
+        "idp_pat_path": d.idp_pat_path
+    }
+}
+
+# Build union render. One branch per discriminator value, each a
+# fully-populated dict (WorkloadEntity.Build). null = forge builds nothing.
+_render_build = lambda b: any -> any {
+    (_render_go_build(b) if b.type == "go" else \
+        (_render_docker_build(b) if b.type == "docker" else \
+        (_render_shell_build(b) if b.type == "shell" else _render_remote_build(b)))) if b else None
+}
+
+_render_cluster_target = lambda ct: ClusterTarget -> any {
+    {
+        "cluster": ct.cluster
+        "namespace": ct.namespace
+        "registry": ct.registry
+        "domain": ct.domain if ct.domain else None
+        "platform": ct.platform if ct.platform else None
+        "image_pull_secrets": ct.image_pull_secrets if ct.image_pull_secrets else []
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Frontends. Hosting is PER FRONTEND: a StaticSite with no bucket is
+# published to the control plane, which writes its config.js and resolves
+# its references; every other frontend's references are resolved here.
+# ---------------------------------------------------------------------------
+
+_frontend_hosted = lambda f: Frontend -> bool {
+    bool(f.deploy and f.deploy.type == "static-site" and not f.deploy.bucket)
+}
+
+# A frontend's runtime_config as the StaticSite spec's `runtimeConfig` wire
+# shape, references KEPT (the hosted lowering). Every name is still checked,
+# so a typo fails at load rather than at the operator.
+_runtime_config_spec = lambda f: Frontend, bundle: Bundle -> {str:} {
+    _names = _env_names(bundle.workloads, bundle.infra, bundle.frontends)
+    _bad = [k + " -> " + v.name for k, v in f.runtime_config if typeof(v) != "str" and v.name not in _names]
+    assert len(_bad) == 0, \
+        "Frontend '${f.name}'.runtime_config: forge.WorkloadURL names a workload this environment does not declare: " \
+        + ", ".join(_bad) + ". Declared workloads: " + ", ".join(_names) + "."
+    {k: ({"value": v} if typeof(v) == "str" else {"workloadURL": {"name": v.name}}) for k, v in f.runtime_config}
+}
+
+# A frontend's runtime_config RESOLVED to literals — the document forge
+# writes itself. Empty for a hosted StaticSite (the control plane writes it).
+_runtime_config_resolved = lambda f: Frontend, bundle: Bundle -> {str:str} {
+    {} if _frontend_hosted(f) else \
+        {k: (v if typeof(v) == "str" else _require_workload_url(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle)) for k, v in f.runtime_config}
+}
+
+_render_frontend_deploy = lambda d: any -> any {
+    (_render_static_site(d) if d.type == "static-site" else _render_firebase_hosting(d)) if d else None
+}
+
+_render_frontend = lambda f: Frontend, bundle: Bundle -> any {
+    {
+        "name": f.name
+        "type": f.type
+        "path": f.path if f.path else None
+        "source": _render_git_source(f.source) if f.source else None
+        "dev_runner": f.dev_runner
+        "port": f.port
+        "env_file": f.env_file if f.env_file else None
+        "env_vars": [_render_env_var(e) for e in f.env_vars]
+        "config": _render_frontend_config(f.config) if f.config else None
+        "deploy": _render_frontend_deploy(f.deploy)
+        # The browser's runtime config, as DECLARED (references kept) and as
+        # RESOLVED for a frontend forge serves or publishes itself. The Go
+        # side layers `runtime_config` over the typed per-env config for
+        # config.js, and a hosted StaticSite publishes `runtime_config_spec`
+        # as the spec's runtimeConfig.
+        "runtime_config": _runtime_config_resolved(f, bundle)
+        "runtime_config_spec": _runtime_config_spec(f, bundle)
+    }
+}
 
 # Render an EnvVar to its stable dict form. Unset / empty-string
 # defaults project as `null` so the consumer sees stable keys — EXCEPT
@@ -69,25 +744,6 @@ _render_env_var = lambda ev: EnvVar -> any {
     }
 }
 
-# k8s ADAPTER projection: neutral Resources -> the k8s-dialect quantity
-# strings the JSON contract has always exposed. qty_lib formats millicores
-# -> "<n>m"/"<n>" and bytes -> "<n>Mi"/"<n>Gi", so the output is byte-stable
-# with the pre-neutral shape (100 -> "100m", 134217728 -> "128Mi").
-_render_resources = lambda r: Resources -> any {
-    {
-        "cpu_request": qty_lib.fmt_k8s_cpu(r.cpu_request_millicores)
-        "cpu_limit": qty_lib.fmt_k8s_cpu(r.cpu_limit_millicores)
-        "memory_request": qty_lib.fmt_k8s_mem(r.memory_request_bytes)
-        "memory_limit": qty_lib.fmt_k8s_mem(r.memory_limit_bytes)
-    }
-}
-
-# Lifted above _render_k8s_deploy so K8sCluster's optional cluster_rbac
-# field can project through the deploy dispatch. Operators consume the
-# same helper from below.
-_render_cluster_rbac = lambda rbac: ClusterRBAC -> any {
-    {"rules": rbac.rules}
-}
 
 _render_build_variant = lambda bv: BuildVariant -> any {
     {
@@ -99,288 +755,7 @@ _render_build_variant = lambda bv: BuildVariant -> any {
     }
 }
 
-# Dispatch on the `type` discriminator. Each branch returns a
-# fully-populated dict so the consumer sees identical key shape for
-# every member of the union.
-_render_host_deploy = lambda d: HostDeploy -> any {
-    {
-        "type": "host"
-        "runner": d.runner
-        "air_config": d.air_config if d.air_config else None
-        "env_vars": [_render_env_var(e) for e in d.env_vars]
-        "delve_port": d.delve_port
-        "working_dir": d.working_dir if d.working_dir else None
-        # `is not Undefined`, NOT truthiness: an explicitly EMPTY list is a
-        # meaningful declaration ("this service binds no port at all") and must
-        # survive to the JSON contract. Collapsing it to None made it identical
-        # to "not declared", so forge inferred a port, published it, and then
-        # failed the readiness gate when nothing bound it — a packaged desktop
-        # app launched fine and was still reported as "nothing is listening".
-        "listen_ports": d.listen_ports if d.listen_ports is not Undefined else None
-    }
-}
 
-# Renders K8sCluster — env-wide knobs (cluster/namespace/registry/domain)
-# plus the per-service knobs.
-_render_k8s_cluster = lambda d: K8sCluster -> any {
-    {
-        "type": "cluster"
-        "cluster": d.cluster
-        "namespace": d.namespace
-        "registry": d.registry
-        "domain": d.domain if d.domain else None
-        "replicas": d.replicas
-        "resources": _render_resources(d.resources) if d.resources else None
-        "health_check": d.health_check if d.health_check else None
-        "security_context": d.security_context if d.security_context else None
-        "env_vars": [_render_env_var(e) for e in d.env_vars]
-        "platform": d.platform if d.platform else None
-        "ports": d.ports
-        "app_protocols": d.app_protocols if d.app_protocols else None
-        "cluster_rbac": _render_cluster_rbac(d.cluster_rbac) if d.cluster_rbac else None
-        "image_pull_secrets": d.image_pull_secrets if d.image_pull_secrets else None
-    }
-}
-
-# Entity projection for a SimpleBackend deploy block: the target coordinates
-# plus the spec as its CR JSON (the generated tiers.simple_backend_json, so
-# the key set is exactly the Go type's). The discriminator stays
-# "simple-backend" rather than being flattened to "cluster", because the
-# entity contract is what `forge project audit` and `forge env render` read,
-# and a tier that vanished into "cluster" there would be invisible to exactly
-# the tooling that needs to see it.
-_render_simple_backend = lambda d: SimpleBackend, bundle: Bundle -> any {
-    {
-        "type": "simple-backend"
-        "cluster": d.cluster
-        "namespace": d.namespace
-        "spec": _simple_backend_spec_json(d.spec, bundle)
-    }
-}
-
-# ---------------------------------------------------------------------------
-# forge.WorkloadURL lowering. See lib/workload_url.k for the resolution rules.
-# ---------------------------------------------------------------------------
-
-# A Bundle whose workload URLs the CONTROL PLANE resolves: it declares a
-# control plane AND runs at least one tier through it. This is the same
-# predicate as the Go side's hasHostedTierWorkload (a LOCAL control-plane env
-# — control plane as secret store only — runs its workloads here, so forge
-# resolves). The two must agree, or a reference is either resolved twice or
-# never.
-_resolves_on_control_plane = lambda bundle: Bundle -> bool {
-    bool(bundle.control_plane) and ( \
-        any s in bundle.services { s.deploy and s.deploy.type == "simple-backend" and not s.deploy.cluster } \
-        or any f in bundle.frontends { f.deploy and f.deploy.type == "static-site" } \
-        or any db in bundle.databases { not db.namespace })
-}
-
-# The URL a reference resolves to, or a load-time refusal naming it. `where`
-# says which declaration holds the reference, so the message points at it.
-_require_workload_url = lambda name: str, where: str, bundle: Bundle -> str {
-    _names = wurl_lib.workload_names(bundle)
-    assert name in _names, \
-        "${where}: forge.WorkloadURL names workload '${name}', which this environment does not declare. " \
-        + "Declared workloads: " + ", ".join(_names) + "."
-    _url = wurl_lib.resolve(name, bundle)
-    assert _url, \
-        "${where}: forge.WorkloadURL '${name}' has no URL forge can know at render time. " \
-        + "Give it one: an HTTPRoute to it, a public SimpleBackend domain, `listen_ports` on its host deploy " \
-        + "(forge env up assigns an undeclared host port only after rendering), or a frontend `port`."
-    _url
-}
-
-# A frontend's runtime_config as the StaticSite spec's `runtimeConfig` wire
-# shape, with references kept as references — the HOSTED lowering. Every
-# name is still checked, so a typo fails at load rather than at the operator.
-_runtime_config_spec = lambda f: Frontend, bundle: Bundle -> {str:} {
-    _names = wurl_lib.workload_names(bundle)
-    _bad = [k + " -> " + v.name for k, v in f.runtime_config if typeof(v) != "str" and v.name not in _names]
-    assert len(_bad) == 0, \
-        "Frontend '${f.name}'.runtime_config: forge.WorkloadURL names a workload this environment does not declare: " \
-        + ", ".join(_bad) + ". Declared workloads: " + ", ".join(_names) + "."
-    {k: ({"value": v} if typeof(v) == "str" else {"workloadURL": {"name": v.name}}) for k, v in f.runtime_config}
-}
-
-# A frontend's runtime_config RESOLVED to literals — the document forge
-# writes itself on every env it resolves for. Empty on a hosted env (the
-# control plane writes it there).
-_runtime_config_resolved = lambda f: Frontend, bundle: Bundle -> {str:str} {
-    {} if _resolves_on_control_plane(bundle) else \
-        {k: (v if typeof(v) == "str" else _require_workload_url(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle)) for k, v in f.runtime_config}
-}
-
-# A SimpleBackend spec as CR JSON with every env workloadURL lowered: kept as
-# a reference on a hosted env, resolved to a literal value everywhere else.
-# The declaration record and the entity contract both go through here, so the
-# Go renderer (which refuses an unresolved reference) never sees one on a
-# self-hosted path.
-_simple_backend_spec_json = lambda spec: tiers.SimpleBackend, bundle: Bundle -> {str:} {
-    _json = tiers.simple_backend_json(spec)
-    _hosted = _resolves_on_control_plane(bundle)
-    _names = wurl_lib.workload_names(bundle)
-    _bad = [e.name + " -> " + e.workloadURL.name for e in (spec.env or []) if e.workloadURL and e.workloadURL.name not in _names]
-    assert len(_bad) == 0, \
-        "SimpleBackend env: workloadURL names a workload this environment does not declare: " \
-        + ", ".join(_bad) + ". Declared workloads: " + ", ".join(_names) + "."
-    # Rebuilt key by key rather than `_json | {"env": ...}`: KCL's dict union
-    # MERGES nested values, so the resolved entries would keep the
-    # reference they replace.
-    _json if _hosted or not spec.env else {
-        k: (v if k != "env" else [({ek: ev for ek, ev in e if ek != "workloadURL"} | {"value": _require_workload_url(e.workloadURL.name, "SimpleBackend env var " + e.name, bundle)}) if "workloadURL" in e else e for e in v]) for k, v in _json
-    }
-}
-
-_render_external = lambda d: External -> any {
-    {
-        "type": "external"
-        "deploy_cmd": d.deploy_cmd
-        "health_cmd": d.health_cmd if d.health_cmd else None
-        # Build is declared on Service.build (forge.ShellBuild) — the single
-        # shell hatch — NOT on the deploy block. No build_cmd is projected here.
-        "env_file": d.env_file if d.env_file else None
-        "env": d.env if d.env else {}
-    }
-}
-
-_render_compose = lambda d: Compose -> any {
-    {
-        "type": "compose"
-        "compose_file": d.compose_file
-        "service": d.service if d.service else None
-        "env_file": d.env_file if d.env_file else None
-        # The compose PROCESS env — what the compose file's own `${VAR}`
-        # references interpolate from. See Compose.env in schema.k for why
-        # this is distinct from env_file (which only reaches containers).
-        "env": d.env if d.env else {}
-    }
-}
-
-_render_host_infra = lambda d: HostInfra -> any {
-    {
-        "type": "host-infra"
-        "engine": d.engine
-        "port": d.port
-        "database": d.database
-        "user": d.user
-        "password": d.password
-        "data_dir": d.data_dir if d.data_dir else None
-        "version": d.version if d.version else None
-        # engine = "zitadel" only: where the dev IdP keeps its state, and
-        # the declarative bootstrap it converges to. Inert for postgres,
-        # projected unconditionally because this lambda is a whitelist —
-        # a field omitted here does not reach the consumer at all, however
-        # correctly the environment declares it.
-        "idp_database": d.idp_database
-        "idp_database_port": d.idp_database_port if d.idp_database_port else None
-        "idp_masterkey": d.idp_masterkey
-        "idp_steps_file": d.idp_steps_file
-        "idp_pat_path": d.idp_pat_path
-    }
-}
-
-_render_build_only = lambda d: BuildOnly -> any {
-    {
-        "type": "build-only"
-        "build_variants": [_render_build_variant(bv) for bv in d.build_variants]
-    }
-}
-
-# Dispatch on the populated deploy's discriminator. Called only when
-# `d` is not Undefined / None. Seven branches: host / cluster (K8sCluster) /
-# simple-backend / external / compose / host-infra / build-only.
-_render_deploy_populated = lambda d: any, bundle: Bundle -> any {
-    _render_host_deploy(d) if d.type == "host" else \
-        (_render_k8s_cluster(d) if d.type == "cluster" else \
-        (_render_simple_backend(d, bundle) if d.type == "simple-backend" else \
-        (_render_external(d) if d.type == "external" else \
-        (_render_compose(d) if d.type == "compose" else \
-        (_render_host_infra(d) if d.type == "host-infra" else _render_build_only(d))))))
-}
-
-# Top-level deploy dispatcher. `deploy = None` (or an omitted deploy) is
-# the EXPLICIT build-only mode: project a `{type: "build-only"}` block so
-# the Go consumer dispatches it exactly like a `forge.BuildOnly` deploy —
-# the service is in the build set (its `build` runs + pushes its image)
-# and out of the deploy set (no Deployment/Service/manifests). This is
-# self-describing (the consumer never has to special-case a null deploy),
-# and render_manifests still skips it (it isn't `type == "cluster"`).
-_render_deploy = lambda d: any, bundle: Bundle -> any {
-    _render_deploy_populated(d, bundle) if d else {"type": "build-only", "build_variants": []}
-}
-
-# build_of coerces a plain build dict (the shape a workloads.k entry
-# or a per-env overlay authors) into the right TYPED Build subtype,
-# dispatching on the `type` discriminator. This exists because KCL union
-# coercion is structural-first: a ShellBuild dict ({type=shell, cmd=...})
-# also satisfies GoBuild's required `cmd`, so a bare dict assigned to
-# `build: GoBuild | DockerBuild | ShellBuild` wrongly commits to GoBuild
-# and fails its `type == "go"` check. Routing the dict through this
-# discriminator-aware constructor at the bridge (build = forge.build_of(
-# c.build)) yields the exact subtype so the union match is unambiguous —
-# the same way the deploy bridge passes typed K8sCluster / BuildOnly
-# literals rather than bare dicts. Module-level (not a lambda body) so it
-# may instantiate schema literals (the v0.11 lambda restriction doesn't
-# apply here). An empty dict returns Undefined so `if c.build` stays the
-# "no build declared" signal.
-_build_go = lambda b: {str:any} -> GoBuild {
-    GoBuild {
-        cmd = b.cmd
-        output_name = b.output_name if "output_name" in b else ""
-        goos = b.goos if "goos" in b else ""
-        goarch = b.goarch if "goarch" in b else ""
-        ldflags = b.ldflags if "ldflags" in b else []
-        tags = b.tags if "tags" in b else []
-        flags = b.flags if "flags" in b else []
-        env = b.env if "env" in b else {}
-    }
-}
-
-_build_docker = lambda b: {str:any} -> DockerBuild {
-    DockerBuild {
-        output_name = b.output_name if "output_name" in b else ""
-        dockerfile = b.dockerfile if "dockerfile" in b else "Dockerfile"
-        platform = b.platform if "platform" in b else ""
-        target = b.target if "target" in b else ""
-        build_args = b.build_args if "build_args" in b else {}
-    }
-}
-
-_build_shell = lambda b: {str:any} -> ShellBuild {
-    ShellBuild {
-        output_name = b.output_name if "output_name" in b else ""
-        cmd = b.cmd
-        cwd = b.cwd if "cwd" in b else ""
-        env = b.env if "env" in b else {}
-    }
-}
-
-_build_remote = lambda b: {str:any} -> RemoteBuild {
-    RemoteBuild {
-        output_name = b.output_name if "output_name" in b else ""
-        source = b.source
-        dockerfile = b.dockerfile if "dockerfile" in b else "Dockerfile"
-        target = b.target if "target" in b else ""
-        platform = b.platform if "platform" in b else "linux/amd64"
-        build_args = b.build_args if "build_args" in b else {}
-        cpu_millicores = b.cpu_millicores if "cpu_millicores" in b else 2000
-        memory_bytes = b.memory_bytes if "memory_bytes" in b else 8589934592
-        cache_gib = b.cache_gib if "cache_gib" in b else 20
-        timeout_seconds = b.timeout_seconds if "timeout_seconds" in b else 900
-    }
-}
-
-build_of = lambda b: {str:any} -> any {
-    _build_go(b) if (b and b.type == "go") else \
-        (_build_docker(b) if (b and b.type == "docker") else \
-        (_build_shell(b) if (b and b.type == "shell") else \
-        (_build_remote(b) if (b and b.type == "remote") else Undefined)))
-}
-
-# Build union render. One branch per discriminator value (go / docker /
-# shell), each returning a fully-populated dict so the Go consumer
-# (ServiceEntity.Build) sees a stable key shape per type. Mirrors the
-# deploy-union dispatch above exactly.
 _render_go_build = lambda b: GoBuild -> any {
     {
         "type": "go"
@@ -403,6 +778,10 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "platform": b.platform if b.platform else None
         "target": b.target if b.target else None
         "build_args": b.build_args if b.build_args else {}
+        # The per-workload push target and named build contexts. Empty
+        # falls back to forge.yaml's docker.registry / build_contexts.
+        "registry": b.registry if b.registry else None
+        "build_contexts": b.build_contexts if b.build_contexts else {}
     }
 }
 
@@ -440,57 +819,6 @@ _render_remote_build = lambda b: RemoteBuild -> any {
     }
 }
 
-# Dispatch on the populated build's discriminator. Called only when `b`
-# is not Undefined / None. An unset build projects as null — the Go side
-# (build.go) then synthesizes the GoBuild { cmd = "./cmd/<name>" }
-# default, so a hand-authored forge.Service that omits `build` still
-# builds.
-_render_build_populated = lambda b: any -> any {
-    _render_go_build(b) if b.type == "go" else \
-        (_render_docker_build(b) if b.type == "docker" else \
-        (_render_shell_build(b) if b.type == "shell" else _render_remote_build(b)))
-}
-
-_render_build = lambda b: any -> any {
-    _render_build_populated(b) if b else None
-}
-
-_render_service = lambda s: RenderedWorkload, bundle: Bundle -> any {
-    {
-        "name": s.name
-        "image": s.image if s.image else None
-        "image_tag": s.image_tag if s.image_tag else None
-        "command": s.command
-        "env_vars": [_render_env_var(e) for e in s.env_vars]
-        "deploy": _render_deploy(s.deploy, bundle)
-        "build": _render_build(s.build)
-        "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
-        # Operator CRD kind names (projected from Service.k8s.operator.crds).
-        # Null for a non-operator service. This is the codegen bridge — the
-        # Go consumer reads it to drive AddToScheme/SetupWithManager wiring;
-        # the CRD MANIFEST itself is NOT synthesized here (it rides
-        # `manifests`/additional_manifests). Additive: absent => null.
-        "operator_crds": s.operator_crds if s.operator_crds else None
-        # Owned raw manifests project into the JSON contract too (null when
-        # empty) so a consumer that reads `output` sees the same stable
-        # key shape; the cluster manifest stream stamps + routes them.
-        "manifests": s.manifests if s.manifests else None
-    }
-}
-
-_render_operator = lambda o: Operator -> any {
-    {
-        "name": o.name
-        "image": o.image
-        "image_tag": o.image_tag if o.image_tag else None
-        "replicas": o.replicas
-        "platform": o.platform if o.platform else None
-        "crds": o.crds
-        "cluster_rbac": _render_cluster_rbac(o.cluster_rbac)
-        "leader_election": o.leader_election
-        "env_vars": [_render_env_var(e) for e in o.env_vars]
-    }
-}
 
 _render_bundle_dir = lambda b: BundleDir -> any {
     {
@@ -550,146 +878,6 @@ _render_static_site = lambda d: StaticSite -> any {
     }
 }
 
-# Project a cluster-deployed Frontend onto the RenderedWorkload the k8s
-# manifest renderer already consumes. A frontend that ships as a container
-# IS a workload — the only reasons it is a distinct schema are the dev-loop
-# concerns (dev_runner, env_file, framework-typed config) that a Service
-# has no use for. So the projection is narrow and deliberately total:
-#
-#   Frontend.name   -> workload name AND image name (matching `forge build`'s
-#                      frontend docker tag, <registry>/<name>:<tag>, so the
-#                      manifest references the image the build produces)
-#   Frontend.port   -> the deploy block's `ports` when the author left it
-#                      empty, so a frontend's ONE declared port doesn't have
-#                      to be written twice. An explicit deploy.ports wins.
-#   Frontend.env_vars-> the container env
-#   deploy          -> the K8sCluster block, so namespace / registry / pull
-#                      secrets / platform behave exactly as for a Service
-#
-# NOT projected: dev_runner / env_file / config — dev-loop and build-time
-# concerns with no manifest meaning.
-#
-# The `deploy` re-literal is not ceremony: Frontend.deploy is typed
-# `FirebaseHosting | K8sCluster`, while RenderedWorkload.deploy is the
-# six-way service union. Rebuilding it as a K8sCluster narrows the type so
-# the assignment type-checks, and is only ever reached on the "cluster"
-# branch (the caller filters on the discriminator first).
-_project_frontend = lambda f: Frontend, bundle: Bundle -> RenderedWorkload {
-    RenderedWorkload {
-        name = f.name
-        image = f.name
-        # The CONTAINER env is the workload's, not the deploy block's — the
-        # manifest renderer reads RenderedWorkload.env_vars. A frontend may
-        # declare its env either on the Frontend (where the dev loop reads it)
-        # or on the deploy block; both land here, with the deploy block
-        # winning since it is the more specific, deploy-time declaration.
-        env_vars = f.deploy.env_vars if f.deploy.env_vars else f.env_vars
-        # securityContext DELTAS ride RenderedWorkload.security_override —
-        # the deploy block's `security_context` is the HOST/compose-shaped
-        # field and is not what the k8s manifest renderer consults. A
-        # frontend image routinely needs a different posture than forge's
-        # restricted-PSA default for a Go binary (a node image runs as
-        # uid 1000, and a Next.js server writes its own cache at runtime),
-        # so this has to be expressible or every frontend CrashLoops.
-        # Probes ride RenderedWorkload.health_probe for the same reason the
-        # securityContext does: the deploy block's `health_check` is the
-        # host/compose-shaped field, while the k8s renderer reads the agnostic
-        # HealthProbe. One probe config becomes BOTH liveness and readiness,
-        # which is the 80/20 the schema intends — a frontend serving one HTTP
-        # route has nothing more specific to say.
-        if f.deploy.health_check:
-            health_probe = HealthProbe {
-                http_path = f.deploy.health_check.liveness_path
-                port = f.deploy.health_check.http_port
-                initial_delay_seconds = f.deploy.health_check.initial_delay
-                period_seconds = f.deploy.health_check.period
-                timeout_seconds = f.deploy.health_check.timeout
-                failure_threshold = f.deploy.health_check.failure_threshold
-            }
-        if f.deploy.security_context:
-            security_override = SecurityOverrides {
-                run_as_non_root = f.deploy.security_context.run_as_non_root
-                run_as_user = f.deploy.security_context.run_as_user
-                run_as_group = f.deploy.security_context.run_as_group
-                read_only_root_fs = f.deploy.security_context.read_only_root_filesystem
-            }
-        deploy = K8sCluster {
-            cluster = f.deploy.cluster
-            namespace = f.deploy.namespace
-            registry = f.deploy.registry
-            domain = f.deploy.domain
-            replicas = f.deploy.replicas
-            resources = f.deploy.resources
-            health_check = f.deploy.health_check
-            security_context = f.deploy.security_context
-            # The frontend's ONE declared `port` becomes the container/Service
-            # port unless the deploy block names its own — so the common case
-            # doesn't write the same number twice.
-            ports = f.deploy.ports if f.deploy.ports else [f.port]
-            env_vars = f.deploy.env_vars if f.deploy.env_vars else f.env_vars
-            app_protocols = f.deploy.app_protocols
-            platform = f.deploy.platform
-            cluster_rbac = f.deploy.cluster_rbac
-            image_pull_secrets = f.deploy.image_pull_secrets
-        }
-    }
-}
-
-# A SimpleBackend renders as ONE declaration record: the forge.dev/v1alpha1
-# CR the hosted path publishes, carrying the generated spec verbatim. forge's
-# manifest extraction (internal/cluster) expands every such record through the
-# Go renderer, pkg/deploy.Render, into its Deployment, Service,
-# ServiceAccount, PVC and NetworkPolicy. So there is ONE definition of what a
-# SimpleBackend becomes, in Go, shared with the control plane's operator, and
-# no second projection here that could drift from it.
-#
-# The record is namespaced to the backend's own target namespace, and it
-# carries the managed labels. The env gate (labels_lib.stamp_env_all) stamps
-# it like every other object, and the expansion copies the record's labels
-# onto everything it renders, so forge.dev/env and part-of survive the
-# expansion.
-_render_managed_database_record = lambda db: ManagedDatabase, part_of: str -> any {
-    {
-        apiVersion = "forge.dev/v1alpha1"
-        kind = "ManagedDatabase"
-        metadata = {
-            name = db.name
-            namespace = db.namespace
-            labels = labels_lib.managed_labels(db.name, part_of)
-        }
-        spec = tiers.managed_database_json(db.spec)
-    }
-}
-
-_render_simple_backend_record = lambda s: RenderedWorkload, part_of: str, bundle: Bundle -> any {
-    {
-        apiVersion = "forge.dev/v1alpha1"
-        kind = "SimpleBackend"
-        metadata = {
-            name = s.name
-            namespace = s.deploy.namespace
-            labels = labels_lib.managed_labels(s.name, part_of)
-        }
-        spec = _simple_backend_spec_json(s.deploy.spec, bundle)
-    }
-}
-
-# Frontend deploy dispatcher. Dispatches on the discriminator exactly like
-# _render_deploy_populated does for services: "firebase" → Firebase Hosting,
-# "static-site" → an object-storage bucket (optionally CDN-fronted),
-# "cluster" → an in-cluster Deployment + Service (the frontend ships as a
-# container image, same as a forge.Service).
-#
-# Firebase is the FALLBACK arm rather than an explicit `== "firebase"`
-# branch purely because it was here first and every existing fixture
-# depends on that shape; the two static targets are otherwise peers.
-#
-# An unset deploy still projects as null — the consumer treats that as
-# "dev-serve / build only, never auto-ship", which is the legacy behaviour
-# every existing project relies on.
-_render_frontend_deploy = lambda d: any, f: Frontend, bundle: Bundle -> any {
-    (_render_k8s_cluster(d) if d.type == "cluster" else _render_static_site(d) if d.type == "static-site" else _render_firebase_hosting(d)) if d else None
-}
 
 # Render a FrontendConfig to its stable dict form. Optional string knobs
 # project as `null` when unset so the consumer sees stable keys; `mock`
@@ -716,27 +904,6 @@ _render_git_source = lambda s: GitSource -> any {
     }
 }
 
-_render_frontend = lambda f: Frontend, bundle: Bundle -> any {
-    {
-        "name": f.name
-        "type": f.type
-        "path": f.path if f.path else None
-        "source": _render_git_source(f.source) if f.source else None
-        "dev_runner": f.dev_runner
-        "port": f.port
-        "env_file": f.env_file if f.env_file else None
-        "env_vars": [_render_env_var(e) for e in f.env_vars]
-        "config": _render_frontend_config(f.config) if f.config else None
-        "deploy": _render_frontend_deploy(f.deploy, f, bundle)
-        # The browser's runtime config, as DECLARED (references kept) and as
-        # RESOLVED for an env forge resolves itself. The Go side layers
-        # `runtime_config` over the typed per-env config for config.js, and
-        # a hosted StaticSite publishes `runtime_config_spec` as the spec's
-        # runtimeConfig. Both are empty for a frontend that declares none.
-        "runtime_config": _runtime_config_resolved(f, bundle)
-        "runtime_config_spec": _runtime_config_spec(f, bundle)
-    }
-}
 
 _render_gateway_listener = lambda l: GatewayListener -> any {
     {
@@ -825,32 +992,6 @@ _render_config_map = lambda cm: ConfigMap -> any {
     }
 }
 
-# One-shot job JSON projection. `before` is the ordering the host runner
-# enforces by waiting for exit 0; the k8s and compose lowerings express
-# the same declaration in their own vocabularies (init containers /
-# service_completed_successfully).
-_render_job = lambda j: OneShotJob -> any {
-    {
-        "name": j.name
-        "image": j.image
-        "command": j.command
-        "before": j.before
-        "timeout_seconds": j.timeout_seconds
-        "env_vars": [_render_env_var(e) for e in j.env_vars]
-    }
-}
-
-_render_cronjob = lambda c: CronJob -> any {
-    {
-        "name": c.name
-        "schedule": c.schedule if c.schedule else None
-        "image": c.image
-        "image_tag": c.image_tag if c.image_tag else None
-        "platform": c.platform if c.platform else None
-        "command": c.command
-        "env_vars": [_render_env_var(e) for e in c.env_vars]
-    }
-}
 
 # RuntimeClass JSON projection — stable shape mirroring the schema.
 # `overhead` / `scheduling` pass through as raw dicts (or null when
@@ -865,22 +1006,6 @@ _render_runtime_class = lambda rc: RuntimeClass -> any {
     }
 }
 
-# Render a ClusterTarget to its stable dict form. The env-wide facts,
-# stated once. Optional fields project as null (not omitted) so the
-# consumer sees stable keys. `deploy` is NOT re-projected here — it's the
-# derived per-service seed, and every cluster service already carries its
-# own flattened K8sCluster projection.
-_render_cluster_target = lambda ct: ClusterTarget -> any {
-    {
-        "cluster": ct.cluster
-        "namespace": ct.namespace
-        "registry": ct.registry
-        "domain": ct.domain if ct.domain else None
-        "platform": ct.platform if ct.platform else None
-        "image_pull_secrets": ct.image_pull_secrets if ct.image_pull_secrets else None
-        "image_tag": ct.image_tag
-    }
-}
 
 # Render a Cluster to its stable dict form. Optional fields project as
 # null (not omitted) so the Go consumer (ClusterEntity) sees stable
@@ -999,10 +1124,13 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
     }
 }
 
+# crd — a minimal apiextensions/v1 CRD object (lib/crd.k), for a
+# `forge.Manifests {objects = [...]}` entry.
+crd = crd_lib.crd
+
 # test_jwks_manifests — top-level re-export of the lib builder so user
 # code calls `forge.test_jwks_manifests(jwks, namespace, public_jwk)`
-# directly in a Bundle's additional_manifests or a service's owned
-# manifests. Emits ConfigMap + static-file Deployment + Service serving
+# inside a `forge.Manifests {objects = ...}` of Bundle.manifests. Emits ConfigMap + static-file Deployment + Service serving
 # `/.well-known/jwks.json`.
 #
 # `public_jwk` is the derived PUBLIC JWK. The caller derives it from the
@@ -1038,7 +1166,7 @@ test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [an
 #         name = "cp-public", cluster = _cp
 #         listeners = [forge.GatewayListener { name = "http", port = 80, protocol = "HTTP" }]
 #     }
-#     manifests = forge.render_gateway(_gw, "my-ns")
+#     manifests = [forge.Manifests {objects = forge.render_gateway(_gw, "my-ns")}]
 #
 # render_http_route / render_grpc_route take the route plus the list of
 # gateways (so the builder can resolve the parent listener + host) and
@@ -1059,193 +1187,7 @@ render_grpc_route = lambda route: GRPCRoute, gateways: [Gateway], namespace: str
     gw_lib.render_grpc_route(route, gateways, namespace)
 }
 
-# stamp_env — top-level re-export of the env-ownership stamp
-# (lib/labels.k). `render_manifests` / `render_support` already apply it
-# to everything they emit, so a project that renders through them needs
-# NOTHING here. It is exposed for the one case those two miss: a main.k
-# that concatenates manifests of its own AFTER the render call
-# (`manifests = forge.render_manifests(...) + _extra`) — hand those
-# through `forge.stamp_env(_extra)` so they carry the same ownership tag.
-# Prefer `Bundle.additional_manifests`, which is stamped for you.
-#
-# `env` is the same drill-in as `Bundle.env`: empty falls back to the
-# `-D env=` binding the CLI passes on every render.
-stamp_env = lambda manifests: [any], env: str = "" -> [any] {
-    labels_lib.stamp_env_all(manifests, env)
-}
 
-# Project a Bundle to the stable JSON contract. Consumed by forge CLI.
-render = lambda bundle: Bundle -> any {
-    {
-        "clusters": [_render_cluster(c) for c in bundle.clusters]
-        # The env-wide ClusterTarget (namespace/registry/tag/platform/
-        # pull_secrets), stated once. Absent when the Bundle declares none
-        # (host-only / External-only envs). The per-service deploy blocks
-        # carry the flattened coordinates the Go dispatcher groups by; this
-        # is the single-source echo the manifest renderer reads.
-        if bundle.cluster_target:
-            "cluster_target": _render_cluster_target(bundle.cluster_target)
-        "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
-        # Agnostic `workloads` are projected onto the RenderedWorkload shape
-        # INTERNALLY (via the k8s adapter) and folded into the same `services`
-        # bucket, so the Go consumer sees ONE stable shape whether a service
-        # was authored as an agnostic `forge.Service` or a raw `RenderedWorkload`.
-        # Projection needs the env-wide `cluster_target`; a Bundle carrying
-        # `workloads` therefore must declare one.
-        "services": [_render_service(s, bundle) for s in bundle.services] \
-            + [_render_service(_project_workload(w, bundle), bundle) for w in bundle.workloads]
-        "operators": [_render_operator(o) for o in bundle.operators]
-        "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
-        "cronjobs": [_render_cronjob(c) for c in bundle.cronjobs]
-        "jobs": [_render_job(j) for j in bundle.jobs]
-        "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
-        "gateways": [_render_gateway(g) for g in bundle.gateways]
-        "http_routes": [_render_http_route(r) for r in bundle.http_routes]
-        "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
-        "runtime_classes": [_render_runtime_class(rc) for rc in bundle.runtime_classes]
-        # Managed databases: name + namespace + the spec as its CR JSON.
-        "databases": [{"name": db.name, "namespace": db.namespace, "spec": tiers.managed_database_json(db.spec)} for db in bundle.databases]
-        # Platform deps (helm-as-RENDERER). The CLI expands each via
-        # `helm template --skip-crds` and folds the manifests into the apply
-        # stream, selected by `--target <name>`. NOT in render_manifests.
-        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts]
-        # Declared external PREREQUISITES (out-of-band Secrets + DNS records
-        # the deploy depends on but forge does NOT create). The CLI reads
-        # these to print a render-time checklist and to drive the preflight
-        # BLOCK on a declared-required-but-absent ExternalSecret. Always
-        # emitted (empty lists when none) so the consumer sees a stable key.
-        "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
-        "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
-        # The secret PROVIDER declaration rides alongside the entities so
-        # the CLI can read WHERE secret values come from. Absent when
-        # unset (no null garbage). Secret VALUES never enter this output —
-        # only the declaration (type + path). NOT in render_manifests.
-        if bundle.secret_provider:
-            "secret_provider": bundle.secret_provider
-        # Explicitly-placed Secrets, independent of the provider. Placement
-        # is RESOLVED here (own cluster/namespace, else cluster_target's) so
-        # the CLI applies each exactly where it says, with no inference. As
-        # with the provider, a `from = "file"` key carries only the store
-        # KEY — its value is resolved CLI-side and never enters this output.
-        "rendered_secrets": [{
-            "name": s.name
-            "keys": s.keys
-            "cluster": s.cluster or bundle.cluster_target.cluster
-            # An explicit cluster without a namespace falls back to the
-            # target's namespace too; with no target the CLI uses the
-            # env's resolved deploy namespace.
-            "namespace": s.namespace or (bundle.cluster_target.namespace if bundle.cluster_target else None)
-        } for s in bundle.rendered_secrets]
-        # The hosted control plane declaration (endpoint + the env var NAME
-        # the credential is read from). Absent when the env declares none.
-        # Like secret_provider this is a DECLARATION only — no credential
-        # value ever enters KCL render output. NOT in render_manifests.
-        if bundle.control_plane:
-            "control_plane": bundle.control_plane
-    }
-}
-
-# ---------------------------------------------------------------------------
-# Kubernetes manifest render.
-#
-# Walks the cluster-targeted entities and emits the k8s manifest list.
-# Skips host-mode services and BuildOnly services — those live outside
-# the cluster manifest boundary.
-# ---------------------------------------------------------------------------
-
-# The manifest renderer reads its env-wide coordinates (namespace /
-# registry / image_pull_secrets) straight off `bundle.cluster_target` —
-# the single source of truth — rather than the old "pull them off the
-# first cluster service" heuristic. The three deploy-time knobs that are
-# NOT env-wide facts — `image_tag` (the per-build override CI passes via
-# `-D image_tag=<sha>`), `image_digests` (the per-image content-addressed
-# pin map from `-D image_digests=<json>`), and `network_policies` (the
-# generic-netpol toggle) — are direct params on `render_manifests` /
-# `render_support`. No `RenderEnv` schema, no `cluster=` restatement at the
-# call site.
-
-_render_namespace = lambda namespace: str -> any {
-    {
-        apiVersion = "v1"
-        kind = "Namespace"
-        metadata = {
-            name = namespace
-            labels = {
-                "app.kubernetes.io/managed-by" = "forge"
-                "pod-security.kubernetes.io/enforce" = "restricted"
-                "pod-security.kubernetes.io/audit" = "restricted"
-                "pod-security.kubernetes.io/warn" = "restricted"
-            }
-        }
-    }
-}
-
-# A cluster Service renders its Deployment/Service (render_k8s_service) plus
-# its RBAC. The RBAC tier is chosen by the OPERATOR predicate: a workload
-# carrying `operator_cluster_rbac` (projected from Service.k8s.operator) is a
-# Kubernetes operator, so it gets CLUSTER-scoped RBAC — a ClusterRole +
-# ClusterRoleBinding named `${name}-${namespace}-clusterrole`/`-clusterrolebinding`
-# (via render_cluster_rbac, which ALSO emits the ServiceAccount) — INSTEAD OF the
-# namespaced Role a plain Service gets. This is the fix docs/design/OPERATOR_AGNOSTIC.md Q3
-# flags: previously ONLY _render_operator_manifests could emit a ClusterRole, so
-# an agnostic Service could not; now an operator authored as a `forge.Service`
-# with `k8s.operator` produces the same cluster RBAC an `Operator` did, through
-# the same renderer and therefore under the same naming rule. The NAMESPACE in
-# those names is load-bearing rather than decorative — the objects are
-# cluster-scoped while the binding's subject is per-env, so see
-# render_cluster_rbac in lib/rbac.k for why an env-invariant name silently
-# breaks every env but the last to deploy. The cluster RBAC
-# path subsumes the config-read the namespaced Role would grant (the default
-# rule is cluster-scoped there too) and emits a single ServiceAccount, so the
-# two tiers are mutually exclusive — no duplicate SA.
-_render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str], part_of: str = "" -> [any] {
-    _is_operator = s.operator_cluster_rbac != Undefined
-    # The pod's `service_account` override is threaded into the RBAC so the
-    # BINDING's subject follows the identity the pod actually runs as, and so
-    # forge does not emit a ServiceAccount it was told already exists. Passing
-    # `s.name` here instead is the defect this argument closes: the trio was
-    # named after the SERVICE while the pod bound a different SA, so the grant
-    # attached to an identity with no pods. Unset => "" => byte-identical.
-    _sa_override = s.service_account if s.service_account else ""
-    # Annotations for the GENERATED SA (cloud workload identity). The
-    # RenderedWorkload check refuses them alongside an override, so on the
-    # override path this is always empty and nothing is dropped.
-    _sa_annotations = s.service_account_annotations if s.service_account_annotations else {}
-    svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests, part_of, pull_secrets) \
-        + (rbac_lib.render_cluster_rbac(
-            s.name,
-            namespace,
-            {rules = s.operator_cluster_rbac},
-            pull_secrets,
-            part_of,
-            _sa_override,
-            _sa_annotations,
-        ) if _is_operator else rbac_lib.render_namespaced_rbac(
-            s.name,
-            namespace,
-            s.namespaced_rbac if s.namespaced_rbac else [],
-            pull_secrets,
-            part_of,
-            _sa_override,
-            _sa_annotations,
-        ))
-}
-
-_render_operator_manifests = lambda o: Operator, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str], part_of: str = "" -> [any] {
-    svc_lib.render_operator(o, namespace, registry, image_tag, image_digests, part_of) \
-        + rbac_lib.render_cluster_rbac(o.name, namespace, o.cluster_rbac, pull_secrets, part_of)
-}
-
-# A CronJob's Role carries the rules the schedule DECLARES, on top of the
-# config-read default rbac_lib always adds. The rule list was hardcoded `[]`
-# here, so the Role was emitted and bound but could never grant anything
-# beyond config-read — which made a scheduled sweeper (list + delete against
-# the API server, the textbook cron) inexpressible on this path.
-_render_cronjob_manifests = lambda c: CronJob, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str], part_of: str = "" -> [any] {
-    svc_lib.render_cronjob(c, namespace, registry, image_tag, image_digests, part_of) \
-        + rbac_lib.render_namespaced_rbac(c.name, namespace, \
-            c.namespaced_rbac if c.namespaced_rbac else [], pull_secrets, part_of)
-}
 
 # Render a RuntimeClass as a node.k8s.io/v1 manifest. Cluster-scoped
 # (no namespace). Forge labels every RuntimeClass with the standard
@@ -1302,160 +1244,3 @@ _render_config_map_manifest = lambda cm: ConfigMap, namespace: str, part_of: str
     }
 }
 
-# Emit the full Kubernetes manifest list for a Bundle.
-#
-# Env-wide coordinates (namespace / registry / image_pull_secrets) are
-# read off `bundle.cluster_target`. `image_tag` / `image_digests` /
-# `network_policies` are the deploy-time params.
-#
-# `--target` GROUP model: the group is ALWAYS the SERVICE
-# (`app.kubernetes.io/name`). Workload / operator / cronjob / gateway /
-# route manifests carry their own service/component name (stamped by their
-# builders); per-service owned manifests (`Service.manifests`, via
-# render_owned_manifests) inherit THEIR service's name. The env-shared
-# resources (Namespace, RuntimeClass, ConfigMap, NetworkPolicy) and
-# bundle-level `additional_manifests` belong to NO service, so they carry
-# NO `app.kubernetes.io/name` — they apply on a bare `forge env deploy` (no
-# `--target`) and are NEVER selected by a service `--target`. There is no
-# synthetic env/namespace group and no Go "keep shared infra" policy: a
-# manifest that needs to ride a service's `--target` is declared on that
-# service's `manifests` (or on a near-bare image-less infra service the
-# author creates to hold it), exactly like `HelmChart.manifests`.
-#
-# RuntimeClasses come first so they exist in the cluster before any
-# workload that references one (a Pod spec'ing `runtimeClassName =
-# "gvisor"` would otherwise hit "RuntimeClass not found" while
-# kube-apiserver applies the rest of the bundle). They're
-# cluster-scoped (no namespace) so they survive namespace deletes —
-# `forge env deploy <env>` is the right owner.
-render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_digests: {str:str} = {}, network_policies: bool = True -> [any] {
-    # A HOSTED env (control_plane declared) has no local manifest stream at
-    # all: its tiers are published to the control plane as specs, and the
-    # platform renders and applies them. Emitting anything here would be a
-    # second, kubectl-shaped path to the same workloads.
-    _render_manifests_self_hosted(bundle, image_tag, image_digests, network_policies) if not bundle.control_plane else []
-}
-
-_render_manifests_self_hosted = lambda bundle: Bundle, image_tag: str, image_digests: {str:str}, network_policies: bool -> [any] {
-    _ct = bundle.cluster_target
-    _ns = _ct.namespace
-    _registry = _ct.registry
-    _pull_secrets = _ct.image_pull_secrets if _ct.image_pull_secrets else []
-    # The PROJECT every object is labelled `app.kubernetes.io/part-of` with —
-    # the selector a CD pipeline's rollout wait iterates. Empty (a Bundle that
-    # declares no project) falls back per-object to the object's own name,
-    # which is the pre-existing render.
-    _project = bundle.project
-    # AGNOSTIC workloads are projected onto RenderedWorkloads INTERNALLY here —
-    # the adapter runs INSIDE the render pipeline, so the user never calls it.
-    # `_project_workload` picks the adapter PER WORKLOAD off the presence of
-    # `svc.host`: a host-targeted workload projects to a `HostDeploy` (and is
-    # filtered OUT of the k8s manifest stream below, exactly like a legacy
-    # `deploy.type == "host"` service); every other workload projects to a
-    # cluster RenderedWorkload seeded from the env-wide `cluster_target`.
-    _projected = [_project_workload(w, bundle) for w in bundle.workloads]
-    # A frontend declaring `deploy = forge.K8sCluster { ... }` ships as a
-    # container and therefore belongs in the SAME manifest stream as every
-    # other cluster workload — one Deployment, one Service, one apply path,
-    # and the project's existing NetworkPolicies / RBAC / probes apply to it
-    # unchanged. Projecting it here (rather than giving frontends a second,
-    # parallel deploy lifecycle) is what keeps that true.
-    #
-    # Frontends with a FirebaseHosting deploy, or no deploy block at all, are
-    # NOT projected: they stay out of the manifest stream exactly as before,
-    # and `dispatchFrontendDeploys` continues to own them.
-    _cluster_frontends = [_project_frontend(f, bundle) for f in bundle.frontends if f.deploy and f.deploy.type == "cluster"]
-    _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"] \
-        + [w for w in _projected if w.deploy.type == "cluster"] \
-        + _cluster_frontends
-    # SimpleBackend services are held SEPARATE from `_cluster_services`:
-    # they are not expanded by any KCL builder at all. Each one becomes a
-    # single forge.dev declaration record in the stamped stream, and the Go
-    # renderer (pkg/deploy.Render) expands it at extraction time. A Bundle
-    # may carry SimpleBackends and ordinary cluster services at once.
-    _simple_backends = [s for s in bundle.services if s.deploy and s.deploy.type == "simple-backend"]
-    # Only a service with an `image` renders a workload (Deployment +
-    # Service + RBAC). An image-less cluster service is an INFRA service:
-    # it contributes ONLY its owned `manifests` (below), no phantom
-    # Deployment. This split is the declared-cluster-only model's no-build
-    # infra-service shape — explicit (no image) rather than inferred.
-    # (Projected agnostic workloads always carry an image, so they are all
-    # workload services.)
-    _workload_services = [s for s in _cluster_services if s.image]
-    # Each workload renders in ITS OWN deploy block's namespace/registry/
-    # pull_secrets — NOT the bundle-wide ones — so a per-service cluster
-    # override (Service.k8s.cluster) lands its Deployment/Service in the
-    # OTHER cluster's namespace with the OTHER registry. For the common case
-    # (deploy seeded from bundle.cluster_target) these EQUAL the bundle-wide
-    # values, so the render is byte-identical.
-    # Env-shared manifests + bundle-level additional_manifests carry NO
-    # service group: they belong to no service, so they apply only on a bare
-    # deploy and are never picked by a service --target. To ride a service's
-    # --target, declare a manifest on that service's `manifests` instead.
-    # Every object leaves through ONE gate, and that gate stamps
-    # `forge.dev/env` (lib/labels.k). Stamping the FINAL list rather than
-    # threading an env argument through each builder is what makes the
-    # guarantee total: `bundle.additional_manifests` (arbitrary user
-    # dicts), the NetworkPolicy bundle and hand-built CRDs never pass
-    # through a forge label builder, and they are stamped here all the
-    # same. The stamp writes only label maps — never a selector; see the
-    # module docstring in lib/labels.k for that argument in full.
-    labels_lib.stamp_env_all(
-        [_render_runtime_class_manifest(rc, _ns, _project) for rc in bundle.runtime_classes] \
-        + [_render_namespace(_ns)] \
-        + [_render_config_map_manifest(cm, _ns, _project) for cm in bundle.config_maps] \
-        + bundle.additional_manifests \
-        + [item for s in _workload_services for item in _render_cluster_service(s, s.deploy.namespace, s.deploy.registry, image_tag, image_digests, s.deploy.image_pull_secrets if s.deploy.image_pull_secrets else _pull_secrets, _project)] \
-        + [_render_simple_backend_record(s, _project, bundle) for s in _simple_backends] \
-        + [_render_managed_database_record(db, _project) for db in bundle.databases] \
-        + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s, _project)] \
-        + [item for o in bundle.operators for item in _render_operator_manifests(o, _ns, _registry, image_tag, image_digests, _pull_secrets, _project)] \
-        + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, _ns, _registry, image_tag, image_digests, _pull_secrets, _project)] \
-        + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, _ns)] \
-        + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, _ns)] \
-        + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, _ns)] \
-        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, _ns)] \
-        + (netpol_lib.render_network_policies(_ns) if network_policies else []),
-        bundle.env,
-    )
-}
-
-# Emit ONLY the non-workload manifests of a Bundle: ConfigMaps,
-# additional_manifests, RuntimeClasses, and the Gateway API ingress
-# (Gateways + Certificates + HTTP/GRPC routes). The workload entities
-# (services / operators / cronjobs) are NOT rendered here.
-#
-# This is the companion to forge.workloads.render_workloads: the
-# env main.k expands its workloads from the declarations it imports (via
-# render_workloads) and concatenates this
-# helper for the env-owned support resources (the project's ingress
-# topology; per-env app config rides each workload's env via
-# config_gen.appConfigEnvMap, not a standalone resource here).
-# Namespace + network policies are owned by render_workloads, so they
-# are deliberately omitted here to avoid duplication.
-render_support = lambda bundle: Bundle -> [any] {
-    _ns = bundle.cluster_target.namespace
-    # Owned manifests of any cluster services declared on the support
-    # Bundle (the deploy-as-data path's home for image-less infra
-    # services that pin env-level resources to a specific cluster). Stamped
-    # with the owning service's app label so the deploy layer routes them.
-    _support_cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
-    _project = bundle.project
-    # Env-shared support manifests + bundle-level additional_manifests carry
-    # NO service group (apply on a bare deploy, never on a service --target);
-    # per-service owned manifests inherit their service name below.
-    # Same env stamp as render_manifests — the support stream is the
-    # other way objects reach a cluster, so it carries the same ownership
-    # tag. See lib/labels.k.
-    labels_lib.stamp_env_all(
-        [_render_runtime_class_manifest(rc, _ns, _project) for rc in bundle.runtime_classes] \
-        + [_render_config_map_manifest(cm, _ns, _project) for cm in bundle.config_maps] \
-        + bundle.additional_manifests \
-        + [item for s in _support_cluster_services for item in svc_lib.render_owned_manifests(s, _project)] \
-        + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, _ns)] \
-        + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, _ns)] \
-        + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, _ns)] \
-        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, _ns)],
-        bundle.env,
-    )
-}

@@ -8,6 +8,8 @@ that manifest and then cannot serve it: TLS handshakes fail at runtime
 with no config error to point at. Fail loudly here instead.
 """
 
+# expect: HTTPS listener(s) [https] resolve to no TLS config
+
 import forge
 
 _gw = forge.Gateway {

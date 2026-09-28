@@ -11,11 +11,11 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 )
 
-// shellSvc is a test helper building a ServiceEntity whose effective
+// shellSvc is a test helper building a WorkloadEntity whose effective
 // build is a ShellBuild (the single shell escape hatch). cwd/env are
 // optional.
-func shellSvc(name, image, cmd, cwd string, env map[string]string) ServiceEntity {
-	return ServiceEntity{
+func shellSvc(name, image, cmd, cwd string, env map[string]string) WorkloadEntity {
+	return WorkloadEntity{
 		Name:  name,
 		Image: image,
 		Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cmd: cmd, Cwd: cwd, Env: env}},
@@ -31,7 +31,7 @@ func shellSvc(name, image, cmd, cwd string, env map[string]string) ServiceEntity
 func TestKCLHasExternalBuildService_PositiveAndNegative(t *testing.T) {
 	// Positive: one service declares a ShellBuild.
 	withCmd := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			shellSvc("a", "a-img", "docker build .", "", nil),
 			{Name: "b"},
 		},
@@ -42,7 +42,7 @@ func TestKCLHasExternalBuildService_PositiveAndNegative(t *testing.T) {
 
 	// Negative: no service declares a ShellBuild (both default to GoBuild).
 	noCmd := &KCLEntities{
-		Services: []ServiceEntity{{Name: "a"}, {Name: "b"}},
+		Workloads: []WorkloadEntity{{Name: "a"}, {Name: "b"}},
 	}
 	if kclHasExternalBuildService(noCmd) {
 		t.Error("kclHasExternalBuildService: want false when no service has a ShellBuild")
@@ -61,7 +61,7 @@ func TestKCLHasExternalBuildService_PositiveAndNegative(t *testing.T) {
 func TestEffectiveBuildCmd_SingleSource(t *testing.T) {
 	cases := []struct {
 		name string
-		svc  ServiceEntity
+		svc  WorkloadEntity
 		want string
 	}{
 		{
@@ -71,12 +71,12 @@ func TestEffectiveBuildCmd_SingleSource(t *testing.T) {
 		},
 		{
 			name: "GoBuild default returns empty",
-			svc:  ServiceEntity{Name: "s", Deploy: DeployConfigEntity{Type: "host"}},
+			svc:  WorkloadEntity{Name: "s", Runtime: RuntimeEntity{Type: RuntimeHost, Host: &HostRuntime{}}},
 			want: "",
 		},
 		{
-			name: "external deploy with no build returns empty",
-			svc:  ServiceEntity{Name: "s", Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{DeployCmd: "ship.sh"}}},
+			name: "prebuilt image with no build returns empty",
+			svc:  clusterWL("s", "k3d-dev", "dev", func(w *WorkloadEntity) { w.Build = BuildConfigEntity{} }),
 			want: "",
 		},
 	}
@@ -98,7 +98,7 @@ func TestEffectiveBuildEnv_FromShell(t *testing.T) {
 		t.Errorf("Shell env: got %q, want bar", env["FOO"])
 	}
 	// A non-shell build has no shell env.
-	if got := (ServiceEntity{Name: "g", Deploy: DeployConfigEntity{Type: "host"}}).EffectiveBuildEnv(); got != nil {
+	if got := (WorkloadEntity{Name: "g", Runtime: RuntimeEntity{Type: RuntimeHost, Host: &HostRuntime{}}}).EffectiveBuildEnv(); got != nil {
 		t.Errorf("non-shell build env: got %v, want nil", got)
 	}
 }
@@ -107,12 +107,12 @@ func TestEffectiveBuildEnv_FromShell(t *testing.T) {
 // survive the JSON round-trip into ShellBuild.Cwd/Env and are surfaced by
 // the Effective* accessors.
 func TestParseKCLEntities_ShellBuildCwdEnv(t *testing.T) {
-	js := `{"services":[{"name":"trader","image":"ghcr.io/x","deploy":{"type":"external","deploy_cmd":"ship.sh"},"build":{"type":"shell","cmd":"docker build -t ${IMAGE}:${TAG} ${PROJECT_DIR}","cwd":"../sib","env":{"REGION":"iad"}}}]}`
+	js := `{"output":{"workloads":[{"name":"trader","kind":"service","image":"ghcr.io/x","runtime":{"type":"hosted"},"build":{"type":"shell","cmd":"docker build -t ${IMAGE}:${TAG} ${PROJECT_DIR}","cwd":"../sib","env":{"REGION":"iad"}},"spec":{"kind":"service"}}]}}`
 	entities, err := parseKCLEntities([]byte(js))
 	if err != nil {
 		t.Fatalf("parseKCLEntities: %v", err)
 	}
-	svc := entities.FindService("trader")
+	svc := entities.FindWorkload("trader")
 	if svc == nil {
 		t.Fatal("trader not found")
 	}
@@ -127,18 +127,18 @@ func TestParseKCLEntities_ShellBuildCwdEnv(t *testing.T) {
 	}
 }
 
-// TestKCLHasExternalBuildService_DetectsShellAlongsideExternalDeploy
-// confirms the discovery helper sees a ShellBuild declared on a service
-// that ALSO has an External deploy (build + deploy are orthogonal). This
-// is the kalshi-trader e2e shape after the build-hatch unification.
-func TestKCLHasExternalBuildService_DetectsShellAlongsideExternalDeploy(t *testing.T) {
+// TestKCLHasExternalBuildService_DetectsShellOnAnyRuntime confirms the
+// discovery helper sees a ShellBuild whatever runtime the workload binds
+// (build and runtime are orthogonal): a hosted workload with a shell build
+// is the kalshi-trader shape.
+func TestKCLHasExternalBuildService_DetectsShellOnAnyRuntime(t *testing.T) {
 	ext := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			{
-				Name:   "trader",
-				Image:  "ghcr.io/x",
-				Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{DeployCmd: "ship.sh"}},
-				Build:  BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cmd: "docker build ."}},
+				Name:    "trader",
+				Image:   "ghcr.io/x",
+				Runtime: RuntimeEntity{Type: RuntimeHosted},
+				Build:   BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cmd: "docker build ."}},
 			},
 		},
 	}
@@ -150,16 +150,13 @@ func TestKCLHasExternalBuildService_DetectsShellAlongsideExternalDeploy(t *testi
 		t.Errorf("externalBuildServices: got %v, want [trader]", got)
 	}
 
-	// External deploy with only deploy_cmd (no ShellBuild) must NOT be
-	// detected — but note an external deploy synthesizes NO Go default,
-	// so EffectiveBuildCmd is "".
+	// A workload with no build (a prebuilt image) must NOT be detected:
+	// nothing synthesizes a default build, so EffectiveBuildCmd is "".
 	noBuild := &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "trader", Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{DeployCmd: "ship.sh"}}},
-		},
+		Workloads: []WorkloadEntity{hostedWL("trader")},
 	}
 	if kclHasExternalBuildService(noBuild) {
-		t.Error("want false when an external deploy has no ShellBuild")
+		t.Error("want false when a workload declares no ShellBuild")
 	}
 }
 
@@ -169,7 +166,7 @@ func TestKCLHasExternalBuildService_DetectsShellAlongsideExternalDeploy(t *testi
 // and must NOT appear in the external dispatcher's input set.
 func TestExternalBuildServices_FiltersShellBuilds(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			shellSvc("edge", "edge-img", "docker build .", "", nil),
 			{Name: "api"}, // GoBuild default
 			shellSvc("daemon", "daemon-img", "go build && docker push", "", nil),
@@ -205,7 +202,7 @@ func TestExternalBuildServices_FiltersShellBuilds(t *testing.T) {
 // and `true` is a fast deterministic no-op that exits 0.
 func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 	projDir := t.TempDir()
-	services := []ServiceEntity{
+	services := []WorkloadEntity{
 		shellSvc("edge", "edge-img", "true", "", nil), // cwd empty so no mkdir
 	}
 	opts := buildOptions{env: "dev", parallel: false}
@@ -252,7 +249,7 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 // that was never pushed.
 func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 	projDir := t.TempDir()
-	services := []ServiceEntity{
+	services := []WorkloadEntity{
 		shellSvc("edge", "edge-img", "false", "missing-sibling", nil), // missing-cwd check short-circuits
 	}
 	opts := buildOptions{env: "dev", parallel: false}
@@ -304,7 +301,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 	orig := externalImageDigestResolver
 	t.Cleanup(func() { externalImageDigestResolver = orig })
 
-	services := []ServiceEntity{
+	services := []WorkloadEntity{
 		shellSvc("reliant-api-server", "reliant", "true", "", nil),
 	}
 	opts := buildOptions{env: "prod", parallel: false}
@@ -435,7 +432,7 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 	}
 	t.Cleanup(func() { externalImageDigestResolver = orig })
 
-	services := []ServiceEntity{
+	services := []WorkloadEntity{
 		shellSvc("reliant-api-server", "reliant", "true", "", nil),
 	}
 	opts := buildOptions{env: "staging", parallel: false}
@@ -511,7 +508,7 @@ func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
 	}
 	t.Cleanup(func() { externalImageDigestResolver = orig })
 
-	services := []ServiceEntity{
+	services := []WorkloadEntity{
 		shellSvc("workspace-base", "workspace-base", "true", "", nil),
 	}
 	opts := buildOptions{env: "e2e", parallel: false}

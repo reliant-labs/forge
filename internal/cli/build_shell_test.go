@@ -40,7 +40,7 @@ func TestShellBuild_CwdAndSubstitution(t *testing.T) {
 	cmd := "sh scripts/build-image.sh > /dev/null && " +
 		"printf 'pwd=%s\\nimage=%s\\ntag=%s\\nregistry=%s\\nproject_dir=%s\\narch=%s\\n' " +
 		"\"$(pwd)\" '${IMAGE}' '${TAG}' '${REGISTRY}' '${PROJECT_DIR}' '${TARGETARCH}' > observed.txt"
-	svcs := []ServiceEntity{shellSvc("gw", "my-gw", cmd, "", nil)}
+	svcs := []WorkloadEntity{shellSvc("gw", "my-gw", cmd, "", nil)}
 
 	opts := buildOptions{env: "dev", parallel: false, outputDir: "bin"}
 	results := buildExternalServices(context.Background(), svcs, opts,
@@ -85,7 +85,7 @@ func TestShellBuild_CwdAndSubstitution(t *testing.T) {
 // success.
 func TestShellBuild_NoopTrue(t *testing.T) {
 	projDir := t.TempDir()
-	svcs := []ServiceEntity{shellSvc("reliant-noop", "reliant", "true  # built upstream; nothing to do here", "", nil)}
+	svcs := []WorkloadEntity{shellSvc("reliant-noop", "reliant", "true  # built upstream; nothing to do here", "", nil)}
 	results := buildExternalServices(context.Background(), svcs,
 		buildOptions{env: "dev", outputDir: "bin"},
 		"reg", "dev", projDir, "amd64", nil)

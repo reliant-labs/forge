@@ -29,10 +29,10 @@ func writeSecretListFixture(t *testing.T, storeBody string, declaredJSON string)
 		}
 	}
 
-	fixture := `{
-  "services": [` + declaredJSON + `],
+	fixture := `{"output": {
+  "workloads": [` + declaredJSON + `],
   "secret_provider": {"type": "file", "path": ` + jsonString(storePath) + `}
-}`
+}}`
 	fixturePath := filepath.Join(dir, "render.json")
 	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -49,12 +49,12 @@ func jsonString(s string) string {
 // apiDeclaresTwo declares one secret that the store holds and one it does not.
 const apiDeclaresTwo = `
     {
-      "name": "api",
-      "deploy": {"type": "host"},
-      "env_vars": [
-        {"name": "STRIPE_SECRET_KEY", "secret_ref": "app-secrets"},
-        {"name": "MISSING_TOKEN", "secret_ref": "app-secrets", "secret_key": "missing_token"}
-      ]
+      "name": "api", "kind": "service",
+      "runtime": {"type": "host"},
+      "spec": {"kind": "service", "env": [
+        {"name": "STRIPE_SECRET_KEY", "secretRef": {"name": "app-secrets"}},
+        {"name": "MISSING_TOKEN", "secretRef": {"name": "app-secrets", "key": "missing_token"}}
+      ]}
     }`
 
 func runListJSON(t *testing.T) (secretListReport, []byte) {
@@ -200,7 +200,7 @@ func TestSecretListJSONNoStoreFile(t *testing.T) {
 // An env whose KCL declares nothing: a valid, empty report rather than an error.
 func TestSecretListJSONNothingDeclared(t *testing.T) {
 	writeSecretListFixture(t, "STRAY: "+canaryValue+"\n", `
-    {"name": "api", "deploy": {"type": "host"}}`)
+    {"name": "api", "kind": "service", "runtime": {"type": "host"}, "spec": {"kind": "service"}}`)
 
 	report, raw := runListJSON(t)
 

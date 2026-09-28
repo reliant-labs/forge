@@ -73,13 +73,6 @@ func auditGroupFor(id string) (ServiceGroup, bool) {
 				{Name: "api", K8sCluster: &K8sClusterSpec{Replicas: 1}},
 			},
 		}, true
-	case "external":
-		return ServiceGroup{
-			Env: "prod",
-			Services: []ResolvedService{
-				{Name: "api", External: &ExternalSpec{DeployCmd: "flyctl deploy"}},
-			},
-		}, true
 	case "compose":
 		// A compose file that CANNOT exist, so the observation resolves
 		// to a deterministic unknown instead of depending on whatever
@@ -119,7 +112,7 @@ func auditGroupFor(id string) (ServiceGroup, bool) {
 		return ServiceGroup{
 			Env:      "prod",
 			Hosted:   &HostedTarget{Endpoint: "https://cp.example"},
-			Services: []ResolvedService{{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierBackend}}},
+			Services: []ResolvedService{{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierWorkload}}},
 		}, true
 	default:
 		return ServiceGroup{}, false
@@ -314,7 +307,7 @@ func TestAuditEnumeratesEveryRegisteredProvider(t *testing.T) {
 	// because its whole job is to disagree with the registry if the
 	// registry's enumeration ever goes wrong.
 	for _, p := range []Provider{
-		K8sClusterProvider{}, ExternalProvider{}, ComposeProvider{},
+		K8sClusterProvider{}, ComposeProvider{},
 		HostInfraProvider{}, FirebaseProvider{}, StaticSiteProvider{},
 		HostedProvider{},
 	} {
@@ -340,8 +333,8 @@ func TestAuditRejectsAProviderWithNoObserver(t *testing.T) {
 	group := ServiceGroup{
 		Env: "prod",
 		Services: []ResolvedService{
-			{Name: "api", External: &ExternalSpec{}},
-			{Name: "worker", External: &ExternalSpec{}},
+			{Name: "api"},
+			{Name: "worker"},
 		},
 	}
 
@@ -403,7 +396,7 @@ func TestAuditRejectsAProviderWithNoObserver(t *testing.T) {
 func TestAuditAcceptsAnHonestProvider(t *testing.T) {
 	group := ServiceGroup{
 		Env:      "prod",
-		Services: []ResolvedService{{Name: "api", External: &ExternalSpec{}}},
+		Services: []ResolvedService{{Name: "api"}},
 	}
 	probe := &testing.T{}
 	auditProvider(probe, honestStubProvider{}, group)

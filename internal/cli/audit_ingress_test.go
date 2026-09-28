@@ -271,7 +271,7 @@ func TestCrossCheckIngress_RenderedManifestBackend(t *testing.T) {
 // forge entity) into the ingress known-backend set. Only kind=="Service"
 // objects contribute; other kinds and unnamed objects are ignored.
 func TestManifestServiceNamesFromOuter(t *testing.T) {
-	outer := []byte(`{
+	outer := []byte(`{"output": {
 		"manifests": [
 			{"kind": "Deployment", "metadata": {"name": "workspace-controller"}},
 			{"kind": "Service", "metadata": {"name": "workspace-controller"}},
@@ -279,8 +279,12 @@ func TestManifestServiceNamesFromOuter(t *testing.T) {
 			{"kind": "Service", "metadata": {"name": ""}},
 			{"kind": "ConfigMap", "metadata": {"name": "cfg"}}
 		]
-	}`)
-	got := manifestServiceNamesFromOuter(outer)
+	}}`)
+	ents, err := parseKCLEntities(outer)
+	if err != nil {
+		t.Fatalf("parseKCLEntities: %v", err)
+	}
+	got := ents.ManifestServiceNames
 	want := map[string]bool{"workspace-controller": true, "admin-server": true}
 	if len(got) != len(want) {
 		t.Fatalf("got %d names %v, want %d", len(got), got, len(want))

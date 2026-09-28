@@ -7,9 +7,9 @@ things it gates start". A service has no completion to wait for, so
 possible lowering. The wildcard does not change that, and this pins that
 it does not: the broadcast form must not become a back door around the
 kind check.
-
-Loading this file MUST FAIL.
 """
+
+# expect: Workload.before orders a one-shot job; it is only valid for kind='job'
 
 import forge.workloads as fw
 

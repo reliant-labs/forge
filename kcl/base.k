@@ -41,7 +41,7 @@ is_local_registry = lambda registry: str -> bool {
     bool(regex.match(_host, r"^(localhost|127\.0\.0\.1|[A-Za-z0-9.-]+\.localhost)(:[0-9]+)?$"))
 }
 
-# builds_an_image(svc) — True when a Service's `build` PRODUCES (and pushes)
+# builds_an_image(w) — True when a workload's `build` PRODUCES (and pushes)
 # a container image whose ARCH the build pipeline must pin from the env's
 # `platform`. That is a DockerBuild (forge `docker build`s it) or a real
 # ShellBuild — an external `sh -c` build that cross-compiles + `docker build`s
@@ -54,8 +54,8 @@ is_local_registry = lambda registry: str -> bool {
 # state the node arch, or the build silently falls through to the dev host's
 # arch (the arm64-image-on-amd64-node class that ImagePull/exec-format-errors
 # in prod).
-builds_an_image = lambda svc: RenderedWorkload -> bool {
-    _b = svc.build
+builds_an_image = lambda w: Workload -> bool {
+    _b = w.build
     True if _b and _b.type == "docker" else \
     (True if _b and _b.type == "shell" and _b.cmd != "true" else False)
 }
@@ -205,7 +205,7 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 # binding. Use for per-env conditional manifests:
 #
 #     _is_dev_host = forge.env() == "dev-host"
-#     additional_manifests = [] if _is_dev_host else [ ...in-cluster infra... ]
+#     manifests = [] if _is_dev_host else [forge.Manifests {objects = [...in-cluster infra...]}]
 env = lambda default: str = "dev" -> str {
     option("env") or default
 }
@@ -267,7 +267,9 @@ _IMAGE_TAG_DEFAULTS: {str: str} = {
 #
 # Usage in a per-env main.k:
 #
-#     manifests = forge.render_manifests(_bundle, forge.image_tag("dev"))
+#     bundle = forge.Bundle {image_tag = forge.image_tag("dev"), ...}
+#
+# (Bundle.image_tag already defaults to exactly this; set it only to pin.)
 image_tag = lambda env: str -> str {
     option("image_tag") or _IMAGE_TAG_DEFAULTS[env] or "latest"
 }
@@ -278,17 +280,13 @@ image_tag = lambda env: str -> str {
 # forge env deploy resolves each built image's pushed manifest digest from the
 # build state and passes the map as a JSON string:
 #   `kcl run -D image_digests='{"reliant":"sha256:...","control-plane":"sha256:..."}'`
-# keyed on the BARE image name. This helper decodes it to `{str:str}` so a
-# per-env main.k can thread it into `forge.render_manifests`'s
-# `image_digests` param (which pins each service's manifest image to ITS
-# image's digest) AND consult it for any hand-composed image reference
-# (e.g. a DAEMON_IMAGE env var that names workspace-base directly).
+# keyed on the BARE image name. `forge.render` reads it to pin each cluster
+# workload's image to ITS image's digest (lib/images.k); a main.k consults
+# it for any hand-composed image reference (e.g. a DAEMON_IMAGE env var that
+# names workspace-base directly).
 #
 # Empty / unset (the local-registry e2e path and a plain `kcl run` with no
 # digest binding) returns `{}`, so every image stays on its tag — unchanged.
-#
-#     manifests = forge.render_manifests(
-#         _bundle, _image_tag, forge.image_digests())
 image_digests = lambda -> {str:str} {
     _raw = option("image_digests") or ""
     json.decode(_raw) if _raw else {}
@@ -297,8 +295,8 @@ image_digests = lambda -> {str:str} {
 # image_ref_for(registry, image, tag) — build an image reference that
 # prefers the per-image digest from image_digests() when one was captured,
 # else falls back to `<registry>/<image>:<tag>`. The companion to
-# forge.image_digests() for hand-composed references that don't flow through
-# the K8sCluster service renderer — chiefly an env var that names an image
+# forge.image_digests() for hand-composed references that are not a
+# workload's own image — chiefly an env var that names an image
 # by hand (DAEMON_IMAGE = the workspace-base ref a controller reads at
 # runtime). When the image has a digest, emits `<registry>/<image>@sha256:…`
 # (immutable); otherwise `<registry>/<image>:<tag>`, byte-identical to the

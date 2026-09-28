@@ -38,13 +38,13 @@ const (
 // Cluster in the workload's own namespace.
 //
 // MERGE DECISIONS. control-plane's type wins, because forge had no schema.
-// It ran live (the `threetier` database, Ready, backing a SimpleBackend
-// through DatabaseRef). Two changes on merit:
+// It ran live (the `threetier` database, Ready, backing a backend through
+// DatabaseRef). Two changes on merit:
 //
 //   - StorageGiB, not control-plane's StorageGB. The value was always
 //     rendered as "<n>Gi", so the field name claimed decimal gigabytes
 //     while the volume was sized in binary GiB. The units now agree with
-//     SimpleBackend.StorageGiB and with what is actually provisioned.
+//     Workload.StorageGiB and with what is actually provisioned.
 //   - OrgID, EnvironmentID, DeploymentID and Namespace are gone from the
 //     spec: identity is labels and the namespace is the target. The
 //     database's name is metadata.name. control-plane's DatabaseName field

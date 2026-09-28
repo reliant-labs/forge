@@ -35,9 +35,9 @@ func renderFromJSON(t *testing.T, env, body string) envRender {
 // container body spliced in, so each test states only the field under
 // test.
 func deployJSON(container string) string {
-	return `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+	return `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 		`"metadata":{"name":"api","namespace":"proj-prod"},` +
-		`"spec":{"template":{"spec":{"containers":[` + container + `]}}}}]}`
+		`"spec":{"template":{"spec":{"containers":[` + container + `]}}}}]}}`
 }
 
 const probedResourcedContainer = `{"name":"api",
@@ -69,42 +69,41 @@ func TestParseRender(t *testing.T) {
 		},
 		{
 			name:        "manifests-only mapping",
-			body:        `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]}`,
+			body:        `{"output":{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]}}`,
 			wantObjects: 1,
 			wantRoot:    true,
 		},
 		{
-			// The dual-output shape IS the forge env deploy contract: the
-			// pipeline selects `-S manifests`, and `output` is the JSON
-			// entity contract `forge build` / `forge env deploy` read
-			// from the same render. It carries no k8s objects, so it is
-			// not a stray root.
-			name: "documented output sibling is not a stray root",
+			// A top-level `manifests` var is the retired two-entrypoint
+			// shape: nothing reads it now (the applied stream is
+			// output.manifests), so it is a stray root like any other.
+			name: "a top-level manifests var is a stray root",
 			body: `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}],` +
-				`"output":{"services":[]}}`,
-			wantObjects: 1,
-			wantRoot:    true,
+				`"output":{"workloads":[]}}`,
+			wantObjects: 0,
+			wantRoot:    false,
+			wantStrays:  []string{"manifests"},
 		},
 		{
 			// A second list of k8s objects under its own key is the real
 			// trap: nothing selects it, so it renders, reviews clean, and
 			// never reaches a cluster.
 			name: "k8s objects under a non-reserved root are unreachable",
-			body: `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}],` +
+			body: `{"output":{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]},` +
 				`"extra_manifests":[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"c"}}]}`,
 			wantObjects: 1,
 			wantRoot:    true,
 			wantStrays:  []string{"extra_manifests"},
 		},
 		{
-			name:     "no manifests root means nothing deploys",
-			body:     `{"output":{"services":[]}}`,
+			name:     "no output.manifests means nothing deploys",
+			body:     `{"output":{"workloads":[]}}`,
 			wantRoot: false,
 		},
 		{
 			name: "manifest entries missing apiVersion/kind are counted",
-			body: `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}},` +
-				`{"metadata":{"name":"broken"}}]}`,
+			body: `{"output":{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}},` +
+				`{"metadata":{"name":"broken"}}]}}`,
 			wantObjects: 2,
 			wantRoot:    true,
 			wantInvalid: 1,
@@ -142,41 +141,41 @@ func TestCheckDeployManifests(t *testing.T) {
 	}{
 		{
 			name: "applyable manifest list passes",
-			body: `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]}`,
+			body: `{"output":{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]}}`,
 			want: StatusPass,
 		},
 		{
-			// The dual-output shape is the deploy contract, not a defect:
-			// the pipeline selects `-S manifests` and `forge build` reads
-			// `output` from the same render.
-			name: "documented output sibling passes",
+			// The retired top-level `manifests` var: nothing applies it, so
+			// the env fails, naming the key.
+			name: "a top-level manifests var fails and names it",
 			body: `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}],` +
-				`"output":{"services":[]}}`,
-			want: StatusPass,
+				`"output":{"workloads":[]}}`,
+			want:     StatusFail,
+			evidence: "top-level key(s) manifests",
 		},
 		{
 			name: "k8s objects under an unreachable root fail and name it",
-			body: `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}],` +
+			body: `{"output":{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]},` +
 				`"extra_manifests":[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"c"}}]}`,
 			want:     StatusFail,
 			evidence: "extra_manifests",
 		},
 		{
-			name:     "no manifests root fails",
-			body:     `{"output":{"services":[]}}`,
+			name:     "no output.manifests fails",
+			body:     `{"output":{"workloads":[]}}`,
 			want:     StatusFail,
-			evidence: "no `manifests` root",
+			evidence: "carries no `output.manifests`",
 		},
 		{
 			name: "manifest kubectl would reject fails and names it",
-			body: `{"manifests":[{"metadata":{"name":"broken"}}]}`,
+			body: `{"output":{"manifests":[{"metadata":{"name":"broken"}}]}}`,
 			want: StatusFail,
 			// kubectl's own words for this render: "apiVersion not set, kind not set".
 			evidence: "no apiVersion, kind",
 		},
 		{
 			name:     "render with no objects fails",
-			body:     `{"manifests":[]}`,
+			body:     `{"output":{"manifests":[]}}`,
 			want:     StatusFail,
 			evidence: "no k8s objects",
 		},
@@ -370,18 +369,18 @@ func TestCheckDeployServiceAccount(t *testing.T) {
 	}{
 		{
 			name: "bound service account passes",
-			body: `{"manifests":[` + sa + `,` + deployWith(`"serviceAccountName":"api",`) + `]}`,
+			body: `{"output":{"manifests":[` + sa + `,` + deployWith(`"serviceAccountName":"api",`) + `]}}`,
 			want: StatusPass,
 		},
 		{
 			name:     "rendered but unbound fails",
-			body:     `{"manifests":[` + sa + `,` + deployWith("") + `]}`,
+			body:     `{"output":{"manifests":[` + sa + `,` + deployWith("") + `]}}`,
 			want:     StatusFail,
 			evidence: "serviceAccountName",
 		},
 		{
 			name: "no service account skips",
-			body: `{"manifests":[` + deployWith("") + `]}`,
+			body: `{"output":{"manifests":[` + deployWith("") + `]}}`,
 			want: StatusSkip,
 		},
 		// The two states the check used to conflate. Both fail, but the
@@ -391,19 +390,19 @@ func TestCheckDeployServiceAccount(t *testing.T) {
 		// for a field that is present.
 		{
 			name:     "unbound with no other binder blames the default SA",
-			body:     `{"manifests":[` + sa + `,` + deployWith("") + `]}`,
+			body:     `{"output":{"manifests":[` + sa + `,` + deployWith("") + `]}}`,
 			want:     StatusFail,
 			evidence: "runs as the namespace `default` SA",
 		},
 		{
 			name:     "unbound while pods run as another SA names that SA",
-			body:     `{"manifests":[` + sa + `,` + deployWith(`"serviceAccountName":"reliant-cloudsql",`) + `]}`,
+			body:     `{"output":{"manifests":[` + sa + `,` + deployWith(`"serviceAccountName":"reliant-cloudsql",`) + `]}}`,
 			want:     StatusFail,
 			evidence: "pods in this namespace run as reliant-cloudsql",
 		},
 		{
 			name:     "unbound while pods run as another SA does not blame the default SA",
-			body:     `{"manifests":[` + sa + `,` + deployWith(`"serviceAccountName":"reliant-cloudsql",`) + `]}`,
+			body:     `{"output":{"manifests":[` + sa + `,` + deployWith(`"serviceAccountName":"reliant-cloudsql",`) + `]}}`,
 			want:     StatusFail,
 			absent:   "`default` SA",
 			evidence: "is inert",
@@ -474,10 +473,10 @@ func TestCheckDeploySecrets_InitContainers(t *testing.T) {
 	appEnv := `{"name":"api","env":[{"name":"DATABASE_URL","valueFrom":{"secretKeyRef":{"name":"db","key":"url"}}}]}`
 
 	deployWithInit := func(initContainer string) string {
-		return `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+		return `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 			`"metadata":{"name":"api","namespace":"proj-prod"},` +
 			`"spec":{"template":{"spec":{"initContainers":[` + initContainer + `],` +
-			`"containers":[` + appEnv + `]}}}}]}`
+			`"containers":[` + appEnv + `]}}}}]}}`
 	}
 
 	t.Run("secret-sourced init container passes", func(t *testing.T) {
@@ -533,11 +532,11 @@ func TestCheckDeployMigrations(t *testing.T) {
 			// templating a config) used to satisfy the check by existing.
 			name:       "an unrelated initContainer is NOT a migration path",
 			migrations: []string{"0001_init.up.sql"},
-			body: `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+			body: `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 				`"metadata":{"name":"api","namespace":"proj-prod"},` +
 				`"spec":{"template":{"spec":{"initContainers":[` +
 				`{"name":"wait-for-db","command":["sh","-c","until nc -z db 5432; do sleep 1; done"]}` +
-				`],"containers":[` + plainContainer + `]}}}}]}`,
+				`],"containers":[` + plainContainer + `]}}}}]}}`,
 			want:     StatusFail,
 			evidence: "no migration Job",
 		},
@@ -550,21 +549,21 @@ func TestCheckDeployMigrations(t *testing.T) {
 		{
 			name:       "a migration Job is a way to apply them",
 			migrations: []string{"0001_init.up.sql"},
-			body: `{"manifests":[{"apiVersion":"batch/v1","kind":"Job",` +
+			body: `{"output":{"manifests":[{"apiVersion":"batch/v1","kind":"Job",` +
 				`"metadata":{"name":"db-migrate","namespace":"proj-prod"},` +
 				`"spec":{"template":{"spec":{"containers":[{"name":"migrate"}]}}}},` +
 				`{"apiVersion":"apps/v1","kind":"Deployment",` +
 				`"metadata":{"name":"api","namespace":"proj-prod"},` +
-				`"spec":{"template":{"spec":{"containers":[` + plainContainer + `]}}}}]}`,
+				`"spec":{"template":{"spec":{"containers":[` + plainContainer + `]}}}}]}}`,
 			want: StatusPass,
 		},
 		{
 			name:       "a migration initContainer is a way to apply them",
 			migrations: []string{"0001_init.up.sql"},
-			body: `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+			body: `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 				`"metadata":{"name":"api","namespace":"proj-prod"},` +
 				`"spec":{"template":{"spec":{"initContainers":[{"name":"migrate"}],"containers":[` +
-				plainContainer + `]}}}}]}`,
+				plainContainer + `]}}}}]}}`,
 			want: StatusPass,
 		},
 		{
@@ -574,11 +573,11 @@ func TestCheckDeployMigrations(t *testing.T) {
 			// passing.
 			name:       "the rendered migrate initContainer passes on its command alone",
 			migrations: []string{"0001_init.up.sql"},
-			body: `{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
+			body: `{"output":{"manifests":[{"apiVersion":"apps/v1","kind":"Deployment",` +
 				`"metadata":{"name":"api","namespace":"proj-prod"},` +
 				`"spec":{"template":{"spec":{"initContainers":[` +
 				`{"name":"schema","command":["/app/demo","db","migrate","up"]}` +
-				`],"containers":[` + plainContainer + `]}}}}]}`,
+				`],"containers":[` + plainContainer + `]}}}}]}}`,
 			want: StatusPass,
 		},
 	}

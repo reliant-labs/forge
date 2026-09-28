@@ -1,25 +1,88 @@
 package templates
 
 import (
-	"bytes"
+	"bufio"
 	"encoding/json"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/kclrender"
+	"github.com/reliant-labs/forge/internal/kclvendor"
 )
 
-// kclModuleRoot resolves the absolute path to the kcl/ module
-// directory at the repo root. Tests use this to wire up the example
-// and tests subtrees via `kcl run -E forge=<root>` so the relative
-// `path = "../"` dependency in the example's kcl.mod resolves
-// regardless of where `go test` is invoked from.
+// The kcl/tests fixture corpus.
+//
+// Every fixture is rendered THE WAY FORGE RENDERS A PROJECT: through
+// kclrender.Run, which supplies `import forge` from the module embedded in
+// this binary (internal/kclvendor, #277) and registers kcl_plugin.forge.
+// There is no `kcl` binary on the path and no kcl.mod dependency, so a
+// fixture exercises exactly the module a released forge would render with.
+//
+// A fixture states how it is run with header directives (a comment line
+// anywhere in the file, `# <directive>: <value>`):
+//
+//	# kcl-args: env=dev              -D bindings for the render. Several
+//	# kcl-args: env=dev | env=e2e    `|`-separated sets run once each.
+//	                                 Bindings are whitespace-separated, so a
+//	                                 value may not contain a space or `|`;
+//	                                 a string is a KCL literal, quoted the
+//	                                 way forge quotes it (image_tag="3826648").
+//	# reject-args: env=prod          also render under these bindings and
+//	# reject-expect: <substring>     require a refusal naming <substring>.
+//	# expect: <substring>            (negative_* / closedschema_*) the
+//	                                 refusal must contain it. Repeatable;
+//	                                 REQUIRED on every negative fixture.
+//
+// Kinds, by file name:
+//
+//	positive*.k      must evaluate, declare at least one `assert_*`, and
+//	                 every `assert_*` must be true.
+//	negative_*.k     must be REFUSED BY FORGE — a schema `check:` or a
+//	                 render `assert` — with every `# expect:` substring in
+//	                 the refusal message. A type error, a compile error or a
+//	                 missing attribute does not count, however it is worded.
+//	closedschema_*.k must fail to compile, naming every `# expect:`
+//	                 substring (an undeclared member of a closed schema is a
+//	                 compile-time error, which negative_* deliberately
+//	                 refuses to accept).
+//
+// WHY `# expect:` IS MANDATORY. "It failed" is not evidence that the rule
+// under test fired. During a schema migration a renamed field or a deleted
+// helper makes every negative fixture fail — with "attribute not found" —
+// so a harness that only checks for failure reports the whole corpus green
+// while validating nothing. The substring ties each fixture to the one
+// message it exists to pin.
+
+var (
+	kclCacheOnce sync.Once
+	kclCacheDir  string
+)
+
+// kclTestModuleCache points kclvendor at a per-process temp directory, once,
+// before any parallel subtest renders, so these tests never write into the
+// developer's real <UserCacheDir>/forge/kcl.
+func kclTestModuleCache(t *testing.T) {
+	t.Helper()
+	kclCacheOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "forge-kcl-module-test-")
+		if err != nil {
+			panic(err)
+		}
+		kclCacheDir = dir
+		kclvendor.SetCacheDirForTest(dir)
+	})
+}
+
+// kclModuleRoot resolves the absolute path to the kcl/ module directory at
+// the repo root.
 func kclModuleRoot(t *testing.T) string {
 	t.Helper()
-	// templates/ is at internal/templates; go up two levels to repo
-	// root, then into kcl/.
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
@@ -35,541 +98,403 @@ func kclModuleRoot(t *testing.T) string {
 	return ""
 }
 
-// runKCL invokes `kcl run` with `-E forge=<module-root>` so external
-// imports of the `forge` package resolve to our in-tree module. The
-// returned bytes are the JSON document callers json.Unmarshal.
-//
-// Two things make that reliable under a parallel `go test`:
-//
-// Stderr is kept OUT of the returned bytes (it is folded into the error
-// instead), and kcl's package-manager progress chatter is stripped from the
-// front of stdout. When two `kcl` processes contend for the shared package
-// cache, kcl prints "waiting for package-cache lock..." as a plain line on
-// STDOUT, ahead of the JSON. json.Unmarshal then failed with `invalid
-// character 'w' looking for beginning of value`, so a perfectly green
-// invariant was reported as a broken one — a failure that appears only when
-// tests run concurrently and vanishes on a re-run in isolation, which is the
-// most expensive kind to debug.
-func runKCL(t *testing.T, entry string, args ...string) ([]byte, error) {
+// requireKCLRender skips when this test binary cannot render: kclrender
+// refuses a CGO-free build (kcl_plugin.forge is registered by a cgo file).
+func requireKCLRender(t *testing.T) {
 	t.Helper()
-	root := kclModuleRoot(t)
-	all := append([]string{"run", "-E", "forge=" + root, "--format", "json"}, args...)
-	all = append(all, entry)
-	cmd := exec.CommandContext(t.Context(), "kcl", all...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil && stderr.Len() > 0 {
-		err = fmt.Errorf("%w\nstderr:\n%s", err, stderr.String())
+	kclplugin.Register()
+	if !kclplugin.Available() {
+		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0 build); forge cannot render KCL")
 	}
-	return trimKCLNoise(out), err
+	kclTestModuleCache(t)
 }
 
-// trimKCLNoise drops kcl's non-JSON preamble, so a document that is valid
-// apart from progress chatter parses. It looks for the first '{' or '[' and
-// returns from there; output with no JSON at all is returned untouched so
-// the caller's error still shows what kcl actually said.
-func trimKCLNoise(out []byte) []byte {
-	i := bytes.IndexAny(out, "{[")
-	if i <= 0 {
-		return out
-	}
-	return out[i:]
+// runKCL renders one .k file through forge's own KCL seam with the given
+// `-D` bindings, from the file's directory. The returned document is the
+// render's JSON.
+func runKCL(t *testing.T, entry string, dArgs ...string) ([]byte, error) {
+	t.Helper()
+	return kclrender.Run(filepath.Dir(entry), entry, dArgs)
 }
 
-// TestKCLModule_PositiveAssertions walks every tests/positive*.k file
-// and asserts that all `assert_*` identifiers each one declares evaluate
-// to true. positive_env_option.k is excluded because it needs the
-// `-D env=<name>` binding plumbed by TestKCLModule_EnvOptionPlumbing.
-// Skips when kcl is not on PATH (local dev shouldn't be forced to
-// install it; CI does).
-func TestKCLModule_PositiveAssertions(t *testing.T) {
-	// Parallel at the parent too, so this test's fixtures overlap with
-	// TestKCLModule_NegativeChecks's rather than merely with each other.
-	// Safe here: nothing in this file sets an env var or changes the
-	// working directory (the one t.Setenv in this package is in
-	// release_scaffold_kcl_render_test.go, which stays serial — Go
-	// panics on t.Setenv in a parallel test).
-	t.Parallel()
+// ansiRE strips the colour escapes kcl writes into its diagnostics.
+var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping KCL module assertion test")
+// kclDiagnostics is the refusal text a failed render reports, with colour
+// stripped and with the ECHOED SOURCE LINES removed. kcl quotes the offending
+// source line (`12 | _bad = forge.X {...}`) above each message; matching an
+// expect substring against that echo would let a fixture satisfy its own
+// assertion by containing the words in a string literal. Only the message
+// lines (`|  <message>` / `| ^ <message>`) and error headers are kept.
+func kclDiagnostics(err error) string {
+	if err == nil {
+		return ""
 	}
+	var keep []string
+	sc := bufio.NewScanner(strings.NewReader(ansiRE.ReplaceAllString(err.Error(), "")))
+	sc.Buffer(make([]byte, 1<<20), 1<<24)
+	sourceLine := regexp.MustCompile(`^\s*\d+\s*\|`)
+	for sc.Scan() {
+		line := sc.Text()
+		if sourceLine.MatchString(line) {
+			continue
+		}
+		keep = append(keep, strings.TrimSpace(line))
+	}
+	return strings.Join(keep, "\n")
+}
 
-	root := kclModuleRoot(t)
-	testsDir := filepath.Join(root, "tests")
-	entries, err := os.ReadDir(testsDir)
+// A forge refusal is a schema check or a render assert. Everything else —
+// a type error, a missing attribute, a compile error — is a broken fixture
+// or a broken module, and must not pass as "the rule fired".
+var (
+	forgeRefusalRE  = regexp.MustCompile(`Check failed on the condition|EvaluationError`)
+	notARefusalREs  = []*regexp.Regexp{
+		regexp.MustCompile(`TypeError`),
+		regexp.MustCompile(`CompileError`),
+		regexp.MustCompile(`CannotFindModule`),
+		regexp.MustCompile(`attribute '[^']*' not found`),
+		regexp.MustCompile(`attribute '[^']*' of \S+ is required`),
+		regexp.MustCompile(`has no attribute`),
+		regexp.MustCompile(`name '[^']*' is not defined`),
+	}
+)
+
+// kclDirectives is a fixture's header: `# name: value` comment lines.
+type kclDirectives map[string][]string
+
+func readDirectives(t *testing.T, path string) kclDirectives {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	d := kclDirectives{}
+	re := regexp.MustCompile(`^\s*#\s*(kcl-args|reject-args|reject-expect|expect):\s*(.+?)\s*$`)
+	for _, line := range strings.Split(string(b), "\n") {
+		if m := re.FindStringSubmatch(line); m != nil {
+			d[m[1]] = append(d[m[1]], m[2])
+		}
+	}
+	return d
+}
+
+// argSets splits a `kcl-args` value into its run sets: `a=1 b=2 | a=3` is
+// two renders. No directive is one render with no bindings.
+func argSets(values []string) [][]string {
+	if len(values) == 0 {
+		return [][]string{nil}
+	}
+	var sets [][]string
+	for _, v := range values {
+		for _, set := range strings.Split(v, "|") {
+			sets = append(sets, strings.Fields(set))
+		}
+	}
+	return sets
+}
+
+// fixtures lists kcl/tests/<prefix>*.k, sorted.
+func fixtures(t *testing.T, prefix string) (string, []string) {
+	t.Helper()
+	dir := filepath.Join(kclModuleRoot(t), "tests")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read tests dir: %v", err)
 	}
-
-	var found int
+	var names []string
 	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasPrefix(name, "positive") || !strings.HasSuffix(name, ".k") {
-			continue
+		if strings.HasPrefix(e.Name(), prefix) && strings.HasSuffix(e.Name(), ".k") {
+			names = append(names, e.Name())
 		}
-		// Skip the env-option fixture — it expects `-D env=` and
-		// has a dedicated test (TestKCLModule_EnvOptionPlumbing).
-		if name == "positive_env_option.k" {
-			continue
-		}
-		// Skip the image-tag fixture — it expects a quoted
-		// `-D image_tag=` and has a dedicated test
-		// (TestKCLModule_ImageTagNumericIsString).
-		if name == "positive_image_tag_numeric.k" {
-			continue
-		}
-		// Skip the rendered-secrets literal fixture — it expects
-		// `-D env=dev|e2e` (the literal-gate binding) and has a
-		// dedicated test (TestKCLModule_RenderedSecretsLiteral).
-		if name == "positive_rendered_secrets_literal.k" {
-			continue
-		}
-		// Skip the DirSecrets fixtures — the provider is gated to
-		// dev/e2e (it renders plaintext Secrets), so they need
-		// `-D env=`. Dedicated test: TestKCLModule_FileSecrets.
-		if name == "positive_file_secrets.k" || name == "positive_secret_provider.k" || name == "positive_bundle_rendered_secrets.k" {
-			continue
-		}
-		found++
-		t.Run(name, func(t *testing.T) {
-			// Each fixture is an independent `kcl run` over a read-only
-			// module, so the subtests overlap freely and the test costs
-			// roughly the slowest fixture instead of their sum. runKCL is
-			// already hardened for this: see its doc comment on the
-			// package-cache lock chatter that concurrent kcl processes
-			// print to stdout.
-			t.Parallel()
-
-			out, err := runKCL(t, filepath.Join(testsDir, name))
-			if err != nil {
-				t.Fatalf("kcl run %s failed: %v\n%s", name, err, out)
-			}
-			var parsed map[string]any
-			if err := json.Unmarshal(out, &parsed); err != nil {
-				t.Fatalf("unmarshal kcl json: %v\n%s", err, out)
-			}
-			// Every assert_* identifier must be true. If anything is
-			// false the invariant it guards regressed.
-			for k, v := range parsed {
-				if !strings.HasPrefix(k, "assert_") {
-					continue
-				}
-				b, ok := v.(bool)
-				if !ok {
-					t.Errorf("identifier %q not a bool: %v", k, v)
-					continue
-				}
-				if !b {
-					t.Errorf("assertion %q is false", k)
-				}
-			}
-		})
 	}
-	if found == 0 {
-		t.Fatal("no positive*.k tests found")
+	sort.Strings(names)
+	if len(names) == 0 {
+		t.Fatalf("no %s*.k fixtures in %s", prefix, dir)
 	}
+	return dir, names
 }
 
-// TestKCLModule_EnvOptionPlumbing runs tests/positive_env_option.k
-// under multiple `-D env=<name>` bindings and asserts the conditional-
-// include pattern (additional_manifests gated on option("env")) flows
-// through the manifest renderer. This pins the env-name plumbing the
-// forge CLI does via `RenderKCL`'s `-D env=<env>` arg — without it,
-// every user main.k that does `option("env") == "dev-host"` regresses
-// silently.
-func TestKCLModule_EnvOptionPlumbing(t *testing.T) {
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping KCL env-option plumbing test")
-	}
-
-	root := kclModuleRoot(t)
-	entry := filepath.Join(root, "tests", "positive_env_option.k")
-
-	for _, env := range []string{"dev", "dev-host"} {
-		t.Run("env="+env, func(t *testing.T) {
-			out, err := runKCL(t, entry, "-D", "env="+env)
-			if err != nil {
-				t.Fatalf("kcl run positive_env_option.k -D env=%s failed: %v\n%s", env, err, out)
-			}
-			var parsed map[string]any
-			if err := json.Unmarshal(out, &parsed); err != nil {
-				t.Fatalf("unmarshal kcl json: %v\n%s", err, out)
-			}
-			for k, v := range parsed {
-				if !strings.HasPrefix(k, "assert_") {
-					continue
-				}
-				b, ok := v.(bool)
-				if !ok {
-					t.Errorf("identifier %q not a bool: %v", k, v)
-					continue
-				}
-				if !b {
-					t.Errorf("env=%s: assertion %q is false", env, k)
-				}
-			}
-		})
-	}
-}
-
-// TestKCLModule_ImageTagNumericIsString pins the forge-deploy-prod
-// regression fix: passing the image tag to KCL as a QUOTED string
-// literal (`-D image_tag="3826648"`) types it as `str`, so an all-digit
-// git-describe tag no longer gets coerced to `int` and violates
-// RenderEnv.image_tag's `str` field. This is the form
-// internal/cluster.renderDArgs produces via strconv.Quote.
-//
-// It also pins the root cause: the BARE form (`-D image_tag=3826648`)
-// makes RenderEnv construction fail. That sub-assertion is tolerant —
-// if a future kcl coerces silently instead of erroring, the primary
-// (quoted) assertion still guards the fix.
-func TestKCLModule_ImageTagNumericIsString(t *testing.T) {
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping KCL image-tag string test")
-	}
-
-	root := kclModuleRoot(t)
-	entry := filepath.Join(root, "tests", "positive_image_tag_numeric.k")
-
-	// Primary: the quoted form the fix produces. The arg value is the
-	// KCL string literal `"3826648"` (double-quotes included), exactly
-	// what strconv.Quote("3826648") yields.
-	out, err := runKCL(t, entry, "-D", `image_tag="3826648"`)
-	if err != nil {
-		t.Fatalf("kcl run with quoted image_tag failed: %v\n%s", err, out)
-	}
+// assertAllTrue requires at least one assert_* and every one true.
+func assertAllTrue(t *testing.T, label string, out []byte) {
+	t.Helper()
 	var parsed map[string]any
 	if err := json.Unmarshal(out, &parsed); err != nil {
-		t.Fatalf("unmarshal kcl json: %v\n%s", err, out)
+		t.Fatalf("%s: unmarshal render JSON: %v\n%s", label, err, out)
 	}
-	var sawAssert bool
+	var n int
 	for k, v := range parsed {
 		if !strings.HasPrefix(k, "assert_") {
 			continue
 		}
-		sawAssert = true
-		b, ok := v.(bool)
-		if !ok {
-			t.Errorf("identifier %q not a bool: %v", k, v)
-			continue
-		}
-		if !b {
-			t.Errorf("assertion %q is false", k)
+		n++
+		if b, ok := v.(bool); !ok {
+			t.Errorf("%s: %q is not a bool: %v", label, k, v)
+		} else if !b {
+			t.Errorf("%s: assertion %q is false", label, k)
 		}
 	}
-	if !sawAssert {
-		t.Fatalf("no assert_* identifiers in output:\n%s", out)
-	}
-
-	// Root-cause pin (tolerant): the BARE numeric form should make kcl
-	// fail because the int value can't satisfy RenderEnv.image_tag: str.
-	// If kcl ever coerces silently, don't fail the test — the quoted
-	// path above is the real guarantee.
-	if bareOut, bareErr := runKCL(t, entry, "-D", "image_tag=3826648"); bareErr == nil {
-		t.Logf("note: bare `-D image_tag=3826648` did NOT fail; kcl may have coerced silently:\n%s", bareOut)
+	if n == 0 {
+		t.Errorf("%s: declares no assert_* identifiers — a fixture that asserts nothing passes vacuously", label)
 	}
 }
 
-// TestKCLModule_RenderedSecretsLiteral pins the dev/e2e literal gate on
-// RenderedSecrets: `from='literal'` renders only when `-D env=` is dev or
-// e2e (the per-key schema check). The negative case — a render with no
-// env binding, which rejects the literal — is covered by
-// negative_rendered_secrets_literal_prod.k.
-func TestKCLModule_RenderedSecretsLiteral(t *testing.T) {
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping RenderedSecrets literal test")
+// refusalProblem is "" when err is a forge refusal (a schema check or a
+// render assert — not a type, compile or missing-attribute error) whose
+// message contains every expected substring, and otherwise says why not.
+func refusalProblem(err error, out []byte, expects []string) string {
+	if err == nil {
+		return "expected forge to refuse this render, but it succeeded:\n" + string(out)
 	}
-	root := kclModuleRoot(t)
-	entry := filepath.Join(root, "tests", "positive_rendered_secrets_literal.k")
-
-	for _, env := range []string{"dev", "e2e"} {
-		t.Run("env="+env, func(t *testing.T) {
-			out, err := runKCL(t, entry, "-D", "env="+env)
-			if err != nil {
-				t.Fatalf("kcl run literal -D env=%s failed (literal must be allowed in %s): %v\n%s", env, env, err, out)
-			}
-			var parsed map[string]any
-			if err := json.Unmarshal(out, &parsed); err != nil {
-				t.Fatalf("unmarshal: %v\n%s", err, out)
-			}
-			for k, v := range parsed {
-				if !strings.HasPrefix(k, "assert_") {
-					continue
-				}
-				if b, ok := v.(bool); !ok || !b {
-					t.Errorf("env=%s: assertion %q not true: %v", env, k, v)
-				}
-			}
-		})
+	diag := kclDiagnostics(err)
+	for _, re := range notARefusalREs {
+		if re.MatchString(diag) {
+			return "failed, but not by a forge rule (" + re.String() + ") — the fixture or the module is broken, so the rule under test was never evaluated:\n" + diag
+		}
 	}
-
-	// A literal under a NON-dev/e2e env binding must be rejected.
-	// The rejection lands on stderr, which runKCL folds into the error.
-	if out, err := runKCL(t, entry, "-D", "env=prod"); err == nil {
-		t.Errorf("expected kcl to reject from='literal' under -D env=prod, but it succeeded:\n%s", out)
-	} else if got := string(out) + "\n" + err.Error(); !strings.Contains(got, "Check failed") {
-		t.Errorf("expected 'Check failed' rejecting literal in prod, got:\n%s", got)
+	if !forgeRefusalRE.MatchString(diag) {
+		return "failed without a schema check or render assert:\n" + diag
 	}
+	var missing []string
+	for _, want := range expects {
+		if !strings.Contains(diag, want) {
+			missing = append(missing, want)
+		}
+	}
+	if len(missing) > 0 {
+		return "refusal does not name " + strings.Join(missing, ", ") + ":\n" + diag
+	}
+	return ""
 }
 
-// TestKCLModule_FileSecrets pins the dev/e2e gate on DirSecrets — the
-// scaffolded local secret store. It renders PLAINTEXT k8s Secrets, so it
-// is allowed only under `-D env=dev|e2e`; staging/prod must declare
-// ExternalSecrets and take their values from an out-of-band Secret.
-func TestKCLModule_FileSecrets(t *testing.T) {
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping DirSecrets test")
-	}
-	root := kclModuleRoot(t)
-
-	// positive_secret_provider.k also declares a DirSecrets bundle, so it
-	// carries the same dev/e2e gate and runs here rather than in the
-	// env-less sweep.
-	// positive_bundle_rendered_secrets.k pairs FileSecrets with
-	// Bundle.rendered_secrets (a literal key), so it is gated the same way.
-	for _, fixture := range []string{"positive_file_secrets.k", "positive_secret_provider.k", "positive_bundle_rendered_secrets.k"} {
-		runFileSecretsFixture(t, filepath.Join(root, "tests", fixture))
-	}
-}
-
-// runFileSecretsFixture asserts a DirSecrets fixture renders under dev/e2e
-// and is REJECTED under prod — forge will not render a plaintext Secret
-// from a developer's local directory into a real cluster.
-func runFileSecretsFixture(t *testing.T, entry string) {
+func assertRefusal(t *testing.T, label string, err error, out []byte, expects []string) {
 	t.Helper()
+	if p := refusalProblem(err, out, expects); p != "" {
+		t.Errorf("%s: %s", label, p)
+	}
+}
 
-	for _, env := range []string{"dev", "e2e"} {
-		t.Run("env="+env, func(t *testing.T) {
-			out, err := runKCL(t, entry, "-D", "env="+env)
-			if err != nil {
-				t.Fatalf("kcl run -D env=%s failed (DirSecrets must be allowed in %s): %v\n%s", env, env, err, out)
-			}
-			var parsed map[string]any
-			if err := json.Unmarshal(out, &parsed); err != nil {
-				t.Fatalf("unmarshal: %v\n%s", err, out)
-			}
-			for k, v := range parsed {
-				if !strings.HasPrefix(k, "assert_") {
+// TestKCLModule_PositiveAssertions: every positive*.k renders under each of
+// its `# kcl-args` sets with every assert_* true, and — when it declares
+// `# reject-args` — is refused under those.
+func TestKCLModule_PositiveAssertions(t *testing.T) {
+	t.Parallel()
+	requireKCLRender(t)
+	dir, names := fixtures(t, "positive")
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			d := readDirectives(t, path)
+			for _, args := range argSets(d["kcl-args"]) {
+				label := name + " " + strings.Join(args, " ")
+				out, err := runKCL(t, path, args...)
+				if err != nil {
+					t.Errorf("%s: render failed: %s", label, kclDiagnostics(err))
 					continue
 				}
-				if b, ok := v.(bool); !ok || !b {
-					t.Errorf("env=%s: assertion %q not true: %v", env, k, v)
+				assertAllTrue(t, label, out)
+			}
+			if rej := d["reject-args"]; len(rej) > 0 {
+				if len(d["reject-expect"]) == 0 {
+					t.Fatalf("%s declares reject-args without reject-expect", name)
+				}
+				for _, args := range argSets(rej) {
+					out, err := runKCL(t, path, args...)
+					assertRefusal(t, name+" "+strings.Join(args, " "), err, out, d["reject-expect"])
 				}
 			}
 		})
 	}
-
-	// A prod binding must be rejected: forge will not render a plaintext
-	// Secret from a developer's local directory into a real cluster.
-	if out, err := runKCL(t, entry, "-D", "env=prod"); err == nil {
-		t.Errorf("expected kcl to reject DirSecrets under -D env=prod, but it succeeded:\n%s", out)
-	} else if got := string(out) + "\n" + err.Error(); !strings.Contains(got, "Check failed") {
-		t.Errorf("expected 'Check failed' rejecting DirSecrets in prod, got:\n%s", got)
-	}
 }
 
-// TestKCLModule_NegativeChecks runs each tests/negative_*.k file and
-// asserts kcl run exits non-zero. The check block in schema.k is
-// what produces the failure; if a schema change accidentally loosens
-// validation, this catches it.
+// TestKCLModule_NegativeChecks: every negative_*.k is refused by a forge
+// rule whose message names every `# expect:` substring.
 func TestKCLModule_NegativeChecks(t *testing.T) {
-	// See TestKCLModule_PositiveAssertions for why this is safe.
 	t.Parallel()
-
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping KCL negative-check test")
-	}
-
-	root := kclModuleRoot(t)
-	testsDir := filepath.Join(root, "tests")
-	entries, err := os.ReadDir(testsDir)
-	if err != nil {
-		t.Fatalf("read tests dir: %v", err)
-	}
-
-	var found int
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), "negative_") || !strings.HasSuffix(e.Name(), ".k") {
-			continue
-		}
-		found++
-		name := e.Name()
+	requireKCLRender(t)
+	dir, names := fixtures(t, "negative_")
+	for _, name := range names {
+		path := filepath.Join(dir, name)
 		t.Run(name, func(t *testing.T) {
-			// Independent read-only `kcl run` per fixture — same
-			// reasoning as the positive loop above.
 			t.Parallel()
-
-			out, err := runKCL(t, filepath.Join(testsDir, name))
-			if err == nil {
-				t.Fatalf("expected kcl to reject %s but it succeeded:\n%s",
-					name, out)
+			d := readDirectives(t, path)
+			if len(d["expect"]) == 0 {
+				t.Fatalf("%s has no `# expect: <substring>` directive: a negative fixture must name the refusal it pins", name)
 			}
-			// The rejection must come from OUR validation, not from a
-			// syntax or type error that would also exit non-zero (and
-			// would make this test pass vacuously while the schema
-			// validated nothing).
-			//
-			// Two forms count, and both mean "the module evaluated and
-			// forge's own validation rejected the input":
-			//   * "Check failed"    — a schema `check:` block, the usual case.
-			//   * "EvaluationError" — an `assert` in the render layer. A
-			//     constraint spanning MULTIPLE components (e.g. a Job whose
-			//     `before` names a component that does not exist) cannot be
-			//     expressed as a single schema's check block, because no one
-			//     schema can see the others.
-			// A CompileError / TypeError matches neither and still fails.
-			//
-			// kcl reports the rejection on STDERR, which runKCL folds
-			// into the error rather than into out (out is JSON for the
-			// positive cases). Search both.
-			got := string(out) + "\n" + err.Error()
-			if !strings.Contains(got, "Check failed") && !strings.Contains(got, "EvaluationError") {
-				t.Errorf("expected 'Check failed' or 'EvaluationError' in stderr for %s, got:\n%s",
-					name, got)
+			for _, args := range argSets(d["kcl-args"]) {
+				out, err := runKCL(t, path, args...)
+				assertRefusal(t, name, err, out, d["expect"])
 			}
 		})
 	}
-	if found == 0 {
-		t.Fatal("no negative_*.k tests found")
+}
+
+// TestKCLModule_ClosedSchemas: a closedschema_*.k declares a member its
+// schema does not have; KCL refuses it at compile time, and the message must
+// name the member and the schema. This is how a hosted-facing schema refuses
+// configuration it must not honour — by not declaring it.
+func TestKCLModule_ClosedSchemas(t *testing.T) {
+	t.Parallel()
+	requireKCLRender(t)
+	dir, names := fixtures(t, "closedschema_")
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			d := readDirectives(t, path)
+			if len(d["expect"]) == 0 {
+				t.Fatalf("%s has no `# expect:` directive naming the refused member and schema", name)
+			}
+			out, err := runKCL(t, path)
+			if err == nil {
+				t.Fatalf("expected the closed schema to refuse %s, but it rendered:\n%s", name, out)
+			}
+			diag := kclDiagnostics(err)
+			for _, want := range d["expect"] {
+				if !strings.Contains(diag, want) {
+					t.Errorf("refusal should name %q:\n%s", want, diag)
+				}
+			}
+		})
 	}
 }
 
-// TestKCLModule_JSONContractShape pins the JSON contract that the
-// forge CLI consumes. Adding new top-level buckets to render() is
-// backward-compatible; removing one IS a breaking change and trips
-// TestKCLModule_StaticSiteSchemaIsClosed pins that StaticSite refuses a
-// field it does not declare.
-//
-// This is the mechanism the hosted tier relies on to reject
-// configuration it must not honour: rather than maintaining an allowlist
-// of forbidden fields — which drifts from the schema the moment either
-// changes — the field simply is not on the schema, and KCL refuses it
-// with a message naming the schema. `public_access` is the canonical
-// case: who may read the bucket is the bucket owner's policy, not
-// something a `forge.StaticSite` deploy block asserts.
-//
-// It needs its own test rather than a negative_*.k fixture because KCL
-// rejects an undeclared member at COMPILE time, and
-// TestKCLModule_NegativeChecks deliberately refuses to accept a
-// CompileError as a pass (otherwise a fixture with a typo would satisfy
-// it while validating nothing). So this asserts the compile-time shape
-// explicitly instead of blunting that guard.
-func TestKCLModule_StaticSiteSchemaIsClosed(t *testing.T) {
+// TestKCLModule_HarnessRefusesVacuousNegatives pins the harness itself: a
+// negative fixture that fails for the WRONG reason (a missing attribute, a
+// type error) or whose message lacks its expect substring must not pass,
+// and an expect substring that appears only in the ECHOED SOURCE must not
+// satisfy it.
+func TestKCLModule_HarnessRefusesVacuousNegatives(t *testing.T) {
 	t.Parallel()
-
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping StaticSite closed-schema test")
+	requireKCLRender(t)
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
+	write("kcl.mod", "[package]\nname = \"harness_probe\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n")
 
-	root := kclModuleRoot(t)
-	fixture := filepath.Join(root, "tests", "closedschema_static_site_unknown_field.k")
-
-	out, err := runKCL(t, fixture)
-	if err == nil {
-		t.Fatalf("expected kcl to reject an undeclared StaticSite field, but it succeeded:\n%s", out)
+	cases := []struct {
+		name, body string
+		expect     []string
+		wantPass   bool
+	}{
+		{"real refusal", "schema A:\n    x: int\n    check:\n        x > 1, \"A.x must exceed one\"\na = A {x = 0}\n", []string{"A.x must exceed one"}, true},
+		{"assert refusal", "assert 1 == 2, \"workload api: sidecars not allowed on OnHosted\"\n", []string{"sidecars not allowed"}, true},
+		{"wrong message", "schema A:\n    x: int\n    check:\n        x > 1, \"A.x must exceed one\"\na = A {x = 0}\n", []string{"replicas"}, false},
+		{"missing attribute", "schema A:\n    x: int\na = A {}\n", []string{"x"}, false},
+		{"unknown attribute", "import forge\na = forge.NoSuchSchema {}\n", []string{"NoSuchSchema"}, false},
+		{"expect only in echoed source", "_msg = \"sidecars not allowed\"\nschema A:\n    x: int\n    check:\n        x > 1, \"A.x must exceed one\"\na = A {x = 0}\n", []string{"sidecars not allowed"}, false},
 	}
-	got := string(out) + "\n" + err.Error()
-	// The rejection must name the offending member AND the schema — that
-	// exact message is what makes the closed schema usable rather than
-	// merely strict, because it tells the author what forge will not
-	// accept and where.
-	for _, want := range []string{"public_access", "StaticSite"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("rejection should name %q; got:\n%s", want, got)
+	for _, c := range cases {
+		p := write(strings.ReplaceAll(c.name, " ", "_")+".k", c.body)
+		out, err := runKCL(t, p)
+		problem := refusalProblem(err, out, c.expect)
+		if passed := problem == ""; passed != c.wantPass {
+			t.Errorf("%s: harness verdict pass=%v, want %v (%s)", c.name, passed, c.wantPass, problem)
 		}
 	}
 }
 
-// TestKCLModule_SimpleBackendSchemaIsClosed pins that SimpleBackend
-// refuses a field it does not declare — the same closed-schema property
-// TestKCLModule_StaticSiteSchemaIsClosed pins for StaticSite, and for the
-// same reason: the way a hosted tier rejects configuration it must not
-// honour is to not declare the field, so there is no allowlist to
-// maintain and none to drift from the schema.
-//
-// `replicas` is the case worth pinning here rather than an obviously
-// absurd one. Unlike StaticSite's `public_access`, it is a field a reader
-// would REASONABLY expect on a deploy block, which is exactly why its
-// absence has to be asserted instead of assumed. SimpleBackend renders a
-// ReadWriteOnce PVC for `storage_gib`, and a multi-replica Deployment
-// mounting one RWO volume either wedges on rolling update or refuses to
-// schedule across nodes — so a `replicas` knob would offer a setting that
-// silently breaks precisely the workloads that set `storage_gib`.
-//
-// Needs its own test rather than a negative_*.k fixture for the same
-// reason StaticSite's does: KCL rejects an undeclared member at COMPILE
-// time, and TestKCLModule_NegativeChecks deliberately refuses to accept a
-// CompileError as a pass, so that a fixture with a typo cannot satisfy it
-// while validating nothing.
-func TestKCLModule_SimpleBackendSchemaIsClosed(t *testing.T) {
+// renderContractDir is where P2a publishes the §9.1 contract goldens: one
+// `<case>.json` (the `output` document) per runtime shape, next to the
+// `<case>.k` source that produces it. P2b decodes the same JSON
+// (kcl_render_test.go); this test is the KCL leg of that triple — the render
+// must REPRODUCE each golden, byte-for-byte after key normalisation.
+func renderContractDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(filepath.Dir(kclModuleRoot(t)), "internal", "cli", "testdata", "render_contract")
+}
+
+// TestKCLModule_RenderContract renders each render_contract/<case>.k and
+// requires its `output` to equal <case>.json.
+func TestKCLModule_RenderContract(t *testing.T) {
 	t.Parallel()
-
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping SimpleBackend closed-schema test")
+	requireKCLRender(t)
+	dir := renderContractDir(t)
+	srcs, _ := filepath.Glob(filepath.Join(dir, "*.k"))
+	if len(srcs) == 0 {
+		t.Skipf("no render-contract goldens in %s yet (P2a publishes them)", dir)
 	}
-
-	root := kclModuleRoot(t)
-	fixture := filepath.Join(root, "tests", "closedschema_simple_backend_unknown_field.k")
-
-	out, err := runKCL(t, fixture)
-	if err == nil {
-		t.Fatalf("expected kcl to reject an undeclared SimpleBackend field, but it succeeded:\n%s", out)
-	}
-	got := string(out) + "\n" + err.Error()
-	// The rejection must name the member AND the schema — that message is
-	// what makes the closed schema usable rather than merely strict.
-	for _, want := range []string{"replicas", "SimpleBackend"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("rejection should name %q; got:\n%s", want, got)
-		}
+	sort.Strings(srcs)
+	for _, src := range srcs {
+		name := strings.TrimSuffix(filepath.Base(src), ".k")
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			golden, err := os.ReadFile(filepath.Join(dir, name+".json"))
+			if err != nil {
+				t.Fatalf("golden %s.json missing beside %s.k: %v", name, name, err)
+			}
+			args := argSets(readDirectives(t, src)["kcl-args"])[0]
+			out, err := runKCL(t, src, args...)
+			if err != nil {
+				t.Fatalf("render %s: %s", name, kclDiagnostics(err))
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(out, &doc); err != nil {
+				t.Fatalf("unmarshal render: %v", err)
+			}
+			got, ok := doc["output"]
+			if !ok {
+				t.Fatalf("%s.k renders no top-level `output` (main.k must end with `output = forge.render(bundle)`)", name)
+			}
+			var want any
+			if err := json.Unmarshal(golden, &want); err != nil {
+				t.Fatalf("unmarshal golden: %v", err)
+			}
+			gb, _ := json.MarshalIndent(got, "", "  ")
+			wb, _ := json.MarshalIndent(want, "", "  ")
+			if string(gb) != string(wb) {
+				t.Errorf("forge.render drifted from the contract golden %s.json\n--- render ---\n%s\n--- golden ---\n%s", name, gb, wb)
+			}
+		})
 	}
 }
 
-// this test.
-func TestKCLModule_JSONContractShape(t *testing.T) {
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping KCL JSON contract test")
-	}
-
-	root := kclModuleRoot(t)
-	out, err := runKCL(t, filepath.Join(root, "example", "dev", "main.k"), "-S", "output")
+// TestKCLModule_ExampleRendersOneOutput pins the single entrypoint on the
+// module's own example env: it renders `output` and no top-level
+// `manifests` (a second, bypass-able applyable stream).
+func TestKCLModule_ExampleRendersOneOutput(t *testing.T) {
+	t.Parallel()
+	requireKCLRender(t)
+	entry := filepath.Join(kclModuleRoot(t), "example", "dev", "main.k")
+	out, err := runKCL(t, entry)
 	if err != nil {
-		t.Fatalf("kcl run example/dev failed: %v\n%s", err, out)
+		t.Fatalf("render example/dev: %s", kclDiagnostics(err))
 	}
-
-	var c map[string]any
-	if err := json.Unmarshal(out, &c); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, out)
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, bucket := range []string{"services", "operators", "frontends", "cronjobs", "config_maps", "gateways", "http_routes", "grpc_routes", "runtime_classes"} {
-		if _, ok := c[bucket]; !ok {
-			t.Errorf("JSON contract missing required bucket %q", bucket)
-		}
-	}
-
-	// Each service.deploy must have the discriminator field — that's
-	// the contract the forge CLI dispatches on.
-	services, ok := c["services"].([]any)
+	output, ok := doc["output"].(map[string]any)
 	if !ok {
-		t.Fatalf("services not an array: %T", c["services"])
+		t.Fatalf("example/dev renders no `output` object")
 	}
-	for i, sRaw := range services {
-		s := sRaw.(map[string]any)
-		dep, ok := s["deploy"].(map[string]any)
-		if !ok || dep == nil {
-			// A service with deploy = None projects an explicit
-			// {type: "build-only"} block (the build-only mode), so the
-			// null branch shouldn't be hit for forge-rendered output; keep
-			// the guard tolerant in case a hand-authored fixture emits null.
-			continue
+	if _, ok := doc["manifests"]; ok {
+		t.Error("example/dev renders a top-level `manifests`: the applyable stream is output.manifests only")
+	}
+	for _, key := range []string{"workloads", "manifests", "frontends", "config_maps", "gateways", "http_routes", "grpc_routes", "runtime_classes", "infra", "databases"} {
+		if _, ok := output[key]; !ok {
+			t.Errorf("output is missing the %q bucket", key)
 		}
-		typ, _ := dep["type"].(string)
-		switch typ {
-		case "host", "cluster", "simple-backend", "build-only":
+	}
+	for _, gone := range []string{"services", "operators", "cronjobs", "jobs"} {
+		if _, ok := output[gone]; ok {
+			t.Errorf("output still carries the deleted %q bucket", gone)
+		}
+	}
+	ws, _ := output["workloads"].([]any)
+	for i, raw := range ws {
+		w, _ := raw.(map[string]any)
+		rt, _ := w["runtime"].(map[string]any)
+		switch rt["type"] {
+		case "host", "compose", "cluster", "hosted", "build-only":
 		default:
-			t.Errorf("services[%d].deploy.type = %q, want one of host|cluster|simple-backend|build-only", i, typ)
+			t.Errorf("workloads[%d].runtime.type = %v, want host|compose|cluster|hosted|build-only", i, rt["type"])
 		}
 	}
 }

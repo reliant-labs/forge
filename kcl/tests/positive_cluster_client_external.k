@@ -18,6 +18,7 @@ client to REFERENCE a pre-existing Secret rather than mint one:
 """
 
 import forge
+import forge.workloads as fw
 import json
 
 _prod = forge.Cluster { name = "workload-prod" }
@@ -43,15 +44,12 @@ _target = forge.ClusterTarget {
     registry = "ghcr.io/reliant/control-plane"
 }
 
-_consumer = forge.RenderedWorkload {
+_consumer = fw.Workload {
     name = "workspace-controller"
     image = "control-plane"
-    deploy = _target.deploy | {
-        env_vars = [
-            forge.EnvVar { name = "CLUSTER_CONFIGS", value = _link.config_json }
-        ]
-    }
+    env = {CLUSTER_CONFIGS = _link.config_json}
     volumes = [_link.volume]
+    runtime = forge.OnCluster {target = _target}
 }
 
 # The external client emits NO secret into kubeconfig_secrets (it's
@@ -59,11 +57,11 @@ _consumer = forge.RenderedWorkload {
 _bundle = forge.Bundle {
     cluster_target = _target
     clusters = [_cp, _prod]
-    services = [_consumer]
+    workloads = [_consumer]
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle)
+manifests = output.manifests
 
 # ── Invariants ─────────────────────────────────────────────────────
 
@@ -73,10 +71,9 @@ assert_no_secret = _link.secret == Undefined
 # The Volume sources the pre-existing Secret by the chosen volume_name —
 # NOT the <id>-kubeconfig derivation.
 assert_vol_name = _link.volume.name == "workload-kubeconfig-oob"
-assert_vol_source = _link.volume.source == "workload-kubeconfig-oob"
-assert_vol_mount = _link.volume.mount_path == "/etc/workload-cluster"
-assert_vol_type = _link.volume.type == "secret"
-assert_vol_ro = _link.volume.read_only == True
+assert_vol_source = _link.volume.source.secret.name == "workload-kubeconfig-oob"
+assert_vol_mount = _link.volume.mountPath == "/etc/workload-cluster"
+assert_vol_ro = _link.volume.readOnly == True
 
 # config_json/config_entry derive from mount_path + key exactly as minting
 # mode — the kubeconfigPath agrees with the volume mount.
@@ -93,7 +90,11 @@ assert_no_secret_manifest = len([m for m in manifests \
     if m.kind == "Secret" and m.metadata.name == "workload-kubeconfig-oob"]) == 0
 
 # The consumer still wires the derived volume + config_json.
-assert_consumer_vol = output.services[0].deploy.env_vars[0].value == _link.config_json
+_consumer_spec = [w for w in output.workloads if w.name == "workspace-controller"][0].spec
+assert_consumer_env = [e for e in _consumer_spec.env if e.name == "CLUSTER_CONFIGS"][0].value == _link.config_json
+# The derived volume reaches the workload spec in the generated Volume shape.
+assert_consumer_volume = _consumer_spec.volumes[0].name == _link.volume.name and \
+    _consumer_spec.volumes[0].mountPath == _link.volume.mountPath
 
 # ── A minting-mode client with an OVERRIDDEN volume_name still mints ──
 # volume_name decouples the name but does NOT disable minting; only
@@ -109,7 +110,7 @@ _pinned = forge.ClusterClient {
 assert_pinned_mints = _pinned.secret != Undefined
 assert_pinned_secret_name = _pinned.secret.name == "daemon-kubeconfig-pinned"
 assert_pinned_vol_name = _pinned.volume.name == "daemon-kubeconfig-pinned"
-assert_pinned_vol_source = _pinned.volume.source == "daemon-kubeconfig-pinned"
+assert_pinned_vol_source = _pinned.volume.source.secret.name == "daemon-kubeconfig-pinned"
 
 # ── secret_name decouples the volume NAME from the sourced Secret NAME ──
 # dev/prod mount an out-of-band kubeconfig under a volume named
@@ -128,7 +129,7 @@ _split = forge.ClusterClient {
 }
 # The volume keeps its own NAME but SOURCES the differently-named Secret.
 assert_split_vol_name = _split.volume.name == "daemon-cluster-kubeconfig"
-assert_split_vol_source = _split.volume.source == "cp-daemon-kubeconfig"
+assert_split_vol_source = _split.volume.source.secret.name == "cp-daemon-kubeconfig"
 assert_split_no_secret = _split.secret == Undefined
 # config_json still derives from mount_path + key — unaffected by the name split.
 _split_cfg = json.decode(_split.config_json)
@@ -150,4 +151,4 @@ _split_mint = forge.ClusterClient {
 }
 assert_split_mint_secret_name = _split_mint.secret.name == "daemon-secret"
 assert_split_mint_vol_name = _split_mint.volume.name == "daemon-vol"
-assert_split_mint_vol_source = _split_mint.volume.source == "daemon-secret"
+assert_split_mint_vol_source = _split_mint.volume.source.secret.name == "daemon-secret"

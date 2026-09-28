@@ -229,7 +229,7 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 // over the (svc, projectDir, envs) tuple — stats the resolved cwd,
 // reads state for each env, computes conflict tokens against
 // externalBuildBuiltinTokens.
-func buildExternalBuildEntry(svc ServiceEntity, projectDir string, envs []string) externalBuildEntry {
+func buildExternalBuildEntry(svc WorkloadEntity, projectDir string, envs []string) externalBuildEntry {
 	buildCwd := svc.EffectiveBuildCwd()
 	buildEnv := svc.EffectiveBuildEnv()
 	entry := externalBuildEntry{

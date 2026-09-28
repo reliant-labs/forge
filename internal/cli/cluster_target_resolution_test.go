@@ -27,10 +27,47 @@ const clusterTargetJSON = `{
       "platform": "amd64",
       "image_tag": "stable"
     },
-    "services": [
-      {"name": "workspace-base", "deploy": {"type": "build-only"}},
-      {"name": "kata-prepull", "deploy": {"type": "cluster", "cluster": "gke_proj_us-central1-a_prod-daemon-v2", "namespace": "kata-prepull", "registry": "us-central1-docker.pkg.dev/proj/other", "platform": "arm64"}},
-      {"name": "admin-server", "image": "control-plane", "deploy": {"type": "cluster", "cluster": "gke_proj_us-central1_prod", "namespace": "control-plane-prod", "registry": "us-central1-docker.pkg.dev/proj/reliant-prod", "platform": "amd64"}}
+    "workloads": [
+      {
+        "name": "workspace-base",
+        "kind": "tool",
+        "runtime": {
+          "type": "build-only",
+          "build_variants": []
+        },
+        "spec": {
+          "kind": "tool"
+        }
+      },
+      {
+        "name": "kata-prepull",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "gke_proj_us-central1-a_prod-daemon-v2",
+          "namespace": "kata-prepull",
+          "registry": "us-central1-docker.pkg.dev/proj/other",
+          "platform": "arm64"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "admin-server",
+        "kind": "service",
+        "image": "control-plane",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "gke_proj_us-central1_prod",
+          "namespace": "control-plane-prod",
+          "registry": "us-central1-docker.pkg.dev/proj/reliant-prod",
+          "platform": "amd64"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
     ]
   }
 }`
@@ -149,9 +186,26 @@ func TestHelmChartsRideTheDeclaredClusterTargetGroup(t *testing.T) {
 // declares no cluster_target (a hand-rolled contract, the in-tree test
 // fixtures) still resolves from its services exactly as before.
 func TestK8sClusterField_NoClusterTargetKeepsServiceFallback(t *testing.T) {
-	e, err := parseKCLEntities([]byte(`{"services": [
-	  {"name": "a", "deploy": {"type": "cluster", "cluster": "k3d-x", "namespace": "ns-x", "registry": "r", "platform": "arm64"}}
-	]}`))
+	e, err := parseKCLEntities([]byte(`{
+  "output": {
+    "workloads": [
+      {
+        "name": "a",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-x",
+          "namespace": "ns-x",
+          "registry": "r",
+          "platform": "arm64"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`))
 	if err != nil {
 		t.Fatalf("parseKCLEntities: %v", err)
 	}

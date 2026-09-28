@@ -20,32 +20,105 @@ import (
 // and host services whose env URLs name the localhost infra ports
 // (Postgres :5434, NATS :4222). This is the shape deploy/kcl/dev renders.
 const devBundle = `{
-  "services": [
-    {"name": "admin-server", "deploy": {"type": "host",
-      "env_vars": [
-        {"name": "DATABASE_URL", "value": "postgres://postgres:postgres@localhost:5434/cp?sslmode=disable"},
-        {"name": "NATS_URL", "value": "nats://localhost:4222"}
-      ]}},
-    {"name": "reliant-api", "deploy": {"type": "host",
-      "env_vars": [
-        {"name": "DATABASE_URL", "value": "postgres://postgres:postgres@localhost:5434/reliant?sslmode=disable"}
-      ]}},
-    {"name": "workspace-proxy", "deploy": {"type": "cluster", "cluster": "k3d-control-plane", "namespace": "ns"}}
-  ],
-  "gateways": [
-    {"name": "public", "listeners": [
-      {"name": "http", "port": 28080, "protocol": "HTTP"},
-      {"name": "controller", "port": 28090, "protocol": "HTTP"},
-      {"name": "grpc", "port": 29190, "protocol": "H2C"}
-    ]}
-  ],
-  "http_routes": [
-    {"name": "workspace-proxy", "gateway": "public", "listener": "http", "service": "workspace-proxy", "port": 8080},
-    {"name": "workspace-controller", "gateway": "public", "listener": "controller", "service": "workspace-controller", "port": 9191}
-  ],
-  "grpc_routes": [
-    {"name": "daemon-gateway", "gateway": "public", "listener": "grpc", "service": "daemon-gateway", "port": 9190}
-  ]
+  "output": {
+    "gateways": [
+      {
+        "name": "public",
+        "listeners": [
+          {
+            "name": "http",
+            "port": 28080,
+            "protocol": "HTTP"
+          },
+          {
+            "name": "controller",
+            "port": 28090,
+            "protocol": "HTTP"
+          },
+          {
+            "name": "grpc",
+            "port": 29190,
+            "protocol": "H2C"
+          }
+        ]
+      }
+    ],
+    "http_routes": [
+      {
+        "name": "workspace-proxy",
+        "gateway": "public",
+        "listener": "http",
+        "service": "workspace-proxy",
+        "port": 8080
+      },
+      {
+        "name": "workspace-controller",
+        "gateway": "public",
+        "listener": "controller",
+        "service": "workspace-controller",
+        "port": 9191
+      }
+    ],
+    "grpc_routes": [
+      {
+        "name": "daemon-gateway",
+        "gateway": "public",
+        "listener": "grpc",
+        "service": "daemon-gateway",
+        "port": 9190
+      }
+    ],
+    "workloads": [
+      {
+        "name": "admin-server",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "value": "postgres://postgres:postgres@localhost:5434/cp?sslmode=disable"
+            },
+            {
+              "name": "NATS_URL",
+              "value": "nats://localhost:4222"
+            }
+          ]
+        }
+      },
+      {
+        "name": "reliant-api",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "value": "postgres://postgres:postgres@localhost:5434/reliant?sslmode=disable"
+            }
+          ]
+        }
+      },
+      {
+        "name": "workspace-proxy",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-control-plane",
+          "namespace": "ns"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
 }`
 
 func TestExtractDevSmokeTargets(t *testing.T) {

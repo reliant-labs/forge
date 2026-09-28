@@ -14,9 +14,9 @@ Pins the load-bearing claims of docs/design/FORGE_KCL_IDIOMS.md §3:
   3. NATIVE MAP-MERGE (`base | overrides`) overrides last-wins with NO
      helper — the map makes the dedup footgun structurally impossible.
   4. EMPTY-STRING value is a legal channel (mirrors EnvVar).
-  5. RENDERER-COMPATIBLE — env_project's [EnvVar] renders to the SAME k8s
-     container env: a hand-written [EnvVar] list does, through the existing
-     render_manifests path.
+  (Rendering a workload's env is not this helper's concern any more: a
+  fw.Workload's env is itself a `{name: value | ref}` map lowered straight to
+  WorkloadSpec env — see positive_workload_env_channels.k.)
 """
 
 import forge
@@ -93,23 +93,6 @@ _dw = forge.env_project(_downward)
 _dw_by_name = {e.name: e for e in _dw}
 assert_field_ref_set = _dw_by_name["POD_NAME"].field_ref == "metadata.name"
 assert_field_ref_no_value = _dw_by_name["POD_NAME"].value == Undefined
-# Render through the k8s adapter and assert the fieldRef shape.
-_dw_target = forge.ClusterTarget {
-    cluster = "k3d-downward"
-    namespace = "downward-dev"
-    registry = "localhost:5050"
-}
-_dw_svc = forge.RenderedWorkload {
-    name = "downward"
-    image = "api"
-    deploy = _dw_target.deploy | {ports = [8080]}
-    env_vars = _dw
-}
-_dw_manifests = forge.render_manifests(forge.Bundle {cluster_target = _dw_target, services = [_dw_svc]}, "latest", {}, False)
-_dw_dep = [m for m in _dw_manifests if m.kind == "Deployment"][0]
-_dw_env = {e.name: e for e in _dw_dep.spec.template.spec.containers[0].env}
-assert_render_field_ref = _dw_env["POD_IP"].valueFrom.fieldRef == {fieldPath = "status.podIP"}
-assert_render_field_no_value = "value" not in _dw_env["NODE_NAME"]
 
 # ── (3) native map-merge, last-wins, no helper ─────────────────────
 _base_env = {
@@ -131,50 +114,3 @@ assert_merge_projected_value = _merged_log[0].value == "debug"
 _empty = forge.env_project({"RUNTIME_CLASS_NAME" = {value = ""}})
 assert_empty_value_set = _empty[0].value == ""
 assert_empty_value_is_value_channel = _empty[0].secret_ref == "" and _empty[0].config_map_ref == ""
-
-# ── (5) renderer-compatible — project == hand-written [EnvVar] ─────
-# Same three vars authored two ways: as a keyed map (projected) and as a
-# hand-written [EnvVar] list. Render BOTH through render_manifests and assert
-# the k8s container env: blocks are IDENTICAL.
-_target = forge.ClusterTarget {
-    cluster = "k3d-env-project"
-    namespace = "env-project-dev"
-    registry = "localhost:5050"
-}
-
-# The hand-written list, in the SAME insertion order env_project emits
-# (matching the _env map literal above: LOG_LEVEL, DATABASE_URL, APP_MODE).
-_handwritten = [
-    forge.EnvVar {name = "LOG_LEVEL", value = "info"}
-    forge.EnvVar {name = "DATABASE_URL", secret_ref = "db", secret_key = "url"}
-    forge.EnvVar {name = "APP_MODE", config_map_ref = "app-config", config_map_key = "mode"}
-]
-
-_svc_map = forge.RenderedWorkload {
-    name = "api-map"
-    image = "api"
-    deploy = _target.deploy | {ports = [8080]}
-    env_vars = forge.env_project(_env)
-}
-_svc_list = forge.RenderedWorkload {
-    name = "api-list"
-    image = "api"
-    deploy = _target.deploy | {ports = [8080]}
-    env_vars = _handwritten
-}
-_bundle = forge.Bundle {cluster_target = _target, services = [_svc_map, _svc_list]}
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
-
-_deploys = {m.metadata.name: m for m in manifests if m.kind == "Deployment"}
-_map_env = _deploys["api-map"].spec.template.spec.containers[0].env
-_list_env = _deploys["api-list"].spec.template.spec.containers[0].env
-
-# The rendered container env blocks are byte-identical.
-assert_render_equivalent = _map_env == _list_env
-
-# And spot-check the actual k8s shapes the projection produced.
-assert_render_count = len(_map_env) == 3
-_map_by_name = {e.name: e for e in _map_env}
-assert_render_value = _map_by_name["LOG_LEVEL"].value == "info"
-assert_render_secret = _map_by_name["DATABASE_URL"].valueFrom.secretKeyRef == {name = "db", key = "url"}
-assert_render_config = _map_by_name["APP_MODE"].valueFrom.configMapKeyRef == {name = "app-config", key = "mode"}

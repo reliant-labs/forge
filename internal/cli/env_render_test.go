@@ -25,14 +25,56 @@ import (
 // services on DIFFERENT clusters plus an operator, which carries no cluster
 // of its own and therefore rides the env's main cluster.
 const twoClusterContract = `{
-  "services": [
-    {"name": "daemon-gateway", "deploy": {"type": "cluster", "cluster": "k3d-control-plane", "namespace": "cp-dev"}},
-    {"name": "workspace-proxy", "deploy": {"type": "cluster", "cluster": "k3d-cp-daemon", "namespace": "cp-dev"}},
-    {"name": "admin-server", "deploy": {"type": "host"}}
-  ],
-  "operators": [
-    {"name": "workspace-controller"}
-  ]
+  "output": {
+    "workloads": [
+      {
+        "name": "daemon-gateway",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-control-plane",
+          "namespace": "cp-dev"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "workspace-proxy",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-cp-daemon",
+          "namespace": "cp-dev"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "admin-server",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "workspace-controller",
+        "kind": "operator",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-control-plane",
+          "namespace": "cp-dev"
+        },
+        "spec": {
+          "kind": "operator"
+        }
+      }
+    ]
+  }
 }`
 
 // twoClusterManifests is the stream that contract renders: one document per
@@ -154,9 +196,24 @@ func TestEnvRenderAttributesEachObjectToItsCluster(t *testing.T) {
 // ones carrying another env's routing label — must be attributed to the one
 // cluster rather than filtered by a scope that does not run.
 func TestEnvRenderSingleClusterAttributesEverything(t *testing.T) {
-	const contract = `{"services": [
-	  {"name": "api", "deploy": {"type": "cluster", "cluster": "gke-prod", "namespace": "prod"}}
-	]}`
+	const contract = `{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "gke-prod",
+          "namespace": "prod"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	objects, clusters := attributeFixture(t, contract, twoClusterManifests)
 
 	if len(clusters) != 1 || clusters[0] != "gke-prod" {
@@ -174,7 +231,22 @@ func TestEnvRenderSingleClusterAttributesEverything(t *testing.T) {
 // "nothing here"; the truth is "this environment targets no cluster", and
 // the report has to say the second thing.
 func TestEnvRenderNoClusterIsReportedNotGuessed(t *testing.T) {
-	const contract = `{"services": [{"name": "api", "deploy": {"type": "host"}}]}`
+	const contract = `{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	objects, clusters := attributeFixture(t, contract, twoClusterManifests)
 
 	if len(clusters) != 0 {

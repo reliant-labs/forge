@@ -96,51 +96,29 @@ var hostedProjectName = func() string {
 // hostedEnvKindOf derives the control-plane environment kind of an env that
 // declares control_plane. Pure.
 //
-//   - ≥1 hosted-tier workload (a SimpleBackend with no cluster, a StaticSite
-//     frontend, a ManagedDatabase with no namespace) → PERSISTENT: the
-//     platform runs it, and its secrets are write-only.
-//   - none → LOCAL: its workloads run on a developer machine via
-//     `forge env up`, and the control plane is only its secret store (pullable).
+//   - anything hosted (a workload bound to OnHosted, a hosted
+//     ManagedDatabase, a bucketless StaticSite) → PERSISTENT: the platform
+//     runs it, and its secrets are write-only.
+//   - nothing hosted → LOCAL: its workloads run on a developer machine or a
+//     cluster the author operates, and the control plane is only its secret
+//     store (pullable).
 //
-// "" when the env declares no control plane.
+// "" when the env declares no control plane. The kind is a PREDICATE over
+// the env's items, never a mode an env selects.
 func hostedEnvKindOf(e *KCLEntities) deploytarget.HostedEnvKind {
 	if e == nil || e.ControlPlane == nil {
 		return ""
 	}
-	if hasHostedTierWorkload(e) {
+	if e.HasHosted() {
 		return deploytarget.HostedEnvPersistent
 	}
 	return deploytarget.HostedEnvLocal
 }
 
 // isLocalControlPlaneEnv reports whether the env declares a control plane that
-// is ONLY its secret store (kind LOCAL).
+// is ONLY its secret store (kind LOCAL): nothing in it is hosted.
 func isLocalControlPlaneEnv(e *KCLEntities) bool {
 	return hostedEnvKindOf(e) == deploytarget.HostedEnvLocal
-}
-
-// hasHostedTierWorkload reports whether any workload in e is a tier the
-// control plane runs. The KCL Bundle check already refuses cluster/namespace
-// coordinates on a tier in a control_plane env, so "no cluster" holds for
-// every tier that reaches here; it is checked anyway so a hand-built entity
-// cannot misclassify.
-func hasHostedTierWorkload(e *KCLEntities) bool {
-	for _, s := range e.Services {
-		if s.Deploy.Type == "simple-backend" && s.Deploy.SimpleBackend != nil && s.Deploy.SimpleBackend.Cluster == "" {
-			return true
-		}
-	}
-	for _, f := range e.Frontends {
-		if f.Deploy != nil && f.Deploy.Type == frontendDeployStaticSite {
-			return true
-		}
-	}
-	for _, db := range e.Databases {
-		if db.Namespace == "" {
-			return true
-		}
-	}
-	return false
 }
 
 // hostedControlPlaneKindName is the lower-case vocabulary the JSON reports
@@ -156,12 +134,13 @@ func hostedControlPlaneKindName(k deploytarget.HostedEnvKind) string {
 	}
 }
 
-// refuseLocalEnvDeploy is `forge env deploy`'s refusal for a LOCAL env: the
-// platform never deploys to one (the control plane refuses too, but this
-// fires before any RPC).
+// refuseLocalEnvDeploy is `forge env deploy`'s refusal for a LOCAL env whose
+// workloads all run on this machine: nothing is hosted and nothing is applied
+// to a cluster, so there is nothing to deploy (the control plane refuses a
+// publish too, but this fires before any RPC).
 func refuseLocalEnvDeploy(envName string) error {
-	return fmt.Errorf("env %q is LOCAL: it declares control_plane but no hosted tier (SimpleBackend / StaticSite / ManagedDatabase), "+
-		"so the control plane is only its secret store and its workloads run on this machine.\n"+
-		"There is nothing for `forge env deploy` to publish.\n"+
-		"fix: run it with `forge env up %s`, or declare a hosted tier to make it a hosted env", envName, envName)
+	return fmt.Errorf("env %q is LOCAL: it declares control_plane but binds nothing to it (no forge.OnHosted workload, hosted database or bucketless StaticSite), "+
+		"so the control plane is only its secret store, and its workloads run on this machine.\n"+
+		"There is nothing for `forge env deploy` to publish or apply.\n"+
+		"fix: run it with `forge env up %s`, or bind a workload to forge.OnHosted / forge.OnCluster", envName, envName)
 }

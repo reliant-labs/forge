@@ -1,5 +1,5 @@
 """
-Positive test — per-service owned manifests (forge.RenderedWorkload.manifests) for
+Positive test — per-workload owned manifests (fw.Workload.manifests) for
 DECLARED-CLUSTER-ONLY routing.
 
 Each manifest attached to a Service is rendered tagged with the owning
@@ -9,12 +9,15 @@ are exercised:
 
   1. A WORKLOAD service ("api", with an image) that also owns a CRD via
      `manifests` — the CRD is stamped with api's app label and the service
-     still renders its Deployment + Service.
+     still renders its Workload record.
 
-  2. An IMAGE-LESS "infra service" ("cp-infra", no image, manifests +
-     K8sCluster deploy) that owns the env-level Gateway + a Namespace — those
-     are stamped with cp-infra's label, and NO Deployment/Service/RBAC is
-     rendered for cp-infra (the no-phantom-workload invariant).
+  2. An IMAGE-LESS infra carrier ("cp-infra", kind = "tool", no image,
+     manifests + an OnCluster runtime) that owns env-level objects — those
+     are stamped with cp-infra's label, and it renders NO Workload record
+     (a tool is never scheduled: the no-phantom-workload invariant).
+
+The carrier moved from RenderedWorkload.manifests to fw.Workload.manifests
+(an authoring-only field, never in WorkloadSpec — map §2.2).
 
 Also covers the label-merge edge cases: an existing user label on a manifest
 is PRESERVED (forge merges under it), and a manifest with NO metadata gets a
@@ -22,9 +25,10 @@ metadata.labels created.
 """
 
 import forge
+import forge.workloads as fw
 import yaml
 
-# Primary target — render_manifests reads namespace/registry off this one.
+# Primary target.
 _target = forge.ClusterTarget {
     cluster = "k3d-control-plane"
     namespace = "control-plane-e2e"
@@ -40,13 +44,14 @@ _daemon_target = forge.ClusterTarget {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [
+    workloads = [
         # 1. Workload service that ALSO owns a CRD. The CRD carries a
         # pre-existing user label to prove the merge preserves it.
-        forge.RenderedWorkload {
+        fw.Workload {
             name = "api"
             image = "example"
-            deploy = _target.deploy | {ports = [8080]}
+            ports = [fw.Port {name = "http", port = 8080}]
+            runtime = forge.OnCluster {target = _target}
             manifests = [
                 {
                     apiVersion = "apiextensions.k8s.io/v1"
@@ -62,9 +67,10 @@ _bundle = forge.Bundle {
         # 2. Image-less infra service: owns env-level resources pinned to
         # the control-plane cluster. One manifest deliberately has NO
         # metadata block to exercise the create-metadata merge path.
-        forge.RenderedWorkload {
+        fw.Workload {
             name = "cp-infra"
-            deploy = _target.deploy | {ports = [8080]}
+            kind = "tool"
+            runtime = forge.OnCluster {target = _target}
             manifests = [
                 {
                     apiVersion = "gateway.networking.k8s.io/v1"
@@ -81,10 +87,10 @@ _bundle = forge.Bundle {
         }
         # 3. A workload service on the OTHER cluster — proves the per-service
         # manifests mechanism is orthogonal to which cluster a service uses.
-        forge.RenderedWorkload {
+        fw.Workload {
             name = "workspace-proxy"
             image = "example"
-            deploy = _daemon_target.deploy
+            runtime = forge.OnCluster {target = _daemon_target}
         }
         # 4. Chart-shaped owned manifests whose OWN app.kubernetes.io/* labels
         # disagree with forge's stamp (control-plane's kata pre-pull and its
@@ -92,9 +98,10 @@ _bundle = forge.Bundle {
         # selector keys on, so it must survive; the decoded doc's
         # `managed-by: Helm` used to be a KCL unification error that failed
         # the whole render.
-        forge.RenderedWorkload {
+        fw.Workload {
             name = "prepull"
-            deploy = _daemon_target.deploy
+            kind = "tool"
+            runtime = forge.OnCluster {target = _daemon_target}
             manifests = [
                 {
                     apiVersion = "apps/v1"
@@ -115,13 +122,13 @@ _bundle = forge.Bundle {
     ]
 }
 
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
+manifests = forge.render(_bundle).manifests
 
 # ── Helpers ────────────────────────────────────────────────────────
 _crds = [m for m in manifests if m.kind == "CustomResourceDefinition"]
 _gateways = [m for m in manifests if m.kind == "Gateway"]
 _issuers = [m for m in manifests if m.kind == "ClusterIssuer"]
-_deployments = [m for m in manifests if m.kind == "Deployment"]
+_deployments = [m for m in manifests if m.kind == "Workload"]
 
 # ── (1) Workload service owns a CRD, stamped with ITS label ────────
 assert_crd_count = len(_crds) == 1
@@ -142,7 +149,7 @@ assert_issuer_count = len(_issuers) == 1
 assert_issuer_owner = _issuers[0].metadata.labels["app.kubernetes.io/name"] == "cp-infra"
 
 # ── No phantom workload for the image-less infra service ───────────
-# Only the two WORKLOAD services (api, workspace-proxy) render Deployments;
+# Only the two WORKLOAD services (api, workspace-proxy) render records;
 # cp-infra renders none.
 _deploy_names = [d.metadata.name for d in _deployments]
 assert_no_infra_deployment = len([n for n in _deploy_names if n == "cp-infra"]) == 0
@@ -169,3 +176,9 @@ assert_decoded_managed_by_kept = _sa.metadata.labels["app.kubernetes.io/managed-
 assert_decoded_name_kept = _sa.metadata.labels["app.kubernetes.io/name"] == "operator-chart"
 assert_decoded_other_label_kept = _sa.metadata.labels["helm.sh/chart"] == "operator-1.0.0"
 assert_decoded_part_of_defaulted = _sa.metadata.labels["app.kubernetes.io/part-of"] == "prepull"
+
+# ── (5) Owned manifests are routed to the OWNER's cluster ─────────────
+# They are emitted beside their owner's record with its forge.dev/cluster,
+# so the ExtractManifests grouping sends them where the owner runs.
+assert_crd_cluster = _crds[0].metadata.labels["forge.dev/cluster"] == "k3d-control-plane"
+assert_ds_cluster = _ds.metadata.labels["forge.dev/cluster"] == "k3d-cp-daemon"

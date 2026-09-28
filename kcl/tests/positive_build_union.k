@@ -1,15 +1,20 @@
 """
-Positive test — the polymorphic Build union (GoBuild | DockerBuild |
-ShellBuild | RemoteBuild) renders with a self-describing `type`
-discriminator, exactly like the deploy union. Consumed by build.go's
-dispatch on build.type.
+Positive test — the typed Build union (GoBuild | DockerBuild | ShellBuild |
+RemoteBuild) on fw.Workload renders with a self-describing `type`
+discriminator into output.workloads[].build. Consumed by build.go's dispatch
+on build.type.
+
+`build` is TYPED now (no `{str:any}` dict + build_of coercion): a dict can
+no longer bind to the wrong union member, so the structural-first mis-bind
+the old build_of existed to prevent is unrepresentable.
 """
 
 import forge
+import forge.workloads as fw
 
-# GoBuild — the dominant case. cmd is the build target; flags/goarch are
-# the per-env knobs an e2e/prod overlay tunes.
-_go = forge.RenderedWorkload {
+_k3d = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5051"}
+
+_go = fw.Workload {
     name = "trader"
     build = forge.GoBuild {
         cmd = "./cmd/trader"
@@ -18,16 +23,10 @@ _go = forge.RenderedWorkload {
         ldflags = ["-s", "-w", "-X main.version=1.2.3"]
         env = {"CGO_ENABLED" = "0"}
     }
-    deploy = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5051"
-    }
+    runtime = forge.OnCluster {target = _k3d}
 }
 
-# DockerBuild — image is produced via docker build with this dockerfile
-# + platform + target.
-_docker = forge.RenderedWorkload {
+_docker = fw.Workload {
     name = "gateway"
     build = forge.DockerBuild {
         dockerfile = "Dockerfile.gateway"
@@ -35,31 +34,23 @@ _docker = forge.RenderedWorkload {
         target = "runtime"
         build_args = {"VERSION" = "1.2.3"}
     }
-    deploy = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5051"
-    }
+    runtime = forge.OnCluster {target = _k3d}
 }
 
-# ShellBuild — verbatim command escape hatch.
-_shell = forge.RenderedWorkload {
+_shell = fw.Workload {
     name = "sidecar"
-    build = forge.ShellBuild { cmd = "echo hi > out.txt" }
-    deploy = forge.BuildOnly {}
+    kind = "tool"
+    build = forge.ShellBuild {cmd = "echo hi > out.txt"}
+    runtime = forge.BuildOnly {}
 }
 
-# RemoteBuild — the artifact is produced by a HOSTED build service, not
-# on this machine. Source is a repo+ref PIN rather than a path, because a
-# build service cannot read the caller's filesystem.
-_remote = forge.RenderedWorkload {
+# RemoteBuild — produced by a HOSTED build service from a repo+ref PIN,
+# because a build service cannot read the caller's filesystem.
+_remote = fw.Workload {
     name = "hosted"
+    kind = "tool"
     build = forge.RemoteBuild {
-        source = forge.GitSource {
-            repo = "github.com/acme/api"
-            ref = "v1.2.3"
-            subdir = "svc"
-        }
+        source = forge.GitSource {repo = "github.com/acme/api", ref = "v1.2.3", subdir = "svc"}
         dockerfile = "docker/Dockerfile"
         platform = "linux/arm64"
         target = "runtime"
@@ -69,74 +60,54 @@ _remote = forge.RenderedWorkload {
         cache_gib = 50
         timeout_seconds = 1800
     }
-    deploy = forge.BuildOnly {}
+    runtime = forge.BuildOnly {}
 }
 
-_bundle = forge.Bundle { services = [_go, _docker, _shell, _remote] }
-output = forge.render(_bundle)
-
-assert_go_type = output.services[0].build.type == "go"
-assert_go_cmd = output.services[0].build.cmd == "./cmd/trader"
-assert_go_goarch = output.services[0].build.goarch == "arm64"
-assert_go_flags = output.services[0].build.flags == ["-cover"]
-assert_go_env = output.services[0].build.env["CGO_ENABLED"] == "0"
-
-assert_docker_type = output.services[1].build.type == "docker"
-assert_docker_dockerfile = output.services[1].build.dockerfile == "Dockerfile.gateway"
-assert_docker_platform = output.services[1].build.platform == "linux/amd64"
-assert_docker_target = output.services[1].build.target == "runtime"
-
-assert_shell_type = output.services[2].build.type == "shell"
-assert_shell_cmd = output.services[2].build.cmd == "echo hi > out.txt"
-
-assert_remote_type = output.services[3].build.type == "remote"
-# The SOURCE PIN is what makes a remote build possible at all — a build
-# service has no access to the caller's disk, so losing repo/ref here
-# would submit a build with nothing to build.
-assert_remote_repo = output.services[3].build.source.repo == "github.com/acme/api"
-assert_remote_ref = output.services[3].build.source.ref == "v1.2.3"
-assert_remote_subdir = output.services[3].build.source.subdir == "svc"
-assert_remote_dockerfile = output.services[3].build.dockerfile == "docker/Dockerfile"
-assert_remote_platform = output.services[3].build.platform == "linux/arm64"
-# The size fields are the BILLING dimensions, so a render that dropped
-# them would bill a default rather than what was declared.
-assert_remote_cpu = output.services[3].build.cpu_millicores == 4000
-assert_remote_mem = output.services[3].build.memory_bytes == 17179869184
-assert_remote_cache = output.services[3].build.cache_gib == 50
-assert_remote_timeout = output.services[3].build.timeout_seconds == 1800
-
-# A service that omits `build` projects null — the Go side synthesizes
-# the GoBuild { cmd = "./cmd/<name>" } default.
-_plain = forge.RenderedWorkload {
-    name = "plain"
-    deploy = forge.BuildOnly {}
+_remote_defaults = fw.Workload {
+    name = "hosted-defaults"
+    kind = "tool"
+    build = forge.RemoteBuild {source = forge.GitSource {repo = "github.com/acme/x", ref = "main"}}
+    runtime = forge.BuildOnly {}
 }
-_pb = forge.Bundle { services = [_plain] }
-_plain_out = forge.render(_pb)
-assert_plain_build_null = _plain_out.services[0].build == None
 
-# build_of coerces a plain dict (the workloads.k / overlay shape)
-# to the right typed Build subtype by discriminator — the bridge path.
-# This is the case that bare-dict union coercion gets wrong (a shell dict
-# also satisfies GoBuild's required cmd), so it must route through build_of.
-_bo_go = forge.RenderedWorkload { name = "bog", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "go", "cmd" = "./cmd/bog"}) }
-_bo_docker = forge.RenderedWorkload { name = "bod", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "docker", "dockerfile" = "Dockerfile.x"}) }
-_bo_shell = forge.RenderedWorkload { name = "bos", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "shell", "cmd" = "make"}) }
-_bo_remote = forge.RenderedWorkload { name = "bor", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "remote", "source" = forge.GitSource {repo = "github.com/acme/x", ref = "main"}}) }
-_bo_empty = forge.RenderedWorkload { name = "boe", deploy = forge.BuildOnly {}, build = forge.build_of({}) }
-_bo_out = forge.render(forge.Bundle { services = [_bo_go, _bo_docker, _bo_shell, _bo_remote, _bo_empty] })
-assert_bo_go = _bo_out.services[0].build.type == "go" and _bo_out.services[0].build.cmd == "./cmd/bog"
-assert_bo_docker = _bo_out.services[1].build.type == "docker" and _bo_out.services[1].build.dockerfile == "Dockerfile.x"
-assert_bo_shell = _bo_out.services[2].build.type == "shell" and _bo_out.services[2].build.cmd == "make"
-# The RemoteBuild dict routed through build_of must bind to RemoteBuild
-# and NOT to an earlier union member. This is the case bare-dict coercion
-# gets wrong: KCL's union matching is structural-first, so a dict is
-# checked against GoBuild before RemoteBuild, and only the discriminator-
-# aware constructor picks the intended member. A mis-bind would not error
-# loudly — it would render a build of the WRONG TYPE, which the Go side
-# would then dispatch to a local builder for a source that is not on disk.
-assert_bo_remote = _bo_out.services[3].build.type == "remote" and _bo_out.services[3].build.source.repo == "github.com/acme/x"
-# Defaults survive the coercion path: a dict that omits them must not
-# render zeros, because these are the billing dimensions and the cap.
-assert_bo_remote_defaults = _bo_out.services[3].build.cpu_millicores == 2000 and _bo_out.services[3].build.timeout_seconds == 900
-assert_bo_empty = _bo_out.services[4].build == None
+# No build: an image-only workload is "not built by forge".
+_plain = fw.Workload {name = "plain", image = "ghcr.io/acme/plain:v1", runtime = forge.OnCluster {target = _k3d}}
+
+output = forge.render(forge.Bundle {
+    project = "demo"
+    workloads = [_go, _docker, _shell, _remote, _remote_defaults, _plain]
+})
+_b = {w.name: w.build for w in output.workloads}
+
+assert_go_type = _b["trader"].type == "go"
+assert_go_cmd = _b["trader"].cmd == "./cmd/trader"
+assert_go_goarch = _b["trader"].goarch == "arm64"
+assert_go_flags = _b["trader"].flags == ["-cover"]
+assert_go_ldflags = _b["trader"].ldflags == ["-s", "-w", "-X main.version=1.2.3"]
+assert_go_env = _b["trader"].env["CGO_ENABLED"] == "0"
+
+assert_docker_type = _b["gateway"].type == "docker"
+assert_docker_dockerfile = _b["gateway"].dockerfile == "Dockerfile.gateway"
+assert_docker_platform = _b["gateway"].platform == "linux/amd64"
+assert_docker_target = _b["gateway"].target == "runtime"
+
+assert_shell_type = _b["sidecar"].type == "shell"
+assert_shell_cmd = _b["sidecar"].cmd == "echo hi > out.txt"
+
+assert_remote_type = _b["hosted"].type == "remote"
+# The SOURCE PIN is what makes a remote build possible at all.
+assert_remote_repo = _b["hosted"].source.repo == "github.com/acme/api"
+assert_remote_ref = _b["hosted"].source.ref == "v1.2.3"
+assert_remote_subdir = _b["hosted"].source.subdir == "svc"
+assert_remote_dockerfile = _b["hosted"].dockerfile == "docker/Dockerfile"
+assert_remote_platform = _b["hosted"].platform == "linux/arm64"
+# The size fields are the BILLING dimensions.
+assert_remote_cpu = _b["hosted"].cpu_millicores == 4000
+assert_remote_mem = _b["hosted"].memory_bytes == 17179869184
+assert_remote_cache = _b["hosted"].cache_gib == 50
+assert_remote_timeout = _b["hosted"].timeout_seconds == 1800
+assert_remote_defaults = _b["hosted-defaults"].cpu_millicores == 2000 and _b["hosted-defaults"].timeout_seconds == 900
+
+# No build declared => null, and NO synthesized ./cmd/<name> default: the
+# lowering never guesses a package path (map §1.1 EffectiveBuild DEL).
+assert_plain_build_null = _b["plain"] == None

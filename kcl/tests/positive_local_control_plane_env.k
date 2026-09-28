@@ -1,42 +1,41 @@
 """
-Positive test — a LOCAL env: control_plane + HostedSecrets, but NO hosted
-tier. The control plane is only the env's secret store (values pulled into
-memory by `forge env up`); every workload runs on the developer machine
-(host / compose). The Bundle checks must admit this shape: none of the
-hosted-coordinate refusals apply, because there is no hosted tier to
-coordinate, and HostedSecrets' only requirement (control_plane) is met.
+Positive test — a LOCAL env: host + compose workloads, with a control plane
+declared only as the SECRET STORE (HostedSecrets).
+
+`control_plane` is no longer an env mode (ADR 0002 §2). Declaring one does
+not make anything hosted: every workload here is host- or compose-bound, so
+nothing is published and nothing is a hosted tier. It is exactly the shape
+`forge env up` runs against a local control-plane stack.
 """
 
 import forge
-
-_api = forge.RenderedWorkload {
-    name = "api"
-    deploy = forge.HostDeploy {
-        runner = "go-run"
-        env_vars = [forge.EnvVar {name = "STRIPE_SECRET_KEY", secret_ref = "app-secrets"}]
-    }
-}
-
-_pg = forge.RenderedWorkload {
-    name = "postgres"
-    deploy = forge.Compose {service = "postgres"}
-}
+import forge.workloads as fw
 
 _bundle = forge.Bundle {
     project = "hounders"
     env = "dev"
     control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}
     secret_provider = forge.HostedSecrets {}
-    services = [_api, _pg]
+    runtime = forge.OnHost {runner = "go-run"}
+    workloads = [
+        fw.Workload {
+            name = "api"
+            build = forge.GoBuild {cmd = "./cmd/hounders"}
+            args = ["api"]
+            env = {STRIPE_SECRET_KEY = forge.SecretRef {name = "app-secrets", key = "STRIPE_SECRET_KEY"}}
+        }
+        fw.Workload {name = "postgres", runtime = forge.OnCompose {service = "postgres"}}
+    ]
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle)
+_w = {w.name: w for w in output.workloads}
 
 assert_control_plane = output.control_plane.endpoint == "http://127.0.0.1:8090"
 assert_hosted_provider = output.secret_provider.type == "hosted"
-assert_host_service = output.services[0].deploy.type == "host"
-assert_host_secret_ref = output.services[0].deploy.env_vars[0].secret_ref == "app-secrets"
-assert_compose_service = output.services[1].deploy.type == "compose"
-assert_no_hosted_tier = len([s for s in output.services if s.deploy.type == "simple-backend"]) == 0
-assert_no_secret_manifest = len([m for m in manifests if m.kind == "Secret"]) == 0
+assert_host_workload = _w["api"].runtime.type == "host"
+assert_host_secret_ref = [e for e in _w["api"].spec.env if e.name == "STRIPE_SECRET_KEY"][0].secretRef.name == "app-secrets"
+assert_compose_workload = _w["postgres"].runtime.type == "compose"
+assert_nothing_hosted = len([w for w in output.workloads if w.runtime.type == "hosted"]) == 0
+assert_no_secret_manifest = len([m for m in output.manifests if m.kind == "Secret"]) == 0
+assert_no_records = len([m for m in output.manifests if m.kind == "Workload"]) == 0

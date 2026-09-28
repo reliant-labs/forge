@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime"
-
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/pkg/deploy"
@@ -19,18 +17,21 @@ import (
 // and `forge doctor --signal deploy` judge an env by the path that actually
 // ships it.
 //
-// Nothing here is a second opinion. The destination is destinationOf (the
-// `forge env topology` vocabulary, which shares its hosted/local split with
-// buildDeployGroups and e58aa032's runtimeTargetFor), the hosted refusal is
-// buildDeployGroups' own, and admission is deploytarget.PreflightHosted —
-// the deploy's plan with placeholder digests. A rule added to any of them
-// reaches CI with no change here.
+// Nothing here is a second opinion. The destinations are destinationOf's
+// votes (the `forge env topology` vocabulary), the hosted selection and its
+// refusal are buildDeployGroups' own (buildHostedGroup), and admission is
+// deploytarget.PreflightHosted — the deploy's plan with placeholder
+// digests. A rule added to any of them reaches CI with no change here.
 //
-// For a hosted env the platform's objects are rendered through
-// pkg/deploy.Render, the function the control plane's tier operators call,
-// into a placeholder namespace (the platform allocates the real one). They
-// carry no hosted decoration (runtime class, pull policy, routes): that is
-// platform policy the author does not declare and cannot change.
+// Hosting is per workload: an env's hosted PART (its OnHosted workloads,
+// hosted databases, bucketless StaticSites) is admitted by
+// deploytarget.PreflightHosted — Workload.Validate(ProfileRestricted) per
+// workload plus a restricted render of the set — and rendered into the
+// objects the platform runs, into a placeholder namespace (the platform
+// allocates the real one). They carry no hosted decoration (runtime class,
+// pull policy, routes): that is platform policy the author does not declare
+// and cannot change. The env's cluster part is judged by doctor from the
+// expanded manifest stream.
 func deployShapeOf(env string, render []byte) (doctor.DeployShape, error) {
 	entities, err := parseKCLEntities(render)
 	if err != nil {
@@ -42,28 +43,28 @@ func deployShapeOf(env string, render []byte) (doctor.DeployShape, error) {
 		return doctor.DeployShape{}, nil
 	}
 	shape := doctor.DeployShape{Destinations: destinationKindsOf(entities)}
-	if destinationOf(entities) != destinationHosted {
+	if !entities.HasHosted() {
 		return shape, nil
 	}
 	shape.Hosted = true
 
-	groups, err := buildDeployGroups(env, entities, "")
+	// Only the HOSTED group is judged here: the cluster part of a mixed env
+	// is judged by doctor from the expanded manifest stream, exactly as it
+	// is applied. buildHostedGroup is the deploy path's own selection, so a
+	// hosted item with no control_plane is refused here as the deploy would.
+	hosted, err := buildHostedGroup(env, entities)
 	if err != nil {
 		shape.Refusal = err
 		return shape, nil
 	}
-	var admitted []deploytarget.HostedPreflightItem
-	for _, g := range groups {
-		items, perr := deploytarget.PreflightHosted(g)
-		if perr != nil {
-			shape.Refusal = perr
-			return shape, nil
-		}
-		admitted = append(admitted, items...)
+	items, perr := deploytarget.PreflightHosted(*hosted)
+	if perr != nil {
+		shape.Refusal = perr
+		return shape, nil
 	}
-	shape.Workloads = len(admitted)
+	shape.Workloads = len(items)
 
-	objects, err := platformObjectsOf(admitted)
+	objects, err := platformObjectsOf(items)
 	if err != nil {
 		// Admitted by the plan and still unrenderable is exactly the
 		// state the platform would discover on its own, one workload at a
@@ -88,41 +89,12 @@ func rendersDeployContract(render []byte) bool {
 	return ok && len(out) > 0 && string(out) != "null"
 }
 
-// destinationKindsOf is every destination kind the env deploys to — the
-// per-kind half of destinationOf, which collapses several into "mixed".
-// doctor needs the set: "does anything here go to a cluster" is the question
-// an empty manifest stream has to answer.
+// destinationKindsOf is every destination kind the env deploys to, sorted —
+// the per-kind set destinationOf collapses into "mixed". doctor needs the
+// set: "does anything here go to a cluster" is the question an empty
+// manifest stream has to answer.
 func destinationKindsOf(e *KCLEntities) []string {
-	if d := destinationOf(e); d != destinationMixed {
-		return []string{d}
-	}
-	kinds := map[string]bool{}
-	for _, s := range e.Services {
-		switch s.Deploy.Type {
-		case "cluster", "simple-backend":
-			kinds[destinationCluster] = true
-		case "compose":
-			kinds[destinationCompose] = true
-		case "host", "host-infra":
-			kinds[destinationHost] = true
-		case "external":
-			kinds[destinationExternal] = true
-		}
-	}
-	if len(e.Operators) > 0 || len(e.CronJobs) > 0 || len(e.Databases) > 0 {
-		kinds[destinationCluster] = true
-	}
-	for _, f := range e.Frontends {
-		if f.Deploy == nil {
-			continue
-		}
-		switch f.Deploy.Type {
-		case "firebase", "static-site":
-			kinds[destinationStatic] = true
-		case "cluster":
-			kinds[destinationCluster] = true
-		}
-	}
+	kinds := destinationKindSet(e)
 	out := make([]string, 0, len(kinds))
 	for k := range kinds {
 		out = append(out, k)
@@ -131,27 +103,26 @@ func destinationKindsOf(e *KCLEntities) []string {
 	return out
 }
 
-// platformNamespace stands in for the namespace the control plane allocates.
-// It only has to be well-formed: the objects it lands on are read, never
-// applied.
-const platformNamespace = "hosted-platform"
-
-// platformObjectsOf renders the admitted tier workloads into the Kubernetes
-// objects the platform runs for them, as one JSON list.
+// platformObjectsOf renders the admitted hosted items into the Kubernetes
+// objects the platform runs for them, as one JSON list: the Workloads as ONE
+// set through pkg/deploy.RenderWorkloads under ProfileRestricted (the call
+// the control plane's Workload operator makes), and each ManagedDatabase
+// through pkg/deploy.Render.
 //
-// A backend's workloadURL env vars are resolved to a placeholder first,
-// exactly as the operator resolves them before it calls Render (which refuses
-// a spec that still carries a reference). PreflightHosted already proved
+// workloadURL env vars are resolved to a placeholder first, exactly as the
+// operator resolves them before it renders. PreflightHosted already proved
 // every reference resolvable; the value the platform allocates is not
 // knowable here and nothing downstream reads it.
 func platformObjectsOf(items []deploytarget.HostedPreflightItem) ([]byte, error) {
-	var objs []any
-	var errs []string
+	var (
+		objs []any
+		errs []string
+		set  []v1alpha1.Workload
+	)
 	for _, it := range items {
-		var obj runtime.Object
 		switch {
-		case it.Backend != nil:
-			spec := *it.Backend
+		case it.Workload != nil:
+			spec := *it.Workload
 			env, err := deploy.ResolveEnvWorkloadURLs(spec.Env, func(name string) (string, error) {
 				return "https://" + name + ".hosted.invalid", nil
 			})
@@ -160,22 +131,29 @@ func platformObjectsOf(items []deploytarget.HostedPreflightItem) ([]byte, error)
 				continue
 			}
 			spec.Env = env
-			b := &v1alpha1.SimpleBackend{Spec: spec}
-			b.Name = it.Name
-			obj = b
+			w := v1alpha1.Workload{Spec: spec}
+			w.Name = it.Name
+			set = append(set, w)
 		case it.Database != nil:
 			db := &v1alpha1.ManagedDatabase{Spec: *it.Database}
 			db.Name = it.Name
-			obj = db
+			rendered, err := deploy.Render(db, deploy.Context{Namespace: deploytarget.HostedPreflightNamespace})
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", it.Name, err))
+				continue
+			}
+			for _, r := range rendered {
+				objs = append(objs, r.Object)
+			}
 		default:
 			// A StaticSite renders no Kubernetes objects: its executor is
 			// the release planner, not an apply.
-			continue
 		}
-		rendered, err := deploy.Render(obj, deploy.Context{Namespace: platformNamespace})
+	}
+	if len(set) > 0 {
+		rendered, err := deploy.RenderWorkloads(set, v1alpha1.ProfileRestricted, deploy.Context{Namespace: deploytarget.HostedPreflightNamespace})
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", it.Name, err))
-			continue
+			errs = append(errs, err.Error())
 		}
 		for _, r := range rendered {
 			objs = append(objs, r.Object)

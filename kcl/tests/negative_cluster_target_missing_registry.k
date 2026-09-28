@@ -5,7 +5,10 @@ ImagePullBackOff at deploy (a manifest whose image reference is missing its
 registry).
 """
 
+# expect: ClusterTarget.registry is required
+
 import forge
+import forge.workloads as fw
 
 # A cloud target whose registry resolved to empty (the masked-default footgun
 # without a consumer-side `or <default>`).
@@ -16,6 +19,5 @@ _prod = forge.ClusterTarget {
 }
 
 output = forge.render(forge.Bundle {
-    cluster_target = _prod
-    services = []
+    workloads = [fw.Workload {name = "api", image = "api", runtime = forge.OnCluster {target = _prod}}]
 })

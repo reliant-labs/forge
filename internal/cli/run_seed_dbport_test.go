@@ -134,9 +134,9 @@ func TestReconcileDevDatabasePort_UnreadableEnvFileStandsDown(t *testing.T) {
 	composeAt(t, dir)
 	t.Setenv(devpg.PortEnv, "")
 
-	entities := &KCLEntities{Services: []ServiceEntity{{
-		Name: "postgres",
-		Deploy: DeployConfigEntity{Type: "compose", Compose: &ComposeDeploy{
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{
+		Name: "postgres", Kind: "service",
+		Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{
 			Service: "postgres", EnvFile: "does-not-exist.env",
 		}},
 	}}}
@@ -160,9 +160,9 @@ func TestReconcileDevDatabasePort_EnvFileReplacesDotEnv(t *testing.T) {
 	}
 	t.Setenv(devpg.PortEnv, "")
 
-	entities := &KCLEntities{Services: []ServiceEntity{{
-		Name: "postgres",
-		Deploy: DeployConfigEntity{Type: "compose", Compose: &ComposeDeploy{
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{
+		Name: "postgres", Kind: "service",
+		Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{
 			Service: "postgres", EnvFile: "pg.env",
 		}},
 	}}}

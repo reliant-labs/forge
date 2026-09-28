@@ -12,26 +12,89 @@ import (
 // proxy) serve no CORS and must not carry an origin. A truly hostless
 // route on a hostless gateway is still skipped (no addressable host).
 const sampleSmokeBundle = `{
-  "services": [
-    {"name": "admin-server", "deploy": {"type": "cluster", "cluster": "gke_x", "namespace": "ns"}}
-  ],
-  "frontends": [
-    {"name": "admin-web", "type": "nextjs", "path": "frontend",
-     "env_vars": [{"name": "NEXT_PUBLIC_API_URL", "value": "https://admin-preprod.reliantapi.com"}],
-     "deploy": {"type": "firebase", "project": "p", "site": "reliant-preprod", "public_dir": "out"}}
-  ],
-  "gateways": [
-    {"name": "edge", "host": ""}
-  ],
-  "http_routes": [
-    {"name": "api", "gateway": "edge", "service": "admin-server", "port": 8080, "host": "preprod.reliantapi.com", "path": "/"},
-    {"name": "admin", "gateway": "edge", "service": "admin-server", "port": 8080, "host": "admin-preprod.reliantapi.com", "path": "/admin"},
-    {"name": "workspace-proxy", "gateway": "edge", "service": "proxy", "port": 8080, "host": "*.workspaces-preprod.reliantapi.com", "path": "/"},
-    {"name": "prefix-mount", "gateway": "edge", "service": "admin-server", "port": 8080, "path": "/internal"}
-  ],
-  "grpc_routes": [
-    {"name": "grpc-api", "gateway": "edge", "service": "admin-server", "port": 8080, "host": "preprod.reliantapi.com"}
-  ]
+  "output": {
+    "frontends": [
+      {
+        "name": "admin-web",
+        "type": "nextjs",
+        "path": "frontend",
+        "env_vars": [
+          {
+            "name": "NEXT_PUBLIC_API_URL",
+            "value": "https://admin-preprod.reliantapi.com"
+          }
+        ],
+        "deploy": {
+          "type": "firebase",
+          "project": "p",
+          "site": "reliant-preprod",
+          "public_dir": "out"
+        }
+      }
+    ],
+    "gateways": [
+      {
+        "name": "edge",
+        "host": ""
+      }
+    ],
+    "http_routes": [
+      {
+        "name": "api",
+        "gateway": "edge",
+        "service": "admin-server",
+        "port": 8080,
+        "host": "preprod.reliantapi.com",
+        "path": "/"
+      },
+      {
+        "name": "admin",
+        "gateway": "edge",
+        "service": "admin-server",
+        "port": 8080,
+        "host": "admin-preprod.reliantapi.com",
+        "path": "/admin"
+      },
+      {
+        "name": "workspace-proxy",
+        "gateway": "edge",
+        "service": "proxy",
+        "port": 8080,
+        "host": "*.workspaces-preprod.reliantapi.com",
+        "path": "/"
+      },
+      {
+        "name": "prefix-mount",
+        "gateway": "edge",
+        "service": "admin-server",
+        "port": 8080,
+        "path": "/internal"
+      }
+    ],
+    "grpc_routes": [
+      {
+        "name": "grpc-api",
+        "gateway": "edge",
+        "service": "admin-server",
+        "port": 8080,
+        "host": "preprod.reliantapi.com"
+      }
+    ],
+    "workloads": [
+      {
+        "name": "admin-server",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "gke_x",
+          "namespace": "ns"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
 }`
 
 func TestExtractSmokeTargets(t *testing.T) {

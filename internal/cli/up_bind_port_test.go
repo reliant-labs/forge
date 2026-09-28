@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -95,17 +96,7 @@ func TestForceHostBindPortsIsANoOpWithoutDeclaredPorts(t *testing.T) {
 func TestBuildHostServiceCmdBindsThePublishedPort(t *testing.T) {
 	t.Setenv("PORT", "8099")
 
-	svc := ServiceEntity{
-		Name: "peptides",
-		Deploy: DeployConfigEntity{
-			Type: "host",
-			Host: &HostDeploy{
-				Runner:      "go-run",
-				ListenPorts: &[]int{64157},
-				EnvVars:     []KCLEnvVar{{Name: "PORT", Value: "64157"}},
-			},
-		},
-	}
+	svc := hostWL("peptides", withListenPorts(64157), withEnv("PORT", "64157"))
 
 	cmd, _, err := buildHostServiceCmd(t.Context(), nil, svc, nil, "dev")
 	if err != nil {
@@ -131,34 +122,40 @@ func TestBuildHostServiceCmdBindsThePublishedPort(t *testing.T) {
 // the packaged desktop app — it launched correctly and was still reported as
 // "nothing is listening — the service failed to bind its port".
 func TestHostServiceDeclaringNoPortsGetsNone(t *testing.T) {
-	empty := []int{}
-	host := &HostDeploy{ListenPorts: &empty}
+	desktop := hostWL("reliant-desktop", withListenPorts(), withPorts(8080))
 
-	if got := hostEnvPorts("reliant-desktop", host); len(got) != 0 {
-		t.Fatalf("hostEnvPorts with an explicit empty declaration = %v, want none", got)
+	if got := desktop.HostPorts(); len(got) != 0 {
+		t.Fatalf("HostPorts with an explicit empty declaration = %v, want none (spec.ports must not stand in)", got)
 	}
-	if got := hostEnvPort("reliant-desktop", host); got != "" {
-		t.Fatalf("hostEnvPort with an explicit empty declaration = %q, want \"\"", got)
+	if got := desktop.HostPort(); got != 0 {
+		t.Fatalf("HostPort with an explicit empty declaration = %d, want 0", got)
 	}
 
 	// And an ephemeral port must not be allocated for it.
-	ents := &KCLEntities{Services: []ServiceEntity{{
-		Name:   "reliant-desktop",
-		Deploy: DeployConfigEntity{Type: "host", Host: host},
-	}}}
+	ents := &KCLEntities{Workloads: []WorkloadEntity{desktop}}
 	resolveEphemeralHostPorts(ents)
-	if got := ents.Services[0].Deploy.Host.ListenPorts; got == nil || len(*got) != 0 {
+	if got := ents.Workloads[0].Runtime.Host.ListenPorts; got == nil || len(*got) != 0 {
 		t.Fatalf("resolveEphemeralHostPorts assigned %v to a service that binds nothing", got)
+	}
+	if _, set := ents.Workloads[0].HostEnv()["PORT"]; set {
+		t.Fatal("resolveEphemeralHostPorts published a PORT for a service that binds nothing")
 	}
 }
 
-// The inference path must be unchanged: a service that declares NOTHING still
-// gets a port inferred, which is what every existing host service relies on.
-func TestHostServiceDeclaringNothingStillInfers(t *testing.T) {
-	host := &HostDeploy{
-		EnvVars: []KCLEnvVar{{Name: "PORT", Value: "8099"}},
+// A host service that declares NO ports at all (neither listen_ports nor
+// spec.ports) gets an ephemeral one: forge allocates it, records it as the
+// listen port the readiness gate checks, and hands it to the process as
+// PORT. There is no env-var inference — a *_PORT value is a dependency
+// address as often as a bind port.
+func TestHostServiceDeclaringNothingGetsAnEphemeralPort(t *testing.T) {
+	ents := &KCLEntities{Workloads: []WorkloadEntity{hostWL("api", withEnv("TEMPORAL_PORT", "7233"))}}
+	resolveEphemeralHostPorts(ents)
+	w := ents.Workloads[0]
+	ports := w.HostPorts()
+	if len(ports) != 1 || ports[0] == 7233 {
+		t.Fatalf("HostPorts after allocation = %v, want one ephemeral port (not the TEMPORAL_PORT dependency address)", ports)
 	}
-	if got := hostEnvPort("api", host); got != "8099" {
-		t.Fatalf("hostEnvPort with no declaration = %q, want inference to give \"8099\"", got)
+	if got := w.HostEnv()["PORT"]; got != fmt.Sprint(ports[0]) {
+		t.Fatalf("PORT handed to the process = %q, want the allocated %d", got, ports[0])
 	}
 }

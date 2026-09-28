@@ -130,12 +130,10 @@ func extractDevInfraTargets(e *KCLEntities) []devSmokeTarget {
 	}
 	seen := map[string]struct{}{} // "kind:port"
 	var out []devSmokeTarget
-	for _, s := range e.Services {
-		if s.Deploy.Host == nil {
-			continue // only host processes dial localhost infra
-		}
+	for _, w := range e.WorkloadsOn(RuntimeHost) { // only host processes dial localhost infra
+		env := w.HostEnv()
 		for _, p := range probes {
-			val := envVarValue(s.Deploy.Host.EnvVars, p.env)
+			val := env[p.env]
 			port := localhostPortFromURL(val)
 			if port == 0 {
 				continue

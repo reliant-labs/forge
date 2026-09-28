@@ -1,0 +1,93 @@
+{
+  "output": {
+    "clusters": [],
+    "config_maps": [],
+    "databases": [],
+    "env": "dev",
+    "frontends": [],
+    "gateways": [],
+    "grpc_routes": [],
+    "helm_charts": [],
+    "http_routes": [],
+    "image_tag": "latest",
+    "infra": [],
+    "kubeconfig_secrets": [],
+    "manifests": [],
+    "network_policy": null,
+    "project": "acme",
+    "rendered_secrets": [],
+    "required_dns": [],
+    "required_secrets": [],
+    "runtime_classes": [],
+    "workloads": [
+      {
+        "build": {
+          "cmd": "./cmd/acme-cli",
+          "env": {},
+          "flags": [],
+          "goarch": null,
+          "goos": null,
+          "ldflags": [],
+          "output_name": "acme-cli",
+          "tags": [],
+          "type": "go"
+        },
+        "image": "acme-cli",
+        "kind": "tool",
+        "name": "cli",
+        "runtime": {
+          "build_variants": [
+            {
+              "goarch": "amd64",
+              "goos": "linux",
+              "ldflags": [
+                "-s",
+                "-w"
+              ],
+              "name": "acme-cli-linux",
+              "tags": []
+            }
+          ],
+          "type": "build-only"
+        },
+        "spec": {
+          "image": "",
+          "kind": "tool",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "build": {
+          "build_args": {},
+          "build_contexts": {},
+          "dockerfile": "images/base/Dockerfile",
+          "output_name": null,
+          "platform": null,
+          "registry": null,
+          "target": null,
+          "type": "docker"
+        },
+        "image": "workspace-base",
+        "kind": "tool",
+        "name": "workspace-base",
+        "runtime": {
+          "build_variants": [],
+          "type": "build-only"
+        },
+        "spec": {
+          "image": "",
+          "kind": "tool",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      }
+    ]
+  }
+}

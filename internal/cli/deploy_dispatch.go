@@ -12,22 +12,24 @@ import (
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
-// buildDeployGroups walks the rendered entities and produces the
-// deploy groups the dispatcher will dispatch in turn.
+// buildDeployGroups walks the rendered entities and produces the deploy
+// groups the dispatcher will dispatch in turn. Placement is PER WORKLOAD
+// (ADR 0002): each workload's own runtime decides its group, so one env may
+// produce a cluster group, a compose group, host-infra and a hosted group
+// side by side.
 //
-// Services that carry K8sCluster fields group natively by the
-// (Cluster, Namespace, Registry) tuple. The namespace defaults to the
-// deploy-time fallback when KCL leaves it blank — typically the
-// user-supplied --namespace or the auto-computed `<project>-<env>`
-// shape.
+//   - runtime cluster → a k8s-cluster group per (cluster, namespace,
+//     registry). The namespace defaults to fallbackNamespace when KCL leaves
+//     it blank.
+//   - runtime compose → a compose group per compose file.
+//   - runtime hosted  → the ONE hosted group, together with hosted
+//     ManagedDatabases and bucketless StaticSite frontends. It requires the
+//     Bundle's control_plane; its target (endpoint, release, digests) is
+//     filled in by the caller, which owns the credential and the ledger read.
+//   - runtime host / build-only → no group (forge env up / forge build).
+//   - Bundle.infra → the host-infra group.
 //
-// external and compose services flow through GroupServices unchanged.
-// host / build-only / no-deploy services are skipped.
-//
-// buildDeployGroupsWithOpts is the dry-run-aware variant — callers
-// that want to plumb --dry-run through to External / Compose use this
-// shape. buildDeployGroups stays as the legacy shape so older call
-// sites don't need to be touched.
+// buildDeployGroupsWithOpts is the dry-run-aware variant.
 func buildDeployGroupsWithOpts(envName string, entities *KCLEntities, fallbackNamespace string, dryRun bool) ([]deploytarget.ServiceGroup, error) {
 	groups, err := buildDeployGroups(envName, entities, fallbackNamespace)
 	if err != nil {
@@ -45,24 +47,11 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 	if entities == nil {
 		return nil, nil
 	}
-	// A Bundle that declares a control plane deploys THROUGH it — every
-	// workload, as one hosted group. This is the single selection point, and
-	// it is declarative: the same KCL chooses the same destination on every
-	// machine, with no flag that could route a hosted env to a kubeconfig.
-	//
-	// A LOCAL env (control_plane but no hosted tier) is the exception: its
-	// control plane is only its secret store, and its workloads run on this
-	// machine, so it takes the ordinary path below.
-	if entities.ControlPlane != nil && !isLocalControlPlaneEnv(entities) {
-		return buildHostedGroups(envName, entities)
-	}
-
 	// Resolve the bundle's secret provider once. For a dotenv provider,
 	// All() returns the resolved key→value map we inline into the runtime
-	// env of External/Compose services (env_file overrides on conflict —
-	// see the merge in compose.go / external.go deployOne). External/none
-	// providers return nil (those resolve secrets out-of-band), so the
-	// merge is a no-op for them. K8sCluster services deliberately do NOT
+	// env of compose workloads (env_file overrides on conflict — see
+	// compose.go deployOne). External/none providers return nil (those
+	// resolve secrets out-of-band). Cluster workloads deliberately do NOT
 	// receive this map: they get rendered Secret objects + secretKeyRef.
 	prov, err := secretProviderFromEntities(entities, projectDirForKCL())
 	if err != nil {
@@ -71,117 +60,47 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 	secretEnv := prov.All()
 
 	var raw []deploytarget.RawService
-	for _, svc := range entities.Services {
-		switch svc.Deploy.Type {
-		case "cluster":
-			c := svc.Deploy.Cluster
-			if c == nil {
-				continue
-			}
+	for _, w := range entities.Workloads {
+		switch w.Runtime.Type {
+		case RuntimeCluster:
+			c := w.Runtime.Cluster
 			namespace := c.Namespace
 			if namespace == "" {
 				namespace = fallbackNamespace
 			}
+			var ports []int
+			for _, p := range w.Spec.Ports {
+				ports = append(ports, int(p.Port))
+			}
+			replicas := int(w.Spec.Replicas)
+			if replicas == 0 {
+				replicas = int(v1alpha1.DefaultReplicas)
+			}
 			raw = append(raw, deploytarget.RawService{
-				Name: svc.Name,
+				Name: w.Name,
 				K8sCluster: &deploytarget.RawK8sCluster{
 					Cluster:   c.Cluster,
 					Namespace: namespace,
 					Registry:  c.Registry,
 					Domain:    c.Domain,
 					Spec: &deploytarget.K8sClusterSpec{
-						Replicas: c.Replicas,
+						Replicas: replicas,
 						Platform: c.Platform,
-						Ports:    c.Ports,
-					},
-				},
-			})
-		case "simple-backend":
-			sb := svc.Deploy.SimpleBackend
-			if sb == nil {
-				continue
-			}
-			namespace := sb.Namespace
-			if namespace == "" {
-				namespace = fallbackNamespace
-			}
-			// A SimpleBackend deploys through the k8s-cluster PROVIDER,
-			// not one of its own, and that is the design rather than a
-			// shortcut. Its objects come from pkg/deploy.Render (expanded
-			// from the forge.dev declaration record at manifest
-			// extraction), and they are ordinary Deployment/Service/PVC
-			// objects. So apply, prune, rollout-wait, the per-group
-			// --context discipline and multi-cluster scoping are the ones
-			// K8sClusterProvider already implements against clusters forge
-			// did not create.
-			//
-			// The tier stays VISIBLE where visibility matters: the entity
-			// contract keeps the `simple-backend` discriminator, so `forge
-			// env render` and `forge project audit` report it.
-			//
-			// Registry is deliberately empty. The image is the app owner's
-			// own, fully qualified and pinned, and the group key is
-			// (cluster, namespace, registry), so these group by their own
-			// namespace rather than joining an ordinary cluster group that
-			// happens to share one.
-			domain := ""
-			if len(sb.Spec.Domains) > 0 {
-				domain = sb.Spec.Domains[0]
-			}
-			var ports []int
-			for _, p := range sb.Spec.Ports {
-				ports = append(ports, int(p))
-			}
-			raw = append(raw, deploytarget.RawService{
-				Name: svc.Name,
-				K8sCluster: &deploytarget.RawK8sCluster{
-					Cluster:   sb.Cluster,
-					Namespace: namespace,
-					Domain:    domain,
-					Spec: &deploytarget.K8sClusterSpec{
-						// Always 1. The spec declares no replicas: storageGiB
-						// renders a ReadWriteOnce PVC that a multi-replica
-						// Deployment cannot roll over.
-						Replicas: 1,
 						Ports:    ports,
-						// The PVC this tier CREATES, named for the
-						// observer. A claim forge creates is one it must be
-						// able to read back, because an unbound PVC shows up
-						// on the Deployment only as "0/1 ready", which names
-						// the symptom and not the cause.
-						OwnedClaims: simpleBackendOwnedClaims(svc.Name, sb),
+						// The PVC this workload's render CREATES, named for
+						// the observer: an unbound claim shows up on the
+						// Deployment only as "0/1 ready", which names the
+						// symptom and not the cause.
+						OwnedClaims: workloadOwnedClaims(w),
 					},
 				},
 			})
-		case "external":
-			e := svc.Deploy.External
-			if e == nil {
-				continue
-			}
+		case RuntimeCompose:
+			cm := w.Runtime.Compose
 			raw = append(raw, deploytarget.RawService{
-				Name: svc.Name,
-				External: &deploytarget.ExternalSpec{
-					// Image is hoisted from the surrounding Service.image
-					// so the ${IMAGE} substitution token resolves without
-					// forcing the user to duplicate the string on the
-					// deploy block.
-					Image:     svc.Image,
-					DeployCmd: e.DeployCmd,
-					HealthCmd: e.HealthCmd,
-					EnvFile:   e.EnvFile,
-					Env:       e.Env,
-				},
-				Secrets: secretEnv,
-			})
-		case "compose":
-			cm := svc.Deploy.Compose
-			if cm == nil {
-				continue
-			}
-			raw = append(raw, deploytarget.RawService{
-				Name: svc.Name,
+				Name: w.Name,
 				Compose: &deploytarget.ComposeSpec{
-					ComposeFile:        cm.ComposeFile,
+					ComposeFile:        cm.File,
 					Service:            cm.Service,
 					EnvFile:            cm.EnvFile,
 					Wait:               cm.Wait,
@@ -190,53 +109,71 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 				},
 				Secrets: secretEnv,
 			})
-		case "host-infra":
-			hi := svc.Deploy.HostInfra
-			if hi == nil {
-				continue
-			}
-			// No Secrets layer: a host-infra instance's credentials are the
-			// ones the declaration states, and the app's DSN is composed from
-			// the SAME declaration. Injecting a secret store's values here
-			// would give forge a second, independent opinion about the
-			// password — which is how the two ever disagree.
-			raw = append(raw, deploytarget.RawService{
-				Name: svc.Name,
-				HostInfra: &deploytarget.HostInfraSpec{
-					Engine:          hi.Engine,
-					Port:            hi.Port,
-					Database:        hi.Database,
-					User:            hi.User,
-					Password:        hi.Password,
-					DataDir:         hi.DataDir,
-					Version:         hi.Version,
-					IDPDatabase:     hi.IDPDatabase,
-					IDPDatabasePort: hi.IDPDatabasePort,
-					IDPMasterKey:    hi.IDPMasterKey,
-					IDPStepsFile:    hi.IDPStepsFile,
-					IDPPATPath:      hi.IDPPATPath,
-				},
-			})
 		default:
-			// host, build-only, "" — skipped.
+			// host, build-only — no deploy group; hosted — below.
 		}
 	}
-	return deploytarget.GroupServices(envName, raw)
+	for _, hi := range entities.Infra {
+		// No Secrets layer: a host-infra instance's credentials are the
+		// ones the declaration states, and the app's DSN is composed from
+		// the SAME declaration. Injecting a secret store's values here
+		// would give forge a second, independent opinion about the
+		// password — which is how the two ever disagree.
+		raw = append(raw, deploytarget.RawService{
+			Name: hi.Name,
+			HostInfra: &deploytarget.HostInfraSpec{
+				Engine:          hi.Engine,
+				Port:            hi.Port,
+				Database:        hi.Database,
+				User:            hi.User,
+				Password:        hi.Password,
+				DataDir:         hi.DataDir,
+				Version:         hi.Version,
+				IDPDatabase:     hi.IDPDatabase,
+				IDPDatabasePort: hi.IDPDatabasePort,
+				IDPMasterKey:    hi.IDPMasterKey,
+				IDPStepsFile:    hi.IDPStepsFile,
+				IDPPATPath:      hi.IDPPATPath,
+			},
+		})
+	}
+	groups, err := deploytarget.GroupServices(envName, raw)
+	if err != nil {
+		return nil, err
+	}
+	hosted, err := buildHostedGroup(envName, entities)
+	if err != nil {
+		return nil, err
+	}
+	if hosted != nil {
+		groups = append(groups, *hosted)
+	}
+	return groups, nil
 }
 
-// simpleBackendOwnedClaims names the PersistentVolumeClaims forge emits
-// for one SimpleBackend service: one, the renderer's own PVC name, when the
-// service declares storage, and none otherwise.
-//
-// The name comes from pkg/deploy.PVCName, the SAME function Render names the
-// claim with, so the observer and the renderer cannot disagree about it. The
-// KCL-era version re-derived "<name>-data" by hand and needed a test to keep
-// the two copies in step.
-func simpleBackendOwnedClaims(svcName string, sb *SimpleBackendSpec) []string {
-	if sb == nil || sb.Spec.StorageGiB <= 0 {
+// workloadOwnedClaims names the PersistentVolumeClaims forge emits for one
+// cluster workload: one, the renderer's own PVC name, when the workload
+// declares storage, and none otherwise. The name comes from
+// pkg/deploy.PVCName, the SAME function RenderWorkloads names the claim with,
+// so the observer and the renderer cannot disagree about it.
+func workloadOwnedClaims(w WorkloadEntity) []string {
+	if w.Spec.StorageGiB <= 0 {
 		return nil
 	}
-	return []string{deploy.PVCName(svcName)}
+	return []string{deploy.PVCName(w.Name)}
+}
+
+// splitHostedGroups separates the hosted group (published to the control
+// plane) from the groups applied from this machine.
+func splitHostedGroups(groups []deploytarget.ServiceGroup) (local, hosted []deploytarget.ServiceGroup) {
+	for _, g := range groups {
+		if g.ProviderID == deploytarget.HostedProviderID {
+			hosted = append(hosted, g)
+			continue
+		}
+		local = append(local, g)
+	}
+	return local, hosted
 }
 
 // dispatchDeployGroups runs every group through its provider. Per-
@@ -276,10 +213,12 @@ type applyOptsContext struct {
 	EnvCfgKV          map[string]string
 	DryRun            bool
 	Prune             bool
-	HostSkip          map[string]struct{}
-	Targets           []string
-	Groups            []deploytarget.ServiceGroup
-	Entities          *KCLEntities
+	// Project names the env's owner with Env (cluster.CRDOwner), which is
+	// what makes the CRD prune provable. Empty disables it.
+	Project  string
+	Targets  []string
+	Groups   []deploytarget.ServiceGroup
+	Entities *KCLEntities
 	// Topology / TopologyEntities are the WHOLE env's groups and entities —
 	// what the multi-cluster scope is built from. A targeted deploy
 	// dispatches a subset of the env (Groups) but must route each object by
@@ -300,7 +239,7 @@ type applyOptsContext struct {
 
 // applyOptsBuilderFromContext returns an ApplyOptsBuilder closure
 // that captures the deploy-wide opts (mainK, image tag, env config,
-// dry-run, prune, host-skip, one-shot jobs, kube-context) and emits a
+// dry-run, prune, kube-context) and emits a
 // per-group cluster.ApplyOpts. For K8sCluster groups the group's
 // Namespace overrides the closure's namespace — that's the new path
 // where the per-service deploy block dictates the namespace rather than
@@ -369,7 +308,11 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			DryRun:       p.DryRun,
 			DryRunFramed: true,
 			Prune:        p.Prune,
-			HostSkip:     p.HostSkip,
+			Project:      p.Project,
+			// Always on: a CRD this env stopped rendering is otherwise
+			// served forever. Apply confines it to a full, non-dry-run
+			// apply, and to CRDs this (project, env) stamped.
+			PruneCRDs:    true,
 			Targets:      p.Targets,
 			ClusterScope: scopeFor(group),
 			HelmCharts:   charts,
@@ -398,29 +341,16 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 // cluster its owner declares, nowhere else (see
 // cluster.ScopeManifestsToGroup for the per-document ownership rule).
 //
-// OPERATORS + CRONJOBS attribute to the env's MAIN cluster. Unlike services,
-// an operator (forge.Operator) and a non-host cronjob (forge.CronJob) carry no
-// per-service `deploy` K8sCluster — they are NOT part of the service-to-cluster
-// grouping, so they never land in any group's Services. But forge's renderer
-// stamps `app.kubernetes.io/name = <name>` on their Deployment / Job / RBAC all
-// the same. Without claiming those app labels for SOME cluster's OwnApps, the
-// scoper sees them as app-labelled-but-ungrouped and KEEPS them defensively on
-// every cluster — replicating a control-plane operator (e.g. workspace-controller,
-// whose ServiceAccount / ClusterRBAC / mounted kubeconfig Secret all live in the
-// main cluster) into the daemon cluster, where it's stuck ContainerCreating and
-// fails the rollout wait. An operator/cronjob deploys to the env's main cluster
-// (RenderEnv.cluster — the env-level deploy target, == the first cluster-shaped
-// service's cluster: see mainClusterForEntities), so we ADD their app names to
-// THAT cluster's OwnApps. They then land in every OTHER cluster's OtherApps and
-// the scoper drops them there. SINGLE-CLUSTER envs never scope (below), so this
-// is invariant for dev-k8s / staging / prod.
+// Every workload carries its OWN cluster (its OnCluster runtime), so there is
+// no attribution by fallback: an operator or cron is a group member exactly
+// like a service.
 //
 // SINGLE-CLUSTER no-op: when every k8s group declares the SAME cluster
 // (the common dev-k8s / staging / prod case), there is no second cluster to
 // isolate, so the closure returns nil and the apply path is byte-identical
 // to the pre-scoping behaviour. Scoping engages ONLY when >1 distinct
 // cluster is declared across the k8s groups.
-func clusterScopeForGroups(groups []deploytarget.ServiceGroup, entities *KCLEntities) func(deploytarget.ServiceGroup) *cluster.GroupScope {
+func clusterScopeForGroups(groups []deploytarget.ServiceGroup, _ *KCLEntities) func(deploytarget.ServiceGroup) *cluster.GroupScope {
 	// Distinct clusters across the k8s groups, and the apps each owns. The
 	// app set per cluster includes image-less infra services (they ARE
 	// cluster groups in buildDeployGroups), so an infra service's owned
@@ -434,19 +364,6 @@ func clusterScopeForGroups(groups []deploytarget.ServiceGroup, entities *KCLEnti
 		clusters[g.Cluster] = struct{}{}
 		for _, s := range g.Services {
 			appsByCluster[g.Cluster] = append(appsByCluster[g.Cluster], s.Name)
-		}
-	}
-	// Attribute operators + cronjobs to the env's main cluster (see doc above).
-	// Operators/cronjobs carry no deploy cluster, so the main cluster is the
-	// env-level deploy target (the first cluster-shaped service's cluster).
-	if entities != nil {
-		if main := mainClusterForEntities(entities, groups); main != "" {
-			for _, o := range entities.Operators {
-				appsByCluster[main] = append(appsByCluster[main], o.Name)
-			}
-			for _, c := range entities.CronJobs {
-				appsByCluster[main] = append(appsByCluster[main], c.Name)
-			}
 		}
 	}
 	// Single-cluster (or no-cluster) env: nothing to isolate — no-op.
@@ -479,33 +396,20 @@ func clusterScopeForGroups(groups []deploytarget.ServiceGroup, entities *KCLEnti
 	}
 }
 
-// mainClusterForEntities resolves the env's MAIN cluster — the env-level deploy
-// target an operator / cronjob (which carry no per-service deploy block) lands
-// on. This is the Bundle's declared `cluster_target.cluster` — the same
-// resolution firstK8sClusterField / expectedClusterForEnv use for the env-wide
-// context. Only a contract with no cluster_target falls back to render order
-// (the FIRST cluster-shaped service's `forge.K8sCluster.cluster`), which is
-// not safe in general: services render as bundle.services + projected
-// workloads, so an image-less infra service on a second cluster can come
-// first. Falls back to the first k8s group's cluster when no service entity
-// carries a cluster (the manifests-only render shape), and "" when the env
-// declares no cluster at all (host-only / compose — nothing to attribute).
+// mainClusterForEntities resolves the env's MAIN cluster — the context its
+// env-wide support resources (Namespace, ConfigMaps, gateways) deploy to.
+// This is the Bundle's declared `cluster_target.cluster`; a contract with no
+// cluster_target falls back to the first Cluster-bound workload's cluster,
+// then to the first k8s group's, and "" when the env declares no cluster at
+// all (host-only / compose / hosted — nothing to attribute).
 func mainClusterForEntities(entities *KCLEntities, groups []deploytarget.ServiceGroup) string {
 	if entities != nil {
-		// The declared env target wins. See k8sClusterFieldFromEntities
-		// for why render order cannot stand in for it.
 		if c := entities.ClusterTarget.field("cluster"); c != "" {
 			return c
 		}
-		for _, s := range entities.Services {
-			if s.Deploy.Type == "cluster" && s.Deploy.Cluster != nil && s.Deploy.Cluster.Cluster != "" {
-				return s.Deploy.Cluster.Cluster
-			}
-			// A SimpleBackend declares its own cluster, so an env made
-			// only of them still has a main cluster for operators and
-			// cronjobs to attribute to.
-			if s.Deploy.Type == "simple-backend" && s.Deploy.SimpleBackend != nil && s.Deploy.SimpleBackend.Cluster != "" {
-				return s.Deploy.SimpleBackend.Cluster
+		for _, w := range entities.Workloads {
+			if w.OnRuntime(RuntimeCluster) && w.Runtime.Cluster.Cluster != "" {
+				return w.Runtime.Cluster.Cluster
 			}
 		}
 	}
@@ -584,85 +488,78 @@ func declaredEnvContext(entities *KCLEntities, groups []deploytarget.ServiceGrou
 	return ""
 }
 
-// hostedTierNames is the refusal's vocabulary: the three deploy tiers a
-// control plane runs.
-const hostedTierNames = "forge.SimpleBackend (backend), forge.ManagedDatabase (database, on Bundle.databases) or forge.StaticSite (static)"
-
-// buildHostedGroups turns a hosted env's entities into ONE "hosted" group.
+// buildHostedGroup collects everything this env publishes to the control
+// plane into ONE hosted group: every workload bound to OnHosted (of any
+// Restricted kind — a JOB is published as a Workload CR like any other, not
+// dropped), every hosted ManagedDatabase, and every bucketless StaticSite.
+// nil when nothing in the env is hosted.
 //
-// Every service must be a tier. A service with no deploy block, or a
-// build-only one, is allowed through untouched: it deploys nothing (it may
-// only BUILD the image a backend names). Anything else — a K8sCluster, an
-// External command, compose, a host process — has no meaning on a control
-// plane, and is refused with the tiers named rather than silently dropped: a
-// hosted deploy that quietly skipped half the env would report success for an
-// environment that is not running.
-//
-// The group's Hosted target (endpoint, release, digests) is filled in by the
-// caller, which owns the credential and the ledger read.
-func buildHostedGroups(envName string, entities *KCLEntities) ([]deploytarget.ServiceGroup, error) {
+// Hosting is a property of each item, not of the env: the same env's
+// cluster-bound workloads are applied from this machine in the same deploy.
+// What the env must still declare is WHERE the control plane is, so a hosted
+// item with no Bundle.control_plane is refused here with the fix, rather than
+// published to nowhere.
+func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.ServiceGroup, error) {
 	var (
 		services []deploytarget.ResolvedService
-		refused  []string
+		names    []string
 	)
-	for _, svc := range entities.Services {
-		switch svc.Deploy.Type {
-		case "simple-backend":
-			if svc.Deploy.SimpleBackend == nil {
-				continue
-			}
-			spec := svc.Deploy.SimpleBackend.Spec
-			services = append(services, deploytarget.ResolvedService{
-				Name: svc.Name,
-				Hosted: &deploytarget.HostedWorkload{
-					Tier: deploytarget.HostedTierBackend, Backend: &spec, Artifact: hostedArtifactKey(svc),
-				},
-			})
-		case "", "build-only":
-			// Deploys nothing; see the doc comment.
-		default:
-			refused = append(refused, fmt.Sprintf("%s (deploy type %q)", svc.Name, svc.Deploy.Type))
+	for _, w := range entities.Workloads {
+		if !w.OnRuntime(RuntimeHosted) {
+			continue
 		}
-	}
-	for _, o := range entities.Operators {
-		refused = append(refused, fmt.Sprintf("%s (operator)", o.Name))
-	}
-	for _, c := range entities.CronJobs {
-		refused = append(refused, fmt.Sprintf("%s (cronjob)", c.Name))
+		spec := w.Spec
+		if w.Image != "" {
+			// A workload this project builds is published by its artifact
+			// name: WHERE the bytes were pushed is a release fact, and the
+			// plan pins `<recorded registry>/<artifact>@<digest>` from it.
+			// Whatever tag the render resolved is not what a hosted
+			// deploy ships.
+			spec.Image = w.Image
+		}
+		services = append(services, deploytarget.ResolvedService{
+			Name: w.Name,
+			Hosted: &deploytarget.HostedWorkload{
+				Tier: deploytarget.HostedTierWorkload, Workload: &spec, Artifact: hostedArtifactKey(w),
+			},
+		})
+		names = append(names, w.Name)
 	}
 	for _, f := range entities.Frontends {
-		switch {
-		case f.Deploy == nil || f.Deploy.Type == "":
-		case f.Deploy.Type == "static-site" && f.Deploy.StaticSite != nil:
-			services = append(services, deploytarget.ResolvedService{
-				Name:   f.Name,
-				Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f), Artifact: f.Name},
-			})
-		default:
-			refused = append(refused, fmt.Sprintf("%s (frontend deploy type %q)", f.Name, f.Deploy.Type))
+		if !frontendIsHosted(f) {
+			continue
 		}
-	}
-	if len(refused) > 0 {
-		return nil, fmt.Errorf("env %q is hosted (its Bundle declares control_plane), so every workload must be a deploy tier: %s.\n"+
-			"  Not a tier: %s\n"+
-			"  fix: redeclare each as a tier, or move it to an env without control_plane",
-			envName, hostedTierNames, strings.Join(refused, ", "))
+		services = append(services, deploytarget.ResolvedService{
+			Name:   f.Name,
+			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f), Artifact: f.Name},
+		})
+		names = append(names, f.Name)
 	}
 	for _, db := range entities.Databases {
+		if !db.Hosted() {
+			continue
+		}
 		spec := db.Spec
 		services = append(services, deploytarget.ResolvedService{
 			Name:   db.Name,
 			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierDatabase, Database: &spec},
 		})
+		names = append(names, db.Name)
 	}
 	if len(services) == 0 {
 		return nil, nil
 	}
-	return []deploytarget.ServiceGroup{{
+	if entities.ControlPlane == nil {
+		return nil, fmt.Errorf("env %q binds %s to the control plane (forge.OnHosted / a hosted database / a bucketless StaticSite), "+
+			"but its Bundle declares no control_plane, so there is nowhere to publish them.\n"+
+			"  fix: declare `control_plane = forge.ControlPlane {...}` on the Bundle, or bind them to another runtime",
+			envName, strings.Join(names, ", "))
+	}
+	return &deploytarget.ServiceGroup{
 		Env:        envName,
 		ProviderID: deploytarget.HostedProviderID,
 		Services:   services,
-	}}, nil
+	}, nil
 }
 
 // hostedStaticSpec projects a StaticSite frontend onto the DEPLOYED half of
@@ -688,20 +585,16 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 }
 
 // hostedArtifactKey is the ONE rule for which release artifact a hosted
-// backend's digest is bound under, shared by `forge release cut` (which
+// workload's digest is bound under, shared by `forge release cut` (which
 // records it) and the hosted deploy (which pins by it):
 //
-//   - the service's own `image`, when declared — that is the key forge's
-//     build state records a pushed image under, so a backend whose image
-//     this project builds resolves to the digest the build captured;
+//   - the workload's own artifact name (`image`), when forge builds it —
+//     that is the key forge's build state records a pushed image under;
 //   - otherwise the spec image's last path segment
 //     (deploytarget.HostedArtifactName), for an image built elsewhere.
-func hostedArtifactKey(svc ServiceEntity) string {
-	if svc.Image != "" {
-		return svc.Image
+func hostedArtifactKey(w WorkloadEntity) string {
+	if w.Image != "" {
+		return w.Image
 	}
-	if svc.Deploy.SimpleBackend == nil {
-		return ""
-	}
-	return deploytarget.HostedArtifactName(svc.Deploy.SimpleBackend.Spec.Image)
+	return deploytarget.HostedArtifactName(w.Spec.Image)
 }

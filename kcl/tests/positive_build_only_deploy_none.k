@@ -1,86 +1,55 @@
 """
-Positive test — `deploy = None` is the explicit BUILD-ONLY mode.
+Positive test — the BUILD-ONLY runtime.
 
-A forge.RenderedWorkload with a `build` and an explicit `deploy = None` (or an
-omitted deploy) builds + pushes its image but renders NO Deployment /
-Service / RBAC / owned manifests. Use it for a base image other
-workloads reference at runtime.
+A workload bound to forge.BuildOnly {} builds and pushes its artifact but
+runs nowhere: no Workload record in output.manifests, while a cluster
+workload in the SAME bundle still gets one. Use it for a base image other
+workloads reference at runtime, or a CLI.
 
-The render layer projects an explicit `{type: "build-only"}` deploy
-block (mirroring forge.BuildOnly) so the Go consumer dispatches it the
-same way: in the build set, out of the deploy set. render_manifests
-emits NOTHING for it (it isn't `type == "cluster"`).
-
-Exercises:
-  * deploy = None projects deploy.type == "build-only".
-  * An omitted deploy projects the same (the two are equivalent).
-  * The service's `build` (a DockerBuild here — the image build) projects
-    through, so the build phase still builds + pushes the image.
-  * A build-only service renders NO Deployment/Service in the manifest
-    stream, even though a normal cluster service in the SAME bundle does.
+The build projects through, so `forge build` still builds and pushes it.
 """
 
 import forge
+import forge.workloads as fw
 
-# A base image: built + pushed, never orchestrated. deploy = None is
-# explicit build-only.
-_base_image = forge.RenderedWorkload {
+_target = forge.ClusterTarget {cluster = "k3d-cp", namespace = "dev", registry = "localhost:5051"}
+
+# A base image: built + pushed, never orchestrated.
+_base_image = fw.Workload {
     name = "workspace-base"
+    kind = "tool"
     image = "workspace-base"
-    deploy = None
-    build = forge.DockerBuild {
-        dockerfile = "docker/Dockerfile.workspace-base"
-    }
+    build = forge.DockerBuild {dockerfile = "docker/Dockerfile.workspace-base"}
+    runtime = forge.BuildOnly {}
 }
 
-# The omitted-deploy equivalent — same projection as deploy = None.
-_cli = forge.RenderedWorkload {
+# A CLI binary.
+_cli = fw.Workload {
     name = "reliant-cli"
-    build = forge.GoBuild { cmd = "./cmd/reliant" }
+    kind = "tool"
+    build = forge.GoBuild {cmd = "./cmd/reliant"}
+    runtime = forge.BuildOnly {}
 }
 
-# A normal cluster service in the SAME bundle, to prove the build-only
-# ones don't suppress real workload manifests.
-_target = forge.ClusterTarget {
-    cluster = "k3d-cp"
-    namespace = "dev"
-    registry = "localhost:5051"
-}
-
-_api = forge.RenderedWorkload {
+# A normal cluster workload in the SAME bundle.
+_api = fw.Workload {
     name = "api"
     image = "api"
-    deploy = _target.deploy | {ports = [8080]}
+    ports = [fw.Port {name = "http", port = 8080}]
+    runtime = forge.OnCluster {target = _target}
 }
 
-_bundle = forge.Bundle {
-    cluster_target = _target
-    services = [_base_image, _cli, _api]
-}
+output = forge.render(forge.Bundle {project = "cp", workloads = [_base_image, _cli, _api]})
+_w = {w.name: w for w in output.workloads}
 
-output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
+assert_base_runtime = _w["workspace-base"].runtime.type == "build-only"
+assert_base_build_type = _w["workspace-base"].build.type == "docker"
+assert_base_dockerfile = _w["workspace-base"].build.dockerfile == "docker/Dockerfile.workspace-base"
+assert_cli_runtime = _w["reliant-cli"].runtime.type == "build-only"
+assert_cli_build_type = _w["reliant-cli"].build.type == "go"
+assert_api_runtime = _w["api"].runtime.type == "cluster"
 
-# ── Invariants ─────────────────────────────────────────────────────
-
-# deploy = None projects an explicit build-only block.
-assert_base_deploy_type = output.services[0].deploy.type == "build-only"
-# The image build projects through so the build phase builds + pushes it.
-assert_base_build_type = output.services[0].build.type == "docker"
-assert_base_dockerfile = output.services[0].build.dockerfile == "docker/Dockerfile.workspace-base"
-
-# An omitted deploy is equivalent to deploy = None.
-assert_cli_deploy_type = output.services[1].deploy.type == "build-only"
-assert_cli_build_type = output.services[1].build.type == "go"
-
-# The normal cluster service is unaffected.
-assert_api_deploy_type = output.services[2].deploy.type == "cluster"
-
-# The build-only services render NO Deployment / Service. The normal `api`
-# service DOES — so the manifest stream carries exactly api's workload.
-assert_no_base_deploy = len([m for m in manifests \
-    if m.kind == "Deployment" and m.metadata.name == "workspace-base"]) == 0
-assert_no_cli_deploy = len([m for m in manifests \
-    if m.kind == "Deployment" and m.metadata.name == "reliant-cli"]) == 0
-assert_api_deploy_present = len([m for m in manifests \
-    if m.kind == "Deployment" and m.metadata.name == "api"]) == 1
+_record_names = [m.metadata.name for m in output.manifests if m.kind == "Workload"]
+assert_no_base_record = "workspace-base" not in _record_names
+assert_no_cli_record = "reliant-cli" not in _record_names
+assert_api_record = _record_names == ["api"]

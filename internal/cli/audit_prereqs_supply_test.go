@@ -214,32 +214,130 @@ func TestEnvAppliesManifestsToCluster(t *testing.T) {
 		{"nil", "", false},
 		{
 			"host only",
-			`{"services":[{"name":"api","deploy":{"type":"host"}}]}`,
+			`{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`,
 			false,
 		},
 		{
 			"host process plus host-infra postgres",
-			`{"services":[{"name":"api","deploy":{"type":"host"}},{"name":"postgres","deploy":{"type":"host-infra","port":5432}}]}`,
+			`{"output": {"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "host"}, "spec": {"kind": "service"}}],
+			  "infra": [{"name": "postgres", "engine": "postgres", "port": 5432}]}}`,
 			false,
 		},
 		{
 			"cluster",
-			`{"services":[{"name":"api","deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}]}`,
+			`{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`,
 			true,
 		},
 		{
 			"mixed host and cluster",
-			`{"services":[{"name":"a","deploy":{"type":"host"}},{"name":"b","deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}]}`,
+			`{
+  "output": {
+    "workloads": [
+      {
+        "name": "a",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "b",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`,
 			true,
 		},
 		{
-			"self-hosted simple backend",
-			`{"services":[{"name":"api","deploy":{"type":"simple-backend","cluster":"c","namespace":"n","spec":{"image":"i"}}}]}`,
-			true,
+			"hosted workload with no control plane (refused at deploy; forge applies nothing)",
+			`{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "hosted"
+        },
+        "spec": {
+          "kind": "service",
+          "image": "i"
+        }
+      }
+    ]
+  }
+}`,
+			false,
 		},
 		{
-			"hosted simple backend (control plane applies)",
-			`{"control_plane":{"type":"reliant","endpoint":"https://cp"},"services":[{"name":"api","deploy":{"type":"simple-backend","spec":{"image":"i"}}}]}`,
+			"hosted workload (control plane applies)",
+			`{
+  "output": {
+    "control_plane": {
+      "type": "reliant",
+      "endpoint": "https://cp"
+    },
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "hosted"
+        },
+        "spec": {
+          "kind": "service",
+          "image": "i"
+        }
+      }
+    ]
+  }
+}`,
 			false,
 		},
 	}

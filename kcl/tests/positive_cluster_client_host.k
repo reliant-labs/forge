@@ -8,7 +8,7 @@ mounts `.secret`.
 
 A HOST process reading the same CLUSTER_CONFIGS needs a path on the
 developer's disk, and there is no volume to derive one from. forge's own
-HostDeploy runs services on the host in dev, so before this a dev stack
+OnHost runs workloads on the host in dev, so before this a dev stack
 whose host service had to reach a second cluster had NO declarative way
 to say where its kubeconfig lived — the workaround being a hardcoded
 `~/.kube/config` literal in an env's main.k, which works on one machine,
@@ -29,7 +29,7 @@ import json
 _cp = forge.Cluster { name = "control-plane", config = "deploy/k3d.yaml", ingress = True }
 _daemon = forge.Cluster { name = "cp-daemon", owner = _cp, api_port = 6444 }
 
-# A HOST process (forge.HostDeploy in dev) reaching into cp-daemon. Same
+# A HOST process (an OnHost workload in dev) reaching into cp-daemon. Same
 # id, same cluster refs, same mount_path as the pod form — only the host
 # path is additional.
 _host_link = forge.ClusterClient {
@@ -97,5 +97,5 @@ assert_no_host_json = _pod_link.host_config_json == Undefined
 assert_no_host_entry = _pod_link.host_config_entry == Undefined
 
 # The volume and secret are unaffected in both forms.
-assert_vol_unchanged = _host_link.volume.mount_path == "/etc/daemon-cluster"
+assert_vol_unchanged = _host_link.volume.mountPath == "/etc/daemon-cluster"
 assert_secret_unchanged = _host_link.secret.context_name == "cp-daemon"

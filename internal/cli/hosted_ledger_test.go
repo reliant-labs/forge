@@ -464,7 +464,7 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	t.Chdir(dir)
 	t.Setenv("FORGE_E2E_CP_TOKEN", "rlat_e2e")
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fmt.Sprintf(
-		`{"control_plane":{"type":"control_plane","endpoint":%q,"token_env":"FORGE_E2E_CP_TOKEN"},"services":[{"name":"api","image":"api","deploy":{"type":"cluster","cluster":"c","namespace":"n"}}],"databases":[{"name":"orders","namespace":""}]}`, srv.URL)))
+		`{"output":{"control_plane":{"type":"control_plane","endpoint":%q,"token_env":"FORGE_E2E_CP_TOKEN"},"workloads":[{"name":"api","kind":"service","image":"api","runtime":{"type":"cluster","cluster":"c","namespace":"n"},"spec":{"kind":"service"}}],"databases":[{"name":"orders","runtime":"hosted"}]}}`, srv.URL)))
 	// The build state an earlier `forge build prod --push` left behind.
 	if err := WriteBuildState(dir, "prod", BuildState{
 		Image: "api", Tag: "v1", Pushed: true, PushedAt: nowRFC3339(), Digest: sha("1"), Registry: "ghcr.io/acme",

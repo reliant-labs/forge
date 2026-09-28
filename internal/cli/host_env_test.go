@@ -9,14 +9,13 @@ import (
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
-// TestHostEnvVarsToMap covers the projection from HostDeploy.EnvVars
-// to the flat NAME→VALUE map. Inline-value entries pass through;
-// secret_ref / config_map_ref entries (which have no host equivalent)
-// drop; nil host returns empty (not nil) so callers don't need a
-// guard.
-func TestHostEnvVarsToMap(t *testing.T) {
-	t.Run("nil host returns empty map", func(t *testing.T) {
-		got := hostEnvVarsToMap(nil)
+// TestWorkloadHostEnv covers the projection from a workload's spec.env to
+// the flat NAME→VALUE map a host launch receives. Inline values pass
+// through; secret / config-map references (resolved elsewhere, or with no
+// host equivalent) drop; a workload with no env returns empty, not nil.
+func TestWorkloadHostEnv(t *testing.T) {
+	t.Run("no env returns empty map", func(t *testing.T) {
+		got := hostWL("api").HostEnv()
 		if got == nil {
 			t.Fatal("got nil, want empty map")
 		}
@@ -26,27 +25,20 @@ func TestHostEnvVarsToMap(t *testing.T) {
 	})
 
 	t.Run("inline values only", func(t *testing.T) {
-		host := &HostDeploy{
-			EnvVars: []KCLEnvVar{
-				{Name: "LOG_LEVEL", Value: "debug"},
-				{Name: "DATABASE_URL", Value: "postgres://x"},
-			},
-		}
-		got := hostEnvVarsToMap(host)
+		got := hostWL("api",
+			withEnv("LOG_LEVEL", "debug", "DATABASE_URL", "postgres://x"),
+			withSecretRef("TOKEN", "creds", "token"),
+		).HostEnv()
 		if got["LOG_LEVEL"] != "debug" || got["DATABASE_URL"] != "postgres://x" {
 			t.Errorf("got %v", got)
+		}
+		if _, leaked := got["TOKEN"]; leaked {
+			t.Errorf("a secretRef has no host literal; got %v", got)
 		}
 	})
 
 	t.Run("empty-name and empty-value entries dropped", func(t *testing.T) {
-		host := &HostDeploy{
-			EnvVars: []KCLEnvVar{
-				{Name: "OK", Value: "yes"},
-				{Name: "", Value: "no-name"},
-				{Name: "EMPTY_VALUE", Value: ""},
-			},
-		}
-		got := hostEnvVarsToMap(host)
+		got := hostWL("api", withEnv("OK", "yes", "", "no-name", "EMPTY_VALUE", "")).HostEnv()
 		if len(got) != 1 {
 			t.Errorf("want 1 entry, got %v", got)
 		}
@@ -54,16 +46,20 @@ func TestHostEnvVarsToMap(t *testing.T) {
 			t.Errorf("OK: got %q", got["OK"])
 		}
 	})
+
+	t.Run("launch env layers over the declaration", func(t *testing.T) {
+		w := hostWL("api", withEnv("PORT", "8080", "LOG_LEVEL", "info"))
+		w.Runtime.Host.LaunchEnv = map[string]string{"PORT": "41234"}
+		got := w.HostEnv()
+		if got["PORT"] != "41234" || got["LOG_LEVEL"] != "info" {
+			t.Errorf("got %v, want PORT=41234 (launch) and LOG_LEVEL=info (declared)", got)
+		}
+	})
 }
 
 // TestHostEnvComposition_EnvVarsOnly: secrets_file empty, env_vars
 // populated → final env carries env_vars only (plus os.Environ baseline).
 func TestHostEnvComposition_EnvVarsOnly(t *testing.T) {
-	host := &HostDeploy{
-		EnvVars: []KCLEnvVar{
-			{Name: "FROM_KCL", Value: "kcl-val"},
-		},
-	}
 	secrets, err := hostlaunch.LoadSecretsFile("")
 	if err != nil {
 		t.Fatalf("LoadSecretsFile(\"\"): %v", err)
@@ -71,7 +67,7 @@ func TestHostEnvComposition_EnvVarsOnly(t *testing.T) {
 	if secrets != nil {
 		t.Errorf("empty path: want nil map, got %v", secrets)
 	}
-	envVars := hostEnvVarsToMap(host)
+	envVars := hostWL("api", withEnv("FROM_KCL", "kcl-val")).HostEnv()
 	final := hostlaunch.LayerHostEnv([]string{"PATH=/usr/bin"}, nil, secrets, envVars)
 	if !envSliceContains(final, "FROM_KCL=kcl-val") {
 		t.Errorf("FROM_KCL missing from final env: %v", final)
@@ -120,11 +116,7 @@ STRIPE_SECRET_KEY=sk_test_xxx
 		t.Fatalf("write secrets: %v", err)
 	}
 	secrets, _ := hostlaunch.LoadSecretsFile(secretsPath)
-	envVars := hostEnvVarsToMap(&HostDeploy{
-		EnvVars: []KCLEnvVar{
-			{Name: "LOG_LEVEL", Value: "debug"}, // collides with secrets_file
-		},
-	})
+	envVars := hostWL("api", withEnv("LOG_LEVEL", "debug")).HostEnv() // collides with secrets_file
 	final := hostlaunch.LayerHostEnv([]string{"PATH=/usr/bin"}, nil, secrets, envVars)
 
 	// KCL env_vars wins on LOG_LEVEL.

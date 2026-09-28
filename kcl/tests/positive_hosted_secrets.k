@@ -10,7 +10,7 @@ and — like every provider — never reaches the manifest stream.
 import forge
 
 _bundle = forge.Bundle {
-    services = []
+    workloads = []
     control_plane = forge.ControlPlane {
         endpoint = "https://api.example.com"
     }
@@ -18,7 +18,7 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle)
+manifests = forge.render(_bundle).manifests
 
 assert_hosted_type = output.secret_provider.type == "hosted"
 assert_hosted_no_path = "path" not in output.secret_provider or not output.secret_provider.path

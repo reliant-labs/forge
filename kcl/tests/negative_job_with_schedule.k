@@ -7,11 +7,13 @@ two lower to different objects. The kinds stay distinct: `kind = "cron"`
 is the scheduled one.
 """
 
+# expect: Workload.schedule is only meaningful for kind='cron'
+
 import forge.workloads as fw
 
 _job = fw.Workload {
     kind = "job"
     name = "provision"
-    command = ["/app/demo", "provision"]
+    args = ["provision"]
     schedule = "@hourly"
 }

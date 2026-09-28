@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // Bundle.rendered_secrets exists for the case neither secret provider can
@@ -20,7 +21,7 @@ import (
 // (a Deployment + a bootstrap Job in additional_manifests). Both mount three
 // Secrets. A Bundle has ONE secret_provider — dev's is FileSecrets, for its
 // services — and a RenderedSecrets provider lands a Secret only where a
-// forge SERVICE references it. So the Secrets were hand-written as raw
+// forge WORKLOAD references it. So the Secrets were hand-written as raw
 // `kind: Secret` manifests with literal values: no preflight entry, no
 // dev/e2e literal gate, no local-cluster guard, and a `from = "file"` value
 // would have had to be pasted into git to be expressed at all.
@@ -63,13 +64,15 @@ func TestPlaceDeclaredSecrets_ExplicitPlacementBesideFileSecrets(t *testing.T) {
 }
 
 // TestPlaceDeclaredSecrets_ProviderInferenceUnchanged: a RenderedSecrets
-// provider entry with no cluster keeps landing where its services reference
+// provider entry with no cluster keeps landing where its workloads reference
 // it — and ONLY there — while one that names a cluster is placed explicitly.
 func TestPlaceDeclaredSecrets_ProviderInferenceUnchanged(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "cp-api", EnvVars: []KCLEnvVar{{Name: "DB_PASSWORD", SecretRef: "cp-db", SecretKey: "password"}}},
-			{Name: "workload-api", EnvVars: []KCLEnvVar{{Name: "TOKEN", SecretRef: "workload-token"}}},
+		Workloads: []WorkloadEntity{
+			{Name: "cp-api", Runtime: RuntimeEntity{Type: RuntimeCluster}, Spec: deployv1alpha1.WorkloadSpec{Env: []deployv1alpha1.EnvVar{
+				{Name: "DB_PASSWORD", SecretRef: &deployv1alpha1.SecretKeyRef{Name: "cp-db", Key: "password"}}}}},
+			{Name: "workload-api", Runtime: RuntimeEntity{Type: RuntimeCluster}, Spec: deployv1alpha1.WorkloadSpec{Env: []deployv1alpha1.EnvVar{
+				{Name: "TOKEN", SecretRef: &deployv1alpha1.SecretKeyRef{Name: "workload-token", Key: "TOKEN"}}}}},
 		},
 		SecretProvider: &SecretProviderEntity{Type: "rendered", Secrets: []RenderedSecretEntity{
 			{Name: "cp-db", Keys: map[string]RenderedSecretKeyEntity{"password": {From: "literal", Value: "x"}}},
@@ -212,7 +215,6 @@ _target = forge.ClusterTarget {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = []
     secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
     rendered_secrets = [
         forge.RenderedSecret {
@@ -233,7 +235,6 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, option("image_tag") or "latest", forge.image_digests(), False)
 `
 
 // TestBundleRenderedSecrets_RenderThroughForge renders the declaration through

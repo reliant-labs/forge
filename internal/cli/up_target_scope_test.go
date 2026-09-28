@@ -14,10 +14,10 @@ import (
 // docker-build the whole project.
 func targetScopeEntities() *KCLEntities {
 	return &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{Runner: "go-run"}}},
-			{Name: "workspace-proxy", Deploy: DeployConfigEntity{Type: "cluster"}},
-			{Name: "daemon-gateway", Deploy: DeployConfigEntity{Type: "cluster"}},
+		Workloads: []WorkloadEntity{
+			hostWL("admin-server"),
+			clusterWL("workspace-proxy", "k3d-x", "ns"),
+			clusterWL("daemon-gateway", "k3d-x", "ns"),
 		},
 		Frontends: []FrontendEntity{
 			{Name: "reliant-web", Port: 3000},
@@ -90,13 +90,13 @@ func TestUpTargetScopesTheBuildSet(t *testing.T) {
 
 	// Sanity: unfiltered, this env has cluster services, so a full run
 	// legitimately builds and pushes an image.
-	if !kclHasClusterService(e) {
+	if !envNeedsProjectImage(e) {
 		t.Fatal("fixture is wrong: the unfiltered env must declare a cluster service")
 	}
 
 	scoped := filterEntitiesByTarget(e, []string{"reliant-web"})
 
-	if kclHasClusterService(scoped) || kclHasClusterFrontend(scoped) {
+	if envNeedsProjectImage(scoped) {
 		t.Error("targeting a frontend left an image-shipping entity in the build set — the docker build+push still runs")
 	}
 	if len(scoped.Frontends) != 1 || scoped.Frontends[0].Name != "reliant-web" {
@@ -106,11 +106,11 @@ func TestUpTargetScopesTheBuildSet(t *testing.T) {
 	// Targeting a cluster service keeps its build: scoping must narrow, not
 	// disable, or `--target workspace-proxy` would deploy a stale image.
 	clusterScoped := filterEntitiesByTarget(e, []string{"workspace-proxy"})
-	if !kclHasClusterService(clusterScoped) {
+	if !envNeedsProjectImage(clusterScoped) {
 		t.Error("targeting a cluster service dropped it from the build set")
 	}
-	if len(clusterScoped.Services) != 1 {
-		t.Errorf("expected exactly the targeted service, got %+v", clusterScoped.Services)
+	if len(clusterScoped.Workloads) != 1 {
+		t.Errorf("expected exactly the targeted workload, got %+v", clusterScoped.Workloads)
 	}
 }
 
@@ -119,21 +119,20 @@ func TestUpTargetScopesTheBuildSet(t *testing.T) {
 // cross-cluster kubeconfig minting happen before render/apply, and calling the
 // deploy pipeline with a host-only target reaches its empty-manifest fallback.
 func TestTargetPhaseRequirements(t *testing.T) {
-	clusterFrontend := FrontendDeployEntity{Type: "cluster"}
+	controller := clusterWL("controller", "dev", "ns")
+	controller.Kind = "operator"
 	e := &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{Runner: "go-run"}}},
-			{Name: "cli", Deploy: DeployConfigEntity{Type: "build-only", BuildOnly: &BuildOnlyDeploy{}}},
-			{Name: "compose-dep", Deploy: DeployConfigEntity{Type: "compose", Compose: &ComposeDeploy{}}},
-			{Name: "remote", Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{}}},
-			{Name: "cluster-api", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{Cluster: "dev"}}},
+		Workloads: []WorkloadEntity{
+			hostWL("api"),
+			{Name: "cli", Kind: "tool", Runtime: RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &BuildOnlyDeploy{}}},
+			composeWL("compose-dep", "docker-compose.yml"),
+			clusterWL("cluster-api", "dev", "ns"),
+			controller,
+			hostedWL("hosted-api"),
 		},
-		Operators:  []OperatorEntity{{Name: "controller"}},
+		Infra:      []HostInfraEntity{{Name: "postgres", Engine: "postgres"}},
 		HelmCharts: []HelmChartEntity{{Name: "gateway"}},
-		Frontends: []FrontendEntity{
-			{Name: "web"},
-			{Name: "cluster-web", Deploy: &clusterFrontend},
-		},
+		Frontends:  []FrontendEntity{{Name: "web"}},
 	}
 
 	tests := []struct {
@@ -145,11 +144,13 @@ func TestTargetPhaseRequirements(t *testing.T) {
 		{name: "host and dev frontend", targets: []string{"api", "web"}, want: upPhaseRequirements{}},
 		{name: "build only", targets: []string{"cli"}, want: upPhaseRequirements{}},
 		{name: "compose without cluster", targets: []string{"compose-dep"}, want: upPhaseRequirements{deploy: true}},
-		{name: "external without cluster", targets: []string{"remote"}, want: upPhaseRequirements{deploy: true}},
+		{name: "host infra without cluster", targets: []string{"postgres"}, want: upPhaseRequirements{deploy: true}},
+		// A hosted workload is published by `forge env deploy`, never by
+		// the dev loop.
+		{name: "hosted workload", targets: []string{"hosted-api"}, want: upPhaseRequirements{}},
 		{name: "cluster service", targets: []string{"cluster-api"}, want: upPhaseRequirements{deploy: true, cluster: true}},
 		{name: "operator", targets: []string{"controller"}, want: upPhaseRequirements{deploy: true, cluster: true}},
 		{name: "platform chart", targets: []string{"gateway"}, want: upPhaseRequirements{deploy: true, cluster: true}},
-		{name: "cluster frontend", targets: []string{"cluster-web"}, want: upPhaseRequirements{deploy: true, cluster: true}},
 		{name: "mixed host and cluster", targets: []string{"api", "cluster-api"}, want: upPhaseRequirements{deploy: true, cluster: true}},
 	}
 

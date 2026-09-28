@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strings"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
@@ -76,17 +78,15 @@ type objectMeta struct {
 	Labels map[string]string `json:"labels"`
 }
 
-// manifestRootKey is the top-level KCL variable the deploy contract
-// reserves for the applyable manifest list. `kcl run … -S manifests`
-// selects it and emits a `---` document stream; `forge env deploy`
-// extracts the same key. A render that does not export it has no
-// applyable output at all.
-const manifestRootKey = "manifests"
+// manifestRootKey names the applyable stream inside the deploy contract:
+// `output.manifests`. forge expands it (cluster.ExtractManifests: every
+// forge.dev Workload record rendered through pkg/deploy.RenderWorkloads)
+// before applying it, and doctor judges exactly that expanded stream.
+const manifestRootKey = "output.manifests"
 
-// outputRootKey is the sibling root carrying forge's JSON deploy
-// contract — the same document `forge build` / `forge env deploy`
-// consume. It is where a HOST-deployed service exists, since a host
-// service has no manifest.
+// outputRootKey is the ONE top-level key a render exports: forge's JSON
+// deploy contract (`output = forge.render(bundle)`), the same document
+// `forge build` / `forge env deploy` consume.
 const outputRootKey = "output"
 
 // parseRenderedFrontends reads the frontend declarations out of the
@@ -106,60 +106,74 @@ func parseRenderedFrontends(raw json.RawMessage) []renderedFrontend {
 	return contract.Frontends
 }
 
-// parseHostServices reads the host-deployed services out of the `output`
-// contract. Anything unparseable answers nil: this is a best-effort
-// enrichment of a check that must keep working on a render that predates
-// the contract, or whose shape has moved on.
+// parseHostServices reads the HOST-bound workloads out of the `output`
+// contract (`workloads[runtime.type == "host"]`). Anything unparseable
+// answers nil: this is a best-effort enrichment of a check that must keep
+// working on a render whose shape has moved on.
 func parseHostServices(raw json.RawMessage) []renderedService {
 	if len(raw) == 0 {
 		return nil
 	}
 	var contract struct {
-		Services []renderedService `json:"services"`
+		Workloads []renderedWorkload `json:"workloads"`
 	}
 	if err := json.Unmarshal(raw, &contract); err != nil {
 		return nil
 	}
 	var hosts []renderedService
-	for _, s := range contract.Services {
-		if s.Deploy.Type == "host" {
-			hosts = append(hosts, s)
+	for _, w := range contract.Workloads {
+		if w.Runtime.Type != "host" {
+			continue
 		}
+		svc := renderedService{Name: w.Name, Command: append(append([]string{}, w.Spec.Command...), w.Spec.Args...)}
+		svc.Deploy.Type = "host"
+		for _, e := range w.Spec.Env {
+			if e.Value != nil {
+				svc.EnvVars = append(svc.EnvVars, renderedEnv{Name: e.Name, Value: *e.Value})
+			}
+		}
+		hosts = append(hosts, svc)
 	}
 	return hosts
 }
 
+// renderedWorkload is the slice of one `output.workloads[]` entry doctor
+// reads: its name, its runtime placement, and the spec fields a host
+// workload's checks reason about.
+type renderedWorkload struct {
+	Name    string `json:"name"`
+	Runtime struct {
+		Type    string `json:"type"`
+		Cluster string `json:"cluster"`
+	} `json:"runtime"`
+	Spec struct {
+		Command []string `json:"command"`
+		Args    []string `json:"args"`
+		Env     []struct {
+			Name  string  `json:"name"`
+			Value *string `json:"value"`
+		} `json:"env"`
+	} `json:"spec"`
+}
+
 // parseClusterAttribution reads the per-workload cluster coordinates out of
-// the `output` contract: which kubectl context each app-labelled workload
-// declares, plus the full set of contexts the env touches.
+// the `output` contract: which kubectl context each Cluster-bound workload
+// declares (its runtime.cluster), plus the full set of contexts the env
+// touches (those, and the env-wide cluster_target).
 //
-// Only `services` and `frontends` carry a `deploy` block. The render folds
-// agnostic `workloads` into `services`, but operators / jobs / cronjobs have
-// no per-entity cluster at all (kcl/render.k `_render_operator` and friends
-// project no `deploy`), so they ride the env-wide `cluster_target`. That
-// asymmetry is exactly why clustersOf falls back to the whole cluster set
-// instead of reading an absent entry as "belongs to no cluster".
-//
-// Best-effort, like parseHostServices: a render that predates these keys
+// Best-effort, like parseHostServices: a render whose shape has moved on
 // answers empty, and the caller degrades to UNDETERMINED rather than guessing.
 func parseClusterAttribution(raw json.RawMessage) (map[string]string, []string) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	type deployed struct {
-		Name   string `json:"name"`
-		Deploy struct {
-			Cluster string `json:"cluster"`
-		} `json:"deploy"`
-	}
 	var contract struct {
-		// The env-wide target: present for every env that deploys anything
-		// to a cluster, and the only cluster fact a single-cluster env has.
+		// The env-wide target: present for every env that deploys support
+		// resources to a cluster, and the only cluster fact some envs have.
 		ClusterTarget *struct {
 			Cluster string `json:"cluster"`
 		} `json:"cluster_target"`
-		Services  []deployed `json:"services"`
-		Frontends []deployed `json:"frontends"`
+		Workloads []renderedWorkload `json:"workloads"`
 	}
 	if err := json.Unmarshal(raw, &contract); err != nil {
 		return nil, nil
@@ -170,16 +184,14 @@ func parseClusterAttribution(raw json.RawMessage) (map[string]string, []string) 
 	if contract.ClusterTarget != nil && contract.ClusterTarget.Cluster != "" {
 		seen[contract.ClusterTarget.Cluster] = true
 	}
-	for _, group := range [][]deployed{contract.Services, contract.Frontends} {
-		for _, d := range group {
-			if d.Deploy.Cluster == "" {
-				continue // host / firebase / External: never lands in a namespace
-			}
-			if d.Name != "" {
-				byApp[d.Name] = d.Deploy.Cluster
-			}
-			seen[d.Deploy.Cluster] = true
+	for _, w := range contract.Workloads {
+		if w.Runtime.Type != "cluster" || w.Runtime.Cluster == "" {
+			continue // host / compose / hosted / build-only: never lands in a namespace forge applies to
 		}
+		if w.Name != "" {
+			byApp[w.Name] = w.Runtime.Cluster
+		}
+		seen[w.Runtime.Cluster] = true
 	}
 
 	clusters := make([]string, 0, len(seen))
@@ -228,15 +240,13 @@ func (r envRender) clustersOf(o k8sObject) []string {
 // envRender is one environment's render outcome.
 type envRender struct {
 	env string
-	// hasManifestRoot records whether the render exported the reserved
-	// `manifests` key (or was itself a bare list / single object, the
-	// hand-written shapes that need no selection).
+	// hasManifestRoot records whether the render carried `output.manifests`
+	// (or was itself a bare list / single object, the hand-written shapes
+	// that need no selection).
 	hasManifestRoot bool
-	// strayRoots are OTHER top-level keys that carry k8s-object-shaped
-	// data. They are a silent trap: `-S manifests` never selects them,
+	// strayRoots are top-level keys OTHER than `output` that carry
+	// k8s-object-shaped data. They are a silent trap: no deploy reads them,
 	// so those objects render, review clean, and never reach a cluster.
-	// The documented `output` sibling (the JSON contract forge build /
-	// deploy consume) is NOT k8s-shaped and never lands here.
 	strayRoots []string
 	// invalid names entries of the manifest list that `kubectl apply`
 	// would reject — a document with no apiVersion or no kind.
@@ -324,11 +334,11 @@ func (r *envRender) applyShape(s DeployShape) {
 }
 
 // subject names an object in evidence. A platform object is named for the
-// tier the author declared, since that declaration is the only thing they
-// can change.
+// hosted workload the author declared, since that declaration is the only
+// thing they can change.
 func (o k8sObject) subject(env string) string {
 	if o.platform {
-		return fmt.Sprintf("%s/%s %s (hosted tier, rendered as the control plane runs it)", env, o.Kind, o.Metadata.Name)
+		return fmt.Sprintf("%s/%s %s (hosted, rendered as the control plane runs it)", env, o.Kind, o.Metadata.Name)
 	}
 	return fmt.Sprintf("%s/%s %s", env, o.Kind, o.Metadata.Name)
 }
@@ -373,7 +383,10 @@ type renderedFrontendDeploy struct {
 	Type string `json:"type"`
 }
 
-// renderedService is the slice of the `output.services` contract these
+// renderedService is a HOST workload as the checks below read it (built by
+// parseHostServices from `output.workloads`). The Deploy block is kept so a
+// reader written against the old shape reads the same fields; it carries only
+// the type. These
 // checks reason about. Deliberately minimal: the contract is large and
 // evolving, and every field read here is one more thing that can break.
 type renderedService struct {
@@ -467,22 +480,27 @@ func renderDeployEnvs(projectDir string, shaper DeployShaper) []envRender {
 // would actually apply, plus everything about the render's SHAPE that
 // decides whether the apply works at all.
 //
-// The applyable invocation is `kcl run … -S manifests`: KCL always
-// emits a module's top-level variables as a mapping (`manifests:` +
-// the `output:` JSON contract forge build/deploy consume), and `-S`
-// selects one of them and emits it as a `---` document stream. So the
-// shape questions that matter are:
+// A render exports ONE top-level key, `output = forge.render(bundle)`, and
+// the applyable stream is `output.manifests`. forge does not apply that list
+// as-is: cluster.ExtractManifests expands every forge.dev Workload record in
+// it through pkg/deploy.RenderWorkloads (and every ManagedDatabase through
+// pkg/deploy.Render). The objects judged here are that EXPANDED stream,
+// because the probes, resources and ServiceAccounts a check reads exist only
+// after expansion. An expansion error is the render's error: the deploy
+// would refuse it the same way.
 //
-//   - is there a `manifests` root to select? Without it there is no
-//     applyable output, whatever else the render exports.
-//   - does every entry under it carry apiVersion + kind? That is
-//     literally what kubectl validates.
-//   - does any OTHER root carry k8s objects? Those are invisible: no
-//     selection reaches them, so they render, review clean, and never
-//     deploy.
+// So the shape questions are:
 //
-// A bare list at the root, or a single object, is the hand-written
-// shape that needs no selection at all — accepted as-is.
+//   - is there an `output` contract at all? Without it there is nothing a
+//     deploy consumes.
+//   - does every applied object carry apiVersion + kind? That is literally
+//     what kubectl validates.
+//   - does any OTHER top-level key carry k8s objects? Those are invisible:
+//     no deploy reads them, so they render, review clean, and never land.
+//     A top-level `manifests` is one of them.
+//
+// A bare list at the root, or a single object, is the hand-written shape
+// that needs no selection at all — accepted as-is.
 func parseRender(raw []byte) envRender {
 	var root map[string]json.RawMessage
 	if uerr := json.Unmarshal(raw, &root); uerr != nil {
@@ -515,21 +533,42 @@ func parseRender(raw []byte) envRender {
 	out.frontends = parseRenderedFrontends(root[outputRootKey])
 	out.clusterOfApp, out.clusters = parseClusterAttribution(root[outputRootKey])
 	for _, k := range keys {
-		var list []k8sObject
-		if lerr := json.Unmarshal(root[k], &list); lerr != nil {
-			continue // not a list at all — the `output` contract lands here
-		}
-		if k == manifestRootKey {
-			out.hasManifestRoot = true
-			out.objects = list
-			out.invalid = invalidObjects(k, list)
+		if k == outputRootKey {
 			continue
 		}
-		// A non-reserved root that carries k8s objects never gets applied.
+		var list []k8sObject
+		if lerr := json.Unmarshal(root[k], &list); lerr != nil {
+			continue
+		}
+		// A root outside `output` that carries k8s objects never gets applied.
 		if len(list) > 0 && (list[0].Kind != "" || list[0].APIVersion != "") {
 			out.strayRoots = append(out.strayRoots, k)
 		}
 	}
+	if _, ok := root[outputRootKey]; !ok {
+		return out
+	}
+	var contract struct {
+		Manifests json.RawMessage `json:"manifests"`
+	}
+	if err := json.Unmarshal(root[outputRootKey], &contract); err != nil || len(contract.Manifests) == 0 {
+		return out
+	}
+	out.hasManifestRoot = true
+	expanded, err := cluster.ExtractManifests([]byte(`{"output":{"manifests":` + string(contract.Manifests) + `}}`))
+	if err != nil {
+		out.err = fmt.Errorf("expand %s: %w", manifestRootKey, err)
+		return out
+	}
+	for _, doc := range cluster.SplitManifestDocs(expanded) {
+		var o k8sObject
+		if err := yaml.Unmarshal([]byte(doc), &o); err != nil {
+			out.err = fmt.Errorf("read an expanded object: %w", err)
+			return out
+		}
+		out.objects = append(out.objects, o)
+	}
+	out.invalid = invalidObjects(manifestRootKey, out.objects)
 	return out
 }
 
@@ -852,23 +891,24 @@ func examineRenderability(env *Environment, what string, examine func(all []envR
 // path, the worst possible combination. `validate-kcl` now calls this
 // check, so the two can no longer disagree.
 //
-// What "applyable" means concretely: `kcl run … -S manifests` selects
-// the `manifests` root and emits it as a `---` document stream. So the
-// render must export that root, every entry under it must carry
-// apiVersion + kind, and no OTHER root may carry k8s objects — those
-// are unreachable by any selection and silently never deploy.
+// What "applyable" means concretely: forge applies `output.manifests`,
+// EXPANDED (cluster.ExtractManifests). So the render must carry it and
+// expand without error, every expanded object must carry apiVersion +
+// kind, and no top-level key but `output` may carry k8s objects — nothing
+// reads them, so they silently never deploy.
 //
 // This is the ONE deploy check that takes examineRenderability rather
 // than examineRendered: an environment that does not render is its
 // finding, not a hole in its evidence, so it receives the failures and
 // reports them by name instead of being degraded to UNDETERMINED.
 //
-// A HOSTED env (see DeployShape) is judged by its own deploy path instead:
-// `forge env deploy` publishes its tiers to a control plane and applies
-// nothing, so its `manifests` stream is empty BY DESIGN and "applyable"
-// means the control plane would admit every workload. The deploy path's
-// refusal is the finding, verbatim. Any k8s object it does render is a
-// defect of its own, because no deploy of a hosted env will ever apply it.
+// Hosting is PER WORKLOAD. An env's hosted part (see DeployShape) is judged
+// by its own deploy path: `forge env deploy` publishes those workloads to a
+// control plane, and "applyable" means the control plane would admit every
+// one of them. The deploy path's refusal is the finding, verbatim. The env's
+// cluster part, if it has one, is judged from the expanded stream like any
+// other env's. An env with NO cluster part applies nothing, so any object it
+// does render is a defect of its own.
 //
 // "Produced no k8s objects" is a finding only for an env that deploys to a
 // cluster. An env the deploy path places entirely on this machine, on
@@ -886,43 +926,45 @@ func CheckDeployManifests(_ context.Context, env *Environment) CheckResult {
 				continue
 			}
 			if r.hosted {
+				// The env's HOSTED part: judged by the deploy path's own
+				// admission (Workload.Validate(ProfileRestricted) per
+				// workload, and the set rendered as the platform renders it).
 				hosted++
 				tiers += r.hostedWorkloads
 				if r.hostedRefusal != nil {
 					problems = append(problems, fmt.Sprintf(
-						"%s: hosted env — `forge env deploy %s` would refuse it before publishing anything:\n    %s",
+						"%s: `forge env deploy %s` would refuse its hosted workloads before publishing anything:\n    %s",
 						r.env, r.env, strings.ReplaceAll(r.hostedRefusal.Error(), "\n", "\n    ")))
 				}
+			}
+			if len(r.strayRoots) > 0 {
+				problems = append(problems, fmt.Sprintf(
+					"%s: top-level key(s) %s carry k8s objects that no deploy applies — "+
+						"a render exports only `output = forge.render(bundle)`; put them in the Bundle (additional manifests or infra)",
+					r.env, strings.Join(r.strayRoots, ", ")))
+			}
+			if r.hosted && !r.deploysToCluster() {
+				// Nothing in this env is applied to a cluster, so any object
+				// in its stream is one no deploy will ever apply.
 				if len(r.objects) > 0 {
 					problems = append(problems, fmt.Sprintf(
-						"%s: hosted env renders %d k8s object(s) into `%s`, and a hosted deploy applies none of them — "+
-							"the control plane runs its tiers; declare this as a tier or move it to an env without control_plane",
+						"%s: renders %d k8s object(s) into `%s`, and this env applies nothing to a cluster — "+
+							"its workloads are hosted; bind the owner to forge.OnCluster or drop the object",
 						r.env, len(r.objects), manifestRootKey))
-				}
-				if len(r.strayRoots) > 0 {
-					problems = append(problems, fmt.Sprintf(
-						"%s: top-level key(s) %s carry k8s objects, and a hosted deploy applies none of them",
-						r.env, strings.Join(r.strayRoots, ", ")))
 				}
 				continue
 			}
 			total += len(r.objects)
-			if !r.hasManifestRoot {
+			if !r.hasManifestRoot && r.deploysToCluster() {
 				problems = append(problems, fmt.Sprintf(
-					"%s: render exports no `%s` root — there is nothing for "+
-						"`kcl run … -S %s | kubectl apply -f -` to select, so this env cannot deploy",
-					r.env, manifestRootKey, manifestRootKey))
+					"%s: render carries no `%s` — main.k must end with `output = forge.render(bundle)`, "+
+						"so there is nothing for `forge env deploy %s` to apply",
+					r.env, manifestRootKey, r.env))
 			}
 			if len(r.invalid) > 0 {
 				problems = append(problems, fmt.Sprintf(
 					"%s: %d manifest(s) `kubectl apply` would reject:\n    %s",
 					r.env, len(r.invalid), strings.Join(r.invalid, "\n    ")))
-			}
-			if len(r.strayRoots) > 0 {
-				problems = append(problems, fmt.Sprintf(
-					"%s: top-level key(s) %s carry k8s objects that no deploy applies — "+
-						"`-S %s` cannot reach them; move them into `%s`",
-					r.env, strings.Join(r.strayRoots, ", "), manifestRootKey, manifestRootKey))
 			}
 			if len(r.objects) == 0 && r.hasManifestRoot && r.deploysToCluster() {
 				problems = append(problems, fmt.Sprintf("%s: render produced no k8s objects", r.env))
@@ -938,9 +980,9 @@ func CheckDeployManifests(_ context.Context, env *Environment) CheckResult {
 		}
 		msg := fmt.Sprintf("%d env(s), %d manifest(s) — all applyable", len(renders), total)
 		if hosted > 0 {
-			// Named separately, and never folded into the manifest count: a
-			// hosted env's tiers are not manifests anything applies.
-			msg += fmt.Sprintf("; %d hosted env(s), %d tier workload(s) the control plane would admit", hosted, tiers)
+			// Named separately, and never folded into the manifest count:
+			// hosted workloads are not manifests anything applies.
+			msg += fmt.Sprintf("; %d env(s) with hosted workloads, %d hosted item(s) the control plane would admit", hosted, tiers)
 		}
 		return CheckResult{Status: StatusPass, Message: msg}
 	})
@@ -999,9 +1041,10 @@ func CheckDeployProbes(_ context.Context, env *Environment) CheckResult {
 						msg := fmt.Sprintf("%s container %q: serves %d port(s) but declares no %s",
 							o.subject(r.env), name, len(ports), strings.Join(absent, " or "))
 						if o.platform {
-							// One HealthCheck drives both probes (pkg/deploy
-							// renderProbe), so the fix is one field, not two.
-							msg += " — set `healthCheck = tiers.HealthCheck {port = …, path = …}` on the SimpleBackend"
+							// One Probes declaration drives both probes
+							// (readiness + derived liveness), so the fix is one
+							// field, not two.
+							msg += " — set `probes = tiers.Probes {...}` on the hosted workload"
 						}
 						missing = append(missing, msg)
 					}

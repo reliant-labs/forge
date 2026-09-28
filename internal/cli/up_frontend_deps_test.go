@@ -233,7 +233,7 @@ func TestGoModuleDirsIsInertForNonGoProjects(t *testing.T) {
 	if err := os.MkdirAll(npmOnly, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	e := &KCLEntities{Services: []ServiceEntity{
+	e := &KCLEntities{Workloads: []WorkloadEntity{
 		{Name: "web", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cwd: npmOnly}}},
 	}}
 	if got := goModuleDirs(e, root); len(got) != 0 {
@@ -256,7 +256,7 @@ func TestGoModuleDirsFindsSiblingExternalBuilds(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	e := &KCLEntities{Services: []ServiceEntity{
+	e := &KCLEntities{Workloads: []WorkloadEntity{
 		{Name: "a", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cwd: sibling}}},
 		// Same directory twice must not be probed twice.
 		{Name: "b", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cwd: sibling}}},

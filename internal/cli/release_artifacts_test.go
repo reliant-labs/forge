@@ -232,9 +232,9 @@ func TestHarvestFileArtifacts_HashesDeclaredBinaries(t *testing.T) {
 	writeArtifactFixture(t, filepath.Join(dir, "bin", "reliant-daemon-prod"), "prod-binary-bytes")
 	writeArtifactFixture(t, filepath.Join(dir, "bin", "custom-name"), "dev-binary-bytes")
 
-	entities := &KCLEntities{Services: []ServiceEntity{{
-		Name: "reliant-daemon",
-		Deploy: DeployConfigEntity{Type: "build-only", BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{
+		Name: "reliant-daemon", Kind: "tool",
+		Runtime: RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{
 			{Name: "prod"},
 			{Name: "dev", OutputName: "custom-name"},
 		}}},
@@ -278,9 +278,9 @@ func sha256Hex(t *testing.T, s string) string {
 // derived from the bytes, not fabricated: the same declaration over different
 // binary contents must produce different integrity values.
 func TestHarvestFileArtifacts_IntegrityTracksContent(t *testing.T) {
-	entities := &KCLEntities{Services: []ServiceEntity{{
-		Name:   "daemon",
-		Deploy: DeployConfigEntity{Type: "build-only", BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{{Name: "prod"}}}},
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{
+		Name: "daemon", Kind: "tool",
+		Runtime: RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{{Name: "prod"}}}},
 	}}}
 
 	hashOf := func(t *testing.T, body string) string {
@@ -305,9 +305,9 @@ func TestHarvestFileArtifacts_IntegrityTracksContent(t *testing.T) {
 // the file-kind twin of the OCI path skipping a digestless image.
 func TestHarvestFileArtifacts_SkipsUnbuiltVariant(t *testing.T) {
 	dir := t.TempDir()
-	entities := &KCLEntities{Services: []ServiceEntity{{
-		Name:   "daemon",
-		Deploy: DeployConfigEntity{Type: "build-only", BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{{Name: "prod"}}}},
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{
+		Name: "daemon", Kind: "tool",
+		Runtime: RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{{Name: "prod"}}}},
 	}}}
 
 	if got := harvestFileArtifacts(dir, "bin", entities); len(got) != 0 {
@@ -322,7 +322,7 @@ func TestHarvestFileArtifacts_SkipsUnbuiltVariant(t *testing.T) {
 func TestHarvestFileArtifacts_IgnoresNonBuildOnlyServices(t *testing.T) {
 	dir := t.TempDir()
 	writeArtifactFixture(t, filepath.Join(dir, "bin", "api-server"), "binary")
-	entities := &KCLEntities{Services: []ServiceEntity{{Name: "api-server", Deploy: DeployConfigEntity{Type: "cluster"}}}}
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{Name: "api-server", Runtime: RuntimeEntity{Type: RuntimeCluster, Cluster: &ClusterRuntime{}}}}}
 
 	if got := harvestFileArtifacts(dir, "bin", entities); len(got) != 0 {
 		t.Errorf("want no artifacts for a non-build-only service, got %+v", got)

@@ -18,11 +18,35 @@ import (
 // registry. The service block carries it too, exactly as render.k projects the
 // target onto each workload's K8sCluster.
 const declaredRegistryFixture = `{
-  "cluster_target":{"cluster":"c","namespace":"n","registry":"registry.example/prod"},
-  "services":[
-    {"name":"pt","image":"pt","deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"registry.example/prod"},
-     "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}}
-  ]}`
+  "output": {
+    "cluster_target": {
+      "cluster": "c",
+      "namespace": "n",
+      "registry": "registry.example/prod"
+    },
+    "workloads": [
+      {
+        "name": "pt",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "registry.example/prod"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 
 // runBuildCommand drives the REAL cobra command — flag parsing included, which
 // is where the defect lived — and returns what it printed. --plan keeps it
@@ -121,10 +145,30 @@ func TestBuildCmd_ExplicitPushMatchingTheDeclarationDoesNotWarn(t *testing.T) {
 // no registry fails a bare --push with a runbook naming the file and the
 // field to set — never a silent local-only build.
 func TestBuildCmd_BarePushUndeclaredRegistryFails(t *testing.T) {
-	planProject(t, `{"services":[
-	  {"name":"pt","image":"pt","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-	   "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}}
-	]}`)
+	planProject(t, `{
+  "output": {
+    "workloads": [
+      {
+        "name": "pt",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`)
 
 	_, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
 	if err == nil {
@@ -143,9 +187,33 @@ func TestBuildCmd_BarePushUndeclaredRegistryFails(t *testing.T) {
 // --push refuses and asks for the image push base explicitly.
 func TestBuildCmd_BarePushHostedEnvFails(t *testing.T) {
 	planProject(t, `{
-	  "control_plane":{"type":"control_plane","endpoint":"http://127.0.0.1:1","token_env":"FORGE_CONTROL_PLANE_TOKEN"},
-	  "services":[{"name":"api","image":"pt","deploy":{"type":"simple-backend","spec":{"image":"pt"}},
-	    "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}}]}`)
+  "output": {
+    "control_plane": {
+      "type": "control_plane",
+      "endpoint": "http://127.0.0.1:1",
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN"
+    },
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "hosted"
+        },
+        "spec": {
+          "kind": "service",
+          "image": "pt"
+        }
+      }
+    ]
+  }
+}`)
 
 	_, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
 	if err == nil {
@@ -173,10 +241,9 @@ func TestBuildCmd_BarePushWithoutEnvFails(t *testing.T) {
 // only on its services, and `--target <frontend>` narrows those away — the
 // resolver reads the FULL render, so the registry survives.
 func TestResolvePushRegistry_TargetNarrowingKeepsTheDeclaredRegistry(t *testing.T) {
-	full := &KCLEntities{Services: []ServiceEntity{{
-		Name:   "api",
-		Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{Cluster: "c", Namespace: "n", Registry: "registry.example/prod"}},
-	}}}
+	full := &KCLEntities{Workloads: []WorkloadEntity{clusterWL("api", "c", "n", func(w *WorkloadEntity) {
+		w.Runtime.Cluster.Registry = "registry.example/prod"
+	})}}
 	if narrowed := filterEntitiesByTarget(full, []string{"web"}); k8sClusterFieldFromEntities(narrowed, "registry") != "" {
 		t.Fatal("fixture precondition: narrowing to a frontend should drop the only service stating the registry")
 	}

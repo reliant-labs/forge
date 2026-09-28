@@ -4,6 +4,8 @@ A bare segment would be interpreted as a path component without
 the leading slash and produce a broken effective path.
 """
 
+# expect: HTTPRoute.path must start with '/'
+
 import forge
 
 _r = forge.HTTPRoute {

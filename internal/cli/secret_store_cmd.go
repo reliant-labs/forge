@@ -669,8 +669,8 @@ func secretDeclarationsByEnvName(e *KCLEntities) map[string][]secretDeclaration 
 		return nil
 	}
 	byName := map[string][]secretDeclaration{}
-	for i := range e.Services {
-		svc := &e.Services[i]
+	for i := range e.Workloads {
+		svc := &e.Workloads[i]
 		for _, ref := range secretRefsForService(svc) {
 			if ref.EnvName == "" {
 				continue
@@ -730,19 +730,16 @@ func renderedSecretStoreKeys(e *KCLEntities) []renderedSecretStoreRef {
 // because that is the key `forge secret set` writes and the provider resolves.
 //
 // They are declarations exactly like a secret_ref, and are collected here
-// rather than through [serviceEnvVars] because they are not store-rendered
-// Secret refs: the provider materializes them into forge-managed-secrets
-// (see [SimpleBackendSpec.EnvVars]). Never optional — a hosted control plane
-// materializes the set all-or-nothing, so one without a value stalls the
-// backend's reconcile. Only a SimpleBackend carries the channel.
-func managedSecretNamesForService(s *ServiceEntity) []string {
-	if s.Deploy.SimpleBackend == nil {
-		return nil
-	}
+// rather than through [WorkloadEntity.EnvVars] because they are not
+// store-rendered Secret refs: the provider materializes them into
+// forge-managed-secrets. An OPTIONAL one (managedSecret.optional) is not
+// listed: the materializer skips it when the store has no value, so it is
+// not a value `ensure` should demand.
+func managedSecretNamesForService(s *WorkloadEntity) []string {
 	var names []string
-	for _, e := range s.Deploy.SimpleBackend.Spec.Env {
-		if e.ManagedSecret != "" {
-			names = append(names, e.ManagedSecret)
+	for _, e := range s.Spec.Env {
+		if e.ManagedSecret != nil && e.ManagedSecret.Name != "" && !e.ManagedSecret.Optional {
+			names = append(names, e.ManagedSecret.Name)
 		}
 	}
 	return names
@@ -958,8 +955,8 @@ func declaredSecretNames(e *KCLEntities) []string {
 		}
 	}
 	if e != nil {
-		for i := range e.Services {
-			for _, name := range managedSecretNamesForService(&e.Services[i]) {
+		for i := range e.Workloads {
+			for _, name := range managedSecretNamesForService(&e.Workloads[i]) {
 				seen[name] = struct{}{}
 			}
 		}

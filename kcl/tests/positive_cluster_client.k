@@ -24,6 +24,7 @@ Exercises:
 """
 
 import forge
+import forge.workloads as fw
 import json
 
 _cp = forge.Cluster { name = "control-plane", config = "deploy/k3d.yaml", ingress = True }
@@ -55,26 +56,23 @@ _target = forge.ClusterTarget {
 
 # A consuming service references link.volume + link.config_json; the
 # derived secret is emitted in the Bundle's kubeconfig_secrets.
-_consumer = forge.RenderedWorkload {
+_consumer = fw.Workload {
     name = "workspace-controller"
     image = "control-plane"
-    deploy = _target.deploy | {
-        env_vars = [
-            forge.EnvVar { name = "CLUSTER_CONFIGS", value = _daemon_link.config_json }
-        ]
-    }
+    env = {CLUSTER_CONFIGS = _daemon_link.config_json}
     volumes = [_daemon_link.volume]
+    runtime = forge.OnCluster {target = _target}
 }
 
 _bundle = forge.Bundle {
     cluster_target = _target
     clusters = [_cp, _daemon]
     kubeconfig_secrets = [_daemon_link.secret, _cp_link.secret]
-    services = [_consumer]
+    workloads = [_consumer]
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle)
+manifests = output.manifests
 
 # ── Invariants ─────────────────────────────────────────────────────
 
@@ -89,10 +87,9 @@ assert_secret_ns = _daemon_link.secret.namespace == "control-plane-e2e"
 # Volume: a read-only secret projection sourced from the SAME secret name,
 # mounted at the declared mount_path.
 assert_vol_name = _daemon_link.volume.name == "cp-daemon-kubeconfig"
-assert_vol_source = _daemon_link.volume.source == "cp-daemon-kubeconfig"
-assert_vol_mount = _daemon_link.volume.mount_path == "/etc/daemon-cluster"
-assert_vol_type = _daemon_link.volume.type == "secret"
-assert_vol_ro = _daemon_link.volume.read_only == True
+assert_vol_source = _daemon_link.volume.source.secret.name == "cp-daemon-kubeconfig"
+assert_vol_mount = _daemon_link.volume.mountPath == "/etc/daemon-cluster"
+assert_vol_ro = _daemon_link.volume.readOnly == True
 
 # config_json: the kubeconfigPath is derived from mount_path + "/" + key,
 # so it ALWAYS agrees with the volume mount above — the drift this schema
@@ -105,7 +102,7 @@ assert_cfg_context = _cfg[0].context == "cp-daemon"
 # The kubeconfigPath is mount_path + "/" + the secret key — provably
 # consistent with the volume mount and the secret key.
 assert_cfg_consistent = _cfg[0].kubeconfigPath == \
-    _daemon_link.volume.mount_path + "/" + _daemon_link.secret.key
+    _daemon_link.volume.mountPath + "/" + _daemon_link.secret.key
 
 # config_entry aggregates: two clients into one CLUSTER_CONFIGS array.
 _multi = json.encode([_daemon_link.config_entry, _cp_link.config_entry])
@@ -114,7 +111,11 @@ assert_multi_len = len(_multi_decoded) == 2
 assert_multi_ids = _multi_decoded[0].id == "cp-daemon" and _multi_decoded[1].id == "control-plane"
 
 # The consumer wires the derived volume + config_json with no hand paths.
-assert_consumer_vol = output.services[0].deploy.env_vars[0].value == _daemon_link.config_json
+_consumer_spec = [w for w in output.workloads if w.name == "workspace-controller"][0].spec
+assert_consumer_env = [e for e in _consumer_spec.env if e.name == "CLUSTER_CONFIGS"][0].value == _daemon_link.config_json
+# The derived volume reaches the workload spec in the generated Volume shape.
+assert_consumer_volume = _consumer_spec.volumes[0].name == _daemon_link.volume.name and \
+    _consumer_spec.volumes[0].mountPath == _daemon_link.volume.mountPath
 
 # Both derived secrets ride the entity output, neither is a manifest.
 assert_secrets_emitted = len(output.kubeconfig_secrets) == 2

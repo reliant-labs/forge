@@ -11,6 +11,8 @@ un-pin CI.
 Expected: `kcl run` FAILS on the Frontend check.
 """
 
+# expect: Frontend declares both `path` and `source`
+
 import forge
 
 _fe = forge.Frontend {

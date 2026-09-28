@@ -30,7 +30,7 @@ var AddToScheme = SchemeBuilder.AddToScheme
 
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
-		&SimpleBackend{}, &SimpleBackendList{},
+		&Workload{}, &WorkloadList{},
 		&StaticSite{}, &StaticSiteList{},
 		&ManagedDatabase{}, &ManagedDatabaseList{},
 	)

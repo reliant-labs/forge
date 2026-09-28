@@ -65,9 +65,14 @@ func TestTierKCLMatchesGoFieldForField(t *testing.T) {
 	kclFields := parseKCLSchemaFields(string(src))
 
 	for _, typ := range []reflect.Type{
-		reflect.TypeOf(v1alpha1.SimpleBackendSpec{}), reflect.TypeOf(v1alpha1.StaticSiteSpec{}), reflect.TypeOf(v1alpha1.ManagedDatabaseSpec{}),
+		reflect.TypeOf(v1alpha1.WorkloadSpec{}), reflect.TypeOf(v1alpha1.StaticSiteSpec{}), reflect.TypeOf(v1alpha1.ManagedDatabaseSpec{}),
 		reflect.TypeOf(v1alpha1.EnvVar{}), reflect.TypeOf(v1alpha1.SecretKeyRef{}), reflect.TypeOf(v1alpha1.DatabaseRef{}),
-		reflect.TypeOf(v1alpha1.Resources{}), reflect.TypeOf(v1alpha1.HealthCheck{}), reflect.TypeOf(v1alpha1.StaticSiteCDN{}),
+		reflect.TypeOf(v1alpha1.ConfigMapKeyRef{}), reflect.TypeOf(v1alpha1.FieldRef{}), reflect.TypeOf(v1alpha1.WorkloadURLRef{}),
+		reflect.TypeOf(v1alpha1.Resources{}), reflect.TypeOf(v1alpha1.Probes{}), reflect.TypeOf(v1alpha1.Port{}),
+		reflect.TypeOf(v1alpha1.PolicyRule{}), reflect.TypeOf(v1alpha1.StaticSiteCDN{}),
+		reflect.TypeOf(v1alpha1.Container{}), reflect.TypeOf(v1alpha1.Volume{}), reflect.TypeOf(v1alpha1.VolumeSource{}),
+		reflect.TypeOf(v1alpha1.SecretVolumeSource{}), reflect.TypeOf(v1alpha1.ConfigMapVolumeSource{}), reflect.TypeOf(v1alpha1.KeyToPath{}),
+		reflect.TypeOf(v1alpha1.EmptyDirVolumeSource{}), reflect.TypeOf(v1alpha1.PVCVolumeSource{}), reflect.TypeOf(v1alpha1.Toleration{}),
 	} {
 		name := kclSchemaName(typ.Name())
 		var goFields []string
@@ -82,7 +87,7 @@ func TestTierKCLMatchesGoFieldForField(t *testing.T) {
 			t.Errorf("schema %s: KCL fields %v, Go JSON fields %v", name, got, goFields)
 		}
 	}
-	for _, status := range []string{"SimpleBackendStatus", "WorkloadStatus", "Phase"} {
+	for _, status := range []string{"WorkloadStatus", "TierStatus", "Phase"} {
 		if _, ok := kclFields[status]; ok {
 			t.Errorf("%s was generated: status is observed, never authored, so it has no KCL schema", status)
 		}

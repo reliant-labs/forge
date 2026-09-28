@@ -333,24 +333,39 @@ module_path: github.com/example/demo
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	// Cluster KCL declares LOG_LEVEL=info; host has nothing → one
-	// missing_in_host divergence.
+	// The workload reads STRIPE_KEY from a Secret: the cluster projects it
+	// through secretKeyRef, while the host side resolves nothing for it →
+	// one missing_in_host divergence. (An inline value can no longer
+	// diverge: a workload declares ONE env for every runtime.)
 	fixture := `{
-		"services": [
-			{
-				"name": "tasks",
-				"deploy": {
-					"type": "cluster",
-					"cluster": "k3d-demo",
-					"namespace": "demo-dev",
-					"registry": "k3d-demo-registry:5000",
-					"env_vars": [
-						{"name": "LOG_LEVEL", "value": "info"}
-					]
-				}
-			}
-		]
-	}`
+  "output": {
+    "workloads": [
+      {
+        "name": "tasks",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-demo",
+          "namespace": "demo-dev",
+          "registry": "k3d-demo-registry:5000"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "LOG_LEVEL",
+              "value": "info"
+            },
+            {
+              "name": "STRIPE_KEY",
+              "secretRef": {"name": "tasks-secrets", "key": "stripe"}
+            }
+          ]
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 
 	var stdout, stderr bytes.Buffer
@@ -401,18 +416,24 @@ module_path: github.com/example/demo
 	}
 	// Tasks has no KCL env_vars on either side → trivially agrees.
 	fixture := `{
-		"services": [
-			{
-				"name": "tasks",
-				"deploy": {
-					"type": "cluster",
-					"cluster": "k3d-demo",
-					"namespace": "demo-dev",
-					"registry": "k3d-demo-registry:5000"
-				}
-			}
-		]
-	}`
+  "output": {
+    "workloads": [
+      {
+        "name": "tasks",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-demo",
+          "namespace": "demo-dev",
+          "registry": "k3d-demo-registry:5000"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 
 	var stdout, stderr bytes.Buffer
@@ -441,37 +462,16 @@ module_path: github.com/example/demo
 // the fix exercises the right field.
 func TestDoctorParity_ExtractKCLEnvVars_ServiceLevelTopLevel(t *testing.T) {
 	t.Run("inline values land in both host and cluster maps", func(t *testing.T) {
-		entities := &KCLEntities{
-			Services: []ServiceEntity{
-				{
-					Name: "tasks",
-					// Top-level env_vars — the field KCL actually
-					// renders. Deploy.Cluster.EnvVars is empty below to
-					// prove this path is what's populating the maps.
-					EnvVars: []KCLEnvVar{
-						{Name: "LOG_LEVEL", Value: "info"},
-						{Name: "DATABASE_URL", Value: "postgres://localhost/tasks"},
-						{Name: "NATS_URL", Value: "nats://localhost:4222"},
-					},
-					Deploy: DeployConfigEntity{
-						Type: "cluster",
-						Cluster: &K8sCluster{
-							// Intentionally empty — if the regression
-							// returns, hostKCL and clusterKCL would
-							// stay empty and the assertions below
-							// would fail.
-							EnvVars: []KCLEnvVar{},
-						},
-					},
-				},
-			},
-		}
+		entities := &KCLEntities{Workloads: []WorkloadEntity{
+			clusterWL("tasks", "k3d-dev", "dev", withEnv(
+				"LOG_LEVEL", "info",
+				"DATABASE_URL", "postgres://localhost/tasks",
+				"NATS_URL", "nats://localhost:4222",
+			)),
+		}}
 
-		hostKCL, clusterKCL, clusterSecret, hostSecretsPath := extractKCLEnvVars(entities, "tasks")
+		hostKCL, clusterKCL, clusterSecret := extractKCLEnvVars(entities, "tasks")
 
-		if hostSecretsPath != "" {
-			t.Errorf("hostSecretsPath: want empty, got %q", hostSecretsPath)
-		}
 		if len(clusterSecret) != 0 {
 			t.Errorf("clusterSecret: want empty, got %+v", clusterSecret)
 		}
@@ -515,29 +515,14 @@ func TestDoctorParity_ExtractKCLEnvVars_ServiceLevelTopLevel(t *testing.T) {
 	})
 
 	t.Run("top-level secret_ref lands in clusterSecret only, not hostKCL", func(t *testing.T) {
-		entities := &KCLEntities{
-			Services: []ServiceEntity{
-				{
-					Name: "tasks",
-					EnvVars: []KCLEnvVar{
-						{Name: "LOG_LEVEL", Value: "info"},
-						{
-							Name:      "STRIPE_WEBHOOK_SECRET",
-							SecretRef: "tasks-secrets",
-							SecretKey: "stripe",
-						},
-					},
-					Deploy: DeployConfigEntity{
-						Type: "cluster",
-						Cluster: &K8sCluster{
-							EnvVars: []KCLEnvVar{},
-						},
-					},
-				},
-			},
-		}
+		entities := &KCLEntities{Workloads: []WorkloadEntity{
+			clusterWL("tasks", "k3d-dev", "dev",
+				withEnv("LOG_LEVEL", "info"),
+				withSecretRef("STRIPE_WEBHOOK_SECRET", "tasks-secrets", "stripe"),
+			),
+		}}
 
-		hostKCL, clusterKCL, clusterSecret, _ := extractKCLEnvVars(entities, "tasks")
+		hostKCL, clusterKCL, clusterSecret := extractKCLEnvVars(entities, "tasks")
 
 		// Inline LOG_LEVEL still hits both inline maps.
 		if _, ok := hostKCL["LOG_LEVEL"]; !ok {

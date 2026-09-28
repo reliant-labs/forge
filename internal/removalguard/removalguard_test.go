@@ -241,10 +241,12 @@ var removals = []removal{
 			{
 				Name: "Kubernetes RBAC prose on the deploy surface",
 				Reason: "The KCL module, the cluster code, serverkit's manager wiring, the deploy command and the deploy design docs discuss Kubernetes RBAC across paragraphs, so the Kubernetes noun is often on a neighbouring line — and the manifest-render tests bind it to a local variable. These files render or apply Kubernetes manifests and nothing else. Application RBAC never lived in any of them; a re-introduction lands in handlers, middleware, frontend or skills, all of which stay guarded.\n" +
-					"`env_render*.go` and `clusterhealth*.go` join this list for the same reason, not a weaker one. `forge env render` prints the manifests an environment would apply — one of which IS a ClusterRoleBinding — and the Cluster Workloads check reads pod status from the API server, where `RBAC denying the list` is one of the ways it must answer UNDETERMINED rather than pass. Both talk to Kubernetes and nothing else.",
+					"`env_render*.go` and `clusterhealth*.go` join this list for the same reason, not a weaker one. `forge env render` prints the manifests an environment would apply — one of which IS a ClusterRoleBinding — and the Cluster Workloads check reads pod status from the API server, where `RBAC denying the list` is one of the ways it must answer UNDETERMINED rather than pass. Both talk to Kubernetes and nothing else.\n" +
+					"`pkg/deploy/` joins it because it is now THE Kubernetes renderer (ADR 0002 §4): RenderWorkloads turns a Workload into Kubernetes manifests, the Role/ClusterRole/bindings among them, and the capability profiles in pkg/deploy/v1alpha1 decide which destinations may carry that RBAC. It renders Kubernetes manifests and nothing else; application RBAC never lived there.",
 				Token: regexp.MustCompile(`(?i)\brbac\b`),
 				Paths: []string{
 					"kcl/",
+					"pkg/deploy/",
 					// The template copy of the same deploy surface. The
 					// KCL module under kcl/ and the workload template that
 					// scaffolds a project's deploy/kcl/ are the same
@@ -1368,6 +1370,7 @@ var skipDirs = map[string]bool{
 	"coverage":     true, // coverage report output
 	"tmp":          true, // scratch output
 	".forge":       true, // per-developer forge runtime state (gitignored)
+	".scratch":     true, // per-agent working notes (gitignored, never shipped)
 	".kilo":        true, // nested git worktrees (excluded via .git/info/exclude)
 }
 
@@ -1691,7 +1694,8 @@ func TestLegitimateLookalikesAreStillPresent(t *testing.T) {
 		{"+kubebuilder:rbac", "controller-gen RBAC marker on generated controllers", regexp.MustCompile(`\+kubebuilder:rbac`)},
 		{"cluster_rbac", "KCL field granting an operator cluster-scoped API access", regexp.MustCompile(`cluster_rbac`)},
 		{"ClusterRBAC", "the KCL schema behind cluster_rbac", regexp.MustCompile(`ClusterRBAC`)},
-		{"RBACSpec", "Go-side KCL render input for RBAC manifests", regexp.MustCompile(`RBACSpec`)},
+		{"WorkloadSpec.NamespacedRBAC", "the Go field (pkg/deploy/v1alpha1) granting a workload namespaced Kubernetes API access — what the Go renderer turns into a Role and RoleBinding", regexp.MustCompile(`\bNamespacedRBAC\b`)},
+		{"v1alpha1.PolicyRule", "the Go mirror of an rbac/v1 PolicyRule that NamespacedRBAC / ClusterRBAC carry", regexp.MustCompile(`\bPolicyRule\b`)},
 		{"namespaced_rbac", "KCL field granting a Service namespaced API access", regexp.MustCompile(`namespaced_rbac`)},
 		{"rbac_lib", "the KCL module that renders the RBAC manifests", regexp.MustCompile(`rbac_lib`)},
 		{"crud.Pack", "the live response-projection seam in forge/pkg/crud — not the retired pack subsystem", regexp.MustCompile(`\bPack:\s+func\(`)},

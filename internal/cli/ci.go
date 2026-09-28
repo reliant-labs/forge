@@ -154,19 +154,18 @@ func newCIValidateKCLCmd() *cobra.Command {
 		Use:   "validate-kcl",
 		Short: "Validate that every environment renders manifests kubectl will accept",
 		Long: "Renders each environment's deploy/kcl/<env>/main.k through the embedded KCL\n" +
-			"runtime and asserts the result is APPLYABLE, not merely that it evaluates.\n\n" +
-			"Evaluating is not the bar: KCL emits a module's top-level variables as a\n" +
-			"YAML mapping, so a render that evaluates perfectly still dies on\n" +
-			"`kubectl apply` with \"apiVersion not set, kind not set\" unless the CD\n" +
-			"pipeline selects the manifest list (`-S manifests`). This command asserts\n" +
-			"the properties that selection depends on: a `manifests` root exists, every\n" +
-			"document under it carries apiVersion + kind, and no other top-level key\n" +
-			"hides k8s objects no deploy would ever apply.\n\n" +
-			"A HOSTED env (its Bundle declares control_plane and deploys tiers through\n" +
-			"it) renders no manifests by design — the control plane runs it. It is\n" +
-			"judged by its own deploy path instead: every workload must be a tier the\n" +
-			"control plane would admit (the same plan `forge env deploy` runs, minus\n" +
-			"the release and the RPCs), and it must render no k8s object nothing applies.\n\n" +
+			"runtime and asserts the result is DEPLOYABLE, not merely that it evaluates.\n\n" +
+			"An env's applied stream is `output.manifests`, EXPANDED exactly as `forge env\n" +
+			"deploy` expands it: every Cluster-bound forge.dev Workload record is rendered\n" +
+			"through pkg/deploy.RenderWorkloads (Full profile), per (cluster, namespace)\n" +
+			"set. A record that does not render fails here. Every expanded object must\n" +
+			"carry apiVersion + kind, and no top-level key but `output` may hide k8s\n" +
+			"objects no deploy would ever apply.\n\n" +
+			"Hosting is PER WORKLOAD. The env's hosted part (forge.OnHosted workloads,\n" +
+			"hosted databases, bucketless static sites) is judged by its own deploy path:\n" +
+			"each workload must pass Workload.Validate(ProfileRestricted), and the set must\n" +
+			"render as the control plane renders it — the same plan `forge env deploy`\n" +
+			"runs, minus the release and the RPCs.\n\n" +
 			"Shares its implementation with `forge doctor --signal deploy`, so CI and\n" +
 			"the doctor cannot disagree about whether a project can be deployed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -188,10 +187,9 @@ func newCIValidateKCLCmd() *cobra.Command {
 			}
 			fmt.Printf("Validating %s ...\n", strings.Join(envs, ", "))
 
-			// The shaper is what lets a HOSTED env pass: it is judged by the
-			// deploy path that ships it (the control plane admits its tiers)
-			// rather than failed for the empty manifest stream it renders by
-			// design.
+			// The shaper judges an env's HOSTED part by the deploy path that
+			// ships it (the control plane admits its workloads) rather than
+			// failing it for the empty manifest stream it renders by design.
 			res := doctor.CheckDeployManifests(cmd.Context(), &doctor.Environment{ProjectDir: projectDir, DeployShaper: deployShapeOf})
 			switch res.Status {
 			case doctor.StatusFail:

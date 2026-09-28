@@ -104,15 +104,15 @@ func TestNonSensitiveOptionalIsNotASecretExemption(t *testing.T) {
 func TestOptionalSensitiveFieldProjectsSecretOptionalIntoKCL(t *testing.T) {
 	out := renderConfigEnvMapNamed(optionalFixture()[0].Fields, "AppConfig", "appConfigEnvMap")
 
-	if !strings.Contains(out, `"ADMIN_PASSWORD" = {from_secret = {name = c.admin_password.name, key = c.admin_password.key}, secret_optional = True}`) {
-		t.Errorf("optional sensitive field did not project secret_optional:\n%s", out)
+	if !strings.Contains(out, `"ADMIN_PASSWORD" = forge.SecretRef {name = c.admin_password.name, key = c.admin_password.key, store_key = "ADMIN_PASSWORD", optional = True}`) {
+		t.Errorf("optional sensitive field did not project optional:\n%s", out)
 	}
 	// The non-optional credential must stay strict — no flag, no exemption.
-	if !strings.Contains(out, `"DATABASE_URL" = {from_secret = {name = c.database_url.name, key = c.database_url.key}}`) {
+	if !strings.Contains(out, `"DATABASE_URL" = forge.SecretRef {name = c.database_url.name, key = c.database_url.key, store_key = "DATABASE_URL"}`) {
 		t.Errorf("a NON-optional credential was altered:\n%s", out)
 	}
-	if strings.Contains(out, `key = c.database_url.key}, secret_optional`) {
-		t.Error("secret_optional leaked onto a field that never declared it")
+	if strings.Contains(out, `store_key = "DATABASE_URL", optional`) {
+		t.Error("optional leaked onto a field that never declared it")
 	}
 }
 

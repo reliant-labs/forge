@@ -5,6 +5,8 @@ would slip through to the route's effective path and fail at
 kubectl apply.
 """
 
+# expect: GatewayListener.path_prefix must start with '/'
+
 import forge
 
 _gw = forge.Gateway {

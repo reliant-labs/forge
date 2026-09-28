@@ -90,7 +90,7 @@ func TestAddFrontendSourceArtifacts_CapturesPinnedFrontend(t *testing.T) {
 // frontend silently stays on whatever the previous binding held.
 func TestCheckReleaseCoversEnv_FailsOnMissingFrontend(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{{Name: "admin-server", Image: "control-plane"}},
+		Workloads: []WorkloadEntity{imageWL("admin-server", "control-plane")},
 		Frontends: []FrontendEntity{
 			fakeFrontendEntity("reliant-web", "github.com/reliant-labs/reliant", "v1.7.12", "web"),
 		},
@@ -114,9 +114,9 @@ func TestCheckReleaseCoversEnv_FailsOnMissingFrontend(t *testing.T) {
 // present, not merely one of them.
 func TestCheckReleaseCoversEnv_FailsOnMissingImage(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "admin-server", Image: "control-plane"},
-			{Name: "workspace-base", Image: "workspace-base"},
+		Workloads: []WorkloadEntity{
+			imageWL("admin-server", "control-plane"),
+			imageWL("workspace-base", "workspace-base"),
 		},
 	}
 	artifacts := map[string]release.Artifact{
@@ -139,10 +139,10 @@ func TestCheckReleaseCoversEnv_FailsOnMissingImage(t *testing.T) {
 // problems. The image is named once, with the services that need it.
 func TestCheckReleaseCoversEnv_DedupesSharedImages(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "admin-api", Image: "control-plane"},
-			{Name: "admin-server", Image: "control-plane"},
-			{Name: "workspace-proxy", Image: "control-plane"},
+		Workloads: []WorkloadEntity{
+			imageWL("admin-api", "control-plane"),
+			imageWL("admin-server", "control-plane"),
+			imageWL("workspace-proxy", "control-plane"),
 		},
 	}
 
@@ -166,7 +166,7 @@ func TestCheckReleaseCoversEnv_DedupesSharedImages(t *testing.T) {
 // just be a wall.
 func TestCheckReleaseCoversEnv_PassesWhenComplete(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{{Name: "admin-server", Image: "control-plane"}},
+		Workloads: []WorkloadEntity{imageWL("admin-server", "control-plane")},
 		Frontends: []FrontendEntity{
 			fakeFrontendEntity("reliant-web", "github.com/reliant-labs/reliant", "v1.7.12", "web"),
 		},
@@ -277,4 +277,10 @@ func releaseArtifactKeys(m map[string]release.Artifact) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// imageWL is a go-built cluster workload shipped as the given image — a
+// workload a release must carry a digest for.
+func imageWL(name, image string) WorkloadEntity {
+	return clusterWL(name, "k3d-dev", "dev", func(w *WorkloadEntity) { w.Image = image })
 }

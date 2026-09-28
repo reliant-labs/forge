@@ -2,57 +2,53 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/hostlaunch"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
-// The rendered KCL contract for a project that declares a
-// forge.OneShotJob must unmarshal into the Jobs bucket the host runner
-// reads. This is the KCL→Go seam; the literal below is the actual output
-// of `kcl run deploy/kcl/dev -S output` for a scaffolded project with a
-// job declared.
-func TestKCLEntities_ParsesJobsBucket(t *testing.T) {
-	raw := `{"services":[{"name":"item","deploy":{"type":"host"}}],
-	         "jobs":[{"name":"provision-idp","image":"jobdemo",
-	                  "command":["sh","-c","echo PROVISIONED"],
-	                  "before":["item"],"timeout_seconds":0,"env_vars":[]}]}`
-	var e KCLEntities
-	if err := json.Unmarshal([]byte(raw), &e); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(e.Jobs) != 1 {
-		t.Fatalf("jobs = %d, want 1", len(e.Jobs))
-	}
-	j := e.Jobs[0]
-	if j.Name != "provision-idp" || len(j.Command) != 3 || j.Before[0] != "item" {
-		t.Errorf("job parsed wrong: %+v", j)
-	}
-	if err := validateJobOrdering(e.Jobs, e.Services); err != nil {
-		t.Errorf("real rendered contract rejected: %v", err)
+// job is a HOST-bound job workload whose argv is spec.command (verbatim).
+func job(name string, command []string, before ...string) WorkloadEntity {
+	return WorkloadEntity{
+		Name: name, Kind: "job",
+		Runtime: RuntimeEntity{Type: RuntimeHost, Host: &HostRuntime{Runner: "go-run"}},
+		Spec:    deployv1alpha1.WorkloadSpec{Kind: deployv1alpha1.KindJob, Command: command, Before: before},
 	}
 }
 
-// An env rendered before the jobs bucket existed must still load — the
-// bucket is additive, not a new requirement.
-func TestKCLEntities_NoJobsBucketIsFine(t *testing.T) {
-	var e KCLEntities
-	if err := json.Unmarshal([]byte(`{"services":[{"name":"item"}]}`), &e); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+func svc(name string) WorkloadEntity { return hostWL(name) }
+
+// The rendered contract's host jobs are what the host runner reads: a
+// workload of kind job bound to forge.OnHost, its gating in spec.before.
+func TestHostJobs_FromTheContract(t *testing.T) {
+	e := &KCLEntities{Workloads: []WorkloadEntity{
+		svc("item"),
+		job("provision-idp", []string{"sh", "-c", "echo PROVISIONED"}, "item"),
+		func() WorkloadEntity {
+			w := job("cluster-job", []string{"true"})
+			w.Runtime = RuntimeEntity{Type: RuntimeCluster, Cluster: &ClusterRuntime{}}
+			return w
+		}(),
+	}}
+	jobs := hostJobs(e)
+	if len(jobs) != 1 || jobs[0].Name != "provision-idp" {
+		t.Fatalf("hostJobs = %v, want only the host-bound job", jobs)
 	}
-	if len(e.Jobs) != 0 {
-		t.Errorf("jobs = %d, want 0", len(e.Jobs))
+	if err := validateJobOrdering(jobs, e.Workloads); err != nil {
+		t.Errorf("valid contract rejected: %v", err)
 	}
 }
 
 func TestJobsGating(t *testing.T) {
-	jobs := []JobEntity{
-		{Name: "provision", Before: []string{"api", "sync"}},
-		{Name: "seed", Before: nil},
-		{Name: "warm", Before: []string{"api"}},
+	jobs := []WorkloadEntity{
+		job("provision", nil, "api", "sync"),
+		job("seed", nil),
+		job("warm", nil, "api"),
 	}
 	if got := jobsGating("api", jobs); len(got) != 2 || got[0] != "provision" || got[1] != "warm" {
 		t.Errorf("jobsGating(api) = %v, want [provision warm]", got)
@@ -70,8 +66,8 @@ func TestJobsGating(t *testing.T) {
 // exists to prevent: the job runs, nothing waits, and the dependent
 // fails later somewhere that names none of this.
 func TestValidateJobOrdering_DanglingBefore(t *testing.T) {
-	jobs := []JobEntity{{Name: "provision", Before: []string{"apiserver"}}}
-	services := []ServiceEntity{{Name: "api"}}
+	jobs := []WorkloadEntity{job("provision", nil, "apiserver")}
+	services := []WorkloadEntity{svc("api")}
 
 	err := validateJobOrdering(jobs, services)
 	if err == nil {
@@ -85,10 +81,7 @@ func TestValidateJobOrdering_DanglingBefore(t *testing.T) {
 }
 
 func TestValidateJobOrdering_Cycle(t *testing.T) {
-	jobs := []JobEntity{
-		{Name: "a", Before: []string{"b"}},
-		{Name: "b", Before: []string{"a"}},
-	}
+	jobs := []WorkloadEntity{job("a", nil, "b"), job("b", nil, "a")}
 	err := validateJobOrdering(jobs, nil)
 	if err == nil {
 		t.Fatal("expected an error for a job-gates-job cycle")
@@ -101,11 +94,8 @@ func TestValidateJobOrdering_Cycle(t *testing.T) {
 // A job gating a SERVICE (not another job) is the ordinary case and must
 // not be mistaken for a cycle.
 func TestValidateJobOrdering_Valid(t *testing.T) {
-	jobs := []JobEntity{
-		{Name: "provision", Before: []string{"api"}},
-		{Name: "seed", Before: []string{"api", "provision"}},
-	}
-	services := []ServiceEntity{{Name: "api"}}
+	jobs := []WorkloadEntity{job("provision", nil, "api"), job("seed", nil, "api", "provision")}
+	services := []WorkloadEntity{svc("api")}
 	if err := validateJobOrdering(jobs, services); err != nil {
 		t.Fatalf("valid ordering rejected: %v", err)
 	}
@@ -114,10 +104,7 @@ func TestValidateJobOrdering_Valid(t *testing.T) {
 // A job that gates another job must run first, regardless of the order
 // the two were declared in.
 func TestOrderJobs_JobGatesJob(t *testing.T) {
-	jobs := []JobEntity{
-		{Name: "seed", Before: []string{"api"}},
-		{Name: "provision", Before: []string{"seed"}},
-	}
+	jobs := []WorkloadEntity{job("seed", nil, "api"), job("provision", nil, "seed")}
 	got := orderJobs(jobs)
 	if got[0].Name != "provision" || got[1].Name != "seed" {
 		t.Errorf("orderJobs = [%s %s], want [provision seed]", got[0].Name, got[1].Name)
@@ -127,11 +114,7 @@ func TestOrderJobs_JobGatesJob(t *testing.T) {
 // Independent jobs keep declaration order — the common case must not be
 // reshuffled by the sort.
 func TestOrderJobs_StableForIndependentJobs(t *testing.T) {
-	jobs := []JobEntity{
-		{Name: "one", Before: []string{"api"}},
-		{Name: "two", Before: []string{"api"}},
-		{Name: "three", Before: []string{"api"}},
-	}
+	jobs := []WorkloadEntity{job("one", nil, "api"), job("two", nil, "api"), job("three", nil, "api")}
 	got := orderJobs(jobs)
 	for i, want := range []string{"one", "two", "three"} {
 		if got[i].Name != want {
@@ -143,12 +126,8 @@ func TestOrderJobs_StableForIndependentJobs(t *testing.T) {
 // The whole point of the primitive: a job that exits non-zero must STOP
 // the up, naming what it gated, rather than letting the dependents run.
 func TestRunOneHostJob_FailureIsFailClosed(t *testing.T) {
-	job := JobEntity{
-		Name:    "provision",
-		Command: []string{"sh", "-c", "echo provisioning failed >&2; exit 3"},
-		Before:  []string{"api"},
-	}
-	err := runOneHostJob(context.Background(), nil, job, nil, "")
+	j := job("provision", []string{"sh", "-c", "echo provisioning failed >&2; exit 3"}, "api")
+	err := runOneHostJob(context.Background(), nil, j, nil, "")
 	if err == nil {
 		t.Fatal("expected a failing job to return an error")
 	}
@@ -161,11 +140,8 @@ func TestRunOneHostJob_FailureIsFailClosed(t *testing.T) {
 
 func TestRunOneHostJob_SuccessRunsToCompletion(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
-	job := JobEntity{
-		Name:    "provision",
-		Command: []string{"sh", "-c", "echo done > " + marker},
-	}
-	if err := runOneHostJob(context.Background(), nil, job, nil, ""); err != nil {
+	j := job("provision", []string{"sh", "-c", "echo done > " + marker})
+	if err := runOneHostJob(context.Background(), nil, j, nil, ""); err != nil {
 		t.Fatalf("job failed: %v", err)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -173,20 +149,17 @@ func TestRunOneHostJob_SuccessRunsToCompletion(t *testing.T) {
 	}
 }
 
-// A one-shot that never exits must fail loudly instead of hanging the
-// up forever.
+// A one-shot that never exits must fail loudly instead of hanging the up
+// forever. The bound is the host default (defaultJobTimeout); a caller's
+// shorter deadline bounds it too, which is what this exercises.
 func TestRunOneHostJob_TimeoutIsReported(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns a subprocess that sleeps; covered in full mode")
 	}
-	job := JobEntity{
-		Name:           "hangs",
-		Command:        []string{"sh", "-c", "sleep 30"},
-		Before:         []string{"api"},
-		TimeoutSeconds: 1,
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 	start := time.Now()
-	err := runOneHostJob(context.Background(), nil, job, nil, "")
+	err := runOneHostJob(ctx, nil, job("hangs", []string{"sh", "-c", "sleep 30"}, "api"), nil, "")
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}
@@ -198,15 +171,12 @@ func TestRunOneHostJob_TimeoutIsReported(t *testing.T) {
 	}
 }
 
-// The job's own env_vars reach the process.
+// The job's own spec.env reaches the process.
 func TestRunOneHostJob_EnvVarsReachTheProcess(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "env")
-	job := JobEntity{
-		Name:    "provision",
-		Command: []string{"sh", "-c", "echo $IDP_URL > " + marker},
-		EnvVars: []KCLEnvVar{{Name: "IDP_URL", Value: "http://idp:8080"}},
-	}
-	if err := runOneHostJob(context.Background(), nil, job, nil, ""); err != nil {
+	j := job("provision", []string{"sh", "-c", "echo $IDP_URL > " + marker})
+	j.Spec.Env = []deployv1alpha1.EnvVar{{Name: "IDP_URL", Value: "http://idp:8080"}}
+	if err := runOneHostJob(context.Background(), nil, j, nil, ""); err != nil {
 		t.Fatalf("job failed: %v", err)
 	}
 	got, err := os.ReadFile(marker)
@@ -229,15 +199,13 @@ func TestRunHostJobs_NoJobsIsANoop(t *testing.T) {
 // Ordering across a multi-job sequence, observed by the jobs themselves.
 func TestRunHostJobs_RunsInDependencyOrder(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "order")
-	e := &KCLEntities{
-		Services: []ServiceEntity{{Name: "api"}},
-		Jobs: []JobEntity{
-			// Declared second-first on purpose: `seed` is gated by
-			// `provision`, so provision must still run first.
-			{Name: "seed", Command: []string{"sh", "-c", "echo seed >> " + log}, Before: []string{"api"}},
-			{Name: "provision", Command: []string{"sh", "-c", "echo provision >> " + log}, Before: []string{"seed"}},
-		},
-	}
+	e := &KCLEntities{Workloads: []WorkloadEntity{
+		svc("api"),
+		// Declared second-first on purpose: `seed` is gated by
+		// `provision`, so provision must still run first.
+		job("seed", []string{"sh", "-c", "echo seed >> " + log}, "api"),
+		job("provision", []string{"sh", "-c", "echo provision >> " + log}, "seed"),
+	}}
 	if err := runHostJobs(context.Background(), nil, e, nil, ""); err != nil {
 		t.Fatalf("jobs failed: %v", err)
 	}
@@ -254,13 +222,11 @@ func TestRunHostJobs_RunsInDependencyOrder(t *testing.T) {
 // A failing job stops the sequence: the jobs after it never run.
 func TestRunHostJobs_StopsAtFirstFailure(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "order")
-	e := &KCLEntities{
-		Services: []ServiceEntity{{Name: "api"}},
-		Jobs: []JobEntity{
-			{Name: "broken", Command: []string{"sh", "-c", "exit 1"}, Before: []string{"api"}},
-			{Name: "later", Command: []string{"sh", "-c", "echo later >> " + log}, Before: []string{"api"}},
-		},
-	}
+	e := &KCLEntities{Workloads: []WorkloadEntity{
+		svc("api"),
+		job("broken", []string{"sh", "-c", "exit 1"}, "api"),
+		job("later", []string{"sh", "-c", "echo later >> " + log}, "api"),
+	}}
 	if err := runHostJobs(context.Background(), nil, e, nil, ""); err == nil {
 		t.Fatal("expected the failing job to stop the sequence")
 	}
@@ -284,10 +250,8 @@ func TestRunHostJobs_StopsAtFirstFailure(t *testing.T) {
 // a migration — with a message telling the reader to fix a name that was
 // never wrong.
 func TestValidateJobOrdering_BroadcastIsNotADanglingName(t *testing.T) {
-	jobs := []JobEntity{
-		{Name: "migrate", Command: []string{"true"}, Before: []string{BeforeAll}},
-	}
-	svcs := []ServiceEntity{{Name: "api"}, {Name: "sync"}}
+	jobs := []WorkloadEntity{job("migrate", []string{"true"}, BeforeAll)}
+	svcs := []WorkloadEntity{svc("api"), svc("sync")}
 	if err := validateJobOrdering(jobs, svcs); err != nil {
 		t.Fatalf("broadcast before rejected: %v", err)
 	}
@@ -297,10 +261,7 @@ func TestValidateJobOrdering_BroadcastIsNotADanglingName(t *testing.T) {
 // service added after it was written, which is the entire reason the
 // selector exists.
 func TestJobsGating_BroadcastGatesEveryServiceAndNeverItself(t *testing.T) {
-	jobs := []JobEntity{
-		{Name: "migrate", Command: []string{"true"}, Before: []string{BeforeAll}},
-		{Name: "seed", Command: []string{"true"}},
-	}
+	jobs := []WorkloadEntity{job("migrate", []string{"true"}, BeforeAll), job("seed", []string{"true"})}
 	for _, svc := range []string{"api", "sync", "a-service-added-later"} {
 		got := jobsGating(svc, jobs)
 		if len(got) != 1 || got[0] != "migrate" {
@@ -322,11 +283,8 @@ func TestJobsGating_BroadcastGatesEveryServiceAndNeverItself(t *testing.T) {
 // neither gates the other, so the graph stays acyclic by construction
 // rather than by a cycle check catching it.
 func TestValidateJobOrdering_TwoBroadcastJobsAreNotACycle(t *testing.T) {
-	jobs := []JobEntity{
-		{Name: "migrate", Command: []string{"true"}, Before: []string{BeforeAll}},
-		{Name: "provision", Command: []string{"true"}, Before: []string{BeforeAll}},
-	}
-	if err := validateJobOrdering(jobs, []ServiceEntity{{Name: "api"}}); err != nil {
+	jobs := []WorkloadEntity{job("migrate", []string{"true"}, BeforeAll), job("provision", []string{"true"}, BeforeAll)}
+	if err := validateJobOrdering(jobs, []WorkloadEntity{svc("api")}); err != nil {
 		t.Fatalf("two broadcast jobs reported as invalid: %v", err)
 	}
 }
@@ -336,13 +294,11 @@ func TestValidateJobOrdering_TwoBroadcastJobsAreNotACycle(t *testing.T) {
 // the seed job it is supposed to precede.
 func TestRunHostJobs_BroadcastRunsBeforeOtherJobs(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "order")
-	e := &KCLEntities{
-		Services: []ServiceEntity{{Name: "api"}},
-		Jobs: []JobEntity{
-			{Name: "seed", Command: []string{"sh", "-c", "echo seed >> " + log}, Before: []string{"api"}},
-			{Name: "migrate", Command: []string{"sh", "-c", "echo migrate >> " + log}, Before: []string{BeforeAll}},
-		},
-	}
+	e := &KCLEntities{Workloads: []WorkloadEntity{
+		svc("api"),
+		job("seed", []string{"sh", "-c", "echo seed >> " + log}, "api"),
+		job("migrate", []string{"sh", "-c", "echo migrate >> " + log}, BeforeAll),
+	}}
 	if err := runHostJobs(context.Background(), nil, e, nil, ""); err != nil {
 		t.Fatalf("jobs failed: %v", err)
 	}
@@ -355,56 +311,28 @@ func TestRunHostJobs_BroadcastRunsBeforeOtherJobs(t *testing.T) {
 	}
 }
 
-// A job's argv is written for the CONTAINER (`/app/<project> db migrate
-// up`). That path does not exist on a developer's laptop, so the host
-// runner rewrites argv[0] to the go-run target — the same translation
-// the host launcher makes for a service's command. Without it, every
-// `forge run` of a project that scaffolds a migration dies with "no such
-// file or directory" naming a path the reader never wrote.
-func TestCollapseJobsToHost_RewritesInImageArgv(t *testing.T) {
-	e := &KCLEntities{Jobs: []JobEntity{
-		{Name: "migrate", Command: []string{"/app/demo", "db", "migrate", "up"}, Before: []string{BeforeAll}},
-		// Not the project binary — deliberately wired by the author, so
-		// forge must leave it exactly as written.
-		{Name: "custom", Command: []string{"/usr/local/bin/psql", "-f", "seed.sql"}},
-	}}
-	collapseJobsToHost(e, "demo")
-
-	want := []string{"go", "run", "./cmd/demo", "db", "migrate", "up"}
-	if got := e.Jobs[0].Command; !slicesEqual(got, want) {
-		t.Errorf("migrate argv = %v, want %v", got, want)
+// A host job's argv is DERIVED like any host workload's: its GoBuild plus
+// its args. The same declaration that runs `/app/<p> db migrate up` in its
+// image runs `go run ./cmd/<p> db migrate up` here — no in-image path to
+// rewrite, because none was written.
+func TestHostJobArgvIsDerivedFromBuildAndArgs(t *testing.T) {
+	w := hostWL("migrate", asJob([]string{"db", "migrate", "up"}, BeforeAll))
+	w.Build = BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/demo", OutputName: "demo"}}
+	cmd, err := hostlaunch.BuildCmd(context.Background(), w.Name, hostRunnerSpec(w))
+	if err != nil {
+		t.Fatal(err)
 	}
-	wantUntouched := []string{"/usr/local/bin/psql", "-f", "seed.sql"}
-	if got := e.Jobs[1].Command; !slicesEqual(got, wantUntouched) {
-		t.Errorf("non-project argv was rewritten: %v, want %v", got, wantUntouched)
+	want := []string{"go", "run", "./cmd/demo", "db", "migrate", "up"}
+	if !slicesEqual(cmd.Args, want) {
+		t.Errorf("derived argv = %v, want %v", cmd.Args, want)
 	}
 }
 
-// Each rewritten job must get its own backing array. The go-run prefix is
-// built once per job, so a shared array would let the longer job's tail
-// overwrite the shorter one's — the second job silently inheriting the
-// first's subcommand, which is the failure mode that reads as "forge ran
-// the wrong migration".
-func TestCollapseJobsToHost_RewrittenJobsDoNotShareBacking(t *testing.T) {
-	e := &KCLEntities{Jobs: []JobEntity{
-		{Name: "migrate", Command: []string{"/app/demo", "db", "migrate", "up"}},
-		{Name: "seed", Command: []string{"/app/demo", "db", "seed"}},
-	}}
-	collapseJobsToHost(e, "demo")
-
-	wantMigrate := []string{"go", "run", "./cmd/demo", "db", "migrate", "up"}
-	if got := e.Jobs[0].Command; !slicesEqual(got, wantMigrate) {
-		t.Errorf("migrate argv = %v, want %v", got, wantMigrate)
-	}
-	wantSeed := []string{"go", "run", "./cmd/demo", "db", "seed"}
-	if got := e.Jobs[1].Command; !slicesEqual(got, wantSeed) {
-		t.Errorf("seed argv = %v, want %v", got, wantSeed)
-	}
-
-	// Mutating one job's argv must not be observable in the other.
-	e.Jobs[1].Command[len(e.Jobs[1].Command)-1] = "CLOBBERED"
-	if got := e.Jobs[0].Command; !slicesEqual(got, wantMigrate) {
-		t.Errorf("writing to seed argv changed migrate argv: %v, want %v", got, wantMigrate)
+// A host job with neither command nor args has nothing to run and says so.
+func TestRunOneHostJob_NothingToRun(t *testing.T) {
+	err := runOneHostJob(context.Background(), nil, job("empty", nil), nil, "")
+	if err == nil || !strings.Contains(err.Error(), "nothing to run") {
+		t.Fatalf("err = %v, want a nothing-to-run refusal", err)
 	}
 }
 

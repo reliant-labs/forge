@@ -9,18 +9,18 @@ import (
 )
 
 // frontendRenderJSON builds the render shape a real project emits: the
-// `manifests` root the deploy applies, plus the `output` JSON contract
-// carrying the frontend declarations. frontends is spliced in verbatim so
+// `output` contract, carrying the applied stream (`manifests`) and the
+// frontend declarations. frontends is spliced in verbatim so
 // each test states only the declaration under test.
 func frontendRenderJSON(frontends string) string {
-	return `{
+	return `{"output":{
 	  "manifests":[
 	    {"apiVersion":"apps/v1","kind":"Deployment",
 	     "metadata":{"name":"api","namespace":"ns"},
 	     "spec":{"template":{"spec":{"containers":[{"name":"api","image":"api:1"}]}}}}
 	  ],
-	  "output":{"frontends":[` + frontends + `]}
-	}`
+	  "frontends":[` + frontends + `]
+	}}`
 }
 
 // missingShippingFrontend is the case this check exists for: an IN-REPO
@@ -332,14 +332,14 @@ func TestFrontendCode_NoForgeYAMLStillChecks(t *testing.T) {
 }
 
 // A render that carries no `output` contract at all (a project whose
-// main.k exports only `manifests`) must degrade quietly instead of
+// output carries only `manifests`, no frontends) must degrade quietly instead of
 // erroring the whole check.
 func TestFrontendCode_ManifestsOnlyRenderIsQuiet(t *testing.T) {
-	body := `{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]}`
+	body := `{"output":{"manifests":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"s"}}]}}`
 	env := envForDrift(t, projectWithFrontends(t, "web"), renderFromJSON(t, "prod", body))
 
 	if got := CheckFrontendCode(context.Background(), env); got.Status != StatusPass {
-		t.Fatalf("Status = %q, want %q — a render exporting only `manifests` carries no "+
+		t.Fatalf("Status = %q, want %q — a render carrying only `manifests` has no "+
 			"frontend contract to check.\nmessage: %s", got.Status, StatusPass, got.Message)
 	}
 }

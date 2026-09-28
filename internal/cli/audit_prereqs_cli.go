@@ -106,13 +106,12 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 //     demand failed the audit for any project whose workload declares a
 //     `config_secrets` credential, in every checkout, whether or not the local
 //     store was populated.
-//   - Hosted (control_plane with a hosted tier): the control plane owns the
-//     cluster and materializes the Secrets it reads (forge-managed-secrets,
-//     the CNPG credential), and forge applies nothing — the deploy publishes
-//     specs instead.
+//   - Hosted workloads: the control plane owns the cluster and materializes
+//     the Secrets it reads (forge-managed-secrets, the CNPG credential), and
+//     forge applies nothing — the deploy publishes Workload specs instead.
 //
-// Anything else that places a workload in a cluster (K8sCluster, a
-// self-hosted SimpleBackend, a LOCAL control-plane env) keeps the gate.
+// Anything else that places a workload in a cluster (a Cluster runtime, a
+// self-managed database, a LOCAL control-plane env) keeps the gate.
 func envAppliesManifestsToCluster(e *KCLEntities) bool {
 	if e == nil {
 		return false

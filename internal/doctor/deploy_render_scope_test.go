@@ -41,7 +41,8 @@ import (
 // finding. Each env therefore owns its own address space, which is also
 // what a correctly-configured project looks like.
 func healthyRenderJSON(namespace string) string {
-	return `{
+	return `{"output":{
+  "frontends":[],
   "manifests":[
     {"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"api","namespace":"` + namespace + `"}},
     {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"` + namespace + `"},
@@ -56,20 +57,19 @@ func healthyRenderJSON(namespace string) string {
          "resources":{"requests":{"cpu":"500m","memory":"512Mi"},"limits":{"cpu":"2","memory":"1Gi"}},
          "env":[{"name":"DATABASE_URL","valueFrom":{"secretKeyRef":{"name":"db","key":"url"}}}]}]
      }}}}
-  ],
-  "output":{"frontends":[]}
-}`
+  ]
+}}`
 }
 
 // leakyRenderJSON carries the same shape with the credential inlined —
 // a real, determined finding, used to prove the fold does not bury one.
-const leakyRenderJSON = `{
+const leakyRenderJSON = `{"output":{
   "manifests":[
     {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"ns"},
      "spec":{"template":{"spec":{"containers":[{"name":"api",
        "env":[{"name":"DATABASE_URL","value":"postgres://u:p@h/db"}]}]}}}}
   ]
-}`
+}}`
 
 var errStagingRender = errors.New("kcl: undefined variable 'ingress_host'")
 
@@ -202,9 +202,9 @@ func TestRenderScope_PartialRenderKeepsADeterminedFailure(t *testing.T) {
 // the environment that failed. That is a security-shaped check asserting
 // "not applicable" from facts it could not obtain.
 func TestRenderScope_ServiceAccountSkipBecomesUnknown(t *testing.T) {
-	const noServiceAccount = `{"manifests":[
+	const noServiceAccount = `{"output":{"manifests":[
 	  {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"ns"},
-	   "spec":{"template":{"spec":{"containers":[{"name":"api"}]}}}}]}`
+	   "spec":{"template":{"spec":{"containers":[{"name":"api"}]}}}}]}}`
 
 	env := scopeEnv(t, scopeProject(t),
 		renderFromJSON(t, "dev", noServiceAccount),

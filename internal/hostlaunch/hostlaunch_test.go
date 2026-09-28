@@ -8,10 +8,11 @@ import (
 	"testing"
 )
 
-// TestBuildCmd_RunnerMatrix covers each runner dispatch path. The
-// matrix is the union of `forge run <svc>` and `forge env up` host-phase
-// cases from before the collapse — running it once here verifies the
-// shared dispatch hasn't drifted from either historical impl.
+// TestBuildCmd_RunnerMatrix pins the host argv DERIVATION (ADR 0002 §2,
+// P2 map §3.3): the command a host workload runs is computed from its
+// runner, its GoBuild and its args. It is never authored per runtime, and
+// there is no `server <name>` convention any more — the args a workload
+// declares are the args it gets, on the host exactly as in its container.
 func TestBuildCmd_RunnerMatrix(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -21,27 +22,27 @@ func TestBuildCmd_RunnerMatrix(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "empty runner falls through to go-run",
+			name: "empty runner is go-run",
 			svc:  "api",
-			spec: RunnerSpec{},
-			want: []string{"go", "run", "./cmd", "server", "api"},
+			spec: RunnerSpec{GoPkg: "./cmd/acme", Args: []string{"api"}},
+			want: []string{"go", "run", "./cmd/acme", "api"},
 		},
 		{
-			name: "go-run explicit",
-			svc:  "api",
-			spec: RunnerSpec{Runner: "go-run"},
-			want: []string{"go", "run", "./cmd", "server", "api"},
+			name: "go-run: go run <build.cmd> <args...>",
+			svc:  "migrate",
+			spec: RunnerSpec{Runner: "go-run", GoPkg: "./cmd/acme", Args: []string{"db", "migrate", "up"}},
+			want: []string{"go", "run", "./cmd/acme", "db", "migrate", "up"},
 		},
 		{
-			name: "unknown runner falls through to go-run",
+			name: "go-run with no args runs the bare binary",
 			svc:  "api",
-			spec: RunnerSpec{Runner: "tilt"},
-			want: []string{"go", "run", "./cmd", "server", "api"},
+			spec: RunnerSpec{Runner: "go-run", GoPkg: "./cmd/acme"},
+			want: []string{"go", "run", "./cmd/acme"},
 		},
 		{
-			name: "air default config",
+			name: "air default config; args are the air config's business",
 			svc:  "api",
-			spec: RunnerSpec{Runner: "air"},
+			spec: RunnerSpec{Runner: "air", GoPkg: "./cmd/acme", Args: []string{"api"}},
 			want: []string{"air", "-c", ".air.toml"},
 		},
 		{
@@ -51,59 +52,109 @@ func TestBuildCmd_RunnerMatrix(t *testing.T) {
 			want: []string{"air", "-c", "configs/api.air.toml"},
 		},
 		{
-			name: "binary runs ./bin/<svc>",
+			name: "binary: ./bin/<output> <args...>",
+			svc:  "api",
+			spec: RunnerSpec{Runner: "binary", GoPkg: "./cmd/acme", OutputName: "acme", Args: []string{"api"}},
+			want: []string{"./bin/acme", "api"},
+		},
+		{
+			name: "binary output defaults to the workload name",
 			svc:  "admin-server",
-			spec: RunnerSpec{Runner: "binary"},
+			spec: RunnerSpec{Runner: "binary", GoPkg: "./cmd/admin-server"},
 			want: []string{"./bin/admin-server"},
 		},
 		{
-			name: "delve default port",
+			name: "delve default port, args after --",
 			svc:  "api",
-			spec: RunnerSpec{Runner: "delve"},
+			spec: RunnerSpec{Runner: "delve", GoPkg: "./cmd/acme", OutputName: "acme", Args: []string{"api"}},
 			want: []string{
 				"dlv", "exec", "--headless", "--listen=:2345",
 				"--api-version=2", "--accept-multiclient", "--continue",
-				"./bin/api",
+				"./bin/acme", "--", "api",
 			},
 		},
 		{
-			name: "delve custom port",
+			name: "delve custom port, no args means no --",
 			svc:  "api",
-			spec: RunnerSpec{Runner: "delve", DelvePort: 4567},
+			spec: RunnerSpec{Runner: "delve", DelvePort: 4567, GoPkg: "./cmd/acme", OutputName: "acme"},
 			want: []string{
 				"dlv", "exec", "--headless", "--listen=:4567",
 				"--api-version=2", "--accept-multiclient", "--continue",
-				"./bin/api",
+				"./bin/acme",
 			},
+		},
+		{
+			name: "explicit command + args run verbatim (a sibling binary)",
+			svc:  "reliant-api",
+			spec: RunnerSpec{Runner: "go-run", Command: []string{"go", "run", "./cmd/reliant"}, Args: []string{"server", "api"}},
+			want: []string{"go", "run", "./cmd/reliant", "server", "api"},
+		},
+		{
+			name: "explicit command needs no build",
+			svc:  "tool",
+			spec: RunnerSpec{Runner: "binary", Command: []string{"/usr/local/bin/tool"}, Args: []string{"--x"}},
+			want: []string{"/usr/local/bin/tool", "--x"},
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cmd := BuildCmd(ctx, c.svc, c.spec)
-			got := cmd.Args
-			if len(got) != len(c.want) {
-				t.Fatalf("args len: got %v, want %v", got, c.want)
+			cmd, err := BuildCmd(ctx, c.svc, c.spec)
+			if err != nil {
+				t.Fatalf("BuildCmd: %v", err)
 			}
-			for i := range got {
-				if got[i] != c.want[i] {
-					t.Errorf("args[%d]: got %q, want %q", i, got[i], c.want[i])
-				}
+			if strings.Join(cmd.Args, " ") != strings.Join(c.want, " ") {
+				t.Fatalf("args:\n got  %q\n want %q", cmd.Args, c.want)
 			}
 		})
 	}
 }
 
+// TestBuildCmd_RefusesUnderivableArgv: a runner that needs a Go build to
+// derive its argv, handed none, is an ERROR naming the workload. The old
+// behaviour — fall back to `go run ./cmd server <name>` — launched a
+// command nobody declared, and an unknown runner silently became go-run.
+func TestBuildCmd_RefusesUnderivableArgv(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		spec RunnerSpec
+		want string
+	}{
+		{"go-run without build", RunnerSpec{Runner: "go-run"}, "no Go build"},
+		{"binary without build", RunnerSpec{Runner: "binary"}, "no Go build"},
+		{"delve without build", RunnerSpec{Runner: "delve"}, "no Go build"},
+		{"unknown runner", RunnerSpec{Runner: "tilt", GoPkg: "./cmd/x"}, "unknown host runner"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := BuildCmd(ctx, "api", c.spec)
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "api") {
+				t.Fatalf("err = %v, want one naming the workload and containing %q", err, c.want)
+			}
+		})
+	}
+}
+
+// TestAirIgnoresArgs: under air the air config owns the argv (full_bin /
+// args_bin), so declared args cannot reach the process. That is reported
+// to the caller rather than silently dropped.
+func TestAirIgnoresArgs(t *testing.T) {
+	if !(RunnerSpec{Runner: "air", Args: []string{"api"}}).IgnoresArgs() {
+		t.Error("air with args: IgnoresArgs() = false, want true")
+	}
+	if (RunnerSpec{Runner: "air"}).IgnoresArgs() {
+		t.Error("air without args: IgnoresArgs() = true, want false")
+	}
+	if (RunnerSpec{Runner: "go-run", Args: []string{"api"}}).IgnoresArgs() {
+		t.Error("go-run: IgnoresArgs() = true, want false")
+	}
+}
+
 // TestBuildCmd_WorkingDir pins the cross-repo cmd.Dir contract. The
-// motivating case: a project declares `WorkingDir: "../sibling-repo"`
-// on a HostDeploy whose Air config lives in a sibling repo and resolves
-// build paths relative to that repo's root. With ProjectDir set to the
-// caller's forge project root, the launched subprocess must chdir to
-// the sibling so Air's `build_cmd` paths resolve correctly.
-//
-// Four cases — empty (inherit parent cwd), absolute, relative+project,
-// relative-without-project (verbatim fallback). The runner is "air"
-// throughout but the cwd resolution is runner-agnostic so the dispatch
-// matrix (go-run/binary/delve) inherits the same behavior automatically.
+// motivating case: a host workload declares `working_dir = "../sibling"`
+// with an Air config that lives in the sibling repo and resolves build
+// paths relative to that repo's root. With ProjectDir set to the caller's
+// forge project root, the launched subprocess must chdir to the sibling so
+// Air's `build_cmd` paths resolve correctly.
 func TestBuildCmd_WorkingDir(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -112,38 +163,17 @@ func TestBuildCmd_WorkingDir(t *testing.T) {
 		projectDir string
 		wantDir    string
 	}{
-		{
-			name:       "empty WorkingDir leaves cmd.Dir empty (inherit parent cwd)",
-			workingDir: "",
-			projectDir: "/forge/project",
-			wantDir:    "",
-		},
-		{
-			name:       "absolute WorkingDir is used verbatim",
-			workingDir: "/abs/sibling",
-			projectDir: "/forge/project",
-			wantDir:    "/abs/sibling",
-		},
-		{
-			name:       "relative WorkingDir resolves against ProjectDir",
-			workingDir: "../sibling",
-			projectDir: "/forge/project",
-			wantDir:    "/forge/sibling",
-		},
-		{
-			name:       "relative WorkingDir with empty ProjectDir falls through verbatim",
-			workingDir: "../sibling",
-			projectDir: "",
-			wantDir:    "../sibling",
-		},
+		{"empty WorkingDir leaves cmd.Dir empty (inherit parent cwd)", "", "/forge/project", ""},
+		{"absolute WorkingDir is used verbatim", "/abs/sibling", "/forge/project", "/abs/sibling"},
+		{"relative WorkingDir resolves against ProjectDir", "../sibling", "/forge/project", "/forge/sibling"},
+		{"relative WorkingDir with empty ProjectDir falls through verbatim", "../sibling", "", "../sibling"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cmd := BuildCmd(ctx, "api", RunnerSpec{
-				Runner:     "air",
-				WorkingDir: c.workingDir,
-				ProjectDir: c.projectDir,
-			})
+			cmd, err := BuildCmd(ctx, "api", RunnerSpec{Runner: "air", WorkingDir: c.workingDir, ProjectDir: c.projectDir})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if cmd.Dir != c.wantDir {
 				t.Errorf("cmd.Dir: got %q, want %q", cmd.Dir, c.wantDir)
 			}
@@ -152,29 +182,28 @@ func TestBuildCmd_WorkingDir(t *testing.T) {
 }
 
 // TestBuildCmd_WorkingDir_AppliesAcrossRunners confirms the cwd is set
-// for every runner dispatch path (air, binary, delve, go-run), not just
-// the runner that surfaced the cross-repo use case.
+// for every runner dispatch path, not just the runner that surfaced the
+// cross-repo use case.
 func TestBuildCmd_WorkingDir_AppliesAcrossRunners(t *testing.T) {
 	ctx := context.Background()
-	const projectDir = "/forge/project"
-	const workingDir = "../sibling"
-	const wantDir = "/forge/sibling"
 	for _, runner := range []string{"air", "binary", "delve", "go-run", ""} {
 		t.Run("runner="+runner, func(t *testing.T) {
-			cmd := BuildCmd(ctx, "api", RunnerSpec{
-				Runner:     runner,
-				WorkingDir: workingDir,
-				ProjectDir: projectDir,
+			cmd, err := BuildCmd(ctx, "api", RunnerSpec{
+				Runner: runner, GoPkg: "./cmd/api",
+				WorkingDir: "../sibling", ProjectDir: "/forge/project",
 			})
-			if cmd.Dir != wantDir {
-				t.Errorf("cmd.Dir: got %q, want %q", cmd.Dir, wantDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.Dir != "/forge/sibling" {
+				t.Errorf("cmd.Dir: got %q, want /forge/sibling", cmd.Dir)
 			}
 		})
 	}
 }
 
 // TestIsKnownRunner: only the four documented runners are known; empty
-// counts as known (the legacy go-run shape).
+// counts as known (it means go-run).
 func TestIsKnownRunner(t *testing.T) {
 	for _, ok := range []string{"", "go-run", "air", "binary", "delve"} {
 		if !IsKnownRunner(ok) {
@@ -398,39 +427,5 @@ func TestPIDPath(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "/.cache/forge/run/admin-server.pid") {
 		t.Errorf("want path ending in /.cache/forge/run/admin-server.pid, got %q", got)
-	}
-}
-
-func TestBuildCmd_ExplicitCommandOverridesRunner(t *testing.T) {
-	cmd := BuildCmd(context.Background(), "reliant-api-server", RunnerSpec{
-		Runner:     "go-run", // should be ignored when Command is set
-		Command:    []string{"go", "run", "./cmd/reliant", "server", "api"},
-		WorkingDir: "../reliant",
-		ProjectDir: "/projects/cp-forge",
-	})
-	want := []string{"go", "run", "./cmd/reliant", "server", "api"}
-	if len(cmd.Args) != len(want) {
-		t.Fatalf("args = %v, want %v", cmd.Args, want)
-	}
-	for i := range want {
-		if cmd.Args[i] != want[i] {
-			t.Errorf("args[%d] = %q, want %q", i, cmd.Args[i], want[i])
-		}
-	}
-	if cmd.Dir != "/projects/reliant" {
-		t.Errorf("cmd.Dir = %q, want sibling-resolved path", cmd.Dir)
-	}
-}
-
-func TestBuildCmd_AirIgnoresCommand(t *testing.T) {
-	// A command set alongside runner=air must NOT hijack air (admin-server
-	// declares a documentation-only command next to its air runner).
-	cmd := BuildCmd(context.Background(), "admin-server", RunnerSpec{
-		Runner:    "air",
-		AirConfig: ".air.admin-server.toml",
-		Command:   []string{"./cp-forge", "server"},
-	})
-	if cmd.Args[0] != "air" {
-		t.Fatalf("air runner hijacked by command: args=%v", cmd.Args)
 	}
 }

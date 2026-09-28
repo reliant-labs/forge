@@ -51,25 +51,13 @@ const (
 	// pin one explicitly. Mirrors the `air` tool's own default —
 	// `.air.toml` at the project root.
 	DefaultAirConfig = ".air.toml"
-
-	// DefaultGoRunTarget is the `go run <target> server <name>` package
-	// used when a RunnerSpec doesn't carry an explicit GoRunCmd (the
-	// service's KCL GoBuild.cmd). It is NOT "./cmd" — the scaffold lays
-	// the project binary down at cmd/<project>, and a project that has
-	// not yet wired build resolution still needs a sane default. Callers
-	// that know the service's build cmd should set GoRunCmd so the
-	// host-run target matches the build target exactly.
-	DefaultGoRunTarget = "./cmd"
 )
 
-// RunnerSpec is the dispatch input. The Runner/AirConfig/DelvePort
-// fields mirror the KCL HostDeploy block; env composition (env_vars
-// from KCL + an optional gitignored secrets dotenv) is layered by the
-// caller via [LoadSecretsFile] and [LayerHostEnv] so this package stays
-// vendor-neutral about how config gets sourced.
-//
-// An empty Runner falls through to the legacy go-run shape so projects
-// that haven't migrated to the deploy module yet keep working.
+// RunnerSpec is the dispatch input: a host workload's runtime block
+// (forge.Host{runner, air_config, delve_port, working_dir}) plus the two
+// runtime-independent facts the argv is DERIVED from — its Go build and
+// its args. Env composition is layered by the caller via [LayerHostEnv]
+// so this package stays vendor-neutral about how config gets sourced.
 //
 // WorkingDir + ProjectDir control the subprocess's working directory.
 // When WorkingDir is empty, the subprocess inherits the parent's cwd
@@ -79,33 +67,36 @@ const (
 //   - relative paths resolve against ProjectDir (which the CLI sets to
 //     the forge project root).
 //
-// The cross-repo Air case is the load-bearing example: a forge project
-// declares `WorkingDir: "../sibling-repo"` so an Air config that lives
+// The cross-repo Air case is the load-bearing example: a host workload
+// declares `working_dir = "../sibling-repo"` so an Air config that lives
 // in the sibling repo and references build paths relative to ITS own
 // repo root resolves correctly even though forge itself runs from the
 // caller's project root.
 type RunnerSpec struct {
-	Runner    string // "" | "go-run" | "air" | "binary" | "delve"
-	AirConfig string // path relative to project root; default DefaultAirConfig
+	Runner    string // "" (= go-run) | "go-run" | "air" | "binary" | "delve"
+	AirConfig string // path relative to the working dir; default DefaultAirConfig
 	DelvePort int    // dlv --listen=:<port>; default DefaultDelvePort
 
-	// GoRunCmd is the go-run target package — the service's KCL
-	// GoBuild.cmd (e.g. "./cmd/myapp"). The go-run dispatch runs
-	// `go run <GoRunCmd> server <name>` so it points at the project's
-	// real cmd/<bin> package rather than a hardcoded "./cmd". Empty
-	// falls back to DefaultGoRunTarget so a caller that hasn't wired the
-	// build resolution yet still launches.
-	GoRunCmd string
+	// GoPkg is the workload's GoBuild.cmd (e.g. "./cmd/acme"): the package
+	// go-run runs and binary/delve were built from. Empty means the
+	// workload has no Go build, and those runners have nothing to derive
+	// an argv from.
+	GoPkg string
+	// OutputName is the GoBuild.output_name — the ./bin/<name> binary
+	// and delve execute. Empty falls back to the workload name, which is
+	// what `forge build` names a binary with no output_name.
+	OutputName string
 
-	// Command, when non-empty, is run verbatim (Command[0] + args) instead
-	// of any runner convention — the escape hatch for host services whose
-	// entrypoint doesn't fit `go run ./cmd server <name>`. The canonical
-	// case is a sibling-repo binary: pair it with WorkingDir so the
-	// command's own relative paths resolve against the sibling root, e.g.
-	// Command=["go","run","./cmd/reliant","server","api"] +
-	// WorkingDir="../reliant". Relative paths in Command resolve against
-	// the effective cmd.Dir (WorkingDir), matching shell semantics.
+	// Command, when non-empty, is the workload's spec.command: an explicit
+	// entrypoint run verbatim with Args, for any runner but air. It is how
+	// a host workload runs something that is not this project's Go binary
+	// — a sibling repo's `go run ./cmd/reliant`, a vendored tool. Relative
+	// paths resolve against the effective cmd.Dir (WorkingDir), matching
+	// shell semantics.
 	Command []string
+	// Args is the workload's spec.args — the same args its container gets
+	// (the project binary's subcommand). Stated once for every runtime.
+	Args []string
 
 	// WorkingDir is the subprocess cwd override. Empty = inherit parent.
 	// Relative paths resolve against ProjectDir; absolute paths are
@@ -118,64 +109,81 @@ type RunnerSpec struct {
 	ProjectDir string
 }
 
-// BuildCmd composes the *exec.Cmd for a host-mode service.
+// IgnoresArgs reports whether declared Args cannot reach the process: under
+// air the air config's full_bin / args_bin owns the argv. Callers warn on
+// it, because an arg that is silently not passed looks exactly like an arg
+// the program ignored.
+func (s RunnerSpec) IgnoresArgs() bool {
+	return strings.TrimSpace(s.Runner) == "air" && len(s.Args) > 0
+}
+
+// BuildCmd composes the *exec.Cmd for a host workload. The argv is DERIVED,
+// never authored per runtime (ADR 0002 §2):
 //
-// Runner dispatch:
-//   - air:    `air -c <spec.AirConfig|.air.toml>`
-//   - binary: `./bin/<name>`
-//   - delve:  `dlv exec --headless --listen=:<port> ... ./bin/<name>`
-//   - default ("" / "go-run" / unknown): `go run <spec.GoRunCmd|./cmd>
-//     server <name>` — the go-run target is the service's KCL
-//     GoBuild.cmd, NOT a hardcoded ./cmd.
+//	explicit Command (any runner but air)  Command... Args...
+//	go-run / ""                            go run <GoPkg> Args...
+//	binary                                 ./bin/<OutputName|name> Args...
+//	delve                                  dlv exec --headless --listen=:<port> --api-version=2
+//	                                         --accept-multiclient --continue ./bin/<out> [-- Args...]
+//	air                                    air -c <AirConfig|.air.toml>   (Args: see IgnoresArgs)
 //
-// Unknown runners fall through to go-run rather than erroring — this
-// preserves the `forge run` behaviour and prevents a typo in KCL from
-// hard-failing the host phase. Callers that want strict matching
-// (the up orchestrator does) should check `IsKnownRunner(spec.Runner)`
-// first and report their own error.
-func BuildCmd(ctx context.Context, name string, spec RunnerSpec) *exec.Cmd {
+// go-run, binary and delve with no Go build and no Command are an ERROR,
+// as is an unknown runner. There is no fallback: the historical default
+// (`go run ./cmd server <name>`) launched a command no declaration said,
+// and every "falls through to go-run" hid a typo behind a process that
+// started and did the wrong thing.
+func BuildCmd(ctx context.Context, name string, spec RunnerSpec) (*exec.Cmd, error) {
 	runner := strings.TrimSpace(spec.Runner)
-	var cmd *exec.Cmd
-	switch runner {
-	case "air":
+	if !IsKnownRunner(runner) {
+		return nil, fmt.Errorf("host workload %s: unknown host runner %q (want go-run, air, binary or delve)", name, spec.Runner)
+	}
+	var argv []string
+	switch {
+	case runner == "air":
 		cfg := spec.AirConfig
 		if cfg == "" {
 			cfg = DefaultAirConfig
 		}
-		cmd = exec.CommandContext(ctx, "air", "-c", cfg)
-	case "binary":
-		cmd = exec.CommandContext(ctx, "./bin/"+name)
-	case "delve":
-		port := spec.DelvePort
-		if port <= 0 {
-			port = DefaultDelvePort
-		}
-		cmd = exec.CommandContext(ctx, "dlv", "exec", "--headless",
-			fmt.Sprintf("--listen=:%d", port),
-			"--api-version=2", "--accept-multiclient",
-			"--continue", "./bin/"+name)
+		argv = []string{"air", "-c", cfg}
+	case len(spec.Command) > 0:
+		argv = append(append([]string{}, spec.Command...), spec.Args...)
+	case strings.TrimSpace(spec.GoPkg) == "":
+		return nil, fmt.Errorf("host workload %s: runner %q derives its command from a Go build, and the workload declares no Go build and no command.\n"+
+			"  fix: give it `build = forge.GoBuild {cmd = \"./cmd/<binary>\"}`, or a `command` to run verbatim", name, runnerOrDefault(runner))
 	default:
-		// "go-run" / "" / unknown — the default shape. An explicit
-		// Command overrides JUST this convention (the escape hatch for
-		// sibling-repo binaries / non-standard entrypoints); air/binary/
-		// delve are deliberate alternative runners that own their command
-		// shape, so a Command set alongside them is ignored (the runner
-		// wins). This keeps services that declare a documentation-only
-		// `command` next to `runner = air` working as before.
-		if len(spec.Command) > 0 {
-			cmd = exec.CommandContext(ctx, spec.Command[0], spec.Command[1:]...)
-		} else {
-			target := strings.TrimSpace(spec.GoRunCmd)
-			if target == "" {
-				target = DefaultGoRunTarget
+		bin := "./bin/" + name
+		if spec.OutputName != "" {
+			bin = "./bin/" + spec.OutputName
+		}
+		switch runner {
+		case "binary":
+			argv = append([]string{bin}, spec.Args...)
+		case "delve":
+			port := spec.DelvePort
+			if port <= 0 {
+				port = DefaultDelvePort
 			}
-			cmd = exec.CommandContext(ctx, "go", "run", target, "server", name)
+			argv = []string{"dlv", "exec", "--headless", fmt.Sprintf("--listen=:%d", port),
+				"--api-version=2", "--accept-multiclient", "--continue", bin}
+			if len(spec.Args) > 0 {
+				argv = append(append(argv, "--"), spec.Args...)
+			}
+		default: // "" | "go-run"
+			argv = append([]string{"go", "run", strings.TrimSpace(spec.GoPkg)}, spec.Args...)
 		}
 	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- argv is derived from the project's own KCL
 	if dir := resolveWorkingDir(spec.WorkingDir, spec.ProjectDir); dir != "" {
 		cmd.Dir = dir
 	}
-	return cmd
+	return cmd, nil
+}
+
+func runnerOrDefault(r string) string {
+	if r == "" {
+		return "go-run"
+	}
+	return r
 }
 
 // resolveWorkingDir returns the effective cmd.Dir for the given spec.
@@ -197,9 +205,7 @@ func resolveWorkingDir(workingDir, projectDir string) string {
 }
 
 // IsKnownRunner reports whether the runner name is one of the
-// explicitly-supported dispatch keys. Callers that want to refuse
-// unknown runners (rather than silently fall through to go-run) check
-// this before BuildCmd.
+// supported dispatch keys ("" means go-run).
 func IsKnownRunner(runner string) bool {
 	switch strings.TrimSpace(runner) {
 	case "", "go-run", "air", "binary", "delve":

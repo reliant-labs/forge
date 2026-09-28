@@ -47,7 +47,7 @@ func TestNestedConfigBlocks_ProjectAsNestedSchemas(t *testing.T) {
 		"schema AppConfigStripe:",
 		"schema AppConfigMailer:",
 		"    stripe: AppConfigStripe = AppConfigStripe {}",
-		`{from_secret = {name = c.stripe.secret_key.name, key = c.stripe.secret_key.key}, secret_optional = True}`,
+		`forge.SecretRef {name = c.stripe.secret_key.name, key = c.stripe.secret_key.key, store_key = "STRIPE_SECRET_KEY", optional = True}`,
 	} {
 		if !strings.Contains(module, want) {
 			t.Errorf("module missing %q:\n%s", want, module)
@@ -74,16 +74,17 @@ func TestNestedConfigBlocks_ProjectAsNestedSchemas(t *testing.T) {
 	write("kcl.mod", "[package]\nname = \"nested_proof\"\n")
 	write(ConfigSchemaModule+".k", module)
 	write("forge/kcl.mod", "[package]\nname = \"forge\"\n")
-	write("forge/core.k", "schema EnvSource:\n    value?: str\n    from_secret?: SecretKeySel\n    secret_optional?: bool\n\nschema SecretKeySel:\n    name: str\n    key: str\n")
+	write("forge/core.k", "schema SecretRef:\n    name: str\n    key: str\n    optional?: bool\n    store_key?: str\n")
 	write("main.k", `import `+ConfigSchemaModule+` as config_gen
 
 _c = config_gen.AppConfig {
     stripe.site_url = "https://bark.example"
 }
 _env = config_gen.appConfigEnvMap(_c, ["STRIPE_SECRET_KEY"])
-assert_stripe_site = _env["STRIPE_SITE_URL"].value == "https://bark.example"
-assert_mailer_site_default = _env["MAILER_SITE_URL"].value == "http://mail"
-assert_secret = _env["STRIPE_SECRET_KEY"].from_secret.key == "stripe_secret_key"
+assert_stripe_site = str(_env["STRIPE_SITE_URL"]) == "https://bark.example"
+assert_mailer_site_default = str(_env["MAILER_SITE_URL"]) == "http://mail"
+assert_secret = _env["STRIPE_SECRET_KEY"].key == "stripe_secret_key"
+assert_secret_optional = _env["STRIPE_SECRET_KEY"].optional == True
 `)
 	out, err := kcltest.Run(t.Context(), dir, "run", ".", "--format", "json")
 	if err != nil {

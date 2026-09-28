@@ -1,6 +1,7 @@
 """
-Negative test — a Job whose `before` names a component that does not
-exist in the environment is rejected at LOAD time.
+Negative test — a Job whose `before` names a workload that does not exist in
+the environment is rejected at LOAD time, by forge.render over the Bundle's
+workloads (one schema cannot see its siblings).
 
 Without this check the failure is silent and worse than a crash: the job
 renders, nothing gates on it, and the ordering the author declared simply
@@ -9,23 +10,26 @@ fails somewhere else entirely, at runtime, in a message that names none of
 this.
 """
 
+# expect: provision
+# expect: apiserver
+
+import forge
 import forge.workloads as fw
 
-_components = [
-    fw.Workload {kind = "service", name = "api"}
-    fw.Workload {
-        kind = "job"
-        name = "provision"
-        command = ["/app/demo", "provision"]
-        # `apiserver` does not exist — the component is called `api`.
-        before = ["apiserver"]
-    }
-]
+_t = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
 
-_env = fw.WorkloadEnv {
-    namespace = "demo-dev"
+output = forge.render(forge.Bundle {
     project = "demo"
-    network_policies = False
-}
-
-manifests = fw.render_workloads(_components, _env)
+    runtime = forge.OnCluster {target = _t}
+    workloads = [
+        fw.Workload {name = "api", image = "demo"}
+        fw.Workload {
+            kind = "job"
+            name = "provision"
+            image = "demo"
+            args = ["provision"]
+            # `apiserver` does not exist — the workload is called `api`.
+            before = ["apiserver"]
+        }
+    ]
+})

@@ -373,7 +373,7 @@ func TestLedgerForEntities_SelectsHostedWhenControlPlaneDeclared(t *testing.T) {
 	// with no tier is LOCAL and keeps the project's own ledger (below).
 	hosted, err := ledgerForEntities("prod", &KCLEntities{ControlPlane: &ControlPlaneEntity{
 		Type: "control_plane", Endpoint: "https://cp.example.com/", TokenEnv: "FORGE_TEST_CP_TOKEN",
-	}, Databases: []DatabaseEntity{{Name: "orders"}}}, dir)
+	}, Databases: []DatabaseEntity{{Name: "orders", Runtime: RuntimeHosted}}}, dir)
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestBindingStoreFor_ReadsTheEnvDeclaration(t *testing.T) {
 	declareEnvDir(t, dir, "prod")
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t,
-		`{"control_plane":{"type":"control_plane","endpoint":"https://cp.example.com","token_env":"FORGE_TEST_CP_TOKEN"},"databases":[{"name":"orders","namespace":""}]}`))
+		`{"output":{"control_plane":{"type":"control_plane","endpoint":"https://cp.example.com","token_env":"FORGE_TEST_CP_TOKEN"},"databases":[{"name":"orders","runtime":"hosted"}]}}`))
 
 	store, err := bindingStoreFor(context.Background(), dir, "prod")
 	if err != nil {

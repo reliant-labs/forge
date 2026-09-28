@@ -504,23 +504,11 @@ func runDoctorParity(ctx context.Context, serviceName, env string, jsonOutput bo
 		return cliutil.WrapUserErr(ctxLabel, "render KCL", "", "ensure deploy/kcl/<env>/ exists and `kcl` is on PATH", err)
 	}
 
-	hostKCL, clusterKCL, clusterSecret, hostSecretsPath := extractKCLEnvVars(entities, serviceName)
-
-	// secrets_file: we DO NOT load it. Just note the path so the
-	// model knows the host counterpart for any cluster secret_ref
-	// entries. An empty map (no path) means the service didn't
-	// declare a secrets_file at all.
+	hostKCL, clusterKCL, clusterSecret := extractKCLEnvVars(entities, serviceName)
+	// Host secrets come from the env's secret provider, scoped by the same
+	// secretRefs the cluster side projects, so there is no separate host
+	// secrets file to point at.
 	hostSecrets := map[string]parityValue{}
-	if hostSecretsPath != "" {
-		// Surface the path as a single sentinel entry — we have no
-		// way to enumerate the keys without reading the file. The
-		// fix-builder for missing-in-host divergences will reference
-		// this path when the cluster carries a secret_ref.
-		hostSecrets["<secrets_file>"] = parityValue{
-			Source:      paritySecretsFile,
-			SourceLabel: fmt.Sprintf("secrets_file %s", hostSecretsPath),
-		}
-	}
 
 	in := parityInputs{
 		Service:       serviceName,
@@ -593,115 +581,42 @@ func buildForgeConfigValues(srcs map[string]kclEnvSource, env string) map[string
 	return out
 }
 
-// extractKCLEnvVars walks the rendered KCL entities for the named
-// service and projects:
-//   - host KCL env_vars (inline values only) → hostKCL
-//   - cluster KCL env_vars (inline values) → clusterKCL
-//   - cluster KCL env_vars with secret_ref / config_map_ref → clusterSecret
-//   - host KCL secrets_file path → hostSecretsPath (empty when unset)
+// extractKCLEnvVars walks the rendered KCL entities for the named workload
+// and projects its spec.env:
+//   - inline values → BOTH hostKCL and clusterKCL (a workload declares one
+//     env for every runtime, so the two sides agree by construction);
+//   - secret_ref / config_map_ref → clusterSecret (host-side, a secret ref is
+//     resolved from the provider, and a config map has no host projection).
 //
-// Returns empty maps (not nil) when the service has no entries on a
+// Returns empty maps (not nil) when the workload has no entries on a
 // channel, so callers can pass results straight to diffParity.
-func extractKCLEnvVars(entities *KCLEntities, serviceName string) (hostKCL, clusterKCL, clusterSecret map[string]parityValue, hostSecretsPath string) {
+func extractKCLEnvVars(entities *KCLEntities, serviceName string) (hostKCL, clusterKCL, clusterSecret map[string]parityValue) {
 	hostKCL = map[string]parityValue{}
 	clusterKCL = map[string]parityValue{}
 	clusterSecret = map[string]parityValue{}
-	if entities == nil {
+	w := entities.FindWorkload(serviceName)
+	if w == nil {
 		return
 	}
-	for _, svc := range entities.Services {
-		if svc.Name != serviceName {
+	for _, ev := range w.EnvVars() {
+		if ev.Name == "" {
 			continue
 		}
-		// Service-level EnvVars (the top-level `env_vars` block on a KCL
-		// `forge.Service`) apply to BOTH host-mode and cluster-mode —
-		// KCL renders them at the service root, not under the deploy
-		// discriminator. The Deploy.Host / Deploy.Cluster slots are for
-		// mode-specific OVERRIDES (rare in practice). Without this top-
-		// level read the parity check silently misses every env_var
-		// most projects actually declare — surfaced during e2e
-		// validation on a fresh `forge project new` project.
-		for _, ev := range svc.EnvVars {
-			if ev.Name == "" {
-				continue
+		switch {
+		case ev.SecretRef != "":
+			clusterSecret[ev.Name] = parityValue{
+				Source:      parityKCLSecretRef,
+				SourceLabel: fmt.Sprintf("KCL spec.env secretRef name=%s key=%s", ev.SecretRef, ev.SecretKey),
 			}
-			switch {
-			case ev.SecretRef != "":
-				// Service-level secret_ref → cluster-side secret channel
-				// only. Host-mode has no kubernetes Secret projection.
-				clusterSecret[ev.Name] = parityValue{
-					Source:      parityKCLSecretRef,
-					SourceLabel: fmt.Sprintf("KCL service env_vars secret_ref name=%s key=%s", ev.SecretRef, ev.SecretKey),
-				}
-			case ev.ConfigMapRef != "":
-				clusterSecret[ev.Name] = parityValue{
-					Source:      parityKCLConfigMapRef,
-					SourceLabel: fmt.Sprintf("KCL service env_vars config_map_ref name=%s key=%s", ev.ConfigMapRef, ev.ConfigMapKey),
-				}
-			default:
-				// Inline value — applies to BOTH sides. Compose into
-				// both maps with the same source label so the diff
-				// shows "agree" rather than a spurious "missing in X".
-				hostKCL[ev.Name] = parityValue{
-					Source:      parityHostKCLEnvVar,
-					SourceLabel: "KCL service env_vars",
-					Value:       ev.Value,
-				}
-				clusterKCL[ev.Name] = parityValue{
-					Source:      parityClusterKCLEnvVar,
-					SourceLabel: "KCL service env_vars",
-					Value:       ev.Value,
-				}
+		case ev.ConfigMapRef != "":
+			clusterSecret[ev.Name] = parityValue{
+				Source:      parityKCLConfigMapRef,
+				SourceLabel: fmt.Sprintf("KCL spec.env configMapRef name=%s key=%s", ev.ConfigMapRef, ev.ConfigMapKey),
 			}
+		default:
+			hostKCL[ev.Name] = parityValue{Source: parityHostKCLEnvVar, SourceLabel: "KCL spec.env", Value: ev.Value}
+			clusterKCL[ev.Name] = parityValue{Source: parityClusterKCLEnvVar, SourceLabel: "KCL spec.env", Value: ev.Value}
 		}
-		if svc.Deploy.Host != nil {
-			hostSecretsPath = svc.Deploy.Host.SecretsFile
-			for _, ev := range svc.Deploy.Host.EnvVars {
-				if ev.Name == "" {
-					continue
-				}
-				// Host-side: only the inline value channel applies.
-				// secret_ref / config_map_ref on a HostDeploy is
-				// nonsensical (no projection target) but we
-				// defensively skip them rather than misattribute.
-				if ev.Value == "" && (ev.SecretRef != "" || ev.ConfigMapRef != "") {
-					continue
-				}
-				hostKCL[ev.Name] = parityValue{
-					Source:      parityHostKCLEnvVar,
-					SourceLabel: "KCL host_deploy.env_vars",
-					Value:       ev.Value,
-				}
-			}
-		}
-		if svc.Deploy.Cluster != nil {
-			for _, ev := range svc.Deploy.Cluster.EnvVars {
-				if ev.Name == "" {
-					continue
-				}
-				switch {
-				case ev.SecretRef != "":
-					clusterSecret[ev.Name] = parityValue{
-						Source:      parityKCLSecretRef,
-						SourceLabel: fmt.Sprintf("KCL secret_ref name=%s key=%s", ev.SecretRef, ev.SecretKey),
-					}
-				case ev.ConfigMapRef != "":
-					clusterSecret[ev.Name] = parityValue{
-						Source:      parityKCLConfigMapRef,
-						SourceLabel: fmt.Sprintf("KCL config_map_ref name=%s key=%s", ev.ConfigMapRef, ev.ConfigMapKey),
-					}
-				default:
-					clusterKCL[ev.Name] = parityValue{
-						Source:      parityClusterKCLEnvVar,
-						SourceLabel: "KCL cluster_deploy.env_vars",
-						Value:       ev.Value,
-					}
-				}
-			}
-		}
-		// First match wins — service names are unique by KCL
-		// validation.
-		break
 	}
 	return
 }

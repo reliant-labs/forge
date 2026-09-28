@@ -98,25 +98,27 @@ type DeployShape struct {
 	// the vocabulary of `forge env topology` (hosted, cluster, compose, host,
 	// external, static), sorted. Nil when the render carries no deploy
 	// contract to read them from. Only an env with "cluster" among them
-	// needs its `manifests` stream to carry anything: an env that runs on
+	// needs its `output.manifests` stream to carry anything: an env that runs on
 	// this machine, on compose, or behind a static host applies no
 	// Kubernetes objects, and an empty stream is the correct render for it.
 	Destinations []string
-	// Hosted is true when the environment deploys THROUGH a control plane:
-	// every workload is a tier published as a spec, the platform renders and
-	// runs it, and forge applies nothing to any cluster. Such an env renders
-	// an empty `manifests` stream by design.
+	// Hosted is true when the environment has a HOSTED part: workloads bound
+	// to forge.OnHosted, hosted databases or bucketless StaticSites, published
+	// to a control plane that renders and runs them. Hosting is per workload,
+	// so the same env may also deploy to a cluster (Destinations says so).
 	Hosted bool
-	// Workloads is how many tier workloads the control plane would admit.
+	// Workloads is how many hosted items the control plane would admit.
 	Workloads int
 	// Refusal is the deploy path's own refusal, verbatim: non-nil means
-	// `forge env deploy` would refuse this environment before publishing
-	// anything (a workload that is not a tier, a spec the platform would
-	// reject, a reference nothing can satisfy).
+	// `forge env deploy` would refuse the hosted part before publishing
+	// anything (a hosted item with no control_plane, a spec the Restricted
+	// profile refuses, a set the platform cannot render, a reference nothing
+	// can satisfy).
 	Refusal error
 	// PlatformObjects is a JSON list of the Kubernetes objects the platform
-	// runs for the admitted workloads, rendered by pkg/deploy.Render — the
-	// renderer the control plane's tier operators call. It is what the
+	// runs for the admitted items, rendered by pkg/deploy.RenderWorkloads
+	// under ProfileRestricted (and pkg/deploy.Render for a database) — the
+	// renderers the control plane's operators call. It is what the
 	// content checks (probes, resources, secrets, ServiceAccounts,
 	// migrations) read for a hosted env, so they judge what will actually
 	// run rather than an empty stream.

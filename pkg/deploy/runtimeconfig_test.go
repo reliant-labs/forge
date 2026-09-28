@@ -74,26 +74,21 @@ func TestRuntimeConfigJSIsByteStable(t *testing.T) {
 // rendering one as an empty variable would silently break CORS. Render
 // refuses; ResolveEnvWorkloadURLs is the step that makes it renderable.
 func TestRenderRefusesUnresolvedWorkloadURL(t *testing.T) {
-	spec := v1alpha1.SimpleBackendSpec{
-		Image: "ghcr.io/acme/api:v1", Ports: []int32{8080},
-		Env: []v1alpha1.EnvVar{{Name: "CORS_ORIGINS", WorkloadURL: &v1alpha1.WorkloadURLRef{Name: "web"}}},
-	}
-	if _, err := RenderSimpleBackend("api", spec, ctx); err == nil || !strings.Contains(err.Error(), "unresolved workloadURL") {
+	w := svc("api", httpPort(true))
+	w.Spec.Env = []v1alpha1.EnvVar{{Name: "CORS_ORIGINS", WorkloadURL: &v1alpha1.WorkloadURLRef{Name: "web"}}}
+	if _, err := RenderWorkloads([]v1alpha1.Workload{w}, v1alpha1.ProfileFull, ctx); err == nil || !strings.Contains(err.Error(), "unresolved workloadURL") {
 		t.Fatalf("err = %v, want an unresolved-reference refusal", err)
 	}
-	resolved, err := ResolveEnvWorkloadURLs(spec.Env, resolverOf(map[string]string{"web": "https://web.example.com/app"}))
+	resolved, err := ResolveEnvWorkloadURLs(w.Spec.Env, resolverOf(map[string]string{"web": "https://web.example.com/app"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Env[0].WorkloadURL == nil {
+	if w.Spec.Env[0].WorkloadURL == nil {
 		t.Fatal("ResolveEnvWorkloadURLs mutated its input")
 	}
-	spec.Env = resolved
-	objs, err := RenderSimpleBackend("api", spec, ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := get(byKind(t, objs)["Deployment"], "spec", "template", "spec", "containers", 0, "env", 0)
+	w.Spec.Env = resolved
+	objs := render(t, v1alpha1.ProfileFull, w)
+	env := get(podOf(objects(t, objs)["Deployment/api"]), "containers", 0, "env", 0)
 	if get(env, "value") != "https://web.example.com/app" {
 		t.Fatalf("rendered env = %v", env)
 	}

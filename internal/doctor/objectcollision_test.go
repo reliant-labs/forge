@@ -23,7 +23,7 @@ import (
 func renderIn(t *testing.T, env, cluster string, objs ...string) envRender {
 	t.Helper()
 	return renderFromJSON(t, env, `{"output":{"cluster_target":{"cluster":"`+cluster+
-		`","namespace":"ignored"}},"manifests":[`+strings.Join(objs, ",")+`]}`)
+		`","namespace":"ignored"},"manifests":[`+strings.Join(objs, ",")+`]}}`)
 }
 
 // deployIn renders a Deployment carrying the app label forge stamps, so the
@@ -101,13 +101,13 @@ func TestObjectCollisionIgnoresSameNamespaceOnDifferentClusters(t *testing.T) {
 // k3d-control-plane. An env cannot collide with ITSELF, and a check that said
 // otherwise would be permanently yellow on a correct project.
 func TestObjectCollisionNeverSelfCollidesOnOneEnvSpanningClusters(t *testing.T) {
-	// The per-service `deploy.cluster` is what pins workspace-proxy to the
-	// daemon cluster; everything else rides the env-wide cluster_target.
+	// The workload's own OnCluster runtime is what pins workspace-proxy to
+	// the daemon cluster; everything else rides the env-wide cluster_target.
 	body := `{"output":{"cluster_target":{"cluster":"k3d-control-plane","namespace":"control-plane-dev"},` +
-		`"services":[{"name":"workspace-proxy","deploy":{"type":"cluster","cluster":"k3d-cp-daemon"}}]},` +
+		`"workloads":[{"name":"workspace-proxy","runtime":{"type":"cluster","cluster":"k3d-cp-daemon"}}],` +
 		`"manifests":[` +
 		deployIn("workspace-proxy", "control-plane-dev", "proxy:dev") + `,` +
-		deployIn("daemon-gateway", "control-plane-dev", "gw:dev") + `]}`
+		deployIn("daemon-gateway", "control-plane-dev", "gw:dev") + `]}}`
 	env := envWithRender([]envRender{renderFromJSON(t, "dev", body)})
 
 	got := CheckObjectCollision(context.Background(), env)
@@ -202,7 +202,7 @@ func TestObjectCollisionIgnoresDistinctClusterScopedNames(t *testing.T) {
 // invents the collision; assuming distinct ones hides it.
 func TestObjectCollisionReportsUndeterminedWhenClusterIsUnknown(t *testing.T) {
 	body := func(ns string) string {
-		return `{"manifests":[` + deployIn("api", ns, "api:1") + `]}`
+		return `{"output":{"manifests":[` + deployIn("api", ns, "api:1") + `]}}`
 	}
 	env := envWithRender([]envRender{
 		renderFromJSON(t, "dev", body("shared-ns")),

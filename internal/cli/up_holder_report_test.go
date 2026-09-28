@@ -19,13 +19,8 @@ import (
 // readiness gate can fail on: one held by a foreign process, one bound by
 // nobody. Only the foreign one has a holder to report.
 func holderEntities() *KCLEntities {
-	return &KCLEntities{Services: []ServiceEntity{
-		{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-			EnvVars: []KCLEnvVar{
-				{Name: "METRICS_PORT", Value: "3091"},
-				{Name: "PPROF_PORT", Value: "6060"},
-			},
-		}}},
+	return &KCLEntities{Workloads: []WorkloadEntity{
+		hostWL("api", withListenPorts(3091, 6060)),
 	}}
 }
 

@@ -13,7 +13,7 @@ Exercises:
     defaults applied.
   * An explicit reachability + namespace + key project through.
   * No kubeconfig_secrets => empty list (stable key).
-  * Never appears in render_manifests.
+  * Never appears in output.manifests.
 """
 
 import forge
@@ -48,14 +48,14 @@ _bundle = forge.Bundle {
         forge.Cluster { name = "workload", owner = _cp }
     ]
     kubeconfig_secrets = [_default_reach, _explicit]
-    services = []
+    workloads = []
 }
 
-_no_kubeconfig_bundle = forge.Bundle { services = [] }
+_no_kubeconfig_bundle = forge.Bundle { workloads = [] }
 
 output = forge.render(_bundle)
 output_none = forge.render(_no_kubeconfig_bundle)
-manifests = forge.render_manifests(_bundle)
+manifests = forge.render(_bundle).manifests
 
 # ── Invariants ─────────────────────────────────────────────────────
 
@@ -78,6 +78,6 @@ assert_explicit_reach = output.kubeconfig_secrets[1].reachability == "endpoint"
 assert_none_empty = output_none.kubeconfig_secrets == []
 
 # The minted Secret is NEVER a rendered manifest — no Secret named after
-# a kubeconfig declaration appears in render_manifests.
+# a kubeconfig declaration appears in output.manifests.
 assert_no_manifest = len([m for m in manifests \
     if m.kind == "Secret" and m.metadata.name == "workload-kubeconfig"]) == 0

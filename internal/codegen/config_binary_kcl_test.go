@@ -32,8 +32,8 @@ func TestPerBinaryKCL_EmitsOneSchemaAndLambdaPerBinary(t *testing.T) {
 		"schema ConfigSecretRef:", // declared once for the module
 		"schema AdminConfig:",
 		"schema GatewayConfig:",
-		"adminConfigEnvMap = lambda c: AdminConfig, config_secrets: [str] -> {str: forge.EnvSource} {",
-		"gatewayConfigEnvMap = lambda c: GatewayConfig, config_secrets: [str] -> {str: forge.EnvSource} {",
+		"adminConfigEnvMap = lambda c: AdminConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {",
+		"gatewayConfigEnvMap = lambda c: GatewayConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("per-binary config module missing %q\n%s", want, got)
@@ -59,7 +59,7 @@ func TestPerBinaryKCL_SecretIsScopedToItsBinary(t *testing.T) {
 	}
 	gatewayBlock := got[strings.Index(got, "gatewayConfigEnvMap"):]
 
-	if !strings.Contains(adminBlock, `"ADMIN_API_KEY" = {from_secret =`) {
+	if !strings.Contains(adminBlock, `"ADMIN_API_KEY" = forge.SecretRef {`) {
 		t.Error("admin's projection should carry ADMIN_API_KEY as a secret reference")
 	}
 	if strings.Contains(gatewayBlock, "ADMIN_API_KEY") {
@@ -100,12 +100,12 @@ func TestPerBinaryKCL_EndToEndDisjointEnvMaps(t *testing.T) {
 
 	write("kcl.mod", "[package]\nname = \"perbin_proof\"\n")
 	write(ConfigSchemaModule+".k", perBinaryKCL(t))
-	// A minimal local `forge` module supplying just EnvSource. The real
+	// A minimal local `forge` module supplying just SecretRef. The real
 	// forge module is deliberately NOT used here: this test is about the
 	// CONFIG projection, and the deploy vocabulary around it is being
 	// reshaped separately.
 	write("forge/kcl.mod", "[package]\nname = \"forge\"\n")
-	write("forge/core.k", "schema EnvSource:\n    value?: str\n    from_secret?: SecretKeySel\n\nschema SecretKeySel:\n    name: str\n    key: str\n")
+	write("forge/core.k", "schema SecretRef:\n    name: str\n    key: str\n    optional?: bool\n    store_key?: str\n")
 
 	write("main.k", `import `+ConfigSchemaModule+` as config_gen
 
@@ -134,14 +134,14 @@ assert_admin_lacks_gateway_field = "UPSTREAM_TIMEOUT_MS" not in _admin_env
 # Compared field-by-field: a typed schema instance does not compare equal to
 # a bare dict literal in KCL, so == against {name = ..., key = ...} would be
 # false even when the value is right.
-assert_secret_name = _admin_env["ADMIN_API_KEY"].from_secret.name == "myproj-secrets"
-assert_secret_key = _admin_env["ADMIN_API_KEY"].from_secret.key == "admin_api_key"
-assert_secret_not_inline = _admin_env["ADMIN_API_KEY"].value == Undefined
+assert_secret_name = _admin_env["ADMIN_API_KEY"].name == "myproj-secrets"
+assert_secret_key = _admin_env["ADMIN_API_KEY"].key == "admin_api_key"
+assert_secret_not_inline = typeof(_admin_env["ADMIN_API_KEY"]) != "str"
 
 # The SHARED base is present in both, resolved independently per process:
 # admin pinned debug, gateway inherited the default.
-assert_shared_admin = _admin_env["LOG_LEVEL"].value == "debug"
-assert_shared_gateway = _gateway_env["LOG_LEVEL"].value == "info"
+assert_shared_admin = str(_admin_env["LOG_LEVEL"]) == "debug"
+assert_shared_gateway = str(_gateway_env["LOG_LEVEL"]) == "info"
 `)
 
 	// kcltest.Run, not exec+CombinedOutput: under a parallel `go test ./...`
@@ -197,7 +197,7 @@ func TestPerBinaryKCL_CrossBinaryFieldIsATypeError(t *testing.T) {
 	write("kcl.mod", "[package]\nname = \"perbin_typeerr\"\n")
 	write(ConfigSchemaModule+".k", perBinaryKCL(t))
 	write("forge/kcl.mod", "[package]\nname = \"forge\"\n")
-	write("forge/core.k", "schema EnvSource:\n    value?: str\n    from_secret?: SecretKeySel\n\nschema SecretKeySel:\n    name: str\n    key: str\n")
+	write("forge/core.k", "schema SecretRef:\n    name: str\n    key: str\n    optional?: bool\n    store_key?: str\n")
 	write("main.k", "import "+ConfigSchemaModule+" as config_gen\n\nbad = config_gen.GatewayConfig {admin_api_key = \"leak\"}\n")
 
 	cmd := exec.CommandContext(t.Context(), "kcl", "run", ".", "--format", "json")

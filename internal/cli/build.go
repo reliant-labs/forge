@@ -1070,24 +1070,23 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 		frontends = filterFrontendsForBuild(frontends, entities)
 	}
 
-	// KCL-driven docker skip: with --env set, frontends that ship as
-	// images (cluster / external / compose deploy) still need a docker
-	// build; host-mode frontends and the legacy "no deploy block" case
-	// stay docker-free. Also skip the project docker build when every
-	// declared service is host or build-only (no cluster service in
-	// this env → no image to push to the cluster).
+	// KCL-driven docker skip: with --env set, no frontend builds an image
+	// (a frontend served from a container is a Workload with a
+	// DockerBuild, built by buildKCLDockerShell), and the project image is
+	// built only when some workload that runs it needs it
+	// (envNeedsProjectImage).
 	dockerFrontends := frontends
 	skipProjectDocker := false
 	if entities != nil {
-		dockerFrontends = kclImageFrontends(frontends, entities)
-		if !kclHasClusterService(entities) && !kclHasClusterFrontend(entities) {
+		dockerFrontends = nil
+		if !envNeedsProjectImage(entities) {
 			skipProjectDocker = true
 		}
 	}
 
 	// Per-env platform override from KCL: the env's declared
-	// cluster_target.platform, else the first cluster service's
-	// deploy.Cluster.Platform (kclFirstClusterPlatform). Falls back to
+	// cluster_target.platform, else the first Cluster-bound workload's
+	// runtime platform (kclFirstClusterPlatform). Falls back to
 	// forge.yaml's deploy.target_arch otherwise.
 	cfgArchForDocker := cfg.Deploy.TargetArch
 	if entities != nil {
@@ -1555,10 +1554,9 @@ func resolveGoTargets(buildBinary bool, entities *KCLEntities, cfg *config.Proje
 }
 
 // goBuildTargetsFromKCL resolves the unique set of go-build targets from
-// the KCL service set. Each service's EffectiveBuild() supplies its
-// GoBuild (synthesizing the ./cmd/<name> default when the service omits
-// `build`); only build.type=="go" services contribute here (docker /
-// shell dispatch elsewhere). Dedup is by (cmd, outputName) so the shared
+// the env's workloads — of every runtime, since a host go-run still needs
+// its module to build. Only a declared GoBuild contributes (docker / shell
+// dispatch elsewhere); a workload with no build is not built by forge. Dedup is by (cmd, outputName) so the shared
 // project binary — which many server/worker/cron services map onto —
 // builds exactly once. The first service to claim a (cmd, output) wins
 // its flags; a divergent second declaration for the same target is a
@@ -1569,29 +1567,29 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 	}
 	seen := map[string]bool{}
 	var out []goBuildTarget
-	for _, svc := range entities.Services {
-		b := svc.EffectiveBuild()
-		if b.Type != "go" || b.Go == nil {
+	for _, w := range entities.Workloads {
+		g := w.GoBuild()
+		if g == nil {
 			continue
 		}
-		outName := b.Go.OutputName
+		outName := g.OutputName
 		if outName == "" {
-			outName = svc.Name
+			outName = w.Name
 		}
-		key := b.Go.Cmd + "\x00" + outName
+		key := g.Cmd + "\x00" + outName
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		out = append(out, goBuildTarget{
-			cmd:        b.Go.Cmd,
+			cmd:        g.Cmd,
 			outputName: outName,
-			goos:       b.Go.GOOS,
-			goarch:     b.Go.GOARCH,
-			ldflags:    b.Go.Ldflags,
-			tags:       b.Go.Tags,
-			flags:      b.Go.Flags,
-			env:        b.Go.Env,
+			goos:       g.GOOS,
+			goarch:     g.GOARCH,
+			ldflags:    g.Ldflags,
+			tags:       g.Tags,
+			flags:      g.Flags,
+			env:        g.Env,
 		})
 	}
 	return out
@@ -2281,7 +2279,7 @@ func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEnt
 			fmt.Printf("[build] skipping prod build for %s (host-mode deploy)\n", fe.Name)
 			continue
 		}
-		if mode == frontendDeployStaticSite && entities.ControlPlane != nil {
+		if fe, ok := findFrontendEntity(entities, fe.Name); ok && frontendIsHosted(fe) {
 			// Built by buildHostedStaticSites, with the env's runtime config
 			// assembled in — a plain `npm run build` here would only repeat it.
 			continue
@@ -2320,125 +2318,73 @@ func projectDirForKCL() string {
 	return "."
 }
 
-// summarizeKCLBuildPlan prints the per-deploy.type split so users see,
-// in one glance, which services this `forge build <env>` will
-// docker-build vs skip vs treat as build-only-variants. The skip set
-// matches the runtime behaviour wired in runBuild — host and build-only
-// services are excluded from the docker layer; cluster services drive
-// it.
+// summarizeKCLBuildPlan prints the per-runtime split so users see, in one
+// glance, where each workload of this `forge build <env>` runs and whether
+// forge builds its image.
 func summarizeKCLBuildPlan(e *KCLEntities) {
 	if e == nil {
 		return
 	}
-	if hosts := e.HostServiceNames(); len(hosts) > 0 {
-		fmt.Printf("[build]   Host-mode (skip docker): %s\n", strings.Join(hosts, ", "))
+	line := func(label string, names []string) {
+		if len(names) > 0 {
+			fmt.Printf("[build]   %-26s %s\n", label+":", strings.Join(names, ", "))
+		}
 	}
-	if cluster := e.ClusterServiceNames(); len(cluster) > 0 {
-		fmt.Printf("[build]   Cluster-mode (docker):   %s\n", strings.Join(cluster, ", "))
-	}
-	if sb := e.SimpleBackendServiceNames(); len(sb) > 0 {
+	line("Host (skip docker)", e.WorkloadNames(RuntimeHost))
+	line("Compose (compose builds)", e.WorkloadNames(RuntimeCompose))
+	for _, rt := range []string{RuntimeCluster, RuntimeHosted} {
 		var built, named []string
-		for _, s := range e.Services {
-			if s.Deploy.Type != "simple-backend" {
-				continue
-			}
-			if s.Build.Type != "" {
-				built = append(built, s.Name)
+		for _, w := range e.WorkloadsOn(rt) {
+			if w.Build.Type != "" {
+				built = append(built, w.Name)
 			} else {
-				named = append(named, s.Name)
+				named = append(named, w.Name)
 			}
 		}
-		if len(built) > 0 {
-			fmt.Printf("[build]   Simple-backend (docker): %s\n", strings.Join(built, ", "))
-		}
-		if len(named) > 0 {
-			fmt.Printf("[build]   Simple-backend (image):  %s  (declared image, not built here)\n", strings.Join(named, ", "))
-		}
+		line(rt+" (built here)", built)
+		line(rt+" (declared image)", named)
 	}
-	if bo := e.BuildOnlyServiceNames(); len(bo) > 0 {
-		fmt.Printf("[build]   Build-only (binary):     %s\n", strings.Join(bo, ", "))
-	}
+	line("Build-only (binary)", e.WorkloadNames(RuntimeBuildOnly))
 	if len(e.Frontends) > 0 {
 		names := make([]string, 0, len(e.Frontends))
 		for _, f := range e.Frontends {
 			names = append(names, f.Name)
 		}
-		fmt.Printf("[build]   Frontends (skip docker): %s\n", strings.Join(names, ", "))
+		line("Frontends (skip docker)", names)
 	}
 }
 
-// kclHasClusterFrontend reports whether the entity set contains at least
-// one FRONTEND with deploy.Type == "cluster" — a frontend that ships as a
-// container image and renders a Deployment, rather than deploying to
-// Firebase Hosting or being dev-served only.
-func kclHasClusterFrontend(e *KCLEntities) bool {
-	for _, f := range e.Frontends {
-		if f.Deploy != nil && f.Deploy.Type == "cluster" {
-			return true
-		}
-	}
-	return false
-}
-
-// kclImageFrontends filters the configured frontends down to the ones that
-// need a docker image built: those whose KCL declares a deploy target that
-// SHIPS AN IMAGE (today, cluster). A Firebase-hosted frontend produces a
-// static export deployed by the Firebase provider, and a frontend with no
-// deploy block is dev-served only — neither needs an image, which is why
-// this list was previously always empty under a KCL render.
-//
-// Matching is by NAME against the rendered entities, so a frontend present
-// in forge.yaml but absent from this env's KCL correctly gets no image.
-func kclImageFrontends(frontends []config.FrontendConfig, e *KCLEntities) []config.FrontendConfig {
+// findFrontendEntity returns the named frontend from the rendered env.
+func findFrontendEntity(e *KCLEntities, name string) (FrontendEntity, bool) {
 	if e == nil {
-		return nil
+		return FrontendEntity{}, false
 	}
-	wanted := make(map[string]bool, len(e.Frontends))
 	for _, f := range e.Frontends {
-		if f.Deploy != nil && f.Deploy.Type == "cluster" {
-			wanted[f.Name] = true
+		if f.Name == name {
+			return f, true
 		}
 	}
-	if len(wanted) == 0 {
-		return nil
-	}
-	var out []config.FrontendConfig
-	for _, fe := range frontends {
-		if wanted[fe.Name] {
-			out = append(out, fe)
-		}
-	}
-	return out
+	return FrontendEntity{}, false
 }
 
-// kclHasClusterService reports whether the entity set contains at least
-// one service with deploy.Type == "cluster". When false the project
-// docker build is skipped: there's no in-cluster Application to ship.
+// envNeedsProjectImage reports whether this env needs the PROJECT image —
+// the image `forge build` produces from the project's Dockerfile, which
+// every forge-built Go workload runs (its args select the subcommand). True
+// when some workload with a GoBuild runs from an image: bound to a cluster,
+// to the control plane, or shipped build-only.
 //
-// The question this asks is "does forge need to BUILD an image for this
-// env", not "does this env touch a cluster" — which is why a SimpleBackend
-// answers by its BUILD, not its deploy type:
-//
-//   - one that only names an image (CI pushed it, or it is third-party) is
-//     not counted. ServiceEntity.EffectiveBuild synthesizes no build for
-//     it, and a project image here would be pushed under a tag nothing
-//     references.
-//   - one that DECLARES a build (`build = forge.build_of(...)`) is this
-//     project's own backend, and IS counted. Its image is the project
-//     image; the build state records the digest under the service's
-//     `image`, which is exactly the key hostedArtifactKey pins it by at
-//     `forge release cut` and the hosted deploy. Skipping it compiled the
-//     binary and then shipped nothing, leaving the release with no digest
-//     for the backend it exists to deploy.
-func kclHasClusterService(e *KCLEntities) bool {
-	for _, s := range e.Services {
-		switch s.Deploy.Type {
-		case "cluster":
+// It asks "does forge need to BUILD an image for this env", not "does this
+// env touch a cluster": a workload that only names a third-party image
+// (`image` set, no build) is not counted, and a host workload runs its
+// binary directly.
+func envNeedsProjectImage(e *KCLEntities) bool {
+	for _, w := range e.Workloads {
+		if w.GoBuild() == nil {
+			continue
+		}
+		switch w.Runtime.Type {
+		case RuntimeCluster, RuntimeHosted, RuntimeBuildOnly:
 			return true
-		case "simple-backend":
-			if s.Build.Type != "" {
-				return true
-			}
 		}
 	}
 	return false
@@ -2456,9 +2402,9 @@ func kclFirstClusterPlatform(e *KCLEntities) string {
 	if p := e.ClusterTarget.field("platform"); p != "" {
 		return p
 	}
-	for _, s := range e.Services {
-		if s.Deploy.Cluster != nil && s.Deploy.Cluster.Platform != "" {
-			return s.Deploy.Cluster.Platform
+	for _, w := range e.WorkloadsOn(RuntimeCluster) {
+		if w.Runtime.Cluster.Platform != "" {
+			return w.Runtime.Cluster.Platform
 		}
 	}
 	return ""
@@ -2471,20 +2417,19 @@ func kclFirstClusterPlatform(e *KCLEntities) string {
 // so users see the full list of failures from one run.
 func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir string) []buildResult {
 	var out []buildResult
-	for _, svc := range e.Services {
-		if svc.Deploy.Type != "build-only" || svc.Deploy.BuildOnly == nil {
+	for _, w := range e.WorkloadsOn(RuntimeBuildOnly) {
+		// The variant's go-build TARGET is the workload's GoBuild cmd: each
+		// variant layers its own ldflags/tags/arch on that one package. A
+		// build-only workload with variants and no GoBuild has nothing to
+		// build them from.
+		g := w.GoBuild()
+		if len(w.Runtime.BuildOnly.BuildVariants) > 0 && (g == nil || g.Cmd == "") {
+			out = append(out, buildResult{name: w.Name, kind: "go", err: fmt.Errorf(
+				"build-only workload %s declares build_variants but no GoBuild to build them from", w.Name)})
 			continue
 		}
-		// The variant's go-build TARGET is the service's effective build
-		// cmd (no ./cmd hardcode): a build-only service still declares its
-		// build via the Build union, and each variant layers its own
-		// ldflags/tags/arch on top of that single target package.
-		buildCmd := "./cmd/" + svc.Name
-		if b := svc.EffectiveBuild(); b.Type == "go" && b.Go != nil && b.Go.Cmd != "" {
-			buildCmd = b.Go.Cmd
-		}
-		for _, v := range svc.Deploy.BuildOnly.BuildVariants {
-			out = append(out, buildVariant(ctx, svc.Name, buildCmd, v, outputDir))
+		for _, v := range w.Runtime.BuildOnly.BuildVariants {
+			out = append(out, buildVariant(ctx, w.Name, g.Cmd, v, outputDir))
 		}
 	}
 	return out
@@ -2550,18 +2495,17 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 //     target / build_args. A DockerBuild is the ONLY per-service image
 //     build — there is no unconditional auto-docker step for these.
 //
-// A service whose EffectiveBuild() is a GoBuild (handled by the go-build
-// path) or a ShellBuild (handled by buildExternalServices) is skipped
-// here. Failures are captured, not short-circuited, so the summary shows
+// A workload whose build is a GoBuild (handled by the go-build path) or a
+// ShellBuild (handled by buildExternalServices) is skipped here. Failures are captured, not short-circuited, so the summary shows
 // the full set.
 func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, opts buildOptions, cfgArchForDocker, resolvedTag string) []buildResult {
 	var out []buildResult
-	for _, svc := range e.Services {
-		switch svc.EffectiveBuild().Type {
+	for _, w := range e.Workloads {
+		switch w.Build.Type {
 		case "docker":
-			out = append(out, buildServiceDocker(ctx, cfg, svc.Name, svc.EffectiveBuild().Docker, opts, cfgArchForDocker, resolvedTag))
+			out = append(out, buildServiceDocker(ctx, cfg, w.Name, w.Build.Docker, opts, cfgArchForDocker, resolvedTag))
 		case "remote":
-			out = append(out, buildServiceRemote(svc.Name))
+			out = append(out, buildServiceRemote(w.Name))
 		}
 	}
 	return out

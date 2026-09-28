@@ -18,9 +18,9 @@ func workloadURLProject(t *testing.T, env, bundleBody string) string {
 	dir := t.TempDir()
 	files := map[string]string{
 		"forge.yaml":         "name: acme\nmodule_path: github.com/example/acme\nversion: 0.1.0\nfrontends: []\n",
-		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n",
-		"deploy/kcl/" + env + "/main.k": "import forge\nimport forge.tiers\n\n_bundle = forge.Bundle {\n" + bundleBody + "\n}\n\n" +
-			"output = forge.render(_bundle)\nmanifests = forge.render_manifests(_bundle, forge.image_tag(\"" + env + "\"), forge.image_digests(), False)\n",
+		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
+		"deploy/kcl/" + env + "/main.k": "import forge\nimport forge.tiers\nimport forge.workloads as fw\n\n_bundle = forge.Bundle {\n" + bundleBody + "\n}\n\n" +
+			"output = forge.render(_bundle)\n",
 	}
 	for rel, body := range files {
 		p := filepath.Join(dir, rel)
@@ -37,16 +37,12 @@ func workloadURLProject(t *testing.T, env, bundleBody string) string {
 const hostedWorkloadURLBundle = `    project = "acme"
     env = "prod"
     control_plane = forge.ControlPlane { endpoint = "https://cp.example" }
-    services = [forge.RenderedWorkload {
+    workloads = [fw.Workload {
         name = "api"
-        deploy = forge.SimpleBackend {
-            spec = tiers.SimpleBackend {
-                image = "ghcr.io/acme/api:v1"
-                ports = [8080]
-                network = "public"
-                env = [tiers.EnvVar { name = "CORS_ORIGINS", workloadURL = forge.WorkloadURL { workload = "web" } }]
-            }
-        }
+        image = "ghcr.io/acme/api:v1"
+        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+        env = {CORS_ORIGINS = forge.WorkloadURL {workload = "web"}}
+        runtime = forge.OnHosted {}
     }]
     frontends = [forge.Frontend {
         name = "web"
@@ -59,11 +55,12 @@ const hostedWorkloadURLBundle = `    project = "acme"
         deploy = forge.StaticSite { public_dir = "dist", base_path = "/app" }
     }]`
 
-// TestWorkloadURL_HostedLowersToSpecReferences: on a hosted env the render
-// leaves every forge.WorkloadURL a REFERENCE, and the hosted groups publish
-// it verbatim — the StaticSite spec's runtimeConfig and the SimpleBackend's
-// env workloadURL — for the control plane to resolve. Nothing resolved means
-// nothing for forge to write into a config.js.
+// TestWorkloadURL_HostedLowersToSpecReferences: a HOSTED referrer (an
+// OnHosted workload, a bucketless StaticSite) leaves every forge.WorkloadURL a
+// REFERENCE, and the hosted group publishes it verbatim — the StaticSite
+// spec's runtimeConfig and the Workload CR's env workloadURL — for the
+// control plane to resolve. Nothing resolved means nothing for forge to write
+// into a config.js.
 func TestWorkloadURL_HostedLowersToSpecReferences(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
@@ -74,22 +71,22 @@ func TestWorkloadURL_HostedLowersToSpecReferences(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	if o := frontendRuntimeOverlays(entities); len(o) != 0 {
-		t.Fatalf("hosted env resolved runtime config %v; the control plane resolves it", o)
+		t.Fatalf("hosted frontend resolved runtime config %v; the control plane resolves it", o)
 	}
 	groups, err := buildDeployGroups("prod", entities, "")
 	if err != nil || len(groups) != 1 {
-		t.Fatalf("groups = %+v err = %v", groups, err)
+		t.Fatalf("groups = %+v err = %v (hosted workload + hosted site = one hosted group)", groups, err)
 	}
-	var static, backend *deploytarget.HostedWorkload
+	var static, workload *deploytarget.HostedWorkload
 	for _, s := range groups[0].Services {
 		switch s.Name {
 		case "web":
 			static = s.Hosted
 		case "api":
-			backend = s.Hosted
+			workload = s.Hosted
 		}
 	}
-	if static == nil || static.Static == nil || backend == nil || backend.Backend == nil {
+	if static == nil || static.Static == nil || workload == nil || workload.Workload == nil {
 		t.Fatalf("hosted workloads missing: %+v", groups[0].Services)
 	}
 	rc := static.Static.RuntimeConfig
@@ -102,17 +99,18 @@ func TestWorkloadURL_HostedLowersToSpecReferences(t *testing.T) {
 	if err := static.Static.Validate(); err != nil {
 		t.Errorf("published StaticSite spec does not validate: %v", err)
 	}
-	env := backend.Backend.Env
+	env := workload.Workload.Env
 	if len(env) != 1 || env[0].WorkloadURL == nil || env[0].WorkloadURL.Name != "web" || env[0].Value != "" {
-		t.Errorf("backend env = %+v, want CORS_ORIGINS carrying the reference to web", env)
+		t.Errorf("workload env = %+v, want CORS_ORIGINS carrying the reference to web", env)
 	}
 }
 
-// TestWorkloadURL_LocalEnvResolvesAtRender: on a non-hosted env every
-// reference is lowered at render time — the frontend's runtime document gets
-// the host service's URL, and the SimpleBackend's env var reaches the
-// Kubernetes Deployment as a VALUE (pkg/deploy.Render would refuse a
-// reference, so this also proves no reference survives to extraction).
+// TestWorkloadURL_LocalEnvResolvesAtRender: a host/cluster referrer's
+// references are lowered at render time — the frontend's runtime document
+// gets the host workload's URL, and the cluster workload's env var reaches
+// the Kubernetes Deployment as a VALUE (pkg/deploy.RenderWorkloads refuses a
+// reference on a cluster record, so this also proves none survives to
+// extraction).
 func TestWorkloadURL_LocalEnvResolvesAtRender(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
@@ -120,19 +118,14 @@ func TestWorkloadURL_LocalEnvResolvesAtRender(t *testing.T) {
 	dir := workloadURLProject(t, "dev", `    project = "acme"
     env = "dev"
     cluster_target = forge.ClusterTarget { cluster = "k3d-acme", namespace = "acme-dev", registry = "localhost:5000" }
-    services = [
-        forge.RenderedWorkload { name = "api", deploy = forge.HostDeploy { listen_ports = [8085] } }
-        forge.RenderedWorkload {
+    workloads = [
+        fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/acme"}, args = ["api"], runtime = forge.OnHost {listen_ports = [8085]}}
+        fw.Workload {
             name = "admin-api"
-            deploy = forge.SimpleBackend {
-                cluster = "k3d-acme"
-                namespace = "acme-dev"
-                spec = tiers.SimpleBackend {
-                    image = "ghcr.io/acme/admin:v1"
-                    ports = [8080]
-                    env = [tiers.EnvVar { name = "CORS_ORIGINS", workloadURL = forge.WorkloadURL { workload = "web" } }]
-                }
-            }
+            image = "ghcr.io/acme/admin:v1"
+            ports = [fw.Port {name = "http", port = 8080}]
+            env = {CORS_ORIGINS = forge.WorkloadURL {workload = "web"}}
+            runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev", registry = "localhost:5000"}}
         }
     ]
     frontends = [forge.Frontend {

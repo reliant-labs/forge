@@ -93,7 +93,15 @@ var (
 	reSchemaField = regexp.MustCompile(`^    (\w+)(\??):\s*(.*)$`)
 	reCheckBlock  = regexp.MustCompile(`^    check:\s*$`)
 	reBareSchema  = regexp.MustCompile(`^\w+$`)
+	// A top-level type alias: `type Runtime = OnHost | OnCompose | ...`.
+	reTypeAlias = regexp.MustCompile(`^type\s+(\w+)\s*=\s*(.+?)\s*$`)
 )
+
+// targetFields are the fields whose union type is a set of deploy targets:
+// a frontend's `deploy` (FirebaseHosting | StaticSite) and a workload's
+// `runtime` (OnHost | OnCompose | OnCluster | OnHosted | BuildOnly, declared
+// through the `Runtime` alias).
+var targetFields = map[string]bool{"deploy": true, "runtime": true}
 
 // schemaDecl is one parsed `schema X:` block.
 type schemaDecl struct {
@@ -180,6 +188,7 @@ func DeployTargetsFor(workloadSchema string) ([]string, error) {
 func parseModule(fsys fs.FS) (map[string]schemaDecl, map[string][]string, error) {
 	schemas := map[string]schemaDecl{}
 	unions := map[string][]string{}
+	aliases := map[string][]string{}
 
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -188,15 +197,34 @@ func parseModule(fsys fs.FS) (map[string]schemaDecl, map[string][]string, error)
 		if d.IsDir() || path.Ext(p) != ".k" {
 			return nil
 		}
+		// tiers/ is the generated wire package. Its schemas share names
+		// with the root package's (StaticSite, ManagedDatabase, Workload)
+		// but are never what a union here references, and a bare-name map
+		// would let whichever file walked last win.
+		if strings.HasPrefix(p, "tiers/") {
+			return nil
+		}
 		src, readErr := fs.ReadFile(fsys, p)
 		if readErr != nil {
 			return readErr
 		}
-		parseFile(p, string(src), schemas, unions)
+		parseFile(p, string(src), schemas, unions, aliases)
 		return nil
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	// A field typed by an alias (`runtime?: Runtime`) names its members
+	// through it. Aliases may be declared in any file, so they resolve
+	// after the walk.
+	for owner, members := range unions {
+		if len(members) == 1 {
+			if expanded, ok := aliases[members[0]]; ok {
+				unions[owner] = expanded
+				continue
+			}
+			delete(unions, owner)
+		}
 	}
 	return schemas, unions, nil
 }
@@ -208,7 +236,7 @@ func parseModule(fsys fs.FS) (map[string]schemaDecl, map[string][]string, error)
 // indented prose and KCL EXAMPLES that look exactly like field declarations,
 // `check:` blocks whose conditions wrap across backslash continuations, and
 // comment blocks between fields.
-func parseFile(file, src string, schemas map[string]schemaDecl, unions map[string][]string) {
+func parseFile(file, src string, schemas map[string]schemaDecl, unions map[string][]string, aliases map[string][]string) {
 	var cur *schemaDecl
 	inDoc := false   // inside a """...""" docstring
 	inCheck := false // past the `check:` line of the current schema
@@ -239,6 +267,13 @@ func parseFile(file, src string, schemas map[string]schemaDecl, unions map[strin
 			continue
 		}
 
+		if m := reTypeAlias.FindStringSubmatch(line); m != nil {
+			flush()
+			if members := unionMembers(m[2]); len(members) > 0 {
+				aliases[m[1]] = members
+			}
+			continue
+		}
 		if m := reSchemaDecl.FindStringSubmatch(line); m != nil {
 			flush()
 			cur = &schemaDecl{name: m[1], file: file, line: lineNo}
@@ -304,9 +339,14 @@ func parseFile(file, src string, schemas map[string]schemaDecl, unions map[strin
 			Default:  strings.TrimSpace(def),
 		})
 
-		if name == "deploy" {
+		if targetFields[name] {
+			typ = strings.TrimSpace(typ)
 			if members := unionMembers(typ); len(members) > 0 {
 				unions[cur.name] = members
+			} else if reBareSchema.MatchString(typ) {
+				// A single name: an alias to expand after the walk, or
+				// dropped there if it is not one.
+				unions[cur.name] = []string{typ}
 			}
 		}
 	}

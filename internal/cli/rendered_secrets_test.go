@@ -38,19 +38,9 @@ func TestDeclaredSecret(t *testing.T) {
 // ANOTHER group must NOT appear.
 func TestReferencedSecretNamesForGroup(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
-			{
-				Name: "cp-api",
-				EnvVars: []KCLEnvVar{
-					{Name: "DB_PASSWORD", SecretRef: "cp-db", SecretKey: "password"},
-				},
-			},
-			{
-				Name: "workload-api",
-				EnvVars: []KCLEnvVar{
-					{Name: "TOKEN", SecretRef: "workload-token", SecretKey: "token"},
-				},
-			},
+		Workloads: []WorkloadEntity{
+			clusterWL("cp-api", "k3d-cp", "cp", withSecretRef("DB_PASSWORD", "cp-db", "password")),
+			clusterWL("workload-api", "k3d-workload", "wl", withSecretRef("TOKEN", "workload-token", "token")),
 		},
 	}
 

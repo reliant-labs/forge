@@ -21,10 +21,11 @@ Exercises:
   * `.context` is the computed kubectl context on every cluster.
   * No clusters declared => `clusters` is an EMPTY list (stable key).
   * Clusters NEVER appear in the k8s manifest stream
-    (forge.render_manifests).
+    (output.manifests).
 """
 
 import forge
+import forge.workloads as fw
 
 _owner = forge.Cluster {
     name = "cp"
@@ -52,20 +53,20 @@ _target = forge.ClusterTarget {
 _bundle = forge.Bundle {
     cluster_target = _target
     clusters = [_owner, _secondary, _from_config]
-    services = [forge.RenderedWorkload {
+    workloads = [fw.Workload {
         name = "api"
         image = "api:dev"
-        deploy = _target.deploy
+        runtime = forge.OnCluster {target = _target}
     }]
 }
 
 _no_clusters_bundle = forge.Bundle {
-    services = []
+    workloads = []
 }
 
 output = forge.render(_bundle)
 output_none = forge.render(_no_clusters_bundle)
-manifests = forge.render_manifests(_bundle)
+manifests = forge.render(_bundle).manifests
 
 # ── Invariants ─────────────────────────────────────────────────────
 

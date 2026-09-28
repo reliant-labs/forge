@@ -33,6 +33,7 @@ import (
 // outside the linked worktree the write scan walks.
 
 const cloudProdMainK = `import forge
+import forge.workloads as fw
 import kcl_plugin.forge as fp
 
 # control-plane's prod pattern, verbatim: "prod" on the primary checkout,
@@ -48,21 +49,21 @@ _bundle = forge.Bundle {
         namespace = "portblock-prod"
         registry = "reg.example.com"
     }
-    services = [forge.RenderedWorkload {
+    workloads = [fw.Workload {
         name = "api"
         image = "portblock"
-        env_vars = [forge.EnvVar {name = "WEB_PORT", value = "${_web_port}"}]
-        deploy = forge.K8sCluster {cluster = "gke_example_us-central1_prod", namespace = "portblock-prod", registry = "reg.example.com"}
+        env = {WEB_PORT = "${_web_port}"}
+        runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "gke_example_us-central1_prod", namespace = "portblock-prod", registry = "reg.example.com"}}
     }]
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, option("image_tag") or "latest", forge.image_digests(), False)
 `
 
 // localDevMainK is the same shape on a LOCAL cluster (a k3d context), keyed the
 // way a dev env keys its stack: on the bare worktree name.
 const localDevMainK = `import forge
+import forge.workloads as fw
 import kcl_plugin.forge as fp
 
 _key = option("worktree") or ""
@@ -75,16 +76,15 @@ _bundle = forge.Bundle {
         namespace = "portblock-dev"
         registry = "registry.localhost:5000"
     }
-    services = [forge.RenderedWorkload {
+    workloads = [fw.Workload {
         name = "api"
         image = "portblock"
-        env_vars = [forge.EnvVar {name = "WEB_PORT", value = "${_web_port}"}]
-        deploy = forge.K8sCluster {cluster = "k3d-portblock", namespace = "portblock-dev", registry = "registry.localhost:5000"}
+        env = {WEB_PORT = "${_web_port}"}
+        runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "k3d-portblock", namespace = "portblock-dev", registry = "registry.localhost:5000"}}
     }]
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, option("image_tag") or "latest", forge.image_digests(), False)
 `
 
 // fullCeilingRegistry is a registry at the default 8-block ceiling: block 0
@@ -243,8 +243,8 @@ func renderWebPort(t *testing.T, projectDir, env string, purpose renderPurpose, 
 	if err != nil {
 		t.Fatalf("render %s: %v", env, err)
 	}
-	for _, svc := range entities.Services {
-		for _, ev := range svc.EnvVars {
+	for _, w := range entities.Workloads {
+		for _, ev := range w.EnvVars() {
 			if ev.Name != "WEB_PORT" {
 				continue
 			}
@@ -332,14 +332,14 @@ func TestEntitiesTargetThisMachine(t *testing.T) {
 		contract string
 		want     bool
 	}{
-		{"cloud cluster only", `{"services": [{"name": "api", "deploy": {"type": "cluster", "cluster": "gke_p_us-central1_prod"}}]}`, false},
+		{"cloud cluster only", `{"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "cluster", "cluster": "gke_p_us-central1_prod", "namespace": "p"}, "spec": {"kind": "service"}}]}`, false},
 		{"firebase frontend only", `{"frontends": [{"name": "web", "path": "web", "deploy": {"type": "firebase"}}]}`, false},
-		{"external deploy", `{"services": [{"name": "api", "deploy": {"type": "external", "deploy_cmd": "fly deploy"}}]}`, false},
+		{"hosted workload", `{"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "hosted"}, "spec": {"kind": "service"}}]}`, false},
 		{"nothing declared", `{}`, false},
 		{"k3d cluster declared", `{"clusters": [{"name": "cp", "context": "k3d-cp"}]}`, true},
-		{"workload on a local context", `{"services": [{"name": "api", "deploy": {"type": "cluster", "cluster": "k3d-demo"}}]}`, true},
-		{"host process", `{"services": [{"name": "api", "deploy": {"type": "host", "runner": "go-run"}}]}`, true},
-		{"compose service", `{"services": [{"name": "db", "deploy": {"type": "compose"}}]}`, true},
+		{"workload on a local context", `{"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "cluster", "cluster": "k3d-demo", "namespace": "demo"}, "spec": {"kind": "service"}}]}`, true},
+		{"host process", `{"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "host", "runner": "go-run"}, "build": {"type": "go", "cmd": "./cmd/api"}, "spec": {"kind": "service"}}]}`, true},
+		{"compose service", `{"workloads": [{"name": "db", "kind": "service", "runtime": {"type": "compose"}, "spec": {"kind": "service"}}]}`, true},
 		{"helm chart into a local cluster", `{"helm_charts": [{"name": "cnpg", "version": "1", "namespace": "x", "cluster": "k3d-cp-daemon"}]}`, true},
 	}
 	for _, tc := range cases {

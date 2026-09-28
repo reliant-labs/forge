@@ -36,6 +36,7 @@ Exercises:
 """
 
 import forge
+import forge.workloads as fw
 
 # ── The default: neither CIDR declared ──────────────────────────────
 
@@ -89,10 +90,10 @@ _target = forge.ClusterTarget {
 _bundle = forge.Bundle {
     cluster_target = _target
     clusters = [_plain, _owner, _secondary, _wide, _pods_only]
-    services = [forge.RenderedWorkload {
+    workloads = [fw.Workload {
         name = "api"
         image = "api:dev"
-        deploy = _target.deploy
+        runtime = forge.OnCluster {target = _target}
     }]
 }
 

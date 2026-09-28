@@ -10,6 +10,8 @@ must fail at render, not fall through to some default and quietly stop
 invalidating a production site's HTML.
 """
 
+# expect: StaticSiteCDN.invalidate must be 'entrypoints'
+
 import forge
 
 _fe = forge.Frontend {

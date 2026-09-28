@@ -187,7 +187,7 @@ const DefaultKeepReleases = 10
 
 // StaticSiteStatus is the observed state of a StaticSite.
 type StaticSiteStatus struct {
-	WorkloadStatus `json:",inline"`
+	TierStatus `json:",inline"`
 
 	// BucketPrefix is the site's root prefix within its bucket, RECORDED
 	// rather than re-derived, so that a later change to the derivation rule

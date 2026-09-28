@@ -10,6 +10,8 @@ it. What stays illegal is two listeners the Gateway controller cannot
 tell apart, which is what this fixture asserts.
 """
 
+# expect: must be unique on (port, protocol, hostname)
+
 import forge
 
 _gw = forge.Gateway {

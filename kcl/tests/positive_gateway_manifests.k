@@ -2,12 +2,13 @@
 Positive test — Gateway API resources render to the correct
 gateway.networking.k8s.io/v1 manifests.
 
-Asserts that render_manifests emits a Gateway with the expected
+Asserts that output.manifests carries a Gateway with the expected
 listeners and an HTTPRoute with the expected parentRefs +
 backendRefs.
 """
 
 import forge
+import forge.workloads as fw
 
 _target = forge.ClusterTarget {
     cluster = "k3d-example"
@@ -17,11 +18,12 @@ _target = forge.ClusterTarget {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [
-        forge.RenderedWorkload {
+    workloads = [
+        fw.Workload {
             name = "api"
             image = "example"
-            deploy = _target.deploy | {ports = [8080]}
+            ports = [fw.Port {name = "http", port = 8080}]
+            runtime = forge.OnCluster {target = _target}
         }
     ]
     gateways = [
@@ -49,7 +51,7 @@ _bundle = forge.Bundle {
     ]
 }
 
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
+manifests = forge.render(_bundle).manifests
 
 # Find the Gateway + HTTPRoute manifests by kind.
 _gateways = [m for m in manifests if m.kind == "Gateway"]

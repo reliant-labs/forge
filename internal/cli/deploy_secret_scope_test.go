@@ -29,13 +29,13 @@ const scopeProdManifests = `
 _on = lambda kctx: str -> {str:str} {
     {"forge.dev/cluster": kctx}
 }
-manifests = [
+output = {manifests = [
     {apiVersion = "v1", kind = "Namespace", metadata = {name = "control-plane-prod", labels = _on("` + scopePrimary + `")}}
     {apiVersion = "v1", kind = "ConfigMap", metadata = {name = "admin-server-config", namespace = "control-plane-prod", labels = _on("` + scopePrimary + `")}, data = {a = "b"}}
     {apiVersion = "scheduling.k8s.io/v1", kind = "PriorityClass", metadata = {name = "workspace-critical", labels = _on("` + scopeDaemon + `")}, value = 1000}
     {apiVersion = "v1", kind = "Namespace", metadata = {name = "kata-prepull", labels = _on("` + scopeDaemon + `")}}
     {apiVersion = "apps/v1", kind = "DaemonSet", metadata = {name = "workspace-base-prepull", namespace = "kata-prepull", labels = _on("` + scopeDaemon + `")}, spec = {selector.matchLabels = {app = "p"}, template = {metadata.labels = {app = "p"}, spec.containers = [{name = "p", image = "localhost:5000/prepull:1"}]}}}
-]
+]}
 `
 
 // scopeFakeKubectl puts a kubectl on PATH that serves every Secret on the
@@ -85,7 +85,7 @@ func scopeProdInput(t *testing.T, extraKCL string, secrets ...ExternalSecretEnti
 	}
 	src := scopeProdManifests
 	if extraKCL != "" {
-		src = strings.Replace(src, "\n]\n", "\n"+extraKCL+"\n]\n", 1)
+		src = strings.Replace(src, "\n]}\n", "\n"+extraKCL+"\n]}\n", 1)
 	}
 	if err := os.WriteFile(mainK, []byte(src), 0o644); err != nil {
 		t.Fatal(err)

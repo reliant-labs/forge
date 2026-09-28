@@ -6,17 +6,22 @@ KCL only emits the DECLARATION (type + path) — secret VALUES never
 enter KCL render output. The declaration rides in the ENTITY output
 (forge.render) alongside `services`, and is ABSENT (not null) when the
 bundle declares no provider. It is NEVER emitted into the k8s manifest
-stream (forge.render_manifests).
+stream (output.manifests).
 
 Exercises:
 
   * FileSecrets projects {type:"dir", path:...} into output.
   * ExternalSecrets projects {type:"external"} into output.
   * No provider => `secret_provider` key absent from output.
-  * Provider declaration never appears in render_manifests.
+  * Provider declaration never appears in output.manifests.
 """
 
+# kcl-args: env=dev | env=e2e
+# reject-args: env=prod
+# reject-expect: FileSecrets is dev/e2e only
+
 import forge
+import forge.workloads as fw
 
 _target = forge.ClusterTarget {
     cluster = "k3d-dev"
@@ -26,10 +31,10 @@ _target = forge.ClusterTarget {
 
 _store_bundle = forge.Bundle {
     cluster_target = _target
-    services = [forge.RenderedWorkload {
+    workloads = [fw.Workload {
         name = "api"
         image = "api:dev"
-        deploy = _target.deploy
+        runtime = forge.OnCluster {target = _target}
     }]
     secret_provider = forge.FileSecrets {
         path = "secrets/dev.yaml"
@@ -37,18 +42,18 @@ _store_bundle = forge.Bundle {
 }
 
 _external_bundle = forge.Bundle {
-    services = []
+    workloads = []
     secret_provider = forge.ExternalSecrets {}
 }
 
 _no_provider_bundle = forge.Bundle {
-    services = []
+    workloads = []
 }
 
 output_store = forge.render(_store_bundle)
 output_external = forge.render(_external_bundle)
 output_none = forge.render(_no_provider_bundle)
-manifests_store = forge.render_manifests(_store_bundle)
+manifests_store = forge.render(_store_bundle).manifests
 
 # ── Invariants ─────────────────────────────────────────────────────
 

@@ -258,8 +258,8 @@ func planFrontendBuild(dir string) string {
 // images, and RemoteBuild, which the real build refuses outright.
 func planKCLDockerRemote(in planInputs) []buildPlanStep {
 	var out []buildPlanStep
-	for _, svc := range in.entities.Services {
-		b := svc.EffectiveBuild()
+	for _, svc := range in.entities.Workloads {
+		b := svc.Build
 		switch b.Type {
 		case "docker":
 			imageName, dockerfile := svc.Name, "Dockerfile"
@@ -290,15 +290,13 @@ func planKCLDockerRemote(in planInputs) []buildPlanStep {
 // planBuildOnlyVariants mirrors buildKCLBuildOnlyVariants.
 func planBuildOnlyVariants(ctx context.Context, in planInputs) []buildPlanStep {
 	var out []buildPlanStep
-	for _, svc := range in.entities.Services {
-		if svc.Deploy.Type != "build-only" || svc.Deploy.BuildOnly == nil {
+	for _, svc := range in.entities.WorkloadsOn(RuntimeBuildOnly) {
+		g := svc.GoBuild()
+		if g == nil || g.Cmd == "" {
 			continue
 		}
-		buildCmd := "./cmd/" + svc.Name
-		if b := svc.EffectiveBuild(); b.Type == "go" && b.Go != nil && b.Go.Cmd != "" {
-			buildCmd = b.Go.Cmd
-		}
-		for _, v := range svc.Deploy.BuildOnly.BuildVariants {
+		buildCmd := g.Cmd
+		for _, v := range svc.Runtime.BuildOnly.BuildVariants {
 			t := goBuildTarget{cmd: buildCmd, outputName: svc.Name + "-" + v.Name, goos: v.GOOS, goarch: v.GOARCH, tags: v.BuildTags, env: v.EnvAtBuild}
 			out = append(out, buildPlanStep{
 				kind: "variant", name: svc.Name + ":" + v.Name, what: "go build " + buildCmd,
@@ -363,7 +361,7 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 				would[imageNameOfPlanStep(in, s)] = placeholder
 			}
 		case "external":
-			if svc := in.entities.FindService(s.name); svc != nil && svc.Image != "" {
+			if svc := in.entities.FindWorkload(s.name); svc != nil && svc.Image != "" {
 				would[svc.Image] = placeholder
 			}
 		}
@@ -393,8 +391,8 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 // imageNameOfPlanStep returns the image a docker plan step builds: the project
 // image, a frontend, or a DockerBuild's output_name.
 func imageNameOfPlanStep(in planInputs, s buildPlanStep) string {
-	if svc := in.entities.FindService(s.name); svc != nil {
-		if b := svc.EffectiveBuild(); b.Type == "docker" && b.Docker != nil && b.Docker.OutputName != "" {
+	if svc := in.entities.FindWorkload(s.name); svc != nil {
+		if b := svc.Build; b.Type == "docker" && b.Docker != nil && b.Docker.OutputName != "" {
 			return b.Docker.OutputName
 		}
 	}

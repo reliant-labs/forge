@@ -5,6 +5,8 @@ NOT a silently-dropped var (the map-shape analogue of EnvVar's own
 "must set a source" check).
 """
 
+# expect: EnvSource must set EXACTLY ONE channel
+
 import forge
 
 _bad = forge.EnvSource {

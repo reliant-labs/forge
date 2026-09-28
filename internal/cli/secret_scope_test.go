@@ -4,18 +4,12 @@ import "testing"
 
 // svcWithSecretRefs builds a host service declaring the given env vars as
 // secret refs.
-func svcWithSecretRefs(name string, envNames ...string) ServiceEntity {
-	evs := make([]KCLEnvVar, 0, len(envNames))
+func svcWithSecretRefs(name string, envNames ...string) WorkloadEntity {
+	w := hostWL(name)
 	for _, n := range envNames {
-		evs = append(evs, KCLEnvVar{Name: n, SecretRef: "app-secrets"})
+		withSecretRef(n, "app-secrets", "")(&w)
 	}
-	return ServiceEntity{
-		Name: name,
-		Deploy: DeployConfigEntity{
-			Type: "host",
-			Host: &HostDeploy{EnvVars: evs},
-		},
-	}
+	return w
 }
 
 // TestScopeSecretsToService_OnlyDeclaredKeysReachAService is the

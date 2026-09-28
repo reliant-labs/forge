@@ -4,6 +4,8 @@ ExternalSecret with an empty `keys` list models a prerequisite the
 preflight can't verify (no key to check), so it's rejected at parse time.
 """
 
+# expect: ExternalSecret.keys must list at least one data key
+
 import forge
 
 _bundle = forge.Bundle {

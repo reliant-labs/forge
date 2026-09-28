@@ -5,25 +5,15 @@ import (
 	"testing"
 )
 
-// svcWithClusterDSN builds a service whose CLUSTER deploy block declares a
+// svcWithClusterDSN builds a cluster-bound workload whose env declares a
 // DATABASE_URL — the shape a k8s workload uses.
-func svcWithClusterDSN(name, dsn string) ServiceEntity {
-	s := ServiceEntity{Name: name}
-	s.Deploy.Type = "cluster"
-	s.Deploy.Cluster = &K8sCluster{
-		EnvVars: []KCLEnvVar{{Name: "DATABASE_URL", Value: dsn}},
-	}
-	return s
+func svcWithClusterDSN(name, dsn string) WorkloadEntity {
+	return clusterWL(name, "k3d-dev", "dev", withEnv("DATABASE_URL", dsn))
 }
 
-// svcWithHostDSN builds a service whose HOST deploy block declares a DSN.
-func svcWithHostDSN(name, dsn string) ServiceEntity {
-	s := ServiceEntity{Name: name}
-	s.Deploy.Type = "host"
-	s.Deploy.Host = &HostDeploy{
-		EnvVars: []KCLEnvVar{{Name: "DATABASE_URL", Value: dsn}},
-	}
-	return s
+// svcWithHostDSN builds a host-bound workload whose env declares a DSN.
+func svcWithHostDSN(name, dsn string) WorkloadEntity {
+	return hostWL(name, withEnv("DATABASE_URL", dsn))
 }
 
 // The regression this change exists for. An env with two DISTINCT databases
@@ -33,7 +23,7 @@ func svcWithHostDSN(name, dsn string) ServiceEntity {
 //	FATAL: database "reliant_my_new_feature" does not exist (SQLSTATE 3D000)
 func TestDevDatabaseDSNs_CollectsEveryDistinctDatabase(t *testing.T) {
 	primary := "postgres://postgres:postgres@localhost:5434/control_plane_dev?sslmode=disable"
-	entities := &KCLEntities{Services: []ServiceEntity{
+	entities := &KCLEntities{Workloads: []WorkloadEntity{
 		svcWithHostDSN("admin-server", primary),
 		svcWithClusterDSN("daemon-gateway",
 			"postgres://postgres:postgres@host.k3d.internal:5434/reliant_my_new_feature?sslmode=disable"),
@@ -66,7 +56,7 @@ func TestDevDatabaseDSNs_CollectsEveryDistinctDatabase(t *testing.T) {
 // "no such host", so it must be rewritten to loopback.
 func TestDevDatabaseDSNs_RewritesHostGatewayAliasToLoopback(t *testing.T) {
 	primary := "postgres://postgres:postgres@localhost:5434/app?sslmode=disable"
-	entities := &KCLEntities{Services: []ServiceEntity{
+	entities := &KCLEntities{Workloads: []WorkloadEntity{
 		svcWithClusterDSN("gw",
 			"postgres://postgres:postgres@host.k3d.internal:5434/other?sslmode=disable"),
 	}}
@@ -88,7 +78,7 @@ func TestDevDatabaseDSNs_RewritesHostGatewayAliasToLoopback(t *testing.T) {
 // dedup is what keeps the primary from being re-ensured under its alias.
 func TestDevDatabaseDSNs_DeduplicatesBySeverAndName(t *testing.T) {
 	primary := "postgres://postgres:postgres@localhost:5434/app?sslmode=disable"
-	entities := &KCLEntities{Services: []ServiceEntity{
+	entities := &KCLEntities{Workloads: []WorkloadEntity{
 		// Same server+name as the primary, via the alias and different creds.
 		svcWithClusterDSN("a", "postgres://other:pw@host.k3d.internal:5434/app?sslmode=require"),
 		svcWithHostDSN("b", primary),
@@ -104,7 +94,7 @@ func TestDevDatabaseDSNs_DeduplicatesBySeverAndName(t *testing.T) {
 // how CREATE DATABASE lands on someone else's server.
 func TestDevDatabaseDSNs_SkipsUnreachableHosts(t *testing.T) {
 	primary := "postgres://postgres:postgres@localhost:5434/app?sslmode=disable"
-	entities := &KCLEntities{Services: []ServiceEntity{
+	entities := &KCLEntities{Workloads: []WorkloadEntity{
 		svcWithClusterDSN("managed",
 			"postgres://u:p@prod-db.abc123.us-east-1.rds.amazonaws.com:5432/prod?sslmode=require"),
 		svcWithClusterDSN("in-cluster",
@@ -120,7 +110,7 @@ func TestDevDatabaseDSNs_SkipsUnreachableHosts(t *testing.T) {
 // A single-database project must behave exactly as before.
 func TestDevDatabaseDSNs_SingleDatabaseUnchanged(t *testing.T) {
 	primary := "postgres://postgres:postgres@localhost:5432/app?sslmode=disable"
-	entities := &KCLEntities{Services: []ServiceEntity{svcWithHostDSN("api", primary)}}
+	entities := &KCLEntities{Workloads: []WorkloadEntity{svcWithHostDSN("api", primary)}}
 
 	got := devDatabaseDSNs(entities, primary)
 	if len(got) != 1 || got[0] != primary {

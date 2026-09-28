@@ -126,7 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@tanstack/react-query`'s `build/legacy` while
   `@reliantlabs/forge-web-runtime` bundled `build/modern`. Two module instances
   are two React contexts, and prerender failed with `No QueryClient set, use
-  QueryClientProvider to set one`. Every pin now names the package's
+QueryClientProvider to set one`. Every pin now names the package's
   declaration file (e.g. `…/@tanstack/react-query/build/modern/index.d.ts`,
   `react` → `@types/react/index.d.ts`), derived from the INSTALLED manifest,
   never hardcoded, because the entry moves inside the declared ranges

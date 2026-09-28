@@ -109,7 +109,8 @@ func goldenCases() []goldenCase {
 				{Name: "DB_PASSWORD", SecretRef: &v1alpha1.SecretKeyRef{Name: "demo-db", Key: "password"}},
 				{Name: "FEATURES", ConfigMapRef: &v1alpha1.ConfigMapKeyRef{Name: "features", Key: "map"}},
 				{Name: "POD_IP", FieldRef: &v1alpha1.FieldRef{FieldPath: "status.podIP"}},
-				{Name: "STRIPE_KEY", ManagedSecret: "STRIPE_KEY"},
+				{Name: "STRIPE_KEY", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "STRIPE_KEY"}},
+				{Name: "SENTRY_DSN", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "SENTRY_DSN", Optional: true}},
 				{Name: "DATABASE_URL", DatabaseRef: &v1alpha1.DatabaseRef{Name: "orders"}},
 			}
 			return w

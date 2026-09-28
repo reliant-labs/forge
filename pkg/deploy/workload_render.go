@@ -759,8 +759,14 @@ func renderEnv(env []v1alpha1.EnvVar) []corev1.EnvVar {
 			if e.SecretRef.Optional {
 				ev.ValueFrom.SecretKeyRef.Optional = new(true)
 			}
-		case e.ManagedSecret != "":
-			ev.ValueFrom = secretKey(v1alpha1.ManagedSecretsSecretName, e.ManagedSecret)
+		case e.ManagedSecret != nil:
+			ev.ValueFrom = secretKey(v1alpha1.ManagedSecretsSecretName, e.ManagedSecret.Name)
+			// The materializer skips an optional name the store lacks, so
+			// its key is absent from the Secret: the ref must tolerate that
+			// or the pod would hold in CreateContainerConfigError.
+			if e.ManagedSecret.Optional {
+				ev.ValueFrom.SecretKeyRef.Optional = new(true)
+			}
 		case e.DatabaseRef != nil:
 			ev.ValueFrom = secretKey(DatabaseCredentialSecretName(e.DatabaseRef.Name), string(e.DatabaseRef.EffectiveKey()))
 		case e.ConfigMapRef != nil:

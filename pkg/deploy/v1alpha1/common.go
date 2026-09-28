@@ -48,6 +48,17 @@ const (
 //     the old name was the hosted platform's vocabulary, which means
 //     nothing to a self-hosted user, while every environment has a secret store.
 //
+//     ManagedSecret.Optional means the materializer SKIPS the name when the
+//     store has no value for it, and the pod starts without the variable.
+//     That is the projection of an OPTIONAL sensitive config field (a tier's
+//     off-switch: "unset means the feature is not registered"), which would
+//     otherwise be a hard deploy requirement in every environment that left
+//     the feature off. A required name the store lacks fails the
+//     materialization, and nothing starts; that is the default because an
+//     app reading an unset credential as "" often falls back to an
+//     unauthenticated path. The renderer marks the secretKeyRef optional as
+//     well, so the pod also starts when the key is absent from the Secret.
+//
 //   - DatabaseRef — the credential of a ManagedDatabase in the same
 //     namespace. control-plane's design, kept on merit. It removes the most
 //     common hand-wiring task in a three-tier app, and it ran live (a
@@ -102,13 +113,10 @@ type EnvVar struct {
 	// +optional
 	SecretRef *SecretKeyRef `json:"secretRef,omitempty"`
 
-	// ManagedSecret names a value in the environment's secret store. A BARE
-	// LOGICAL NAME: env-var shaped, with no separator to traverse, carrying
-	// no customer or environment component.
+	// ManagedSecret names a value in the environment's secret store, and
+	// whether its absence is tolerated.
 	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
-	ManagedSecret string `json:"managedSecret,omitempty"`
+	ManagedSecret *ManagedSecretRef `json:"managedSecret,omitempty"`
 
 	// DatabaseRef projects a ManagedDatabase's credential.
 	// +optional
@@ -195,6 +203,23 @@ type RuntimeConfigValue struct {
 	// WorkloadURL resolves to another workload's public URL.
 	// +optional
 	WorkloadURL *WorkloadURLRef `json:"workloadURL,omitempty"`
+}
+
+// ManagedSecretRef names one value in the environment's secret store.
+type ManagedSecretRef struct {
+	// Name is the secret's logical name. A BARE LOGICAL NAME: env-var shaped,
+	// with no separator to traverse, carrying no customer or environment
+	// component, so no spelling of it reaches another customer's value.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	Name string `json:"name"`
+
+	// Optional tolerates the store having no value: the materializer skips
+	// the name, and the pod starts without the variable. Default false: a
+	// missing value fails the materialization and nothing starts.
+	// +optional
+	Optional bool `json:"optional,omitempty"`
 }
 
 // ManagedSecretsSecretName is the Secret every ManagedSecret env var reads

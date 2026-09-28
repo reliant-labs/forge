@@ -132,7 +132,8 @@ func TestWorkloadValidateRestrictedProfile(t *testing.T) {
 		Resources: Resources{CPURequestMillicores: 500, MemoryRequestBytes: 2 << 30},
 		Env: []EnvVar{
 			{Name: "A", Value: "1"},
-			{Name: "B", ManagedSecret: "B"},
+			{Name: "B", ManagedSecret: &ManagedSecretRef{Name: "B"}},
+			{Name: "B2", ManagedSecret: &ManagedSecretRef{Name: "B2", Optional: true}},
 			{Name: "C", DatabaseRef: &DatabaseRef{Name: "orders"}},
 			{Name: "D", WorkloadURL: &WorkloadURLRef{Name: "web"}},
 		},
@@ -443,7 +444,7 @@ func TestWorkloadPodLevelFields(t *testing.T) {
 		"sidecar port exposed": {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Ports: []Port{{Name: "p", Port: 9000, Expose: true}}}}},
 			"container ports only"},
 		"sidecar probes need a port": {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Probes: &Probes{}}}}, "sidecars[s]: probes need a port"},
-		"sidecar env two channels":   {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Env: []EnvVar{{Name: "X", Value: "1", ManagedSecret: "X"}}}}}, "sidecars[s]: env var X sets more than one"},
+		"sidecar env two channels":   {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Env: []EnvVar{{Name: "X", Value: "1", ManagedSecret: &ManagedSecretRef{Name: "X"}}}}}}, "sidecars[s]: env var X sets more than one"},
 		"sidecar limit below request": {WorkloadSpec{Image: pinnedImage, Sidecars: []Container{{Name: "s", Image: "i", Resources: Resources{CPURequestMillicores: 100, CPULimitMillicores: 50}}}},
 			"sidecars[s]: resources.cpuLimitMillicores"},
 

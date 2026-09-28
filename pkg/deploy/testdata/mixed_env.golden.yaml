@@ -46,6 +46,12 @@ spec:
             secretKeyRef:
               key: STRIPE_KEY
               name: forge-managed-secrets
+        - name: SENTRY_DSN
+          valueFrom:
+            secretKeyRef:
+              key: SENTRY_DSN
+              name: forge-managed-secrets
+              optional: true
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:

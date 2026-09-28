@@ -34,7 +34,7 @@ func fullWorkload() *Workload {
 			Env: []EnvVar{
 				{Name: "LOG_LEVEL", Value: "info"},
 				{Name: "DB_PASSWORD", SecretRef: &SecretKeyRef{Name: "db", Key: "password"}},
-				{Name: "STRIPE_KEY", ManagedSecret: "STRIPE_KEY"},
+				{Name: "STRIPE_KEY", ManagedSecret: &ManagedSecretRef{Name: "STRIPE_KEY", Optional: true}},
 				{Name: "DATABASE_URL", DatabaseRef: &DatabaseRef{Name: "orders", Key: DatabaseKeyURI}},
 				{Name: "CORS_ORIGINS", WorkloadURL: &WorkloadURLRef{Name: "web"}},
 				{Name: "FEATURES", ConfigMapRef: &ConfigMapKeyRef{Name: "flags", Key: "features"}},

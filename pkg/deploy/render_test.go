@@ -213,7 +213,7 @@ func TestGracePeriod(t *testing.T) {
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1h"}}, 3610},
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1m30s"}}, 40}, // not <int><unit>: fallback
 		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "7"}}, 42},
-		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", ManagedSecret: "X"}}, 40}, // a reference has no literal
+		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "X"}}}, 40}, // a reference has no literal
 	} {
 		w := svc("api")
 		w.Spec.Env = c.env
@@ -348,7 +348,8 @@ func TestEnvChannels(t *testing.T) {
 		{Name: "EMPTY"},
 		{Name: "SREF", SecretRef: &v1alpha1.SecretKeyRef{Name: "s", Key: "k"}},
 		{Name: "SREF_OPT", SecretRef: &v1alpha1.SecretKeyRef{Name: "s", Key: "maybe", Optional: true}},
-		{Name: "MANAGED", ManagedSecret: "STRIPE_KEY"},
+		{Name: "MANAGED", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "STRIPE_KEY"}},
+		{Name: "MANAGED_OPT", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "SENTRY_DSN", Optional: true}},
 		{Name: "DB", DatabaseRef: &v1alpha1.DatabaseRef{Name: "orders"}},
 		{Name: "DBPASS", DatabaseRef: &v1alpha1.DatabaseRef{Name: "orders", Key: v1alpha1.DatabaseKeyPassword}},
 		{Name: "CM", ConfigMapRef: &v1alpha1.ConfigMapKeyRef{Name: "features", Key: "map"}},
@@ -361,6 +362,7 @@ func TestEnvChannels(t *testing.T) {
 		map[string]any{"name": "SREF", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "s", "key": "k"}}},
 		map[string]any{"name": "SREF_OPT", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "s", "key": "maybe", "optional": true}}},
 		map[string]any{"name": "MANAGED", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": v1alpha1.ManagedSecretsSecretName, "key": "STRIPE_KEY"}}},
+		map[string]any{"name": "MANAGED_OPT", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": v1alpha1.ManagedSecretsSecretName, "key": "SENTRY_DSN", "optional": true}}},
 		map[string]any{"name": "DB", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "orders-app", "key": "uri"}}},
 		map[string]any{"name": "DBPASS", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "orders-app", "key": "password"}}},
 		map[string]any{"name": "CM", "valueFrom": map[string]any{"configMapKeyRef": map[string]any{"name": "features", "key": "map"}}},
@@ -630,7 +632,7 @@ func TestRestrictedKindSet(t *testing.T) {
 func restrictedSet() []v1alpha1.Workload {
 	img := "ghcr.io/acme/app:v1"
 	web := wl("web", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, Image: img, Replicas: 3, Ports: []v1alpha1.Port{httpPort(true)},
-		Probes: &v1alpha1.Probes{}, Env: []v1alpha1.EnvVar{{Name: "DB", DatabaseRef: &v1alpha1.DatabaseRef{Name: "orders"}}, {Name: "KEY", ManagedSecret: "KEY"}}})
+		Probes: &v1alpha1.Probes{}, Env: []v1alpha1.EnvVar{{Name: "DB", DatabaseRef: &v1alpha1.DatabaseRef{Name: "orders"}}, {Name: "KEY", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "KEY"}}, {Name: "DSN", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "DSN", Optional: true}}}})
 	store := wl("store", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, Image: img, StorageGiB: 10})
 	worker := wl("jobs", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Image: img, Args: []string{"work"}})
 	migrate := wl("migrate", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Image: img, Args: []string{"db", "migrate", "up"}, Before: []string{v1alpha1.BeforeAll}})

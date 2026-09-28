@@ -35,6 +35,12 @@ spec:
             secretKeyRef:
               key: KEY
               name: forge-managed-secrets
+        - name: DSN
+          valueFrom:
+            secretKeyRef:
+              key: DSN
+              name: forge-managed-secrets
+              optional: true
         image: ghcr.io/acme/app:v1
         imagePullPolicy: IfNotPresent
         livenessProbe:

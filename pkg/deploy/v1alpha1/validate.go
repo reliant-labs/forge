@@ -68,10 +68,10 @@ func (e EnvVar) Validate() error {
 			errs = append(errs, fmt.Errorf("env var %s: secretRef needs both name and key", e.Name))
 		}
 	}
-	if e.ManagedSecret != "" {
+	if e.ManagedSecret != nil {
 		set++
-		if !envNameRE.MatchString(e.ManagedSecret) {
-			errs = append(errs, fmt.Errorf("env var %s: managedSecret %q must be a bare logical name matching %s", e.Name, e.ManagedSecret, envNameRE))
+		if !envNameRE.MatchString(e.ManagedSecret.Name) || len(e.ManagedSecret.Name) > 253 {
+			errs = append(errs, fmt.Errorf("env var %s: managedSecret.name %q must be a bare logical name matching %s, at most 253 characters", e.Name, e.ManagedSecret.Name, envNameRE))
 		}
 	}
 	if e.DatabaseRef != nil {

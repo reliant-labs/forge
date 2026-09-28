@@ -288,15 +288,13 @@ schema EnvVar:
     configMapRef?: ConfigMapKeyRef
     databaseRef?: DatabaseRef
     fieldRef?: FieldRef
-    managedSecret?: str
+    managedSecret?: ManagedSecretRef
     name: str
     secretRef?: SecretKeyRef
     value?: str
     workloadURL?: WorkloadURLRef
 
     check:
-        managedSecret == Undefined or regex.match(managedSecret, "^[A-Za-z_][A-Za-z0-9_]*$"), "EnvVar.managedSecret must match ^[A-Za-z_][A-Za-z0-9_]*$"
-        managedSecret == Undefined or len(managedSecret) <= 253, "EnvVar.managedSecret must be at most 253 characters"
         regex.match(name, "^[A-Za-z_][A-Za-z0-9_]*$"), "EnvVar.name must match ^[A-Za-z_][A-Za-z0-9_]*$"
         len(name) >= 1, "EnvVar.name must be at least 1 characters"
         len(name) <= 253, "EnvVar.name must be at most 253 characters"
@@ -307,7 +305,7 @@ env_var_json = lambda v: EnvVar -> {str:} {
         "configMapRef": config_map_key_ref_json(v.configMapRef) if v.configMapRef else Undefined
         "databaseRef": database_ref_json(v.databaseRef) if v.databaseRef else Undefined
         "fieldRef": field_ref_json(v.fieldRef) if v.fieldRef else Undefined
-        "managedSecret": v.managedSecret
+        "managedSecret": managed_secret_ref_json(v.managedSecret) if v.managedSecret else Undefined
         "name": v.name
         "secretRef": secret_key_ref_json(v.secretRef) if v.secretRef else Undefined
         "value": v.value
@@ -346,6 +344,24 @@ key_to_path_json = lambda v: KeyToPath -> {str:} {
     _d = {
         "key": v.key
         "path": v.path
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema ManagedSecretRef:
+    """ManagedSecretRef names one value in the environment's secret store."""
+    name: str
+    optional?: bool
+
+    check:
+        regex.match(name, "^[A-Za-z_][A-Za-z0-9_]*$"), "ManagedSecretRef.name must match ^[A-Za-z_][A-Za-z0-9_]*$"
+        len(name) >= 1, "ManagedSecretRef.name must be at least 1 characters"
+        len(name) <= 253, "ManagedSecretRef.name must be at most 253 characters"
+
+managed_secret_ref_json = lambda v: ManagedSecretRef -> {str:} {
+    _d = {
+        "name": v.name
+        "optional": v.optional
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

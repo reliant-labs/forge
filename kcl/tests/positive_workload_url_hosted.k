@@ -1,6 +1,6 @@
 """
 Positive test — forge.WorkloadURL from a HOSTED workload and a HOSTED
-(bucketless) StaticSite is KEPT as a reference, for the control plane to
+frontend (forge.OnHosted) is KEPT as a reference, for the control plane to
 resolve.
 
 The platform allocates hostnames, so nothing in the render knows the URL;
@@ -38,7 +38,8 @@ _out = forge.render(forge.Bundle {
             API_URL = forge.WorkloadURL {workload = "api"}
             APP_NAME = "acme"
         }
-        deploy = forge.StaticSite {public_dir = "dist"}
+        public_dir = "dist"
+        runtime = forge.OnHosted {}
     }]
 })
 

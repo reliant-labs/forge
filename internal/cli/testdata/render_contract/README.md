@@ -15,7 +15,7 @@ one mixed env. Together they are the §9.1 contract between three parties:
 | `host` | `forge.OnHost` workloads: an air service with `listen_ports`, a go-run migrate job. Also a `HostInfra` infra entry, a dev frontend, a `SecretRef` with `optional`, and a WorkloadURL resolved to `localhost` |
 | `compose` | `forge.OnCompose` third-party services: no build, `spec.image` is `""`, and literal env is merged into the compose process `env` |
 | `cluster` | `forge.OnCluster` workloads of every scheduled kind, a third-party image, a cluster `ManagedDatabase`, an opted-in `network_policy`, and the `forge.dev/v1alpha1 Workload` records in `manifests` |
-| `hosted` | `forge.OnHosted` service and job, a hosted database, and a bucketless (hosted) StaticSite. References stay references: `managedSecret` (from a config `SecretRef`'s `store_key`), `databaseRef`, `workloadURL` |
+| `hosted` | `forge.OnHosted` service and job, a hosted database, and a frontend on `forge.OnHosted`. References stay references: `managedSecret` (from a config `SecretRef`'s `store_key`), `databaseRef`, `workloadURL` |
 | `build-only` | `forge.BuildOnly` tools: a Go CLI with a build variant, and a docker-built image |
 | `mixed` | One env binding host (the default), compose, cluster, hosted and build-only side by side. The cluster workload reaches the host `api` through the cluster's `host_gateway` |
 

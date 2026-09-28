@@ -170,7 +170,7 @@ func newCIValidateKCLCmd() *cobra.Command {
 			"carry apiVersion + kind, and no top-level key but `output` may hide k8s\n" +
 			"objects no deploy would ever apply.\n\n" +
 			"Hosting is PER WORKLOAD. The env's hosted part (forge.OnHosted workloads,\n" +
-			"hosted databases, bucketless static sites) is judged by its own deploy path:\n" +
+			"hosted databases, hosted frontends) is judged by its own deploy path:\n" +
 			"each workload must pass Workload.Validate(ProfileRestricted), and the set must\n" +
 			"render as the control plane renders it — the same plan `forge env deploy`\n" +
 			"runs, minus the release and the RPCs.\n\n" +

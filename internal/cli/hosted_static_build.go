@@ -9,7 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
-// hostedStaticPusher builds, packs and pushes one hosted StaticSite and
+// hostedStaticPusher builds, packs and pushes one hosted frontend's site and
 // returns the release digest. A var so the CLI tests state the registry's
 // answer (an in-memory push) instead of needing a registry.
 var hostedStaticPusher = func(ctx context.Context, projectDir, repository string, fe deploytarget.StaticSiteFrontend) (string, error) {
@@ -24,9 +24,9 @@ var hostedStaticPusher = func(ctx context.Context, projectDir, repository string
 	return deploytarget.PushStaticSiteArtifact(ctx, repository, layer)
 }
 
-// buildHostedStaticSites is the BUILD half of a hosted StaticSite: for an env
-// whose Bundle declares control_plane, every forge.StaticSite frontend is
-// built, assembled, and pushed as an OCI release artifact to
+// buildHostedStaticSites is the BUILD half of a hosted frontend: every
+// frontend bound to forge.OnHosted is built, assembled, and pushed as an OCI
+// release artifact to
 // `<push>/static.v1/<frontend>` — where `<push>` is the org's image push base,
 // the one registry subtree the control plane admits this org's artifacts from.
 //
@@ -48,12 +48,12 @@ var hostedStaticPusher = func(ctx context.Context, projectDir, repository string
 // document is spec instead: the StaticSite's runtimeConfig, which the
 // control plane resolves and writes after each sync (hostedStaticSpec).
 func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KCLEntities, opts buildOptions) error {
-	if entities == nil || entities.ControlPlane == nil {
+	if entities == nil {
 		return nil
 	}
 	var sites []FrontendEntity
 	for _, f := range entities.Frontends {
-		if f.Deploy == nil || f.Deploy.Type != frontendDeployStaticSite || f.Deploy.StaticSite == nil {
+		if !frontendIsHosted(f) {
 			continue
 		}
 		if opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != f.Name {
@@ -69,7 +69,7 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		for _, f := range sites {
 			names = append(names, f.Name)
 		}
-		return fmt.Errorf("env %q is hosted and declares forge.StaticSite frontend(s) %s: a hosted site ships as an OCI release artifact, "+
+		return fmt.Errorf("env %q binds frontend(s) %s to forge.OnHosted: a hosted site ships as an OCI release artifact, "+
 			"so the build must push — run `forge build %s --push`, which pushes to the registry deploy/kcl/%s/main.k declares on forge.ControlPlane",
 			opts.env, strings.Join(names, ", "), opts.env, opts.env)
 	}

@@ -1,6 +1,6 @@
 """
 render contract — the HOSTED runtime: a service and a migrate job published
-as Workload CRs, a hosted database, and a bucketless (hosted) StaticSite.
+as Workload CRs, a hosted database, and a frontend on forge.OnHosted.
 References stay references: the control plane resolves them.
 """
 # kcl-args: env="prod"
@@ -45,6 +45,7 @@ output = forge.render(forge.Bundle {
         type = "vite"
         path = "frontends/web"
         runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}
-        deploy = forge.StaticSite {public_dir = "dist"}
+        public_dir = "dist"
+        runtime = forge.OnHosted {}
     }]
 })

@@ -24,10 +24,10 @@ import (
 // fakeFrontendEntity builds a source-pinned FrontendEntity for the tests.
 func fakeFrontendEntity(name, repo, ref, subdir string) FrontendEntity {
 	return FrontendEntity{
-		Name:   name,
-		Type:   "vite",
-		Source: &config.GitSource{Repo: repo, Ref: ref, Subdir: subdir},
-		Deploy: &FrontendDeployEntity{Type: "firebase"},
+		Name:    name,
+		Type:    "vite",
+		Source:  &config.GitSource{Repo: repo, Ref: ref, Subdir: subdir},
+		Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase},
 	}
 }
 

@@ -272,10 +272,10 @@ func normalizeSmokePath(p string) string {
 // make this exact rather than reconstructed.
 func frontendOrigin(e *KCLEntities) string {
 	for _, f := range e.Frontends {
-		if f.Deploy == nil || f.Deploy.Firebase == nil {
+		if f.Runtime.Firebase == nil {
 			continue
 		}
-		site := strings.TrimSpace(f.Deploy.Firebase.Site)
+		site := strings.TrimSpace(f.Runtime.Firebase.Site)
 		if site == "" {
 			continue
 		}

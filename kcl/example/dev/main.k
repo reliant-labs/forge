@@ -98,7 +98,7 @@ output = forge.render(forge.Bundle {
     ]
     # A host-run postgres the api dials; forge fetches and supervises it.
     infra = [forge.HostInfra {name = "postgres", port = 5433, database = "example"}]
-    frontends = [forge.Frontend {name = "admin-web", type = "nextjs", path = "frontends/admin-web"}]
+    frontends = [forge.Frontend {name = "admin-web", type = "nextjs", path = "frontends/admin-web", runtime = forge.OnHost {}}]
     secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
     # Gateway API ingress. In a project this lives in deploy/kcl/ingress.k.
     gateways = [forge.Gateway {

@@ -9,23 +9,21 @@ import (
 // deploy templates exist to carry, and it is a UX property rather than a
 // correctness one — which is exactly why it needs a test.
 //
-// forge.Frontend.deploy accepts FirebaseHosting or StaticSite.
-// That capability was real long before this test, and was declared in the DEV
-// template only: staging and prod emitted no frontend workload at all. So the
-// only way to discover it was to read kcl/schema.k, and a user who never did
-// shipped a backend to prod and served their frontend by hand — never learning
-// forge could do it. A capability nobody can find is one that does not exist.
-//
-// The assertion is deliberately about the SCAFFOLD's output rather than the
-// schema: the schema already allowed this and that changed nothing.
+// A frontend binds a runtime in every env (ADR 0002 §6). That capability was
+// once declared in the DEV template only: staging and prod emitted no
+// frontend at all, so the only way to discover forge could ship one was to
+// read kcl/schema.k, and a user who never did shipped a backend to prod and
+// served their frontend by hand. A capability nobody can find is one that
+// does not exist. Now every env declares the frontend AND binds it, because a
+// frontend with no runtime is a render error.
 func TestEveryEnvDeclaresTheFrontendCapability(t *testing.T) {
 	t.Parallel()
 
 	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
 
-	for _, tmpl := range []string{
-		"kcl/dev/main.k.tmpl",
-		"kcl/cloud/main.k.tmpl",
+	for tmpl, runtime := range map[string]string{
+		"kcl/dev/main.k.tmpl":   "runtime = forge.OnHost {}",
+		"kcl/cloud/main.k.tmpl": "_on_bucket(_web_frontend)",
 	} {
 		t.Run(tmpl, func(t *testing.T) {
 			t.Parallel()
@@ -35,14 +33,11 @@ func TestEveryEnvDeclaresTheFrontendCapability(t *testing.T) {
 				t.Fatalf("rendering %s: %v", tmpl, err)
 			}
 			rendered := string(out)
-
-			if !strings.Contains(rendered, "frontends = [forge.Frontend {") {
-				t.Fatalf("%s declares NO frontend workload for a project that has one. "+
-					"Staging and prod were silent about frontends for exactly this reason, "+
-					"and the result was a capability only readable in kcl/schema.k", tmpl)
+			if !strings.Contains(rendered, "forge.Frontend {") || !strings.Contains(rendered, `name = "web"`) {
+				t.Fatalf("%s declares NO frontend for a project that has one", tmpl)
 			}
-			if !strings.Contains(rendered, `name = "web"`) {
-				t.Fatalf("%s did not substitute FrontendName", tmpl)
+			if !strings.Contains(rendered, runtime) {
+				t.Fatalf("%s does not bind the frontend's runtime (%s): a frontend with no runtime is a render error", tmpl, runtime)
 			}
 		})
 	}
@@ -65,50 +60,34 @@ func TestFrontendBlockIsAbsentWithoutAFrontend(t *testing.T) {
 		if err != nil {
 			t.Fatalf("rendering %s: %v", tmpl, err)
 		}
-		if strings.Contains(string(out), "frontends = [forge.Frontend {") {
-			t.Fatalf("%s emitted a frontend workload for a project with no frontend", tmpl)
+		if strings.Contains(string(out), "forge.Frontend") {
+			t.Fatalf("%s emitted a frontend for a project with no frontend", tmpl)
 		}
 	}
 }
 
-// TestFrontendScaffoldChoosesNoDeployTarget pins an absence that is a design
-// decision rather than an omission.
+// TestCloudFrontendBucketIsAPlaceholder pins a decision that is easy to
+// "improve" into a bug.
 //
-// forge does not guess where a frontend belongs. A default would deploy
-// somewhere plausible and cost money there, and the user would discover the
-// choice by receiving a bill. The scaffolded block therefore names the
-// options in comments and commits to none.
-func TestFrontendScaffoldChoosesNoDeployTarget(t *testing.T) {
+// forge does not guess where a frontend is published. The cloud env binds
+// forge.OnBucket, and bucket names are GLOBAL: a derived name
+// ("acme-prod-web") would publish into whichever bucket of that name exists,
+// possibly someone else's, and a real one costs money the day it is created.
+// So the scaffold states the runtime and leaves the bucket a visible
+// REPLACE_ME_BUCKET, which `forge env new --check` refuses until filled.
+func TestCloudFrontendBucketIsAPlaceholder(t *testing.T) {
 	t.Parallel()
 
 	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
-
-	for _, tmpl := range []string{"kcl/cloud/main.k.tmpl"} {
-		out, err := DeployTemplates().Render(tmpl, data)
-		if err != nil {
-			t.Fatalf("rendering %s: %v", tmpl, err)
-		}
-		rendered := string(out)
-
-		// Find the frontends block and confirm no ACTIVE deploy assignment
-		// inside it. Commented mentions are the point; an uncommented one is
-		// forge choosing for the user.
-		idx := strings.Index(rendered, "frontends = [forge.Frontend {")
-		if idx < 0 {
-			t.Fatalf("%s: no frontend block", tmpl)
-		}
-		block := rendered[idx:]
-		if end := strings.Index(block, "}]"); end > 0 {
-			block = block[:end]
-		}
-		for _, line := range strings.Split(block, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			if strings.Contains(trimmed, "deploy") {
-				t.Fatalf("%s picked a deploy target for the user: %q", tmpl, trimmed)
-			}
-		}
+	out, err := DeployTemplates().Render("kcl/cloud/main.k.tmpl", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := string(out)
+	if !strings.Contains(rendered, `bucket = "REPLACE_ME_BUCKET"`) {
+		t.Fatalf("the cloud env does not leave the frontend bucket a placeholder:\n%s", rendered)
+	}
+	if strings.Contains(rendered, `bucket = "acme`) {
+		t.Fatalf("the cloud env guessed a bucket name")
 	}
 }

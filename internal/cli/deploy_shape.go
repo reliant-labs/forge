@@ -24,7 +24,7 @@ import (
 // digests. A rule added to any of them reaches CI with no change here.
 //
 // Hosting is per workload: an env's hosted PART (its OnHosted workloads,
-// hosted databases, bucketless StaticSites) is admitted by
+// hosted databases, OnHosted frontends) is admitted by
 // deploytarget.PreflightHosted — Workload.Validate(ProfileRestricted) per
 // workload plus a restricted render of the set — and rendered into the
 // objects the platform runs, into a placeholder namespace (the platform

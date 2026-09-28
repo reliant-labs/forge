@@ -36,6 +36,6 @@ output = forge.render(forge.Bundle {
         }
     ]
     infra = [forge.HostInfra {name = "postgres", port = 5433, database = "acme"}]
-    frontends = [forge.Frontend {name = "web", type = "vite", path = "frontends/web"}]
+    frontends = [forge.Frontend {name = "web", type = "vite", path = "frontends/web", runtime = forge.OnHost {}}]
     secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
 })

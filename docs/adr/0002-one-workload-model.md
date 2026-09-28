@@ -40,7 +40,8 @@ Everything that runs is a `fw.Workload`: kind `service | worker | job | cron |
 operator | tool`. It is declared once in `deploy/kcl/workloads.k` and shared
 by every env. There is no other authoring shape for a runnable thing. The
 schemas listed under _Supersedes_ are deleted. `forge.Frontend` (static sites)
-and `forge.ManagedDatabase` stay: they are not processes forge runs.
+and `forge.ManagedDatabase` stay: they are not processes forge runs. Both
+still bind a runtime (§6).
 
 ### 2. The runtime is chosen per workload
 
@@ -159,6 +160,42 @@ defaults live in Go:
 - A service CR with ports but no probes gets TCP on its first port.
 - A worker or job gets none unless it declares one.
 
+### 6. Frontends bind a runtime too
+
+`forge.Frontend` is not a process forge runs in production, so it is not a
+`fw.Workload` (§1). It still has the property that made §2 necessary: WHERE
+it is served differs per env. It used to be a `deploy` field whose ABSENCE
+meant "dev server" and whose `forge.StaticSite` without a `bucket` meant
+"hosted" — the hidden mode §2 removed from workloads. So a frontend binds a
+runtime the same way, and it is required:
+
+| Runtime                                        | Meaning                                                         |
+| ---------------------------------------------- | --------------------------------------------------------------- |
+| `forge.OnHost {}`                              | the dev server, `<dev_runner> dev` on the frontend's `port`     |
+| `forge.OnHosted {}`                            | platform static hosting: a release artifact + a `StaticSite` CR |
+| `forge.OnBucket {bucket, cdn?, keep_releases}` | the author's own object-storage bucket                          |
+| `forge.OnFirebase {project, site, ...}`        | Firebase Hosting                                                |
+| `forge.BuildOnly {}`                           | built for a sibling frontend's `bundle`, never shipped          |
+
+`OnHost`, `OnHosted` and `BuildOnly` are the workload schemas, reused so one
+name means one place across both declarations. The workload-only fields they
+carry (`runner`, `listen_ports`, `build_variants`, ...) are refused on a
+frontend at render, naming the field. The alternative — a parallel
+`FrontendOnHost` — would give one runtime two names; the refusal costs one
+lowering rule. `OnBucket` and `OnFirebase` are frontend-only.
+
+The static BUILD facts (`public_dir`, `base_path`, `bundle`, `cache_control`)
+are the frontend's own, never re-stated per runtime; `cache_control` is
+refused where forge does not set the headers (everywhere but `OnBucket`).
+`OnHosted` has no `bucket` field, so a hosted site that names one does not
+compile. `control_plane` is required iff some workload, database or frontend
+is `OnHosted`, and an env mixes frontend and workload runtimes freely. A
+containerized (SSR) frontend is still a `fw.Workload` with a `DockerBuild`.
+
+`forge env up` dev-serves every frontend whatever it binds: the runtime says
+what a DEPLOY does with it, which is what lets `forge env up prod --target
+web` run the prod bundle's config against a local dev server.
+
 ## Consequences
 
 - One mental model for users: _declare a workload; bind it to a runtime_.
@@ -170,7 +207,9 @@ defaults live in Go:
   observers. Its `deploy/kcl` migrates from `forge.Service`/`RenderedWorkload`
   to `fw.Workload` + runtimes.
 - No backwards compatibility (pre-1.0). Existing hosted SimpleBackend CRs are
-  replaced on the next deploy.
+  replaced on the next deploy. `Frontend.deploy`, `forge.StaticSite` and
+  `forge.FirebaseHosting` are deleted (§6); the `StaticSite` CR stays the
+  hosted wire contract, and a hosted frontend publishes the same spec.
 - Deferred, by design: `cron` on Hosted (metering), the `Full` profile on
   Hosted (vcluster), and cross-runtime reference resolution beyond
   `workloadURL`/`databaseRef` (e.g. a `PortOf` for host↔compose wiring).

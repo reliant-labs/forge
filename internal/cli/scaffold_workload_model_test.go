@@ -22,8 +22,9 @@ import (
 // each workload to where it runs, one line per workload. This scaffolds a
 // project, then renders that SAME declaration bound three ways: dev (host
 // processes), prod (its cluster), and a MIXED env derived from prod with
-// `forge env new cloud --from prod --bind item=hosted` — item on the forge
-// control plane beside migrate on the cluster. Each render goes through the
+// `forge env new cloud --from prod --bind item=hosted --bind web=hosted` —
+// item on the forge control plane beside migrate on the cluster, and the web
+// frontend on the platform's static hosting (ADR 0002 §6). Each render goes through the
 // production decoder and the consumer the deploy path runs for that runtime:
 //
 //   - hosted: the spec is admitted under ProfileRestricted (Workload.Validate
@@ -57,9 +58,9 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	// once the knobs are filled, compiles, and admitted by the hosted plan.
 	withCwd(t, dir, func() {
 		cmd := newEnvNewCmd()
-		cmd.SetArgs([]string{"cloud", "--from", "prod", "--bind", "item=hosted"})
+		cmd.SetArgs([]string{"cloud", "--from", "prod", "--bind", "item=hosted", "--bind", "web=hosted"})
 		if err := cmd.Execute(); err != nil {
-			t.Fatalf("forge env new cloud --from prod --bind item=hosted: %v", err)
+			t.Fatalf("forge env new cloud --from prod --bind item=hosted --bind web=hosted: %v", err)
 		}
 	})
 	cloudDir := filepath.Join(dir, "deploy", "kcl", "cloud")
@@ -67,7 +68,7 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"_hosted(wl.item)", "_on_cluster(wl.migrate)", "control_plane = forge.ControlPlane {}"} {
+	for _, want := range []string{"_hosted(wl.item)", "_on_cluster(wl.migrate)", "_hosted_frontend(_web_frontend)", "control_plane = forge.ControlPlane {}"} {
 		if !strings.Contains(string(cloud), want) {
 			t.Fatalf("derived cloud/main.k lacks %q:\n%s", want, cloud)
 		}
@@ -76,6 +77,7 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 		return map[string]string{
 			"REPLACE_ME_CLUSTER_CONTEXT": "gke_acme_cloud", "REPLACE_ME_PLATFORM": "amd64",
 			"REPLACE_ME_NAMESPACE": "acme-cloud", "REPLACE_ME_REGISTRY": "ghcr.io/acme",
+			"REPLACE_ME_BUCKET": "acme-cloud-web",
 		}[p]
 	})
 	writeEnv(t, dir, "cloud", filled, filepath.Join(dir, "deploy", "kcl", "prod"))
@@ -136,13 +138,29 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	if !admittedService {
 		t.Fatalf("the hosted env admitted no `item` Workload (items: %+v)", items)
 	}
+	// The web frontend, rebound to hosted, is published as a StaticSite.
+	var hostedSite bool
+	for _, s := range group.Services {
+		if s.Name == "web" && s.Hosted != nil && s.Hosted.Tier == deploytarget.HostedTierStatic {
+			hostedSite = true
+		}
+	}
+	if !hostedSite {
+		t.Errorf("the rebound web frontend is not published as a hosted StaticSite: %+v", group.Services)
+	}
 
 	// ── cluster (prod): RenderWorkloads, probes present ──────────────────
-	_, prodRaw := render("prod")
+	prod, prodRaw := render("prod")
+	if fe := prod.Frontends; len(fe) != 1 || fe[0].Runtime.Type != FrontendRuntimeBucket {
+		t.Errorf("prod frontends = %+v, want web on forge.OnBucket", fe)
+	}
 	assertClusterDeploymentProbed(t, "prod", prodRaw)
 
 	// ── host (dev): argv from build + args ───────────────────────────────
 	dev, _ := render("dev")
+	if fe := dev.Frontends; len(fe) != 1 || fe[0].Runtime.Type != FrontendRuntimeHost {
+		t.Errorf("dev frontends = %+v, want web on forge.OnHost", fe)
+	}
 	devW := byName(dev)
 	if rt := devW["item"].Runtime; rt.Type != RuntimeHost {
 		t.Fatalf("dev item runtime = %q, want host", rt.Type)

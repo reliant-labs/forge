@@ -45,5 +45,18 @@ output = forge.render(forge.Bundle {
         fw.Workload {name = "cli", kind = "tool", build = forge.GoBuild {cmd = "./cmd/acme-cli", output_name = "acme-cli"}, runtime = forge.BuildOnly {}}
     ]
     infra = [forge.HostInfra {name = "postgres", port = 5433, database = "acme"}]
-    frontends = [forge.Frontend {name = "web", type = "vite", path = "frontends/web", runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}}]
+    frontends = [
+        forge.Frontend {name = "web", type = "vite", path = "frontends/web", runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}, runtime = forge.OnHost {}}
+        # A frontend on the author's own bucket, beside hosted workloads: the
+        # hosted ones do not make it hosted.
+        forge.Frontend {
+            name = "site"
+            type = "vite"
+            path = "frontends/site"
+            base_path = "/docs"
+            cache_control = [forge.CacheRule {pattern = "assets/**", cache_control = "public, max-age=31536000, immutable"}]
+            runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}
+            runtime = forge.OnBucket {bucket = "gs://acme-site", cdn = forge.StaticSiteCDN {url_map = "acme-lb"}}
+        }
+    ]
 })

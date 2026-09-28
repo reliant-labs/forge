@@ -6,7 +6,7 @@ A `forge.WorkloadURL { workload = "api" }` names a sibling and means "its
 public URL, in this environment". WHO resolves it depends on where the
 REFERRER runs (kcl/render.k `_env_var`):
 
-  * a HOSTED workload or StaticSite keeps the reference; the control plane
+  * a HOSTED workload or frontend keeps the reference; the control plane
     resolves it against what it runs, and re-resolves when a hostname moves.
   * every other referrer resolves it NOW, from what the env declares, so the
     dev document, the host process's env and the cluster record carry a URL
@@ -56,7 +56,7 @@ resolve = lambda name: str, bundle: any, from_host: str = "localhost" -> str {
 }
 
 _frontend_base = lambda f: any -> str {
-    f.deploy.base_path if f.deploy and f.deploy.type == "static-site" and f.deploy.base_path else ""
+    f.base_path if f.base_path else ""
 }
 
 _route_url = lambda r: any, bundle: any -> str {

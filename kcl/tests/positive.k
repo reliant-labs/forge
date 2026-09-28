@@ -86,7 +86,7 @@ _bundle = forge.Bundle {
     project = "myapp"
     env = "dev"
     workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [_admin, _proxy, _daemon, _op, _cron, _job]]
-    frontends = [forge.Frontend {name = "admin-web", path = "frontends/admin-web"}]
+    frontends = [forge.Frontend {name = "admin-web", path = "frontends/admin-web", runtime = forge.OnHost {}}]
     config_maps = [forge.ConfigMap {name = "myapp-dev-config", data = {"LOG_LEVEL" = "info"}}]
 }
 

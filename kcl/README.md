@@ -47,7 +47,7 @@ public top-level var.
 | `forge.GoBuild` / `DockerBuild` / `ShellBuild` / `RemoteBuild`                                    | How forge produces a workload's artifact. Unset = forge builds nothing.                                                                                                                                                       |
 | `forge.SecretRef` / `ConfigMapRef` / `FieldRef` / `ManagedSecret` / `DatabaseRef` / `WorkloadURL` | The non-literal values of `fw.Workload.env` (a map, name -> value).                                                                                                                                                           |
 | `forge.Bundle`                                                                                    | One environment: workloads, `infra` (`forge.HostInfra`), frontends, databases, gateways/routes, secrets, clusters, `manifests` (`forge.Manifests`, raw objects), `network_policy` (opt-in).                                   |
-| `forge.Frontend`                                                                                  | A dev-served frontend, optionally shipped to Firebase or a `StaticSite` (a bucketless StaticSite is hosted). A containerized frontend is a workload.                                                                          |
+| `forge.Frontend`                                                                                  | A dev server or a static build forge publishes, bound per env to `forge.OnHost` / `OnHosted` / `OnBucket` / `OnFirebase` / `BuildOnly` (required, no default). The build facts — `public_dir`, `base_path`, `bundle`, `cache_control` — are on the frontend. A containerized frontend is a workload. |
 | `forge.ManagedDatabase`                                                                           | A Postgres on a cluster (CloudNativePG) or on the control plane.                                                                                                                                                              |
 
 ### What each runtime does with a workload
@@ -71,6 +71,26 @@ A forge-built `service` gets explicit `/readyz` + `/healthz` probes on its
 render for host and cluster referrers (a cluster pod reaches a host process
 through its target's `host_gateway`, default `host.k3d.internal`) and kept as
 a reference for hosted ones. See `kcl/lib/workload_url.k`.
+
+### What each runtime does with a frontend
+
+A frontend binds a runtime exactly as a workload does (ADR 0002 §6). `OnHost`,
+`OnHosted` and `BuildOnly` are the workload schemas of the same name; the
+workload-only fields on them (`runner`, `listen_ports`, `build_variants`, ...)
+are refused on a frontend, naming the field. `output.frontends[].runtime` is
+`{type, ...}`, and the Go dispatch keys on `type`:
+
+| Runtime                                       | `forge env deploy` does                                                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `OnHost {}`                                   | nothing — it is the dev server (`<dev_runner> dev` on `port`); `forge env up` runs it                                     |
+| `OnHosted {}`                                 | `forge build --push` pushes the site as an OCI release; the deploy publishes a StaticSite CR (needs `control_plane`)      |
+| `OnBucket {bucket, cdn?, keep_releases}`      | builds, assembles, uploads `releases/<digest>/`, syncs `live/`, invalidates the CDN                                       |
+| `OnFirebase {project, site, target?, rewrites}` | builds, assembles, `firebase deploy`                                                                                    |
+| `BuildOnly {}`                                | builds it, so a sibling frontend's `bundle` can assemble its output; ships nothing                                        |
+
+`cache_control` is honoured only on `OnBucket` (forge sets the object headers
+there and nowhere else); `bundle` is refused on `OnHost`. `OnHosted` has no
+`bucket` field at all, so "a hosted site that names a bucket" does not compile.
 
 ### Cross-repo sources
 

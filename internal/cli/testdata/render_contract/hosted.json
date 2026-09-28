@@ -24,23 +24,20 @@
     "env": "prod",
     "frontends": [
       {
+        "base_path": null,
+        "bundle": [],
+        "cache_control": [],
         "config": null,
-        "deploy": {
-          "base_path": null,
-          "bucket": "",
-          "bundle": [],
-          "cache_control": [],
-          "cdn": null,
-          "keep_releases": 10,
-          "public_dir": "dist",
-          "type": "static-site"
-        },
         "dev_runner": "npm",
         "env_file": null,
         "env_vars": [],
         "name": "web",
         "path": "frontends/web",
         "port": 3000,
+        "public_dir": "dist",
+        "runtime": {
+          "type": "hosted"
+        },
         "runtime_config": {},
         "runtime_config_spec": {
           "API_URL": {

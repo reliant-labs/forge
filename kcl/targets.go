@@ -14,29 +14,27 @@ import (
 //
 // The set of deploy targets is a fact about kcl/schema.k, and schema.k is
 // already in the binary (embed.go). Anything that restates the set — a
-// []string{"FirebaseHosting", "K8sCluster"}, a doc comment, a help string —
-// is a SECOND copy that no compiler and no test keeps honest, and it rots on
-// the first commit that adds a target. One is being added: the forge-deploy
-// branch introduces StaticSite and SimpleBackend and rewrites the frontend
-// union to `FirebaseHosting | StaticSite | K8sCluster`.
+// []string{"OnHost", "OnCluster"}, a doc comment, a help string — is a SECOND
+// copy that no compiler and no test keeps honest, and it rots on the first
+// commit that adds a runtime.
 //
 // So nothing here names a target. The set is defined structurally:
 //
-//	a deploy target is a union member of a `deploy` field
+//	a deploy target is a union member of a `runtime` field
 //	on some schema in the embedded module.
 //
-// DeployTargets finds every `deploy?:` field wherever it is declared, splits
-// its union, and resolves each member back to its own schema — picking up the
-// member's docstring and fields on the way. Add a target to the union in
-// schema.k and it appears in `forge project shapes --kind deploy-target` and
-// in the deploy warning's hint text with no Go change at all. Remove one and
-// it disappears. That is the whole design.
+// DeployTargets finds every `runtime?:` field wherever it is declared (through
+// a `type X = A | B` alias too), splits its union, and resolves each member
+// back to its own schema — picking up the member's docstring and fields on
+// the way. Add a runtime to a union in the module and it appears in `forge
+// project shapes --kind deploy-target` and in the deploy warning's hint text
+// with no Go change at all. Remove one and it disappears. That is the whole
+// design.
 //
-// The OWNING schema is discovered the same way rather than assumed, because
-// the assumption is wrong: the service-side union lives on RenderedWorkload
-// (the schema the staging/prod templates construct), not on `Frontend`'s
-// obvious counterpart `Service`, which has no deploy field at all. Reporting
-// a hand-written "Service" there would be a third thing to get out of date.
+// The OWNING schema is discovered the same way rather than assumed: Workload,
+// Frontend and ManagedDatabase each accept a different set (OnBucket is
+// frontend-only, OnCluster is not a frontend runtime), and a member shared by
+// several (OnHost, OnHosted) lists every owner.
 //
 // ── Why a line parser and not the kcl binary ─────────────────────────────
 //
@@ -46,10 +44,10 @@ import (
 // parser is a line scan over an in-memory FS: microseconds, no I/O, and it
 // cannot be stale because there is no cache between it and the source.
 
-// DeployTarget is one schema a workload's `deploy` field may be set to,
+// DeployTarget is one schema a `runtime` field may be set to,
 // resolved from the embedded module.
 type DeployTarget struct {
-	// Name is the schema name, e.g. "FirebaseHosting".
+	// Name is the schema name, e.g. "OnBucket".
 	Name string
 	// File and Line locate the schema declaration inside the module
 	// (e.g. "schema.k", 1851), so a reader's next step is a targeted read.
@@ -60,9 +58,9 @@ type DeployTarget struct {
 	Doc string
 	// Fields are the schema's own declared fields, in source order.
 	Fields []SchemaField
-	// Workloads are the schemas whose `deploy` union names this target,
-	// sorted. This is the load-bearing distinction between the two unions:
-	// a Frontend and a RenderedWorkload accept different target sets.
+	// Workloads are the schemas whose `runtime` union names this target,
+	// sorted. This is the load-bearing distinction between the unions: a
+	// Frontend and a Workload accept different runtime sets.
 	Workloads []string
 }
 
@@ -98,10 +96,9 @@ var (
 )
 
 // targetFields are the fields whose union type is a set of deploy targets:
-// a frontend's `deploy` (FirebaseHosting | StaticSite) and a workload's
-// `runtime` (OnHost | OnCompose | OnCluster | OnHosted | BuildOnly, declared
-// through the `Runtime` alias).
-var targetFields = map[string]bool{"deploy": true, "runtime": true}
+// every schema's `runtime` — a workload's (the `Runtime` alias), a frontend's
+// (the `FrontendRuntime` alias) and a database's.
+var targetFields = map[string]bool{"runtime": true}
 
 // schemaDecl is one parsed `schema X:` block.
 type schemaDecl struct {
@@ -184,7 +181,7 @@ func DeployTargetsFor(workloadSchema string) ([]string, error) {
 }
 
 // parseModule scans every .k file in fsys, returning the schema declarations
-// by name and the `deploy` unions by owning schema name.
+// by name and the `runtime` unions by owning schema name.
 func parseModule(fsys fs.FS) (map[string]schemaDecl, map[string][]string, error) {
 	schemas := map[string]schemaDecl{}
 	unions := map[string][]string{}
@@ -229,7 +226,7 @@ func parseModule(fsys fs.FS) (map[string]schemaDecl, map[string][]string, error)
 	return schemas, unions, nil
 }
 
-// parseFile accumulates one .k file's schemas and deploy unions.
+// parseFile accumulates one .k file's schemas and runtime unions.
 //
 // The state machine is small but every branch is load-bearing against the
 // real schema.k, which has 2,849 lines of multi-line docstrings containing
@@ -386,7 +383,7 @@ func splitDefault(rest string) (typ, def string) {
 	return rest, ""
 }
 
-// unionMembers splits `FirebaseHosting | K8sCluster` into its member schema
+// unionMembers splits `OnHost | OnCluster` into its member schema
 // names. It returns nil for a type that is not a union of bare schema names
 // — `str`, `[EnvVar]`, `{str: any}` — so a `deploy` field that is not
 // polymorphic contributes no targets rather than a garbage one.

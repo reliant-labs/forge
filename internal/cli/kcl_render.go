@@ -16,8 +16,8 @@
 // its fields at the same visibility so a reader is not left wondering why a
 // lowercase type has uppercase members. Verified before suppressing: none of
 // the types this branch adds (RemoteBuild, RemoteBuildSource, ControlPlaneEntity,
-// StaticSiteDeploy, StaticSiteCDN, CacheRule, BundleDir,
-// FirebaseHostingDeploy, FrontendDeployEntity) is referenced outside package
+// FrontendRuntime, BucketRuntime, FirebaseRuntime, StaticSiteCDN, CacheRule,
+// BundleDir) is referenced outside package
 // cli, so every one of them is package-private in practice.
 //
 // THE REAL FIX IS A PACKAGE SPLIT, and this comment is the note that says so.
@@ -771,19 +771,11 @@ type BuildVariant struct {
 	OutputName string            `json:"output_name,omitempty"` // default: <service>-<variant>
 }
 
-// FrontendEntity is one frontend from rendered KCL. Frontends are
-// host-only in the dev loop (no in-cluster Deployment for the dev env);
-// the DevRunner field selects npm/pnpm/yarn.
-//
-// Deploy is the optional discriminator that lets `forge build` skip the
-// production build for frontends that ship via host-mode dev server
-// only (no production artifact ever consumed). When absent (legacy
-// projects whose KCL doesn't emit a frontend `deploy` block) callers
-// fall back to "always build", preserving the pre-discriminator
-// behaviour. Unlike ServiceEntity.Deploy this is a thin Type-only
-// struct — frontends don't carry per-mode config blocks on the Go
-// side; the type discriminator is the only thing the build pipeline
-// needs to make the skip/build decision.
+// FrontendEntity is one frontend from rendered KCL: a dev server, or a
+// static build forge publishes. Runtime says which (ADR 0002 §6), and every
+// consumer dispatches on Runtime.Type. The static build facts (PublicDir,
+// BasePath, Bundle, CacheControl) are the frontend's own, identical on every
+// runtime that publishes a build.
 type FrontendEntity struct {
 	Name string `json:"name"`
 	Type string `json:"type,omitempty"` // "nextjs" | "vite-spa" | "react-native"
@@ -807,7 +799,21 @@ type FrontendEntity struct {
 	// with explicit EnvVars winning on a variable collision. See
 	// EffectiveEnvVars.
 	Config *FrontendConfigEntity `json:"config,omitempty"`
-	Deploy *FrontendDeployEntity `json:"deploy,omitempty"`
+	// Runtime is where the frontend runs. Always present in a render: the
+	// Bundle refuses a frontend with none. Zero only for a frontend bridged
+	// in from forge.yaml (mergeConfigFrontends), which is dev-served.
+	Runtime FrontendRuntime `json:"runtime"`
+	// PublicDir is the build's static output dir relative to the frontend's
+	// code — declared, else the type's convention (resolved by the render).
+	PublicDir string `json:"public_dir,omitempty"`
+	// BasePath mounts the frontend under a sub-path ("/admin"); empty is
+	// the site root.
+	BasePath string `json:"base_path,omitempty"`
+	// Bundle is the extra pre-built static dirs assembled into the site.
+	Bundle []BundleDir `json:"bundle,omitempty"`
+	// CacheControl is the ordered Cache-Control rules forge applies to the
+	// objects it uploads (OnBucket only; the render refuses them elsewhere).
+	CacheControl []CacheRule `json:"cache_control,omitempty"`
 	// RuntimeConfig is the frontend's declared `runtime_config` RESOLVED
 	// to literals by the KCL render (forge.WorkloadURL references lowered
 	// to the target's URL). It is layered over the typed per-env config
@@ -1511,7 +1517,7 @@ func (e *KCLEntities) WorkloadsOn(runtime string) []WorkloadEntity {
 }
 
 // HasHosted reports whether anything in the env is bound to the control
-// plane: a Hosted workload, a hosted database, or a bucketless StaticSite.
+// plane: a Hosted workload, a hosted database, or an OnHosted frontend.
 func (e *KCLEntities) HasHosted() bool {
 	if e == nil {
 		return false
@@ -1534,8 +1540,8 @@ func (e *KCLEntities) HasHosted() bool {
 	return false
 }
 
-// frontendIsHosted is the per-frontend hosted predicate: a StaticSite with no
-// bucket is published to the control plane; with a bucket it is self-hosted.
+// frontendIsHosted reports whether the frontend is bound to forge.OnHosted:
+// published to the control plane as a StaticSite.
 func frontendIsHosted(f FrontendEntity) bool {
-	return f.Deploy != nil && f.Deploy.Type == frontendDeployStaticSite && f.Deploy.StaticSite != nil && f.Deploy.StaticSite.Bucket == ""
+	return f.Runtime.Type == FrontendRuntimeHosted
 }

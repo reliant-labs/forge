@@ -85,7 +85,9 @@ wins. See `secrets` for the provider model.
 
 `forge env up dev` is the one-command inner loop — host infra up, cluster-bound
 workloads applied, host-bound workloads launched (jobs to completion first),
-every frontend dev-served. It
+every frontend dev-served — whatever runtime it binds, `up` serves it with
+`<dev_runner> dev` on its `port` (a frontend's runtime decides what a DEPLOY
+does with it; dev binds `forge.OnHost {}`). It
 also keeps two gitignored prerequisites fresh, each gated on staleness (a no-op
 in the steady state):
 

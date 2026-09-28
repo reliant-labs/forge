@@ -19,6 +19,7 @@ is **incompatible with generated CRUD pages**, whose `/<entity>/[id]` routes are
 dynamic. `base_path: /admin` mounts a frontend under a URL prefix, and hand-built
 URLs then have to go through `joinBasePath` from `src/lib/basepath_gen.ts`.
 Both, with the footguns, are in `frontend/serving`.
+Each env binds the frontend's `runtime` (`deploy` skill).
 
 ## Generated TypeScript hooks
 
@@ -145,6 +146,7 @@ Two sources are layered into the document, key by key:
 ```kcl
 forge.Frontend {
     name = "web"
+    runtime = forge.OnHost {}
     runtime_config = {
         API_URL = forge.WorkloadURL { workload = "api" }   # a sibling workload's public URL
         APP_NAME = "acme"                                   # or a literal
@@ -156,8 +158,8 @@ Name the workload, never the hostname:
 
 | Env | Who resolves `forge.WorkloadURL` | Who writes `config.js` |
 |---|---|---|
-| **Hosted** (the referrer is a hosted StaticSite, or a workload bound to `forge.OnHosted`) | The control plane. It allocates the hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync. The release artifact carries **no** config.js. |
-| Everything else (host, compose, cluster, Firebase / own bucket) | forge, **at render time**: a route to the workload → a custom domain on its exposed port → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / StaticSite deploy. |
+| **Hosted** (the referrer is a frontend or a workload bound to `forge.OnHosted`) | The control plane. It allocates the hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync. The release artifact carries **no** config.js. |
+| Everything else (host, compose, cluster, `OnFirebase` / `OnBucket`) | forge, **at render time**: a route to the workload → a custom domain on its exposed port → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / bucket deploy. |
 
 Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
 

@@ -103,7 +103,7 @@ type DeployShape struct {
 	// Kubernetes objects, and an empty stream is the correct render for it.
 	Destinations []string
 	// Hosted is true when the environment has a HOSTED part: workloads bound
-	// to forge.OnHosted, hosted databases or bucketless StaticSites, published
+	// to forge.OnHosted, hosted databases or OnHosted frontends, published
 	// to a control plane that renders and runs them. Hosting is per workload,
 	// so the same env may also deploy to a cluster (Destinations says so).
 	Hosted bool

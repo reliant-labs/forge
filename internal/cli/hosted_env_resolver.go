@@ -97,7 +97,7 @@ var hostedProjectName = func() string {
 // declares control_plane. Pure.
 //
 //   - anything hosted (a workload bound to OnHosted, a hosted
-//     ManagedDatabase, a bucketless StaticSite) → PERSISTENT: the platform
+//     ManagedDatabase, an OnHosted frontend) → PERSISTENT: the platform
 //     runs it, and its secrets are write-only.
 //   - nothing hosted → LOCAL: its workloads run on a developer machine or a
 //     cluster the author operates, and the control plane is only its secret
@@ -139,7 +139,7 @@ func hostedControlPlaneKindName(k deploytarget.HostedEnvKind) string {
 // to a cluster, so there is nothing to deploy (the control plane refuses a
 // publish too, but this fires before any RPC).
 func refuseLocalEnvDeploy(envName string) error {
-	return fmt.Errorf("env %q is LOCAL: it declares control_plane but binds nothing to it (no forge.OnHosted workload, hosted database or bucketless StaticSite), "+
+	return fmt.Errorf("env %q is LOCAL: it declares control_plane but binds nothing to it (no forge.OnHosted workload, hosted database or OnHosted frontend), "+
 		"so the control plane is only its secret store, and its workloads run on this machine.\n"+
 		"There is nothing for `forge env deploy` to publish or apply.\n"+
 		"fix: run it with `forge env up %s`, or bind a workload to forge.OnHosted / forge.OnCluster", envName, envName)

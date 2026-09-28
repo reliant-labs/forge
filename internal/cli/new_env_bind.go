@@ -22,11 +22,37 @@ var envBinders = map[string]string{
 	"cluster": "_on_cluster",
 }
 
-// bindingLine matches one scaffolded binding, `<binder>(wl.<ident>)`,
+// frontendBinders is the same map for a FRONTEND's binding line: a frontend
+// binds a runtime exactly as a workload does (ADR 0002 §6), through its own
+// binders, since its runtimes differ (no cluster; a bucket instead).
+var frontendBinders = map[string]string{
+	"hosted": "_hosted_frontend",
+	"bucket": "_on_bucket",
+}
+
+// bindingLine matches one scaffolded workload binding, `<binder>(wl.<ident>)`,
 // capturing the binder.
 func bindingLine(ident string) *regexp.Regexp {
 	return regexp.MustCompile(`(?m)^(\s*)(_[a-z_]+)\(wl\.` + regexp.QuoteMeta(ident) + `\)`)
 }
+
+// frontendBindingLine matches one scaffolded frontend binding,
+// `<binder>(_<ident>_frontend)`.
+func frontendBindingLine(ident string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^(\s*)(_[a-z_]+)\(_` + regexp.QuoteMeta(ident) + `_frontend\)`)
+}
+
+// bindTargetKnown reports whether target names a binder for a workload or a
+// frontend. Which one applies is decided against the env file, by the line
+// the name binds.
+func bindTargetKnown(target string) bool {
+	_, w := envBinders[target]
+	_, f := frontendBinders[target]
+	return w || f
+}
+
+// bindUsage is the one spelling of the --bind grammar every refusal names.
+const bindUsage = "write it as <workload>=hosted|cluster, or <frontend>=hosted|bucket"
 
 var (
 	bundleProjectLine = regexp.MustCompile(`(?m)^(\s+)project = .*$`)
@@ -37,20 +63,20 @@ var (
 // typo never leaves a half-made env directory behind.
 func validateEnvBinds(binds []string) error {
 	for _, b := range binds {
-		workload, target, ok := strings.Cut(b, "=")
-		if _, known := envBinders[target]; !ok || workload == "" || !known {
-			return cliutil.UserErr("forge env new", fmt.Sprintf("--bind %q", b), "",
-				"write it as <workload>=hosted or <workload>=cluster")
+		name, target, ok := strings.Cut(b, "=")
+		if !ok || name == "" || !bindTargetKnown(target) {
+			return cliutil.UserErr("forge env new", fmt.Sprintf("--bind %q", b), "", bindUsage)
 		}
 	}
 	return nil
 }
 
-// applyEnvBinds rebinds workloads in a freshly derived env's main.k: each
-// `<workload>=<target>` rewrites that workload's one binding line. Binding
-// any workload to hosted also declares the env's control plane (Reliant
-// cloud) when it has none, since that is where a hosted workload is
-// published.
+// applyEnvBinds rebinds workloads and frontends in a freshly derived env's
+// main.k: each `<name>=<target>` rewrites that name's one binding line — a
+// workload's `_<binder>(wl.<name>)` or a frontend's
+// `_<binder>(_<name>_frontend)`, whichever the env declares. Binding anything
+// to hosted also declares the env's control plane (Reliant cloud) when it has
+// none, since that is where a hosted workload or frontend is published.
 func applyEnvBinds(env string, binds []string) error {
 	projectDir, err := projectRoot()
 	if err != nil {
@@ -64,30 +90,26 @@ func applyEnvBinds(env string, binds []string) error {
 	content := string(raw)
 	hosted := false
 	for _, b := range binds {
-		workload, target, ok := strings.Cut(b, "=")
-		binder, known := envBinders[target]
-		if !ok || workload == "" || !known {
-			return cliutil.UserErr("forge env new", fmt.Sprintf("--bind %q", b), "",
-				"write it as <workload>=hosted or <workload>=cluster")
+		name, target, ok := strings.Cut(b, "=")
+		if !ok || name == "" || !bindTargetKnown(target) {
+			return cliutil.UserErr("forge env new", fmt.Sprintf("--bind %q", b), "", bindUsage)
 		}
-		re := bindingLine(naming.KCLIdentifier(workload))
-		if len(re.FindAllStringIndex(content, -1)) != 1 {
-			return cliutil.UserErr("forge env new",
-				fmt.Sprintf("--bind %s: deploy/kcl/%s/main.k has no single `_<binder>(wl.%s)` line to rebind", b, env, naming.KCLIdentifier(workload)),
-				"", "bind it by hand in the env's `_workloads` list")
+		rebound, err := rebindOne(content, env, b, naming.KCLIdentifier(name), target)
+		if err != nil {
+			return err
 		}
-		content = re.ReplaceAllString(content, "${1}"+binder+"(wl."+naming.KCLIdentifier(workload)+")")
+		content = rebound
 		hosted = hosted || target == "hosted"
 	}
 	if hosted && !controlPlaneField.MatchString(content) {
 		loc := bundleProjectLine.FindStringSubmatchIndex(content)
 		if loc == nil {
 			return cliutil.UserErr("forge env new",
-				fmt.Sprintf("deploy/kcl/%s/main.k binds a hosted workload but has no Bundle `project = ` line to add control_plane after", env),
+				fmt.Sprintf("deploy/kcl/%s/main.k binds something hosted but has no Bundle `project = ` line to add control_plane after", env),
 				"", "add `control_plane = forge.ControlPlane {}` to the env's Bundle by hand")
 		}
 		indent := content[loc[2]:loc[3]]
-		decl := "\n" + indent + "# Where the hosted-bound workloads are published: Reliant cloud (set\n" +
+		decl := "\n" + indent + "# Where the hosted-bound workloads and frontends are published: Reliant cloud (set\n" +
 			indent + "# `endpoint` for another control plane).\n" +
 			indent + "control_plane = forge.ControlPlane {}"
 		content = content[:loc[1]] + decl + content[loc[1]:]
@@ -97,6 +119,35 @@ func applyEnvBinds(env string, binds []string) error {
 	}
 	fmt.Printf("\nRebound in deploy/kcl/%s/main.k: %s\n", env, strings.Join(binds, ", "))
 	return nil
+}
+
+// rebindOne rewrites the ONE binding line that binds ident — a workload's or
+// a frontend's — to target's binder. Exactly one of the two may match: a name
+// is unique across an env's workloads and frontends (the Bundle refuses a
+// duplicate), so a hit on both, or on neither, is a file forge will not guess
+// about.
+func rebindOne(content, env, bind, ident, target string) (string, error) {
+	wl, fe := bindingLine(ident), frontendBindingLine(ident)
+	wlHits, feHits := len(wl.FindAllStringIndex(content, -1)), len(fe.FindAllStringIndex(content, -1))
+	switch {
+	case wlHits == 1 && feHits == 0:
+		binder, ok := envBinders[target]
+		if !ok {
+			return "", cliutil.UserErr("forge env new",
+				fmt.Sprintf("--bind %s: %s is a workload, which binds hosted or cluster", bind, ident), "", bindUsage)
+		}
+		return wl.ReplaceAllString(content, "${1}"+binder+"(wl."+ident+")"), nil
+	case feHits == 1 && wlHits == 0:
+		binder, ok := frontendBinders[target]
+		if !ok {
+			return "", cliutil.UserErr("forge env new",
+				fmt.Sprintf("--bind %s: %s is a frontend, which binds hosted or bucket", bind, ident), "", bindUsage)
+		}
+		return fe.ReplaceAllString(content, "${1}"+binder+"(_"+ident+"_frontend)"), nil
+	}
+	return "", cliutil.UserErr("forge env new",
+		fmt.Sprintf("--bind %s: deploy/kcl/%s/main.k has no single `_<binder>(wl.%s)` or `_<binder>(_%s_frontend)` line to rebind", bind, env, ident, ident),
+		"", "bind it by hand in the env's `_workloads` or `frontends` list")
 }
 
 // checkHostedAdmissible runs the hosted deploy path's own admission plan over

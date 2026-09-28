@@ -1,5 +1,7 @@
 package templates
 
+import "strings"
+
 // EnvTemplateData is the payload of the env main.k templates
 // (deploy/kcl/dev/main.k.tmpl for the local loop, deploy/kcl/cloud/main.k.tmpl
 // for staging and prod). An env is a list of per-workload bindings, so the
@@ -18,6 +20,11 @@ type EnvTemplateData struct {
 	IngressEnabled  bool
 	HasFrontend     bool
 	FrontendName    string
+	// FrontendIdent is the KCL identifier of that frontend: the cloud env
+	// declares it once as `_<ident>_frontend` and binds it on one line
+	// (`_on_bucket(_<ident>_frontend)`), the line `forge env new --bind`
+	// rewrites.
+	FrontendIdent string
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string
@@ -44,6 +51,9 @@ func (d EnvTemplateData) withDefaults() interface{} {
 	}
 	if d.PrimaryIdent == "" {
 		d.PrimaryIdent = d.PrimaryWorkload
+	}
+	if d.FrontendIdent == "" {
+		d.FrontendIdent = strings.NewReplacer("-", "_", ".", "_").Replace(d.FrontendName)
 	}
 	if d.Replicas == 0 {
 		d.Replicas, d.CPURequest, d.CPULimit, d.MemoryRequestMiB, d.MemoryLimitMiB = 3, "0.5", "2.0", 512, 1024

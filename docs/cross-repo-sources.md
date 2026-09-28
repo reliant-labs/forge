@@ -79,7 +79,8 @@ forge.Frontend {
         ref = "v1.6.3"          # tag, branch, or commit sha
         subdir = "web"
     }
-    deploy = forge.FirebaseHosting { site = "reliant-prod", ... }
+    public_dir = "dist"
+    runtime = forge.OnFirebase { project = "reliant-labs-475814", site = "reliant-prod" }
 }
 ```
 

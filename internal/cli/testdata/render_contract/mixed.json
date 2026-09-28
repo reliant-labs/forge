@@ -19,14 +19,60 @@
     "env": "dev",
     "frontends": [
       {
+        "base_path": null,
+        "bundle": [],
+        "cache_control": [],
         "config": null,
-        "deploy": null,
         "dev_runner": "npm",
         "env_file": null,
         "env_vars": [],
         "name": "web",
         "path": "frontends/web",
         "port": 3000,
+        "public_dir": "dist",
+        "runtime": {
+          "type": "host"
+        },
+        "runtime_config": {
+          "API_URL": "http://localhost:8080"
+        },
+        "runtime_config_spec": {
+          "API_URL": {
+            "workloadURL": {
+              "name": "api"
+            }
+          }
+        },
+        "source": null,
+        "type": "vite"
+      },
+      {
+        "base_path": "/docs",
+        "bundle": [],
+        "cache_control": [
+          {
+            "cache_control": "public, max-age=31536000, immutable",
+            "pattern": "assets/**"
+          }
+        ],
+        "config": null,
+        "dev_runner": "npm",
+        "env_file": null,
+        "env_vars": [],
+        "name": "site",
+        "path": "frontends/site",
+        "port": 3000,
+        "public_dir": "dist",
+        "runtime": {
+          "bucket": "gs://acme-site",
+          "cdn": {
+            "extra_invalidate_paths": [],
+            "invalidate": "entrypoints",
+            "url_map": "acme-lb"
+          },
+          "keep_releases": 10,
+          "type": "bucket"
+        },
         "runtime_config": {
           "API_URL": "http://localhost:8080"
         },

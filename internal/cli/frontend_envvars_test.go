@@ -44,6 +44,7 @@ _bundle = forge.Bundle {
         path = "web"
         port = _port
         env_vars = [forge.EnvVar { name = "VITE_ADMIN_URL", value = "http://localhost:${_port}/admin" }]
+        runtime = forge.OnHost {}
     }]
 }
 output = forge.render(_bundle)

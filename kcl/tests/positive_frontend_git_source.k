@@ -26,10 +26,10 @@ _sourced = forge.Frontend {
         ref = "v1.6.3"
         subdir = "web"
     }
-    deploy = forge.FirebaseHosting {
+    public_dir = "dist"
+    runtime = forge.OnFirebase {
         project = "reliant-labs-475814"
         site = "reliant-prod"
-        public_dir = "dist"
     }
 }
 
@@ -41,6 +41,7 @@ _root_sourced = forge.Frontend {
         repo = "github.com/reliant-labs/docs"
         ref = "3f1a2b9c4d5e6f70819a2b3c4d5e6f7081920a1b"
     }
+    runtime = forge.OnHost {}
 }
 
 # The unchanged shape: a directory in THIS repo.
@@ -48,6 +49,7 @@ _local = forge.Frontend {
     name = "admin-web"
     type = "nextjs"
     path = "admin-web"
+    runtime = forge.OnHost {}
 }
 
 _bundle = forge.Bundle {
@@ -69,8 +71,8 @@ assert_source_ref = _s.source.ref == "v1.6.3"
 assert_source_subdir = _s.source.subdir == "web"
 # A source-declared frontend has no directory in this repo.
 assert_source_path_null = _s.path == None
-# The deploy block is orthogonal to where the code came from.
-assert_source_deploy_type = _s.deploy.type == "firebase"
+# The runtime is orthogonal to where the code came from.
+assert_source_runtime_type = _s.runtime.type == "firebase"
 
 # Repo root: subdir projects as null, not "".
 assert_root_subdir_null = _r.source.subdir == None

@@ -344,8 +344,8 @@ func (o k8sObject) subject(env string) string {
 }
 
 // renderedFrontend is the slice of the `output.frontends` contract the
-// frontend-code check reasons about: the NAME, whether the declaration
-// claims a deploy target, and where its code lives. The rest of the
+// frontend-code check reasons about: the NAME, whether its runtime ships a
+// build somewhere, and where its code lives. The rest of the
 // contract (dev_runner, env vars, the typed config block) belongs to the
 // build and dev-loop paths, and reading it here would be one more thing
 // that can break.
@@ -357,11 +357,9 @@ type renderedFrontend struct {
 	// means forge has nothing to build. See CheckFrontendCode.
 	Path   string          `json:"path"`
 	Source *renderedSource `json:"source"`
-	// Deploy is nil when the KCL declared no deploy block (`deploy =
-	// None` / omitted). KCL projects that as a literal null, so the
-	// pointer distinguishes "build-only" from "ships somewhere" without
-	// a second flag.
-	Deploy *renderedFrontendDeploy `json:"deploy"`
+	// Runtime is where the frontend runs (always present: the render
+	// refuses a frontend with none).
+	Runtime renderedFrontendRuntime `json:"runtime"`
 }
 
 // HasSource reports whether the declaration pins its code to another
@@ -375,12 +373,18 @@ type renderedSource struct {
 	Repo string `json:"repo"`
 }
 
-// renderedFrontendDeploy carries only the discriminator. "firebase",
-// "static-site" and "cluster" are today's variants; an unknown one still
-// reads as "this claims to ship", which is the question being asked —
-// which is why this check needs no update when a variant is added.
-type renderedFrontendDeploy struct {
+// renderedFrontendRuntime carries only the discriminator. The dev server
+// ("host") and a frontend built only for a sibling's bundle ("build-only")
+// ship nothing; every other runtime — "hosted", "bucket", "firebase", and
+// any added later — reads as "this claims to ship", which is the question
+// being asked, so the check needs no update when a runtime is added.
+type renderedFrontendRuntime struct {
 	Type string `json:"type"`
+}
+
+// Ships reports whether the runtime publishes the frontend's build.
+func (r renderedFrontendRuntime) Ships() bool {
+	return r.Type != "" && r.Type != "host" && r.Type != "build-only"
 }
 
 // renderedService is a HOST workload as the checks below read it (built by

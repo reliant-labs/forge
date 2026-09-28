@@ -50,9 +50,10 @@ package doctor
 //
 // Severity splits on what the declaration CLAIMS:
 //
-//   - a `deploy` block is an ERROR. It says "ship this to production",
-//     and there is no source tree to produce the artifact from.
-//   - `deploy = None` is a WARNING. A build-only frontend makes no
+//   - a runtime that ships (OnHosted, OnBucket, OnFirebase) is an ERROR.
+//     It says "ship this", and there is no source tree to produce the
+//     artifact from.
+//   - forge.OnHost / forge.BuildOnly is a WARNING. Neither makes a
 //     shipping claim, so missing code is a likely oversight — often a
 //     declaration written ahead of `forge scaffold frontend` — rather
 //     than a contradiction.
@@ -82,19 +83,19 @@ type frontendDrift struct {
 	// name deploy/kcl/{preprod,prod}/main.k rather than repeat itself
 	// once per environment.
 	envs []string
-	// deployEnvs are the subset whose declaration carries a deploy block.
+	// deployEnvs are the subset whose runtime ships the build.
 	// Non-empty promotes the finding to an error.
 	deployEnvs []string
-	// deployTypes are the distinct deploy discriminators seen
-	// ("firebase", "static-site", "cluster"), sorted — named in the
-	// evidence so the reader knows what the project believes it is
-	// shipping. Collected generically from the discriminator, so a new
-	// variant flows through without a change here.
+	// deployTypes are the distinct shipping runtimes seen ("hosted",
+	// "bucket", "firebase"), sorted — named in the evidence so the reader
+	// knows what the project believes it is shipping. Collected
+	// generically from the discriminator, so a new runtime flows through
+	// without a change here.
 	deployTypes []string
 }
 
-// shipsSomewhere reports whether any environment's declaration carries a
-// deploy target, which is what separates the error case from the warning.
+// shipsSomewhere reports whether any environment binds a shipping runtime,
+// which is what separates the error case from the warning.
 func (d frontendDrift) shipsSomewhere() bool { return len(d.deployEnvs) > 0 }
 
 // CheckFrontendCode reports frontends the rendered deploy graph declares
@@ -135,7 +136,7 @@ func CheckFrontendCode(_ context.Context, env *Environment) CheckResult {
 
 		summary := fmt.Sprintf("%d frontend(s) declared in KCL with no code in this repository", len(drift))
 		if shipping > 0 {
-			summary = fmt.Sprintf("%s — %d with a deploy target, so they claim to ship and cannot be built",
+			summary = fmt.Sprintf("%s — %d on a runtime that ships, so they claim to ship and cannot be built",
 				summary, shipping)
 		}
 		return CheckResult{Status: worst, Message: summary, Evidence: strings.Join(problems, "\n")}
@@ -179,9 +180,9 @@ func collectFrontendDrift(projectDir string, renders []envRender) []frontendDrif
 				order = append(order, fe.Name)
 			}
 			d.envs = append(d.envs, r.env)
-			if fe.Deploy != nil {
+			if fe.Runtime.Ships() {
 				d.deployEnvs = append(d.deployEnvs, r.env)
-				if t := fe.Deploy.Type; t != "" && !contains(d.deployTypes, t) {
+				if t := fe.Runtime.Type; !contains(d.deployTypes, t) {
 					d.deployTypes = append(d.deployTypes, t)
 				}
 			}
@@ -221,14 +222,14 @@ func contains(haystack []string, needle string) bool {
 func frontendDriftMessage(d frontendDrift) string {
 	if !d.shipsSomewhere() {
 		return fmt.Sprintf(
-			"frontends[name=%s] declared in %s with `deploy = None` but %s/ does not exist — "+
+			"frontends[name=%s] declared in %s (not shipped: forge.OnHost / forge.BuildOnly) but %s/ does not exist — "+
 				"`forge build --target %s` has no source tree to build. "+
 				"Run `forge scaffold frontend %s`, or remove the KCL declaration.",
 			d.name, kclPathsPhrase(d.envs), d.dir, d.name, d.name)
 	}
-	target := "a deploy target"
+	target := "a shipping runtime"
 	if len(d.deployTypes) > 0 {
-		target = fmt.Sprintf("a %s deploy target", strings.Join(d.deployTypes, "/"))
+		target = fmt.Sprintf("the %s runtime", strings.Join(d.deployTypes, "/"))
 	}
 	return fmt.Sprintf(
 		"frontends[name=%s] declared in %s with %s but %s/ does not exist — "+

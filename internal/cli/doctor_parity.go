@@ -78,7 +78,7 @@ const (
 	// config_map_ref + config_map_key set.
 	parityKCLConfigMapRef
 	// paritySecretRefPlaceholder — per-env KCL config carrying a
-	// secret-backed value (from_secret). Host-mode treats this as "user's
+	// secret-backed value (a forge.SecretRef). Host-mode treats this as "user's
 	// env supplies it"; cluster-mode resolves via its own channel.
 	paritySecretRefPlaceholder
 )
@@ -554,8 +554,8 @@ func serviceDeclared(comps []config.ComponentConfig, name string) bool {
 
 // buildForgeConfigValues turns the per-env KCL config projection
 // (config_gen.appConfigEnvMap, ENV_VAR-keyed) into the
-// key→parityValue projection both modes derive from. An inline `value`
-// entry carries through as a resolved value; a `from_secret` entry is a
+// key→parityValue projection both modes derive from. A plain value
+// carries through as a resolved value; a forge.SecretRef entry is a
 // secret-backed value — noted as secret_ref_placeholder rather than an
 // inline value, since host-mode can't dereference it either.
 func buildForgeConfigValues(srcs map[string]kclEnvSource, env string) map[string]parityValue {
@@ -570,7 +570,7 @@ func buildForgeConfigValues(srcs map[string]kclEnvSource, env string) map[string
 			}
 			continue
 		}
-		// from_secret (or any non-inline channel): the host has a deferred
+		// A forge.SecretRef: the host has a deferred
 		// channel for it, but no literal to compare.
 		out[name] = parityValue{
 			Source:      paritySecretRefPlaceholder,

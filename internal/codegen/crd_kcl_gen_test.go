@@ -235,7 +235,7 @@ func TestGenerateCRDKCL_EmptyInputIsAnError(t *testing.T) {
 
 func TestCRDLambdaName(t *testing.T) {
 	for kind, want := range map[string]string{
-		"SimpleBackend":   "simplebackend_crd",
+		"Workload":        "workload_crd",
 		"ManagedDatabase": "manageddatabase_crd",
 		"Workspace":       "workspace_crd",
 		"ImageBuild":      "imagebuild_crd",

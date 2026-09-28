@@ -49,28 +49,35 @@ func TestTierKCLRoundTripsIntoGo(t *testing.T) {
 		t.Skip("runs kcl; full mode only")
 	}
 	out, err := runTierKCL(t, `
-_sb = tiers.SimpleBackend {
+_api = tiers.Workload {
     image = "ghcr.io/acme/api:v1.4.2"
-    ports = [8080]
-    network = "public"
-    domains = ["api.acme.com"]
-    storageGiB = 5
-    healthCheck = tiers.HealthCheck { port = 8080, path = "/healthz" }
+    args = ["serve"]
+    replicas = 3
+    ports = [tiers.Port { name = "http", port = 8080, expose = True }]
+    probes = tiers.Probes { readinessPath = "/readyz", livenessPath = "/healthz" }
     env = [
         tiers.EnvVar { name = "LOG_LEVEL", value = "info" }
         tiers.EnvVar { name = "DATABASE_URL", databaseRef = tiers.DatabaseRef { name = "orders" } }
         tiers.EnvVar { name = "STRIPE_KEY", managedSecret = "STRIPE_KEY" }
         tiers.EnvVar { name = "PW", secretRef = tiers.SecretKeyRef { name = "s", key = "k" } }
+        tiers.EnvVar { name = "CFG", configMapRef = tiers.ConfigMapKeyRef { name = "c", key = "k" } }
+        tiers.EnvVar { name = "POD", fieldRef = tiers.FieldRef { fieldPath = "metadata.name" } }
     ]
+    namespacedRBAC = [tiers.PolicyRule { apiGroups = [""], resources = ["configmaps"], verbs = ["get"] }]
+    serviceAccountAnnotations = {"iam.gke.io/gcp-service-account" = "api@p.iam.gserviceaccount.com"}
 }
-_min = tiers.SimpleBackend { image = "ghcr.io/acme/w:v1", ports = [3000] }
-_req = tiers.SimpleBackend { image = "ghcr.io/acme/w:v1", ports = [3000], resources = tiers.Resources { cpuRequestMillicores = 500, memoryRequestBytes = 2147483648 } }
+_job = tiers.Workload { kind = "job", image = "ghcr.io/acme/api:v1", args = ["migrate"], before = ["*"] }
+_op = tiers.Workload { kind = "operator", image = "ghcr.io/acme/op:v1", crds = ["Widget"], group = "acme.dev", version = "v1alpha1", clusterRBAC = [tiers.PolicyRule { apiGroups = ["acme.dev"], resources = ["widgets"], verbs = ["*"] }] }
+_min = tiers.Workload { image = "ghcr.io/acme/w:v1", ports = [tiers.Port { name = "http", port = 3000 }] }
+_req = tiers.Workload { image = "ghcr.io/acme/w:v1", resources = tiers.Resources { cpuRequestMillicores = 500, memoryRequestBytes = 2147483648 } }
 _ss = tiers.StaticSite { bucket = "gs://acme", keepReleases = 0, cdn = tiers.StaticSiteCDN { urlMap = "lb" } }
 _db = tiers.ManagedDatabase {}
 
-sb = tiers.simple_backend_json(_sb)
-min = tiers.simple_backend_json(_min)
-req = tiers.simple_backend_json(_req)
+api = tiers.workload_json(_api)
+job = tiers.workload_json(_job)
+op = tiers.workload_json(_op)
+min = tiers.workload_json(_min)
+req = tiers.workload_json(_req)
 ss = tiers.static_site_json(_ss)
 db = tiers.managed_database_json(_db)
 `)
@@ -78,9 +85,11 @@ db = tiers.managed_database_json(_db)
 		t.Fatalf("kcl: %v\n%s", err, out)
 	}
 	var doc struct {
-		SB  v1alpha1.SimpleBackendSpec   `json:"sb"`
-		Min v1alpha1.SimpleBackendSpec   `json:"min"`
-		Req v1alpha1.SimpleBackendSpec   `json:"req"`
+		API v1alpha1.WorkloadSpec        `json:"api"`
+		Job v1alpha1.WorkloadSpec        `json:"job"`
+		Op  v1alpha1.WorkloadSpec        `json:"op"`
+		Min v1alpha1.WorkloadSpec        `json:"min"`
+		Req v1alpha1.WorkloadSpec        `json:"req"`
 		SS  v1alpha1.StaticSiteSpec      `json:"ss"`
 		DB  v1alpha1.ManagedDatabaseSpec `json:"db"`
 	}
@@ -89,15 +98,41 @@ db = tiers.managed_database_json(_db)
 	if err := dec.Decode(&doc); err != nil {
 		t.Fatalf("decode KCL output into the Go specs: %v\n%s", err, out)
 	}
-	for name, v := range map[string]interface{ Validate() error }{"sb": doc.SB, "min": doc.Min, "req": doc.Req, "ss": doc.SS, "db": doc.DB} {
+	for name, v := range map[string]interface{ Validate() error }{"ss": doc.SS, "db": doc.DB} {
 		if err := v.Validate(); err != nil {
 			t.Errorf("%s: KCL-authored spec fails Go Validate: %v", name, err)
 		}
 	}
+	for name, w := range map[string]v1alpha1.WorkloadSpec{"api": doc.API, "job": doc.Job, "op": doc.Op, "min": doc.Min, "req": doc.Req} {
+		if err := w.Validate(v1alpha1.ProfileFull); err != nil {
+			t.Errorf("%s: KCL-authored workload fails Go Validate(Full): %v", name, err)
+		}
+	}
+	// The same api is refused under Restricted, naming the Full-only fields.
+	if err := doc.API.Validate(v1alpha1.ProfileRestricted); err == nil || !strings.Contains(err.Error(), "namespacedRBAC") || !strings.Contains(err.Error(), "env[PW].secretRef") {
+		t.Errorf("api under Restricted = %v, want namespacedRBAC and env[PW].secretRef refused", err)
+	}
 	// The working defaults reached Go: an omitted resources block is the
-	// entry shape, not zero, and the database defaults to RETAIN.
+	// entry shape, not zero; kind defaults to service; replicas to 1; a
+	// port's protocol to tcp.
 	if r := doc.Min.Resources; r.CPURequestMillicores != 250 || r.MemoryRequestBytes != 1<<30 {
 		t.Errorf("omitted resources = %+v, want the 250m/1Gi default shape", r)
+	}
+	if doc.Min.Kind != v1alpha1.KindService || doc.Min.Replicas != 1 || doc.Min.Ports[0].Protocol != v1alpha1.ProtocolTCP {
+		t.Errorf("min = %+v, want kind service, replicas 1, protocol tcp", doc.Min)
+	}
+	// Probes is a pointer: unset stays ABSENT, so the kind's probe policy
+	// decides. An empty default instance would give every job a probe.
+	if doc.Min.Probes != nil || doc.Job.Probes != nil {
+		t.Errorf("unset probes = %+v / %+v, want absent", doc.Min.Probes, doc.Job.Probes)
+	}
+	if p := doc.API.Probes; p == nil || p.PeriodSeconds != v1alpha1.DefaultProbePeriodSeconds || p.TimeoutSeconds != v1alpha1.DefaultProbeTimeoutSeconds {
+		t.Errorf("declared probes = %+v, want the readiness timing defaults filled", p)
+	}
+	// Kind-dependent defaults have NO static default: leaderElection and
+	// deployPhase stay unset, and the Effective helpers resolve them.
+	if doc.Op.LeaderElection != nil || doc.Job.DeployPhase != "" || !doc.Op.EffectiveLeaderElection() {
+		t.Errorf("op.leaderElection = %v, job.deployPhase = %q: want both unset, leader election effective", doc.Op.LeaderElection, doc.Job.DeployPhase)
 	}
 	// Request-only: KCL must leave the limits UNSET (a static default cannot
 	// say "equals the request"), so Go's WithDefaults resolves them to the
@@ -107,9 +142,6 @@ db = tiers.managed_database_json(_db)
 	}
 	if r := doc.Req.Resources.WithDefaults(); r.CPULimitMillicores != 500 || r.MemoryLimitBytes != 2<<30 {
 		t.Errorf("defaulted request-only resources = %+v, want limits equal to the requests", r)
-	}
-	if doc.Min.Network != v1alpha1.NetworkPrivate {
-		t.Errorf("network default = %q, want private", doc.Min.Network)
 	}
 	if doc.DB.DeletionPolicy != v1alpha1.DeletionPolicyRetain || doc.DB.Instances != 1 || doc.DB.StorageGiB != 10 {
 		t.Errorf("database defaults = %+v", doc.DB)
@@ -122,8 +154,8 @@ db = tiers.managed_database_json(_db)
 	if doc.SS.CDN == nil || doc.SS.CDN.Invalidate != v1alpha1.InvalidateEntrypoints {
 		t.Errorf("cdn = %+v, want invalidate defaulted to entrypoints", doc.SS.CDN)
 	}
-	if doc.SB.Env[1].DatabaseRef == nil || doc.SB.Env[1].DatabaseRef.EffectiveKey() != v1alpha1.DatabaseKeyURI {
-		t.Errorf("databaseRef = %+v", doc.SB.Env[1].DatabaseRef)
+	if doc.API.Env[1].DatabaseRef == nil || doc.API.Env[1].DatabaseRef.EffectiveKey() != v1alpha1.DatabaseKeyURI {
+		t.Errorf("databaseRef = %+v", doc.API.Env[1].DatabaseRef)
 	}
 	// Unset optionals are ABSENT, not null. A null would clear a CR field.
 	if strings.Contains(out, "null") {
@@ -138,20 +170,24 @@ func TestTierKCLRejects(t *testing.T) {
 		t.Skip("runs kcl; full mode only")
 	}
 	cases := map[string]struct{ decl, want string }{
-		"closed schema: replicas":       {`x = tiers.SimpleBackend { image = "ghcr.io/a/b:v1", replicas = 3 }`, "replicas"},
-		"closed schema: cluster":        {`x = tiers.SimpleBackend { image = "ghcr.io/a/b:v1", cluster = "c" }`, "cluster"},
-		"closed schema: config_map_ref": {`x = tiers.EnvVar { name = "A", config_map_ref = "c" }`, "config_map_ref"},
-		"closed schema: org":            {`x = tiers.ManagedDatabase { orgId = "o" }`, "orgId"},
-		"network enum":                  {`x = tiers.SimpleBackend { image = "ghcr.io/a/b:v1", network = "internet" }`, "SimpleBackend.network must be one of"},
-		"port range":                    {`x = tiers.SimpleBackend { image = "ghcr.io/a/b:v1", ports = [70000] }`, "SimpleBackend.ports[] must be at most 65535"},
-		"env name pattern":              {`x = tiers.EnvVar { name = "1BAD" }`, "EnvVar.name must match"},
-		"managed secret no path":        {`x = tiers.EnvVar { name = "A", managedSecret = "other/secret" }`, "EnvVar.managedSecret must match"},
-		"db key enum":                   {`x = tiers.DatabaseRef { name = "db", key = "dsn" }`, "DatabaseRef.key must be one of"},
-		"digest not tag":                {`x = tiers.StaticSite { liveDigest = "latest" }`, "StaticSite.liveDigest must match"},
-		"invalidate enum":               {`x = tiers.StaticSiteCDN { urlMap = "m", invalidate = "some" }`, "StaticSiteCDN.invalidate must be one of"},
-		"instances ceiling":             {`x = tiers.ManagedDatabase { instances = 50 }`, "ManagedDatabase.instances must be at most 3"},
-		"deletion policy enum":          {`x = tiers.ManagedDatabase { deletionPolicy = "purge" }`, "ManagedDatabase.deletionPolicy must be one of"},
-		"probe port required":           {`x = tiers.HealthCheck { path = "/h" }`, "port"},
+		"closed schema: securityContext": {`x = tiers.Workload { image = "ghcr.io/a/b:v1", securityContext = {} }`, "securityContext"},
+		"closed schema: cluster":         {`x = tiers.Workload { image = "ghcr.io/a/b:v1", cluster = "c" }`, "cluster"},
+		"closed schema: config_map_ref":  {`x = tiers.EnvVar { name = "A", config_map_ref = "c" }`, "config_map_ref"},
+		"closed schema: org":             {`x = tiers.ManagedDatabase { orgId = "o" }`, "orgId"},
+		"kind enum":                      {`x = tiers.Workload { image = "ghcr.io/a/b:v1", kind = "daemon" }`, "Workload.kind must be one of"},
+		"replicas floor":                 {`x = tiers.Workload { image = "ghcr.io/a/b:v1", replicas = 0 }`, "Workload.replicas must be at least 1"},
+		"port range":                     {`x = tiers.Port { name = "http", port = 70000 }`, "Port.port must be at most 65535"},
+		"port name":                      {`x = tiers.Port { name = "HTTP_PORT", port = 80 }`, "Port.name must match"},
+		"deploy phase enum":              {`x = tiers.Workload { image = "ghcr.io/a/b:v1", deployPhase = "during" }`, "Workload.deployPhase must be one of"},
+		"env name pattern":               {`x = tiers.EnvVar { name = "1BAD" }`, "EnvVar.name must match"},
+		"managed secret no path":         {`x = tiers.EnvVar { name = "A", managedSecret = "other/secret" }`, "EnvVar.managedSecret must match"},
+		"db key enum":                    {`x = tiers.DatabaseRef { name = "db", key = "dsn" }`, "DatabaseRef.key must be one of"},
+		"digest not tag":                 {`x = tiers.StaticSite { liveDigest = "latest" }`, "StaticSite.liveDigest must match"},
+		"invalidate enum":                {`x = tiers.StaticSiteCDN { urlMap = "m", invalidate = "some" }`, "StaticSiteCDN.invalidate must be one of"},
+		"instances ceiling":              {`x = tiers.ManagedDatabase { instances = 50 }`, "ManagedDatabase.instances must be at most 3"},
+		"deletion policy enum":           {`x = tiers.ManagedDatabase { deletionPolicy = "purge" }`, "ManagedDatabase.deletionPolicy must be one of"},
+		"probe path must be absolute":    {`x = tiers.Probes { readinessPath = "readyz" }`, "Probes.readinessPath must match"},
+		"rbac rule needs verbs":          {`x = tiers.PolicyRule { apiGroups = [""], resources = ["pods"] }`, "verbs"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

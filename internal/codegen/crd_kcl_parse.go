@@ -288,7 +288,7 @@ func checkOneSourcePerKind(docs []CRDDoc) error {
 }
 
 // CRDLambdaName maps a CR kind to its generated KCL lambda name:
-// "SimpleBackend" -> "simplebackend_crd". Lowercasing the whole kind (rather
+// "ManagedDatabase" -> "manageddatabase_crd". Lowercasing the whole kind (rather
 // than snake-casing it) matches the hand-authored spelling this generator
 // replaces, so an existing project's call sites keep working unchanged.
 func CRDLambdaName(kind string) string {

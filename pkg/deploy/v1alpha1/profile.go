@@ -177,10 +177,17 @@ func profileViolations(s WorkloadSpec, p Profile) []error {
 			errs = append(errs, fmt.Errorf("%s: not allowed under the %s profile: %s", display, p, fullOnlyReasons[key]))
 			return false
 		}
-		return true
+		return classifiesChildren(fp)
 	})
 	return errs
 }
+
+// classifiesChildren reports whether the children of a field classified at
+// fp need classifications of their own. A field only ProfileFull allows is
+// allowed or refused WHOLE, because the most permissive profile has nothing
+// narrower to say about its parts. Only the children of a field some
+// restricted profile allows are classified one by one.
+func classifiesChildren(fp Profile) bool { return fp != ProfileFull }
 
 // walkSpecFields visits every SET field of a struct value, depth-first,
 // calling visit with its table key ("env.secretRef"), a display path that

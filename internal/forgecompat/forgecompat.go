@@ -50,15 +50,15 @@ const ModulePath = "github.com/reliant-labs/forge"
 type Verdict int
 
 const (
-	// OK: generating is safe (or the question could not be answered, and
-	// guessing is worse than letting generate's validate step speak).
+	// OK means generating is safe (or the question could not be answered,
+	// and guessing is worse than letting generate's validate step speak).
 	OK Verdict = iota
-	// UnreleasableNoBridge: this binary exists on no module proxy and the
-	// project resolves forge to a published version — the pairing that
+	// UnreleasableNoBridge means this binary exists on no module proxy and
+	// the project resolves forge to a published version — the pairing that
 	// produced `undefined: testkit.StubNotConfigured`.
 	UnreleasableNoBridge
-	// StalePin: the project's forge is older than the binary generating
-	// into it.
+	// StalePin means the project's forge is older than the binary
+	// generating into it.
 	StalePin
 )
 

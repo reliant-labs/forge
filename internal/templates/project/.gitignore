@@ -152,7 +152,8 @@ tmp/
 #                     and the next `forge generate` hands it back. Must
 #                     travel with the repo: a teammate's fresh clone has
 #                     to inherit "we removed that file", not re-acquire
-#                     it on their first generate.
+#                     it on their first generate. To want one back:
+#                     `forge project rescaffold <path>`.
 #   releases/       — the release ledger (`forge build --release`,
 #   promotions/       `forge env promote`): what each version IS and which
 #                     version each environment runs, as an append-only log

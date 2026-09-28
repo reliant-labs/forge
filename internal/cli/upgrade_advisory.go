@@ -22,7 +22,7 @@ import (
 // Returns the results so callers can act on them; the printing is the
 // product.
 func runAdvisoryPass(projectDir string, cfg *config.ProjectConfig, selection generator.ForceSelection, check, showAll bool) ([]generator.AdvisoryResult, error) {
-	files, err := generator.AdvisoryFilesFor(cfg)
+	files, err := generator.AdvisoryFilesFor(projectDir, cfg)
 	if err != nil {
 		return nil, err
 	}

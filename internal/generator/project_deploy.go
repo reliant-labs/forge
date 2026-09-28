@@ -181,7 +181,7 @@ func scaffoldEnvBindings(env string, components codegen.Inventory, hasFrontend b
 // declared by a proto descriptor that does not exist until the generate
 // pipeline extracts it).
 func (g *ProjectGenerator) bornComponents() codegen.Inventory {
-	inv := codegen.DiscoverProjectComponents(g.Path, g.Name)
+	inv := codegen.DiscoverProjectComponents(g.treeDir(), g.Name)
 	for _, name := range append([]string{g.ServiceName}, g.AdditionalServices...) {
 		if name == "" {
 			continue

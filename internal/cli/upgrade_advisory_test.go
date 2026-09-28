@@ -80,7 +80,7 @@ func TestAdvisoryReport_GithubStartersAreInTheSet(t *testing.T) {
 	dir := scaffoldAdvisoryProject(t)
 	cfg := loadAdvisoryConfig(t, dir)
 
-	rows, err := generator.AdvisoryFilesFor(cfg)
+	rows, err := generator.AdvisoryFilesFor(dir, cfg)
 	if err != nil {
 		t.Fatalf("AdvisoryFilesFor: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestResolveForceSelection_AcceptsScaffoldOncePaths(t *testing.T) {
 	var sel generator.ForceSelection
 	var err error
 	withCwd(t, dir, func() {
-		sel, err = resolveForceSelection(cfg, true, []string{rel})
+		sel, err = resolveForceSelection(dir, cfg, true, []string{rel})
 	})
 	if err != nil {
 		t.Fatalf("--force %s: %v", rel, err)

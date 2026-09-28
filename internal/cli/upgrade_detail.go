@@ -36,7 +36,7 @@ func runUpgradeDetail(projectDir string, cfg *config.ProjectConfig, paths []stri
 	if err != nil {
 		return err
 	}
-	advisoryFiles, err := generator.AdvisoryFilesFor(cfg)
+	advisoryFiles, err := generator.AdvisoryFilesFor(projectDir, cfg)
 	if err != nil {
 		return err
 	}

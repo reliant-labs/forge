@@ -19,7 +19,7 @@ import (
 // workflow still runs, unlike buf.yaml whose derived dep gates the build
 // — so write-once is the right lifecycle. Write-once covers deletion too:
 // a repo that manages its own CI removes these and they stay removed. To
-// re-scaffold, drop the path's entry from .forge/scaffolded.json.
+// re-scaffold one, `forge project rescaffold <path>`.
 func writeCIScaffold(root, relPath string, content []byte) error {
 	written, err := generator.WriteScaffoldIfMissing(root, relPath, content)
 	if err != nil {
@@ -28,7 +28,7 @@ func writeCIScaffold(root, relPath string, content []byte) error {
 	if written {
 		fmt.Printf("  ✅ Generated %s\n", relPath)
 	} else {
-		fmt.Printf("  ⏭️  %s exists — yours to edit, leaving it untouched\n", relPath)
+		fmt.Println(scaffoldSkipLine(root, relPath))
 	}
 	return nil
 }

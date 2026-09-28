@@ -829,7 +829,7 @@ func runTestsLint() error {
 	fmt.Print(combined.FormatText())
 	if combined.HasErrors() {
 		return fmt.Errorf("a scaffolded hook test contradicts the hook it exercises and cannot pass; " +
-			"fix the block named above, or delete the test file and re-run `forge generate` for a fresh one")
+			"fix the block named above, or delete the test file and run `forge project rescaffold <path>` for a fresh one")
 	}
 	fmt.Println("(warnings only — not failing the build)")
 	return nil

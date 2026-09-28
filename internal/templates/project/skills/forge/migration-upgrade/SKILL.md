@@ -12,10 +12,27 @@ about a version mismatch.
 ## How forge tracks versions
 
 Every `forge.yaml` carries a `forge_version` field set at scaffold time
-to the version of `forge project new` that produced the project. The field is
-updated only by `forge project upgrade` (never silently by `forge generate`),
-so it is a faithful record of the last forge release the project's
-generated artifacts were produced against.
+to the version of `forge project new` that produced the project.
+
+For a project whose `go.mod` requires `github.com/reliant-labs/forge` (every
+service project), the pin **follows go.mod**: bumping forge is
+
+```bash
+go get github.com/reliant-labs/forge@vX.Y.Z && go mod tidy
+forge generate        # converges forge.yaml's forge_version to vX.Y.Z
+```
+
+`forge generate` rewrites that one scalar and says so (`📌 forge_version … →
+vX.Y.Z`). It never writes the version of the forge binary running it — only
+the version go.mod names, which every clone resolves identically. The one
+exception is a hop `forge project upgrade` has to walk (a codemod, a
+migration this project still needs, or more minors than the supported
+window): generate leaves the pin, prints why, and names `forge project
+upgrade`.
+
+For a CLI or library whose go.mod does not require forge, `forge.yaml`'s
+`forge_version` IS the pin (CI installs that version), and only `forge
+project upgrade` moves it.
 
 Legacy projects that predate the field are treated as `0.0.0`. They
 get a one-time nudge from `forge generate` to run `forge project upgrade` so
@@ -58,6 +75,9 @@ small enough that every migration in it is still true.
 grep forge_version forge.yaml
 forge version
 
+# A project whose go.mod requires forge: bump it there first.
+go get github.com/reliant-labs/forge@vX.Y.Z && go mod tidy
+
 # See which migrations this project actually needs.
 forge project upgrade list
 
@@ -83,7 +103,10 @@ forge project upgrade --force
    middleware scaffolds) are diffed against the latest templates; the
    user sees a unified diff for any file they've modified, and unmodified
    files are auto-updated.
-3. **Bump `forge_version`** in `forge.yaml` to the target version.
+3. **Bump `forge_version`** in `forge.yaml` to the target version. (For a
+   project that requires forge in go.mod, `forge generate` converges it to
+   go.mod's require on its own — upgrade's bump matters for the hops generate
+   leaves to it, and for CLI/library projects without the require.)
 
 ## Reading per-version migration skills
 

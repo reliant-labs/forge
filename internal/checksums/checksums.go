@@ -53,7 +53,8 @@
 // scaffolded a path it NEVER writes it again — no flag, no exception —
 // whether the user then edits the file or deletes it. Deleting is an act
 // of ownership, not a request for a fresh copy. To re-scaffold on
-// purpose, drop the path's entry from .forge/scaffolded.json.
+// purpose: `forge project rescaffold <path>`, which drops the path's entry
+// and writes it again.
 package checksums
 
 import (
@@ -861,8 +862,9 @@ func atomicWriteFile(path string, content []byte, perm os.FileMode) error {
 // write it" and silently undoes the decision. The ledger separates "never
 // scaffolded" (write) from "scaffolded and then deleted" (leave deleted).
 //
-// To re-scaffold on purpose, drop the path's entry from
-// .forge/scaffolded.json — deleting the file is no longer the reset.
+// To re-scaffold on purpose, `forge project rescaffold <path>` drops the
+// path's entry (ForgetScaffold) and writes it again — deleting the file is
+// not the reset.
 //
 // Returns true when the file was written (a genuine birth). An existing
 // file — pristine, hand-edited, or fully rewritten — and a deliberately

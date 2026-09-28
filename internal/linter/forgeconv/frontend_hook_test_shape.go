@@ -262,16 +262,16 @@ func hookShapeFinding(hookName string, actual, asserted hookShape, testPath, rel
 			"    const { result } = renderHook(() => %s(), { wrapper });\n"+
 			"    await result.current.mutateAsync({} as never).catch(() => {});\n"+
 			"    expect(result.current).toBeDefined();\n"+
-			"  Or delete the test file and re-run `forge generate` to scaffold a fresh one.",
-			hookName, hookName)
+			"  Or delete the test file and run `forge project rescaffold %s` to scaffold a fresh one.",
+			hookName, hookName, relPath(testPath, relRoot))
 	} else {
 		why = fmt.Sprintf("%s is a useQuery hook, but its test calls mutateAsync on the result — "+
 			"a query result has no mutateAsync, so this test can never pass.", hookName)
 		remedy = fmt.Sprintf("rewrite the %s block to await the query:\n"+
 			"    const { result } = renderHook(() => %s({} as never), { wrapper });\n"+
 			"    await waitFor(() => expect(result.current.isSuccess).toBe(true));\n"+
-			"  Or delete the test file and re-run `forge generate` to scaffold a fresh one.",
-			hookName, hookName)
+			"  Or delete the test file and run `forge project rescaffold %s` to scaffold a fresh one.",
+			hookName, hookName, relPath(testPath, relRoot))
 	}
 
 	return Finding{

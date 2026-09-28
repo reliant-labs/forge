@@ -18,8 +18,10 @@
 // trying to reproduce the birth condition by hand — copying the project to a
 // scratch directory, stripping the CRUD rpcs out of the proto, deleting
 // db/migrations, deleting the handler directory — none of which could work,
-// because the one thing that brings the file back is an edit to
-// .forge/scaffolded.json that nothing in forge's output had ever named.
+// because the one thing that brought the file back was an edit to
+// .forge/scaffolded.json that nothing in forge's output had ever named. That
+// edit is now a command, `forge project rescaffold <path>` (rescaffold.go),
+// and this notice names it.
 //
 // The bug is not the suppression. The suppression is the feature, and this
 // file does not touch it: forge still never resurrects a file the user
@@ -45,6 +47,8 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -72,38 +76,48 @@ func missingScaffoldNotice(paths []string) string {
 		fmt.Fprintf(&b, "   - %s\n", p)
 	}
 	b.WriteString("    These are yours from birth: forge writes each exactly once and never again,\n")
-	b.WriteString("    and DELETING one is an act of ownership forge will not undo — which is why\n")
-	b.WriteString("    re-running generate does not bring it back. If that is what you meant, nothing\n")
-	b.WriteString("    to do; this notice is informational and the run did not fail.\n")
+	fmt.Fprintf(&b, "    and DELETING one is an act of ownership %s records, so re-running\n", checksums.ScaffoldedFile)
+	b.WriteString("    generate does not bring it back. If that is what you meant, nothing to do;\n")
+	b.WriteString("    this notice is informational and the run did not fail.\n")
 	b.WriteString("    To have forge scaffold one FRESH against the project as it stands today\n")
 	b.WriteString("    (e.g. a CRUD lifecycle test whose fixtures no longer match migrations you have\n")
-	fmt.Fprintf(&b, "    since corrected), delete that ONE path's entry from %s and re-run\n", checksums.ScaffoldedFile)
-	b.WriteString("    `forge generate`:\n")
+	b.WriteString("    since corrected), rescaffold it:\n")
 	fmt.Fprintf(&b, "      %s\n", rescaffoldHint(sorted))
 	return b.String()
 }
 
-// rescaffoldHint renders the copy-pasteable one-liner that drops a path's
-// birth record.
+// rescaffoldHint renders the copy-pasteable command that re-creates absent
+// scaffold-once files.
 //
 // With exactly one absent path the command is concrete — an agent can run it
 // verbatim, which is the whole point. With several, it takes a <path>
 // placeholder rather than silently picking one: the run this notice exists
 // for lost an hour to a remedy it could not locate, and a command that
-// confidently names the wrong file (the alphabetically-first one, which is
-// rarely the one the author just deleted) is a worse failure than one that
-// asks them to substitute a path already listed three lines above.
-//
-// jq is named because the ledger is JSON and hand-editing a committed state
-// file is the kind of instruction that gets subtly wrong; the file is
-// human-readable and sorted precisely so an ordinary editor works too.
+// confidently re-creates files the author deleted on purpose (every file in
+// the list, or the alphabetically-first one, which is rarely the one they
+// want back) is a worse failure than one that asks them to substitute a path
+// already listed three lines above.
 func rescaffoldHint(sorted []string) string {
-	target := "<path>"
 	if len(sorted) == 1 {
-		target = sorted[0]
+		return rescaffoldCmd(sorted[0])
 	}
-	return fmt.Sprintf(`jq 'del(.files[%q])' %s > .forge/scaffolded.tmp && mv .forge/scaffolded.tmp %s`,
-		target, checksums.ScaffoldedFile, checksums.ScaffoldedFile)
+	return rescaffoldCmd("<path>...")
+}
+
+// scaffoldSkipLine is what a scaffold-once writer prints for a path it did not
+// write, and it has to tell the truth about WHY.
+//
+// It used to say "<path> exists — yours to edit, leaving it untouched"
+// unconditionally, including for a workflow the user had deleted: the
+// scaffold-once decision refuses both a present file and a deleted one, and
+// the message only knew the first reason. A line claiming a file exists while
+// `ls` says otherwise sends the reader looking for a bug in the wrong place.
+func scaffoldSkipLine(root, relPath string) string {
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relPath))); err == nil {
+		return fmt.Sprintf("  ⏭️  %s exists — yours to edit, leaving it untouched", relPath)
+	}
+	return fmt.Sprintf("  ⏭️  %s is absent, but deleted by you (%s) — leaving it deleted. Re-create it: %s",
+		relPath, checksums.ScaffoldedFile, rescaffoldCmd(relPath))
 }
 
 // reportMissingScaffolds writes the notice for root's absent scaffold-once

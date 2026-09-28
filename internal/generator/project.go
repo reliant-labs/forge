@@ -52,6 +52,23 @@ type ProjectGenerator struct {
 	// the historical main.version-only stamping. `forge generate` /
 	// upgrade re-render with the live forge.yaml value.
 	BuildVersionVar string
+
+	// factsDir, when set, is where the scaffold reads facts ABOUT the
+	// project tree (existing migrations, the binaries under cmd/, the
+	// discovered components) instead of Path. It is set only when the
+	// scaffold is rendered into a staging directory on behalf of an
+	// existing project (ScaffoldProjectInto): the files land in the staging
+	// dir, but what they say must describe the real project.
+	factsDir string
+}
+
+// treeDir is the directory the scaffold reads project facts from — see
+// factsDir.
+func (g *ProjectGenerator) treeDir() string {
+	if g.factsDir != "" {
+		return g.factsDir
+	}
+	return g.Path
 }
 
 // effectiveBinary returns the binary mode, defaulting to "per-service".

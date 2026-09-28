@@ -37,7 +37,7 @@ func TestUpgradeLanes_DoNotBothClaimTheSameFile(t *testing.T) {
 				managed[filepath.ToSlash(f.destPath)] = true
 			}
 
-			advisory, err := AdvisoryFilesFor(cfg)
+			advisory, err := AdvisoryFilesFor(t.TempDir(), cfg)
 			if err != nil {
 				t.Fatalf("AdvisoryFilesFor: %v", err)
 			}
@@ -74,7 +74,7 @@ func TestUpgradeLanes_EslintIsStillClaimedByExactlyOneLane(t *testing.T) {
 			inManaged = true
 		}
 	}
-	advisory, err := AdvisoryFilesFor(cfg)
+	advisory, err := AdvisoryFilesFor(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("AdvisoryFilesFor: %v", err)
 	}

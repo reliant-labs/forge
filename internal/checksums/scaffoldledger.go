@@ -61,10 +61,10 @@
 // ── Re-scaffolding on purpose ─────────────────────────────────────────
 //
 // Deleting the file is no longer the reset (that is the whole point), so
-// the reset is deleting the ENTRY: remove the path from
-// .forge/scaffolded.json and the next `forge generate` scaffolds it fresh.
-// The file is human-readable, sorted, and committed precisely so that this
-// is an ordinary reviewable edit.
+// the reset is dropping the ENTRY and writing the file again: `forge
+// project rescaffold <path>` (internal/cli/rescaffold.go). The file is
+// human-readable, sorted, and committed, so the resulting diff — one ledger
+// line out and back, one file re-created — is an ordinary reviewable change.
 package checksums
 
 import (

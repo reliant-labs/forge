@@ -316,6 +316,10 @@ func generateSteps() []GenStep {
 		{Name: "migrate legacy checksums manifest", Gate: always, Run: stepMigrateLegacyManifest, Tag: "config"},
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
+		// After every refusal and the stomp guard (a refused or drift-aborted
+		// generate must not have touched forge.yaml), before anything reads
+		// the pin. See generate_forge_pin.go.
+		{Name: "reconcile forge_version with go.mod", Gate: hasForgeYAML, GateReason: "no forge.yaml (directory-scan fallback)", Run: stepReconcileForgePin, Tag: "config"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config", ReadOnly: true},
 		// After every refusal: this rewrites .forge-kcl/ (and kcl.mod), and
 		// its writes are journaled so a later failure restores them.
@@ -1113,7 +1117,12 @@ func short(h string) string {
 // Also emits the forge_version mismatch warning when applicable.
 func stepAnnounceProject(ctx *pipelineContext) error {
 	if ctx.Cfg != nil {
-		if warning := forgeVersionMismatchWarning(ctx.Cfg.ForgeVersion, buildinfo.Version()); warning != "" {
+		// A project whose go.mod requires forge has had its pin converged to
+		// that require (stepReconcileForgePin); skew between the running
+		// binary and go.mod is the compatibility handshake's call, not a
+		// reason to `forge project upgrade`.
+		_, followsGoMod := goModForgeRequire(ctx.AbsPath)
+		if warning := forgeVersionMismatchWarning(ctx.Cfg.ForgeVersion, buildinfo.Version()); warning != "" && !followsGoMod {
 			// Per-binary-path sentinel keeps the nudge from spamming every
 			// `forge generate` invocation — fires once per shell session
 			// (approximated via $TMPDIR).

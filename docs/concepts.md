@@ -61,6 +61,20 @@ files are tables, not programs.** All uniform machinery lives in a library;
 the generated file shrinks to per-app data. That is what makes regeneration
 safe — there is nothing in a generated file worth hand-editing.
 
+Scaffold-once files are written exactly once, and **deleting one sticks**:
+`.forge/scaffolded.json` (committed) records every file forge has scaffolded,
+so an absent one reads as a decision and `forge generate` leaves it absent in
+every clone. To get forge's version back, ask for it by name:
+
+```bash
+forge project rescaffold .github/workflows/ci.yml .pre-commit-config.yaml
+```
+
+That re-creates each absent path the way forge scaffolds it for this project
+today — CI workflows through the same mapper `forge generate` uses — and it
+refuses a path that still exists, so it never overwrites your bytes (that is
+`forge project upgrade --force <path>`, which shows the diff first).
+
 ### Self-certifying files
 
 Every forge-owned file embeds a SHA-256 of its own body:

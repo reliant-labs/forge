@@ -1,0 +1,177 @@
+{
+  "output": {
+    "project": "acme",
+    "env": "dev",
+    "image_tag": "latest",
+    "clusters": [],
+    "kubeconfig_secrets": [],
+    "network_policy": null,
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "image": "acme",
+        "build": {
+          "type": "go",
+          "output_name": "acme",
+          "cmd": "./cmd/acme",
+          "goos": null,
+          "goarch": null,
+          "ldflags": [],
+          "tags": [],
+          "flags": [],
+          "env": {}
+        },
+        "runtime": {
+          "type": "host",
+          "runner": "air",
+          "air_config": ".air.toml",
+          "working_dir": null,
+          "listen_ports": [
+            8080
+          ],
+          "delve_port": 2345
+        },
+        "spec": {
+          "args": [
+            "api"
+          ],
+          "env": [
+            {
+              "name": "LOG_LEVEL",
+              "value": "debug"
+            },
+            {
+              "name": "API_KEY",
+              "secretRef": {
+                "key": "api_key",
+                "name": "acme-secrets",
+                "optional": true
+              }
+            },
+            {
+              "name": "WEB_URL",
+              "value": "http://localhost:3000"
+            }
+          ],
+          "image": "",
+          "kind": "service",
+          "ports": [
+            {
+              "expose": true,
+              "name": "http",
+              "port": 8080,
+              "protocol": "tcp"
+            }
+          ],
+          "probes": {
+            "failureThreshold": 3,
+            "initialDelaySeconds": 0,
+            "periodSeconds": 5,
+            "timeoutSeconds": 3
+          },
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "name": "migrate",
+        "kind": "job",
+        "image": "acme",
+        "build": {
+          "type": "go",
+          "output_name": "acme",
+          "cmd": "./cmd/acme",
+          "goos": null,
+          "goarch": null,
+          "ldflags": [],
+          "tags": [],
+          "flags": [],
+          "env": {}
+        },
+        "runtime": {
+          "type": "host",
+          "runner": "go-run",
+          "air_config": null,
+          "working_dir": null,
+          "listen_ports": null,
+          "delve_port": 2345
+        },
+        "spec": {
+          "args": [
+            "db",
+            "migrate",
+            "up"
+          ],
+          "before": [
+            "*"
+          ],
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "value": "postgres://postgres:postgres@localhost:5433/acme"
+            }
+          ],
+          "image": "",
+          "kind": "job",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      }
+    ],
+    "infra": [
+      {
+        "name": "postgres",
+        "engine": "postgres",
+        "port": 5433,
+        "database": "acme",
+        "user": "postgres",
+        "password": "postgres",
+        "data_dir": null,
+        "version": null,
+        "idp_database": "zitadel",
+        "idp_database_port": null,
+        "idp_masterkey": "MasterkeyNeedsToHave32Characters",
+        "idp_steps_file": "idp-steps.yaml",
+        "idp_pat_path": ".forge/idp/pat.txt"
+      }
+    ],
+    "frontends": [
+      {
+        "name": "web",
+        "type": "vite",
+        "path": "frontends/web",
+        "source": null,
+        "dev_runner": "npm",
+        "port": 3000,
+        "env_file": null,
+        "env_vars": [],
+        "config": null,
+        "deploy": null,
+        "runtime_config": {},
+        "runtime_config_spec": {}
+      }
+    ],
+    "databases": [],
+    "config_maps": [],
+    "gateways": [],
+    "http_routes": [],
+    "grpc_routes": [],
+    "runtime_classes": [],
+    "helm_charts": [],
+    "required_secrets": [],
+    "required_dns": [],
+    "secret_provider": {
+      "type": "file",
+      "path": "secrets/dev.yaml"
+    },
+    "rendered_secrets": [],
+    "manifests": []
+  }
+}

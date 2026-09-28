@@ -1,0 +1,427 @@
+{
+  "output": {
+    "project": "acme",
+    "env": "dev",
+    "image_tag": "latest",
+    "clusters": [],
+    "cluster_target": {
+      "cluster": "k3d-acme",
+      "namespace": "acme-dev",
+      "registry": "localhost:5050",
+      "domain": null,
+      "platform": null,
+      "image_pull_secrets": []
+    },
+    "kubeconfig_secrets": [],
+    "network_policy": {
+      "egress_ports": [
+        443,
+        5432
+      ],
+      "telemetry_namespace": "",
+      "ingress_namespace": ""
+    },
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "image": "acme",
+        "build": {
+          "type": "go",
+          "output_name": "acme",
+          "cmd": "./cmd/acme",
+          "goos": null,
+          "goarch": null,
+          "ldflags": [],
+          "tags": [],
+          "flags": [],
+          "env": {}
+        },
+        "runtime": {
+          "type": "host",
+          "runner": "air",
+          "air_config": ".air.toml",
+          "working_dir": null,
+          "listen_ports": [
+            8080
+          ],
+          "delve_port": 2345
+        },
+        "spec": {
+          "args": [
+            "api"
+          ],
+          "env": [
+            {
+              "name": "LOG_LEVEL",
+              "value": "debug"
+            },
+            {
+              "name": "API_KEY",
+              "secretRef": {
+                "key": "api_key",
+                "name": "acme-secrets",
+                "optional": true
+              }
+            },
+            {
+              "name": "WEB_URL",
+              "value": "http://localhost:3000"
+            }
+          ],
+          "image": "",
+          "kind": "service",
+          "ports": [
+            {
+              "expose": true,
+              "name": "http",
+              "port": 8080,
+              "protocol": "tcp"
+            }
+          ],
+          "probes": {
+            "failureThreshold": 3,
+            "initialDelaySeconds": 0,
+            "periodSeconds": 5,
+            "timeoutSeconds": 3
+          },
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "name": "migrate",
+        "kind": "job",
+        "image": "acme",
+        "build": {
+          "type": "go",
+          "output_name": "acme",
+          "cmd": "./cmd/acme",
+          "goos": null,
+          "goarch": null,
+          "ldflags": [],
+          "tags": [],
+          "flags": [],
+          "env": {}
+        },
+        "runtime": {
+          "type": "host",
+          "runner": "go-run",
+          "air_config": null,
+          "working_dir": null,
+          "listen_ports": null,
+          "delve_port": 2345
+        },
+        "spec": {
+          "args": [
+            "db",
+            "migrate",
+            "up"
+          ],
+          "before": [
+            "*"
+          ],
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "value": "postgres://postgres:postgres@localhost:5433/acme"
+            }
+          ],
+          "image": "",
+          "kind": "job",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "name": "search",
+        "kind": "service",
+        "image": "acme",
+        "build": {
+          "type": "go",
+          "output_name": "acme",
+          "cmd": "./cmd/acme",
+          "goos": null,
+          "goarch": null,
+          "ldflags": [],
+          "tags": [],
+          "flags": [],
+          "env": {}
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-acme",
+          "namespace": "acme-dev",
+          "registry": "localhost:5050",
+          "domain": null,
+          "platform": null,
+          "image_pull_secrets": []
+        },
+        "spec": {
+          "args": [
+            "search"
+          ],
+          "env": [
+            {
+              "name": "API_URL",
+              "value": "http://localhost:8080"
+            }
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "service",
+          "ports": [
+            {
+              "expose": true,
+              "name": "http",
+              "port": 8080,
+              "protocol": "tcp"
+            }
+          ],
+          "probes": {
+            "failureThreshold": 3,
+            "initialDelaySeconds": 0,
+            "periodSeconds": 5,
+            "timeoutSeconds": 3
+          },
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "name": "nats",
+        "kind": "service",
+        "image": "",
+        "build": null,
+        "runtime": {
+          "type": "compose",
+          "service": "nats",
+          "file": "docker-compose.yml",
+          "env_file": null,
+          "wait": true,
+          "wait_timeout": 0,
+          "env": {}
+        },
+        "spec": {
+          "image": "",
+          "kind": "service",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "name": "billing",
+        "kind": "worker",
+        "image": "acme",
+        "build": {
+          "type": "go",
+          "output_name": "acme",
+          "cmd": "./cmd/acme",
+          "goos": null,
+          "goarch": null,
+          "ldflags": [],
+          "tags": [],
+          "flags": [],
+          "env": {}
+        },
+        "runtime": {
+          "type": "hosted"
+        },
+        "spec": {
+          "args": [
+            "billing"
+          ],
+          "env": [
+            {
+              "name": "STRIPE_KEY",
+              "managedSecret": {
+                "name": "STRIPE_KEY"
+              }
+            }
+          ],
+          "image": "acme",
+          "kind": "worker",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "name": "cli",
+        "kind": "tool",
+        "image": "",
+        "build": {
+          "type": "go",
+          "output_name": "acme-cli",
+          "cmd": "./cmd/acme-cli",
+          "goos": null,
+          "goarch": null,
+          "ldflags": [],
+          "tags": [],
+          "flags": [],
+          "env": {}
+        },
+        "runtime": {
+          "type": "build-only",
+          "build_variants": [
+            {
+              "name": "acme-cli-linux",
+              "ldflags": [
+                "-s",
+                "-w"
+              ],
+              "tags": [],
+              "goos": "linux",
+              "goarch": "amd64"
+            }
+          ]
+        },
+        "spec": {
+          "image": "",
+          "kind": "tool",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      }
+    ],
+    "infra": [
+      {
+        "name": "postgres",
+        "engine": "postgres",
+        "port": 5433,
+        "database": "acme",
+        "user": "postgres",
+        "password": "postgres",
+        "data_dir": null,
+        "version": null,
+        "idp_database": "zitadel",
+        "idp_database_port": null,
+        "idp_masterkey": "MasterkeyNeedsToHave32Characters",
+        "idp_steps_file": "idp-steps.yaml",
+        "idp_pat_path": ".forge/idp/pat.txt"
+      }
+    ],
+    "frontends": [
+      {
+        "name": "web",
+        "type": "vite",
+        "path": "frontends/web",
+        "source": null,
+        "dev_runner": "npm",
+        "port": 3000,
+        "env_file": null,
+        "env_vars": [],
+        "config": null,
+        "deploy": null,
+        "runtime_config": {
+          "API_URL": "http://localhost:8080"
+        },
+        "runtime_config_spec": {
+          "API_URL": {
+            "workloadURL": {
+              "name": "api"
+            }
+          }
+        }
+      }
+    ],
+    "databases": [],
+    "config_maps": [],
+    "gateways": [],
+    "http_routes": [],
+    "grpc_routes": [],
+    "runtime_classes": [],
+    "helm_charts": [],
+    "required_secrets": [],
+    "required_dns": [],
+    "secret_provider": {
+      "type": "file",
+      "path": "secrets/dev.yaml"
+    },
+    "rendered_secrets": [],
+    "control_plane": {
+      "type": "control_plane",
+      "endpoint": "https://admin.reliantapi.com",
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN"
+    },
+    "manifests": [
+      {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "acme-dev",
+          "labels": {
+            "app.kubernetes.io/managed-by": "forge",
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/audit": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted",
+            "forge.dev/env": "dev"
+          }
+        }
+      },
+      {
+        "apiVersion": "forge.dev/v1alpha1",
+        "kind": "Workload",
+        "metadata": {
+          "name": "search",
+          "namespace": "acme-dev",
+          "labels": {
+            "app.kubernetes.io/name": "search",
+            "app.kubernetes.io/managed-by": "forge",
+            "app.kubernetes.io/part-of": "acme",
+            "forge.dev/cluster": "k3d-acme",
+            "forge.dev/env": "dev"
+          }
+        },
+        "spec": {
+          "args": [
+            "search"
+          ],
+          "env": [
+            {
+              "name": "API_URL",
+              "value": "http://localhost:8080"
+            }
+          ],
+          "image": "localhost:5050/acme:latest",
+          "kind": "service",
+          "ports": [
+            {
+              "expose": true,
+              "name": "http",
+              "port": 8080,
+              "protocol": "tcp"
+            }
+          ],
+          "probes": {
+            "failureThreshold": 3,
+            "initialDelaySeconds": 0,
+            "periodSeconds": 5,
+            "timeoutSeconds": 3
+          },
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      }
+    ]
+  }
+}

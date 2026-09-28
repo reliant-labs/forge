@@ -1,0 +1,93 @@
+{
+  "output": {
+    "project": "acme",
+    "env": "dev",
+    "image_tag": "latest",
+    "clusters": [],
+    "kubeconfig_secrets": [],
+    "network_policy": null,
+    "workloads": [
+      {
+        "name": "cli",
+        "kind": "tool",
+        "image": "",
+        "build": {
+          "type": "go",
+          "output_name": "acme-cli",
+          "cmd": "./cmd/acme-cli",
+          "goos": null,
+          "goarch": null,
+          "ldflags": [],
+          "tags": [],
+          "flags": [],
+          "env": {}
+        },
+        "runtime": {
+          "type": "build-only",
+          "build_variants": [
+            {
+              "name": "acme-cli-linux",
+              "ldflags": [
+                "-s",
+                "-w"
+              ],
+              "tags": [],
+              "goos": "linux",
+              "goarch": "amd64"
+            }
+          ]
+        },
+        "spec": {
+          "image": "",
+          "kind": "tool",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      },
+      {
+        "name": "workspace-base",
+        "kind": "tool",
+        "image": "workspace-base",
+        "build": {
+          "type": "docker",
+          "output_name": null,
+          "dockerfile": "images/base/Dockerfile",
+          "platform": null,
+          "target": null,
+          "build_args": {},
+          "registry": null,
+          "build_contexts": {}
+        },
+        "runtime": {
+          "type": "build-only",
+          "build_variants": []
+        },
+        "spec": {
+          "image": "",
+          "kind": "tool",
+          "replicas": 1,
+          "resources": {
+            "cpuRequestMillicores": 250,
+            "memoryRequestBytes": 1073741824
+          }
+        }
+      }
+    ],
+    "infra": [],
+    "frontends": [],
+    "databases": [],
+    "config_maps": [],
+    "gateways": [],
+    "http_routes": [],
+    "grpc_routes": [],
+    "runtime_classes": [],
+    "helm_charts": [],
+    "required_secrets": [],
+    "required_dns": [],
+    "rendered_secrets": [],
+    "manifests": []
+  }
+}

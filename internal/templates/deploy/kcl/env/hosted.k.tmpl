@@ -66,15 +66,17 @@ _db = forge.ManagedDatabase {name = "db"}
 # name, so its value comes from this env's secret store){{if .HasDatabase}}, and the
 # managed database's DSN for every workload that reads DATABASE_URL{{end}}. A tool
 # is built into the release but never scheduled.
-_bind = lambda w: fw.Workload -> fw.Workload {
-    w | {
-        env = config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | {OTEL_SERVICE_NAME = w.name}
+_env = lambda w: fw.Workload -> {str:} {
 {{- if .HasDatabase}}
-            | ({DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {})
+    _dsn = {DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}
+    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | {OTEL_SERVICE_NAME = w.name} | _dsn
+{{- else}}
+    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | {OTEL_SERVICE_NAME = w.name}
 {{- end}}
-        if w.kind == "tool":
-            runtime = forge.BuildOnly {}
-    }
+}
+_bind = lambda w: fw.Workload -> fw.Workload {
+    _bound = w | {env = _env(w)}
+    _bound | {runtime = forge.BuildOnly {}} if w.kind == "tool" and not w.runtime else _bound
 }
 
 _bundle = forge.Bundle {

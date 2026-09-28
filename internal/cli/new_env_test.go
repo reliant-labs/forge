@@ -262,3 +262,24 @@ func TestLineHasLivePlaceholder(t *testing.T) {
 		}
 	}
 }
+
+// --runtime renders a fresh env and --from copies one; asking for both is
+// ambiguous, and an unknown runtime names the choices.
+func TestNewEnv_RuntimeFlagGuards(t *testing.T) {
+	dir := writeProjectFixture(t, "staging")
+	withCwd(t, dir, func() {
+		cmd := newEnvNewCmd()
+		cmd.SetArgs([]string{"preview", "--runtime", "hosted", "--from", "staging"})
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "exclusive") {
+			t.Errorf("--runtime with --from: err = %v, want an exclusivity refusal", err)
+		}
+		if err := runNewEnvForRuntime(context.Background(), "preview", "serverless", false); err == nil ||
+			!strings.Contains(err.Error(), "host, cluster, hosted") {
+			t.Errorf("unknown runtime: err = %v, want the list of runtimes", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "deploy", "kcl", "preview")); !os.IsNotExist(err) {
+			t.Errorf("a refused --runtime wrote deploy/kcl/preview (stat err %v)", err)
+		}
+	})
+}

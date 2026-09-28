@@ -155,13 +155,11 @@ _k3d = forge.ClusterTarget {
 # anything starts; the local cluster for the kinds a host process cannot be.
 # A runtime the workload already binds (in workloads.k, or above) wins.
 _bind = lambda w: fw.Workload -> fw.Workload {
-    w | {
-        env = _env(w)
-        if not w.runtime and w.kind in ["operator", "cron"]:
-            runtime = forge.OnCluster {target = _k3d}
-        elif not w.runtime and w.kind in _LONG_RUNNING:
-            runtime = forge.OnHost {runner = "go-run", listen_ports = [_port_of(w.name)]}
-    }
+    _bound = w | {env = _env(w)}
+    _on_k3d = _bound | {runtime = forge.OnCluster {target = _k3d}}
+    _on_host = _bound | {runtime = forge.OnHost {runner = "go-run", listen_ports = [_port_of(w.name)]}}
+    _choice = _on_k3d if w.kind in ["operator", "cron"] else (_on_host if w.kind in _LONG_RUNNING else _bound)
+    _bound if w.runtime else _choice
 }
 
 # WANT A CONTAINER for another workload? Bind it to the same cluster, by

@@ -1230,8 +1230,12 @@ func ExtractManifests(kclOutput []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	pullSecrets, err := decodePullSecrets(out["workloads"])
+	if err != nil {
+		return "", err
+	}
 
-	items, err = expandTierDeclarations(items, network)
+	items, err = expandTierDeclarations(items, network, pullSecrets)
 	if err != nil {
 		return "", err
 	}
@@ -1248,6 +1252,54 @@ func ExtractManifests(kclOutput []byte) (string, error) {
 		sb.Write(b)
 	}
 	return sb.String(), nil
+}
+
+// decodePullSecrets reads the image-pull Secrets each Cluster runtime in
+// `output.workloads` declares (`forge.Cluster.image_pull_secrets`), keyed by
+// the (cluster, namespace) group its records render in. A pull Secret is a
+// fact about where a workload runs, not about the workload, so it rides the
+// runtime and reaches pkg/deploy as Context.ImagePullSecrets. Workloads that
+// share a group share one render call, so the group's set is the union of
+// its runtimes' declarations, in first-declared order.
+func decodePullSecrets(raw any) (map[workloadGroupKey][]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("output.workloads: %w", err)
+	}
+	var ws []struct {
+		Runtime struct {
+			Type             string   `json:"type"`
+			Cluster          string   `json:"cluster"`
+			Namespace        string   `json:"namespace"`
+			ImagePullSecrets []string `json:"image_pull_secrets"`
+		} `json:"runtime"`
+	}
+	if err := json.Unmarshal(b, &ws); err != nil {
+		return nil, fmt.Errorf("output.workloads: %w", err)
+	}
+	out := map[workloadGroupKey][]string{}
+	seen := map[workloadGroupKey]map[string]bool{}
+	for _, w := range ws {
+		rt := w.Runtime
+		if rt.Type != "cluster" {
+			continue
+		}
+		key := workloadGroupKey{cluster: rt.Cluster, namespace: rt.Namespace}
+		for _, s := range rt.ImagePullSecrets {
+			if s == "" || seen[key][s] {
+				continue
+			}
+			if seen[key] == nil {
+				seen[key] = map[string]bool{}
+			}
+			seen[key][s] = true
+			out[key] = append(out[key], s)
+		}
+	}
+	return out, nil
 }
 
 // decodeNetworkPolicy reads `output.network_policy`: the env-wide
@@ -1297,7 +1349,8 @@ type workloadGroup struct {
 //     group is rendered by ONE deploy.RenderWorkloads(group, ProfileFull)
 //     call, emitted at the position of the group's first record. The env's
 //     NetworkPolicy bundle (network) rides every group, because each group
-//     is a namespace the env deploys into.
+//     is a namespace the env deploys into; the group's image-pull Secrets
+//     (pullSecrets, from its Cluster runtimes) ride its own call.
 //   - ManagedDatabase / StaticSite records render one at a time through
 //     deploy.Render, in place.
 //
@@ -1311,7 +1364,7 @@ type workloadGroup struct {
 // stamp) are copied onto every object the group renders — including the env
 // NetworkPolicies, which carry no app label — so multi-cluster scoping and
 // env-scoped prune/status see them exactly as they saw the record.
-func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy) ([]any, error) {
+func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullSecrets map[workloadGroupKey][]string) ([]any, error) {
 	groups := map[workloadGroupKey]*workloadGroup{}
 	var order []workloadGroupKey
 	leaders := map[int]workloadGroupKey{}
@@ -1344,10 +1397,11 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy) ([]an
 	for _, key := range order {
 		g := groups[key]
 		objs, err := deploy.RenderWorkloads(g.records, deployv1alpha1.ProfileFull, deploy.Context{
-			Namespace: key.namespace,
-			PartOf:    g.labels[deploy.LabelPartOf],
-			Env:       g.labels[deploy.LabelEnv],
-			Network:   network,
+			Namespace:        key.namespace,
+			PartOf:           g.labels[deploy.LabelPartOf],
+			Env:              g.labels[deploy.LabelEnv],
+			Network:          network,
+			ImagePullSecrets: pullSecrets[key],
 		})
 		if err != nil {
 			return nil, fmt.Errorf("render workloads (cluster %q, namespace %s): %w", key.cluster, key.namespace, err)

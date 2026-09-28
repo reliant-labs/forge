@@ -222,3 +222,64 @@ func kinds(objs []extractedObj) []string {
 	}
 	return out
 }
+
+// TestExtractManifests_ImagePullSecretsFromTheClusterRuntime: a private
+// registry's pull Secret is a fact about the cluster runtime a workload
+// binds (`forge.Cluster.image_pull_secrets`), not about the workload. The
+// runtimes in output.workloads name them per (cluster, namespace), and each
+// group's RenderWorkloads call receives its own — so every ServiceAccount
+// forge generates in acme-dev pulls with ghcr-creds, and acme-search, whose
+// runtime declares none, gets none.
+func TestExtractManifests_ImagePullSecretsFromTheClusterRuntime(t *testing.T) {
+	in := workloadRecords + `  workloads:
+  - name: api
+    runtime: {type: cluster, cluster: k3d-acme, namespace: acme-dev, image_pull_secrets: [ghcr-creds]}
+  - name: migrate
+    runtime: {type: cluster, cluster: k3d-acme, namespace: acme-dev, image_pull_secrets: [ghcr-creds]}
+  - name: search
+    runtime: {type: cluster, cluster: k3d-acme-daemon, namespace: acme-search, image_pull_secrets: []}
+  - name: local
+    runtime: {type: host, runner: go-run}
+`
+	got, err := ExtractManifests([]byte(in))
+	if err != nil {
+		t.Fatalf("ExtractManifests: %v", err)
+	}
+	var sas int
+	for _, doc := range splitDocs(got) {
+		var o struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
+			} `json:"metadata"`
+			ImagePullSecrets []struct {
+				Name string `json:"name"`
+			} `json:"imagePullSecrets"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &o); err != nil {
+			t.Fatalf("parse %q: %v", doc, err)
+		}
+		if o.Kind != "ServiceAccount" {
+			continue
+		}
+		sas++
+		var names []string
+		for _, s := range o.ImagePullSecrets {
+			names = append(names, s.Name)
+		}
+		switch o.Metadata.Namespace {
+		case "acme-dev":
+			if len(names) != 1 || names[0] != "ghcr-creds" {
+				t.Errorf("ServiceAccount %s/%s imagePullSecrets = %v, want [ghcr-creds] from its cluster runtime", o.Metadata.Namespace, o.Metadata.Name, names)
+			}
+		case "acme-search":
+			if len(names) != 0 {
+				t.Errorf("ServiceAccount %s/%s imagePullSecrets = %v, want none: its runtime declares none", o.Metadata.Namespace, o.Metadata.Name, names)
+			}
+		}
+	}
+	if sas == 0 {
+		t.Fatal("no ServiceAccount rendered")
+	}
+}

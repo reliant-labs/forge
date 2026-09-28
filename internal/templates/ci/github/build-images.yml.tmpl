@@ -54,14 +54,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-{{- if .HasFrontends}}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: "{{.FrontendPath}}/package.json"
-          cache: "npm"
-          cache-dependency-path: "{{.FrontendPath}}/package-lock.json"
-{{- end}}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -71,12 +63,6 @@ jobs:
         # one this code compiles against — so bumping forge in go.mod is the
         # whole upgrade.
 {{installForgeRun 8}}
-{{- if .HasFrontends}}
-
-      - name: Install frontend dependencies
-        working-directory: {{.FrontendPath}}
-        run: npm ci
-{{- end}}
 
       - name: Log in to the declared registry
         # forge logs docker in to the registry deploy/kcl/$FORGE_ENV/main.k

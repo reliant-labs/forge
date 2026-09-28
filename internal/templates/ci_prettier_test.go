@@ -52,7 +52,6 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		{"proto-breaking", "proto-breaking.yml.tmpl", full},
 		{"build-images", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true}},
 		{"build-images cut-release", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, CutRelease: true}},
-		{"build-images frontends", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", HasFrontends: true, FrontendPath: "frontends/web", VulnDocker: true}},
 		{"deploy", "deploy.yml.tmpl", DeployWorkflowData{ProjectName: "demo", Environments: envs, HasFrontends: true, FrontendPath: "frontends/web", Concurrency: true}},
 		{"deploy lone env", "deploy.yml.tmpl", DeployWorkflowData{ProjectName: "demo", Environments: envs[1:]}},
 		{"e2e", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "docker-compose", HasFrontends: true, FrontendPath: "frontends/web"}},

@@ -178,6 +178,89 @@ func TestBuildTargetNarrowing_FrontendNameScopesEntities(t *testing.T) {
 	}
 }
 
+// `--target <project>` builds the PROJECT image and nothing else. It is the
+// command a CI job runs to publish that one image (forge's own scaffolded
+// build-images.yml: `forge build <env> --target <project> --push`), so every
+// other artifact the env declares is out of scope: a ShellBuild's build_cmd
+// (control-plane's sibling-repo reliant images, which need a ../reliant
+// checkout CI does not have), a DockerBuild workload (a containerised
+// frontend), and the frontends' `npm run build`.
+//
+// Before the fix the project name narrowed NOTHING: the service and frontend
+// names did, the project name fell through, and `forge build prod --target
+// control-plane --push --plan` planned the reliant ShellBuilds and the
+// internal-console DockerBuild beside the project image — and failed on the
+// missing sibling checkout. resolveNamedBuildTarget had the same hole for the
+// frontends: its comment said "with its frontends already filtered away" and
+// it returned every one.
+func TestBuildTargetNarrowing_ProjectNameScopesToTheProjectImage(t *testing.T) {
+	entities, err := parseKCLEntities([]byte(`{"output": {
+  "workloads": [
+    {"name": "admin-server", "kind": "service", "image": "control-plane",
+     "runtime": {"type": "cluster", "cluster": "gke-prod", "namespace": "prod"},
+     "build": {"type": "go", "cmd": "./cmd/control-plane", "output_name": "control-plane"}, "spec": {"kind": "service"}},
+    {"name": "reliant-api-server", "kind": "service", "image": "reliant",
+     "runtime": {"type": "cluster", "cluster": "gke-prod", "namespace": "prod"},
+     "build": {"type": "shell", "cmd": "docker push reliant", "cwd": "../reliant"}, "spec": {"kind": "service"}},
+    {"name": "internal-console", "kind": "service", "image": "internal-console",
+     "runtime": {"type": "cluster", "cluster": "gke-prod", "namespace": "prod"},
+     "build": {"type": "docker", "dockerfile": "frontends/internal-console/Dockerfile"}, "spec": {"kind": "service"}}
+  ],
+  "frontends": [
+    {"name": "reliant-web", "type": "vite", "path": "web",
+     "source": {"repo": "github.com/reliant-labs/reliant", "ref": "v1"}}
+  ]
+}}`))
+	if err != nil {
+		t.Fatalf("parseKCLEntities: %v", err)
+	}
+
+	got := narrowBuildEntities("control-plane", entities, buildOptions{buildTarget: "control-plane", env: "prod"})
+	var names []string
+	for _, w := range got.Workloads {
+		names = append(names, w.Name)
+	}
+	if len(names) != 1 || names[0] != "admin-server" {
+		t.Errorf("workloads = %v, want [admin-server] — only the workloads the project image is built for", names)
+	}
+	if svcs := externalBuildServices(got); len(svcs) != 0 {
+		t.Errorf("external builds = %d, want 0 — naming the project must not run a ShellBuild's build_cmd", len(svcs))
+	}
+	if len(got.Frontends) != 0 {
+		t.Errorf("frontends = %+v, want none", got.Frontends)
+	}
+	// The project image itself must survive the narrowing: the binary is
+	// still compiled and the image still built.
+	if !envNeedsProjectImage(got) {
+		t.Error("envNeedsProjectImage = false — the narrowing dropped the project image it was asked for")
+	}
+	if targets := goBuildTargetsFromKCL(got); len(targets) != 1 || targets[0].cmd != "./cmd/control-plane" {
+		t.Errorf("go targets = %+v, want exactly ./cmd/control-plane", targets)
+	}
+	// The declared set is untouched: the registry and every other env-wide
+	// fact are read from the FULL render.
+	if len(entities.Workloads) != 3 {
+		t.Errorf("narrowing mutated the declared render: %d workloads, want 3", len(entities.Workloads))
+	}
+
+	cfg := &config.ProjectConfig{Name: "control-plane"}
+	opts := buildOptions{buildTarget: "control-plane", env: "prod"}
+	inventory := []config.FrontendConfig{config.FrontendConfig{Name: "internal-console", Type: "nextjs"}.WithDir("frontends/internal-console")}
+	frontends, buildBinary, err := resolveNamedBuildTarget(cfg, got, &opts, inventory)
+	if err != nil {
+		t.Fatalf("resolveNamedBuildTarget: %v", err)
+	}
+	if !buildBinary {
+		t.Error("buildBinary = false — naming the project must build its binary")
+	}
+	if len(frontends) != 0 {
+		t.Errorf("frontends = %+v, want none — the project target builds no frontend", frontends)
+	}
+	if !opts.skipFrontends {
+		t.Error("skipFrontends = false, want true for the project target")
+	}
+}
+
 // The narrowing predicate itself: a KCL frontend name must be recognised
 // as a narrowable target. Guards the condition in renderBuildEntities
 // that decides whether to filter at all.

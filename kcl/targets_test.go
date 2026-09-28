@@ -13,7 +13,7 @@ import (
 //
 // It re-derives the expected target set from schema.k by a DIFFERENT and
 // deliberately dumber route than the parser under test — a grep for
-// `deploy?:` lines and a split on `|` — and asserts the two agree. Add a
+// `runtime?:` lines and a split on `|` — and asserts the two agree. Add a
 // target to a union in schema.k and this test keeps passing (both sides see
 // it). Add one and break the parser, and the two disagree and this fails.
 //
@@ -25,7 +25,7 @@ import (
 func TestDeployTargetsMatchSchemaSource(t *testing.T) {
 	want := grepDeployUnions(t, "schema.k", "workload.k")
 	if len(want) == 0 {
-		t.Fatal("no `deploy?:` / `runtime?:` union found — the grep oracle is broken, not the parser")
+		t.Fatal("no `runtime?:` union found — the grep oracle is broken, not the parser")
 	}
 
 	targets, err := DeployTargets()
@@ -141,7 +141,7 @@ func TestParsesRealSchemaShapes(t *testing.T) {
     defaulted: str = "yes"
     optional?: int
     container: [{str: any}] = []
-    deploy?: Alpha | Beta
+    runtime?: Alpha | Beta
 
     check:
         real_field, "required"
@@ -182,7 +182,7 @@ schema Beta:
 	for _, f := range decoy.fields {
 		names = append(names, f.Name)
 	}
-	wantFields := "real_field,defaulted,optional,container,deploy"
+	wantFields := "real_field,defaulted,optional,container,runtime"
 	if strings.Join(names, ",") != wantFields {
 		t.Errorf("Decoy fields: got %v, want %s", names, wantFields)
 	}
@@ -210,19 +210,19 @@ schema Beta:
 // target named "str" or "[EnvVar]".
 func TestNonUnionDeployFieldYieldsNoTargets(t *testing.T) {
 	for _, typ := range []string{"str", "[EnvVar]", "{str: any}", "Alpha"} {
-		src := "schema W:\n    deploy?: " + typ + "\n"
+		src := "schema W:\n    runtime?: " + typ + "\n"
 		targets, err := deployTargetsFrom(fstest.MapFS{"schema.k": {Data: []byte(src)}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(targets) != 0 {
-			t.Errorf("deploy?: %s yielded %+v, want none", typ, targets)
+			t.Errorf("runtime?: %s yielded %+v, want none", typ, targets)
 		}
 	}
 }
 
 var (
-	reDeployUnionLine = regexp.MustCompile(`^    (?:deploy|runtime)\??:\s*(.+)$`)
+	reDeployUnionLine = regexp.MustCompile(`^    runtime\??:\s*(.+)$`)
 	reAliasLine       = regexp.MustCompile(`^type\s+(\w+)\s*=\s*(.+)$`)
 )
 
@@ -248,7 +248,7 @@ func grepDeployUnions(t *testing.T, names ...string) map[string][]string {
 	src := b.String()
 	for _, line := range strings.Split(src, "\n") {
 		if m := reAliasLine.FindStringSubmatch(line); m != nil {
-			src = regexp.MustCompile(`(?m)^(    (?:deploy|runtime)\??:\s*)`+m[1]+`\s*$`).ReplaceAllString(src, "${1}"+m[2])
+			src = regexp.MustCompile(`(?m)^(    runtime\??:\s*)`+m[1]+`\s*$`).ReplaceAllString(src, "${1}"+m[2])
 		}
 	}
 	return grepDeployUnionsSrc(t, src)

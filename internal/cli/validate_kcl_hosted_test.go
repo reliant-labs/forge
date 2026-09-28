@@ -11,7 +11,7 @@ import (
 
 // hostedValidateBundle is hounders' prod shape (deploy/kcl/prod/main.k at
 // houndersclub PR #1) on the workload model: a workload this project builds,
-// a StaticSite and a ManagedDatabase, all hosted, with cross-workload
+// a frontend on forge.OnHosted and a ManagedDatabase, all hosted, with cross-workload
 // references in both directions and a managed secret. `api` is the
 // fw.Workload's body, spliced in so a test can break exactly one thing.
 func hostedValidateBundle(api string) string {
@@ -35,7 +35,8 @@ func hostedValidateBundle(api string) string {
     frontends = [forge.Frontend {
         name = "web"
         path = "frontends/web"
-        deploy = forge.StaticSite {public_dir = "out"}
+        public_dir = "out"
+        runtime = forge.OnHosted {}
         runtime_config = {
             API_URL = forge.WorkloadURL {workload = "api"}
             SITE_URL = forge.WorkloadURL {workload = "web"}

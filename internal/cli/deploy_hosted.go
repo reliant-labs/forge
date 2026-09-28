@@ -65,7 +65,7 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 // envAppliesLocally reports whether any part of the env is applied FROM THIS
 // MACHINE: a Cluster- or Compose-bound workload, host infra, a cluster
 // database, a declared cluster_target (support resources), or a frontend
-// shipped by its own provider (Firebase, a bucketed StaticSite).
+// shipped or built by forge from here (OnBucket, OnFirebase, BuildOnly).
 func envAppliesLocally(e *KCLEntities) bool {
 	if len(e.WorkloadsOn(RuntimeCluster)) > 0 || len(e.WorkloadsOn(RuntimeCompose)) > 0 || len(e.Infra) > 0 {
 		return true
@@ -79,7 +79,7 @@ func envAppliesLocally(e *KCLEntities) bool {
 		}
 	}
 	for _, f := range e.Frontends {
-		if f.Deploy != nil && f.Deploy.Type != "" && !frontendIsHosted(f) {
+		if f.Runtime.Ships() || f.Runtime.Type == FrontendRuntimeBuildOnly {
 			return true
 		}
 	}

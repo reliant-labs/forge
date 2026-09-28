@@ -52,11 +52,13 @@ const hostedWorkloadURLBundle = `    project = "acme"
             API_URL = forge.WorkloadURL { workload = "api" }
             APP_NAME = "acme"
         }
-        deploy = forge.StaticSite { public_dir = "dist", base_path = "/app" }
+        public_dir = "dist"
+        base_path = "/app"
+        runtime = forge.OnHosted {}
     }]`
 
 // TestWorkloadURL_HostedLowersToSpecReferences: a HOSTED referrer (an
-// OnHosted workload, a bucketless StaticSite) leaves every forge.WorkloadURL a
+// OnHosted workload, an OnHosted frontend) leaves every forge.WorkloadURL a
 // REFERENCE, and the hosted group publishes it verbatim — the StaticSite
 // spec's runtimeConfig and the Workload CR's env workloadURL — for the
 // control plane to resolve. Nothing resolved means nothing for forge to write
@@ -134,6 +136,7 @@ func TestWorkloadURL_LocalEnvResolvesAtRender(t *testing.T) {
         type = "vite"
         port = 5173
         runtime_config = { API_URL = forge.WorkloadURL { workload = "api" }, APP_NAME = "acme" }
+        runtime = forge.OnHost {}
     }]`)
 	entities, err := RenderKCL(context.Background(), dir, "dev")
 	if err != nil {

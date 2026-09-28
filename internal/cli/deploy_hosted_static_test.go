@@ -117,7 +117,9 @@ _bundle = forge.Bundle {
         name = "web"
         path = "frontends/web"
         type = "vite"
-        deploy = forge.StaticSite { public_dir = "dist", base_path = "/app" }
+        public_dir = "dist"
+        base_path = "/app"
+        runtime = forge.OnHosted {}
     }]
 }
 

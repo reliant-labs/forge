@@ -110,13 +110,13 @@ func frontendCfg(names ...string) *config.ProjectConfig {
 // TestWarnsWhenFrontendAbsentFromEnv is the reported bug: the scaffold emits
 // forge.Frontend in dev only, so staging/prod render no frontend workload at
 // all and the deploy dispatch has nothing to iterate over. The frontend is
-// ABSENT from entities rather than present-with-nil-deploy.
+// ABSENT from entities.
 func TestWarnsWhenFrontendAbsentFromEnv(t *testing.T) {
 	var sb strings.Builder
 	warnUndeployedFrontends(&sb, frontendCfg("web"), &KCLEntities{}, "prod", nil)
 
 	out := sb.String()
-	if !strings.Contains(out, `frontend "web" is declared but has no deploy target for env "prod"`) {
+	if !strings.Contains(out, `frontend "web" is not declared in env "prod"`) {
 		t.Errorf("missing the warning line:\n%s", out)
 	}
 	if !strings.Contains(out, "will NOT be deployed") {
@@ -157,15 +157,16 @@ func TestWarnsWhenFrontendAbsentFromEnv(t *testing.T) {
 	}
 }
 
-// TestWarnsWhenFrontendPresentWithNoDeploy is the other silent shape: the env
-// declares the frontend but writes no deploy block, which dispatch treats as
-// build-only.
-func TestWarnsWhenFrontendPresentWithNoDeploy(t *testing.T) {
-	entities := &KCLEntities{Frontends: []FrontendEntity{{Name: "web", Path: "frontends/web"}}}
+// TestNoWarningWhenFrontendIsDevServedByDeclaration: a frontend the env binds
+// to forge.OnHost ships nothing, and that is a DECLARATION, not the silence
+// this warning exists for (a frontend with no runtime is a render error, so
+// the old "present with no deploy block" shape no longer exists).
+func TestNoWarningWhenFrontendIsDevServedByDeclaration(t *testing.T) {
+	entities := &KCLEntities{Frontends: []FrontendEntity{{Name: "web", Path: "frontends/web", Runtime: FrontendRuntime{Type: FrontendRuntimeHost}}}}
 	var sb strings.Builder
 	warnUndeployedFrontends(&sb, frontendCfg("web"), entities, "staging", nil)
-	if !strings.Contains(sb.String(), `frontend "web" is declared`) {
-		t.Errorf("no warning for a present-but-undeployed frontend:\n%s", sb.String())
+	if sb.String() != "" {
+		t.Errorf("warned about a frontend its env binds to forge.OnHost:\n%s", sb.String())
 	}
 }
 
@@ -173,9 +174,9 @@ func TestWarnsWhenFrontendPresentWithNoDeploy(t *testing.T) {
 // must stay silent, or the warning becomes noise users learn to ignore.
 func TestNoWarningWhenFrontendHasDeployTarget(t *testing.T) {
 	entities := &KCLEntities{Frontends: []FrontendEntity{{
-		Name:   "web",
-		Path:   "frontends/web",
-		Deploy: &FrontendDeployEntity{Type: "firebase"},
+		Name:    "web",
+		Path:    "frontends/web",
+		Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase},
 	}}}
 	var sb strings.Builder
 	warnUndeployedFrontends(&sb, frontendCfg("web"), entities, "prod", nil)
@@ -233,8 +234,8 @@ func TestNoWarningInDev(t *testing.T) {
 // deployed sibling does not suppress the warning for the others.
 func TestWarningIsPerFrontend(t *testing.T) {
 	entities := &KCLEntities{Frontends: []FrontendEntity{{
-		Name:   "admin",
-		Deploy: &FrontendDeployEntity{Type: "firebase"},
+		Name:    "admin",
+		Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase},
 	}}}
 	var sb strings.Builder
 	warnUndeployedFrontends(&sb, frontendCfg("web", "admin", "marketing"), entities, "prod", nil)

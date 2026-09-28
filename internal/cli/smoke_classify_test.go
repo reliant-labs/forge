@@ -24,11 +24,10 @@ const sampleSmokeBundle = `{
             "value": "https://admin-preprod.reliantapi.com"
           }
         ],
-        "deploy": {
+        "runtime": {
           "type": "firebase",
           "project": "p",
-          "site": "reliant-preprod",
-          "public_dir": "out"
+          "site": "reliant-preprod"
         }
       }
     ],
@@ -154,7 +153,7 @@ func TestExtractSmokeTargets_GatewayHosted(t *testing.T) {
 	  "frontends": [
 	    {"name": "admin-web", "type": "nextjs", "path": "frontend",
 	     "env_vars": [{"name": "NEXT_PUBLIC_API_URL", "value": "https://admin-staging.reliantapi.com"}],
-	     "deploy": {"type": "firebase", "project": "p", "site": "reliant-staging", "public_dir": "out"}}
+	     "runtime": {"type": "firebase", "project": "p", "site": "reliant-staging"}}
 	  ],
 	  "gateways": [
 	    {"name": "public", "host": "staging.reliantapi.com"},
@@ -222,7 +221,7 @@ func TestExtractSmokeTargets_NoFrontendAPIURL(t *testing.T) {
 	bundle := `{
 	  "frontends": [
 	    {"name": "admin-web", "type": "nextjs", "path": "frontend",
-	     "deploy": {"type": "firebase", "project": "p", "site": "reliant-preprod", "public_dir": "out"}}
+	     "runtime": {"type": "firebase", "project": "p", "site": "reliant-preprod"}}
 	  ],
 	  "gateways": [{"name": "edge", "host": ""}],
 	  "http_routes": [

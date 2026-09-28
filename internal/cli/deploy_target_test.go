@@ -70,8 +70,8 @@ func TestFilterEntitiesToFrontendsOnly(t *testing.T) {
 		Workloads: []WorkloadEntity{clusterWL("admin-server", "k3d-x", "ns"), operatorWL("workspace-controller")},
 		Infra:     []HostInfraEntity{{Name: "postgres"}},
 		Frontends: []FrontendEntity{
-			{Name: "reliant-web", Deploy: &FrontendDeployEntity{Type: "firebase"}},
-			{Name: "admin-web"}, // deploy = None build-only; must survive
+			{Name: "reliant-web", Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase}},
+			{Name: "admin-web", Runtime: FrontendRuntime{Type: FrontendRuntimeBuildOnly}}, // bundled by reliant-web; must survive
 		},
 		Gateways:   []GatewayEntity{{Name: "gw"}},
 		HelmCharts: []HelmChartEntity{{Name: "cert-manager"}},

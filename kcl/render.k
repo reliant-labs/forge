@@ -111,7 +111,7 @@ _env_names = lambda workloads: [any], infra: [any], frontends: [any] -> [str] {
 _hosted_names = lambda workloads: [any], databases: [any], frontends: [any] -> [str] {
     [w.name for w in workloads if w.runtime and w.runtime.type == "hosted"] \
         + [db.name for db in databases if db.runtime and db.runtime.type == "hosted"] \
-        + [f.name for f in frontends if f.deploy and f.deploy.type == "static-site" and not f.deploy.bucket]
+        + [f.name for f in frontends if f.runtime and f.runtime.type == "hosted"]
 }
 
 # A cloud-bound workload whose build produces an image, on a target that
@@ -731,13 +731,38 @@ _render_cluster_target = lambda ct: ClusterTarget -> any {
 }
 
 # ---------------------------------------------------------------------------
-# Frontends. Hosting is PER FRONTEND: a StaticSite with no bucket is
-# published to the control plane, which writes its config.js and resolves
+# Frontends. The runtime is PER FRONTEND (ADR 0002 §6): an OnHosted frontend
+# is published to the control plane, which writes its config.js and resolves
 # its references; every other frontend's references are resolved here.
 # ---------------------------------------------------------------------------
 
 _frontend_hosted = lambda f: Frontend -> bool {
-    bool(f.deploy and f.deploy.type == "static-site" and not f.deploy.bucket)
+    bool(f.runtime and f.runtime.type == "hosted")
+}
+
+# The frontend's static output dir: declared, else the type's convention
+# (a Next.js static export writes out/, Vite and Expo web write dist/).
+_public_dir = lambda f: Frontend -> str {
+    f.public_dir if f.public_dir else ("out" if f.type == "nextjs" else "dist")
+}
+
+# What a frontend's runtime cannot honour, and why. OnHost and OnHosted are
+# the workload schemas, so they carry workload-only fields a frontend has no
+# use for: a declared one is REFUSED, naming it, rather than silently ignored.
+# The static build facts are refused where nothing consumes them.
+_frontend_violations = lambda f: Frontend -> [str] {
+    _rt = f.runtime
+    _t = _rt.type
+    _host = _t == "host"
+    (["runner '${_rt.runner}': a frontend's dev server is `<dev_runner> dev`; set Frontend.dev_runner, not OnHost.runner"] if _host and _rt.runner != "go-run" else []) \
+        + (["air_config: a frontend's dev server has no air config"] if _host and _rt.air_config else []) \
+        + (["working_dir: a frontend's dev server runs in its own path"] if _host and _rt.working_dir else []) \
+        + (["listen_ports: a frontend's dev server binds Frontend.port; set that"] if _host and _rt.listen_ports is not Undefined else []) \
+        + (["delve_port: a frontend's dev server is not a Go process"] if _host and _rt.delve_port != 2345 else []) \
+        + (["build_variants: a frontend has one build"] if _t == "build-only" and _rt.build_variants else []) \
+        + (["bundle: the dev server assembles nothing; bundle dirs are assembled into a PUBLISHED site"] if _host and f.bundle else []) \
+        + (["cache_control: forge sets Cache-Control only on the objects it uploads to your bucket (forge.OnBucket); ${'the platform owns the CDN and its headers' if _t == 'hosted' else ('Firebase owns the headers' if _t == 'firebase' else 'nothing here serves the build')}"] \
+            if f.cache_control and _t != "bucket" else [])
 }
 
 # A frontend's runtime_config as the StaticSite spec's `runtimeConfig` wire
@@ -749,21 +774,45 @@ _runtime_config_spec = lambda f: Frontend, bundle: Bundle -> {str:} {
     assert len(_bad) == 0, \
         "Frontend '${f.name}'.runtime_config: forge.WorkloadURL names a workload this environment does not declare: " \
         + ", ".join(_bad) + ". Declared workloads: " + ", ".join(_names) + "."
-    {k: ({"value": v} if typeof(v) == "str" else {"workloadURL": {"name": v.name}}) for k, v in f.runtime_config}
+    {k: ({"value": v} if typeof(v) == "str" else {"workloadURL": {"name": _require_hosted_url_target(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle) if _frontend_hosted(f) else v.name}}) for k, v in f.runtime_config}
 }
 
 # A frontend's runtime_config RESOLVED to literals — the document forge
-# writes itself. Empty for a hosted StaticSite (the control plane writes it).
+# writes itself. Empty for an OnHosted frontend (the control plane writes it).
 _runtime_config_resolved = lambda f: Frontend, bundle: Bundle -> {str:str} {
     {} if _frontend_hosted(f) else \
         {k: (v if typeof(v) == "str" else _require_workload_url(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle)) for k, v in f.runtime_config}
 }
 
-_render_frontend_deploy = lambda d: any -> any {
-    (_render_static_site(d) if d.type == "static-site" else _render_firebase_hosting(d)) if d else None
+# output.frontends[].runtime: {type, ...} — the dispatch key. Only the
+# fields the runtime's consumer reads; optional ones project as null.
+_render_frontend_runtime = lambda rt: any -> any {
+    {
+        "type": "bucket"
+        "bucket": rt.bucket
+        "cdn": _render_static_site_cdn(rt.cdn) if rt.cdn else None
+        # keep_releases projects UNCONDITIONALLY, including its 0 ("retain
+        # everything") value. A `if rt.keep_releases else None` would erase
+        # exactly the setting that says "never delete", and the consumer
+        # would read the absent key as the default 10 and start pruning a
+        # bucket the author asked it to leave alone.
+        "keep_releases": rt.keep_releases
+    } if rt.type == "bucket" else ({
+        "type": "firebase"
+        "project": rt.project
+        "site": rt.site
+        "target": rt.target if rt.target else None
+        "rewrites": rt.rewrites if rt.rewrites else []
+    } if rt.type == "firebase" else {"type": rt.type})
 }
 
 _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
+    _bad = _frontend_violations(f)
+    assert len(_bad) == 0, "frontend '${f.name}' cannot run on the ${f.runtime.type} runtime:\n  - " + "\n  - ".join(_bad)
+    # Computed BEFORE the literal: a KCL dict key is in scope for the
+    # entries after it, so the "bundle" key would shadow the Bundle.
+    _rc = _runtime_config_resolved(f, bundle)
+    _rc_spec = _runtime_config_spec(f, bundle)
     {
         "name": f.name
         "type": f.type
@@ -774,14 +823,20 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "env_file": f.env_file if f.env_file else None
         "env_vars": [_render_env_var(e) for e in f.env_vars]
         "config": _render_frontend_config(f.config) if f.config else None
-        "deploy": _render_frontend_deploy(f.deploy)
+        "runtime": _render_frontend_runtime(f.runtime)
+        # The static build, on the frontend: every publishing runtime
+        # builds and assembles the same way.
+        "public_dir": _public_dir(f)
+        "base_path": f.base_path if f.base_path else None
+        "bundle": [_render_bundle_dir(b) for b in f.bundle]
+        "cache_control": [_render_cache_rule(r) for r in f.cache_control]
         # The browser's runtime config, as DECLARED (references kept) and as
         # RESOLVED for a frontend forge serves or publishes itself. The Go
         # side layers `runtime_config` over the typed per-env config for
-        # config.js, and a hosted StaticSite publishes `runtime_config_spec`
-        # as the spec's runtimeConfig.
-        "runtime_config": _runtime_config_resolved(f, bundle)
-        "runtime_config_spec": _runtime_config_spec(f, bundle)
+        # config.js, and an OnHosted frontend publishes `runtime_config_spec`
+        # as the StaticSite spec's runtimeConfig.
+        "runtime_config": _rc
+        "runtime_config_spec": _rc_spec
     }
 }
 
@@ -891,19 +946,6 @@ _render_bundle_dir = lambda b: BundleDir -> any {
     }
 }
 
-_render_firebase_hosting = lambda d: FirebaseHosting -> any {
-    {
-        "type": "firebase"
-        "project": d.project
-        "site": d.site
-        "target": d.target if d.target else None
-        "public_dir": d.public_dir
-        "base_path": d.base_path if d.base_path else None
-        "bundle": [_render_bundle_dir(b) for b in d.bundle]
-        "rewrites": d.rewrites if d.rewrites else []
-    }
-}
-
 _render_cache_rule = lambda r: CacheRule -> any {
     {
         "pattern": r.pattern
@@ -920,25 +962,6 @@ _render_static_site_cdn = lambda c: StaticSiteCDN -> any {
         "url_map": c.url_map
         "invalidate": c.invalidate
         "extra_invalidate_paths": c.extra_invalidate_paths
-    }
-}
-
-_render_static_site = lambda d: StaticSite -> any {
-    {
-        "type": "static-site"
-        # Empty on a hosted env: the platform owns the bucket there.
-        "bucket": d.bucket if d.bucket else ""
-        "public_dir": d.public_dir
-        "base_path": d.base_path if d.base_path else None
-        "bundle": [_render_bundle_dir(b) for b in d.bundle]
-        "cache_control": [_render_cache_rule(r) for r in d.cache_control]
-        "cdn": _render_static_site_cdn(d.cdn) if d.cdn else None
-        # keep_releases projects UNCONDITIONALLY, including its 0 ("retain
-        # everything") value. A `if d.keep_releases else None` would erase
-        # exactly the setting that says "never delete", and the consumer
-        # would read the absent key as the default 10 and start pruning a
-        # bucket the author asked it to leave alone.
-        "keep_releases": d.keep_releases
     }
 }
 

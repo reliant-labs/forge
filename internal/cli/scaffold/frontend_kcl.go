@@ -21,7 +21,7 @@ import (
 // bridged in with forge.yaml's literal `port:` (3000 by default), so the port
 // preflight probed 3000, found it taken, and refused to start: the frontend
 // the user had just added could not be run. In staging/prod the declaration
-// is where a deploy target is chosen, and a frontend missing from it is one
+// is where its runtime is bound, and a frontend missing from it is one
 // that ships nowhere without anyone having decided that.
 //
 // The edit is two insertions per env and never a rewrite:
@@ -109,7 +109,7 @@ func frontendPortIdent(frontendName string) string {
 func frontendKCLEntry(frontendName string, dev bool, pinnedPort int) string {
 	var b strings.Builder
 	b.WriteString("    # Added by `forge scaffold frontend " + frontendName + "`. `+=` composes with\n")
-	b.WriteString("    # any frontends declared above; edit freely (a deploy target, dev_runner, ...).\n")
+	b.WriteString("    # any frontends declared above; edit freely (its runtime, dev_runner, ...).\n")
 	b.WriteString("    frontends += [forge.Frontend {\n")
 	fmt.Fprintf(&b, "        name = %q\n", frontendName)
 	fmt.Fprintf(&b, "        path = %q\n", "frontends/"+frontendName)
@@ -118,6 +118,16 @@ func frontendKCLEntry(frontendName string, dev bool, pinnedPort int) string {
 		fmt.Fprintf(&b, "        port = %d\n", pinnedPort)
 	case dev:
 		fmt.Fprintf(&b, "        port = %s\n", frontendPortIdent(frontendName))
+	}
+	// Every frontend binds a runtime (ADR 0002 §6): the dev server in dev;
+	// elsewhere the author's own bucket, whose name forge does not guess —
+	// bucket names are global. `forge env new --check` refuses the
+	// placeholder until it is filled.
+	if dev {
+		b.WriteString("        runtime = forge.OnHost {}\n")
+	} else {
+		b.WriteString("        public_dir = \"out\"\n")
+		b.WriteString("        runtime = forge.OnBucket {bucket = \"REPLACE_ME_BUCKET\"}\n")
 	}
 	b.WriteString("    }]\n")
 	return b.String()

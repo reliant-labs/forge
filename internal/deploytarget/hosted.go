@@ -3,7 +3,7 @@ package deploytarget
 // The HOSTED provider: ship forge's deploy tiers to a control plane.
 //
 // A workload bound to the Hosted runtime (forge.OnHosted), a hosted
-// ManagedDatabase and a bucketless StaticSite are not applied to any cluster
+// ManagedDatabase and an OnHosted frontend are not applied to any cluster
 // forge can see. They are PUBLISHED to the control plane as forge.dev/v1alpha1
 // objects — a Workload CR per hosted workload, jobs included — and the
 // platform validates (ProfileRestricted), renders and runs them. So this

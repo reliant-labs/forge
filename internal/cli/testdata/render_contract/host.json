@@ -6,14 +6,20 @@
     "env": "dev",
     "frontends": [
       {
+        "base_path": null,
+        "bundle": [],
+        "cache_control": [],
         "config": null,
-        "deploy": null,
         "dev_runner": "npm",
         "env_file": null,
         "env_vars": [],
         "name": "web",
         "path": "frontends/web",
         "port": 3000,
+        "public_dir": "dist",
+        "runtime": {
+          "type": "host"
+        },
         "runtime_config": {},
         "runtime_config_spec": {},
         "source": null,

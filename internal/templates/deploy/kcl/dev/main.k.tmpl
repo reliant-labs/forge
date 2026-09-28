@@ -232,12 +232,14 @@ _bundle = forge.Bundle {
     #     fw.Workload {name = "lgtm", runtime = forge.OnCompose {service = "lgtm"}}
     #     fw.Workload {name = "alloy", runtime = forge.OnCompose {service = "alloy"}}
 {{- if .HasFrontend}}
-    # The frontend's dev server, with its port declared above so everything
-    # that must agree on it reads one variable.
+    # The frontend's dev server (forge.OnHost — the same runtime a workload
+    # binds), with its port declared above so everything that must agree on
+    # it reads one variable.
     frontends = [forge.Frontend {
         name = "{{.FrontendName}}"
         path = "frontends/{{.FrontendName}}"
         port = _frontend_port
+        runtime = forge.OnHost {}
     }]
 {{- end}}
     # SECRET VALUES for this env: the gitignored `secrets/{{.EnvName}}.yaml`, a

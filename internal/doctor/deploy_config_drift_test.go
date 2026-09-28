@@ -24,22 +24,21 @@ func frontendRenderJSON(frontends string) string {
 }
 
 // missingShippingFrontend is the case this check exists for: an IN-REPO
-// path, a FirebaseHosting deploy target, and no directory. It claims to
+// path, a forge.OnFirebase runtime, and no directory. It claims to
 // ship and there is nothing to build.
 const missingShippingFrontend = `{"name":"web","type":"vite","path":"frontends/web",
-	"deploy":{"type":"firebase","project":"proj-prod","site":"proj-prod","public_dir":"dist"}}`
+	"runtime":{"type":"firebase","project":"proj-prod","site":"proj-prod"}}`
 
-// missingBuildOnlyFrontend is `deploy = None` — KCL projects an unset
-// deploy block as a literal null, which is what distinguishes
-// "compile-checked only" from "claims to ship".
+// missingBuildOnlyFrontend is on forge.BuildOnly, which makes no shipping
+// claim: "compile-checked only".
 const missingBuildOnlyFrontend = `{"name":"internal-console","type":"nextjs","path":"frontends/internal-console",
-	"deploy":null}`
+	"runtime":{"type":"build-only"}}`
 
 // siblingRepoFrontend is control-plane's reliant-web: a path pointing OUT
 // of this repository, at a checkout whose presence is a property of the
 // machine rather than of this repository's configuration.
 const siblingRepoFrontend = `{"name":"reliant-web","type":"vite","path":"../reliant/web",
-	"deploy":{"type":"firebase","project":"reliant-prod","site":"reliant-prod","public_dir":"dist"}}`
+	"runtime":{"type":"firebase","project":"reliant-prod","site":"reliant-prod"}}`
 
 // projectWithFrontends writes a forge.yaml declaring the named frontends
 // and returns its directory.
@@ -128,7 +127,7 @@ func TestFrontendCode_RemedyIsNotForgeYAML(t *testing.T) {
 	}
 }
 
-// `deploy = None` makes no shipping claim. Missing code there is a
+// forge.BuildOnly makes no shipping claim. Missing code there is a
 // likely oversight — a declaration written ahead of `forge scaffold
 // frontend` — rather than a contradiction, so it must not fail the gate.
 func TestFrontendCode_BuildOnlyIsAWarningNotAnError(t *testing.T) {
@@ -137,7 +136,7 @@ func TestFrontendCode_BuildOnlyIsAWarningNotAnError(t *testing.T) {
 
 	got := CheckFrontendCode(context.Background(), env)
 	if got.Status != StatusWarn {
-		t.Fatalf("Status = %q, want %q — `deploy = None` makes no shipping claim, so "+
+		t.Fatalf("Status = %q, want %q — forge.BuildOnly makes no shipping claim, so "+
 			"missing code must not fail the deployability gate.\nmessage: %s\nevidence: %s",
 			got.Status, StatusWarn, got.Message, got.Evidence)
 	}
@@ -182,7 +181,7 @@ func TestFrontendCode_SourcePinnedFrontendIsBuildable(t *testing.T) {
 	dir := projectWithFrontends(t) // declares no frontends at all
 	pinned := `{"name":"reliant-web","type":"vite","path":"",
 		"source":{"repo":"github.com/reliant-labs/reliant","ref":"v1.7.11"},
-		"deploy":{"type":"firebase","site":"reliant-prod"}}`
+		"runtime":{"type":"firebase","site":"reliant-prod"}}`
 	env := envForDrift(t, dir, renderFromJSON(t, "prod", frontendRenderJSON(pinned)))
 
 	got := CheckFrontendCode(context.Background(), env)
@@ -266,29 +265,34 @@ func TestFrontendCode_ShippingDriftDominatesBuildOnly(t *testing.T) {
 	}
 }
 
-// A cluster-mode frontend ships too — it becomes a real Deployment. The
-// discriminator is named in the finding so the reader knows what the
-// project believes it is shipping.
-func TestFrontendCode_ClusterDeployAlsoShips(t *testing.T) {
-	const clusterFrontend = `{"name":"ops-console","type":"nextjs","path":"frontends/ops-console",
-		"deploy":{"type":"cluster","cluster":"prod","namespace":"ns","registry":"r"}}`
+// A hosted frontend ships too — the platform publishes its build. The
+// runtime is named in the finding so the reader knows what the project
+// believes it is shipping. A dev server ships nothing and only warns.
+func TestFrontendCode_HostedRuntimeAlsoShips(t *testing.T) {
+	const hostedFrontend = `{"name":"site","type":"vite","path":"frontends/site","runtime":{"type":"hosted"}}`
 	env := envForDrift(t, projectWithFrontends(t),
-		renderFromJSON(t, "prod", frontendRenderJSON(clusterFrontend)))
+		renderFromJSON(t, "prod", frontendRenderJSON(hostedFrontend)))
 
 	got := CheckFrontendCode(context.Background(), env)
 	if got.Status != StatusFail {
-		t.Fatalf("Status = %q, want %q — a cluster frontend renders a Deployment; it ships.\nevidence: %s",
+		t.Fatalf("Status = %q, want %q — a hosted frontend publishes its build; it ships.\nevidence: %s",
 			got.Status, StatusFail, got.Evidence)
 	}
-	if !strings.Contains(got.Evidence, "cluster deploy target") {
-		t.Errorf("the finding does not name the deploy type: %s", got.Evidence)
+	if !strings.Contains(got.Evidence, "the hosted runtime") {
+		t.Errorf("the finding does not name the runtime: %s", got.Evidence)
+	}
+
+	const devServer = `{"name":"site","type":"vite","path":"frontends/site","runtime":{"type":"host"}}`
+	env = envForDrift(t, projectWithFrontends(t), renderFromJSON(t, "dev", frontendRenderJSON(devServer)))
+	if got := CheckFrontendCode(context.Background(), env); got.Status != StatusWarn {
+		t.Errorf("a dev-served frontend with no code: Status = %q, want %q", got.Status, StatusWarn)
 	}
 }
 
 // A declaration with no explicit path falls back to the
 // frontends/<name> convention every emitter uses, and is judged there.
 func TestFrontendCode_EmptyPathUsesTheConvention(t *testing.T) {
-	noPath := `{"name":"web","type":"vite","path":"","deploy":{"type":"firebase"}}`
+	noPath := `{"name":"web","type":"vite","path":"","runtime":{"type":"firebase"}}`
 	dir := projectWithFrontends(t)
 	env := envForDrift(t, dir, renderFromJSON(t, "prod", frontendRenderJSON(noPath)))
 

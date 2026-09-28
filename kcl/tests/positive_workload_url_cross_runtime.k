@@ -79,7 +79,7 @@ output = forge.render(forge.Bundle {
         listeners = [forge.GatewayListener {name = "http", port = 8081, protocol = "HTTP"}]
     }]
     http_routes = [forge.HTTPRoute {name = "admin", gateway = "public", listener = "http", service = "admin-api", port = 8080, path = "/admin"}]
-    frontends = [forge.Frontend {name = "web", path = "frontends/web", type = "vite", port = 5173}]
+    frontends = [forge.Frontend {name = "web", path = "frontends/web", type = "vite", port = 5173, runtime = forge.OnHost {}}]
 })
 
 _env = lambda w: str -> {str:} {

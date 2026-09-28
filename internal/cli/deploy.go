@@ -696,7 +696,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		return gerr
 	}
 	// The hosted group (workloads bound to forge.OnHosted, hosted databases,
-	// bucketless static sites) is PUBLISHED, not applied: it rides the
+	// hosted frontends) is PUBLISHED, not applied: it rides the
 	// control plane, after the local apply below. Hosting is per workload,
 	// so the same env's cluster part deploys in the same run.
 	groups, hostedGroups := splitHostedGroups(groups)
@@ -1357,13 +1357,11 @@ func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) e
 // workload, so `forge env deploy prod` ships the Go services, says nothing
 // about the frontend, and exits 0. The user's app is simply not deployed.
 //
-// Two distinct shapes both produce that silence, and both are checked here:
-//
-//   - the frontend is ABSENT from the env's rendered bundle (the scaffolded
-//     staging/prod case — nothing to iterate over, so the dispatch loop
-//     never sees it); and
-//   - the frontend is PRESENT with no deploy block, which dispatch treats
-//     as build-only.
+// The shape that still produces that silence is a frontend ABSENT from the
+// env's rendered bundle: there is nothing to iterate over, so the dispatch
+// loop never sees it. A frontend that IS in the env states its runtime (the
+// Bundle refuses one that does not), so "on forge.OnHost, ships nothing" is
+// a declaration rather than an accident, and is not warned about.
 //
 // ── Why it warns rather than errors ──────────────────────────────────────
 //
@@ -1372,12 +1370,13 @@ func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) e
 // configured and erroring would break them, which is worse than the silence
 // this fixes. A frontend named by --target is likewise not a surprise.
 //
-// The targets named in the hint are REFLECTED from the embedded schema
-// (kcl.DeployTargetsFor("Frontend")), so this text cannot name a target the
+// The runtimes named in the hint are REFLECTED from the embedded schema
+// (kcl.DeployTargetsFor("Frontend")), so this text cannot name a runtime the
 // schema doesn't accept, and it picks up a newly added one for free. That is
 // also why it asks the Frontend union specifically rather than the whole
-// target set: the service-side union is different, and offering a user a
-// service-only target here would be advice that fails to compile.
+// set: OnBucket and OnFirebase are frontend-only, and OnCluster is
+// workload-only, so offering the wrong one would be advice that fails to
+// compile.
 func warnUndeployedFrontends(w io.Writer, cfg *config.ProjectConfig, entities *KCLEntities, envName string, targets []string) {
 	if cfg == nil || len(cfg.Frontends) == 0 {
 		return
@@ -1406,8 +1405,7 @@ func warnUndeployedFrontends(w io.Writer, cfg *config.ProjectConfig, entities *K
 
 	var undeployed []string
 	for _, fe := range cfg.Frontends {
-		r, inEnv := rendered[fe.Name]
-		if inEnv && r.Deploy != nil {
+		if _, inEnv := rendered[fe.Name]; inEnv {
 			continue
 		}
 		undeployed = append(undeployed, fe.Name)
@@ -1416,37 +1414,37 @@ func warnUndeployedFrontends(w io.Writer, cfg *config.ProjectConfig, entities *K
 		return
 	}
 
-	hint := "add a `deploy = forge.<target> { … }` block to the frontend"
+	hint := "declare it as `forge.Frontend {..., runtime = forge.<runtime> { … }}`"
 	if avail, err := kcl.DeployTargetsFor("Frontend"); err == nil && len(avail) > 0 {
-		hint = fmt.Sprintf("add `deploy = forge.%s { … }` (or %s) to the frontend",
-			avail[0], strings.Join(avail[1:], " / "))
-		if len(avail) == 1 {
-			hint = fmt.Sprintf("add `deploy = forge.%s { … }` to the frontend", avail[0])
-		}
+		hint = fmt.Sprintf("declare it as `forge.Frontend {..., runtime = forge.<%s> { … }}`", strings.Join(avail, " | "))
 	}
 
 	fmt.Fprintln(w)
 	for _, name := range undeployed {
-		fmt.Fprintf(w, "warning: frontend %q is declared but has no deploy target for env %q — it will NOT be deployed\n", name, envName)
+		fmt.Fprintf(w, "warning: frontend %q is not declared in env %q — it will NOT be deployed\n", name, envName)
 		fmt.Fprintf(w, "  %s in deploy/kcl/%s/main.k\n", hint, envName)
 		fmt.Fprintln(w, "  see: forge project shapes --kind deploy-target")
 		fmt.Fprintln(w, "  (ignore this if the frontend ships out-of-band — Vercel, a separate pipeline, a static host outside forge)")
 	}
 }
 
-// dispatchFrontendDeploys ships every frontend declaring a first-class
-// deploy target. Today that's exclusively forge.FirebaseHosting: build
-// the frontend (npm install + npm run build) with the frontend's
-// env_vars injected as build-time env, assemble public_dir + any bundle
-// dirs into a staging tree honoring base_path, write firebase.json +
-// .firebaserc, then `firebase deploy`.
+// dispatchFrontendDeploys ships every frontend whose runtime forge publishes
+// to FROM THIS MACHINE, dispatching on runtime.type:
 //
-// Frontends without a deploy block — and frontends whose deploy target
-// isn't Firebase — are skipped, preserving the pre-feature behaviour for
-// every existing project. envCfgKV (the per-env -D config) is layered
-// UNDER the frontend's KCL env_vars so an explicit env_var wins, and is
-// only injected when the env var name was actually declared on the
-// frontend (we don't leak the whole env config into the JS build).
+//	host        the dev server — nothing to ship, skipped
+//	build-only  built (env-injected) so its output exists for a sibling's
+//	            bundle, never shipped
+//	bucket      built, assembled, uploaded to releases/<digest>/ and synced
+//	            to live/ (StaticSiteProvider)
+//	firebase    built, assembled, `firebase deploy` (FirebaseProvider)
+//	hosted      NOT here: published to the control plane by the hosted
+//	            group (buildHostedGroup), from a release artifact
+//	            `forge build <env> --push` pushed
+//
+// envCfgKV (the per-env -D config) is layered UNDER the frontend's KCL
+// env_vars so an explicit env_var wins, and is only injected when the env
+// var name was actually declared on the frontend (we don't leak the whole
+// env config into the JS build).
 func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir, envName string, envCfgKV map[string]string, dryRun bool) error {
 	if entities == nil {
 		return nil
@@ -1476,20 +1474,17 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	var buildOnly []deploytarget.BuildOnlyFrontend
 	var builtDirs []string
 	for _, f := range entities.Frontends {
-		if f.Deploy == nil {
-			// `deploy = None`: build-only. forge builds it (env-injected)
-			// so its output exists on disk before any shipping frontend
-			// assembles a bundle that references it. Non-static deploy
-			// targets remain a no-op (skipped below).
+		switch f.Runtime.Type {
+		case FrontendRuntimeBuildOnly:
+			// Built (env-injected) so its output exists on disk before
+			// any shipping frontend assembles a bundle that references it.
 			if err := checkDeployableFrontendMock(f); err != nil {
 				return err
 			}
 			builtDirs = append(builtDirs, f.Path)
 			buildOnly = append(buildOnly, frontendToBuildOnly(f))
-			continue
-		}
-		switch {
-		case f.Deploy.Type == "firebase" && f.Deploy.Firebase != nil:
+
+		case FrontendRuntimeFirebase:
 			if err := checkDeployableFrontendMock(f); err != nil {
 				return err
 			}
@@ -1498,7 +1493,7 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			fb.RuntimeConfigJS = runtimeConfigs[f.Name]
 			fes = append(fes, fb)
 
-		case f.Deploy.Type == frontendDeployStaticSite && f.Deploy.StaticSite != nil:
+		case FrontendRuntimeBucket:
 			if err := checkDeployableFrontendMock(f); err != nil {
 				return err
 			}
@@ -1523,9 +1518,9 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	// any FirebaseHosting frontend assembles a bundle referencing it.
 	if len(buildOnly) > 0 {
 		if !dryRun {
-			fmt.Printf("\nBuilding %d build-only frontend(s) (deploy = None)...\n", len(buildOnly))
+			fmt.Printf("\nBuilding %d build-only frontend(s) (forge.BuildOnly)...\n", len(buildOnly))
 		} else {
-			fmt.Printf("\nBuild-only frontend(s) (deploy = None): %d\n", len(buildOnly))
+			fmt.Printf("\nBuild-only frontend(s) (forge.BuildOnly): %d\n", len(buildOnly))
 		}
 		provider := deploytarget.FirebaseProvider{ProjectDir: projectDir}
 		if err := provider.BuildOnly(ctx, buildOnly, dryRun); err != nil {
@@ -1569,42 +1564,32 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	return dispatchDeployGroups(ctx, registry, groups)
 }
 
-// hasShippableFrontend reports whether any rendered frontend declares a
-// deploy target forge ships OUT OF BAND — Firebase Hosting or a static
-// site. Used to recognise a frontend-only env (skip the cluster
-// pipeline) and gates nothing else.
-//
-// Deliberately excludes a "cluster" frontend: that one renders a real
-// Deployment and rides the normal k8s apply path, so an env containing
-// one is NOT frontend-only and must not skip the cluster pipeline.
+// hasShippableFrontend reports whether any rendered frontend is bound to a
+// runtime forge ships OUT OF BAND from this machine — a bucket or Firebase.
+// Used to recognise a frontend-only env (skip the cluster pipeline) and
+// gates nothing else. A hosted frontend ships through the control plane, a
+// build-only one ships nowhere, and a host one is the dev server.
 func hasShippableFrontend(e *KCLEntities) bool {
 	if e == nil {
 		return false
 	}
 	for _, f := range e.Frontends {
-		if f.Deploy == nil {
-			continue
-		}
-		if f.Deploy.Type == "firebase" || f.Deploy.Type == frontendDeployStaticSite {
+		if f.Runtime.Ships() {
 			return true
 		}
 	}
 	return false
 }
 
-// frontendToFirebase maps a rendered FrontendEntity (with a Firebase
-// deploy block) onto the deploytarget.FirebaseFrontend the provider
+// frontendToFirebase maps a rendered FrontendEntity on forge.OnFirebase
+// onto the deploytarget.FirebaseFrontend the provider
 // consumes. The frontend's env_vars become the build-time env injected
 // into the JS build (NEXT_PUBLIC_* / VITE_*); only inline Value entries
 // are forwarded — secret/configmap-projected vars have no host build-time
 // value to inject.
 func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
-	fb := f.Deploy.Firebase
+	fb := f.Runtime.Firebase
 	buildEnv := frontendBuildEnv(f)
-	bundles := make([]deploytarget.BundleDirSpec, 0, len(fb.Bundle))
-	for _, b := range fb.Bundle {
-		bundles = append(bundles, deploytarget.BundleDirSpec{Src: b.Src, Dest: b.Dest})
-	}
 	return deploytarget.FirebaseFrontend{
 		Name:      f.Name,
 		Path:      f.Path,
@@ -1614,35 +1599,51 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 			Project:   fb.Project,
 			Site:      fb.Site,
 			Target:    fb.Target,
-			PublicDir: fb.PublicDir,
-			BasePath:  fb.BasePath,
-			Bundle:    bundles,
+			PublicDir: f.PublicDir,
+			BasePath:  f.BasePath,
+			Bundle:    frontendBundleSpecs(f),
 			Rewrites:  fb.Rewrites,
 		},
 	}
 }
 
-// frontendToStaticSite maps a rendered FrontendEntity (with a StaticSite
-// deploy block) onto the deploytarget.StaticSiteFrontend the provider
-// consumes. The build half is IDENTICAL to frontendToFirebase — same
-// path, same dev runner, same frontendBuildEnv — because the two targets
-// share the whole build-and-assemble step; only the Spec differs.
-func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
-	ss := f.Deploy.StaticSite
-	bundles := make([]deploytarget.BundleDirSpec, 0, len(ss.Bundle))
-	for _, b := range ss.Bundle {
+// frontendBundleSpecs is the frontend's bundle dirs in the provider's shape.
+func frontendBundleSpecs(f FrontendEntity) []deploytarget.BundleDirSpec {
+	bundles := make([]deploytarget.BundleDirSpec, 0, len(f.Bundle))
+	for _, b := range f.Bundle {
 		bundles = append(bundles, deploytarget.BundleDirSpec{Src: b.Src, Dest: b.Dest})
 	}
-	rules := make([]deploytarget.CacheRuleSpec, 0, len(ss.CacheControl))
-	for _, r := range ss.CacheControl {
+	return bundles
+}
+
+// frontendToStaticSite maps a rendered FrontendEntity onto the
+// deploytarget.StaticSiteFrontend the static-site build-and-assemble half
+// consumes. The build half is IDENTICAL to frontendToFirebase — same path,
+// same dev runner, same frontendBuildEnv, the frontend's own public_dir /
+// base_path / bundle — because every static runtime shares it. Only the
+// bucket placement differs: it comes from forge.OnBucket, and is empty for
+// a hosted frontend (the control plane owns its bucket), which is built by
+// this same projection and never uploaded from here.
+func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
+	rules := make([]deploytarget.CacheRuleSpec, 0, len(f.CacheControl))
+	for _, r := range f.CacheControl {
 		rules = append(rules, deploytarget.CacheRuleSpec{Pattern: r.Pattern, CacheControl: r.CacheControl})
 	}
-	var cdn *deploytarget.StaticSiteCDNSpec
-	if ss.CDN != nil {
-		cdn = &deploytarget.StaticSiteCDNSpec{
-			URLMap:               ss.CDN.URLMap,
-			Invalidate:           ss.CDN.Invalidate,
-			ExtraInvalidatePaths: ss.CDN.ExtraInvalidatePaths,
+	spec := deploytarget.StaticSiteSpec{
+		PublicDir:    f.PublicDir,
+		BasePath:     f.BasePath,
+		Bundle:       frontendBundleSpecs(f),
+		CacheControl: rules,
+	}
+	if b := f.Runtime.Bucket; b != nil {
+		spec.Bucket = b.Bucket
+		spec.KeepReleases = b.KeepReleases
+		if b.CDN != nil {
+			spec.CDN = &deploytarget.StaticSiteCDNSpec{
+				URLMap:               b.CDN.URLMap,
+				Invalidate:           b.CDN.Invalidate,
+				ExtraInvalidatePaths: b.CDN.ExtraInvalidatePaths,
+			}
 		}
 	}
 	return deploytarget.StaticSiteFrontend{
@@ -1650,33 +1651,24 @@ func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
 		Path:      f.Path,
 		DevRunner: f.DevRunner,
 		BuildEnv:  frontendBuildEnv(f),
-		Spec: deploytarget.StaticSiteSpec{
-			Bucket:       ss.Bucket,
-			PublicDir:    ss.PublicDir,
-			BasePath:     ss.BasePath,
-			Bundle:       bundles,
-			CacheControl: rules,
-			CDN:          cdn,
-			KeepReleases: ss.KeepReleases,
-		},
+		Spec:      spec,
 	}
 }
 
-// frontendToBuildOnly maps a rendered FrontendEntity with NO deploy
-// block (`deploy = None`) onto the deploytarget.BuildOnlyFrontend the
-// build-only path consumes. Like frontendToFirebase, only inline Value
-// env_vars are forwarded as build-time env — secret/configmap-projected
-// vars have no host build-time value. PublicDir is inferred from the
-// frontend type (nextjs static export → "out", vite → "dist") so the
-// dry-run plan can report the emitted directory; the build itself
-// doesn't depend on it.
+// frontendToBuildOnly maps a rendered FrontendEntity on forge.BuildOnly
+// onto the deploytarget.BuildOnlyFrontend the build-only path consumes.
+// Like frontendToFirebase, only inline Value env_vars are forwarded as
+// build-time env — secret/configmap-projected vars have no host build-time
+// value. PublicDir is the frontend's (the render resolves the type's
+// convention when it is undeclared), so the dry-run plan reports the
+// emitted directory.
 func frontendToBuildOnly(f FrontendEntity) deploytarget.BuildOnlyFrontend {
 	return deploytarget.BuildOnlyFrontend{
 		Name:      f.Name,
 		Path:      f.Path,
 		DevRunner: f.DevRunner,
 		BuildEnv:  frontendBuildEnv(f),
-		PublicDir: inferPublicDir(f.Type),
+		PublicDir: f.PublicDir,
 	}
 }
 
@@ -1747,22 +1739,6 @@ func gateFrontendEnvFiles(projectDir string, feDirs []string) error {
 	}
 	fmt.Print(res.FormatText())
 	return fmt.Errorf("a frontend .env* file hard-codes a forge-owned variable; move it to the frontend's KCL config/env_vars and delete the dotenv line (see the findings above)")
-}
-
-// inferPublicDir returns the conventional build-output dir for a frontend
-// type: Next.js static export emits "out", Vite emits "dist". Used only
-// for build-only dry-run reporting; an unknown type yields "" (no
-// emitted-dir line). Accepts both the KCL Frontend.type spellings
-// ("vite") and the scaffold-kind spellings ("vite-spa").
-func inferPublicDir(frontendType string) string {
-	switch strings.ToLower(strings.TrimSpace(frontendType)) {
-	case "vite", "vite-spa":
-		return "dist"
-	case "nextjs", "":
-		return "out"
-	default:
-		return ""
-	}
 }
 
 // validateDeployTargets checks every name passed to --target against

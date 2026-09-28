@@ -68,6 +68,14 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 			} else if strings.Contains(out, "_web_frontend_port") {
 				t.Errorf("%s is not a dev env; it must not get a dev-server port", tc.env)
 			}
+			// Every frontend binds a runtime; a non-dev bucket is never guessed.
+			wantRuntime := `runtime = forge.OnBucket {bucket = "REPLACE_ME_BUCKET"}`
+			if dev {
+				wantRuntime = "runtime = forge.OnHost {}"
+			}
+			if !strings.Contains(out, wantRuntime) {
+				t.Errorf("%s: the spliced frontend binds no runtime (want %s):\n%s", tc.env, wantRuntime, out)
+			}
 
 			// Idempotent: a second scaffold of the same name is a no-op.
 			if again, st := spliceFrontendIntoEnvKCL(out, "acme", tc.env, "web", dev, 0); st != frontendKCLAlreadyDeclared || again != out {

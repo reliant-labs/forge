@@ -472,7 +472,7 @@ func TestDestinationOf(t *testing.T) {
 		"cluster": {&KCLEntities{Workloads: []WorkloadEntity{clusterWL("a", "k3d-x", "ns"), clusterWL("b", "k3d-x", "ns")}}, "cluster"},
 		"compose": {&KCLEntities{Workloads: []WorkloadEntity{composeWL("pg", "docker-compose.yml")}}, "compose"},
 		"host":    {&KCLEntities{Workloads: []WorkloadEntity{hostWL("api")}}, "host"},
-		"static":  {&KCLEntities{Frontends: []FrontendEntity{{Deploy: &FrontendDeployEntity{Type: "firebase"}}}}, "static"},
+		"static":  {&KCLEntities{Frontends: []FrontendEntity{{Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase}}}}, "static"},
 		"mixed":   {&KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{hostedWL("api"), composeWL("pg", "docker-compose.yml")}}, "mixed"},
 		"empty":   {&KCLEntities{}, "host"},
 	}

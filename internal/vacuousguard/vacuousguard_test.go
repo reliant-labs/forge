@@ -40,16 +40,6 @@ var quarantine = []quarantined{
 		Key:  "internal/cli/frontend_envvars_test.go::TestFrontendEnvVarsRoundTrip",
 		Cost: "Skips when kcl/schema.k — tracked in this repo — is missing. Owner: internal/cli.",
 	},
-	{
-		Rule: RuleDeadSkip,
-		Key:  "internal/cli/frontend_firebase_render_test.go::TestFrontendFirebaseDeployRoundTrip",
-		Cost: "Same stat of kcl/schema.k. Owner: internal/cli.",
-	},
-	{
-		Rule: RuleDeadSkip,
-		Key:  "internal/cli/frontend_firebase_render_test.go::TestFrontendDeployNoneRendersBuildOnly",
-		Cost: "Same stat of kcl/schema.k. Owner: internal/cli.",
-	},
 
 	{
 		Rule: RuleDeadSkip,

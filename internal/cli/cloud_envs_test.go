@@ -350,7 +350,7 @@ func TestHostedEnvKindOf(t *testing.T) {
 	}{
 		{"no control plane", &KCLEntities{Workloads: []WorkloadEntity{host}}, "", destinationHost},
 		{"hosted workload", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{backend}}, deploytarget.HostedEnvPersistent, destinationHosted},
-		{"bucketless static site", &KCLEntities{ControlPlane: cp, Frontends: []FrontendEntity{{Name: "web", Deploy: &FrontendDeployEntity{Type: frontendDeployStaticSite, StaticSite: &StaticSiteDeploy{}}}}}, deploytarget.HostedEnvPersistent, destinationHosted},
+		{"hosted frontend", &KCLEntities{ControlPlane: cp, Frontends: []FrontendEntity{{Name: "web", Runtime: FrontendRuntime{Type: FrontendRuntimeHosted}}}}, deploytarget.HostedEnvPersistent, destinationHosted},
 		{"hosted database", &KCLEntities{ControlPlane: cp, Databases: []DatabaseEntity{{Name: "db", Runtime: RuntimeHosted}}}, deploytarget.HostedEnvPersistent, destinationHosted},
 		{"host only", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{host}}, deploytarget.HostedEnvLocal, destinationHost},
 		{"host + compose", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{host, composeWL("pg", "docker-compose.yml")}}, deploytarget.HostedEnvLocal, destinationMixed},

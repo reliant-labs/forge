@@ -62,8 +62,9 @@ type envDestination struct {
 //
 // Every deployable thing votes for where it runs: each workload by its own
 // runtime (hosted, cluster, compose, host), each database by its runtime,
-// host infra for "host", each frontend by its deploy target (a bucketless
-// StaticSite is hosted, other static sites and Firebase are "static"). One
+// host infra for "host", each frontend by its runtime (OnHosted is hosted,
+// OnBucket and OnFirebase are "static"; a dev server or a build-only
+// frontend deploys nowhere). One
 // kind is that kind, several are "mixed". Hosted is one vote among them, not
 // an env mode: an env whose every workload is hosted is "hosted", and an env
 // that runs one workload on the platform and another on a cluster is "mixed".
@@ -112,10 +113,9 @@ func destinationKindSet(e *KCLEntities) map[string]bool {
 	}
 	for _, f := range e.Frontends {
 		switch {
-		case f.Deploy == nil:
 		case frontendIsHosted(f):
 			kinds[destinationHosted] = true
-		case f.Deploy.Type == "firebase", f.Deploy.Type == frontendDeployStaticSite:
+		case f.Runtime.Ships():
 			kinds[destinationStatic] = true
 		}
 	}

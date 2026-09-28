@@ -1950,13 +1950,17 @@ schema RemoteBuild(Build):
         timeout_seconds >= 60, "RemoteBuild.timeout_seconds must be at least 60"
 
 # ---------------------------------------------------------------------------
-# Frontend deploy union.
+# Frontend runtimes, and the static-build facts they share.
 #
-# Frontends have their own deploy discriminator (parallel to the Service
-# one) because their deploy targets differ: a static export ships to a
-# CDN / object store / Firebase Hosting / Vercel, not a Deployment.
-# FirebaseHosting, StaticSite and (future) Vercel share the `type`
-# discriminator so the consumer dispatches on `deploy.type`.
+# A frontend binds a runtime exactly as a workload does (ADR 0002 §6):
+# `forge.OnHost` and `forge.OnHosted` are the SAME schemas a workload binds,
+# and `forge.OnBucket` / `forge.OnFirebase` are the two static-hosting
+# runtimes only a frontend has. Each states its `type`, which is what the
+# JSON contract dispatches on (output.frontends[].runtime.type).
+#
+# The facts about the static BUILD — `public_dir`, `base_path`, `bundle`,
+# `cache_control` — are true on every static runtime, so they live on
+# forge.Frontend itself and are never re-stated per runtime.
 # ---------------------------------------------------------------------------
 
 schema BundleDir:
@@ -1971,81 +1975,23 @@ schema BundleDir:
       * `src`  — directory on disk holding the pre-built static files
                  (relative paths resolve against the project root). It is
                  NOT built by forge; the caller is expected to have run
-                 the sibling build already (or to wire it via a separate
-                 forge.Service `build = forge.ShellBuild {...}`).
+                 the sibling build already (or to wire it as a workload
+                 with a `forge.ShellBuild` bound to `forge.BuildOnly {}`).
       * `dest` — sub-path under the site's public root to copy `src`
                  into. Empty (the default) means the site root. A leading
                  "/" is tolerated and stripped.
 
-    Target-NEUTRAL: assembling a bundle is the same operation whether the
-    tree ends up on Firebase Hosting or in an object-store bucket, so
-    both deploy variants accept this one schema.
+    Runtime-NEUTRAL: assembling a bundle is the same operation whether the
+    tree is published to the control plane, an object-store bucket or
+    Firebase Hosting, so it is a Frontend field, honoured by every static
+    runtime (and refused on forge.OnHost, whose dev server assembles
+    nothing).
     """
     src: str
     dest: str = ""
 
     check:
         src, "BundleDir.src is required"
-
-schema FirebaseBundleDir(BundleDir):
-    """Deprecated alias for BundleDir, kept so existing `main.k` files
-    that name it keep rendering. It adds nothing: a FirebaseBundleDir IS
-    a BundleDir and is accepted anywhere one is.
-
-    The concept was never Firebase-specific — it is "an extra pre-built
-    static dir to assemble into the site" — and the name became actively
-    misleading once StaticSite started consuming the same shape. Prefer
-    `forge.BundleDir` in new code; this alias will be removed.
-    """
-
-schema FirebaseHosting:
-    """Deploy a frontend's static build output to Firebase Hosting.
-
-    forge builds the frontend (`<dev_runner> install` + `npm run build`)
-    with the frontend's `env_vars` injected as build-time environment
-    (NEXT_PUBLIC_* / VITE_*), assembles `public_dir` (plus any `bundle`
-    dirs) into a staging directory honoring `base_path`, writes a
-    firebase.json + .firebaserc targeting `project`/`site`, then runs
-    `firebase deploy --project <project> --only hosting:<target>`.
-
-    Fields:
-      * `project`    — Firebase / GCP project id (e.g. reliant-prod-475814).
-                       Per-env values are supplied either by declaring a
-                       distinct deploy ref per env's main.k or via `-D`.
-      * `site`       — Firebase Hosting site id (e.g. reliant-prod).
-      * `target`     — hosting target alias used in `--only hosting:<target>`
-                       and in `firebase target:apply`. Defaults to `site`.
-      * `public_dir` — the frontend build's static output directory,
-                       relative to the frontend `path` (e.g. "out" for a
-                       Next.js static export, "dist" for Vite).
-      * `base_path`  — sub-path under the hosting site root to mount the
-                       frontend's own output under (e.g. "/admin"). Empty
-                       means the site root. Mirrors Frontend base_path so
-                       the deployed URL matches the dev mount.
-      * `bundle`     — extra pre-built static dirs assembled into the same
-                       site (see FirebaseBundleDir). Use to co-host a
-                       sibling SPA at the root with this frontend under
-                       base_path.
-      * `rewrites`   — Firebase Hosting rewrites passed through verbatim
-                       into the generated firebase.json `hosting.rewrites`
-                       (SPA fallback, etc.). Empty omits the key.
-    """
-    type: str = "firebase"
-    project: str
-    site: str
-    target?: str
-    public_dir: str
-    base_path?: str
-    bundle: [BundleDir] = []
-    rewrites: [{str: any}] = []
-
-    check:
-        type == "firebase", "FirebaseHosting.type must be 'firebase'"
-        project, "FirebaseHosting.project is required (Firebase/GCP project id)"
-        site, "FirebaseHosting.site is required (Firebase Hosting site id)"
-        public_dir, "FirebaseHosting.public_dir is required (frontend build output dir, e.g. 'out' or 'dist')"
-        base_path == Undefined or base_path.startswith("/"), \
-            "FirebaseHosting.base_path must start with '/' (e.g. '/admin'); omit for the site root"
 
 schema CacheRule:
     """One Cache-Control header applied to the objects a glob matches.
@@ -2129,17 +2075,16 @@ schema StaticSiteCDN:
         all p in extra_invalidate_paths { p.startswith("/") }, \
             "StaticSiteCDN.extra_invalidate_paths entries must be absolute site paths starting with '/'"
 
-schema StaticSite:
-    """Deploy a frontend's static build output to an object-storage
-    bucket, optionally behind a CDN.
+schema OnBucket:
+    """A frontend's static build published to YOUR object-storage bucket,
+    optionally behind a CDN you operate.
 
-    This is the same build-and-assemble contract as FirebaseHosting —
     forge builds the frontend (`<dev_runner> install` + `npm run build`)
-    with the frontend's `env_vars` injected as build-time environment,
-    assembles `public_dir` plus any `bundle` dirs into one tree honoring
+    with its `env_vars` injected as build-time environment, assembles the
+    frontend's `public_dir` plus any `bundle` dirs into one tree honoring
     `base_path`, and writes this environment's runtime config document
-    into it last — differing only in where the assembled tree goes and
-    what happens to the edge cache afterwards.
+    into it last. Those are Frontend fields: they are the same on every
+    static runtime. This runtime states only WHERE the tree goes.
 
     WHAT A DEPLOY ACTUALLY WRITES. The assembled tree is uploaded TWICE,
     to two different prefixes, and the distinction is the whole design:
@@ -2154,20 +2099,10 @@ schema StaticSite:
     That split is what makes PROMOTION real rather than aspirational: a
     promotion re-syncs `live/` from a release prefix still sitting in the
     bucket. It re-points at an EXISTING digest and never rebuilds, so it
-    cannot produce different bytes than the release that was tested. See
-    `keep_releases` for the retention rule.
+    cannot produce different bytes than the release that was tested.
 
     Fields:
-      * `bucket`        — target bucket. `gs://name` or a bare `name`.
-      * `public_dir`    — the frontend build's static output directory,
-                          relative to the frontend `path` ("out" for a
-                          Next.js static export, "dist" for Vite).
-      * `base_path`     — sub-path under the site root to mount the
-                          frontend's own output under ("/admin"). Empty
-                          means the site root. Mirrors FirebaseHosting.
-      * `bundle`        — extra pre-built static dirs assembled into the
-                          same site (see BundleDir).
-      * `cache_control` — ordered Cache-Control rules (see CacheRule).
+      * `bucket`        — REQUIRED. `gs://name` or a bare `name`.
       * `cdn`           — the CDN in front of the bucket, and the
                           per-deploy invalidation policy (see
                           StaticSiteCDN). Omit for a bare bucket.
@@ -2175,21 +2110,17 @@ schema StaticSite:
 
     DELIBERATELY ABSENT, and this is a design decision rather than an
     omission: there is no field here for bucket creation, IAM, public-ACL
-    toggles, CORS, versioning, or a raw provider-flag passthrough. A
-    hosted tier that must reject a field is a tier maintaining an
-    allowlist that drifts from the schema; a field that does not exist
-    needs no allowlist, and KCL rejects it for free with a message
-    naming the schema. forge PUBLISHES to a bucket it is pointed at; it
-    does not own that bucket's existence or its access policy.
+    toggles, CORS, versioning, or a raw provider-flag passthrough. forge
+    PUBLISHES to a bucket it is pointed at; it does not own that bucket's
+    existence or its access policy. A field that does not exist needs no
+    allowlist, and KCL rejects it for free with a message naming the
+    schema.
+
+    The platform-hosted counterpart is `forge.OnHosted {}`, which has no
+    bucket field at all: the control plane owns the bucket and the CDN.
     """
-    type: str = "static-site"
-    # Self-hosted: REQUIRED, your own bucket. Hosted (the Bundle declares
-    # control_plane): REFUSED — the platform owns the bucket and the prefix.
-    bucket?: str
-    public_dir: str
-    base_path?: str
-    bundle: [BundleDir] = []
-    cache_control: [CacheRule] = []
+    type: "bucket" = "bucket"
+    bucket: str
     cdn?: StaticSiteCDN
 
     # How many archived `releases/<digest>/` prefixes to retain, newest
@@ -2207,14 +2138,46 @@ schema StaticSite:
     keep_releases: int = 10
 
     check:
-        type == "static-site", "StaticSite.type must be 'static-site'"
-        not bucket or not bucket.startswith("gs://") or len(bucket) > 5, \
-            "StaticSite.bucket 'gs://' has no bucket name after the scheme"
-        public_dir, "StaticSite.public_dir is required (frontend build output dir, e.g. 'out' or 'dist')"
-        base_path == Undefined or base_path.startswith("/"), \
-            "StaticSite.base_path must start with '/' (e.g. '/admin'); omit for the site root"
+        bucket, "OnBucket.bucket is required: the bucket this frontend publishes to (gs://name or a bare name). For platform static hosting, bind forge.OnHosted {} instead"
+        not bucket.startswith("gs://") or len(bucket) > 5, \
+            "OnBucket.bucket 'gs://' has no bucket name after the scheme"
         keep_releases == 0 or keep_releases >= 2, \
-            "StaticSite.keep_releases must be 0 (retain everything) or at least 2 — retaining fewer than the live release plus its predecessor would delete assets pages loaded moments ago still fetch"
+            "OnBucket.keep_releases must be 0 (retain everything) or at least 2 — retaining fewer than the live release plus its predecessor would delete assets pages loaded moments ago still fetch"
+
+schema OnFirebase:
+    """A frontend's static build published to Firebase Hosting.
+
+    The build and the assembly are the Frontend's (`public_dir`,
+    `base_path`, `bundle`), exactly as on every static runtime. forge then
+    writes a firebase.json + .firebaserc targeting `project`/`site` and
+    runs `firebase deploy --project <project> --only hosting:<target>`.
+
+    Fields:
+      * `project`  — Firebase / GCP project id (e.g. reliant-prod-475814).
+      * `site`     — Firebase Hosting site id (e.g. reliant-prod).
+      * `target`   — hosting target alias used in `--only hosting:<target>`
+                     and in `firebase target:apply`. Defaults to `site`.
+      * `rewrites` — Firebase Hosting rewrites passed through verbatim
+                     into the generated firebase.json `hosting.rewrites`
+                     (SPA fallback, etc.). Empty omits the key.
+
+    Firebase owns the cache headers and the CDN, so a frontend on this
+    runtime declares no `cache_control` (refused at render).
+    """
+    type: "firebase" = "firebase"
+    project: str
+    site: str
+    target?: str
+    rewrites: [{str: any}] = []
+
+    check:
+        project, "OnFirebase.project is required (Firebase/GCP project id)"
+        site, "OnFirebase.site is required (Firebase Hosting site id)"
+
+# Where a frontend runs. OnHost, OnHosted and BuildOnly are the workload
+# runtimes of the same name; OnBucket and OnFirebase are the static-hosting
+# runtimes only a frontend has. There is no default (ADR 0002 §6).
+type FrontendRuntime = OnHost | OnHosted | OnBucket | OnFirebase | BuildOnly
 
 # ---------------------------------------------------------------------------
 # Typed entities — each captures ONE orchestration shape.
@@ -2367,41 +2330,54 @@ schema WorkloadURL(tiers.WorkloadURLRef):
         name == workload, "WorkloadURL: set `workload` only; `name` is derived from it"
 
 schema Frontend:
-    """A web or mobile frontend.
+    """A web or mobile frontend: a dev server, or a static build forge
+    publishes. WHERE it runs is its `runtime`, chosen per frontend exactly
+    as a workload's is (ADR 0002 §6). There is no default: a frontend with
+    no runtime is a render error naming it.
 
-    Dev runs on the host via `<dev_runner> dev`. Production deploys
-    vary by `type`:
-      * nextjs — server-rendered, ships as a container.
-      * vite   — static SPA, deploys to CDN / object store.
-      * rn     — React Native; no in-cluster deploy.
+      * `forge.OnHost {}`     — the dev server, `<dev_runner> dev` on
+                                `port`, with `env_file` + `env_vars`.
+                                `forge env up` runs it; a deploy ships
+                                nothing.
+      * `forge.OnHosted {}`   — platform static hosting. The build is
+                                published as a release artifact and a
+                                StaticSite CR; the control plane owns the
+                                bucket and the CDN, and resolves
+                                `runtime_config` references itself.
+                                Requires `Bundle.control_plane`.
+      * `forge.OnBucket {bucket, cdn?, keep_releases}`
+                              — YOUR object-storage bucket
+                                (`releases/<digest>/` + `live/`).
+      * `forge.OnFirebase {project, site, target?, rewrites}`
+                              — Firebase Hosting.
+      * `forge.BuildOnly {}`  — built by `forge env deploy`, never shipped:
+                                its output exists on disk for a sibling
+                                frontend's `bundle` to assemble.
 
-    The optional `deploy` block declares a first-class production deploy
-    target the same way Service.deploy does:
+    OnHost and OnHosted are the SAME schemas a workload binds; the lowering
+    refuses the workload-only fields (`runner`, `listen_ports`, ...) on a
+    frontend, naming them.
 
-      * FirebaseHosting — static export → Firebase Hosting (public CDN).
-      * StaticSite      — static export → an object-storage bucket,
-                          optionally behind a CDN. Same build-and-assemble
-                          contract as FirebaseHosting; differs in where
-                          the tree lands, and it archives every deploy
-                          under a content digest so promotion
-                          re-points at existing bytes rather
-                          than rebuilding.
-
-    Omit `deploy` to keep the legacy behaviour — the frontend is
-    dev-served / built only, never auto-shipped by `forge env deploy`.
+    The STATIC BUILD facts — `public_dir`, `base_path`, `bundle`,
+    `cache_control` — are the frontend's own, true on every runtime that
+    publishes a build, and never re-stated per runtime. A frontend can
+    therefore be declared once and bound per env (`_web | {runtime =
+    forge.OnHost {}}` in dev, `forge.OnBucket {...}` in prod). `cache_control`
+    is serving policy and is honoured only where forge sets the headers
+    (OnBucket); everywhere else it is refused rather than dropped.
 
     A frontend that ships as a CONTAINER (a server-rendered Next.js app,
     an internal console) is a process forge runs, so it is a workload:
     `fw.Workload {build = forge.DockerBuild {dockerfile =
     "frontends/<n>/Dockerfile"}, ports = [...], runtime = forge.OnCluster
     {...}}`. It gets the same probes, drain and rollout policy as any
-    other workload. This schema is the dev server plus static hosting.
-
-    A StaticSite WITHOUT a `bucket` is HOSTED (published to the control
-    plane, which owns the bucket and CDN). With a bucket it is yours.
+    other workload.
     """
     name: str
     type: str = "nextjs"
+    # WHERE it runs. Required by the time the env renders it (the Bundle
+    # names every unbound frontend).
+    runtime?: FrontendRuntime
     # The frontend's directory in THIS repository. Mutually exclusive
     # with `source`: exactly one of the two must be set. Optional in the
     # schema (rather than required) only so `source` can replace it — a
@@ -2420,17 +2396,34 @@ schema Frontend:
     # declaratively — e.g. forge.resolve_port(...) for a host port — so the
     # dev URLs a frontend needs live in KCL, not a launcher script.
     #
-    # For a `deploy = forge.FirebaseHosting { ... }` frontend these are
-    # ALSO injected as build-time env (NEXT_PUBLIC_* / VITE_*) so per-env
-    # config lives in KCL, not hardcoded in CI.
+    # On a runtime that publishes a build these are ALSO injected as
+    # build-time env (NEXT_PUBLIC_* / VITE_*) so per-env config lives in
+    # KCL, not hardcoded in CI.
     env_vars: [EnvVar] = []
     # Typed, well-known knobs (mock mode, api_url, otel_endpoint,
     # environment, telemetry) forge maps to framework-specific env var
     # names and ENFORCES — esp. mock on the build path. Rendered into the
     # SAME env stream as env_vars; an explicit env_vars entry wins on the
-    # same variable (forge warns). Additive — omit for the legacy
-    # env_vars-only shape. See FrontendConfig.
+    # same variable (forge warns). See FrontendConfig.
     config?: FrontendConfig
+
+    # --- The static build (every runtime that publishes one) ---
+    # The build's static output directory, relative to the frontend's
+    # code ("out" for a Next.js static export, "dist" for Vite). Unset:
+    # the type's conventional one ("out" for nextjs, "dist" otherwise).
+    public_dir?: str
+    # Sub-path under the site root the frontend's own output is mounted
+    # at ("/admin"). Unset: the site root. On OnHost it is the dev mount,
+    # so a forge.WorkloadURL to the dev server carries it too.
+    base_path?: str
+    # Extra pre-built static dirs assembled into the same site (see
+    # BundleDir): a sibling SPA at the root with this frontend under
+    # base_path. Ignored on OnHost (the dev server assembles nothing).
+    bundle: [BundleDir] = []
+    # Ordered Cache-Control rules (see CacheRule). OnBucket only: forge
+    # sets object headers there and nowhere else.
+    cache_control: [CacheRule] = []
+
     # The browser's runtime configuration document — what the bundle reads
     # as window.__FORGE_CONFIG__ — declared per environment:
     #
@@ -2443,14 +2436,13 @@ schema Frontend:
     # the typed per-env config (deploy/kcl/<env>/config.k) on the same key,
     # so the typed schema still validates and defaults it in the bundle.
     #
-    # Where it lands: a HOSTED StaticSite publishes it as the spec's
-    # `runtimeConfig`, and the control plane writes config.js after every
-    # sync, so the release artifact carries NO config.js and promotes across
-    # environments unchanged. Every other env resolves references at render
-    # time and writes config.js itself (the dev server's public/, a
-    # Firebase / own-bucket deploy).
+    # Where it lands: an OnHosted frontend publishes it as the StaticSite
+    # spec's `runtimeConfig` with references KEPT, and the control plane
+    # writes config.js after every sync, so the release artifact carries NO
+    # config.js and promotes across environments unchanged. Every other
+    # runtime resolves references at render time and forge writes config.js
+    # itself (the dev server's public/, a Firebase or own-bucket deploy).
     runtime_config: {str:str | WorkloadURL} = {}
-    deploy?: FirebaseHosting | StaticSite
 
     check:
         name, "Frontend.name is required"
@@ -2466,6 +2458,10 @@ schema Frontend:
         dev_runner in ["npm", "pnpm", "yarn"], \
             "Frontend.dev_runner must be 'npm' | 'pnpm' | 'yarn'"
         port > 0 and port < 65536, "Frontend.port must be 1..65535"
+        not public_dir or not public_dir.startswith("/"), \
+            "Frontend '${name}'.public_dir must be relative to the frontend's code (e.g. 'dist')"
+        base_path == Undefined or base_path.startswith("/"), \
+            "Frontend '${name}'.base_path must start with '/' (e.g. '/admin'); omit for the site root"
 
 # ---------------------------------------------------------------------------
 # Platform dependency — a helm chart rendered (NOT installed) by forge.
@@ -2958,18 +2954,13 @@ schema Bundle:
         # `--target` group and every rendered object's name.
         len(_duplicates(_env_names(workloads, infra, frontends))) == 0, \
             "Bundle: a name is declared twice across workloads, infra and frontends: ${_duplicates(_env_names(workloads, infra, frontends))}. The name is how the env refers to it (--target, forge.WorkloadURL), so it must be unique"
-        # HOSTED IS PER WORKLOAD, and it needs a control plane to publish to.
-        control_plane or not _hosted_names(workloads, databases, []), \
-            "${_hosted_names(workloads, databases, [])} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
-        # A hosted StaticSite is published INTO the platform's bucket, behind
-        # the platform's CDN: naming a URL map would be a user choosing what
-        # the platform's credential purges, and cache_control has no carrier
-        # on the hosted release (it holds bytes only). A StaticSite with no
-        # bucket IS the hosted one, so the rule is per frontend.
-        all f in frontends { not (f.deploy and f.deploy.type == "static-site" and not f.deploy.bucket) or (not f.deploy.cdn and not f.deploy.cache_control) }, \
-            "StaticSite with no bucket is HOSTED (${[f.name for f in frontends if f.deploy and f.deploy.type == 'static-site' and not f.deploy.bucket and (f.deploy.cdn or f.deploy.cache_control)]}): .cdn and .cache_control must NOT be set, because the platform owns the bucket and the CDN and the hosted release carries no cache rules yet. Remove them, or set `bucket` to publish to your own"
-        control_plane or all f in frontends { not (f.deploy and f.deploy.type == "static-site") or f.deploy.bucket }, \
-            "StaticSite.bucket is required unless the env declares control_plane: a StaticSite with no bucket is published to the control plane, and ${[f.name for f in frontends if f.deploy and f.deploy.type == 'static-site' and not f.deploy.bucket]} has neither. Set bucket (gs://name or a bare bucket name)"
+        # EVERY FRONTEND STATES ITS RUNTIME, exactly like a workload.
+        all f in frontends { f.runtime }, \
+            "Bundle.frontends ${[f.name for f in frontends if not f.runtime]} bind no runtime: every frontend states where it runs — bind it in this env, e.g. `runtime = forge.OnHost {} | forge.OnHosted {} | forge.OnBucket {bucket = ...} | forge.OnFirebase {project = ..., site = ...} | forge.BuildOnly {}`"
+        # HOSTED IS PER WORKLOAD / FRONTEND, and it needs a control plane to
+        # publish to.
+        control_plane or not _hosted_names(workloads, databases, frontends), \
+            "${_hosted_names(workloads, databases, frontends)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
         # A database binds a runtime, or lands on the env's cluster_target.
         all db in databases { _db_runtime(db) or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
             "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"

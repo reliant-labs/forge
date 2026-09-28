@@ -15,5 +15,5 @@ import forge.workloads as fw
 output = forge.render(forge.Bundle {
     project = "demo"
     workloads = [_w | {runtime = forge.OnHost {}} if not _w.runtime else _w for _w in [fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/demo"}, args = ["api"]}]]
-    frontends = [forge.Frontend {name = "api", path = "frontends/api"}]
+    frontends = [forge.Frontend {name = "api", path = "frontends/api", runtime = forge.OnHost {}}]
 })

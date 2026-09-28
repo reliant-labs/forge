@@ -62,7 +62,7 @@ from one of the project's existing envs (instead of hand-copying a sibling).
 The boilerplate — the full_stack / ClusterTarget wiring, sibling-repo
 build commands, frontends, in-cluster infra — is copied verbatim from the
 template env. The DANGEROUS per-env knobs (cluster context, namespace,
-registry, platform, image_tag, supabase URL / JWT issuer) are replaced
+registry, platform, a frontend's bucket, supabase URL / JWT issuer) are replaced
 with REPLACE_ME_* placeholders carrying inline 'check:' guidance, so a
 knob you forget to set is a visible author-time error rather than a value
 silently inherited from the wrong environment.
@@ -79,17 +79,21 @@ no placeholder remains and the env KCL-compiles.
 Each workload's binding — where it runs — is copied from the template env,
 one line per workload (` + "`_on_cluster(wl.api)`" + `). There is no env-level
 runtime: to run a workload somewhere else, edit its line, or rebind it as the
-env is created with --bind <workload>=<binder>:
+env is created with --bind <name>=<binder>. A frontend binds the same way
+(its line is ` + "`_on_bucket(_web_frontend)`" + `):
 
   --bind api=hosted       run api on the forge control plane (adds
                           control_plane = forge.ControlPlane {} when the env
                           has none; the platform admits it under its
                           Restricted profile)
   --bind api=cluster      run api on the env's cluster
+  --bind web=hosted       serve the web frontend from the control plane's
+                          static hosting (it owns the bucket and the CDN)
+  --bind web=bucket       publish the web frontend to your own bucket
 
 Examples:
   forge env new preview                 # derive from an auto-picked cloud sibling
-  forge env new cloud --from prod --bind api=hosted --bind migrate=hosted
+  forge env new cloud --from prod --bind api=hosted --bind migrate=hosted --bind web=hosted
   forge env new preview --from staging  # derive explicitly from staging
   forge env new preview --check         # verify no REPLACE_ME_* remains + it compiles`,
 		Args: cobra.ExactArgs(1),
@@ -108,7 +112,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringArrayVar(&binds, "bind", nil, "Rebind a workload in the new env: <workload>=hosted|cluster (repeatable)")
+	cmd.Flags().StringArrayVar(&binds, "bind", nil, "Rebind a workload or frontend in the new env: <workload>=hosted|cluster, <frontend>=hosted|bucket (repeatable)")
 
 	cmd.Flags().StringVar(&fromEnv, "from", "", "Existing env to derive the new env from (default: auto-pick a cloud-shaped sibling)")
 	cmd.Flags().BoolVar(&check, "check", false, "Don't scaffold; verify the existing env has no REPLACE_ME_* placeholders left and KCL-compiles (CI gate)")
@@ -481,6 +485,15 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 			`kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.architecture}' for THIS env's cluster`)
 	}
 
+	// 3b. bucket = "<name>" — a frontend's forge.OnBucket. Copied verbatim,
+	//     the new env publishes over the template env's live site.
+	if bucketAssignRe.MatchString(line) {
+		return knobLines(indent, "bucket", `"REPLACE_ME_BUCKET"`,
+			"the object-storage bucket this env's frontend is published to (gs://name or a bare name)",
+			"inheriting a sibling's bucket overwrites THAT env's live site on the next deploy",
+			`gcloud storage buckets describe gs://<name> — the bucket must belong to THIS env`)
+	}
+
 	// 4. _supabase_url / _supabase_jwt_issuer — the identity knobs.
 	if m := supabaseAssignRe.FindStringSubmatch(line); m != nil {
 		varName := m[1]
@@ -538,6 +551,9 @@ var (
 	clusterAssignRe = regexp.MustCompile(`^\s*cluster\s*=\s*"[^"]*"`)
 	// platform = "<value>".
 	platformAssignRe = regexp.MustCompile(`^\s*platform\s*=\s*"[^"]*"`)
+	// bucket = "<value>" on its own line — forge.OnBucket's one field that
+	// names a destination (no other forge schema has a `bucket`).
+	bucketAssignRe = regexp.MustCompile(`^\s*bucket\s*=\s*"[^"]*"\s*(?:#.*)?$`)
 	// _supabase_url / _supabase_jwt_issuer = "<value>".
 	supabaseAssignRe = regexp.MustCompile(`^\s*(_supabase_url|_supabase_jwt_issuer)\s*=\s*"[^"]*"`)
 	// The opening of a forge.ControlPlane block, and its endpoint field —

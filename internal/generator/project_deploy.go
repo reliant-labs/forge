@@ -83,6 +83,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			IngressEnabled:  true,
 			HasFrontend:     hasFrontend,
 			FrontendName:    g.FrontendName,
+			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
 			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
 			CloudRegistry:   scaffoldCloudRegistry(g.ModulePath),
 		}

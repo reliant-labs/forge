@@ -16,6 +16,7 @@ _bundle = forge.Bundle {
     frontends = [forge.Frontend {
         name = "web"
         path = "frontends/web"
+        runtime = forge.OnHost {}
         runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}
     }]
 }

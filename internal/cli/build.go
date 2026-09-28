@@ -142,10 +142,9 @@ type buildOptions struct {
 	// never consumes the `npm run build` prod artifact. Saves the entire
 	// Next.js prod build time on every `forge env up` cycle. Direct
 	// `forge build` callers leave this false to preserve prod-build
-	// behaviour. Independent of the Frontend.deploy-discriminator filter,
-	// which reads the `deploy` block forge.Frontend declares (kcl/schema.k:
-	// `deploy?: FirebaseHosting`) to decide which frontends need a docker
-	// image at all.
+	// behaviour. Independent of the Frontend.runtime filter
+	// (filterFrontendsForBuild), which skips the dev-served and hosted
+	// frontends of an env.
 	skipFrontends bool
 	// targets, when non-empty, scopes the build to the named applications
 	// (service / operator / frontend names), exactly as `forge env deploy
@@ -1090,10 +1089,6 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	// from `frontends` (the input to buildFrontend → `npm run build`)
 	// while keeping their entry in cfg.Frontends so other commands
 	// (forge generate, forge env up's frontend phase) see them unchanged.
-	//
-	// Frontends without a Deploy block (legacy KCL that doesn't emit
-	// frontend deploy yet) fall through to "build" — preserving the
-	// pre-discriminator behaviour so projects upgrade lazily.
 	if entities != nil {
 		frontends = filterFrontendsForBuild(frontends, entities)
 	}
@@ -1263,7 +1258,7 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 }
 
 // finishReleaseArtifacts is the build's last artifact step: it builds and
-// pushes a hosted env's StaticSite frontends (they ship as OCI release
+// pushes an env's forge.OnHosted frontends (they ship as OCI release
 // artifacts), then cuts the release ledger when --release is set, so the cut
 // records those digests too.
 func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
@@ -2300,15 +2295,19 @@ func kclFrontendAsBuildTarget(e *KCLEntities, target string) *config.FrontendCon
 	return nil
 }
 
-// filterFrontendsForBuild drops frontends whose KCL `deploy.type` is
-// "host" — the host-mode dev server (`npm run dev` in forge env up) doesn't
-// consume the production build artifact, so running `npm run build`
-// for it is a pure waste. Per-frontend lookup goes by name; a frontend
-// in cfg.Frontends with no matching KCL entry (or whose KCL entry has
-// no deploy block) falls through to "build" — preserving the
-// pre-discriminator behaviour so legacy projects keep working.
+// filterFrontendsForBuild drops the frontends this env does not build with
+// a plain `npm run build`, by runtime:
 //
-// Prints a one-line note per skipped frontend so users can see at a
+//   - forge.OnHost — the dev server (`npm run dev` in forge env up) never
+//     consumes the production artifact, so building it is pure waste;
+//   - forge.OnHosted — built by buildHostedStaticSites, environment-agnostic
+//     and pushed as a release artifact; a plain build here would repeat it.
+//
+// Every other runtime (bucket, firebase, build-only) is kept. A frontend in
+// cfg.Frontends that the env does not declare is kept too: with no runtime
+// to read there is nothing to skip on.
+//
+// Prints a one-line note per skipped dev server so users can see at a
 // glance why their build finished early.
 func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEntities) []config.FrontendConfig {
 	if entities == nil {
@@ -2316,38 +2315,17 @@ func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEnt
 	}
 	kept := make([]config.FrontendConfig, 0, len(frontends))
 	for _, fe := range frontends {
-		mode := frontendDeployMode(entities, fe.Name)
-		if mode == "host" {
-			fmt.Printf("[build] skipping prod build for %s (host-mode deploy)\n", fe.Name)
+		entity, ok := findFrontendEntity(entities, fe.Name)
+		switch {
+		case ok && entity.Runtime.Type == FrontendRuntimeHost:
+			fmt.Printf("[build] skipping prod build for %s (forge.OnHost: the dev server)\n", fe.Name)
 			continue
-		}
-		if fe, ok := findFrontendEntity(entities, fe.Name); ok && frontendIsHosted(fe) {
-			// Built by buildHostedStaticSites, with the env's runtime config
-			// assembled in — a plain `npm run build` here would only repeat it.
+		case ok && frontendIsHosted(entity):
 			continue
 		}
 		kept = append(kept, fe)
 	}
 	return kept
-}
-
-// frontendDeployMode returns the deploy.type for the named frontend in
-// the rendered KCL, or "" when the frontend isn't found or has no
-// deploy block. Lower-cased for case-insensitive comparison.
-func frontendDeployMode(entities *KCLEntities, name string) string {
-	if entities == nil {
-		return ""
-	}
-	for _, fe := range entities.Frontends {
-		if fe.Name != name {
-			continue
-		}
-		if fe.Deploy == nil {
-			return ""
-		}
-		return strings.ToLower(strings.TrimSpace(fe.Deploy.Type))
-	}
-	return ""
 }
 
 // projectDirForKCL resolves the project root directory used as the

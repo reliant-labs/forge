@@ -34,6 +34,7 @@ _out = forge.render(forge.Bundle {
         path = "frontends/web"
         type = "vite"
         port = 5173
+        runtime = forge.OnHost {}
         runtime_config = {
             API_URL = forge.WorkloadURL {workload = "api"}
             ADMIN_URL = forge.WorkloadURL {workload = "admin-api"}

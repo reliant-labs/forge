@@ -24,7 +24,7 @@ import (
 //     it blank.
 //   - runtime compose → a compose group per compose file.
 //   - runtime hosted  → the ONE hosted group, together with hosted
-//     ManagedDatabases and bucketless StaticSite frontends. It requires the
+//     ManagedDatabases and OnHosted frontends. It requires the
 //     Bundle's control_plane; its target (endpoint, release, digests) is
 //     filled in by the caller, which owns the credential and the ledger read.
 //   - runtime host / build-only → no group (forge env up / forge build).
@@ -556,7 +556,7 @@ func declaredEnvContext(entities *KCLEntities, groups []deploytarget.ServiceGrou
 // buildHostedGroup collects everything this env publishes to the control
 // plane into ONE hosted group: every workload bound to OnHosted (of any
 // Restricted kind — a JOB is published as a Workload CR like any other, not
-// dropped), every hosted ManagedDatabase, and every bucketless StaticSite.
+// dropped), every hosted ManagedDatabase, and every OnHosted frontend.
 // nil when nothing in the env is hosted.
 //
 // Hosting is a property of each item, not of the env: the same env's
@@ -615,7 +615,7 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		return nil, nil
 	}
 	if entities.ControlPlane == nil {
-		return nil, fmt.Errorf("env %q binds %s to the control plane (forge.OnHosted / a hosted database / a bucketless StaticSite), "+
+		return nil, fmt.Errorf("env %q binds %s to the control plane (forge.OnHosted workloads / frontends, or a hosted database), "+
 			"but its Bundle declares no control_plane, so there is nowhere to publish them.\n"+
 			"  fix: declare `control_plane = forge.ControlPlane {...}` on the Bundle, or bind them to another runtime",
 			envName, strings.Join(names, ", "))
@@ -627,11 +627,17 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 	}, nil
 }
 
-// hostedStaticSpec projects a StaticSite frontend onto the DEPLOYED half of
-// forge's StaticSiteSpec. Build inputs (public_dir, bundle) are consumed by
-// `forge build` and are not part of the deployed spec; bucket and cdn are
-// refused on a hosted env by the Bundle check, so none reaches here. The
+// hostedStaticSpec projects a frontend on forge.OnHosted onto the DEPLOYED
+// half of forge's StaticSiteSpec. Build inputs (public_dir, bundle) are
+// consumed by `forge build` and are not part of the deployed spec, and
+// OnHosted has no bucket or cdn to state: the platform owns both. The
 // liveDigest is pinned later, from the bound release.
+//
+// keepReleases is written EXPLICITLY as forge's default. OnHosted carries no
+// retention knob (it is the same runtime a workload binds), and the CR has
+// always stated its retention rather than leaving the platform to infer it,
+// so the published spec is byte-identical to what a hosted frontend
+// published before the runtime split.
 //
 // runtimeConfig is the frontend's declared runtime_config with every
 // forge.WorkloadURL KEPT as a reference: the control plane knows the URLs
@@ -640,9 +646,8 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 // the release artifact deliberately does NOT carry — see
 // buildHostedStaticSites.
 func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
-	ss := f.Deploy.StaticSite
-	keep := int32(ss.KeepReleases)
-	spec := &v1alpha1.StaticSiteSpec{BasePath: ss.BasePath, KeepReleases: &keep}
+	keep := int32(v1alpha1.DefaultKeepReleases)
+	spec := &v1alpha1.StaticSiteSpec{BasePath: f.BasePath, KeepReleases: &keep}
 	if len(f.RuntimeConfigSpec) > 0 {
 		spec.RuntimeConfig = f.RuntimeConfigSpec
 	}

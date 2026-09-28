@@ -408,22 +408,30 @@ than it works.
 
 ## 6. Deployment
 
-Workloads are authored once as a target-agnostic KCL `forge.Service` with
-zero Kubernetes vocabulary. Adapters project them onto concrete runtimes.
+Everything that runs is an `fw.Workload`, declared ONCE in
+`deploy/kcl/workloads.k` with its runtime-independent facts — build, the
+subcommand in `args`, ports, env, probes — and zero Kubernetes vocabulary
+(ADR 0002). Each environment binds every workload to a runtime, one binding
+per workload; there is no env-level runtime, so one env can mix them.
 
-**Target selection is structural, not a flag.** A `host` block routes the
-workload through the host adapter; its absence means Kubernetes. A
-host-targeted service that also sets Kubernetes-only fields fails at load
-rather than silently dropping them.
+**The runtime is a binding, not a flag.** `forge.OnHost` runs a local
+process whose argv is derived from `build` + `args`; `forge.OnCluster
+{target}` renders a Workload record that `pkg/deploy.RenderWorkloads`
+expands; `forge.OnHosted {}` publishes the spec to a forge control plane,
+which admits it under its Restricted profile and renders it with the same
+code; `forge.OnCompose` hands it to docker compose; `forge.BuildOnly`
+builds and never runs it. A field a runtime cannot honour — `namespacedRBAC` on a
+host process, sidecars on the hosted runtime — fails at render, naming the
+workload and field, rather than being silently dropped.
 
 Maturity is not uniform, and the docs should not pretend otherwise:
 
-| Target             | State                                                                      |
+| Runtime            | State                                                                      |
 | ------------------ | -------------------------------------------------------------------------- |
-| Kubernetes         | Production-grade; the deeply-developed path                                |
-| External (`sh -c`) | Mature by simplicity; forge runs your command and records the deployed tag |
+| Cluster            | Production-grade; the deeply-developed path                                |
+| Hosted             | Real; the platform owns placement, probes are written into every spec     |
 | Compose            | Real, thinner; `pull` + `up -d --wait`                                     |
-| Firebase           | Substantial, frontend-only                                                 |
+| Firebase / StaticSite | Frontends only                                                          |
 | Host               | Excellent dev loop, not a deploy target                                    |
 
 ### Failures move to author time

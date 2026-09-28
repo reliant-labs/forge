@@ -1189,7 +1189,6 @@ var removals = []removal{
 				Token: regexp.MustCompile("no `--rollback`,\\s*|no `rollback_cmd`|no `kubectl rollout undo` path|There is no rollback_cmd|There is no `rollback_cmd`"),
 				Paths: []string{
 					"internal/templates/project/skills/forge/deploy/SKILL.md",
-					"internal/templates/project/skills/forge/external-deploy-recipes/SKILL.md",
 					"internal/deploytarget/external.go",
 					".claude/skills/",
 				},

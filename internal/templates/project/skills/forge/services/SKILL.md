@@ -14,7 +14,7 @@ Use this skill whenever you need to introduce a new network-facing service, inte
 | A new network-facing API (Connect RPC)       | `forge scaffold service <name>`     | Proto definition, generated stubs, Go service skeleton |
 | A background worker                          | `forge scaffold worker <name>`      | Worker with Start/Stop lifecycle |
 | A cron-scheduled worker                      | `forge scaffold worker <name> --kind cron --schedule "..."` | Worker with cron scheduler |
-| A one-shot step that must finish before something else starts | declare a `kind = "job"` workload in `deploy/kcl/<env>/main.k` (see below) | Ordering primitive — no scaffold needed |
+| A one-shot step that must finish before something else starts | declare a `kind = "job"` workload in `deploy/kcl/workloads.k` and bind it per env (see below) | Ordering primitive — no scaffold needed |
 | An internal Go package with interface contract | `forge package new <name>`   | Package directory with contract interface and default implementation |
 | A Next.js web frontend                       | `forge scaffold frontend <name>`    | Next.js app wired into the project |
 | A React Native mobile frontend               | `forge scaffold frontend <name> --kind mobile` | Expo app with Connect-web transport |
@@ -31,34 +31,37 @@ that is a `job`. Every other workload kind is long-running: `service` /
 `worker` / `operator` run forever, `cron` runs on a schedule forever, and a
 `tool` is never scheduled at all. `job` is the one that ends.
 
-Declare it in `deploy/kcl/<env>/main.k`, where the rest of the per-env deploy
-shape lives — ordering is a relation between workloads in ONE environment, so
-it belongs to the env rather than the shared declaration:
+Declare it ONCE in `deploy/kcl/workloads.k`, like every workload, and bind
+it in each env that runs it. Ordering (`before`) is part of the declaration;
+WHERE it runs is the env's binding:
 
 ```kcl
-import forge.workloads as fw
-import ..workloads as wl
-
-_provision = fw.Workload {
+# deploy/kcl/workloads.k
+provision_idp = fw.Workload {
     name = "provision-idp"
     kind = "job"
-    image = "myproj"
-    command = ["/app/myproj", "provision-idp"]
+    build = forge.GoBuild {cmd = "./cmd/myproj", output_name = "myproj"}
+    args = ["provision-idp"]  # a subcommand of the project binary
     before = ["api"]          # `api` does not start until this exits 0
 }
 
-_declared = wl.ALL + [_provision]
+# deploy/kcl/dev/main.k — one binding line
+_workloads = [
+    _on_host_job(wl.provision_idp)
+    _on_host(wl.api)
+]
 ```
 
 `before` is the ordering declaration and it is the point — a one-shot with no
-ordering is just a cron that fires once. It lowers honestly to each target:
+ordering is just a cron that fires once. Each runtime honours it:
 
-| target | lowering |
-| ------ | -------- |
-| Kubernetes | an **init container** on each workload named in `before`. This is the only ordering k8s enforces itself, so it holds under `kubectl apply`, Argo CD, Flux and `forge env deploy` alike. A gating job renders **no** standalone `Job` object — that would run the command a second time, unordered, which is the race `before` exists to remove. |
-| Kubernetes, `before` empty | a standalone `batch/v1` Job. Nothing waits on it, and nothing claims to. |
-| docker-compose | a service with `restart: "no"`, plus `depends_on: {<job>: {condition: service_completed_successfully}}` on each dependent. Compose enforces this natively. Render it with `fw.compose_fragment(workloads, image)`. |
-| host (`forge run` / `forge env up`) | the runner executes the command, waits for exit 0, and only then launches the dependents. Declare it as a `forge.OneShotJob` in the bundle's `jobs = [...]`. Fail-closed: a job that exits non-zero stops the up. |
+| runtime | lowering |
+| ------- | -------- |
+| cluster (`forge.OnCluster`) | an **init container** on each workload named in `before`, rendered by `pkg/deploy.RenderWorkloads`. It is the only ordering Kubernetes enforces itself, so it holds under any applier. A gating job renders **no** standalone `Job` — that would run the command a second time, unordered. |
+| cluster, `before` empty | a standalone `batch/v1` Job, pre-rollout by default (`forge env deploy` waits for it before applying Deployments); `deployPhase = "post-rollout"` defers it. |
+| hosted (`forge.OnHosted`) | the control plane runs it the same way, before the workloads it gates. |
+| host (`forge.OnHost`) | `forge env up` runs `go run ./cmd/<p> <args>`, waits for exit 0, and only then launches the dependents. Fail-closed: a job that exits non-zero stops the up. |
+| compose (`forge.OnCompose`) | the compose file owns it: `restart: "no"` plus `depends_on: {<job>: {condition: service_completed_successfully}}` on each dependent. |
 
 **The job's command must be idempotent.** The k8s lowering fans it out to one
 init container per dependent, and init containers re-run on every pod start,
@@ -69,7 +72,8 @@ orchestrator.
 
 Things forge rejects at load time rather than at 3am: a `before` naming a
 component that does not exist, a job with no `command`, a job carrying a
-`schedule` (use `kind = "cron"`), and — on the host path — a cycle in the job graph.
+`schedule` (use `kind = "cron"`), a workload an env lists without binding a
+runtime, and — on the host path — a cycle in the job graph.
 
 ## Wiring Cycle
 
@@ -81,9 +85,21 @@ Follow this sequence every time you scaffold a new component:
 4. **Implement** — write the business logic on the `*Service` methods in `internal/handlers/<svc>/` using `s.deps` (a custom RPC is a pb-through method on `*Service`; CRUD delegates via `handlers_crud.go`). For a reusable, transport-free domain layer, scaffold a standalone package (`forge scaffold package <name>`) and call it from the handler.
 5. **Compose it into a binary** — a binary serves a service because `NewComponents` constructs it and the serve path mounts it. Add the constructor call to the composition (see below); selection is code, not a string table.
 
+## Deploying it: declared once, bound per env
+
+`forge scaffold service|worker|operator|binary` appends the workload to
+`deploy/kcl/workloads.k` — build, the component's subcommand in `args`, the
+`http` port for a service — and a binding line to every env's `_workloads`
+list (`_on_host(wl.<name>)` in dev, `_on_cluster(wl.<name>)` in staging and
+prod). Probes need nothing: a service forge builds gets `/readyz` + `/healthz`
+on its `http` port on every runtime. See the `deploy` skill for the runtimes
+and how to rebind one workload (to the forge control plane, say).
+
 ## Port Assignment
 
-Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers; let Forge manage them.
+In a container every service owns `:8080` (the `http` port). In the dev loop
+each host process gets its own port from `plugin.resolve_port` in
+`deploy/kcl/dev/main.k`. Do not hard-code port numbers elsewhere.
 
 ## Rules
 

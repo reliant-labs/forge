@@ -145,10 +145,10 @@ A clean port lands with at most a handful of `//nolint:` annotations, not a grow
 
 Forge emits `deploy/kcl/<env>/` (KCL-based manifests, one dir per environment: `dev`, `staging`, `prod`). KCL is canonical — there is no "ship hand-written YAML instead" mode. Either:
 
-- **Adopt KCL** (recommended). Translate hand-written manifest customizations into KCL overrides; use `additional_manifests = [...]` on the Bundle for raw manifest dicts that don't fit a typed entity (ClusterIssuers, SealedSecrets, hand-typed CRDs).
+- **Adopt KCL** (recommended). Translate hand-written manifest customizations into KCL overrides; declare each process as an `fw.Workload` in `deploy/kcl/workloads.k` and bind it per env (`wl.x | {runtime = forge.OnCluster {target = _cluster}}`); raw manifest dicts that are not workloads (ClusterIssuers, SealedSecrets, hand-typed CRDs) go in `manifests = [forge.Manifests {objects = [...]}]` on the Bundle.
 - **Disable the deploy feature.** Set `features.deploy: false` in `forge.yaml` and bring your own manifests. `forge env deploy <env>` and the deploy half of `forge generate` then short-circuit with "feature 'deploy' is disabled".
 
-`forge.yaml` stays strictly top-level (project identity, features, deploy provider). Per-env config (logging, env vars) lives in `deploy/kcl/<env>/` alongside the per-env deploy knobs (cluster/namespace/registry/domain) on `forge.K8sCluster` blocks — there is no second `config.<env>.yaml` format. The single typed config struct (`internal/config`, generated from proto config blocks) serves server, CLI, and standalone binaries via cmdkit; non-server binaries do NOT hand-roll `os.Getenv`/ad-hoc loggers/hardcoded timeouts.
+`forge.yaml` stays strictly top-level (project identity, features, deploy provider). Per-env config (logging, env vars) lives in `deploy/kcl/<env>/` alongside the per-env deploy knobs (cluster/namespace/registry/domain) on the env's `forge.ClusterTarget` — there is no second `config.<env>.yaml` format. The single typed config struct (`internal/config`, generated from proto config blocks) serves server, CLI, and standalone binaries via cmdkit; non-server binaries do NOT hand-roll `os.Getenv`/ad-hoc loggers/hardcoded timeouts.
 
 ## Final checks
 

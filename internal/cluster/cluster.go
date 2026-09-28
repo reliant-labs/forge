@@ -20,8 +20,7 @@
 //   - the k3d cluster bootstrap (ensureDevCluster, buildAndPushLocal)
 //     — that's a deploy-time concern for the dev env that the reload
 //     deliberately skips;
-//   - the typed KCLEntities schema (still in internal/cli/) — callers
-//     compute the per-call HostSkip set from that and pass it in.
+//   - the typed KCLEntities schema (still in internal/cli/).
 //
 // The shape mirrors internal/hostlaunch: a small Opts struct
 // expressing the differences between call sites, plus a single Apply
@@ -275,11 +274,16 @@ type ApplyOpts struct {
 	// destructive (see deploy.go's pruneOrphanDeployments docstring).
 	Prune bool
 
-	// HostSkip is the set of Deployment names to skip in the rollout
-	// wait — services declared `deploy: host` in KCL, which run as host
-	// processes and don't have a Deployment in the cluster. Empty
-	// disables the skip (every managed Deployment is awaited).
-	HostSkip map[string]struct{}
+	// Project is the forge project name. With Env it names the owner of
+	// the CRDs this apply renders (CRDOwner), which is what makes CRD
+	// pruning provable. Empty disables the CRD stamp and prune.
+	Project string
+	// PruneCRDs deletes the CRDs this (project, env) previously rendered
+	// and no longer does, provided no custom resource of them remains —
+	// see crd_prune.go. It runs only on a FULL apply: never with Targets,
+	// never on a dry run. The env up and deploy paths set it, because a
+	// CRD the render dropped is otherwise served forever.
+	PruneCRDs bool
 
 	// Rollout governs what the post-apply wait DOES, and — critically —
 	// whether a rollout that never becomes ready fails the deploy.
@@ -530,15 +534,7 @@ func waitForDeploymentRollouts(
 	deployments []string,
 	note func(indent, kind, name string, err error),
 ) (failFast bool) {
-	var skipped, awaited []string
-	for _, dep := range deployments {
-		if _, skip := opts.HostSkip[dep]; skip {
-			skipped = append(skipped, dep)
-			continue
-		}
-		awaited = append(awaited, dep)
-	}
-	for _, dep := range policy.orderDeployments(awaited) {
+	for _, dep := range policy.orderDeployments(deployments) {
 		state, err := WaitRolloutObserved(ctx, opts.Context, dep, opts.Namespace, policy.Timeout)
 		observeRollout(opts, "Deployment", dep, state, err)
 		if err == nil {
@@ -549,10 +545,6 @@ func waitForDeploymentRollouts(
 		if policy.FailFast && policy.Mode == RolloutWait {
 			return true
 		}
-	}
-	if len(skipped) > 0 {
-		fmt.Printf("Skipped rollout wait for %d host-mode service(s): %s\n",
-			len(skipped), strings.Join(skipped, ", "))
 	}
 	return false
 }
@@ -828,6 +820,11 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 		manifests = ScopeManifestsToGroup(manifests, *opts.ClusterScope)
 	}
 
+	// Stamp every CRD with this env's ownership label, so a later apply that
+	// stops rendering it can prove the CRD was its own (crd_prune.go).
+	crdOwner := CRDOwner(opts.Project, opts.Env)
+	manifests = StampCRDOwnership(manifests, crdOwner)
+
 	// Split the stream into its apply passes NOW, before the dry-run return
 	// and before any chart is fetched: an unknown deploy-phase declaration
 	// is refused for a preview exactly as for a real apply, and before
@@ -960,6 +957,13 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	if opts.Prune {
 		if err := Prune(ctx, opts.Context, manifests, opts.Namespace); err != nil {
 			fmt.Printf("Warning: prune: %v\n", err)
+		}
+	}
+	// A --target apply renders a subset of the env, so a CRD missing from
+	// it proves nothing: the CRD prune runs on a full apply only.
+	if opts.PruneCRDs && len(opts.Targets) == 0 && crdOwner != "" {
+		if _, _, err := PruneCRDs(ctx, opts.Context, manifests, crdOwner); err != nil {
+			fmt.Printf("Warning: %v\n", err)
 		}
 	}
 
@@ -1177,54 +1181,57 @@ func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, 
 	return extractManifests(out)
 }
 
-// extractManifests pulls the `manifests` list out of KCL's YAML output
-// and emits each item as its own YAML document, separated by `---`.
-// See RenderManifests for the contract on top-level KCL vars.
-//
-// The canonical generated `main.k` exports TWO top-level vars:
-//
-//   - `manifests` — the YAML manifest list we consume here.
-//   - `output`    — the JSON contract `forge build/run/deploy` consume via
-//     a separate `kcl run --format json` invocation through
-//     [internal/cli.RenderKCL].
-//
-// Both are part of the documented dual-output contract, so `output` is
-// silently skipped here rather than warned about — emitting a warning
-// on every `forge env deploy` / `forge env up` for a sibling that the forge
-// pipeline itself produces just trains users to ignore warnings. Any
-// OTHER unexpected top-level var still warns.
+// extractManifests is ExtractManifests; kept as the package-internal name
+// RenderManifests calls.
 func extractManifests(kclOutput []byte) (string, error) {
 	return ExtractManifests(kclOutput)
 }
 
 // ExtractManifests is the manifest stream a render's KCL output becomes on
-// its way to kubectl: the `manifests` list, with every forge.dev deploy-tier
-// declaration expanded through pkg/deploy.Render, as `---`-separated YAML.
-// It is exported so tests and tooling can assert against exactly what is
-// applied, not against an intermediate.
+// its way to kubectl: `output.manifests`, with every forge.dev record
+// expanded through pkg/deploy, as `---`-separated YAML. It is exported so
+// tests and tooling can assert against exactly what is applied, not against
+// an intermediate.
+//
+// ONE ENTRYPOINT. main.k ends with `output = forge.render(bundle)`, and the
+// applyable stream is `output.manifests`. A top-level `manifests` var is an
+// ERROR, not a fallback: the stream carries Workload records only forge can
+// expand, so a second top-level stream that a bare `kcl run -S manifests |
+// kubectl apply` could consume would be a path that looks right and silently
+// is not. Any other public top-level var warns.
 func ExtractManifests(kclOutput []byte) (string, error) {
 	var doc map[string]any
 	if err := yaml.Unmarshal(kclOutput, &doc); err != nil {
 		return "", fmt.Errorf("parse kcl output: %w", err)
 	}
-	raw, ok := doc["manifests"]
-	if !ok {
-		return "", fmt.Errorf("kcl output has no top-level `manifests` key; main.k must end with `manifests = forge.render_manifests(...)` and other top-level vars (besides `output`) must be private (underscore-prefix)")
+	if _, legacy := doc["manifests"]; legacy {
+		return "", fmt.Errorf("kcl output has a top-level `manifests` var: main.k must end with `output = forge.render(bundle)`, " +
+			"the one entrypoint — the applyable stream is output.manifests, and forge expands the Workload records in it")
 	}
-	items, ok := raw.([]any)
+	out, ok := doc["output"].(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("`manifests` is not a list (got %T)", raw)
+		return "", fmt.Errorf("kcl output has no top-level `output` object; main.k must end with `output = forge.render(bundle)` " +
+			"and other top-level vars must be private (underscore-prefix)")
 	}
 	for k := range doc {
-		// `manifests` is what we consume; `output` is the documented
-		// sibling for the JSON-contract pipeline.
-		if k == "manifests" || k == "output" {
+		if k == "output" {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "warning: ignoring extra top-level KCL var %q (mark as private with `_%s = ...` to suppress)\n", k, k)
 	}
+	raw, present := out["manifests"]
+	var items []any
+	if present && raw != nil {
+		if items, ok = raw.([]any); !ok {
+			return "", fmt.Errorf("`output.manifests` is not a list (got %T)", raw)
+		}
+	}
+	network, err := decodeNetworkPolicy(out["network_policy"])
+	if err != nil {
+		return "", err
+	}
 
-	items, err := expandTierDeclarations(items)
+	items, err = expandTierDeclarations(items, network)
 	if err != nil {
 		return "", err
 	}
@@ -1243,85 +1250,200 @@ func ExtractManifests(kclOutput []byte) (string, error) {
 	return sb.String(), nil
 }
 
-// expandTierDeclarations replaces every forge.dev deploy-tier declaration
-// record in the stream with the Kubernetes objects pkg/deploy.Render produces
-// for it, in place, so the stream's order is preserved.
+// decodeNetworkPolicy reads `output.network_policy`: the env-wide
+// NetworkPolicy bundle (default-deny plus the DNS / same-namespace /
+// external-egress / telemetry / ingress-controller allows). nil means the env
+// declares none. It is passed to every cluster group's RenderWorkloads, which
+// is the one renderer that emits it.
+func decodeNetworkPolicy(raw any) (*deploy.EnvNetworkPolicy, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var np struct {
+		EgressPorts        []int32 `json:"egress_ports"`
+		TelemetryNamespace string  `json:"telemetry_namespace"`
+		IngressNamespace   string  `json:"ingress_namespace"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&np); err != nil {
+		return nil, fmt.Errorf("decode output.network_policy: %w", err)
+	}
+	return &deploy.EnvNetworkPolicy{EgressPorts: np.EgressPorts, TelemetryNamespace: np.TelemetryNamespace, IngressNamespace: np.IngressNamespace}, nil
+}
+
+// workloadGroupKey is one RenderWorkloads call: the Workload records that
+// share a cluster and namespace. `before` gating, cycle checks and
+// cross-workload references are relations inside ONE such set, so a set is
+// never split and never rendered one record at a time.
+type workloadGroupKey struct{ cluster, namespace string }
+
+// workloadGroup is one set's records, in stream order, plus the position its
+// first record held (where the rendered objects are spliced in).
+type workloadGroup struct {
+	first   int
+	labels  map[string]string // the first record's labels: cluster, part-of, env
+	records []deployv1alpha1.Workload
+}
+
+// expandTierDeclarations replaces every forge.dev record in the stream with
+// the Kubernetes objects pkg/deploy produces for it.
 //
-// This is how a self-hosted deploy tier reaches the cluster. The KCL layer
+//   - Workload records are GROUPED by (forge.dev/cluster, namespace) and each
+//     group is rendered by ONE deploy.RenderWorkloads(group, ProfileFull)
+//     call, emitted at the position of the group's first record. The env's
+//     NetworkPolicy bundle (network) rides every group, because each group
+//     is a namespace the env deploys into.
+//   - ManagedDatabase / StaticSite records render one at a time through
+//     deploy.Render, in place.
+//
+// This is how a Cluster-bound workload reaches the cluster: the KCL layer
 // emits the declaration (the same forge.dev/v1alpha1 object the hosted path
 // publishes as a CR), and the ONE Go renderer, shared with the control
-// plane's operator, decides what it becomes. A self-hosted cluster never
-// sees the declaration itself: no CRD is installed and no controller runs
-// there.
+// plane's operator, decides what it becomes. The cluster never sees the
+// record itself: no CRD is installed and no controller runs there.
 //
-// The record's metadata.labels (the managed set plus the env gate's
-// forge.dev/env stamp) are copied onto every rendered object. The KCL env
-// gate stamped the RECORD, and the objects replacing it must carry the same
-// stamp, or env-scoped prune and status queries would miss them.
-func expandTierDeclarations(items []any) ([]any, error) {
+// The record's routing and ownership labels (forge.dev/cluster, and the env
+// stamp) are copied onto every object the group renders — including the env
+// NetworkPolicies, which carry no app label — so multi-cluster scoping and
+// env-scoped prune/status see them exactly as they saw the record.
+func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy) ([]any, error) {
+	groups := map[workloadGroupKey]*workloadGroup{}
+	var order []workloadGroupKey
+	leaders := map[int]workloadGroupKey{}
+	skip := map[int]bool{}
+	for i, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok || m["apiVersion"] != deployv1alpha1.GroupVersion.String() || m["kind"] != "Workload" {
+			continue
+		}
+		var w deployv1alpha1.Workload
+		if err := decodeStrict(m, &w); err != nil {
+			return nil, fmt.Errorf("manifest item %d: %w", i, err)
+		}
+		if w.Namespace == "" {
+			return nil, fmt.Errorf("manifest item %d: %s has no namespace: a Cluster workload record must carry its runtime's namespace", i, describeManifest(m))
+		}
+		key := workloadGroupKey{cluster: w.Labels[ClusterRoutingLabel], namespace: w.Namespace}
+		g, seen := groups[key]
+		if !seen {
+			g = &workloadGroup{first: i, labels: w.Labels}
+			groups[key] = g
+			order = append(order, key)
+			leaders[i] = key
+		} else {
+			skip[i] = true
+		}
+		g.records = append(g.records, w)
+	}
+	rendered := map[workloadGroupKey][]any{}
+	for _, key := range order {
+		g := groups[key]
+		objs, err := deploy.RenderWorkloads(g.records, deployv1alpha1.ProfileFull, deploy.Context{
+			Namespace: key.namespace,
+			PartOf:    g.labels[deploy.LabelPartOf],
+			Env:       g.labels[deploy.LabelEnv],
+			Network:   network,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render workloads (cluster %q, namespace %s): %w", key.cluster, key.namespace, err)
+		}
+		for _, o := range objs {
+			if key.cluster != "" {
+				labels := o.GetLabels()
+				if labels == nil {
+					labels = map[string]string{}
+				}
+				labels[ClusterRoutingLabel] = key.cluster
+				o.SetLabels(labels)
+			}
+			rendered[key] = append(rendered[key], o.Object)
+		}
+	}
+
 	out := make([]any, 0, len(items))
 	for i, it := range items {
+		if key, ok := leaders[i]; ok {
+			out = append(out, rendered[key]...)
+			continue
+		}
+		if skip[i] {
+			continue
+		}
 		m, ok := it.(map[string]any)
 		if !ok || m["apiVersion"] != deployv1alpha1.GroupVersion.String() {
 			out = append(out, it)
 			continue
 		}
-		obj, err := decodeTierDeclaration(m)
+		objs, err := expandTierRecord(i, m)
 		if err != nil {
-			return nil, fmt.Errorf("manifest item %d: %w", i, err)
+			return nil, err
 		}
-		md, _ := m["metadata"].(map[string]any)
-		namespace, _ := md["namespace"].(string)
-		labels, _ := md["labels"].(map[string]any)
-		partOf, _ := labels[deploy.LabelPartOf].(string)
-		rendered, err := deploy.Render(obj, deploy.Context{Namespace: namespace, PartOf: partOf})
-		if err != nil {
-			return nil, fmt.Errorf("render %s: %w", describeManifest(m), err)
-		}
-		for _, r := range rendered {
-			objLabels := r.GetLabels()
-			if objLabels == nil {
-				objLabels = map[string]string{}
-			}
-			for k, v := range labels {
-				if s, ok := v.(string); ok {
-					objLabels[k] = s
-				}
-			}
-			r.SetLabels(objLabels)
-			out = append(out, r.Object)
-		}
+		out = append(out, objs...)
 	}
 	return out, nil
 }
 
-// decodeTierDeclaration decodes one declaration record into its typed tier
-// object, STRICTLY. A key the Go type does not know is an error rather than
-// silently dropped, because a dropped field is exactly the drift this whole
-// design exists to make impossible.
-func decodeTierDeclaration(m map[string]any) (runtime.Object, error) {
-	kind, _ := m["kind"].(string)
+// expandTierRecord renders one ManagedDatabase / StaticSite record in place,
+// copying the record's labels (managed set, env stamp, cluster route) onto
+// every rendered object.
+func expandTierRecord(i int, m map[string]any) ([]any, error) {
 	var obj runtime.Object
-	switch kind {
-	case "SimpleBackend":
-		obj = &deployv1alpha1.SimpleBackend{}
+	switch m["kind"] {
 	case "StaticSite":
 		obj = &deployv1alpha1.StaticSite{}
 	case "ManagedDatabase":
 		obj = &deployv1alpha1.ManagedDatabase{}
 	default:
-		return nil, fmt.Errorf("%s is not a forge.dev deploy tier kind", describeManifest(m))
+		return nil, fmt.Errorf("manifest item %d: %s is not a forge.dev deploy kind (Workload, ManagedDatabase, StaticSite)", i, describeManifest(m))
 	}
+	if err := decodeStrict(m, obj); err != nil {
+		return nil, fmt.Errorf("manifest item %d: %w", i, err)
+	}
+	md, _ := m["metadata"].(map[string]any)
+	namespace, _ := md["namespace"].(string)
+	labels, _ := md["labels"].(map[string]any)
+	partOf, _ := labels[deploy.LabelPartOf].(string)
+	rendered, err := deploy.Render(obj, deploy.Context{Namespace: namespace, PartOf: partOf})
+	if err != nil {
+		return nil, fmt.Errorf("render %s: %w", describeManifest(m), err)
+	}
+	out := make([]any, 0, len(rendered))
+	for _, r := range rendered {
+		objLabels := r.GetLabels()
+		if objLabels == nil {
+			objLabels = map[string]string{}
+		}
+		for k, v := range labels {
+			if s, ok := v.(string); ok {
+				objLabels[k] = s
+			}
+		}
+		r.SetLabels(objLabels)
+		out = append(out, r.Object)
+	}
+	return out, nil
+}
+
+// decodeStrict decodes one declaration record into its typed object,
+// STRICTLY. A key the Go type does not know is an error rather than silently
+// dropped, because a dropped field is exactly the drift this whole design
+// exists to make impossible.
+func decodeStrict(m map[string]any, obj any) error {
 	raw, err := json.Marshal(m)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(obj); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", describeManifest(m), err)
+		return fmt.Errorf("decode %s: %w", describeManifest(m), err)
 	}
-	return obj, nil
+	return nil
 }
 
 func describeManifest(m map[string]any) string {

@@ -243,12 +243,20 @@ type ApplyOpts struct {
 	ImageTag string
 
 	// ImageDigests is the per-image content-addressed digest map bound to
-	// KCL's `image_digests` -D variable (image NAME → "sha256:..."). When
-	// set, each rendered service's manifest image resolves to ITS image's
-	// digest (`<image>@sha256:...`), not the env-wide ImageTag — the
-	// structural fix for a multi-image env pinning every service to one
-	// digest. May be nil/empty (the local-registry / no-digest path), in
-	// which case every image stays on ImageTag, byte-identical to before.
+	// KCL's `image_digests` -D variable. When set, each rendered service's
+	// manifest image resolves to ITS image's digest rather than the env-wide
+	// ImageTag — the structural fix for a multi-image env pinning every
+	// service to one digest.
+	//
+	// Keys are BOTH the bare image name (`reliant`) and the tag-qualified
+	// name the build pushed (`reliant:e2e`), because the render looks up
+	// whichever one the workload declares: an unpinned image takes the env
+	// tag and is keyed bare, while an image that pins its own tag must match
+	// a digest captured for THAT tag or stay unpinned. A tag-pinned image
+	// renders as `<image>:<tag>@sha256:…`.
+	//
+	// May be nil/empty (the no-digest path), in which case every image stays
+	// on ImageTag, byte-identical to before.
 	ImageDigests map[string]string
 
 	// Namespace is the value bound to KCL's `namespace` -D variable and

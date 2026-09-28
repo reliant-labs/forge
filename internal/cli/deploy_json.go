@@ -1277,13 +1277,19 @@ func classifyDeployImage(ref string) deployJSONImage {
 	if at := strings.LastIndex(ref, "@"); at >= 0 {
 		out.Repository = ref[:at]
 		out.Pinning = deployPinningDigest
-		return out
 	}
 	// A ":" is only a tag separator when it comes after the last "/" —
 	// otherwise it is a registry port (localhost:5000/img), and treating that
 	// as a tag would report the wrong repository.
-	if colon := strings.LastIndex(ref, ":"); colon > strings.LastIndex(ref, "/") {
-		out.Repository = ref[:colon]
+	//
+	// Stripped for a digest-pinned reference too, because forge renders a
+	// forge-built image that pins its own tag as `repo:tag@sha256:…` — the
+	// tag documents which tag the bytes were pushed under, and the digest is
+	// what the kubelet pulls. Leaving the tag on Repository would give the
+	// same image two identities depending on how it was declared, which
+	// defeats the grouping this field exists for.
+	if colon := strings.LastIndex(out.Repository, ":"); colon > strings.LastIndex(out.Repository, "/") {
+		out.Repository = out.Repository[:colon]
 	}
 	return out
 }

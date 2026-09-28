@@ -290,13 +290,25 @@ image_digests = lambda -> {str:str} {
 # forge.image_digests() for hand-composed references that are not a
 # workload's own image — chiefly an env var that names an image
 # by hand (DAEMON_IMAGE = the workspace-base ref a controller reads at
-# runtime). When the image has a digest, emits `<registry>/<image>@sha256:…`
-# (immutable); otherwise `<registry>/<image>:<tag>`, byte-identical to the
+# runtime).
+#
+# `image` here is the BARE name and `tag` the tag to use, so the caller has
+# already stated which tag it means. Both keys are therefore consulted, most
+# specific first, matching lib/images.k's image_ref: a digest captured for
+# THIS `image:tag` wins, then the bare-name digest. The emitted reference
+# keeps the tag beside the digest (`<registry>/<image>:<tag>@sha256:…`) when
+# the digest is tag-specific, so the two helpers produce the same text for
+# the same image and a reader can still see which tag was meant. With no
+# digest at all it is `<registry>/<image>:<tag>`, byte-identical to the
 # manual string it replaces.
 image_ref_for = lambda registry: str, image: str, tag: str -> str {
     _d = image_digests()
-    _digest = _d[image] if (image in _d) else ""
-    "${registry}/${image}@${_digest}" if _digest else "${registry}/${image}:${tag}"
+    _tagged = "${image}:${tag}"
+    _tag_digest = _d[_tagged] if (_tagged in _d) else ""
+    _bare_digest = _d[image] if (image in _d) else ""
+    "${registry}/${image}:${tag}@${_tag_digest}" if _tag_digest \
+        else ("${registry}/${image}@${_bare_digest}" if _bare_digest \
+        else "${registry}/${image}:${tag}")
 }
 
 # ---------------------------------------------------------------------------

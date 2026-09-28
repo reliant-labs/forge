@@ -388,6 +388,44 @@ func TestResolveDeployDigests_BoundEnvUsesRelease(t *testing.T) {
 	}
 }
 
+// TestResolveDeployDigests_ReleaseOverridesTaggedKeys proves a release binding
+// wins for a TAG-PINNED workload as well as an unpinned one.
+//
+// A release ledger records a digest per image NAME and carries no tag, while a
+// workload declaring `reliant:e2e` is resolved by the tag-qualified key. So an
+// overlay that wrote only the bare key would leave the tag-pinned workloads
+// resolving to the local build state's digest — the env would report the
+// release deployed while shipping something else entirely. Every tag-qualified
+// key of an image the release pins must follow the release.
+func TestResolveDeployDigests_ReleaseOverridesTaggedKeys(t *testing.T) {
+	dir := t.TempDir()
+	if err := buildtarget.WriteState(dir, "prod", buildtarget.State{
+		Service: "reliant-api-server", Image: "reliant", Tag: "e2e",
+		PushedAt: nowRFC3339(), Digest: sha("0"),
+	}); err != nil {
+		t.Fatalf("write build state: %v", err)
+	}
+	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote,
+		Resolved: map[string]string{"reliant": sha("a")},
+	}); err != nil {
+		t.Fatalf("write bindings: %v", err)
+	}
+
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, newFileBindingStore(dir))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if boundRel != "v1.4.0" {
+		t.Errorf("boundRelease = %q, want v1.4.0", boundRel)
+	}
+	for _, key := range []string{"reliant", "reliant:e2e"} {
+		if digests[key] != sha("a") {
+			t.Errorf("%s = %q, want the release digest %q", key, digests[key], sha("a"))
+		}
+	}
+}
+
 // TestResolveDeployDigests_UnboundEnvFallsBack proves full backward compat: an
 // env with NO release binding resolves exactly the per-env build-state digests,
 // with an empty bound release — byte-identical to the pre-release flow.

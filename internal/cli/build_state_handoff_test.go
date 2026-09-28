@@ -144,10 +144,16 @@ func TestResolveDeployImageDigests_PerImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveDeployImageDigests: %v", err)
 	}
+	// Every digest is recorded under BOTH the bare name and the
+	// tag-qualified name the build pushed, so the KCL render can resolve an
+	// unpinned `reliant` and a tag-pinned `reliant:staging` from one map.
 	want := map[string]string{
-		"control-plane":  cpDigest,
-		"reliant":        reliantDigest,
-		"workspace-base": wsDigest,
+		"control-plane":          cpDigest,
+		"control-plane:staging":  cpDigest,
+		"reliant":                reliantDigest,
+		"reliant:staging":        reliantDigest,
+		"workspace-base":         wsDigest,
+		"workspace-base:staging": wsDigest,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d image digests, want %d: %v", len(got), len(want), got)
@@ -215,6 +221,74 @@ func TestResolveDeployImageTag_NoDigestFlagForcesTag(t *testing.T) {
 	}
 	if ref != "v1.4.0" {
 		t.Errorf("imageRef = %q, want v1.4.0 (--no-digest forces the tag)", ref)
+	}
+}
+
+// TestResolveDeployImageDigests_EmitsTagQualifiedKey pins the fix for the
+// silent no-op deploy: a state file recording image+tag+digest must produce a
+// `<image>:<tag>` key as well as the bare `<image>` one, because a workload
+// that pins its own tag (`image = "reliant:e2e"`, which control-plane's e2e
+// env declares) is looked up in the KCL render by that exact string. Without
+// the tag-qualified key the lookup missed, the workload stayed on its mutable
+// tag, the rendered spec never changed between rebuilds, and the Deployment
+// never rolled out — while the deploy reported success.
+//
+// It also pins the SEPARATION: two tags of the same image carry their own
+// digests, so a tag-pinned workload can never be handed bytes that were
+// pushed under a different tag.
+func TestResolveDeployImageDigests_EmitsTagQualifiedKey(t *testing.T) {
+	dir := t.TempDir()
+	e2eDigest := "sha256:" + strings.Repeat("b", 64)
+	baseDigest := "sha256:" + strings.Repeat("e", 64)
+
+	for _, st := range []buildtarget.State{
+		{Service: "reliant-api-server", Image: "reliant", Tag: "e2e", Digest: e2eDigest},
+		{Service: "workspace-base", Image: "workspace-base", Tag: "dev-per-daemon", Digest: baseDigest},
+	} {
+		if err := buildtarget.WriteState(dir, "e2e", st); err != nil {
+			t.Fatalf("write per-service state %s: %v", st.Service, err)
+		}
+	}
+
+	got, err := resolveDeployImageDigests(dir, "e2e", false)
+	if err != nil {
+		t.Fatalf("resolveDeployImageDigests: %v", err)
+	}
+	want := map[string]string{
+		"reliant":                       e2eDigest,
+		"reliant:e2e":                   e2eDigest,
+		"workspace-base":                baseDigest,
+		"workspace-base:dev-per-daemon": baseDigest,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("digests =\n  %v\nwant\n  %v", got, want)
+	}
+	// A tag this env never built resolves to nothing, so the render leaves
+	// such a workload on its tag rather than pinning foreign bytes.
+	if d, ok := got["reliant:v9"]; ok {
+		t.Errorf("reliant:v9 resolved to %q, but no build pushed that tag", d)
+	}
+}
+
+// TestResolveDeployImageDigests_NoTagEmitsOnlyBareKey proves a state file with
+// no recorded tag still contributes its bare-name digest. Only the
+// tag-qualified key is skipped — there is no tag to qualify it with, and
+// inventing one (the env tag, say) would claim a push that may not have
+// happened.
+func TestResolveDeployImageDigests_NoTagEmitsOnlyBareKey(t *testing.T) {
+	dir := t.TempDir()
+	digest := "sha256:" + strings.Repeat("f", 64)
+	if err := buildtarget.WriteState(dir, "staging", buildtarget.State{
+		Service: "api", Image: "api", Digest: digest,
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	got, err := resolveDeployImageDigests(dir, "staging", false)
+	if err != nil {
+		t.Fatalf("resolveDeployImageDigests: %v", err)
+	}
+	if !reflect.DeepEqual(got, map[string]string{"api": digest}) {
+		t.Fatalf("digests = %v, want only the bare api key", got)
 	}
 }
 

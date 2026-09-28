@@ -39,99 +39,66 @@ func writeAuditDevProject(t *testing.T, mainK string) string {
 	return dir
 }
 
-// auditDevHeader is the part of every fixture that does not vary: one
-// workload that reads a credential from the "acme-secrets" Secret, rendered
-// into `manifests` through fw.render_workloads exactly as the scaffolded dev
-// env renders it — a Deployment whose env carries a secretKeyRef.
-const auditDevHeader = `import forge
+// auditDevFixture renders one workload that reads a credential from the
+// "acme-secrets" Secret, bound to `runtime` under `provider` — the scaffolded
+// dev shape on the workload model (ADR 0002). The SAME declaration is used by
+// every case; only where it runs and who supplies its Secret vary, which are
+// exactly the two facts the audit's supply check turns on.
+func auditDevFixture(runtime, provider string) string {
+	return auditDevFixtureTargeting(runtime, provider, "    cluster_target = _cluster\n")
+}
+
+// auditDevFixtureTargeting is auditDevFixture with the env-wide
+// cluster_target line supplied by the caller ("" for an env that names no
+// cluster at all).
+func auditDevFixtureTargeting(runtime, provider, clusterTarget string) string {
+	return `import forge
 import forge.workloads as fw
 
-_ns = "acme-dev"
-_registry = "localhost:5050"
 _cluster = forge.ClusterTarget {
     cluster = "k3d-acme"
-    namespace = _ns
-    registry = _registry
+    namespace = "acme-dev"
+    registry = "localhost:5050"
 }
-_env = [forge.EnvVar {name = "STRIPE_SECRET_KEY", secret_ref = "acme-secrets", secret_key = "stripe_secret_key"}]
-_workloads = [fw.Workload {
-    name = "api"
-    kind = "service"
-    image = "acme"
-    registry = _registry
-    namespace = _ns
-    ports = [fw.Port {name = "http", port = 8080, expose = True}]
-    env_vars = _env
-}]
-manifests = fw.render_workloads(_workloads, fw.WorkloadEnv {
-    namespace = _ns
-    project = "acme"
-    registry = _registry
-    network_policies = False
-})
-`
-
-// The scaffolded dev shape: the stream renders the workload as a Deployment,
-// but the Bundle runs it as a HOST process fed by the FileSecrets store. forge
-// never applies that stream (nothing is placed in a cluster), so nothing can
-// FailedMount — and the store being absent on a fresh clone is irrelevant.
-const auditDevHostPlaced = auditDevHeader + `
 _bundle = forge.Bundle {
-    cluster_target = _cluster
-    project = "acme"
-    services = [forge.RenderedWorkload {
+` + clusterTarget + `    project = "acme"
+    workloads = [fw.Workload {
         name = "api"
-        image = "acme"
-        command = ["go", "run", "./cmd/acme", "server"]
-        env_vars = _env
-        deploy = forge.HostDeploy {
-            runner = "go-run"
-            env_vars = _env
-        }
+        build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
+        args = ["server"]
+        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+        env = {STRIPE_SECRET_KEY = forge.SecretRef {name = "acme-secrets", key = "stripe_secret_key"}}
+        runtime = ` + runtime + `
     }]
-    secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
+    secret_provider = ` + provider + `
 }
 output = forge.render(_bundle)
 `
+}
+
+// The scaffolded dev shape: the workload runs as a HOST process fed by the
+// FileSecrets store, and the env still names a cluster_target for its support
+// objects (Namespace, gateways), which forge DOES apply. A host-bound workload
+// never enters that stream, so its Secret reference is not cluster demand and
+// nothing can FailedMount — whether or not the store exists on this clone.
+var auditDevHostPlaced = auditDevFixture(`forge.OnHost {listen_ports = [8080]}`, `forge.FileSecrets {path = "secrets/dev.yaml"}`)
+
+// The same host workload in an env that names no cluster at all: forge
+// applies nothing, so the supply check has no stream to judge and says so.
+var auditDevHostOnly = auditDevFixtureTargeting(`forge.OnHost {listen_ports = [8080]}`, `forge.FileSecrets {path = "secrets/dev.yaml"}`, "")
 
 // The same workload placed IN the cluster, with FileSecrets declared: the
 // provider renders "acme-secrets" from its store at deploy time, so the mount
 // is declared. That holds whether or not this checkout's store exists — the
 // DECLARATION is what the audit checks; a missing value is `forge secret
 // ensure`'s job, reported by deploy/up when it actually needs one.
-const auditDevClusterPlacedFileSecrets = auditDevHeader + `
-_bundle = forge.Bundle {
-    cluster_target = _cluster
-    project = "acme"
-    services = [forge.RenderedWorkload {
-        name = "api"
-        image = "acme"
-        env_vars = _env
-        deploy = _cluster.deploy | {ports = [8080]}
-    }]
-    secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
-}
-output = forge.render(_bundle)
-`
+var auditDevClusterPlacedFileSecrets = auditDevFixture(`forge.OnCluster {target = _cluster}`, `forge.FileSecrets {path = "secrets/dev.yaml"}`)
 
 // A genuinely wrong DECLARATION: the workload runs in the cluster and reads
 // "acme-secrets", but the env's provider (ExternalSecrets) never supplies a
 // Secret itself and no forge.ExternalSecret promises this one. Nothing can
 // ever provide it; the pod would sit in CreateContainerConfigError.
-const auditDevClusterPlacedUndeclared = auditDevHeader + `
-_bundle = forge.Bundle {
-    cluster_target = _cluster
-    project = "acme"
-    services = [forge.RenderedWorkload {
-        name = "api"
-        image = "acme"
-        env_vars = _env
-        deploy = _cluster.deploy | {ports = [8080]}
-    }]
-    secret_provider = forge.ExternalSecrets {}
-}
-output = forge.render(_bundle)
-`
+var auditDevClusterPlacedUndeclared = auditDevFixture(`forge.OnCluster {target = _cluster}`, `forge.ExternalSecrets {}`)
 
 func auditPrereqsFor(t *testing.T, mainK string) audittype.Category {
 	t.Helper()
@@ -157,16 +124,34 @@ func TestAuditPrerequisites_HostPlacedWorkloadOnFreshClone(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
 	}
-	cat := auditPrereqsFor(t, auditDevHostPlaced)
-	if cat.Status == audittype.StatusError {
-		t.Fatalf("status = error, want ok: a host-placed workload's Secret is never mounted by a pod.\nsummary: %s\nfindings:\n%s",
-			cat.Summary, auditFindings(cat))
-	}
-	if got := cat.Details["undeclared_secret_mounts"]; got != 0 {
-		t.Errorf("undeclared_secret_mounts = %v, want 0", got)
-	}
-	if _, ok := cat.Details["secret_supply_check"].(string); !ok {
-		t.Errorf("the skipped supply check must say why it is n/a; details = %v", cat.Details)
+	for _, tc := range []struct {
+		name, mainK string
+		// supplyChecked: whether forge applies a manifest stream for this
+		// env at all. The scaffold shape does (its support objects land in
+		// the named cluster), so the check runs — and must find nothing,
+		// because a host-bound workload never enters that stream.
+		supplyChecked bool
+	}{
+		{"scaffold shape: support objects in a cluster", auditDevHostPlaced, true},
+		{"no cluster named", auditDevHostOnly, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cat := auditPrereqsFor(t, tc.mainK)
+			if cat.Status == audittype.StatusError {
+				t.Fatalf("status = error, want ok: a host-placed workload's Secret is never mounted by a pod.\nsummary: %s\nfindings:\n%s",
+					cat.Summary, auditFindings(cat))
+			}
+			if got := cat.Details["undeclared_secret_mounts"]; got != 0 {
+				t.Errorf("undeclared_secret_mounts = %v, want 0", got)
+			}
+			_, skipped := cat.Details["secret_supply_check"].(string)
+			if tc.supplyChecked && skipped {
+				t.Errorf("forge applies this env's support stream, so the supply check must run; details = %v", cat.Details)
+			}
+			if !tc.supplyChecked && !skipped {
+				t.Errorf("the skipped supply check must say why it is n/a; details = %v", cat.Details)
+			}
+		})
 	}
 }
 

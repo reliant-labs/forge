@@ -17,7 +17,14 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
+      # --allow-multiple-documents: a `---`-separated stream is valid YAML
+      # and is the shape every Kubernetes manifest set takes — the
+      # pkg/deploy RenderWorkloads goldens are exactly that. The hook still
+      # PARSES every document, so broken YAML is caught; it just stops
+      # rejecting the stream shape itself. (testdata/ stays in scope: this
+      # hook validates, it never rewrites, so a golden's exact bytes are safe.)
       - id: check-yaml
+        args: ["--allow-multiple-documents"]
       - id: check-json
 
   - repo: https://github.com/gitleaks/gitleaks

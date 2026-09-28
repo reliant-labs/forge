@@ -3,8 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
@@ -179,19 +177,4 @@ func mergeType(typ string, v any) map[string]any {
 	}
 	m["type"] = typ
 	return m
-}
-
-// writeContractFixture writes e as a render fixture and points RenderKCL at
-// it for the rest of the test.
-func writeContractFixture(t interface {
-	Fatalf(string, ...any)
-	TempDir() string
-	Setenv(string, string)
-}, e *KCLEntities) string {
-	p := filepath.Join(t.TempDir(), "render.json")
-	if err := os.WriteFile(p, contractJSON(t, e), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	t.Setenv("FORGE_KCL_RENDER_FIXTURE", p)
-	return p
 }

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,7 +115,7 @@ func TestValidateKCL_BrokenHostedEnvIsStillCaught(t *testing.T) {
 			if res.Status != doctor.StatusFail {
 				t.Fatalf("status = %s (%s), want fail: a hosted env the deploy path refuses passed validation", res.Status, res.Message)
 			}
-			if !strings.Contains(res.Evidence, "would refuse it before publishing anything") || !strings.Contains(res.Evidence, tc.want) {
+			if !strings.Contains(res.Evidence, "would refuse its hosted workloads before publishing anything") || !strings.Contains(res.Evidence, tc.want) {
 				t.Errorf("evidence does not carry the deploy path's refusal (want %q):\n%s", tc.want, res.Evidence)
 			}
 			if _, err := runForge(t, "ci", "validate-kcl"); err == nil {
@@ -194,13 +193,4 @@ func TestDoctorDeploy_HostedEnvContentChecksReadThePlatformObjects(t *testing.T)
 			}
 		})
 	}
-}
-
-func rewriteFile(t *testing.T, path string, edit func(string) string) {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeTestFile(t, path, edit(string(b)))
 }

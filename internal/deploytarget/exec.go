@@ -105,14 +105,6 @@ func isShellIdentByte(c byte, first bool) bool {
 	return false
 }
 
-// expandVars is the unexported alias kept for callers inside this
-// package (external.go, compose.go) so the existing call sites stay
-// untouched while public consumers get the canonical [ExpandVars]
-// name.
-func expandVars(template string, vars map[string]string) string {
-	return ExpandVars(template, vars)
-}
-
 // commandRunner is the indirection point the providers use to run
 // external commands (sh, docker, docker-compose, user-supplied CLIs).
 // Tests swap in a fake that records calls and returns canned output;

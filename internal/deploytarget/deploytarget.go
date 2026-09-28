@@ -526,15 +526,3 @@ func groupTarget(g ServiceGroup) string {
 		return ""
 	}
 }
-
-// truncForSummary keeps the FormatGroupSummary line readable when the
-// user's deploy_cmd is long (e.g. a flyctl command with several
-// flags). Truncates with an ellipsis after 60 chars — enough to see
-// the CLI binary and the first flag, which is what users grep for.
-func truncForSummary(s string) string {
-	const maxLen = 60
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "…"
-}

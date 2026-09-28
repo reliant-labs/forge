@@ -104,7 +104,7 @@ If your binary mounts Connect handlers, the interceptor chain (otel-outermost �
 
 ### One-off scripts (backfills, migrations, ad-hoc tools)
 
-A one-off binary's work-loop is allowed to finish: do the work, log the summary, return `nil`. Deploy it as a `forge.Job` instead of a `forge.Service` so Kubernetes won't restart it. Same scaffold, same composition root; the only difference is the KCL block (`forge.Job` vs `forge.Service`) in `deploy/kcl/<env>/main.k`.
+A one-off binary's work-loop is allowed to finish: do the work, log the summary, return `nil`. Declare its workload `kind = "job"` instead of `service`/`worker` in `deploy/kcl/workloads.k`, so no runtime restarts it. Same scaffold, same composition root; the only difference is the `kind`.
 
 ## Config — the cmdkit paved path
 
@@ -130,31 +130,42 @@ If your binary mounts handlers, every handler maps errors with `svcerr.Wrap(err)
 
 ## Deploy
 
-The `binaries:` block seeds `deploy/kcl/<env>/main.k` with a `forge.Service { name = "<bin>", command = ["./<bin>", "<name>"], ... }` — the same `forge.Service` schema services use, just a different `command`:
+A secondary binary is its own program: `forge scaffold binary <name>`
+declares it in `deploy/kcl/workloads.k` with its OWN build, as a `tool`
+(built into the project image, never scheduled) and binds it
+`_build_only(wl.<name>)` in every env:
 
 ```kcl
-# deploy/kcl/prod/main.k
-import forge
-
-_prod_k8s = forge.K8sCluster {
-    cluster = "gke_acme-prod_us-central1_c1"
-    namespace = "myapp-prod"
-    registry = "ghcr.io/acme/myapp"
-}
-
-_bundle = forge.Bundle {
-    services = [
-        forge.Service { name = "api", deploy = _prod_k8s }
-        forge.Service {
-            name = "workspace-proxy"
-            command = ["./myapp", "workspace-proxy"]
-            deploy = _prod_k8s | { replicas = 2 }
-        }
-    ]
+# deploy/kcl/workloads.k
+workspace_proxy = fw.Workload {
+    name = "workspace-proxy"
+    kind = "tool"
+    build = forge.GoBuild {cmd = "./cmd/workspace_proxy", output_name = "workspace_proxy"}
 }
 ```
 
-Binaries can target any deploy provider (K8sCluster / External / Compose / HostDeploy / BuildOnly) — same dispatch as services. For an Ingress, extra env vars, or per-binary resources, set them on the `forge.Service` block (`ingress`, `env_vars`, `resources` on `K8sCluster`).
+To RUN it as a long-lived process, make it a `service` (or `worker`) and
+name its binary as the `command` — the project image's ENTRYPOINT is the
+primary binary, and a workload's `command` replaces it:
+
+```kcl
+workspace_proxy = fw.Workload {
+    name = "workspace-proxy"
+    kind = "service"
+    build = forge.GoBuild {cmd = "./cmd/workspace_proxy", output_name = "workspace_proxy"}
+    command = ["/app/workspace_proxy"]
+    ports = [fw.Port {name = "http", port = 8080, expose = True}]
+}
+```
+
+then bind it per env like any workload — `_on_cluster(wl.workspace_proxy)`,
+`_on_host(wl.workspace_proxy)` (the host runtime runs `command` verbatim), or
+`_hosted(...)`. Replicas, resources and env are refinements on the binding
+(`_on_cluster(wl.workspace_proxy) | {replicas = 2}`), never a second copy of
+the declaration.
+
+A subcommand of the PRIMARY binary needs no build of its own: `args =
+["<subcommand>"]` with the project's GoBuild selects it on every runtime.
 
 ## Common patterns
 

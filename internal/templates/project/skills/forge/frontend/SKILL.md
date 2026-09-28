@@ -156,15 +156,15 @@ Name the workload, never the hostname:
 
 | Env | Who resolves `forge.WorkloadURL` | Who writes `config.js` |
 |---|---|---|
-| **Hosted** (Bundle declares `control_plane` and runs tiers through it) | The control plane. It allocates the hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync. The release artifact carries **no** config.js. |
-| Everything else (host, compose, cluster, Firebase / own bucket) | forge, **at render time**: a route to the workload → its public SimpleBackend domain → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / StaticSite deploy. |
+| **Hosted** (the referrer is a hosted StaticSite, or a workload bound to `forge.OnHosted`) | The control plane. It allocates the hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync. The release artifact carries **no** config.js. |
+| Everything else (host, compose, cluster, Firebase / own bucket) | forge, **at render time**: a route to the workload → a custom domain on its exposed port → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / StaticSite deploy. |
 
 Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
 
-The backend half uses the same reference. A SimpleBackend's `CORS_ORIGINS` names the site, not its URL:
+The backend half uses the same reference. A workload's `CORS_ORIGINS` names the site, not its URL:
 
 ```kcl
-tiers.EnvVar { name = "CORS_ORIGINS", workloadURL = forge.WorkloadURL { workload = "web" } }
+wl.api | {env = {CORS_ORIGINS = forge.WorkloadURL {workload = "web"}}}
 ```
 
 ## Protobuf-ES v2

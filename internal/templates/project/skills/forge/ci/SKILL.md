@@ -116,10 +116,11 @@ read when the workflow is scaffolded; with several, the first auto-deploys
 after a green image build on main and the last is protected. A lone env is
 never auto-deployed.
 
-Credentials: a `forge.K8sCluster` env needs `secrets.KUBECONFIG` holding a
-context named exactly the env's declared `cluster`; a hosted env
-(`forge.ControlPlane`) needs `secrets.FORGE_CONTROL_PLANE_TOKEN` and no
-kubeconfig. forge picks the path from the env's own KCL.
+Credentials: an env with `forge.OnCluster` workloads needs `secrets.KUBECONFIG` holding a
+context named exactly the ClusterTarget's `cluster`; `forge.OnHosted`
+workloads need `secrets.FORGE_CONTROL_PLANE_TOKEN` (for the env's
+`forge.ControlPlane`) and no kubeconfig; an env that binds both needs both.
+forge picks each workload's path from its own binding.
 
 ### Pre-commit and generated files
 

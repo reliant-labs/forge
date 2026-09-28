@@ -124,7 +124,7 @@ fix.
 ## In a Forge Project
 
 - **Bring the stack up, then test:** `forge env up <env>` builds + deploys every
-  service to its declared `K8sCluster` context; `task test:e2e` runs the suite
+  workload to the kubectl context its `forge.OnCluster` target declares; `task test:e2e` runs the suite
   against the live multi-cluster stack. See the `forge/testing/e2e` skill.
 - **The pod is still up after a failure** — `forge env up` leaves the stack running, so
   you can `kubectl exec` in without the `E2E_HOLD_ON_FAIL` dance, or

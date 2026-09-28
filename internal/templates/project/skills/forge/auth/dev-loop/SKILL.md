@@ -21,7 +21,7 @@ forge run
 
 **Nothing here runs in a container.** Both servers are `forge.HostInfra` declarations, so a scaffolded project starts ZERO containers. Zitadel is a single static Go binary: forge downloads the pinned version once, verifies it against a checksum committed in forge itself, caches it under the user cache dir, and supervises it as a host process. Its state lives in its OWN database on that same postgres, so the two schemas cannot collide.
 
-**The container is still there if you want it.** `docker-compose.yml` still defines `idp` (and the `idp-db` it needs); swap the one `deploy =` line in `deploy/kcl/dev/main.k` for `forge.Compose {service = "idp", env = {"IDP_PORT": str(_idp_port)}}`. Same steps file, same port, same provisioning job.
+**The container is still there if you want it.** `docker-compose.yml` still defines `idp` (and the `idp-db` it needs); in `deploy/kcl/dev/main.k`, drop the `idp` `forge.HostInfra` entry and add a compose-bound workload to `_workloads` — `fw.Workload {name = "idp", runtime = forge.OnCompose {service = "idp", env = {"IDP_PORT": str(_idp_port)}}}`. Same steps file, same port, same provisioning job.
 
 It is scaffolded only for a project that declares a **frontend** — a project authenticating with API keys, a worker, or a service with no browser never gets it.
 
@@ -55,7 +55,7 @@ _idp_port = plugin.allocate_port(8080, option("worktree") or "")
 _idp_origin = "http://localhost:${_idp_port}"
 ```
 
-Everything that has to agree reads that one variable: the IdP binds it (`HostInfra.port`, or `Compose.env`'s `${IDP_PORT}`), and the `idp-provision` job dials and registers it (`IDP_BASE` / `IDP_BROWSER_ORIGIN` in its `env_vars`). `allocate_port` rather than `resolve_port` because a port that stepped off a busy neighbour between runs would invalidate the `iss` of every issued token and the registered redirect URI. **To move it, change the base in that file** — not `IDP_PORT` in your shell, and not the compose file; those move the server alone and leave every other reference on the old port.
+Everything that has to agree reads that one variable: the IdP binds it (`HostInfra.port`, or `OnCompose.env`'s `${IDP_PORT}`), and the `idp-provision` job dials and registers it (`IDP_BASE` / `IDP_BROWSER_ORIGIN` in its env). `allocate_port` rather than `resolve_port` because a port that stepped off a busy neighbour between runs would invalidate the `iss` of every issued token and the registered redirect URI. **To move it, change the base in that file** — not `IDP_PORT` in your shell, and not the compose file; those move the server alone and leave every other reference on the old port.
 
 **The frontend's port does NOT need pinning.** A frontend that signs in keeps the kernel-assigned dev port forge hands it, so two dev stacks can run and sign in at the same time. That works because what `idp-provision` registers is a **glob**, not a URL: Zitadel matches redirect URIs as patterns whenever the app is in `devMode` (which the job always sets for the dev SPA), so `http://localhost:*/auth/callback` matches whatever port this run got. A single `*` spans the port and does not cross a `/`, so a different host or path is still refused. Under a `base_path` the job composes the glob from the origin pattern plus the base path (`http://localhost:*/<base_path>/auth/callback`).
 

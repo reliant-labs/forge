@@ -18,7 +18,7 @@ forge env up dev     # in one terminal — builds + infra + deploys all services
 task test:e2e         # in another terminal — runs e2e suite
 ```
 
-If your services span multiple clusters, you don't script that yourself: each service's `deploy` block names its own `K8sCluster` (the `cluster` field is its kubectl context), and `forge env up` routes each service to its context. A cross-cluster e2e flow is just real Connect clients talking to services that happen to live in different contexts.
+If your services span multiple clusters, you don't script that yourself: each workload's binding names its own `forge.ClusterTarget` (its `cluster` field is its kubectl context), and `forge env up` routes each workload to its context. A cross-cluster e2e flow is just real Connect clients talking to services that happen to live in different contexts.
 
 ## Running
 

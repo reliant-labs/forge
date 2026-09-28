@@ -33,7 +33,7 @@ _bundle = forge.Bundle {
     ]
 }
 
-_manifests = forge.render_manifests(_bundle, "v1", {}, False)
+_manifests = forge.render(_bundle).manifests
 _records = {m.metadata.name: m for m in _manifests if m.kind == "ManagedDatabase"}
 _entities = forge.render(_bundle).databases
 

@@ -29,6 +29,7 @@ argv it had before the field existed.
 """
 
 import forge
+import forge.workloads as fw
 
 _control_plane = forge.Cluster {
     name = "control-plane"
@@ -53,11 +54,12 @@ _target = forge.ClusterTarget {
 _bundle = forge.Bundle {
     cluster_target = _target
     clusters = [_control_plane, _cp_daemon]
-    services = [
-        forge.RenderedWorkload {
+    workloads = [
+        fw.Workload {
             name = "admin-server"
             image = "admin-server"
-            deploy = _target.deploy | {ports = [8080]}
+            ports = [fw.Port {name = "http", port = 8080}]
+            runtime = forge.OnCluster {target = _target}
         }
     ]
     helm_charts = [
@@ -140,6 +142,6 @@ assert_flux_cluster_null = output.helm_charts[2].cluster == None
 # ── still never renders into the k8s manifest stream ───────────────────
 # Re-targeting changes WHERE a chart is applied, not WHETHER it is a
 # Go-side helm shell-out. No chart manifest may leak into the KCL render.
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
+manifests = forge.render(_bundle).manifests
 _helmish = [m for m in manifests if m.kind == "GatewayClass" or "cnpg" in str(m)]
 assert_no_helm_manifests_in_render = len(_helmish) == 0

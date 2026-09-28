@@ -20,6 +20,7 @@ Invariants asserted:
 """
 
 import forge
+import forge.workloads as fw
 
 _target = forge.ClusterTarget {
     cluster = "k3d-example"
@@ -31,21 +32,24 @@ _issuer = "letsencrypt-dns01"
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [
-        forge.RenderedWorkload {
+    workloads = [
+        fw.Workload {
             name = "api"
             image = "example"
-            deploy = _target.deploy | {ports = [8080]}
+            ports = [fw.Port {name = "http", port = 8080}]
+            runtime = forge.OnCluster {target = _target}
         }
-        forge.RenderedWorkload {
+        fw.Workload {
             name = "admin"
             image = "example"
-            deploy = _target.deploy | {ports = [8081]}
+            ports = [fw.Port {name = "http", port = 8081}]
+            runtime = forge.OnCluster {target = _target}
         }
-        forge.RenderedWorkload {
+        fw.Workload {
             name = "daemon-gateway"
             image = "example"
-            deploy = _target.deploy | {ports = [9190]}
+            ports = [fw.Port {name = "http", port = 9190}]
+            runtime = forge.OnCluster {target = _target}
         }
     ]
     gateways = [
@@ -131,7 +135,7 @@ _bundle = forge.Bundle {
     ]
 }
 
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
+manifests = forge.render(_bundle).manifests
 
 _gateways = [m for m in manifests if m.kind == "Gateway"]
 _certs = [m for m in manifests if m.kind == "Certificate"]

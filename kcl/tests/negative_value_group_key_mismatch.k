@@ -5,6 +5,8 @@ comparison compares like for like. A group whose members project different
 keys can't be byte-matched, so the Bundle check rejects it at parse time.
 """
 
+# expect: ExternalSecrets sharing a value_group must declare the SAME key set
+
 import forge
 
 _bundle = forge.Bundle {

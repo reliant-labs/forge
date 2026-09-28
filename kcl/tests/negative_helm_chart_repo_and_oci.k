@@ -4,6 +4,8 @@ A platform dep is sourced from EITHER a chart repo OR an OCI ref, never
 both. Declaring both must fail the schema check.
 """
 
+# expect: HelmChart.repo and HelmChart.oci are mutually exclusive
+
 import forge
 
 _chart = forge.HelmChart {

@@ -4,6 +4,8 @@ bundle reads it as window.__FORGE_CONFIG__.<KEY>, and a hyphenated key is
 unreachable that way.
 """
 
+# expect: runtime_config keys must be JavaScript identifiers
+
 import forge
 
 _fe = forge.Frontend {

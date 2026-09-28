@@ -13,6 +13,8 @@ one we own — pin THAT path so a future loosening of the check is
 caught loudly.
 """
 
+# expect: RuntimeClass.handler is required
+
 import forge
 
 _bad = forge.RuntimeClass { name = "gvisor", handler = "" }

@@ -16,6 +16,7 @@ render).
 """
 
 import forge
+import forge.workloads as fw
 
 _target = forge.ClusterTarget {
     cluster = "prod-cluster"
@@ -26,11 +27,12 @@ _target = forge.ClusterTarget {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [
-        forge.RenderedWorkload {
+    workloads = [
+        fw.Workload {
             name = "api"
             image = "api"
-            deploy = _target.deploy | {ports = [8080]}
+            ports = [fw.Port {name = "http", port = 8080}]
+            runtime = forge.OnCluster {target = _target}
         }
     ]
     helm_charts = [
@@ -88,6 +90,6 @@ assert_hc_eg_values_empty = len(output.helm_charts[1].values) == 0
 # ── HelmChart NEVER renders into the k8s manifest stream ───────────
 # Its expansion is a Go-side `helm template` shell-out; KCL emits only
 # the declaration. No chart manifest leaks into render_manifests.
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
+manifests = forge.render(_bundle).manifests
 _helmish = [m for m in manifests if "envoyproxy" in str(m) or m.kind == "ClusterIssuer"]
 assert_no_helm_manifests_in_render = len(_helmish) == 0

@@ -1,6 +1,10 @@
 """
 Negative test — ShellBuild requires `cmd`.
 """
+
+# expect: ShellBuild.cmd is required
+
 import forge
-_s = forge.RenderedWorkload { name = "x", build = forge.ShellBuild {} }
-output = forge.render(forge.Bundle { services = [_s] })
+import forge.workloads as fw
+
+_w = fw.Workload {name = "x", build = forge.ShellBuild {}}

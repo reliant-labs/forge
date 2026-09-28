@@ -48,14 +48,14 @@ _bundle = forge.Bundle {
         forge.Cluster { name = "workload", owner = _cp }
     ]
     kubeconfig_secrets = [_default_reach, _explicit]
-    services = []
+    workloads = []
 }
 
-_no_kubeconfig_bundle = forge.Bundle { services = [] }
+_no_kubeconfig_bundle = forge.Bundle { workloads = [] }
 
 output = forge.render(_bundle)
 output_none = forge.render(_no_kubeconfig_bundle)
-manifests = forge.render_manifests(_bundle)
+manifests = forge.render(_bundle).manifests
 
 # ── Invariants ─────────────────────────────────────────────────────
 

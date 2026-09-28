@@ -9,10 +9,15 @@ and a RenderedSecrets provider lands a Secret only where a SERVICE names it,
 so neither could place them.
 
 Env-gated (a literal key): runs under `-D env=dev|e2e` and is REJECTED under
-prod — see TestKCLModule_FileSecrets.
+prod (the kcl-args / reject-args directives).
 """
 
+# kcl-args: env=dev | env=e2e
+# reject-args: env=prod
+# reject-expect: FileSecrets is dev/e2e only
+
 import forge
+import forge.workloads as fw
 
 _target = forge.ClusterTarget {
     cluster = "k3d-cp"
@@ -22,10 +27,10 @@ _target = forge.ClusterTarget {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [forge.RenderedWorkload {
+    workloads = [fw.Workload {
         name = "api"
         image = "api:dev"
-        deploy = _target.deploy
+        runtime = forge.OnCluster {target = _target}
     }]
     secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
     rendered_secrets = [
@@ -50,7 +55,7 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle)
+manifests = forge.render(_bundle).manifests
 
 _rs = output.rendered_secrets
 

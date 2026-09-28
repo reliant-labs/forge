@@ -12,7 +12,7 @@ _bundle = forge.Bundle {
     project = "acme"
     env = "hosted"
     control_plane = forge.ControlPlane { endpoint = "https://api.example.com" }
-    services = []
+    workloads = []
     frontends = [forge.Frontend {
         name = "web"
         path = "frontends/web"

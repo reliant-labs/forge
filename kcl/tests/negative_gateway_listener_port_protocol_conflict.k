@@ -15,6 +15,8 @@ side effect, before listener identity became (port, protocol, hostname).
 It is now its own check, so both properties hold at once.
 """
 
+# expect: listeners sharing a port must agree on protocol
+
 import forge
 
 _gw = forge.Gateway {

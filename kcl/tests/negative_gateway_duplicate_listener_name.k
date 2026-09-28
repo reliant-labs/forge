@@ -5,6 +5,8 @@ spec.listeners[*].name and must be unique within a gateway since
 routes attach via sectionName.
 """
 
+# expect: Gateway.listeners[*].name must be unique within a gateway
+
 import forge
 
 _gw = forge.Gateway {

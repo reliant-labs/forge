@@ -13,7 +13,7 @@ rejection than the `check:` block failures the negative_* harness looks
 for — and that harness deliberately refuses to accept a CompileError, so
 a typo'd fixture cannot pass vacuously. Weakening it to admit this file
 would blunt that guard for every other fixture. Its dedicated test is
-TestKCLModule_StaticSiteSchemaIsClosed in
+TestKCLModule_ClosedSchemas in
 internal/templates/kcl_module_test.go.
 
 `public_access` is the canonical example — who may read the bucket is
@@ -21,6 +21,9 @@ the bucket owner's policy, not something a `forge.StaticSite` deploy
 block gets to assert. This fixture fails if someone later adds an
 escape-hatch passthrough that would make arbitrary keys legal again.
 """
+
+# expect: public_access
+# expect: StaticSite
 
 import forge
 

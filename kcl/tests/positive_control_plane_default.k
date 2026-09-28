@@ -19,14 +19,14 @@ _reliant_cloud = forge.Bundle {
     env = "prod"
     control_plane = forge.ControlPlane {}
     secret_provider = forge.HostedSecrets {}
-    services = []
+    workloads = []
 }
 
 _self_run = forge.Bundle {
     project = "acme"
     env = "dev"
     control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}
-    services = []
+    workloads = []
 }
 
 _cloud_out = forge.render(_reliant_cloud)

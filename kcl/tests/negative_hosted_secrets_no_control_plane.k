@@ -7,10 +7,11 @@ so the Bundle check must reject the declaration at load rather than let
 `forge secret set` fail later with a less direct error.
 """
 
+# expect: secret_provider = forge.HostedSecrets {} requires control_plane
+
 import forge
 
 _bundle = forge.Bundle {
-    services = []
     secret_provider = forge.HostedSecrets {}
 }
 

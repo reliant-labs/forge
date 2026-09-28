@@ -8,6 +8,8 @@ that has nothing to build.
 Expected: `kcl run` FAILS on the Frontend check.
 """
 
+# expect: Frontend needs a source of code
+
 import forge
 
 _fe = forge.Frontend {

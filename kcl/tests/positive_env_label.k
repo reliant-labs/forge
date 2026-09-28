@@ -24,7 +24,7 @@ need one:
 
 The `-D env=` DEFAULT path (the automatic case: a project gets the label
 without editing any KCL) is pinned by tests/positive_env_option.k, which
-TestKCLModule_EnvOptionPlumbing runs under real bindings.
+its `# kcl-args` directive runs under real bindings.
 
 The other invariant here is the CRITICAL one: the stamp reaches
 `metadata.labels` and the POD TEMPLATE's labels, and NEVER a selector.

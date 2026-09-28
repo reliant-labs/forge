@@ -10,6 +10,8 @@ main happens to be today.
 Expected: `kcl run` FAILS on the GitSource check.
 """
 
+# expect: GitSource.ref is required
+
 import forge
 
 _fe = forge.Frontend {

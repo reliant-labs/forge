@@ -5,10 +5,11 @@ inferred, so this is a load error rather than a Secret that is silently
 never applied.
 """
 
+# expect: Bundle.rendered_secrets: every Secret needs a cluster
+
 import forge
 
 _bundle = forge.Bundle {
-    services = []
     rendered_secrets = [forge.RenderedSecret {
         name = "orphan"
         keys = {"k" = forge.RenderedSecretKey {key = "SOME_KEY"}}

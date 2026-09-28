@@ -1,18 +1,20 @@
 """
-Negative test — CronJob.deploy_phase on a SCHEDULED CronJob is refused.
+Negative test — deployPhase on a SCHEDULED (cron) workload is refused.
 
-The phase orders a one-shot Job against the deploy's workloads. A scheduled
-CronJob runs on its own cadence and nothing waits for it, so the declaration
-would be silently meaningless — which is exactly the kind of dropped
-declaration forge refuses rather than ignores.
+The phase orders a one-shot Job against the deploy's workloads. A cron runs
+on its own cadence and nothing waits for it, so the declaration would be
+silently meaningless — which is exactly the kind of dropped declaration
+forge refuses rather than ignores.
 """
 
-import forge
+# expect: deployPhase
 
-_c = forge.CronJob {
+import forge.workloads as fw
+
+_c = fw.Workload {
     name = "nightly"
-    image = "app"
+    kind = "cron"
     schedule = "@daily"
-    command = ["/app", "report"]
-    deploy_phase = "pre-rollout"
+    args = ["report"]
+    deployPhase = "pre-rollout"
 }

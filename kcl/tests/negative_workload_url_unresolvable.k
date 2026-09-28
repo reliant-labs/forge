@@ -1,18 +1,22 @@
 """
-Negative test — on a non-hosted env, a reference to a workload with no URL
-forge can know at render time is REFUSED rather than guessed. Here the host
-service declares no listen_ports: `forge env up` hands it an ephemeral port
-only after rendering, so any URL written now would be wrong.
+Negative test — a reference to a workload with no URL forge can know at
+render time is REFUSED rather than guessed. Here the host workload declares
+no listen_ports: `forge env up` hands it an ephemeral port only after
+rendering, so any URL written now would be wrong.
 """
 
+# expect: forge.WorkloadURL 'api' has no URL forge can know at render time
+
 import forge
+import forge.workloads as fw
 
 _bundle = forge.Bundle {
-    services = [forge.RenderedWorkload { name = "api", deploy = forge.HostDeploy {} }]
+    runtime = forge.OnHost {}
+    workloads = [fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/api"}, args = ["server"]}]
     frontends = [forge.Frontend {
         name = "web"
         path = "frontends/web"
-        runtime_config = { API_URL = forge.WorkloadURL { workload = "api" } }
+        runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}
     }]
 }
 

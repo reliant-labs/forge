@@ -12,6 +12,8 @@ form a hand-picked pair most often takes — the two look different at a
 glance and are not.
 """
 
+# expect: Cluster.cluster_cidr overlaps its own service_cidr
+
 import forge
 
 _bad = forge.Cluster {

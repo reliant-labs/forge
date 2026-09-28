@@ -13,6 +13,7 @@ render-and-apply pipeline.
 """
 
 import forge
+import forge.workloads as fw
 
 _target = forge.ClusterTarget {
     cluster = "k3d-runtime"
@@ -22,11 +23,12 @@ _target = forge.ClusterTarget {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [
-        forge.RenderedWorkload {
+    workloads = [
+        fw.Workload {
             name = "api"
             image = "api"
-            deploy = _target.deploy | {ports = [8080]}
+            ports = [fw.Port {name = "http", port = 8080}]
+            runtime = forge.OnCluster {target = _target}
         }
     ]
     runtime_classes = [
@@ -71,7 +73,7 @@ assert_rc_kata_scheduling_set = output.runtime_classes[1].scheduling.nodeSelecto
 
 # ── K8s manifests (node.k8s.io/v1 RuntimeClass objects) ────────────
 
-manifests = forge.render_manifests(_bundle, "latest", {}, False)
+manifests = forge.render(_bundle).manifests
 _rcs = [m for m in manifests if m.kind == "RuntimeClass"]
 assert_rc_manifest_count = len(_rcs) == 2
 

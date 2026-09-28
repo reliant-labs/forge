@@ -9,15 +9,15 @@ while looking like it gates everything.
 
 There is no safe way to guess which was meant, so the schema rejects it
 and says both spellings.
-
-Loading this file MUST FAIL.
 """
+
+# expect: already gates every workload
 
 import forge.workloads as fw
 
 _bad = fw.Workload {
     kind = "job"
     name = "migrate"
-    command = ["/app/demo", "db", "migrate", "up"]
+    args = ["db", "migrate", "up"]
     before = [fw.BEFORE_ALL, "api"]
 }

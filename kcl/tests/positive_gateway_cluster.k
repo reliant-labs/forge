@@ -92,7 +92,7 @@ _bundle = forge.Bundle {
     http_routes = [_route_http]
     grpc_routes = [_route_grpc]
 }
-_full = forge.render_manifests(_bundle, "latest", {}, False)
+_full = forge.render(_bundle).manifests
 _full_gw = [m for m in _full if m.kind == "Gateway"][0]
 
 # ── Invariants ──────────────────────────────────────────────────────

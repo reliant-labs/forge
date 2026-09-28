@@ -1,13 +1,16 @@
 """
-Negative test — CronJob.schedule must be either '' (one-shot Job),
-a named expression ('@hourly', ...), or a 5-field cron expression.
-Anything else fails the check block.
+Negative test — a cron workload's schedule must be a named expression
+('@hourly', ...) or a 5-field cron expression. Anything else fails the
+Workload check block, naming the field.
 """
 
-import forge
+# expect: Workload.schedule must be
 
-_cron = forge.CronJob {
+import forge.workloads as fw
+
+_cron = fw.Workload {
     name = "bad-schedule"
-    image = "x"
+    kind = "cron"
+    args = ["sweep"]
     schedule = "every other tuesday"
 }

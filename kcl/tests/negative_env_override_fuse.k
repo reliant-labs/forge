@@ -11,6 +11,8 @@ overridden key's WHOLE EnvSource, so the same re-channel yields a clean
 single-channel source. This fixture is the two-channel proof: it MUST fail.
 """
 
+# expect: EnvSource must set EXACTLY ONE channel
+
 import forge
 
 _base: {str: forge.EnvSource} = {

@@ -3,6 +3,8 @@ Negative test — FirebaseHosting.base_path must start with '/'.
 A bare segment ("admin") fails the check block.
 """
 
+# expect: FirebaseHosting.base_path must start with '/'
+
 import forge
 
 _fe = forge.Frontend {

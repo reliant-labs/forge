@@ -7,10 +7,11 @@ control plane, so it must be rejected at load rather than render a
 declaration forge would later treat as absent.
 """
 
+# expect: ControlPlane.endpoint must not be empty
+
 import forge
 
 _bundle = forge.Bundle {
-    services = []
     control_plane = forge.ControlPlane {endpoint = ""}
 }
 

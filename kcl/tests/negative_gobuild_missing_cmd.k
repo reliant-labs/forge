@@ -2,6 +2,10 @@
 Negative test — GoBuild requires `cmd`. Omitting it must fail the
 schema check (no hardcoded ./cmd fallback in the schema).
 """
+
+# expect: GoBuild.cmd is required
+
 import forge
-_s = forge.RenderedWorkload { name = "x", build = forge.GoBuild {} }
-output = forge.render(forge.Bundle { services = [_s] })
+import forge.workloads as fw
+
+_w = fw.Workload {name = "x", build = forge.GoBuild {}}

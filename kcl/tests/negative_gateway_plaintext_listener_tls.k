@@ -8,6 +8,8 @@ unencrypted with nothing anywhere reporting a problem. Reject it rather
 than quietly ignoring it.
 """
 
+# expect: GatewayListener.tls is only valid on an HTTPS listener
+
 import forge
 
 _l = forge.GatewayListener {

@@ -400,14 +400,11 @@ type BuildImagesWorkflowData struct {
 	// is pushed to. The workflow names no registry — forge reads it from
 	// deploy/kcl/<BuildEnv>/main.k.
 	BuildEnv string
-	// Frontend IMAGES are per-env (each renders that env's config.js), so
-	// deploy.yml builds them; this workflow builds the project image alone.
-	// But `forge build --target <project>` still runs each frontend's
-	// `npm run build`, so the job installs the first frontend's
-	// dependencies, exactly as deploy.yml does.
-	HasFrontends bool
-	FrontendPath string
-	VulnDocker   bool // trivy scanning
+	// No frontend fields: frontend IMAGES are per-env (each renders that
+	// env's config.js), so deploy.yml builds them, and `forge build <env>
+	// --target <project>` builds the project image alone — no frontend's
+	// `npm run build` — so this job needs no Node toolchain.
+	VulnDocker bool // trivy scanning
 
 	// CutRelease emits the job that records a release against a control
 	// plane and promotes an environment to it — the step between "the image

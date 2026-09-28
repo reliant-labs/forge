@@ -130,11 +130,9 @@ func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.F
 	if isService {
 		if buildEnv != "" {
 			files = append(files, CIWorkflowFile{"build-images.yml.tmpl", ".github/workflows/build-images.yml", templates.BuildImagesWorkflowData{
-				ProjectName:  cfg.Name,
-				BuildEnv:     buildEnv,
-				HasFrontends: hasFrontends,
-				FrontendPath: firstFrontendPath,
-				VulnDocker:   ci.VulnDocker,
+				ProjectName: cfg.Name,
+				BuildEnv:    buildEnv,
+				VulnDocker:  ci.VulnDocker,
 				// Cut-release + promote talks to a control plane, the same
 				// server the reconcile workflow does, so it rides the same
 				// opt-in gate: a project without one must not get a job

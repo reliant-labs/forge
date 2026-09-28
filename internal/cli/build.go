@@ -794,37 +794,7 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		declared, entities = ents, ents
 	}
 
-	// --target narrows the entity set BEFORE any build decision reads it.
-	// Doing it here (rather than at each derivation site) is what makes the
-	// scoping total: resolveBuildTargetSet, buildKCLDockerShell,
-	// buildKCLBuildOnlyVariants and buildExternalServiceResults all read
-	// `entities`, so one filter covers every build lane. Validated by the
-	// caller (`forge env up` / `forge env deploy`), which owns the
-	// "unknown target" message and its available-names list.
-	if len(opts.targets) > 0 && entities != nil {
-		entities = filterEntitiesByTarget(entities, opts.targets)
-	}
-
-	// `-t <name>` scopes the KCL set the same way. opts.targets is the
-	// orchestrator's channel (set by `forge env up`); opts.buildTarget is this
-	// command's own flag, and it must narrow the entities too — otherwise
-	// naming one service still runs every other service's build_cmd, which is
-	// exactly the "one command rebuilt my whole stack" failure. `all` and
-	// `external` keep their existing meanings and are not names.
-	//
-	// A FRONTEND name narrows the same way, and for the same reason. It
-	// used not to matter: a frontend was resolvable only from the codegen
-	// inventory, which no external-build service is ever in, so the branch
-	// was unreachable for one. Now that a KCL-declared frontend resolves,
-	// `forge build prod --target reliant-web` reached it — and observed:
-	// the frontend built in 22s, then every external service's build_cmd
-	// ran anyway and four docker pushes failed, on a command that named
-	// one frontend.
-	if entities != nil && opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != "external" {
-		if kclHasServiceNamed(entities, opts.buildTarget) || kclFrontendAsBuildTarget(entities, opts.buildTarget) != nil {
-			entities = filterEntitiesByTarget(entities, []string{opts.buildTarget})
-		}
-	}
+	entities = narrowBuildEntities(cfg.Name, entities, opts)
 
 	// Materialize any cross-repo frontend source, so every downstream
 	// consumer (npm install, `npm run build`, the docker context) sees a
@@ -834,6 +804,77 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		return nil, nil, err
 	}
 	return declared, entities, nil
+}
+
+// narrowBuildEntities is the entity set a build acts on: the env's render
+// narrowed by --target BEFORE any build decision reads it. Doing it here
+// (rather than at each derivation site) is what makes the scoping total:
+// resolveBuildTargetSet, buildKCLDockerShell, buildKCLBuildOnlyVariants and
+// buildExternalServiceResults all read the result, so one filter covers every
+// build lane. nil in, nil out.
+func narrowBuildEntities(projectName string, entities *KCLEntities, opts buildOptions) *KCLEntities {
+	if entities == nil {
+		return nil
+	}
+	// opts.targets is the orchestrator's channel (set by `forge env up`).
+	// Validated by the caller (`forge env up` / `forge env deploy`), which
+	// owns the "unknown target" message and its available-names list.
+	if len(opts.targets) > 0 {
+		entities = filterEntitiesByTarget(entities, opts.targets)
+	}
+
+	// opts.buildTarget is this command's own `-t <name>`, and it must narrow
+	// the entities too — otherwise naming one service still runs every other
+	// service's build_cmd, which is exactly the "one command rebuilt my whole
+	// stack" failure. `all` and `external` keep their existing meanings and
+	// are not names.
+	//
+	// A FRONTEND name narrows the same way, and for the same reason. It used
+	// not to matter: a frontend was resolvable only from the codegen
+	// inventory, which no external-build service is ever in, so the branch
+	// was unreachable for one. Now that a KCL-declared frontend resolves,
+	// `forge build prod --target reliant-web` reached it — and observed: the
+	// frontend built in 22s, then every external service's build_cmd ran
+	// anyway and four docker pushes failed, on a command that named one
+	// frontend.
+	//
+	// The PROJECT name narrows too, to the workloads the project image is
+	// built for. It is the command a CI job runs to publish that one image,
+	// and without this it ran every ShellBuild and DockerBuild the env
+	// declares — `forge build prod --target control-plane --push` needed a
+	// sibling-repo checkout for images it was never asked to build.
+	// Precedence is resolveNamedBuildTarget's: frontend, project, service.
+	switch t := opts.buildTarget; {
+	case t == "" || t == "all" || t == "external":
+		return entities
+	case kclFrontendAsBuildTarget(entities, t) != nil:
+		return filterEntitiesByTarget(entities, []string{t})
+	case t == projectName:
+		return filterEntitiesToProjectImage(entities)
+	case kclHasServiceNamed(entities, t):
+		return filterEntitiesByTarget(entities, []string{t})
+	}
+	return entities
+}
+
+// filterEntitiesToProjectImage returns a shallow copy of e narrowed to the
+// workloads the project image is built for — every workload with a GoBuild —
+// and no frontend or host infra. The project Dockerfile copies every built
+// binary into the one image, so those workloads are one artifact: building a
+// subset would ship an image missing a binary some workload runs.
+func filterEntitiesToProjectImage(e *KCLEntities) *KCLEntities {
+	out := *e // shallow copy; slices below are rebuilt, the rest shared
+	var ws []WorkloadEntity
+	for _, w := range e.Workloads {
+		if w.GoBuild() != nil {
+			ws = append(ws, w)
+		}
+	}
+	out.Workloads = ws
+	out.Infra = nil
+	out.Frontends = nil
+	out.ManifestClusters = nil
+	return &out
 }
 
 // bindBuildRenderOptions publishes this invocation's `-D name=value` render
@@ -959,8 +1000,11 @@ func resolveNamedBuildTarget(cfg *config.ProjectConfig, entities *KCLEntities, o
 		return []config.FrontendConfig{*hit}, false, nil
 	}
 	if opts.buildTarget == cfg.Name {
-		// The project binary, with its frontends already filtered away.
-		return frontends, true, nil
+		// The project binary and image, and no frontend: a frontend is its
+		// own target. Returning the inventory here ran every frontend's
+		// `npm run build` on a command that named the project.
+		opts.skipFrontends = true
+		return nil, true, nil
 	}
 	if !kclHasServiceNamed(entities, opts.buildTarget) {
 		return nil, false, fmt.Errorf("target %q not found in project config or in env %q's KCL services", opts.buildTarget, opts.env)

@@ -91,6 +91,11 @@ var FieldProfiles = map[string]Profile{
 	"ports.port":     ProfileRestricted,
 	"ports.protocol": ProfileRestricted,
 	"ports.expose":   ProfileRestricted,
+	// appProtocol only sets the Service port's appProtocol, and domains are
+	// custom hostnames that hosted verifies before serving. Neither reaches
+	// past the tenant's own workload.
+	"ports.appProtocol": ProfileRestricted,
+	"ports.domains":     ProfileRestricted,
 
 	"probes":                     ProfileRestricted,
 	"probes.port":                ProfileRestricted,
@@ -119,6 +124,14 @@ var FieldProfiles = map[string]Profile{
 	"version":                   ProfileFull,
 	"leaderElection":            ProfileFull,
 	"serviceAccountAnnotations": ProfileFull,
+
+	// Pod-level escape hatches (pod_types.go).
+	"sidecars":       ProfileFull,
+	"volumes":        ProfileFull,
+	"serviceAccount": ProfileFull,
+	"nodeSelector":   ProfileFull,
+	"tolerations":    ProfileFull,
+	"podAnnotations": ProfileFull,
 }
 
 // fullOnlyReasons is WHY each ProfileFull field is refused under
@@ -138,6 +151,12 @@ var fullOnlyReasons = map[string]string{
 	"version":                   "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until tenant isolation (vcluster) exists",
 	"leaderElection":            "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until tenant isolation (vcluster) exists",
 	"serviceAccountAnnotations": "hosted workloads run under a platform-owned ServiceAccount; cloud workload identity is bound by the platform, never by the tenant",
+	"sidecars":                  "the hosted platform composes the pod itself (runtime class, isolation, egress), and a tenant-authored container would run outside the single-container policy it enforces",
+	"volumes":                   "a Secret, ConfigMap or PVC volume reads namespace objects the tenant did not write; use storageGiB for a persistent disk, and env for configuration",
+	"serviceAccount":            "hosted workloads run under a platform-owned ServiceAccount; naming another one would borrow its identity",
+	"nodeSelector":              "hosted placement (the isolation pool) is decided by the platform, never by the tenant",
+	"tolerations":               "hosted placement (the isolation pool) is decided by the platform, never by the tenant; a toleration would let a pod onto nodes reserved for something else",
+	"podAnnotations":            "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns",
 }
 
 // KindProfiles is the kind mask: the most restrictive profile each kind is

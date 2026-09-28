@@ -33,14 +33,20 @@ schema Workload:
     kind: str = "service"
     leaderElection?: bool
     namespacedRBAC?: [PolicyRule]
+    nodeSelector?: {str:str}
+    podAnnotations?: {str:str}
     ports?: [Port]
     probes?: Probes
     replicas: int = 1
     resources: Resources = Resources {}
     schedule?: str
+    serviceAccount?: str
     serviceAccountAnnotations?: {str:str}
+    sidecars?: [Container]
     storageGiB?: int
+    tolerations?: [Toleration]
     version?: str
+    volumes?: [Volume]
 
     check:
         args == Undefined or len(args) <= 64, "Workload.args allows at most 64 entries"
@@ -59,13 +65,20 @@ schema Workload:
         len(image) <= 500, "Workload.image must be at most 500 characters"
         kind in ["service", "worker", "job", "cron", "operator", "tool"], "Workload.kind must be one of \"service\", \"worker\", \"job\", \"cron\", \"operator\", \"tool\""
         namespacedRBAC == Undefined or len(namespacedRBAC) <= 64, "Workload.namespacedRBAC allows at most 64 entries"
+        nodeSelector == Undefined or len(nodeSelector) <= 32, "Workload.nodeSelector allows at most 32 entries"
+        podAnnotations == Undefined or len(podAnnotations) <= 64, "Workload.podAnnotations allows at most 64 entries"
         ports == Undefined or len(ports) <= 16, "Workload.ports allows at most 16 entries"
         replicas >= 1, "Workload.replicas must be at least 1"
         schedule == Undefined or len(schedule) <= 128, "Workload.schedule must be at most 128 characters"
+        serviceAccount == Undefined or regex.match(serviceAccount, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"), "Workload.serviceAccount must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+        serviceAccount == Undefined or len(serviceAccount) <= 253, "Workload.serviceAccount must be at most 253 characters"
         serviceAccountAnnotations == Undefined or len(serviceAccountAnnotations) <= 32, "Workload.serviceAccountAnnotations allows at most 32 entries"
+        sidecars == Undefined or len(sidecars) <= 8, "Workload.sidecars allows at most 8 entries"
         storageGiB == Undefined or storageGiB >= 0, "Workload.storageGiB must be at least 0"
+        tolerations == Undefined or len(tolerations) <= 32, "Workload.tolerations allows at most 32 entries"
         version == Undefined or regex.match(version, "^v[0-9]+((alpha|beta)[0-9]+)?$"), "Workload.version must match ^v[0-9]+((alpha|beta)[0-9]+)?$"
         version == Undefined or len(version) <= 63, "Workload.version must be at most 63 characters"
+        volumes == Undefined or len(volumes) <= 32, "Workload.volumes allows at most 32 entries"
 
 workload_json = lambda v: Workload -> {str:} {
     _d = {
@@ -81,14 +94,20 @@ workload_json = lambda v: Workload -> {str:} {
         "kind": v.kind
         "leaderElection": v.leaderElection
         "namespacedRBAC": [policy_rule_json(_i) for _i in v.namespacedRBAC] if v.namespacedRBAC else Undefined
+        "nodeSelector": v.nodeSelector
+        "podAnnotations": v.podAnnotations
         "ports": [port_json(_i) for _i in v.ports] if v.ports else Undefined
         "probes": probes_json(v.probes) if v.probes else Undefined
         "replicas": v.replicas
         "resources": resources_json(v.resources) if v.resources else Undefined
         "schedule": v.schedule
+        "serviceAccount": v.serviceAccount
         "serviceAccountAnnotations": v.serviceAccountAnnotations
+        "sidecars": [container_json(_i) for _i in v.sidecars] if v.sidecars else Undefined
         "storageGiB": v.storageGiB
+        "tolerations": [toleration_json(_i) for _i in v.tolerations] if v.tolerations else Undefined
         "version": v.version
+        "volumes": [volume_json(_i) for _i in v.volumes] if v.volumes else Undefined
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
@@ -175,6 +194,62 @@ config_map_key_ref_json = lambda v: ConfigMapKeyRef -> {str:} {
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
 
+schema ConfigMapVolumeSource:
+    """ConfigMapVolumeSource names a ConfigMap, and optionally which keys to project."""
+    items?: [KeyToPath]
+    name: str
+
+    check:
+        items == Undefined or len(items) <= 64, "ConfigMapVolumeSource.items allows at most 64 entries"
+        len(name) >= 1, "ConfigMapVolumeSource.name must be at least 1 characters"
+        len(name) <= 253, "ConfigMapVolumeSource.name must be at most 253 characters"
+
+config_map_volume_source_json = lambda v: ConfigMapVolumeSource -> {str:} {
+    _d = {
+        "items": [key_to_path_json(_i) for _i in v.items] if v.items else Undefined
+        "name": v.name
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema Container:
+    """Container is a sidecar: a second container in the workload's pod."""
+    args?: [str]
+    command?: [str]
+    env?: [EnvVar]
+    image: str
+    name: str
+    ports?: [Port]
+    probes?: Probes
+    resources: Resources = Resources {}
+
+    check:
+        args == Undefined or len(args) <= 64, "Container.args allows at most 64 entries"
+        args == Undefined or all _x in args { len(_x) <= 4096 }, "Container.args[] must be at most 4096 characters"
+        command == Undefined or len(command) <= 64, "Container.command allows at most 64 entries"
+        command == Undefined or all _x in command { len(_x) <= 4096 }, "Container.command[] must be at most 4096 characters"
+        env == Undefined or len(env) <= 256, "Container.env allows at most 256 entries"
+        len(image) >= 1, "Container.image must be at least 1 characters"
+        len(image) <= 500, "Container.image must be at most 500 characters"
+        regex.match(name, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Container.name must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        len(name) >= 1, "Container.name must be at least 1 characters"
+        len(name) <= 63, "Container.name must be at most 63 characters"
+        ports == Undefined or len(ports) <= 16, "Container.ports allows at most 16 entries"
+
+container_json = lambda v: Container -> {str:} {
+    _d = {
+        "args": v.args
+        "command": v.command
+        "env": [env_var_json(_i) for _i in v.env] if v.env else Undefined
+        "image": v.image
+        "name": v.name
+        "ports": [port_json(_i) for _i in v.ports] if v.ports else Undefined
+        "probes": probes_json(v.probes) if v.probes else Undefined
+        "resources": resources_json(v.resources) if v.resources else Undefined
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
 schema DatabaseRef:
     """DatabaseRef names a ManagedDatabase, in the workload's own namespace, whose credential to project."""
     key?: str
@@ -190,6 +265,20 @@ database_ref_json = lambda v: DatabaseRef -> {str:} {
     _d = {
         "key": v.key
         "name": v.name
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema EmptyDirVolumeSource:
+    """EmptyDirVolumeSource is pod-lifetime scratch space."""
+    sizeLimitBytes?: int
+
+    check:
+        sizeLimitBytes == Undefined or sizeLimitBytes >= 1, "EmptyDirVolumeSource.sizeLimitBytes must be at least 1"
+
+empty_dir_volume_source_json = lambda v: EmptyDirVolumeSource -> {str:} {
+    _d = {
+        "sizeLimitBytes": v.sizeLimitBytes
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
@@ -242,6 +331,40 @@ field_ref_json = lambda v: FieldRef -> {str:} {
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
 
+schema KeyToPath:
+    """KeyToPath projects one key to a file path relative to the mount."""
+    key: str
+    path: str
+
+    check:
+        len(key) >= 1, "KeyToPath.key must be at least 1 characters"
+        len(key) <= 253, "KeyToPath.key must be at most 253 characters"
+        len(path) >= 1, "KeyToPath.path must be at least 1 characters"
+        len(path) <= 4096, "KeyToPath.path must be at most 4096 characters"
+
+key_to_path_json = lambda v: KeyToPath -> {str:} {
+    _d = {
+        "key": v.key
+        "path": v.path
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema PVCVolumeSource:
+    """PVCVolumeSource names an existing PersistentVolumeClaim in the workload's namespace."""
+    claimName: str
+
+    check:
+        len(claimName) >= 1, "PVCVolumeSource.claimName must be at least 1 characters"
+        len(claimName) <= 253, "PVCVolumeSource.claimName must be at most 253 characters"
+
+pvc_volume_source_json = lambda v: PVCVolumeSource -> {str:} {
+    _d = {
+        "claimName": v.claimName
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
 schema PolicyRule:
     """PolicyRule is one RBAC rule: verbs on resources in API groups."""
     apiGroups: [str]
@@ -266,12 +389,17 @@ policy_rule_json = lambda v: PolicyRule -> {str:} {
 
 schema Port:
     """Port is one named port a workload listens on."""
+    appProtocol?: str
+    domains?: [str]
     expose?: bool
     name: str
     port: int
     protocol: str = "tcp"
 
     check:
+        appProtocol == Undefined or regex.match(appProtocol, "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"), "Port.appProtocol must match ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+        appProtocol == Undefined or len(appProtocol) <= 63, "Port.appProtocol must be at most 63 characters"
+        domains == Undefined or len(domains) <= 8, "Port.domains allows at most 8 entries"
         regex.match(name, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Port.name must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         len(name) >= 1, "Port.name must be at least 1 characters"
         len(name) <= 15, "Port.name must be at most 15 characters"
@@ -281,6 +409,8 @@ schema Port:
 
 port_json = lambda v: Port -> {str:} {
     _d = {
+        "appProtocol": v.appProtocol
+        "domains": v.domains
         "expose": v.expose
         "name": v.name
         "port": v.port
@@ -385,6 +515,24 @@ secret_key_ref_json = lambda v: SecretKeyRef -> {str:} {
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
 
+schema SecretVolumeSource:
+    """SecretVolumeSource names a Secret, and optionally which keys to project."""
+    items?: [KeyToPath]
+    name: str
+
+    check:
+        items == Undefined or len(items) <= 64, "SecretVolumeSource.items allows at most 64 entries"
+        len(name) >= 1, "SecretVolumeSource.name must be at least 1 characters"
+        len(name) <= 253, "SecretVolumeSource.name must be at most 253 characters"
+
+secret_volume_source_json = lambda v: SecretVolumeSource -> {str:} {
+    _d = {
+        "items": [key_to_path_json(_i) for _i in v.items] if v.items else Undefined
+        "name": v.name
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
 schema StaticSiteCDN:
     """StaticSiteCDN is the CDN in front of the site's bucket, and what a deploy does to the edge cache afterwards. Neither side creates the CDN: URLMap names an EXISTING load-balancer URL map whose backend is the bucket."""
     extraInvalidatePaths?: [str]
@@ -400,6 +548,77 @@ static_site_cdn_json = lambda v: StaticSiteCDN -> {str:} {
         "extraInvalidatePaths": v.extraInvalidatePaths
         "invalidate": v.invalidate
         "urlMap": v.urlMap
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema Toleration:
+    """Toleration lets the workload's pods schedule onto nodes with a matching taint. It is a local mirror of core/v1 Toleration, for the same reasons as PolicyRule: the schema is closed and self-contained."""
+    effect?: str
+    key?: str
+    operator?: str
+    tolerationSeconds?: int
+    value?: str
+
+    check:
+        effect == Undefined or effect in ["NoSchedule", "PreferNoSchedule", "NoExecute"], "Toleration.effect must be one of \"NoSchedule\", \"PreferNoSchedule\", \"NoExecute\""
+        key == Undefined or len(key) <= 316, "Toleration.key must be at most 316 characters"
+        operator == Undefined or operator in ["Exists", "Equal"], "Toleration.operator must be one of \"Exists\", \"Equal\""
+        tolerationSeconds == Undefined or tolerationSeconds >= 0, "Toleration.tolerationSeconds must be at least 0"
+        value == Undefined or len(value) <= 63, "Toleration.value must be at most 63 characters"
+
+toleration_json = lambda v: Toleration -> {str:} {
+    _d = {
+        "effect": v.effect
+        "key": v.key
+        "operator": v.operator
+        "tolerationSeconds": v.tolerationSeconds
+        "value": v.value
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema Volume:
+    """Volume is one pod volume and its mount into the MAIN container."""
+    mountPath: str
+    name: str
+    readOnly?: bool
+    source: VolumeSource
+
+    check:
+        regex.match(mountPath, "^/.*$"), "Volume.mountPath must match ^/.*$"
+        len(mountPath) >= 1, "Volume.mountPath must be at least 1 characters"
+        len(mountPath) <= 4096, "Volume.mountPath must be at most 4096 characters"
+        regex.match(name, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Volume.name must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        len(name) >= 1, "Volume.name must be at least 1 characters"
+        len(name) <= 63, "Volume.name must be at most 63 characters"
+
+volume_json = lambda v: Volume -> {str:} {
+    _d = {
+        "mountPath": v.mountPath
+        "name": v.name
+        "readOnly": v.readOnly
+        "source": volume_source_json(v.source) if v.source else Undefined
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema VolumeSource:
+    """VolumeSource is exactly one of the four closed volume sources."""
+    configMap?: ConfigMapVolumeSource
+    emptyDir?: EmptyDirVolumeSource
+    pvc?: PVCVolumeSource
+    secret?: SecretVolumeSource
+
+    check:
+        (1 if secret != Undefined and secret != None else 0) + (1 if configMap != Undefined and configMap != None else 0) + (1 if emptyDir != Undefined and emptyDir != None else 0) + (1 if pvc != Undefined and pvc != None else 0) == 1, "VolumeSource: exactly one of the fields in [secret configMap emptyDir pvc] must be set"
+
+volume_source_json = lambda v: VolumeSource -> {str:} {
+    _d = {
+        "configMap": config_map_volume_source_json(v.configMap) if v.configMap else Undefined
+        "emptyDir": empty_dir_volume_source_json(v.emptyDir) if v.emptyDir else Undefined
+        "pvc": pvc_volume_source_json(v.pvc) if v.pvc else Undefined
+        "secret": secret_volume_source_json(v.secret) if v.secret else Undefined
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

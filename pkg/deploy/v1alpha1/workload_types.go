@@ -237,6 +237,52 @@ type WorkloadSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxProperties=32
 	ServiceAccountAnnotations map[string]string `json:"serviceAccountAnnotations,omitempty"`
+
+	// --- Pod-level escape hatches: FULL PROFILE ONLY (pod_types.go) ---
+
+	// Sidecars are additional containers in the workload's pod: a Cloud SQL
+	// Auth Proxy, a registry forwarder. They get the same hardened
+	// securityContext as the main container.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=8
+	Sidecars []Container `json:"sidecars,omitempty"`
+
+	// Volumes are extra pod volumes, each mounted into the main container.
+	// For storage forge provisions, use StorageGiB.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=32
+	Volumes []Volume `json:"volumes,omitempty"`
+
+	// ServiceAccount names an EXISTING ServiceAccount to run as, instead of
+	// the one forge generates. The case is cloud workload identity bound to
+	// a ServiceAccount that other infrastructure owns. forge then renders no
+	// ServiceAccount, Role or binding for the workload, so this is mutually
+	// exclusive with NamespacedRBAC, ClusterRBAC and
+	// ServiceAccountAnnotations: each of those describes the generated
+	// ServiceAccount, which no longer exists.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	ServiceAccount string `json:"serviceAccount,omitempty"`
+
+	// NodeSelector constrains the pods to nodes with these labels.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=32
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations let the pods schedule onto tainted nodes.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	Tolerations []Toleration `json:"tolerations,omitempty"`
+
+	// PodAnnotations are stamped on the pod template.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=64
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
 }
 
 // Port is one named port a workload listens on.
@@ -259,6 +305,14 @@ type Port struct {
 	// +kubebuilder:default=tcp
 	Protocol PortProtocol `json:"protocol,omitempty"`
 
+	// AppProtocol is the application protocol the port speaks (h2c, grpc,
+	// http, https, ws), set as the Service port's appProtocol so a gateway
+	// or mesh can route it correctly. It changes no pod behaviour.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	AppProtocol string `json:"appProtocol,omitempty"`
+
 	// Expose asks the environment to route a PUBLIC hostname to this port:
 	// the gateway when self-hosted, the platform's allocated hostname on
 	// hosted. Only a service can expose a port, because only a service
@@ -266,6 +320,17 @@ type Port struct {
 	// exposed, because status reports one hostname.
 	// +optional
 	Expose bool `json:"expose,omitempty"`
+
+	// Domains are CUSTOM hostnames served IN ADDITION to the default
+	// hostname. They are only meaningful on the exposed port. The default
+	// hostname needs no declaration: hosted allocates a collision-safe one
+	// and self-hosted derives one from the env's gateway, so a public
+	// workload never has to invent a domain. Hosted verifies ownership of a
+	// custom domain before serving it, because on shared infrastructure an
+	// unverified hostname is a takeover vector. Self-hosted trusts it.
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	Domains []string `json:"domains,omitempty"`
 }
 
 // Probes are a workload's readiness and liveness probes, declared ONCE.
@@ -524,7 +589,8 @@ const (
 )
 
 // WithDefaults fills every unset value that has a static default: the kind,
-// replicas, resources, port protocols and (when present) probe timings.
+// replicas, resources, port protocols and (when present) probe timings,
+// including each sidecar's.
 // DeployPhase and LeaderElection are resolved by their Effective* helpers
 // instead, because their defaults depend on the kind.
 func (s WorkloadSpec) WithDefaults() WorkloadSpec {
@@ -535,21 +601,39 @@ func (s WorkloadSpec) WithDefaults() WorkloadSpec {
 		s.Replicas = DefaultReplicas
 	}
 	s.Resources = s.Resources.WithDefaults()
-	if len(s.Ports) > 0 {
-		ports := make([]Port, len(s.Ports))
-		for i, p := range s.Ports {
-			if p.Protocol == "" {
-				p.Protocol = DefaultPortProtocol
-			}
-			ports[i] = p
-		}
-		s.Ports = ports
-	}
+	s.Ports = defaultPorts(s.Ports)
 	if s.Probes != nil {
 		p := s.Probes.WithDefaults()
 		s.Probes = &p
 	}
+	if len(s.Sidecars) > 0 {
+		sidecars := make([]Container, len(s.Sidecars))
+		for i, c := range s.Sidecars {
+			c.Resources = c.Resources.WithDefaults()
+			c.Ports = defaultPorts(c.Ports)
+			if c.Probes != nil {
+				p := c.Probes.WithDefaults()
+				c.Probes = &p
+			}
+			sidecars[i] = c
+		}
+		s.Sidecars = sidecars
+	}
 	return s
+}
+
+func defaultPorts(in []Port) []Port {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]Port, len(in))
+	for i, p := range in {
+		if p.Protocol == "" {
+			p.Protocol = DefaultPortProtocol
+		}
+		out[i] = p
+	}
+	return out
 }
 
 // EffectiveKind resolves an unset Kind to service.
@@ -582,7 +666,9 @@ func (s WorkloadSpec) EffectiveLeaderElection() bool {
 }
 
 // ExposedPort is the port a public hostname routes to, or nil when nothing
-// is exposed.
+// is exposed. Its Domains are the custom hostnames served beside the default
+// one. Validate guarantees at most one exposed port, and that Domains
+// appear on no other port.
 func (s WorkloadSpec) ExposedPort() *Port {
 	for i := range s.Ports {
 		if s.Ports[i].Expose {
@@ -594,20 +680,27 @@ func (s WorkloadSpec) ExposedPort() *Port {
 
 // ProbePort is the port the probes connect to: Probes.Port if set, else the
 // port named http, else the first declared port, else 0 (nothing to probe).
-func (s WorkloadSpec) ProbePort() int32 {
-	if s.Probes != nil && s.Probes.Port != 0 {
-		return s.Probes.Port
+func (s WorkloadSpec) ProbePort() int32 { return probePort(s.Probes, s.Ports) }
+
+func probePort(probes *Probes, ports []Port) int32 {
+	if probes != nil && probes.Port != 0 {
+		return probes.Port
 	}
-	for _, p := range s.Ports {
+	for _, p := range ports {
 		if p.Name == DefaultHTTPPortName {
 			return p.Port
 		}
 	}
-	if len(s.Ports) > 0 {
-		return s.Ports[0].Port
+	if len(ports) > 0 {
+		return ports[0].Port
 	}
 	return 0
 }
+
+// UsesGeneratedServiceAccount reports whether forge renders the workload's
+// ServiceAccount (named after the workload). False when ServiceAccount names
+// an existing one.
+func (s WorkloadSpec) UsesGeneratedServiceAccount() bool { return s.ServiceAccount == "" }
 
 // EffectiveProbes is the probe policy of ADR 0002 §5, defined once:
 //

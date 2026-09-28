@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -16,7 +17,14 @@ var (
 	// key grammar: [prefix/]name.
 	annotationNameRE   = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
 	annotationPrefixRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+	labelValueRE       = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
+	// appProtocolRE is Kubernetes' appProtocol grammar: an IANA service
+	// name, or a domain-prefixed name.
+	appProtocolRE = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
 )
+
+// MaxDomains bounds a port's custom domains.
+const MaxDomains = 8
 
 // kindCapabilities is which kinds may set each kind-specific field. It is
 // the Go statement of kcl/workloads/capabilities.k's KIND_CAPABILITIES, for
@@ -40,7 +48,17 @@ var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"before":                    {KindJob: true},
 	"deployPhase":               {KindJob: true},
 	"serviceAccountAnnotations": {KindService: true, KindWorker: true, KindJob: true, KindCron: true, KindOperator: true},
+	"sidecars":                  scheduledKinds,
+	"volumes":                   scheduledKinds,
+	"serviceAccount":            scheduledKinds,
+	"nodeSelector":              scheduledKinds,
+	"tolerations":               scheduledKinds,
+	"podAnnotations":            scheduledKinds,
 }
+
+// scheduledKinds are the kinds that render a pod. A tool is never scheduled,
+// so every pod-level field is refused for it.
+var scheduledKinds = map[WorkloadKind]bool{KindService: true, KindWorker: true, KindJob: true, KindCron: true, KindOperator: true}
 
 // kindCapabilityReasons explains each refusal, naming the alternative.
 var kindCapabilityReasons = map[string]string{
@@ -58,6 +76,12 @@ var kindCapabilityReasons = map[string]string{
 	"before":                    "before orders a one-shot job ahead of other workloads; it is only valid for kind job",
 	"deployPhase":               "deployPhase places a standalone job in the deploy; it is only valid for kind job",
 	"serviceAccountAnnotations": "a tool is never scheduled, so forge renders no ServiceAccount to annotate",
+	"sidecars":                  "a tool is never scheduled, so it has no pod to add a container to",
+	"volumes":                   "a tool is never scheduled, so it has no pod to mount a volume in",
+	"serviceAccount":            "a tool is never scheduled, so it has no pod to run as a ServiceAccount",
+	"nodeSelector":              "a tool is never scheduled, so there is no pod to place",
+	"tolerations":               "a tool is never scheduled, so there is no pod to place",
+	"podAnnotations":            "a tool is never scheduled, so there is no pod to annotate",
 }
 
 // Validate checks a Workload spec against the invariants every destination
@@ -99,6 +123,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 		for _, field := range []string{
 			"ports", "replicas", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
 			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
+			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
 		} {
 			if s.declares(field) && !kindCapabilities[field][kind] {
 				errs = append(errs, fmt.Errorf("%s is not supported for kind %q: %s", field, kind, kindCapabilityReasons[field]))
@@ -147,8 +172,9 @@ func (s WorkloadSpec) Validate(p Profile) error {
 		errs = append(errs, errors.New("kind operator must list at least one CRD kind in crds"))
 	}
 
-	// --- ports ---
+	// --- ports (the main container's, then pod-wide uniqueness) ---
 	errs = append(errs, validatePorts(kind, s.Ports)...)
+	errs = append(errs, validatePodPorts(s)...)
 
 	// --- probes ---
 	if s.Probes != nil {
@@ -191,6 +217,36 @@ func (s WorkloadSpec) Validate(p Profile) error {
 		}
 	}
 
+	// --- pod-level: sidecars, volumes, identity, placement ---
+	errs = append(errs, validateSidecars(s.Sidecars)...)
+	errs = append(errs, validateVolumes(s)...)
+	if s.ServiceAccount != "" {
+		for field, set := range map[string]bool{
+			"namespacedRBAC": len(s.NamespacedRBAC) > 0, "clusterRBAC": len(s.ClusterRBAC) > 0,
+			"serviceAccountAnnotations": len(s.ServiceAccountAnnotations) > 0,
+		} {
+			if set {
+				errs = append(errs, fmt.Errorf("serviceAccount %q and %s are mutually exclusive: naming an existing ServiceAccount means forge renders none, so there is no generated ServiceAccount for %s to describe; grant it where that ServiceAccount is owned", s.ServiceAccount, field, field))
+			}
+		}
+	}
+	for _, k := range sortedKeys(s.NodeSelector) {
+		if !validAnnotationKey(k) {
+			errs = append(errs, fmt.Errorf("nodeSelector key %q is not a valid label key ([prefix/]name)", k))
+		}
+		if v := s.NodeSelector[k]; len(v) > 63 || (v != "" && !labelValueRE.MatchString(v)) {
+			errs = append(errs, fmt.Errorf("nodeSelector %s: value %q is not a valid label value (at most 63 characters of [A-Za-z0-9-_.], starting and ending alphanumeric)", k, v))
+		}
+	}
+	for i, t := range s.Tolerations {
+		errs = append(errs, t.validate(fmt.Sprintf("tolerations[%d]", i))...)
+	}
+	for _, k := range sortedKeys(s.PodAnnotations) {
+		if !validAnnotationKey(k) {
+			errs = append(errs, fmt.Errorf("podAnnotations key %q must be [prefix/]name: name at most 63 characters of [A-Za-z0-9-_.] starting and ending alphanumeric, prefix a DNS subdomain", k))
+		}
+	}
+
 	// --- profile ---
 	errs = append(errs, profileViolations(s, p)...)
 	return errors.Join(errs...)
@@ -228,6 +284,18 @@ func (s WorkloadSpec) declares(field string) bool {
 		return s.DeployPhase != ""
 	case "serviceAccountAnnotations":
 		return len(s.ServiceAccountAnnotations) > 0
+	case "sidecars":
+		return len(s.Sidecars) > 0
+	case "volumes":
+		return len(s.Volumes) > 0
+	case "serviceAccount":
+		return s.ServiceAccount != ""
+	case "nodeSelector":
+		return len(s.NodeSelector) > 0
+	case "tolerations":
+		return len(s.Tolerations) > 0
+	case "podAnnotations":
+		return len(s.PodAnnotations) > 0
 	}
 	return false
 }
@@ -298,10 +366,24 @@ func validatePorts(kind WorkloadKind, ports []Port) []error {
 			errs = append(errs, fmt.Errorf("port %s: %s is declared twice", p.Name, num))
 		}
 		numbers[num] = true
+		if p.AppProtocol != "" && !appProtocolRE.MatchString(p.AppProtocol) {
+			errs = append(errs, fmt.Errorf("port %s: appProtocol %q must be a protocol name (h2c, grpc, http) or a prefixed name (example.com/proto)", p.Name, p.AppProtocol))
+		}
 		if p.Expose {
 			exposed++
 			if kind != KindService {
 				errs = append(errs, fmt.Errorf("port %s: expose is only for kind service, which is the only kind with a Service object to route a hostname to", p.Name))
+			}
+		}
+		if len(p.Domains) > 0 {
+			if !p.Expose {
+				errs = append(errs, fmt.Errorf("port %s: domains are only meaningful on the exposed port (expose: true): nothing routes a hostname to a port that is not exposed", p.Name))
+			}
+			if len(p.Domains) > MaxDomains {
+				errs = append(errs, fmt.Errorf("port %s: %d domains; at most %d are allowed", p.Name, len(p.Domains), MaxDomains))
+			}
+			if err := validateDomains(fmt.Sprintf("port %s: domains", p.Name), p.Domains); err != nil {
+				errs = append(errs, err)
 			}
 		}
 	}
@@ -353,4 +435,197 @@ func validAnnotationKey(k string) bool {
 		return false
 	}
 	return !hasPrefix || (len(prefix) <= 253 && annotationPrefixRE.MatchString(prefix))
+}
+
+// validatePodPorts checks that port names and numbers are unique across the
+// whole POD. A sidecar shares the main container's network namespace, so two
+// containers binding one port is a crash, and Kubernetes refuses a duplicate
+// container port name in one pod.
+func validatePodPorts(s WorkloadSpec) []error {
+	var errs []error
+	owner := map[string]string{} // port name / number+proto -> container
+	claim := func(key, container string) {
+		if prev, ok := owner[key]; ok && prev != container {
+			errs = append(errs, fmt.Errorf("port %s is declared by both %s and %s: containers in one pod share a network namespace", key, prev, container))
+		}
+		owner[key] = container
+	}
+	for _, c := range append([]Container{{Name: "the main container", Ports: s.Ports}}, s.Sidecars...) {
+		for _, p := range c.Ports {
+			proto := p.Protocol
+			if proto == "" {
+				proto = DefaultPortProtocol
+			}
+			claim(fmt.Sprintf("name %q", p.Name), c.Name)
+			claim(fmt.Sprintf("%d/%s", p.Port, proto), c.Name)
+		}
+	}
+	return errs
+}
+
+func validateSidecars(sidecars []Container) []error {
+	var errs []error
+	seen := map[string]bool{}
+	for _, c := range sidecars {
+		label := fmt.Sprintf("sidecars[%s]", c.Name)
+		if !dnsLabelRE.MatchString(c.Name) || len(c.Name) > 63 {
+			errs = append(errs, fmt.Errorf("%s: name must be an RFC-1123 label of at most 63 characters", label))
+		}
+		if seen[c.Name] {
+			errs = append(errs, fmt.Errorf("%s: sidecar name is declared twice", label))
+		}
+		seen[c.Name] = true
+		if c.Image == "" {
+			errs = append(errs, fmt.Errorf("%s: image is required", label))
+		} else if strings.ContainsAny(c.Image, " \t\n") {
+			errs = append(errs, fmt.Errorf("%s: image %q contains whitespace", label, c.Image))
+		}
+		for _, err := range validatePorts(KindWorker, c.Ports) {
+			errs = append(errs, fmt.Errorf("%s: %w", label, err))
+		}
+		for _, p := range c.Ports {
+			if p.Expose || len(p.Domains) > 0 {
+				errs = append(errs, fmt.Errorf("%s: port %s: a sidecar's ports are container ports only; expose and domains belong on the workload's own port", label, p.Name))
+			}
+		}
+		if c.Probes != nil {
+			for _, err := range c.Probes.validate() {
+				errs = append(errs, fmt.Errorf("%s: %w", label, err))
+			}
+			if c.ProbePort() == 0 {
+				errs = append(errs, fmt.Errorf("%s: probes need a port: declare one in the sidecar's ports, or set probes.port", label))
+			}
+		}
+		envSeen := map[string]bool{}
+		for _, e := range c.Env {
+			if err := e.Validate(); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", label, err))
+			}
+			if envSeen[e.Name] {
+				errs = append(errs, fmt.Errorf("%s: env var %s is declared twice", label, e.Name))
+			}
+			envSeen[e.Name] = true
+		}
+		if err := c.Resources.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", label, err))
+		}
+	}
+	return errs
+}
+
+func validateVolumes(s WorkloadSpec) []error {
+	var errs []error
+	names, paths := map[string]bool{TmpVolumeName: true}, map[string]string{TmpMountPath: TmpVolumeName}
+	if s.StorageGiB > 0 {
+		names[DataVolumeName] = true
+		paths[DataMountPath] = DataVolumeName
+	}
+	for _, v := range s.Volumes {
+		label := fmt.Sprintf("volumes[%s]", v.Name)
+		if !dnsLabelRE.MatchString(v.Name) || len(v.Name) > 63 {
+			errs = append(errs, fmt.Errorf("%s: name must be an RFC-1123 label of at most 63 characters", label))
+		}
+		if names[v.Name] {
+			if v.Name == TmpVolumeName || (v.Name == DataVolumeName && s.StorageGiB > 0) {
+				errs = append(errs, fmt.Errorf("%s: the name %q is reserved for forge's own %s volume", label, v.Name, v.Name))
+			} else {
+				errs = append(errs, fmt.Errorf("%s: volume name is declared twice", label))
+			}
+		}
+		names[v.Name] = true
+		switch {
+		case !strings.HasPrefix(v.MountPath, "/"):
+			errs = append(errs, fmt.Errorf("%s: mountPath %q must be absolute", label, v.MountPath))
+		case paths[v.MountPath] != "":
+			errs = append(errs, fmt.Errorf("%s: mountPath %s is already mounted by volume %s", label, v.MountPath, paths[v.MountPath]))
+		}
+		paths[v.MountPath] = v.Name
+
+		src := v.Source
+		set := 0
+		if src.Secret != nil {
+			set++
+			if src.Secret.Name == "" {
+				errs = append(errs, fmt.Errorf("%s: source.secret.name is required", label))
+			}
+			errs = append(errs, validateKeyToPaths(label+".source.secret", src.Secret.Items)...)
+		}
+		if src.ConfigMap != nil {
+			set++
+			if src.ConfigMap.Name == "" {
+				errs = append(errs, fmt.Errorf("%s: source.configMap.name is required", label))
+			}
+			errs = append(errs, validateKeyToPaths(label+".source.configMap", src.ConfigMap.Items)...)
+		}
+		if src.EmptyDir != nil {
+			set++
+			if src.EmptyDir.SizeLimitBytes < 0 {
+				errs = append(errs, fmt.Errorf("%s: source.emptyDir.sizeLimitBytes must not be negative", label))
+			}
+		}
+		if src.PVC != nil {
+			set++
+			if src.PVC.ClaimName == "" {
+				errs = append(errs, fmt.Errorf("%s: source.pvc.claimName is required", label))
+			}
+		}
+		if set != 1 {
+			errs = append(errs, fmt.Errorf("%s: source must set exactly one of secret, configMap, emptyDir, pvc (got %d): a volume with no source has nothing to mount, and one with two has no correct reading", label, set))
+		}
+	}
+	return errs
+}
+
+func validateKeyToPaths(label string, items []KeyToPath) []error {
+	var errs []error
+	seen := map[string]bool{}
+	for _, it := range items {
+		if it.Key == "" {
+			errs = append(errs, fmt.Errorf("%s.items: key is required", label))
+		}
+		switch {
+		case it.Path == "":
+			errs = append(errs, fmt.Errorf("%s.items[%s]: path is required", label, it.Key))
+		case strings.HasPrefix(it.Path, "/") || slices.Contains(strings.Split(it.Path, "/"), ".."):
+			errs = append(errs, fmt.Errorf("%s.items[%s]: path %q must be relative and must not contain '..': a key is never written outside its volume", label, it.Key, it.Path))
+		}
+		if seen[it.Path] {
+			errs = append(errs, fmt.Errorf("%s.items: path %q is projected twice", label, it.Path))
+		}
+		seen[it.Path] = true
+	}
+	return errs
+}
+
+func (t Toleration) validate(label string) []error {
+	var errs []error
+	switch t.Operator {
+	case "", TolerationOpEqual:
+		if t.Key == "" {
+			errs = append(errs, fmt.Errorf("%s: an empty key tolerates every taint, which requires operator Exists", label))
+		}
+	case TolerationOpExists:
+		if t.Value != "" {
+			errs = append(errs, fmt.Errorf("%s: operator Exists matches any value, so value must be empty", label))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("%s: operator %q must be Exists or Equal", label, t.Operator))
+	}
+	switch t.Effect {
+	case "", TaintNoSchedule, TaintPreferNoSchedule, TaintNoExecute:
+	default:
+		errs = append(errs, fmt.Errorf("%s: effect %q must be NoSchedule, PreferNoSchedule or NoExecute", label, t.Effect))
+	}
+	if t.TolerationSeconds != nil {
+		if t.Effect != TaintNoExecute {
+			errs = append(errs, fmt.Errorf("%s: tolerationSeconds only applies to effect NoExecute (it bounds time before eviction)", label))
+		}
+		if *t.TolerationSeconds < 0 {
+			errs = append(errs, fmt.Errorf("%s: tolerationSeconds must not be negative", label))
+		}
+	}
+	if t.Key != "" && !validAnnotationKey(t.Key) {
+		errs = append(errs, fmt.Errorf("%s: key %q is not a valid taint key ([prefix/]name)", label, t.Key))
+	}
+	return errs
 }

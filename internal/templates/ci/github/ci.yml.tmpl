@@ -434,8 +434,8 @@ jobs:
       # This requires the project to declare an `e2e` environment
       # (deploy/kcl/e2e/main.k). Create one on the local cluster with:
       #   forge env new e2e --runtime cluster
-      # and point its ClusterTarget at k3d (cluster = "k3d-e2e",
-      # registry = "localhost:5050").
+      # and point its ClusterTarget at the k3d cluster and the k3d registry
+      # its deploy/k3d.yaml creates.
       - name: Create the e2e cluster
         run: forge cluster up e2e --wait
       - name: Build images

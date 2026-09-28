@@ -56,9 +56,6 @@ permissions:
   contents: read
   packages: write
 
-env:
-  REGISTRY: "ghcr.io/${{ github.repository_owner }}"
-
 jobs:
   deploy:
     name: Deploy to ${{ matrix.env }}
@@ -155,13 +152,17 @@ jobs:
         working-directory: frontends/web
         run: npm ci
 
-      - name: Log in to registry
+      - name: Log in to the declared registry
         if: steps.select.outputs.run == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        # forge logs docker in to the registry this env's KCL declares
+        # (deploy/kcl/<env>/main.k); the workflow supplies only the
+        # credential. GITHUB_TOKEN (with `packages: write`) is the credential
+        # for GitHub's container registry. For another registry, pipe its
+        # credential instead — a GAR key with --username _json_key, an ECR
+        # token with --username AWS — from a repository or environment SECRET.
+        env:
+          LOGIN_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "${{ matrix.env }}" --username "${{ github.actor }}" --password-stdin
 
       - name: Set kubeconfig
         # Only an env with forge.OnCluster workloads needs one; a hosted env deploys through

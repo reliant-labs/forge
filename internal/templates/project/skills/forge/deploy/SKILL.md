@@ -156,6 +156,8 @@ forge doctor --signal deploy   # probes, resources, Secrets, migrations
 ```
 forge build <env>                 # what <env> declares (host workloads need no image)
 forge build <env> --push          # and push to the registry the env's ClusterTarget declares
+forge registry login <env> -u <user> --password-stdin   # docker login to that registry
+forge registry ref <env>          # <registry>/<image>@<digest> of the last pushed build
 forge build <env> --plan          # resolve + preflight the build set; build nothing
 forge build --tag=<tag>           # override image tag (default: commit SHA)
 forge build --debug               # with debug symbols for Delve

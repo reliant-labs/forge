@@ -61,12 +61,14 @@ func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.F
 
 	kclEnvs := declaredKCLEnvs(root)
 	deployEnvs := ciDeployEnvs(cfg, kclEnvs)
-	// The workflow templates still branch on a registry FLAVOUR (ghcr/gar/ecr)
-	// for their login step; forge.yaml no longer carries one (a registry is
-	// declared in the env's KCL), so every project gets the ghcr branch it
-	// defaulted to. The next change drops the registry from the workflows
-	// entirely.
-	registry := "ghcr"
+	// The once-per-commit image is built for the first deploy env in
+	// promotion order — the one deploy.yml auto-deploys — and pushed to the
+	// registry THAT env's KCL declares. With no deploy env there is no
+	// registry to push to, so no build-images workflow is emitted.
+	var buildEnv string
+	if len(deployEnvs) > 0 {
+		buildEnv = deployEnvs[0].Name
+	}
 	e2eRuntime := cfg.CI.E2E.Runtime
 	if e2eRuntime == "" {
 		e2eRuntime = "docker-compose"
@@ -120,28 +122,30 @@ func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.F
 		VerifyGenerated: true,
 
 		Module:       cfg.ModulePath,
-		Registry:     registry,
 		FrontendName: firstFrontendName,
 		GitHubOwner:  githubOwnerFromModulePath(cfg.ModulePath),
 	}
 
 	files := []CIWorkflowFile{{"ci.yml.tmpl", ".github/workflows/ci.yml", ci}}
 	if isService {
-		files = append(files,
-			CIWorkflowFile{"build-images.yml.tmpl", ".github/workflows/build-images.yml", templates.BuildImagesWorkflowData{
-				ProjectName: cfg.Name,
-				Registry:    registry,
-				VulnDocker:  ci.VulnDocker,
+		if buildEnv != "" {
+			files = append(files, CIWorkflowFile{"build-images.yml.tmpl", ".github/workflows/build-images.yml", templates.BuildImagesWorkflowData{
+				ProjectName:  cfg.Name,
+				BuildEnv:     buildEnv,
+				HasFrontends: hasFrontends,
+				FrontendPath: firstFrontendPath,
+				VulnDocker:   ci.VulnDocker,
 				// Cut-release + promote talks to a control plane, the same
 				// server the reconcile workflow does, so it rides the same
 				// opt-in gate: a project without one must not get a job
 				// that fails on every push to main.
 				CutRelease: cfg.Features.ReconcileEnabled(),
-			}},
+			}})
+		}
+		files = append(files,
 			CIWorkflowFile{"deploy.yml.tmpl", ".github/workflows/deploy.yml", templates.DeployWorkflowData{
 				ProjectName:      cfg.Name,
 				Environments:     deployEnvs,
-				Registry:         registry,
 				HasFrontends:     hasFrontends,
 				FrontendPath:     firstFrontendPath,
 				FrontendDeploy:   cfg.Deploy.FrontendDeploy,

@@ -28,7 +28,6 @@ func renderBuildImages(t *testing.T, data BuildImagesWorkflowData) string {
 func TestBuildImages_CutReleaseIsAbsentUnlessEnabled(t *testing.T) {
 	out := renderBuildImages(t, BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "ghcr",
 	})
 
 	for _, absent := range []string{
@@ -53,7 +52,6 @@ func TestBuildImages_CutReleaseIsAbsentUnlessEnabled(t *testing.T) {
 func TestBuildImages_CutReleaseJobWhenEnabled(t *testing.T) {
 	out := renderBuildImages(t, BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "ghcr",
 		CutRelease:  true,
 	})
 
@@ -75,7 +73,7 @@ func TestBuildImages_CutReleaseJobWhenEnabled(t *testing.T) {
 // on.
 //
 // A tag is a mutable pointer. If the release were cut against `sha-abc1234`
-// rather than against the digest build-push-action reported, then re-pushing
+// rather than against the digest the build recorded, then re-pushing
 // that tag would change what the release names, and "the bytes that passed
 // staging are the bytes that reach prod" would quietly stop being true while
 // every test still passed. The workflow must carry the digest through as a job
@@ -83,12 +81,11 @@ func TestBuildImages_CutReleaseJobWhenEnabled(t *testing.T) {
 func TestBuildImages_TheReleaseIsCutAgainstTheDigest(t *testing.T) {
 	out := renderBuildImages(t, BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "ghcr",
 		CutRelease:  true,
 	})
 
-	if !strings.Contains(out, "digest: ${{ steps.build.outputs.digest }}") {
-		t.Error("build-push does not publish the digest build-push-action reported as a job output; " +
+	if !strings.Contains(out, "digest: ${{ steps.ref.outputs.digest }}") {
+		t.Error("build-push does not publish the digest `forge registry ref` read back as a job output; " +
 			"without it the cut job has no immutable reference to pin")
 	}
 	if !strings.Contains(out, "IMAGE_DIGEST: ${{ needs.build-push.outputs.digest }}") {
@@ -121,7 +118,6 @@ func TestBuildImages_TheReleaseIsCutAgainstTheDigest(t *testing.T) {
 func TestBuildImages_ThePromoteCallNamesAVersionAndNoImage(t *testing.T) {
 	out := renderBuildImages(t, BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "ghcr",
 		CutRelease:  true,
 	})
 
@@ -157,7 +153,6 @@ func TestBuildImages_ThePromoteCallNamesAVersionAndNoImage(t *testing.T) {
 func TestBuildImages_TheVersionIsDerivedFromTheCommit(t *testing.T) {
 	out := renderBuildImages(t, BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "ghcr",
 		CutRelease:  true,
 	})
 
@@ -185,7 +180,6 @@ func TestBuildImages_TheVersionIsDerivedFromTheCommit(t *testing.T) {
 func TestBuildImages_ARetryIsNotTreatedAsAFailure(t *testing.T) {
 	out := renderBuildImages(t, BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "ghcr",
 		CutRelease:  true,
 	})
 
@@ -207,7 +201,6 @@ func TestBuildImages_ARetryIsNotTreatedAsAFailure(t *testing.T) {
 func TestBuildImages_APromoteFailureExplainsTheRecovery(t *testing.T) {
 	out := renderBuildImages(t, BuildImagesWorkflowData{
 		ProjectName: "myapp",
-		Registry:    "ghcr",
 		CutRelease:  true,
 	})
 

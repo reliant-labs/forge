@@ -34,7 +34,7 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		E2EEnabled: true, E2ERuntime: "docker-compose", PermContents: "read",
 		HasKCL: true, HasDocker: true, VerifyGenerated: true,
 		Environments: []string{"dev", "staging", "prod"},
-		Module:       "github.com/example/demo", Registry: "ghcr", FrontendName: "web", GitHubOwner: "example",
+		Module:       "github.com/example/demo", FrontendName: "web", GitHubOwner: "example",
 	}
 	k3d := full
 	k3d.E2ERuntime = "k3d"
@@ -50,10 +50,11 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		{"ci k3d", "ci.yml.tmpl", k3d},
 		{"ci minimal", "ci.yml.tmpl", minimal},
 		{"proto-breaking", "proto-breaking.yml.tmpl", full},
-		{"build-images", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", Registry: "ghcr", VulnDocker: true}},
-		{"build-images cut-release", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", Registry: "gar", VulnDocker: true, CutRelease: true}},
-		{"deploy", "deploy.yml.tmpl", DeployWorkflowData{ProjectName: "demo", Environments: envs, Registry: "ghcr", HasFrontends: true, FrontendPath: "frontends/web", Concurrency: true}},
-		{"deploy lone env", "deploy.yml.tmpl", DeployWorkflowData{ProjectName: "demo", Environments: envs[1:], Registry: "ghcr"}},
+		{"build-images", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true}},
+		{"build-images cut-release", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, CutRelease: true}},
+		{"build-images frontends", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", HasFrontends: true, FrontendPath: "frontends/web", VulnDocker: true}},
+		{"deploy", "deploy.yml.tmpl", DeployWorkflowData{ProjectName: "demo", Environments: envs, HasFrontends: true, FrontendPath: "frontends/web", Concurrency: true}},
+		{"deploy lone env", "deploy.yml.tmpl", DeployWorkflowData{ProjectName: "demo", Environments: envs[1:]}},
 		{"e2e", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "docker-compose", HasFrontends: true, FrontendPath: "frontends/web"}},
 		{"e2e no frontend", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "k3d"}},
 		// HasFrontends without a path is the setup-node fallback branch

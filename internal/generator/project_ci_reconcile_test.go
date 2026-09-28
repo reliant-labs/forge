@@ -51,6 +51,9 @@ func writeCIProjectConfig(t *testing.T, g *ProjectGenerator) {
 
 func TestCIFiles_ReconcileWorkflowIsOffByDefault(t *testing.T) {
 	g, dir := ciGenerator(t, config.FeaturesConfig{})
+	// A deploy env, as every service scaffold has: build-images.yml builds
+	// for the first one.
+	writeEnvMain(t, dir, "staging", "prod")
 	if err := g.generateCIFiles(); err != nil {
 		t.Fatalf("generateCIFiles: %v", err)
 	}
@@ -81,6 +84,9 @@ func TestCIFiles_ReconcileWorkflowWhenEnabled(t *testing.T) {
 	g, dir := ciGenerator(t, config.FeaturesConfig{
 		Experimental: config.ExperimentalConfig{Reconcile: true},
 	})
+	// A deploy env, as every service scaffold has: build-images.yml builds
+	// for the first one.
+	writeEnvMain(t, dir, "staging", "prod")
 	if err := g.generateCIFiles(); err != nil {
 		t.Fatalf("generateCIFiles: %v", err)
 	}
@@ -143,4 +149,37 @@ func readCIFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(b)
+}
+
+// TestCIFiles_BuildImagesBuildsForTheFirstDeployEnv: the once-per-commit
+// image is built for the env deploy.yml auto-deploys, so it lands in the
+// registry THAT env's KCL declares — and the workflow names no registry of its
+// own. With no deploy env there is no registry to push to, and no
+// build-images.yml that could only fail.
+func TestCIFiles_BuildImagesBuildsForTheFirstDeployEnv(t *testing.T) {
+	g, dir := ciGenerator(t, config.FeaturesConfig{})
+	writeEnvMain(t, dir, "staging", "prod")
+	if err := g.generateCIFiles(); err != nil {
+		t.Fatalf("generateCIFiles: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".github", "workflows", "build-images.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "FORGE_ENV: staging") {
+		t.Errorf("build-images.yml should build for staging (the first deploy env):\n%s", b)
+	}
+
+	lone := t.TempDir()
+	g2 := &ProjectGenerator{Name: "myapp", Path: lone, ModulePath: "github.com/example/myapp", Kind: "service"}
+	writeEnvMain(t, lone, "dev")
+	if err := g2.writeProjectConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if err := g2.generateCIFiles(); err != nil {
+		t.Fatalf("generateCIFiles (dev only): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(lone, ".github", "workflows", "build-images.yml")); !os.IsNotExist(err) {
+		t.Errorf("a project with no deploy env got a build-images.yml (stat err=%v); it has no registry to push to", err)
+	}
 }

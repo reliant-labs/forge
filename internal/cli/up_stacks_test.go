@@ -136,13 +136,7 @@ func freePort(t *testing.T) int {
 // entitiesOnPort renders one host service bound to port — the shape
 // resolveEphemeralHostPorts produces for a scaffolded backend.
 func entitiesOnPort(port int) *KCLEntities {
-	return &KCLEntities{Services: []ServiceEntity{{
-		Name: "api",
-		Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-			Runner:      "go-run",
-			ListenPorts: &[]int{port},
-		}},
-	}}}
+	return &KCLEntities{Workloads: []WorkloadEntity{hostWL("api", withListenPorts(port))}}
 }
 
 // TestUpPreflight_StopsThePredecessorOnFreePorts is the defect, pinned.

@@ -41,56 +41,45 @@ func TestSplitImageNameTag(t *testing.T) {
 	}
 }
 
-// manifestImageTagFixture mirrors the control-plane cloud render shape:
-// an `output` entity echo (services carry NO image_tag — the env-wide
-// tag rides RenderEnv, not the entity) alongside a `manifests` stream
-// whose Deployment container images bake the resolved env tag (here
-// "staging"). The build side must recover the tag from the manifests,
-// not the (empty) entity field.
-const manifestImageTagFixture = `{
-  "output": {
-    "services": [
-      {"name": "reliant-api-server", "image": "reliant", "deploy": {"type": "cluster", "replicas": 1}},
-      {"name": "admin-server", "image": "control-plane", "deploy": {"type": "cluster", "replicas": 1}}
-    ]
-  },
-  "manifests": [
-    {"kind": "Deployment", "metadata": {"namespace": "control-plane-staging"},
-     "spec": {"template": {"spec": {"containers": [
-       {"image": "ghcr.io/reliant-labs/control-plane:staging"}
-     ]}}}},
-    {"kind": "Deployment", "metadata": {"namespace": "control-plane-staging"},
-     "spec": {"template": {"spec": {"containers": [
-       {"image": "ghcr.io/reliant-labs/reliant:staging"}
-     ]}}}}
+// envImageTagFixture mirrors the control-plane cloud render shape: the
+// workloads carry no per-workload pin, so their resolved spec.image carries
+// the env's own image_tag ("staging") — the tag the deploy pulls. The build
+// side reads it from output.image_tag and spec.image; nothing is scraped
+// from the manifest stream.
+const envImageTagFixture = `{"output": {
+  "project": "control-plane", "env": "staging", "image_tag": "staging",
+  "workloads": [
+    {"name": "reliant-api-server", "kind": "service", "image": "reliant",
+     "runtime": {"type": "cluster", "cluster": "gke", "namespace": "control-plane-staging"},
+     "spec": {"kind": "service", "image": "ghcr.io/reliant-labs/reliant:staging"}},
+    {"name": "admin-server", "kind": "service", "image": "control-plane",
+     "runtime": {"type": "cluster", "cluster": "gke", "namespace": "control-plane-staging"},
+     "spec": {"kind": "service", "image": "ghcr.io/reliant-labs/control-plane:staging"}}
   ]
-}`
+}}`
 
-// TestParseKCLEntities_ManifestImageTags confirms the env's resolved
-// image tag is recovered from the rendered manifests (the deploy ref)
-// even when the entity echo carries no per-service image_tag — the
-// cloud-env shape.
-func TestParseKCLEntities_ManifestImageTags(t *testing.T) {
-	ents, err := parseKCLEntities([]byte(manifestImageTagFixture))
+// TestEnvImageTagFor_FromImageTagAndSpecImage confirms the env's resolved
+// image tag is what `forge build <env>` defaults to: a workload's resolved
+// spec.image tag when it carries one, else the env's output.image_tag.
+func TestEnvImageTagFor_FromImageTagAndSpecImage(t *testing.T) {
+	ents, err := parseKCLEntities([]byte(envImageTagFixture))
 	if err != nil {
 		t.Fatalf("parseKCLEntities: %v", err)
 	}
-	if got := ents.ManifestImageTags["control-plane"]; got != "staging" {
-		t.Errorf("control-plane tag: got %q, want staging", got)
-	}
-	if got := ents.ManifestImageTags["reliant"]; got != "staging" {
-		t.Errorf("reliant tag: got %q, want staging", got)
-	}
-	// envImageTagFor is the build-side accessor.
 	if got := envImageTagFor(ents, "control-plane"); got != "staging" {
 		t.Errorf("envImageTagFor(control-plane): got %q, want staging", got)
 	}
-	// An image the env doesn't deploy yields "" → caller falls back to
-	// git-describe.
-	if got := envImageTagFor(ents, "not-deployed"); got != "" {
-		t.Errorf("envImageTagFor(not-deployed): got %q, want empty", got)
+	// A per-workload pin in spec.image wins over the env tag.
+	ents.Workloads[0].Spec.Image = "ghcr.io/reliant-labs/reliant:v1.4.2"
+	if got := envImageTagFor(ents, "reliant"); got != "v1.4.2" {
+		t.Errorf("envImageTagFor(reliant) with a pinned spec.image: got %q, want v1.4.2", got)
 	}
-	// nil entities (no --env) yields "" too.
+	// A digest-pinned spec.image carries no tag and falls through to the env tag.
+	ents.Workloads[0].Spec.Image = "ghcr.io/reliant-labs/reliant@sha256:abc"
+	if got := envImageTagFor(ents, "reliant"); got != "staging" {
+		t.Errorf("envImageTagFor(reliant) digest-pinned: got %q, want the env tag staging", got)
+	}
+	// nil entities (no --env) yields "" → caller falls back to git-describe.
 	if got := envImageTagFor(nil, "control-plane"); got != "" {
 		t.Errorf("envImageTagFor(nil): got %q, want empty", got)
 	}
@@ -106,11 +95,11 @@ func TestParseKCLEntities_ManifestImageTags(t *testing.T) {
 // git-describe and deploying "staging" → ImagePullBackOff.
 func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 	projDir := t.TempDir()
-	ents, err := parseKCLEntities([]byte(manifestImageTagFixture))
+	ents, err := parseKCLEntities([]byte(envImageTagFixture))
 	if err != nil {
 		t.Fatalf("parseKCLEntities: %v", err)
 	}
-	services := []ServiceEntity{
+	services := []WorkloadEntity{
 		// no cwd → runs from project root, writes state with the resolved tag
 		shellSvc("reliant-api-server", "reliant", "true", "", nil),
 	}
@@ -139,22 +128,20 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 	}
 }
 
-// TestBuildExternalServices_PerServicePinWins confirms an explicit KCL
-// per-service image_tag (e2e's reliant_image_tag="e2e" /
-// workspace-base "dev-per-daemon") OVERRIDES both the env-wide tag and
-// the manifest-derived tag — so e2e's pinned tags keep building exactly
+// TestBuildExternalServices_PerServicePinWins confirms an explicit
+// per-workload tag pin in the resolved spec.image (e2e's
+// reliant_image_tag="e2e" / workspace-base "dev-per-daemon") OVERRIDES both
+// the env-wide build tag and the env's image_tag — so e2e's pinned tags keep building exactly
 // what the daemon pods pull. This is the property that keeps
 // `forge env up e2e` building the tags it deploys.
 func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	projDir := t.TempDir()
-	// Env render says workspace-base would be :staging, but the service
-	// declares an explicit image_tag pin of "dev-per-daemon".
-	ents := &KCLEntities{
-		ManifestImageTags: map[string]string{"workspace-base": "staging"},
-	}
+	// The env's tag is :staging, but the workload's resolved image pins
+	// "dev-per-daemon".
 	wsbase := shellSvc("workspace-base", "workspace-base", "true", "", nil)
-	wsbase.ImageTag = "dev-per-daemon" // the KCL per-service pin
-	services := []ServiceEntity{wsbase}
+	wsbase.Spec.Image = "registry.localhost:5051/workspace-base:dev-per-daemon" // the per-workload pin
+	ents := &KCLEntities{ImageTag: "staging", Workloads: []WorkloadEntity{wsbase}}
+	services := []WorkloadEntity{wsbase}
 	opts := buildOptions{env: "e2e", parallel: false}
 	results := buildExternalServices(
 		context.Background(), services, opts,

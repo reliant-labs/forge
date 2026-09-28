@@ -9,27 +9,27 @@ import (
 // sampleSecretProviderJSON is an entity render carrying a FileSecrets
 // secret_provider declaration plus a mix of cluster/host services with
 // declared secret_refs. Exercises the parse + wiring helpers.
-const sampleSecretProviderJSON = `{
-  "services": [
+const sampleSecretProviderJSON = `{"output": {
+  "workloads": [
     {
-      "name": "api",
-      "deploy": {"type": "cluster", "cluster": "c", "namespace": "dev", "registry": "r"},
-      "env_vars": [
-        {"name": "GITHUB_CLIENT_ID", "secret_ref": "github-oauth", "secret_key": "client-id"},
-        {"name": "TOKEN", "secret_ref": "creds"},
+      "name": "api", "kind": "service",
+      "runtime": {"type": "cluster", "cluster": "c", "namespace": "dev", "registry": "r"},
+      "spec": {"kind": "service", "env": [
+        {"name": "GITHUB_CLIENT_ID", "secretRef": {"name": "github-oauth", "key": "client-id"}},
+        {"name": "TOKEN", "secretRef": {"name": "creds"}},
         {"name": "LOG_LEVEL", "value": "debug"}
-      ]
+      ]}
     },
     {
-      "name": "worker",
-      "deploy": {"type": "host", "runner": "go-run"},
-      "env_vars": [
-        {"name": "STRIPE_KEY", "secret_ref": "stripe"}
-      ]
+      "name": "worker", "kind": "worker",
+      "runtime": {"type": "host", "runner": "go-run"},
+      "spec": {"kind": "worker", "env": [
+        {"name": "STRIPE_KEY", "secretRef": {"name": "stripe"}}
+      ]}
     }
   ],
   "secret_provider": {"type": "file", "path": "secrets/dev.yaml"}
-}`
+}}`
 
 func TestParseKCLEntities_SecretProvider(t *testing.T) {
 	e, err := parseKCLEntities([]byte(sampleSecretProviderJSON))
@@ -48,11 +48,8 @@ func TestParseKCLEntities_SecretProvider(t *testing.T) {
 }
 
 func TestParseKCLEntities_SecretProvider_AbsentNil(t *testing.T) {
-	// The existing sample (no secret_provider key) must parse to nil.
-	e, err := parseKCLEntities([]byte(sampleKCLJSON))
-	if err != nil {
-		t.Fatalf("parseKCLEntities: %v", err)
-	}
+	// A contract with no secret_provider key must parse to nil.
+	e, _ := loadContract(t, "compose")
 	if e.SecretProvider != nil {
 		t.Errorf("SecretProvider should be nil when absent, got %+v", e.SecretProvider)
 	}
@@ -132,10 +129,7 @@ func TestSecretProviderFromEntities_StorePathResolved(t *testing.T) {
 }
 
 func TestSecretProviderFromEntities_NoneNoop(t *testing.T) {
-	e, err := parseKCLEntities([]byte(sampleKCLJSON))
-	if err != nil {
-		t.Fatalf("parseKCLEntities: %v", err)
-	}
+	e, _ := loadContract(t, "compose")
 	p, err := secretProviderFromEntities(e, t.TempDir())
 	if err != nil {
 		t.Fatalf("secretProviderFromEntities: %v", err)

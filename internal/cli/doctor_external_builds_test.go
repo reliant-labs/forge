@@ -49,7 +49,7 @@ func TestBuildExternalBuildDoctorChecks_CwdPresentCmdOnPath(t *testing.T) {
 	stat := stubStat{cwd: {}}.Stat
 	lookup := stubLookupErr{"docker": {}}.Lookup
 
-	svcs := []ServiceEntity{
+	svcs := []WorkloadEntity{
 		shellSvc("gw", "", "docker build .", "sibling", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
@@ -79,7 +79,7 @@ func TestBuildExternalBuildDoctorChecks_MissingCwdWarns(t *testing.T) {
 	stat := stubStat{}.Stat
 	lookup := stubLookupErr{"docker": {}}.Lookup
 
-	svcs := []ServiceEntity{
+	svcs := []WorkloadEntity{
 		shellSvc("gw", "", "docker build .", "missing", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
@@ -103,7 +103,7 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenMissingWarns(t *testing.T) {
 	stat := stubStat{projectDir: {}}.Stat // cwd ok (empty BuildCwd = projectDir)
 	lookup := stubLookupErr{}.Lookup      // nothing on PATH
 
-	svcs := []ServiceEntity{
+	svcs := []WorkloadEntity{
 		shellSvc("gw", "", "go build ./...", "", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
@@ -128,7 +128,7 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenSkippedWhenCdPrefix(t *testing
 	stat := stubStat{projectDir: {}}.Stat
 	lookup := stubLookupErr{}.Lookup // even with empty PATH, we should not warn
 
-	svcs := []ServiceEntity{
+	svcs := []WorkloadEntity{
 		shellSvc("gw", "", "cd ../sibling && docker build .", "", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
@@ -152,7 +152,7 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenSkippedWhenEnvVar(t *testing.T
 	stat := stubStat{projectDir: {}}.Stat
 	lookup := stubLookupErr{}.Lookup
 
-	svcs := []ServiceEntity{
+	svcs := []WorkloadEntity{
 		shellSvc("gw", "", "CGO_ENABLED=0 go build ./...", "", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
@@ -174,7 +174,7 @@ func TestBuildExternalBuildDoctorChecks_PreviewSubstitutesTokens(t *testing.T) {
 	stat := stubStat{projectDir: {}}.Stat
 	lookup := stubLookupErr{"docker": {}}.Lookup
 
-	svcs := []ServiceEntity{
+	svcs := []WorkloadEntity{
 		shellSvc("gw", "my-gw", `docker build -t ${REGISTRY}/${IMAGE}:${TAG} --platform=linux/${TARGETARCH} .`, "", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
@@ -223,10 +223,25 @@ func TestRunExternalBuildDoctorChecks_NoServicesReturnsNil(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, `{
-		"services": [
-			{"name":"api","image":"api","deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
-		]
-	}`))
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "image": "api",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`))
 	cfg := &config.ProjectConfig{Name: "t"}
 	results := runExternalBuildDoctorChecks(context.Background(), cfg, dir, "")
 	if results != nil {

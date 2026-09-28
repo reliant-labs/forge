@@ -48,9 +48,9 @@ func withClusterCheck(t *testing.T, res doctor.CheckResult) {
 // health `forge env up` must assert on.
 func clusterEntities() *KCLEntities {
 	return &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{Runner: "go-run"}}},
-			{Name: "daemon-gateway", Deploy: DeployConfigEntity{Type: "cluster"}},
+		Workloads: []WorkloadEntity{
+			hostWL("admin-server"),
+			{Name: "daemon-gateway", Runtime: RuntimeEntity{Type: RuntimeCluster, Cluster: &ClusterRuntime{}}},
 		},
 		Frontends: []FrontendEntity{{Name: "reliant-web", Port: 3000}},
 	}

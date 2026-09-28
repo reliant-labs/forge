@@ -55,11 +55,7 @@ func localEnvEntities(endpoint string) *KCLEntities {
 	return &KCLEntities{
 		ControlPlane:   &ControlPlaneEntity{Type: "control_plane", Endpoint: endpoint},
 		SecretProvider: &SecretProviderEntity{Type: "hosted"},
-		Services: []ServiceEntity{{
-			Name: "api",
-			Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{Runner: "go-run",
-				EnvVars: []KCLEnvVar{{Name: "STRIPE_SECRET_KEY", SecretRef: "app-secrets"}}}},
-		}},
+		Workloads:      []WorkloadEntity{hostWL("api", withSecretRef("STRIPE_SECRET_KEY", "app-secrets", "STRIPE_SECRET_KEY"))},
 	}
 }
 
@@ -159,8 +155,7 @@ func TestSecretCommands_RequireEnvFlag(t *testing.T) {
 func TestSecretList_ExternalProviderReportsUnknown(t *testing.T) {
 	withSecretEntities(t, &KCLEntities{
 		SecretProvider: &SecretProviderEntity{Type: "external"},
-		Services: []ServiceEntity{{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-			EnvVars: []KCLEnvVar{{Name: "STRIPE_SECRET_KEY", SecretRef: "app-secrets"}}}}}},
+		Workloads:      []WorkloadEntity{hostWL("api", withSecretRef("STRIPE_SECRET_KEY", "app-secrets", "STRIPE_SECRET_KEY"))},
 	})
 	var buf bytes.Buffer
 	if err := runSecretListJSON(context.Background(), "prod", &buf); err != nil {
@@ -184,8 +179,7 @@ func TestSecretList_ExternalProviderReportsUnknown(t *testing.T) {
 
 func TestSecretList_NoProviderReportsDeclarations(t *testing.T) {
 	withSecretEntities(t, &KCLEntities{
-		Services: []ServiceEntity{{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-			EnvVars: []KCLEnvVar{{Name: "K", SecretRef: "s"}}}}}},
+		Workloads: []WorkloadEntity{hostWL("api", withSecretRef("K", "s", "K"))},
 	})
 	r, err := collectSecretListFacts(context.Background(), "dev")
 	if err != nil {
@@ -242,8 +236,7 @@ func TestSecretList_HostedReportsVersions(t *testing.T) {
 	fake.stored["STRIPE_SECRET_KEY"] = 3
 	withProjectName(t, "acme")
 	e, _ := renderEntitiesForSecrets(context.Background(), "prod")
-	e.Services = []ServiceEntity{{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-		EnvVars: []KCLEnvVar{{Name: "STRIPE_SECRET_KEY", SecretRef: "s"}}}}}}
+	e.Workloads = []WorkloadEntity{hostWL("api", withSecretRef("STRIPE_SECRET_KEY", "s", "STRIPE_SECRET_KEY"))}
 	r, err := collectSecretListFacts(context.Background(), "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -346,20 +339,24 @@ func TestResolveCredential_HintIsBareLogin(t *testing.T) {
 
 func TestHostedEnvKindOf(t *testing.T) {
 	cp := &ControlPlaneEntity{Endpoint: "https://cp"}
-	backend := ServiceEntity{Name: "api", Deploy: DeployConfigEntity{Type: "simple-backend", SimpleBackend: &SimpleBackendSpec{}}}
-	host := ServiceEntity{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}}
+	backend := hostedWL("api")
+	host := hostWL("api")
+	onCluster := clusterWL("search", "k3d-x", "ns")
 	cases := []struct {
 		name string
 		e    *KCLEntities
 		want deploytarget.HostedEnvKind
 		dest string
 	}{
-		{"no control plane", &KCLEntities{Services: []ServiceEntity{host}}, "", destinationHost},
-		{"backend tier", &KCLEntities{ControlPlane: cp, Services: []ServiceEntity{backend}}, deploytarget.HostedEnvPersistent, destinationHosted},
-		{"static site tier", &KCLEntities{ControlPlane: cp, Frontends: []FrontendEntity{{Name: "web", Deploy: &FrontendDeployEntity{Type: frontendDeployStaticSite}}}}, deploytarget.HostedEnvPersistent, destinationHosted},
-		{"database tier", &KCLEntities{ControlPlane: cp, Databases: []DatabaseEntity{{Name: "db"}}}, deploytarget.HostedEnvPersistent, destinationHosted},
-		{"host only", &KCLEntities{ControlPlane: cp, Services: []ServiceEntity{host}}, deploytarget.HostedEnvLocal, destinationHost},
-		{"host + compose", &KCLEntities{ControlPlane: cp, Services: []ServiceEntity{host, {Name: "pg", Deploy: DeployConfigEntity{Type: "compose", Compose: &ComposeDeploy{}}}}}, deploytarget.HostedEnvLocal, destinationMixed},
+		{"no control plane", &KCLEntities{Workloads: []WorkloadEntity{host}}, "", destinationHost},
+		{"hosted workload", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{backend}}, deploytarget.HostedEnvPersistent, destinationHosted},
+		{"bucketless static site", &KCLEntities{ControlPlane: cp, Frontends: []FrontendEntity{{Name: "web", Deploy: &FrontendDeployEntity{Type: frontendDeployStaticSite, StaticSite: &StaticSiteDeploy{}}}}}, deploytarget.HostedEnvPersistent, destinationHosted},
+		{"hosted database", &KCLEntities{ControlPlane: cp, Databases: []DatabaseEntity{{Name: "db", Runtime: RuntimeHosted}}}, deploytarget.HostedEnvPersistent, destinationHosted},
+		{"host only", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{host}}, deploytarget.HostedEnvLocal, destinationHost},
+		{"host + compose", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{host, composeWL("pg", "docker-compose.yml")}}, deploytarget.HostedEnvLocal, destinationMixed},
+		// Hosting is per workload: one hosted and one cluster workload in
+		// one env is a PERSISTENT env whose destination is mixed.
+		{"hosted + cluster", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{backend, onCluster}}, deploytarget.HostedEnvPersistent, destinationMixed},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -437,7 +434,7 @@ func TestLookupHostedEnvironment_IgnoresOtherProjects(t *testing.T) {
 func TestDispatchHostedDeploy_RefusesLocalEnvBeforeAnyRPC(t *testing.T) {
 	dir := t.TempDir()
 	fixture := filepath.Join(dir, "render.json")
-	raw, _ := json.Marshal(localEnvEntities("https://cp.invalid"))
+	raw := contractJSON(t, localEnvEntities("https://cp.invalid"))
 	if err := os.WriteFile(fixture, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +460,7 @@ func TestDispatchHostedDeploy_RefusesLocalEnvBeforeAnyRPC(t *testing.T) {
 
 func TestBuildDeployGroups_LocalEnvIsNotHosted(t *testing.T) {
 	e := localEnvEntities("https://cp")
-	e.Services = append(e.Services, ServiceEntity{Name: "pg", Deploy: DeployConfigEntity{Type: "compose", Compose: &ComposeDeploy{}}})
+	e.Workloads = append(e.Workloads, composeWL("pg", "docker-compose.yml"))
 	groups, err := buildDeployGroups("dev", e, "")
 	if err != nil {
 		t.Fatalf("a LOCAL env's host/compose workloads must group normally: %v", err)
@@ -560,7 +557,7 @@ func TestUpLocalEnv_PulledSecretsInjectedAndValidated(t *testing.T) {
 	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForLaunch(e), secretStoreLabel(e)); err != nil {
 		t.Fatalf("pre-flight with the pulled value present: %v", err)
 	}
-	cmd, _, err := buildHostServiceCmd(context.Background(), nil, e.Services[0], prov.All(), "dev")
+	cmd, _, err := buildHostServiceCmd(context.Background(), nil, e.Workloads[0], prov.All(), "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +567,7 @@ func TestUpLocalEnv_PulledSecretsInjectedAndValidated(t *testing.T) {
 
 	// A declared secret the store lacks fails the pre-flight with the
 	// env-named fix.
-	e.Services[0].Deploy.Host.EnvVars = append(e.Services[0].Deploy.Host.EnvVars, KCLEnvVar{Name: "JWT_SECRET", SecretRef: "s"})
+	withSecretRef("JWT_SECRET", "s", "JWT_SECRET")(&e.Workloads[0])
 	err = withEnvInSecretFix(secrets.ValidateDeclaredRefs(prov, secretRefsForLaunch(e), secretStoreLabel(e)), "dev")
 	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET") || !strings.Contains(err.Error(), "forge secret set --env dev") {
 		t.Fatalf("missing pulled secret: %v", err)
@@ -578,7 +575,7 @@ func TestUpLocalEnv_PulledSecretsInjectedAndValidated(t *testing.T) {
 
 	// A persistent hosted env never resolves armed values.
 	persistent := &KCLEntities{ControlPlane: e.ControlPlane, SecretProvider: e.SecretProvider,
-		Databases: []DatabaseEntity{{Name: "db", Spec: v1alpha1.ManagedDatabaseSpec{}}}}
+		Databases: []DatabaseEntity{{Name: "db", Runtime: RuntimeHosted, Spec: v1alpha1.ManagedDatabaseSpec{}}}}
 	p2, _ := secretProviderFromEntities(persistent, t.TempDir())
 	if secrets.ResolvesValues(p2) {
 		t.Fatal("a PERSISTENT env's provider must stay value-free")

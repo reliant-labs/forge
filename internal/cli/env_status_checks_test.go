@@ -28,10 +28,8 @@ func TestRuntimeTargetComesFromTheResolvedRows(t *testing.T) {
 		{Name: "reliant-api-server", Kind: "host", Port: 3091, Listening: true},
 		{Name: "reliant-web", Kind: "frontend", Port: 3000, Listening: true},
 	}
-	entities := &KCLEntities{Services: []ServiceEntity{
-		{Name: "reliant-api-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-			EnvVars: []KCLEnvVar{{Name: "PPROF_ADDR", Value: ":6061"}},
-		}}},
+	entities := &KCLEntities{Workloads: []WorkloadEntity{
+		hostWL("reliant-api-server", withEnv("PPROF_ADDR", ":6061")),
 	}}
 
 	got := runtimeTargetFor(entities, rows)
@@ -67,23 +65,22 @@ func TestRuntimeTargetIsEmptyWhenNothingIsListening(t *testing.T) {
 // frontend preview is not the stack the machine-local checks probe.
 func TestRuntimeTargetRemoteOnlyFollowsTheDeclaration(t *testing.T) {
 	cases := map[string]struct {
-		services []ServiceEntity
+		services []WorkloadEntity
+		infra    []HostInfraEntity
 		want     bool
 	}{
-		"remote cluster + simple-backend only": {[]ServiceEntity{
-			{Name: "api", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{Cluster: "gke_acme_us-central1_prod"}}},
-			{Name: "sb", Deploy: DeployConfigEntity{Type: "simple-backend", SimpleBackend: &SimpleBackendSpec{Cluster: "gke_acme_us-central1_prod"}}},
-		}, true},
-		"a local k3d cluster service": {[]ServiceEntity{
-			{Name: "api", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{Cluster: "k3d-acme"}}},
-		}, false},
-		"a host service":   {[]ServiceEntity{{Name: "api", Deploy: DeployConfigEntity{Type: "host"}}}, false},
-		"a compose unit":   {[]ServiceEntity{{Name: "pg", Deploy: DeployConfigEntity{Type: "compose"}}}, false},
-		"a host-infra one": {[]ServiceEntity{{Name: "bao", Deploy: DeployConfigEntity{Type: "host-infra"}}}, false},
+		"remote cluster + hosted only": {services: []WorkloadEntity{
+			clusterWL("api", "gke_acme_us-central1_prod", "prod"),
+			hostedWL("sb"),
+		}, want: true},
+		"a local k3d cluster service": {services: []WorkloadEntity{clusterWL("api", "k3d-acme", "dev")}, want: false},
+		"a host service":              {services: []WorkloadEntity{hostWL("api")}, want: false},
+		"a compose unit":              {services: []WorkloadEntity{composeWL("pg", "docker-compose.yml")}, want: false},
+		"a host-infra one":            {infra: []HostInfraEntity{{Name: "bao"}}, want: false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := &KCLEntities{Services: tc.services, Frontends: []FrontendEntity{{Name: "web", Port: 3100}}}
+			e := &KCLEntities{Workloads: tc.services, Infra: tc.infra, Frontends: []FrontendEntity{{Name: "web", Port: 3100}}}
 			if got := runtimeTargetFor(e, nil).RemoteOnly; got != tc.want {
 				t.Errorf("RemoteOnly = %v, want %v", got, tc.want)
 			}
@@ -133,12 +130,10 @@ func TestScaffoldPprofDefaultResolvesThroughEnvStatus(t *testing.T) {
 	}
 
 	rows := []upServiceRow{{Name: "gateway", Kind: "host", Port: 8080, Listening: true}}
-	entities := &KCLEntities{Services: []ServiceEntity{
-		{Name: "gateway", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-			// Exactly what appConfigEnvMap projects onto a workload when the
-			// env pins nothing — the scaffold default, verbatim.
-			EnvVars: []KCLEnvVar{{Name: "PPROF_ADDR", Value: def}},
-		}}},
+	entities := &KCLEntities{Workloads: []WorkloadEntity{
+		// Exactly what appConfigEnvMap projects onto a workload when the
+		// env pins nothing — the scaffold default, verbatim.
+		hostWL("gateway", withEnv("PPROF_ADDR", def)),
 	}}
 
 	got := runtimeTargetFor(entities, rows)
@@ -177,11 +172,28 @@ features:
   frontend: false
 `)
 	fixture := fmt.Sprintf(`{
-      "services": [
-        {"name": "admin-server", "deploy": {"type": "host", "runner": "go-run",
-          "env_vars": [{"name": "ADMIN_SERVER_PORT", "value": "%d"}]}}
-      ]
-    }`, port)
+  "output": {
+    "workloads": [
+      {
+        "name": "admin-server",
+        "kind": "service",
+        "runtime": {
+          "type": "host",
+          "runner": "go-run"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "ADMIN_SERVER_PORT",
+              "value": "%d"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}`, port)
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	t.Chdir(dir)
 

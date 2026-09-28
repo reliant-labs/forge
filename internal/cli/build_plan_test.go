@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // The regression these tests pin: control-plane's v1.7.0 release cut
@@ -52,11 +53,42 @@ func planProject(t *testing.T, fixture string) string {
 // IMAGE-LESS cluster service that declares no build. Rendered as manifests
 // only, so it has no artifact — but EffectiveBuild synthesized
 // `go build ./cmd/prod-daemon-cluster` for it before forge #252.
-const imagelessInfraFixture = `{"services":[
-  {"name":"pt","image":"pt","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-   "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}},
-  {"name":"prod-daemon-cluster","deploy":{"type":"cluster","cluster":"d","namespace":"kube-system"}}
-]}`
+const imagelessInfraFixture = `{
+  "output": {
+    "workloads": [
+      {
+        "name": "pt",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "prod-daemon-cluster",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "d",
+          "namespace": "kube-system"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 
 // TestBuildPlan_PassesTheReleaseSetWithoutBuildingAnything is the positive
 // case, end to end through runBuild — the SAME entry point the cut uses — and
@@ -84,12 +116,48 @@ func TestBuildPlan_PassesTheReleaseSetWithoutBuildingAnything(t *testing.T) {
 // service here declares its missing package EXPLICITLY, so this pins the
 // plan's own check independently of how forge synthesizes defaults.
 func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
-	planProject(t, `{"services":[
-	  {"name":"pt","image":"pt","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-	   "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}},
-	  {"name":"ghost","image":"pt","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-	   "build":{"type":"go","cmd":"./cmd/ghost","output_name":"ghost"}}
-	]}`)
+	planProject(t, `{
+  "output": {
+    "workloads": [
+      {
+        "name": "pt",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "ghost",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/ghost",
+          "output_name": "ghost"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`)
 
 	err := runBuild(context.Background(), buildOptions{
 		env: "prod", buildTarget: "all", outputDir: "bin", buildDocker: true,
@@ -107,7 +175,11 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
 // having written an archive, not an executable — so the real build "passes"
 // and the image that COPYs it crash-loops. The plan must call it out.
 func TestPlanGoTarget_RejectsNonMainPackage(t *testing.T) {
-	planProject(t, `{"services":[]}`)
+	planProject(t, `{
+  "output": {
+    "workloads": []
+  }
+}`)
 	if p := planGoTarget(context.Background(), goBuildTarget{cmd: "./lib", outputName: "lib"}, goListPackageName); !strings.Contains(p, "not a main package") {
 		t.Errorf("non-main go-build target: want a 'not a main package' problem, got %q", p)
 	}
@@ -120,12 +192,48 @@ func TestPlanGoTarget_RejectsNonMainPackage(t *testing.T) {
 // cwd (a sibling checkout) is absent fails the plan with buildtarget's own
 // error — the SAME rule Runner.Build applies, not a restatement of it.
 func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
-	planProject(t, `{"services":[
-	  {"name":"pt","image":"pt","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-	   "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}},
-	  {"name":"sib","image":"sib","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-	   "build":{"type":"shell","cmd":"docker push ${REGISTRY}/${IMAGE}:${TAG}","cwd":"../no-such-sibling"}}
-	]}`)
+	planProject(t, `{
+  "output": {
+    "workloads": [
+      {
+        "name": "pt",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "sib",
+        "kind": "service",
+        "image": "sib",
+        "build": {
+          "type": "shell",
+          "cmd": "docker push ${REGISTRY}/${IMAGE}:${TAG}",
+          "cwd": "../no-such-sibling"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`)
 	err := runBuild(context.Background(), buildOptions{
 		env: "prod", buildTarget: "all", outputDir: "bin", buildDocker: true,
 		pushRegistry: "registry.example/prod", release: "v9.9.9", plan: true, skipGenerate: true,
@@ -139,12 +247,48 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
 // the build produces must fail the plan with the release's own completeness
 // error — the check the cut runs only after building everything else.
 func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
-	planProject(t, `{"services":[
-	  {"name":"pt","image":"pt","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-	   "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}},
-	  {"name":"vendored","image":"somebody-elses","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-	   "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}}
-	]}`)
+	planProject(t, `{
+  "output": {
+    "workloads": [
+      {
+        "name": "pt",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "vendored",
+        "kind": "service",
+        "image": "somebody-elses",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`)
 	err := runBuild(context.Background(), buildOptions{
 		env: "prod", buildTarget: "all", outputDir: "bin", buildDocker: true,
 		pushRegistry: "registry.example/prod", release: "v9.9.9", plan: true, skipGenerate: true,
@@ -182,18 +326,37 @@ func TestImageTagSet_ReleaseWritesOnlyTheVersion(t *testing.T) {
 	}
 }
 
-// TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag: the env's manifest tag
-// (prod renders `…:stable`) must NOT become a release's image tag. Before the
+// TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag: the env's image tag
+// (prod resolves `stable`) must NOT become a release's image tag. Before the
 // fix runBuild resolved the release's tag from the env render, and the cut
 // pushed `:stable`. The plan prints exactly the refs the build would push, so
 // it is the observation point.
 func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
-	dir := planProject(t, `{"services":[
-	  {"name":"pt","image":"pt","deploy":{"type":"cluster","cluster":"c","namespace":"n"},
-	   "build":{"type":"go","cmd":"./cmd/pt","output_name":"pt"}}
-	],
-	"manifests":[{"kind":"Deployment","metadata":{"name":"pt"},
-	  "spec":{"template":{"spec":{"containers":[{"image":"registry.example/prod/pt:stable"}]}}}}]}`)
+	dir := planProject(t, `{
+  "output": {
+    "image_tag": "stable",
+    "workloads": [
+      {
+        "name": "pt",
+        "kind": "service",
+        "image": "pt",
+        "build": {
+          "type": "go",
+          "cmd": "./cmd/pt",
+          "output_name": "pt"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`)
 	ents, err := RenderKCL(context.Background(), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -226,12 +389,14 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
 // shared tag for its image — both of which are exactly the shared tags a
 // failed cut must not move (reliant/workspace-base `:stable` in v1.7.0).
 func TestExternalBuildTag_ReleaseOverridesSharedTags(t *testing.T) {
-	ents := &KCLEntities{ManifestImageTags: map[string]string{"reliant": "stable"}}
-	pinned := ServiceEntity{Name: "workspace-base", Image: "workspace-base", ImageTag: "dev-per-daemon"}
-	envTagged := ServiceEntity{Name: "reliant-api-server", Image: "reliant"}
+	pinned := WorkloadEntity{Name: "workspace-base", Image: "workspace-base",
+		Spec: deployv1alpha1.WorkloadSpec{Image: "workspace-base:dev-per-daemon"}}
+	envTagged := WorkloadEntity{Name: "reliant-api-server", Image: "reliant",
+		Spec: deployv1alpha1.WorkloadSpec{Image: "registry.example/reliant:stable"}}
+	ents := &KCLEntities{ImageTag: "stable", Workloads: []WorkloadEntity{pinned, envTagged}}
 
 	rel := buildOptions{release: "v1.7.0"}
-	for _, svc := range []ServiceEntity{pinned, envTagged} {
+	for _, svc := range []WorkloadEntity{pinned, envTagged} {
 		if got := externalBuildTag(svc, ents, "v1.7.0", rel); got != "v1.7.0" {
 			t.Errorf("release build: %s ${TAG} = %q, want the release version v1.7.0", svc.Name, got)
 		}

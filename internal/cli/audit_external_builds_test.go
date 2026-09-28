@@ -25,10 +25,25 @@ func TestAuditExternalBuilds_NoServicesIsOK(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, `{
-		"services": [
-			{"name":"api","image":"api","deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
-		]
-	}`))
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "image": "api",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`))
 
 	entities, err := RenderKCL(t.Context(), dir, "dev")
 	if err != nil {
@@ -59,11 +74,30 @@ func TestAuditExternalBuilds_PresentCwdNoConflictIsOK(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture := `{
-		"services": [
-			{"name":"gw","image":"my-gw","build":{"type":"shell","cmd":"docker build .","cwd":"sibling"},
-			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
-		]
-	}`
+  "output": {
+    "workloads": [
+      {
+        "name": "gw",
+        "kind": "service",
+        "image": "my-gw",
+        "build": {
+          "type": "shell",
+          "cmd": "docker build .",
+          "cwd": "sibling"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, nil, dir)
@@ -91,11 +125,30 @@ func TestAuditExternalBuilds_MissingCwdWarns(t *testing.T) {
 	// Intentionally do NOT create dir/missing-sibling — we want the
 	// stat to fail.
 	fixture := `{
-		"services": [
-			{"name":"gw","image":"gw","build":{"type":"shell","cmd":"docker build .","cwd":"missing-sibling"},
-			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
-		]
-	}`
+  "output": {
+    "workloads": [
+      {
+        "name": "gw",
+        "kind": "service",
+        "image": "gw",
+        "build": {
+          "type": "shell",
+          "cmd": "docker build .",
+          "cwd": "missing-sibling"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, nil, dir)
@@ -122,11 +175,35 @@ func TestAuditExternalBuilds_BuildEnvConflictWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture := `{
-		"services": [
-			{"name":"gw","image":"gw","build":{"type":"shell","cmd":"docker build .","cwd":"sib","env":{"IMAGE":"oops","CGO_ENABLED":"0","TAG":"v1"}},
-			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
-		]
-	}`
+  "output": {
+    "workloads": [
+      {
+        "name": "gw",
+        "kind": "service",
+        "image": "gw",
+        "build": {
+          "type": "shell",
+          "cmd": "docker build .",
+          "cwd": "sib",
+          "env": {
+            "IMAGE": "oops",
+            "CGO_ENABLED": "0",
+            "TAG": "v1"
+          }
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, nil, dir)
@@ -169,11 +246,30 @@ func TestAuditExternalBuilds_StateReadAggregatesEnvs(t *testing.T) {
 		}
 	}
 	fixture := `{
-		"services": [
-			{"name":"gw","image":"gw","build":{"type":"shell","cmd":"docker build .","cwd":"src"},
-			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
-		]
-	}`
+  "output": {
+    "workloads": [
+      {
+        "name": "gw",
+        "kind": "service",
+        "image": "gw",
+        "build": {
+          "type": "shell",
+          "cmd": "docker build .",
+          "cwd": "src"
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, []string{"dev", "prod"}, dir)
@@ -211,11 +307,33 @@ func TestAuditExternalBuilds_JSONShape_Golden(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture := `{
-		"services": [
-			{"name":"gw","image":"gw","build":{"type":"shell","cmd":"docker build .","cwd":"src","env":{"CGO_ENABLED":"0"}},
-			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
-		]
-	}`
+  "output": {
+    "workloads": [
+      {
+        "name": "gw",
+        "kind": "service",
+        "image": "gw",
+        "build": {
+          "type": "shell",
+          "cmd": "docker build .",
+          "cwd": "src",
+          "env": {
+            "CGO_ENABLED": "0"
+          }
+        },
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, nil, dir)

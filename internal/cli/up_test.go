@@ -19,95 +19,81 @@ import (
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
-// TestBuildHostServiceCmd covers each runner dispatch — go-run / air /
-// binary / delve — plus the unknown-runner error. Each case asserts
-// the exec.Cmd's program + args match the expected shape; we don't
-// exercise the readDotEnvFile path here (that's a separate unit).
+// TestBuildHostServiceCmd covers the `forge env up` host launch over each
+// runner: the argv is DERIVED from the workload's GoBuild + spec args by
+// hostlaunch.BuildCmd (its own table pins every runner); this pins that the
+// up path feeds it the workload's facts, and that no `server <name>` is
+// invented.
 func TestBuildHostServiceCmd(t *testing.T) {
 	ctx := context.Background()
+	withRunner := func(r string) func(*WorkloadEntity) {
+		return func(w *WorkloadEntity) { w.Runtime.Host.Runner = r }
+	}
+	withArgs := func(a ...string) func(*WorkloadEntity) {
+		return func(w *WorkloadEntity) { w.Spec.Args = a }
+	}
+	sharedBinary := func(w *WorkloadEntity) {
+		w.Build = BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/myproj", OutputName: "myproj"}}
+	}
 	cases := []struct {
 		name    string
-		svc     ServiceEntity
+		svc     WorkloadEntity
 		want    []string
 		wantErr string
 	}{
 		{
-			// No build block → EffectiveBuild synthesizes the
-			// ./cmd/<name> default, so the go-run target is ./cmd/api,
-			// NOT the legacy ./cmd hardcode.
-			name: "go-run default uses ./cmd/<name>",
-			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
-				Type: "host", Host: &HostDeploy{Runner: "go-run"},
-			}},
-			want: []string{"go", "run", "./cmd/api", "server", "api"},
+			name: "go-run runs the GoBuild cmd with the workload's args",
+			svc:  hostWL("api", sharedBinary, withArgs("api")),
+			want: []string{"go", "run", "./cmd/myproj", "api"},
 		},
 		{
-			name: "empty runner defaults to go-run",
-			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
-				Type: "host", Host: &HostDeploy{Runner: ""},
-			}},
-			want: []string{"go", "run", "./cmd/api", "server", "api"},
-		},
-		{
-			// An explicit GoBuild.cmd flows into the go-run target so
-			// host-run matches the build target exactly (shared binary at
-			// ./cmd/<project>, not ./cmd/<service>).
-			name: "go-run uses explicit GoBuild.cmd",
-			svc: ServiceEntity{
-				Name:   "api",
-				Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{Runner: "go-run"}},
-				Build:  BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/myproj"}},
-			},
-			want: []string{"go", "run", "./cmd/myproj", "server", "api"},
+			name: "empty runner is go-run",
+			svc:  hostWL("api", sharedBinary, withRunner(""), withArgs("api")),
+			want: []string{"go", "run", "./cmd/myproj", "api"},
 		},
 		{
 			name: "air with custom config",
-			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
-				Type: "host", Host: &HostDeploy{Runner: "air", AirConfig: ".air.custom.toml"},
-			}},
+			svc: hostWL("api", withRunner("air"), func(w *WorkloadEntity) {
+				w.Runtime.Host.AirConfig = ".air.custom.toml"
+			}),
 			want: []string{"air", "-c", ".air.custom.toml"},
 		},
 		{
-			name: "air default config",
-			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
-				Type: "host", Host: &HostDeploy{Runner: "air"},
-			}},
-			want: []string{"air", "-c", ".air.toml"},
-		},
-		{
-			name: "binary runner",
-			svc: ServiceEntity{Name: "admin-server", Deploy: DeployConfigEntity{
-				Type: "host", Host: &HostDeploy{Runner: "binary"},
-			}},
-			want: []string{"./bin/admin-server"},
-		},
-		{
-			name: "delve runner default port",
-			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
-				Type: "host", Host: &HostDeploy{Runner: "delve"},
-			}},
-			want: []string{"dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "./bin/api"},
+			name: "binary runs the built output with args",
+			svc:  hostWL("admin-server", sharedBinary, withRunner("binary"), withArgs("admin")),
+			want: []string{"./bin/myproj", "admin"},
 		},
 		{
 			name: "delve runner custom port",
-			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
-				Type: "host", Host: &HostDeploy{Runner: "delve", DelvePort: 3030},
-			}},
-			want: []string{"dlv", "exec", "--headless", "--listen=:3030", "--api-version=2", "--accept-multiclient", "--continue", "./bin/api"},
+			svc: hostWL("api", sharedBinary, withRunner("delve"), withArgs("api"), func(w *WorkloadEntity) {
+				w.Runtime.Host.DelvePort = 3030
+			}),
+			want: []string{"dlv", "exec", "--headless", "--listen=:3030", "--api-version=2", "--accept-multiclient", "--continue", "./bin/myproj", "--", "api"},
 		},
 		{
-			name: "unknown runner errors",
-			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
-				Type: "host", Host: &HostDeploy{Runner: "tilt"},
-			}},
+			name: "an explicit spec.command runs verbatim with args",
+			svc: hostWL("reliant-api", func(w *WorkloadEntity) {
+				w.Build = BuildConfigEntity{}
+				w.Spec.Command = []string{"go", "run", "./cmd/reliant"}
+				w.Spec.Args = []string{"server", "api"}
+			}),
+			want: []string{"go", "run", "./cmd/reliant", "server", "api"},
+		},
+		{
+			name: "no GoBuild and no command is an error",
+			svc: hostWL("api", func(w *WorkloadEntity) {
+				w.Build = BuildConfigEntity{}
+			}),
+			wantErr: "no Go build",
+		},
+		{
+			name:    "unknown runner errors",
+			svc:     hostWL("api", withRunner("tilt")),
 			wantErr: `unknown host runner "tilt"`,
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// nil cfg is the test-shaped projectConfig — the dispatch
-			// matrix shouldn't depend on forge.yaml layering at all,
-			// and a nil cfg makes that explicit.
 			cmd, _, err := buildHostServiceCmd(ctx, nil, c.svc, nil, "dev")
 			if c.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
@@ -118,14 +104,8 @@ func TestBuildHostServiceCmd(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
 			}
-			got := cmd.Args
-			if len(got) != len(c.want) {
-				t.Fatalf("args len mismatch: got %v, want %v", got, c.want)
-			}
-			for i := range got {
-				if got[i] != c.want[i] {
-					t.Errorf("args[%d]: got %q, want %q", i, got[i], c.want[i])
-				}
+			if strings.Join(cmd.Args, " ") != strings.Join(c.want, " ") {
+				t.Fatalf("args:\n got  %q\n want %q", cmd.Args, c.want)
 			}
 		})
 	}
@@ -140,14 +120,14 @@ func TestEntitiesEmpty(t *testing.T) {
 	if !entitiesEmpty(&KCLEntities{}) {
 		t.Error("zero value: want empty")
 	}
-	if entitiesEmpty(&KCLEntities{Services: []ServiceEntity{{Name: "a"}}}) {
-		t.Error("one service: want non-empty")
+	if entitiesEmpty(&KCLEntities{Workloads: []WorkloadEntity{hostWL("a")}}) {
+		t.Error("one workload: want non-empty")
 	}
 	if entitiesEmpty(&KCLEntities{Frontends: []FrontendEntity{{Name: "web"}}}) {
 		t.Error("one frontend: want non-empty")
 	}
-	if entitiesEmpty(&KCLEntities{CronJobs: []CronJobEntity{{Name: "cron"}}}) {
-		t.Error("one cronjob: want non-empty")
+	if entitiesEmpty(&KCLEntities{Infra: []HostInfraEntity{{Name: "postgres"}}}) {
+		t.Error("one infra entry: want non-empty")
 	}
 }
 
@@ -403,40 +383,12 @@ func TestSummaryLogPath_MatchesUpLogPath(t *testing.T) {
 	}
 }
 
-func TestHostEnvPort(t *testing.T) {
-	if got := hostEnvPort("svc", nil); got != "" {
-		t.Errorf("nil host: got %q, want empty", got)
-	}
-	// Only PORT set → use it.
-	host := &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "DATABASE_URL", Value: "postgres://x"},
-		{Name: "PORT", Value: "8080"},
-	}}
-	if got := hostEnvPort("api", host); got != "8080" {
-		t.Errorf("hostEnvPort PORT-only: got %q, want 8080", got)
-	}
-	// Both PORT and <NAME>_PORT → the service-specific one wins (the real
-	// bind port; the generic PORT is often a vestigial default).
-	both := &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "PORT", Value: "8080"},
-		{Name: "ADMIN_SERVER_PORT", Value: "8090"},
-	}}
-	if got := hostEnvPort("admin-server", both); got != "8090" {
-		t.Errorf("hostEnvPort specific-wins: got %q, want 8090", got)
-	}
-	// config_map_ref-only PORT (no inline value) yields no URL.
-	refHost := &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "PORT", ConfigMapRef: "cfg", ConfigMapKey: "PORT"},
-	}}
-	if got := hostEnvPort("api", refHost); got != "" {
-		t.Errorf("hostEnvPort ref-only: got %q, want empty", got)
-	}
-}
-
-// TestHostEnvPorts is the Gap-A fix: a host service binds EVERY declared
-// <...>_PORT, not just the first/canonical one. Probing only one let a real
-// conflict slip past the pre-flight guard.
-func TestHostEnvPorts(t *testing.T) {
+// TestWorkloadHostPorts pins where a host workload's bind ports come from:
+// the runtime's listen_ports when declared (declared EMPTY = binds nothing),
+// else the workload's spec.ports. There is no env-var heuristic any more — a
+// *_PORT variable is not a bind port (TEMPORAL_PORT is a dependency address),
+// and guessing from them blocked `up` on healthy infra.
+func TestWorkloadHostPorts(t *testing.T) {
 	eq := func(t *testing.T, got, want []int) {
 		t.Helper()
 		if len(got) != len(want) {
@@ -448,85 +400,35 @@ func TestHostEnvPorts(t *testing.T) {
 			}
 		}
 	}
-
-	if got := hostEnvPorts("svc", nil); got != nil {
-		t.Errorf("nil host: got %v, want nil", got)
+	// spec.ports, http first for the summary port.
+	w := hostWL("api", withPorts(8081, 3091))
+	eq(t, w.HostPorts(), []int{8081, 3091})
+	if got := w.HostPort(); got != 8081 {
+		t.Errorf("HostPort = %d, want the http port 8081", got)
 	}
-
-	// The headline case: one service with several distinct bind ports, each a
-	// <...>_PORT env var. ALL are returned, in declaration order.
-	multi := &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "DATABASE_URL", Value: "postgres://x"},
-		{Name: "API_PORT", Value: "8081"},
-		{Name: "METRICS_PORT", Value: "3091"},
-		{Name: "PPROF_PORT", Value: "6060"},
-	}}
-	eq(t, hostEnvPorts("api", multi), []int{8081, 3091, 6060})
-
-	// Only generic PORT declared → it is the bind port.
-	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "PORT", Value: "8080"},
-	}}), []int{8080})
-
-	// Generic PORT + the service-specific <NAME>_PORT → PORT is a vestigial
-	// default the binary ignores, so it is dropped; the specific one wins.
-	// (Over-detecting a vestigial PORT would mean a false pre-flight conflict
-	// and a readiness gate waiting for a port that never binds.)
-	eq(t, hostEnvPorts("admin-server", &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "PORT", Value: "8080"},
-		{Name: "ADMIN_SERVER_PORT", Value: "8090"},
-	}}), []int{8090})
-
-	// Generic PORT alongside a NON-name-matching *_PORT (e.g. a metrics port):
-	// no service-specific override, so BOTH are real bind ports.
-	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "PORT", Value: "8080"},
-		{Name: "METRICS_PORT", Value: "9090"},
-	}}), []int{9090, 8080})
-
-	// Duplicate values collapse; ref-only ports have no host-side literal and
-	// are skipped.
-	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "API_PORT", Value: "8081"},
-		{Name: "HTTP_PORT", Value: "8081"},                                  // dup value
-		{Name: "GRPC_PORT", ConfigMapRef: "cfg", ConfigMapKey: "GRPC_PORT"}, // ref, no literal
-		{Name: "BAD_PORT", Value: "not-a-number"},                           // unparseable
-	}}), []int{8081})
-
-	// No inline port at all → empty.
-	if got := hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
-		{Name: "DATABASE_URL", Value: "postgres://x"},
-	}}); got != nil {
-		t.Errorf("no port: got %v, want nil", got)
+	// listen_ports wins over spec.ports, deduped and bounds-checked.
+	w = hostWL("api", withPorts(8080), withListenPorts(3091, 3091, 0, 70000, 9090))
+	eq(t, w.HostPorts(), []int{3091, 9090})
+	if got := w.HostPort(); got != 3091 {
+		t.Errorf("HostPort = %d, want the first listen port 3091", got)
 	}
-
-	// Explicit listen_ports declared → the env heuristic is skipped entirely.
-	// The env here is the false-positive shape that motivated the field: the
-	// service DIALS temporal at TEMPORAL_PORT and the gateway LB at
-	// WORKSPACE_URL_PORT, and carries a vestigial k8s-convention PORT — none
-	// of which it binds. Only the declared bind ports are checked.
-	eq(t, hostEnvPorts("reliant-api-server", &HostDeploy{
-		ListenPorts: &[]int{3091, 8081},
-		EnvVars: []KCLEnvVar{
-			{Name: "TEMPORAL_PORT", Value: "7233"},
-			{Name: "WORKSPACE_URL_PORT", Value: "28080"},
-			{Name: "PORT", Value: "8080"},
-		},
-	}), []int{3091, 8081})
-
-	// Declared listen_ports are deduped and bounds-checked.
-	eq(t, hostEnvPorts("api", &HostDeploy{
-		ListenPorts: &[]int{8081, 8081, 0, 70000, 9090},
-	}), []int{8081, 9090})
-
-	// The singular summary-port helper prefers the first declared listen
-	// port over the env heuristic, so the status/summary URL and probe
-	// target a port the service actually binds.
-	if got := hostEnvPort("reliant-api-server", &HostDeploy{
-		ListenPorts: &[]int{3091, 8081},
-		EnvVars:     []KCLEnvVar{{Name: "PORT", Value: "8080"}},
-	}); got != "3091" {
-		t.Errorf("listen_ports summary port: got %q, want \"3091\"", got)
+	// Declared EMPTY listen_ports: binds nothing, even with spec.ports.
+	w = hostWL("desktop", withPorts(8080), withListenPorts())
+	eq(t, w.HostPorts(), nil)
+	if got := w.HostPort(); got != 0 {
+		t.Errorf("HostPort = %d, want 0 for a workload that binds nothing", got)
+	}
+	// *_PORT env vars are NOT bind ports.
+	w = hostWL("reliant-api-server", withEnv("TEMPORAL_PORT", "7233", "PORT", "8080"))
+	eq(t, w.HostPorts(), nil)
+	// The per-run ephemeral allocation (listen_ports + LaunchEnv PORT) is
+	// what HostEnv and HostPorts both read.
+	w = hostWL("api")
+	w.Runtime.Host.ListenPorts = &[]int{51234}
+	w.Runtime.Host.LaunchEnv = map[string]string{"PORT": "51234"}
+	eq(t, w.HostPorts(), []int{51234})
+	if got := w.HostEnv()["PORT"]; got != "51234" {
+		t.Errorf("HostEnv PORT = %q, want the launch overlay 51234", got)
 	}
 }
 
@@ -659,20 +561,12 @@ func TestPortInUse(t *testing.T) {
 // fe.Port==0 skip.
 func TestConflictingPorts(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-				EnvVars: []KCLEnvVar{{Name: "ADMIN_SERVER_PORT", Value: "8090"}},
-			}}},
-			// Multi-port host service: three distinct declared bind ports.
-			{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-				EnvVars: []KCLEnvVar{
-					{Name: "API_PORT", Value: "8081"},
-					{Name: "METRICS_PORT", Value: "3091"},
-					{Name: "PPROF_PORT", Value: "6060"},
-				},
-			}}},
-			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
-			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		Workloads: []WorkloadEntity{
+			hostWL("admin-server", withListenPorts(8090)),
+			// Multi-port host workload: three distinct declared bind ports.
+			hostWL("api", withListenPorts(8081, 3091, 6060)),
+			hostWL("noport"),
+			clusterWL("cluster-svc", "k3d-x", "ns", withPorts(9999)),
 		},
 		Frontends: []FrontendEntity{
 			{Name: "reliant-web", Port: 3000},
@@ -769,12 +663,10 @@ func ports(cs []portConflict) []int {
 // gate scope the set.
 func TestCollectUpServices(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-				EnvVars: []KCLEnvVar{{Name: "ADMIN_SERVER_PORT", Value: "8090"}},
-			}}},
-			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
-			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		Workloads: []WorkloadEntity{
+			hostWL("admin-server", withListenPorts(8090)),
+			hostWL("noport"),
+			clusterWL("cluster-svc", "k3d-x", "ns", withPorts(9999)),
 		},
 		Frontends: []FrontendEntity{
 			{Name: "admin-web", Port: 3000},
@@ -899,16 +791,46 @@ features:
   frontend: true
 `)
 	fixture := fmt.Sprintf(`{
-      "services": [
-        {"name": "admin-server", "deploy": {"type": "host", "runner": "go-run",
-          "env_vars": [{"name": "ADMIN_SERVER_PORT", "value": "%d"}]}},
-        {"name": "cluster-only", "deploy": {"type": "cluster", "cluster": "k3d-demo"}}
-      ],
-      "frontends": [
-        {"name": "admin-web", "path": "web/admin", "port": 3100},
-        {"name": "reliant-web", "path": "web/reliant", "port": 3101}
-      ]
-    }`, port)
+  "output": {
+    "frontends": [
+      {
+        "name": "admin-web",
+        "path": "web/admin",
+        "port": 3100
+      },
+      {
+        "name": "reliant-web",
+        "path": "web/reliant",
+        "port": 3101
+      }
+    ],
+    "workloads": [
+      {
+        "name": "admin-server",
+        "kind": "service",
+        "runtime": {
+          "type": "host",
+          "runner": "go-run",
+          "listen_ports": [%d]
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "cluster-only",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-demo"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`, port)
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	t.Chdir(dir)
 
@@ -1038,16 +960,10 @@ func TestClassifyPortReadiness(t *testing.T) {
 // + error name the offending ports with the right foreign-vs-nobody wording.
 func TestEvalHostReadiness(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
-			{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
-				EnvVars: []KCLEnvVar{
-					{Name: "API_PORT", Value: "8081"},
-					{Name: "METRICS_PORT", Value: "3091"},
-					{Name: "PPROF_PORT", Value: "6060"},
-				},
-			}}},
-			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
-			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		Workloads: []WorkloadEntity{
+			hostWL("api", withListenPorts(8081, 3091, 6060)),
+			hostWL("noport"),
+			clusterWL("cluster-svc", "k3d-x", "ns", withPorts(9999)),
 		},
 	}
 	// :8081 bound by our child (100, marked dev); :3091 held by a foreign
@@ -1126,9 +1042,9 @@ func TestEvalHostReadiness(t *testing.T) {
 // host service declares a bind port there is nothing to gate, so the wrapper
 // returns nil immediately without any real socket/lsof work or polling.
 func TestWaitHostServicesReady_NoPortsIsInstantPass(t *testing.T) {
-	e := &KCLEntities{Services: []ServiceEntity{
-		{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
-		{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+	e := &KCLEntities{Workloads: []WorkloadEntity{
+		hostWL("noport"),
+		clusterWL("cluster-svc", "k3d-x", "ns", withPorts(9999)),
 	}}
 	done := make(chan error, 1)
 	go func() { done <- waitHostServicesReady(e, testProj, "dev", nil, hostReadyTimeout, hostReadyPoll) }()

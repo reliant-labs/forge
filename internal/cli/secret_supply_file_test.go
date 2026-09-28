@@ -40,17 +40,43 @@ func TestSecretSupplyForPreflight_FileProviderSuppliesDeclaredRefs(t *testing.T)
 // Two env vars pointing at the same Secret are one Secret, not two.
 func TestSecretSupplyForPreflight_FileDedupesBySecretName(t *testing.T) {
 	const sameSecretTwiceJSON = `{
-  "services": [
-    {
-      "name": "api",
-      "deploy": {"type": "cluster", "cluster": "c", "namespace": "dev", "registry": "r"},
-      "env_vars": [
-        {"name": "DATABASE_URL", "secret_ref": "app-secrets", "secret_key": "database_url"},
-        {"name": "JWT_SECRET", "secret_ref": "app-secrets", "secret_key": "jwt_secret"}
-      ]
-    }
-  ],
-  "secret_provider": {"type": "file", "path": "secrets/dev.yaml"}
+  "output": {
+    "secret_provider": {
+      "type": "file",
+      "path": "secrets/dev.yaml"
+    },
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "dev",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "secretRef": {
+                "name": "app-secrets",
+                "key": "database_url"
+              }
+            },
+            {
+              "name": "JWT_SECRET",
+              "secretRef": {
+                "name": "app-secrets",
+                "key": "jwt_secret"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
 }`
 
 	e, err := parseKCLEntities([]byte(sameSecretTwiceJSON))
@@ -74,16 +100,35 @@ func TestSecretSupplyForPreflight_FileDedupesBySecretName(t *testing.T) {
 // that vouches for them. Silently crediting them would defeat the gate.
 func TestSecretSupplyForPreflight_ExternalProviderDoesNotSelfSupply(t *testing.T) {
 	const externalJSON = `{
-  "services": [
-    {
-      "name": "api",
-      "deploy": {"type": "cluster", "cluster": "c", "namespace": "prod", "registry": "r"},
-      "env_vars": [
-        {"name": "DATABASE_URL", "secret_ref": "app-secrets", "secret_key": "database_url"}
-      ]
-    }
-  ],
-  "secret_provider": {"type": "external"}
+  "output": {
+    "secret_provider": {
+      "type": "external"
+    },
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "prod",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "secretRef": {
+                "name": "app-secrets",
+                "key": "database_url"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
 }`
 
 	e, err := parseKCLEntities([]byte(externalJSON))

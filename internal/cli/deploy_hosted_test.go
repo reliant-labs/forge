@@ -20,16 +20,17 @@ import (
 const hostedTestDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 // writeHostedProject writes a real forge project with ONE env, "hosted",
-// whose Bundle declares control_plane → endpoint. The backend's image is
-// digest-pinned, so `forge release cut` records it without a registry.
-func writeHostedProject(t *testing.T, endpoint, backendSpec string) string {
+// whose Bundle declares control_plane → endpoint and binds its one workload,
+// `api`, to forge.OnHosted. apiFields are the fw.Workload fields spliced into
+// it (image, ports, env, resources …).
+func writeHostedProject(t *testing.T, endpoint, apiFields string) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
 		"forge.yaml":         "name: acme\nmodule_path: github.com/example/acme\nversion: 0.1.0\nfrontends: []\n",
 		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n",
 		"deploy/kcl/hosted/main.k": `import forge
-import forge.tiers
+import forge.workloads as fw
 
 _bundle = forge.Bundle {
     project = "acme"
@@ -39,16 +40,14 @@ _bundle = forge.Bundle {
         token_env = "ACME_CP_TOKEN"
     }
     secret_provider = forge.HostedSecrets {}
-    services = [forge.RenderedWorkload {
+    runtime = forge.OnHosted {}
+    workloads = [fw.Workload {
         name = "api"
-        deploy = forge.SimpleBackend {
-            spec = ` + backendSpec + `
-        }
+` + apiFields + `
     }]
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, forge.image_tag("hosted"), forge.image_digests(), False)
 `,
 	}
 	for rel, body := range files {
@@ -68,12 +67,9 @@ manifests = forge.render_manifests(_bundle, forge.image_tag("hosted"), forge.ima
 // (hostedBackendDigestResolver, stubbed per test), and the deploy must publish
 // THAT digest — a deploy that shipped the declared reference would publish a
 // tag, and the e2e test would see it.
-const hostedOnBandSpec = `tiers.SimpleBackend {
-                image = "localhost:5051/acme/api:v1"
-                ports = [8080]
-                network = "public"
-                env = [tiers.EnvVar { name = "GREETING", managedSecret = "GREETING" }]
-            }`
+const hostedOnBandSpec = `        image = "localhost:5051/acme/api:v1"
+        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+        env = {GREETING = forge.ManagedSecret {name = "GREETING"}}`
 
 // stubHostedRegistry answers the cut's tag → digest lookup for
 // localhost:5051/acme/api:v1 with hostedTestDigest, and fails any other ref.
@@ -369,11 +365,9 @@ func TestHostedDeployRefusals(t *testing.T) {
 	})
 
 	t.Run("off-band", func(t *testing.T) {
-		fake, _ := setup(t, `tiers.SimpleBackend {
-                image = "localhost:5051/acme/api:v1"
-                ports = [8080]
-                resources = tiers.Resources { cpuRequestMillicores = 500, memoryRequestBytes = 1073741824 }
-            }`)
+		fake, _ := setup(t, `        image = "localhost:5051/acme/api:v1"
+        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+        resources = fw.Resources {cpuRequestMillicores = 500, memoryRequestBytes = 1073741824}`)
 		if _, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
 			t.Fatal(err)
 		}
@@ -417,46 +411,71 @@ func TestHostedDeployRefusals(t *testing.T) {
 	})
 }
 
-// TestBuildHostedGroupsRefusesNonTier: a non-tier workload on a hosted env is
-// refused, naming the tiers. Mutation: letting "cluster" through silently
-// fails this.
-func TestBuildHostedGroupsRefusesNonTier(t *testing.T) {
+// TestBuildDeployGroups_HostedIsPerWorkload: a control_plane env that binds
+// one workload to the platform and another to a cluster deploys BOTH — a
+// hosted group and a k8s-cluster group from one render. Before, a
+// control_plane env was hosted env-wide: buildDeployGroups short-circuited
+// to buildHostedGroups, which REFUSED the cluster workload ("not a tier").
+// Hosted jobs and databases ride the hosted group; a build-only workload
+// joins none.
+func TestBuildDeployGroups_HostedIsPerWorkload(t *testing.T) {
+	migrate := hostedWL("migrate", func(w *WorkloadEntity) {
+		w.Kind = "job"
+		w.Spec.Kind = "job"
+		w.Spec.Ports, w.Spec.Probes = nil, nil
+		w.Spec.Args = []string{"db", "migrate", "up"}
+		w.Spec.Before = []string{"api"}
+	})
 	e := &KCLEntities{
 		ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example"},
-		Services: []ServiceEntity{
-			{Name: "api", Deploy: DeployConfigEntity{Type: "simple-backend", SimpleBackend: &SimpleBackendSpec{}}},
-			{Name: "worker", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		Workloads: []WorkloadEntity{
+			hostedWL("api"),
+			migrate,
+			clusterWL("worker", "k3d-acme", "acme-dev"),
+			{Name: "img", Kind: "tool", Runtime: RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &BuildOnlyDeploy{}}},
 		},
+		Databases: []DatabaseEntity{{Name: "orders", Runtime: RuntimeHosted}},
 	}
-	_, err := buildDeployGroups("prod", e, "")
-	if err == nil || !strings.Contains(err.Error(), "worker") || !strings.Contains(err.Error(), "forge.SimpleBackend") ||
-		!strings.Contains(err.Error(), "forge.ManagedDatabase") || !strings.Contains(err.Error(), "forge.StaticSite") {
-		t.Fatalf("err = %v, want a refusal naming worker and the three tiers", err)
-	}
-	e.Services = e.Services[:1]
-	e.Services = append(e.Services, ServiceEntity{Name: "img", Deploy: DeployConfigEntity{Type: "build-only"}})
-	e.Databases = []DatabaseEntity{{Name: "orders"}}
 	groups, err := buildDeployGroups("prod", e, "")
-	if err != nil || len(groups) != 1 || groups[0].ProviderID != deploytarget.HostedProviderID || len(groups[0].Services) != 2 {
-		t.Fatalf("groups = %+v err = %v", groups, err)
+	if err != nil {
+		t.Fatalf("a mixed hosted + cluster env must group, got: %v", err)
+	}
+	var hosted, k8s []string
+	for _, g := range groups {
+		for _, s := range g.Services {
+			switch g.ProviderID {
+			case deploytarget.HostedProviderID:
+				hosted = append(hosted, s.Name)
+			case "k8s-cluster":
+				k8s = append(k8s, s.Name)
+			default:
+				t.Errorf("unexpected group %s for %s", g.ProviderID, s.Name)
+			}
+		}
+	}
+	if strings.Join(hosted, ",") != "api,migrate,orders" {
+		t.Errorf("hosted group = %v, want [api migrate orders] (the job is published, not dropped)", hosted)
+	}
+	if strings.Join(k8s, ",") != "worker" {
+		t.Errorf("k8s-cluster group = %v, want [worker]", k8s)
 	}
 }
 
-// TestDestinationOf pins the destination vocabulary.
+// TestDestinationOf pins the destination vocabulary: every deployable thing
+// votes by its own runtime.
 func TestDestinationOf(t *testing.T) {
-	sb := DeployConfigEntity{Type: "simple-backend", SimpleBackend: &SimpleBackendSpec{}}
+	cp := &ControlPlaneEntity{Endpoint: "https://x"}
 	cases := map[string]struct {
 		e    *KCLEntities
 		want string
 	}{
-		"hosted":   {&KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Services: []ServiceEntity{{Deploy: sb}}}, "hosted"},
-		"cluster":  {&KCLEntities{Services: []ServiceEntity{{Deploy: sb}, {Deploy: DeployConfigEntity{Type: "cluster"}}}}, "cluster"},
-		"compose":  {&KCLEntities{Services: []ServiceEntity{{Deploy: DeployConfigEntity{Type: "compose"}}}}, "compose"},
-		"host":     {&KCLEntities{Services: []ServiceEntity{{Deploy: DeployConfigEntity{Type: "host"}}}}, "host"},
-		"external": {&KCLEntities{Services: []ServiceEntity{{Deploy: DeployConfigEntity{Type: "external"}}}}, "external"},
-		"static":   {&KCLEntities{Frontends: []FrontendEntity{{Deploy: &FrontendDeployEntity{Type: "firebase"}}}}, "static"},
-		"mixed":    {&KCLEntities{Services: []ServiceEntity{{Deploy: sb}, {Deploy: DeployConfigEntity{Type: "compose"}}}}, "mixed"},
-		"empty":    {&KCLEntities{}, "host"},
+		"hosted":  {&KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{hostedWL("api")}}, "hosted"},
+		"cluster": {&KCLEntities{Workloads: []WorkloadEntity{clusterWL("a", "k3d-x", "ns"), clusterWL("b", "k3d-x", "ns")}}, "cluster"},
+		"compose": {&KCLEntities{Workloads: []WorkloadEntity{composeWL("pg", "docker-compose.yml")}}, "compose"},
+		"host":    {&KCLEntities{Workloads: []WorkloadEntity{hostWL("api")}}, "host"},
+		"static":  {&KCLEntities{Frontends: []FrontendEntity{{Deploy: &FrontendDeployEntity{Type: "firebase"}}}}, "static"},
+		"mixed":   {&KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{hostedWL("api"), composeWL("pg", "docker-compose.yml")}}, "mixed"},
+		"empty":   {&KCLEntities{}, "host"},
 	}
 	for name, tc := range cases {
 		if got := destinationOf(tc.e); got != tc.want {
@@ -469,7 +488,7 @@ func TestDestinationOf(t *testing.T) {
 // plane does not know has an endpoint and NO environment_id.
 func TestResolveEnvDestinationNeverFabricatesAnID(t *testing.T) {
 	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example/"},
-		Databases: []DatabaseEntity{{Name: "orders"}}}
+		Databases: []DatabaseEntity{{Name: "orders", Runtime: RuntimeHosted}}}
 	got := resolveEnvDestination(context.Background(), "prod", e, func(context.Context, string, *KCLEntities) (deploytarget.HostedEnvStatus, error) {
 		return deploytarget.HostedEnvStatus{}, deploytarget.ErrHostedEnvironmentNotFound
 	})
@@ -479,25 +498,28 @@ func TestResolveEnvDestinationNeverFabricatesAnID(t *testing.T) {
 	var _ = cloud.DefaultTokenEnv
 }
 
-// TestHostedArtifactKey: the service's own `image` (what forge's build state
-// records a push under) wins over the spec image's last segment, and the
-// hosted group carries it so the deploy pins by the same key the cut
-// recorded. Mutation: ignoring svc.Image makes the path-shaped key miss.
+// TestHostedArtifactKey: the workload's own artifact name (`image`, what
+// forge's build state records a push under) wins over the spec image's last
+// segment, and the hosted group carries it — publishing the spec BY that
+// artifact name — so the deploy pins by the same key the cut recorded.
 func TestHostedArtifactKey(t *testing.T) {
-	svc := ServiceEntity{Name: "api", Image: "e2eh/abc/echo", Deploy: DeployConfigEntity{
-		Type: "simple-backend", SimpleBackend: &SimpleBackendSpec{},
-	}}
-	svc.Deploy.SimpleBackend.Spec.Image = "localhost:5051/e2eh/abc/echo:t1"
-	if got := hostedArtifactKey(svc); got != "e2eh/abc/echo" {
-		t.Fatalf("key = %q, want the service image", got)
+	w := hostedWL("api", func(w *WorkloadEntity) {
+		w.Image = "e2eh/abc/echo"
+		w.Spec.Image = "localhost:5051/e2eh/abc/echo:t1"
+	})
+	if got := hostedArtifactKey(w); got != "e2eh/abc/echo" {
+		t.Fatalf("key = %q, want the workload's artifact name", got)
 	}
-	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Services: []ServiceEntity{svc}}
+	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Workloads: []WorkloadEntity{w}}
 	groups, err := buildDeployGroups("prod", e, "")
 	if err != nil || groups[0].Services[0].Hosted.Artifact != "e2eh/abc/echo" {
 		t.Fatalf("group artifact = %+v err=%v", groups, err)
 	}
-	svc.Image = ""
-	if got := hostedArtifactKey(svc); got != "echo" {
+	if img := groups[0].Services[0].Hosted.Workload.Image; img != "e2eh/abc/echo" {
+		t.Errorf("published image = %q, want the artifact name the release pins", img)
+	}
+	w.Image = ""
+	if got := hostedArtifactKey(w); got != "echo" {
 		t.Fatalf("fallback key = %q, want echo", got)
 	}
 }

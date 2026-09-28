@@ -13,8 +13,7 @@ const sampleClustersJSON = `{
     {"name": "cp", "context": "k3d-cp", "image": "rancher/k3s:v1.36.3-k3s1", "registry_inherit": false, "servers": 1, "agents": 0, "api_port": 6443},
     {"name": "workload", "context": "k3d-workload", "image": "rancher/k3s:v1.36.3-k3s1", "network": "k3d-cp", "registry_inherit": true, "servers": 1, "agents": 2, "api_port": 6444},
     {"name": "configured", "context": "k3d-configured", "config": "deploy/k3d.workload.yaml", "servers": 1, "agents": 0}
-  ],
-  "services": []
+  ]
 }`
 
 // TestParseKCLEntities_Clusters pins that the declared clusters block
@@ -68,10 +67,7 @@ func TestParseKCLEntities_Clusters(t *testing.T) {
 // clusters parses to an empty list (no-op reconcile) — preserving the
 // no-ensure behavior for single-cluster / cluster-less envs.
 func TestParseKCLEntities_NoClusters(t *testing.T) {
-	entities, err := parseKCLEntities([]byte(sampleKCLJSON))
-	if err != nil {
-		t.Fatalf("parseKCLEntities: %v", err)
-	}
+	entities, _ := loadContract(t, "compose")
 	if len(entities.Clusters) != 0 {
 		t.Errorf("clusters: got %d want 0", len(entities.Clusters))
 	}
@@ -565,26 +561,6 @@ func TestUpsertNodeHostsAlias(t *testing.T) {
 	}
 	if gotIP := nodeHostsIPFor(got, k3dHostGatewayAlias); gotIP != "192.168.65.254" {
 		t.Fatalf("nodeHostsIPFor = %q; want 192.168.65.254", gotIP)
-	}
-}
-
-// TestParseKCLEntities_ServiceImageTagPin pins that a per-service
-// image_tag round-trips through the entity parse (the JSON contract
-// carries it; the KCL render layer uses it to stamp the image ref).
-func TestParseKCLEntities_ServiceImageTagPin(t *testing.T) {
-	const js = `{"services":[
-      {"name":"reliant","image":"reliant","image_tag":"v1.4.2","deploy":{"type":"cluster","cluster":"k3d-dev","namespace":"dev","registry":"localhost:5050"}},
-      {"name":"api","image":"api","deploy":{"type":"cluster","cluster":"k3d-dev","namespace":"dev","registry":"localhost:5050"}}
-    ]}`
-	entities, err := parseKCLEntities([]byte(js))
-	if err != nil {
-		t.Fatalf("parseKCLEntities: %v", err)
-	}
-	if got := entities.FindService("reliant").ImageTag; got != "v1.4.2" {
-		t.Errorf("reliant.ImageTag = %q want v1.4.2", got)
-	}
-	if got := entities.FindService("api").ImageTag; got != "" {
-		t.Errorf("api.ImageTag = %q want empty (env-wide tag)", got)
 	}
 }
 

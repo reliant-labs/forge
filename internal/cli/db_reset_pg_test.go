@@ -102,7 +102,7 @@ func devProject(t *testing.T, declaredDSN string) string {
 
 	// RenderKCL needs deploy/kcl/dev/ to exist; writeEnvConfigK made it.
 	fixture := filepath.Join(dir, "render.json")
-	bundle := `{"services":[{"name":"api","deploy":{"type":"host"},"env_vars":[{"name":"DATABASE_URL","value":"` + declaredDSN + `"}]}]}`
+	bundle := `{"output":{"workloads":[{"name":"api","kind":"service","runtime":{"type":"host"},"spec":{"kind":"service","env":[{"name":"DATABASE_URL","value":"` + declaredDSN + `"}]}}]}}`
 	if err := os.WriteFile(fixture, []byte(bundle), 0o644); err != nil {
 		t.Fatal(err)
 	}

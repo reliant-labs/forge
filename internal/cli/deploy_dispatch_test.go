@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // fakeProvider is a minimal Provider used by the dispatch tests. It
@@ -41,10 +42,10 @@ func (f *fakeProvider) Observe(_ context.Context, _ deploytarget.ServiceGroup) (
 // KCL. This is the plumbing that ties --dry-run on the CLI to the
 // per-provider dry-run gating.
 func TestBuildDeployGroupsWithOpts_DryRunPropagates(t *testing.T) {
-	body := `{"services":[
-		{"name":"edge","image":"x/edge","deploy":{"type":"external","deploy_cmd":"flyctl deploy"}},
-		{"name":"web","image":"x/web","deploy":{"type":"compose","compose_file":"docker-compose.yml"}}
-	]}`
+	body := `{"output":{"workloads":[
+		{"name":"edge","kind":"service","runtime":{"type":"cluster","cluster":"k3d-dev","namespace":"dev"},"spec":{"kind":"service","image":"x/edge"}},
+		{"name":"web","kind":"service","runtime":{"type":"compose","file":"docker-compose.yml"},"spec":{"kind":"service"}}
+	]}}`
 	entities, err := parseKCLEntities([]byte(body))
 	if err != nil {
 		t.Fatalf("parseKCLEntities: %v", err)
@@ -64,21 +65,37 @@ func TestBuildDeployGroupsWithOpts_DryRunPropagates(t *testing.T) {
 }
 
 // TestKclEntitiesHaveK8sCluster confirms the "any cluster-shaped
-// service?" gate used to suppress the namespace banner and
-// kubectl-context guard for external-only / compose-only projects.
+// workload?" gate used to suppress the namespace banner and
+// kubectl-context guard for hosted-only / compose-only projects.
 func TestKclEntitiesHaveK8sCluster(t *testing.T) {
-	t.Run("external-only", func(t *testing.T) {
-		body := `{"services":[{"name":"edge","deploy":{"type":"external","deploy_cmd":"flyctl deploy"}}]}`
+	t.Run("hosted-only", func(t *testing.T) {
+		body := `{"output":{"workloads":[{"name":"edge","kind":"service","runtime":{"type":"hosted"},"spec":{"kind":"service","image":"x/edge"}}]}}`
 		ents, err := parseKCLEntities([]byte(body))
 		if err != nil {
 			t.Fatalf("parseKCLEntities: %v", err)
 		}
 		if kclEntitiesHaveK8sCluster(ents) {
-			t.Error("external-only should report no k8s services")
+			t.Error("hosted-only should report no k8s services")
 		}
 	})
 	t.Run("cluster-shaped", func(t *testing.T) {
-		body := `{"services":[{"name":"edge","deploy":{"type":"cluster","replicas":1}}]}`
+		body := `{
+  "output": {
+    "workloads": [
+      {
+        "name": "edge",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster"
+        },
+        "spec": {
+          "kind": "service",
+          "replicas": 1
+        }
+      }
+    ]
+  }
+}`
 		ents, err := parseKCLEntities([]byte(body))
 		if err != nil {
 			t.Fatalf("parseKCLEntities: %v", err)
@@ -243,45 +260,49 @@ func TestClusterScopeForGroups_InfraServiceRoutesToItsCluster(t *testing.T) {
 	}
 }
 
-// clusterSvcEntity builds a cluster-shaped ServiceEntity on the given cluster —
+// clusterSvcEntity builds a cluster-shaped WorkloadEntity on the given cluster —
 // the render-order input mainClusterForEntities walks to resolve the env's main
 // cluster (the env-level deploy target an operator/cronjob lands on).
-func clusterSvcEntity(name, cluster string) ServiceEntity {
-	return ServiceEntity{
-		Name: name,
-		Deploy: DeployConfigEntity{
-			Type:    "cluster",
-			Cluster: &K8sCluster{Cluster: cluster, Namespace: "ns"},
-		},
-	}
+func clusterSvcEntity(name, cluster string) WorkloadEntity {
+	return clusterWL(name, cluster, "ns")
 }
 
 // TestClusterScopeForGroups_OperatorAttributedToMainCluster is the regression
-// for the manifest-scoping leak: an OPERATOR (and a CRONJOB) carry no per-service
-// deploy block, so they're never part of the service-to-cluster grouping — but
-// forge stamps `app.kubernetes.io/name` on their Deployment/Job/RBAC all the
-// same. Before the fix the scoper saw those app labels as ungrouped and KEPT
-// them on EVERY cluster, replicating a control-plane operator (workspace-
-// controller) into the daemon cluster (no SA / no secret → stuck
-// ContainerCreating → failed rollout). With operators/cronjobs attributed to the
-// env's main cluster (the first cluster-shaped service's cluster), their app
-// labels must land in the main cluster's OwnApps and the OTHER cluster's
-// OtherApps — so the scoper DROPS them from the daemon cluster.
+// for the manifest-scoping leak: forge stamps `app.kubernetes.io/name` on an
+// operator's Deployment/RBAC and a cron's CronJob, so a scoper that did not
+// know which cluster they belong to KEPT them on EVERY cluster, replicating a
+// control-plane operator (workspace-controller) into the daemon cluster (no
+// SA / no secret → stuck ContainerCreating → failed rollout). An operator and
+// a cron are now workloads bound to a cluster runtime like any other, so they
+// group onto their declared cluster: their app labels must land in that
+// cluster's OwnApps and the OTHER cluster's OtherApps.
 func TestClusterScopeForGroups_OperatorAttributedToMainCluster(t *testing.T) {
-	// Mirror the e2e env: bulk of services + the operator + the migrate cronjob
-	// on k3d-control-plane (the env's main cluster — admin-server is the first
-	// cluster-shaped service), and a lone workspace-proxy on k3d-cp-daemon.
-	controlPlaneG := k8sGroupWithSvcs("k3d-control-plane", "admin-server", "reliant-api-server")
-	daemonG := k8sGroupWithSvcs("k3d-cp-daemon", "workspace-proxy")
-	groups := []deploytarget.ServiceGroup{controlPlaneG, daemonG}
+	operator := clusterWL("workspace-controller", "k3d-control-plane", "ns", func(w *WorkloadEntity) {
+		w.Kind, w.Spec.Kind = "operator", deployv1alpha1.KindOperator
+	})
+	cron := clusterWL("control-plane-migrate", "k3d-control-plane", "ns", func(w *WorkloadEntity) {
+		w.Kind, w.Spec.Kind = "cron", deployv1alpha1.KindCron
+	})
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			clusterSvcEntity("admin-server", "k3d-control-plane"),
 			clusterSvcEntity("workspace-proxy", "k3d-cp-daemon"),
 			clusterSvcEntity("reliant-api-server", "k3d-control-plane"),
+			operator, cron,
 		},
-		Operators: []OperatorEntity{{Name: "workspace-controller"}},
-		CronJobs:  []CronJobEntity{{Name: "control-plane-migrate"}},
+	}
+	groups, err := buildDeployGroups("e2e", entities, "")
+	if err != nil {
+		t.Fatalf("buildDeployGroups: %v", err)
+	}
+	var controlPlaneG, daemonG deploytarget.ServiceGroup
+	for _, g := range groups {
+		switch g.Cluster {
+		case "k3d-control-plane":
+			controlPlaneG = g
+		case "k3d-cp-daemon":
+			daemonG = g
+		}
 	}
 	scopeFor := clusterScopeForGroups(groups, entities)
 
@@ -322,7 +343,7 @@ func TestClusterScopeForGroups_OperatorAttributedToMainCluster(t *testing.T) {
 // cross-cluster override later in the list never wins.
 func TestMainClusterForEntities_FirstClusterShapedService(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{
+		Workloads: []WorkloadEntity{
 			clusterSvcEntity("admin-server", "k3d-control-plane"),
 			clusterSvcEntity("workspace-proxy", "k3d-cp-daemon"),
 		},

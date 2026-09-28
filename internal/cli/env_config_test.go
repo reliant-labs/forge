@@ -13,21 +13,67 @@ import (
 // one frontend, each carrying config. It exercises the flattening across
 // workload kinds without needing a KCL toolchain.
 const envConfigFixture = `{
-  "services": [
-    {"name": "api", "deploy": {"type": "host"}, "env_vars": [
-      {"name": "DATABASE_URL", "value": "postgres://localhost:5433/app"},
-      {"name": "LOG_LEVEL", "value": "info"}
-    ]},
-    {"name": "postgres", "deploy": {"type": "host"}, "env_vars": []}
-  ],
-  "jobs": [
-    {"name": "migrate", "env_vars": [
-      {"name": "DATABASE_URL", "value": "postgres://localhost:5433/app"}
-    ]}
-  ],
-  "frontends": [
-    {"name": "web", "env_vars": [{"name": "API_URL", "value": "http://localhost:8080"}]}
-  ]
+  "output": {
+    "frontends": [
+      {
+        "name": "web",
+        "env_vars": [
+          {
+            "name": "API_URL",
+            "value": "http://localhost:8080"
+          }
+        ]
+      }
+    ],
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "value": "postgres://localhost:5433/app"
+            },
+            {
+              "name": "LOG_LEVEL",
+              "value": "info"
+            }
+          ]
+        }
+      },
+      {
+        "name": "postgres",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      },
+      {
+        "name": "migrate",
+        "kind": "job",
+        "runtime": {
+          "type": "cluster"
+        },
+        "spec": {
+          "kind": "job",
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "value": "postgres://localhost:5433/app"
+            }
+          ]
+        }
+      }
+    ]
+  }
 }`
 
 // withKCLFixture points RenderKCL at a literal contract for the duration of
@@ -101,10 +147,32 @@ func TestEnvConfigReportsEveryWorkloadKind(t *testing.T) {
 // the report has to carry variables forge has no special knowledge of, and
 // must not drop or rename anything.
 func TestEnvConfigIsTechnologyAgnostic(t *testing.T) {
-	withKCLFixture(t, `{"services": [{"name": "api", "deploy": {"type": "host"}, "env_vars": [
-	  {"name": "SURREALDB_ENDPOINT", "value": "ws://localhost:8000"},
-	  {"name": "SOME_VENDOR_TOKEN", "value": "abc123"}
-	]}]}`)
+	withKCLFixture(t, `{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "SURREALDB_ENDPOINT",
+              "value": "ws://localhost:8000"
+            },
+            {
+              "name": "SOME_VENDOR_TOKEN",
+              "value": "abc123"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}`)
 
 	var report envConfigReport
 	if err := json.Unmarshal([]byte(runEnvConfig(t, "dev", "--json")), &report); err != nil {
@@ -128,13 +196,32 @@ func TestEnvConfigIsTechnologyAgnostic(t *testing.T) {
 // process. Reading only one of them under-reports what the process is
 // actually launched with, which is the whole question this command answers.
 func TestEnvConfigMergesHostDeployEnv(t *testing.T) {
-	withKCLFixture(t, `{"services": [
-	  {"name": "api",
-	   "env_vars": [{"name": "LOG_LEVEL", "value": "info"}],
-	   "deploy": {"type": "host", "env_vars": [
-	     {"name": "DATABASE_URL", "value": "postgres://localhost:5433/app"}
-	   ]}}
-	]}`)
+	withKCLFixture(t, `{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "host"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "LOG_LEVEL",
+              "value": "info"
+            },
+            {
+              "name": "DATABASE_URL",
+              "value": "postgres://localhost:5433/app"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}`)
 
 	var report envConfigReport
 	if err := json.Unmarshal([]byte(runEnvConfig(t, "dev", "--json")), &report); err != nil {

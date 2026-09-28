@@ -43,7 +43,23 @@ func TestExpectedClusterForEnv_DevDefault(t *testing.T) {
 // `forge.K8sCluster.cluster` in rendered KCL takes precedence over
 // the dev default.
 func TestExpectedClusterForEnv_KCLDeclaration(t *testing.T) {
-	body := `{"services":[{"name":"api","deploy":{"type":"cluster","cluster":"gke_acme-prod_us-central1_cluster-1"}}]}`
+	body := `{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "gke_acme-prod_us-central1_cluster-1"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, body))
 	cfg := &config.ProjectConfig{Name: "cp-forge"}
 	got := expectedClusterForEnv(context.Background(), cfg, "prod")
@@ -57,7 +73,22 @@ func TestExpectedClusterForEnv_KCLDeclaration(t *testing.T) {
 // envs without an explicit cluster — the guard is skipped (with a
 // notice), preserving backwards compatibility.
 func TestExpectedClusterForEnv_NoDeclaration(t *testing.T) {
-	body := `{"services":[{"name":"api","deploy":{"type":"cluster"}}]}`
+	body := `{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, body))
 	cfg := &config.ProjectConfig{Name: "cp-forge"}
 	got := expectedClusterForEnv(context.Background(), cfg, "staging")
@@ -70,7 +101,23 @@ func TestExpectedClusterForEnv_NoDeclaration(t *testing.T) {
 // dev, an explicit KCL declaration wins over the k3d-<project> default —
 // supports projects with a non-default k3d cluster name.
 func TestExpectedClusterForEnv_DevExplicitOverride(t *testing.T) {
-	body := `{"services":[{"name":"api","deploy":{"type":"cluster","cluster":"k3d-my-custom-name"}}]}`
+	body := `{
+  "output": {
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "k3d-my-custom-name"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, body))
 	cfg := &config.ProjectConfig{Name: "cp-forge"}
 	got := expectedClusterForEnv(context.Background(), cfg, "dev")

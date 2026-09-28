@@ -26,10 +26,30 @@ import (
 // kubeconfig_secrets block parses into KubeconfigSecretEntity with
 // defaults preserved as the renderer emits them.
 func TestParseKCLEntities_KubeconfigSecrets(t *testing.T) {
-	const js = `{"kubeconfig_secrets":[
-      {"name":"workload-kubeconfig","in_cluster":"k3d-cp","target_cluster":"workload","context_name":"workload","key":"kubeconfig","reachability":"in-network"},
-      {"name":"prod-kubeconfig","in_cluster":"k3d-cp","target_cluster":"prod-workload","context_name":"prod-workload","key":"config","namespace":"system","reachability":"endpoint"}
-    ],"services":[]}`
+	const js = `{
+  "output": {
+    "kubeconfig_secrets": [
+      {
+        "name": "workload-kubeconfig",
+        "in_cluster": "k3d-cp",
+        "target_cluster": "workload",
+        "context_name": "workload",
+        "key": "kubeconfig",
+        "reachability": "in-network"
+      },
+      {
+        "name": "prod-kubeconfig",
+        "in_cluster": "k3d-cp",
+        "target_cluster": "prod-workload",
+        "context_name": "prod-workload",
+        "key": "config",
+        "namespace": "system",
+        "reachability": "endpoint"
+      }
+    ],
+    "workloads": []
+  }
+}`
 	entities, err := parseKCLEntities([]byte(js))
 	if err != nil {
 		t.Fatalf("parseKCLEntities: %v", err)

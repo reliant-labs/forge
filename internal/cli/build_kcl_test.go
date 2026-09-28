@@ -6,78 +6,50 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// TestKCLBuildPlanHelpers covers the small helpers that runBuild uses
-// to drive the docker-skip set and the platform override from a parsed
-// KCL entity set. The runBuild path itself is exercised end-to-end by
-// the cp-forge env smoke (post-agent-A) — these unit tests guard the
-// dispatch / accessor invariants.
+// TestKCLBuildPlanHelpers covers the helpers runBuild uses to decide
+// whether the env needs the project image and which arch to build it for,
+// over the render-contract goldens.
 func TestKCLBuildPlanHelpers(t *testing.T) {
-	entities, err := parseKCLEntities([]byte(sampleKCLJSON))
-	if err != nil {
-		t.Fatalf("parseKCLEntities: %v", err)
+	cluster, _ := loadContract(t, "cluster")
+	if !envNeedsProjectImage(cluster) {
+		t.Error("envNeedsProjectImage(cluster golden): want true (api is a go-built cluster workload)")
 	}
-
-	if !kclHasClusterService(entities) {
-		t.Error("kclHasClusterService: want true (sample has workspace-proxy)")
-	}
-	if got := kclFirstClusterPlatform(entities); got != "amd64" {
-		t.Errorf("kclFirstClusterPlatform: got %q, want amd64", got)
+	cluster.ClusterTarget.Platform = "arm64"
+	if got := kclFirstClusterPlatform(cluster); got != "arm64" {
+		t.Errorf("kclFirstClusterPlatform: got %q, want the declared cluster_target platform arm64", got)
 	}
 }
 
-// TestKCLHasClusterService_AllHost confirms the all-host-services
-// scenario flips the docker-skip switch — runBuild uses this to decide
-// whether the project docker image is needed at all for the env.
-func TestKCLHasClusterService_AllHost(t *testing.T) {
-	allHost := `{
-  "services": [
-    {"name": "a", "deploy": {"type": "host", "runner": "go-run"}},
-    {"name": "b", "deploy": {"type": "build-only", "build_variants": [{"name": "default"}]}}
-  ]
-}`
-	entities, err := parseKCLEntities([]byte(allHost))
-	if err != nil {
-		t.Fatalf("parseKCLEntities: %v", err)
+// TestEnvNeedsProjectImage_ByRuntimeAndBuild pins the one question
+// runBuild asks before building the project image: is some go-built
+// workload run FROM an image? Host workloads run their binary directly and
+// a workload that only names a third-party image has nothing to build.
+func TestEnvNeedsProjectImage_ByRuntimeAndBuild(t *testing.T) {
+	noBuild := func(w *WorkloadEntity) { w.Build = BuildConfigEntity{} }
+	goBuild := func(w *WorkloadEntity) {
+		w.Build = BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/api", OutputName: "api"}}
 	}
-	if kclHasClusterService(entities) {
-		t.Error("kclHasClusterService: want false when no cluster service")
-	}
-	if got := kclFirstClusterPlatform(entities); got != "" {
-		t.Errorf("kclFirstClusterPlatform on no-cluster: got %q, want empty", got)
-	}
-}
-
-// TestKCLHasClusterService_SimpleBackend pins the one case a SimpleBackend
-// needs the project image: it DECLARES a build of this project's source. A
-// SimpleBackend that only names an image someone else pushed has nothing for
-// forge to build, so it must not trigger one; one that declares
-// `build = forge.build_of({type = "go", …})` is this project's own backend,
-// and skipping the image left `forge release cut` with no digest to record
-// under its artifact key (the service's `image`).
-func TestKCLHasClusterService_SimpleBackend(t *testing.T) {
 	cases := map[string]struct {
-		json string
-		want bool
+		workloads []WorkloadEntity
+		want      bool
 	}{
-		"prebuilt image, no build": {`{"services": [
-    {"name": "api", "deploy": {"type": "simple-backend", "spec": {"image": "ghcr.io/acme/api:v1", "ports": [8080]}}}
-  ]}`, false},
-		"declares a go build of this project": {`{"services": [
-    {"name": "api", "image": "hounders",
-     "build": {"type": "go", "cmd": "./cmd/hounders", "output_name": "hounders"},
-     "deploy": {"type": "simple-backend", "spec": {"image": "hounders", "ports": [8080]}}}
-  ]}`, true},
+		"all host":                        {[]WorkloadEntity{hostWL("a"), hostWL("b")}, false},
+		"compose only":                    {[]WorkloadEntity{composeWL("pg", "docker-compose.yml")}, false},
+		"cluster, go build":               {[]WorkloadEntity{clusterWL("api", "k3d-dev", "dev")}, true},
+		"cluster, prebuilt image":         {[]WorkloadEntity{clusterWL("nats", "k3d-dev", "dev", noBuild)}, false},
+		"hosted, prebuilt image":          {[]WorkloadEntity{hostedWL("api")}, false},
+		"hosted, declares a go build":     {[]WorkloadEntity{hostedWL("api", goBuild)}, true},
+		"host api plus cluster go worker": {[]WorkloadEntity{hostWL("api"), clusterWL("w", "k3d-dev", "dev")}, true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			entities, err := parseKCLEntities([]byte(tc.json))
-			if err != nil {
-				t.Fatalf("parseKCLEntities: %v", err)
-			}
-			if got := kclHasClusterService(entities); got != tc.want {
-				t.Errorf("kclHasClusterService = %v, want %v", got, tc.want)
+			if got := envNeedsProjectImage(&KCLEntities{Workloads: tc.workloads}); got != tc.want {
+				t.Errorf("envNeedsProjectImage = %v, want %v", got, tc.want)
 			}
 		})
+	}
+	if got := kclFirstClusterPlatform(&KCLEntities{Workloads: []WorkloadEntity{hostWL("a")}}); got != "" {
+		t.Errorf("kclFirstClusterPlatform on no-cluster: got %q, want empty", got)
 	}
 }
 
@@ -248,23 +220,24 @@ func TestResolveNamedBuildTarget_UnknownNameStillErrors(t *testing.T) {
 // reliant-web` on control-plane hit it: the frontend built in 22s, then
 // four unrelated docker pushes ran and failed.
 func TestBuildTargetNarrowing_FrontendNameScopesEntities(t *testing.T) {
-	entities, err := parseKCLEntities([]byte(`{
-  "services": [
-    {"name": "api", "deploy": {"type": "cluster", "build_cmd": "docker push everything"}}
+	entities, err := parseKCLEntities([]byte(`{"output": {
+  "workloads": [
+    {"name": "api", "kind": "service", "runtime": {"type": "cluster", "cluster": "k3d-dev", "namespace": "dev"},
+     "build": {"type": "shell", "cmd": "docker push everything"}, "spec": {"kind": "service"}}
   ],
   "frontends": [
     {"name": "reliant-web", "type": "vite", "path": "web",
      "source": {"repo": "github.com/reliant-labs/reliant", "ref": "v1"}},
     {"name": "internal-console", "type": "nextjs", "path": "frontends/internal-console"}
   ]
-}`))
+}}`))
 	if err != nil {
 		t.Fatalf("parseKCLEntities: %v", err)
 	}
 
 	got := filterEntitiesByTarget(entities, []string{"reliant-web"})
-	if len(got.Services) != 0 {
-		t.Errorf("services = %+v, want none — naming a frontend must not run a service's build_cmd", got.Services)
+	if len(got.Workloads) != 0 {
+		t.Errorf("workloads = %+v, want none — naming a frontend must not run a workload's shell build", got.Workloads)
 	}
 	if len(got.Frontends) != 1 || got.Frontends[0].Name != "reliant-web" {
 		t.Errorf("frontends = %+v, want exactly [reliant-web]", got.Frontends)
@@ -308,7 +281,7 @@ func TestKCLFrontendAsBuildTarget_RecognisesFrontendNames(t *testing.T) {
 // and "did anything get compiled" are different questions.
 func TestNamedKCLServiceTargetStillBuildsItsBinary(t *testing.T) {
 	entities := &KCLEntities{
-		Services: []ServiceEntity{{
+		Workloads: []WorkloadEntity{{
 			Name:  "admin-server",
 			Image: "control-plane",
 			Build: BuildConfigEntity{

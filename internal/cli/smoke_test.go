@@ -226,7 +226,24 @@ func TestRunSmokeWith_JSON(t *testing.T) {
 }
 
 func TestRunSmokeWith_NoRoutes(t *testing.T) {
-	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, `{"services":[{"name":"s","deploy":{"type":"cluster","cluster":"c","namespace":"n"}}]}`))
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, `{
+  "output": {
+    "workloads": [
+      {
+        "name": "s",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n"
+        },
+        "spec": {
+          "kind": "service"
+        }
+      }
+    ]
+  }
+}`))
 	resolve := func(ctx context.Context, kubeContext, namespace, gateway string) (string, error) {
 		t.Fatalf("resolve should not run with no routes")
 		return "", nil

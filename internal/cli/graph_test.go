@@ -121,23 +121,62 @@ func TestGraph_EmitsAllResourceTypes(t *testing.T) {
 	// we can see KCL win), one gateway ("web-gw"), one HTTPRoute
 	// ("api-route") attached to web-gw and routing to tasks.
 	fixture := `{
-		"services": [
-			{"name":"tasks","image":"tasks",
-			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"},
-			 "env_vars":[{"name":"DATABASE_URL","value":"postgres://"}]}
-		],
-		"frontends": [
-			{"name":"web","type":"nextjs","path":"frontends/web","port":3001}
-		],
-		"gateways": [
-			{"name":"web-gw","host":"demo.test",
-			 "listeners":[{"name":"https","port":443,"protocol":"HTTPS"}]}
-		],
-		"http_routes": [
-			{"name":"api-route","gateway":"web-gw","listener":"https",
-			 "service":"tasks","port":8080,"path":"/api"}
-		]
-	}`
+  "output": {
+    "frontends": [
+      {
+        "name": "web",
+        "type": "nextjs",
+        "path": "frontends/web",
+        "port": 3001
+      }
+    ],
+    "gateways": [
+      {
+        "name": "web-gw",
+        "host": "demo.test",
+        "listeners": [
+          {
+            "name": "https",
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        ]
+      }
+    ],
+    "http_routes": [
+      {
+        "name": "api-route",
+        "gateway": "web-gw",
+        "listener": "https",
+        "service": "tasks",
+        "port": 8080,
+        "path": "/api"
+      }
+    ],
+    "workloads": [
+      {
+        "name": "tasks",
+        "kind": "service",
+        "image": "tasks",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "c",
+          "namespace": "n",
+          "registry": "r"
+        },
+        "spec": {
+          "kind": "service",
+          "env": [
+            {
+              "name": "DATABASE_URL",
+              "value": "postgres://"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}`
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 
 	doc := buildGraphDoc(context.Background(), dir, "dev")

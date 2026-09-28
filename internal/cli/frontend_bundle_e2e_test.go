@@ -46,8 +46,17 @@ import (
 const nodeBuildHeapMB = 2048
 
 // e2eNodeEnv is the environment every npm/next invocation here runs with.
+//
+// CI=1 on every run, not only on a CI runner: outside CI, `next build` that
+// finds a TypeScript dependency missing INSTALLS it into the fixture and
+// carries on, while under CI it refuses and fails. A fixture missing
+// @types/node therefore passed on a laptop and failed on the e2e shard — the
+// same bytes, two verdicts. Pinning CI makes the build as strict everywhere
+// as it is where it counts, and forbids it from editing the fixture it is
+// testing.
 func e2eNodeEnv() []string {
 	return append(os.Environ(),
+		"CI=1",
 		fmt.Sprintf("NODE_OPTIONS=--max-old-space-size=%d", nodeBuildHeapMB),
 		"NEXT_TELEMETRY_DISABLED=1",
 	)
@@ -96,6 +105,7 @@ const pinProbeManifest = `{
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@types/node": "^22.14.0",
     "@types/react": "^19.1.0",
     "typescript": "^5.8.0"
   }

@@ -8,8 +8,10 @@ import (
 var getPods = []PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}}
 
 // TestClusterRBACOnAnyScheduledKind: clusterRBAC is a Full-only tier any
-// scheduled kind may take (workspace-proxy resolves resources cluster-wide),
-// and it REPLACES the namespaced tier, so declaring both is refused.
+// scheduled kind may take (workspace-proxy resolves resources cluster-wide).
+// It ADDS to the namespaced tier rather than replacing it, so both on one
+// workload is valid — including on an operator, whose namespace-local grants
+// belong in its Role, not widened into its ClusterRole.
 func TestClusterRBACOnAnyScheduledKind(t *testing.T) {
 	for _, s := range []WorkloadSpec{
 		{Kind: KindService, Image: pinnedImage, ClusterRBAC: getPods},
@@ -20,8 +22,8 @@ func TestClusterRBACOnAnyScheduledKind(t *testing.T) {
 		mustPass(t, s, ProfileFull)
 		mustFail(t, s.Validate(ProfileRestricted), "clusterRBAC: not allowed under the restricted profile")
 	}
-	both := WorkloadSpec{Kind: KindWorker, Image: pinnedImage, ClusterRBAC: getPods, NamespacedRBAC: getPods}
-	mustFail(t, both.Validate(ProfileFull), "namespacedRBAC and clusterRBAC are exclusive")
+	mustPass(t, WorkloadSpec{Kind: KindWorker, Image: pinnedImage, ClusterRBAC: getPods, NamespacedRBAC: getPods}, ProfileFull)
+	mustPass(t, WorkloadSpec{Kind: KindOperator, Image: pinnedImage, CRDs: []string{"W"}, ClusterRBAC: getPods, NamespacedRBAC: getPods}, ProfileFull)
 	gating := WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}, Before: []string{"api"}, ClusterRBAC: getPods}
 	mustFail(t, gating.Validate(ProfileFull), "clusterRBAC is not allowed on a job with before")
 	if !strings.Contains(FullOnlyReason("clusterRBAC"), "Kubernetes API access") {

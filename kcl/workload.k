@@ -316,15 +316,13 @@ schema Workload:
         # field, the kind and the alternative, rather than rendered and
         # silently dropped.
         not namespacedRBAC or caps.supports(kind, caps.CAP_NAMESPACED_RBAC), \
-            "Workload.namespacedRBAC is not supported for kind='${kind}'. An operator's permissions are CLUSTER-scoped, so an operator uses `clusterRBAC`; a tool is never scheduled, so it has no pod to grant permission to (use kind='service' or kind='worker')."
+            "Workload.namespacedRBAC is not supported for kind='${kind}' — a tool is never scheduled, so it has no pod to grant permission to (use kind='service' or kind='worker')."
         # A GATING job runs as an initContainer under the DEPENDENT's
         # ServiceAccount, so a Role for it would bind nothing.
         not namespacedRBAC or not before, \
             "Workload.namespacedRBAC is not supported on a gating job (before = ${before}): it runs as an initContainer in each dependent's pod, under the DEPENDENT's ServiceAccount, so a Role for '${name}' would bind nothing. Grant the rules on the dependents, or drop `before` to run '${name}' as a standalone Job with its own identity."
         not clusterRBAC or caps.supports(kind, caps.CAP_CLUSTER_RBAC), \
             "Workload.clusterRBAC is not supported for kind='${kind}' — a tool is never scheduled, so it has no pod to grant permission to."
-        not (namespacedRBAC and clusterRBAC), \
-            "Workload '${name}': namespacedRBAC and clusterRBAC are exclusive — one ServiceAccount gets one binding tier, and a ClusterRole already covers the workload's own namespace. Move the namespaced rules into clusterRBAC."
         not activeDeadlineSeconds or kind in ["job", "cron"], \
             "Workload.activeDeadlineSeconds bounds a run to completion — only kind='job' or 'cron' completes; '${name}' is a '${kind}'"
         not ports or caps.supports(kind, caps.CAP_PORTS), \

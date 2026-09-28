@@ -139,6 +139,11 @@ best:
 - soft topology spread plus a PDB above one replica;
 - non-root, read-only rootfs with a `/tmp` emptyDir, no token automount
   unless the workload has Kubernetes RBAC;
+- RBAC split by scope onto the workload's one ServiceAccount: a namespaced
+  Role (the config-read defaults, an operator's leader-election lease, and
+  `namespacedRBAC`) whenever it has any RBAC, plus a ClusterRole carrying
+  only cluster-scoped intent (an operator's CRD rules, `clusterRBAC`). The
+  two tiers add; the config-read defaults are never granted cluster-wide;
 - `before` jobs as initContainers, plus standalone Jobs with a deploy phase;
 - storage: `storageGiB > 0` requires 1 replica with a `Recreate` rollout.
 

@@ -68,7 +68,6 @@ CAP_ORDERING = caps.CAP_ORDERING
 CAP_GATED = caps.CAP_GATED
 CAP_CRDS = caps.CAP_CRDS
 supports = caps.supports
-rbac_tier = caps.rbac_tier
 
 # The generated WorkloadSpec sub-types (kcl/tiers/tiers_gen.k), with the
 # camelCase field names the wire carries.

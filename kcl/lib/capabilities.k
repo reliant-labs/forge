@@ -111,11 +111,12 @@ CAP_PDB: str = "pdb"
 # namespace, on top of the default config-read rules.
 CAP_NAMESPACED_RBAC: str = "namespaced_rbac"
 
-# Honors `clusterRBAC` — a ClusterRole + ClusterRoleBinding. Any scheduled
-# kind may declare it (a worker that reads nodes, a job that installs a
-# CRD); an operator can ONLY use this tier. A workload carries one tier or
-# the other, never both: one ServiceAccount gets one binding (see
-# rbac_tier below).
+# Honors `clusterRBAC` — a ClusterRole + ClusterRoleBinding carrying ONLY
+# the declared cluster-scoped rules. Any scheduled kind may declare it (a
+# worker that reads nodes, a job that installs a CRD). It ADDS to the
+# namespaced tier: the config-read defaults stay in the workload's Role, so a
+# ClusterRole never grants cluster-wide read on Secrets. Both tiers bind the
+# one ServiceAccount (pkg/deploy identity).
 CAP_CLUSTER_RBAC: str = "cluster_rbac"
 
 # Honors `resources` (CPU/memory requests + limits).
@@ -147,9 +148,9 @@ KIND_CAPABILITIES: {str: [str]} = {
     # kind, and the one every other scheduled kind is a restriction of.
     #
     # No CAP_ORDERING: a service is what one-shots gate, not a one-shot
-    # itself. No CAP_CLUSTER_RBAC: a service that needs cluster-scoped
-    # permission is an operator, and saying so gets it leader election and
-    # the CRD wiring too.
+    # itself. CAP_CLUSTER_RBAC it has: a service may resolve resources across
+    # namespaces (a proxy routing to per-workspace objects) without being a
+    # controller.
     "service" = [
         CAP_WORKLOAD, CAP_DEPLOYMENT, CAP_SERVICE_OBJECT, CAP_PORTS,
         CAP_REPLICAS, CAP_PROBES, CAP_PDB, CAP_NAMESPACED_RBAC,
@@ -211,12 +212,13 @@ KIND_CAPABILITIES: {str: [str]} = {
 
     # A controller-runtime manager that watches the API server.
     #
-    # CAP_CLUSTER_RBAC INSTEAD OF CAP_NAMESPACED_RBAC, not in addition: an
-    # operator watches across namespaces, so its permission is cluster-
-    # scoped, and the cluster tier already subsumes the namespaced default
-    # config-read rules. Emitting both would produce two bindings for one
-    # ServiceAccount where the wider one decides every outcome — an
-    # audit-log lie, and a Role whose deletion changes nothing.
+    # CAP_CLUSTER_RBAC AND CAP_NAMESPACED_RBAC. An operator watches its CRDs
+    # across namespaces, so those rules are cluster-scoped, but its config
+    # read and its leader-election lease are in its OWN namespace, and they
+    # go in a namespaced Role. Putting them in the ClusterRole (as this
+    # matrix once did, calling the cluster tier a superset) granted every
+    # operator read on every Secret in the cluster. A namespace-local grant
+    # an operator declares belongs in namespacedRBAC for the same reason.
     #
     # CAP_PORTS it does have, and this cell was got wrong the first time
     # this matrix was written — caught by rendering a real project against
@@ -239,7 +241,7 @@ KIND_CAPABILITIES: {str: [str]} = {
     # quietly inventing a Service object for every operator in existence.)
     "operator" = [
         CAP_WORKLOAD, CAP_DEPLOYMENT, CAP_PORTS, CAP_REPLICAS, CAP_PDB,
-        CAP_CLUSTER_RBAC, CAP_CRDS, CAP_RESOURCES, CAP_GATED,
+        CAP_NAMESPACED_RBAC, CAP_CLUSTER_RBAC, CAP_CRDS, CAP_RESOURCES, CAP_GATED,
     ]
 
     # Built into the image and NEVER scheduled — a CLI, an admin escape
@@ -290,16 +292,3 @@ supports = lambda kind: str, capability: str -> bool {
     capability in KIND_CAPABILITIES[kind] if kind in KIND_CAPABILITIES else False
 }
 
-# Which RBAC tier this kind gets: "cluster" | "namespaced" | "none".
-#
-# One function, because the tiers are EXCLUSIVE and that exclusivity is the
-# property worth centralizing. A workload gets a ClusterRole or a Role, never
-# both — see the operator note above for why both is an audit-log lie.
-#
-# "none" means the kind still gets a bare ServiceAccount (identity without
-# permission — see lib/rbac.k::render_service_account); it does not mean the
-# pod runs as the namespace `default`.
-rbac_tier = lambda kind: str -> str {
-    "cluster" if supports(kind, CAP_CLUSTER_RBAC) and not supports(kind, CAP_NAMESPACED_RBAC) \
-        else ("namespaced" if supports(kind, CAP_NAMESPACED_RBAC) else "none")
-}

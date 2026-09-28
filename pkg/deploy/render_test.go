@@ -111,14 +111,18 @@ func TestPerKindObjects(t *testing.T) {
 		{svc("api", httpPort(true)), []string{"Deployment/api", "Service/api", "ServiceAccount/api"}},
 		{wl("w", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker}), []string{"Deployment/w", "ServiceAccount/w"}},
 		{wl("c", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"sweep"}}), []string{"CronJob/c", "ServiceAccount/c"}},
-		{wl("op", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"Widget"}}), []string{
-			"ClusterRole/op-acme-prod-clusterrole", "ClusterRoleBinding/op-acme-prod-clusterrolebinding", "Deployment/op", "ServiceAccount/op",
+		// An operator: a namespaced Role (config read + lease) beside the
+		// ClusterRole its CRDs derive.
+		{wl("op", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, Group: "e.com", CRDs: []string{"Widget"}}), []string{
+			"ClusterRole/op-acme-prod-clusterrole", "ClusterRoleBinding/op-acme-prod-clusterrolebinding", "Deployment/op",
+			"Role/op-role", "RoleBinding/op-rolebinding", "ServiceAccount/op",
 		}},
 		// An operator that declares ports is dialled (webhook, metrics,
 		// workspace-controller's :9191), so it gets a Service. A worker
 		// with ports still does not: nothing resolves it by name.
-		{wl("op2", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"Widget"}, Ports: []v1alpha1.Port{{Name: "http", Port: 9191}}}), []string{
-			"ClusterRole/op2-acme-prod-clusterrole", "ClusterRoleBinding/op2-acme-prod-clusterrolebinding", "Deployment/op2", "Service/op2", "ServiceAccount/op2",
+		{wl("op2", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, Group: "e.com", CRDs: []string{"Widget"}, Ports: []v1alpha1.Port{{Name: "http", Port: 9191}}}), []string{
+			"ClusterRole/op2-acme-prod-clusterrole", "ClusterRoleBinding/op2-acme-prod-clusterrolebinding", "Deployment/op2",
+			"Role/op2-role", "RoleBinding/op2-rolebinding", "Service/op2", "ServiceAccount/op2",
 		}},
 		{wl("w2", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Ports: []v1alpha1.Port{{Name: "http", Port: 8080}}}), []string{"Deployment/w2", "ServiceAccount/w2"}},
 		{wl("cli", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindTool}), nil},
@@ -428,8 +432,9 @@ func TestEnvChannels(t *testing.T) {
 }
 
 // TestIdentity: one SA per workload; no token unless RBAC; the namespaced
-// Role carries the default config-read rules; an operator's ClusterRole
-// REPLACES a Role; annotations ride the SA only; an override renders none.
+// Role carries the default config-read rules; an operator gets that Role
+// beside its ClusterRole; annotations ride the SA only; an override renders
+// none.
 func TestIdentity(t *testing.T) {
 	o := objects(t, render(t, v1alpha1.ProfileFull, svc("api")))
 	if get(o["ServiceAccount/api"], "automountServiceAccountToken") != false || get(podOf(o["Deployment/api"]), "automountServiceAccountToken") != false {
@@ -458,10 +463,8 @@ func TestIdentity(t *testing.T) {
 		ServiceAccountAnnotations: map[string]string{"iam.gke.io/gcp-service-account": "m@p.iam.gserviceaccount.com"},
 	})
 	o = objects(t, render(t, v1alpha1.ProfileFull, op))
-	for k := range o {
-		if strings.HasPrefix(k, "Role/") || strings.HasPrefix(k, "RoleBinding/") {
-			t.Errorf("operator rendered %s: the cluster tier REPLACES the namespaced one", k)
-		}
+	if o["Role/mgr-role"] == nil || o["RoleBinding/mgr-rolebinding"] == nil {
+		t.Errorf("an operator reads its config through a namespaced Role; objects = %v", keysOf(o))
 	}
 	if get(o["ClusterRoleBinding/mgr-acme-prod-clusterrolebinding"], "subjects", 0, "namespace") != "acme-prod" {
 		t.Error("cluster binding subject must be the env's namespace")
@@ -1134,35 +1137,120 @@ func TestOperatorClusterRBACDisjointAcrossNamespaces(t *testing.T) {
 // TestOperatorClusterRoleDerivesCRDRules: an operator's ClusterRole grants
 // what its manager needs on the CRDs it declares, the same rules the
 // scaffolded controller's kubebuilder markers state
-// (internal/templates/crd/controller.go.tmpl:56-58), plus leases for leader
-// election. Declared clusterRBAC is appended, never replacing them.
-// expand.k derived none, so an operator declaring crds without restating them
-// in cluster_rbac could not watch its own resources.
+// (internal/templates/crd/controller.go.tmpl:56-58), then its declared
+// clusterRBAC — and NOTHING namespace-local. The config-read defaults and the
+// leader-election leases live in the namespaced Role: a ClusterRole carrying
+// them read every Secret in the cluster and could take any controller's
+// lease. expand.k derived no CRD rules, so an operator declaring crds without
+// restating them in cluster_rbac could not watch its own resources.
 func TestOperatorClusterRoleDerivesCRDRules(t *testing.T) {
 	extra := v1alpha1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"list"}}
 	op := wl("mgr", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, Group: "reliant.dev", CRDs: []string{"Workspace", "Policy"}, ClusterRBAC: []v1alpha1.PolicyRule{extra}})
-	role := objects(t, render(t, v1alpha1.ProfileFull, op))["ClusterRole/mgr-acme-prod-clusterrole"]
+	o := objects(t, render(t, v1alpha1.ProfileFull, op))
+	defaults := map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps", "secrets"}, "verbs": []any{"get", "list", "watch"}}
+	leases := map[string]any{"apiGroups": []any{"coordination.k8s.io"}, "resources": []any{"leases"}, "verbs": []any{"get", "list", "watch", "create", "update", "patch", "delete"}}
 	want := []any{
-		map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps", "secrets"}, "verbs": []any{"get", "list", "watch"}},
 		map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces", "policies"}, "verbs": []any{"get", "list", "watch", "create", "update", "patch", "delete"}},
 		map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces/status", "policies/status"}, "verbs": []any{"get", "update", "patch"}},
 		map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces/finalizers", "policies/finalizers"}, "verbs": []any{"update"}},
-		map[string]any{"apiGroups": []any{"coordination.k8s.io"}, "resources": []any{"leases"}, "verbs": []any{"get", "list", "watch", "create", "update", "patch", "delete"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list"}},
 	}
-	if got := get(role, "rules"); !reflect.DeepEqual(got, want) {
+	if got := get(o["ClusterRole/mgr-acme-prod-clusterrole"], "rules"); !reflect.DeepEqual(got, want) {
 		gb, _ := json.MarshalIndent(got, "", " ")
 		t.Fatalf("ClusterRole rules =\n%s", gb)
 	}
+	if got := get(o["Role/mgr-role"], "rules"); !reflect.DeepEqual(got, []any{defaults, leases}) {
+		gb, _ := json.MarshalIndent(got, "", " ")
+		t.Fatalf("operator Role rules =\n%s\nwant the config-read defaults + leases", gb)
+	}
 
 	// No leader election: no leases. No group: nothing to derive (a CRD
-	// needs its group to be addressable), so only defaults + declared.
+	// needs its group to be addressable), so the ClusterRole is only the
+	// declared rules and the Role only the defaults.
 	off := false
 	op.Spec.LeaderElection = &off
 	op.Spec.Group = ""
-	role = objects(t, render(t, v1alpha1.ProfileFull, op))["ClusterRole/mgr-acme-prod-clusterrole"]
-	if got := get(role, "rules"); !reflect.DeepEqual(got, []any{want[0], want[5]}) {
-		t.Errorf("without group or leader election, rules = %v", got)
+	o = objects(t, render(t, v1alpha1.ProfileFull, op))
+	if got := get(o["ClusterRole/mgr-acme-prod-clusterrole"], "rules"); !reflect.DeepEqual(got, []any{want[3]}) {
+		t.Errorf("without group or leader election, ClusterRole rules = %v", got)
+	}
+	if got := get(o["Role/mgr-role"], "rules"); !reflect.DeepEqual(got, []any{defaults}) {
+		t.Errorf("without leader election, Role rules = %v", got)
+	}
+
+	// Nothing cluster-scoped at all: no ClusterRole. An empty one is a
+	// binding that grants nothing, and one more object to audit.
+	op.Spec.ClusterRBAC = nil
+	o = objects(t, render(t, v1alpha1.ProfileFull, op))
+	if o["ClusterRole/mgr-acme-prod-clusterrole"] != nil || o["ClusterRoleBinding/mgr-acme-prod-clusterrolebinding"] != nil {
+		t.Errorf("an operator with no cluster-scoped rules rendered a ClusterRole: %v", keysOf(o))
+	}
+	if o["Role/mgr-role"] == nil {
+		t.Error("the operator still needs its namespaced config-read Role")
+	}
+}
+
+// TestNoClusterRoleGrantsSecrets is the security invariant, swept across every
+// kind and every tier combination: NO ClusterRole forge renders grants
+// ConfigMaps or Secrets it was not explicitly asked for. The config-read
+// defaults are namespace-local by construction; a ClusterRole carrying them
+// was cluster-wide read on every Secret for any workload with clusterRBAC and
+// for every operator.
+func TestNoClusterRoleGrantsSecrets(t *testing.T) {
+	pods := []v1alpha1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"list"}}}
+	for _, w := range []v1alpha1.Workload{
+		wl("svc", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, ClusterRBAC: pods}),
+		wl("both", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, ClusterRBAC: pods, NamespacedRBAC: pods}),
+		wl("cron", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Args: []string{"x"}, Schedule: "@daily", ClusterRBAC: pods}),
+		wl("mgr", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, Group: "e.com", CRDs: []string{"W"}}),
+		wl("mgr2", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, Group: "e.com", CRDs: []string{"W"}, ClusterRBAC: pods}),
+	} {
+		for k, obj := range objects(t, render(t, v1alpha1.ProfileFull, w)) {
+			if !strings.HasPrefix(k, "ClusterRole/") {
+				continue
+			}
+			for _, r := range asSlice(get(obj, "rules")) {
+				for _, res := range asSlice(get(r, "resources")) {
+					if res == "secrets" || res == "configmaps" {
+						t.Errorf("%s: %s grants %s cluster-wide: %v", w.Name, k, res, r)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestBothRBACTiersCoexist: namespacedRBAC and clusterRBAC on one workload
+// render BOTH a Role (defaults + namespaced rules) and a ClusterRole (the
+// cluster rules only), each bound to the SAME ServiceAccount, with the token
+// mounted. The permissions in force are the union, and each object states
+// exactly the part of it that is at its scope.
+func TestBothRBACTiersCoexist(t *testing.T) {
+	nsRule := v1alpha1.PolicyRule{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"create"}}
+	clRule := v1alpha1.PolicyRule{APIGroups: []string{"reliant.dev"}, Resources: []string{"workspaces"}, Verbs: []string{"list"}}
+	w := wl("sweeper", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, NamespacedRBAC: []v1alpha1.PolicyRule{nsRule}, ClusterRBAC: []v1alpha1.PolicyRule{clRule}})
+	o := objects(t, render(t, v1alpha1.ProfileFull, w))
+	want := []string{
+		"ClusterRole/sweeper-acme-prod-clusterrole", "ClusterRoleBinding/sweeper-acme-prod-clusterrolebinding",
+		"Deployment/sweeper", "Role/sweeper-role", "RoleBinding/sweeper-rolebinding", "ServiceAccount/sweeper",
+	}
+	if got := keysOf(o); !reflect.DeepEqual(got, want) {
+		t.Fatalf("objects = %v\nwant      %v", got, want)
+	}
+	defaults := map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps", "secrets"}, "verbs": []any{"get", "list", "watch"}}
+	if got := get(o["Role/sweeper-role"], "rules"); !reflect.DeepEqual(got, []any{defaults, map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "verbs": []any{"create"}}}) {
+		t.Errorf("Role rules = %v, want defaults + namespacedRBAC", got)
+	}
+	if got := get(o["ClusterRole/sweeper-acme-prod-clusterrole"], "rules"); !reflect.DeepEqual(got, []any{map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces"}, "verbs": []any{"list"}}}) {
+		t.Errorf("ClusterRole rules = %v, want clusterRBAC only", got)
+	}
+	for _, b := range []string{"RoleBinding/sweeper-rolebinding", "ClusterRoleBinding/sweeper-acme-prod-clusterrolebinding"} {
+		if get(o[b], "subjects", 0, "name") != "sweeper" || get(o[b], "subjects", 0, "namespace") != "acme-prod" || len(asSlice(get(o[b], "subjects"))) != 1 {
+			t.Errorf("%s subjects = %v, want the workload's one SA", b, get(o[b], "subjects"))
+		}
+	}
+	if get(podOf(o["Deployment/sweeper"]), "automountServiceAccountToken") != true {
+		t.Error("a workload with RBAC needs its token mounted")
 	}
 }
 
@@ -1242,27 +1330,36 @@ func TestBatchResources(t *testing.T) {
 }
 
 // TestClusterRBACOnService: a non-operator with clusterRBAC gets a
-// ClusterRole INSTEAD of a Role (one binding tier per SA), its token mounted,
-// and none of an operator's derivations (no CRD rules, no leases,
-// no LEADER_ELECTION).
+// ClusterRole carrying ONLY the declared rules, the config-read defaults in a
+// namespaced Role beside it (both bound to its one SA), its token mounted,
+// and none of an operator's derivations (no CRD rules, no leases, no
+// LEADER_ELECTION).
 func TestClusterRBACOnService(t *testing.T) {
 	rule := v1alpha1.PolicyRule{APIGroups: []string{"reliant.dev"}, Resources: []string{"workspaces"}, Verbs: []string{"get", "list", "watch"}}
 	w := wl("workspace-proxy", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, ClusterRBAC: []v1alpha1.PolicyRule{rule}})
 	o := objects(t, render(t, v1alpha1.ProfileFull, w))
 	want := []string{
 		"ClusterRole/workspace-proxy-acme-prod-clusterrole", "ClusterRoleBinding/workspace-proxy-acme-prod-clusterrolebinding",
-		"Deployment/workspace-proxy", "Service/workspace-proxy", "ServiceAccount/workspace-proxy",
+		"Deployment/workspace-proxy", "Role/workspace-proxy-role", "RoleBinding/workspace-proxy-rolebinding",
+		"Service/workspace-proxy", "ServiceAccount/workspace-proxy",
 	}
 	if got := keysOf(o); !reflect.DeepEqual(got, want) {
 		t.Fatalf("objects = %v\nwant      %v", got, want)
 	}
 	rules := get(o["ClusterRole/workspace-proxy-acme-prod-clusterrole"], "rules")
 	wantRules := []any{
-		map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps", "secrets"}, "verbs": []any{"get", "list", "watch"}},
 		map[string]any{"apiGroups": []any{"reliant.dev"}, "resources": []any{"workspaces"}, "verbs": []any{"get", "list", "watch"}},
 	}
 	if !reflect.DeepEqual(rules, wantRules) {
-		t.Errorf("rules = %v, want defaults + declared only", rules)
+		t.Errorf("ClusterRole rules = %v, want the declared clusterRBAC only (no config-read defaults)", rules)
+	}
+	defaults := []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps", "secrets"}, "verbs": []any{"get", "list", "watch"}}}
+	if got := get(o["Role/workspace-proxy-role"], "rules"); !reflect.DeepEqual(got, defaults) {
+		t.Errorf("Role rules = %v, want the config-read defaults", got)
+	}
+	if get(o["RoleBinding/workspace-proxy-rolebinding"], "subjects", 0, "name") != "workspace-proxy" ||
+		get(o["ClusterRoleBinding/workspace-proxy-acme-prod-clusterrolebinding"], "subjects", 0, "name") != "workspace-proxy" {
+		t.Error("both bindings must name the workload's one ServiceAccount")
 	}
 	pod := podOf(o["Deployment/workspace-proxy"])
 	if get(pod, "automountServiceAccountToken") != true || get(o["ServiceAccount/workspace-proxy"], "automountServiceAccountToken") != nil {

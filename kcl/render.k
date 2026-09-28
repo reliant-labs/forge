@@ -237,10 +237,31 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # ---------------------------------------------------------------------------
 
 # The registry-less artifact name a forge-built workload is built into —
-# the build-state / release-ledger key. "" when forge builds nothing for it.
+# the build-state / release-ledger key, and the ${IMAGE} its build pushes.
+# "" when forge builds nothing for it.
+#
+# A declared image names it, with any `:tag` stripped: `reliant:e2e` is built
+# as IMAGE=reliant, TAG=e2e (the Go build side reads the tag back off the
+# resolved spec.image). It used to fall back to the output_name / workload
+# name for ANY tagged image, so the build pushed `<registry>/<name>:<env tag>`
+# while the deploy pulled `<registry>/reliant:e2e` — ErrImagePull. Only an
+# UNSET image derives the name from the build.
 _artifact = lambda w: any -> str {
-    (w.image if w.image and not img_lib.has_registry_host(w.image) and not img_lib.has_tag_or_digest(w.image) \
-        else (w.build.output_name if w.build and w.build.output_name else w.name)) if w.build else ""
+    (img_lib.repository(w.image) if w.image \
+        else (w.build.output_name if w.build.output_name else w.name)) if w.build else ""
+}
+
+# A build cannot produce a digest chosen in advance: a digest names bytes
+# that already exist. Building to some tag the deploy then ignores, or
+# skipping the declared build, would each leave the declaration lying, so a
+# forge-built workload pinned to a digest is refused.
+_check_built_digest = lambda w: any -> bool {
+    assert not (w.build and w.image and "@" in w.image), \
+        "workload '${w.name}': image '${w.image}' pins a digest, but the workload also declares a build. " \
+        + "A build cannot produce a pre-chosen digest. Drop `build` to run that exact image, or drop the " \
+        + "digest (pin a tag, or leave it unpinned) so the image is the one forge builds; " \
+        + "`forge env deploy` pins what the build pushed by digest itself."
+    True
 }
 
 # The image a runtime runs, resolved per runtime (module docstring).
@@ -335,6 +356,7 @@ _lower = lambda w: any, bundle: Bundle -> any {
     _rt = _bound_runtime(w, bundle.runtime)
     _bad = _mask_violations(w, _rt)
     assert len(_bad) == 0, "workload '${w.name}' cannot run on the ${_rt.type} runtime:\n  - " + "\n  - ".join(_bad)
+    assert _check_built_digest(w)
     {
         "name": w.name
         "kind": w.kind

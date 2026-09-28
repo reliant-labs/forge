@@ -48,14 +48,17 @@ import (
 //	service   Deployment + Service (+ PDB, PVC) + ServiceAccount [+ RBAC] [+ NetworkPolicy]
 //	worker    Deployment (+ PDB, PVC) + ServiceAccount [+ RBAC] [+ NetworkPolicy]
 //	operator  Deployment [+ Service when it declares ports] (+ PDB, PVC) + ServiceAccount
-//	          + ClusterRole + ClusterRoleBinding (CRD rules and leases derived)
+//	          + Role + RoleBinding (config-read defaults, leases derived)
+//	          + ClusterRole + ClusterRoleBinding (CRD rules derived)
 //	job       standalone: Job + ServiceAccount [+ RBAC] [+ NetworkPolicy];
 //	          with `before`: nothing of its own, an initContainer on each gated pod
 //	cron      CronJob + ServiceAccount [+ RBAC] [+ NetworkPolicy]
 //	tool      nothing (built into the image, never scheduled)
 //
-// [+ RBAC] is a Role + RoleBinding (namespacedRBAC) or, under the Full
-// profile, a ClusterRole + ClusterRoleBinding (clusterRBAC), never both.
+// [+ RBAC] is a Role + RoleBinding (the config-read defaults + namespacedRBAC)
+// whenever either tier is declared, plus, under the Full profile, a
+// ClusterRole + ClusterRoleBinding carrying ONLY clusterRBAC. Both bind the
+// workload's one ServiceAccount (see identity).
 // [+ NetworkPolicy] is the per-workload ingress policy: always under
 // ProfileRestricted, and under ProfileFull only when Context.Network is set.
 //
@@ -1026,32 +1029,38 @@ func tolerations(in []v1alpha1.Toleration) []corev1.Toleration {
 }
 
 // defaultRBACRules are lib/rbac.k:35-41: read the namespace's ConfigMaps and
-// Secrets. Granted with every Role and ClusterRole forge renders, never to a
-// workload that asked for none.
+// Secrets. Granted in every namespaced Role forge renders, never to a
+// workload that asked for no RBAC, and NEVER in a ClusterRole: there it is
+// read access to every Secret in the cluster. (lib/rbac.k put them in an
+// operator's ClusterRole; that was the same hole.)
 var defaultRBACRules = []rbacv1.PolicyRule{{
 	APIGroups: []string{""}, Resources: []string{"configmaps", "secrets"}, Verbs: []string{"get", "list", "watch"},
 }}
 
-// hasRBAC ports capabilities.k:304-307 rbac_tier plus expand.k:370-380: an
-// operator always gets its ClusterRole (a manager cannot start without the
-// config-read defaults); any other kind gets a Role or a ClusterRole only
-// when it declares rules. A workload with RBAC also gets its token mounted.
+// hasRBAC ports expand.k:370-380: an operator always has RBAC (a manager
+// cannot start without the config-read defaults and its lease); any other
+// kind only when it declares rules in either tier. A workload with RBAC gets
+// its namespaced Role and its token mounted.
 func hasRBAC(w *workload) bool {
-	return w.kind == v1alpha1.KindOperator || hasClusterRole(w) || len(w.spec.NamespacedRBAC) > 0
-}
-
-// hasClusterRole: the cluster tier. An operator always; any other kind when
-// it declares clusterRBAC (Full only), which REPLACES the Role (Validate
-// refuses declaring both).
-func hasClusterRole(w *workload) bool {
-	return w.kind == v1alpha1.KindOperator || len(w.spec.ClusterRBAC) > 0
+	return w.kind == v1alpha1.KindOperator || len(w.spec.ClusterRBAC) > 0 || len(w.spec.NamespacedRBAC) > 0
 }
 
 // identity ports expand.k:381-394 _workload_rbac with lib/rbac.k: exactly ONE
-// ServiceAccount per workload, and at most one tier of RBAC bound to it. The
-// tiers are EXCLUSIVE: an operator's ClusterRole REPLACES a Role rather than
-// adding one (schema.k:337-341), because two bindings on one ServiceAccount
-// let the wider decide every outcome and make the narrower an audit-log lie.
+// ServiceAccount per workload, and up to two bindings on it, split by SCOPE:
+//
+//   - a Role + RoleBinding in the workload's own namespace, whenever it has
+//     any RBAC: the config-read defaults, an operator's leader-election
+//     lease, and namespacedRBAC;
+//   - a ClusterRole + ClusterRoleBinding only for cluster-scoped intent: an
+//     operator's CRD rules and clusterRBAC. Nothing namespace-local is
+//     widened into it.
+//
+// The tiers used to be exclusive, with the ClusterRole REPLACING the Role
+// and so carrying the defaults cluster-wide: every operator and every
+// workload with clusterRBAC could read every Secret in the cluster. Two
+// bindings on one ServiceAccount are the union of their rules, and each
+// object states exactly the part of that union at its scope, so neither
+// misdescribes what is in force.
 //
 // With a ServiceAccount override forge renders nothing: it does not own an
 // identity it was told already exists, and a copy without the real one's
@@ -1081,35 +1090,14 @@ func identity(w *workload, ctx Context) []runtime.Object {
 		return []runtime.Object{sa}
 	}
 	subject := []rbacv1.Subject{{Kind: "ServiceAccount", Name: w.name, Namespace: ctx.Namespace}}
-	if hasClusterRole(w) {
-		// lib/rbac.k:230-267. Cluster-scoped names carry the NAMESPACE:
-		// with an env-invariant name every env in a shared cluster writes
-		// the same binding, and the last deploy silently repoints it at
-		// its own namespace (lib/rbac.k:198-222).
-		roleName := fmt.Sprintf("%s-%s-clusterrole", w.name, ctx.Namespace)
-		return []runtime.Object{
-			sa,
-			&rbacv1.ClusterRole{
-				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
-				ObjectMeta: metav1.ObjectMeta{Name: roleName, Labels: copyLabels(labels)},
-				Rules:      clusterRules(w),
-			},
-			&rbacv1.ClusterRoleBinding{
-				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
-				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%s-clusterrolebinding", w.name, ctx.Namespace), Labels: copyLabels(labels)},
-				Subjects:   subject,
-				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: roleName},
-			},
-		}
-	}
 	// lib/rbac.k:149-191.
 	roleName := w.name + "-role"
-	return []runtime.Object{
+	objs := []runtime.Object{
 		sa,
 		&rbacv1.Role{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
 			ObjectMeta: objectMeta(roleName, ctx.Namespace, labels),
-			Rules:      append(slices.Clone(defaultRBACRules), policyRules(s.NamespacedRBAC)...),
+			Rules:      namespacedRules(s),
 		},
 		&rbacv1.RoleBinding{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
@@ -1118,6 +1106,30 @@ func identity(w *workload, ctx Context) []runtime.Object {
 			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: roleName},
 		},
 	}
+	clusterRules := clusterRules(s)
+	if len(clusterRules) == 0 {
+		// An operator with no Group derives no CRD rules; with no declared
+		// clusterRBAC either, a ClusterRole would bind nothing.
+		return objs
+	}
+	// lib/rbac.k:230-267. Cluster-scoped names carry the NAMESPACE: with an
+	// env-invariant name every env in a shared cluster writes the same
+	// binding, and the last deploy silently repoints it at its own
+	// namespace (lib/rbac.k:198-222).
+	clusterRoleName := fmt.Sprintf("%s-%s-clusterrole", w.name, ctx.Namespace)
+	return append(objs,
+		&rbacv1.ClusterRole{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
+			ObjectMeta: metav1.ObjectMeta{Name: clusterRoleName, Labels: copyLabels(labels)},
+			Rules:      clusterRules,
+		},
+		&rbacv1.ClusterRoleBinding{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%s-clusterrolebinding", w.name, ctx.Namespace), Labels: copyLabels(labels)},
+			Subjects:   subject,
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: clusterRoleName},
+		},
+	)
 }
 
 // crdVerbs / crdStatusVerbs / crdFinalizerVerbs are what the scaffolded
@@ -1131,29 +1143,38 @@ var (
 	leaseVerbs        = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
 )
 
-// clusterRules is a ClusterRole's rules: an operator's (operatorRules), or,
-// for any other kind, the config-read defaults plus its declared
-// clusterRBAC. Only a controller gets CRD rules and leases.
-func clusterRules(w *workload) []rbacv1.PolicyRule {
-	if w.kind == v1alpha1.KindOperator {
-		return operatorRules(w.spec)
+// namespacedRules is the workload's Role: the config-read defaults, then an
+// operator's coordination.k8s.io leases when it elects a leader, then its
+// declared NamespacedRBAC.
+//
+// The lease is namespace-local. The scaffolded manager (operatorkit.Run)
+// leaves LeaderElectionNamespace empty in-cluster, so controller-runtime
+// takes the lease in the namespace its ServiceAccount token names — this
+// workload's own. A non-empty namespace is only the opt-in for a manager run
+// as a HOST process, which has no rendered ServiceAccount to grant anything
+// to. Granting leases cluster-wide would add nothing but the power to take
+// over every other controller's lease.
+func namespacedRules(s v1alpha1.WorkloadSpec) []rbacv1.PolicyRule {
+	rules := slices.Clone(defaultRBACRules)
+	if s.EffectiveLeaderElection() {
+		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: leaseVerbs})
 	}
-	return append(slices.Clone(defaultRBACRules), policyRules(w.spec.ClusterRBAC)...)
+	return append(rules, policyRules(s.NamespacedRBAC)...)
 }
 
-// operatorRules is an operator's ClusterRole: the lib/rbac.k config-read
-// defaults, then the rules its manager needs on the CRDs it declares (the
-// resource, /status and /finalizers in Group), then coordination.k8s.io
-// leases when it elects a leader, then its declared ClusterRBAC.
+// clusterRules is the workload's ClusterRole: cluster-scoped intent only —
+// the rules an operator's manager needs on the CRDs it declares (the
+// resource, /status and /finalizers in Group), then the declared
+// ClusterRBAC. Empty means no ClusterRole is rendered.
 //
-// expand.k derived none of the middle part (it passed only cluster_rbac), so
-// an operator declaring crds, but not restating them as rules, rendered a
-// ClusterRole that could not watch its own resources, and the manager
-// failed its first list with "forbidden". Without a Group the CRDs are not
+// expand.k derived no CRD rules (it passed only cluster_rbac), so an
+// operator declaring crds, but not restating them as rules, rendered a
+// ClusterRole that could not watch its own resources, and the manager failed
+// its first list with "forbidden". Without a Group the CRDs are not
 // addressable, so nothing is derived; declared rules still apply.
-func operatorRules(s v1alpha1.WorkloadSpec) []rbacv1.PolicyRule {
-	rules := slices.Clone(defaultRBACRules)
-	if s.Group != "" && len(s.CRDs) > 0 {
+func clusterRules(s v1alpha1.WorkloadSpec) []rbacv1.PolicyRule {
+	var rules []rbacv1.PolicyRule
+	if s.EffectiveKind() == v1alpha1.KindOperator && s.Group != "" && len(s.CRDs) > 0 {
 		var res, status, finalizers []string
 		for _, kind := range s.CRDs {
 			plural := crdPlural(kind)
@@ -1167,9 +1188,6 @@ func operatorRules(s v1alpha1.WorkloadSpec) []rbacv1.PolicyRule {
 			rbacv1.PolicyRule{APIGroups: group, Resources: status, Verbs: crdStatusVerbs},
 			rbacv1.PolicyRule{APIGroups: group, Resources: finalizers, Verbs: crdFinalizerVerbs},
 		)
-	}
-	if s.EffectiveLeaderElection() {
-		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: leaseVerbs})
 	}
 	return append(rules, policyRules(s.ClusterRBAC)...)
 }

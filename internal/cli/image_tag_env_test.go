@@ -7,36 +7,26 @@ import (
 	"testing"
 )
 
-// TestSplitImageNameTag covers the registry/name/tag parser that backs
-// the env-image-tag recovery. The tricky cases are the registry
-// "host:port/img" colon (must NOT be read as a tag) and digest refs
-// (no tag to align to).
-func TestSplitImageNameTag(t *testing.T) {
+// TestPinnedTagOf: a resolved ref answers its tag only for the artifact
+// repository it names, matched at a `/` boundary.
+func TestPinnedTagOf(t *testing.T) {
 	cases := []struct {
-		image    string
-		wantName string
-		wantTag  string
-		wantOK   bool
+		ref, repo, tag string
+		ok             bool
 	}{
-		{"ghcr.io/reliant-labs/reliant:staging", "reliant", "staging", true},
-		{"ghcr.io/reliant-labs/control-plane:stable", "control-plane", "stable", true},
-		{"registry.localhost:5051/workspace-base:dev-per-daemon", "workspace-base", "dev-per-daemon", true},
+		{"localhost:5051/reliant:e2e", "reliant", "e2e", true},
 		{"reliant:e2e", "reliant", "e2e", true},
-		// Registry port colon, no tag → not a tag.
-		{"registry.localhost:5051/img", "", "", false},
-		// Digest pin → no tag to align to.
-		{"ghcr.io/x/y@sha256:abc", "", "", false},
-		// Tagless → no tag.
-		{"reliant", "", "", false},
-		// Empty tag after colon.
-		{"reliant:", "", "", false},
-		{"", "", "", false},
+		{"localhost:5051/acme/app:v2", "acme/app", "v2", true},
+		{"localhost:5051/acme/app:v2", "app", "v2", true},
+		{"localhost:5051/myapp:v1", "app", "", false},
+		{"localhost:5051/reliant", "reliant", "", false},
+		{"localhost:5051/reliant@sha256:abc", "reliant", "", false},
+		{"localhost:5051/other:v1", "reliant", "", false},
 	}
 	for _, c := range cases {
-		name, tag, ok := splitImageNameTag(c.image)
-		if ok != c.wantOK || name != c.wantName || tag != c.wantTag {
-			t.Errorf("splitImageNameTag(%q) = (%q,%q,%v), want (%q,%q,%v)",
-				c.image, name, tag, ok, c.wantName, c.wantTag, c.wantOK)
+		tag, ok := pinnedTagOf(c.ref, c.repo)
+		if tag != c.tag || ok != c.ok {
+			t.Errorf("pinnedTagOf(%q, %q) = (%q, %v), want (%q, %v)", c.ref, c.repo, tag, ok, c.tag, c.ok)
 		}
 	}
 }
@@ -78,6 +68,13 @@ func TestEnvImageTagFor_FromImageTagAndSpecImage(t *testing.T) {
 	ents.Workloads[0].Spec.Image = "ghcr.io/reliant-labs/reliant@sha256:abc"
 	if got := envImageTagFor(ents, "reliant"); got != "staging" {
 		t.Errorf("envImageTagFor(reliant) digest-pinned: got %q, want the env tag staging", got)
+	}
+	// An artifact with an org path matches the resolved ref's whole path
+	// suffix, not only its last segment.
+	ents.Workloads[0].Image = "acme/reliant"
+	ents.Workloads[0].Spec.Image = "localhost:5051/acme/reliant:e2e"
+	if got := envImageTagFor(ents, "acme/reliant"); got != "e2e" {
+		t.Errorf("envImageTagFor(acme/reliant): got %q, want the pin e2e", got)
 	}
 	// nil entities (no --env) yields "" → caller falls back to git-describe.
 	if got := envImageTagFor(nil, "control-plane"); got != "" {

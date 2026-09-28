@@ -1707,7 +1707,7 @@ func TestLegitimateLookalikesAreStillPresent(t *testing.T) {
 		{"forge.workloads.Port", "the LIVE KCL schema a project declares a real port on — the home a port moved TO, not the Go carrier it moved off", regexp.MustCompile(`\bfw\.Port\b`)},
 		{"config.DefaultServePort", "the one port fact forge itself knows: the single mux every service in the binary mounts onto", regexp.MustCompile(`DefaultServePort`)},
 		{"HostDeploy.listen_ports", "the host TCP ports a dev-mode service binds — a KCL deploy fact, unrelated to the removed per-component carrier", regexp.MustCompile(`listen_ports`)},
-		{"K8sCluster.ports", "the k8s Service/container port list on a cluster deploy block", regexp.MustCompile(`ports\?: \[int\]|Ports\s+\[\]int`)},
+		{"Workload.ports", "the container/Service port list a workload declares (fw.Workload, tiers.Workload, WorkloadSpec.Ports) — the home the cluster deploy block's ports moved TO", regexp.MustCompile(`ports\?: \[(tiers\.)?Port\]|Ports\s+\[\]Port\b`)},
 		{"forge cluster up", "the LIVE k3d-lifecycle verb — a `forge up` pattern widened to drop the word between `forge` and `up` swallows it", regexp.MustCompile(`forge cluster up`)},
 		{"forge run --env", "the LIVE flag on a command where the environment really is an optional modifier — the counter-example that keeps the `--env` pattern anchored on up/down", regexp.MustCompile(`forge run --env`)},
 		{"forge env deploy", "the LIVE spelling the env-noun verbs moved TO — a root-verb pattern widened to ignore what sits between `forge` and the verb swallows it", regexp.MustCompile(`forge env deploy`)},

@@ -40,17 +40,13 @@
 // bug class this whole file exists to fix.
 //
 // A row may only be added when the project has exactly ONE renderer for
-// that path. That rule is why the GitHub Actions workflows are absent even
-// though they are the same tier and were part of the same incident: forge
-// renders .github/workflows/* from two different config→data mappings —
-// project_ci.go at `forge project new` time and generate_ci.go's
-// buildCIWorkflowData afterwards — and on a project seconds old they
-// disagree (a whole docker-build job in ci.yml, the env list in
-// deploy.yml). Reporting that difference would report forge's own
-// inconsistency as the user's staleness, on the loudest file in the repo,
-// for every project. The prerequisite is one CI mapper, not a smarter
-// comparison; until then this lane stays quiet about them rather than
-// train everyone to skip the section.
+// that path. The GitHub Actions workflows used to fail that rule: forge
+// rendered .github/workflows/* from two config→data mappings (one per
+// command) that disagreed on a project seconds old — a whole docker-build
+// job in ci.yml, the env order in deploy.yml. They now share one,
+// CIWorkflows (ci_workflows.go), pinned byte-identical by
+// TestCIWorkflows_NewAndGenerateRenderIdentically, so the prerequisite is
+// met; adding their rows is a separate change and they are still absent.
 //
 // The two non-workflow .github starters have a single renderer and are in.
 package generator
@@ -172,10 +168,9 @@ func AdvisoryFilesFor(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 //
 // Both are already exempt from the drift probe as user-owned, which left
 // them with no feedback path whatsoever: a project whose PR template
-// predates a whole new checklist section had no way to learn that. They
-// qualify where the workflows do not because forge renders each from one
-// place, so what this lane compares against is what the scaffold would
-// write today — no second mapping to disagree with.
+// predates a whole new checklist section had no way to learn that. Forge
+// renders each from one place, so what this lane compares against is what
+// the scaffold would write today — no second mapping to disagree with.
 func githubStarterAdvisoryFiles(cfg *config.ProjectConfig) []AdvisoryFile {
 	if cfg.CI.Provider != "" && cfg.CI.Provider != "github" {
 		return nil

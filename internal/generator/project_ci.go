@@ -2,9 +2,7 @@ package generator
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -31,182 +29,24 @@ func githubOwnerFromModulePath(modulePath string) string {
 	return rest[:slash]
 }
 
-func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length is embedded GitHub Actions YAML, not control flow.
-	provider := "github"
+// generateCIFiles writes the GitHub Actions workflows, dependabot, and the
+// .github starters at `forge project new` time.
+//
+// The workflow set and every template's data come from CIWorkflows — the
+// same function `forge generate` calls — fed the forge.yaml this scaffold
+// just wrote, read back through the loader `forge generate` uses. So the
+// two commands cannot render different workflows for the same project.
+func (g *ProjectGenerator) generateCIFiles() error {
+	const provider = "github"
 
-	hasFrontends := g.FrontendName != ""
+	cfg, err := ReadProjectConfig(filepath.Join(g.Path, "forge.yaml"))
+	if err != nil {
+		return fmt.Errorf("read the scaffolded forge.yaml for CI workflow data: %w", err)
+	}
 	var frontends []templates.FrontendCIConfig
-	if hasFrontends {
-		frontends = []templates.FrontendCIConfig{
-			{Name: g.FrontendName, Path: fmt.Sprintf("frontends/%s", g.FrontendName)},
-		}
-	}
-
-	githubOwner := githubOwnerFromModulePath(g.ModulePath)
-
-	data := templates.CIWorkflowData{
-		ProjectName:  g.Name,
-		HasFrontends: hasFrontends,
-		Frontends:    frontends,
-		HasServices:  true,
-
-		LintGolangci:        true,
-		LintBuf:             true,
-		LintBufBreaking:     true,
-		LintFrontend:        hasFrontends,
-		LintFrontendStyles:  hasFrontends,
-		LintMigrationSafety: true,
-
-		TestRace:     true,
-		TestCoverage: false,
-
-		VulnGo:     true,
-		VulnDocker: true,
-		VulnNPM:    hasFrontends,
-
-		LicenseCheck: true,
-
-		E2EEnabled: false,
-
-		PermContents: "read",
-
-		HasKCL:          true,
-		HasDocker:       true,
-		VerifyGenerated: true,
-		Environments:    []string{"dev", "staging", "prod"},
-
-		// Legacy fields for other CI templates
-		Module:       g.ModulePath,
-		Registry:     "ghcr",
-		FrontendName: g.FrontendName,
-		GitHubOwner:  githubOwner,
-	}
-
-	// The deploy environments, shared by the deploy workflow and the
-	// reconcile matrix. ONE list rather than two literals: the two workflows
-	// must agree about which environments exist, and two lists would be free
-	// to drift into reconciling an environment nothing deploys.
-	//
-	// Read from disk, never hard-coded: the KCL envs are written before the
-	// workflows, and a workflow job for an env with no deploy/kcl/<env>/main.k
-	// fails on every run. A project converted in place keeps its own env set
-	// (houndersclub had dev + prod and got a deploy-staging job wired to every
-	// image build on main).
-	deployEnvs := scaffoldDeployEnvs(g.Path)
-
-	// Deploy and build-images use their own spec-driven data types
-	var frontendPath string
-	if hasFrontends {
-		frontendPath = fmt.Sprintf("frontends/%s", g.FrontendName)
-	}
-	deployData := templates.DeployWorkflowData{
-		ProjectName:      g.Name,
-		Environments:     deployEnvs,
-		Registry:         "ghcr",
-		HasFrontends:     hasFrontends,
-		FrontendPath:     frontendPath,
-		FrontendDeploy:   "none",
-		MigrationTest:    false,
-		Concurrency:      true,
-		CancelInProgress: false,
-	}
-
-	buildImagesData := templates.BuildImagesWorkflowData{
-		ProjectName: g.Name,
-		Registry:    "ghcr",
-		VulnDocker:  true,
-		// The cut-release + promote job rides the same gate as the reconcile
-		// workflow. Both talk to a control plane, and a project that has not
-		// opted into that machinery must not get CI steps that fail on every
-		// push to main against a server it does not have.
-		CutRelease: g.Features.ReconcileEnabled(),
-	}
-
-	reconcileData := templates.ReconcileWorkflowData{
-		ProjectName:  g.Name,
-		Environments: deployEnvs,
-	}
-
-	var e2eFrontendPath string
-	if hasFrontends {
-		e2eFrontendPath = fmt.Sprintf("frontends/%s", g.FrontendName)
-	}
-	e2eData := templates.E2EWorkflowData{
-		ProjectName:  g.Name,
-		Runtime:      "docker-compose",
-		HasFrontends: hasFrontends,
-		FrontendPath: e2eFrontendPath,
-	}
-
-	// Templated files — each with its own data type. The full set is
-	// emitted for service kinds; CLI/library kinds get just ci.yml +
-	// dependabot since they have no Docker images, no deploys, and (for
-	// CLIs) typically no protos.
-	var templatedFiles []struct {
-		templateName string
-		dest         string
-		data         interface{}
-	}
-	if g.isService() {
-		templatedFiles = []struct {
-			templateName string
-			dest         string
-			data         interface{}
-		}{
-			{"ci.yml.tmpl", ".github/workflows/ci.yml", data},
-			{"build-images.yml.tmpl", ".github/workflows/build-images.yml", buildImagesData},
-			{"deploy.yml.tmpl", ".github/workflows/deploy.yml", deployData},
-			{"e2e.yml.tmpl", ".github/workflows/e2e.yml", e2eData},
-			{"proto-breaking.yml.tmpl", ".github/workflows/proto-breaking.yml", data},
-			{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
-		}
-		// OPT-IN, OFF BY DEFAULT — the same à la carte rule every other
-		// forge feature follows. `forge reconcile` only exists for a project
-		// whose reconcile loop is wired, so scaffolding a scheduled workflow
-		// that calls it unconditionally would hand every project an hourly
-		// failing job for a feature it never enabled.
-		if g.Features.ReconcileEnabled() {
-			templatedFiles = append(templatedFiles, struct {
-				templateName string
-				dest         string
-				data         interface{}
-			}{"reconcile.yml.tmpl", ".github/workflows/reconcile.yml", reconcileData})
-		}
-	} else {
-		// CLI/library: lint + test + vuln scan still apply, but skip
-		// proto-breaking (no proto/services in CLI), build-images
-		// (no Dockerfile), deploy (no k8s), and e2e (no service to
-		// stand up).
-		// The ci.yml template branches on HasFrontends + LintBuf etc;
-		// for CLI mode we strip frontend hooks and proto-related lints
-		// so the rendered workflow is buildable.
-		data.LintBuf = false
-		data.LintBufBreaking = false
-		data.LintFrontend = false
-		data.LintFrontendStyles = false
-		data.LintMigrationSafety = false
-		data.VulnDocker = false
-		data.VulnNPM = false
-		data.HasFrontends = false
-		data.HasServices = false
-		data.HasKCL = false
-		data.HasDocker = false
-		// VerifyGenerated stays true for CLI/library kinds: even without
-		// proto codegen, contract-driven mock generation (`forge generate`
-		// emits `mock_gen.go` for any package with a contract.go) drifts
-		// silently when a contract method gains a parameter and the mock
-		// is not refreshed. The drift surfaces only at test time, often
-		// in unrelated packages. CI's verify-generate gate catches it
-		// pre-merge regardless of project kind.
-		data.VerifyGenerated = true
-		data.Frontends = nil
-		templatedFiles = []struct {
-			templateName string
-			dest         string
-			data         interface{}
-		}{
-			{"ci.yml.tmpl", ".github/workflows/ci.yml", data},
-			{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
+	for _, fe := range cfg.Frontends {
+		if p, ok := fe.Dir(g.Path); ok {
+			frontends = append(frontends, templates.FrontendCIConfig{Name: fe.Name, Path: p})
 		}
 	}
 
@@ -221,10 +61,10 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 	// go.mod resolves at run time.)
 	cs.ForgeVersion = buildinfo.Version()
 
-	for _, f := range templatedFiles {
-		content, err := templates.CITemplates(provider).Render(f.templateName, f.data)
+	for _, f := range CIWorkflows(g.Path, cfg, frontends) {
+		content, err := templates.CITemplates(provider).Render(f.Template, f.Data)
 		if err != nil {
-			return fmt.Errorf("render CI template %s: %w", f.templateName, err)
+			return fmt.Errorf("render CI template %s: %w", f.Template, err)
 		}
 		// Scaffold-once ("yours"): CI workflows are the canonical
 		// hand-edited policy file (add jobs, secrets, custom steps), so
@@ -233,8 +73,8 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 		// every sanctioned edit as `user_edited_gen_files` drift and
 		// pushed users to `forge project disown`. This mirrors the PR template /
 		// CODEOWNERS starters written just below.
-		if _, err := checksums.WriteScaffoldIfMissing(g.Path, f.dest, content); err != nil {
-			return fmt.Errorf("write %s: %w", f.dest, err)
+		if _, err := checksums.WriteScaffoldIfMissing(g.Path, f.Dest, content); err != nil {
+			return fmt.Errorf("write %s: %w", f.Dest, err)
 		}
 	}
 
@@ -268,8 +108,8 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 	// review-free stub that silently bypasses branch protection is worse
 	// than having no file at all. Users can add `.github/CODEOWNERS`
 	// manually when they're ready.
-	if githubOwner != "" {
-		content, err := templates.CITemplates(provider).Render("CODEOWNERS.tmpl", data)
+	if owner := githubOwnerFromModulePath(g.ModulePath); owner != "" {
+		content, err := templates.CITemplates(provider).Render("CODEOWNERS.tmpl", templates.CIWorkflowData{GitHubOwner: owner})
 		if err != nil {
 			return fmt.Errorf("render CODEOWNERS: %w", err)
 		}
@@ -288,43 +128,4 @@ func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length i
 	}
 
 	return nil
-}
-
-// scaffoldDeployEnvs lists the environments a deploy workflow should target:
-// every deploy/kcl/<env>/main.k under projectDir except dev (which runs
-// locally via `forge env up`), ordered along the promotion path. The first
-// auto-deploys after a green image build on main; the last is protected.
-func scaffoldDeployEnvs(projectDir string) []templates.DeployEnv {
-	kclDir := filepath.Join(projectDir, "deploy", "kcl")
-	entries, err := os.ReadDir(kclDir)
-	if err != nil {
-		return nil
-	}
-	var envs []templates.DeployEnv
-	for _, e := range entries {
-		if !e.IsDir() || e.Name() == "dev" {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(kclDir, e.Name(), "main.k")); err == nil {
-			envs = append(envs, templates.DeployEnv{Name: e.Name()})
-		}
-	}
-	// prod ships last; everything else precedes it alphabetically.
-	sort.SliceStable(envs, func(i, j int) bool {
-		pi, pj := envs[i].Name == "prod", envs[j].Name == "prod"
-		if pi != pj {
-			return pj
-		}
-		return envs[i].Name < envs[j].Name
-	})
-	// A lone env is the one users reach — protected, and never
-	// auto-deployed: auto-promoting it would ship every merge to main
-	// straight to production.
-	if len(envs) > 0 {
-		envs[len(envs)-1].Protection = true
-	}
-	if len(envs) > 1 {
-		envs[0].Auto = true
-	}
-	return envs
 }

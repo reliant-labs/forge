@@ -304,8 +304,9 @@ type CIWorkflowData struct {
 	// Permissions
 	PermContents string // default "read"
 
-	// Extra jobs
-	ExtraJobs []CIExtraJob
+	// There is deliberately no extra-jobs field: nothing ever populated it
+	// (forge.yaml's ci.extra_jobs was removed for exactly that reason), and
+	// adding a job is one edit to the ci.yml the user already owns.
 
 	// Deploy-related
 	HasKCL    bool // validate KCL manifests
@@ -356,22 +357,6 @@ func (d CIWorkflowData) withDefaults() interface{} {
 type FrontendCIConfig struct {
 	Name string
 	Path string
-}
-
-// CIExtraJob defines an additional user-specified CI job.
-type CIExtraJob struct {
-	Name   string
-	Needs  []string
-	RunsOn string
-	Steps  []CIExtraStep
-}
-
-// CIExtraStep is a single step inside an extra CI job.
-type CIExtraStep struct {
-	Name string
-	Run  string
-	Uses string
-	With map[string]string
 }
 
 // DeployEnv represents a single deploy environment (e.g. staging, prod).

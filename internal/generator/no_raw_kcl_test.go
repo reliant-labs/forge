@@ -21,6 +21,7 @@ import (
 func TestScaffoldedWorkflowsNeverRunKCLDirectly(t *testing.T) {
 	g, dir := ciGenerator(t, config.FeaturesConfig{})
 	g.FrontendName = "web"
+	writeCIProjectConfig(t, g)
 	writeEnvMain(t, dir, "dev", "staging", "prod")
 	if err := g.generateCIFiles(); err != nil {
 		t.Fatalf("generateCIFiles: %v", err)

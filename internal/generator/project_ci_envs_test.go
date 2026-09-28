@@ -50,16 +50,21 @@ func TestCIFiles_DeployTargetsDeclaredEnvsOnly(t *testing.T) {
 	}
 }
 
-func TestScaffoldDeployEnvs_PromotionOrder(t *testing.T) {
+// Discovered envs are ordered along the PROMOTION path, not lexically: qa is
+// a pre-production stage, so it follows staging, and prod is always last.
+// (The scaffold path used to sort alphabetically, which auto-deployed qa
+// ahead of staging; the generate path already ranked them. One mapper now
+// answers for both.)
+func TestCIDeployEnvs_PromotionOrder(t *testing.T) {
 	dir := t.TempDir()
 	writeEnvMain(t, dir, "dev", "prod", "staging", "qa")
-	envs := scaffoldDeployEnvs(dir)
+	envs := ciDeployEnvs(serviceCfg(), declaredKCLEnvs(dir))
 	var names []string
 	for _, e := range envs {
 		names = append(names, e.Name)
 	}
-	if got := strings.Join(names, ","); got != "qa,staging,prod" {
-		t.Fatalf("envs = %s, want qa,staging,prod (dev excluded, prod last)", got)
+	if got := strings.Join(names, ","); got != "staging,qa,prod" {
+		t.Fatalf("envs = %s, want staging,qa,prod (dev excluded, promotion order, prod last)", got)
 	}
 	if !envs[0].Auto || envs[0].Protection {
 		t.Errorf("first env must auto-deploy and be unprotected: %+v", envs[0])
@@ -67,7 +72,35 @@ func TestScaffoldDeployEnvs_PromotionOrder(t *testing.T) {
 	if last := envs[len(envs)-1]; last.Auto || !last.Protection {
 		t.Errorf("prod must be protected and never auto-deployed: %+v", last)
 	}
-	if got := scaffoldDeployEnvs(t.TempDir()); len(got) != 0 {
+	if got := ciDeployEnvs(serviceCfg(), declaredKCLEnvs(t.TempDir())); len(got) != 0 {
 		t.Errorf("a project with no deploy/kcl has no deploy envs, got %+v", got)
+	}
+}
+
+// A lone cloud env (houndersclub: dev + prod) IS production: protected, and
+// never auto-deployed on a merge to main.
+func TestCIDeployEnvs_LoneEnvIsNeverAuto(t *testing.T) {
+	dir := t.TempDir()
+	writeEnvMain(t, dir, "dev", "prod")
+	envs := ciDeployEnvs(serviceCfg(), declaredKCLEnvs(dir))
+	if len(envs) != 1 || envs[0].Name != "prod" || envs[0].Auto || !envs[0].Protection {
+		t.Fatalf("a lone prod env must be protected and never auto-deployed: %+v", envs)
+	}
+}
+
+// The default scaffold (dev/prod/staging) must auto-deploy staging and gate
+// prod — ListEnvs order is alphabetical, which put PROD first.
+func TestCIDeployEnvs_DefaultScaffoldStagingThenProd(t *testing.T) {
+	dir := t.TempDir()
+	writeEnvMain(t, dir, "dev", "prod", "staging")
+	envs := ciDeployEnvs(serviceCfg(), declaredKCLEnvs(dir))
+	if len(envs) != 2 {
+		t.Fatalf("want 2 cloud envs (dev is local-only), got %+v", envs)
+	}
+	if first := envs[0]; first.Name != "staging" || !first.Auto || first.Protection {
+		t.Fatalf("first env must be staging, auto-deployed and unprotected, got %+v", first)
+	}
+	if last := envs[1]; last.Name != "prod" || last.Auto || !last.Protection {
+		t.Fatalf("last env must be prod, protected and never auto-deployed, got %+v", last)
 	}
 }

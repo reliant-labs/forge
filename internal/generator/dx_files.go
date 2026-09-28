@@ -546,7 +546,7 @@ repos:
     hooks:
       - id: commitlint
         stages: [commit-msg]
-        additional_dependencies: ['@commitlint/config-conventional']
+        additional_dependencies: ["@commitlint/config-conventional"]
 `
 	if err := os.WriteFile(filepath.Join(g.Path, ".pre-commit-config.yaml"), []byte(content), 0o644); err != nil {
 		return err
@@ -689,7 +689,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

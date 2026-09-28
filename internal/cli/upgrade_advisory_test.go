@@ -71,11 +71,11 @@ func TestAdvisoryReport_FreshScaffoldIsSilent(t *testing.T) {
 // unmanaged by upgrade because they are not in the frozen-file table. That
 // left them with no feedback path at all.
 //
-// The GitHub Actions workflows are deliberately NOT here: forge renders
-// them from two different config→data mappings (project_ci.go at scaffold
-// time, buildCIWorkflowData afterwards) that disagree on a project seconds
-// old, so any report would be forge's inconsistency dressed as the user's
-// staleness. This test pins the boundary in both directions.
+// The GitHub Actions workflows are NOT here yet. They used to be excluded
+// because forge rendered them from two disagreeing mappings; they now share
+// generator.CIWorkflows (see TestCIWorkflows_NewAndGenerateRenderIdentically),
+// and adding their rows is a separate change. This test pins the current
+// boundary in both directions.
 func TestAdvisoryReport_GithubStartersAreInTheSet(t *testing.T) {
 	dir := scaffoldAdvisoryProject(t)
 	cfg := loadAdvisoryConfig(t, dir)

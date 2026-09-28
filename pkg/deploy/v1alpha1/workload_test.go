@@ -307,6 +307,18 @@ func TestEffectiveProbesPolicy(t *testing.T) {
 	if p := (WorkloadSpec{Kind: KindJob}).EffectiveProbes(); p != nil {
 		t.Errorf("job = %+v, want none", p)
 	}
+	// An operator may declare probes (its manager serves /healthz +
+	// /readyz); none are invented for it.
+	if p := (WorkloadSpec{Kind: KindOperator, Ports: []Port{{Name: "http", Port: 9191}}}).EffectiveProbes(); p != nil {
+		t.Errorf("operator with no declared probes = %+v, want none", p)
+	}
+	op := WorkloadSpec{Kind: KindOperator, Image: pinnedImage, CRDs: []string{"Widget"}, Ports: []Port{{Name: "http", Port: 9191}}, Probes: &Probes{}}
+	if p := op.EffectiveProbes(); p == nil || p.Port != 9191 || p.ReadinessPath != "/readyz" {
+		t.Errorf("operator declared probe = %+v, want /readyz on 9191", p)
+	}
+	if err := op.Validate(ProfileFull); err != nil {
+		t.Errorf("an operator declaring probes must validate under Full: %v", err)
+	}
 	// Declared: the port resolves to the port NAMED http, not the first.
 	s := WorkloadSpec{Ports: []Port{{Name: "metrics", Port: 9090}, {Name: "http", Port: 8080}}, Probes: &Probes{}}
 	if p := s.EffectiveProbes(); p == nil || p.TCP || p.Port != 8080 || p.ReadinessPath != "/readyz" || p.LivenessPath != "/healthz" {

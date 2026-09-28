@@ -135,7 +135,10 @@ _primary_target = lambda b: Bundle -> any {
 #
 # A SERVICE that forge BUILDS serves /readyz + /healthz through serverkit, so
 # the lowering writes that probe into the spec EXPLICITLY — paths and port —
-# unless the author declared one. A CR on the wire is then self-describing:
+# unless the author declared one. A forge-built OPERATOR that declares ports
+# gets the same: its subcommand runs the manager under serverkit.Run, which
+# serves /healthz + /readyz on the process PORT (its http port) whatever it
+# mounts. With no ports there is no listener to name, so none is written. A CR on the wire is then self-describing:
 # the hosted platform, the CLI renderer and a human reading the record all
 # see the same probe, and nothing is inferred downstream. A third-party
 # image (no build) gets none here: forge cannot know it serves /readyz, and
@@ -147,7 +150,7 @@ _default_probes = lambda w: any -> any {
         readinessPath = "/readyz"
         livenessPath = "/healthz"
         port = _http_port(w)
-    } if w.build and w.kind == "service" else Undefined)
+    } if w.build and (w.kind == "service" or (w.kind == "operator" and w.ports)) else Undefined)
 }
 
 # The port a default probe targets: the one named `http`, else the first,

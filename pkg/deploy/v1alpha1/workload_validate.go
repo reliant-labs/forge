@@ -36,7 +36,7 @@ const MaxDomains = 8
 var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"ports":                         {KindService: true, KindWorker: true, KindOperator: true},
 	"replicas":                      {KindService: true, KindWorker: true, KindOperator: true},
-	"probes":                        {KindService: true, KindWorker: true},
+	"probes":                        {KindService: true, KindWorker: true, KindOperator: true},
 	"storageGiB":                    {KindService: true, KindWorker: true, KindOperator: true},
 	"namespacedRBAC":                scheduledKinds,
 	"clusterRBAC":                   scheduledKinds,
@@ -67,7 +67,7 @@ var scheduledKinds = map[WorkloadKind]bool{KindService: true, KindWorker: true, 
 var kindCapabilityReasons = map[string]string{
 	"ports":                         "a batch kind (job/cron) runs to completion and a tool is never scheduled, so there is no pod anything can dial; use kind service or worker",
 	"replicas":                      "a batch pod's concurrency belongs to its Job or CronJob and a tool is never scheduled, so Kubernetes has nowhere to put this value",
-	"probes":                        "probes gate traffic and restart long-running pods; a batch pod runs to completion, an operator's manager serves its own health, and a tool is never scheduled",
+	"probes":                        "probes gate traffic and restart long-running pods; a batch pod runs to completion and a tool is never scheduled",
 	"storageGiB":                    "a ReadWriteOnce volume is mounted by a long-running pod; a batch pod or a tool has nothing to keep it for",
 	"namespacedRBAC":                "a tool is never scheduled, so it has no pod to grant permission to",
 	"clusterRBAC":                   "a tool is never scheduled, so it has no pod to grant permission to",

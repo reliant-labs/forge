@@ -214,6 +214,22 @@ func TestProbesSplit(t *testing.T) {
 	if get(c, "ports", 0, "containerPort") != float64(9090) || get(c, "readinessProbe", "httpGet", "port") != float64(9090) {
 		t.Errorf("probed worker: %v", c)
 	}
+	// An operator's manager serves /healthz + /readyz (serverkit on its
+	// PORT, or controller-runtime's probe listener), so a declared probe is
+	// rendered like a service's. An undeclared one stays absent: forge
+	// cannot know an arbitrary manager's paths (the lowering writes the
+	// default for a forge-built one).
+	op := wl("op", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"Widget"}, Ports: []v1alpha1.Port{{Name: "http", Port: 9191}}})
+	c = get(podOf(objects(t, render(t, v1alpha1.ProfileFull, op))["Deployment/op"]), "containers", 0)
+	if get(c, "readinessProbe") != nil || get(c, "livenessProbe") != nil {
+		t.Errorf("an operator with no declared probes must get none: %v", c)
+	}
+	op.Spec.Probes = &v1alpha1.Probes{}
+	c = get(podOf(objects(t, render(t, v1alpha1.ProfileFull, op))["Deployment/op"]), "containers", 0)
+	if get(c, "readinessProbe", "httpGet", "path") != "/readyz" || get(c, "livenessProbe", "httpGet", "path") != "/healthz" ||
+		get(c, "readinessProbe", "httpGet", "port") != float64(9191) {
+		t.Errorf("probed operator: want /readyz + /healthz on 9191, got %v", c)
+	}
 }
 
 // TestGracePeriod ports expand.k:239-253 and its _duration_seconds parser.

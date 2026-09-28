@@ -8,6 +8,9 @@ Positive test — the probe DEFAULT is written by the lowering, per ADR 0002 §5
   * a service with a THIRD-PARTY image (no build) gets NO probes in the
     spec: forge cannot know that image serves /readyz. Go's policy then
     gives it TCP on its first port (WorkloadSpec.EffectiveProbes).
+  * a forge-built OPERATOR that declares ports gets the same HTTP default:
+    it runs under serverkit, which serves /readyz + /healthz on its PORT
+    (the http port). One with no ports, or a third-party one, gets none.
   * a worker or job gets none unless it declares one.
   * a declared probe is kept verbatim (the default never overwrites it).
 
@@ -34,6 +37,14 @@ output = forge.render(forge.Bundle {
         fw.Workload {name = "dual", build = _build, image = "demo", args = ["dual"], ports = [fw.Port {name = "grpc", port = 9090}, fw.Port {name = "http", port = 8081}]}
         # third-party image, no build
         fw.Workload {name = "redis", image = "redis:7.2", ports = [fw.Port {name = "redis", port = 6379}]}
+        # forge-built operator with an http port: the service default
+        fw.Workload {name = "ctl", kind = "operator", build = _build, image = "demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Widget"], ports = [fw.Port {name = "http", port = 9191}]}
+        # forge-built operator with no ports: nothing to probe on
+        fw.Workload {name = "ctl-quiet", kind = "operator", build = _build, image = "demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Gadget"]}
+        # third-party operator: forge cannot know its paths
+        fw.Workload {name = "ctl-vendor", kind = "operator", image = "ghcr.io/vendor/ctl:1.0", group = "vendor.io", version = "v1", crds = ["Thing"], ports = [fw.Port {name = "http", port = 8081}]}
+        # an operator's declared probe is kept
+        fw.Workload {name = "ctl-custom", kind = "operator", build = _build, image = "demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Doodad"], ports = [fw.Port {name = "probes", port = 9440}], probes = fw.Probes {readinessPath = "/readyz", livenessPath = "/healthz", port = 9440}}
         # forge-built worker and job: no default
         fw.Workload {name = "sync", kind = "worker", build = _build, image = "demo", args = ["sync"]}
         fw.Workload {name = "seed", kind = "job", build = _build, image = "demo", args = ["seed"]}
@@ -61,6 +72,10 @@ assert_hosted_built_service_probed = _explicit(_p["hosted-api"], 8080)
 assert_probe_port_is_http = _explicit(_p["dual"], 8081)
 assert_default_timings = _p["api"].periodSeconds == 5 and _p["api"].failureThreshold == 3 and _p["api"].timeoutSeconds == 3
 assert_third_party_no_spec_probes = _p["redis"] == None
+assert_built_operator_probed = _explicit(_p["ctl"], 9191)
+assert_portless_operator_no_default = _p["ctl-quiet"] == None
+assert_third_party_operator_no_default = _p["ctl-vendor"] == None
+assert_operator_declared_probe_kept = _explicit(_p["ctl-custom"], 9440)
 assert_worker_no_default = _p["sync"] == None
 assert_job_no_default = _p["seed"] == None
 assert_declared_probe_kept = _p["custom"].readinessPath == "/ready" and _p["custom"].livenessPath == "/live" and _p["custom"].periodSeconds == 10

@@ -86,7 +86,7 @@ func (p ComposeProvider) observeOne(ctx context.Context, runner commandRunner, s
 	// rather than to resolve the file. A missing `${VAR}` yields a
 	// compose warning and an empty substitution, which surfaces as an
 	// honest unknown rather than a wrong answer.
-	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
+	envOverlay, ferr := loadEnvFile(spec.EnvFile)
 	if ferr != nil {
 		return ObservedItem{
 			Name:   svc.Name,

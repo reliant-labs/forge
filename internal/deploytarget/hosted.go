@@ -2,17 +2,22 @@ package deploytarget
 
 // The HOSTED provider: ship forge's deploy tiers to a control plane.
 //
-// An env whose Bundle declares `control_plane` does not apply anything to a
-// cluster forge can see. Its tiers (SimpleBackend, ManagedDatabase) are
-// PUBLISHED to the control plane as forge.dev/v1alpha1 specs, and the platform
-// renders and runs them. So this provider never shells out to kubectl and
-// never ensures a cluster: every step is a Connect call.
+// A workload bound to the Hosted runtime (forge.OnHosted), a hosted
+// ManagedDatabase and a bucketless StaticSite are not applied to any cluster
+// forge can see. They are PUBLISHED to the control plane as forge.dev/v1alpha1
+// objects — a Workload CR per hosted workload, jobs included — and the
+// platform validates (ProfileRestricted), renders and runs them. So this
+// provider never shells out to kubectl and never ensures a cluster: every step
+// is a Connect call. Hosting is PER WORKLOAD: the same env may apply other
+// workloads to a cluster in the same deploy.
 //
 // THE ORDER IS THE CONTRACT, and it is fixed so that nothing is written until
 // everything is known to be admissible:
 //
-//  1. pin every backend spec to the digest the env's bound release froze
-//  2. Validate + CheckShapeBand EVERY spec — a refusal here costs zero RPCs
+//  1. pin every workload's image to the digest the env's bound release froze
+//  2. Workload.Validate(ProfileRestricted) + CheckShapeBand EVERY workload,
+//     and render the hosted set as the platform will — a refusal here costs
+//     zero RPCs
 //  3. EnsureEnvironment (by name) → EnsureDeployment (by name, per workload)
 //  4. PublishDeploymentConfig per deployment
 //  5. a bounded readiness wait on GetStatus{environmentId}; timing out is
@@ -49,17 +54,22 @@ type HostedCaller interface {
 // HostedTier is the tier a hosted workload is published as.
 type HostedTier string
 
-// The three hosted tiers, one per forge.dev tier CRD.
+// The three hosted tiers, one per forge.dev kind the control plane admits.
 const (
-	HostedTierBackend  HostedTier = "backend"
+	HostedTierWorkload HostedTier = "workload"
 	HostedTierDatabase HostedTier = "database"
 	HostedTierStatic   HostedTier = "static"
 )
 
 // wireTier is the controlplane.v1.DeployTier value name for a tier.
+//
+// A Workload rides DEPLOY_TIER_BACKEND. That is the control plane's decision
+// (control-plane internal/deployspec): the enum value is the deployment row's
+// discriminator and a public wire name, and what it SELECTS changed — the spec
+// is a WorkloadSpec and the CR kind is Workload — not what it means.
 func (t HostedTier) wireTier() string {
 	switch t {
-	case HostedTierBackend:
+	case HostedTierWorkload:
 		return "DEPLOY_TIER_BACKEND"
 	case HostedTierDatabase:
 		return "DEPLOY_TIER_DATABASE"
@@ -70,16 +80,20 @@ func (t HostedTier) wireTier() string {
 	}
 }
 
-// HostedWorkload is one tier declaration bound for the control plane. Exactly
-// one of Backend / Database / Static is set, matching Tier.
+// HostedWorkload is one declaration bound for the control plane. Exactly one
+// of Workload / Database / Static is set, matching Tier.
 type HostedWorkload struct {
 	Tier HostedTier
 	// Artifact is the release-ledger artifact name this workload's digest is
-	// bound under. Empty means HostedArtifactName(Backend.Image) for a
-	// backend and the workload's own name for a static site (the frontend
+	// bound under. Empty means HostedArtifactName(Workload.Image) for a
+	// workload and the workload's own name for a static site (the frontend
 	// name `forge build` records its site release under).
 	Artifact string
-	Backend  *v1alpha1.SimpleBackendSpec
+	// Workload is the spec published as a forge.dev Workload CR (named by
+	// the ResolvedService name). Its Image is the declared image — a
+	// registry-less artifact name this project builds, or a pinned
+	// third-party reference — and the plan pins it to the release digest.
+	Workload *v1alpha1.WorkloadSpec
 	Database *v1alpha1.ManagedDatabaseSpec
 	// Static is the deployed half of a StaticSite: everything but the
 	// digest, which planHosted pins from the bound release as liveDigest.
@@ -102,7 +116,7 @@ type HostedTarget struct {
 	Digests map[string]string
 	// Registries is the bound release's artifact → registry map: where each
 	// image was pushed (the release artifact's URI). It locates the bytes of
-	// a backend whose image THIS project builds, which is declared
+	// a workload whose image THIS project builds, which is declared
 	// registry-less (`image = "api"`) because the registry is a push-time
 	// fact (`forge build --push <image push base>`), not a declaration.
 	Registries map[string]string
@@ -128,7 +142,7 @@ type wireEnvironment struct {
 	Namespace string `json:"namespace,omitempty"`
 	// ImagePushBase is `<registry_base>/<org>`: the one registry subtree the
 	// control plane admits this org's images from. Empty means it admits
-	// none (no registry base is configured), so every backend publish fails.
+	// none (no registry base is configured), so every workload publish fails.
 	ImagePushBase string `json:"imagePushBase,omitempty"`
 }
 
@@ -286,15 +300,15 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 	return ensured.Environment, ensured.Created, nil
 }
 
-// checkImagePushBase refuses every backend in the plan whose pinned image is
+// checkImagePushBase refuses every workload in the plan whose pinned image is
 // not under the org's image push base — the subtree the control plane's
 // publish-time boundary admits. It runs after the environment is known (the
 // base comes back on it) and BEFORE any EnsureDeployment or publish, so an
 // image the platform will refuse costs no deployment write and no ledger
-// entry. Every offending backend is reported together.
+// entry. Every offending workload is reported together.
 //
 // An EMPTY base means the control plane has no registry configured and admits
-// no image at all; that is refused too, unless the plan carries no backend.
+// no image at all; that is refused too, unless the plan carries no workload.
 //
 // This is deliberately stricter than the server's own Contains, which lets an
 // image OUTSIDE the platform registry through to the tier's registry
@@ -304,16 +318,16 @@ func checkImagePushBase(envName, base string, plan []hostedPlanItem) error {
 	base = strings.TrimSuffix(strings.TrimSpace(base), "/")
 	var errs []error
 	for _, item := range plan {
-		if item.Tier != HostedTierBackend {
+		if item.Tier != HostedTierWorkload {
 			continue
 		}
-		spec, ok := item.Spec.(v1alpha1.SimpleBackendSpec)
+		spec, ok := item.Spec.(v1alpha1.WorkloadSpec)
 		if !ok {
 			continue
 		}
 		if base == "" {
 			return fmt.Errorf("hosted env %q: the control plane reports no image push base, so it admits no registry "+
-				"and would refuse every backend image (first: %s for %s).\n"+
+				"and would refuse every workload image (first: %s for %s).\n"+
 				"  fix: the control plane must be configured with a registry base (ImageBuildConfig.registry_base); "+
 				"nothing a deploy can change will make it publish", envName, spec.Image, item.Name)
 		}
@@ -346,18 +360,18 @@ func HostedImageRepository(image string) string {
 	return image
 }
 
-// HostedArtifactName is the release-ledger artifact name a hosted backend's
+// HostedArtifactName is the release-ledger artifact name a hosted workload's
 // image is recorded and bound under: the repository's LAST path segment
 // ("ghcr.io/acme/api:v1" → "api"). That is the same key forge's own builds use
 // (a registry-less image name, with the registry held separately as the
-// artifact's URI), so a backend whose image forge builds and one whose image
+// artifact's URI), so a workload whose image forge builds and one whose image
 // CI pushes resolve through one rule.
 func HostedArtifactName(image string) string {
 	repo := HostedImageRepository(image)
 	return repo[strings.LastIndex(repo, "/")+1:]
 }
 
-// hostedBackendRepository is the repository a backend's bound digest is pinned
+// hostedWorkloadRepository is the repository a workload's bound digest is pinned
 // under.
 //
 //   - A spec image that names its registry (ghcr.io/acme/api:v1) is an image
@@ -369,7 +383,7 @@ func HostedArtifactName(image string) string {
 //
 // A registry-less image whose release recorded no registry was built without
 // --push, so there are no addressable bytes to pin: refused, naming the fix.
-func hostedBackendRepository(image, artifact string, group ServiceGroup) (string, error) {
+func hostedWorkloadRepository(image, artifact string, group ServiceGroup) (string, error) {
 	repo := HostedImageRepository(image)
 	if hostedImageNamesRegistry(repo) {
 		return repo, nil
@@ -450,12 +464,12 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			continue
 		}
 		switch w.Tier {
-		case HostedTierBackend:
-			if w.Backend == nil {
-				errs = append(errs, fmt.Errorf("%s: backend workload has no spec", svc.Name))
+		case HostedTierWorkload:
+			if w.Workload == nil {
+				errs = append(errs, fmt.Errorf("%s: hosted workload has no spec", svc.Name))
 				continue
 			}
-			spec := *w.Backend
+			spec := *w.Workload
 			artifact := hostedArtifactOf(svc.Name, w)
 			if other, dup := seen[artifact]; dup && HostedImageRepository(spec.Image) != other {
 				errs = append(errs, fmt.Errorf("%s: image %q and %q share the release artifact name %q, so one binding cannot pin both; rename one repository",
@@ -465,18 +479,23 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			seen[artifact] = HostedImageRepository(spec.Image)
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
-				errs = append(errs, fmt.Errorf("%s: release %s pins no artifact %q (the backend's image %s).\n"+
-					"  fix: re-cut the release so it covers this backend (forge release cut <version> --env %s), then promote it",
+				errs = append(errs, fmt.Errorf("%s: release %s pins no artifact %q (the workload's image %s).\n"+
+					"  fix: re-cut the release so it covers this workload (forge release cut <version> --env %s), then promote it",
 					svc.Name, group.Hosted.Release, artifact, spec.Image, group.Env))
 				continue
 			}
-			repo, rerr := hostedBackendRepository(spec.Image, artifact, group)
+			repo, rerr := hostedWorkloadRepository(spec.Image, artifact, group)
 			if rerr != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, rerr))
 				continue
 			}
 			spec.Image = repo + "@" + digest
-			if err := spec.Validate(); err != nil {
+			// The admission entrypoint the control plane itself runs, under
+			// the profile of the destination: the author sees the refusal
+			// here, before anything is written.
+			cr := v1alpha1.Workload{Spec: spec}
+			cr.Name = svc.Name
+			if err := cr.Validate(v1alpha1.ProfileRestricted); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
 				continue
 			}
@@ -525,6 +544,11 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 		}
 	}
 	errs = append(errs, hostedReferenceErrors(group)...)
+	if len(errs) == 0 {
+		if err := renderHostedSet(out); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("hosted env %q: refusing to publish anything — %d workload(s) are not admissible:\n  %w",
 			group.Env, len(errs), errors.Join(errs...))
@@ -534,7 +558,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 
 // hostedArtifactOf is the release artifact a pinned workload's digest is
 // bound under: the declared Artifact, else HostedArtifactName(image) for a
-// backend and the workload's own name for a static site (the frontend name
+// workload and the workload's own name for a static site (the frontend name
 // `forge build` records its site release under). One rule, read by both the
 // plan and PreflightHosted, so the preflight can never pin a key the deploy
 // would not look up.
@@ -542,8 +566,8 @@ func hostedArtifactOf(name string, w *HostedWorkload) string {
 	if w.Artifact != "" {
 		return w.Artifact
 	}
-	if w.Tier == HostedTierBackend && w.Backend != nil {
-		return HostedArtifactName(w.Backend.Image)
+	if w.Tier == HostedTierWorkload && w.Workload != nil {
+		return HostedArtifactName(w.Workload.Image)
 	}
 	return name
 }
@@ -557,9 +581,9 @@ func hostedArtifactOf(name string, w *HostedWorkload) string {
 //     "<name>-app" Secret nothing will ever publish, so the pod never
 //     starts (CreateContainerConfigError, no application log);
 //   - a workloadURL naming a workload the env does not publish, or a
-//     SimpleBackend that is not network public, has no URL the control
-//     plane can allocate — its resolver refuses a non-public backend
-//     permanently, and the referring workload waits on it forever.
+//     Workload that exposes no port, has no URL the control plane can
+//     allocate — its resolver refuses such a target permanently, and the
+//     referring workload waits on it forever.
 func hostedReferenceErrors(group ServiceGroup) []error {
 	databases := map[string]bool{}
 	urls := map[string]string{} // workload → "" (has a URL) or why it has none
@@ -573,9 +597,9 @@ func hostedReferenceErrors(group ServiceGroup) []error {
 			databases[svc.Name] = true
 		case w.Tier == HostedTierStatic:
 			urls[svc.Name] = ""
-		case w.Tier == HostedTierBackend && w.Backend != nil:
-			if n := w.Backend.EffectiveNetwork(); n != v1alpha1.NetworkPublic {
-				urls[svc.Name] = fmt.Sprintf("it is network %s, and only a public backend has a URL", n)
+		case w.Tier == HostedTierWorkload && w.Workload != nil:
+			if w.Workload.ExposedPort() == nil {
+				urls[svc.Name] = "it exposes no port, and only a workload with an exposed port has a URL"
 			} else {
 				urls[svc.Name] = ""
 			}
@@ -598,8 +622,8 @@ func hostedReferenceErrors(group ServiceGroup) []error {
 		if w == nil {
 			continue
 		}
-		if w.Backend != nil {
-			for _, e := range w.Backend.Env {
+		if w.Workload != nil {
+			for _, e := range w.Workload.Env {
 				if e.DatabaseRef != nil && !databases[e.DatabaseRef.Name] {
 					errs = append(errs, fmt.Errorf("%s: env var %s reads databaseRef %q, but this env declares no ManagedDatabase of that name — "+
 						"its credential Secret will never exist and the pod will never start", svc.Name, e.Name, e.DatabaseRef.Name))
@@ -629,13 +653,55 @@ func hostedReferenceErrors(group ServiceGroup) []error {
 	return errs
 }
 
+// renderHostedSet renders the admitted hosted Workloads as ONE set, under
+// ProfileRestricted, exactly as the control plane's operator will. Each spec
+// validated alone; this is what catches the cross-workload refusals the
+// platform would otherwise discover after the publish succeeded — a `before`
+// naming a workload the set does not contain, a job cycle, a duplicate name.
+//
+// workloadURL references are resolved to a placeholder first, as the
+// operator resolves them before it renders: hostedReferenceErrors already
+// proved every reference resolvable, and the value the platform allocates is
+// not knowable here.
+func renderHostedSet(plan []hostedPlanItem) error {
+	var set []v1alpha1.Workload
+	for _, item := range plan {
+		spec, ok := item.Spec.(v1alpha1.WorkloadSpec)
+		if !ok {
+			continue
+		}
+		env, err := deploy.ResolveEnvWorkloadURLs(spec.Env, func(name string) (string, error) {
+			return "https://" + name + ".hosted.invalid", nil
+		})
+		if err != nil {
+			return fmt.Errorf("%s: %w", item.Name, err)
+		}
+		spec.Env = env
+		w := v1alpha1.Workload{Spec: spec}
+		w.Name = item.Name
+		set = append(set, w)
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	if _, err := deploy.RenderWorkloads(set, v1alpha1.ProfileRestricted, deploy.Context{Namespace: HostedPreflightNamespace}); err != nil {
+		return fmt.Errorf("the platform could not render the hosted workload set: %w", err)
+	}
+	return nil
+}
+
+// HostedPreflightNamespace stands in for the namespace the control plane
+// allocates. It only has to be well-formed: what renders into it is read,
+// never applied.
+const HostedPreflightNamespace = "hosted-platform"
+
 // HostedPreflightItem is one workload PreflightHosted admitted: its name,
 // tier and the spec the control plane would store — pinned to a PLACEHOLDER
 // digest, because no release is involved. Exactly one spec is set.
 type HostedPreflightItem struct {
 	Name     string
 	Tier     HostedTier
-	Backend  *v1alpha1.SimpleBackendSpec
+	Workload *v1alpha1.WorkloadSpec
 	Database *v1alpha1.ManagedDatabaseSpec
 	Static   *v1alpha1.StaticSiteSpec
 }
@@ -666,7 +732,7 @@ func PreflightHosted(group ServiceGroup) ([]HostedPreflightItem, error) {
 	registries := map[string]string{}
 	for _, svc := range group.Services {
 		w := svc.Hosted
-		if w == nil || (w.Tier != HostedTierBackend && w.Tier != HostedTierStatic) {
+		if w == nil || (w.Tier != HostedTierWorkload && w.Tier != HostedTierStatic) {
 			continue
 		}
 		artifact := hostedArtifactOf(svc.Name, w)
@@ -683,8 +749,8 @@ func PreflightHosted(group ServiceGroup) ([]HostedPreflightItem, error) {
 	for _, item := range plan {
 		p := HostedPreflightItem{Name: item.Name, Tier: item.Tier}
 		switch spec := item.Spec.(type) {
-		case v1alpha1.SimpleBackendSpec:
-			p.Backend = &spec
+		case v1alpha1.WorkloadSpec:
+			p.Workload = &spec
 		case v1alpha1.ManagedDatabaseSpec:
 			p.Database = &spec
 		case v1alpha1.StaticSiteSpec:
@@ -696,11 +762,11 @@ func PreflightHosted(group ServiceGroup) ([]HostedPreflightItem, error) {
 }
 
 // hostedGroupHasPinnedArtifact reports whether any workload ships bytes a
-// release must pin — a backend image or a static site. A database-only env
+// release must pin — a workload image or a static site. A database-only env
 // needs no release.
 func hostedGroupHasPinnedArtifact(group ServiceGroup) bool {
 	for _, s := range group.Services {
-		if s.Hosted != nil && (s.Hosted.Tier == HostedTierBackend || s.Hosted.Tier == HostedTierStatic) {
+		if s.Hosted != nil && (s.Hosted.Tier == HostedTierWorkload || s.Hosted.Tier == HostedTierStatic) {
 			return true
 		}
 	}
@@ -963,7 +1029,7 @@ func printHostedPlan(group ServiceGroup, plan []hostedPlanItem) {
 // HostedWorkloadStatus is one deployment as the console contract reports it.
 type HostedWorkloadStatus struct {
 	Name string `json:"name"`
-	// Tier is backend | database | static.
+	// Tier is workload | database | static.
 	Tier string `json:"tier,omitempty"`
 	// URL is the platform-allocated public URL, once one exists.
 	URL string `json:"url,omitempty"`
@@ -1011,7 +1077,7 @@ func ReadHostedStatus(ctx context.Context, c HostedCaller, project, envName stri
 	for _, d := range resp.Deployments {
 		ws := HostedWorkloadStatus{
 			Name:          d.Deployment.Name,
-			Tier:          strings.ToLower(strings.TrimPrefix(d.Deployment.Tier, "DEPLOY_TIER_")),
+			Tier:          hostedTierName(d.Deployment.Tier),
 			Verdict:       VerdictName(d.Verdict),
 			VerdictReason: d.VerdictReason,
 			DesiredDigest: d.DesiredDigest,
@@ -1031,6 +1097,17 @@ func ReadHostedStatus(ctx context.Context, c HostedCaller, project, envName stri
 	}
 	sort.Slice(out.Workloads, func(i, j int) bool { return out.Workloads[i].Name < out.Workloads[j].Name })
 	return out, nil
+}
+
+// hostedTierName is the forge vocabulary for a wire DeployTier:
+// DEPLOY_TIER_BACKEND carries a Workload (see wireTier), so it reads back as
+// "workload".
+func hostedTierName(wire string) string {
+	t := strings.ToLower(strings.TrimPrefix(wire, "DEPLOY_TIER_"))
+	if t == "backend" {
+		return string(HostedTierWorkload)
+	}
+	return t
 }
 
 // VerdictName renders a DeployVerdict value name in the lower-case vocabulary

@@ -14,44 +14,24 @@ import (
 // rather than the error.
 var errKubectlExit1 = errors.New("exit status 1")
 
-// SimpleBackend observation.
+// Owned-claim observation for a cluster workload with storage.
 //
-// # The finding these tests record
+// A Cluster-bound workload with storageGiB is the one case where forge EMITS
+// a PersistentVolumeClaim (pkg/deploy.RenderWorkloads, named by PVCName)
+// rather than referencing one someone else provisioned. A claim that never
+// binds shows up on the Deployment only as "0/1 ready" — true, and it names
+// the symptom while the cause sits one object away. So the dispatch records
+// the claim on the group (K8sClusterSpec.OwnedClaims) and the one k8s
+// observer reads it back. The Deployment itself is observed like any other.
 //
-// SimpleBackend has no Go provider. It PROJECTS onto K8sCluster inside
-// KCL (_project_simple_backend in kcl/render.k) and the deploy dispatch
-// hands it to K8sClusterProvider as an ordinary cluster group
-// (deploy_dispatch.go, case "simple-backend"). So the first question was
-// whether K8sClusterProvider.Observe already covered it, and the answer
-// turned out to be PARTLY:
-//
-//   - The Deployment IS observed, fully and correctly. A SimpleBackend
-//     renders through the same _render_cluster_service every forge.Service
-//     goes through, so the object the observer reads is byte-identical in
-//     shape. TestSimpleBackendObserve_DeploymentIsAlreadyCovered pins this,
-//     and it required no new code — it is the evidence for that claim.
-//   - The PVC was NOT, and this is the gap. `storage_gib` is the one case
-//     where forge EMITS a PersistentVolumeClaim rather than referencing
-//     one someone else provisioned, and nothing read it back. A claim that
-//     never binds shows up on the Deployment only as "0/1 ready" — true,
-//     and it names the symptom while the cause sits one object away.
-//
-// The fix is NOT a second provider. Projection was chosen to avoid
-// reimplementing apply, prune, rollout-wait and context discipline, and
-// the same argument holds for observation. Instead the group carries what
-// forge OWNS (K8sClusterSpec.OwnedClaims, populated by the dispatch) and
-// the one observer reads it.
-//
-// The Service object is deliberately not observed, for either tier. A
-// Service is a stable name and a selector — it has no status worth
-// reading, it is either applied or it is not, and a SimpleBackend with
-// network = "none" declares none at all. Reporting on it would add a row
-// that is always green and never informative.
+// The Service object is deliberately not observed. A Service is a stable
+// name and a selector — it has no status worth reading, and reporting on it
+// would add a row that is always green and never informative.
 
-// simpleBackendGroup is a SimpleBackend as the deploy dispatch actually
-// builds it: a k8s-cluster group, replicas pinned to 1, plus the claim
-// forge emits when storage_gib is declared.
-func simpleBackendGroup(storage bool) ServiceGroup {
+// storageWorkloadGroup is a cluster workload as the deploy dispatch builds
+// it: a k8s-cluster group, one replica (storage requires it), plus the claim
+// forge emits when storageGiB is declared.
+func storageWorkloadGroup(storage bool) ServiceGroup {
 	spec := &K8sClusterSpec{Replicas: 1, Ports: []int{8080}}
 	if storage {
 		spec.OwnedClaims = []string{"api-data"}
@@ -78,20 +58,20 @@ func pvcJSON(t *testing.T, phase string) string {
 	return string(b)
 }
 
-// TestSimpleBackendObserve_DeploymentIsAlreadyCovered is the EVIDENCE for
+// TestOwnedClaimObserve_DeploymentIsAlreadyCovered is the EVIDENCE for
 // "no new code was needed for the Deployment half".
 //
-// A SimpleBackend with no storage is, to the observer, an ordinary
+// A workload with no storage is, to the observer, an ordinary
 // cluster service — and it must observe exactly as one. If this ever
 // needed provider changes to pass, the projection would have stopped
 // being a true projection.
-func TestSimpleBackendObserve_DeploymentIsAlreadyCovered(t *testing.T) {
+func TestOwnedClaimObserve_DeploymentIsAlreadyCovered(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
 		"kubectl": deploymentJSON(t,
 			"ghcr.io/acme/api@sha256:"+strings.Repeat("a", 64), 1, 1, 1, 1),
 	}}
 	obs, err := K8sClusterProvider{Runner: runner}.Observe(
-		context.Background(), simpleBackendGroup(false))
+		context.Background(), storageWorkloadGroup(false))
 	if err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
@@ -109,10 +89,10 @@ func TestSimpleBackendObserve_DeploymentIsAlreadyCovered(t *testing.T) {
 		t.Errorf("replicas = %+v, want desired=1 ready=1", item.Replicas)
 	}
 
-	// And it read the Deployment, by name, in the SimpleBackend's own
+	// And it read the Deployment, by name, in the workload's own
 	// namespace — not some other object or some other namespace.
 	if len(runner.calls) != 1 {
-		t.Fatalf("made %d kubectl calls, want exactly 1 (a storage-less SimpleBackend owns no PVC): %v",
+		t.Fatalf("made %d kubectl calls, want exactly 1 (a storage-less workload owns no PVC): %v",
 			len(runner.calls), runner.calls)
 	}
 	if !strings.Contains(runner.calls[0], "get deployment api -n acme-prod") {
@@ -120,19 +100,19 @@ func TestSimpleBackendObserve_DeploymentIsAlreadyCovered(t *testing.T) {
 	}
 }
 
-// TestSimpleBackendObserve_UnboundClaimIsDegradedNotHealthy is the GAP
+// TestOwnedClaimObserve_UnboundClaimIsDegradedNotHealthy is the GAP
 // this work closed.
 //
 // The Deployment here is perfectly healthy on its own numbers. Without
 // the claim read, this observation reports green for a workload whose
 // storage never bound.
-func TestSimpleBackendObserve_UnboundClaimIsDegradedNotHealthy(t *testing.T) {
+func TestOwnedClaimObserve_UnboundClaimIsDegradedNotHealthy(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
 		"kubectl --context gke_example_prod get deployment": deploymentJSON(t, "img:v1", 1, 1, 1, 1),
 		"kubectl --context gke_example_prod get pvc":        pvcJSON(t, "Pending"),
 	}}
 	obs, err := K8sClusterProvider{Runner: runner}.Observe(
-		context.Background(), simpleBackendGroup(true))
+		context.Background(), storageWorkloadGroup(true))
 	if err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
@@ -151,17 +131,17 @@ func TestSimpleBackendObserve_UnboundClaimIsDegradedNotHealthy(t *testing.T) {
 	}
 }
 
-// TestSimpleBackendObserve_BoundClaimStaysHealthy is the control on the
+// TestOwnedClaimObserve_BoundClaimStaysHealthy is the control on the
 // control: the claim check must not downgrade a workload that is fine, or
-// it would report every SimpleBackend as degraded forever and the test
+// it would report every storage workload as degraded forever and the test
 // above would pass for the wrong reason.
-func TestSimpleBackendObserve_BoundClaimStaysHealthy(t *testing.T) {
+func TestOwnedClaimObserve_BoundClaimStaysHealthy(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
 		"kubectl --context gke_example_prod get deployment": deploymentJSON(t, "img:v1", 1, 1, 1, 1),
 		"kubectl --context gke_example_prod get pvc":        pvcJSON(t, "Bound"),
 	}}
 	obs, _ := K8sClusterProvider{Runner: runner}.Observe(
-		context.Background(), simpleBackendGroup(true))
+		context.Background(), storageWorkloadGroup(true))
 	item := obs.Items[0]
 	if item.Health != HealthHealthy {
 		t.Errorf("health = %v (detail %q), want healthy — a bound claim must not downgrade",
@@ -180,11 +160,11 @@ func TestSimpleBackendObserve_BoundClaimStaysHealthy(t *testing.T) {
 	}
 }
 
-// TestSimpleBackendObserve_DeletedClaimIsReported covers the claim that
+// TestOwnedClaimObserve_DeletedClaimIsReported covers the claim that
 // is not there at all. forge emitted it, so its absence is a measurement
 // — someone deleted it, or the apply never landed — and not a failure to
 // look.
-func TestSimpleBackendObserve_DeletedClaimIsReported(t *testing.T) {
+func TestOwnedClaimObserve_DeletedClaimIsReported(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string]string{
 			"kubectl --context gke_example_prod get deployment": deploymentJSON(t, "img:v1", 1, 1, 1, 1),
@@ -196,7 +176,7 @@ func TestSimpleBackendObserve_DeletedClaimIsReported(t *testing.T) {
 		},
 	}
 	obs, _ := K8sClusterProvider{Runner: runner}.Observe(
-		context.Background(), simpleBackendGroup(true))
+		context.Background(), storageWorkloadGroup(true))
 	item := obs.Items[0]
 	if item.Health != HealthDegraded {
 		t.Errorf("health = %v, want degraded", item.Health)
@@ -206,12 +186,12 @@ func TestSimpleBackendObserve_DeletedClaimIsReported(t *testing.T) {
 	}
 }
 
-// TestSimpleBackendObserve_UnreadableClaimIsUnknownNotDegraded keeps the
+// TestOwnedClaimObserve_UnreadableClaimIsUnknownNotDegraded keeps the
 // same distinction the Deployment read already makes: "I looked and the
 // claim is wrong" and "I could not look" are different answers, and only
 // the first is a measurement. Collapsing them would make an unreachable
 // cluster indistinguishable from a broken PVC.
-func TestSimpleBackendObserve_UnreadableClaimIsUnknownNotDegraded(t *testing.T) {
+func TestOwnedClaimObserve_UnreadableClaimIsUnknownNotDegraded(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string]string{
 			"kubectl --context gke_example_prod get deployment": deploymentJSON(t, "img:v1", 1, 1, 1, 1),
@@ -222,7 +202,7 @@ func TestSimpleBackendObserve_UnreadableClaimIsUnknownNotDegraded(t *testing.T) 
 		},
 	}
 	obs, _ := K8sClusterProvider{Runner: runner}.Observe(
-		context.Background(), simpleBackendGroup(true))
+		context.Background(), storageWorkloadGroup(true))
 	item := obs.Items[0]
 	if item.Health != HealthUnknown {
 		t.Errorf("health = %v, want unknown — a claim forge emitted but could not read is not a "+

@@ -74,24 +74,16 @@ func unsupportedProviders() []struct {
 	p     Provider
 	group ServiceGroup
 } {
-	svcGroup := ServiceGroup{
-		Env: "prod",
-		Services: []ResolvedService{
-			{Name: "api", External: &ExternalSpec{DeployCmd: "flyctl deploy"}},
-			{Name: "worker", External: &ExternalSpec{DeployCmd: "flyctl deploy"}},
-		},
-	}
 	return []struct {
 		name  string
 		p     Provider
 		group ServiceGroup
 	}{
-		{"external", ExternalProvider{}, svcGroup},
 		// Compose and HostInfra were here, as NOT-YET-BUILT gaps. Both
 		// now observe for real (observe_compose.go, observe_hostinfra.go)
 		// and their verdicts are pinned in observe_compose_test.go and
 		// observe_hostinfra_test.go. Only the two STRUCTURAL declinations
-		// remain, which is the point: this table is the list of things
+		// remains, which is the point: this table is the list of things
 		// forge can never read, and it should only ever shrink.
 		//
 		// Nothing is lost by removing them. The rule they were here to
@@ -172,22 +164,22 @@ func TestUnsupportedProvidersNameEveryItem(t *testing.T) {
 // wrapped (so errors.Is works) AND that the concrete type carrying the
 // human explanation is recoverable with errors.As. A caller that can only
 // learn "unsupported" but not WHY cannot tell a structural limit
-// (External's opaque shell command, permanent) from a gap (Compose,
+// (Firebase's release history, permanent) from a gap (Compose,
 // implementable) — which is the difference between "stop asking" and
 // "file a bug".
 func TestObservationUnsupportedErrorCarriesReason(t *testing.T) {
-	_, err := ExternalProvider{}.Observe(context.Background(), ServiceGroup{
-		Services: []ResolvedService{{Name: "api", External: &ExternalSpec{}}},
+	_, err := FirebaseProvider{}.Observe(context.Background(), ServiceGroup{
+		Frontends: []FirebaseFrontend{{Name: "web"}},
 	})
 	var use ObservationUnsupportedError
 	if !errors.As(err, &use) {
 		t.Fatalf("error %v does not unwrap to ObservationUnsupportedError", err)
 	}
-	if use.Provider != "external" {
-		t.Errorf("Provider = %q, want \"external\"", use.Provider)
+	if use.Provider != "firebase" {
+		t.Errorf("Provider = %q, want \"firebase\"", use.Provider)
 	}
-	if !strings.Contains(use.Reason, "sh -c") {
-		t.Errorf("Reason %q does not explain WHY external is unobservable", use.Reason)
+	if !strings.Contains(use.Reason, "release history") {
+		t.Errorf("Reason %q does not explain WHY firebase is unobservable", use.Reason)
 	}
 }
 
@@ -516,13 +508,13 @@ func TestObserveGroups_UnsupportedIsAnAnswerNotAFailure(t *testing.T) {
 		t.Fatalf("WriteDeployState: %v", err)
 	}
 	reg := &Registry{}
-	reg.Register(ExternalProvider{})
+	reg.Register(FirebaseProvider{})
 	reg.Register(StaticSiteProvider{ProjectDir: dir, Runner: &fakeRunner{outputs: map[string]string{
 		"gcloud storage ls": "gs://assets/releases/d1/\n",
 	}}})
 
 	groups := []ServiceGroup{
-		{Env: "prod", ProviderID: "external", Services: []ResolvedService{{Name: "api", External: &ExternalSpec{}}}},
+		{Env: "prod", ProviderID: "firebase", Frontends: []FirebaseFrontend{{Name: "site"}}},
 		{Env: "prod", ProviderID: "static-site", StaticSites: []StaticSiteFrontend{{
 			Name: "web", Spec: StaticSiteSpec{Bucket: "assets"},
 		}}},
@@ -535,7 +527,7 @@ func TestObserveGroups_UnsupportedIsAnAnswerNotAFailure(t *testing.T) {
 		t.Fatalf("want one Observed per group, got %d", len(out))
 	}
 	if out[0].Items[0].Health != HealthUnknown {
-		t.Errorf("external item = %v, want unknown", out[0].Items[0].Health)
+		t.Errorf("firebase item = %v, want unknown", out[0].Items[0].Health)
 	}
 	if out[1].Items[0].Health != HealthHealthy {
 		t.Errorf("static-site item = %v (%s), want healthy", out[1].Items[0].Health, out[1].Items[0].Detail)

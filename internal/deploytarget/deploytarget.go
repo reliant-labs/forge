@@ -1,47 +1,36 @@
-// Package deploytarget owns the per-service deploy dispatch — the
-// surface that maps a rendered KCL Service.deploy block to a concrete
-// pipeline that ships the service somewhere.
+// Package deploytarget owns the deploy dispatch — the surface that maps a
+// rendered workload's RUNTIME (and each frontend's and database's deploy
+// target) to a concrete pipeline that ships it somewhere.
 //
-// Deploy config is fully owned by KCL: per-service deploy-target
-// schemas (`K8sCluster`, `External`, `Compose`) carry both the env-wide
-// info (cluster, namespace, registry, domain) and the per-service
-// knobs (replicas, ingress, ports). KCL refs DRY the common case
-// across many services:
+// Placement is fully owned by KCL: every fw.Workload is bound to one runtime
+// (forge.OnHost | OnCompose | OnCluster | OnHosted | BuildOnly), per workload,
+// so one env can run some workloads on a cluster, some on the control plane
+// and some as host processes. The CLI walks the rendered workloads, groups
+// them by target (workloads that share a cluster/namespace or a compose file
+// flow through one pipeline invocation), and dispatches to the right
+// Provider.
 //
-//	_prod_k8s = forge.K8sCluster {
-//	    cluster = "prod-cluster"; namespace = "kalshi-prod"
-//	    registry = "ghcr.io/reliant/kalshi"
-//	}
-//	forge.Service { name = "trader"; deploy = _prod_k8s }
-//	forge.Service { name = "admin";  deploy = _prod_k8s | { replicas = 5 } }
+// Providers:
 //
-// This package walks the rendered services, groups by deploy target
-// (so services that share a cluster/host/compose-file flow through one
-// pipeline invocation), and dispatches to the right Provider.
-//
-// Providers in this release:
-//
-//   - K8sClusterProvider — wraps internal/cluster.Apply (the existing
-//     render-KCL → kubectl-apply → wait-rollouts pipeline). Group-
-//     level cluster/namespace come from the first service's
-//     K8sCluster.{Cluster,Namespace}.
-//   - ExternalProvider   — generic shell-command escape hatch. Run
-//     `sh -c <deploy_cmd>` with ${IMAGE}/${TAG}/${SERVICE}/etc.
-//     substituted; record the deployed tag in .forge/state.
-//     Covers Fly.io / Cloud Run / Cloudflare Workers / ECS / Vercel
-//     / systemd-on-VM and any other CLI-driven deploy target.
+//   - K8sClusterProvider — wraps internal/cluster.Apply (the render-KCL →
+//     expand Workload records through pkg/deploy.RenderWorkloads →
+//     kubectl-apply → wait-rollouts pipeline).
+//   - HostedProvider     — publishes a Workload CR per hosted workload (plus
+//     StaticSite / ManagedDatabase) to the control plane.
 //   - ComposeProvider    — docker compose pull/up -d.
 //   - HostInfraProvider  — a third-party server (postgres) run as a HOST
 //     PROCESS, no container runtime. This is the DEFAULT shape for dev
 //     infrastructure; Compose is the opt-in for projects that want the
 //     container. See internal/hostinfra.
+//   - FirebaseProvider / StaticSiteProvider — frontends.
 //
-// HostDeploy and BuildOnly aren't providers — `forge run` / `forge env up`
-// own the host story, and BuildOnly is consumed by `forge build`.
-// The dispatcher skips both rather than routing them through a Provider.
+// Host-bound and build-only workloads aren't providers — `forge run` /
+// `forge env up` own the host story, and BuildOnly is consumed by `forge
+// build`. The dispatcher skips both rather than routing them through a
+// Provider.
 //
 // HostInfra IS a provider even though it also runs on the host, because it
-// answers a different question: HostDeploy launches code this project
+// answers a different question: a host workload launches code this project
 // BUILDS, HostInfra supervises a dependency forge FETCHES. They fail
 // differently (a compile error vs. a missing binary vs. a held port), and a
 // single "runs on the host" target would have to guess which it was
@@ -60,7 +49,7 @@ import (
 )
 
 // Provider is the dispatch surface for one deploy target type. Each
-// concrete provider owns the pipeline for its target (k8s, external,
+// concrete provider owns the pipeline for its target (k8s, hosted,
 // compose, etc.); the dispatcher in forge env deploy hands it a
 // ServiceGroup and the provider does the rest.
 //
@@ -112,7 +101,7 @@ type ServiceGroup struct {
 	Env string
 
 	// ProviderID identifies the provider type — "k8s-cluster",
-	// "external", "compose". Used by the dispatcher to look the
+	// "hosted", "compose". Used by the dispatcher to look the
 	// provider up and by log output to tag lines per-group.
 	ProviderID string
 
@@ -122,7 +111,7 @@ type ServiceGroup struct {
 
 	// Frontends carries the frontends the "firebase" provider ships.
 	// It's the frontend analogue of Services — empty for the
-	// service-shaped providers (k8s-cluster / external / compose), which
+	// service-shaped providers (k8s-cluster / compose / host-infra), which
 	// read Services instead. The Firebase provider reads Frontends +
 	// DryRun off the group so it dispatches through the registry like
 	// every other provider.
@@ -158,13 +147,13 @@ type ServiceGroup struct {
 	// commands it would exec instead of running them, and skip any
 	// state-file writes. Providers honor this independently of the
 	// cluster.ApplyOpts.DryRun knob (K8sCluster's provider plumbs it
-	// through ApplyOpts; External and Compose check this field
+	// through ApplyOpts; Compose checks this field
 	// directly because they don't go through cluster.Apply).
 	DryRun bool
 }
 
 // ResolvedService is one service in a group, with its deploy block
-// already dispatched by type. Exactly one of K8sCluster/External/
+// already dispatched by type. Exactly one of K8sCluster/Hosted/
 // Compose/HostInfra is non-nil; the dispatcher discards services with
 // HostDeploy/BuildOnly (those aren't in any deploy-target group).
 type ResolvedService struct {
@@ -175,13 +164,12 @@ type ResolvedService struct {
 	// so each provider's Deploy method can type-assert against its
 	// own concrete shape without a runtime switch.
 	K8sCluster *K8sClusterSpec
-	External   *ExternalSpec
 	Compose    *ComposeSpec
 	HostInfra  *HostInfraSpec
 	Hosted     *HostedWorkload
 
 	// Secrets carries resolved secret values to inject into the runtime
-	// env (compose / external). Populated by the deploy dispatch from a
+	// env (compose). Populated by the deploy dispatch from a
 	// dotenv secret_provider's All() map; nil for external/none providers
 	// (those resolve secrets out-of-band) and always nil for K8sCluster
 	// services (those get rendered Secret objects + secretKeyRef, not
@@ -208,9 +196,8 @@ type K8sClusterSpec struct {
 	// The distinction is ownership, not usage. A forge.Volume of type
 	// "pvc" REFERENCES a claim by name and leaves its existence to
 	// whoever provisioned it — forge has no standing to report on a
-	// claim it did not create. SimpleBackend's `storage_gib` is the one
-	// case where forge emits the PVC (_render_simple_backend_pvc in
-	// kcl/render.k), and a thing forge creates is a thing forge must be
+	// claim it did not create. A workload's `storageGiB` is the one
+	// case where forge emits the PVC (pkg/deploy.RenderWorkloads, named by PVCName), and a thing forge creates is a thing forge must be
 	// able to read back.
 	//
 	// It matters because an unbound claim is invisible in the half of
@@ -224,24 +211,6 @@ type K8sClusterSpec struct {
 	// observer asks the group what forge owns instead of re-deriving
 	// "<name>-data" and hoping the render still agrees.
 	OwnedClaims []string
-}
-
-// ExternalSpec is the per-service shell-command deploy spec. Mirrors
-// the kcl/schema.k External schema.
-//
-// Image isn't on the KCL schema itself — it's hoisted from the
-// surrounding Service.image so the ${IMAGE} substitution token has a
-// well-defined value without forcing the user to duplicate the
-// service's image string on the deploy block.
-type ExternalSpec struct {
-	Image     string
-	DeployCmd string
-	HealthCmd string
-	EnvFile   string
-	// Env is the user-declared substitution map merged underneath the
-	// built-in tokens (IMAGE / TAG / LAST_TAG / SERVICE / ENV /
-	// ENV_FILE / PROJECT_DIR).
-	Env map[string]string
 }
 
 // ComposeSpec is the per-service docker-compose deploy spec. Mirrors
@@ -308,7 +277,7 @@ type HostInfraSpec struct {
 // ErrProviderNotImplemented is the sentinel future providers (Lambda,
 // EdgeWorker, etc.) wrap when their dispatch lands as a stub. Keep
 // using errors.Is to distinguish "feature deferred" from "real
-// failure" — the active K8sCluster / External / Compose providers do
+// failure" — the active K8sCluster / Compose / Hosted providers do
 // NOT return this; they implement the full pipeline.
 var ErrProviderNotImplemented = errors.New("forge: deploy provider not yet implemented in this release")
 
@@ -320,7 +289,7 @@ type Registry struct {
 }
 
 // NewRegistry returns a Registry pre-populated with the canonical
-// forge providers (k8s-cluster + external + compose + firebase).
+// forge providers (k8s-cluster + compose + host-infra + hosted + frontends).
 // Callers that need to inject test doubles should construct an empty
 // Registry and Register the doubles directly.
 //
@@ -331,7 +300,6 @@ type Registry struct {
 func NewRegistry() *Registry {
 	r := &Registry{providers: map[string]Provider{}}
 	r.Register(K8sClusterProvider{})
-	r.Register(ExternalProvider{})
 	r.Register(ComposeProvider{})
 	r.Register(HostInfraProvider{})
 	r.Register(FirebaseProvider{})
@@ -388,13 +356,6 @@ func (r *Registry) IDs() []string {
 // preserves cluster/namespace/registry so the override service joins
 // the same group).
 //
-// External grouping rule: services sharing an identical deploy_cmd
-// end up in one group. KCL refs that point at the same External var
-// render to identical deploy_cmd strings, which is the natural
-// batching signal. Without a shared ref, every service ends up in
-// its own group — which is fine because external providers
-// typically deploy one service per invocation anyway.
-//
 // Compose grouping rule: services sharing a ComposeFile end up in
 // one group.
 //
@@ -426,23 +387,6 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 			grp.Services = append(grp.Services, ResolvedService{
 				Name:       s.Name,
 				K8sCluster: s.K8sCluster.Spec,
-			})
-
-		case s.External != nil:
-			key := fmt.Sprintf("external|%s", s.External.DeployCmd)
-			grp, ok := groups[key]
-			if !ok {
-				grp = &ServiceGroup{
-					Env:        env,
-					ProviderID: "external",
-				}
-				groups[key] = grp
-				keyOrder = append(keyOrder, key)
-			}
-			grp.Services = append(grp.Services, ResolvedService{
-				Name:     s.Name,
-				External: s.External,
-				Secrets:  s.Secrets,
 			})
 
 		case s.Compose != nil:
@@ -500,7 +444,7 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 
 // RawService is the input shape for GroupServices — one entry per
 // rendered Service, with the deploy union already dispatched to the
-// matching variant. Exactly one of K8sCluster / External / Compose /
+// matching variant. Exactly one of K8sCluster / Compose /
 // HostInfra is non-nil for services the dispatcher should ship; all nil
 // means "skip" (host / build-only / no deploy declared).
 type RawService struct {
@@ -510,12 +454,11 @@ type RawService struct {
 	// and the per-service spec (carried through to the provider).
 	K8sCluster *RawK8sCluster
 
-	External  *ExternalSpec
 	Compose   *ComposeSpec
 	HostInfra *HostInfraSpec
 
 	// Secrets carries resolved secret values to inline into the runtime
-	// env for External/Compose services. Carried verbatim onto the
+	// env for Compose services. Carried verbatim onto the
 	// ResolvedService. nil for K8sCluster services (those get rendered
 	// Secret objects, not inlined values) and for external/none
 	// providers.
@@ -557,11 +500,6 @@ func groupTarget(g ServiceGroup) string {
 	switch g.ProviderID {
 	case "k8s-cluster":
 		return fmt.Sprintf("cluster=%s ns=%s", g.Cluster, g.Namespace)
-	case "external":
-		if len(g.Services) > 0 && g.Services[0].External != nil {
-			return "cmd=" + truncForSummary(g.Services[0].External.DeployCmd)
-		}
-		return "cmd=?"
 	case "compose":
 		if len(g.Services) > 0 && g.Services[0].Compose != nil {
 			return "file=" + g.Services[0].Compose.ComposeFile

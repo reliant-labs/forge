@@ -247,7 +247,7 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	// only forwards values to *containers*; the compose file itself
 	// reads from the docker-compose process env. Layering both keeps
 	// the two cases in sync.
-	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
+	envOverlay, ferr := loadEnvFile(spec.EnvFile)
 	if ferr != nil {
 		return fmt.Errorf("compose %s: env_file: %w", svc.Name, ferr)
 	}

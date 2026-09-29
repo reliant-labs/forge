@@ -500,6 +500,27 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-quinquies. ShellBuild-tokens — flags a retired forge
+		// substitution token (${TARGETARCH}, ${IMAGE}, …) left in a
+		// ShellBuild cmd. GATES, unlike its advisory neighbours, because
+		// `GOARCH=${TARGETARCH}` becomes `GOARCH=` and silently builds for
+		// the host arch — see lint_shellbuild_tokens.go.
+		{
+			name:  "shellbuild-tokens lint",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				// No env KCL means no ShellBuild to check.
+				return dirExists(deployKCLDirDefault), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runShellBuildTokensLint(deployKCLDirDefault)
+			},
+			errFormat: "✗ shellbuild-tokens lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectShellBuildTokensJSON(deployKCLDirDefault)
+			},
+		},
+
 		// 13d-ter. Proto-markers — the same check one layer up: flags a
 		// .proto comment whose text contains forge: but matches no known
 		// proto marker (see lint_proto_markers.go). A misspelled marker

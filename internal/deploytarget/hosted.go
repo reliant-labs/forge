@@ -144,13 +144,6 @@ type wireEnvironment struct {
 	// control plane admits this org's images from. Empty means it admits
 	// none (no registry base is configured), so every workload publish fails.
 	ImagePushBase string `json:"imagePushBase,omitempty"`
-	// Capabilities are the optional behaviours this control plane converges
-	// for the environment, by name (HostedCapabilityCustomDomains, ...).
-	// A capability forge does not recognise is ignored; a capability a
-	// declaration NEEDS and the environment does not advertise is a
-	// refusal, never a silent drop. An empty list is the honest answer
-	// from a control plane that advertises none.
-	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type wireObserved struct {
@@ -849,10 +842,11 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if err := checkImagePushBase(group.Env, env.ImagePushBase, plan); err != nil {
 		return err
 	}
-	// Before the first EnsureDeployment: a domain this control plane will
-	// not serve must not reach a published spec, because from there on it
-	// is indistinguishable from one that simply has not converged yet.
-	if err := checkCustomDomains(group.Env, env.Capabilities, plan); err != nil {
+	// Before the first EnsureDeployment: on hosted a domain is a bound
+	// control-plane resource, so one carried in spec must not reach a
+	// published document, where it is indistinguishable from a binding
+	// that simply has not converged yet.
+	if err := checkCustomDomains(group.Env, plan); err != nil {
 		return err
 	}
 	return p.publish(ctx, c, group, envID, plan)
@@ -1079,13 +1073,11 @@ func printHostedPlan(group ServiceGroup, plan []hostedPlanItem) {
 		raw, _ := json.Marshal(item.Spec)
 		fmt.Printf("    %s (%s): %s\n", item.Name, item.Tier, raw)
 	}
-	// A dry run makes no calls, so it cannot know the environment's
-	// capabilities — and reporting the declaration as if it were settled
-	// would make --dry-run the one path that hides the refusal a real
-	// deploy produces. Name what was declared and what has to be true.
+	// --dry-run must not be the one path that hides a refusal a real
+	// deploy produces, so it names the same spec-carried domains and says
+	// they are refused.
 	if claims := hostedDomainClaims(plan); len(claims) > 0 {
-		fmt.Printf("  [dry-run] custom domains declared (served only if the control plane advertises the %q capability; a real deploy REFUSES otherwise):\n",
-			HostedCapabilityCustomDomains)
+		fmt.Println("  [dry-run] custom domains carried in spec (a real deploy REFUSES these; use `forge domain add` + `forge domain bind`):")
 		for _, c := range claims {
 			fmt.Printf("    %s (%s): %s\n", c.Workload, c.Tier, strings.Join(c.Domains, ", "))
 		}

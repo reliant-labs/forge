@@ -2,8 +2,6 @@ package deploytarget
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -11,9 +9,11 @@ import (
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
-// domainGroup is hounders' shape once it declares custom domains: the `web`
-// frontend answers on the apex and www, and the `membership` service answers
-// on api.hounders.club through its exposed port.
+// domainGroup is a hosted group whose specs CARRY custom domains — the shape
+// the backstop exists to refuse. Nothing in forge builds this any more (the
+// authoring schema has no frontend `domains`, and the render refuses a
+// hosted port's), so it is constructed directly here: that is exactly the
+// out-of-band path the backstop covers.
 func domainGroup() ServiceGroup {
 	keep := int32(10)
 	return ServiceGroup{
@@ -34,63 +34,43 @@ func domainGroup() ServiceGroup {
 	}
 }
 
-// capabilityCP is a control plane whose EnsureEnvironment advertises a given
-// capability list, and whose status is always converged. It is the fake the
-// capability handshake is tested against: everything else about it matches
-// fakeCP's answers.
-type capabilityCP struct {
-	fakeCP
-	capabilities []string
-}
-
-func (c *capabilityCP) Call(ctx context.Context, proc string, req, out any) error {
-	if strings.HasSuffix(proc, "/EnsureEnvironment") {
-		raw, _ := json.Marshal(req)
-		var body map[string]any
-		_ = json.Unmarshal(raw, &body)
-		c.mu.Lock()
-		c.calls = append(c.calls, fakeCall{Proc: proc, Body: body})
-		c.mu.Unlock()
-		caps, _ := json.Marshal(c.capabilities)
-		reply := fmt.Sprintf(`{"environment":{"id":"env-1","name":"prod","imagePushBase":"ghcr.io/acme","capabilities":%s},"created":true}`, caps)
-		if out == nil {
-			return nil
-		}
-		return json.Unmarshal([]byte(reply), out)
-	}
-	return c.fakeCP.Call(ctx, proc, req, out)
-}
-
 func domainProvider(cp HostedCaller) HostedProvider {
 	return HostedProvider{Client: cp, Rollout: cluster.RolloutPolicy{Mode: cluster.RolloutSkip}}
 }
 
-// THE SAFETY PROPERTY. A control plane that does not advertise custom_domains
-// ignores `domains` entirely: it accepts the spec, the deploy goes green, and
-// the hostname never resolves, with nothing anywhere saying why. forge refuses
-// BEFORE writing anything, and the refusal names every domain declared.
+// THE SAFETY PROPERTY. On hosted a custom hostname is a bound control-plane
+// resource, so one carried in a published spec is a field nothing reads: the
+// deploy goes green and the hostname never resolves, with nothing anywhere
+// saying why. forge refuses BEFORE writing anything, names every domain, and
+// points at the two commands that do work.
+//
+// The render refuses this first (kcl/render.k `_hosted_domain_violations`);
+// this is the backstop for a plan that did not come from that lowering.
 //
 // MUTATIONS VERIFIED RED:
 //   - dropping the checkCustomDomains call from Deploy → the deploy succeeds
 //     and publishes;
 //   - moving it after publish() → EnsureDeployment appears in the call log.
-func TestHostedDeployRefusesDomainsWithoutTheCapability(t *testing.T) {
-	cp := &capabilityCP{fakeCP: fakeCP{status: readyStatus(digestA)}}
+func TestHostedDeployRefusesDomainsInSpec(t *testing.T) {
+	cp := &fakeCP{status: readyStatus(digestA)}
 	err := domainProvider(cp).Deploy(context.Background(), domainGroup())
 	if err == nil {
-		t.Fatal("the deploy published custom domains to a control plane that does not serve them")
+		t.Fatal("the deploy published a custom domain carried in spec")
 	}
 	for _, want := range []string{
 		"hounders.club", "www.hounders.club", "api.hounders.club",
-		"custom_domains", "refusing to publish anything",
-		"would succeed and the domains would never resolve",
+		"refusing to publish anything", "a domain is not spec",
+		// The worked example uses the first claim, so the author can
+		// copy a line that runs rather than a placeholder.
+		"forge domain add api.hounders.club",
+		"forge domain bind api.hounders.club --env prod --target membership",
+		"forge.OnCluster keeps `Port.domains`",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not mention %q:\n%v", want, err)
 		}
 	}
-	// Refused BEFORE any write: the environment was ensured (that is how
-	// the capability is known), and nothing past it ran.
+	// Refused BEFORE any write.
 	for _, proc := range cp.procs() {
 		if proc == "EnsureDeployment" || proc == "PublishDeploymentConfig" {
 			t.Fatalf("refused, but %s was called: %v", proc, cp.procs())
@@ -98,65 +78,21 @@ func TestHostedDeployRefusesDomainsWithoutTheCapability(t *testing.T) {
 	}
 }
 
-// With the capability present the same declaration publishes, and the
-// StaticSite spec on the wire carries the domains in the order declared.
-func TestHostedDeployPublishesDomainsWithTheCapability(t *testing.T) {
-	cp := &capabilityCP{
-		fakeCP:       fakeCP{status: readyStatus(digestA)},
-		capabilities: []string{HostedCapabilityCustomDomains},
-	}
-	if err := domainProvider(cp).Deploy(context.Background(), domainGroup()); err != nil {
-		t.Fatalf("deploy with the capability present: %v", err)
-	}
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	var static, workload []any
-	for _, c := range cp.calls {
-		if !strings.HasSuffix(c.Proc, "/EnsureDeployment") {
-			continue
-		}
-		spec, _ := c.Body["spec"].(map[string]any)
-		switch c.Body["name"] {
-		case "web":
-			static, _ = spec["domains"].([]any)
-		case "membership":
-			ports, _ := spec["ports"].([]any)
-			if len(ports) == 1 {
-				p, _ := ports[0].(map[string]any)
-				workload, _ = p["domains"].([]any)
-			}
-		}
-	}
-	if got := fmt.Sprint(static); got != "[hounders.club www.hounders.club]" {
-		t.Errorf("StaticSite spec.domains on the wire = %v, want the two declared names in order", static)
-	}
-	if got := fmt.Sprint(workload); got != "[api.hounders.club]" {
-		t.Errorf("Workload port domains on the wire = %v, want [api.hounders.club]", workload)
-	}
-}
-
-// A capability the control plane advertises alongside others still counts,
-// and an env that declares NO domains never consults the list at all — a
-// control plane with no capabilities must keep deploying ordinary workloads.
+// The refusal is scoped to specs that actually carry a domain: an ordinary
+// hosted env must keep deploying, which is every env now that the field is
+// gone from the authoring schema.
 func TestCheckCustomDomainsScope(t *testing.T) {
-	plan, err := planHosted(domainGroup())
-	if err != nil {
-		t.Fatalf("plan: %v", err)
-	}
-	if err := checkCustomDomains("prod", []string{"managed_databases", "custom_domains"}, plan); err != nil {
-		t.Errorf("refused with the capability present among others: %v", err)
-	}
 	noDomains, err := planHosted(hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}))
 	if err != nil {
 		t.Fatalf("plan without domains: %v", err)
 	}
-	if err := checkCustomDomains("prod", nil, noDomains); err != nil {
-		t.Errorf("an env declaring no domains was refused for a missing capability: %v", err)
+	if err := checkCustomDomains("prod", noDomains); err != nil {
+		t.Errorf("an env carrying no domains was refused: %v", err)
 	}
 }
 
-// --dry-run makes no calls, so it cannot know the capability — and must not
-// therefore go quiet about a declaration a real deploy would refuse.
+// --dry-run must not be the one path that goes quiet about a declaration a
+// real deploy refuses.
 func TestHostedPlanPrintReportsDeclaredDomains(t *testing.T) {
 	plan, err := planHosted(domainGroup())
 	if err != nil {

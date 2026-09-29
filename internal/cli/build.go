@@ -898,7 +898,7 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 // is what this function exists to prevent.
 func rerenderWithBuildFacts(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions, first *KCLEntities) (*KCLEntities, error) {
 	if first == nil {
-		return first, nil
+		return nil, nil
 	}
 	var extra []string
 

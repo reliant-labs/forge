@@ -385,21 +385,6 @@ func TestAuditExternalBuilds_NoCfgIsError(t *testing.T) {
 	}
 }
 
-// equalStringSlices is local-only — testify isn't a dep and reflect
-// equality flips nil vs empty distinctions in ways we don't want
-// here (conflict helper returns nil for "no conflicts").
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func mapKeys(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

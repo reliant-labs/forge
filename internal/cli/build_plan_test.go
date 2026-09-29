@@ -494,7 +494,9 @@ func TestExternalBuildTag_ReleaseOverridesSharedTags(t *testing.T) {
 	pinned := WorkloadEntity{Name: "workspace-base", Image: "workspace-base", BuildImage: "workspace-base:dev-per-daemon"}
 	envTagged := WorkloadEntity{Name: "reliant-api-server", Image: "reliant", BuildImage: "reliant",
 		Spec: deployv1alpha1.WorkloadSpec{Image: "registry.example/reliant:stable"}}
-	ents := &KCLEntities{ImageTag: "stable", Workloads: []WorkloadEntity{pinned, envTagged}}
+	// Only the env's resolved tag is read below; the workloads are passed to
+	// externalBuildTag individually.
+	ents := &KCLEntities{ImageTag: "stable"}
 
 	rel := buildOptions{release: "v1.7.0"}
 	for _, svc := range []WorkloadEntity{pinned, envTagged} {

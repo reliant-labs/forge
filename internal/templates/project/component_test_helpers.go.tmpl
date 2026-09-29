@@ -289,7 +289,7 @@ func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Se
 // NewTest{{.FieldName}} creates a test instance of the {{.FieldName}} package with
 // test defaults. By default, deps are minimal (just a discard logger).
 // Use options to override specific deps.
-func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) Service {
+func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{if .ConstructorType}}{{.ConstructorType}}{{else}}Service{{end}} {
 	t.Helper()
 	cfg := testkit.ApplyOptions(defaultTestConfig(t), opts...)
 {{- if .Fallible}}

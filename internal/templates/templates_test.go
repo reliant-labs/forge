@@ -494,3 +494,79 @@ func TestDeadAppSubstrateTemplatesRemoved(t *testing.T) {
 		}
 	}
 }
+
+// TestComponentTestHelpersTemplate_PackageContractName pins the helper's
+// return type to what the component's constructor ACTUALLY returns.
+//
+// The template used to emit a literal `Service` for the package branch. A
+// package whose contract interface is named for what it does — keywrap's
+// `KeyWrapper` — therefore generated `func NewTestKeywrap(...) Service`,
+// naming a type that does not exist. Because the file is forge-owned the
+// author could not fix it, and `forge generate` failed its own validate step,
+// so ONE package's naming broke codegen for the whole repository.
+func TestComponentTestHelpersTemplate_PackageContractName(t *testing.T) {
+	data := struct {
+		Module          string
+		Package         string
+		Name            string
+		FieldName       string
+		IsService       bool
+		ConstructorName string
+		ConstructorType string
+		Fallible        bool
+		HasDB           bool
+		HasLogger       bool
+		HasConfig       bool
+		HasMigrationsFS bool
+		NeedsTime       bool
+		NeedsULID       bool
+
+		ProtoServiceName       string
+		ProtoConnectImportPath string
+		ProtoConnectPkg        string
+		MountMethod            string
+
+		AutoStubs       []struct{ FieldName, StubType, InterfaceQualified string }
+		UnresolvedStubs []struct{ FieldName, TypeExpr string }
+		FuncDefaults    []struct {
+			FieldName, Expr      string
+			NeedsTime, NeedsULID bool
+		}
+		FuncTodos    []struct{ FieldName, TypeExpr string }
+		ExtraImports []struct{ Alias, Path string }
+	}{
+		Module:          "example.com/myproject",
+		Package:         "keywrap",
+		Name:            "keywrap",
+		FieldName:       "Keywrap",
+		IsService:       false,
+		ConstructorName: "New",
+		ConstructorType: "KeyWrapper",
+		Fallible:        true,
+	}
+
+	content, err := ProjectTemplates().Render("component_test_helpers.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("Render component_test_helpers.go.tmpl: %v", err)
+	}
+	rendered := string(content)
+
+	if !strings.Contains(rendered, "func NewTestKeywrap(t *testing.T, opts ...TestOption) KeyWrapper {") {
+		t.Errorf("helper must return the constructor's own type KeyWrapper; got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "opts ...TestOption) Service {") {
+		t.Error("helper returns Service, a type this package does not declare — the bug that broke forge generate repo-wide")
+	}
+
+	// An unset ConstructorType still falls back to Service, which is right
+	// for a just-scaffolded package whose New cannot be parsed yet.
+	fallback := data
+	fallback.ConstructorType = ""
+	content, err = ProjectTemplates().Render("component_test_helpers.go.tmpl", fallback)
+	if err != nil {
+		t.Fatalf("Render (fallback): %v", err)
+	}
+	if !strings.Contains(string(content), "opts ...TestOption) Service {") {
+		t.Error("an unparseable constructor must fall back to Service")
+	}
+}

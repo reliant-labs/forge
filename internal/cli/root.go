@@ -234,6 +234,7 @@ authored protos, in one call.`,
 	rootCmd.AddCommand(newLoginCmd())
 	rootCmd.AddCommand(newLogoutCmd())
 	rootCmd.AddCommand(newCloudCmd())
+	rootCmd.AddCommand(newDomainCmd())
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newVersionCmd())

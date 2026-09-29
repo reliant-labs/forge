@@ -989,13 +989,21 @@ func resolveDeployTags(ctx context.Context, projectDir, envName string, opts dep
 	res.imageTag = ref
 	res.plainTag = pt
 	res.tagSource = src
-	bindings, berr := bindingStoreFor(ctx, projectDir, envName)
-	if berr != nil {
-		return deployTagResolution{}, berr
+	ledger, lerr := ledgerFor(ctx, projectDir, envName)
+	if lerr != nil {
+		return deployTagResolution{}, lerr
 	}
-	digests, boundRel, derr := resolveDeployDigests(ctx, projectDir, envName, opts.noDigest, bindings)
+	bindings := ledger.Bindings
+	digests, boundRel, derr := resolveDeployDigests(ctx, projectDir, envName, opts.noDigest, bindings, ledger.Releases)
 	if derr != nil {
 		return deployTagResolution{}, derr
+	}
+	// Fail closed: a release-bound env whose declared images did not all
+	// resolve a digest must not deploy on the mutable tag.
+	if entities, eerr := RenderKCL(ctx, projectDir, envName); eerr == nil {
+		if perr := checkReleasePinned(entities, digests, boundRel, envName); perr != nil {
+			return deployTagResolution{}, perr
+		}
 	}
 	res.imageDigests = digests
 	res.boundRelease = boundRel
@@ -2178,6 +2186,121 @@ func overrideTaggedKeys(m map[string]string, image, digest string) {
 	}
 }
 
+// releaseArtifactURIs is the artifact-name → recorded URI map of a release,
+// read for the sole purpose of expanding a LEGACY promotion ledger (see
+// expandLegacyLedgerKeys). Empty when the release cannot be read: the
+// expansion is best-effort, and the fail-closed check downstream is what
+// turns an unexpandable legacy entry into a loud error rather than a silent
+// unpin.
+func releaseArtifactURIs(ctx context.Context, releases releaseLedger, version string) map[string]string {
+	if releases == nil || version == "" {
+		return nil
+	}
+	rel, err := releases.Get(ctx, version)
+	if err != nil || rel == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for name, art := range rel.Artifacts {
+		if art.URI != "" {
+			out[name] = art.URI
+		}
+	}
+	return out
+}
+
+// checkReleasePinned is the FAIL-CLOSED gate on a release-bound environment.
+//
+// An env promoted to a release has made a specific claim: these exact bytes
+// ship. Every image forge BUILDS for that env must therefore resolve to a
+// digest. If one does not, `image_ref`'s last branch silently falls through
+// to the mutable env tag — and the tag is usually a `git describe` string
+// that was never pushed, so the deploy either ImagePullBackOffs or pulls
+// whatever else happens to sit under a matching tag.
+//
+// That fall-through is not a theoretical hazard. Adopting the registry-bearing
+// image model re-keyed every declared reference while the bound ledger still
+// held bare names, so all four of a real prod release's images silently
+// dropped their digests — and the banner went on announcing "image digests
+// pinned", because nothing checked. A render that cannot honour the release
+// binding must say so and stop, naming the image and the keys it did have,
+// which is the difference between a five-second fix and an outage.
+//
+// Only images forge builds AND that a pulling runtime uses are checked:
+// third-party images (nats, temporal) are pinned by their own author in the
+// declaration and appear in no release, and a host/compose workload pulls
+// nothing. `--no-digest` is the explicit escape hatch and never reaches here.
+func checkReleasePinned(entities *KCLEntities, digests map[string]string, boundRelease, envName string) error {
+	if boundRelease == "" || entities == nil {
+		return nil
+	}
+	var unpinned []string
+	for _, d := range declaredImageDestinations(entities) {
+		if _, ok := digests[d.repository]; ok {
+			continue
+		}
+		unpinned = append(unpinned, fmt.Sprintf("  %s (workload %q)", d.repository, d.workload))
+	}
+	if len(unpinned) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(digests))
+	for k := range digests {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	known := "  (none)"
+	if len(keys) > 0 {
+		known = "  " + strings.Join(keys, "\n  ")
+	}
+	return fmt.Errorf(
+		"environment %q is promoted to release %s, but these images it builds resolved no digest:\n%s\n\n"+
+			"The release ledger and this deploy's build state carry digests under:\n%s\n\n"+
+			"Deploying would silently fall back to the mutable tag, which is not what the release names — so forge stopped.\n"+
+			"Fix: re-cut and re-promote the release so its artifacts are keyed by the repositories the KCL declares\n"+
+			"  forge build %s --release <version> --push && forge env promote <version> --to %s\n"+
+			"Or deploy without the release's pins, deliberately: forge env deploy %s --no-digest",
+		envName, boundRelease, strings.Join(unpinned, "\n"), known, envName, envName, envName)
+}
+
+// expandLegacyLedgerKeys re-keys a promotion's digest map onto the FULL image
+// references the KCL actually declares.
+//
+// A release cut today keys every OCI artifact by its repository, registry host
+// included (`us-central1-docker.pkg.dev/acme/prod/api`), because that is what
+// the workload declares and therefore what `image_ref` looks up. Releases cut
+// BEFORE a workload's image carried its registry are keyed by the bare name
+// (`api`), with the repository recorded separately in Artifact.URI.
+//
+// Reading a legacy entry is not optional: prod is bound to one. Its bare key
+// matches no declared image any more, so every lookup misses and — before the
+// fail-closed check below — each image silently fell through to its mutable
+// env tag while the banner still announced "image digests pinned". That is
+// the exact silent-unpin this function and checkReleasePinned exist to stop.
+//
+// The bare key is DROPPED once it has been expanded, rather than kept as a
+// parallel lookup path. Forge is pre-1.0 and one key per artifact is the
+// invariant worth holding: a surviving bare key would be a second, older
+// spelling of the same fact that nothing consults (no post-#322 KCL looks one
+// up) and that would quietly answer a future lookup with a digest from a
+// DIFFERENT registry — the collapse the repository-qualified key exists to
+// prevent. A bare key with no known URI is kept as-is, so an artifact forge
+// cannot place is still visible to the fail-closed check instead of vanishing.
+func expandLegacyLedgerKeys(resolved, uris map[string]string) map[string]string {
+	out := make(map[string]string, len(resolved))
+	for name, digest := range resolved {
+		uri, known := uris[name]
+		// Already a full reference (it names a registry host, so it carries a
+		// path separator), or no URI to place it under: keep it verbatim.
+		if strings.Contains(name, "/") || !known || uri == "" {
+			out[name] = digest
+			continue
+		}
+		out[strings.TrimSuffix(uri, "/")+"/"+name] = digest
+	}
+	return out
+}
+
 // resolveDeployDigests is the per-image digest resolver with the release layer
 // folded in. It returns the image-name → digest map the KCL render pins each
 // service to, plus the bound release version (empty when the env has no
@@ -2204,7 +2327,7 @@ func overrideTaggedKeys(m map[string]string, image, digest string) {
 // bindings is the binding ledger to consult. projectDir remains for the
 // build-state half, which IS a file concept (.forge/state/build-<env>.json);
 // the release half no longer knows where — or whether — bindings are files.
-func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDigest bool, bindings bindingStore) (digests map[string]string, boundRelease string, err error) {
+func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDigest bool, bindings bindingStore, releases releaseLedger) (digests map[string]string, boundRelease string, err error) {
 	base, err := resolveDeployImageDigests(projectDir, envName, noDigest)
 	if err != nil {
 		return nil, "", err
@@ -2226,7 +2349,7 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 	if base == nil {
 		base = map[string]string{}
 	}
-	for image, digest := range binding.Resolved {
+	for image, digest := range expandLegacyLedgerKeys(binding.Resolved, releaseArtifactURIs(ctx, releases, binding.Release)) {
 		// Name every image whose freshly-built digest the release is about to
 		// discard. The release winning is correct — a promotion is a
 		// deliberate "these exact bytes ship" — but doing it SILENTLY is how a

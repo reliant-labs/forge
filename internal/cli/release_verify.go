@@ -638,7 +638,7 @@ func verifyOCIArtifact(ctx context.Context, f httpFetcher, name string, art rele
 	host, repo := ociManifestCoordinates(name)
 	if host == "" {
 		res.Status = verifyUnverifiable
-		res.Detail = fmt.Sprintf("%s recorded for %q, which names no registry host — a bare image name cannot be resolved to an address", digest, name)
+		res.Detail = bareRepositoryDetail(name, digest)
 		return res
 	}
 

@@ -1081,8 +1081,10 @@ func identity(w *workload, ctx Context) []runtime.Object {
 	if len(s.ServiceAccountAnnotations) > 0 {
 		sa.Annotations = s.ServiceAccountAnnotations
 	}
-	// The env's registry credentials ride the SA, so every pod, Job and
+	// The target's image_pull_secrets ride the SA, so every pod, Job and
 	// CronJob bound to it pulls with them (lib/rbac.k:90-98, :159-160).
+	// These are CREDENTIALS, which are per-cluster; the registry itself is
+	// named by each image, so one SA's secrets can cover several registries.
 	sa.ImagePullSecrets = pullSecrets(ctx.ImagePullSecrets)
 	if !hasRBAC(w) {
 		// lib/rbac.k:69-99: identity without permission, and no token.

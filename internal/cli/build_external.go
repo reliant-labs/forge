@@ -295,15 +295,12 @@ func externalBuildTag(svc WorkloadEntity, buildTag string, opts buildOptions) st
 }
 
 // externalPushedRef reconstructs the image reference the ShellBuild's command
-// pushed, so the post-build digest lookup queries the same manifest. When
-// registry is empty (a local build that tags `<image>:<tag>` with no registry
-// prefix, e.g. the e2e workspace-base/reliant images) we drop the
-// `<registry>/` segment. A local-only ref simply won't resolve a registry
-// digest, so the best-effort lookup returns empty and deploy stays on the tag.
-//
-// This still composes the reference forge-side rather than reading the one KCL
-// rendered. Moving it onto the rendered reference is slice B's job, together
-// with removing the env-level registry field it reads.
+// pushed, so the post-build digest lookup queries the same manifest. The
+// registry host comes from the image's own declared reference — there is no
+// env-level registry to compose in — so an image that names no host (a local
+// build tagging `<image>:<tag>`, e.g. the e2e workspace-base/reliant images)
+// yields a local-only ref. That simply won't resolve a registry digest, so the
+// best-effort lookup returns empty and deploy stays on the tag.
 func externalPushedRef(image, tag string) string {
 	return imageRepository(image) + ":" + tag
 }

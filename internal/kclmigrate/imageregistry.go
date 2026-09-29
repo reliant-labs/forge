@@ -183,33 +183,8 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 
 	// Which env each registry site belongs to, and what that env binds.
 	envs := tree.envs()
-	envRegistry := map[string]string{} // env -> registry
-	envSites := map[string][]siteRef{} // env -> its sites
-	var orphans []siteRef              // sites outside any env directory
-	for _, s := range sites {
-		env := envOfFile(s.File, envs)
-		if env == "" {
-			orphans = append(orphans, s)
-			continue
-		}
-		envSites[env] = append(envSites[env], s)
-		if prev, ok := envRegistry[env]; ok && prev != s.Value {
-			// One env declaring two different registries is not something
-			// this migration can reduce to a single image prefix.
-			res.Unaccounted = append(res.Unaccounted, Unaccounted{
-				File: s.File, Line: s.Line, Expr: s.Expr,
-				Reason: fmt.Sprintf("env %q declares more than one registry (%q and %q); forge cannot tell which one each workload's image should carry", env, prev, s.Value),
-			})
-			continue
-		}
-		envRegistry[env] = s.Value
-	}
-	for _, s := range orphans {
-		res.Unaccounted = append(res.Unaccounted, Unaccounted{
-			File: s.File, Line: s.Line, Expr: s.Expr,
-			Reason: "this registry is declared outside any deploy/kcl/<env>/ directory, so forge cannot tell which environment's workloads it applies to. Move the declaration into the env that uses it, or put the full reference on the workload's image",
-		})
-	}
+	envRegistry, envSites, siteBad := attributeSitesToEnvs(sites, envs)
+	res.Unaccounted = append(res.Unaccounted, siteBad...)
 
 	// What each env binds, and to which runtime. An env's bindings are read
 	// from its main.k AND from the library modules it imports, because a real
@@ -273,38 +248,22 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 	}
 
 	// Judge every pulled workload BEFORE writing anything.
-	for ident, byEnv := range pullRegistries {
-		d := byIdent[ident]
-		if d.BuildUnresolved {
-			// forge derives the image from the build's output_name, so a
-			// build this reader could not read means the artifact name would
-			// be a guess — and a wrong one writes a reference to a repository
-			// the build never pushes to.
-			s := envSites[sortedKeys(byEnv)[0]][0]
-			res.Unaccounted = append(res.Unaccounted, Unaccounted{
-				File: s.File, Line: s.Line, Expr: s.Expr,
-				Reason: fmt.Sprintf("workload %q declares no image and names a build forge could not read in deploy/kcl/workloads.k, so the image name it would derive is a guess. Declare its full image reference by hand", declName(d)),
-			})
-			continue
-		}
-		artifact, ok := d.artifact()
-		if !ok {
-			s := envSites[sortedKeys(byEnv)[0]][0]
-			res.Unaccounted = append(res.Unaccounted, Unaccounted{
-				File: s.File, Line: s.Line, Expr: s.Expr,
-				Reason: fmt.Sprintf("workload %q is bound to a pulling runtime but declares neither an image nor a build forge can derive one from, so there is nothing to put this registry on. Declare its full image reference in deploy/kcl/workloads.k", d.Ident),
-			})
-			continue
-		}
-		if hasRegistryHost(artifact) {
-			continue // already a complete reference: this registry is not its
-		}
-		if len(distinctValues(byEnv)) > 1 {
-			res.Ambiguous = append(res.Ambiguous, AmbiguousImage{
-				Workload: declName(d), Image: artifact, Derived: !d.HasImageLine, ByEnv: byEnv,
-			})
-		}
-	}
+	ambiguous, judgeBad := judgePulledWorkloads(pullRegistries, byIdent, envSites)
+	res.Ambiguous = append(res.Ambiguous, ambiguous...)
+	res.Unaccounted = append(res.Unaccounted, judgeBad...)
+
+	// A hosted FRONTEND publishes its static build to a registry, so it needs
+	// its own reference by exactly the same rule — and pre-#322 it declared
+	// none, taking the env's ControlPlane.registry instead. Frontends are
+	// declared in the env rather than in workloads.k, so they are read per env.
+	//
+	// Without this the hounders shape still fails after migration: the
+	// ControlPlane registry is removed, the `web` frontend keeps no reference,
+	// and prod refuses at render with "image is REQUIRED on forge.OnHosted".
+	// The workloads were completed, so the registry counted as placed and
+	// nothing reported a problem.
+	frontendPlan, frontendBad := planHostedFrontends(tree, envRegistry, envSites)
+	res.Unaccounted = append(res.Unaccounted, frontendBad...)
 
 	if res.Refused() {
 		sort.Slice(res.Ambiguous, func(i, j int) bool { return res.Ambiguous[i].Workload < res.Ambiguous[j].Workload })
@@ -320,11 +279,174 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 
 	// Settled. Complete each pulled workload's image — writing an image line
 	// where the declaration had none, which is the case forge derives.
-	newWorkloads := workloadsSrc
-	var completed []string
+	newWorkloads, completed, workloadRewrites := completeWorkloadImages(workloadsSrc, pullRegistries, byIdent, resolveBuild)
+	res.Rewrites = append(res.Rewrites, workloadRewrites...)
+
+	// Complete each hosted frontend's image, in its env's own main.k. Done
+	// BEFORE the strip pass below, which rewrites the same files: both edits
+	// have to land, and the strip pass reads whatever this leaves behind.
+	changed, frontendDone, frontendRewrites := applyHostedFrontends(tree, frontendPlan)
+	res.Rewrites = append(res.Rewrites, frontendRewrites...)
+
+	// Remove every registry declaration, everywhere it appears.
+	for _, s := range sites {
+		src, ok := changed[s.File]
+		if !ok {
+			src = tree.files[relOf(s.File)]
+		}
+		changed[s.File] = stripRegistry(src)
+	}
+	strip := stripReport{
+		changed: changed, envs: envs, envRegistry: envRegistry,
+		frontendDone: frontendDone, pullRegistries: pullRegistries,
+		anyCompleted: len(completed) > 0,
+	}
+	rm, dropped, err := strip.apply(kclDir, apply)
+	res.Rewrites = append(res.Rewrites, rm...)
+	res.Dropped = append(res.Dropped, dropped...)
+	if err != nil {
+		return res, err
+	}
+	if apply && newWorkloads != workloadsSrc {
+		if err := os.WriteFile(filepath.Join(kclDir, "workloads.k"), []byte(newWorkloads), 0o644); err != nil {
+			return res, fmt.Errorf("write workloads.k: %w", err)
+		}
+	}
+	sort.Strings(res.Rewrites)
+	sort.Strings(res.Dropped)
+	return res, nil
+}
+
+// frontendCompletion is one hosted frontend that will gain a reference.
+type frontendCompletion struct {
+	decl declaration
+	name string
+	full string
+}
+
+// judgePulledWorkloads decides, for every workload some env pulls an image for,
+// whether its registry can be placed — WITHOUT writing anything, so a refusal
+// stops the migration before any file is touched.
+//
+// Three outcomes: placeable (returned in neither slice, completed later),
+// AMBIGUOUS (two envs pulling it declared different registries, so no single
+// reference is right), and UNACCOUNTED (nothing to place the registry on, or a
+// build whose output_name could not be read — where a derived name would be a
+// guess, and a wrong guess writes a reference to a repository the build never
+// pushes to).
+func judgePulledWorkloads(pullRegistries map[string]map[string]string, byIdent map[string]declaration, envSites map[string][]siteRef) ([]AmbiguousImage, []Unaccounted) {
+	var ambiguous []AmbiguousImage
+	var bad []Unaccounted
 	for _, ident := range sortedKeys(flatten(pullRegistries)) {
 		byEnv := pullRegistries[ident]
-		regs := distinctValues(byEnv)
+		d := byIdent[ident]
+		site := envSites[sortedKeys(byEnv)[0]][0]
+		if d.BuildUnresolved {
+			bad = append(bad, Unaccounted{
+				File: site.File, Line: site.Line, Expr: site.Expr,
+				Reason: fmt.Sprintf("workload %q declares no image and names a build forge could not read in deploy/kcl/workloads.k, so the image name it would derive is a guess. Declare its full image reference by hand", declName(d)),
+			})
+			continue
+		}
+		artifact, ok := d.artifact()
+		if !ok {
+			bad = append(bad, Unaccounted{
+				File: site.File, Line: site.Line, Expr: site.Expr,
+				Reason: fmt.Sprintf("workload %q is bound to a pulling runtime but declares neither an image nor a build forge can derive one from, so there is nothing to put this registry on. Declare its full image reference in deploy/kcl/workloads.k", d.Ident),
+			})
+			continue
+		}
+		if hasRegistryHost(artifact) {
+			continue // already a complete reference: this registry is not its
+		}
+		if len(distinctValues(byEnv)) > 1 {
+			ambiguous = append(ambiguous, AmbiguousImage{
+				Workload: declName(d), Image: artifact, Derived: !d.HasImageLine, ByEnv: byEnv,
+			})
+		}
+	}
+	return ambiguous, bad
+}
+
+// attributeSitesToEnvs assigns each `registry = …` site to the env whose
+// directory it sits in, and refuses the two cases it cannot attribute: an env
+// declaring two different registries, and a site outside any env directory.
+//
+// Both are refusals rather than guesses for the same reason: the migration's
+// only safe move is to put a registry onto the images of the env that declared
+// it, and neither case identifies one env and one value.
+func attributeSitesToEnvs(sites []siteRef, envs []string) (map[string]string, map[string][]siteRef, []Unaccounted) {
+	envRegistry := map[string]string{} // env -> registry
+	envSites := map[string][]siteRef{} // env -> its sites
+	var bad []Unaccounted
+	for _, s := range sites {
+		env := envOfFile(s.File, envs)
+		if env == "" {
+			bad = append(bad, Unaccounted{
+				File: s.File, Line: s.Line, Expr: s.Expr,
+				Reason: "this registry is declared outside any deploy/kcl/<env>/ directory, so forge cannot tell which environment's workloads it applies to. Move the declaration into the env that uses it, or put the full reference on the workload's image",
+			})
+			continue
+		}
+		envSites[env] = append(envSites[env], s)
+		if prev, ok := envRegistry[env]; ok && prev != s.Value {
+			bad = append(bad, Unaccounted{
+				File: s.File, Line: s.Line, Expr: s.Expr,
+				Reason: fmt.Sprintf("env %q declares more than one registry (%q and %q); forge cannot tell which one each workload's image should carry", env, prev, s.Value),
+			})
+			continue
+		}
+		envRegistry[env] = s.Value
+	}
+	return envRegistry, envSites, bad
+}
+
+// stripReport is the registry-removal pass: which files changed, and what each
+// env needed, so a removal can be reported either as MOVED or as DROPPED.
+//
+// The distinction is the safety property. "Dropped" means nothing in that env
+// needed the registry; a removal reported that way when something DID need it
+// is how a project ends up unrenderable with the value it needed gone.
+type stripReport struct {
+	changed        map[string]string
+	envs           []string
+	envRegistry    map[string]string
+	frontendDone   map[string]bool
+	pullRegistries map[string]map[string]string
+	anyCompleted   bool
+}
+
+// apply writes each stripped file and returns one removal line per file, plus a
+// Dropped line for every env whose registry went nowhere.
+func (s stripReport) apply(kclDir string, write bool) (rewrites, dropped []string, err error) {
+	for _, file := range sortedKeys(s.changed) {
+		env := envOfFile(file, s.envs)
+		rewrites = append(rewrites, fmt.Sprintf("%s: removed `registry = %q`", file, s.envRegistry[env]))
+		if !s.frontendDone[env] && (!s.anyCompleted || !envPulled(s.pullRegistries, env)) {
+			dropped = append(dropped, fmt.Sprintf(
+				"%s: `registry = %q` dropped — no workload this env binds to a cluster or hosted runtime needed it",
+				file, s.envRegistry[env]))
+		}
+		if !write {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(kclDir, relOf(file)), []byte(s.changed[file]), 0o644); err != nil {
+			return rewrites, dropped, fmt.Errorf("write %s: %w", file, err)
+		}
+	}
+	return rewrites, dropped, nil
+}
+
+// completeWorkloadImages writes the settled reference onto each workload that
+// pulls one, returning the new workloads.k text, the idents completed, and one
+// rewrite line each.
+//
+// A declaration with NO image line GAINS one: that is the shape forge derives
+// the artifact for, and the case the migration originally did nothing about.
+func completeWorkloadImages(src string, pullRegistries map[string]map[string]string, byIdent map[string]declaration, resolveBuild func(string) (string, bool)) (out string, completed []string, rewrites []string) {
+	out = src
+	for _, ident := range sortedKeys(flatten(pullRegistries)) {
+		regs := distinctValues(pullRegistries[ident])
 		if len(regs) != 1 {
 			continue
 		}
@@ -336,50 +458,97 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 		full := regs[0] + "/" + artifact
 		// Re-find the declaration in the CURRENT text: an earlier insertion
 		// shifted every later block's offsets.
-		cur, found := findDeclaration(newWorkloads, workloadStartRe, ident, resolveBuild)
+		cur, found := findDeclaration(out, workloadStartRe, ident, resolveBuild)
 		if !found {
 			continue
 		}
-		newWorkloads = setImage(newWorkloads, cur, full)
+		out = setImage(out, cur, full)
 		how := fmt.Sprintf("image %q → %q", artifact, full)
 		if !d.HasImageLine {
 			how = fmt.Sprintf("added image = %q (derived from its build)", full)
 		}
 		completed = append(completed, ident)
-		res.Rewrites = append(res.Rewrites, fmt.Sprintf("deploy/kcl/workloads.k: workload %q %s", declName(d), how))
+		rewrites = append(rewrites, fmt.Sprintf("deploy/kcl/workloads.k: workload %q %s", declName(d), how))
 	}
+	return out, completed, rewrites
+}
 
-	// Remove every registry declaration, everywhere it appears.
-	changed := map[string]string{}
-	for _, s := range sites {
-		src, ok := changed[s.File]
-		if !ok {
-			src = tree.files[relOf(s.File)]
-		}
-		changed[s.File] = stripRegistry(src)
+// applyHostedFrontends writes each planned frontend reference into its env's
+// own main.k, returning the modified sources keyed by repo-relative path, which
+// envs gained a reference, and one rewrite line each.
+//
+// The returned map SEEDS the registry-strip pass, which rewrites the same
+// files: both edits have to land, so the strip pass must read what this left
+// behind rather than the original text.
+func applyHostedFrontends(tree *kclTree, plan map[string][]frontendCompletion) (changed map[string]string, done map[string]bool, rewrites []string) {
+	changed, done = map[string]string{}, map[string]bool{}
+	envs := make([]string, 0, len(plan))
+	for env := range plan {
+		envs = append(envs, env)
 	}
-	for _, file := range sortedKeys(changed) {
-		env := envOfFile(file, envs)
-		res.Rewrites = append(res.Rewrites, fmt.Sprintf("%s: removed `registry = %q`", file, envRegistry[env]))
-		if len(completed) == 0 || !envPulled(pullRegistries, env) {
-			res.Dropped = append(res.Dropped, fmt.Sprintf(
-				"%s: `registry = %q` dropped — no workload this env binds to a cluster or hosted runtime needed it",
-				file, envRegistry[env]))
-		}
-		if apply {
-			if err := os.WriteFile(filepath.Join(kclDir, relOf(file)), []byte(changed[file]), 0o644); err != nil {
-				return res, fmt.Errorf("write %s: %w", file, err)
+	sort.Strings(envs)
+	for _, env := range envs {
+		rel := env + "/main.k"
+		src := tree.files[rel]
+		for _, fc := range plan[env] {
+			// Re-find by NAME in the current text: an earlier insertion shifted
+			// every later block's offsets.
+			cur, found := findHostedFrontend(src, fc.name)
+			if !found {
+				continue
 			}
+			src = setImage(src, cur, fc.full)
+			done[env] = true
+			rewrites = append(rewrites, fmt.Sprintf(
+				"deploy/kcl/%s/main.k: hosted frontend %q added image = %q", env, fc.name, fc.full))
+		}
+		changed["deploy/kcl/"+rel] = src
+	}
+	return changed, done, rewrites
+}
+
+// planHostedFrontends works out which hosted frontends need a reference, and
+// what it should be, WITHOUT writing anything — so a refusal found here stops
+// the migration before any file is touched.
+//
+// A frontend bound to forge.OnHosted publishes its static build to a registry,
+// so it needs its own reference by exactly the same rule as a workload, with
+// the same field name. Pre-#322 it declared none and took the env's
+// ControlPlane.registry instead.
+//
+// Without this the hounders shape still fails after migration: the ControlPlane
+// registry is removed, the `web` frontend keeps no reference, and prod refuses
+// at render with "image is REQUIRED on forge.OnHosted". The workloads were
+// completed, so the registry counted as placed and nothing reported a problem.
+func planHostedFrontends(tree *kclTree, envRegistry map[string]string, envSites map[string][]siteRef) (map[string][]frontendCompletion, []Unaccounted) {
+	plan := map[string][]frontendCompletion{}
+	var bad []Unaccounted
+	for _, env := range sortedKeys(envRegistry) {
+		reg := envRegistry[env]
+		if reg == "" {
+			continue
+		}
+		src, ok := tree.files[env+"/main.k"]
+		if !ok {
+			continue
+		}
+		for _, f := range hostedFrontendsIn(src) {
+			if f.Image != "" && hasRegistryHost(f.Image) {
+				continue // already a complete reference
+			}
+			name := declName(f)
+			if name == "" {
+				s := envSites[env][0]
+				bad = append(bad, Unaccounted{
+					File: s.File, Line: s.Line, Expr: s.Expr,
+					Reason: fmt.Sprintf("env %q binds a frontend to forge.OnHosted, but forge could not read its name, so it cannot derive the reference to publish it under. Declare the frontend's full image reference by hand", env),
+				})
+				continue
+			}
+			plan[env] = append(plan[env], frontendCompletion{decl: f, full: reg + "/" + name, name: name})
 		}
 	}
-	if apply && newWorkloads != workloadsSrc {
-		if err := os.WriteFile(filepath.Join(kclDir, "workloads.k"), []byte(newWorkloads), 0o644); err != nil {
-			return res, fmt.Errorf("write workloads.k: %w", err)
-		}
-	}
-	sort.Strings(res.Rewrites)
-	sort.Strings(res.Dropped)
-	return res, nil
+	return plan, bad
 }
 
 // declName is the workload's declared name, falling back to its identifier.

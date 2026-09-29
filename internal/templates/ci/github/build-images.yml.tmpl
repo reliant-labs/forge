@@ -65,8 +65,8 @@ jobs:
 {{installForgeRun 8}}
 
       - name: Log in to the declared registry
-        # forge logs docker in to the registry deploy/kcl/$FORGE_ENV/main.k
-        # declares; the workflow supplies only the credential. GITHUB_TOKEN
+        # forge logs docker in to the registry each image this env builds
+        # names; the workflow supplies only the credential. GITHUB_TOKEN
         # (with `packages: write`) is the credential for GitHub's container
         # registry. For another registry, pipe its credential instead — a GAR
         # key with --username _json_key, an ECR token with --username AWS —
@@ -145,6 +145,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # A job is a fresh runner, and installing forge compiles it — so this
+      # job needs Go even though it only scans. From go.mod, never a literal:
+      # the runner's preinstalled Go is older than go.mod's `go` directive
+      # sooner or later, and `go install` then refuses before forge exists.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Install forge
 {{installForgeRun 8}}

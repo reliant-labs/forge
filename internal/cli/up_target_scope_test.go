@@ -83,8 +83,8 @@ func TestUpTargetReachesTheBuildPhase(t *testing.T) {
 }
 
 // TestUpBuildPushesToTheDeclaredRegistry pins that `forge env up` PUSHES the
-// image it builds to the registry the env declares — the one its cluster
-// pulls from. Asserted on the real runBuild (in --plan mode), not on the
+// image it builds to the registry that image's own reference names — the one
+// its cluster pulls from. Asserted on the real runBuild (in --plan mode), not on the
 // options struct, because the regression lived between the two: env up handed
 // runBuild a registry but never switched push on, and runBuild's one resolver
 // (resolvePushPlan) reads "no --push" as "push nothing" and overwrote it.

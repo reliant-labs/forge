@@ -426,7 +426,7 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 	// captured nothing at all.
 	if len(would) == 0 {
 		return nil, fmt.Errorf("--release %s: this build would capture no image digest to record — a release pins immutable digests, which require "+
-			"a push (forge build %s --release %s --push pushes to the registry the env declares)", in.opts.release, in.opts.env, in.opts.release)
+			"a push (forge build %s --release %s --push pushes to each image's own registry)", in.opts.release, in.opts.env, in.opts.release)
 	}
 	return names, nil
 }

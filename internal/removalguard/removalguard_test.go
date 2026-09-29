@@ -426,7 +426,13 @@ var removals = []removal{
 			"the cluster runtime. forge contributes only the tag and the digest, and composes them onto " +
 			"the reference the author wrote — so the image the build pushes and the image the cluster " +
 			"pulls cannot disagree, and two workloads in one env can ride two registries. " +
-			"This entry keeps the env-wide field from being reintroduced as a convenience.",
+			"This entry keeps the env-wide field from being reintroduced as a convenience — and, " +
+			"because the field outlived itself in PROSE, it also guards the sentences that told a " +
+			"user to look for it. `forge build --push` printing \"pushes to the registry " +
+			"deploy/kcl/<env>/main.k declares on forge.ControlPlane\" named a field that no longer " +
+			"exists: a user who followed it went looking in the env file, found nothing, and had no " +
+			"way to learn the reference is on the frontend. A stale message is a worse failure than a " +
+			"stale field, because the field fails loudly at load and the message is believed.",
 		Patterns: []*regexp.Regexp{
 			// The Go fields that held the one env-wide value.
 			regexp.MustCompile(`\benvRegistry\b|\bpushRegistry\b|\bpushRegistryChoice\b`),
@@ -438,6 +444,16 @@ var removals = []removal{
 			// stay clear.
 			regexp.MustCompile(`(?m)^\s*registry\s*=\s*"`),
 			regexp.MustCompile(`ClusterTarget\.registry|ControlPlane\.registry|DockerBuild\.registry`),
+			// USER-FACING PROSE that sends someone to an env for a registry.
+			// Each of these was a real message or scaffold comment after the
+			// field was deleted. They are phrases rather than identifiers
+			// because prose is exactly where this survived the removal.
+			regexp.MustCompile(`(?i)the registry (?:the |this )?env(?:ironment)?(?:'s(?: KCL)?)? declares`),
+			regexp.MustCompile(`(?i)the registry deploy/kcl/`),
+			regexp.MustCompile(`(?i)declares on forge\.ControlPlane`),
+			// "the env's registry" / "the environment's registry" — the field
+			// as a possessive. An env HAS no registry to possess.
+			regexp.MustCompile(`(?i)\bthe env(?:ironment)?'s registry\b`),
 		},
 		Allowances: []allowance{
 			{
@@ -455,6 +471,17 @@ var removals = []removal{
 					"kcl/tests/closedschema_control_plane_registry.k",
 					"CHANGELOG.md",
 				},
+			},
+			{
+				Name: "the pre-#322 ledger explanation, which must describe the field to say why keys are NOT rewritten",
+				Reason: "release_ledger_prerelease.go exists to explain an unverifiable pre-#322 release: its " +
+					"OCI keys were bare because the registry lived on the env. Saying so requires naming " +
+					"what the env used to carry, in the PAST tense, and it is the argument for not " +
+					"rewriting the keys — a text substitution would make the ledger verify green on a " +
+					"claim nobody checked. Deleting the phrase to satisfy the guard would delete the " +
+					"reasoning that keeps someone from 'fixing' it.",
+				Token: regexp.MustCompile(`the env's registry was AT THE TIME|the registry the env used to declare`),
+				Paths: []string{"internal/cli/release_ledger_prerelease.go"},
 			},
 			{
 				Name: "prose and helpers about the registry an IMAGE names",

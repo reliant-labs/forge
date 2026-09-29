@@ -84,7 +84,7 @@ func TestImageRegistry_UnambiguousRewritesTheImage(t *testing.T) {
 		t.Fatalf("refused an unambiguous migration: %+v", res.Ambiguous)
 	}
 	if got := read(t, root, "deploy/kcl/workloads.k"); !strings.Contains(got, `image = "ghcr.io/acme/shop"`) {
-		t.Errorf("image was not completed with the env's registry:\n%s", got)
+		t.Errorf("image was not completed with the registry that env declared:\n%s", got)
 	}
 	if got := read(t, root, "deploy/kcl/prod/main.k"); strings.Contains(got, "registry") {
 		t.Errorf("env registry survived the migration:\n%s", got)
@@ -211,7 +211,7 @@ nats = fw.Workload {
 		t.Error("a third-party reference was rewritten")
 	}
 	if strings.Contains(got, "registry.example.com") {
-		t.Errorf("the env's registry was prefixed onto an image that already had one:\n%s", got)
+		t.Errorf("a removed env registry was prefixed onto an image that already had one:\n%s", got)
 	}
 }
 

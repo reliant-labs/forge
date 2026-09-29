@@ -194,10 +194,57 @@ type ManagedDatabaseStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
+	// Backup is what the executor observed about this database's backups,
+	// nil when the environment configures no object store.
+	//
+	// NIL AND "UNHEALTHY" ARE DIFFERENT ANSWERS, which is why this is a
+	// pointer rather than a value. A database nobody is backing up by
+	// design must not report the same state as one whose archiving has
+	// broken.
+	// +optional
+	Backup *DatabaseBackupStatus `json:"backup,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// DatabaseBackupStatus answers one question for whoever owns the data: if
+// this database broke right now, what would come back?
+//
+// THREE INDEPENDENT FACTS, NOT A BOOLEAN. A single "backups: ok" hides all
+// three of the ways this goes wrong:
+//
+//   - A recent base backup with dead WAL archiving restores, but only to
+//     whenever that backup was taken.
+//   - Healthy archiving with no base backup restores to NOTHING. WAL is
+//     replayed on top of a base backup; an archive alone is not a backup.
+//   - Both healthy, while the retention floor is newer than the incident
+//     being investigated, means the moment you want is already gone.
+type DatabaseBackupStatus struct {
+	// LastSuccessfulAt is when the last base backup completed. Nil means
+	// none ever has.
+	// +optional
+	LastSuccessfulAt *metav1.Time `json:"lastSuccessfulAt,omitempty"`
+
+	// WALArchivingHealthy is whether WAL is currently reaching the object
+	// store. THIS IS THE SILENT FAILURE: a database whose archiving has
+	// stopped keeps serving traffic normally, and every minute it does is a
+	// minute that cannot be recovered to.
+	// +optional
+	WALArchivingHealthy bool `json:"walArchivingHealthy,omitempty"`
+
+	// EarliestRestorableAt is the oldest point recovery can reach — the
+	// floor set by the retention policy. Nil until a first backup exists.
+	// +optional
+	EarliestRestorableAt *metav1.Time `json:"earliestRestorableAt,omitempty"`
+
+	// LastError is the last archiving or backup error, cleared on success.
+	// It is surfaced verbatim: someone who can see "no bucket permission"
+	// fixes it, while someone who sees only a false boolean files a ticket.
+	// +optional
+	LastError string `json:"lastError,omitempty"`
 }
 
 // ManagedDatabase is a dedicated Postgres.

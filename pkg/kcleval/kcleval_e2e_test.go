@@ -44,7 +44,14 @@ func forgeBinary(t *testing.T) string {
 		out := filepath.Join(dir, "forge")
 		cmd := exec.Command("go", "build", "-o", out, "./cmd/forge")
 		cmd.Dir = repoRoot(t)
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+		// CGO_ENABLED=1 because the kcl_plugin.forge namespace is a CGO
+		// bridge and a CGO-free forge refuses to render at all. Set via
+		// t.Setenv rather than cmd.Env: a nil cmd.Env inherits the parent's
+		// environment, so this adds one variable instead of replacing the
+		// whole environment — and forge/pkg must not read os.Environ (see
+		// internal/pkgguard), which a library that compiles into every
+		// generated binary has no business doing.
+		t.Setenv("CGO_ENABLED", "1")
 		if b, err := cmd.CombinedOutput(); err != nil {
 			buildErr = err
 			t.Logf("build forge: %s", b)

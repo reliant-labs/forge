@@ -9,6 +9,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: an environment no longer has an image registry — a WORKLOAD has
+  one, as part of its image.** `forge.ClusterTarget.registry`,
+  `forge.ControlPlane.registry` and `forge.DockerBuild.registry` are all gone.
+  The author writes the full reference on the workload and forge contributes
+  only what it alone knows:
+
+  ```kcl
+  # deploy/kcl/workloads.k
+  api = fw.Workload {
+      name = "api"
+      image = "ghcr.io/acme/api"        # the registry IS the image
+      build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
+  }
+  ```
+
+  forge appends the resolved tag and, after a push, the digest. It never
+  invents, prefixes or rewrites the host. So the reference you read in the KCL
+  is the reference the build pushes and the cluster pulls — they cannot
+  disagree, which is the whole point: a build aimed at one registry while the
+  spec named another was an `ErrImagePull` that surfaced only at rollout.
+
+  Two workloads in one env may now name two different registries, which an
+  env-wide field could not express at all.
+
+  **Migration is automatic.** `forge generate` removes `registry = …` from every
+  ClusterTarget / ControlPlane and prefixes the removed value onto a workload's
+  bare `image`, judging ambiguity ONLY over the envs where that workload is
+  bound to a runtime that pulls an image (cluster or hosted). A registry on an
+  env where the workload runs `OnHost`, or is not bound at all, is simply
+  dropped — it was never that workload's. If the same workload genuinely pulls
+  from two different registries, forge REFUSES and prints the exact per-env KCL
+  rather than picking one. Your binder expressions are never edited.
+
+  **A bare image is refused at render**, naming the workload: it would render as
+  `api:<tag>`, which the kubelet resolves against Docker Hub and fails to pull.
+  A third-party image must name its host too (`docker.io/library/nats:2.10`).
+
+  A hosted env is no different, and gets its own runbook: a hosted env may one
+  day inherit a default from the control plane's advertised image push base, but
+  that base is not pushable yet (control-plane ADR 0003 / #334), so forge does
+  not invent one. Hosted FRONTENDS follow the same rule with the same field
+  name (`forge.Frontend.image`), and forge appends the platform's own
+  `static.v1` layout segment itself, so that segment never appears in your KCL.
+
+  A local env re-points one declaration rather than declaring the image twice:
+  `forge.image_on_registry(w.image, "localhost:5050")`, which the scaffolded dev
+  env now uses, because a k3d node can only pull from a host-local registry.
+
+  **`forge registry login <env>` logs in to every distinct host the env's images
+  name** — no host argument and no flag that takes one. The credential is the
+  only input: `--username` with `--password-stdin`, or `--password-env` naming
+  the variable that holds it (the `forge.ControlPlane.token_env` convention, so
+  CI states a NAME in git and never the value). `forge registry ref <env>` now
+  prints one `<image>@<digest>` per built image, labelled by the workload that
+  declared it.
+
+  **RELEASES MUST BE RE-CUT.** The release ledger now keys an OCI artifact by
+  its declared repository, host included, so the key IS the address and
+  `release.Artifact.URI` is no longer recorded for images. Ledgers cut before
+  this change are keyed by bare name, which no longer resolves to an address:
+  `forge release verify` reports such an entry as UNVERIFIABLE rather than
+  guessing Docker Hub. Re-cut and re-promote any release you still rely on.
+  Keying by bare name could not survive per-workload registries — two envs
+  building the same app to two registries collapsed onto one entry, so a prod
+  promotion could read a digest that only ever existed in the dev registry.
+
+  Also removed: `BuildState.Registry` and `buildtarget.State.Registry` (Image
+  now holds the full repository), `forge env new`'s `REPLACE_ME_REGISTRY` knob
+  (an env has no registry to get wrong), and the `registry` field the render
+  projected onto each cluster runtime.
+
 - **BREAKING: a `forge.ShellBuild` `cmd` is plain KCL, run verbatim — the
   `${TOKEN}` substitution is gone.** Forge used to rewrite a fixed vocabulary
   into the command before running it — `${IMAGE}`, `${TAG}`, `${CODE_VERSION}`,

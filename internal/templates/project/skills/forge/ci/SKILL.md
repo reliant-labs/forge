@@ -135,7 +135,7 @@ key with `--username _json_key`, an ECR token with `--username AWS`).
 ### Deploys go through forge
 
 `deploy.yml` runs, per env, `forge registry login <env>`, `forge build <env>
---push` (to the registry the env's KCL declares), then
+--push` (each image to the reference its workload declares), then
 `forge env deploy <env>` — never `kcl run | kubectl apply`, which cannot
 resolve `kcl_plugin.forge` and skips the declared-context binding, the
 per-env frontend `config.js` render, digest pinning and the live preflight.

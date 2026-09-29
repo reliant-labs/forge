@@ -40,7 +40,7 @@ may mix them. This env runs `item` on the forge control plane and keeps
 `migrate` and `search` on a cluster it operates:
 
 ```kcl
-_prod = forge.ClusterTarget {cluster = "gke_acme_prod", namespace = "acme-prod", registry = "ghcr.io/acme", platform = "amd64"}
+_prod = forge.ClusterTarget {cluster = "gke_acme_prod", namespace = "acme-prod", platform = "amd64"}
 
 output = forge.render(forge.Bundle {
     project = "acme"
@@ -137,7 +137,7 @@ rather than after a publish.
     per environment, not spec (`forge domain add` / `forge domain bind`).
   - Raw `secretRef`, `configMapRef` and `fieldRef` env — they address
     namespace objects you did not write.
-  - A registry-less or unpinned image — the release pins every artifact by
+  - A hostless or unpinned image — the release pins every artifact by
     digest.
 
 A workload the hosted runtime refuses can still live in a hosted env:
@@ -158,9 +158,9 @@ forge doctor --signal deploy   # probes, resources, Secrets, migrations
 
 ```
 forge build <env>                 # what <env> declares (host workloads need no image)
-forge build <env> --push          # and push to the registry the env's ClusterTarget declares
-forge registry login <env> -u <user> --password-stdin   # docker login to that registry
-forge registry ref <env>          # <registry>/<image>@<digest> of the last pushed build
+forge build <env> --push          # and push each image to the reference its workload declares
+forge registry login <env> -u <user> --password-stdin   # login to every host they name
+forge registry ref <env>          # <image>@<digest> per image the last build pushed
 forge build <env> --plan          # resolve + preflight the build set; build nothing
 forge build --tag=<tag>           # override image tag (default: commit SHA)
 forge build --debug               # with debug symbols for Delve
@@ -170,7 +170,8 @@ One project image carries every binary. Its ENTRYPOINT is the binary and
 its CMD the default subcommand (`server`), so a workload's `args` select
 what the pod runs, the same subcommand the host runtime runs.
 
-A hosted env declares its registry on `forge.ControlPlane` (`registry = "<registry-host>/<org>"`); `forge build <env> --push` pushes there.
+A hosted env declares no registry either: each workload — and each hosted
+frontend, via `forge.Frontend.image` — declares its own.
 
 ### Docker build contexts
 
@@ -335,7 +336,7 @@ no `--rollback`, no `rollback_cmd`, and no `kubectl rollout undo` path.
 Recovery is always a **new release that rolls forward**:
 
 ```bash
-forge build prod --release v1.7.1 --push     # the registry prod's KCL declares
+forge build prod --release v1.7.1 --push     # each image to its declared reference
 forge env promote v1.7.1 --to prod --plan    # read it: direction must be AHEAD
 forge env promote v1.7.1 --to prod --note "<incident>"
 forge env deploy prod
@@ -355,8 +356,8 @@ release is an ordinary promote labelled `direction BEHIND`; see
 - Image tags are immutable — commit SHA by default, digest-pinned on deploy.
 - Secrets never live in KCL — it is checked in. Reference them
   (`config_secrets`, `forge.SecretRef`, `forge.ManagedSecret`).
-- A third-party image names its registry host (`docker.io/library/nats:2.10`);
-  a registry-less `image` means forge's own artifact.
+- EVERY image names its registry host (`ghcr.io/acme/api`). A hostless one is
+  refused at render, naming the workload: no env registry exists to complete it.
 
 ## Per-env config — KCL is the surface
 

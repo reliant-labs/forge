@@ -420,13 +420,21 @@ type buildResult struct {
 	// pushed manifest advertises, captured alongside.
 	digest    string
 	platforms []string
-	// image is the BARE image name this result built (`internal-console`),
-	// as opposed to name, which carries the " (docker)" display suffix. It is
-	// the key the KCL `_image_ref` seam looks up in image_digests, so a
-	// per-image build state can only be written for results that carry it.
+	// image is the artifact NAME this result built (`internal-console`), as
+	// opposed to name, which carries the " (docker)" display suffix. It keys
+	// the per-image build-state FILE, so a per-image build state can only be
+	// written for results that carry it — and it must stay a plain name, since
+	// a repository's slashes would escape the state directory.
 	// Set by the frontend docker path; the project image derives its own name
 	// from cfg.Name.
 	image string
+	// repository is the full destination this result was tagged and pushed to
+	// (`ghcr.io/acme/internal-console`) — the workload's declared reference
+	// minus its tag. It is what the build state and the release ledger RECORD,
+	// and the key the KCL `_image_ref` seam looks up in image_digests. Empty
+	// when the artifact has no declared repository, in which case the writer
+	// falls back to resolving `image` through the push plan.
+	repository string
 	// tag is the tag this result's image was BUILT and pushed as — the one
 	// its build state records. Carried on the result rather than recomputed
 	// by the state writer, so the two cannot disagree. Empty for non-image
@@ -1358,9 +1366,13 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 		if r.kind != "docker" || r.image == "" || r.tag == "" {
 			continue
 		}
+		repository := r.repository
+		if repository == "" {
+			repository = opts.pushPlan.repositoryFor(r.image)
+		}
 		state := buildtarget.State{
 			Service:   r.image,
-			Image:     opts.pushPlan.repositoryFor(r.image),
+			Image:     repository,
 			Tag:       r.tag,
 			PushedAt:  nowRFC3339(),
 			Digest:    r.digest,
@@ -2637,8 +2649,8 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	for _, w := range e.Workloads {
 		switch w.Build.Type {
 		case "docker":
-			imageName, imageTag := serviceDockerImage(w, resolvedTag, opts)
-			out = append(out, buildServiceDocker(ctx, cfg, w.Name, imageName, w.Build.Docker, opts, cfgArchForDocker, imageTag))
+			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
+			out = append(out, buildServiceDocker(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag))
 		case "remote":
 			out = append(out, buildServiceRemote(w.Name))
 		}
@@ -2693,7 +2705,7 @@ func buildServiceRemote(svcName string) buildResult {
 // `--build-arg BASE_*` injection happens — the Dockerfile's `FROM` lines are
 // the whole story. The only `--build-arg`s are the service's explicit
 // DockerBuild.build_args.
-func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
+func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
 	dockerArgs = []string{"build"}
 	// platform: the DockerBuild's explicit platform wins; otherwise the
 	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
@@ -2714,7 +2726,11 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile str
 			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
 		}
 	}
-	tags := opts.imageTags(imageName, resolvedTag)
+	// `repository` is already the declared destination (serviceDockerImage), so
+	// it is used as-is rather than resolved again through the push plan — a
+	// second lookup by name would not find a repository and would silently
+	// fall back to a bare tag.
+	tags := imageTagSet(repository, resolvedTag, opts.pushPlan.push, releaseImageTag(opts) != "")
 	for _, t := range tags.local {
 		dockerArgs = append(dockerArgs, "-t", t)
 	}
@@ -2805,25 +2821,31 @@ func checkServiceDockerContext(projectDir, svcName string, d *DockerBuild) error
 // WorkloadEntity.BuildImage), else the build-wide resolvedTag. The pin wins
 // over the build-wide tag because it IS the deploy ref; a --tag that
 // contradicts it is refused up front (checkExplicitTagAgainstPins).
-func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions) (name, tag string) {
-	name = w.Image
-	if name == "" {
-		name = w.Name
+// serviceDockerImage is the REPOSITORY a DockerBuild workload's image goes to
+// and the tag it carries. The repository is the workload's own declared image
+// minus any pin — registry host included, because that is where the build
+// pushes and where the deploy pulls. A workload that declares no image falls
+// back to its build's output_name / its own name, which names no host and so
+// is only ever tagged locally.
+func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions) (repository, tag string) {
+	repository = imageRepository(w.Image)
+	if repository == "" {
+		repository = w.Name
 		if d := w.Build.Docker; d != nil && d.OutputName != "" {
-			name = d.OutputName
+			repository = d.OutputName
 		}
 	}
 	pin, _ := w.PinnedBuildTag()
-	return name, buildTagFor(opts, pin, resolvedTag)
+	return repository, buildTagFor(opts, pin, resolvedTag)
 }
 
 // buildServiceDocker runs `docker build` for a DockerBuild service. It
 // reuses the same tag/registry/push/build-context primitives the project
 // image build uses (resolveBuildContext / appendBuildContexts /
 // expandPushRegistries) so a per-service image is tagged and pushed the
-// same way. imageName/resolvedTag come from serviceDockerImage. platform
+// same way. repository/resolvedTag come from serviceDockerImage. platform
 // overrides the env-wide arch.
-func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, imageName string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
+func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, repository string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 	if d != nil && d.Dockerfile != "" {
@@ -2841,7 +2863,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 
-	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, imageName, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
+	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
@@ -2876,6 +2898,9 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 	return buildResult{
 		name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
-		image: imageName, tag: resolvedTag, digest: digest, platforms: platforms,
+		// The state file is keyed by the SERVICE name (a path segment), while
+		// what it records is the repository. Keying it by the repository would
+		// put slashes in the filename.
+		image: svcName, repository: repository, tag: resolvedTag, digest: digest, platforms: platforms,
 	}
 }

@@ -50,19 +50,19 @@ const tagPrecedenceFixture = `{
     "image_tag": "latest",
     "workloads": [
       {
-        "name": "echo", "kind": "service", "image": "registry.example/prod/echo", "build_image": "echo",
+        "name": "echo", "kind": "service", "image": "registry.example/prod/echo", "build_image": "registry.example/prod/echo",
         "build": {"type": "shell", "cmd": "echo ran > ran-echo.txt"},
         "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
       },
       {
-        "name": "gw", "kind": "service", "image": "registry.example/prod/gw", "build_image": "gw",
+        "name": "gw", "kind": "service", "image": "registry.example/prod/gw", "build_image": "registry.example/prod/gw",
         "build": {"type": "docker", "dockerfile": "Dockerfile"},
         "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
       },
       {
-        "name": "api", "kind": "service", "image": "registry.example/prod/reliant", "build_image": "reliant:e2e",
+        "name": "api", "kind": "service", "image": "registry.example/prod/reliant", "build_image": "registry.example/prod/reliant:e2e",
         "build": {"type": "shell", "cmd": "echo ran > ran-api.txt"},
         "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
@@ -135,10 +135,13 @@ func assertRecorded(t *testing.T, dir, service, image, tag string) {
 	if st.Tag != tag {
 		t.Errorf("%s: recorded tag %q, want %q", image, st.Tag, tag)
 	}
-	if st.Image != image {
-		t.Errorf("%s: recorded image %q, want %q (the deploy and ledger key)", service, st.Image, image)
+	// The recorded Image is the full REPOSITORY the workload declared — host
+	// included, because that is the ledger key and the push target.
+	wantImage := tagPrecedenceRegistry + "/" + image
+	if st.Image != wantImage {
+		t.Errorf("%s: recorded image %q, want %q (the deploy and ledger key)", service, st.Image, wantImage)
 	}
-	wantRef := tagPrecedenceRegistry + "/" + image + ":" + tag
+	wantRef := wantImage + ":" + tag
 	if st.Digest != digestOf(wantRef) {
 		t.Errorf("%s: recorded digest %q is not the digest of the pushed ref %s (%s)", image, st.Digest, wantRef, digestOf(wantRef))
 	}

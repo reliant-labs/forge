@@ -39,11 +39,10 @@ func countFlag(args []string, tok string) int {
 // declaration there is nothing to reconcile.
 func TestServiceDockerBuildArgs_TagsTheWorkloadsDeclaredRepository(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "control-plane"}
-	opts := buildOptions{pushPlan: pushPlan{destinations: []imageDestination{
-		{repository: "us-docker.pkg.dev/svc-specific/workspace-base", workload: "workspace-base"},
-	}}}
-
-	args, _ := serviceDockerBuildArgs(cfg, "workspace-base", "Dockerfile", &DockerBuild{}, opts, "", "v1.2.3")
+	// serviceDockerBuildArgs takes the REPOSITORY, already resolved by
+	// serviceDockerImage from the workload's own image.
+	args, _ := serviceDockerBuildArgs(cfg, "us-docker.pkg.dev/svc-specific/workspace-base",
+		"Dockerfile", &DockerBuild{}, buildOptions{}, "", "v1.2.3")
 
 	for _, want := range []string{
 		"us-docker.pkg.dev/svc-specific/workspace-base:latest",

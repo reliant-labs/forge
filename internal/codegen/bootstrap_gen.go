@@ -1001,6 +1001,22 @@ type componentTestHelperData struct {
 	ProtoConnectPkg        string
 	MountMethod            string
 
+	// ConstructorType is what the component's New actually returns, so the
+	// helper's signature matches it: "Service" for the usual internal
+	// package, but "KeyWrapper" for one whose contract interface is named
+	// after what it does.
+	//
+	// IT IS READ FROM THE SOURCE, NOT ASSUMED. The template used to emit a
+	// literal `Service`, which made a package naming its interface anything
+	// else generate a helper referring to a type that does not exist — and
+	// because the file is forge-owned, the author could not fix it. That
+	// failed the whole `forge generate` at its own validate step, so ONE
+	// package's naming broke codegen for the entire repo.
+	//
+	// Empty falls back to Service, which is right for a just-scaffolded
+	// package whose constructor cannot be parsed yet.
+	ConstructorType string
+
 	AutoStubs       []DepsAutoStub
 	UnresolvedStubs []UnresolvedAutoStub
 	FuncDefaults    []DepsFuncDefault
@@ -1077,6 +1093,12 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			HasMigrationsFS: data.HasMigrationsFS,
 		}
 		dir := filepath.Join(projectDir, "internal", filepath.FromSlash(pkg.ImportPath))
+		// The helper returns what New returns. A package whose contract
+		// interface is not called Service (keywrap's KeyWrapper) would
+		// otherwise get a helper naming a type that does not exist.
+		if t, err := DetectConstructorType(dir); err == nil {
+			d.ConstructorType = t
+		}
 		if err := renderComponentTestHelpers(d, dir, projectDir, cs); err != nil {
 			return err
 		}

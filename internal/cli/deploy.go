@@ -1351,7 +1351,10 @@ func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) e
 		imageDigests:    in.imageDigests,
 		requiredSecrets: requiredSecretsForPreflight(in.entities),
 		secretSupply:    secretSupplyForPreflight(in.entities),
-		report:          in.report,
+		// Read from in.entities — the env actually being deployed, the same
+		// value mintDeployKubeconfigSecrets is handed further down.
+		provisionedByDeploy: provisionedByDeployForPreflight(in.entities),
+		report:              in.report,
 	})
 }
 
@@ -2778,6 +2781,12 @@ type deployPreflightInput struct {
 	// (the silent FailedMount fix). Rendered-stream Secrets are collected from
 	// the manifests directly, so this carries only the entity-derived supply.
 	secretSupply []cluster.SecretSupply
+	// provisionedByDeploy are the Secrets this deploy MINTS after the
+	// preflight (the minted forge.KubeconfigSecret declarations). Threaded
+	// into PreflightOpts.ProvisionedByDeploy so the live existence check does
+	// not block the deploy on a Secret that same deploy creates. See
+	// provisionedByDeployForPreflight.
+	provisionedByDeploy []cluster.ProvisionedSecret
 }
 
 // requiredSecretsForPreflight projects the env's declared external Secret
@@ -2829,6 +2838,38 @@ func requiredSecretsForPreflight(entities *KCLEntities) []cluster.RequiredSecret
 //     reports every sensitive config field as an undeclared mount.
 //
 // nil entities / no supply => nil (only rendered-stream Secrets then count).
+// provisionedByDeployForPreflight projects the Secrets THIS deploy creates
+// after the preflight onto the cluster-package shape the live existence check
+// consults — keeping the cluster package decoupled from the cli entity types
+// (the same pattern requiredSecretsForPreflight uses).
+//
+// Today that is exactly the minted forge.KubeconfigSecret declarations, read
+// from deployMintedKubeconfigSecrets — the SAME filter the mint phase iterates,
+// so the gate cannot drift from what is actually provisioned. Without this the
+// preflight blocks on its own output: the Secret is absent precisely because
+// the deploy being refused is the one that mints it.
+//
+// A declaration forge does NOT mint (no service_account — a copied kubeconfig)
+// is absent from this set and still BLOCKS when missing, which is correct: the
+// deploy will not create it.
+//
+// nil entities / no minted declarations => nil (the exemption is inert).
+func provisionedByDeployForPreflight(entities *KCLEntities) []cluster.ProvisionedSecret {
+	minted := deployMintedKubeconfigSecrets(entities)
+	if len(minted) == 0 {
+		return nil
+	}
+	out := make([]cluster.ProvisionedSecret, 0, len(minted))
+	for _, k := range minted {
+		out = append(out, cluster.ProvisionedSecret{
+			Name:      k.Name,
+			Namespace: k.Namespace,
+			By:        cluster.SupplyKubeconfigSecret,
+		})
+	}
+	return out
+}
+
 func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
 	if entities == nil {
 		return nil
@@ -2972,6 +3013,11 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		// this carries the KubeconfigSecret / ExternalSecret / rendered-provider
 		// supply.
 		SecretSupply: in.secretSupply,
+		// The Secrets this deploy mints a few phases after the preflight. They
+		// are exempt from the LIVE existence check only — demanding them
+		// up-front blocks the deploy on its own output. See
+		// PreflightOpts.ProvisionedByDeploy.
+		ProvisionedByDeploy: in.provisionedByDeploy,
 	}
 	// Secret + ConfigMap checks only against a REMOTE cluster (see
 	// docstring). An empty or local context leaves opts.Secrets /

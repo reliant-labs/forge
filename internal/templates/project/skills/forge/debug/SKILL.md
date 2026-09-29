@@ -126,7 +126,7 @@ The uncaught-error capture is the part worth internalizing: a `TypeError` that
 crashes a render, or a rejected promise, produces **no `console` call at all**
 and is invisible to a code search. It still lands in this file, with its stack.
 
-Two caveats that will otherwise mislead you:
+Three caveats that will otherwise mislead you:
 
 - **Dev only.** The receiving endpoint is a `apply: "serve"` Vite plugin (or a
   Next.js route that 404s in production), and `installDevLogging` no-ops
@@ -135,6 +135,38 @@ Two caveats that will otherwise mislead you:
   owns — one call in `src/main.tsx` / `src/app/providers.tsx` and one plugin
   entry. If the file has no `[browser:` lines at all, check those two places
   before concluding the code never ran.
+- **Lines arrive in batches, up to ~250ms late.** Forwarding coalesces console
+  calls into one POST per quarter-second (errors flush immediately, and the
+  buffer is beaconed on page unload), so `tail -f` lags slightly behind the
+  browser. That is the fix for one-request-per-line saturating the browser's
+  six-connections-per-origin pool and slowing the app's own RPCs.
+
+### If the log shows empty `[browser:...]` lines, the endpoint is out of date
+
+The endpoint is a **scaffold-once file the project owns**, so `forge generate`
+will not update it — and a `@reliantlabs/forge-web-runtime` upgraded through npm
+can outrun it. A pre-batch endpoint parses `{"entries":[…]}` as a single line,
+finds no `msg`, and prints one empty line for the whole batch.
+
+The client detects this (a 2xx with no `X-Forge-Devlog` response header), falls
+back to one request per line so nothing is lost, and says so once:
+
+```
+[browser:warn] [forge-devlog] this dev server's /__forge/log endpoint predates batched posts; update it
+```
+
+To fix it, make the endpoint understand both shapes — a `{"entries":[…]}` batch
+and a bare `{"level","msg"}` — print one `[browser:<level>] <msg>` line per
+entry in a single `console.log`, and answer `X-Forge-Devlog: 2`. The current
+version is what `forge scaffold frontend` writes into a new project:
+`src/lib/devlog-plugin.ts` (Vite) or `src/app/%5F_forge/log/route.ts`
+(Next.js). Copy it from a freshly scaffolded frontend.
+
+Related failure modes that produce the same silence: a malformed or oversized
+post now prints `[browser:warn] [forge-devlog] dropped …` rather than being
+swallowed, and a client that could not deliver a batch prepends
+`[forge-devlog] dropped N lines (<reason>)` to the next one. If you see none of
+those and no `[browser:` lines at all, the forwarder is not installed.
 
 Use chrome-devtools MCP tools (snapshots, console, network) when you need to
 DRIVE the UI or inspect live DOM/network state — the log file tells you what

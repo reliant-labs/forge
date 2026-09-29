@@ -312,4 +312,3 @@ func externalPushedRef(registry, image, tag string) string {
 	}
 	return registry + "/" + image + ":" + tag
 }
-

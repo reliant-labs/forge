@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING: a `forge.ShellBuild` `cmd` is plain KCL, run verbatim — the
   `${TOKEN}` substitution is gone.** Forge used to rewrite a fixed vocabulary
-  (`${IMAGE} ${TAG} ${CODE_VERSION} ${SERVICE} ${TARGETARCH} ${REGISTRY}
-  ${PROJECT_DIR} ${ENV} ${BUILD_CWD}`) into the command before running it. It no
+  into the command before running it — `${IMAGE}`, `${TAG}`, `${CODE_VERSION}`,
+  `${SERVICE}`, `${TARGETARCH}`, `${REGISTRY}`, `${PROJECT_DIR}`, `${ENV}` and
+  `${BUILD_CWD}`. It no
   longer substitutes anything and exports no variables of its own: the rendered
   string is handed to `sh -c` byte-for-byte, from the declared `cwd`, with the
   declared `env` merged onto the process environment. Every `$VAR` in a command

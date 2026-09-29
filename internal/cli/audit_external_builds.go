@@ -57,11 +57,11 @@ import (
 // `.external_builds.details.services`. JSON field names follow the
 // snake_case convention the rest of audit uses.
 type externalBuildEntry struct {
-	Service        string                `json:"service"`
-	Image          string                `json:"image,omitempty"`
-	BuildCwd       string                `json:"build_cwd,omitempty"`
-	ResolvedCwd    string                `json:"resolved_cwd,omitempty"`
-	CwdExists      bool                  `json:"cwd_exists"`
+	Service      string                `json:"service"`
+	Image        string                `json:"image,omitempty"`
+	BuildCwd     string                `json:"build_cwd,omitempty"`
+	ResolvedCwd  string                `json:"resolved_cwd,omitempty"`
+	CwdExists    bool                  `json:"cwd_exists"`
 	BuildEnvKeys []string              `json:"build_env_keys,omitempty"`
 	LastBuilds   []externalBuildStateE `json:"last_builds,omitempty"`
 }
@@ -250,4 +250,3 @@ func buildExternalBuildEntry(svc WorkloadEntity, projectDir string, envs []strin
 	}
 	return entry
 }
-

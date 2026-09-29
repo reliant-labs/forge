@@ -916,6 +916,9 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "type": "docker"
         "output_name": b.output_name if b.output_name else None
         "dockerfile": b.dockerfile
+        # The MAIN build context (a project-root-relative dir). None is the
+        # project root, which is how every build behaved before this existed.
+        "context": b.context if b.context else None
         "platform": b.platform if b.platform else None
         "target": b.target if b.target else None
         "build_args": b.build_args if b.build_args else {}

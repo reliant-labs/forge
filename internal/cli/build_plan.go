@@ -272,7 +272,15 @@ func planKCLDockerRemote(in planInputs) []buildPlanStep {
 			}
 			imageName, imageTag := serviceDockerImage(svc, in.resolvedTag, in.opts)
 			_, pushes := serviceDockerBuildArgs(in.cfg, imageName, dockerfile, b.Docker, in.opts, in.targets.cfgArchForDocker, imageTag)
-			step := buildPlanStep{kind: "docker", name: svc.Name, what: "docker build -f " + dockerfile, pushes: pushes}
+			step := buildPlanStep{
+				kind:   "docker",
+				name:   svc.Name,
+				what:   "docker build -f " + dockerfile + " " + serviceDockerContext(b.Docker),
+				pushes: pushes,
+			}
+			if err := checkServiceDockerContext(in.projectDir, svc.Name, b.Docker); err != nil {
+				step.problem = err.Error()
+			}
 			if !fileExists(resolveProjectPath(in.projectDir, dockerfile)) {
 				// A skip in the real build (buildServiceDocker), not a
 				// failure; the release gate catches a missing image.

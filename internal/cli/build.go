@@ -2747,8 +2747,69 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile str
 	} else {
 		dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
 	}
-	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
+	dockerArgs = append(dockerArgs, "-f", dockerfile, serviceDockerContext(d))
 	return dockerArgs, pushTags
+}
+
+// serviceDockerContext is the MAIN `docker build` context directory for a
+// DockerBuild: its declared context, else the project root. The build runs
+// with the project root as its cwd, so a relative context is used verbatim.
+//
+// A Dockerfile written to be run from its own directory (`COPY package.json
+// ./`) needs this; one that COPYs repo-root paths wants the default. Keeping
+// the default "." is what makes every pre-existing DockerBuild byte-identical.
+func serviceDockerContext(d *DockerBuild) string {
+	if d != nil && strings.TrimSpace(d.Context) != "" {
+		return strings.TrimSpace(d.Context)
+	}
+	return "."
+}
+
+// checkServiceDockerContext refuses a DockerBuild.context that does not name a
+// directory inside the project. It runs at plan time AND before the real build,
+// because the docker failure it replaces is inscrutable: a context pointing at
+// the wrong place surfaces as `failed to compute cache key: "/package.json":
+// not found`, which reads as a Dockerfile bug rather than a context bug.
+//
+// The DOCKERFILE is deliberately not checked against the context — docker
+// allows `-f` outside the context, and forge does not narrow that.
+func checkServiceDockerContext(projectDir, svcName string, d *DockerBuild) error {
+	if d == nil || strings.TrimSpace(d.Context) == "" {
+		return nil
+	}
+	ctxPath := strings.TrimSpace(d.Context)
+	if filepath.IsAbs(ctxPath) {
+		return fmt.Errorf(
+			"service %q declares build context %q, which is absolute: "+
+				"DockerBuild.context is a directory RELATIVE to the project root, so it stays "+
+				"valid on another machine and in CI", svcName, ctxPath)
+	}
+	root, err := filepath.Abs(projectDir)
+	if err != nil {
+		return fmt.Errorf("service %q: resolving the project root %q: %w", svcName, projectDir, err)
+	}
+	full := filepath.Join(root, ctxPath)
+	rel, err := filepath.Rel(root, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf(
+			"service %q declares build context %q, which escapes the project root: "+
+				"DockerBuild.context must name a directory inside the project. "+
+				"To pull in a sibling checkout, declare a NAMED build_contexts entry "+
+				"the Dockerfile COPY --from=s instead", svcName, ctxPath)
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		return fmt.Errorf(
+			"service %q declares build context %q, which does not exist (looked in %s): "+
+				"DockerBuild.context is a directory relative to the project root", svcName, ctxPath, full)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf(
+			"service %q declares build context %q, which is a file, not a directory (%s): "+
+				"DockerBuild.context is the directory docker sends as the build context",
+			svcName, ctxPath, full)
+	}
+	return nil
 }
 
 // serviceDockerImage is the repository and tag a DockerBuild workload's image
@@ -2795,8 +2856,12 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
 	}
 
+	if err := checkServiceDockerContext(".", svcName, d); err != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
+	}
+
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, imageName, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
-	fmt.Printf("[build] %s: docker build -f %s (%d tags)\n", svcName, dockerfile, countTags(dockerArgs))
+	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	cmd.Stdout = os.Stdout

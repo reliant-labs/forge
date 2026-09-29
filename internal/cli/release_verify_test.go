@@ -583,29 +583,34 @@ func TestVerifyOCI_NoRegistryIsUnverifiable(t *testing.T) {
 	}
 }
 
-// TestOCIManifestCoordinates pins the registry/image → host+repo split,
-// including the Docker Hub cases where the pull alias and the API host differ.
+// TestOCIManifestCoordinates pins the repository → host+repo split. The input
+// is now ONE value — the artifact's key, which is its full repository — because
+// a ledger artifact is keyed by the repository the workload declared, so the
+// key IS the address and there is no second field to reconcile.
 func TestOCIManifestCoordinates(t *testing.T) {
 	cases := []struct {
-		registry, image string
-		wantHost        string
-		wantRepo        string
+		repository string
+		wantHost   string
+		wantRepo   string
 	}{
-		{"ghcr.io/reliant-labs", "control-plane", "ghcr.io", "reliant-labs/control-plane"},
-		{"ghcr.io", "control-plane", "ghcr.io", "control-plane"},
-		{"us-central1-docker.pkg.dev/proj/repo", "api", "us-central1-docker.pkg.dev", "proj/repo/api"},
-		{"localhost:5000", "api", "localhost:5000", "api"},
-		// No dot and no port: a Docker Hub namespace, not a hostname.
-		{"acme", "api", "registry-1.docker.io", "acme/api"},
-		{"docker.io/acme", "api", "registry-1.docker.io", "acme/api"},
+		{"ghcr.io/reliant-labs/control-plane", "ghcr.io", "reliant-labs/control-plane"},
+		{"ghcr.io/control-plane", "ghcr.io", "control-plane"},
+		{"us-central1-docker.pkg.dev/proj/repo/api", "us-central1-docker.pkg.dev", "proj/repo/api"},
+		{"localhost:5000/api", "localhost:5000", "api"},
+		{"docker.io/acme/api", "registry-1.docker.io", "acme/api"},
 		// An unqualified official image lives under `library`.
-		{"docker.io", "alpine", "registry-1.docker.io", "library/alpine"},
+		{"docker.io/alpine", "registry-1.docker.io", "library/alpine"},
+		// A bare name is NOT an address. Guessing Docker Hub for it would
+		// report a confident failure against a registry the image was never
+		// pushed to, so it resolves to nothing and verify says unverifiable.
+		{"api", "", ""},
+		{"acme/api", "", ""},
 	}
 	for _, c := range cases {
-		host, repo := ociManifestCoordinates(c.registry, c.image)
+		host, repo := ociManifestCoordinates(c.repository)
 		if host != c.wantHost || repo != c.wantRepo {
-			t.Errorf("ociManifestCoordinates(%q, %q) = (%q, %q), want (%q, %q)",
-				c.registry, c.image, host, repo, c.wantHost, c.wantRepo)
+			t.Errorf("ociManifestCoordinates(%q) = (%q, %q), want (%q, %q)",
+				c.repository, host, repo, c.wantHost, c.wantRepo)
 		}
 	}
 }

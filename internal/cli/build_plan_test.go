@@ -406,7 +406,7 @@ func TestBuildPlan_HostedStaticSiteMissingPackageJSON(t *testing.T) {
 // `:latest` — so a cut that fails after its first push leaves every shared
 // tag where it was. Ordinary builds keep `:latest`.
 func TestImageTagSet_ReleaseWritesOnlyTheVersion(t *testing.T) {
-	rel := imageTagSet("reg.local", "control-plane", "gar.example/prod", "v1.7.0", true)
+	rel := imageTagSet("gar.example/prod/control-plane", "v1.7.0", true, true)
 	wantPush := []string{"gar.example/prod/control-plane:v1.7.0"}
 	if strings.Join(rel.push, ",") != strings.Join(wantPush, ",") {
 		t.Errorf("release push tags = %v, want exactly %v", rel.push, wantPush)
@@ -417,7 +417,7 @@ func TestImageTagSet_ReleaseWritesOnlyTheVersion(t *testing.T) {
 		}
 	}
 
-	ord := imageTagSet("reg.local", "control-plane", "gar.example/prod", "sha-abc", false)
+	ord := imageTagSet("gar.example/prod/control-plane", "sha-abc", true, false)
 	if !containsStr(ord.push, "gar.example/prod/control-plane:latest") || !containsStr(ord.push, "gar.example/prod/control-plane:sha-abc") {
 		t.Errorf("ordinary build push tags = %v, want :latest and :sha-abc", ord.push)
 	}
@@ -520,7 +520,7 @@ func TestExternalBuildTag_ReleaseOverridesSharedTags(t *testing.T) {
 func TestServiceDockerBuildArgs_ReleaseDropsLatest(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "control-plane"}
 	args, push := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{},
-		buildOptions{release: "v1.7.0", pushRegistry: "gar.example/prod"}, "", "v1.7.0")
+		buildOptions{release: "v1.7.0", pushPlan: pushPlan{push: true}}, "", "v1.7.0")
 	for _, a := range args {
 		if strings.HasSuffix(a, ":latest") {
 			t.Errorf("release DockerBuild tagged %q", a)

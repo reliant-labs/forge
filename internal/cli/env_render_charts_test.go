@@ -80,7 +80,6 @@ import forge.workloads as fw
 _target = forge.ClusterTarget {
     cluster = "gke_example_us-central1_prod"
     namespace = "charttest-prod"
-    registry = "reg.example.com"
     platform = "amd64"
 }
 
@@ -89,7 +88,7 @@ _bundle = forge.Bundle {
     cluster_target = _target
     workloads = [fw.Workload {
         name = "api"
-        image = "charttest"
+        image = "reg.example.com/charttest"
         runtime = forge.OnCluster {target = _target}
     }]
     helm_charts = [forge.HelmChart {

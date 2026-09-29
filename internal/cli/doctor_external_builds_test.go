@@ -237,12 +237,11 @@ func TestRunExternalBuildDoctorChecks_NoServicesReturnsNil(t *testing.T) {
       {
         "name": "api",
         "kind": "service",
-        "image": "api",
+        "image": "r/api",
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"

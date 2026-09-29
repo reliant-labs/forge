@@ -157,12 +157,11 @@ func TestGraph_EmitsAllResourceTypes(t *testing.T) {
       {
         "name": "tasks",
         "kind": "service",
-        "image": "tasks",
+        "image": "r/tasks",
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service",

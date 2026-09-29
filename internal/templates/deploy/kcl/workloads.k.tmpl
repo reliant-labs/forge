@@ -66,8 +66,8 @@ result: a bad override fails at that env, naming the field.
 ADDING SOMETHING THAT ISN'T GO CODE
 ===================================
 Anything can be a workload. Declare it in the env that HAS it rather than
-here, and only that env gets it. A third-party image names its registry
-host, or forge treats it as its own artifact and prefixes the env registry:
+here, and only that env gets it. Every image names its own registry — a
+third-party one included, because there is no env registry to fall back on:
 
     # in deploy/kcl/dev/main.k
     _nats = fw.Workload {

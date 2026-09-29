@@ -18,7 +18,7 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge cluster reload` | Re-render `deploy/kcl/dev/` + kubectl apply + wait rollout. The inner-loop reload after editing code or KCL. |
 | `forge cluster status [--json]` | Cluster up/down + kubectl context + config path + pods in the dev namespace + ingress URLs + sibling dev namespaces. |
 | `forge cluster logs [--service x] [--tail N]` | Stream `kubectl logs -f` for one or all forge-managed pods in the dev namespace. |
-| `forge cluster info` | Diagnostic dump — cluster, context, namespace, registry, the component list (every server answers on the binary's one mux, `PORT`, default 8080) and declared frontend ports. |
+| `forge cluster info` | Diagnostic dump — cluster, context, namespace, declared images, the component list (every server answers on the binary's one mux, `PORT`, default 8080) and declared frontend ports. |
 | `forge cluster urls [--json]` | Print the ingress URL table for the dev env (one row per HTTP/GRPC route). |
 | `forge cluster instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
 | `forge env up <env> --target <workload> [--background]` | Single-workload runner: scopes the WHOLE run — build, deploy, host and frontend phases — to the named workload. A workload bound to `forge.OnHost` launches as a host process, dispatching on its `runner` (`go-run` / `air` / `binary` / `delve`). |
@@ -262,10 +262,12 @@ declares `k3d-<project>`; staging/prod declare their own:
 _cluster = forge.ClusterTarget {
     cluster = "gke_acme-prod_us-central1_cluster-1"
     namespace = "myapp-prod"
-    registry = "ghcr.io/acme"
     platform = "amd64"
 }
 ```
+
+A ClusterTarget declares no registry: each workload declares its own, as part
+of its `image` in `deploy/kcl/workloads.k`.
 
 The deploy fails fast (even under `--dry-run`) if the declared cluster has no
 matching kubectl context. Fix your kubeconfig (e.g. `gcloud container clusters
@@ -299,9 +301,9 @@ primitives above:
 # guard: did we forget to run forge generate?
 forge generate --check
 
-# build + push to the registry deploy/kcl/staging/main.k declares
-# (cluster_target.registry — the one `forge env deploy staging` pulls from).
-# --push takes no value: to push elsewhere, change the declaration.
+# build + push each image to the reference its own workload declares in
+# deploy/kcl/workloads.k — the same reference `forge env deploy staging` pulls.
+# --push takes no value: to push elsewhere, change the workload's image.
 forge build staging --push
 
 # deploy with context guard

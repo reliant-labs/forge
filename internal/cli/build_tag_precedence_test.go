@@ -50,21 +50,21 @@ const tagPrecedenceFixture = `{
     "image_tag": "latest",
     "workloads": [
       {
-        "name": "echo", "kind": "service", "image": "echo", "build_image": "echo",
+        "name": "echo", "kind": "service", "image": "registry.example/prod/echo", "build_image": "echo",
         "build": {"type": "shell", "cmd": "echo ran > ran-echo.txt"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "registry": "registry.example/prod"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
       },
       {
-        "name": "gw", "kind": "service", "image": "gw", "build_image": "gw",
+        "name": "gw", "kind": "service", "image": "registry.example/prod/gw", "build_image": "gw",
         "build": {"type": "docker", "dockerfile": "Dockerfile"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "registry": "registry.example/prod"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
       },
       {
-        "name": "api", "kind": "service", "image": "reliant", "build_image": "reliant:e2e",
+        "name": "api", "kind": "service", "image": "registry.example/prod/reliant", "build_image": "reliant:e2e",
         "build": {"type": "shell", "cmd": "echo ran > ran-api.txt"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "registry": "registry.example/prod"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
       }
     ]

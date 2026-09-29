@@ -179,10 +179,8 @@ type ControlPlaneEntity struct {
 	Endpoint     string `json:"endpoint"`
 	TokenEnv     string `json:"token_env,omitempty"`
 	Organization string `json:"organization,omitempty"`
-	// Registry is the image registry a hosted env declares: where
-	// `forge build <env> --push` pushes and what `forge registry login <env>`
-	// logs in to (declaredRegistry). Empty when the env declares none.
-	Registry string `json:"registry,omitempty"`
+	// NO Registry field. A hosted env declares no registry any more than a
+	// cluster env does — each workload declares its own, as part of its image.
 }
 
 // RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s
@@ -696,10 +694,6 @@ type DockerBuild struct {
 	Platform  string            `json:"platform,omitempty"`
 	Target    string            `json:"target,omitempty"`
 	BuildArgs map[string]string `json:"build_args,omitempty"`
-	// Registry is the tag registry for THIS service's image
-	// (registry-host[/namespace]). Empty is the registry the env declares
-	// (buildOptions.envRegistry); with none, the image is tagged bare.
-	Registry string `json:"registry,omitempty"`
 	// BuildContexts maps a `docker buildx --build-context name=value` entry
 	// THIS service's Dockerfile needs (a sibling-checkout path the Dockerfile
 	// `COPY --from=name`s, a `docker-image://` override, …). Same value shapes

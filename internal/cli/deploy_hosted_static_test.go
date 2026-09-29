@@ -111,7 +111,6 @@ _bundle = forge.Bundle {
     control_plane = forge.ControlPlane {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
-        registry = "localhost:5051/org1"
     }
     frontends = [forge.Frontend {
         name = "web"

@@ -52,8 +52,7 @@ func TestSecretSupplyForPreflight_FileDedupesBySecretName(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "dev",
-          "registry": "r"
+          "namespace": "dev"
         },
         "spec": {
           "kind": "service",
@@ -111,8 +110,7 @@ func TestSecretSupplyForPreflight_ExternalProviderDoesNotSelfSupply(t *testing.T
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "prod",
-          "registry": "r"
+          "namespace": "prod"
         },
         "spec": {
           "kind": "service",

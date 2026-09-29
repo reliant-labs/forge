@@ -236,16 +236,16 @@ Examples:
   forge build -o bin                         # Output binaries to bin/
   forge build --docker                       # Also build Docker images
   forge build --debug                        # Build with debug symbols for Delve
-  forge build prod --push                    # Build + push to the registry deploy/kcl/prod/main.k declares
+  forge build prod --push                    # Build + push each image to the reference its workload declares
 
---push takes no value. The registry is DECLARED in the env's KCL — the
-env's forge.ClusterTarget.registry, or forge.ControlPlane.registry for a
-hosted env — the same value forge env up and forge env deploy read, so what
-is pushed is what is deployed. An env that declares none fails with the file
-and field to set; --push without an env asks for one.
+--push takes no value, and there is no registry to pass. Each image's
+destination is DECLARED on its workload, as part of its image field in
+deploy/kcl/workloads.k — the same reference forge env up and forge env deploy
+read, so what is pushed is what is deployed. Two workloads may name two
+different registries; both are pushed. --push without an env asks for one.
 
-When the declared registry is a k3d-local localhost:<port>, the image is
-also tagged registry.localhost:<port>/<name> (LOCAL alias only — the host
+When a declared reference is a k3d-local localhost:<port>, the image is
+also tagged registry.localhost:<port>/<path> (LOCAL alias only — the host
 can't DNS-resolve registry.localhost, so it isn't pushed; the containerd
 mirror config inside k3d resolves that reference at pull time).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -290,7 +290,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
-	cmd.Flags().BoolVar(&opts.push, "push", false, "Push docker images after build (implies --docker) to the registry the env's KCL declares (forge.ClusterTarget.registry, or forge.ControlPlane.registry for a hosted env, in deploy/kcl/<env>/main.k). Requires the environment argument; takes no value")
+	cmd.Flags().BoolVar(&opts.push, "push", false, "Push docker images after build (implies --docker), each to the reference its own workload declares (its image field in deploy/kcl/workloads.k). Requires the environment argument; takes no value and carries no registry")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
@@ -530,9 +530,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// BEFORE tag resolution so the env's resolved image_tag can seed the
 	// default build tag.
 	//
-	// The same step decides where this build pushes (resolvePushRegistry:
-	// the registry the env's KCL declares, or a runbook) and writes it back
-	// into opts.pushRegistry, so everything below reads one resolved value.
+	// The same step decides where this build pushes (resolvePushPlan: each
+	// workload's declared reference, or a runbook) and writes it back into
+	// opts.pushPlan, so everything below reads one resolution.
 	entities, push, err := renderBuildInputs(ctx, cfg, &opts)
 	if err != nil {
 		return err
@@ -827,7 +827,8 @@ type buildTargetSet struct {
 // frontend path means every downstream consumer sees a real directory.
 //
 // It returns the env's render twice: declared is the FULL render, for the
-// env-wide facts a narrowed set can lose (resolvePushRegistry's registry);
+// facts a narrowed set can lose (resolvePushPlan's destinations, which a
+// --target narrowing can drop);
 // entities is the set this build acts on, narrowed by --target. Both are nil
 // without an env, or when the env has no KCL directory.
 func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions) (declared, entities *KCLEntities, err error) {

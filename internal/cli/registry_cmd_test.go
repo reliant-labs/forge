@@ -158,7 +158,7 @@ const refDigest = "sha256:111111111111111111111111111111111111111111111111111111
 // the image, the digest — never a YAML literal.
 func TestRegistryRef_PrintsThePushedDigestRef(t *testing.T) {
 	dir := planProject(t, declaredRegistryFixture)
-	if err := WriteBuildState(dir, "prod", BuildState{Image: "pt", Tag: "t1", Registry: "registry.example/prod", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {
+	if err := WriteBuildState(dir, "prod", BuildState{Image: "pt", Tag: "t1", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {
 		t.Fatal(err)
 	}
 	out, err := runRegistryCommand(t, "", "ref", "prod")
@@ -175,7 +175,7 @@ func TestRegistryRef_PrintsThePushedDigestRef(t *testing.T) {
 // registry pointer), so later steps read them as step outputs.
 func TestRegistryRef_WritesGitHubOutput(t *testing.T) {
 	dir := planProject(t, declaredRegistryFixture)
-	if err := WriteBuildState(dir, "prod", BuildState{Image: "pt", Tag: "t1", Registry: "registry.example/prod", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {
+	if err := WriteBuildState(dir, "prod", BuildState{Image: "pt", Tag: "t1", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {
 		t.Fatal(err)
 	}
 	outFile := filepath.Join(t.TempDir(), "gh_output")
@@ -211,7 +211,7 @@ func TestRegistryRef_UnpushedBuildFails(t *testing.T) {
 // TestRegistryRef_NamedImage reads a per-image state (a frontend, a DockerBuild).
 func TestRegistryRef_NamedImage(t *testing.T) {
 	planProject(t, declaredRegistryFixture)
-	persistImageBuildStates(buildOptions{env: "prod", pushRegistry: "registry.example/prod"},
+	persistImageBuildStates(buildOptions{env: "prod", pushPlan: pushPlan{push: true, env: "prod"}},
 		[]buildResult{{kind: "docker", image: "web", tag: "t1", digest: refDigest}})
 	out, err := runRegistryCommand(t, "", "ref", "prod", "--image", "web")
 	if err != nil {

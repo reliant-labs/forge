@@ -215,9 +215,11 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 #                   resolves to ITS content-addressed digest. forge.image_digests().
 #                   Absent on the local-registry / `kcl run` path (→ {}).
 #
-# The image REGISTRY is not among them: it is a field your main.k declares
-# (forge.ClusterTarget.registry / forge.ControlPlane.registry), like any
-# other. forge binds no option for it and owns no accessor.
+# The image REGISTRY is not among them, and is not an env field either: it is
+# part of each WORKLOAD's `image`. forge binds no option for it and invents no
+# value for it — it appends the tag and digest above to the reference the
+# author wrote. forge.image_registry_host / forge.image_on_registry read and
+# re-point that reference.
 #
 # Per-env app config is NOT passed via `-D`: it lives in the typed AppConfig
 # instance in `deploy/kcl/<env>/config.k` and is projected into each workload's

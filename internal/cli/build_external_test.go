@@ -203,15 +203,14 @@ func TestExternalBuildServices_FiltersShellBuilds(t *testing.T) {
 func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 	projDir := t.TempDir()
 	services := []WorkloadEntity{
-		shellSvc("edge", "edge-img", "true", "", nil), // cwd empty so no mkdir
+		shellSvc("edge", "localhost:5051/edge-img", "true", "", nil), // cwd empty so no mkdir
 	}
 	opts := buildOptions{env: "dev", parallel: false}
 	results := buildExternalServices(
 		context.Background(),
 		services,
 		opts,
-		"localhost:5051", // registry
-		"v1.2.3",         // tag
+		"v1.2.3", // tag
 		projDir,
 	)
 	if len(results) != 1 {
@@ -248,14 +247,13 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 	projDir := t.TempDir()
 	services := []WorkloadEntity{
-		shellSvc("edge", "edge-img", "false", "missing-sibling", nil), // missing-cwd check short-circuits
+		shellSvc("edge", "localhost:5051/edge-img", "false", "missing-sibling", nil), // missing-cwd check short-circuits
 	}
 	opts := buildOptions{env: "dev", parallel: false}
 	results := buildExternalServices(
 		context.Background(),
 		services,
 		opts,
-		"localhost:5051",
 		"v1",
 		projDir)
 	if len(results) != 1 {
@@ -306,7 +304,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 		return priorDigest, []string{"linux/amd64"}, nil
 	}
 	if r := buildExternalServices(context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "prod", projDir); len(r) != 1 || r[0].err != nil {
+		"prod", projDir); len(r) != 1 || r[0].err != nil {
 		t.Fatalf("first build: %+v", r)
 	}
 	if dst, err := ReadBuildState(projDir, "prod"); err != nil || dst == nil || dst.Digest != priorDigest {
@@ -319,7 +317,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 		return "", nil, fmt.Errorf("not in registry: %s", ref)
 	}
 	if r := buildExternalServices(context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "prod", projDir); len(r) != 1 || r[0].err != nil {
+		"prod", projDir); len(r) != 1 || r[0].err != nil {
 		t.Fatalf("second build: %+v", r)
 	}
 
@@ -430,12 +428,11 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 	t.Cleanup(func() { externalImageDigestResolver = orig })
 
 	services := []WorkloadEntity{
-		shellSvc("reliant-api-server", "reliant", "true", "", nil),
+		shellSvc("reliant-api-server", "ghcr.io/reliant-labs/reliant", "true", "", nil),
 	}
 	opts := buildOptions{env: "staging", parallel: false}
 	results := buildExternalServices(
-		context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "staging", projDir)
+		context.Background(), services, opts, "staging", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -505,13 +502,13 @@ func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
 	t.Cleanup(func() { externalImageDigestResolver = orig })
 
 	services := []WorkloadEntity{
+		// A bare image: no registry host, so the pushed ref is local-only and
+		// the digest lookup cannot resolve it. The build must still succeed.
 		shellSvc("workspace-base", "workspace-base", "true", "", nil),
 	}
 	opts := buildOptions{env: "e2e", parallel: false}
 	results := buildExternalServices(
-		context.Background(), services, opts,
-		"", "e2e", projDir, // empty registry → local ref
-	)
+		context.Background(), services, opts, "e2e", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("build must still succeed on a digest miss: %+v", results)
 	}

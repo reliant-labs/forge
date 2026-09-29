@@ -15,14 +15,13 @@ import forge.workloads as fw
 _t = forge.ClusterTarget {
     cluster = "test-cluster"
     namespace = "testns"
-    registry = "reg.example.com/proj"
 }
 
 output = forge.render(forge.Bundle {
     project = "proj"
     workloads = [fw.Workload {
         name = "api"
-        image = "api"
+        image = "reg.example.com/proj/api"
         ports = [fw.Port {name = "http", port = 8080}]
         sidecars = [
             fw.Container {

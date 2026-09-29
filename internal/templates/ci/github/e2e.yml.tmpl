@@ -112,8 +112,8 @@ jobs:
 
       - name: Build images
         # Builds what the e2e env declares, renders its frontend config.js
-        # into the build, and pushes to the cluster-local registry the env
-        # declares (its forge.ClusterTarget.registry).
+        # into the build, and pushes each image to the reference its own
+        # workload declares (the cluster-local registry, for this env).
         run: forge build e2e --push
 
       - name: Deploy to the cluster

@@ -18,7 +18,7 @@ import (
 func scaffoldedWorkloadsProject(t *testing.T, name string, hasFrontend bool) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := generator.ScaffoldWorkloadsKCL(dir, name, nil, hasFrontend); err != nil {
+	if err := generator.ScaffoldWorkloadsKCL(dir, "github.com/acme/"+name, name, nil, hasFrontend); err != nil {
 		t.Fatalf("ScaffoldWorkloadsKCL: %v", err)
 	}
 	return dir

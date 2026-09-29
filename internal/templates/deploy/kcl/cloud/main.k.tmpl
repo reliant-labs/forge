@@ -7,7 +7,7 @@ This file BINDS; it does not declare. `deploy/kcl/workloads.k` states what
 each workload is (build, subcommand, ports, credentials). This file says
 where each one runs here — one binding per workload, all on this env's
 cluster as scaffolded — and states the values only this environment knows:
-the cluster, namespace and registry, the capacity floor, the network
+the cluster and namespace, the capacity floor, the network
 policy, and where secrets come from.
 
 Each cluster-bound workload becomes a `forge.dev/v1alpha1 Workload` record,

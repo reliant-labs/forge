@@ -47,8 +47,7 @@ func TestShellBuild_CwdAndVerbatimCmd(t *testing.T) {
 	svcs := []WorkloadEntity{shellSvc("gw", "my-gw", cmd, "", nil)}
 
 	opts := buildOptions{env: "dev", parallel: false, outputDir: "bin"}
-	results := buildExternalServices(context.Background(), svcs, opts,
-		"reg.example.com", "v1.2.3", projDir)
+	results := buildExternalServices(context.Background(), svcs, opts, "v1.2.3", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("buildExternalServices: %+v", results)
 	}
@@ -91,7 +90,7 @@ func TestShellBuild_DeclaredEnvResolvesInTheShell(t *testing.T) {
 	svcs := []WorkloadEntity{shellSvc("gw", "my-gw", cmd, "", map[string]string{"TARGETARCH": "arm64"})}
 
 	results := buildExternalServices(context.Background(), svcs,
-		buildOptions{env: "dev", outputDir: "bin"}, "reg", "v1", projDir)
+		buildOptions{env: "dev", outputDir: "bin"}, "v1", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("buildExternalServices: %+v", results)
 	}
@@ -112,8 +111,7 @@ func TestShellBuild_NoopTrue(t *testing.T) {
 	projDir := t.TempDir()
 	svcs := []WorkloadEntity{shellSvc("reliant-noop", "reliant", "true  # built upstream; nothing to do here", "", nil)}
 	results := buildExternalServices(context.Background(), svcs,
-		buildOptions{env: "dev", outputDir: "bin"},
-		"reg", "dev", projDir)
+		buildOptions{env: "dev", outputDir: "bin"}, "dev", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("no-op ShellBuild should succeed, got: %+v", results)
 	}

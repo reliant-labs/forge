@@ -3,8 +3,8 @@ Negative test — a workload bound to a CLUSTER runtime must declare an image
 that names its own registry HOST, because the registry is declared on the
 image and nowhere else. There is no env-level registry to fall back on.
 
-A bare `api` used to be completed by ClusterTarget.registry. With that field
-gone, a bare name would render as `api:<tag>`, which the kubelet resolves
+A bare `api` used to be completed by an env-level field. With no env declaring
+a registry, a bare name renders as `api:<tag>`, which the kubelet resolves
 against Docker Hub and fails to pull — an ImagePullBackOff minutes after a
 deploy reported success. So it fails at KCL LOAD, naming the workload.
 """

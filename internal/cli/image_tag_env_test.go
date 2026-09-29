@@ -42,10 +42,10 @@ func TestPinnedTagOf(t *testing.T) {
 const envImageTagFixture = `{"output": {
   "project": "control-plane", "env": "staging", "image_tag": "staging",
   "workloads": [
-    {"name": "reliant-api-server", "kind": "service", "image": "reliant",
+    {"name": "reliant-api-server", "kind": "service", "image": "localhost:5051/reliant",
      "runtime": {"type": "cluster", "cluster": "gke", "namespace": "control-plane-staging"},
      "spec": {"kind": "service", "image": "ghcr.io/reliant-labs/reliant:staging"}},
-    {"name": "admin-server", "kind": "service", "image": "control-plane",
+    {"name": "admin-server", "kind": "service", "image": "localhost:5051/control-plane",
      "runtime": {"type": "cluster", "cluster": "gke", "namespace": "control-plane-staging"},
      "spec": {"kind": "service", "image": "ghcr.io/reliant-labs/control-plane:staging"}}
   ]
@@ -110,8 +110,7 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 		t.Fatalf("resolveBuildImageTag = (%q, %q, %v), want the env's image_tag staging", buildTag, source, err)
 	}
 	results := buildExternalServices(
-		context.Background(), services, opts,
-		"ghcr.io/reliant-labs", buildTag, projDir)
+		context.Background(), services, opts, buildTag, projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -146,8 +145,7 @@ func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	opts := buildOptions{env: "e2e", parallel: false}
 	// "staging" stands in for the build-wide tag (the env's image_tag).
 	results := buildExternalServices(
-		context.Background(), services, opts,
-		"registry.localhost:5051", "staging", projDir)
+		context.Background(), services, opts, "staging", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -168,7 +166,7 @@ const buildOnlyPinMain = `
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-e2e", registry = "localhost:5051"}
+_k3d = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-e2e"}
 
 output = forge.render(forge.Bundle {
     project = "cp"
@@ -178,13 +176,13 @@ output = forge.render(forge.Bundle {
         fw.Workload {
             name = "workspace-base"
             kind = "tool"
-            image = "workspace-base:dev-per-daemon"
+            image = "localhost:5051/workspace-base:dev-per-daemon"
             build = forge.ShellBuild {cmd = "true"}
             runtime = forge.BuildOnly {}
         }
         fw.Workload {
             name = "hostapp"
-            image = "hostapp:v3"
+            image = "localhost:5051/hostapp:v3"
             build = forge.ShellBuild {cmd = "true"}
             command = ["./bin/hostapp"]
             runtime = forge.OnHost {}

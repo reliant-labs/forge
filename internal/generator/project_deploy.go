@@ -367,4 +367,3 @@ func (g *ProjectGenerator) generateIDPSteps() error {
 	}
 	return os.WriteFile(filepath.Join(g.Path, "idp-steps.yaml"), content, 0644)
 }
-

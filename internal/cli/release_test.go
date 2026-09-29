@@ -186,7 +186,7 @@ func TestHarvestReleaseArtifacts(t *testing.T) {
 func TestHarvestReleaseArtifacts_RecordsRegistry(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteBuildState(dir, "default", BuildState{
-		Image: "control-plane", Tag: "v1.4.0", Registry: "ghcr.io/reliant-labs",
+		Image: "control-plane", Tag: "v1.4.0",
 		Pushed: true, PushedAt: nowRFC3339(), Digest: sha("a"),
 	}); err != nil {
 		t.Fatalf("write aggregate: %v", err)
@@ -194,8 +194,7 @@ func TestHarvestReleaseArtifacts_RecordsRegistry(t *testing.T) {
 	// An external build pushed to a DIFFERENT registry — each artifact must
 	// carry its own, not one borrowed from a sibling.
 	if err := buildtarget.WriteState(dir, "default", buildtarget.State{
-		Service: "reliant", Image: "reliant", Tag: "v1.4.0",
-		Registry: "us-central1-docker.pkg.dev/proj/repo", PushedAt: nowRFC3339(), Digest: sha("b"),
+		Service: "reliant", Image: "reliant", Tag: "v1.4.0", PushedAt: nowRFC3339(), Digest: sha("b"),
 	}); err != nil {
 		t.Fatalf("write per-service: %v", err)
 	}

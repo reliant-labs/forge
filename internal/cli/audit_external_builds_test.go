@@ -30,12 +30,11 @@ func TestAuditExternalBuilds_NoServicesIsOK(t *testing.T) {
       {
         "name": "api",
         "kind": "service",
-        "image": "api",
+        "image": "r/api",
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -79,7 +78,7 @@ func TestAuditExternalBuilds_PresentCwdNoConflictIsOK(t *testing.T) {
       {
         "name": "gw",
         "kind": "service",
-        "image": "my-gw",
+        "image": "r/my-gw",
         "build": {
           "type": "shell",
           "cmd": "docker build .",
@@ -88,8 +87,7 @@ func TestAuditExternalBuilds_PresentCwdNoConflictIsOK(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -130,7 +128,7 @@ func TestAuditExternalBuilds_MissingCwdWarns(t *testing.T) {
       {
         "name": "gw",
         "kind": "service",
-        "image": "gw",
+        "image": "r/gw",
         "build": {
           "type": "shell",
           "cmd": "docker build .",
@@ -139,8 +137,7 @@ func TestAuditExternalBuilds_MissingCwdWarns(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -184,7 +181,7 @@ func TestAuditExternalBuilds_TokenNamedEnvKeyIsNotAConflict(t *testing.T) {
       {
         "name": "gw",
         "kind": "service",
-        "image": "gw",
+        "image": "r/gw",
         "build": {
           "type": "shell",
           "cmd": "docker build .",
@@ -198,8 +195,7 @@ func TestAuditExternalBuilds_TokenNamedEnvKeyIsNotAConflict(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -241,9 +237,8 @@ func TestAuditExternalBuilds_StateReadAggregatesEnvs(t *testing.T) {
 	for _, env := range []string{"dev", "prod"} {
 		if err := buildtarget.WriteState(dir, env, buildtarget.State{
 			Service:  "gw",
-			Image:    "gw",
+			Image:    "ghcr.io/acme/gw",
 			Tag:      env + "-tag",
-			Registry: "r",
 			PushedAt: "2026-01-01T00:00:00Z",
 		}); err != nil {
 			t.Fatalf("WriteState %s: %v", env, err)
@@ -255,7 +250,7 @@ func TestAuditExternalBuilds_StateReadAggregatesEnvs(t *testing.T) {
       {
         "name": "gw",
         "kind": "service",
-        "image": "gw",
+        "image": "r/gw",
         "build": {
           "type": "shell",
           "cmd": "docker build .",
@@ -264,8 +259,7 @@ func TestAuditExternalBuilds_StateReadAggregatesEnvs(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -316,7 +310,7 @@ func TestAuditExternalBuilds_JSONShape_Golden(t *testing.T) {
       {
         "name": "gw",
         "kind": "service",
-        "image": "gw",
+        "image": "r/gw",
         "build": {
           "type": "shell",
           "cmd": "docker build .",
@@ -328,8 +322,7 @@ func TestAuditExternalBuilds_JSONShape_Golden(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"

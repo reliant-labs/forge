@@ -125,46 +125,49 @@ func TestBuildDebugFlagDefaultIsFalse(t *testing.T) {
 	}
 }
 
-// TestExpandPushRegistries covers the k3d-aware expansion: localhost:<port>
-// fans out to also tag registry.localhost:<port> (the in-cluster
-// pull reference), every other registry passes through unchanged.
-func TestExpandPushRegistries(t *testing.T) {
+// TestK3dMirrorRepositories covers the k3d-aware mirror tag: a
+// localhost:<port> REPOSITORY also gets the same path under
+// registry.localhost:<port> (the in-cluster pull reference); every other host
+// gets none. The path is kept, so two images that differ only in their org
+// path stay distinct after the swap.
+func TestK3dMirrorRepositories(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
 		want []string
 	}{
 		{"empty", "", nil},
+		{"a bare name has no host, so no mirror", "api", nil},
 		{
-			name: "localhost retags as registry.localhost",
-			in:   "localhost:5051",
-			want: []string{"localhost:5051", "registry.localhost:5051"},
+			name: "localhost mirrors, path kept",
+			in:   "localhost:5051/api",
+			want: []string{"registry.localhost:5051/api"},
 		},
 		{
-			name: "localhost on a different port also retags",
-			in:   "localhost:5050",
-			want: []string{"localhost:5050", "registry.localhost:5050"},
+			name: "a multi-segment path is kept whole",
+			in:   "localhost:5050/acme/api",
+			want: []string{"registry.localhost:5050/acme/api"},
 		},
 		{
-			name: "non-localhost registries pass through unchanged",
-			in:   "ghcr.io/acme",
-			want: []string{"ghcr.io/acme"},
+			name: "a real registry gets no mirror",
+			in:   "ghcr.io/acme/api",
+			want: nil,
 		},
 		{
 			name: "127.0.0.1 is NOT auto-mirrored (only literal localhost)",
-			in:   "127.0.0.1:5051",
-			want: []string{"127.0.0.1:5051"},
+			in:   "127.0.0.1:5051/api",
+			want: nil,
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := expandPushRegistries(c.in)
+			got := k3dMirrorRepositories(c.in)
 			if len(got) != len(c.want) {
-				t.Fatalf("expandPushRegistries(%q) = %v, want %v", c.in, got, c.want)
+				t.Fatalf("k3dMirrorRepositories(%q) = %v, want %v", c.in, got, c.want)
 			}
 			for i, v := range got {
 				if v != c.want[i] {
-					t.Errorf("expandPushRegistries(%q)[%d] = %q, want %q", c.in, i, v, c.want[i])
+					t.Errorf("k3dMirrorRepositories(%q)[%d] = %q, want %q", c.in, i, v, c.want[i])
 				}
 			}
 		})

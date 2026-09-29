@@ -26,26 +26,26 @@ import (
 const pinnedBuildBundle = `import forge
 import forge.workloads as fw
 
-_t = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5051"}
+_t = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev"}
 
 output = forge.render(forge.Bundle {
     project = "cp"
     workloads = [_w | {runtime = forge.OnCluster {target = _t}} if not _w.runtime else _w for _w in [
         fw.Workload {
             name = "api-server"
-            image = "reliant:e2e"
+            image = "localhost:5051/reliant:e2e"
             args = ["api"]
             build = forge.ShellBuild {cmd = "echo localhost:5051/reliant:e2e > out-api-server.txt"}
         }
         fw.Workload {
             name = "worker"
-            image = "acme/reliant-worker:v2"
+            image = "localhost:5051/acme/reliant-worker:v2"
             args = ["work"]
             build = forge.ShellBuild {cmd = "echo localhost:5051/acme/reliant-worker:v2 > out-worker.txt"}
         }
         fw.Workload {
             name = "docker-api"
-            image = "gateway:v7"
+            image = "localhost:5051/gateway:v7"
             args = ["gw"]
             build = forge.DockerBuild {output_name = "ignored-by-a-declared-image"}
         }
@@ -82,7 +82,7 @@ func TestPinnedImageBuildPushesTheRenderedRef(t *testing.T) {
 	// under the env tag, a ref no deploy pulls.
 	projDir := t.TempDir()
 	results := buildExternalServices(context.Background(), externalBuildServices(ents),
-		buildOptions{env: "dev"}, "localhost:5051", "abc1234-dirty", projDir)
+		buildOptions{env: "dev"}, "abc1234-dirty", projDir)
 	for _, r := range results {
 		if r.err != nil {
 			t.Fatalf("external build %s: %v", r.name, r.err)
@@ -101,7 +101,7 @@ func TestPinnedImageBuildPushesTheRenderedRef(t *testing.T) {
 	// DockerBuild lane: the -t tags forge would push.
 	docker := ents.FindWorkload("docker-api")
 	cfg := &config.ProjectConfig{Name: "cp"}
-	opts := buildOptions{env: "dev", pushRegistry: "localhost:5051"}
+	opts := buildOptions{env: "dev", pushPlan: pushPlan{push: true, env: "dev"}}
 	name, tag := serviceDockerImage(*docker, "abc1234-dirty", opts)
 	_, pushes := serviceDockerBuildArgs(cfg, name, "Dockerfile", docker.Build.Docker, opts, "", tag)
 	if !slices.Contains(pushes, "localhost:5051/gateway:v7") {
@@ -116,13 +116,13 @@ func TestDigestPinnedBuiltImageIsRefused(t *testing.T) {
 	bundle := `import forge
 import forge.workloads as fw
 
-_t = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5051"}
+_t = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev"}
 
 output = forge.render(forge.Bundle {
     project = "cp"
     workloads = [_w | {runtime = forge.OnCluster {target = _t}} if not _w.runtime else _w for _w in [fw.Workload {
         name = "api-server"
-        image = "reliant@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+        image = "localhost:5051/reliant@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
         args = ["api"]
         build = forge.ShellBuild {cmd = "true"}
     }]]

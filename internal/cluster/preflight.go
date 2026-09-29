@@ -672,6 +672,34 @@ type PreflightOpts struct {
 	// KEY SET; only the live byte equality needs cluster reads).
 	SecretValues SecretValueGetter
 
+	// ProvisionedByDeploy are the Secrets THIS deploy creates AFTER the
+	// preflight runs, so the live existence check must not demand them
+	// up-front. Today that is exactly the forge.KubeconfigSecret declarations
+	// forge MINTS on the deploy path (a declared service_account).
+	//
+	// Without this the gate blocks on its own output: forge refuses to deploy
+	// because a Secret is absent, and the deploy it refuses is the one that
+	// would have created it. There is no order of operations that fixes it —
+	// minting first would grant a credential on a deploy the gate then
+	// rejects, and under --dry-run the mint writes nothing at all, so the
+	// Secret is absent by construction.
+	//
+	// This is the same reasoning that already skips the local-cluster Secret
+	// check: a Secret forge itself applies moments later is not a missing
+	// dependency, it is a not-yet-executed step of this deploy.
+	//
+	// The set must be DERIVED from the provisioning step rather than
+	// re-described beside it, or the two drift and the gate silently stops
+	// covering a Secret nobody creates. The caller builds it from the same
+	// filter the mint phase iterates.
+	//
+	// Scope is deliberately narrow: a Secret in here is exempt from the live
+	// existence check ONLY. It still counts as DEMAND for every other gate,
+	// and a Secret forge does not provision — including a KubeconfigSecret
+	// that COPIES a kubeconfig rather than minting one — is not in this set
+	// and still BLOCKS when absent.
+	ProvisionedByDeploy []ProvisionedSecret
+
 	// SecretSupply is the env's bundle-internal Secret SUPPLY for the
 	// RENDER-TIME back-propagation gate (CheckSecretSupply): the Secrets the
 	// bundle PROVIDES via a forge.KubeconfigSecret mint, a forge.ExternalSecret
@@ -707,6 +735,65 @@ type RequiredSecret struct {
 	// prerequisites are checked in (RequiredSecretContexts, else Context), the
 	// conservative choice for a Secret nothing attributes to a cluster.
 	Contexts []string
+}
+
+// ProvisionedSecret is one Secret THIS deploy creates after the preflight, so
+// its absence up-front is not a missing dependency. See
+// PreflightOpts.ProvisionedByDeploy for why the gate needs to know.
+//
+// Namespace is recorded for the report; the match is name-based, matching
+// SecretSupply. A forge bundle renders into one deploy namespace, and the
+// alternative — insisting on an exact namespace match — fails CLOSED in the
+// wrong direction here: a mismatch would re-block the deploy on a Secret forge
+// does create, which is the defect this exists to fix.
+type ProvisionedSecret struct {
+	// Name is the k8s Secret name this deploy will create. The match key.
+	Name string
+	// Namespace is the declared namespace (empty means the deploy namespace).
+	Namespace string
+	// By names the provisioning step, for the report.
+	By SecretSupplyKind
+}
+
+// provisionedSecretNames is the name set of the Secrets this deploy creates
+// after the preflight. Empty input yields an empty set, which exempts nothing.
+func provisionedSecretNames(provisioned []ProvisionedSecret) map[string]struct{} {
+	names := make(map[string]struct{}, len(provisioned))
+	for _, p := range provisioned {
+		if name := strings.TrimSpace(p.Name); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+// withoutProvisionedSecrets drops from the manifest-driven Secret references
+// the ones this deploy is itself about to create, so the live existence check
+// does not demand a Secret up-front that the same command provisions a few
+// phases later.
+//
+// It filters the REFERENCE set rather than suppressing the finding afterwards
+// on purpose: an exempt Secret produces no lookup at all, so the gate never
+// reads a cluster to ask a question whose answer it would discard.
+//
+// Returns refs unchanged when nothing is exempt, so the overwhelmingly common
+// case allocates nothing.
+func withoutProvisionedSecrets(
+	refs map[string]map[string]struct{},
+	provisioned []ProvisionedSecret,
+) map[string]map[string]struct{} {
+	exempt := provisionedSecretNames(provisioned)
+	if len(exempt) == 0 || len(refs) == 0 {
+		return refs
+	}
+	out := make(map[string]map[string]struct{}, len(refs))
+	for name, keys := range refs {
+		if _, skip := exempt[name]; skip {
+			continue
+		}
+		out[name] = keys
+	}
+	return out
 }
 
 // SecretValueGetter resolves a Secret's decoded .data values for the
@@ -923,9 +1010,15 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 
 	// Secret checks — one lookup per distinct Secret, only when a getter
 	// and a target context are configured.
+	// The Secrets THIS deploy mints after the preflight are dropped from the
+	// reference set first — see PreflightOpts.ProvisionedByDeploy. Everything
+	// else is checked exactly as before, including a KubeconfigSecret forge
+	// does NOT mint.
 	if opts.Secrets != nil && hasContext {
 		checkKeyedResources(ctx, keyedResourceCheck{
-			wg: &wg, refs: refs.Secrets, kind: "Secret", namespace: opts.Namespace,
+			wg:   &wg,
+			refs: withoutProvisionedSecrets(refs.Secrets, opts.ProvisionedByDeploy),
+			kind: "Secret", namespace: opts.Namespace,
 			getKeys: func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
 				return opts.Secrets.GetSecretKeys(ctx, opts.Context, opts.Namespace, name)
 			},

@@ -84,6 +84,24 @@ func mintKubeconfigSecretsMode(ctx context.Context, secrets []KubeconfigSecretEn
 // the operator's machine, which is an `env up` concern and would fail (or,
 // worse, resolve something unrelated) during a cloud deploy.
 func mintDeployKubeconfigSecrets(ctx context.Context, entities *KCLEntities, defaultNamespace string, dryRun bool) error {
+	return mintKubeconfigSecretsMode(ctx, deployMintedKubeconfigSecrets(entities), "", defaultNamespace, dryRun)
+}
+
+// deployMintedKubeconfigSecrets is the declarations the DEPLOY path mints:
+// those that mint their own credential (a declared service_account). A
+// declaration WITHOUT one copies a k3d kubeconfig, which is an `env up`
+// concern — see mintDeployKubeconfigSecrets.
+//
+// It exists as a named function, rather than a loop inside the mint, because
+// the deployability preflight needs the SAME set: these Secrets are created by
+// this deploy AFTER the preflight runs, so demanding them up-front blocks the
+// deploy on its own output. Deriving both from one filter is what keeps the
+// gate and the provisioning step from drifting — a new kind of minted
+// declaration becomes exempt automatically, and a declaration forge does not
+// mint stays gated.
+//
+// nil entities / no declarations => nil (both callers no-op).
+func deployMintedKubeconfigSecrets(entities *KCLEntities) []KubeconfigSecretEntity {
 	if entities == nil {
 		return nil
 	}
@@ -93,7 +111,7 @@ func mintDeployKubeconfigSecrets(ctx context.Context, entities *KCLEntities, def
 			minted = append(minted, k)
 		}
 	}
-	return mintKubeconfigSecretsMode(ctx, minted, "", defaultNamespace, dryRun)
+	return minted
 }
 
 func mintOneKubeconfigSecret(ctx context.Context, k KubeconfigSecretEntity, ownerNetwork, defaultNamespace string) error {

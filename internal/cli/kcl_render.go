@@ -685,11 +685,17 @@ type GoBuild struct {
 // when unset, so a single-image project keeps declaring them once at the top
 // level. KCL renders per env, so these are per-service AND per-env.
 type DockerBuild struct {
-	OutputName string            `json:"output_name,omitempty"`
-	Dockerfile string            `json:"dockerfile,omitempty"`
-	Platform   string            `json:"platform,omitempty"`
-	Target     string            `json:"target,omitempty"`
-	BuildArgs  map[string]string `json:"build_args,omitempty"`
+	OutputName string `json:"output_name,omitempty"`
+	Dockerfile string `json:"dockerfile,omitempty"`
+	// Context is the MAIN `docker build` context directory, relative to the
+	// project root. Empty is the project root ("."), so an unset Context
+	// builds byte-identically to before this field existed. Distinct from
+	// BuildContexts, which are NAMED --build-context entries. The Dockerfile
+	// need not live under it — docker allows -f outside the context.
+	Context   string            `json:"context,omitempty"`
+	Platform  string            `json:"platform,omitempty"`
+	Target    string            `json:"target,omitempty"`
+	BuildArgs map[string]string `json:"build_args,omitempty"`
 	// Registry is the tag registry for THIS service's image
 	// (registry-host[/namespace]). Empty is the registry the env declares
 	// (buildOptions.envRegistry); with none, the image is tagged bare.

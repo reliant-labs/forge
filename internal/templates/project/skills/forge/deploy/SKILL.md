@@ -172,21 +172,16 @@ what the pod runs, the same subcommand the host runtime runs.
 
 A hosted env declares its registry on `forge.ControlPlane` (`registry = "<registry-host>/<org>"`); `forge build <env> --push` pushes there.
 
-### Multi-source Docker builds (`docker.build_contexts`)
+### Docker build contexts
 
-When a Dockerfile needs files from outside the project tree (a sibling
-checkout the `go.mod` `replace`s against, a shared-libs monorepo sibling,
-a base image to pin), declare the extra contexts in `forge.yaml`:
-
-```yaml
-docker:
-  build_contexts:
-    shared: ../shared-libs            # relative path, resolved against forge.yaml's dir
-    base: docker-image://acme/base:v3  # registry image — pin or local-override a FROM
-```
-
-Consume them via `FROM <name>` or `COPY --from=<name>`. Each entry becomes a
-`docker buildx --build-context name=value` arg.
+A `forge.DockerBuild` sends the PROJECT ROOT as its build context unless it
+sets `context` (a project-root-relative directory) — set that when the
+Dockerfile expects to run from its own directory, or the un-prefixed `COPY
+package.json ./` fails as `failed to compute cache key: "/package.json": not
+found`. Separately, `docker.build_contexts` declares NAMED contexts for
+files outside the project tree, consumed via `COPY --from=<name>`. Both,
+including which one a given Dockerfile needs: load the
+`deploy/build-contexts` skill.
 
 ## Deploy
 

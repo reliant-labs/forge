@@ -65,6 +65,7 @@
         "build": {
           "build_args": {},
           "build_contexts": {},
+          "context": null,
           "dockerfile": "images/base/Dockerfile",
           "output_name": null,
           "platform": null,

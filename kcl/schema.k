@@ -1924,6 +1924,16 @@ schema DockerBuild(Build):
     wanted."""
     type: str = "docker"
     dockerfile: str = "Dockerfile"
+    # The MAIN build context — the directory `docker build` sends as its
+    # context, relative to the project root. Empty is the project root, so
+    # an unset context builds exactly as before. Set it when the Dockerfile
+    # was written to be run from its own directory (`COPY package.json ./`
+    # with no path prefix); a Dockerfile that COPYs repo-root paths wants
+    # the default. This is DISTINCT from `build_contexts`, which are NAMED
+    # `--build-context name=value` entries a `COPY --from=name` consumes.
+    # `dockerfile` need not live under `context` — docker allows `-f`
+    # outside the context.
+    context: str = ""
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}

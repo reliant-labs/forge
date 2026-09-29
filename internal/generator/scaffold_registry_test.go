@@ -11,19 +11,30 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-// The image registry is DECLARED in each env's KCL as a literal. A scaffolded
-// env must never route it through a render option (`option("registry")`), the
-// retired forge.registry helper, or a comment telling CI to pass `-D registry=`.
-func TestScaffoldDeclaresEachEnvRegistryAsALiteral(t *testing.T) {
-	registryLine := regexp.MustCompile(`(?m)^\s*registry = "([^"]+)"$`)
+// The image registry is DECLARED on each WORKLOAD, as part of its image in
+// deploy/kcl/workloads.k. No ENV declares one, and no scaffolded env may route
+// one through a render option (`option("registry")`), the retired
+// forge.registry helper, or a comment telling CI to pass `-D registry=`.
+//
+// This replaces the per-env literal this test used to assert. The env field it
+// checked for is gone from both schemas, so asserting it would now demand a
+// line that cannot compile.
+func TestScaffoldDeclaresTheRegistryOnEachWorkloadImage(t *testing.T) {
+	imageLine := regexp.MustCompile(`(?m)^\s*image = "([^"]+)"$`)
+	envRegistryLine := regexp.MustCompile(`(?m)^\s*registry = "`)
+
 	for name, tc := range map[string]struct {
 		module string
 		shared bool
-		cloud  string
+		// wantImage is the reference every scaffolded workload declares.
+		wantImage string
 	}{
-		"github module":         {module: "github.com/Acme/shop", cloud: "ghcr.io/acme"},
-		"non-github module":     {module: "example.com/shop", cloud: "ghcr.io/OWNER"},
-		"shared-binary project": {module: "github.com/acme/shop", shared: true, cloud: "ghcr.io/acme"},
+		"github module": {module: "github.com/Acme/shop", wantImage: "ghcr.io/acme/shop"},
+		// No GitHub owner to derive from: a placeholder that still parses as a
+		// host (so the tree compiles) and can never resolve (so a push fails
+		// at the placeholder rather than somewhere real).
+		"non-github module":     {module: "example.com/shop", wantImage: "REPLACE-ME-REGISTRY.invalid/shop"},
+		"shared-binary project": {module: "github.com/acme/shop", shared: true, wantImage: "ghcr.io/acme/shop"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -36,19 +47,43 @@ func TestScaffoldDeclaresEachEnvRegistryAsALiteral(t *testing.T) {
 			if err := g.Generate(); err != nil {
 				t.Fatalf("Generate: %v", err)
 			}
-			for env, want := range map[string]string{"dev": "localhost:5050", "staging": tc.cloud, "prod": tc.cloud} {
+
+			// Every workload declares the full reference, once, in workloads.k.
+			raw, err := os.ReadFile(filepath.Join(tmp, "deploy", "kcl", "workloads.k"))
+			if err != nil {
+				t.Fatalf("read workloads.k: %v", err)
+			}
+			var declared []string
+			for _, m := range imageLine.FindAllStringSubmatch(string(raw), -1) {
+				declared = append(declared, m[1])
+			}
+			if len(declared) == 0 {
+				t.Fatalf("no workload declares an image:\n%s", raw)
+			}
+			for _, image := range declared {
+				// A third-party image names its own registry and is not this
+				// project's artifact; everything forge builds is the project's.
+				if strings.HasPrefix(image, "docker.io/") {
+					continue
+				}
+				if image != tc.wantImage {
+					t.Errorf("workload image = %q, want %q", image, tc.wantImage)
+				}
+			}
+
+			// No env declares a registry, in any spelling.
+			for _, env := range []string{"dev", "staging", "prod"} {
 				raw, err := os.ReadFile(filepath.Join(tmp, "deploy", "kcl", env, "main.k"))
 				if err != nil {
 					t.Fatalf("read %s/main.k: %v", env, err)
 				}
 				body := string(raw)
-				m := registryLine.FindStringSubmatch(body)
-				if m == nil || m[1] != want {
-					t.Errorf("%s/main.k: want the literal declaration `registry = %q`, got %v", env, want, m)
+				if envRegistryLine.MatchString(body) {
+					t.Errorf("%s/main.k declares a `registry = …` — an env has no registry; the workload's image carries it", env)
 				}
 				for _, bad := range []string{"forge.registry", `option("registry")`, "-D registry", "$REGISTRY"} {
 					if strings.Contains(body, bad) {
-						t.Errorf("%s/main.k carries %q — the registry is a literal the env declares, nothing overrides it", env, bad)
+						t.Errorf("%s/main.k carries %q — the registry is part of a workload's image, and nothing overrides it", env, bad)
 					}
 				}
 			}

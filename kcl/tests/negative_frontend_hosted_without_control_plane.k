@@ -12,5 +12,5 @@ import forge
 
 output = forge.render(forge.Bundle {
     project = "fixture"
-    frontends = [forge.Frontend {name = "web", path = "web", type = "vite", runtime = forge.OnHosted {}}]
+    frontends = [forge.Frontend {name = "web", image = "ghcr.io/acme/web", path = "web", type = "vite", runtime = forge.OnHosted {}}]
 })

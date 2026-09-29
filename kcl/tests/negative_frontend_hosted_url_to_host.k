@@ -19,6 +19,7 @@ output = forge.render(forge.Bundle {
     workloads = [fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/api"}, args = ["api"], runtime = forge.OnHost {listen_ports = [8085]}}]
     frontends = [forge.Frontend {
         name = "site"
+        image = "ghcr.io/acme/site"
         path = "site"
         runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}
         runtime = forge.OnHosted {}

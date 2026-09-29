@@ -18,6 +18,7 @@ import forge
 
 _fe = forge.Frontend {
     name = "web"
+    image = "ghcr.io/acme/web"
     path = "web"
     domains = ["hounders.club"]
     runtime = forge.OnHosted {}

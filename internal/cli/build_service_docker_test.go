@@ -32,7 +32,7 @@ func countFlag(args []string, tok string) int {
 // TestServiceDockerBuildArgs_TagsTheWorkloadsDeclaredRepository: a per-service
 // docker build is tagged under the repository the WORKLOAD declared, verbatim.
 //
-// This replaces the old DockerBuild.registry-vs-env-registry precedence test.
+// This replaces the old per-build-vs-per-env registry precedence test.
 // Both of those fields are gone, and the precedence they encoded was the defect:
 // a build could be aimed at one registry while the spec the deploy reads named
 // another, which is an ErrImagePull that only surfaces at rollout. With one

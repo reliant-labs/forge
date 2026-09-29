@@ -368,9 +368,14 @@ func TestWriteState_JSONShape(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, k := range []string{"service", "image", "tag", "registry", "pushed_at"} {
+	// No "registry" key: the registry is part of "image", which holds the full
+	// repository. A separate key would be a second place for it to disagree.
+	for _, k := range []string{"service", "image", "tag", "pushed_at"} {
 		if _, ok := raw[k]; !ok {
 			t.Errorf("missing key %q in: %s", k, string(data))
 		}
+	}
+	if _, ok := raw["registry"]; ok {
+		t.Errorf("state carries a separate registry key; the image holds it: %s", string(data))
 	}
 }

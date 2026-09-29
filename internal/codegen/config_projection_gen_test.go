@@ -379,7 +379,7 @@ _target = forge.ClusterTarget {
 
 _svc = fw.Workload {
     name = "demo"
-    image = "reg/demo-image"
+    image = "reg.example.com/demo-image"
     ports = [fw.Port {name = "http", port = 8080}]
     env = config_gen.appConfigEnvMap(appcfg.app_config, ["API_KEY"]) | {`, ConfigSchemaModule) + `
         EXTRA = "extra-val"
@@ -395,7 +395,7 @@ _svc = fw.Workload {
 _worker = fw.Workload {
     name = "worker"
     kind = "worker"
-    image = "reg/demo-image"
+    image = "reg.example.com/demo-image"
     env = config_gen.appConfigEnvMap(appcfg.app_config, [])
 }
 

@@ -2842,7 +2842,7 @@ func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions)
 // buildServiceDocker runs `docker build` for a DockerBuild service. It
 // reuses the same tag/registry/push/build-context primitives the project
 // image build uses (resolveBuildContext / appendBuildContexts /
-// expandPushRegistries) so a per-service image is tagged and pushed the
+// k3dMirrorRepositories) so a per-service image is tagged and pushed the
 // same way. repository/resolvedTag come from serviceDockerImage. platform
 // overrides the env-wide arch.
 func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, repository string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {

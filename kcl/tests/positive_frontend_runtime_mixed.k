@@ -18,7 +18,7 @@ hosted_env = forge.render(forge.Bundle {
     project = "acme"
     control_plane = forge.ControlPlane {}
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api:v1", ports = [fw.Port {name = "http", port = 8080}], runtime = forge.OnCluster {target = _k8s}}]
-    frontends = [forge.Frontend {name = "web", path = "web", type = "vite", runtime = forge.OnHosted {}}]
+    frontends = [forge.Frontend {name = "web", image = "ghcr.io/acme/web", path = "web", type = "vite", runtime = forge.OnHosted {}}]
 })
 
 bucket_env = forge.render(forge.Bundle {

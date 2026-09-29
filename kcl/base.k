@@ -40,18 +40,6 @@ import .lib.images as img_lib
 # rule forge's guards use, rather than re-deriving Docker's heuristic.
 image_registry_host = img_lib.registry_host
 
-# image_on_registry(image, host) — the same image reference on a different
-# registry host, path and tag kept. A local env re-points a workload declared
-# against a real registry onto its k3d-local one:
-#
-#     _on_k3d = lambda w: fw.Workload -> fw.Workload {
-#         w | {image = forge.image_on_registry(w.image, "localhost:5050"), ...}
-#     }
-#
-# The declaration stays single-sourced — dev states only the difference — and
-# both references still name their own registry, which is the rule.
-image_on_registry = img_lib.on_registry
-
 # image_repository(image) — an image reference minus any `:tag` / `@digest`,
 # registry host INCLUDED. The build-state and release-ledger key, re-exported
 # for a main.k that needs to name the same repository forge does.
@@ -218,8 +206,9 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 # The image REGISTRY is not among them, and is not an env field either: it is
 # part of each WORKLOAD's `image`. forge binds no option for it and invents no
 # value for it — it appends the tag and digest above to the reference the
-# author wrote. forge.image_registry_host / forge.image_on_registry read and
-# re-point that reference.
+# author wrote. forge.image_registry_host reads the host off that reference;
+# an env that needs a DIFFERENT image says so, by setting `image` on the
+# workload in its own KCL.
 #
 # Per-env app config is NOT passed via `-D`: it lives in the typed AppConfig
 # instance in `deploy/kcl/<env>/config.k` and is projected into each workload's

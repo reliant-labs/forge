@@ -121,10 +121,10 @@ func (a AmbiguousImage) Runbook() string {
 		fmt.Fprintf(&b, "    # deploy/kcl/%s/main.k\n", env)
 		fmt.Fprintf(&b, "    %s | {image = %q}\n", "wl."+kclIdent(a.Workload), a.ByEnv[env]+"/"+a.Image)
 	}
-	b.WriteString("\n  Or, if one registry is the common case, declare THAT in deploy/kcl/workloads.k\n")
-	b.WriteString("  and re-point it in the envs that differ with forge.image_on_registry:\n\n")
+	b.WriteString("\n  Or, if one registry is the common case, declare THAT image in\n")
+	b.WriteString("  deploy/kcl/workloads.k and state the whole image in the envs that differ:\n\n")
 	b.WriteString("    # deploy/kcl/<the-odd-env>/main.k\n")
-	b.WriteString("    " + "wl." + kclIdent(a.Workload) + " | {image = forge.image_on_registry(wl." + kclIdent(a.Workload) + ".image, \"<that env's registry host>\")}\n")
+	b.WriteString("    " + "wl." + kclIdent(a.Workload) + " | {image = \"<that env's registry host>/" + a.Image + "\"}\n")
 	return b.String()
 }
 

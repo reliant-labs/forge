@@ -53,9 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name (`forge.Frontend.image`), and forge appends the platform's own
   `static.v1` layout segment itself, so that segment never appears in your KCL.
 
-  A local env re-points one declaration rather than declaring the image twice:
-  `forge.image_on_registry(w.image, "localhost:5050")`, which the scaffolded dev
-  env now uses, because a k3d node can only pull from a host-local registry.
+  A local env states the image IT runs, because a k3d node can only pull from a
+  host-local registry. That is a plain KCL string on the workload — the
+  scaffolded dev env declares one `_LOCAL_IMAGE` constant and its `_on_k3d`
+  binder sets it. forge ships no helper for composing an image reference and
+  prescribes no pattern: a project that wants one source of truth writes its
+  own constant, which is what KCL is for.
 
   **`forge registry login <env>` logs in to every distinct host the env's images
   name** — no host argument and no flag that takes one. The credential is the

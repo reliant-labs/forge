@@ -166,7 +166,6 @@ func TestImageRegistry_AmbiguousRefusesWithPerEnvKCL(t *testing.T) {
 		`wl.api | {image = "localhost:5051/shop"}`,
 		`wl.api | {image = "us-central1-docker.pkg.dev/proj/repo/shop"}`,
 		"deploy/kcl/prod/main.k",
-		"forge.image_on_registry",
 	} {
 		if !strings.Contains(book, want) {
 			t.Errorf("runbook is missing %q:\n%s", want, book)

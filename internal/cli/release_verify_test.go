@@ -673,7 +673,7 @@ func TestVerifyReleaseArtifacts_MixedLedgerSortedAndPerArtifact(t *testing.T) {
 	rel := release.Release{
 		Version: "v1.4.0",
 		Artifacts: map[string]release.Artifact{
-			"zz-image": {Kind: release.KindOCI, Mode: release.ModeShared,
+			"zz.example/acme/image": {Kind: release.KindOCI, Mode: release.ModeShared,
 				Digests: map[string]string{release.SharedVariant: sha("a")}},
 			"aa-package":     {Kind: release.KindNPM, Version: "1.0.0", Integrity: goodIntegrity},
 			"mm-unpublished": {Kind: release.KindNPM, Version: "2.0.0", Integrity: "sha512-never-shipped"},
@@ -693,7 +693,7 @@ func TestVerifyReleaseArtifacts_MixedLedgerSortedAndPerArtifact(t *testing.T) {
 	if len(results) != 4 {
 		t.Fatalf("want one verdict per artifact, got %d", len(results))
 	}
-	wantOrder := []string{"aa-package", "bb-binary", "mm-unpublished", "zz-image"}
+	wantOrder := []string{"aa-package", "bb-binary", "mm-unpublished", "zz.example/acme/image"}
 	for i, want := range wantOrder {
 		if results[i].Name != want {
 			t.Errorf("results[%d].Name = %q, want %q (output must be sorted, not concurrency-ordered)",
@@ -708,8 +708,8 @@ func TestVerifyReleaseArtifacts_MixedLedgerSortedAndPerArtifact(t *testing.T) {
 	if byName["aa-package"].Status != verifyVerified {
 		t.Errorf("aa-package: %v (%s)", byName["aa-package"].Status, byName["aa-package"].Detail)
 	}
-	if byName["zz-image"].Status != verifyVerified {
-		t.Errorf("zz-image: %v (%s)", byName["zz-image"].Status, byName["zz-image"].Detail)
+	if byName["zz.example/acme/image"].Status != verifyVerified {
+		t.Errorf("zz-image: %v (%s)", byName["zz.example/acme/image"].Status, byName["zz.example/acme/image"].Detail)
 	}
 	if byName["bb-binary"].Status != verifyUnverifiable {
 		t.Errorf("bb-binary: %v (%s)", byName["bb-binary"].Status, byName["bb-binary"].Detail)

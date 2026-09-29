@@ -26,7 +26,7 @@ output = forge.render(forge.Bundle {
     cluster_target = _primary
     workloads = [_w | {runtime = forge.OnCluster {target = _primary}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", image = "localhost:5050/cp", build = _build, args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
-        fw.Workload {name = "proxy", build = _build, args = ["proxy"], ports = [fw.Port {name = "http", port = 8081}], runtime = forge.OnCluster {target = _daemon}}
+        fw.Workload {name = "proxy", image = "localhost:5050/cp", build = _build, args = ["proxy"], ports = [fw.Port {name = "http", port = 8081}], runtime = forge.OnCluster {target = _daemon}}
     ]]
     manifests = [
         forge.Manifests {objects = [

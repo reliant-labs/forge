@@ -481,8 +481,10 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 	if derr != nil {
 		t.Fatalf("resolveDeployImageDigests: %v", derr)
 	}
-	if digests["reliant"] != wantDigest {
-		t.Errorf("reliant image digest: got %q, want %q", digests["reliant"], wantDigest)
+	// The pin map is keyed by the declared REFERENCE, host included — the same
+	// key kcl/lib/images.k looks an image up under.
+	if digests["ghcr.io/reliant-labs/reliant"] != wantDigest {
+		t.Errorf("reliant image digest: got %q, want %q", digests["ghcr.io/reliant-labs/reliant"], wantDigest)
 	}
 }
 

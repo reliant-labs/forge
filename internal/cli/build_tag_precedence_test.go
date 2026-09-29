@@ -263,9 +263,10 @@ func TestBuildTag_ReleaseWinsAndReachesTheLedger(t *testing.T) {
 	}
 	for service, image := range map[string]string{"echo": "echo", "gw": "gw", "api": "reliant"} {
 		assertRecorded(t, dir, service, image, "v2.0.0")
-		art, ok := rel.Artifacts[image]
+		// The ledger is keyed by the declared REPOSITORY, host included.
+		art, ok := rel.Artifacts[tagPrecedenceRegistry+"/"+image]
 		if !ok {
-			t.Errorf("release ledger has no %s artifact", image)
+			t.Errorf("release ledger has no %s/%s artifact", tagPrecedenceRegistry, image)
 			continue
 		}
 		if want := digestOf(tagPrecedenceRegistry + "/" + image + ":v2.0.0"); art.Digests[release.SharedVariant] != want {

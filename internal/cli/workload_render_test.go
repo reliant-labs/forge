@@ -259,7 +259,7 @@ output = forge.render(forge.Bundle {
     project = "demo"
     workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [
         fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}, image = "localhost:5050/demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
-        fw.Workload {name = "redis", image = "redis:7.2", ports = [fw.Port {name = "redis", port = 6379}]}
+        fw.Workload {name = "redis", image = "docker.io/library/redis:7.2", ports = [fw.Port {name = "redis", port = 6379}]}
     ]]
 })
 `))

@@ -355,7 +355,7 @@ func TestBuildPlan_HostedStaticSiteIsAStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--plan --push --release on a hosted env: want nil, got %v\n%s", err, out)
 	}
-	for _, want := range []string{"static", "npm run build in frontends/web → out", "push ghcr.io/x/static.v1/web"} {
+	for _, want := range []string{"static", "npm run build in frontends/web → out", "push ghcr.io/x/web/static.v1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plan output lacks %q:\n%s", want, out)
 		}

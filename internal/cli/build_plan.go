@@ -395,17 +395,17 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 		switch s.kind {
 		case "docker":
 			if len(s.pushes) > 0 {
-				would[imageNameOfPlanStep(in, s)] = placeholder
+				would[imageRepositoryOfPlanStep(in, s)] = placeholder
 			}
 		case "external":
 			if svc := in.entities.FindWorkload(s.name); svc != nil && svc.Image != "" {
-				would[svc.Image] = placeholder
+				would[imageRepository(svc.Image)] = placeholder
 			}
 		case "static":
-			// Recorded under the frontend's name, as buildHostedStaticSites
-			// writes its build state.
+			// Keyed by the REPOSITORY the release lands in, which is what
+			// buildHostedStaticSites records and what the ledger is keyed by.
 			if len(s.pushes) > 0 {
-				would[s.name] = placeholder
+				would[s.pushes[0]] = placeholder
 			}
 		}
 	}
@@ -431,14 +431,17 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 	return names, nil
 }
 
-// imageNameOfPlanStep returns the image a docker plan step builds: the project
-// image, a frontend, or a DockerBuild workload's artifact (serviceDockerImage).
-func imageNameOfPlanStep(in planInputs, s buildPlanStep) string {
+// imageRepositoryOfPlanStep returns the REPOSITORY a docker plan step pushes
+// to: the project image's, a frontend's, or a DockerBuild workload's
+// (serviceDockerImage). It is a repository rather than a name because that is
+// how the release ledger is keyed — the declared reference, host included — so
+// the coverage gate compares like with like.
+func imageRepositoryOfPlanStep(in planInputs, s buildPlanStep) string {
 	if svc := in.entities.FindWorkload(s.name); svc != nil && svc.Build.Type == "docker" {
-		name, _ := serviceDockerImage(*svc, in.resolvedTag, in.opts)
-		return name
+		repository, _ := serviceDockerImage(*svc, in.resolvedTag, in.opts)
+		return repository
 	}
-	return s.name
+	return in.opts.pushPlan.repositoryFor(s.name)
 }
 
 func printBuildPlan(r buildPlanReport, opts buildOptions) {

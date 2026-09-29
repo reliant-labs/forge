@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 // An image registry is DECLARED on a WORKLOAD, as part of its image, and
@@ -172,12 +173,29 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 //     even though those workloads carry perfectly good references for the envs
 //     that DO deploy them.
 //
+// A hosted FRONTEND counts too. Its static release is pushed to a registry
+// exactly as a backend image is — it just lands under the platform's own layout
+// segment, which forge appends rather than asking the author for. An env whose
+// only publishable thing is a hosted site still has a push destination, and
+// omitting it made `forge build <env> --push` refuse a project that had one.
+//
 // Sorted by repository so every consumer enumerates the same order.
 func declaredImageDestinations(e *KCLEntities) []imageDestination {
 	if e == nil {
 		return nil
 	}
 	seen := map[string]string{}
+	add := func(repo, owner string) {
+		if registryHost(repo) == "" {
+			// No host: not a pushable destination. The render refuses a
+			// hostless image on any runtime that PULLS one, so reaching here
+			// means the declaration belongs to something that pushes nothing.
+			return
+		}
+		if _, dup := seen[repo]; !dup {
+			seen[repo] = owner
+		}
+	}
 	for _, w := range e.Workloads {
 		if w.Build.Type == "" || w.Image == "" {
 			continue
@@ -186,17 +204,13 @@ func declaredImageDestinations(e *KCLEntities) []imageDestination {
 		case RuntimeHost, RuntimeCompose:
 			continue
 		}
-		repo := imageRepository(w.Image)
-		if registryHost(repo) == "" {
-			// No host: not a pushable destination. The render refuses this
-			// for a workload bound to a runtime that pulls, so reaching here
-			// means the workload is BuildOnly or host-bound — it has no
-			// registry to push to and needs none.
+		add(imageRepository(w.Image), w.Name)
+	}
+	for _, f := range e.Frontends {
+		if f.Image == "" || f.Runtime.Type != RuntimeHosted {
 			continue
 		}
-		if _, dup := seen[repo]; !dup {
-			seen[repo] = w.Name
-		}
+		add(deploytarget.HostedStaticRepository(imageRepository(f.Image)), f.Name)
 	}
 	out := make([]imageDestination, 0, len(seen))
 	for repo, workload := range seen {

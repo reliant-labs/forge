@@ -59,7 +59,7 @@ const imagelessInfraFixture = `{
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -122,7 +122,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -140,7 +140,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
       {
         "name": "ghost",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/ghost",
@@ -198,7 +198,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -216,7 +216,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
       {
         "name": "sib",
         "kind": "service",
-        "image": "sib",
+        "image": "registry.example/prod/sib",
         "build": {
           "type": "shell",
           "cmd": "docker push ${REGISTRY}/${IMAGE}:${TAG}",
@@ -253,7 +253,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -271,7 +271,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
       {
         "name": "vendored",
         "kind": "service",
-        "image": "somebody-elses",
+        "image": "registry.example/prod/somebody-elses",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -311,10 +311,10 @@ const hostedStaticPlanFixture = `{
       {
         "name": "api",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {"type": "go", "cmd": "./cmd/pt", "output_name": "pt"},
         "runtime": {"type": "hosted"},
-        "spec": {"kind": "service", "image": "pt"}
+        "spec": {"kind": "service", "image": "registry.example/prod/pt"}
       }
     ],
     "frontends": [
@@ -323,6 +323,7 @@ const hostedStaticPlanFixture = `{
         "type": "nextjs",
         "path": "frontends/web",
         "public_dir": "out",
+        "image": "ghcr.io/x/web",
         "runtime": {"type": "hosted"}
       }
     ]
@@ -432,7 +433,7 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",

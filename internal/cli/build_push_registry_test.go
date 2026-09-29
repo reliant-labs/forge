@@ -248,27 +248,35 @@ func TestBuildCmd_HostedEnvPushesToTheWorkloadReference(t *testing.T) {
 
 	out, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
 	if err != nil {
-		t.Fatalf("forge build prod --push (hosted env declaring ControlPlane.registry): %v", err)
+		t.Fatalf("forge build prod --push (hosted env): %v", err)
 	}
-	if !strings.Contains(out, "Push:     registry.example/org-7 (declared in deploy/kcl/prod/main.k)") {
-		t.Errorf("hosted --push should resolve forge.ControlPlane.registry; plan output:\n%s", out)
+	if !strings.Contains(out, `Image:    registry.example/org-7/pt (declared by workload "api"; pushed)`) {
+		t.Errorf("hosted --push should push to the workload's own reference; plan output:\n%s", out)
 	}
 }
 
-// TestBuildCmd_HostedEnvWithoutRegistryFails: a hosted env that declares no
-// registry fails with a runbook naming forge.ControlPlane's `registry` — the
-// control plane's advertised push base is not consulted yet, and forge never
-// invents a default.
-func TestBuildCmd_HostedEnvWithoutRegistryFails(t *testing.T) {
+// TestBuildCmd_HostedBareImageFails: a hosted workload whose image names no
+// registry host fails --push with a runbook naming the image field. The
+// control plane's advertised push base is not consulted yet (control-plane ADR
+// 0003 / #334), and forge never invents a default for a registry that is not
+// pushable — so the runbook asks for the reference rather than implying a
+// field exists that would supply it.
+func TestBuildCmd_HostedBareImageFails(t *testing.T) {
 	planProject(t, hostedPushFixture(""))
 
 	_, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
 	if err == nil {
-		t.Fatal("--push against a hosted env that declares no registry: want an error, got nil")
+		t.Fatal("--push with a hosted workload whose image names no registry: want an error, got nil")
 	}
-	for _, want := range []string{"hosted", "forge.ControlPlane", "registry", "deploy/kcl/prod/main.k"} {
+	for _, want := range []string{"image", "deploy/kcl/workloads.k"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("hosted runbook error should name %q; got: %v", want, err)
+			t.Errorf("runbook error should name %q; got: %v", want, err)
+		}
+	}
+	// It must NOT point at an env-level field: there is none to set.
+	for _, gone := range []string{"forge.ControlPlane", "ClusterTarget"} {
+		if strings.Contains(err.Error(), gone) {
+			t.Errorf("runbook must not name the removed env field %q; got: %v", gone, err)
 		}
 	}
 }

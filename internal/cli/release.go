@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/gitsource"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -366,13 +367,17 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		if s.Image == "" || s.Build.Type == "" || s.OnRuntime(RuntimeHost) || s.OnRuntime(RuntimeCompose) {
 			continue
 		}
-		if _, ok := artifacts[s.Image]; ok {
+		// Compare by REPOSITORY, which is how the ledger is keyed: the declared
+		// reference minus its tag. A workload pinning `repo:e2e` and the ledger
+		// entry for `repo` are the same artifact.
+		repo := imageRepository(s.Image)
+		if _, ok := artifacts[repo]; ok {
 			continue
 		}
-		if _, seen := missingImages[s.Image]; !seen {
-			imageOrder = append(imageOrder, s.Image)
+		if _, seen := missingImages[repo]; !seen {
+			imageOrder = append(imageOrder, repo)
 		}
-		missingImages[s.Image] = append(missingImages[s.Image], s.Name)
+		missingImages[repo] = append(missingImages[repo], s.Name)
 	}
 
 	var missing []string
@@ -386,7 +391,7 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		// frontend name (buildHostedStaticSites); the hosted deploy pins it
 		// as liveDigest, so a release without it cannot deploy the site.
 		if frontendIsHosted(fe) {
-			if _, ok := artifacts[fe.Name]; !ok {
+			if _, ok := artifacts[deploytarget.HostedStaticRepository(imageRepository(fe.Image))]; !ok {
 				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge build %s --push)", fe.Name, envNameOr(opts.env)))
 			}
 			continue

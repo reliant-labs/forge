@@ -2018,11 +2018,25 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 // digest → `manifest unknown`), each image resolves to ITS OWN captured
 // digest.
 //
-// The map is keyed on the BARE image name (`control-plane`, `reliant`,
-// `workspace-base`), the same key the KCL `_image_ref` seam looks up against
-// `svc.image`. Multiple services may share one image (reliant-api-server /
-// reliant-temporal-worker / daemon-gateway all run `reliant`); they all carry
-// the same digest, so a later write is a harmless overwrite.
+// EVERY DIGEST IS RECORDED UNDER TWO KEYS: the BARE image name
+// (`control-plane`, `reliant`) and the tag-qualified name (`reliant:e2e`) the
+// build actually pushed. The KCL `image_ref` seam looks up whichever one the
+// workload's declared image names, and that split is load-bearing:
+//
+//   - An UNPINNED image (`image = "reliant"`) takes the env tag, so the bare
+//     name is unambiguous and is what it looks up.
+//   - A TAG-PINNED image (`image = "reliant:e2e"`, which control-plane's e2e
+//     env declares) looks up `reliant:e2e`. A digest is only true of the tag
+//     it was captured for, so borrowing the bare-name digest could pin bytes
+//     that were never pushed under this tag. Before the tag-qualified key
+//     existed there was no way to say that, so a tag-pinned image was left on
+//     its mutable tag — the spec never changed between rebuilds, the
+//     Deployment never rolled out, and the nodes kept the old digest while
+//     the deploy reported success.
+//
+// Multiple services may share one image (reliant-api-server /
+// reliant-temporal-worker both run `reliant:e2e`); they all carry the same
+// digest, so a later write is a harmless overwrite.
 //
 // Sources, all best-effort (a missing/unreadable file is skipped, never
 // fatal — deploy still works on the tag for any image with no digest):
@@ -2054,8 +2068,8 @@ func resolveDeployImageDigests(projectDir, envName string, noDigest bool) (map[s
 			// reporting — the tag resolver surfaces the real error.
 			continue
 		}
-		if st != nil && st.Image != "" && st.Digest != "" {
-			out[st.Image] = st.Digest
+		if st != nil {
+			recordImageDigest(out, st.Image, st.Tag, st.Digest)
 		}
 	}
 
@@ -2095,15 +2109,74 @@ func resolveDeployImageDigests(projectDir, envName string, noDigest bool) (map[s
 		if !buildtarget.StateBelongsTo(st, envName, service) {
 			continue
 		}
-		if st.Image != "" && st.Digest != "" {
-			out[st.Image] = st.Digest
-		}
+		recordImageDigest(out, st.Image, st.Tag, st.Digest)
 	}
 
 	if len(out) == 0 {
 		return nil, nil
 	}
 	return out, nil
+}
+
+// recordImageDigest writes one build state's digest into the pin map under
+// both keys the KCL render may look it up by: the bare image name, and the
+// tag-qualified `<image>:<tag>` name the build actually pushed.
+//
+// Writing both is what lets the render keep the two cases apart without
+// knowing anything about build state. A workload declaring `reliant` wants
+// "the digest of whatever this env built"; one declaring `reliant:e2e` wants
+// "the digest pushed under :e2e specifically", and must get nothing if this
+// build pushed some other tag of the same image. One map, two questions, and
+// the key is which question was asked.
+//
+// A record with no image or no digest contributes nothing (a non-pushed build
+// has no registry manifest to address). A record with no tag contributes only
+// the bare key.
+func recordImageDigest(out map[string]string, image, tag, digest string) {
+	if image == "" || digest == "" {
+		return
+	}
+	out[image] = digest
+	if tag != "" {
+		out[image+":"+tag] = digest
+	}
+}
+
+// overrideTaggedKeys re-points every tag-qualified key of `image` at the
+// release's digest, so a release binding wins for a TAG-PINNED workload the
+// same way it already wins for an unpinned one.
+//
+// WHY THIS IS NEEDED, AND WHY IT IS SHAPED THIS WAY. A release ledger records
+// a digest per image name and NO TAG (release.Artifact has Digests, URI and
+// Platforms; the only Tag in the package is the release's own git tag). That
+// is by design — a release names bytes, and which mutable tag those bytes
+// were once pushed under is not part of their identity. But a workload
+// declaring `reliant:e2e` looks up the tag-qualified key, so a release
+// overlay that wrote only the bare key would be silently ignored for exactly
+// the images this fix is about: the release would appear to be deployed while
+// the tag-pinned workloads shipped whatever the local build state last
+// captured.
+//
+// Since the ledger cannot say which tag it meant, the honest reading is that
+// a release is authoritative for the IMAGE: every tag of it that this deploy
+// would otherwise resolve now resolves to the release's digest. The keys
+// rewritten are only those the build state already put in the map, so this
+// pins nothing forge did not already intend to deploy — it redirects them.
+// A tag with no build state stays absent and falls through to its mutable
+// tag, unchanged.
+//
+// Recording a per-image tag in the release ledger would let this be exact
+// rather than image-wide. It is deliberately NOT done here: it is a ledger
+// schema change that every backend (file and hosted) would have to write and
+// read, and the image-wide reading is already correct for the promote model,
+// where one release's bytes ship to every env.
+func overrideTaggedKeys(m map[string]string, image, digest string) {
+	prefix := image + ":"
+	for key := range m {
+		if strings.HasPrefix(key, prefix) {
+			m[key] = digest
+		}
+	}
 }
 
 // resolveDeployDigests is the per-image digest resolver with the release layer
@@ -2168,6 +2241,7 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 				image, shortDigest(built), binding.Release, shortDigest(digest), envName, envName, envName)
 		}
 		base[image] = digest
+		overrideTaggedKeys(base, image, digest)
 	}
 	return base, binding.Release, nil
 }

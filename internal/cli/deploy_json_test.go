@@ -351,6 +351,26 @@ func TestClassifyDeployImage_RegistryPortIsNotATag(t *testing.T) {
 	}
 }
 
+// TestClassifyDeployImage_TagAndDigest pins the reference shape forge renders
+// for a forge-built image that pins its OWN tag (control-plane's e2e env
+// declares `reliant:e2e`): the tag is kept for readability and the digest is
+// appended, so the kubelet pulls content-addressed bytes.
+//
+// Both halves matter. It must report as DIGEST-pinned — that is the whole
+// point of the fix, and reporting it as a mutable tag would tell an operator
+// the deploy is unsafe when it is not. And its repository must strip the tag,
+// so the same image groups identically whether it was declared pinned or not.
+func TestClassifyDeployImage_TagAndDigest(t *testing.T) {
+	const digest = "sha256:b372e3a911bca415e0a2f9358b101a51b72fda0913617f28dbba75e408e64f98"
+	got := classifyDeployImage("localhost:5051/reliant:e2e@" + digest)
+	if got.Pinning != deployPinningDigest {
+		t.Errorf("pinning = %s, want digest — the digest is what the kubelet resolves", got.Pinning)
+	}
+	if got.Repository != "localhost:5051/reliant" {
+		t.Errorf("repository = %q, want localhost:5051/reliant (port kept, tag and digest stripped)", got.Repository)
+	}
+}
+
 // TestDeployImages_NoDigestRequestedIsRecorded distinguishes "forge had no
 // digest to pin" from "forge was told not to pin". Same outcome, very different
 // mistakes.

@@ -713,17 +713,18 @@ type DockerBuild struct {
 //     the project root, so relative paths like scripts/build-image.sh,
 //     ../sibling-repo, or docker/Dockerfile resolve as a user expects. A
 //     Cwd that doesn't exist on disk is a HARD build failure.
-//   - before exec forge substitutes the ${X} tokens ${IMAGE} ${TAG}
-//     ${CODE_VERSION} ${SERVICE} ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR}
-//     ${ENV} ${BUILD_CWD}, plus any keys in Env (built-ins win on
-//     conflict), into Cmd.
-//   - Env vars are merged into the command's process environment AND the
-//     substitution map.
+//   - Cmd is run VERBATIM. Forge substitutes nothing into it: it is a plain
+//     KCL string, so the tag, arch and env are composed in KCL
+//     (forge.image_tag(), forge.target_arch(), forge.env()) where those
+//     values already live, and every `$VAR` in the command is the shell's.
+//   - Env vars are merged onto the command's process environment (declared
+//     keys win), which is also how to keep a `${NAME}` spelling in the
+//     command: declare NAME in Env and the shell resolves it.
 //   - on success forge captures the pushed digest (best-effort) and
 //     writes the build-state file so deploy pins the same tag/digest.
 //
-// Absorbs the former flat Service.build_cmd / build_cwd / build_env trio
-// (and External.build_cmd) — one declaration surface, one contract.
+// Absorbs the former flat Service.build_cmd / build_cwd / build_env trio —
+// one declaration surface, one contract.
 type ShellBuild struct {
 	OutputName string            `json:"output_name,omitempty"`
 	Cmd        string            `json:"cmd"`
@@ -1066,7 +1067,23 @@ func (t *ClusterTargetEntity) field(name string) string {
 // whose contents are read in lieu of shelling kcl. Used by unit tests so
 // they can exercise the dispatch logic without a real KCL toolchain.
 func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
-	raw, err := renderKCLRaw(ctx, projectDir, env)
+	return RenderKCLWith(ctx, projectDir, env, nil)
+}
+
+// RenderKCLWith is RenderKCL plus additional forge-derived `-D` bindings.
+//
+// It exists for the build render, which must bind values a plain render cannot
+// know: `image_tag` (the tag THIS build resolved, which outranks the env's own
+// default) and `target_arch`. Both are read by the KCL that composes a
+// ShellBuild's `cmd`, and that command is run verbatim — so if forge did not
+// bind them before the render, the command string would carry the wrong tag or
+// arch and there is no later substitution pass to correct it.
+//
+// extra is `key=value` with the value already KCL-quoted by the caller, the
+// same contract renderKCLRaw's own dArgs use. A key the caller binds here wins
+// over nothing else: these are reserved names no project may set.
+func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) (*KCLEntities, error) {
+	raw, err := renderKCLRaw(ctx, projectDir, env, extra...)
 	if err != nil {
 		return nil, err
 	}
@@ -1080,7 +1097,7 @@ func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error
 // can conditionally include manifests via the `option("env")` builtin
 // (e.g. only ship in-cluster NATS to k3d, skip it for dev-host where
 // docker-compose provides it).
-func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
+func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) ([]byte, error) {
 	if fixture := os.Getenv("FORGE_KCL_RENDER_FIXTURE"); fixture != "" {
 		return os.ReadFile(fixture)
 	}
@@ -1119,6 +1136,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	kclplugin.UsePortStoreReadOnly(filepath.Join(projectDir, ".forge", "ports-"+env+".json"))
 
 	dArgs := append([]string{"env=" + env}, activeRenderOptionDArgs()...)
+	dArgs = append(dArgs, extra...)
 	return kclrender.Run(projectDir, kclDir, dArgs)
 }
 

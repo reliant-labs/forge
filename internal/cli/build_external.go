@@ -26,7 +26,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
@@ -127,7 +126,7 @@ func externalBuildServices(e *KCLEntities) []WorkloadEntity {
 // single source of truth a subsequent `forge env deploy <env>` reads to
 // pin the image tag — eliminating the build/deploy tag divergence
 // the External (deploy) provider already closes for the deploy side.
-func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts buildOptions, registry, tag, projectDir, targetArch string) []buildResult {
+func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts buildOptions, registry, tag, projectDir string) []buildResult {
 	if len(services) == 0 {
 		return nil
 	}
@@ -142,13 +141,12 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 			Service:    svc.Name,
 			Image:      svc.Image,
 			Tag:        svcTag,
-			TargetArch: targetArch,
-			Registry:   registry,
 			ProjectDir: projectDir,
-			Env:        opts.env,
 			// The single shell hatch: EffectiveBuildCmd/Cwd/Env all read
 			// off the service's effective ShellBuild (build = forge.
 			// ShellBuild { cmd, cwd, env }). One source, one contract.
+			// The cmd is run verbatim — the render already resolved
+			// everything forge contributes.
 			BuildCmd: svc.EffectiveBuildCmd(),
 			BuildCwd: svc.EffectiveBuildCwd(),
 			BuildEnv: svc.EffectiveBuildEnv(),
@@ -188,7 +186,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// mutable env tag — closing the external-build half of the digest gap:
 		// the user's build_cmd owns build AND push, so forge resolves the
 		// digest AFTER the command by querying the registry for the exact ref
-		// it pushed (${REGISTRY}/${IMAGE}:${TAG}). Best-effort, same contract as
+		// it pushed. Best-effort, same contract as
 		// the docker PROJECT path: any lookup failure (local-only ref with no
 		// registry manifest — the e2e workspace-base/reliant case — or an
 		// unreachable registry) records no digest and deploy falls back to the
@@ -284,12 +282,12 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 	return results
 }
 
-// externalBuildTag is the ${TAG} one ShellBuild service is handed: the
-// shared precedence (buildTagFor) over the workload's own pin and the
-// build-wide tag.
+// externalBuildTag is one ShellBuild workload's tag: the shared precedence
+// (buildTagFor) over the workload's own pin and the build-wide tag.
 //
-// The user's build_cmd owns its own push, so ${TAG} IS the tag it writes to
-// the registry and the one its state records. That is why a release version
+// The command owns its own push, so this IS the tag written to the registry
+// and the one its state records — it was bound as the `image_tag` KCL input
+// for the render that produced the command. That is why a release version
 // beats even the pin: every ordinary answer is a SHARED tag (prod's
 // `stable`, e2e's `e2e`, a pinned `dev-per-daemon`), and handing one to a cut
 // moves it the moment that one image finishes. See releaseImageTag.
@@ -298,43 +296,19 @@ func externalBuildTag(svc WorkloadEntity, buildTag string, opts buildOptions) st
 	return buildTagFor(opts, pin, buildTag)
 }
 
-// externalPushedRef reconstructs the image ref the external build_cmd was
-// handed via ${REGISTRY}/${IMAGE}:${TAG} — the exact ref the user's command
-// pushed — so the post-build digest lookup queries the same manifest. When
-// registry is empty (a local build_cmd that tags `${IMAGE}:${TAG}` with no
-// registry prefix, e.g. the e2e workspace-base/reliant images) we drop the
-// `<registry>/` segment, matching the deploy-side External ${IMAGE}:${TAG}
-// substitution. A local-only ref simply won't resolve a registry digest, so
-// the best-effort lookup returns empty and deploy stays on the tag.
+// externalPushedRef reconstructs the image reference the ShellBuild's command
+// pushed, so the post-build digest lookup queries the same manifest. When
+// registry is empty (a local build that tags `<image>:<tag>` with no registry
+// prefix, e.g. the e2e workspace-base/reliant images) we drop the
+// `<registry>/` segment. A local-only ref simply won't resolve a registry
+// digest, so the best-effort lookup returns empty and deploy stays on the tag.
+//
+// This still composes the reference forge-side rather than reading the one KCL
+// rendered. Moving it onto the rendered reference is slice B's job, together
+// with removing the env-level registry field it reads.
 func externalPushedRef(registry, image, tag string) string {
 	if registry == "" {
 		return image + ":" + tag
 	}
 	return registry + "/" + image + ":" + tag
-}
-
-// resolveExternalBuildTargetArch picks the GOARCH for the ${TARGETARCH}
-// substitution token used by external build_cmd scripts. Distinct
-// helper from resolveBuildArch (which controls the Go-build env)
-// because external builds delegate cross-compilation to the user's
-// command — forge just hands them the target arch, the user's
-// `docker buildx --platform=linux/${TARGETARCH}` does the work.
-//
-// Precedence (highest to lowest):
-//
-//  1. opts.targetArch (--target-arch flag)
-//  2. cfgArch (resolved from KCL deploy.Cluster.Platform / forge.yaml deploy.target_arch)
-//  3. runtime.GOARCH fallback
-//
-// Empty return is never useful for external builds — the substitution
-// would expand to `--platform=linux/` which buildx rejects. So the
-// fallback to runtime.GOARCH keeps the token always-resolvable.
-func resolveExternalBuildTargetArch(cfgArch, flagArch string) string {
-	if flagArch != "" {
-		return flagArch
-	}
-	if cfgArch != "" {
-		return cfgArch
-	}
-	return runtime.GOARCH
 }

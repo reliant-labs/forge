@@ -69,6 +69,7 @@ import .lib.workload_url as wurl_lib
 import .lib.images as img_lib
 import .lib.capabilities as caps
 import .lib.crd as crd_lib
+import .lib.build as build_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -244,7 +245,7 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # ---------------------------------------------------------------------------
 
 # The registry-less artifact name a forge-built workload is built into —
-# the build-state / release-ledger key, and the ${IMAGE} its build pushes.
+# the build-state / release-ledger key, and the repository its build pushes to.
 # "" when forge builds nothing for it.
 #
 # A declared image names it, with any `:tag` stripped: `reliant:e2e` is built
@@ -1249,6 +1250,15 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
 # crd — a minimal apiextensions/v1 CRD object (lib/crd.k), for a
 # `forge.Manifests {objects = [...]}` entry.
 crd = crd_lib.crd
+
+# target_arch — the GOARCH forge resolved for this build (lib/build.k).
+#
+# A ShellBuild's `cmd` is plain KCL that forge runs verbatim, so a command
+# that cross-compiles reads the arch HERE rather than expecting forge to
+# substitute a `${TARGETARCH}` token into its shell:
+#
+#     cmd = "docker buildx build --platform=linux/${forge.target_arch()} ."
+target_arch = build_lib.target_arch
 
 # test_jwks_manifests — top-level re-export of the lib builder so user
 # code calls `forge.test_jwks_manifests(jwks, namespace, public_jwk)`

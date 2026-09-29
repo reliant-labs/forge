@@ -66,8 +66,8 @@ func TestBuildExternalBuildDoctorChecks_CwdPresentCmdOnPath(t *testing.T) {
 	if !strings.Contains(r.Evidence, "ok: docker on PATH") {
 		t.Errorf("evidence should confirm docker on PATH; got %s", r.Evidence)
 	}
-	if !strings.Contains(r.Evidence, "info: resolved build cmd: docker build .") {
-		t.Errorf("evidence should show resolved command; got %s", r.Evidence)
+	if !strings.Contains(r.Evidence, "info: build cmd (run verbatim): docker build .") {
+		t.Errorf("evidence should show the verbatim cmd; got %s", r.Evidence)
 	}
 }
 
@@ -96,7 +96,7 @@ func TestBuildExternalBuildDoctorChecks_MissingCwdWarns(t *testing.T) {
 }
 
 // TestBuildExternalBuildDoctorChecks_FirstTokenMissingWarns — `go`
-// not on PATH → warn with the resolved command still visible (the
+// not on PATH → warn with the verbatim command still visible (the
 // preview line is always emitted regardless of warn state).
 func TestBuildExternalBuildDoctorChecks_FirstTokenMissingWarns(t *testing.T) {
 	projectDir := "/proj"
@@ -114,8 +114,8 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenMissingWarns(t *testing.T) {
 	if !strings.Contains(r.Evidence, "warn: go not found on PATH") {
 		t.Errorf("evidence should call out missing first token; got %s", r.Evidence)
 	}
-	if !strings.Contains(r.Evidence, "info: resolved build cmd: go build ./...") {
-		t.Errorf("evidence should still show the resolved command; got %s", r.Evidence)
+	if !strings.Contains(r.Evidence, "info: build cmd (run verbatim): go build ./...") {
+		t.Errorf("evidence should still show the verbatim cmd; got %s", r.Evidence)
 	}
 }
 
@@ -139,8 +139,8 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenSkippedWhenCdPrefix(t *testing
 	if !strings.Contains(r.Evidence, "first-token PATH check skipped") {
 		t.Errorf("evidence should explain skipped heuristic; got %s", r.Evidence)
 	}
-	if !strings.Contains(r.Evidence, "info: resolved build cmd: cd ../sibling && docker build .") {
-		t.Errorf("evidence should still show resolved command; got %s", r.Evidence)
+	if !strings.Contains(r.Evidence, "info: build cmd (run verbatim): cd ../sibling && docker build .") {
+		t.Errorf("evidence should still show the verbatim cmd; got %s", r.Evidence)
 	}
 }
 
@@ -165,25 +165,34 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenSkippedWhenEnvVar(t *testing.T
 	}
 }
 
-// TestBuildExternalBuildDoctorChecks_PreviewSubstitutesTokens
-// confirms the info preview reflects the substituted form — the
-// whole point of the line is to surface substitution errors before
-// the user runs build.
-func TestBuildExternalBuildDoctorChecks_PreviewSubstitutesTokens(t *testing.T) {
+// Doctor reports the command VERBATIM — the exact string forge will hand
+// `sh -c`, with no placeholders standing in for anything.
+//
+// It used to render a preview against a synthetic Spec of stand-in values
+// (<registry>, <tag>, <arch>), which was the best it could do while a
+// substitution pass sat between the declaration and the shell. That preview was
+// a fiction nobody could act on: it showed neither what the KCL declared nor
+// what would actually run. Now the two are the same string, so doctor shows it.
+func TestBuildExternalBuildDoctorChecks_ReportsCmdVerbatim(t *testing.T) {
 	projectDir := "/proj"
 	stat := stubStat{projectDir: {}}.Stat
 	lookup := stubLookupErr{"docker": {}}.Lookup
 
-	svcs := []WorkloadEntity{
-		shellSvc("gw", "my-gw", `docker build -t ${REGISTRY}/${IMAGE}:${TAG} --platform=linux/${TARGETARCH} .`, "", nil),
-	}
+	// A rendered cmd: KCL already resolved the reference and the arch, and a
+	// ${HOME} the SHELL owns survives into it.
+	cmd := `docker build -t reg.example.com/my-gw:v1.2.3 --platform=linux/arm64 --build-arg H=${HOME} .`
+	svcs := []WorkloadEntity{shellSvc("gw", "my-gw", cmd, "", nil)}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
 	r := results[0]
-	// Substituted preview should carry placeholder values from
-	// buildExternalBuildDoctorChecks's synthetic Spec.
-	want := "info: resolved build cmd: docker build -t <registry>/my-gw:<tag> --platform=linux/<arch> ."
-	if !strings.Contains(r.Evidence, want) {
-		t.Errorf("evidence missing substituted preview\n  want substring: %s\n  got: %s", want, r.Evidence)
+	if want := "info: build cmd (run verbatim): " + cmd; !strings.Contains(r.Evidence, want) {
+		t.Errorf("evidence missing the verbatim cmd\n  want substring: %s\n  got: %s", want, r.Evidence)
+	}
+	// No placeholder vocabulary may survive: a stand-in would imply forge
+	// still resolves something at exec time.
+	for _, gone := range []string{"<registry>", "<tag>", "<arch>", "resolved build cmd"} {
+		if strings.Contains(r.Evidence, gone) {
+			t.Errorf("evidence still carries %q from the deleted substituted preview: %s", gone, r.Evidence)
+		}
 	}
 }
 

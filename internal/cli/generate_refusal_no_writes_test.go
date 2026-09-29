@@ -226,6 +226,7 @@ func TestGenerateStepsReadOnlySet(t *testing.T) {
 		"load project config":         true,
 		"forge version compatibility": true,
 		"pre-codegen contract check":  true,
+		"retired ShellBuild tokens":   true,
 		"announce project":            true,
 	}
 	got := map[string]bool{}
@@ -253,7 +254,8 @@ func TestGenerateStepsReadOnlySet(t *testing.T) {
 		}
 	}
 	for i, s := range generateSteps() {
-		if (s.Name == "forge version compatibility" || s.Name == "pre-codegen contract check") && i > firstWriter {
+		if (s.Name == "forge version compatibility" || s.Name == "pre-codegen contract check" ||
+			s.Name == "retired ShellBuild tokens") && i > firstWriter {
 			t.Errorf("refusal %q runs at %d, after the first writing step at %d", s.Name, i, firstWriter)
 		}
 	}

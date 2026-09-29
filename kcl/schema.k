@@ -1950,12 +1950,38 @@ schema ShellBuild(Build):
 
     This is the single way to declare "run this shell command to produce
     (and push) this artifact." It replaces the former second hatch — the
-    flat `Service.build_cmd` / `build_cwd` / `build_env` trio (and the
-    `External.build_cmd` deploy-block mirror) — which had the same
-    execution semantics but a different, surprising declaration surface.
-    Build and deploy are orthogonal: a service can carry a `ShellBuild`
-    (built externally) AND a `deploy = forge.External {...}` /
-    `forge.K8sCluster {...}` (deployed however) at the same time.
+    flat `Service.build_cmd` / `build_cwd` / `build_env` trio — which had
+    the same execution semantics but a different, surprising declaration
+    surface. Build and deploy are orthogonal: a service can carry a
+    `ShellBuild` (built externally) AND a `deploy = forge.K8sCluster {...}`
+    (deployed however) at the same time.
+
+    `cmd` IS PLAIN KCL AND FORGE RUNS IT VERBATIM. Forge substitutes
+    nothing and exports no variables of its own, so every `$VAR` in the
+    command belongs to the shell. Anything forge knows is read in KCL,
+    where the command is composed and the value already lives:
+
+        _arch = forge.target_arch()          # the build's GOARCH
+        _ref  = "ghcr.io/acme/api:" + forge.image_tag("prod")
+
+        build = forge.ShellBuild {
+            cwd = "../api"
+            cmd = "GOARCH=${_arch} go build -o bin/api ./cmd/api && " +
+                  "docker build --platform=linux/${_arch} -t ${_ref} . && " +
+                  "docker push ${_ref}"
+        }
+
+    ESCAPING A SHELL VARIABLE. Braced-dollar is KCL's own interpolation,
+    so a `${HOME}` meant for the shell must be escaped — backslash the
+    dollar (`"\\${HOME}"`), or write the whole command as a raw string
+    (`r"..."`, which disables KCL interpolation entirely and so cannot
+    also interpolate a KCL value). A DOUBLED dollar is NOT an escape:
+    KCL reads it as interpolation of an undefined name and refuses to
+    compile. A bare `$HOME` needs no escape.
+
+    Note also that KCL interpolation cannot nest an escaped quote, so
+    bind a call that takes a string argument to a local first (as `_ref`
+    does above) rather than inlining it.
 
     Execution contract (ONE documented contract):
 
@@ -1967,16 +1993,21 @@ schema ShellBuild(Build):
         failure (naming the missing path) — a build that was supposed to
         run can't, and a following deploy would reference an unpushed
         image.
-      * substitution — before exec forge substitutes these ${X} tokens
-        into `cmd`: ${IMAGE} ${TAG} ${CODE_VERSION} ${SERVICE}
-        ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR} ${ENV} ${BUILD_CWD}, plus
-        any keys declared in `env` (the built-in tokens win on conflict).
-      * env — extra env vars merged into the command's PROCESS environment
-        AND added to the ${X} substitution map (built-ins win on conflict).
+      * cmd — handed to `sh -c` byte-for-byte, exactly as rendered.
+      * env — extra env vars merged onto the command's PROCESS environment
+        (declared keys win). This is also how to keep a `${NAME}` spelling
+        in the command: declare NAME here and the shell resolves it.
       * state/digest — on success forge captures the pushed image's
         content-addressed digest (best-effort) and writes the build-state
         file so a subsequent `forge env deploy <env>` pins the same
         tag/digest, exactly as the project docker build does.
+
+    Forge once substituted a fixed ${IMAGE}/${TAG}/${REGISTRY}/
+    ${TARGETARCH}/… vocabulary into `cmd`. It no longer does, and a
+    leftover token is refused by `forge lint` and `forge generate` — not
+    for tidiness, but because `GOARCH=${TARGETARCH}` reaching the shell
+    unset becomes `GOARCH=`, which builds for the HOST arch and fails
+    only as an `exec format error` crash-loop in the cluster.
 
     A no-op ShellBuild (`cmd = "true"`) is the idiomatic way to suppress
     forge's default `./cmd/<name>` Go build for a service whose artifact
@@ -1989,8 +2020,10 @@ schema ShellBuild(Build):
     # against the project root; absolute pass through. Unset => the
     # project root. A missing-on-disk cwd is a hard build failure.
     cwd: str = ""
-    # Extra env vars merged into the command's process environment AND the
-    # ${X} substitution map (built-in tokens win on conflict).
+    # Extra env vars merged onto the command's process environment
+    # (declared keys win). Forge substitutes nothing into `cmd`, so this is
+    # also how a `${NAME}` spelling in the command gets resolved — by the
+    # shell, from here.
     env: {str: str} = {}
 
     check:
@@ -3162,9 +3195,9 @@ schema Bundle:
         # `platform` is REQUIRED on a CLOUD target whenever a workload bound
         # to it ships a REAL external image build (a DockerBuild or a
         # non-no-op ShellBuild — see forge.builds_an_image). Those builds
-        # interpolate the env's `platform` as ${TARGETARCH} / the docker
+        # read the env's `platform` via forge.target_arch() / the docker
         # `--platform`; WITHOUT it the build pipeline falls through to the
-        # dev HOST's arch (resolveExternalBuildTargetArch → runtime.GOARCH),
+        # dev HOST's arch (resolveBuildArchForImage → runtime.GOARCH),
         # so a `forge build` from an arm64 Mac pushes arm64 images that
         # exec-format-error / ImagePullBackOff on amd64 cloud nodes — the
         # class that broke prod. Making it a LOAD-time failure (naming the

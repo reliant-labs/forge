@@ -213,7 +213,6 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 		"localhost:5051", // registry
 		"v1.2.3",         // tag
 		projDir,
-		"amd64",
 	)
 	if len(results) != 1 {
 		t.Fatalf("results: got %d, want 1", len(results))
@@ -258,8 +257,7 @@ func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 		opts,
 		"localhost:5051",
 		"v1",
-		projDir,
-		"amd64")
+		projDir)
 	if len(results) != 1 {
 		t.Fatalf("results: got %d, want 1", len(results))
 	}
@@ -308,7 +306,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 		return priorDigest, []string{"linux/amd64"}, nil
 	}
 	if r := buildExternalServices(context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "prod", projDir, "amd64"); len(r) != 1 || r[0].err != nil {
+		"ghcr.io/reliant-labs", "prod", projDir); len(r) != 1 || r[0].err != nil {
 		t.Fatalf("first build: %+v", r)
 	}
 	if dst, err := ReadBuildState(projDir, "prod"); err != nil || dst == nil || dst.Digest != priorDigest {
@@ -321,7 +319,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 		return "", nil, fmt.Errorf("not in registry: %s", ref)
 	}
 	if r := buildExternalServices(context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "prod", projDir, "amd64"); len(r) != 1 || r[0].err != nil {
+		"ghcr.io/reliant-labs", "prod", projDir); len(r) != 1 || r[0].err != nil {
 		t.Fatalf("second build: %+v", r)
 	}
 
@@ -371,12 +369,14 @@ func TestBuildTargetExternalFlag_Accepted(t *testing.T) {
 	}
 }
 
-// TestResolveExternalBuildTargetArch_Precedence locks in the flag >
-// cfg > runtime fallback precedence. External builds always need a
-// resolved arch (the user's command expands ${TARGETARCH} into
-// `--platform=linux/<arch>` which buildx rejects on empty); so the
-// runtime fallback is load-bearing.
-func TestResolveExternalBuildTargetArch_Precedence(t *testing.T) {
+// The flag > cfg > runtime-host precedence that forge binds as the
+// `target_arch` KCL input, which a ShellBuild reads via forge.target_arch().
+//
+// The runtime fallback is load-bearing and is the reason this is asserted on a
+// resolver that NEVER returns empty: an empty arch reaches a rendered command
+// as `--platform=linux/` (buildx rejects it) or, far worse, as `GOARCH=`, which
+// Go reads as "unset" and silently builds for the host.
+func TestResolveBuildArchForImage_Precedence(t *testing.T) {
 	cases := []struct {
 		name     string
 		cfgArch  string
@@ -394,7 +394,7 @@ func TestResolveExternalBuildTargetArch_Precedence(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := resolveExternalBuildTargetArch(c.cfgArch, c.flagArch)
+			got := resolveBuildArchForImage(c.cfgArch, c.flagArch)
 			if c.wantEqualFlag && got != c.flagArch {
 				t.Errorf("got %q, want flagArch %q", got, c.flagArch)
 			}
@@ -435,7 +435,7 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 	opts := buildOptions{env: "staging", parallel: false}
 	results := buildExternalServices(
 		context.Background(), services, opts,
-		"ghcr.io/reliant-labs", "staging", projDir, "amd64")
+		"ghcr.io/reliant-labs", "staging", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -510,7 +510,7 @@ func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
 	opts := buildOptions{env: "e2e", parallel: false}
 	results := buildExternalServices(
 		context.Background(), services, opts,
-		"", "e2e", projDir, "amd64", // empty registry → local ref
+		"", "e2e", projDir, // empty registry → local ref
 	)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("build must still succeed on a digest miss: %+v", results)

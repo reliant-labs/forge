@@ -15,9 +15,10 @@ plumbing stays in one place).
   * Jobs, crons and operators resolve the same way (one rule, every kind).
 
 And the BUILD side of the same pin: a forge-built workload's artifact (the
-entity's `image`, the ${IMAGE} its build pushes) is the declared image's
-repository with the tag stripped, so `${REGISTRY}/${IMAGE}:${TAG}` rebuilds
-exactly the spec.image above. `image = "reliant:e2e"` on a workload named
+entity's `image`, the repository its build pushes to) is the declared image's
+repository with the tag stripped, so the registry, that repository and the
+resolved tag recompose exactly the spec.image above. `image = "reliant:e2e"`
+on a workload named
 `api-server` builds IMAGE=reliant (TAG=e2e, read back off spec.image in
 Go), never IMAGE=api-server — the ErrImagePull the control-plane migration
 hit. An unset image still derives from the build (output_name, else name).
@@ -29,7 +30,7 @@ import forge
 import forge.workloads as fw
 
 _target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5050"}
-_shell = forge.ShellBuild {cmd = r"echo ${REGISTRY}/${IMAGE}:${TAG}"}
+_shell = forge.ShellBuild {cmd = "echo built"}
 
 output = forge.render(forge.Bundle {
     project = "dev"

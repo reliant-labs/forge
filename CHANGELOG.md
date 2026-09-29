@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: a `forge.ShellBuild` `cmd` is plain KCL, run verbatim — the
+  `${TOKEN}` substitution is gone.** Forge used to rewrite a fixed vocabulary
+  into the command before running it — `${IMAGE}`, `${TAG}`, `${CODE_VERSION}`,
+  `${SERVICE}`, `${TARGETARCH}`, `${REGISTRY}`, `${PROJECT_DIR}`, `${ENV}` and
+  `${BUILD_CWD}`. It no
+  longer substitutes anything and exports no variables of its own: the rendered
+  string is handed to `sh -c` byte-for-byte, from the declared `cwd`, with the
+  declared `env` merged onto the process environment. Every `$VAR` in a command
+  is now the shell's, so `$PWD` and `$HOME` work.
+
+  Write the values in KCL, where the command is composed and the value already
+  lives: `forge.target_arch()` (new, and the reason `target_arch` is now a
+  reserved render input), `forge.image_tag("<env>")`, `forge.env()`,
+  `file.workdir()`, the image reference itself, or a literal. To keep a
+  `${NAME}` spelling, declare `NAME` in that build's `env` map and the shell
+  resolves it.
+
+  `forge lint` (`shellbuild-tokens`) and `forge generate` both REFUSE a leftover
+  token. That is a gate rather than a warning because one of them fails
+  silently: `GOARCH=${TARGETARCH}` reaching the shell unset becomes `GOARCH=`,
+  which Go reads as "unset" and builds for the host — so an amd64 cluster gets
+  an arm64 binary whose only symptom is an `exec format error` crash-loop. The
+  rest (`docker push /:`) fail loudly.
+
+  Forge now resolves the build's tag BEFORE the render and binds it as the
+  existing `image_tag` input, so a rendered `cmd` already names the tag the build
+  records and pushes (`--release` > `--tag` > the image's own pin > the env's
+  `image_tag` > `git describe`, unchanged). Two casualties of the old pass are
+  also gone: `forge project audit`'s `conflict_tokens` / `conflict_count` (with no
+  built-in tokens there is nothing for a declared env key to collide with) and
+  `forge doctor`'s substituted-command preview, which now prints the exact string
+  forge will run instead of one built from `<registry>`/`<tag>` stand-ins.
+
+  Escaping, worth knowing before you write one: braced-dollar is KCL's own
+  interpolation, so backslash-escape a shell `${HOME}` or use a raw `r"..."`
+  string. A DOUBLED dollar is not an escape — KCL reads it as an undefined name
+  and refuses to compile.
+
 - **BREAKING: every rollback surface is gone — recovery is roll forward.**
   `forge env deploy --rollback`, `forge env promote --rollback`, the KCL
   `forge.External.rollback_cmd` field, and every provider's rollback path

@@ -480,7 +480,7 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 	// 3. platform = "<arch>" — the build arch knob.
 	if m := platformAssignRe.FindStringSubmatch(line); m != nil {
 		return knobLines(indent, "platform", `"REPLACE_ME_PLATFORM"`,
-			"the node arch (amd64/arm64). forge derives ${TARGETARCH} + GOARCH from it",
+			"the node arch (amd64/arm64). forge derives forge.target_arch() + GOARCH from it",
 			"a wrong value builds images that CrashLoopBackOff 'exec format error' on the nodes",
 			`kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.architecture}' for THIS env's cluster`)
 	}

@@ -46,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/projectstore"
+	"github.com/reliant-labs/forge/internal/shellbuildtokens"
 )
 
 // GenStep is one ordered unit of the generate pipeline. Steps are pure
@@ -303,6 +304,7 @@ func generateSteps() []GenStep {
 		// costs nothing.
 		{Name: "forge version compatibility", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate", ReadOnly: true},
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate", ReadOnly: true},
+		{Name: "retired ShellBuild tokens", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepShellBuildTokens, Tag: "validate", ReadOnly: true},
 		// Before every gate and emitter that reads the frontend inventory,
 		// so they all see one answer (the two pre-checks above read none). See
 		// generate_frontend_inventory.go for why a project can reach here
@@ -1205,6 +1207,39 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 // fail to compile.
 func stepPreCodegenContractCheck(ctx *pipelineContext) error {
 	return preCodegenContractCheck(ctx.ProjectDir, ctx.Cfg)
+}
+
+// stepShellBuildTokens refuses a ShellBuild `cmd` that still writes one of the
+// retired ${NAME} substitution tokens.
+//
+// forge runs a `cmd` verbatim, so a leftover token is a shell variable nothing
+// sets. Refusing at generate — rather than warning — is because one of them is
+// silent: `GOARCH=${TARGETARCH}` becomes `GOARCH=`, which builds for the host
+// arch and surfaces only as `exec format error` on the cluster. Generate is the
+// last point before a build consumes the declaration, and it is read-only here,
+// so the refusal leaves the tree untouched.
+//
+// The same check is a gating `forge lint` rule, so a project sees it whichever
+// command it runs first.
+func stepShellBuildTokens(ctx *pipelineContext) error {
+	// A project with no deploy/kcl tree scans clean (ScanKCLTree treats a
+	// missing dir as "nothing to check"), so CLI and library projects pass.
+	findings, err := shellbuildtokens.ScanKCLTree(filepath.Join(ctx.ProjectDir, "deploy", "kcl"))
+	if err != nil {
+		return err
+	}
+	return shellbuildtokens.Error(stripFileLocations(findings))
+}
+
+// stripFileLocations flattens located findings back to the bare Finding list
+// shellbuildtokens.Error formats. The file:line pairs stay in the lint output,
+// which has a column-aware renderer; generate's refusal is prose.
+func stripFileLocations(in []shellbuildtokens.FileFinding) []shellbuildtokens.Finding {
+	out := make([]shellbuildtokens.Finding, 0, len(in))
+	for _, f := range in {
+		out = append(out, f.Finding)
+	}
+	return out
 }
 
 // stepPkgCompatHandshake checks that the forge this project compiles against

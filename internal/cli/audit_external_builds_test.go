@@ -164,12 +164,16 @@ func TestAuditExternalBuilds_MissingCwdWarns(t *testing.T) {
 	}
 }
 
-// TestAuditExternalBuilds_BuildEnvConflictWarns exercises the
-// reserved-token collision check. A user-declared key matching one of
-// IMAGE/TAG/SERVICE/PROJECT_DIR/REGISTRY/TARGETARCH/BUILD_CWD is
-// silently shadowed at substitution time — audit warns so the user
-// renames the key instead of being surprised at build time.
-func TestAuditExternalBuilds_BuildEnvConflictWarns(t *testing.T) {
+// A declared env key named after one of the old substitution tokens is NOT a
+// conflict any more, and audit must not warn about it.
+//
+// It used to: a built-in token shadowed the user's key, so declaring IMAGE or
+// TAG was a footgun worth surfacing. With substitution gone there are no
+// built-ins, so the declared env map is the ONLY source — a key called
+// TARGETARCH is exactly how a project keeps a `${TARGETARCH}` spelling in its
+// command working, which is the migration path the lint rule's remediation
+// recommends. Warning on it would flag the fix as the problem.
+func TestAuditExternalBuilds_TokenNamedEnvKeyIsNotAConflict(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "sib"), 0o755); err != nil {
 		t.Fatal(err)
@@ -207,20 +211,20 @@ func TestAuditExternalBuilds_BuildEnvConflictWarns(t *testing.T) {
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, nil, dir)
-	if cat.Status != audittype.StatusWarn {
-		t.Errorf("status = %q, want warn", cat.Status)
+	if cat.Status != audittype.StatusOK {
+		t.Errorf("status = %q, want ok — a token-named env key is how you keep the spelling, not a conflict", cat.Status)
 	}
-	if cnt, _ := cat.Details["conflict_count"].(int); cnt != 1 {
-		t.Errorf("conflict_count = %v, want 1 (one service with conflicts)", cat.Details["conflict_count"])
+	if v, present := cat.Details["conflict_count"]; present {
+		t.Errorf("the collision count must be gone from the audit details; got %v", v)
 	}
 	svcs, _ := cat.Details["services"].([]externalBuildEntry)
 	if len(svcs) != 1 {
 		t.Fatalf("want 1 service; got %d", len(svcs))
 	}
-	conflicts := svcs[0].ConflictTokens
-	// Sorted ascending — IMAGE before TAG.
-	if len(conflicts) != 2 || conflicts[0] != "IMAGE" || conflicts[1] != "TAG" {
-		t.Errorf("conflict_tokens = %v, want [IMAGE TAG]", conflicts)
+	// The keys are still reported, as plain information.
+	want := []string{"CGO_ENABLED", "IMAGE", "TAG"}
+	if got := svcs[0].BuildEnvKeys; len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("build_env_keys = %v, want %v (sorted)", got, want)
 	}
 }
 
@@ -371,76 +375,6 @@ func TestAuditExternalBuilds_JSONShape_Golden(t *testing.T) {
 	}
 }
 
-// TestConflictingBuildEnvKeys covers the pure helper. Belt-and-
-// braces on the token list — if a new built-in lands in
-// buildtarget.Vars but isn't mirrored into externalBuildBuiltinTokens
-// here, the corresponding test below catches the drift.
-func TestConflictingBuildEnvKeys(t *testing.T) {
-	cases := []struct {
-		name string
-		in   map[string]string
-		want []string
-	}{
-		{"empty", nil, nil},
-		{"no_conflict", map[string]string{"CGO_ENABLED": "0", "FOO": "bar"}, nil},
-		{"single_image", map[string]string{"IMAGE": "x"}, []string{"IMAGE"}},
-		{
-			"multi_sorted",
-			map[string]string{"TAG": "x", "IMAGE": "y", "SERVICE": "z", "OTHER": "w"},
-			[]string{"IMAGE", "SERVICE", "TAG"},
-		},
-		{"build_cwd_token", map[string]string{"BUILD_CWD": "x"}, []string{"BUILD_CWD"}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := conflictingBuildEnvKeys(c.in)
-			if !equalStringSlices(got, c.want) {
-				t.Errorf("got %v, want %v", got, c.want)
-			}
-		})
-	}
-}
-
-// TestExternalBuildBuiltinTokens_MatchesBuildtargetVars pins the
-// drift contract: every key buildtarget.Vars emits must appear in
-// externalBuildBuiltinTokens. Without this assertion, a new built-in
-// added to buildtarget.Vars would silently stop being detected as a
-// conflict on the audit side.
-func TestExternalBuildBuiltinTokens_MatchesBuildtargetVars(t *testing.T) {
-	// Build a spec with EVERY built-in slot non-empty so Vars emits
-	// each key. BuildEnv stays empty so the result is only the
-	// built-ins.
-	spec := buildtarget.Spec{
-		Service:    "s",
-		Image:      "i",
-		Tag:        "t",
-		TargetArch: "a",
-		Registry:   "r",
-		ProjectDir: "p",
-		BuildCwd:   "c",
-		BuildCmd:   "x",
-	}
-	vars := buildtarget.Vars(spec)
-	got := make(map[string]struct{}, len(vars))
-	for k := range vars {
-		got[k] = struct{}{}
-	}
-	want := make(map[string]struct{}, len(externalBuildBuiltinTokens))
-	for _, k := range externalBuildBuiltinTokens {
-		want[k] = struct{}{}
-	}
-	for k := range got {
-		if _, ok := want[k]; !ok {
-			t.Errorf("buildtarget.Vars emits %q but externalBuildBuiltinTokens omits it — add it to the audit list", k)
-		}
-	}
-	for k := range want {
-		if _, ok := got[k]; !ok {
-			t.Errorf("externalBuildBuiltinTokens lists %q but buildtarget.Vars no longer emits it — drop it from the audit list", k)
-		}
-	}
-}
-
 // TestAuditExternalBuilds_NoCfgIsError pins the contract for a
 // non-forge project: nil cfg → status=error, no panic. Mirrors
 // auditIngress's no-forge.yaml branch.
@@ -449,21 +383,6 @@ func TestAuditExternalBuilds_NoCfgIsError(t *testing.T) {
 	if cat.Status != audittype.StatusError {
 		t.Errorf("status = %q, want error", cat.Status)
 	}
-}
-
-// equalStringSlices is local-only — testify isn't a dep and reflect
-// equality flips nil vs empty distinctions in ways we don't want
-// here (conflict helper returns nil for "no conflicts").
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func mapKeys(m map[string]any) []string {

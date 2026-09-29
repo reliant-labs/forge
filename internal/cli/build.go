@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -124,9 +125,10 @@ type buildOptions struct {
 	pushRegistry string
 	// envRegistry is the registry the env's KCL declares (declaredRegistry),
 	// resolved with the render whether or not this build pushes. It is the
-	// registry a locally-built image is TAGGED under, and a ShellBuild's
-	// ${REGISTRY}. "" with no env, or an env that declares none — a local
-	// image is then tagged bare (<image>:<tag>).
+	// registry a locally-built image is TAGGED under, and the one the
+	// post-build digest lookup composes its reference from. "" with no env,
+	// or an env that declares none — a local image is then tagged bare
+	// (<image>:<tag>).
 	envRegistry string
 	// targetArch overrides the GOARCH used for the Go binary build
 	// AND the docker buildx --platform when --docker / --push is set.
@@ -840,6 +842,27 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		if rerr != nil {
 			return nil, nil, rerr
 		}
+		// Re-render with the build's own tag and arch bound, when they
+		// differ from what the first pass resolved on its own.
+		//
+		// This is not a nicety: a ShellBuild's `cmd` is a plain KCL string
+		// that forge runs VERBATIM, so whatever tag and arch the KCL read
+		// while composing that string are the ones the command will use.
+		// There is no substitution pass afterwards to correct them. So the
+		// values must be bound BEFORE the render whose `cmd` we run — a
+		// `--tag v9` that arrived after the render would print v9, build
+		// `:latest`, and record v9.
+		//
+		// Two passes rather than one because both inputs are partly derived
+		// FROM the render: the tag falls back to the env's own `image_tag`,
+		// and the arch to the env's declared cluster platform. The first
+		// pass discovers those; the second binds forge's resolution of them.
+		// Skipped entirely when the first pass already agrees, so the common
+		// `forge build dev` renders once.
+		ents, rerr = rerenderWithBuildFacts(ctx, cfg, opts, ents)
+		if rerr != nil {
+			return nil, nil, rerr
+		}
 		declared, entities = ents, ents
 	}
 
@@ -853,6 +876,60 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		return nil, nil, err
 	}
 	return declared, entities, nil
+}
+
+// rerenderWithBuildFacts re-renders env with the tag and arch THIS build
+// resolved bound as `-D image_tag=` / `-D target_arch=`, so a ShellBuild's
+// rendered `cmd` — which forge runs byte-for-byte — already names the right
+// ones.
+//
+// Both values outrank what the KCL resolves alone, and both are computed from
+// the first pass: buildTagFor's precedence (release > --tag > env image_tag >
+// git describe) needs the env's image_tag, and the arch needs the env's
+// declared cluster platform. Hence discover-then-bind.
+//
+// Returns the FIRST pass unchanged when the second would bind nothing new —
+// no --tag, no --release, and an arch the KCL would derive identically. A
+// second render is a second kcl evaluation, so the common case pays nothing.
+//
+// A re-render failure is returned: the first pass proved the KCL renders, so a
+// failure here is forge's own binding being rejected (a project that declared
+// a conflicting `option("target_arch")`), and rendering on with the wrong tag
+// is what this function exists to prevent.
+func rerenderWithBuildFacts(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions, first *KCLEntities) (*KCLEntities, error) {
+	if first == nil {
+		return nil, nil
+	}
+	var extra []string
+
+	// The tag: buildTagFor's precedence over the env's own image_tag. Bound
+	// only when it differs, so an env that already resolves its own tag is
+	// not re-rendered to be told the same thing.
+	if tag := buildTagFor(opts, "", first.ImageTag); tag != "" && tag != first.ImageTag {
+		extra = append(extra, "image_tag="+strconv.Quote(tag))
+	}
+
+	// The arch: the same resolution every other build lane applies
+	// (resolveBuildArchForImage over the env's platform), which is also what
+	// lib/build.k's own default would produce — so bind it only when forge's
+	// answer is the more specific one.
+	cfgArch := cfg.Deploy.TargetArch
+	if p := kclFirstClusterPlatform(first); p != "" {
+		cfgArch = p
+	}
+	if arch := resolveBuildArchForImage(cfgArch, opts.targetArch); arch != "" && arch != "amd64" {
+		extra = append(extra, "target_arch="+strconv.Quote(arch))
+	}
+
+	if len(extra) == 0 {
+		return first, nil
+	}
+	ents, err := RenderKCLWith(ctx, projectDirForKCL(), opts.env, extra)
+	if err != nil {
+		return nil, fmt.Errorf("re-render env %q with the build's resolved tag/arch (%s): %w",
+			opts.env, strings.Join(extra, " "), err)
+	}
+	return ents, nil
 }
 
 // narrowBuildEntities is the entity set a build acts on: the env's render
@@ -1005,14 +1082,15 @@ func validateExternalBuildTarget(entities *KCLEntities, opts buildOptions) error
 		return fmt.Errorf("--target external requires --env to know which KCL services to build")
 	}
 	if !kclHasExternalBuildService(entities) {
-		return fmt.Errorf("--target external: no service declares build_cmd in env %q.\n"+
-			"  Declare a `build_cmd` on your forge.External target (the build-side mirror of deploy_cmd) so\n"+
-			"  `forge build -t external` constructs the image, e.g.:\n"+
-			"      deploy = forge.External {\n"+
-			"          deploy_cmd = r\"...\"\n"+
-			"          build_cmd  = r\"docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} ${PROJECT_DIR}\"\n"+
-			"      }\n"+
-			"  (a top-level Service.build_cmd also works for non-External deploy types)", opts.env)
+		return fmt.Errorf("--target external: no workload declares a ShellBuild in env %q.\n"+
+			"  Declare `build = forge.ShellBuild { ... }` on the workload so `forge build -t external`\n"+
+			"  constructs the image. The cmd is plain KCL, run verbatim, e.g.:\n"+
+			"      _arch = forge.target_arch()\n"+
+			"      _ref  = \"ghcr.io/acme/api:\" + forge.image_tag(%q)\n"+
+			"      build = forge.ShellBuild {\n"+
+			"          cwd = \"../api\"\n"+
+			"          cmd = \"docker build --platform=linux/${_arch} -t ${_ref} . && docker push ${_ref}\"\n"+
+			"      }", opts.env, opts.env)
 	}
 	return nil
 }
@@ -1203,20 +1281,19 @@ func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg
 	}
 	externalTag := resolvedTag
 	if externalTag == "" {
-		// External-build dispatchers need a stable tag even when the
-		// caller didn't pass --tag (the user's command interpolates
-		// ${TAG} into `docker push <reg>/<img>:${TAG}` and an empty
-		// tag would push :latest accidentally). Resolve the same
-		// git-describe tag the docker path would have used.
+		// The tag is recorded in build state and reported in the build
+		// log line, and it is what was bound as the `image_tag` KCL input
+		// for the render whose `cmd` we are about to run — so it must be
+		// the same value even when the caller passed no --tag. Resolve the
+		// same git-describe tag the docker path would have used.
 		t, terr := resolveImageTag(ctx, opts.env)
 		if terr != nil {
 			return nil, fmt.Errorf("external build: resolve image tag: %w (pass --tag to override)", terr)
 		}
 		externalTag = t
 	}
-	externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
 	projDir := projectDirForKCL()
-	return buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch), nil
+	return buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir), nil
 }
 
 // persistProjectBuildState records the build→deploy tag handoff for a

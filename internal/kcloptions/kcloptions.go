@@ -65,6 +65,7 @@ var Reserved = map[string]string{
 	"namespace":     "the k8s namespace — derived from the env's cluster target",
 	"image_tag":     "the resolved image tag — derived from the env and the build",
 	"image_digests": "the built images' content digests — captured by `forge env deploy`",
+	"target_arch":   "the deploy-target GOARCH — derived from --target-arch, the env's cluster platform, or forge.yaml deploy.target_arch",
 	"worktree":      "the git worktree basename — resolved by the parallel-dev-stack primitives",
 	"branch":        "the git branch — resolved by the parallel-dev-stack primitives",
 	"kubeconfig":    "the default kubeconfig path on this machine — resolved by forge, read via `<cluster>.kubeconfig`",

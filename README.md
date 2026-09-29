@@ -377,10 +377,13 @@ The details:
   `forge.Service`; adapters project them onto Kubernetes and host processes.
   Target selection is structural — a `host` block routes to the host adapter,
   no mode flag.
-- **`External` is the generic CLI-driven target** for anything with a deploy
-  command: Fly.io, Cloudflare Workers, Cloud Run, ECS, Vercel, Railway,
-  systemd-on-a-VM. Forge substitutes `${IMAGE}`, `${TAG}`, `${ENV}` and friends
-  and execs it, with an optional health command.
+- **`ShellBuild` is the shell escape hatch** for a workload forge does not
+  build itself: a sibling repo, a third-party binary, a language runtime.
+  `cmd` is a plain KCL string and forge runs it byte-for-byte via `sh -c`, from
+  the declared `cwd`, with the declared `env` merged on. Forge substitutes
+  nothing — the tag, arch and environment are read in KCL
+  (`forge.image_tag()`, `forge.target_arch()`, `forge.env()`) where the
+  command is composed.
 - **KCL is still KCL.** Forge models _your_ workloads — Application,
   Environment, ConfigMap, Ingress, RBAC. It deliberately does not model
   third-party in-cluster infra, so when you need NATS, Temporal, or a Postgres

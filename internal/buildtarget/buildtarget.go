@@ -10,7 +10,11 @@
 // Design notes:
 //
 //   - Mirrors External (deploy provider) in shape — same `sh -c`
-//     execution, same ${X} substitution. The build side and deploy side
+//     execution. The `cmd` is a plain KCL string that forge runs
+//     VERBATIM: there is no token substitution and forge exports no
+//     ${IMAGE}/${TAG}/${REGISTRY}-style variables, so every `$VAR` in the
+//     command is the shell's. Anything forge knows is composed in KCL,
+//     where the value already lives. The build side and deploy side
 //     are ORTHOGONAL: a service can have a ShellBuild (build externally)
 //     AND `deploy = K8sCluster { ... }` (deploy to in-cluster) — the
 //     typical cp-forge pattern.
@@ -46,7 +50,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/statefile"
 )
@@ -55,60 +58,42 @@ import (
 // Mirrors deploytarget.ExternalSpec for the build side — the fields
 // the user declares on KCL Service translate to this shape.
 //
-// Image is the raw Service.image string (matching External's IMAGE
-// semantics — registry is composed separately via ${REGISTRY}). Tag
-// is the build-resolved tag (`git describe` or --tag override) shared
-// across all services in a build invocation.
+// Nothing here is substituted into BuildCmd. The command is whatever the
+// KCL render produced, run byte-for-byte; Service/Image/Tag are carried
+// only so the dispatcher can label log lines and record build state.
 type Spec struct {
-	// Service is the KCL Service.name, surfaced in log lines and used
-	// as the ${SERVICE} substitution token.
+	// Service is the KCL Service.name, surfaced in log lines and in the
+	// per-service build-state file.
 	Service string
 
-	// Image is the raw Service.image string. Used as the ${IMAGE}
-	// substitution token. The user composes the registry into their
-	// command via ${REGISTRY}/${IMAGE}:${TAG} (matching External's
-	// ${IMAGE} semantics).
+	// Image is the rendered Service.image reference, recorded in build
+	// state so a later deploy can resolve the same image. The command
+	// composes its own reference in KCL.
 	Image string
 
-	// Tag is the build-resolved image tag (git describe or --tag
-	// override). Used as the ${TAG} substitution token.
+	// Tag is the resolved image tag, recorded in build state and in the
+	// build log line. Bound into the render as the `image_tag` KCL input
+	// before the command string exists, so the rendered cmd already
+	// carries whatever reference KCL composed from it.
 	Tag string
 
-	// TargetArch is the resolved deploy-target GOARCH (amd64/arm64).
-	// Used as the ${TARGETARCH} substitution token so user commands
-	// can cross-compile and pass --platform=linux/<arch> to docker
-	// buildx without re-deriving the arch.
-	TargetArch string
-
-	// Registry is the registry the env's KCL declares (the resolved push
-	// destination when the build pushes). Used as the ${REGISTRY}
-	// substitution token.
-	Registry string
-
-	// ProjectDir is the project root containing forge.yaml. Used as
-	// the ${PROJECT_DIR} substitution token AND as the cwd fallback
-	// when BuildCwd is empty.
-	ProjectDir string
-
-	// Env is the deploy-env name (dev/staging/prod). Used as the
-	// ${ENV} substitution token so a build_cmd can branch on env (e.g.
-	// a different Dockerfile or build-arg per env). Mirrors the
-	// deploy-side External provider's ${ENV} token.
-	Env string
-
-	// BuildCmd is the shell command to exec via `sh -c`. Required —
-	// callers should NOT construct a Spec without a build_cmd set.
+	// BuildCmd is the shell command to exec via `sh -c`, verbatim.
+	// Required — callers should NOT construct a Spec without one.
 	BuildCmd string
 
 	// BuildCwd is the working directory the command runs from.
 	// Relative paths are resolved against ProjectDir. Empty means
-	// "use ProjectDir directly." Missing-on-disk is a warn-and-skip
+	// "use ProjectDir directly." Missing-on-disk is a hard failure
 	// (see Runner.Build).
 	BuildCwd string
 
-	// BuildEnv carries extra env vars merged into the command's
-	// environment AND added to the substitution map (built-in tokens
-	// win on conflict — same precedence External uses).
+	// ProjectDir is the project root containing forge.yaml — the cwd
+	// the command runs from when BuildCwd is empty, and the base that
+	// a relative BuildCwd resolves against.
+	ProjectDir string
+
+	// BuildEnv carries the ShellBuild's declared `env` map, merged onto
+	// the process environment for the command (declared keys win).
 	BuildEnv map[string]string
 }
 
@@ -158,51 +143,16 @@ func (execRunner) RunInDir(ctx context.Context, dir string, env map[string]strin
 	return nil
 }
 
-// Vars returns the substitution map for a Spec's ${X} tokens. The
-// built-in keys (IMAGE/TAG/CODE_VERSION/SERVICE/TARGETARCH/REGISTRY/
-// PROJECT_DIR/ENV/BUILD_CWD) win on conflict with BuildEnv keys — same precedence
-// the deploy-side External provider uses (so users carry one mental
-// model across both escape hatches).
+// Runner executes a Spec's BuildCmd via `sh -c` VERBATIM — the string
+// the KCL render produced is the string the shell sees. Mirrors
+// deploytarget.ExternalProvider's shape: same `sh -c` invocation, same
+// env-overlay precedence, same "user owns the command" contract.
 //
-// Exposed so callers that want to render a preview of the
-// substituted command (forge build --dry-run, forge project audit) can reuse
-// the same token map the runner consumes — no risk of the preview
-// drifting from the actual exec.
-func Vars(spec Spec) map[string]string {
-	vars := map[string]string{}
-	// User-declared env first so the built-ins win on conflict.
-	for k, v := range spec.BuildEnv {
-		vars[k] = v
-	}
-	vars["IMAGE"] = spec.Image
-	vars["TAG"] = spec.Tag
-	// CODE_VERSION mirrors TAG — the canonical version to stamp into
-	// the image so the running container's reported code_version always
-	// matches its tag. Same semantics as the deploy-side External token.
-	vars["CODE_VERSION"] = spec.Tag
-	vars["SERVICE"] = spec.Service
-	vars["TARGETARCH"] = spec.TargetArch
-	vars["REGISTRY"] = spec.Registry
-	vars["PROJECT_DIR"] = spec.ProjectDir
-	vars["ENV"] = spec.Env
-	vars["BUILD_CWD"] = spec.BuildCwd
-	return vars
-}
-
-// Expand substitutes the documented ${X} tokens in template against
-// the Spec. Thin wrapper around deploytarget.ExpandVars + Vars(spec)
-// so callers don't have to thread the var-map through themselves.
-//
-// Phase-1 surface: callers that just want to know "what would forge
-// run" can call this without instantiating a Runner.
-func Expand(template string, spec Spec) string {
-	return deploytarget.ExpandVars(template, Vars(spec))
-}
-
-// Runner executes a Spec's BuildCmd via `sh -c` after substituting
-// the documented ${X} tokens. Mirrors deploytarget.ExternalProvider's
-// shape — same `sh -c` invocation, same env-overlay precedence, same
-// "user owns the command" contract.
+// There is no token substitution. A ShellBuild `cmd` is plain KCL, so
+// everything forge used to inject is composed in KCL where the value
+// already lives (`forge.env()`, `file.workdir()`, the arch accessor, the
+// rendered image reference, a literal), and every `$VAR` / `${VAR}` in
+// the command belongs to the shell.
 //
 // Tests inject a fake Runner via the unexported runner field; the
 // production zero-value runs commands through execRunner.
@@ -285,8 +235,6 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 		return result
 	}
 
-	expanded := Expand(spec.BuildCmd, spec)
-
 	runner := r.runner
 	if runner == nil {
 		runner = execRunner{}
@@ -296,7 +244,7 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 	// spaces or shell metacharacters. RunInDir with an empty dir leaves
 	// cmd.Dir unset, inheriting the host cwd (== ProjectDir for forge
 	// build) — matching the prior no-cwd behavior.
-	err := runner.RunInDir(ctx, cwd, spec.BuildEnv, "sh", "-c", expanded)
+	err := runner.RunInDir(ctx, cwd, spec.BuildEnv, "sh", "-c", spec.BuildCmd)
 	result.Err = err
 	result.Duration = time.Since(start)
 	return result

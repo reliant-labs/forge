@@ -453,6 +453,18 @@ func generateSteps() []GenStep {
 		// next `go test`. See generate_stale_scaffold.go.
 		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepGoBuildValidate, Tag: "validate"},
+		// The deploy tree must COMPILE, and a tree that does not is a hard
+		// failure rather than a warning. See generate_kcl_loadable.go: a
+		// generate that exits 0 on an unrenderable tree defers the discovery
+		// to whatever runs next, which is how #322's closed-schema break
+		// surfaced at render with nothing pointing back at the generate that
+		// had already reported success. Runs after the emitters, because the
+		// tree it checks is the one they just produced.
+		// NOT marked ReadOnly, though it writes nothing itself: ReadOnly
+		// licenses the "No files were changed" report, and it is only true of
+		// a step that runs BEFORE the first writer. This one runs last, by
+		// which point the emitters have written the tree it checks.
+		{Name: "deploy KCL loads", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepKCLLoadable, Tag: "validate"},
 		// Last: record WHICH forge build produced this tree, so a later
 		// run by a different build can say so instead of failing
 		// confusingly. Runs only after everything above succeeded, so the
@@ -1293,6 +1305,22 @@ func stepMigrateImageRegistry(ctx *pipelineContext) error {
 		b.WriteString("forge could not migrate it automatically, and wrote nothing:\n\n")
 		for _, a := range res.Ambiguous {
 			b.WriteString("  " + strings.ReplaceAll(a.Runbook(), "\n", "\n  ") + "\n")
+		}
+		// The unaccounted set is printed with the SAME weight as the
+		// ambiguous one. "forge found a registry it could not read" and
+		// "forge found two registries and will not choose" both leave a tree
+		// that does not render, and reporting the first as a lesser note is
+		// how it gets skimmed past.
+		if len(res.Unaccounted) > 0 {
+			b.WriteString("  forge found a registry declaration it could not account for. Each one is a\n")
+			b.WriteString("  `registry = …` that the new schema rejects, so leaving it in place would not\n")
+			b.WriteString("  render — and forge will not drop a registry it never understood:\n\n")
+			for _, u := range res.Unaccounted {
+				b.WriteString("    " + u.String() + "\n")
+			}
+			b.WriteString("\n  Put the full reference on each affected workload's image in\n")
+			b.WriteString("  deploy/kcl/workloads.k (e.g. `image = \"ghcr.io/<owner>/<name>\"`), remove the\n")
+			b.WriteString("  registry declarations above, and re-run forge generate.\n")
 		}
 		return cliutil.UserErr("forge generate", "cannot migrate env registries onto images automatically", "deploy/kcl/", b.String())
 	}

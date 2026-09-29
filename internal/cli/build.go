@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -840,6 +841,27 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		if rerr != nil {
 			return nil, nil, rerr
 		}
+		// Re-render with the build's own tag and arch bound, when they
+		// differ from what the first pass resolved on its own.
+		//
+		// This is not a nicety: a ShellBuild's `cmd` is a plain KCL string
+		// that forge runs VERBATIM, so whatever tag and arch the KCL read
+		// while composing that string are the ones the command will use.
+		// There is no substitution pass afterwards to correct them. So the
+		// values must be bound BEFORE the render whose `cmd` we run — a
+		// `--tag v9` that arrived after the render would print v9, build
+		// `:latest`, and record v9.
+		//
+		// Two passes rather than one because both inputs are partly derived
+		// FROM the render: the tag falls back to the env's own `image_tag`,
+		// and the arch to the env's declared cluster platform. The first
+		// pass discovers those; the second binds forge's resolution of them.
+		// Skipped entirely when the first pass already agrees, so the common
+		// `forge build dev` renders once.
+		ents, rerr = rerenderWithBuildFacts(ctx, cfg, opts, ents)
+		if rerr != nil {
+			return nil, nil, rerr
+		}
 		declared, entities = ents, ents
 	}
 
@@ -853,6 +875,60 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		return nil, nil, err
 	}
 	return declared, entities, nil
+}
+
+// rerenderWithBuildFacts re-renders env with the tag and arch THIS build
+// resolved bound as `-D image_tag=` / `-D target_arch=`, so a ShellBuild's
+// rendered `cmd` — which forge runs byte-for-byte — already names the right
+// ones.
+//
+// Both values outrank what the KCL resolves alone, and both are computed from
+// the first pass: buildTagFor's precedence (release > --tag > env image_tag >
+// git describe) needs the env's image_tag, and the arch needs the env's
+// declared cluster platform. Hence discover-then-bind.
+//
+// Returns the FIRST pass unchanged when the second would bind nothing new —
+// no --tag, no --release, and an arch the KCL would derive identically. A
+// second render is a second kcl evaluation, so the common case pays nothing.
+//
+// A re-render failure is returned: the first pass proved the KCL renders, so a
+// failure here is forge's own binding being rejected (a project that declared
+// a conflicting `option("target_arch")`), and rendering on with the wrong tag
+// is what this function exists to prevent.
+func rerenderWithBuildFacts(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions, first *KCLEntities) (*KCLEntities, error) {
+	if first == nil {
+		return first, nil
+	}
+	var extra []string
+
+	// The tag: buildTagFor's precedence over the env's own image_tag. Bound
+	// only when it differs, so an env that already resolves its own tag is
+	// not re-rendered to be told the same thing.
+	if tag := buildTagFor(opts, "", first.ImageTag); tag != "" && tag != first.ImageTag {
+		extra = append(extra, "image_tag="+strconv.Quote(tag))
+	}
+
+	// The arch: the same resolution every other build lane applies
+	// (resolveBuildArchForImage over the env's platform), which is also what
+	// lib/build.k's own default would produce — so bind it only when forge's
+	// answer is the more specific one.
+	cfgArch := cfg.Deploy.TargetArch
+	if p := kclFirstClusterPlatform(first); p != "" {
+		cfgArch = p
+	}
+	if arch := resolveBuildArchForImage(cfgArch, opts.targetArch); arch != "" && arch != "amd64" {
+		extra = append(extra, "target_arch="+strconv.Quote(arch))
+	}
+
+	if len(extra) == 0 {
+		return first, nil
+	}
+	ents, err := RenderKCLWith(ctx, projectDirForKCL(), opts.env, extra)
+	if err != nil {
+		return nil, fmt.Errorf("re-render env %q with the build's resolved tag/arch (%s): %w",
+			opts.env, strings.Join(extra, " "), err)
+	}
+	return ents, nil
 }
 
 // narrowBuildEntities is the entity set a build acts on: the env's render

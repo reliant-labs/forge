@@ -1066,7 +1066,23 @@ func (t *ClusterTargetEntity) field(name string) string {
 // whose contents are read in lieu of shelling kcl. Used by unit tests so
 // they can exercise the dispatch logic without a real KCL toolchain.
 func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
-	raw, err := renderKCLRaw(ctx, projectDir, env)
+	return RenderKCLWith(ctx, projectDir, env, nil)
+}
+
+// RenderKCLWith is RenderKCL plus additional forge-derived `-D` bindings.
+//
+// It exists for the build render, which must bind values a plain render cannot
+// know: `image_tag` (the tag THIS build resolved, which outranks the env's own
+// default) and `target_arch`. Both are read by the KCL that composes a
+// ShellBuild's `cmd`, and that command is run verbatim — so if forge did not
+// bind them before the render, the command string would carry the wrong tag or
+// arch and there is no later substitution pass to correct it.
+//
+// extra is `key=value` with the value already KCL-quoted by the caller, the
+// same contract renderKCLRaw's own dArgs use. A key the caller binds here wins
+// over nothing else: these are reserved names no project may set.
+func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) (*KCLEntities, error) {
+	raw, err := renderKCLRaw(ctx, projectDir, env, extra...)
 	if err != nil {
 		return nil, err
 	}
@@ -1080,7 +1096,7 @@ func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error
 // can conditionally include manifests via the `option("env")` builtin
 // (e.g. only ship in-cluster NATS to k3d, skip it for dev-host where
 // docker-compose provides it).
-func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
+func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) ([]byte, error) {
 	if fixture := os.Getenv("FORGE_KCL_RENDER_FIXTURE"); fixture != "" {
 		return os.ReadFile(fixture)
 	}
@@ -1119,6 +1135,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	kclplugin.UsePortStoreReadOnly(filepath.Join(projectDir, ".forge", "ports-"+env+".json"))
 
 	dArgs := append([]string{"env=" + env}, activeRenderOptionDArgs()...)
+	dArgs = append(dArgs, extra...)
 	return kclrender.Run(projectDir, kclDir, dArgs)
 }
 

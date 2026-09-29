@@ -848,6 +848,13 @@ type FrontendEntity struct {
 	// Bundle refuses a frontend with none. Zero only for a frontend bridged
 	// in from forge.yaml (mergeConfigFrontends), which is dev-served.
 	Runtime FrontendRuntime `json:"runtime"`
+	// Image is where an OnHosted frontend's site release is pushed: the
+	// reference the frontend DECLARES, registry host included. Empty for every
+	// other runtime (the render refuses it there, and requires it on hosted).
+	// forge appends the platform's static.v1 layout — see
+	// deploytarget.HostedStaticRepository — so the declared reference stays
+	// exactly what the author wrote.
+	Image string `json:"image,omitempty"`
 	// PublicDir is the build's static output dir relative to the frontend's
 	// code — declared, else the type's convention (resolved by the render).
 	PublicDir string `json:"public_dir,omitempty"`

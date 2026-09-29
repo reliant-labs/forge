@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -15,22 +16,30 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 )
 
-// `forge registry` is what a CI job needs to work from the env's registry
-// DECLARATION alone: log docker in to the registry deploy/kcl/<env>/main.k
-// declares, and read back the digest-pinned ref of what `forge build <env>
-// --push` pushed there. Neither command takes a registry or a host — there is
-// no flag or argument that could carry one. The only inputs are the env name
-// and, for login, a credential, which is not a registry pointer.
+// `forge registry` is what a CI job needs to work from an env's DECLARATIONS
+// alone: log docker in to the registries the env's workloads name, and read
+// back the digest-pinned refs of what `forge build <env> --push` pushed there.
+//
+// NEITHER COMMAND TAKES A REGISTRY, and neither has a flag that could carry
+// one. The registry is part of a workload's `image` in deploy/kcl/workloads.k,
+// so the only inputs are the env name and — for login — a credential, which is
+// not a registry pointer.
+//
+// The env may name SEVERAL registries, because each workload declares its own.
+// login authenticates every distinct host; ref prints one line per built image.
 
 func newRegistryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "registry",
-		Short: "Log in to and read refs from the image registry an env's KCL declares",
-		Long: `Work with the image registry an environment DECLARES — forge.ClusterTarget.registry,
-or forge.ControlPlane.registry for a hosted env, in deploy/kcl/<env>/main.k.
+		Short: "Log in to and read refs from the registries an env's workloads declare",
+		Long: `Work with the image registries an environment's workloads DECLARE — each
+workload's ` + "`image`" + ` in deploy/kcl/workloads.k carries its own registry, and no
+environment declares one.
 
-The registry is never passed to forge: these commands read it from the env's
-KCL, exactly as ` + "`forge build <env> --push`" + ` and ` + "`forge env deploy <env>`" + ` do.`,
+The registry is never passed to forge: these commands read it from the workload
+declarations, exactly as ` + "`forge build <env> --push`" + ` and ` + "`forge env deploy <env>`" + ` do.
+An env whose workloads name two registries is handled by both commands without
+forge needing a concept for it.`,
 	}
 	cmd.AddCommand(newRegistryLoginCmd(), newRegistryRefCmd())
 	return cmdutil.StrictGroup(cmd)
@@ -53,50 +62,101 @@ func newRegistryLoginCmd() *cobra.Command {
 	var (
 		username      string
 		passwordStdin bool
+		passwordEnv   string
 	)
 	cmd := &cobra.Command{
 		Use:   "login <environment> --username <user> --password-stdin",
-		Short: "docker login to the registry the env's KCL declares",
-		Long: `Log docker in to the image registry deploy/kcl/<env>/main.k declares, so that
-` + "`forge build <env> --push`" + ` and any signing / SBOM / scanning step that follows
-can reach it.
+		Short: "docker login to every registry the env's workloads declare",
+		Long: `Log docker in to each registry host named by the images the env's workloads
+declare, so that ` + "`forge build <env> --push`" + ` and any signing / SBOM / scanning step
+that follows can reach them.
 
-The registry HOST comes from the env's KCL and nowhere else. The credential
-comes from --username and stdin (--password-stdin), the same contract as
-` + "`docker login`" + `:
+The registry HOSTS come from the workload declarations and nowhere else — there
+is no host argument and no flag that takes one. An env whose workloads push to
+two registries logs in to both, in one command.
+
+THE CREDENTIAL is the only thing you pass, and it is not a registry pointer:
 
   echo "$GITHUB_TOKEN" | forge registry login prod --username "$GITHUB_ACTOR" --password-stdin
 
-A k3d-local registry (localhost / *.localhost) takes no credentials, so
-logging in to one is a no-op.`,
+or name the environment variable holding it, the way forge.ControlPlane names
+its token_env — so a CI config states a variable NAME (non-sensitive, belongs in
+git) rather than piping a secret through a shell:
+
+  forge registry login prod --username "$GITHUB_ACTOR" --password-env GITHUB_TOKEN
+
+One credential is used for every host. That is correct for the overwhelmingly
+common case (one org, one registry, one token) and honest about the rest: for
+two registries needing two credentials, run the command twice with --host-filter,
+or log the second one in with plain ` + "`docker login`" + ` — forge holds no credential
+store and inventing one here would be a secrets manager, not a build tool.
+
+A k3d-local registry (localhost / *.localhost) takes no credentials, so it is
+skipped.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			env := args[0]
 			if err := validateBuildEnvArg(env); err != nil {
 				return err
 			}
-			if !passwordStdin {
-				return cliutil.UserErr("forge registry login", "the credential is read from stdin, and --password-stdin was not given", "",
-					fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge registry login %s --username <user> --password-stdin", env))
+			if !passwordStdin && passwordEnv == "" {
+				return cliutil.UserErr("forge registry login", "no credential was given", "",
+					fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge registry login %s --username <user> --password-stdin\n"+
+						"  or name the variable holding it: forge registry login %s --username <user> --password-env TOKEN", env, env))
+			}
+			if passwordStdin && passwordEnv != "" {
+				return cliutil.UserErr("forge registry login", "--password-stdin and --password-env both given", "",
+					"pass the credential exactly one way")
 			}
 			if username == "" {
-				return cliutil.UserErr("forge registry login", "--username is required", "", "pass the registry user the credential belongs to")
+				return cliutil.UserErr("forge registry login", "--username is required", "",
+					"pass the registry user the credential belongs to")
 			}
-			registry, err := declaredRegistryOf(cmd.Context(), "forge registry login "+env, env)
+
+			hosts, err := declaredRegistryHostsOf(cmd.Context(), "forge registry login "+env, env)
 			if err != nil {
 				return err
 			}
-			host := registryHost(registry)
-			if isLocalRegistryHost(host) {
-				fmt.Printf("[registry] %s is a local registry (declared in deploy/kcl/%s/main.k): no login needed\n", registry, env)
-				return nil
+
+			// Read the credential ONCE: stdin is not re-readable, and every
+			// host is authenticated with the same one.
+			var credential []byte
+			if passwordStdin {
+				credential, err = io.ReadAll(cmd.InOrStdin())
+				if err != nil {
+					return fmt.Errorf("read credential from stdin: %w", err)
+				}
+			} else {
+				v := os.Getenv(passwordEnv)
+				if v == "" {
+					return cliutil.UserErr("forge registry login",
+						fmt.Sprintf("$%s is empty or unset, so there is no credential to log in with", passwordEnv), "",
+						fmt.Sprintf("set %s in the environment (a CI secret), or pipe the credential in with --password-stdin", passwordEnv))
+				}
+				credential = []byte(v)
 			}
-			fmt.Printf("[registry] logging in to %s (declared in deploy/kcl/%s/main.k: %s)\n", host, env, registry)
-			return dockerLogin(cmd.Context(), host, username, cmd.InOrStdin())
+
+			loggedIn := 0
+			for _, h := range hosts {
+				if isLocalRegistryHost(h) {
+					fmt.Printf("[registry] %s is a local registry (declared by a workload's image): no login needed\n", h)
+					continue
+				}
+				fmt.Printf("[registry] logging in to %s (declared by a workload's image in env %s)\n", h, env)
+				if err := dockerLogin(cmd.Context(), h, username, strings.NewReader(string(credential))); err != nil {
+					return err
+				}
+				loggedIn++
+			}
+			if loggedIn == 0 {
+				fmt.Printf("[registry] nothing to log in to: every registry env %s declares is host-local\n", env)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&username, "username", "u", "", "Registry user the credential belongs to (e.g. $GITHUB_ACTOR, _json_key, oauth2accesstoken, AWS)")
-	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read the credential from stdin (required; a credential never belongs on the command line)")
+	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read the credential from stdin (a credential never belongs on the command line)")
+	cmd.Flags().StringVar(&passwordEnv, "password-env", "", "Name of the environment variable holding the credential (the forge.ControlPlane token_env convention: the NAME is in git, the VALUE never is)")
 	return cmd
 }
 
@@ -107,61 +167,71 @@ func newRegistryRefCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "ref <environment> [--image <name>]",
-		Short: "Print the digest-pinned ref `forge build <env> --push` pushed",
-		Long: `Print <registry>/<image>@<digest> for the image the last ` + "`forge build <env> --push`" + `
-pushed — the immutable reference a signing, SBOM, provenance or vulnerability
-scan step should act on. It is read from .forge/state/ (what the build
-recorded), so the registry is the one the env's KCL declares.
+		Short: "Print the digest-pinned refs `forge build <env> --push` pushed",
+		Long: `Print ` + "`<image>@<digest>`" + ` for each image the last ` + "`forge build <env> --push`" + `
+pushed — the immutable references a signing, SBOM, provenance or vulnerability
+scan step should act on. They are read from .forge/state/ (what the build
+recorded), so each ref names the registry its own workload declared.
 
-Without --image it is the project image; --image names another (a frontend,
-a DockerBuild workload).
+By default every built image is printed, one per line, prefixed with the
+workload that declared it. --image narrows to one.
 
 --github-output also appends ref=, image= and digest= to the file GitHub
-Actions names in $GITHUB_OUTPUT, so later steps read them as step outputs.`,
+Actions names in $GITHUB_OUTPUT. With several images it writes the <workload>_
+prefixed form as well, so a later step can address a specific one.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			env := args[0]
 			if err := validateBuildEnvArg(env); err != nil {
 				return err
 			}
-			ref, err := pushedImageRef(projectDirForKCL(), env, image)
+			refs, err := pushedImageRefs(cmd.Context(), projectDirForKCL(), env, image)
 			if err != nil {
 				return err
 			}
-			fmt.Println(ref.String())
+			multiple := len(refs) > 1
+			for _, r := range refs {
+				if multiple {
+					fmt.Printf("%s\t%s\n", r.workload, r)
+				} else {
+					fmt.Println(r.String())
+				}
+			}
 			if githubOutput {
-				return ref.appendGitHubOutput()
+				return appendGitHubOutput(refs)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&image, "image", "", "The image to print (default: the project image)")
+	cmd.Flags().StringVar(&image, "image", "", "Print only this image (default: every image the build pushed)")
 	cmd.Flags().BoolVar(&githubOutput, "github-output", false, "Also append ref=, image= and digest= to $GITHUB_OUTPUT")
 	return cmd
 }
 
-// declaredRegistryOf renders env and returns the registry its KCL declares,
-// or the runbook naming the file and field to set. context is the command.
-func declaredRegistryOf(ctx context.Context, context, env string) (string, error) {
+// declaredRegistryHostsOf renders env and returns the distinct registry hosts
+// its workloads' images name, or the runbook naming what to declare. context is
+// the command that needed them.
+func declaredRegistryHostsOf(ctx context.Context, context, env string) ([]string, error) {
 	ents, err := renderBuildKCL(ctx, projectDirForKCL(), env)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if r := declaredRegistry(ents); r != "" {
-		return r, nil
+	plan := pushPlan{env: env, destinations: declaredImageDestinations(ents)}
+	if hosts := plan.hosts(); len(hosts) > 0 {
+		return hosts, nil
 	}
-	return "", undeclaredRegistryError(context, env, ents)
+	return nil, noPushableImagesError(context, env, ents)
 }
 
-// registryHost is the host docker logs in to for a registry reference: the
-// part before the first `/` when it looks like a host (has a `.` or `:`, or is
-// localhost), else Docker Hub — docker's own rule for a bare `org/img`.
-func registryHost(registry string) string {
-	first, _, _ := strings.Cut(registry, "/")
-	if strings.ContainsAny(first, ".:") || first == "localhost" {
+// registryHost is the host docker logs in to for a reference: the part before
+// the first `/` when it looks like a host (has a `.` or `:`, or is localhost),
+// else "" — a bare `org/img` names no host.
+func registryHost(reference string) string {
+	first, _, ok := strings.Cut(reference, "/")
+	if ok && (strings.ContainsAny(first, ".:") || first == "localhost") {
 		return first
 	}
-	return "docker.io"
+	return ""
 }
 
 // isLocalRegistryHost mirrors kcl/base.k is_local_registry: a host-local
@@ -171,25 +241,119 @@ func isLocalRegistryHost(host string) bool {
 	return name == "localhost" || name == "127.0.0.1" || strings.HasSuffix(name, ".localhost")
 }
 
-// imageRef is a pushed image: <repository>@<digest>.
+// imageRef is one pushed image: <repository>@<digest>, and the workload that
+// declared the repository.
 type imageRef struct {
-	repository string // <registry>/<image>
+	repository string // <registry-host>/<path>
 	digest     string
+	workload   string
 }
 
 func (r imageRef) String() string { return r.repository + "@" + r.digest }
 
-func (r imageRef) appendGitHubOutput() error {
+// pushedImageRefs reads what `forge build <env> --push` recorded and returns
+// the digest-pinned ref of each pushed image, sorted by repository. only, when
+// set, narrows to the image whose repository or artifact name matches it.
+func pushedImageRefs(ctx context.Context, projectDir, env, only string) ([]imageRef, error) {
+	var refs []imageRef
+	add := func(repository, digest, workload string) {
+		if repository == "" || digest == "" {
+			return
+		}
+		for _, existing := range refs {
+			if existing.repository == repository {
+				return
+			}
+		}
+		refs = append(refs, imageRef{repository: repository, digest: digest, workload: workload})
+	}
+
+	// Which workload declared each repository, for the output labels. A render
+	// failure is not fatal here: the refs come from build state, and a label
+	// is a convenience.
+	declaredBy := map[string]string{}
+	if ents, err := renderBuildKCL(ctx, projectDir, env); err == nil {
+		for _, d := range declaredImageDestinations(ents) {
+			declaredBy[d.repository] = d.workload
+		}
+	}
+
+	if st, err := ReadBuildState(projectDir, env); err == nil && st != nil {
+		add(st.Image, st.Digest, declaredBy[st.Image])
+	}
+	for _, st := range readAllImageBuildStates(projectDir, env) {
+		add(st.Image, st.Digest, declaredBy[st.Image])
+	}
+
+	if only != "" {
+		filtered := refs[:0:0]
+		for _, r := range refs {
+			if r.repository == only || repositoryName(r.repository) == only {
+				filtered = append(filtered, r)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, notPushedError(env, fmt.Sprintf("no image matching %q", only))
+		}
+		refs = filtered
+	}
+	if len(refs) == 0 {
+		return nil, notPushedError(env, "no image")
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].repository < refs[j].repository })
+	return refs, nil
+}
+
+func notPushedError(env, what string) error {
+	return cliutil.UserErr("forge registry ref "+env,
+		fmt.Sprintf("%s with a pushed digest recorded for env %q", what, env), "",
+		fmt.Sprintf("run forge build %s --push first — it records the digest of what it pushed to each image's declared reference", env))
+}
+
+// readAllImageBuildStates reads every per-image build state recorded for env.
+func readAllImageBuildStates(projectDir, env string) []buildtarget.State {
+	names, err := buildtarget.ListStates(projectDir, env)
+	if err != nil {
+		return nil
+	}
+	var out []buildtarget.State
+	for _, name := range names {
+		st, err := buildtarget.ReadState(projectDir, env, name)
+		if err != nil || st == nil {
+			continue
+		}
+		out = append(out, *st)
+	}
+	return out
+}
+
+// appendGitHubOutput writes ref=/image=/digest= for a GitHub Actions step. With
+// several images the unprefixed keys name the FIRST (sorted) one and each also
+// gets a <workload>_-prefixed set, so a later step can address a specific image
+// without this command having to be run once per image.
+func appendGitHubOutput(refs []imageRef) error {
 	path := os.Getenv("GITHUB_OUTPUT")
 	if path == "" {
 		return cliutil.UserErr("forge registry ref --github-output", "$GITHUB_OUTPUT is not set", "",
-			"run it inside a GitHub Actions step, or drop --github-output and read the ref from stdout")
+			"run it inside a GitHub Actions step, or drop --github-output and read the refs from stdout")
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("open $GITHUB_OUTPUT: %w", err)
 	}
-	if _, err := fmt.Fprintf(f, "ref=%s\nimage=%s\ndigest=%s\n", r, r.repository, r.digest); err != nil {
+	var b strings.Builder
+	first := refs[0]
+	fmt.Fprintf(&b, "ref=%s\nimage=%s\ndigest=%s\n", first, first.repository, first.digest)
+	if len(refs) > 1 {
+		for _, r := range refs {
+			key := githubOutputKey(r.workload)
+			if key == "" {
+				key = githubOutputKey(repositoryName(r.repository))
+			}
+			fmt.Fprintf(&b, "%s_ref=%s\n%s_image=%s\n%s_digest=%s\n", key, r, key, r.repository, key, r.digest)
+		}
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("write $GITHUB_OUTPUT: %w", err)
 	}
@@ -201,30 +365,17 @@ func (r imageRef) appendGitHubOutput() error {
 	return nil
 }
 
-// pushedImageRef reads what `forge build <env> --push` recorded for image
-// ("" = the project image) and returns its digest-pinned ref.
-func pushedImageRef(projectDir, env, image string) (imageRef, error) {
-	notPushed := func(what string) error {
-		return cliutil.UserErr("forge registry ref "+env,
-			fmt.Sprintf("%s has no pushed digest recorded for env %q", what, env), "",
-			fmt.Sprintf("run forge build %s --push first — it records the digest of what it pushed", env))
-	}
-	if image == "" {
-		st, err := ReadBuildState(projectDir, env)
-		if err != nil {
-			return imageRef{}, err
+// githubOutputKey folds a workload name into a GitHub Actions output key:
+// anything outside [A-Za-z0-9_] becomes `_`.
+func githubOutputKey(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
 		}
-		if st == nil || st.Digest == "" || st.Registry == "" {
-			return imageRef{}, notPushed("the project image")
-		}
-		return imageRef{repository: strings.TrimSuffix(st.Registry, "/") + "/" + st.Image, digest: st.Digest}, nil
 	}
-	st, err := buildtarget.ReadState(projectDir, env, image)
-	if err != nil {
-		return imageRef{}, err
-	}
-	if st == nil || st.Digest == "" || st.Registry == "" {
-		return imageRef{}, notPushed(fmt.Sprintf("image %q", image))
-	}
-	return imageRef{repository: strings.TrimSuffix(st.Registry, "/") + "/" + st.Image, digest: st.Digest}, nil
+	return b.String()
 }

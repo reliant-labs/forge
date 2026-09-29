@@ -630,16 +630,18 @@ func verifyOCIArtifact(ctx context.Context, f httpFetcher, name string, art rele
 		res.Detail = "no shared digest recorded (variant-mode artifacts are not yet resolvable)"
 		return res
 	}
-	if art.URI == "" {
-		// The common case for ledgers cut before the registry was recorded,
-		// and for every local/compose build that never pushed anywhere. The
-		// digest is real but unaddressable: a bare image name names no host.
+	// The artifact's NAME is its repository, registry host included, because
+	// that is how harvestReleaseArtifacts keys an OCI artifact. So the address
+	// needs no second field — but a ledger entry with no host is still
+	// unverifiable (a local/compose build that pushed nowhere), and says so
+	// rather than guessing Docker Hub and reporting a spurious failure.
+	host, repo := ociManifestCoordinates(name)
+	if host == "" {
 		res.Status = verifyUnverifiable
-		res.Detail = fmt.Sprintf("%s recorded, but the ledger names no registry — a bare image name cannot be resolved to a host", digest)
+		res.Detail = fmt.Sprintf("%s recorded for %q, which names no registry host — a bare image name cannot be resolved to an address", digest, name)
 		return res
 	}
 
-	host, repo := ociManifestCoordinates(art.URI, name)
 	endpoint := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, repo, digest)
 
 	resp, err := f.Fetch(ctx, fetchRequest{URL: endpoint, Accept: ociManifestAccept})
@@ -696,31 +698,29 @@ func verifyOCIArtifact(ctx context.Context, f httpFetcher, name string, art rele
 // HOST when it looks like one — it contains a dot or a port, or it is
 // localhost — because a DNS name and a Docker Hub username are otherwise
 // indistinguishable, and that heuristic is the same one docker itself uses.
-func ociManifestCoordinates(registry, image string) (host, repo string) {
-	registry = strings.Trim(registry, "/")
-	first, rest, _ := strings.Cut(registry, "/")
-
-	if strings.Contains(first, ".") || strings.Contains(first, ":") || first == "localhost" {
-		host = first
-	} else {
-		// No host component: the whole value is a Docker Hub namespace.
-		host, rest = "docker.io", registry
+// ociManifestCoordinates splits a full repository (`ghcr.io/acme/shop`) into
+// the registry API host and the repository path to request a manifest from.
+// Returns ("", "") when the reference names no host — a bare name is not an
+// address, and guessing Docker Hub for it would report a confident failure
+// against a registry the image was never pushed to.
+func ociManifestCoordinates(repository string) (host, repo string) {
+	repository = strings.Trim(repository, "/")
+	first, rest, ok := strings.Cut(repository, "/")
+	if !ok || !(strings.Contains(first, ".") || strings.Contains(first, ":") || first == "localhost") {
+		return "", ""
 	}
+	host, repo = first, rest
 
 	// Docker Hub's registry API lives on a different name than its pull
 	// alias, and an unqualified official image sits under the `library`
 	// namespace.
 	if host == "docker.io" || host == "index.docker.io" {
 		host = "registry-1.docker.io"
-		if rest == "" {
-			rest = "library"
+		if !strings.Contains(repo, "/") {
+			repo = "library/" + repo
 		}
 	}
-
-	if rest == "" {
-		return host, image
-	}
-	return host, rest + "/" + image
+	return host, repo
 }
 
 // ociTokenResponse is a registry token endpoint's reply. Registries disagree

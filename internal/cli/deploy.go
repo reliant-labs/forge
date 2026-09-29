@@ -2596,9 +2596,12 @@ func writeFallbackRegistriesYAML() (string, error) {
 }
 
 func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targetArchFlag string) error {
-	registry := declaredRegistryForEnv(ctx, "dev")
-	if registry == "" {
-		return undeclaredRegistryError("forge env deploy dev", "dev", &KCLEntities{})
+	// Where the project image goes is the reference the workload declaring it
+	// wrote — the same one the dev cluster pulls. Nothing here composes a
+	// destination out of an env field, because there is no env field.
+	repository := declaredProjectRepositoryForEnv(ctx, "dev", cfg.Name)
+	if repository == "" {
+		return noPushableImagesError("forge env deploy dev", "dev", &KCLEntities{})
 	}
 
 	// Build and push the single project image from root Dockerfile.
@@ -2608,7 +2611,7 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 		return nil
 	}
 
-	imageRef := fmt.Sprintf("%s/%s:%s", registry, cfg.Name, tag)
+	imageRef := repository + ":" + tag
 
 	// Skip the rebuild if the image is already present at the tag (e.g.
 	// the user just ran `forge build --push` against the same registry).
@@ -3057,7 +3060,7 @@ func expectedClusterForEnv(ctx context.Context, cfg *config.ProjectConfig, envNa
 }
 
 // firstK8sClusterField reads the rendered KCL for env and returns the
-// requested field ("cluster" / "namespace" / "registry" / "domain")
+// requested field ("cluster" / "namespace" / "domain" / "platform")
 // from the env's declared cluster_target, falling back to the first
 // Cluster-bound workload's runtime. Returns "" when KCL can't be
 // rendered or the field is declared nowhere.
@@ -3097,8 +3100,6 @@ func k8sClusterFieldFromEntities(entities *KCLEntities, field string) string {
 			v = c.Cluster
 		case "namespace":
 			v = c.Namespace
-		case "registry":
-			v = c.Registry
 		case "domain":
 			v = c.Domain
 		case "platform":
@@ -3126,18 +3127,30 @@ func k8sClusterNamespaceForEnv(ctx context.Context, envName string) string {
 	return firstK8sClusterField(ctx, envName, "namespace")
 }
 
-// declaredRegistryForEnv renders env and returns the image registry its KCL
-// declares (declaredRegistry). "" when the env declares none or cannot be
-// rendered.
-func declaredRegistryForEnv(ctx context.Context, envName string) string {
+// declaredImageDestinationsForEnv renders env and returns every repository its
+// workloads declare for an image forge builds. Nil when the env declares none
+// or cannot be rendered.
+func declaredImageDestinationsForEnv(ctx context.Context, envName string) []imageDestination {
 	if envName == "" {
-		return ""
+		return nil
 	}
 	entities, err := RenderKCL(ctx, projectDirForKCL(), envName)
 	if err != nil {
-		return ""
+		return nil
 	}
-	return declaredRegistry(entities)
+	return declaredImageDestinations(entities)
+}
+
+// declaredProjectRepositoryForEnv is the repository env's workloads declare for
+// the artifact named `image` — the project image, usually. "" when no workload
+// in that env declares it.
+func declaredProjectRepositoryForEnv(ctx context.Context, envName, image string) string {
+	for _, d := range declaredImageDestinationsForEnv(ctx, envName) {
+		if repositoryName(d.repository) == image {
+			return d.repository
+		}
+	}
+	return ""
 }
 
 // verifyKubectlContext is the DECLARATIVE env-cluster guard. The env's

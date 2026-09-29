@@ -126,7 +126,7 @@ func externalBuildServices(e *KCLEntities) []WorkloadEntity {
 // single source of truth a subsequent `forge env deploy <env>` reads to
 // pin the image tag — eliminating the build/deploy tag divergence
 // the External (deploy) provider already closes for the deploy side.
-func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts buildOptions, registry, tag, projectDir string) []buildResult {
+func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts buildOptions, tag, projectDir string) []buildResult {
 	if len(services) == 0 {
 		return nil
 	}
@@ -191,7 +191,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// registry manifest — the e2e workspace-base/reliant case — or an
 		// unreachable registry) records no digest and deploy falls back to the
 		// tag exactly as before. NEVER fails the build.
-		pushedRef := externalPushedRef(registry, svc.Image, svcTag)
+		pushedRef := externalPushedRef(svc.Image, svcTag)
 		digest, platforms := "", []string(nil)
 		if d, p, derr := externalImageDigestResolver(ctx, pushedRef); derr == nil {
 			digest, platforms = d, p
@@ -207,9 +207,8 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// fall back to git-derived tag resolution).
 		state := buildtarget.State{
 			Service:   svc.Name,
-			Image:     svc.Image,
+			Image:     imageRepository(svc.Image),
 			Tag:       svcTag,
-			Registry:  registry,
 			PushedAt:  nowRFC3339(),
 			Digest:    digest,
 			Platforms: platforms,
@@ -231,9 +230,8 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// describe on a missing file. Last successful service wins; this
 		// matches the single-file-per-env shape the --push path uses.
 		deployState := BuildState{
-			Image:    svc.Image,
-			Tag:      svcTag,
-			Registry: registry,
+			Image: imageRepository(svc.Image),
+			Tag:   svcTag,
 			// The user's build_cmd owns build AND push; we record the
 			// registry coordinates but can't prove a push happened, so
 			// Pushed stays false (the deploy-side tag read doesn't gate
@@ -306,9 +304,6 @@ func externalBuildTag(svc WorkloadEntity, buildTag string, opts buildOptions) st
 // This still composes the reference forge-side rather than reading the one KCL
 // rendered. Moving it onto the rendered reference is slice B's job, together
 // with removing the env-level registry field it reads.
-func externalPushedRef(registry, image, tag string) string {
-	if registry == "" {
-		return image + ":" + tag
-	}
-	return registry + "/" + image + ":" + tag
+func externalPushedRef(image, tag string) string {
+	return imageRepository(image) + ":" + tag
 }

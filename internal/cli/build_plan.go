@@ -155,9 +155,8 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 	// 3. Project image + image frontends (only with --docker; same gate as
 	// buildParallel's `opts.buildDocker`).
 	if opts.buildDocker {
-		registry := opts.envRegistry
 		if len(in.targets.goTargets) > 0 && !in.targets.skipProjectDocker {
-			tags := imageTagSet(registry, in.cfg.Name, opts.pushRegistry, in.projectTag, releaseScoped)
+			tags := imageTagSet(opts.pushPlan.repositoryFor(in.cfg.Name), in.projectTag, opts.pushPlan.push, releaseScoped)
 			// A missing root Dockerfile is a SKIP in the real build
 			// (dockerBuildProject), not a failure — the completeness gate
 			// below is what refuses a release that lacks the image.
@@ -169,7 +168,7 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 			report.steps = append(report.steps, step)
 		}
 		for _, fe := range in.targets.dockerFrontends {
-			tags := imageTagSet(registry, fe.Name, opts.pushRegistry, in.resolvedTag, releaseScoped)
+			tags := imageTagSet(opts.pushPlan.repositoryFor(fe.Name), in.resolvedTag, opts.pushPlan.push, releaseScoped)
 			df := filepath.Join(fe.DeclaredDir(), "Dockerfile")
 			step := buildPlanStep{kind: "docker", name: fe.Name, what: "docker build -f " + df, pushes: tags.push}
 			if !fileExists(df) {
@@ -370,10 +369,10 @@ func planHostedStaticSites(in planInputs) []buildPlanStep {
 		if err := checkDeployableFrontendMock(f); err != nil {
 			step.problem = err.Error()
 		}
-		if in.opts.pushRegistry == "" {
+		if !in.opts.pushPlan.push {
 			step.problem = errHostedSiteMustPush(in.opts.env, []string{f.Name}).Error()
 		} else {
-			step.pushes = []string{deploytarget.HostedStaticRepository(in.opts.pushRegistry, f.Name)}
+			step.pushes = []string{deploytarget.HostedStaticRepository(f.Image)}
 		}
 		out = append(out, step)
 	}

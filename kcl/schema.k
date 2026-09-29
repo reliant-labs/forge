@@ -2602,6 +2602,23 @@ schema Frontend:
     config?: FrontendConfig
 
     # --- The static build (every runtime that publishes one) ---
+    # WHERE THE RELEASE IS PUSHED, for a frontend that publishes one to a
+    # registry (OnHosted). Same field name and same rule as a workload's,
+    # because it is the same fact: a registry is declared on the thing that
+    # ships, never on the environment.
+    #
+    #     forge.Frontend {name = "web", image = "ghcr.io/acme/web", ...}
+    #
+    # forge appends the platform's own layout to it — a site release lands
+    # under `<image>/static.v1` — because that segment is how the control
+    # plane tells a site release from a backend image, not something an author
+    # should have to know or could get right. So the reference you write stays
+    # yours and `static.v1` is never forced into it.
+    #
+    # Required on OnHosted, refused on the runtimes that publish no registry
+    # artifact (OnBucket and OnFirebase ship to your bucket / your Firebase
+    # site; OnHost is a dev server).
+    image?: str
     # The build's static output directory, relative to the frontend's
     # code ("out" for a Next.js static export, "dist" for Vite). Unset:
     # the type's conventional one ("out" for nextjs, "dist" otherwise).

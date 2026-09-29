@@ -29,14 +29,17 @@ import (
 // user peeks at the file by hand. PushedAt is RFC3339 so a human can
 // eyeball "how stale is this?" without a parser.
 type BuildState struct {
-	Image    string `json:"image"`
-	Tag      string `json:"tag"`
-	Registry string `json:"registry"`
-	// Pushed is true when the image was pushed to Registry. False for
+	// Image is the REPOSITORY this build wrote, registry host included
+	// (`ghcr.io/acme/shop`) — the reference the workload declared, minus any
+	// tag. There is no separate Registry field: the registry is part of the
+	// image, so splitting them here would let the two disagree, which is the
+	// class of bug that made a push and a deploy name different repositories.
+	Image string `json:"image"`
+	Tag   string `json:"tag"`
+	// Pushed is true when the image was pushed to that repository. False for
 	// local/scp/compose builds — the image lives only on the build host.
 	// Recording the handoff no longer depends on a push (that gate left
-	// non-registry deploys with no tag to read); push just adds the
-	// registry coordinates.
+	// non-registry deploys with no tag to read).
 	Pushed bool `json:"pushed"`
 	// Git provenance of the build, so `forge env deploy` can warn when it's
 	// about to ship a non-reproducible (dirty / untagged) build. Commit

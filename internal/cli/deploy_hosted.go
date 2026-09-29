@@ -212,8 +212,11 @@ func releaseRegistries(rel *release.Release) map[string]string {
 	}
 	out := map[string]string{}
 	for name, art := range rel.Artifacts {
-		if art.Kind == release.KindOCI && art.URI != "" {
-			out[name] = art.URI
+		// The artifact's name IS its repository, host included, so the
+		// registry is read off the key rather than a parallel URI field that
+		// could contradict it. An entry naming no host was never pushed.
+		if art.Kind == release.KindOCI && registryHost(name) != "" {
+			out[name] = name
 		}
 	}
 	return out

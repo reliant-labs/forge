@@ -840,7 +840,13 @@ _frontend_violations = lambda f: Frontend -> [str] {
         + (["build_variants: a frontend has one build"] if _t == "build-only" and _rt.build_variants else []) \
         + (["bundle: the dev server assembles nothing; bundle dirs are assembled into a PUBLISHED site"] if _host and f.bundle else []) \
         + (["cache_control: forge sets Cache-Control only on the objects it uploads to your bucket (forge.OnBucket); ${'the platform owns the CDN and its headers' if _t == 'hosted' else ('Firebase owns the headers' if _t == 'firebase' else 'nothing here serves the build')}"] \
-            if f.cache_control and _t != "bucket" else [])
+            if f.cache_control and _t != "bucket" else []) \
+        + (["image: nothing here pushes a registry artifact — ${'your bucket serves the build' if _t == 'bucket' else ('your Firebase site serves it' if _t == 'firebase' else ('the dev server serves it' if _host else 'the build is not published'))}"] \
+            if f.image and _t != "hosted" else []) \
+        + (["image is REQUIRED on forge.OnHosted: the site release is pushed to a registry, and the registry is part of the reference (e.g. image = \"ghcr.io/<owner>/${f.name}\"). forge appends the platform's own static.v1 layout to it. There is no env-level registry"] \
+            if _t == "hosted" and not f.image else []) \
+        + (["image '${f.image}' names no registry host, and an OnHosted frontend's release is pushed to one. Declare the full reference, e.g. image = \"ghcr.io/<owner>/${f.name}\""] \
+            if _t == "hosted" and f.image and not img_lib.has_registry_host(f.image) else [])
 }
 
 # A frontend's runtime_config as the StaticSite spec's `runtimeConfig` wire
@@ -902,6 +908,9 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "env_vars": [_render_env_var(e) for e in f.env_vars]
         "config": _render_frontend_config(f.config) if f.config else None
         "runtime": _render_frontend_runtime(f.runtime)
+        # Where an OnHosted frontend's release is pushed: the reference the
+        # frontend DECLARES. Go appends the platform's static.v1 layout.
+        "image": f.image if f.image else None
         # The static build, on the frontend: every publishing runtime
         # builds and assembles the same way.
         "public_dir": _public_dir(f)

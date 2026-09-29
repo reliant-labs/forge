@@ -52,7 +52,7 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 	if len(sites) == 0 {
 		return nil
 	}
-	if opts.pushRegistry == "" {
+	if !opts.pushPlan.push {
 		names := make([]string, 0, len(sites))
 		for _, f := range sites {
 			names = append(names, f.Name)
@@ -62,7 +62,6 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
 		return err
 	}
-	registry := strings.TrimSuffix(opts.pushRegistry, "/") + "/" + deploytarget.StaticSiteRepositorySegment
 	for _, f := range sites {
 		if err := checkDeployableFrontendMock(f); err != nil {
 			return err
@@ -72,7 +71,10 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		// any travelling in the built bundle removed.
 		fe.RuntimeConfigJS = ""
 		fe.StripRuntimeConfig = true
-		repository := deploytarget.HostedStaticRepository(opts.pushRegistry, f.Name)
+		// The frontend's OWN declared reference, plus the platform's static.v1
+		// layout. The render requires the reference and requires it to name a
+		// host, so there is nothing to resolve or default here.
+		repository := deploytarget.HostedStaticRepository(f.Image)
 		fmt.Printf("[build] %s: hosted static site → %s\n", f.Name, repository)
 		digest, err := hostedStaticPusher(ctx, projectDir, repository, fe)
 		if err != nil {
@@ -80,9 +82,8 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		}
 		state := buildtarget.State{
 			Service:  f.Name,
-			Image:    f.Name,
+			Image:    imageRepository(f.Image),
 			Tag:      digest,
-			Registry: registry,
 			PushedAt: nowRFC3339(),
 			Digest:   digest,
 		}

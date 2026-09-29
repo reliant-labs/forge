@@ -4,108 +4,233 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// An image registry is DECLARED in the env's KCL (deploy/kcl/<env>/main.k) and
-// nowhere else. No flag, no `-D` binding forge owns, no environment variable
-// and no forge.yaml key carries one. `forge build <env> --push` is a switch —
-// "push this build" — and the destination is whatever the env declares, the
-// same value `forge env deploy` pulls from, so the two agree by construction
-// rather than by a CI script restating the registry correctly.
+// An image registry is DECLARED on a WORKLOAD, as part of its image, and
+// nowhere else. Not on the env, not on a flag, not in a `-D` binding forge
+// owns, not in an environment variable or a forge.yaml key.
+//
+// `forge build <env> --push` is a switch — "push these builds" — and each
+// build's destination is the reference its own workload declares, which is the
+// same reference `forge env deploy` pulls. They agree by construction rather
+// than because a CI script restated a registry correctly, and two workloads in
+// one env can ride two different registries without forge needing a concept
+// for that.
 
-// pushRegistryChoice is where a build pushes and why.
-type pushRegistryChoice struct {
-	// registry is the push destination; empty means the build pushes nothing.
-	registry string
-	// source names the declaration it came from, for the build header.
-	source string
-	// env and local describe a build that pushes nothing: the env, and the
-	// registry it declares (which its images are tagged under), for the
-	// header.
-	env, local string
+// imageDestination is one built image and where it goes: the repository its
+// workload declared (registry host included) and the workload that declared
+// it, for error messages and the build header.
+type imageDestination struct {
+	// repository is the push target: `<host>/<path>`, no tag or digest.
+	repository string
+	// workload names the declaration it came from.
+	workload string
+}
+
+// host is the registry host `docker login` authenticates against for this
+// destination.
+func (d imageDestination) host() string { return registryHost(d.repository) }
+
+// pushPlan is where a build's images go, derived from the env's images.
+type pushPlan struct {
+	// push is true when this build pushes at all. False means the images are
+	// built and tagged locally and nothing leaves the machine.
+	push bool
+	// destinations is one entry per distinct declared repository, sorted, so
+	// the header and `forge registry login` enumerate them deterministically.
+	destinations []imageDestination
+	// env is the environment these images belong to, for the header.
+	env string
+}
+
+// printHeader prints where this build's images are tagged and pushed. One
+// line per distinct registry, because there can legitimately be several.
+func (p pushPlan) printHeader() {
+	if len(p.destinations) == 0 {
+		return
+	}
+	verb := "tagged locally, not pushed"
+	if p.push {
+		verb = "pushed"
+	}
+	for _, d := range p.destinations {
+		fmt.Printf("[build]   Image:    %s (declared by workload %q; %s)\n", d.repository, d.workload, verb)
+	}
+}
+
+// repositoryFor is the declared repository a built artifact goes to.
+//
+// The build knows an artifact by its NAME — the project name for the project
+// image, a frontend's name for a frontend image — while a declaration names a
+// full reference. They are joined on the reference's last path segment, which
+// is the repository's own name: `ghcr.io/acme/shop` IS the artifact `shop`.
+//
+// Falls back to the bare name when no workload declares it. That is not a
+// silent mis-push: a bare name has no registry host, so nothing pushes it, and
+// the image is tagged locally exactly as an unbound artifact should be. The
+// render is what refuses a bare image on a runtime that must pull one.
+func (p pushPlan) repositoryFor(name string) string {
+	for _, d := range p.destinations {
+		if repositoryName(d.repository) == name {
+			return d.repository
+		}
+	}
+	return name
+}
+
+// repositoryName is a repository's last path segment — the artifact name
+// (`ghcr.io/acme/shop` → `shop`).
+func repositoryName(repository string) string {
+	if slash := strings.LastIndex(repository, "/"); slash >= 0 {
+		return repository[slash+1:]
+	}
+	return repository
+}
+
+// hosts is the set of distinct registry hosts these destinations name, sorted.
+// What `forge registry login` authenticates against.
+func (p pushPlan) hosts() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range p.destinations {
+		h := d.host()
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // renderBuildInputs renders the env (renderBuildEntities) and resolves where
-// the build pushes from the FULL render — the registry is an env-wide fact,
-// and --target narrowing can drop the one workload that states it. The
-// resolved registry is written back into opts.pushRegistry so every
-// downstream push reads the one resolved value. Returns the narrowed entity
-// set the build acts on.
-func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *buildOptions) (*KCLEntities, pushRegistryChoice, error) {
+// each image goes from the FULL render — a --target narrowing can drop the
+// workload whose image the header should name. The resolved plan is written
+// back into opts.pushPlan so every downstream push reads one resolution.
+// Returns the narrowed entity set the build acts on.
+func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *buildOptions) (*KCLEntities, pushPlan, error) {
 	declared, entities, err := renderBuildEntities(ctx, cfg, *opts)
 	if err != nil {
-		return nil, pushRegistryChoice{}, err
+		return nil, pushPlan{}, err
 	}
-	push, err := resolvePushRegistry(*opts, declared)
+	plan, err := resolvePushPlan(*opts, declared)
 	if err != nil {
-		return nil, pushRegistryChoice{}, err
+		return nil, pushPlan{}, err
 	}
-	opts.pushRegistry = push.registry
-	opts.envRegistry = declaredRegistry(declared)
-	push.env, push.local = opts.env, opts.envRegistry
-	return entities, push, nil
+	opts.pushPlan = plan
+	return entities, plan, nil
 }
 
-// printHeader prints where this build's images are tagged and pushed.
-// Nothing when the env declares no registry and the build pushes nothing.
-func (c pushRegistryChoice) printHeader() {
-	switch {
-	case c.registry != "":
-		fmt.Printf("[build]   Push:     %s (%s)\n", c.registry, c.source)
-	case c.local != "":
-		fmt.Printf("[build]   Registry: %s (declared in deploy/kcl/%s/main.k; tagged locally, not pushed)\n", c.local, c.env)
-	}
-}
-
-// resolvePushRegistry is the ONE place a build decides where it pushes: the
-// registry the env declares (declaredRegistry), or a runbook naming the file
-// and field to set. There is no other source and no precedence to reason
-// about.
+// resolvePushPlan is the ONE place a build decides where its images go: each
+// workload's declared image, or a runbook naming the workload with no usable
+// one. There is no other source and no precedence to reason about.
 //
 // declared is the env's FULL render, before --target narrowing. nil when there
 // is no env or the env has no KCL directory.
 //
-// `forge env up` (opts.pushIfDeclared) pushes to the same declaration, but an
-// env that declares none builds locally instead of failing: a host-only env
-// has no cluster to pull from.
-func resolvePushRegistry(opts buildOptions, declared *KCLEntities) (pushRegistryChoice, error) {
+// `forge env up` (opts.pushIfDeclared) pushes to the same declarations, but an
+// env whose workloads declare no pullable image builds locally instead of
+// failing: a host-only env has no cluster to pull from.
+func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error) {
+	dests := declaredImageDestinations(declared)
+	plan := pushPlan{env: opts.env, destinations: dests}
 	if !opts.push {
-		if opts.pushIfDeclared && opts.env != "" {
-			if registry := declaredRegistry(declared); registry != "" {
-				return pushRegistryChoice{registry: registry, source: fmt.Sprintf("declared in deploy/kcl/%s/main.k", opts.env)}, nil
-			}
-		}
-		return pushRegistryChoice{}, nil
+		plan.push = opts.pushIfDeclared && opts.env != "" && len(dests) > 0
+		return plan, nil
 	}
 	if opts.env == "" {
-		return pushRegistryChoice{}, errPushNeedsEnv()
+		return pushPlan{}, errPushNeedsEnv()
 	}
-	if registry := declaredRegistry(declared); registry != "" {
-		return pushRegistryChoice{registry: registry, source: fmt.Sprintf("declared in deploy/kcl/%s/main.k", opts.env)}, nil
+	if len(dests) == 0 {
+		return pushPlan{}, noPushableImagesError(fmt.Sprintf("forge build %s --push", opts.env), opts.env, declared)
 	}
-	return pushRegistryChoice{}, undeclaredRegistryError(fmt.Sprintf("forge build %s --push", opts.env), opts.env, declared)
+	plan.push = true
+	return plan, nil
 }
 
-// declaredRegistry is the image registry an env's KCL declares — the single
-// resolution `forge build --push`, `forge registry login` and `forge env up`
-// share:
+// declaredImageDestinations is every distinct repository the env's workloads
+// declare for an image forge BUILDS — the single resolution `forge build
+// --push`, `forge registry login`, `forge registry ref` and `forge env up`
+// share.
 //
-//  1. the env's cluster target (Bundle.cluster_target.registry, else the first
-//     cluster-bound workload's) — k8sClusterFieldFromEntities, the same read
-//     `forge env deploy` makes, so build and deploy agree by construction;
-//  2. else the registry a hosted env declares on forge.ControlPlane.
+// Two filters, each closing a way this could ask for a credential nothing
+// needs:
 //
-// "" when the env declares none (or there is no render).
-func declaredRegistry(e *KCLEntities) string {
-	if r := k8sClusterFieldFromEntities(e, "registry"); r != "" {
-		return r
+//  1. Only a workload forge BUILDS contributes. A third-party image
+//     (`docker.io/library/nats:2.10`) is pulled, never pushed, so including it
+//     would have `forge registry login` demand docker.io credentials.
+//  2. Only a workload on a runtime that involves a REGISTRY contributes. A
+//     workload bound OnHost or OnCompose runs from the local filesystem or a
+//     compose file — nothing pulls an image for it, so its declared reference
+//     is not a push destination in that env. This is why `forge registry login
+//     dev` on a host-only dev env correctly reports nothing to log in to,
+//     even though those workloads carry perfectly good references for the envs
+//     that DO deploy them.
+//
+// Sorted by repository so every consumer enumerates the same order.
+func declaredImageDestinations(e *KCLEntities) []imageDestination {
+	if e == nil {
+		return nil
 	}
-	if e != nil && e.ControlPlane != nil {
-		return e.ControlPlane.Registry
+	seen := map[string]string{}
+	for _, w := range e.Workloads {
+		if w.Build.Type == "" || w.Image == "" {
+			continue
+		}
+		switch w.Runtime.Type {
+		case RuntimeHost, RuntimeCompose:
+			continue
+		}
+		repo := imageRepository(w.Image)
+		if registryHost(repo) == "" {
+			// No host: not a pushable destination. The render refuses this
+			// for a workload bound to a runtime that pulls, so reaching here
+			// means the workload is BuildOnly or host-bound — it has no
+			// registry to push to and needs none.
+			continue
+		}
+		if _, dup := seen[repo]; !dup {
+			seen[repo] = w.Name
+		}
+	}
+	out := make([]imageDestination, 0, len(seen))
+	for repo, workload := range seen {
+		out = append(out, imageDestination{repository: repo, workload: workload})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].repository < out[j].repository })
+	return out
+}
+
+// imageRepository strips any `:tag` / `@digest` from an image reference,
+// keeping the registry host. The Go twin of kcl/lib/images.k's `repository`,
+// and the key build state and the release ledger record — so a build and a
+// deploy name the same repository by applying the same rule.
+func imageRepository(image string) string {
+	if at := strings.Index(image, "@"); at >= 0 {
+		image = image[:at]
+	}
+	lastSlash := strings.LastIndex(image, "/")
+	if colon := strings.LastIndex(image, ":"); colon > lastSlash {
+		return image[:colon]
+	}
+	return image
+}
+
+// imagePinnedTag is the tag an image reference pins, or "" when it pins none.
+// A registry-port colon sits before the last `/`, so a tag colon is the
+// rightmost `:` after the rightmost `/`; a digest-pinned image pins no tag.
+func imagePinnedTag(image string) string {
+	if strings.Contains(image, "@") {
+		return ""
+	}
+	lastSlash := strings.LastIndex(image, "/")
+	if colon := strings.LastIndex(image, ":"); colon > lastSlash {
+		return image[colon+1:]
 	}
 	return ""
 }
@@ -117,8 +242,8 @@ var buildEnvArgRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 // validateBuildEnvArg refuses a `forge build` positional that cannot be an
 // env name. Without it, a registry passed as --push's value the way older
 // forges took it (ghcr.io/acme, written with a space) parses as a bool --push
-// plus an ENV named "ghcr.io/acme", renders nothing for it, and would build under a nonsense
-// env instead of saying the registry is declared, not passed.
+// plus an ENV named "ghcr.io/acme", renders nothing for it, and would build
+// under a nonsense env instead of saying the registry belongs on the workload.
 func validateBuildEnvArg(arg string) error {
 	if buildEnvArgRe.MatchString(arg) {
 		return nil
@@ -127,8 +252,8 @@ func validateBuildEnvArg(arg string) error {
 		return cliutil.UserErr("forge build",
 			fmt.Sprintf("%q is not an environment name — it looks like an image registry, and forge build takes no registry", arg),
 			"",
-			"declare the registry in the env's KCL (forge.ClusterTarget.registry, or forge.ControlPlane.registry for a hosted env, "+
-				"in deploy/kcl/<env>/main.k) and run forge build <env> --push")
+			"the registry is part of a workload's image: set `image = \"<registry>/<name>\"` on the workload in "+
+				"deploy/kcl/workloads.k and run forge build <env> --push")
 	}
 	return cliutil.UserErr("forge build",
 		fmt.Sprintf("invalid environment name %q", arg),
@@ -136,51 +261,65 @@ func validateBuildEnvArg(arg string) error {
 		"an env name is lowercase letters, digits and hyphens, starting with a letter — one deploy/kcl/<env>/ directory")
 }
 
-// errPushNeedsEnv is --push with no environment argument: there is no
-// declaration to read the registry from.
+// errPushNeedsEnv is --push with no environment argument: without an env there
+// is nothing to render, so no workload's image can be read.
 func errPushNeedsEnv() error {
 	return cliutil.UserErr("forge build --push",
-		"--push pushes to the image registry an environment's KCL declares, and no environment argument was given",
+		"--push pushes each built image to the reference its workload declares, and no environment argument was given",
 		"",
-		"name the env whose KCL declares the registry: forge build <env> --push")
+		"name the env whose workloads to build: forge build <env> --push")
 }
 
-// undeclaredRegistryError is the runbook for an env that declares no image
-// registry, shaped by WHY it declares none. context is the command that needed
-// one (`forge build prod --push`, `forge registry login prod`).
-func undeclaredRegistryError(context, env string, declared *KCLEntities) error {
+// noPushableImagesError is the runbook for an env with nothing to push,
+// shaped by WHY it has nothing. context is the command that needed a
+// destination (`forge build prod --push`, `forge registry login prod`).
+func noPushableImagesError(context, env string, declared *KCLEntities) error {
 	mainK := fmt.Sprintf("deploy/kcl/%s/main.k", env)
+	workloadsK := "deploy/kcl/workloads.k"
 	switch {
 	case declared == nil:
 		return cliutil.UserErr(context,
-			fmt.Sprintf("env %q has no %s, so it declares no image registry", env, mainK),
+			fmt.Sprintf("env %q has no %s, so it declares no workloads and no images", env, mainK),
 			"",
-			fmt.Sprintf("create the env (forge env new %s) and declare its registry on the env's forge.ClusterTarget", env))
-	case declared.ControlPlane != nil && !isLocalControlPlaneEnv(declared):
+			fmt.Sprintf("create the env (forge env new %s), and declare each workload's image in %s", env, workloadsK))
+	case len(declared.Workloads) == 0:
 		return cliutil.UserErr(context,
-			fmt.Sprintf("env %q is hosted (its Bundle declares forge.ControlPlane) and declares no image registry", env),
+			fmt.Sprintf("env %q declares no workloads, so there is no image to push", env),
 			mainK,
-			fmt.Sprintf("set `registry` on the env's forge.ControlPlane (the registry subtree the control plane admits "+
-				"this org's images from), e.g. control_plane = forge.ControlPlane { registry = \"<registry-host>/<org>\" }. "+
-				"%s", hostedPushBaseFollowUp))
+			fmt.Sprintf("bind a workload in %s — the env names what IT runs", mainK))
 	default:
+		// Distinguish the two shapes, because the fix is different. Every
+		// workload bound OnHost / OnCompose is not a misconfiguration at all —
+		// nothing pulls an image for those, so there is genuinely nothing to
+		// push, and telling the author to declare an image would send them to
+		// fix a file that is already correct.
+		if !hasRegistryBoundWorkload(declared) {
+			return cliutil.UserErr(context,
+				fmt.Sprintf("env %q runs every workload on the host or under compose, so nothing pulls an image and there is nothing to push", env),
+				mainK,
+				fmt.Sprintf("this is not a misconfiguration: bind a workload to forge.OnCluster or forge.OnHosted in %s "+
+					"if it should ship an image, or run this against the env that deploys it", mainK))
+		}
 		return cliutil.UserErr(context,
-			fmt.Sprintf("env %q declares no image registry", env),
-			mainK,
-			fmt.Sprintf("set `registry` on the env's forge.ClusterTarget (Bundle.cluster_target) — the registry `forge env deploy %s` pulls from", env))
+			fmt.Sprintf("no workload in env %q declares an image forge builds AND pushes", env),
+			workloadsK,
+			"set `image` on each workload forge builds, with its registry in it — e.g. "+
+				"`image = \"ghcr.io/<owner>/<name>\"`. That one reference is where the build pushes and where "+
+				"the deploy pulls, so they cannot disagree.")
 	}
 }
 
-// hostedPushBaseFollowUp documents the one registry source a hosted env may
-// eventually get WITHOUT declaring it: the control plane's advertised
-// image_push_base (`<registry_base>/<org>`, already returned on every
-// environment read — deploytarget wireEnvironment.ImagePushBase — and already
-// enforced at publish time). It would be the declared-ABSENT default, never an
-// override: a registry declared on forge.ControlPlane always wins.
-//
-// It is not consulted today. The Reliant-hosted registry gateway that would
-// make that base pushable is a draft ADR (control-plane #334), not a running
-// service, and forge does not invent a default for a registry that does not
-// exist yet. When the gateway lands, declaredRegistry gains that one fallback
-// for a hosted env with no declared registry, and this sentence goes.
-const hostedPushBaseFollowUp = "forge does not yet read the control plane's advertised image push base, so a hosted env must declare its registry"
+// hasRegistryBoundWorkload reports whether any workload is bound to a runtime
+// that pulls an image from a registry.
+func hasRegistryBoundWorkload(e *KCLEntities) bool {
+	if e == nil {
+		return false
+	}
+	for _, w := range e.Workloads {
+		switch w.Runtime.Type {
+		case RuntimeCluster, RuntimeHosted:
+			return true
+		}
+	}
+	return false
+}

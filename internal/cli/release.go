@@ -165,22 +165,24 @@ func ReadRelease(projectDir, version string) (*release.Release, error) {
 func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Artifact {
 	out := map[string]release.Artifact{}
 
-	add := func(image, digest, registry string, platforms []string) {
-		if image == "" || digest == "" {
+	// An OCI artifact is KEYED BY ITS REPOSITORY — registry host included,
+	// exactly as the workload declared it (`ghcr.io/acme/shop`). The key IS
+	// the address, which is why there is no separate URI to record and no way
+	// for the two to disagree.
+	//
+	// Keying by bare name could not survive a workload declaring its own
+	// registry: two envs building the same app to two different registries
+	// collapse onto one entry, and a prod promotion would read a digest that
+	// only ever existed in the dev registry. The host in the key keeps them
+	// distinct.
+	add := func(repository, digest string, platforms []string) {
+		if repository == "" || digest == "" {
 			return
 		}
-		out[image] = release.Artifact{
-			Kind:    release.KindOCI,
-			Mode:    release.ModeShared,
-			Digests: map[string]string{release.SharedVariant: digest},
-			// The registry the build pushed to. Recorded because a digest
-			// alone is not an ADDRESS: `sha256:…` says what the bytes are
-			// but not which host serves them, so a ledger without this can
-			// name an image it cannot prove exists. `forge release verify`
-			// reads it to fetch the manifest. Empty for a local/compose
-			// build that pushed nowhere, which verification then reports as
-			// unverifiable rather than passing it silently.
-			URI:       registry,
+		out[repository] = release.Artifact{
+			Kind:      release.KindOCI,
+			Mode:      release.ModeShared,
+			Digests:   map[string]string{release.SharedVariant: digest},
 			Platforms: platforms,
 		}
 	}
@@ -192,7 +194,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 		if err != nil || st == nil {
 			continue
 		}
-		add(st.Image, st.Digest, st.Registry, st.Platforms)
+		add(st.Image, st.Digest, st.Platforms)
 	}
 
 	// Per-service external-build states: build-<env>-<service>.json. Glob the
@@ -216,7 +218,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 			if err != nil || st == nil {
 				continue
 			}
-			add(st.Image, st.Digest, st.Registry, st.Platforms)
+			add(st.Image, st.Digest, st.Platforms)
 		}
 	}
 

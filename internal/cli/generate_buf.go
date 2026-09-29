@@ -147,13 +147,23 @@ plugins:
 	template := filepath.Join(feDir, "buf.gen.yaml")
 
 	// Verify the local TS plugin is on disk before invoking buf — otherwise
-	// buf emits a confusing "fork/exec: no such file" error. If absent, surface
-	// a clear remediation message and skip cleanly.
+	// buf emits a confusing "fork/exec: no such file" error.
+	//
+	// This FAILS the run rather than skipping. A skip here is not survivable
+	// even though it looks like the polite option: the hooks and mocks steps
+	// downstream emit TypeScript importing `@/gen/<svc>/v1/<svc>_pb` for
+	// every service, and those modules are exactly what this step writes. Skip
+	// it and `forge generate` exits 0 having produced a frontend that cannot
+	// compile — the diagnostic then surfaces at `next build`, usually in
+	// another repo, blamed on whichever service was added most recently
+	// rather than on the missing node_modules that actually caused it.
 	if usesLocalTSPlugin(feBufGen) {
 		pluginRel, ok := resolveLocalTSPluginRel(projectDir, feDir)
 		if !ok {
-			fmt.Printf("  ⚠️  %s: @bufbuild/protoc-gen-es not installed yet — run `npm install` in %s before `forge generate`.\n", fe.Name, feDir)
-			return nil
+			return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed, so no TypeScript "+
+				"stubs can be generated — run `npm install` in %s and re-run generate "+
+				"(continuing would emit hooks and mocks importing _pb modules that do not exist)",
+				fe.Name, feDir)
 		}
 		// Point THIS RUN at wherever the plugin actually is, by handing buf
 		// the retargeted template as inline data. The committed buf.gen.yaml
@@ -268,12 +278,15 @@ plugins:
 	}
 
 	// Verify the local TS plugin exists before invoking buf — same
-	// pre-flight as the per-frontend path.
+	// pre-flight, and the same hard failure, as the per-frontend path. See
+	// runBufGenerateTypeScript for why a skip here is not survivable.
 	if usesLocalTSPlugin(bufGenPath) {
 		pluginPath := filepath.Join(absFeDir, "node_modules", ".bin", "protoc-gen-es")
 		if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
-			fmt.Printf("  ⚠️  workspace TS gen: @bufbuild/protoc-gen-es not installed yet — run `pnpm install` at the project root before `forge generate`.\n")
-			return nil
+			return fmt.Errorf("workspace TS gen: @bufbuild/protoc-gen-es is not installed, so no "+
+				"TypeScript stubs can be generated — run `npm install` (or `pnpm install`) at the "+
+				"project root and re-run generate (continuing would emit hooks and mocks importing "+
+				"_pb modules that do not exist); looked in %s", pluginPath)
 		}
 	}
 
@@ -338,7 +351,7 @@ func withNodeNoDeprecation() []string {
 //     not exist at all in a bridged project.
 //
 // Looking in only the first place is what made a bridged project generate NO
-// TypeScript stubs: the plugin check above skipped with "not installed yet",
+// TypeScript stubs: the plugin check above reported "not installed yet",
 // `buf generate` never ran for the frontend, and src/gen/ stayed empty. The
 // symptom surfaced much later and far away, as tsc reporting TS2307 "Cannot
 // find module '@/gen/services/<svc>/v1/<svc>_pb'" against files forge had just

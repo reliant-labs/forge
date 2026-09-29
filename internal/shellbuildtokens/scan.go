@@ -91,7 +91,66 @@ var (
 	envKeyField = regexp.MustCompile(`"([A-Za-z_][A-Za-z0-9_]*)"\s*=`)
 	// nameField captures the enclosing workload's name, for the message.
 	nameField = regexp.MustCompile(`(?m)^\s*name\s*=\s*"([^"]+)"`)
+	// cmdIdentField captures a `cmd = <identifier>` — the command bound to a
+	// variable rather than written inline. Real projects share one command
+	// string across several workloads and envs this way, so this is the common
+	// shape, not an exotic one.
+	cmdIdentField = regexp.MustCompile(`\bcmd\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\b`)
+	// topLevelString captures `<ident> = "<string>"` at the top level of a file,
+	// including the raw and triple-quoted forms — the declaration a
+	// `cmd = <ident>` refers to.
+	topLevelString = regexp.MustCompile(`(?ms)^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(r?"""(.*?)"""|r?"((?:[^"\\]|\\.)*)")`)
+	// cmdNamedDeclaration captures any declaration whose IDENTIFIER says it
+	// holds a build command — `_reliant_image_build_cmd = r"""…"""`, or a
+	// `build_cmd = lambda -> str { r"""…""" }`.
+	//
+	// Matching on the name is what reaches the two shapes no brace-scoped scan
+	// can: a command returned from a lambda, and one handed to a config-struct
+	// field in a DIFFERENT file from the ShellBuild that eventually runs it.
+	// Both are how control-plane writes every one of its `GOARCH=${TARGETARCH}`
+	// builds — the single token that fails silently — so leaving them
+	// unreachable would mean the rule covered only the findings that were going
+	// to fail loudly anyway.
+	//
+	// It is deliberately keyed on `cmd` rather than on "any raw string": an
+	// identifier ending in _cmd (or containing build_cmd) is the project
+	// declaring what the string is FOR, and a rule that flagged every raw string
+	// holding ${TAG} would hit SQL and docstrings and get ignored.
+	cmdNamedDeclaration = regexp.MustCompile(`(?ms)^\s*([A-Za-z_][A-Za-z0-9_]*(?:_cmd|Cmd))\s*=\s*(?:lambda[^{]*\{\s*)?(r?"""(.*?)"""|r?"((?:[^"\\]|\\.)*)")`)
 )
+
+// commandStrings maps every top-level `<ident> = "<string>"` in a file to its
+// body and the line it starts on.
+//
+// Only identifiers a ShellBuild actually names as its `cmd` are ever consulted
+// (see ScanSource), which is what keeps this from reading every string in the
+// file: a raw string holding SQL, a docstring example or a Dockerfile heredoc is
+// collected here and then never looked at, because no build points at it. That
+// distinction matters — a scanner that flagged any raw string containing ${TAG}
+// would produce findings nobody can act on and teach people to ignore the rule.
+func commandStrings(src string) map[string]struct {
+	body string
+	line int
+} {
+	out := map[string]struct {
+		body string
+		line int
+	}{}
+	for _, m := range topLevelString.FindAllStringSubmatchIndex(src, -1) {
+		name := src[m[2]:m[3]]
+		body := ""
+		if m[6] >= 0 {
+			body = src[m[6]:m[7]] // triple-quoted
+		} else if m[8] >= 0 {
+			body = src[m[8]:m[9]] // single-quoted
+		}
+		out[name] = struct {
+			body string
+			line int
+		}{body: body, line: 1 + strings.Count(src[:m[0]], "\n")}
+	}
+	return out
+}
 
 // ScanSource reports retired tokens in every ShellBuild literal in one KCL
 // source file. file is used only for the finding's File field.
@@ -102,19 +161,54 @@ var (
 // line still locate it.
 func ScanSource(file, src string) []FileFinding {
 	var out []FileFinding
+	declared := commandStrings(src)
+	seenLine := map[int]bool{}
+
+	// Declarations that NAME themselves a build command, wherever they sit. This
+	// runs first and independently of any ShellBuild literal, because the
+	// declaration and the build are routinely in different files.
+	for _, m := range cmdNamedDeclaration.FindAllStringSubmatchIndex(src, -1) {
+		cmd := ""
+		if m[6] >= 0 {
+			cmd = src[m[6]:m[7]]
+		} else if m[8] >= 0 {
+			cmd = src[m[8]:m[9]]
+		}
+		ident := src[m[2]:m[3]]
+		line := 1 + strings.Count(src[:m[0]], "\n")
+		seenLine[line] = true
+		for _, f := range Check(ident, cmd, nil) {
+			out = append(out, FileFinding{Finding: f, File: file, Line: line})
+		}
+	}
 	for _, loc := range shellBuildLiteral.FindAllStringIndex(src, -1) {
 		body, ok := kclBlockBody(src, loc[1])
 		if !ok {
 			continue
 		}
-		m := cmdField.FindStringSubmatch(body)
-		if m == nil {
+		// The line to report: the ShellBuild literal for an inline cmd, or the
+		// command string's own line when the cmd is bound to a variable — that
+		// is where the edit has to happen, and one shared string may serve
+		// several builds.
+		line := 1 + strings.Count(src[:loc[0]], "\n")
+		var cmd string
+		if m := cmdField.FindStringSubmatch(body); m != nil {
+			// Group 2 is the triple-quoted body, group 3 the single-quoted one.
+			cmd = m[2]
+			if cmd == "" {
+				cmd = m[3]
+			}
+		} else if m := cmdIdentField.FindStringSubmatch(body); m != nil {
+			// `cmd = <ident>`: resolve the identifier to its declaration.
+			// Unresolvable (imported from another file, or built by an
+			// expression) simply yields nothing rather than a guess.
+			d, found := declared[m[1]]
+			if !found {
+				continue
+			}
+			cmd, line = d.body, d.line
+		} else {
 			continue
-		}
-		// Group 2 is the triple-quoted body, group 3 the single-quoted one.
-		cmd := m[2]
-		if cmd == "" {
-			cmd = m[3]
 		}
 		env := map[string]string{}
 		if e := envMapBody(body); e != "" {
@@ -126,7 +220,11 @@ func ScanSource(file, src string) []FileFinding {
 		if n := nameField.FindAllStringSubmatch(src[:loc[0]], -1); len(n) > 0 {
 			name = n[len(n)-1][1]
 		}
-		line := 1 + strings.Count(src[:loc[0]], "\n")
+		// A cmd-named declaration already reported at this line — don't report it
+		// twice just because a ShellBuild also points at it.
+		if seenLine[line] {
+			continue
+		}
 		for _, f := range Check(name, cmd, env) {
 			out = append(out, FileFinding{Finding: f, File: file, Line: line})
 		}

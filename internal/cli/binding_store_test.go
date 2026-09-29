@@ -487,7 +487,7 @@ func TestResolveDeployDigests_AgainstNonFileBackend(t *testing.T) {
 	store := newMemBindingStore(map[string]release.Promotion{
 		"prod": {Release: "v1.4.0", Resolved: map[string]string{"control-plane": sha("a")}},
 	})
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, store)
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, store, fileReleaseLedger{projectDir: dir})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

@@ -387,7 +387,7 @@ func TestResolveDeployDigests_BoundEnvUsesRelease(t *testing.T) {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, newFileBindingStore(dir))
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, newFileBindingStore(dir), fileReleaseLedger{projectDir: dir})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestResolveDeployDigests_ReleaseOverridesTaggedKeys(t *testing.T) {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, newFileBindingStore(dir))
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, newFileBindingStore(dir), fileReleaseLedger{projectDir: dir})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestResolveDeployDigests_UnboundEnvFallsBack(t *testing.T) {
 		t.Fatalf("write build state: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "staging", false, newFileBindingStore(dir))
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "staging", false, newFileBindingStore(dir), fileReleaseLedger{projectDir: dir})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestResolveDeployDigests_NoDigestSkipsRelease(t *testing.T) {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", true /* noDigest */, newFileBindingStore(dir))
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", true /* noDigest */, newFileBindingStore(dir), fileReleaseLedger{projectDir: dir})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

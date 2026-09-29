@@ -518,7 +518,7 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digests, bound, err := resolveDeployDigests(context.Background(), dir, "prod", false, bindings)
+	digests, bound, err := resolveDeployDigests(context.Background(), dir, "prod", false, bindings, fileReleaseLedger{projectDir: dir})
 	if err != nil || bound != "v1" || digests["api"] != sha("1") {
 		t.Fatalf("deploy must pin from the hosted ledger: rel=%q digests=%v err=%v", bound, digests, err)
 	}

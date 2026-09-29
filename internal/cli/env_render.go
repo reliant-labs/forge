@@ -326,9 +326,19 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		digests      map[string]string
 		boundRelease string
 	)
-	bindings, derr := bindingStoreFor(ctx, projectDir, envName)
+	ledger, derr := ledgerFor(ctx, projectDir, envName)
 	if derr == nil {
-		digests, boundRelease, derr = resolveDeployDigests(ctx, projectDir, envName, opts.noDigest, bindings)
+		digests, boundRelease, derr = resolveDeployDigests(ctx, projectDir, envName, opts.noDigest, ledger.Bindings, ledger.Releases)
+	}
+	// Fail closed BEFORE rendering: a release-bound env whose declared images
+	// did not all resolve a digest would render the mutable tag while the
+	// banner below announced "image digests pinned". The render is what an
+	// operator diffs against the cluster, so a wrong answer here is worse
+	// than no answer.
+	if derr == nil {
+		if perr := checkReleasePinned(entities, digests, boundRelease, envName); perr != nil {
+			return perr
+		}
 	}
 	if derr != nil {
 		// Digest pinning is an optimisation of WHICH bytes deploy ships, not

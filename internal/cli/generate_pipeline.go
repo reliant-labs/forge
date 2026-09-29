@@ -1294,6 +1294,22 @@ func stepMigrateImageRegistry(ctx *pipelineContext) error {
 		for _, a := range res.Ambiguous {
 			b.WriteString("  " + strings.ReplaceAll(a.Runbook(), "\n", "\n  ") + "\n")
 		}
+		// The unaccounted set is printed with the SAME weight as the
+		// ambiguous one. "forge found a registry it could not read" and
+		// "forge found two registries and will not choose" both leave a tree
+		// that does not render, and reporting the first as a lesser note is
+		// how it gets skimmed past.
+		if len(res.Unaccounted) > 0 {
+			b.WriteString("  forge found a registry declaration it could not account for. Each one is a\n")
+			b.WriteString("  `registry = …` that the new schema rejects, so leaving it in place would not\n")
+			b.WriteString("  render — and forge will not drop a registry it never understood:\n\n")
+			for _, u := range res.Unaccounted {
+				b.WriteString("    " + u.String() + "\n")
+			}
+			b.WriteString("\n  Put the full reference on each affected workload's image in\n")
+			b.WriteString("  deploy/kcl/workloads.k (e.g. `image = \"ghcr.io/<owner>/<name>\"`), remove the\n")
+			b.WriteString("  registry declarations above, and re-run forge generate.\n")
+		}
 		return cliutil.UserErr("forge generate", "cannot migrate env registries onto images automatically", "deploy/kcl/", b.String())
 	}
 	for _, r := range res.Rewrites {

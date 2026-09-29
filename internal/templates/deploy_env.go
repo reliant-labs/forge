@@ -28,6 +28,12 @@ type EnvTemplateData struct {
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string
+	// ScaffoldImage is the image reference a scaffolded workload declares
+	// (codegen.ScaffoldImageRef) — `ghcr.io/<owner>/<project>`, or a visibly
+	// placeholder host when the module path names no GitHub owner. The hosted
+	// frontend binder composes its own reference from it, so a project's
+	// frontend and its backends land under one registry by default.
+	ScaffoldImage string
 	// Cluster capacity floor (cloud envs only).
 	Replicas         int
 	CPURequest       string

@@ -136,17 +136,33 @@ func projectGoBuild(projectName string) string {
 //
 // The registry is derived from the module path's GitHub owner
 // (github.com/acme/shop → ghcr.io/acme/shop), which a GitHub-hosted project
-// can push to with nothing but its workflow token. A module path that names no
-// GitHub owner gets a VISIBLE placeholder rather than a bare name: a bare name
-// would render as `shop:<tag>`, which the kubelet resolves against Docker Hub
-// and fails to pull, whereas REPLACE_ME cannot be mistaken for a working
-// value and forge refuses it at render with the workload's name.
+// can push to with nothing but its workflow token.
+//
+// A module path that names no GitHub owner gets a placeholder HOST rather than
+// a bare name, and the shape of that placeholder is load-bearing:
+//
+//   - It must contain a dot, so it parses as a registry host. A bare
+//     `REPLACE_ME_REGISTRY/shop` does NOT — Docker's rule is that the first
+//     segment is a host only if it has a `.` or `:` — so the render would
+//     refuse the scaffold forge itself just wrote, and `forge env new --check`
+//     could not compile a fresh project.
+//   - It must be obviously unreal. `.invalid` is reserved by RFC 2606 and can
+//     never resolve, so a scaffold that reaches a real push fails at the
+//     placeholder instead of silently pushing somewhere that happens to exist.
+//
+// So the tree compiles, the value is visibly a placeholder, and the failure —
+// if anyone tries to push it — names a host that provably belongs to nobody.
 func ScaffoldImageRef(modulePath, projectName string) string {
 	if owner := githubOwnerFromModulePath(modulePath); owner != "" {
 		return "ghcr.io/" + strings.ToLower(owner) + "/" + projectName
 	}
-	return "REPLACE_ME_REGISTRY/" + projectName
+	return ScaffoldPlaceholderRegistry + "/" + projectName
 }
+
+// ScaffoldPlaceholderRegistry is the registry host a scaffolded image carries
+// when forge cannot derive one. See ScaffoldImageRef for why it is shaped like
+// a host and why the TLD is `.invalid`.
+const ScaffoldPlaceholderRegistry = "REPLACE-ME-REGISTRY.invalid"
 
 // githubOwnerFromModulePath is the owner segment of a github.com module path
 // (github.com/acme/shop → "acme"), or "" for any other host or a path too

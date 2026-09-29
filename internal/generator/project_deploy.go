@@ -85,6 +85,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			FrontendName:    g.FrontendName,
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
 			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
+			ScaffoldImage:   codegen.ScaffoldImageRef(g.ModulePath, g.Name),
 		}
 		content, err := templates.DeployTemplates().Render(e.template, data)
 		if err != nil {

@@ -306,6 +306,44 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 		}
 	}
 
+	// A hosted FRONTEND publishes its static build to a registry, so it needs
+	// its own reference by exactly the same rule — and pre-#322 it declared
+	// none, taking the env's ControlPlane.registry instead. Frontends are
+	// declared in the env rather than in workloads.k, so they are read per env.
+	//
+	// Without this the hounders shape still fails after migration: the
+	// ControlPlane registry is removed, the `web` frontend keeps no reference,
+	// and prod refuses at render with "image is REQUIRED on forge.OnHosted".
+	// The workloads were completed, so the registry counted as placed and
+	// nothing reported a problem.
+	frontendPlan := map[string][]frontendCompletion{} // env -> completions
+	for _, env := range sortedKeys(envRegistry) {
+		reg := envRegistry[env]
+		if reg == "" {
+			continue
+		}
+		rel := env + "/main.k"
+		src, ok := tree.files[rel]
+		if !ok {
+			continue
+		}
+		for _, f := range hostedFrontendsIn(src) {
+			if f.Image != "" && hasRegistryHost(f.Image) {
+				continue // already complete
+			}
+			name := declName(f)
+			if name == "" {
+				s := envSites[env][0]
+				res.Unaccounted = append(res.Unaccounted, Unaccounted{
+					File: s.File, Line: s.Line, Expr: s.Expr,
+					Reason: fmt.Sprintf("env %q binds a frontend to forge.OnHosted, but forge could not read its name, so it cannot derive the reference to publish it under. Declare the frontend's full image reference by hand", env),
+				})
+				continue
+			}
+			frontendPlan[env] = append(frontendPlan[env], frontendCompletion{decl: f, full: reg + "/" + name, name: name})
+		}
+	}
+
 	if res.Refused() {
 		sort.Slice(res.Ambiguous, func(i, j int) bool { return res.Ambiguous[i].Workload < res.Ambiguous[j].Workload })
 		sort.Slice(res.Unaccounted, func(i, j int) bool {
@@ -349,8 +387,33 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 		res.Rewrites = append(res.Rewrites, fmt.Sprintf("deploy/kcl/workloads.k: workload %q %s", declName(d), how))
 	}
 
-	// Remove every registry declaration, everywhere it appears.
+	// Complete each hosted frontend's image, in its env's own main.k. Done
+	// BEFORE the strip pass below, which rewrites the same files: both edits
+	// have to land, and the strip pass reads whatever this leaves behind.
+	frontendDone := map[string]bool{} // env -> a frontend reference was written
 	changed := map[string]string{}
+	frontendEnvs := make([]string, 0, len(frontendPlan))
+	for env := range frontendPlan {
+		frontendEnvs = append(frontendEnvs, env)
+	}
+	sort.Strings(frontendEnvs)
+	for _, env := range frontendEnvs {
+		rel := env + "/main.k"
+		src := tree.files[rel]
+		for _, fc := range frontendPlan[env] {
+			cur, found := findHostedFrontend(src, fc.name)
+			if !found {
+				continue
+			}
+			src = setImage(src, cur, fc.full)
+			frontendDone[env] = true
+			res.Rewrites = append(res.Rewrites, fmt.Sprintf(
+				"deploy/kcl/%s/main.k: hosted frontend %q added image = %q", env, fc.name, fc.full))
+		}
+		changed["deploy/kcl/"+rel] = src
+	}
+
+	// Remove every registry declaration, everywhere it appears.
 	for _, s := range sites {
 		src, ok := changed[s.File]
 		if !ok {
@@ -361,7 +424,7 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 	for _, file := range sortedKeys(changed) {
 		env := envOfFile(file, envs)
 		res.Rewrites = append(res.Rewrites, fmt.Sprintf("%s: removed `registry = %q`", file, envRegistry[env]))
-		if len(completed) == 0 || !envPulled(pullRegistries, env) {
+		if !frontendDone[env] && (len(completed) == 0 || !envPulled(pullRegistries, env)) {
 			res.Dropped = append(res.Dropped, fmt.Sprintf(
 				"%s: `registry = %q` dropped — no workload this env binds to a cluster or hosted runtime needed it",
 				file, envRegistry[env]))
@@ -380,6 +443,13 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 	sort.Strings(res.Rewrites)
 	sort.Strings(res.Dropped)
 	return res, nil
+}
+
+// frontendCompletion is one hosted frontend that will gain a reference.
+type frontendCompletion struct {
+	decl declaration
+	name string
+	full string
 }
 
 // declName is the workload's declared name, falling back to its identifier.

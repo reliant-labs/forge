@@ -59,8 +59,21 @@ var (
 	// `<ident> = fw.Workload {` / `forge.Workload {` — a declaration in
 	// workloads.k.
 	workloadStartRe = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:fw|forge)\.Workload[ \t]*\{`)
-	// `<ident> = forge.Frontend {` — a frontend declaration.
+	// `<ident> = forge.Frontend {` — a frontend assigned to a name.
 	frontendStartRe = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:fe|fw|forge)\.Frontend[ \t]*\{`)
+	// A frontend literal ANYWHERE, including inline in the Bundle's list
+	// (`frontends = [forge.Frontend {…}]`), which is what forge scaffolds and
+	// what hounders wrote. A reader that required a top-level assignment saw no
+	// frontend at all on the shape most projects have.
+	frontendLiteralRe = regexp.MustCompile(`(?:fe|fw|forge)\.Frontend[ \t]*\{`)
+	// An env-local refinement of a shared workload: `_membership = wl.membership
+	// | {…}`. Captures the local name, the module alias, and the workload.
+	localRefinementRe = regexp.MustCompile(`(?m)^(_[A-Za-z0-9_]*)[ \t]*=[ \t]*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)[ \t]*\|`)
+	// A binder applied to an env-local name: `_hosted(_membership)`.
+	localAliasBindingRe = regexp.MustCompile(`(_[A-Za-z0-9_]*)\(\s*(_[A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	// `runtime = forge.OnHosted` inside a frontend literal — the one frontend
+	// runtime that publishes its static build to a registry.
+	hostedFrontendRuntimeRe = regexp.MustCompile(`runtime[ \t]*=[ \t]*(?:forge\.OnHosted\b|(_[A-Za-z0-9_]*))`)
 
 	imageLineRe = regexp.MustCompile(`(?m)^([ \t]*)image[ \t]*=[ \t]*"([^"]*)"[ \t]*(#[^\n]*)?$`)
 	nameLineRe  = regexp.MustCompile(`(?m)^([ \t]*)name[ \t]*=[ \t]*"([^"]*)"[ \t]*(?:#[^\n]*)?$`)
@@ -284,6 +297,25 @@ func bindingsIn(src string) map[string]string {
 	refRe := regexp.MustCompile(regexp.QuoteMeta(alias) + `\.([A-Za-z_][A-Za-z0-9_]*)`)
 	names := runtimeNames(src)
 
+	// An env-local REFINEMENT is a third shape, and it is the one hounders
+	// writes: the env names the refined workload, then binds THAT name.
+	//
+	//	_membership = wl.membership | {env = … CORS_ORIGINS …}
+	//	_workloads  = [_hosted(_membership)]
+	//
+	// Neither the call nor the pipe reader sees it, because the binder's
+	// argument is `_membership`, not `wl.membership`. Recording the refinement
+	// here resolves the binder application below onto the real workload —
+	// without it, membership looks bound nowhere that pulls, so no registry is
+	// placed on it, while the env's registry is still removed. Verified against
+	// houndersclub's real pre-#322 prod/main.k.
+	localAliasOf := map[string]string{}
+	for _, m := range localRefinementRe.FindAllStringSubmatch(src, -1) {
+		if m[2] == alias {
+			localAliasOf[m[1]] = m[3]
+		}
+	}
+
 	out := map[string]string{}
 	locs := refRe.FindAllStringSubmatchIndex(src, -1)
 	for i, loc := range locs {
@@ -314,6 +346,17 @@ func bindingsIn(src string) map[string]string {
 				out[workload] = rt
 				continue
 			}
+		}
+	}
+	// Bindings of an env-local refinement resolve onto the workload it refines.
+	for _, m := range localAliasBindingRe.FindAllStringSubmatch(src, -1) {
+		binder, local := m[1], m[2]
+		workload, isRefinement := localAliasOf[local]
+		if !isRefinement {
+			continue
+		}
+		if rt, ok := names[binder]; ok {
+			out[workload] = rt
 		}
 	}
 	return out
@@ -418,6 +461,59 @@ func declarationsIn(src string, startRe *regexp.Regexp, buildOf func(expr string
 		out = append(out, d)
 	}
 	return out
+}
+
+// hostedFrontendsIn returns every forge.Frontend declaration in src bound to
+// forge.OnHosted — the one frontend runtime that publishes its build to a
+// registry, and therefore the one that needs its own image reference.
+//
+// The runtime may be named inline (`runtime = forge.OnHosted {}`) or through a
+// local variable the env declares once (`_hosted = forge.OnHosted {}`, then
+// `runtime = _hosted`), which is what hounders writes; runtimeNames resolves
+// the latter. A frontend on any other runtime publishes no registry artifact
+// and is left alone.
+func hostedFrontendsIn(src string) []declaration {
+	names := runtimeNames(src)
+	var out []declaration
+	locs := frontendLiteralRe.FindAllStringIndex(src, -1)
+	for i, loc := range locs {
+		end := len(src)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		block := src[loc[0]:end]
+		m := hostedFrontendRuntimeRe.FindStringSubmatch(block)
+		if m == nil {
+			continue
+		}
+		if m[1] != "" && names[m[1]] != "OnHosted" {
+			continue
+		}
+		d := declaration{Start: loc[0], End: end}
+		if nm := nameLineRe.FindStringSubmatch(block); nm != nil {
+			d.Name = nm[2]
+			// A frontend literal has no identifier of its own when it is
+			// declared inline, so its NAME is the handle — that is what the
+			// re-location below matches on.
+			d.Ident = nm[2]
+		}
+		if im := imageLineRe.FindStringSubmatch(block); im != nil {
+			d.Image, d.HasImageLine = im[2], true
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// findHostedFrontend re-locates a hosted frontend by its declared NAME in text
+// that may have shifted since it was read.
+func findHostedFrontend(src, name string) (declaration, bool) {
+	for _, d := range hostedFrontendsIn(src) {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return declaration{}, false
 }
 
 // resolveBuildExpr returns the assignment text for `name` in src, when src

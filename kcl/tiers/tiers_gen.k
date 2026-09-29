@@ -164,6 +164,7 @@ schema ManagedDatabase:
     deletionPolicy: str = "retain"
     engine: str = "postgres"
     instances: int = 1
+    restore?: DatabaseRestore
     storageGiB: int = 10
 
     check:
@@ -179,6 +180,7 @@ managed_database_json = lambda v: ManagedDatabase -> {str:} {
         "deletionPolicy": v.deletionPolicy
         "engine": v.engine
         "instances": v.instances
+        "restore": database_restore_json(v.restore) if v.restore else Undefined
         "storageGiB": v.storageGiB
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
@@ -274,6 +276,22 @@ database_ref_json = lambda v: DatabaseRef -> {str:} {
     _d = {
         "key": v.key
         "name": v.name
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema DatabaseRestore:
+    """DatabaseRestore is a declarative recovery: which database's backups to read, and optionally how far to replay them."""
+    pointInTime?: str
+    sourceDatabase: str
+
+    check:
+        len(sourceDatabase) >= 1, "DatabaseRestore.sourceDatabase must be at least 1 characters"
+
+database_restore_json = lambda v: DatabaseRestore -> {str:} {
+    _d = {
+        "pointInTime": v.pointInTime
+        "sourceDatabase": v.sourceDatabase
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

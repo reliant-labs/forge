@@ -1022,6 +1022,186 @@ func TestRenderManagedDatabase(t *testing.T) {
 	}
 }
 
+// backupCtx is an environment that HAS declared an object store.
+var backupCtx = Context{
+	Namespace: "acme-prod",
+	PartOf:    "proj",
+	DatabaseBackup: &DatabaseBackup{
+		Bucket:          "s3://forge-db-backups/org-acme/prod",
+		RetentionPolicy: "30d",
+	},
+}
+
+// TestRenderManagedDatabaseBackup pins the backup stanza: the CNPG-I plugin
+// (not the deprecated in-tree barmanObjectStore), an ObjectStore under this
+// database's OWN prefix, and Workload Identity when no secret is named.
+func TestRenderManagedDatabaseBackup(t *testing.T) {
+	objs, err := RenderManagedDatabase("order-db", v1alpha1.ManagedDatabaseSpec{}, backupCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := objects(t, objs)
+	store, ok := all["ObjectStore/order-db"]
+	if !ok {
+		t.Fatalf("no ObjectStore rendered; got %v", objs)
+	}
+	if got := get(store, "spec", "configuration", "destinationPath"); got != "s3://forge-db-backups/org-acme/prod/order-db" {
+		t.Errorf("destinationPath = %v; each database must sit under its OWN prefix", got)
+	}
+	if got := get(store, "spec", "retentionPolicy"); got != "30d" {
+		t.Errorf("retentionPolicy = %v, want 30d", got)
+	}
+	// No CredentialSecret => Workload Identity, and NO static key anywhere.
+	if got := get(store, "spec", "configuration", "googleCredentials", "gkeEnvironment"); got != true {
+		t.Errorf("gkeEnvironment = %v; an unset credential secret must mean Workload Identity, not an absent credential", got)
+	}
+	if get(store, "spec", "configuration", "s3Credentials") != nil {
+		t.Error("s3Credentials rendered with no credential secret declared")
+	}
+
+	c := all["Cluster/order-db"]
+	plugin := get(c, "spec", "plugins", 0)
+	if got := get(plugin, "name"); got != barmanPluginName {
+		t.Errorf("plugin = %v, want the CNPG-I barman plugin (the in-tree stanza is deprecated from 1.26)", got)
+	}
+	if got := get(plugin, "isWALArchiver"); got != true {
+		t.Errorf("isWALArchiver = %v: without it there is no continuous archiving and no PITR", got)
+	}
+	if got := get(plugin, "parameters", "serverName"); got != "order-db" {
+		t.Errorf("serverName = %v, want order-db", got)
+	}
+	if get(c, "spec", "backup") != nil {
+		t.Error("spec.backup rendered: the deprecated in-tree stanza must not be used")
+	}
+}
+
+// TestRenderManagedDatabaseNoBackupWithoutStore keeps the original gate: an
+// environment with no object store renders a Cluster that does not CLAIM to
+// be backed up.
+func TestRenderManagedDatabaseNoBackupWithoutStore(t *testing.T) {
+	objs, err := RenderManagedDatabase("order-db", v1alpha1.ManagedDatabaseSpec{}, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objs) != 1 {
+		t.Fatalf("want only the Cluster, got %d objects", len(objs))
+	}
+	c := objects(t, objs)["Cluster/order-db"]
+	if get(c, "spec", "plugins") != nil || get(c, "spec", "backup") != nil {
+		t.Error("a Cluster with no object store must render no backup configuration at all")
+	}
+}
+
+// TestRenderManagedDatabaseRestore pins the declarative restore, and above all
+// the serverName rule: a restored database archives to its OWN stream.
+//
+// Reusing the source's serverName is not a style preference. Verified against
+// CNPG 1.30.0 + plugin v0.15.0: barman-cloud-check-wal-archive fails with
+// "Expected empty archive", the recovery job crash-loops, and the restore
+// never completes.
+func TestRenderManagedDatabaseRestore(t *testing.T) {
+	spec := v1alpha1.ManagedDatabaseSpec{Restore: &v1alpha1.DatabaseRestore{
+		SourceDatabase: "order-db",
+		PointInTime:    "2026-01-02T15:04:05Z",
+	}}
+	objs, err := RenderManagedDatabase("order-db-restored", spec, backupCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := objects(t, objs)["Cluster/order-db-restored"]
+
+	if got := get(c, "spec", "bootstrap", "initdb"); got != nil {
+		t.Error("a restoring Cluster must not also declare initdb: it would bootstrap empty and report success")
+	}
+	if got := get(c, "spec", "bootstrap", "recovery", "recoveryTarget", "targetTime"); got != "2026-01-02T15:04:05Z" {
+		t.Errorf("targetTime = %v", got)
+	}
+	ext := get(c, "spec", "externalClusters", 0)
+	if got := get(ext, "plugin", "parameters", "serverName"); got != "order-db" {
+		t.Errorf("recovery reads serverName = %v, want the SOURCE's stream order-db", got)
+	}
+	archive := get(c, "spec", "plugins", 0, "parameters", "serverName")
+	if archive == "order-db" {
+		t.Fatal("restored cluster archives into its SOURCE's stream: barman refuses a non-empty archive and the recovery job crash-loops")
+	}
+	if archive != "order-db-restored-restored" {
+		t.Errorf("archive serverName = %v", archive)
+	}
+}
+
+// TestRenderManagedDatabaseServerNameOverride: a platform that can restore the
+// same database twice allocates the stream itself, because the derived name
+// would collide on the second restore and fail it mid-incident.
+func TestRenderManagedDatabaseServerNameOverride(t *testing.T) {
+	octx := backupCtx
+	store := *backupCtx.DatabaseBackup
+	store.ServerName = "order-db-r2"
+	octx.DatabaseBackup = &store
+
+	spec := v1alpha1.ManagedDatabaseSpec{Restore: &v1alpha1.DatabaseRestore{SourceDatabase: "order-db"}}
+	objs, err := RenderManagedDatabase("order-db", spec, octx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := objects(t, objs)["Cluster/order-db"]
+	if got := get(c, "spec", "plugins", 0, "parameters", "serverName"); got != "order-db-r2" {
+		t.Errorf("archive serverName = %v, want the platform-allocated order-db-r2", got)
+	}
+	// The source is still read from its own stream.
+	if got := get(c, "spec", "externalClusters", 0, "plugin", "parameters", "serverName"); got != "order-db" {
+		t.Errorf("recovery serverName = %v, want order-db", got)
+	}
+}
+
+// TestRenderManagedDatabaseRestoreNeedsStore: a restore with nowhere to read
+// from is refused at render, not discovered in a crash-looping job.
+func TestRenderManagedDatabaseRestoreNeedsStore(t *testing.T) {
+	spec := v1alpha1.ManagedDatabaseSpec{Restore: &v1alpha1.DatabaseRestore{SourceDatabase: "order-db"}}
+	if _, err := RenderManagedDatabase("copy", spec, ctx); err == nil {
+		t.Fatal("want an error restoring in an environment with no object store")
+	}
+}
+
+// TestRenderManagedDatabasePlacement: the data tier lands where the platform
+// says it may, which decides where the volumes physically live.
+func TestRenderManagedDatabasePlacement(t *testing.T) {
+	pctx := ctx
+	pctx.DatabasePlacement = &DatabasePlacement{
+		NodeSelector: map[string]string{"reliant.dev/pool": "data"},
+		Tolerations: []v1alpha1.Toleration{{
+			Key: "reliant.dev/runtime", Operator: v1alpha1.TolerationOpEqual,
+			Value: "kata", Effect: v1alpha1.TaintNoSchedule,
+		}},
+	}
+	objs, err := RenderManagedDatabase("order-db", v1alpha1.ManagedDatabaseSpec{}, pctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := objects(t, objs)["Cluster/order-db"]
+	if got := get(c, "spec", "nodeSelector", "reliant.dev/pool"); got != "data" {
+		t.Errorf("nodeSelector = %v", get(c, "spec", "nodeSelector"))
+	}
+	if got := get(c, "spec", "tolerations", 0, "effect"); got != "NoSchedule" {
+		t.Errorf("tolerations = %v", get(c, "spec", "tolerations"))
+	}
+}
+
+// TestManagedDatabaseRestoreValidation: a malformed PITR timestamp is refused
+// at validation. CNPG would accept the Cluster and fail inside the recovery
+// job, which is the worst possible moment to learn it.
+func TestManagedDatabaseRestoreValidation(t *testing.T) {
+	bad := v1alpha1.ManagedDatabaseSpec{Restore: &v1alpha1.DatabaseRestore{
+		SourceDatabase: "order-db", PointInTime: "yesterday",
+	}}
+	if err := bad.Validate(); err == nil {
+		t.Error("want an error for a non-RFC3339 pointInTime")
+	}
+	missing := v1alpha1.ManagedDatabaseSpec{Restore: &v1alpha1.DatabaseRestore{}}
+	if err := missing.Validate(); err == nil {
+		t.Error("want an error for a restore with no sourceDatabase")
+	}
+}
+
 // TestRenderDispatch: Render handles the per-object tiers and REFUSES a
 // Workload, which must be rendered with its set.
 func TestRenderDispatch(t *testing.T) {

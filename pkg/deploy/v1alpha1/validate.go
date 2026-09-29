@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Validation is ALL-OR-NOTHING and runs BEFORE anything renders: every
@@ -279,6 +280,20 @@ func (s ManagedDatabaseSpec) Validate() error {
 	}
 	if d.DeletionPolicy != DeletionPolicyRetain && d.DeletionPolicy != DeletionPolicyDelete {
 		errs = append(errs, fmt.Errorf("deletionPolicy %q must be retain or delete", s.DeletionPolicy))
+	}
+	if r := d.Restore; r != nil {
+		if err := ValidateDatabaseName(r.SourceDatabase); err != nil {
+			errs = append(errs, fmt.Errorf("restore.sourceDatabase: %w", err))
+		}
+		// A timestamp that does not parse would otherwise reach CNPG, which
+		// accepts the Cluster and fails inside the recovery job — a restore
+		// that appears to start and then crash-loops, at the moment someone
+		// is least able to debug it.
+		if r.PointInTime != "" {
+			if _, err := time.Parse(time.RFC3339, r.PointInTime); err != nil {
+				errs = append(errs, fmt.Errorf("restore.pointInTime %q must be an RFC3339 timestamp (2026-01-02T15:04:05Z)", r.PointInTime))
+			}
+		}
 	}
 	return errors.Join(errs...)
 }

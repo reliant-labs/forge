@@ -82,6 +82,48 @@ type ManagedDatabaseSpec struct {
 	// +optional
 	// +kubebuilder:default=retain
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
+
+	// Restore, when set, bootstraps this database from a backup instead of
+	// from an empty initdb. DECLARING it is the whole restore procedure:
+	// there is no imperative RPC, because a restore that only exists as a
+	// command is one nobody can review, repeat, or run at 3am from a git
+	// revert.
+	//
+	// It is honoured ONCE, at bootstrap. A Cluster that already holds data
+	// is never re-bootstrapped, so adding this to a live database does
+	// nothing — restoring over a running database means declaring a NEW
+	// one that names the old as its source, which is also what keeps a
+	// mistaken restore from destroying the original.
+	// +optional
+	Restore *DatabaseRestore `json:"restore,omitempty"`
+}
+
+// DatabaseRestore is a declarative recovery: which database's backups to
+// read, and optionally how far to replay them.
+//
+// WHY SourceDatabase IS NOT OPTIONAL. Defaulting it to "this database" would
+// make the common typo — declaring a restore on the database you meant to
+// restore INTO, with the source left blank — silently mean "recover myself
+// from my own backups", which is indistinguishable from a working restore
+// until you look for the data that is missing.
+type DatabaseRestore struct {
+	// SourceDatabase is the ManagedDatabase whose backups are read. It may
+	// be this database's own name (recreating it in place) or another in
+	// the same environment — never one in another environment, which the
+	// platform enforces by scoping the object-store prefix, not by
+	// checking a string here.
+	// +kubebuilder:validation:MinLength=1
+	SourceDatabase string `json:"sourceDatabase"`
+
+	// PointInTime stops recovery at an RFC3339 timestamp instead of
+	// replaying every archived WAL. Unset recovers as far as the archive
+	// goes.
+	//
+	// This is the field that makes the difference between "we have
+	// backups" and "we can undo what happened at 14:05", and it is the
+	// only reason continuous WAL archiving is worth its cost.
+	// +optional
+	PointInTime string `json:"pointInTime,omitempty"`
 }
 
 // Defaults and ceilings. THE CEILING IS THE POINT: a default only helps the

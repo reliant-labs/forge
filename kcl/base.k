@@ -40,6 +40,18 @@ import .lib.images as img_lib
 # rule forge's guards use, rather than re-deriving Docker's heuristic.
 image_registry_host = img_lib.registry_host
 
+# image_on_registry(image, host) — the same image reference on a different
+# registry host, path and tag kept. A local env re-points a workload declared
+# against a real registry onto its k3d-local one:
+#
+#     _on_k3d = lambda w: fw.Workload -> fw.Workload {
+#         w | {image = forge.image_on_registry(w.image, "localhost:5050"), ...}
+#     }
+#
+# The declaration stays single-sourced — dev states only the difference — and
+# both references still name their own registry, which is the rule.
+image_on_registry = img_lib.on_registry
+
 # image_repository(image) — an image reference minus any `:tag` / `@digest`,
 # registry host INCLUDED. The build-state and release-ledger key, re-exported
 # for a main.k that needs to name the same repository forge does.

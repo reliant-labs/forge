@@ -203,7 +203,7 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 			Name:       c.Name,
 			Kind:       c.EffectiveKind(),
 			Undeclared: true,
-			Stanza:     codegen.WorkloadStanza(cfg.Name, c),
+			Stanza:     codegen.WorkloadStanza(cfg.ModulePath, cfg.Name, c),
 		})
 	}
 

@@ -142,10 +142,14 @@ _env = lambda w: fw.Workload -> {str:} {
 _k3d = forge.ClusterTarget {
     cluster = "k3d-{{.ProjectName}}"
     namespace = "{{.ProjectName}}-{{.EnvName}}"
-    # The k3d registry deploy/k3d.yaml creates: `forge env up {{.EnvName}}`
-    # pushes here and the cluster pulls from here.
-    registry = "localhost:5050"
 }
+
+# The k3d registry deploy/k3d.yaml creates. A workload declares its image
+# against a real registry (deploy/kcl/workloads.k); this env re-points that
+# same reference onto the local one, because a k3d node can only pull from a
+# host-local registry. The declaration stays single-sourced — dev states only
+# the difference — and `forge env up {{.EnvName}}` pushes here.
+_LOCAL_REGISTRY = "localhost:5050"
 
 # ---------------------------------------------------------------------------
 # THE BINDINGS: where each workload runs in this env.
@@ -169,9 +173,14 @@ _on_host = lambda w: fw.Workload -> fw.Workload {
 _on_host_job = lambda w: fw.Workload -> fw.Workload {
     w | {env = _env(w), runtime = forge.OnHost {runner = "go-run"}}
 }
-# A pod in the local k3d cluster, from the image `forge build dev` pushes.
+# A pod in the local k3d cluster, from the image `forge build {{.EnvName}}`
+# pushes to the local registry.
 _on_k3d = lambda w: fw.Workload -> fw.Workload {
-    w | {env = _env(w), runtime = forge.OnCluster {target = _k3d}}
+    w | {
+        env = _env(w)
+        image = forge.image_on_registry(w.image, _LOCAL_REGISTRY)
+        runtime = forge.OnCluster {target = _k3d}
+    }
 }
 # Built, never run.
 _build_only = lambda w: fw.Workload -> fw.Workload {

@@ -5,8 +5,7 @@
       "domain": null,
       "image_pull_secrets": [],
       "namespace": "acme-dev",
-      "platform": null,
-      "registry": "localhost:5050"
+      "platform": null
     },
     "clusters": [],
     "config_maps": [],
@@ -315,8 +314,8 @@
           "tags": [],
           "type": "go"
         },
-        "build_image": "acme",
-        "image": "acme",
+        "build_image": "localhost:5050/acme",
+        "image": "localhost:5050/acme",
         "kind": "service",
         "name": "api",
         "runtime": {
@@ -325,7 +324,6 @@
           "image_pull_secrets": [],
           "namespace": "acme-dev",
           "platform": null,
-          "registry": "localhost:5050",
           "type": "cluster"
         },
         "spec": {
@@ -390,8 +388,8 @@
           "tags": [],
           "type": "go"
         },
-        "build_image": "acme",
-        "image": "acme",
+        "build_image": "localhost:5050/acme",
+        "image": "localhost:5050/acme",
         "kind": "job",
         "name": "migrate",
         "runtime": {
@@ -400,7 +398,6 @@
           "image_pull_secrets": [],
           "namespace": "acme-dev",
           "platform": null,
-          "registry": "localhost:5050",
           "type": "cluster"
         },
         "spec": {
@@ -433,8 +430,8 @@
           "tags": [],
           "type": "go"
         },
-        "build_image": "acme",
-        "image": "acme",
+        "build_image": "localhost:5050/acme",
+        "image": "localhost:5050/acme",
         "kind": "cron",
         "name": "nightly",
         "runtime": {
@@ -443,7 +440,6 @@
           "image_pull_secrets": [],
           "namespace": "acme-dev",
           "platform": null,
-          "registry": "localhost:5050",
           "type": "cluster"
         },
         "spec": {
@@ -486,7 +482,6 @@
           "image_pull_secrets": [],
           "namespace": "acme-dev",
           "platform": null,
-          "registry": "localhost:5050",
           "type": "cluster"
         },
         "spec": {
@@ -518,8 +513,8 @@
           "tags": [],
           "type": "go"
         },
-        "build_image": "acme",
-        "image": "acme",
+        "build_image": "localhost:5050/acme",
+        "image": "localhost:5050/acme",
         "kind": "operator",
         "name": "workspace",
         "runtime": {
@@ -528,7 +523,6 @@
           "image_pull_secrets": [],
           "namespace": "acme-dev",
           "platform": null,
-          "registry": "localhost:5050",
           "type": "cluster"
         },
         "spec": {

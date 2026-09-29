@@ -9,6 +9,9 @@ import forge
 import forge.workloads as fw
 
 _build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
+# A hosted env has no registry either: the workload declares its reference,
+# and forge's hosted publish pins it to repository@digest.
+_image = "ghcr.io/acme/acme"
 
 output = forge.render(forge.Bundle {
     project = "acme"
@@ -18,6 +21,7 @@ output = forge.render(forge.Bundle {
     workloads = [
         fw.Workload {
             name = "api"
+            image = _image
             build = _build
             args = ["api"]
             ports = [fw.Port {name = "http", port = 8080, expose = True}]
@@ -32,6 +36,7 @@ output = forge.render(forge.Bundle {
         fw.Workload {
             name = "migrate"
             kind = "job"
+            image = _image
             build = _build
             args = ["db", "migrate", "up"]
             before = [fw.BEFORE_ALL]

@@ -5,8 +5,7 @@
       "domain": null,
       "image_pull_secrets": [],
       "namespace": "acme-dev",
-      "platform": null,
-      "registry": "localhost:5050"
+      "platform": null
     },
     "clusters": [],
     "config_maps": [],
@@ -321,8 +320,8 @@
           "tags": [],
           "type": "go"
         },
-        "build_image": "acme",
-        "image": "acme",
+        "build_image": "localhost:5050/acme",
+        "image": "localhost:5050/acme",
         "kind": "service",
         "name": "search",
         "runtime": {
@@ -331,7 +330,6 @@
           "image_pull_secrets": [],
           "namespace": "acme-dev",
           "platform": null,
-          "registry": "localhost:5050",
           "type": "cluster"
         },
         "spec": {
@@ -381,8 +379,8 @@
           "tags": [],
           "type": "go"
         },
-        "build_image": "acme",
-        "image": "acme",
+        "build_image": "localhost:5050/acme",
+        "image": "localhost:5050/acme",
         "kind": "worker",
         "name": "billing",
         "runtime": {
@@ -400,7 +398,7 @@
               "name": "STRIPE_KEY"
             }
           ],
-          "image": "acme",
+          "image": "localhost:5050/acme",
           "kind": "worker",
           "replicas": 1,
           "resources": {

@@ -77,7 +77,7 @@ const MigrateWorkloadName = "migrate"
 //
 // `config_secrets = ["DATABASE_URL"]`: the job needs the DSN and nothing
 // else, so it is the one credential projected into it.
-func MigrateWorkloadStanza(projectName string) string {
+func MigrateWorkloadStanza(modulePath, projectName string) string {
 	var b strings.Builder
 	b.WriteString("# The deploy-time schema migration — YOURS to change.\n")
 	b.WriteString("#\n")
@@ -104,6 +104,7 @@ func MigrateWorkloadStanza(projectName string) string {
 	fmt.Fprintf(&b, "%s = fw.Workload {\n", naming.KCLIdentifier(MigrateWorkloadName))
 	fmt.Fprintf(&b, "    name = %q\n", MigrateWorkloadName)
 	fmt.Fprintf(&b, "    kind = %q\n", WorkloadKindJob)
+	fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, projectName))
 	fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
 	fmt.Fprintf(&b, "    args = %s\n", kclStringList(MigrateArgs()))
 	b.WriteString("    before = [fw.BEFORE_ALL]\n")
@@ -127,6 +128,40 @@ func kclStringList(items []string) string {
 // than a package identifier.
 func projectGoBuild(projectName string) string {
 	return goBuild("./cmd/"+projectName, projectName)
+}
+
+// ScaffoldImageRef is the image reference a scaffolded workload declares: the
+// FULL reference, registry host included, because that is the only place a
+// registry is declared — no environment carries one.
+//
+// The registry is derived from the module path's GitHub owner
+// (github.com/acme/shop → ghcr.io/acme/shop), which a GitHub-hosted project
+// can push to with nothing but its workflow token. A module path that names no
+// GitHub owner gets a VISIBLE placeholder rather than a bare name: a bare name
+// would render as `shop:<tag>`, which the kubelet resolves against Docker Hub
+// and fails to pull, whereas REPLACE_ME cannot be mistaken for a working
+// value and forge refuses it at render with the workload's name.
+func ScaffoldImageRef(modulePath, projectName string) string {
+	if owner := githubOwnerFromModulePath(modulePath); owner != "" {
+		return "ghcr.io/" + strings.ToLower(owner) + "/" + projectName
+	}
+	return "REPLACE_ME_REGISTRY/" + projectName
+}
+
+// githubOwnerFromModulePath is the owner segment of a github.com module path
+// (github.com/acme/shop → "acme"), or "" for any other host or a path too
+// short to name one.
+func githubOwnerFromModulePath(modulePath string) string {
+	const host = "github.com/"
+	if !strings.HasPrefix(modulePath, host) {
+		return ""
+	}
+	rest := modulePath[len(host):]
+	slash := strings.Index(rest, "/")
+	if slash <= 0 {
+		return ""
+	}
+	return rest[:slash]
 }
 
 func goBuild(cmd, outputName string) string {
@@ -196,7 +231,7 @@ func IDPProvisionConfigMapName(projectName string) string {
 // dev env runs this job on the host. An env that runs it on a cluster, where
 // it publishes a ConfigMap, grants the write THERE, where the runtime makes
 // it meaningful (see the stanza's comment).
-func IDPProvisionWorkloadStanza(projectName string) string {
+func IDPProvisionWorkloadStanza(modulePath, projectName string) string {
 	var b strings.Builder
 	b.WriteString("# The dev-IdP identity convergence step — YOURS to change.\n")
 	b.WriteString("#\n")
@@ -219,6 +254,7 @@ func IDPProvisionWorkloadStanza(projectName string) string {
 	fmt.Fprintf(&b, "%s = fw.Workload {\n", naming.KCLIdentifier(IDPProvisionWorkloadName))
 	fmt.Fprintf(&b, "    name = %q\n", IDPProvisionWorkloadName)
 	fmt.Fprintf(&b, "    kind = %q\n", WorkloadKindJob)
+	fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, projectName))
 	fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
 	fmt.Fprintf(&b, "    args = %s\n", kclStringList(IDPProvisionArgs()))
 	b.WriteString("}\n")
@@ -241,13 +277,23 @@ func IDPProvisionWorkloadStanza(projectName string) string {
 // No probes: the lowering writes `/readyz` + `/healthz` on the `http` port
 // into the spec of every service forge builds, on every runtime, which is
 // exactly what serverkit serves.
-func WorkloadStanza(projectName string, c config.ComponentConfig) string {
+func WorkloadStanza(modulePath, projectName string, c config.ComponentConfig) string {
 	var b strings.Builder
 	kind := WorkloadKindFor(c.EffectiveKind())
 
 	fmt.Fprintf(&b, "%s = fw.Workload {\n", naming.KCLIdentifier(c.Name))
 	fmt.Fprintf(&b, "    name = %q\n", c.Name)
 	fmt.Fprintf(&b, "    kind = %q\n", kind)
+
+	// The image, registry INCLUDED — a workload declares its own registry,
+	// and no environment declares one. A secondary binary is its own program
+	// and so its own image; everything else ships the project image and
+	// selects its behaviour with `args`.
+	if c.EffectiveKind() == config.ComponentKindBinary {
+		fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, naming.ServicePackage(c.Name)))
+	} else {
+		fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, projectName))
+	}
 
 	// Build target and subcommand. A secondary binary is its OWN program:
 	// it builds its own cmd/<binpkg> package and runs with no subcommand.

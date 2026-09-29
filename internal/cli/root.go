@@ -246,6 +246,12 @@ authored protos, in one call.`,
 	rootCmd.AddCommand(newToolsCmd())
 	rootCmd.AddCommand(newClusterCmd())
 	rootCmd.AddCommand(newAPICmd())
+	// `kcl` is the KCL-file noun: evaluating ONE file of the project and
+	// selecting out of it. An ENVIRONMENT's render is `env render <env>`,
+	// which is env-shaped (image tags, digests, cluster routing, charts);
+	// none of that applies to a library file declaring constants, which is
+	// what scripts and tests read. See internal/cli/kcl_eval.go.
+	rootCmd.AddCommand(newKCLCmd())
 	// `env` is the environment noun: every env-REQUIRED lifecycle verb
 	// (up/down/status/list/new/deploy/promote/smoke/secrets/devstack)
 	// lives under it with the env as a positional argument. Commands where

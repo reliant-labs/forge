@@ -211,6 +211,29 @@ func withDevStackDArgs(dArgs []string) []string {
 // as are the active dev-stack git facts, see withDevStackDArgs.
 // kpm progress/diagnostics go to stderr.
 func Run(workDir, source string, dArgs []string) ([]byte, error) {
+	return RunIn(workDir, workDir, source, dArgs)
+}
+
+// RunIn is Run with the two directories Run collapses into one held apart:
+// projectDir is the project root the kcl.mod migration checks read, and
+// workDir is the cwd KCL evaluates in.
+//
+// Every env render wants them equal — an env package is `deploy/kcl/<env>`
+// and relative `lib.*` imports resolve from the project root either way — so
+// Run stays the one-argument form and this is the exception.
+//
+// The exception is real, not hypothetical. A KCL file that is not an env
+// resolves its imports from ITS OWN kcl.mod package root:
+// control-plane's `deploy/kcl/lib/platform_local.k` says `import
+// lib.barman_plugin`, which resolves only with `deploy/kcl` as the cwd (the
+// scripts reading it all `cd` there first). Evaluating it with the project
+// root as workDir fails on the import; evaluating it with `deploy/kcl` as
+// BOTH would point the migration checks at a subtree, and
+// CheckRegistryHelper walks that subtree — so a stale helper elsewhere in the
+// project would go unreported for this render and be reported for every
+// other, which is the kind of difference between two renders of one project
+// that forge exists to remove.
+func RunIn(projectDir, workDir, source string, dArgs []string) ([]byte, error) {
 	// Make kcl_plugin.forge (resolve_port, …) available. Idempotent;
 	// the registry is process-global.
 	kclplugin.Register()
@@ -221,7 +244,7 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 		return nil, err
 	}
 
-	forgeArg, err := forgeModuleArg(workDir)
+	forgeArg, err := forgeModuleArg(projectDir)
 	if err != nil {
 		return nil, err
 	}

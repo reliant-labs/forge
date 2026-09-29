@@ -24,7 +24,7 @@ _cloud_noplatform = forge.ClusterTarget {cluster = "gke_proj_us-central1_prod", 
 _real = fw.Workload {
     name = "sibling"
     image = "sibling"
-    build = forge.ShellBuild {cmd = r"docker build --platform=linux/${TARGETARCH} -t ${REGISTRY}/${IMAGE}:${TAG} . && docker push ${REGISTRY}/${IMAGE}:${TAG}"}
+    build = forge.ShellBuild {cmd = "docker build --platform=linux/${forge.target_arch()} -t sibling . && docker push sibling"}
 }
 _docker = fw.Workload {name = "gw", image = "gw", build = forge.DockerBuild {dockerfile = "Dockerfile.gw"}}
 _noop = fw.Workload {name = "prebuilt", image = "prebuilt", build = forge.ShellBuild {cmd = "true"}}

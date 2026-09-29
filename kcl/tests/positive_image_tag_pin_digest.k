@@ -38,7 +38,7 @@ _bare_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 _plain_digest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 _target = forge.ClusterTarget {cluster = "k3d-cp", namespace = "e2e", registry = "localhost:5051"}
-_shell = forge.ShellBuild {cmd = r"echo ${REGISTRY}/${IMAGE}:${TAG}"}
+_shell = forge.ShellBuild {cmd = "echo built"}
 
 output = forge.render(forge.Bundle {
     project = "cp"

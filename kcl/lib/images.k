@@ -31,7 +31,7 @@ has_registry_host = lambda image: str -> bool {
 }
 
 # `image` without its own registry host and without any `:tag` / `@digest`
-# — the REPOSITORY a build pushes to under `${REGISTRY}/${IMAGE}:${TAG}`,
+# — the REPOSITORY a build pushes to, under the registry and resolved tag,
 # and the key build state and the release ledger record. The org path is
 # kept (`acme/app:v2` -> `acme/app`), because image_ref keeps it too: build
 # and deploy name the same repository only if both keep it.

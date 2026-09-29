@@ -54,7 +54,7 @@ type buildPlanStep struct {
 	what string
 	// pushes are the registry refs this step would write. Empty when the
 	// step pushes nothing (no --push) or its pushes are the user's own
-	// (a ShellBuild owns its push; its ${TAG} is shown in what).
+	// (a ShellBuild owns its push; its resolved tag is shown in what).
 	pushes []string
 	// problem is non-empty when the real build would fail this step.
 	problem string

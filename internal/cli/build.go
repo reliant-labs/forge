@@ -125,9 +125,10 @@ type buildOptions struct {
 	pushRegistry string
 	// envRegistry is the registry the env's KCL declares (declaredRegistry),
 	// resolved with the render whether or not this build pushes. It is the
-	// registry a locally-built image is TAGGED under, and a ShellBuild's
-	// ${REGISTRY}. "" with no env, or an env that declares none — a local
-	// image is then tagged bare (<image>:<tag>).
+	// registry a locally-built image is TAGGED under, and the one the
+	// post-build digest lookup composes its reference from. "" with no env,
+	// or an env that declares none — a local image is then tagged bare
+	// (<image>:<tag>).
 	envRegistry string
 	// targetArch overrides the GOARCH used for the Go binary build
 	// AND the docker buildx --platform when --docker / --push is set.
@@ -1081,14 +1082,15 @@ func validateExternalBuildTarget(entities *KCLEntities, opts buildOptions) error
 		return fmt.Errorf("--target external requires --env to know which KCL services to build")
 	}
 	if !kclHasExternalBuildService(entities) {
-		return fmt.Errorf("--target external: no service declares build_cmd in env %q.\n"+
-			"  Declare a `build_cmd` on your forge.External target (the build-side mirror of deploy_cmd) so\n"+
-			"  `forge build -t external` constructs the image, e.g.:\n"+
-			"      deploy = forge.External {\n"+
-			"          deploy_cmd = r\"...\"\n"+
-			"          build_cmd  = r\"docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} ${PROJECT_DIR}\"\n"+
-			"      }\n"+
-			"  (a top-level Service.build_cmd also works for non-External deploy types)", opts.env)
+		return fmt.Errorf("--target external: no workload declares a ShellBuild in env %q.\n"+
+			"  Declare `build = forge.ShellBuild { ... }` on the workload so `forge build -t external`\n"+
+			"  constructs the image. The cmd is plain KCL, run verbatim, e.g.:\n"+
+			"      _arch = forge.target_arch()\n"+
+			"      _ref  = \"ghcr.io/acme/api:\" + forge.image_tag(%q)\n"+
+			"      build = forge.ShellBuild {\n"+
+			"          cwd = \"../api\"\n"+
+			"          cmd = \"docker build --platform=linux/${_arch} -t ${_ref} . && docker push ${_ref}\"\n"+
+			"      }", opts.env, opts.env)
 	}
 	return nil
 }

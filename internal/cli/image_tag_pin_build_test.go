@@ -35,13 +35,13 @@ output = forge.render(forge.Bundle {
             name = "api-server"
             image = "reliant:e2e"
             args = ["api"]
-            build = forge.ShellBuild {cmd = r"echo ${REGISTRY}/${IMAGE}:${TAG} > ${PROJECT_DIR}/out-${SERVICE}.txt"}
+            build = forge.ShellBuild {cmd = "echo localhost:5051/reliant:e2e > out-api-server.txt"}
         }
         fw.Workload {
             name = "worker"
             image = "acme/reliant-worker:v2"
             args = ["work"]
-            build = forge.ShellBuild {cmd = r"echo ${REGISTRY}/${IMAGE}:${TAG} > ${PROJECT_DIR}/out-${SERVICE}.txt"}
+            build = forge.ShellBuild {cmd = "echo localhost:5051/acme/reliant-worker:v2 > out-worker.txt"}
         }
         fw.Workload {
             name = "docker-api"
@@ -70,11 +70,19 @@ func TestPinnedImageBuildPushesTheRenderedRef(t *testing.T) {
 		t.Fatalf("render resolved spec.image = %v (the deploy side is the reference; it must not change)", specImage)
 	}
 
-	// ShellBuild lane: run the real dispatcher with the env tag threaded as
-	// the build-wide tag, and read back the ref each command was handed.
+	// ShellBuild lane: run the real dispatcher and read back the ref each
+	// command wrote.
+	//
+	// The reference is now composed IN KCL and the command runs verbatim, so
+	// this asserts the thing that actually matters: the ref the cmd writes
+	// equals the rendered spec.image the deploy pulls. Under the old
+	// substitution pass the cmd named ${REGISTRY}/${IMAGE}:${TAG} and forge
+	// recomposed the ref from three separately-resolved pieces — which is
+	// precisely how it came to build IMAGE=api-server (the workload name)
+	// under the env tag, a ref no deploy pulls.
 	projDir := t.TempDir()
 	results := buildExternalServices(context.Background(), externalBuildServices(ents),
-		buildOptions{env: "dev"}, "localhost:5051", "abc1234-dirty", projDir, "amd64")
+		buildOptions{env: "dev"}, "localhost:5051", "abc1234-dirty", projDir)
 	for _, r := range results {
 		if r.err != nil {
 			t.Fatalf("external build %s: %v", r.name, r.err)

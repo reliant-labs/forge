@@ -60,9 +60,6 @@ Supported deploy targets (declared in deploy/kcl/<env>/main.k):
 
   * forge.K8sCluster — Kubernetes deployment via render → kubectl apply
     → wait-rollouts. Forge auto-creates a k3d cluster for dev.
-  * forge.External   — generic shell-command escape hatch. Forge runs
-    sh -c <deploy_cmd> with ${IMAGE}/${TAG}/${SERVICE} etc. expanded;
-    use for Fly.io, Cloud Run, Cloudflare Workers, ECS, Vercel, etc.
   * forge.Compose    — docker compose pull + up -d.
 
 forge.HostDeploy and forge.BuildOnly are skipped by deploy — those are
@@ -585,8 +582,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	}
 
 	// imageTag is the env-wide mutable tag bound to KCL's `image_tag` (the
-	// per-image fallback for vendored / no-digest images and the
-	// External/Compose ${TAG} source). plainTag is the same mutable tag.
+	// per-image fallback for vendored / no-digest images). plainTag is the
+	// same mutable tag, never the digest form.
 	// imageDigests is the PER-IMAGE name→digest map: each forge-built image
 	// resolves to ITS OWN captured digest, so the KCL render pins
 	// `<image>@<digest>` per service rather than stamping one env-wide digest
@@ -953,7 +950,7 @@ func recordDeployInvocation(report *deployReport, opts deployOptions) {
 
 // deployTagResolution is the resolved image-reference set runDeploy threads
 // through the render + apply pipeline: the (possibly digest-pinned) imageTag,
-// the always-plain plainTag (the External/Compose ${TAG} source), the
+// the always-plain plainTag (what a provider records as the deployed tag), the
 // per-image name→digest map, and a human-readable tagSource for the banner.
 type deployTagResolution struct {
 	imageTag     string
@@ -1094,9 +1091,9 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 // skipped (forge run / forge build territory).
 //
 // The tag propagation uses the PLAIN tag, never the digest form: the cluster
-// path consumes ImageTag implicitly via cluster.Apply, but the external/compose
-// providers read group.ImageTag for ${TAG} substitution — a `${IMAGE}:${TAG}`
-// with `${TAG}=@sha256:...` would render a broken `image:@sha256:...` ref.
+// path consumes ImageTag implicitly via cluster.Apply, and the compose path
+// RECORDS it as the deployed tag — a digest there would write
+// `image:@sha256:...`, which is not a reference.
 func buildDeployGroupsForEnv(envName string, entities *KCLEntities, namespace, plainTag string, dryRun bool) ([]deploytarget.ServiceGroup, error) {
 	groups, gerr := buildDeployGroupsWithOpts(envName, entities, namespace, dryRun)
 	if gerr != nil {
@@ -1960,10 +1957,9 @@ func kclEntitiesHaveK8sCluster(entities *KCLEntities) bool {
 //
 // Return values: (imageRef, plainTag, source, err). imageRef is what the
 // KCL manifest render pins — the digest form `@sha256:...` when a digest is
-// preferred, else the plain tag. plainTag is ALWAYS the mutable tag, used by
-// the External/Compose providers for their `${TAG}` substitution (a digest
-// there would break `${IMAGE}:${TAG}`). For every tag-only path the two are
-// identical.
+// preferred, else the plain tag. plainTag is ALWAYS the mutable tag — what a
+// provider records as the tag it deployed, where a digest would not be a
+// reference at all. For every tag-only path the two are identical.
 func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverride string, noDigest bool) (imageRef, plainTag, source string, err error) {
 	if flagOverride != "" {
 		return flagOverride, flagOverride, "explicit --tag flag", nil
@@ -2000,7 +1996,7 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 		// Returning one digest here was the bug: it stamped a single image's
 		// digest onto every service (reliant pinned to control-plane's digest
 		// → manifest unknown). The env tag is the per-image fallback (vendored
-		// images, no-digest builds) and the External/Compose ${TAG} source.
+		// images, no-digest builds) and the tag a provider records.
 		src := fmt.Sprintf(".forge/state/build-%s.json (built %s)", key, st.PushedAt)
 		return st.Tag, st.Tag, src, nil
 	}
@@ -2417,9 +2413,9 @@ func checkBuildStateFreshness(ctx context.Context, projectDir, envName, stateKey
 // which by construction carries the env's own registry.
 //
 // NOT sufficient: "the bound release pins this image". The K8s path renders a
-// digest for a pinned image and ignores the tag, but plainTag still feeds
-// External/Compose ${TAG} substitution (buildDeployGroupsForEnv), so a stale
-// tag can genuinely ship there. TestResolveDeployImageTag_ReleaseCommitStill
+// digest for a pinned image and ignores the tag, but plainTag still reaches
+// every provider via buildDeployGroupsForEnv, so a stale tag can genuinely
+// ship there. TestResolveDeployImageTag_ReleaseCommitStill
 // RefusesOlderImage pins exactly that, and it is right to.
 //
 // Two conditions, and BOTH are required:

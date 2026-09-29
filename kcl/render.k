@@ -245,7 +245,7 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # ---------------------------------------------------------------------------
 
 # The registry-less artifact name a forge-built workload is built into —
-# the build-state / release-ledger key, and the ${IMAGE} its build pushes.
+# the build-state / release-ledger key, and the repository its build pushes to.
 # "" when forge builds nothing for it.
 #
 # A declared image names it, with any `:tag` stripped: `reliant:e2e` is built

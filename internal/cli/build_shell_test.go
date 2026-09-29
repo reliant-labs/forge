@@ -8,16 +8,22 @@ import (
 	"testing"
 )
 
-// TestShellBuild_CwdAndSubstitution verifies the unified ShellBuild
-// contract through the single dispatcher (buildExternalServices): the
-// command runs from the resolved cwd (here the PROJECT ROOT, since the
-// ShellBuild declares no cwd), and the documented ${X} tokens are
-// substituted into the command before exec.
+// TestShellBuild_CwdAndVerbatimCmd verifies the ShellBuild contract through the
+// single dispatcher (buildExternalServices), against a REAL `sh -c`: the command
+// runs from the resolved cwd (here the project root, since the ShellBuild
+// declares no cwd), and the command string reaches the shell byte-for-byte.
 //
-// It drives a real `sh -c` and inspects what the shell observed (its cwd
-// via $(pwd), and the already-expanded ${PROJECT_DIR}/${IMAGE}/${TAG}/
-// ${REGISTRY}/${TARGETARCH} tokens).
-func TestShellBuild_CwdAndSubstitution(t *testing.T) {
+// Two things are asserted that the substitution pass made impossible, and both
+// are the point of the change:
+//
+//   - A `${FOO}` forge does not own arrives at the shell AS `${FOO}`. Under
+//     substitution a known token was rewritten before the shell ever saw it, so
+//     the script the author wrote was not the script that ran.
+//   - `$PWD` works. The old test had to use `$(pwd)` instead and said why: the
+//     substitution pass consumed a bare `$PWD` as an unknown token. That is a
+//     forge bug visible in its own test's workaround, and it is gone — a shell
+//     variable is now just a shell variable.
+func TestShellBuild_CwdAndVerbatimCmd(t *testing.T) {
 	projDir := t.TempDir()
 	// A relative script path under the project root — resolving it from
 	// the project root is the whole point of the cwd contract.
@@ -31,20 +37,18 @@ func TestShellBuild_CwdAndSubstitution(t *testing.T) {
 
 	outFile := filepath.Join(projDir, "observed.txt")
 	// The command exercises: (1) a relative scripts/ path that must resolve
-	// against the project root, and (2) ${X} substitution. It records $(pwd)
-	// and the post-substitution token values into observed.txt.
-	// Note: $(pwd) (command substitution) is used rather than $PWD because
-	// forge's substitution runs os.Expand over the whole string first, which
-	// would consume a bare $PWD (it's an unknown token → empty). $( is left
-	// untouched by os.Expand.
+	// against the project root, (2) $PWD reaching the shell intact, and (3) a
+	// ${RETIRED} token forge must NOT touch — the shell expands it to empty
+	// because nothing set it, which is exactly the semantics the lint rule
+	// warns about and precisely what forge now does.
 	cmd := "sh scripts/build-image.sh > /dev/null && " +
-		"printf 'pwd=%s\\nimage=%s\\ntag=%s\\nregistry=%s\\nproject_dir=%s\\narch=%s\\n' " +
-		"\"$(pwd)\" '${IMAGE}' '${TAG}' '${REGISTRY}' '${PROJECT_DIR}' '${TARGETARCH}' > observed.txt"
+		"printf 'pwd=%s\\nliteral=%s\\nunset=%s\\n' " +
+		"\"$PWD\" 'IMAGE-is-not-substituted' \"${TARGETARCH}\" > observed.txt"
 	svcs := []WorkloadEntity{shellSvc("gw", "my-gw", cmd, "", nil)}
 
 	opts := buildOptions{env: "dev", parallel: false, outputDir: "bin"}
 	results := buildExternalServices(context.Background(), svcs, opts,
-		"reg.example.com", "v1.2.3", projDir, "arm64")
+		"reg.example.com", "v1.2.3", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("buildExternalServices: %+v", results)
 	}
@@ -58,37 +62,58 @@ func TestShellBuild_CwdAndSubstitution(t *testing.T) {
 	// macOS /tmp is a symlink to /private/tmp; resolve both sides before
 	// comparing the cwd the shell observed against the project root.
 	wantPWD, _ := filepath.EvalSymlinks(projDir)
-	observedPWD := parseField(t, got, "pwd")
-	gotPWD, _ := filepath.EvalSymlinks(observedPWD)
+	gotPWD, _ := filepath.EvalSymlinks(parseField(t, got, "pwd"))
 	if gotPWD != wantPWD {
 		t.Errorf("cwd: command ran from %q, want project root %q", gotPWD, wantPWD)
 	}
 
-	// ${X} tokens must have been expanded BEFORE the shell saw them.
-	for _, tc := range []struct{ field, want string }{
-		{"image", "my-gw"},
-		{"tag", "v1.2.3"},
-		{"registry", "reg.example.com"},
-		{"project_dir", projDir},
-		{"arch", "arm64"},
-	} {
-		if g := parseField(t, got, tc.field); g != tc.want {
-			t.Errorf("token %s: expanded to %q, want %q", tc.field, g, tc.want)
-		}
+	// The literal reached the shell unmodified.
+	if g := parseField(t, got, "literal"); g != "IMAGE-is-not-substituted" {
+		t.Errorf("literal: got %q, want it passed through untouched", g)
+	}
+
+	// ${TARGETARCH} was NOT substituted by forge: the shell resolved it, and
+	// nothing set it, so it is empty. Under the old substitution pass this
+	// would have been "arm64".
+	if g := parseField(t, got, "unset"); g != "" {
+		t.Errorf("unset: got %q, want empty — forge must not substitute ${TARGETARCH}; the shell owns it now", g)
+	}
+}
+
+// A ShellBuild that declares a token-named key in its `env` map gets it from
+// the SHELL, because forge merges the declared env onto the process
+// environment. This is the documented way to keep a `${TARGETARCH}` spelling
+// working, so it is worth proving end-to-end through a real shell rather than
+// only at the unit level.
+func TestShellBuild_DeclaredEnvResolvesInTheShell(t *testing.T) {
+	projDir := t.TempDir()
+	cmd := "printf 'arch=%s\\n' \"${TARGETARCH}\" > observed.txt"
+	svcs := []WorkloadEntity{shellSvc("gw", "my-gw", cmd, "", map[string]string{"TARGETARCH": "arm64"})}
+
+	results := buildExternalServices(context.Background(), svcs,
+		buildOptions{env: "dev", outputDir: "bin"}, "reg", "v1", projDir)
+	if len(results) != 1 || results[0].err != nil {
+		t.Fatalf("buildExternalServices: %+v", results)
+	}
+	raw, err := os.ReadFile(filepath.Join(projDir, "observed.txt"))
+	if err != nil {
+		t.Fatalf("read observed.txt: %v", err)
+	}
+	if g := parseField(t, string(raw), "arch"); g != "arm64" {
+		t.Errorf("arch: got %q, want arm64 from the declared env map", g)
 	}
 }
 
 // TestShellBuild_NoopTrue confirms the no-op ShellBuild the reliant
 // sibling services declare (`cmd = "true  # ..."`) still succeeds through
-// the unified dispatcher: no relative paths, no ${} tokens, nothing
-// pushed — so the digest lookup finds nothing and the build is a harmless
-// success.
+// the unified dispatcher: no relative paths, nothing pushed — so the digest
+// lookup finds nothing and the build is a harmless success.
 func TestShellBuild_NoopTrue(t *testing.T) {
 	projDir := t.TempDir()
 	svcs := []WorkloadEntity{shellSvc("reliant-noop", "reliant", "true  # built upstream; nothing to do here", "", nil)}
 	results := buildExternalServices(context.Background(), svcs,
 		buildOptions{env: "dev", outputDir: "bin"},
-		"reg", "dev", projDir, "amd64")
+		"reg", "dev", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("no-op ShellBuild should succeed, got: %+v", results)
 	}

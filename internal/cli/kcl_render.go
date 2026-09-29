@@ -713,17 +713,18 @@ type DockerBuild struct {
 //     the project root, so relative paths like scripts/build-image.sh,
 //     ../sibling-repo, or docker/Dockerfile resolve as a user expects. A
 //     Cwd that doesn't exist on disk is a HARD build failure.
-//   - before exec forge substitutes the ${X} tokens ${IMAGE} ${TAG}
-//     ${CODE_VERSION} ${SERVICE} ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR}
-//     ${ENV} ${BUILD_CWD}, plus any keys in Env (built-ins win on
-//     conflict), into Cmd.
-//   - Env vars are merged into the command's process environment AND the
-//     substitution map.
+//   - Cmd is run VERBATIM. Forge substitutes nothing into it: it is a plain
+//     KCL string, so the tag, arch and env are composed in KCL
+//     (forge.image_tag(), forge.target_arch(), forge.env()) where those
+//     values already live, and every `$VAR` in the command is the shell's.
+//   - Env vars are merged onto the command's process environment (declared
+//     keys win), which is also how to keep a `${NAME}` spelling in the
+//     command: declare NAME in Env and the shell resolves it.
 //   - on success forge captures the pushed digest (best-effort) and
 //     writes the build-state file so deploy pins the same tag/digest.
 //
-// Absorbs the former flat Service.build_cmd / build_cwd / build_env trio
-// (and External.build_cmd) — one declaration surface, one contract.
+// Absorbs the former flat Service.build_cmd / build_cwd / build_env trio —
+// one declaration surface, one contract.
 type ShellBuild struct {
 	OutputName string            `json:"output_name,omitempty"`
 	Cmd        string            `json:"cmd"`

@@ -51,166 +51,87 @@ func (f *fakeRunner) last() (fakeCall, bool) {
 	return f.calls[len(f.calls)-1], true
 }
 
-// TestVars_BuiltinsWin confirms a Spec's built-in tokens
-// (IMAGE/TAG/SERVICE/TARGETARCH/REGISTRY/PROJECT_DIR/BUILD_CWD) win
-// against any conflicting BuildEnv key — same precedence External
-// uses, so users carry one mental model across the two escape
-// hatches.
-func TestVars_BuiltinsWin(t *testing.T) {
-	spec := Spec{
-		Service:    "daemon-gateway",
-		Image:      "reliant-daemon-gateway",
+// TestBuild_RunsCmdVerbatim is the core of the plain-KCL contract: the string
+// forge hands `sh -c` is byte-for-byte the string the Spec carried. Nothing is
+// substituted, so a ${FOO} in the command reaches the SHELL as ${FOO} and the
+// shell resolves it (or does not) from the environment.
+//
+// This is the assertion that would have caught the old behaviour: under the
+// substitution pass, an unknown token was left alone but every known one was
+// rewritten — so a command was not the thing the author wrote, and the KCL that
+// composed it could not be reasoned about on its own.
+func TestBuild_RunsCmdVerbatim(t *testing.T) {
+	projDir := t.TempDir()
+	fake := &fakeRunner{}
+	r := Runner{runner: fake}
+
+	// Every retired token spelling, plus ordinary shell syntax. All of it must
+	// survive untouched.
+	cmd := `docker build -t ${IMAGE}:${TAG} --build-arg A=${TARGETARCH} ` +
+		`--build-arg B=${REGISTRY} --build-arg C=${PROJECT_DIR} ${ENV} ${SERVICE} ` +
+		`&& W=$(mktemp -d) && cp -r "$W/x" "${HOME}/y"`
+	res := r.Build(context.Background(), Spec{
+		Service:    "svc",
+		Image:      "ghcr.io/acme/svc",
 		Tag:        "v1.2.3",
-		TargetArch: "amd64",
-		Registry:   "localhost:5051",
-		ProjectDir: "/home/dev/cp-forge",
-		BuildCwd:   "../reliant",
+		ProjectDir: projDir,
+		BuildCmd:   cmd,
+	})
+	if res.Err != nil {
+		t.Fatalf("Build: unexpected err: %v", res.Err)
+	}
+	call, ok := fake.last()
+	if !ok {
+		t.Fatal("runner was not invoked")
+	}
+	if len(call.args) != 2 || call.args[0] != "-c" {
+		t.Fatalf("runner args: got %v, want [-c <cmd>]", call.args)
+	}
+	if call.args[1] != cmd {
+		t.Errorf("cmd was not passed verbatim:\n got %q\nwant %q", call.args[1], cmd)
+	}
+}
+
+// The declared env map is merged onto the process environment for the command
+// — which is the ONLY channel forge has for handing the shell a value now that
+// substitution is gone, and therefore the documented way to keep a ${NAME}
+// spelling working.
+func TestBuild_DeclaredEnvReachesTheCommand(t *testing.T) {
+	projDir := t.TempDir()
+	fake := &fakeRunner{}
+	r := Runner{runner: fake}
+
+	res := r.Build(context.Background(), Spec{
+		Service:    "edge",
+		ProjectDir: projDir,
+		BuildCmd:   "build --region ${REGION} --arch ${TARGETARCH}",
 		BuildEnv: map[string]string{
-			// User-declared overlay; built-ins must win on conflict.
-			"IMAGE":  "user-shadow-attempt",
-			"TAG":    "user-shadow-attempt",
-			"CUSTOM": "user-custom",
+			"REGION":     "us-east-1",
+			"TARGETARCH": "arm64",
 		},
+	})
+	if res.Err != nil {
+		t.Fatalf("Build: unexpected err: %v", res.Err)
 	}
-	got := Vars(spec)
-	if got["IMAGE"] != "reliant-daemon-gateway" {
-		t.Errorf("IMAGE: want reliant-daemon-gateway, got %q", got["IMAGE"])
+	call, _ := fake.last()
+	// The command still carries the tokens — forge did not touch them...
+	if !strings.Contains(call.args[1], "${REGION}") || !strings.Contains(call.args[1], "${TARGETARCH}") {
+		t.Errorf("cmd should be verbatim, got %q", call.args[1])
 	}
-	if got["TAG"] != "v1.2.3" {
-		t.Errorf("TAG: want v1.2.3, got %q", got["TAG"])
+	// ...and the values ride in the env, where the shell will find them.
+	if call.env["REGION"] != "us-east-1" {
+		t.Errorf("env REGION: got %q, want us-east-1", call.env["REGION"])
 	}
-	if got["SERVICE"] != "daemon-gateway" {
-		t.Errorf("SERVICE: want daemon-gateway, got %q", got["SERVICE"])
-	}
-	if got["TARGETARCH"] != "amd64" {
-		t.Errorf("TARGETARCH: want amd64, got %q", got["TARGETARCH"])
-	}
-	if got["REGISTRY"] != "localhost:5051" {
-		t.Errorf("REGISTRY: want localhost:5051, got %q", got["REGISTRY"])
-	}
-	if got["PROJECT_DIR"] != "/home/dev/cp-forge" {
-		t.Errorf("PROJECT_DIR: want /home/dev/cp-forge, got %q", got["PROJECT_DIR"])
-	}
-	if got["BUILD_CWD"] != "../reliant" {
-		t.Errorf("BUILD_CWD: want ../reliant, got %q", got["BUILD_CWD"])
-	}
-	if got["CUSTOM"] != "user-custom" {
-		t.Errorf("CUSTOM (user-declared): want user-custom, got %q", got["CUSTOM"])
+	if call.env["TARGETARCH"] != "arm64" {
+		t.Errorf("env TARGETARCH: got %q, want arm64", call.env["TARGETARCH"])
 	}
 }
 
-// TestVars_CodeVersionAndEnv pins the two External-mirror tokens added
-// for the External.build_cmd feature: ${CODE_VERSION} (== ${TAG}, the
-// version to stamp into the image) and ${ENV} (the deploy env name).
-// These let an External build_cmd carry the same provenance the
-// deploy-side deploy_cmd does.
-func TestVars_CodeVersionAndEnv(t *testing.T) {
-	spec := Spec{
-		Tag: "forge-test",
-		Env: "prod",
-	}
-	got := Vars(spec)
-	if got["CODE_VERSION"] != "forge-test" {
-		t.Errorf("CODE_VERSION: want forge-test (==TAG), got %q", got["CODE_VERSION"])
-	}
-	if got["ENV"] != "prod" {
-		t.Errorf("ENV: want prod, got %q", got["ENV"])
-	}
-}
-
-// TestExpand_ExternalBuildShape validates the substitution against the
-// exact build_cmd the kalshi-trader e2e declares on its External target
-// — the build-side mirror of deploy_cmd. Pins that ${IMAGE} ${TAG}
-// ${PROJECT_DIR} ${TARGETARCH} all resolve in one shell string.
-func TestExpand_ExternalBuildShape(t *testing.T) {
-	spec := Spec{
-		Image:      "ghcr.io/kalshi-trader",
-		Tag:        "forge-test",
-		TargetArch: "amd64",
-		ProjectDir: "/Users/x/src/kalshi-trader",
-		Env:        "prod",
-	}
-	template := `docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} -f ${PROJECT_DIR}/Dockerfile ${PROJECT_DIR}`
-	want := `docker build --platform linux/amd64 -t ghcr.io/kalshi-trader:forge-test -f /Users/x/src/kalshi-trader/Dockerfile /Users/x/src/kalshi-trader`
-	if got := Expand(template, spec); got != want {
-		t.Errorf("Expand:\n got %q\nwant %q", got, want)
-	}
-}
-
-// TestExpand_CPForgeShape validates the substitution against the
-// exact shape cp-forge's scripts/cloud-dev.sh:build_daemon_gateway_image
-// helper builds. This is the canonical real-world use case the feature
-// is designed to subsume; pinning the expansion here means any future
-// change to the var set or precedence is caught at unit time before
-// downstream projects pick it up.
-func TestExpand_CPForgeShape(t *testing.T) {
-	spec := Spec{
-		Service:    "daemon-gateway",
-		Image:      "reliant-daemon-gateway",
-		Tag:        "abc1234-dirty",
-		TargetArch: "arm64",
-		Registry:   "localhost:5051",
-		ProjectDir: "/home/dev/cp-forge",
-		BuildCwd:   "../reliant",
-	}
-	template := `cd ${BUILD_CWD} && ` +
-		`GOOS=linux GOARCH=${TARGETARCH} CGO_ENABLED=0 go build -o /tmp/bin ./cmd/reliant && ` +
-		`docker build --platform=linux/${TARGETARCH} -t ${REGISTRY}/${IMAGE}:${TAG} ` +
-		`-f ${PROJECT_DIR}/docker/Dockerfile.daemon-gateway.dev /tmp && ` +
-		`docker push ${REGISTRY}/${IMAGE}:${TAG}`
-
-	got := Expand(template, spec)
-	want := `cd ../reliant && ` +
-		`GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/bin ./cmd/reliant && ` +
-		`docker build --platform=linux/arm64 -t localhost:5051/reliant-daemon-gateway:abc1234-dirty ` +
-		`-f /home/dev/cp-forge/docker/Dockerfile.daemon-gateway.dev /tmp && ` +
-		`docker push localhost:5051/reliant-daemon-gateway:abc1234-dirty`
-	if got != want {
-		t.Errorf("Expand:\n want: %s\n  got: %s", want, got)
-	}
-}
-
-// TestExpand_UnknownTokensLeftForTheShell pins that only the documented
-// tokens (plus build_env keys) are substituted. Everything else is the
-// script's own shell syntax and must reach `sh -c` untouched — the F2
-// fixture's `W=$(mktemp -d); … "$W/root"` silently lost $W under the old
-// os.Expand semantics.
-func TestExpand_UnknownTokensLeftForTheShell(t *testing.T) {
-	spec := Spec{Service: "x", Image: "x", Tag: "v1"}
-	got := Expand(`W=$(mktemp -d); echo ${TYPO} "$W/root" ${TAG}`, spec)
-	want := `W=$(mktemp -d); echo ${TYPO} "$W/root" v1`
-	if got != want {
-		t.Errorf("want %q, got %q", want, got)
-	}
-}
-
-// TestExpand_UserEnvAvailable confirms BuildEnv keys land in the
-// substitution map alongside the built-ins — same shape External's
-// `env` block carries. Lets users pass deploy-target-specific knobs
-// (region, profile, stage) into their build_cmd without env-var
-// gymnastics.
-func TestExpand_UserEnvAvailable(t *testing.T) {
-	spec := Spec{
-		Service: "edge",
-		Image:   "edge",
-		Tag:     "v1",
-		BuildEnv: map[string]string{
-			"REGION": "us-east-1",
-			"STAGE":  "acme",
-		},
-	}
-	got := Expand("build --region ${REGION} --stage ${STAGE}", spec)
-	want := "build --region us-east-1 --stage acme"
-	if got != want {
-		t.Errorf("user env: want %q, got %q", want, got)
-	}
-}
-
-// TestBuild_ExpandsAndExecs pins the happy path: tokens substitute,
-// BuildEnv flows through to the runner env overlay, the final command
-// is wrapped with `cd <abs> && <expanded>` when BuildCwd is set, and
-// the result reports success.
-func TestBuild_ExpandsAndExecs(t *testing.T) {
+// TestBuild_ExecsInDeclaredCwd pins the happy path: the command is handed to
+// `sh -c` unchanged, BuildEnv flows through to the runner env overlay, the
+// working directory is carried as cmd.Dir rather than a `cd …` shell prefix,
+// and the result reports success with the tag it was given.
+func TestBuild_ExecsInDeclaredCwd(t *testing.T) {
 	projDir := t.TempDir()
 	// Create the build_cwd so the runner doesn't trigger skip-with-warn.
 	cwd := filepath.Join(projDir, "sibling")
@@ -224,11 +145,11 @@ func TestBuild_ExpandsAndExecs(t *testing.T) {
 		Service:    "daemon-gateway",
 		Image:      "reliant-daemon-gateway",
 		Tag:        "v1.2.3",
-		TargetArch: "arm64",
-		Registry:   "localhost:5051",
 		ProjectDir: projDir,
 		BuildCwd:   "sibling",
-		BuildCmd:   "docker build -t ${REGISTRY}/${IMAGE}:${TAG} .",
+		// The reference is composed in KCL, so by the time it reaches a Spec
+		// it is a literal — this is what a rendered cmd looks like.
+		BuildCmd: "docker build -t localhost:5051/reliant-daemon-gateway:v1.2.3 .",
 		BuildEnv: map[string]string{
 			"REGION": "us-east-1",
 		},
@@ -260,9 +181,8 @@ func TestBuild_ExpandsAndExecs(t *testing.T) {
 	// The working directory is carried as cmd.Dir (call.dir), NOT a
 	// shell `cd <cwd> && …` prefix — so a path with spaces or shell
 	// metacharacters can never break the script.
-	wantCmd := "docker build -t localhost:5051/reliant-daemon-gateway:v1.2.3 ."
-	if call.args[1] != wantCmd {
-		t.Errorf("expanded cmd: got %q, want %q", call.args[1], wantCmd)
+	if call.args[1] != spec.BuildCmd {
+		t.Errorf("cmd: got %q, want %q (verbatim)", call.args[1], spec.BuildCmd)
 	}
 	if call.dir != cwd {
 		t.Errorf("runner dir: got %q, want %q", call.dir, cwd)
@@ -334,7 +254,7 @@ func TestBuild_NoCwd(t *testing.T) {
 		Image:      "x",
 		Tag:        "v1",
 		ProjectDir: "/proj",
-		BuildCmd:   "echo ${IMAGE}",
+		BuildCmd:   "echo x",
 	}
 	res := r.Build(context.Background(), spec)
 	if res.Err != nil {
@@ -347,8 +267,8 @@ func TestBuild_NoCwd(t *testing.T) {
 	if strings.HasPrefix(call.args[1], "cd ") {
 		t.Errorf("no BuildCwd should not produce a `cd …` prefix; got %q", call.args[1])
 	}
-	if call.args[1] != "echo x" {
-		t.Errorf("expanded: got %q, want %q", call.args[1], "echo x")
+	if call.args[1] != spec.BuildCmd {
+		t.Errorf("cmd: got %q, want %q (verbatim)", call.args[1], spec.BuildCmd)
 	}
 }
 

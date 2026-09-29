@@ -40,6 +40,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		// generate_refusal_no_writes_test.go.
 		"forge version compatibility",
 		"pre-codegen contract check",
+		"retired ShellBuild tokens",
 		// Before every later gate and emitter that reads the frontend
 		// inventory, so it is settled before any of them runs. See
 		// generate_frontend_inventory.go.

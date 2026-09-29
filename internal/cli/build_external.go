@@ -186,7 +186,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// mutable env tag — closing the external-build half of the digest gap:
 		// the user's build_cmd owns build AND push, so forge resolves the
 		// digest AFTER the command by querying the registry for the exact ref
-		// it pushed (${REGISTRY}/${IMAGE}:${TAG}). Best-effort, same contract as
+		// it pushed. Best-effort, same contract as
 		// the docker PROJECT path: any lookup failure (local-only ref with no
 		// registry manifest — the e2e workspace-base/reliant case — or an
 		// unreachable registry) records no digest and deploy falls back to the
@@ -282,12 +282,12 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 	return results
 }
 
-// externalBuildTag is the ${TAG} one ShellBuild service is handed: the
-// shared precedence (buildTagFor) over the workload's own pin and the
-// build-wide tag.
+// externalBuildTag is one ShellBuild workload's tag: the shared precedence
+// (buildTagFor) over the workload's own pin and the build-wide tag.
 //
-// The user's build_cmd owns its own push, so ${TAG} IS the tag it writes to
-// the registry and the one its state records. That is why a release version
+// The command owns its own push, so this IS the tag written to the registry
+// and the one its state records — it was bound as the `image_tag` KCL input
+// for the render that produced the command. That is why a release version
 // beats even the pin: every ordinary answer is a SHARED tag (prod's
 // `stable`, e2e's `e2e`, a pinned `dev-per-daemon`), and handing one to a cut
 // moves it the moment that one image finishes. See releaseImageTag.

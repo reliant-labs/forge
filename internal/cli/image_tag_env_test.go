@@ -111,7 +111,7 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 	}
 	results := buildExternalServices(
 		context.Background(), services, opts,
-		"ghcr.io/reliant-labs", buildTag, projDir, "amd64")
+		"ghcr.io/reliant-labs", buildTag, projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -147,7 +147,7 @@ func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	// "staging" stands in for the build-wide tag (the env's image_tag).
 	results := buildExternalServices(
 		context.Background(), services, opts,
-		"registry.localhost:5051", "staging", projDir, "amd64")
+		"registry.localhost:5051", "staging", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -221,7 +221,7 @@ func TestBuildPlan_BuildOnlyPinnedTagIsTheTag(t *testing.T) {
 			whats[s.name] = s.what
 		}
 	}
-	for name, want := range map[string]string{"workspace-base": "${TAG}=dev-per-daemon", "hostapp": "${TAG}=v3", "api": "${TAG}=e2e"} {
+	for name, want := range map[string]string{"workspace-base": "tag dev-per-daemon", "hostapp": "tag v3", "api": "tag e2e"} {
 		if !strings.Contains(whats[name], want) {
 			t.Errorf("plan step %s = %q, want it to carry %s", name, whats[name], want)
 		}

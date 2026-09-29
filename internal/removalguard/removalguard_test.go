@@ -417,6 +417,61 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "ShellBuild ${TOKEN} substitution",
+		Why: "A ShellBuild `cmd` is a plain KCL string that forge runs byte-for-byte. " +
+			"deploytarget.ExpandVars, buildtarget.Vars/Expand, the Spec fields that fed them " +
+			"(TargetArch/Registry/Env), resolveExternalBuildTargetArch, doctor's substituted-command " +
+			"preview and audit's conflict_tokens are gone: forge substituted a fixed ${IMAGE}/${TAG}/" +
+			"${REGISTRY}/${TARGETARCH}/… vocabulary into a shell program written in a language forge " +
+			"does not parse. The values are read in KCL instead, where they already live " +
+			"(forge.image_tag(), forge.target_arch(), forge.env(), file.workdir()). " +
+			"`forge lint` (shellbuild-tokens) and `forge generate` refuse a leftover token in a " +
+			"project; this entry keeps the substitution itself from creeping back into forge.",
+		Patterns: []*regexp.Regexp{
+			// The substitution functions and the token map.
+			regexp.MustCompile(`\bExpandVars\b|\bisShellIdentByte\b`),
+			regexp.MustCompile(`\bbuildtarget\.(Vars|Expand)\b`),
+			// The arch helper that existed only to feed ${TARGETARCH}.
+			regexp.MustCompile(`\bresolveExternalBuildTargetArch\b`),
+			// Audit's built-in-token collision surface.
+			regexp.MustCompile(`\bexternalBuildBuiltinTokens\b|\bconflictingBuildEnvKeys\b`),
+			regexp.MustCompile(`\bconflict_tokens\b|\bconflict_count\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the check that DETECTS a leftover token, and the docs that teach the replacement",
+				Reason: "internal/shellbuildtokens exists to find these spellings in a project, so its " +
+					"token table, its tests and its lint/generate arms must name every one of them. " +
+					"The KCL schema docstring, the arch accessor and the fixture that pins the contract " +
+					"name them in order to say forge NO LONGER substitutes them — that is the text most " +
+					"likely to stop someone reintroducing the pass, so deleting it to satisfy the guard " +
+					"would delete the explanation for why the guard exists.",
+				Paths: []string{
+					"internal/shellbuildtokens/",
+					"internal/cli/lint/lint_shellbuild_tokens.go",
+					"internal/cli/lint/lint_steps.go",
+					"internal/cli/generate_pipeline.go",
+					"kcl/schema.k",
+					"kcl/lib/build.k",
+					"kcl/render.k",
+					"internal/buildtarget/buildtarget.go",
+					"kcl/tests/positive_shellbuild_plain_kcl.k",
+					"CHANGELOG.md",
+				},
+			},
+			{
+				Name: "the audit test asserting conflict_count is GONE from the details map",
+				Reason: "TestAuditExternalBuilds_TokenNamedEnvKeyIsNotAConflict names the key in order to " +
+					"assert it is absent — it reads cat.Details[\"conflict_count\"] and fails if the key is " +
+					"present. That is the test that would catch the collision surface coming back, so the " +
+					"name has to appear in it. Scoped to the details-map lookup, so a line in this same " +
+					"file that actually re-populated conflict_count still fails.",
+				Token: regexp.MustCompile(`Details\["conflict_count"\]|"conflict_count"\]`),
+				Paths: []string{"internal/cli/audit_external_builds_test.go"},
+			},
+		},
+	},
+	{
 		Name: "the vendored KCL-module downgrade guard",
 		Why: "`forge generate --allow-kcl-downgrade` and kclvendor.DowngradeError are gone. They " +
 			"guarded a committed project-local .forge-kcl/ copy against an older forge rewriting it; " +

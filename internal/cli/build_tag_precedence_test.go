@@ -23,9 +23,18 @@ import (
 // env's tag above the flag.
 //
 // So these tests assert AGREEMENT, not one number: the printed Tag line, the
-// tag each build is handed, the ref it pushes, the ref whose digest is
-// captured, the recorded build state and the release ledger must all name the
-// same tag. Each one is an observation of what `forge build` actually did.
+// ref whose digest is captured, the recorded build state and the release ledger
+// must all name the same tag. Each one is an observation of what `forge build`
+// actually did.
+//
+// The tag is no longer observed by reading it back out of the command. A cmd is
+// plain KCL run verbatim, so in a real project the tag reaches it through the
+// render (forge binds it as the `image_tag` input BEFORE rendering, which is
+// what makes the rendered cmd carry the right one) — and these fixtures are
+// static JSON with no render to bind. What they can still observe, and what
+// actually decides whether a deploy finds the image, is the ref forge looked up
+// a digest for and the ref it recorded. Those are asserted per lane below;
+// image_tag_pin_build_test.go covers agreement through a REAL render.
 
 // tagPrecedenceRegistry is the registry the fixture's cluster target declares.
 const tagPrecedenceRegistry = "registry.example/prod"
@@ -33,7 +42,7 @@ const tagPrecedenceRegistry = "registry.example/prod"
 // tagPrecedenceFixture is an env whose image_tag is `latest` (the default the
 // e2e hit), with:
 //
-//   - echo: an unpinned ShellBuild that records the ref it was handed;
+//   - echo: an unpinned ShellBuild that records THAT it ran;
 //   - gw:   an unpinned DockerBuild;
 //   - api:  a ShellBuild whose declared image PINS a tag (`reliant:e2e`).
 const tagPrecedenceFixture = `{
@@ -42,7 +51,7 @@ const tagPrecedenceFixture = `{
     "workloads": [
       {
         "name": "echo", "kind": "service", "image": "echo", "build_image": "echo",
-        "build": {"type": "shell", "cmd": "echo ${REGISTRY}/${IMAGE}:${TAG} > ${PROJECT_DIR}/handed-${SERVICE}.txt"},
+        "build": {"type": "shell", "cmd": "echo ran > ran-echo.txt"},
         "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "registry": "registry.example/prod"},
         "spec": {"kind": "service"}
       },
@@ -54,7 +63,7 @@ const tagPrecedenceFixture = `{
       },
       {
         "name": "api", "kind": "service", "image": "reliant", "build_image": "reliant:e2e",
-        "build": {"type": "shell", "cmd": "echo ${REGISTRY}/${IMAGE}:${TAG} > ${PROJECT_DIR}/handed-${SERVICE}.txt"},
+        "build": {"type": "shell", "cmd": "echo ran > ran-api.txt"},
         "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "registry": "registry.example/prod"},
         "spec": {"kind": "service"}
       }
@@ -149,8 +158,8 @@ func TestBuildTag_ExplicitTagWinsForShellBuild(t *testing.T) {
 	if !strings.Contains(out, "Tag:      t1 (explicit --tag flag)") {
 		t.Errorf("printed Tag line should name t1 from --tag:\n%s", out)
 	}
-	if got := readTrim(t, filepath.Join(dir, "handed-echo.txt")); got != tagPrecedenceRegistry+"/echo:t1" {
-		t.Errorf("ShellBuild was handed %q, want %s/echo:t1 — the printed tag and the built tag disagree", got, tagPrecedenceRegistry)
+	if _, serr := os.Stat(filepath.Join(dir, "ran-echo.txt")); serr != nil {
+		t.Errorf("the ShellBuild command did not run: %v", serr)
 	}
 	if len(*inspected) != 1 || (*inspected)[0] != tagPrecedenceRegistry+"/echo:t1" {
 		t.Errorf("digest captured for %v, want exactly the pushed ref %s/echo:t1", *inspected, tagPrecedenceRegistry)
@@ -205,7 +214,7 @@ func TestBuildTag_ExplicitTagOnPinnedWorkloadIsRefused(t *testing.T) {
 			}
 		}
 		for _, svc := range []string{"echo", "api"} {
-			if _, serr := os.Stat(filepath.Join(dir, "handed-"+svc+".txt")); serr == nil {
+			if _, serr := os.Stat(filepath.Join(dir, "ran-"+svc+".txt")); serr == nil {
 				t.Errorf("--target %s: %s built before the refusal — refuse up front", target, svc)
 			}
 		}
@@ -224,12 +233,9 @@ func TestBuildTag_NoFlagUsesPinThenEnvTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runBuild: %v\n%s", err, out)
 	}
-	if got := readTrim(t, filepath.Join(dir, "handed-api.txt")); got != tagPrecedenceRegistry+"/reliant:e2e" {
-		t.Errorf("pinned ShellBuild handed %q, want its pin reliant:e2e", got)
-	}
-	if got := readTrim(t, filepath.Join(dir, "handed-echo.txt")); got != tagPrecedenceRegistry+"/echo:latest" {
-		t.Errorf("unpinned ShellBuild handed %q, want the env tag echo:latest", got)
-	}
+	// The pinned workload records its pin; the unpinned one the env's tag.
+	// assertRecorded also checks the digest is the one for THAT ref, so a
+	// build that pushed one tag and recorded another cannot pass.
 	assertRecorded(t, dir, "api", "reliant", "e2e")
 	assertRecorded(t, dir, "echo", "echo", "latest")
 	assertRecorded(t, dir, "gw", "gw", "latest")
@@ -247,9 +253,6 @@ func TestBuildTag_ReleaseWinsAndReachesTheLedger(t *testing.T) {
 	out := captureStdout(t, func() { err = runBuild(context.Background(), tagPrecedenceBuild("all", "", "v2.0.0")) })
 	if err != nil {
 		t.Fatalf("runBuild --release: %v\n%s", err, out)
-	}
-	if got := readTrim(t, filepath.Join(dir, "handed-api.txt")); got != tagPrecedenceRegistry+"/reliant:v2.0.0" {
-		t.Errorf("release: pinned ShellBuild handed %q, want reliant:v2.0.0", got)
 	}
 	rel, err := ReadRelease(dir, "v2.0.0")
 	if err != nil || rel == nil {

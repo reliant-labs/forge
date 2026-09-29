@@ -353,6 +353,7 @@ release is an ordinary promote labelled `direction BEHIND`; see
 - Declare a workload once, in `workloads.k`. An env file that re-states a
   workload's command, ports or build is a second copy that will drift.
 - Never `kubectl apply` a hand render — everything through `forge env deploy`.
+  To read a VALUE KCL declares, `forge kcl eval`; see `deploy/kcl-eval`.
 - Image tags are immutable — commit SHA by default, digest-pinned on deploy.
 - Secrets never live in KCL — it is checked in. Reference them
   (`config_secrets`, `forge.SecretRef`, `forge.ManagedSecret`).

@@ -126,7 +126,7 @@ func Eval(req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	raw, err := kclrender.Run(req.ProjectDir, abs, req.Options)
+	raw, err := kclrender.RunInWorkDir(req.ProjectDir, abs, req.Options)
 	if err != nil {
 		return Result{}, err
 	}

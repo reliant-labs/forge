@@ -2,23 +2,26 @@
 
 package kclrender_test
 
-// workdir_eval_test.go pins that workDir decides where a project's KCL reads
-// FILES from, independent of the caller's process cwd.
+// workdir_eval_test.go pins RunInWorkDir: the opt-in form under which a
+// project's KCL reads FILES relative to workDir rather than to the caller's
+// process cwd.
 //
-// This was broken for every render path, `forge env render` included. kpm's
-// client.WithWorkDir decides where kpm resolves the PACKAGE from, and it was
-// the only directory Run set — but the KCL runtime's `file.read` resolves a
-// relative path against the real process cwd, which nothing set. So a project
-// whose KCL reads a file by project-relative path rendered correctly when
-// invoked from the project root and failed with "No such file or directory"
-// from anywhere else, naming a path that plainly exists.
+// kpm's client.WithWorkDir decides where kpm resolves the PACKAGE from. It does
+// NOT reach the KCL runtime's `file.read`, which resolves a relative path
+// against the real process cwd. So a project whose KCL reads a file by
+// project-relative path — control-plane's deploy/kcl/lib/barman_plugin.k does
+// `file.read("deploy/cnpg/plugin-barman-cloud.yaml")` — rendered correctly when
+// forge was invoked from the project root and failed with "No such file or
+// directory" from anywhere else, naming a path that plainly exists. Every shell
+// script reading one of those files cd'd there first, which is how the gap
+// stayed hidden.
 //
-// The shape is not hypothetical: control-plane's deploy/kcl/lib/barman_plugin.k
-// does `file.read("deploy/cnpg/plugin-barman-cloud.yaml")`, and its
-// lib/platform_local.k renders that plugin into the local platform set. Every
-// shell script that read one of those files cd'd to the right directory first,
-// which is how the gap stayed hidden — and `forge -C <dir> env render` had no
-// such cd to hide behind.
+// The last test here pins the opt-in half, which matters as much as the fix:
+// plain Run must NOT chdir, because os.Chdir is process-global and this is a
+// library. Making it unconditional turned
+// internal/templates.TestBornContractTestSurvivesDepValidation intermittently
+// red — it resolves the forge module root as filepath.Abs("../..") inside a
+// t.Parallel() subtest, and picked up a render's workDir instead.
 
 import (
 	"os"
@@ -32,7 +35,7 @@ import (
 
 // TestRunResolvesFileReadAgainstWorkDirNotTheCallerCwd renders the same
 // project from two different process cwds and requires the same answer.
-func TestRunResolvesFileReadAgainstWorkDirNotTheCallerCwd(t *testing.T) {
+func TestRunInWorkDirResolvesFileReadAgainstWorkDir(t *testing.T) {
 	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
 	dir := t.TempDir()
 	for rel, body := range map[string]string{
@@ -55,7 +58,7 @@ func TestRunResolvesFileReadAgainstWorkDirNotTheCallerCwd(t *testing.T) {
 	// any cwd that is not the project root.
 	for _, cwd := range []string{dir, t.TempDir(), filepath.Join(dir, "deploy", "kcl")} {
 		t.Chdir(cwd)
-		out, err := kclrender.Run(dir, envDir, []string{"env=dev"})
+		out, err := kclrender.RunInWorkDir(dir, envDir, []string{"env=dev"})
 		if err != nil {
 			t.Fatalf("render from cwd %s: a project-relative file.read must resolve against workDir: %v", cwd, err)
 		}
@@ -69,7 +72,7 @@ func TestRunResolvesFileReadAgainstWorkDirNotTheCallerCwd(t *testing.T) {
 // and must not leak. A command that renders and then resolves a relative path
 // of its own — or a test that renders and then reads a fixture — would
 // otherwise silently read from the project instead.
-func TestRunRestoresTheCallerCwd(t *testing.T) {
+func TestRunInWorkDirRestoresTheCallerCwd(t *testing.T) {
 	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
 	dir := t.TempDir()
 	for rel, body := range map[string]string{
@@ -91,7 +94,7 @@ func TestRunRestoresTheCallerCwd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := kclrender.Run(dir, filepath.Join(dir, "deploy", "kcl", "dev"), []string{"env=dev"}); err != nil {
+	if _, err := kclrender.RunInWorkDir(dir, filepath.Join(dir, "deploy", "kcl", "dev"), []string{"env=dev"}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Getwd()
@@ -105,11 +108,56 @@ func TestRunRestoresTheCallerCwd(t *testing.T) {
 	// And a render that FAILS must restore it too — the defer, not the happy
 	// path. A refused render is the common case in a validation loop, so a
 	// leak here would be the one that actually bit.
-	_, err = kclrender.Run(dir, filepath.Join(dir, "deploy", "kcl", "nope"), nil)
+	_, err = kclrender.RunInWorkDir(dir, filepath.Join(dir, "deploy", "kcl", "nope"), nil)
 	if err == nil {
 		t.Fatal("render of a nonexistent env succeeded")
 	}
 	if got, _ := os.Getwd(); got != before {
 		t.Errorf("a FAILED render left the process in %s; it must restore %s", got, before)
+	}
+}
+
+// TestRunDoesNotChdir pins the OPT-IN half. os.Chdir is process-global, so a
+// library that moved the process on every render would change the meaning of
+// every relative path in the calling program for the duration — including in
+// unrelated code that never asked for a render.
+//
+// That is a measured failure, not a theoretical one: making the chdir
+// unconditional turned internal/templates.TestBornContractTestSurvivesDepValidation
+// intermittently red, because it computes the forge module root as
+// filepath.Abs(filepath.Join("..", "..")) inside a t.Parallel() subtest and
+// resolved it against a concurrent render's workDir. A flaky suite is a worse
+// defect than the `-C` bug being fixed, so the shared render paths stay
+// byte-identical and only a caller that knows it is alone opts in.
+func TestRunDoesNotChdir(t *testing.T) {
+	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
+	dir := t.TempDir()
+	for rel, body := range map[string]string{
+		"deploy/kcl/kcl.mod":    "[package]\nname = \"nochdir_probe\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n",
+		"deploy/kcl/dev/main.k": "import forge\n\nok = forge.Bundle is not None\n",
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	caller := t.TempDir()
+	t.Chdir(caller)
+	// A relative path the CALLER owns. If Run moved the process, this would
+	// resolve somewhere inside the rendered project instead.
+	if err := os.WriteFile("marker.txt", []byte("caller"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kclrender.Run(dir, filepath.Join(dir, "deploy", "kcl", "dev"), []string{"env=dev"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile("marker.txt")
+	if err != nil || string(got) != "caller" {
+		t.Errorf("after Run, the caller's relative path no longer resolves to the caller's dir (%q, %v); "+
+			"plain Run must not chdir", got, err)
 	}
 }

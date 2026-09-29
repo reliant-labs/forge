@@ -211,6 +211,47 @@ func withDevStackDArgs(dArgs []string) []string {
 // as are the active dev-stack git facts, see withDevStackDArgs.
 // kpm progress/diagnostics go to stderr.
 func Run(workDir, source string, dArgs []string) ([]byte, error) {
+	return run(workDir, source, dArgs, false)
+}
+
+// RunInWorkDir is Run with one addition: the process enters workDir for the
+// duration of the evaluation, so the KCL runtime's own `file.read` resolves a
+// relative path against it.
+//
+// # Why this is not just what Run does
+//
+// kpm's client.WithWorkDir decides where kpm resolves the PACKAGE from. It does
+// NOT reach `file.read`, which the KCL runtime resolves against the real
+// process cwd — so a project whose KCL reads a file by project-relative path
+// (control-plane's deploy/kcl/lib/barman_plugin.k does
+// `file.read("deploy/cnpg/plugin-barman-cloud.yaml")`) renders correctly only
+// when forge was invoked from the project root, and fails with "No such file or
+// directory" naming a path that plainly exists from anywhere else.
+//
+// # Why it is OPT-IN rather than the default
+//
+// Because os.Chdir is process-global, and this package is a library. The chdir
+// sits inside the KCL evaluation lock, so no two evaluations can race each
+// other — but nothing stops UNRELATED code in the same process from resolving
+// its own relative path while an evaluation holds that lock. That is not
+// hypothetical: making it unconditional turned
+// internal/templates.TestBornContractTestSurvivesDepValidation intermittently
+// red, because it computes the forge module root as
+// filepath.Abs(filepath.Join("..", "..")) in a t.Parallel() subtest and
+// resolved it against a render's workDir instead. A flaky suite is a worse
+// defect than the one being fixed, and forge's own root.go names this hazard
+// as the reason `--project-dir` exists at all.
+//
+// So a CLI command — one process, one evaluation, no concurrent readers —
+// opts in, and the shared render paths stay byte-identical. `forge env render`
+// therefore still has the `-C` defect described above; fixing it needs kcl-go
+// to accept a read-root for `file.read`, which is an upstream change, or every
+// render path to become chdir-safe.
+func RunInWorkDir(workDir, source string, dArgs []string) ([]byte, error) {
+	return run(workDir, source, dArgs, true)
+}
+
+func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, error) {
 	// Make kcl_plugin.forge (resolve_port, …) available. Idempotent;
 	// the registry is process-global.
 	kclplugin.Register()
@@ -234,31 +275,17 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 	// refusals (a refused render can come back as success, or carrying
 	// another render's message). See kclplugin.Serialized.
 	//
-	// The chdir to workDir lives INSIDE that lock, and it is not redundant
-	// with client.WithWorkDir. kpm's WithWorkDir decides where kpm resolves
-	// the PACKAGE from; it does NOT reach the KCL runtime's `file.read`,
-	// which resolves a relative path against the real process cwd. So a
-	// project whose KCL reads a file by project-relative path — control-plane's
-	// lib/barman_plugin.k reads "deploy/cnpg/plugin-barman-cloud.yaml" — got a
-	// different answer depending on where the CALLER stood: correct from the
-	// project root, "No such file or directory" from anywhere else. That is
-	// the `forge -C <dir>` defect, and it applied to every render path,
-	// `env render` included, not just to this one.
-	//
-	// The lock is what makes a process-global chdir safe here: it is the same
-	// lock every KCL evaluation in this process already takes, so no two
-	// evaluations can be mid-chdir at once, and the cwd is always restored
-	// before the next one starts. It is deliberately NOT a fix applied at one
-	// caller — a cwd that only some render paths honoured would reintroduce
-	// exactly the "two renders of one project disagree" failure that
-	// withKubeconfigDArg and withDevStackDArgs are centralized here to
-	// prevent.
+	// The chdir — only when the caller opted in, see RunInWorkDir — lives
+	// inside that lock, so no two evaluations can be mid-chdir at once and the
+	// cwd is restored before the next one starts.
 	res, err := kclplugin.Serialized(func() (*kcl.KCLResultList, error) {
-		restore, err := chdir(workDir)
-		if err != nil {
-			return nil, err
+		if enterWorkDir {
+			restore, err := chdir(workDir)
+			if err != nil {
+				return nil, err
+			}
+			defer restore()
 		}
-		defer restore()
 		return c.Run(
 			client.WithRunSourceUrl(source),
 			client.WithWorkDir(workDir),
@@ -274,7 +301,7 @@ func Run(workDir, source string, dArgs []string) ([]byte, error) {
 }
 
 // chdir moves the process to dir and returns a func restoring the previous
-// cwd. Called only with the KCL evaluation lock held — see Run.
+// cwd. Called only with the KCL evaluation lock held — see RunInWorkDir.
 //
 // A failure to restore is deliberately silent: there is nothing the caller can
 // do about it, and the alternative (overwriting a successful render's result

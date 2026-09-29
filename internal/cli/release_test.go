@@ -231,7 +231,7 @@ func TestHarvestReleaseArtifacts_KeyIsTheRepository(t *testing.T) {
 	for key, wantHost := range map[string]string{
 		"ghcr.io/reliant-labs/control-plane":           "ghcr.io",
 		"us-central1-docker.pkg.dev/proj/repo/reliant": "us-central1-docker.pkg.dev",
-		"local-only":                                   "",
+		"local-only": "",
 	} {
 		if host, _ := ociManifestCoordinates(key); host != wantHost {
 			t.Errorf("%s resolves to host %q, want %q", key, host, wantHost)

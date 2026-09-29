@@ -18,7 +18,6 @@ import forge.workloads as fw
 _target = forge.ClusterTarget {
     cluster = "k3d-runtime"
     namespace = "runtime-dev"
-    registry = "localhost:5050"
 }
 
 _bundle = forge.Bundle {
@@ -27,7 +26,7 @@ _bundle = forge.Bundle {
     workloads = [
         fw.Workload {
             name = "api"
-            image = "api"
+            image = "localhost:5050/api"
             ports = [fw.Port {name = "http", port = 8080}]
             runtime = forge.OnCluster {target = _target}
         }

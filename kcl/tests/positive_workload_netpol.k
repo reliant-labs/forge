@@ -19,7 +19,7 @@ KCL renders no NetworkPolicy of its own (one renderer).
 import forge
 import forge.workloads as fw
 
-_prod = forge.ClusterTarget {cluster = "gke-prod", namespace = "demo-prod", registry = "ghcr.io/demo", platform = "amd64"}
+_prod = forge.ClusterTarget {cluster = "gke-prod", namespace = "demo-prod", platform = "amd64"}
 
 output = forge.render(forge.Bundle {
     project = "demo"
@@ -28,7 +28,7 @@ output = forge.render(forge.Bundle {
         telemetry_namespace = "observability"
         ingress_namespace = "envoy-gateway-system"
     }
-    workloads = [_w | {runtime = forge.OnCluster {target = _prod}} if not _w.runtime else _w for _w in [fw.Workload {name = "api", image = "demo", ports = [fw.Port {name = "http", port = 8080, expose = True}]}]]
+    workloads = [_w | {runtime = forge.OnCluster {target = _prod}} if not _w.runtime else _w for _w in [fw.Workload {name = "api", image = "ghcr.io/demo/demo", ports = [fw.Port {name = "http", port = 8080, expose = True}]}]]
 })
 
 assert_declared_egress = output.network_policy.egress_ports == [443, 5432]

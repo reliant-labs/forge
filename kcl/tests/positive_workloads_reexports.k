@@ -8,14 +8,14 @@ need no second `import forge.tiers`.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 
 output = forge.render(forge.Bundle {
     project = "demo"
     cluster_target = _k3d
     workloads = [fw.Workload {
         name = "api"
-        image = "demo"
+        image = "localhost:5050/demo"
         runtime = forge.OnCluster {target = _k3d}
         ports = [fw.Port {name = "http", port = 8080}]
         securityContext = fw.PodSecurity {runAsUser = 1000, runAsGroup = 1000, fsGroup = 1000}

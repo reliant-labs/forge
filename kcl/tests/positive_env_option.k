@@ -24,12 +24,12 @@ _nats_manifests = [] if _is_dev_host else [
     {apiVersion = "v1", kind = "Service", metadata = {name = "nats"}}
 ]
 
-_target = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-" + _env_name, registry = "localhost:5050"}
+_target = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-" + _env_name}
 
 output = forge.render(forge.Bundle {
     project = "myapp"
     cluster_target = _target
-    workloads = [fw.Workload {name = "api", image = "myapp", runtime = forge.OnCluster {target = _target}}]
+    workloads = [fw.Workload {name = "api", image = "localhost:5050/myapp", runtime = forge.OnCluster {target = _target}}]
     manifests = [forge.Manifests {objects = _nats_manifests}]
 })
 

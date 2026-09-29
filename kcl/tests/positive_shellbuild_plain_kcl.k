@@ -21,7 +21,7 @@ substitution pass that no longer exists:
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5051"}
+_k3d = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev"}
 
 # The canonical shape: KCL values interpolated where forge used to substitute
 # a token, and a shell variable escaped so the shell — not KCL — resolves it.

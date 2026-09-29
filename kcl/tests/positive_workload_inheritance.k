@@ -9,6 +9,10 @@ companion negative is negative_workload_bad_refinement.k).
 dev binds the base unchanged to a local cluster; prod refines replicas and
 the port. The base is untouched, and every refinement reaches its own env's
 record.
+
+The IMAGE is declared once on the base and is the same in both envs, because
+the registry is part of the image and neither env has one. What differs per env
+is the tag forge resolves, not where the image lives.
 """
 
 import forge
@@ -17,14 +21,14 @@ import forge.workloads as fw
 api = fw.Workload {
     name = "api"
     kind = "service"
-    image = "demo"
+    image = "ghcr.io/acme/demo"
     args = ["api"]
     ports = [fw.Port {name = "http", port = 8080, expose = True}]
     build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
 }
 
-_dev_t = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
-_prod_t = forge.ClusterTarget {cluster = "gke-demo", namespace = "demo-prod", registry = "ghcr.io/acme", platform = "amd64"}
+_dev_t = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
+_prod_t = forge.ClusterTarget {cluster = "gke-demo", namespace = "demo-prod", platform = "amd64"}
 
 _dev = forge.render(forge.Bundle {project = "demo", workloads = [api | {runtime = forge.OnCluster {target = _dev_t}}]})
 _prod = forge.render(forge.Bundle {project = "demo", workloads = [api | {
@@ -44,4 +48,7 @@ assert_base_unchanged = api.ports[0].port == 8080 and api.replicas == 1
 assert_name_inherited = _rec(_prod).metadata.name == "api"
 assert_kind_inherited = _rec(_prod).spec.kind == "service"
 assert_build_inherited = _prod.workloads[0].build.cmd == "./cmd/demo"
+# Both envs pull the same declared reference; only the tag differs.
+assert_dev_image_host = _rec(_dev).spec.image.startswith("ghcr.io/acme/demo:")
+assert_prod_image_host = _rec(_prod).spec.image.startswith("ghcr.io/acme/demo:")
 assert_refinement_preserves_schema = typeof(api | {replicas = 2}) == "Workload"

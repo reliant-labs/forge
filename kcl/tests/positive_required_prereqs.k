@@ -21,7 +21,6 @@ import forge.workloads as fw
 _target = forge.ClusterTarget {
     cluster = "prod-cluster"
     namespace = "control-plane-prod"
-    registry = "ghcr.io/reliant-labs"
     platform = "amd64"
 }
 
@@ -31,7 +30,7 @@ _bundle = forge.Bundle {
     workloads = [
         fw.Workload {
             name = "api"
-            image = "api"
+            image = "ghcr.io/reliant-labs/api"
             ports = [fw.Port {name = "http", port = 8080}]
             runtime = forge.OnCluster {target = _target}
         }

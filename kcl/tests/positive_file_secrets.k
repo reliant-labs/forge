@@ -29,7 +29,6 @@ import forge.workloads as fw
 _target = forge.ClusterTarget {
     cluster = "k3d-dev"
     namespace = "dev"
-    registry = "localhost:5051"
 }
 
 _dir_bundle = forge.Bundle {
@@ -37,7 +36,7 @@ _dir_bundle = forge.Bundle {
     cluster_target = _target
     workloads = [fw.Workload {
         name = "api"
-        image = "api:dev"
+        image = "localhost:5051/api:dev"
         runtime = forge.OnCluster {target = _target}
     }]
     secret_provider = forge.FileSecrets {

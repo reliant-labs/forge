@@ -12,7 +12,7 @@ about the env's hosted workloads makes it hosted.
 import forge
 import forge.workloads as fw
 
-_k8s = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme", registry = "localhost:5000"}
+_k8s = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme"}
 
 hosted_env = forge.render(forge.Bundle {
     project = "acme"

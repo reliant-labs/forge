@@ -23,7 +23,7 @@ The illegal direction (hosted → host) is negative_workload_url_hosted_to_host.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev", registry = "localhost:5000"}
+_k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev"}
 _pinned = "ghcr.io/acme/web-api@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 output = forge.render(forge.Bundle {
@@ -106,12 +106,12 @@ assert_hosted_no_value = "value" not in _env("public-api")["PEER_URL"]
 
 # A target that names its own host_gateway (a docker-desktop cluster, a VM)
 # is honoured: the gateway is a fact about the CLUSTER, not a forge guess.
-_dd = forge.ClusterTarget {cluster = "docker-desktop", namespace = "acme-dev", registry = "localhost:5000", host_gateway = "host.docker.internal"}
+_dd = forge.ClusterTarget {cluster = "docker-desktop", namespace = "acme-dev", host_gateway = "host.docker.internal"}
 _dd_out = forge.render(forge.Bundle {
     project = "acme"
     workloads = [
         fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/acme"}, args = ["api"], runtime = forge.OnHost {listen_ports = [8085]}}
-        fw.Workload {name = "admin-api", image = "admin", env = {API_URL = forge.WorkloadURL {workload = "api"}}, runtime = forge.OnCluster {target = _dd}}
+        fw.Workload {name = "admin-api", image = "localhost:5000/admin", env = {API_URL = forge.WorkloadURL {workload = "api"}}, runtime = forge.OnCluster {target = _dd}}
     ]
 })
 _dd_env = [w for w in _dd_out.workloads if w.name == "admin-api"][0].spec.env

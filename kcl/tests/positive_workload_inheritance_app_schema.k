@@ -20,11 +20,11 @@ schema BillingService(fw.Workload):
     check:
         region, "BillingService.region is required"
 
-_target = forge.ClusterTarget {cluster = "prod-cluster", namespace = "billing-prod", registry = "ghcr.io/reliant-labs"}
+_target = forge.ClusterTarget {cluster = "prod-cluster", namespace = "billing-prod"}
 
 _svc = BillingService {
     name = "billing-api"
-    image = "billing-api"
+    image = "ghcr.io/reliant-labs/billing-api"
     region = "us-east-1"
     tier = "pro"
     ports = [fw.Port {name = "http", port = 8080}]
@@ -32,7 +32,7 @@ _svc = BillingService {
 }
 _plain = fw.Workload {
     name = "billing-api"
-    image = "billing-api"
+    image = "ghcr.io/reliant-labs/billing-api"
     ports = [fw.Port {name = "http", port = 8080}]
     runtime = forge.OnCluster {target = _target}
 }

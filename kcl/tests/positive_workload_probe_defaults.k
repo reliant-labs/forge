@@ -21,7 +21,7 @@ with NO probes because the hosted path had no default.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 _build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
 _pinned = "ghcr.io/acme/api@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 
@@ -30,29 +30,29 @@ output = forge.render(forge.Bundle {
     control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
     workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [
         # forge-built service, cluster
-        fw.Workload {name = "api", build = _build, image = "demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
+        fw.Workload {name = "api", build = _build, image = "localhost:5050/demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
         # forge-built service, HOSTED — the Hounders case
-        fw.Workload {name = "hosted-api", build = _build, image = "demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080, expose = True}], runtime = forge.OnHosted {}}
+        fw.Workload {name = "hosted-api", build = _build, image = "localhost:5050/demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080, expose = True}], runtime = forge.OnHosted {}}
         # forge-built service whose http port is not the first
-        fw.Workload {name = "dual", build = _build, image = "demo", args = ["dual"], ports = [fw.Port {name = "grpc", port = 9090}, fw.Port {name = "http", port = 8081}]}
+        fw.Workload {name = "dual", build = _build, image = "localhost:5050/demo", args = ["dual"], ports = [fw.Port {name = "grpc", port = 9090}, fw.Port {name = "http", port = 8081}]}
         # third-party image, no build
-        fw.Workload {name = "redis", image = "redis:7.2", ports = [fw.Port {name = "redis", port = 6379}]}
+        fw.Workload {name = "redis", image = "localhost:5050/redis:7.2", ports = [fw.Port {name = "redis", port = 6379}]}
         # forge-built operator with an http port: the service default
-        fw.Workload {name = "ctl", kind = "operator", build = _build, image = "demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Widget"], ports = [fw.Port {name = "http", port = 9191}]}
+        fw.Workload {name = "ctl", kind = "operator", build = _build, image = "localhost:5050/demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Widget"], ports = [fw.Port {name = "http", port = 9191}]}
         # forge-built operator with no ports: nothing to probe on
-        fw.Workload {name = "ctl-quiet", kind = "operator", build = _build, image = "demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Gadget"]}
+        fw.Workload {name = "ctl-quiet", kind = "operator", build = _build, image = "localhost:5050/demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Gadget"]}
         # third-party operator: forge cannot know its paths
         fw.Workload {name = "ctl-vendor", kind = "operator", image = "ghcr.io/vendor/ctl:1.0", group = "vendor.io", version = "v1", crds = ["Thing"], ports = [fw.Port {name = "http", port = 8081}]}
         # an operator's declared probe is kept
-        fw.Workload {name = "ctl-custom", kind = "operator", build = _build, image = "demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Doodad"], ports = [fw.Port {name = "probes", port = 9440}], probes = fw.Probes {readinessPath = "/readyz", livenessPath = "/healthz", port = 9440}}
+        fw.Workload {name = "ctl-custom", kind = "operator", build = _build, image = "localhost:5050/demo", args = ["ctl"], group = "example.com", version = "v1", crds = ["Doodad"], ports = [fw.Port {name = "probes", port = 9440}], probes = fw.Probes {readinessPath = "/readyz", livenessPath = "/healthz", port = 9440}}
         # forge-built worker and job: no default
-        fw.Workload {name = "sync", kind = "worker", build = _build, image = "demo", args = ["sync"]}
-        fw.Workload {name = "seed", kind = "job", build = _build, image = "demo", args = ["seed"]}
+        fw.Workload {name = "sync", kind = "worker", build = _build, image = "localhost:5050/demo", args = ["sync"]}
+        fw.Workload {name = "seed", kind = "job", build = _build, image = "localhost:5050/demo", args = ["seed"]}
         # a declared probe is kept
         fw.Workload {
             name = "custom"
             build = _build
-            image = "demo"
+            image = "localhost:5050/demo"
             args = ["custom"]
             ports = [fw.Port {name = "http", port = 8080}]
             probes = fw.Probes {readinessPath = "/ready", livenessPath = "/live", periodSeconds = 10}

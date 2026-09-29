@@ -20,7 +20,7 @@ TestBothRBACTiersCoexist).
 import forge
 import forge.workloads as fw
 
-_target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5050"}
+_target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev"}
 _ns_rule = {apiGroups = [""], resources = ["configmaps"], verbs = ["get", "create"]}
 _cluster_rule = {apiGroups = ["reliant.dev"], resources = ["workspaces"], verbs = ["list", "watch"]}
 

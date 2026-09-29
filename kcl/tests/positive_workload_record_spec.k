@@ -17,13 +17,13 @@ import json
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 
 _all = [
     fw.Workload {
         name = "api"
         build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
-        image = "demo"
+        image = "localhost:5050/demo"
         command = ["/app/demo"]
         args = ["api"]
         replicas = 2
@@ -43,14 +43,14 @@ _all = [
         tolerations = [fw.Toleration {key = "dedicated", operator = "Equal", value = "general", effect = "NoSchedule"}]
         podAnnotations = {"prometheus.io/scrape" = "true"}
     }
-    fw.Workload {name = "store", image = "demo", args = ["store"], ports = [fw.Port {name = "http", port = 8080}], storageGiB = 10}
-    fw.Workload {name = "nightly", kind = "cron", image = "demo", args = ["sweep"], schedule = "@daily"}
-    fw.Workload {name = "migrate", kind = "job", image = "demo", args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL]}
-    fw.Workload {name = "report", kind = "job", image = "demo", args = ["report"], deployPhase = "post-rollout"}
+    fw.Workload {name = "store", image = "localhost:5050/demo", args = ["store"], ports = [fw.Port {name = "http", port = 8080}], storageGiB = 10}
+    fw.Workload {name = "nightly", kind = "cron", image = "localhost:5050/demo", args = ["sweep"], schedule = "@daily"}
+    fw.Workload {name = "migrate", kind = "job", image = "localhost:5050/demo", args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL]}
+    fw.Workload {name = "report", kind = "job", image = "localhost:5050/demo", args = ["report"], deployPhase = "post-rollout"}
     fw.Workload {
         name = "mgr"
         kind = "operator"
-        image = "demo"
+        image = "localhost:5050/demo"
         args = ["mgr"]
         group = "example.com"
         version = "v1"

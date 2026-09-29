@@ -15,8 +15,9 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
     network_policy            the env NetworkPolicy bundle's inputs, or null
     workloads[]               EVERY workload, of every runtime:
         {name, kind, image, build, runtime, spec}
-          image   — the registry-less artifact name forge builds it into
-                    ("" when it builds none): the build-state / ledger key
+          image   — the REPOSITORY forge builds it into, registry host
+                    included ("" when it builds none): the build-state /
+                    release-ledger key, and where a push goes
           build   — the typed build, or null (forge builds nothing)
           runtime — {type: host|compose|cluster|hosted|build-only, ...}
           spec    — v1alpha1.WorkloadSpec JSON (the generated
@@ -39,9 +40,11 @@ WHAT THE LOWERING DECIDES (per workload, `_lower`):
 
   * the RUNTIME: the workload's own. There is no env-level default: an env
     is a list of per-workload bindings (ADR 0002 §2);
-  * the IMAGE: a cluster workload's image is resolved here, against the
-    target's registry, the env's tag and `-D image_digests`, so the record
-    names exactly what the cluster pulls; a hosted workload carries the
+  * the IMAGE: a cluster workload's image is resolved here, against the env's
+    tag and `-D image_digests`, so the record names exactly what the cluster
+    pulls. The REGISTRY comes from the image itself — the author declares the
+    full reference and forge appends only the tag/digest; an image naming no
+    registry host is refused here, naming the workload. A hosted workload carries the
     artifact name (forge's hosted publish pins it to repo@digest) or the
     author's third-party image; host / compose / build-only run no image;
   * ENV: the map becomes the wire's list, with each reference in its
@@ -117,10 +120,21 @@ _hosted_names = lambda workloads: [any], databases: [any], frontends: [any] -> [
 
 # A cloud-bound workload whose build produces an image, on a target that
 # states no platform (see the Bundle check).
+#
+# The local-vs-cloud signal is the IMAGE's registry host, because that is
+# where a registry is declared. A `localhost:`/`*.localhost` host can only be
+# served to the dev host's own k3d cluster, so its nodes share the dev arch and
+# an omitted platform correctly tracks it; any real remote host means nodes of
+# a fixed, possibly different arch.
+# A hostless image is NOT treated as cloud here: it is already a hard render
+# error naming the workload (_check_image_names_registry), and that is the more
+# precise complaint. Reporting a missing platform as well would ask the author
+# to fix the wrong field.
 _cloud_build_without_platform = lambda w: any -> bool {
     _rt = w.runtime
+    _host = img_lib.registry_host(w.image if w.image else "")
     bool(_rt and _rt.type == "cluster" and not _rt.target.platform \
-        and not is_local_registry(_rt.target.registry) and builds_an_image(w))
+        and _host and not is_local_registry(_host) and builds_an_image(w))
 }
 
 # The env's primary cluster target: declared, else the target of the first
@@ -283,10 +297,53 @@ _check_built_digest = lambda w: any -> bool {
     True
 }
 
-# The image a runtime runs, resolved per runtime (module docstring).
+# A workload's image must name its own registry, because the registry is
+# declared THERE and nowhere else — no env-level field supplies one. An image
+# with no host is an incomplete declaration, so it is refused at render,
+# naming the workload and the runtime that needs it, rather than rendering a
+# reference the kubelet resolves against Docker Hub and cannot pull.
+#
+# The two runtimes that PULL an image get different runbooks, because the
+# registry an author should name is a different question on each.
+# `image` may be "" for a runtime that resolves none (a host or compose
+# workload, or a cluster workload forge builds nothing for); there is no
+# reference to check, so both asserts stay inert.
+_check_image_names_registry = lambda w: any, rt: any, image: str -> bool {
+    assert not (image and rt.type == "cluster" and not img_lib.has_registry_host(image)), \
+        "workload '${w.name}': image '${image}' names no registry host, and it is bound to a cluster runtime " \
+        + "that must pull it. The registry is part of the image: declare the full reference on the workload, e.g. " \
+        + "`image = \"ghcr.io/<owner>/${image}\"` (or `localhost:5051/${image}` for a k3d-local registry). " \
+        + "There is no env-level registry — a ClusterTarget declares the cluster, namespace and platform; " \
+        + "the workload declares what to pull."
+    assert not (image and rt.type == "hosted" and not img_lib.has_registry_host(image)), \
+        "workload '${w.name}': image '${image}' names no registry host, and it is bound to forge.OnHosted, " \
+        + "which publishes the image for the control plane to pull. Declare the full reference on the workload, " \
+        + "e.g. `image = \"ghcr.io/<owner>/${image}\"`, and `forge registry login <env>` / `forge build <env> --push` " \
+        + "will use it. " + _HOSTED_IMAGE_BASE_SEAM
+    True
+}
+
+# THE SEAM for the hosted default. A hosted env could one day take its
+# registry from the control plane's advertised `image_push_base`
+# (`<registry_base>/<org>`, already returned on every environment read), so a
+# hosted workload would not have to declare a host at all. That base is not
+# pushable yet — the Reliant-hosted registry gateway is control-plane ADR 0003
+# / PR #334, a draft, not a running service — and forge does not invent a
+# default for a registry that does not exist.
+#
+# When it lands, this is the ONE place that changes: the hosted branch of
+# _check_image_names_registry stops refusing and _spec_image composes the
+# advertised base onto a bare image. Deliberately one named constant rather
+# than a scattering of TODOs, so the follow-up is a single edit.
+_HOSTED_IMAGE_BASE_SEAM = "A hosted env does not yet inherit a registry from the control plane's advertised image push base " \
+    + "(control-plane ADR 0003 / #334); until it does, declare the reference."
+
+# The image a runtime runs, resolved per runtime (module docstring). The
+# author's registry is kept verbatim; forge contributes the tag and digest.
 _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
     _name = w.image if w.image else _artifact(w)
-    img_lib.image_ref(_name, rt.target.registry, bundle.image_tag, image_digests()) if rt.type == "cluster" and _name \
+    assert _check_image_names_registry(w, rt, _name)
+    img_lib.image_ref(_name, bundle.image_tag, image_digests()) if rt.type == "cluster" and _name \
         else (_name if rt.type == "hosted" else "")
 }
 
@@ -358,7 +415,6 @@ _render_runtime = lambda w: any, rt: any -> any {
         "type": "cluster"
         "cluster": rt.target.cluster
         "namespace": rt.target.namespace
-        "registry": rt.target.registry
         "domain": rt.target.domain if rt.target.domain else None
         "platform": rt.target.platform if rt.target.platform else None
         "image_pull_secrets": rt.target.image_pull_secrets if rt.target.image_pull_secrets else []
@@ -746,7 +802,6 @@ _render_cluster_target = lambda ct: ClusterTarget -> any {
     {
         "cluster": ct.cluster
         "namespace": ct.namespace
-        "registry": ct.registry
         "domain": ct.domain if ct.domain else None
         "platform": ct.platform if ct.platform else None
         "image_pull_secrets": ct.image_pull_secrets if ct.image_pull_secrets else []
@@ -922,10 +977,9 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "platform": b.platform if b.platform else None
         "target": b.target if b.target else None
         "build_args": b.build_args if b.build_args else {}
-        # The per-workload tag registry and named build contexts. An empty
-        # registry is the env's declared one; empty build_contexts fall back
-        # to forge.yaml's docker.build_contexts.
-        "registry": b.registry if b.registry else None
+        # Named build contexts; empty falls back to forge.yaml's
+        # docker.build_contexts. Where the image goes is the workload's
+        # `image`, not a field here.
         "build_contexts": b.build_contexts if b.build_contexts else {}
     }
 }

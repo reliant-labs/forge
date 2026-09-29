@@ -12,16 +12,17 @@ the same KCL package see them as bare names — no `import` needed.
 
 import json
 import regex
+import .lib.images as img_lib
 
 # ---------------------------------------------------------------------------
 # Local-vs-cloud target detection.
 # ---------------------------------------------------------------------------
 #
-# A handful of load-time guards (ClusterTarget.registry / Bundle platform)
-# need to tell a LOCAL deploy target (k3d on the dev host — host arch, an
-# in-host registry) apart from a CLOUD target (GKE/EKS/… — a fixed node arch,
-# a real remote registry). The two guards must agree on that classification,
-# so the predicate lives ONCE here and both reference it.
+# The Bundle build-platform guard needs to tell a LOCAL deploy target (k3d on
+# the dev host — host arch, an in-host registry) apart from a CLOUD target
+# (GKE/EKS/… — a fixed node arch, a real remote registry). It classifies by the
+# registry host in the WORKLOAD's image, because that is the only place a
+# registry is declared, so the predicate lives ONCE here.
 #
 # The registry is the load-bearing signal: a localhost-style registry can
 # only be reached from the host's own k3d cluster — a CLOUD node could never
@@ -33,6 +34,17 @@ import regex
 # inert for the local envs that legitimately omit a platform / ride a local
 # registry, and fire only for the cloud envs where the omission is a bug.
 #
+# image_registry_host(image) — the registry HOST an image reference names
+# (`ghcr.io`, `localhost:5051`), or "" when it names none. Re-exported from
+# lib/images.k so an env's main.k can classify its own images with the same
+# rule forge's guards use, rather than re-deriving Docker's heuristic.
+image_registry_host = img_lib.registry_host
+
+# image_repository(image) — an image reference minus any `:tag` / `@digest`,
+# registry host INCLUDED. The build-state and release-ledger key, re-exported
+# for a main.k that needs to name the same repository forge does.
+image_repository = img_lib.repository
+
 # is_local_registry(registry) — True when `registry` is a host-local registry
 # (the LOCAL-target signal). Matches a leading `localhost`, `127.0.0.1`, or
 # any `*.localhost` host (with or without a `:port`), before the first `/`.
@@ -284,31 +296,30 @@ image_digests = lambda -> {str:str} {
     json.decode(_raw) if _raw else {}
 }
 
-# image_ref_for(registry, image, tag) — build an image reference that
-# prefers the per-image digest from image_digests() when one was captured,
-# else falls back to `<registry>/<image>:<tag>`. The companion to
-# forge.image_digests() for hand-composed references that are not a
-# workload's own image — chiefly an env var that names an image
-# by hand (DAEMON_IMAGE = the workspace-base ref a controller reads at
-# runtime).
+# image_ref_for(image, tag) — build an image reference that prefers the
+# per-image digest from image_digests() when one was captured, else falls back
+# to `<image>:<tag>`. The companion to forge.image_digests() for hand-composed
+# references that are not a workload's own image — chiefly an env var that
+# names an image by hand (DAEMON_IMAGE = the workspace-base ref a controller
+# reads at runtime).
 #
-# `image` here is the BARE name and `tag` the tag to use, so the caller has
-# already stated which tag it means. Both keys are therefore consulted, most
-# specific first, matching lib/images.k's image_ref: a digest captured for
-# THIS `image:tag` wins, then the bare-name digest. The emitted reference
-# keeps the tag beside the digest (`<registry>/<image>:<tag>@sha256:…`) when
-# the digest is tag-specific, so the two helpers produce the same text for
-# the same image and a reader can still see which tag was meant. With no
-# digest at all it is `<registry>/<image>:<tag>`, byte-identical to the
-# manual string it replaces.
-image_ref_for = lambda registry: str, image: str, tag: str -> str {
+# `image` is the FULL reference, registry host included, exactly as a workload
+# declares it — there is no registry parameter, because there is no env-level
+# registry to pass. `tag` is the tag the caller means, so both digest keys are
+# consulted, most specific first, matching lib/images.k's image_ref: a digest
+# captured for THIS `image:tag` wins, then the untagged repository's. The
+# emitted reference keeps the tag beside the digest
+# (`<image>:<tag>@sha256:…`) when the digest is tag-specific, so the two
+# helpers produce the same text for the same image and a reader can still see
+# which tag was meant.
+image_ref_for = lambda image: str, tag: str -> str {
     _d = image_digests()
     _tagged = "${image}:${tag}"
     _tag_digest = _d[_tagged] if (_tagged in _d) else ""
     _bare_digest = _d[image] if (image in _d) else ""
-    "${registry}/${image}:${tag}@${_tag_digest}" if _tag_digest \
-        else ("${registry}/${image}@${_bare_digest}" if _bare_digest \
-        else "${registry}/${image}:${tag}")
+    "${image}:${tag}@${_tag_digest}" if _tag_digest \
+        else ("${image}@${_bare_digest}" if _bare_digest \
+        else "${image}:${tag}")
 }
 
 # ---------------------------------------------------------------------------

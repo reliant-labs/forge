@@ -17,27 +17,27 @@ import forge.workloads as fw
 import forge.lib.annotations as annotations_lib
 
 _WI = "iam.gke.io/gcp-service-account"
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 
 output = forge.render(forge.Bundle {
     project = "demo"
     workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [
-        fw.Workload {name = "api", image = "demo", serviceAccountAnnotations = {"${_WI}" = "api@p.iam.gserviceaccount.com"}}
+        fw.Workload {name = "api", image = "localhost:5050/demo", serviceAccountAnnotations = {"${_WI}" = "api@p.iam.gserviceaccount.com"}}
         fw.Workload {
             name = "reaper"
             kind = "worker"
-            image = "demo"
+            image = "localhost:5050/demo"
             namespacedRBAC = [{apiGroups = ["reliant.dev"], resources = ["workspaces"], verbs = ["list"]}]
             serviceAccountAnnotations = {"${_WI}" = "reaper@p.iam.gserviceaccount.com"}
         }
         fw.Workload {
             name = "ctl"
             kind = "operator"
-            image = "demo"
+            image = "localhost:5050/demo"
             crds = ["Workspace"]
             serviceAccountAnnotations = {"${_WI}" = "ctl@p.iam.gserviceaccount.com", "eks.amazonaws.com/role-arn" = "arn:aws:iam::1:role/raw"}
         }
-        fw.Workload {name = "bare", image = "demo"}
+        fw.Workload {name = "bare", image = "localhost:5050/demo"}
     ]]
 })
 _spec = {m.metadata.name: m.spec for m in output.manifests if m.kind == "Workload"}

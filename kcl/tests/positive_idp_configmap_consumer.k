@@ -16,7 +16,7 @@ import forge
 import forge.workloads as fw
 
 _CONFIGMAP = "demo-idp-identity"
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 
 output = forge.render(forge.Bundle {
     project = "demo"
@@ -24,13 +24,13 @@ output = forge.render(forge.Bundle {
         fw.Workload {
             kind = "job"
             name = "idp-provision"
-            image = "demo"
+            image = "localhost:5050/demo"
             args = ["auth", "idp-provision", "--configmap-name", _CONFIGMAP]
             namespacedRBAC = [{apiGroups = [""], resources = ["configmaps"], verbs = ["get", "create", "update", "patch"]}]
         }
         fw.Workload {
             name = "admin-server"
-            image = "demo"
+            image = "localhost:5050/demo"
             args = ["admin"]
             ports = [fw.Port {name = "http", port = 8080, expose = True}]
             env = {

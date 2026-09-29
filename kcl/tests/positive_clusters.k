@@ -47,7 +47,6 @@ _from_config = forge.Cluster {
 _target = forge.ClusterTarget {
     cluster = "k3d-cp"
     namespace = "dev"
-    registry = "localhost:5051"
 }
 
 _bundle = forge.Bundle {
@@ -56,7 +55,7 @@ _bundle = forge.Bundle {
     clusters = [_owner, _secondary, _from_config]
     workloads = [fw.Workload {
         name = "api"
-        image = "api:dev"
+        image = "localhost:5051/api:dev"
         runtime = forge.OnCluster {target = _target}
     }]
 }

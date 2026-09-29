@@ -16,13 +16,13 @@ renders + applies the Secrets CLI-side, per cluster).
 import forge
 import forge.workloads as fw
 
-_target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5051"}
+_target = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev"}
 
 _bundle = forge.Bundle {
     project = "dev"
     workloads = [fw.Workload {
         name = "api"
-        image = "api"
+        image = "localhost:5051/api"
         env = {DB_PASSWORD = forge.SecretRef {name = "db-credentials", key = "password"}}
         runtime = forge.OnCluster {target = _target}
     }]

@@ -47,7 +47,6 @@ _cp_daemon = forge.Cluster {
 _target = forge.ClusterTarget {
     cluster = _control_plane.context
     namespace = "control-plane-dev"
-    registry = "registry.localhost:5051"
     platform = "arm64"
 }
 
@@ -58,7 +57,7 @@ _bundle = forge.Bundle {
     workloads = [
         fw.Workload {
             name = "admin-server"
-            image = "admin-server"
+            image = "registry.localhost:5051/admin-server"
             ports = [fw.Port {name = "http", port = 8080}]
             runtime = forge.OnCluster {target = _target}
         }

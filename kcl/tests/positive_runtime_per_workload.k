@@ -22,12 +22,12 @@ A Bundle has no `runtime` field to set: closedschema_bundle_runtime.k.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-hounders", namespace = "hounders-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-hounders", namespace = "hounders-dev"}
 
 _build = forge.GoBuild {cmd = "./cmd/hounders", output_name = "hounders"}
 _membership = fw.Workload {name = "membership", build = _build, args = ["membership"]}
 _migrate = fw.Workload {name = "migrate", kind = "job", build = _build, args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL]}
-_search = fw.Workload {name = "search", build = _build, image = "hounders", args = ["search"]}
+_search = fw.Workload {name = "search", build = _build, image = "localhost:5050/hounders", args = ["search"]}
 
 output = forge.render(forge.Bundle {
     project = "hounders"

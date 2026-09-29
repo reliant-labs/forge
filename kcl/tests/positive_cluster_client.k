@@ -51,14 +51,13 @@ _cp_link = forge.ClusterClient {
 _target = forge.ClusterTarget {
     cluster = _cp.context
     namespace = "control-plane-e2e"
-    registry = "localhost:5051"
 }
 
 # A consuming service references link.volume + link.config_json; the
 # derived secret is emitted in the Bundle's kubeconfig_secrets.
 _consumer = fw.Workload {
     name = "workspace-controller"
-    image = "control-plane"
+    image = "localhost:5051/control-plane"
     env = {CLUSTER_CONFIGS = _daemon_link.config_json}
     volumes = [_daemon_link.volume]
     runtime = forge.OnCluster {target = _target}

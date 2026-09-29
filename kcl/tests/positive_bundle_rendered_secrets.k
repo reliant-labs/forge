@@ -22,7 +22,6 @@ import forge.workloads as fw
 _target = forge.ClusterTarget {
     cluster = "k3d-cp"
     namespace = "cp-dev"
-    registry = "localhost:5051"
 }
 
 _bundle = forge.Bundle {
@@ -30,7 +29,7 @@ _bundle = forge.Bundle {
     cluster_target = _target
     workloads = [fw.Workload {
         name = "api"
-        image = "api:dev"
+        image = "localhost:5051/api:dev"
         runtime = forge.OnCluster {target = _target}
     }]
     secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}

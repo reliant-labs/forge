@@ -24,7 +24,7 @@ import forge.workloads as fw
 _admin = fw.Workload {
     name = "admin-server"
     build = forge.GoBuild {cmd = "./cmd/control-plane", output_name = "control-plane"}
-    image = "control-plane"
+    image = "localhost:5051/control-plane"
     args = ["admin"]
     ports = [fw.Port {name = "http", port = 8090, expose = True}]
     env = {
@@ -33,7 +33,7 @@ _admin = fw.Workload {
     }
 }
 
-_k3d = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-dev", registry = "localhost:5051"}
+_k3d = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-dev"}
 
 _host = _admin | {runtime = forge.OnHost {runner = "air", air_config = ".air.admin.toml", listen_ports = [8090]}}
 _cluster = _admin | {name = "admin-server-k8s", runtime = forge.OnCluster {target = _k3d}}

@@ -565,20 +565,28 @@ schema GRPCRoute:
 
 schema ClusterTarget:
     """A Kubernetes cluster you operate, as a deploy target: the kubectl
-    `cluster` context, the `namespace`, the image `registry`, the build
-    `platform` and the `image_pull_secrets`, stated ONCE.
+    `cluster` context, the `namespace`, the build `platform` and the
+    `image_pull_secrets`, stated ONCE.
 
         _prod = forge.ClusterTarget {
             cluster = "gke_acme_us-central1_prod"
             namespace = "acme-prod"
-            registry = "ghcr.io/acme"
             platform = "amd64"
         }
 
         wl.api | {runtime = forge.OnCluster {target = _prod}}
 
+    THERE IS NO `registry` HERE. An environment does not have a registry; a
+    WORKLOAD does, and it declares it as part of its image:
+
+        wl.api | {image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _prod}}
+
+    forge contributes only the tag and, after a push, the digest. That is why
+    two workloads in one env can ride two different registries, and why the
+    reference you read in the KCL is the reference the cluster pulls.
+
     A workload bound to `forge.OnCluster {target}` renders into the
-    target's namespace, pulls from its registry, and is labelled with its
+    target's namespace and is labelled with its
     context (`forge.dev/cluster`), which is what routes it at apply. A
     second target is a second cluster: one workload rides it without the
     env-wide facts drifting.
@@ -590,7 +598,6 @@ schema ClusterTarget:
     """
     cluster: str
     namespace: str
-    registry: str
     domain?: str
     # Env-wide build arch (GOARCH / --platform). Same node arch for every
     # workload the env renders. Unset => the build falls through to the
@@ -602,22 +609,18 @@ schema ClusterTarget:
     # host.k3d.internal; Docker Desktop's is host.docker.internal.
     host_gateway: str = "host.k3d.internal"
     # Names of EXISTING image-pull Secrets, applied to every workload's
-    # generated ServiceAccount. Env-wide (the registry is env-wide, so its
-    # pull secret is too). Unset => no imagePullSecrets.
+    # generated ServiceAccount. Env-wide because a ServiceAccount is: the
+    # secrets a cluster holds are a property of the cluster, not of one
+    # image. Unset => no imagePullSecrets.
     image_pull_secrets?: [str]
 
     check:
         cluster, "ClusterTarget.cluster is required (kubectl context name)"
         namespace, "ClusterTarget.namespace is required"
-        # registry is a REQUIRED declaration — empty is a load-time failure,
-        # NOT a deploy-time ImagePullBackOff. A registry that resolves to ""
-        # (an unfilled value, or a project's own option() with no default) is
-        # rejected HERE, at KCL load, instead of rendering manifests with an
-        # image reference missing its registry that only fails when kubelet
-        # tries to pull.
-        # The companion build-platform guard lives on Bundle (it needs the
-        # workloads to see whether any external image build is declared).
-        registry, "ClusterTarget.registry is required (image registry, e.g. ghcr.io/org/proj) — declare it in deploy/kcl/<env>/main.k; an empty registry is rejected here rather than producing an ImagePullBackOff at deploy"
+        # The companion guards live elsewhere because they need more context:
+        # the build-platform guard is on Bundle (it must see the workloads),
+        # and the "image names a registry" guard is in the workload lowering
+        # (it must name the workload and its runtime).
 
 schema ManagedDatabase:
     """A dedicated Postgres: the managed-database tier, as a Bundle entry.
@@ -918,20 +921,21 @@ schema ControlPlane:
     # internal/removalguard, which is why the word that used to be here is
     # not.
     organization?: str
-    # The image registry this hosted environment pushes to — the registry
-    # subtree the control plane admits this org's images from
-    # (`<registry-host>/<org>`). It is DECLARED here, beside the endpoint,
-    # exactly as a cluster env declares ClusterTarget.registry: `forge build
-    # <env> --push` pushes to it and `forge registry login <env>` logs in to
-    # it, and nothing — no flag, no `-D`, no environment variable — can
-    # supply it instead. Unset => the env declares no registry, and a push
-    # refuses with the fix.
-    registry?: str
+    # THERE IS NO `registry` HERE. A hosted environment does not have a
+    # registry any more than a cluster environment does — each WORKLOAD
+    # declares its own, as part of its image:
+    #
+    #     wl.api | {image = "ghcr.io/acme/api", runtime = forge.OnHosted {}}
+    #
+    # `forge build <env> --push` pushes each image to the reference it
+    # declares, and `forge registry login <env>` logs in to the hosts those
+    # images name. A hosted env may one day inherit a default from the
+    # control plane's advertised image push base — see the
+    # _HOSTED_IMAGE_BASE_SEAM in render.k — but that base is not pushable yet
+    # (control-plane ADR 0003 / #334), so the reference is declared.
 
     check:
         type == "control_plane", "ControlPlane.type must be 'control_plane'"
-        not registry or not registry.startswith("http"), \
-            "ControlPlane.registry is an image registry reference (host[/path], e.g. ghcr.io/acme), not a URL"
         endpoint, "ControlPlane.endpoint must not be empty — omit it for Reliant cloud (forge.RELIANT_CLOUD_ENDPOINT), or set the base URL of another control plane"
         endpoint.startswith("http://") or endpoint.startswith("https://"), \
             "ControlPlane.endpoint must be an absolute http(s) URL"
@@ -1909,14 +1913,17 @@ schema DockerBuild(Build):
     dockerfile/platform/target/build_args map to the corresponding
     `docker build` flags.
 
-    The per-service `docker` facts — `registry` (the push/tag target for
-    THIS service's image) and `build_contexts` (the named
-    `--build-context name=value` entries THIS service's Dockerfile
-    `COPY --from=`s) — live HERE because they are NOT expressible in the
-    Dockerfile itself, and KCL renders per env so they are per-service AND
-    per-env. Each is OPTIONAL: an unset `registry` is the registry the env
-    declares (its ClusterTarget / ControlPlane), and unset `build_contexts`
-    fall back to forge.yaml `docker.build_contexts`.
+    `build_contexts` (the named `--build-context name=value` entries THIS
+    service's Dockerfile `COPY --from=`s) lives HERE because it is NOT
+    expressible in the Dockerfile itself, and KCL renders per env so it is
+    per-service AND per-env. Unset falls back to forge.yaml
+    `docker.build_contexts`.
+
+    THERE IS NO `registry` HERE either. Where the image goes is the WORKLOAD's
+    `image` — the one declaration the build pushes to and the runtime pulls
+    from, so they cannot disagree. A registry on the build was a second place
+    to say it, and a build that pushed somewhere the spec did not name was the
+    ErrImagePull that motivated removing it.
 
     forge is base-image-AGNOSTIC: it does NOT discover, mirror, pin, or
     inject base images. A Dockerfile's `FROM` lines are the whole story —
@@ -1937,9 +1944,6 @@ schema DockerBuild(Build):
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}
-    # Tag registry for THIS service's image (registry-host[/namespace]).
-    # Empty is the registry the env declares; with none, a bare local tag.
-    registry: str = ""
     # Named build contexts THIS service's Dockerfile needs, each a
     # `docker buildx --build-context name=value` entry (a sibling-checkout
     # path the Dockerfile `COPY --from=name`s, a `docker-image://` override,
@@ -3214,13 +3218,14 @@ schema Bundle:
         # field) converts that silent deploy-time break into an author-time
         # one.
         #
-        # The registry is the authoritative local-vs-cloud signal: a LOCAL
-        # k3d target rides a host-local registry (localhost:/registry.localhost:)
-        # whose nodes share the dev-host arch, so an omitted platform
-        # correctly tracks the host — the dev/e2e path that legitimately omits
-        # it stays exempt. A CLOUD target (any real remote registry) whose
-        # nodes have a FIXED arch must state it. Using the registry (not the
-        # cluster name) keeps the signal reliable: a localhost registry can
+        # The IMAGE's registry host is the authoritative local-vs-cloud
+        # signal, because that is where a registry is declared. A LOCAL k3d
+        # workload pulls from a host-local registry
+        # (localhost:/registry.localhost:) whose nodes share the dev-host
+        # arch, so an omitted platform correctly tracks the host — the dev/e2e
+        # path that legitimately omits it stays exempt. A CLOUD registry, whose
+        # nodes have a FIXED arch, must state it. Reading it off the image (not
+        # the cluster name) keeps the signal reliable: a localhost registry can
         # only be served to the host's own cluster, period.
         all w in workloads { not _cloud_build_without_platform(w) }, \
             "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

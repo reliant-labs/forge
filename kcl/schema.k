@@ -2563,25 +2563,25 @@ schema Frontend:
     # at ("/admin"). Unset: the site root. On OnHost it is the dev mount,
     # so a forge.WorkloadURL to the dev server carries it too.
     base_path?: str
-    # CUSTOM hostnames this site is served on, IN ADDITION to the default
-    # one. The default needs no declaration: the platform allocates a
-    # collision-safe hostname for every hosted site.
+    # NO `domains` HERE. A hosted custom hostname is not spec — it is a
+    # control-plane resource, created once for the org and BOUND to one
+    # environment's frontend:
     #
-    #     domains = ["hounders.club", "www.hounders.club"]
+    #     forge domain add hounders.club      # prints the DNS to set
+    #     forge domain bind hounders.club --env prod --target web
     #
-    # This is the frontend's half of the same field a workload's exposed
-    # `fw.Port` carries, and it means the same thing: the platform verifies
-    # ownership of each name before serving it, because on shared
-    # infrastructure an unverified hostname is a takeover vector. Declare
-    # every name you want served — an apex and its `www` are two names.
+    # Three reasons the field was deleted rather than kept and refused.
+    # A name you bring needs an action at YOUR registrar, ownership
+    # verification and a certificate — asynchronous and human-gated, not
+    # something a deploy converges. One env file renders to MANY
+    # environments, while a domain binds to exactly one. And the platform
+    # may allocate a hostname itself, which would make the spec a second
+    # source of truth for a fact the control plane already owns.
     #
-    # OnHosted ONLY. The platform is the only runtime forge can ask to
-    # serve a name it does not own: OnBucket and OnFirebase are served by
-    # YOUR bucket/CDN and YOUR Firebase site (declare the domain there,
-    # where the certificate and the DNS live), OnHost is a dev server on
-    # localhost, and BuildOnly serves nothing. Declaring it on any of
-    # those is REFUSED, naming the runtime — never dropped.
-    domains?: [str]
+    # The other runtimes never had it: OnBucket and OnFirebase are served
+    # by YOUR bucket/CDN and YOUR Firebase site, so the domain belongs
+    # where its certificate and DNS already live; OnHost is a dev server on
+    # localhost; BuildOnly serves nothing.
     # Extra pre-built static dirs assembled into the same site (see
     # BundleDir): a sibling SPA at the root with this frontend under
     # base_path. Ignored on OnHost (the dev server assembles nothing).
@@ -2628,14 +2628,6 @@ schema Frontend:
             "Frontend '${name}'.public_dir must be relative to the frontend's code (e.g. 'dist')"
         base_path == Undefined or base_path.startswith("/"), \
             "Frontend '${name}'.base_path must start with '/' (e.g. '/admin'); omit for the site root"
-        domains == Undefined or len(domains) <= 8, \
-            "Frontend '${name}'.domains allows at most 8 entries"
-        domains == Undefined or all d in domains {"*" not in d}, \
-            "Frontend '${name}'.domains: a wildcard names an unbounded set nobody can prove ownership of; declare each hostname you want served"
-        domains == Undefined or all d in domains {regex.match(d, "^([a-z0-9]([-a-z0-9]*[a-z0-9])?\\.)+[a-z]([-a-z0-9]*[a-z0-9])?$") and len(d) <= 253}, \
-            "Frontend '${name}'.domains entries must be lowercase DNS hostnames (e.g. 'hounders.club', 'www.hounders.club')"
-        domains == Undefined or len(domains) == len({d: None for d in domains}), \
-            "Frontend '${name}'.domains lists the same hostname twice"
 
 # ---------------------------------------------------------------------------
 # Platform dependency — a helm chart rendered (NOT installed) by forge.

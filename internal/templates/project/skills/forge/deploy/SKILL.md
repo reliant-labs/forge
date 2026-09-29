@@ -118,8 +118,9 @@ at render, so a refusal names the workload and field in your env file
 rather than after a publish.
 
 - **Allowed:** kinds `service`, `worker`, `job`; `replicas`, `resources`,
-  `command`/`args`, `ports` (the platform routes the `expose = True` one,
-  including custom `domains`), `probes`, `storageGiB`,
+  `command`/`args`, `ports` (the platform routes the `expose = True` one;
+  its `domains` is NOT allowed here — see Custom domains), `probes`,
+  `storageGiB`,
   `activeDeadlineSeconds`; env from a literal, `forge.ManagedSecret`,
   `forge.DatabaseRef` or `forge.WorkloadURL`. A config-projected
   `forge.SecretRef` lowers to a `forge.ManagedSecret` of the same store key
@@ -132,6 +133,8 @@ rather than after a publish.
     `terminationGracePeriodSeconds`, `podAnnotations` — the platform
     composes the pod and owns its identity and grace period.
   - `nodeSelector`, `tolerations` — the platform decides placement.
+  - `ports.domains` — a hosted hostname is a control-plane resource bound
+    per environment, not spec (`forge domain add` / `forge domain bind`).
   - Raw `secretRef`, `configMapRef` and `fieldRef` env — they address
     namespace objects you did not write.
   - A registry-less or unpinned image — the release pins every artifact by
@@ -263,50 +266,38 @@ against workloads in the same environment.
 ### Custom domains
 
 Every hosted site and exposed hosted port already answers on a hostname the
-platform allocates — you never declare that one. To ALSO serve your own,
-declare `domains`: on an `OnHosted` frontend, and on the workload's
-`expose = True` port.
+platform allocates — you never declare that one. To ALSO serve your own, use
+the `forge domain` commands. **A hosted domain is NOT spec**: there is no
+`domains` field on a hosted frontend or a hosted port, and a spec that
+carries one is refused at render.
+
+`forge domain add hounders.club` prints the DNS records to set, and
+`forge domain bind hounders.club --env prod --target web` attaches the
+verified name to one environment's workload or frontend.
+
+Why a resource, not a field: bringing a name takes an action at YOUR
+registrar, then ownership verification, then a certificate — asynchronous
+and human-gated, none of which a deploy converges. It binds to ONE
+environment, while an env file renders to many. And the platform may
+allocate a hostname itself, which a spec field would contradict.
+
+**`forge.OnCluster` is the exception, and keeps `Port.domains`.** There you
+own the ingress: forge renders the Gateway and HTTPRoute itself, and
+`forge.WorkloadURL` resolves the exposed port's first domain. Nothing waits
+on a human, so the name is spec and converges with the deploy.
 
 ```kcl
-frontends = [forge.Frontend {
-    name = "web"
-    path = "web"
-    domains = ["hounders.club", "www.hounders.club"]
-    runtime = forge.OnHosted {}
-}]
-workloads = [fw.Workload {
-    name = "membership"
-    ports = [fw.Port {name = "http", port = 8080, expose = True, domains = ["api.hounders.club"]}]
-    runtime = forge.OnHosted {}
-}]
+# OnCluster only — on OnHosted this is a render error.
+ports = [fw.Port {name = "http", port = 8080, expose = True, domains = ["api.hounders.club"]}]
 ```
 
-Rules, both halves the same: at most 8 names, each a lowercase DNS
-hostname, no wildcards, no duplicates. An apex and its `www` are two names —
-declare both. A wildcard is refused because the platform verifies ownership
-per name, and a wildcard names a set nobody can prove they own.
+Rules there: at most 8 names, each a lowercase DNS hostname, no wildcards,
+no duplicates. An apex and its `www` are two names — declare both.
 
-**OnHosted only.** The platform is the one runtime that can verify a name it
-does not own and issue its certificate. On `OnBucket` / `OnFirebase` the
-domain belongs where the certificate and the DNS record already live (your
-CDN; the Firebase console); `OnHost` is localhost and `BuildOnly` serves
-nothing. Declaring it there is a render error naming the runtime — forge
-never drops it quietly.
-
-**Declaration only, never a command.** There is no imperative add-a-domain
-subcommand: KCL is the source of truth, and the control plane converges it —
-records the claim, verifies ownership from DNS, issues the certificate, then
-serves the name.
-
-So a deploy against a control plane that does NOT serve custom domains is
-**refused before anything is published**, naming every domain you declared.
-Publishing anyway is the one outcome nobody can debug: the spec is accepted,
-the deploy goes green, and the hostname never resolves. `--dry-run` reports
-the same.
-
-`forge env status <env>` and the post-deploy summary print each domain's
-state — `pending_dns` | `verifying` | `issuing` | `live` | `failed` |
-`conflict` — with the DNS records still to set and the last error:
+`forge env status <env>` and the post-deploy summary print each bound
+domain's state — `pending_dns` | `verifying` | `issuing` | `live` |
+`failed` | `conflict` — with the DNS records still to set and the last
+error:
 
 ```
 custom domains (prod):
@@ -320,6 +311,7 @@ custom domains (prod):
 A domain that is not live is not a failed deploy: setting the record at your
 registrar is your step, which is why forge prints the record rather than
 blocking on it. `--json` carries the same under each workload's `domains`.
+`forge domain show <hostname>` prints the same for one name.
 
 ## forge env up — the local loop
 

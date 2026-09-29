@@ -11,25 +11,29 @@ import (
 
 // Custom domains: forge's half.
 //
-// A custom hostname is DECLARED — `domains` on a workload's exposed port, or
-// on an OnHosted frontend — and the control plane converges it: it records
-// the claim, verifies ownership from DNS, issues a certificate, serves the
-// name, and reports per-domain state plus the DNS records the author still
-// has to set. forge never adds a domain imperatively; there is no
-// `forge domain add`, because the declaration in KCL is the source of truth.
+// On hosted, a custom hostname is NOT spec. It is an org-scoped resource in
+// the control plane, created once and BOUND to one environment's workload or
+// frontend:
 //
-// That leaves forge one job the control plane cannot do for it: refusing a
-// declaration the platform will not honour. A control plane that does not
-// converge domains accepts the spec, publishes it, and serves only the
-// allocated hostname — so the author's deploy goes green while the domain
-// they declared does nothing, and nothing anywhere says why. The capability
-// handshake below is what turns that silence into a refusal.
-
-// HostedCapabilityCustomDomains is the capability name a control plane
-// advertises on its environment when it converges `Port.domains` and
-// `StaticSite.domains`. Absent, forge refuses to publish a declaration
-// carrying either.
-const HostedCapabilityCustomDomains = "custom_domains"
+//	forge domain add hounders.club
+//	forge domain bind hounders.club --env prod --target web
+//
+// Three things make it a resource rather than a field. A name you bring
+// needs an action at YOUR registrar, ownership verification and a
+// certificate — asynchronous and human-gated, none of which a deploy
+// converges. It binds to exactly ONE environment, while a single workloads.k
+// renders to many. And the platform may allocate a hostname itself, which a
+// spec field would then contradict as a second source of truth.
+//
+// forge.OnCluster is the opposite case and keeps `Port.domains`: there you
+// own the ingress, forge renders the Gateway and HTTPRoute itself, and
+// nothing is waiting on a human.
+//
+// So forge has two jobs here. It REFUSES a hosted spec that carries a domain
+// (below, and at render — kcl/render.k `_hosted_domain_violations`, which is
+// the refusal an author actually sees). And it REPORTS what the control
+// plane observes about the domains bound to the env, which is the rest of
+// this file: per-domain state, the DNS still owed, and the last error.
 
 // hostedDomainClaim is one workload's declared custom hostnames.
 type hostedDomainClaim struct {
@@ -66,42 +70,35 @@ func hostedDomainClaims(plan []hostedPlanItem) []hostedDomainClaim {
 	return out
 }
 
-// hasCapability reports whether the environment advertises name.
-func hasCapability(capabilities []string, name string) bool {
-	for _, c := range capabilities {
-		if strings.EqualFold(strings.TrimSpace(c), name) {
-			return true
-		}
-	}
-	return false
-}
-
-// checkCustomDomains refuses a deploy whose plan declares custom domains
-// against a control plane that does not advertise custom_domains. It runs
-// after the environment is known (the capability list comes back on it) and
-// BEFORE any EnsureDeployment or publish, so a declaration the platform would
-// ignore costs no deployment write and no ledger entry.
+// checkCustomDomains refuses a hosted deploy whose plan carries a custom
+// domain in spec, BEFORE any EnsureDeployment or publish.
 //
-// REFUSING IS THE POINT. Publishing anyway is the one outcome that cannot be
-// debugged from the outside: the spec is accepted, the deploy reports
-// success, and the domain silently never resolves. Every declared domain is
-// named, so one refusal tells the author everything they declared and what to
-// do about it.
-func checkCustomDomains(envName string, capabilities []string, plan []hostedPlanItem) error {
+// This is a BACKSTOP, not the primary gate. The render refuses the same
+// declaration first (kcl/render.k `_hosted_domain_violations`), so an author
+// editing KCL sees it from `forge env render` and `--plan`, not only against
+// a live control plane. This catches the paths that reach a hosted plan
+// without going through that lowering — a spec built in Go, or a stale
+// release artifact rendered by an older forge — where publishing would
+// otherwise store a domain the control plane does not read as a binding and
+// never serves.
+func checkCustomDomains(envName string, plan []hostedPlanItem) error {
 	claims := hostedDomainClaims(plan)
-	if len(claims) == 0 || hasCapability(capabilities, HostedCapabilityCustomDomains) {
+	if len(claims) == 0 {
 		return nil
 	}
 	var lines []string
 	for _, c := range claims {
 		lines = append(lines, fmt.Sprintf("    %s (%s): %s", c.Workload, c.Tier, strings.Join(c.Domains, ", ")))
 	}
-	return fmt.Errorf("hosted env %q: refusing to publish anything — %d workload(s) declare custom domains, "+
-		"and this control plane does not serve them (its environment advertises no %q capability):\n%s\n"+
-		"  Publishing would succeed and the domains would never resolve, with nothing to read that says why.\n"+
-		"  fix: remove the `domains` declaration to deploy on the platform-allocated hostname, or wait for the "+
-		"control plane to serve custom domains and deploy again — the declaration is converged once it does",
-		envName, len(claims), HostedCapabilityCustomDomains, strings.Join(lines, "\n"))
+	first := claims[0].Domains[0]
+	return fmt.Errorf("hosted env %q: refusing to publish anything — %d workload(s) carry a custom domain in their spec, "+
+		"and on hosted a domain is not spec:\n%s\n"+
+		"  A hosted hostname needs DNS at your registrar, ownership verification and a certificate. "+
+		"That is asynchronous and human-gated, so it is a control-plane resource bound to ONE environment, "+
+		"not a field this deploy converges.\n"+
+		"  fix: `forge domain add %s`, then `forge domain bind %s --env %s --target %s`, "+
+		"and remove `domains` from the spec. (forge.OnCluster keeps `Port.domains`: there you own the ingress.)",
+		envName, len(claims), strings.Join(lines, "\n"), first, first, envName, claims[0].Workload)
 }
 
 // ─── Per-domain status ───────────────────────────────────────────────────────

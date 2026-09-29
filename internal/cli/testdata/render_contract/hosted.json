@@ -29,7 +29,6 @@
         "cache_control": [],
         "config": null,
         "dev_runner": "npm",
-        "domains": [],
         "env_file": null,
         "env_vars": [],
         "name": "web",

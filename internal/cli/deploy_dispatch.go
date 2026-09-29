@@ -645,17 +645,12 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 // environment, and writes config.js after every sync. That document is what
 // the release artifact deliberately does NOT carry — see
 // buildHostedStaticSites.
-// domains are the frontend's declared custom hostnames, carried through
-// verbatim. They are the site's half of the same declaration a workload's
-// exposed port makes, and the control plane converges both — but only where
-// it advertises the custom_domains capability, which checkCustomDomains
-// enforces before anything is published.
+// The spec carries NO domains: a hosted site's custom hostname is an
+// org-scoped control-plane resource bound to this environment
+// (`forge domain add` + `forge domain bind`), never a field forge publishes.
 func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 	keep := int32(v1alpha1.DefaultKeepReleases)
 	spec := &v1alpha1.StaticSiteSpec{BasePath: f.BasePath, KeepReleases: &keep}
-	if len(f.Domains) > 0 {
-		spec.Domains = append([]string(nil), f.Domains...)
-	}
 	if len(f.RuntimeConfigSpec) > 0 {
 		spec.RuntimeConfig = f.RuntimeConfigSpec
 	}

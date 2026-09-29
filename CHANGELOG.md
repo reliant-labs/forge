@@ -214,6 +214,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A cert-manager `Certificate` in the bundle now SUPPLIES the Secret it
+  materialises, so the deploy preflight stops false-failing on it.** The
+  render-time secret back-propagation gate recognised only `kind: Secret`
+  documents as in-stream supply, so a workload mounting a Secret that a
+  `Certificate` in the SAME bundle creates was reported as an undeclared
+  mount. `forge env deploy e2e` refused to run on the vendored
+  cloudnative-pg barman-cloud plugin, whose Certificates and the Deployment
+  mounting `barman-cloud-{client,server}-tls` render in one stream, and the
+  only way past it was `--skip-preflight` — which disables the image, CRD and
+  live-Secret checks too.
+
+  cert-manager writes the Secret when it reconciles the Certificate, in the
+  same apply pass that creates the pods mounting it, exactly as `kubectl
+  apply` orders a rendered `kind: Secret` ahead of its consumers. Demanding
+  it exist beforehand made a first deploy of any cert-manager-backed workload
+  unsatisfiable by construction: the thing that provisions the Secret was the
+  very deploy being blocked. The advice the gate printed — declare a
+  `KubeconfigSecret` or an `ExternalSecret` — was actively wrong for a
+  cert-manager Secret, whose bytes cert-manager owns and would overwrite.
+
+  Matching is on the `cert-manager.io` API group (any version), so a bundle
+  on `v1alpha2` or a future `v2` is recognised without a forge change, and an
+  unrelated CRD that happens to be named `Certificate` is not. A Certificate
+  supplies only the one name in its `spec.secretName`; every other undeclared
+  mount in the same bundle still fails.
+
 - **The frontend bundle and image tests run in the e2e lane, on a minimal
   fixture.** The `next build` peer-pin test scaffolded a whole frontend
   (OpenTelemetry web instrumentation included) inside the unit lane's

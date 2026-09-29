@@ -74,6 +74,95 @@ func TestCheckSecretSupply_UndeclaredMountFails(t *testing.T) {
 	}
 }
 
+// certManagerBundle is the shape the vendored cloudnative-pg barman-cloud
+// plugin renders: a Deployment that mounts two TLS Secrets, and the two
+// cert-manager Certificates in the SAME bundle whose spec.secretName is
+// exactly those Secrets. cert-manager materialises each Secret when it
+// reconciles its Certificate, so the bundle DOES provide them — they are not
+// undeclared mounts, and blocking on them makes a first deploy of any
+// cert-manager-backed workload unsatisfiable by construction.
+const certManagerBundle = `
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: barman-cloud-client
+  namespace: cnpg-system
+spec:
+  commonName: barman-cloud-client
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: selfsigned-issuer
+  secretName: barman-cloud-client-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: barman-cloud-server
+  namespace: cnpg-system
+spec:
+  commonName: barman-cloud
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: selfsigned-issuer
+  secretName: barman-cloud-server-tls
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: barman-cloud
+  namespace: cnpg-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          image: ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.15.0
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: barman-cloud-server-tls
+        - name: client-tls
+          secret:
+            secretName: barman-cloud-client-tls
+`
+
+// TestCheckSecretSupply_CertManagerCertificateSatisfies — a cert-manager
+// Certificate in the bundle SUPPLIES the Secret named by its spec.secretName.
+//
+// Reproduces the `forge env deploy e2e` false positive: the vendored
+// barman-cloud plugin renders its Certificates and the Deployment that mounts
+// their Secrets in one stream, and the gate reported both TLS Secrets as
+// undeclared mounts because it only recognised `kind: Secret` documents as
+// in-stream supply. The advice it printed — declare a KubeconfigSecret or an
+// ExternalSecret — is wrong for a cert-manager Secret, which no one may mint
+// by hand: cert-manager owns those bytes and would overwrite them.
+func TestCheckSecretSupply_CertManagerCertificateSatisfies(t *testing.T) {
+	if misses := CheckSecretSupply(certManagerBundle, nil); len(misses) != 0 {
+		t.Fatalf("a cert-manager Certificate in the bundle must supply its spec.secretName; got undeclared mounts: %v", misses)
+	}
+}
+
+// TestCheckSecretSupply_CertManagerOnlySuppliesItsOwnSecretName — the
+// Certificate supplies the ONE name it declares, and nothing else. A mount of
+// some other Secret in the same bundle must still fail, so the new supply
+// source cannot become a blanket exemption for any bundle that happens to
+// carry a Certificate.
+func TestCheckSecretSupply_CertManagerOnlySuppliesItsOwnSecretName(t *testing.T) {
+	manifests := certManagerBundle + docDelimiter + mountManifest
+	misses := CheckSecretSupply(manifests, nil)
+	if len(misses) != 2 {
+		t.Fatalf("expected the two unrelated mounts to still fail, got %d: %v", len(misses), misses)
+	}
+	want := map[string]bool{"app-secrets": true, "cp-daemon-kubeconfig": true}
+	for _, m := range misses {
+		if !want[m.Secret] {
+			t.Fatalf("unexpected undeclared mount %q — a Certificate must supply only its own secretName", m.Secret)
+		}
+	}
+}
+
 // TestCheckSecretSupply_KubeconfigSecretSatisfies — declaring a
 // KubeconfigSecret of the same name PASSES (the fix for the bug).
 func TestCheckSecretSupply_KubeconfigSecretSatisfies(t *testing.T) {

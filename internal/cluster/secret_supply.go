@@ -32,6 +32,8 @@ import (
 //
 // SUPPLY (what provides a Secret in this bundle):
 //   - a Secret rendered into the manifest stream (kind: Secret),
+//   - a cert-manager Certificate in the stream (materialises the Secret named
+//     by its spec.secretName when cert-manager reconciles it),
 //   - a forge.KubeconfigSecret (mints its named Secret),
 //   - a forge.ExternalSecret (the author's explicit out-of-band promise that
 //     the Secret exists — counts as SATISFIED; the LIVE preflight separately
@@ -66,6 +68,9 @@ const (
 	// provisioned, generated). The catch-all the caller uses for supply that
 	// isn't one of the first-class kinds.
 	SupplyGenerated SecretSupplyKind = "generated/known Secret"
+	// SupplyCertManagerCertificate — a cert-manager Certificate in the stream,
+	// which materialises the Secret its spec.secretName names.
+	SupplyCertManagerCertificate SecretSupplyKind = "cert-manager Certificate"
 )
 
 // SecretSupply is one Secret the bundle PROVIDES, used to satisfy a demand. The
@@ -112,6 +117,57 @@ func CollectRenderedSecretNames(manifests string) map[string]struct{} {
 	return names
 }
 
+// CollectCertManagerSecretNames returns the set of Secret NAMES that
+// cert-manager Certificates in the stream will materialise — each
+// Certificate's `spec.secretName`.
+//
+// A Certificate is a PROVIDER of its Secret, exactly as a `kind: Secret`
+// document is. cert-manager issues the certificate and writes the Secret when
+// it reconciles the Certificate, in the same apply pass that creates the pods
+// mounting it, so demanding the Secret exist beforehand makes a first deploy
+// of any cert-manager-backed workload unsatisfiable — the thing that
+// provisions it is the very deploy being blocked.
+//
+// This surfaced on the vendored cloudnative-pg barman-cloud plugin, whose
+// bundle renders two Certificates and the Deployment mounting their
+// `barman-cloud-{client,server}-tls` Secrets. The gate reported both as
+// undeclared mounts and told the operator to declare a KubeconfigSecret or
+// ExternalSecret — advice that is wrong for a cert-manager Secret, whose
+// bytes cert-manager owns and would overwrite. `forge env deploy e2e` was
+// unrunnable without --skip-preflight, which disables every other check too.
+//
+// Matched on the cert-manager.io API GROUP (any version), so a bundle on
+// v1alpha2 or a future v2 is recognised without a forge change, while an
+// unrelated CRD that happens to be called Certificate is not.
+func CollectCertManagerSecretNames(manifests string) map[string]struct{} {
+	names := map[string]struct{}{}
+	for _, doc := range splitDocs(manifests) {
+		var head struct {
+			APIVersion string `yaml:"apiVersion"`
+			Kind       string `yaml:"kind"`
+			Spec       struct {
+				SecretName string `yaml:"secretName"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &head); err != nil {
+			continue
+		}
+		if strings.TrimSpace(head.Kind) != "Certificate" {
+			continue
+		}
+		// apiVersion is "<group>/<version>"; compare the group alone so every
+		// cert-manager.io version qualifies.
+		group, _, _ := strings.Cut(strings.TrimSpace(head.APIVersion), "/")
+		if !strings.EqualFold(group, "cert-manager.io") {
+			continue
+		}
+		if name := strings.TrimSpace(head.Spec.SecretName); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
 // UndeclaredSecretMount is one demanded Secret that NO supply in the bundle
 // provides — a back-propagated render-time failure. Workloads carries the
 // names of the workload manifests that mount/reference it (so the error points
@@ -143,9 +199,13 @@ func CheckSecretSupply(manifests string, supplied []SecretSupply) []UndeclaredSe
 		return nil
 	}
 
-	// SUPPLY set, name-keyed. Rendered-stream Secrets first, then the
+	// SUPPLY set, name-keyed. Rendered-stream Secrets first, then the Secrets
+	// cert-manager Certificates in the same stream materialise, then the
 	// caller-supplied sources.
 	supply := CollectRenderedSecretNames(manifests)
+	for name := range CollectCertManagerSecretNames(manifests) {
+		supply[name] = struct{}{}
+	}
 	for _, s := range supplied {
 		if n := strings.TrimSpace(s.Name); n != "" {
 			supply[n] = struct{}{}

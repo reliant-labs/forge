@@ -480,8 +480,10 @@ func TestVerifyOCI_Verified(t *testing.T) {
 		match: "/manifests/sha256:", status: http.StatusOK, body: `{"schemaVersion":2}`,
 	}}}
 
-	got := verifyOCIArtifact(context.Background(), f, "control-plane", release.Artifact{
-		Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/reliant-labs",
+	// The artifact's NAME is its repository, host included: the key is the
+	// address, so there is no URI to carry.
+	got := verifyOCIArtifact(context.Background(), f, "ghcr.io/reliant-labs/control-plane", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared,
 		Digests: map[string]string{release.SharedVariant: sha("a")},
 	})
 	if got.Status != verifyVerified {
@@ -499,8 +501,8 @@ func TestVerifyOCI_DigestAbsent(t *testing.T) {
 		match: "/manifests/", status: http.StatusNotFound, body: `{"errors":[{"code":"MANIFEST_UNKNOWN"}]}`,
 	}}}
 
-	got := verifyOCIArtifact(context.Background(), f, "control-plane", release.Artifact{
-		Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/reliant-labs",
+	got := verifyOCIArtifact(context.Background(), f, "ghcr.io/reliant-labs/control-plane", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared,
 		Digests: map[string]string{release.SharedVariant: sha("b")},
 	})
 	if got.Status != verifyFailed {
@@ -535,8 +537,8 @@ func TestVerifyOCI_AnonymousTokenDance(t *testing.T) {
 		return f.Fetch(ctx, req)
 	})
 
-	got := verifyOCIArtifact(context.Background(), wrapped, "control-plane", release.Artifact{
-		Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/reliant-labs",
+	got := verifyOCIArtifact(context.Background(), wrapped, "ghcr.io/reliant-labs/control-plane", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared,
 		Digests: map[string]string{release.SharedVariant: digest},
 	})
 	if got.Status != verifyVerified {
@@ -557,8 +559,8 @@ func TestVerifyOCI_PrivateRegistryIsUnreachable(t *testing.T) {
 		}()},
 	}}
 
-	got := verifyOCIArtifact(context.Background(), f, "secret", release.Artifact{
-		Kind: release.KindOCI, Mode: release.ModeShared, URI: "private.example",
+	got := verifyOCIArtifact(context.Background(), f, "private.example/secret", release.Artifact{
+		Kind: release.KindOCI, Mode: release.ModeShared,
 		Digests: map[string]string{release.SharedVariant: sha("d")},
 	})
 	if got.Status != verifyUnreachable {
@@ -568,12 +570,13 @@ func TestVerifyOCI_PrivateRegistryIsUnreachable(t *testing.T) {
 
 // TestVerifyOCI_NoRegistryIsUnverifiable: a bare image name with a digest but
 // no registry host is not an address. Passing it would be a green check over
-// something never contacted.
+// something never contacted — and guessing Docker Hub for it would be a
+// confident FAILURE against a registry the image was never pushed to.
 func TestVerifyOCI_NoRegistryIsUnverifiable(t *testing.T) {
 	f := &stubFetcher{}
 	got := verifyOCIArtifact(context.Background(), f, "control-plane", release.Artifact{
 		Kind: release.KindOCI, Mode: release.ModeShared,
-		Digests: map[string]string{release.SharedVariant: sha("e")}, // no URI
+		Digests: map[string]string{release.SharedVariant: sha("e")}, // key names no host
 	})
 	if got.Status != verifyUnverifiable {
 		t.Fatalf("status = %v (%s), want UNVERIFIABLE", got.Status, got.Detail)
@@ -670,7 +673,7 @@ func TestVerifyReleaseArtifacts_MixedLedgerSortedAndPerArtifact(t *testing.T) {
 	rel := release.Release{
 		Version: "v1.4.0",
 		Artifacts: map[string]release.Artifact{
-			"zz-image": {Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/acme",
+			"zz-image": {Kind: release.KindOCI, Mode: release.ModeShared,
 				Digests: map[string]string{release.SharedVariant: sha("a")}},
 			"aa-package":     {Kind: release.KindNPM, Version: "1.0.0", Integrity: goodIntegrity},
 			"mm-unpublished": {Kind: release.KindNPM, Version: "2.0.0", Integrity: "sha512-never-shipped"},

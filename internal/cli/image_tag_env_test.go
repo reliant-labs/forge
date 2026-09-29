@@ -189,7 +189,7 @@ output = forge.render(forge.Bundle {
             command = ["./bin/hostapp"]
             runtime = forge.OnHost {}
         }
-        fw.Workload {name = "api", build = forge.ShellBuild {cmd = "true"}, runtime = forge.OnCluster {target = _k3d}}
+        fw.Workload {name = "api", image = "localhost:5051/api", build = forge.ShellBuild {cmd = "true"}, runtime = forge.OnCluster {target = _k3d}}
     ]
 })
 `

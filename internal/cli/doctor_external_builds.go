@@ -37,7 +37,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/doctor"
 )
@@ -134,7 +133,6 @@ func evaluateExternalBuildCheck(svc WorkloadEntity, projectDir string, lookup bi
 
 	buildCmd := svc.EffectiveBuildCmd()
 	buildCwd := svc.EffectiveBuildCwd()
-	buildEnv := svc.EffectiveBuildEnv()
 
 	// CWD existence. Empty cwd → check projectDir itself so the
 	// user gets a clear hit when forge is invoked from a wonky cwd.
@@ -180,25 +178,12 @@ func evaluateExternalBuildCheck(svc WorkloadEntity, projectDir string, lookup bi
 		}
 	}
 
-	// Substituted-command preview. Render against a synthetic Spec
-	// with placeholder values so the user sees the shape forge will
-	// actually exec — including any unresolved ${X} that points at a
-	// typo'd token. We use distinct stand-ins ("<arch>" etc.) rather
-	// than the real values because doctor is observation, not a
-	// build harness, and the dev-env tag isn't resolved here.
-	syntheticSpec := buildtarget.Spec{
-		Service:    svc.Name,
-		Image:      orPlaceholder(svc.Image, "<image>"),
-		Tag:        "<tag>",
-		TargetArch: "<arch>",
-		Registry:   "<registry>",
-		ProjectDir: projectDir,
-		BuildCwd:   buildCwd,
-		BuildCmd:   buildCmd,
-		BuildEnv:   buildEnv,
-	}
-	preview := buildtarget.Expand(buildCmd, syntheticSpec)
-	evidence = append(evidence, "info: resolved build cmd: "+preview)
+	// The command forge will exec, verbatim. There is nothing to preview
+	// a substitution of: the KCL render already resolved every value, and
+	// forge hands this exact string to `sh -c`. Any `$VAR` left in it is
+	// the shell's own, resolved from the process env plus the declared
+	// `env` map.
+	evidence = append(evidence, "info: build cmd (run verbatim): "+buildCmd)
 
 	if hasWarn {
 		result.Status = doctor.StatusWarn
@@ -301,17 +286,6 @@ func isShellEnvKey(s string) bool {
 		}
 	}
 	return true
-}
-
-// orPlaceholder substitutes a placeholder string when the source is
-// empty. Used for the synthetic Spec preview so ${IMAGE} doesn't
-// expand to an empty string (which would print a confusing
-// `:${TAG}` shape that looks like a real bug).
-func orPlaceholder(s, placeholder string) string {
-	if s == "" {
-		return placeholder
-	}
-	return s
 }
 
 // appendExternalBuildChecksToReport mutates report to add the

@@ -308,17 +308,13 @@ func planBuildOnlyVariants(ctx context.Context, in planInputs) []buildPlanStep {
 }
 
 // planExternalBuilds mirrors buildExternalServiceResults + buildExternalServices:
-// the same service selection, the same registry and ${TAG} resolution, and the
-// same cwd rule — so a missing sibling checkout fails the plan with the exact
-// error the cut would hit after every build before it had already run.
+// the same service selection, the same tag resolution, and the same cwd rule —
+// so a missing sibling checkout fails the plan with the exact error the cut
+// would hit after every build before it had already run.
 func planExternalBuilds(in planInputs) []buildPlanStep {
 	svcs := externalBuildServices(in.entities)
 	if len(svcs) == 0 {
 		return nil
-	}
-	registry := in.opts.pushRegistry
-	if registry == "" {
-		registry = in.opts.envRegistry
 	}
 	var out []buildPlanStep
 	for _, svc := range svcs {
@@ -327,14 +323,12 @@ func planExternalBuilds(in planInputs) []buildPlanStep {
 			Service:    svc.Name,
 			Image:      svc.Image,
 			Tag:        tag,
-			Registry:   registry,
 			ProjectDir: in.projectDir,
-			Env:        in.opts.env,
 			BuildCmd:   svc.EffectiveBuildCmd(),
 			BuildCwd:   svc.EffectiveBuildCwd(),
 			BuildEnv:   svc.EffectiveBuildEnv(),
 		}
-		step := buildPlanStep{kind: "external", name: svc.Name, what: fmt.Sprintf("ShellBuild (${TAG}=%s, ${REGISTRY}=%s)", tag, registry)}
+		step := buildPlanStep{kind: "external", name: svc.Name, what: fmt.Sprintf("ShellBuild (tag %s)", tag)}
 		if _, err := buildtarget.ResolveCwd(spec); err != nil {
 			step.problem = err.Error()
 		}

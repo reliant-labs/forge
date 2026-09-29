@@ -1203,20 +1203,19 @@ func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg
 	}
 	externalTag := resolvedTag
 	if externalTag == "" {
-		// External-build dispatchers need a stable tag even when the
-		// caller didn't pass --tag (the user's command interpolates
-		// ${TAG} into `docker push <reg>/<img>:${TAG}` and an empty
-		// tag would push :latest accidentally). Resolve the same
-		// git-describe tag the docker path would have used.
+		// The tag is recorded in build state and reported in the build
+		// log line, and it is what was bound as the `image_tag` KCL input
+		// for the render whose `cmd` we are about to run — so it must be
+		// the same value even when the caller passed no --tag. Resolve the
+		// same git-describe tag the docker path would have used.
 		t, terr := resolveImageTag(ctx, opts.env)
 		if terr != nil {
 			return nil, fmt.Errorf("external build: resolve image tag: %w (pass --tag to override)", terr)
 		}
 		externalTag = t
 	}
-	externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
 	projDir := projectDirForKCL()
-	return buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch), nil
+	return buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir), nil
 }
 
 // persistProjectBuildState records the build→deploy tag handoff for a

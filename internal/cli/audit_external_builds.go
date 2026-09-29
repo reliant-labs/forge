@@ -53,29 +53,6 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// externalBuildBuiltinTokens enumerates the token names the
-// build-side runner reserves. Keys in a service's build_env map that
-// match any of these collide with built-ins; the built-in wins on
-// substitution (see buildtarget.Vars) but the conflict is worth
-// surfacing because the user almost certainly didn't intend their
-// override to be silently shadowed.
-//
-// Kept in lockstep with buildtarget.Vars — if a new built-in token
-// lands there, add it here too so audit warns on the new collision.
-// A test in audit_external_builds_test.go pins the set so the two
-// can't drift unnoticed.
-var externalBuildBuiltinTokens = []string{
-	"IMAGE",
-	"TAG",
-	"CODE_VERSION",
-	"SERVICE",
-	"TARGETARCH",
-	"REGISTRY",
-	"PROJECT_DIR",
-	"ENV",
-	"BUILD_CWD",
-}
-
 // externalBuildEntry is the per-service detail row surfaced under
 // `.external_builds.details.services`. JSON field names follow the
 // snake_case convention the rest of audit uses.
@@ -85,9 +62,8 @@ type externalBuildEntry struct {
 	BuildCwd       string                `json:"build_cwd,omitempty"`
 	ResolvedCwd    string                `json:"resolved_cwd,omitempty"`
 	CwdExists      bool                  `json:"cwd_exists"`
-	BuildEnvKeys   []string              `json:"build_env_keys,omitempty"`
-	ConflictTokens []string              `json:"conflict_tokens,omitempty"`
-	LastBuilds     []externalBuildStateE `json:"last_builds,omitempty"`
+	BuildEnvKeys []string              `json:"build_env_keys,omitempty"`
+	LastBuilds   []externalBuildStateE `json:"last_builds,omitempty"`
 }
 
 // externalBuildStateE is the per-(env, service) state snapshot. We
@@ -174,16 +150,12 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 
 	entries := make([]externalBuildEntry, 0, len(services))
 	missingCwdCount := 0
-	conflictCount := 0
 	stateCount := 0
 
 	for _, svc := range services {
 		entry := buildExternalBuildEntry(svc, projectDir, envs)
 		if entry.BuildCwd != "" && !entry.CwdExists {
 			missingCwdCount++
-		}
-		if len(entry.ConflictTokens) > 0 {
-			conflictCount++
 		}
 		stateCount += len(entry.LastBuilds)
 		entries = append(entries, entry)
@@ -194,7 +166,7 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 	})
 
 	status := audittype.StatusOK
-	if missingCwdCount > 0 || conflictCount > 0 {
+	if missingCwdCount > 0 {
 		status = audittype.StatusWarn
 	}
 
@@ -202,22 +174,14 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 		"services":          entries,
 		"service_count":     len(services),
 		"missing_cwd_count": missingCwdCount,
-		"conflict_count":    conflictCount,
 		"state_count":       stateCount,
 	}
-	if missingCwdCount > 0 || conflictCount > 0 {
-		var hints []string
-		if missingCwdCount > 0 {
-			hints = append(hints, "missing build_cwd on disk is skip-with-warn at build time (CI without the sibling repo is expected); check out the sibling repo or set build_cwd to a path that exists")
-		}
-		if conflictCount > 0 {
-			hints = append(hints, "build_env keys colliding with built-in tokens are silently shadowed by the built-in (built-in wins); rename your env key to avoid the conflict")
-		}
-		details["hint"] = hints
+	if missingCwdCount > 0 {
+		details["hint"] = []string{"missing build_cwd on disk is a hard failure at build time; check out the sibling repo or set build_cwd to a path that exists"}
 	}
 
-	summary := fmt.Sprintf("%d service(s) declare a ShellBuild; %d missing cwd, %d env-key conflict(s), %d recorded build state(s)",
-		len(services), missingCwdCount, conflictCount, stateCount)
+	summary := fmt.Sprintf("%d service(s) declare a ShellBuild; %d missing cwd, %d recorded build state(s)",
+		len(services), missingCwdCount, stateCount)
 	return audittype.Category{
 		Status:  status,
 		Summary: summary,
@@ -226,9 +190,8 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 }
 
 // buildExternalBuildEntry composes the per-service detail row. Pure
-// over the (svc, projectDir, envs) tuple — stats the resolved cwd,
-// reads state for each env, computes conflict tokens against
-// externalBuildBuiltinTokens.
+// over the (svc, projectDir, envs) tuple — stats the resolved cwd and
+// reads state for each env.
 func buildExternalBuildEntry(svc WorkloadEntity, projectDir string, envs []string) externalBuildEntry {
 	buildCwd := svc.EffectiveBuildCwd()
 	buildEnv := svc.EffectiveBuildEnv()
@@ -255,9 +218,8 @@ func buildExternalBuildEntry(svc WorkloadEntity, projectDir string, envs []strin
 		entry.CwdExists = false
 	}
 
-	// Sorted build_env keys + token-collision detection. Sorted keys
-	// keep the JSON stable across audit runs (map iteration order is
-	// non-deterministic).
+	// Sorted build_env keys. Sorted keeps the JSON stable across audit
+	// runs (map iteration order is non-deterministic).
 	if len(buildEnv) > 0 {
 		keys := make([]string, 0, len(buildEnv))
 		for k := range buildEnv {
@@ -265,7 +227,6 @@ func buildExternalBuildEntry(svc WorkloadEntity, projectDir string, envs []strin
 		}
 		sort.Strings(keys)
 		entry.BuildEnvKeys = keys
-		entry.ConflictTokens = conflictingBuildEnvKeys(buildEnv)
 	}
 
 	// Per-env state aggregation. Missing state files (ReadState
@@ -290,23 +251,3 @@ func buildExternalBuildEntry(svc WorkloadEntity, projectDir string, envs []strin
 	return entry
 }
 
-// conflictingBuildEnvKeys returns the subset of buildEnv keys that
-// collide with a built-in substitution token. Empty result means
-// no conflicts (the common case). Sorted for stable output.
-func conflictingBuildEnvKeys(buildEnv map[string]string) []string {
-	if len(buildEnv) == 0 {
-		return nil
-	}
-	builtins := make(map[string]struct{}, len(externalBuildBuiltinTokens))
-	for _, t := range externalBuildBuiltinTokens {
-		builtins[t] = struct{}{}
-	}
-	var out []string
-	for k := range buildEnv {
-		if _, ok := builtins[k]; ok {
-			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out
-}

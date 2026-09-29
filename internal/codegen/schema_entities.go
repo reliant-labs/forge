@@ -58,6 +58,13 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 	if len(tables) == 0 {
 		return nil, nil
 	}
+	return entitiesForTables(tables, services), nil
+}
+
+// entitiesForTables is the pure half of BuildSchemaEntities: the join
+// itself, with the schema already introspected. Split out so the join's
+// rules can be tested without a shadow database.
+func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []EntityDef {
 	tableByName := make(map[string]schemadef.Table, len(tables))
 	for _, t := range tables {
 		tableByName[t.Name] = t
@@ -85,6 +92,17 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 			if !ok {
 				continue
 			}
+			// The RPC NAME is not evidence that the wire message exists.
+			// `ListSecrets`/`DeleteSecret` parse to the entity "Secret"
+			// whether or not the service declares a Secret message — and
+			// control-plane's SecretStoreService declares SecretSummary and
+			// SecretVersion instead. Projecting an entity anyway emits a
+			// CRUD page and mock fixtures that import `Secret` and
+			// `SecretSchema` from a _pb module exporting neither, so the
+			// frontend stops compiling. Require the message.
+			if !declaresWireMessage(svc, name) {
+				continue
+			}
 			seen[key] = true
 			// A composite PK has no single column the CRUD projection's
 			// Get/Update/Delete (which take ONE id) can key on. Fabricating
@@ -104,7 +122,31 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 		}
 	}
 	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })
-	return entities, nil
+	return entities
+}
+
+// declaresWireMessage reports whether svc's descriptor actually contains a
+// message named pkg.name — the entity's wire shape.
+//
+// A descriptor produced before SchemaFiles/Schemas existed carries no
+// message inventory, and there the answer is yes: a gate with no evidence
+// must not drop every entity in the project. Only a descriptor that DOES
+// enumerate messages, and does not list this one, is a refusal.
+func declaresWireMessage(svc ServiceDef, name string) bool {
+	fq := svc.Package + "." + name
+	if len(svc.SchemaFiles) > 0 {
+		_, ok := svc.SchemaFiles[fq]
+		return ok
+	}
+	if len(svc.Schemas) > 0 {
+		_, ok := svc.Schemas[fq]
+		return ok
+	}
+	if len(svc.Messages) > 0 {
+		_, ok := svc.Messages[name]
+		return ok
+	}
+	return true
 }
 
 func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDef {

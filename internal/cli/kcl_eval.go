@@ -62,6 +62,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kcleval"
 	"github.com/reliant-labs/forge/internal/kclplugin"
@@ -158,7 +159,7 @@ Examples:
 // becomes part of V. `env render` learned this the hard way when a `Note:` on
 // stdout became the first YAML document of a stream piped to kubectl.
 func runKCLEval(cmd *cobra.Command, file string, selectors []string, format string, options []string) error {
-	projectDir, err := projectRoot()
+	projectDir, err := evalProjectRoot()
 	if err != nil {
 		return err
 	}
@@ -190,6 +191,38 @@ func runKCLEval(cmd *cobra.Command, file string, selectors []string, format stri
 	}
 	reportDeclinedWrites(cmd.ErrOrStderr(), kclplugin.SuppressedWrites())
 	return nil
+}
+
+// evalProjectRoot locates the project by WALKING UP from the resolution root,
+// rather than requiring a forge.yaml in the exact cwd as most commands do.
+//
+// The difference matters because of who calls this. A Go test runs in its own
+// package directory — `internal/operators/shared`, never the project root —
+// and the pkg/kcleval helper exists precisely so such a test can read a
+// declared value. Requiring an exact-cwd forge.yaml meant the helper failed
+// with "forge.yaml not found in current directory" for every caller that did
+// not pass an explicit -C, which is the common case and the one that most
+// looks like the tool is broken. Shell scripts hit the same edge: the ones this
+// replaces run from wherever the caller invoked them.
+//
+// Walking up is safe HERE in a way it would not be for a mutating command,
+// because the file argument is resolved against the discovered root and
+// refused if it escapes it: the worst a wrong ancestor can do is fail to
+// contain the requested file. `forge -C <dir>` still wins outright —
+// ResolutionRoot honours it — so a caller that needs to name the project
+// explicitly can.
+func evalProjectRoot() (string, error) {
+	dir, err := cmdutil.FindProjectRoot()
+	if err != nil {
+		return "", err
+	}
+	if dir == "" {
+		// Reuse the exact-cwd resolver's message rather than writing a second
+		// one: it already names both fixes, and two spellings of "no project
+		// here" would drift.
+		return projectRoot()
+	}
+	return dir, nil
 }
 
 // armReadOnlyKCLContext arms the render-context globals a READ-ONLY

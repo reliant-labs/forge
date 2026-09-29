@@ -165,12 +165,17 @@ const (
 	DomainStateUnknown    = "unknown"
 )
 
-// domainStateName renders a DeployCustomDomainState value name in forge's
+// DomainStateName renders a DeployCustomDomainState value name in forge's
 // lower-case vocabulary. UNSPECIFIED and anything forge does not recognise
 // are "unknown" — a control plane newer than this forge reports a state this
 // binary has never heard of, and guessing at it is how a not-yet-serving
 // domain reads as serving.
-func domainStateName(wire string) string {
+//
+// Exported so `forge domain` decodes the state with THIS function rather
+// than its own copy: the same enum reaches the CLI from two services
+// (DomainService.Domain.state and DeployService's observed domains), and two
+// decoders would eventually disagree about what "live" means.
+func DomainStateName(wire string) string {
 	switch v := strings.ToLower(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(wire)), wireDomainStatePrefix)); v {
 	case DomainStatePendingDNS, DomainStateVerifying, DomainStateIssuing, DomainStateLive, DomainStateFailed, DomainStateConflict:
 		return v
@@ -187,7 +192,7 @@ func customDomainsOf(obs *wireObserved) []HostedCustomDomain {
 	}
 	out := make([]HostedCustomDomain, 0, len(obs.Domains))
 	for _, d := range obs.Domains {
-		hd := HostedCustomDomain{Domain: d.Domain, State: domainStateName(d.State), LastError: d.LastError}
+		hd := HostedCustomDomain{Domain: d.Domain, State: DomainStateName(d.State), LastError: d.LastError}
 		if d.LiveSince != nil {
 			hd.LiveSince = d.LiveSince.UTC().Format(time.RFC3339)
 		}

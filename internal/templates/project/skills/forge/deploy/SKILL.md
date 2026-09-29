@@ -271,33 +271,36 @@ the `forge domain` commands. **A hosted domain is NOT spec**: there is no
 `domains` field on a hosted frontend or a hosted port, and a spec that
 carries one is refused at render.
 
-`forge domain add hounders.club` prints the DNS records to set, and
-`forge domain bind hounders.club --env prod --target web` attaches the
-verified name to one environment's workload or frontend.
+```
+forge domain add hounders.club --env prod                # prints the DNS to set
+forge domain bind hounders.club --env prod --target web
+forge domain bind www.hounders.club --env prod --redirect-to hounders.club
+```
+
+`ls`, `show`, `verify` (check DNS now), `unbind` (stop serving, keep the
+verification) and `rm` (give the hostname up) complete the group; every read
+takes `--json`. `--env` names which control plane to talk to — a domain has
+no environment, only its binding does.
 
 Why a resource, not a field: bringing a name takes an action at YOUR
-registrar, then ownership verification, then a certificate — asynchronous
-and human-gated, none of which a deploy converges. It binds to ONE
-environment, while an env file renders to many. And the platform may
-allocate a hostname itself, which a spec field would contradict.
+registrar, then verification, then a certificate — asynchronous and
+human-gated, none of which a deploy converges. It binds to ONE environment,
+while an env file renders to many. And the platform may allocate a hostname
+itself, which a spec field would contradict.
 
-**`forge.OnCluster` is the exception, and keeps `Port.domains`.** There you
-own the ingress: forge renders the Gateway and HTTPRoute itself, and
-`forge.WorkloadURL` resolves the exposed port's first domain. Nothing waits
-on a human, so the name is spec and converges with the deploy.
+**`forge.OnCluster` is the exception, and keeps `Port.domains`** — there you
+own the ingress, forge renders the Gateway and HTTPRoute, and
+`forge.WorkloadURL` resolves the exposed port's first domain. At most 8
+names, lowercase DNS, no wildcards, no duplicates.
 
 ```kcl
 # OnCluster only — on OnHosted this is a render error.
 ports = [fw.Port {name = "http", port = 8080, expose = True, domains = ["api.hounders.club"]}]
 ```
 
-Rules there: at most 8 names, each a lowercase DNS hostname, no wildcards,
-no duplicates. An apex and its `www` are two names — declare both.
-
 `forge env status <env>` and the post-deploy summary print each bound
 domain's state — `pending_dns` | `verifying` | `issuing` | `live` |
-`failed` | `conflict` — with the DNS records still to set and the last
-error:
+`failed` | `conflict` — with the DNS still to set and the last error:
 
 ```
 custom domains (prod):

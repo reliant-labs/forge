@@ -127,6 +127,7 @@ func hostedStaticSites(entities *KCLEntities, opts buildOptions) []FrontendEntit
 // report the same remedy.
 func errHostedSiteMustPush(env string, names []string) error {
 	return fmt.Errorf("env %q binds frontend(s) %s to forge.OnHosted: a hosted site ships as an OCI release artifact, "+
-		"so the build must push — run `forge build %s --push`, which pushes to the registry deploy/kcl/%s/main.k declares on forge.ControlPlane",
-		env, strings.Join(names, ", "), env, env)
+		"so the build must push — run `forge build %s --push`, which pushes to each frontend's own `image` reference "+
+		"(plus the platform's static.v1 layout)",
+		env, strings.Join(names, ", "), env)
 }

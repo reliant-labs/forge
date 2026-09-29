@@ -53,26 +53,27 @@ output = forge.render(forge.Bundle {
 	return containers
 }
 
-// TestSidecarImageKeepsItsOwnRegistry pins the rule that an image naming its
-// OWN registry host is never prefixed with the environment's registry.
+// TestSidecarImageKeepsItsOwnRegistry pins the rule that every container's
+// image reference reaches the render VERBATIM: forge composes a tag onto it and
+// nothing else, so a sidecar's registry host is whatever its own reference says.
 //
-// THE BUG THIS CATCHES: a third-party sidecar — cloud-sql-proxy, an OTel
-// collector — is pulled from its vendor's registry, not from the env's. The
-// image resolver prefixed the env registry onto any image that carried a tag,
-// without first asking whether the image already named a registry, producing:
+// THE BUG THIS CATCHES: forge once prefixed a project-wide registry onto any
+// image that carried a tag, without first asking whether the image already
+// named a registry. A third-party sidecar — cloud-sql-proxy, an OTel collector
+// — is pulled from its vendor's registry, and the prefixing produced:
 //
 //	us-central1-docker.pkg.dev/proj/repo/gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
 //
 // That reference cannot be pulled. It renders and deploys cleanly, then fails
 // at runtime as ImagePullBackOff — the expensive place to find out.
 //
-// The primary container is asserted alongside it: a BARE image name still
-// takes the env registry and tag, which is the behavior the prefixing exists
-// for and the thing a naive fix would break.
+// The primary container is asserted alongside the sidecars: it carries no tag
+// of its own, so it takes the env's resolved TAG while keeping its host — the
+// one thing forge does contribute, and the thing a naive fix would break.
 func TestSidecarImageKeepsItsOwnRegistry(t *testing.T) {
 	containers := sidecarContainers(t)
 	for _, tc := range []struct{ container, want, why string }{
-		{"api", "reg.example.com/proj/api:v9", "a bare primary image takes the env registry and tag"},
+		{"api", "reg.example.com/proj/api:v9", "an untagged primary image keeps its host and takes the env's resolved tag"},
 		{"cloud-sql-proxy", "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1", "a dotted registry host means the image is third-party"},
 		{"port-registry", "localhost:5050/vendor/thing:1.0", "a host:port registry is a registry host too"},
 	} {

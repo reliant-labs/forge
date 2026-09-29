@@ -1446,7 +1446,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	if len(artifacts) == 0 {
 		return release.Release{}, fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
 			"  A release pins immutable digests, which require a registry push — re-run with --push\n"+
-			"  (forge build %s --release %s --push pushes to the registry the env's KCL declares).\n"+
+			"  (forge build %s --release %s --push pushes to each image's own registry).\n"+
 			"  A release built without --push has only a local tag, which can't be promoted across envs", version, env, version)
 	}
 

@@ -80,9 +80,9 @@ var (
 
 // runtimesThatPull are the runtimes an image reference is needed for. A
 // workload bound OnHost or OnCompose runs from the local filesystem or a
-// compose file: nothing pulls an image for it, so the env's registry says
-// nothing about where that workload's image should live. This is the whole
-// basis of the ambiguity judgment.
+// compose file: nothing pulls an image for it, so a registry declared on that
+// env says nothing about where the workload's image should live. This is the
+// whole basis of the ambiguity judgment.
 var runtimesThatPull = map[string]bool{"OnCluster": true, "OnHosted": true}
 
 // kclTree is every .k file under deploy/kcl, read once.

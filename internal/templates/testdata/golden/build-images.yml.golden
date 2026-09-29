@@ -85,8 +85,8 @@ jobs:
           CGO_ENABLED=1 go install "$forge/cmd/forge@${v}"
 
       - name: Log in to the declared registry
-        # forge logs docker in to the registry deploy/kcl/$FORGE_ENV/main.k
-        # declares; the workflow supplies only the credential. GITHUB_TOKEN
+        # forge logs docker in to the registry each image this env builds
+        # names; the workflow supplies only the credential. GITHUB_TOKEN
         # (with `packages: write`) is the credential for GitHub's container
         # registry. For another registry, pipe its credential instead — a GAR
         # key with --username _json_key, an ECR token with --username AWS —

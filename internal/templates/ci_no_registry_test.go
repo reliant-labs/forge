@@ -6,11 +6,12 @@ import (
 	"testing"
 )
 
-// An image registry is DECLARED in the env's KCL (deploy/kcl/<env>/main.k) and
-// nowhere else. A scaffolded workflow therefore never names one: it logs in
-// with `forge registry login <env>`, builds with `forge build <env> --push`,
-// and reads the pushed ref back with `forge registry ref <env>` — each of
-// which reads the declaration. A registry host in a workflow, a REGISTRY
+// A registry is DECLARED as part of a workload's (or frontend's) `image` in
+// the project's KCL, and nowhere else — an environment does not have one. A
+// scaffolded workflow therefore never names a registry: it logs in with
+// `forge registry login <env>`, builds with `forge build <env> --push`, and
+// reads the pushed ref back with `forge registry ref <env>` — each of which
+// reads the images' own references. A registry host in a workflow, a REGISTRY
 // env/var, or a --push carrying a value is a second source of truth that
 // drifts from the one the deploy pulls from.
 var workflowRegistryLeaks = []struct {
@@ -29,7 +30,7 @@ func TestScaffoldedWorkflowsNameNoRegistry(t *testing.T) {
 		for i, line := range strings.Split(string(body), "\n") {
 			code := line
 			// A comment may explain what the declaration is for (e.g. "the
-			// registry deploy/kcl/<env>/main.k declares"); only a registry
+			// registry each image names"); only a registry
 			// VALUE in the workflow is a leak. Comments still may not carry a
 			// host literal: an example host in a comment is copied into code.
 			if idx := strings.Index(line, "#"); idx >= 0 && strings.TrimSpace(line[:idx]) == "" {

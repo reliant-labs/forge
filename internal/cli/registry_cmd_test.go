@@ -164,8 +164,8 @@ func TestRegistryHost(t *testing.T) {
 const refDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 // TestRegistryRef_PrintsThePushedDigestRef: the ref a scan/sign step needs is
-// what `forge build <env> --push` recorded — the registry the env declares,
-// the image, the digest — never a YAML literal.
+// what `forge build <env> --push` recorded — the image's own reference, host
+// included, and the digest — never a YAML literal.
 func TestRegistryRef_PrintsThePushedDigestRef(t *testing.T) {
 	dir := planProject(t, declaredRegistryFixture)
 	if err := WriteBuildState(dir, "prod", BuildState{Image: "registry.example/prod/pt", Tag: "t1", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {

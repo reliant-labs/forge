@@ -154,8 +154,8 @@ jobs:
 
       - name: Log in to the declared registry
         if: steps.select.outputs.run == 'true'
-        # forge logs docker in to the registry this env's KCL declares
-        # (deploy/kcl/<env>/main.k); the workflow supplies only the
+        # forge logs docker in to the registry each image this env builds
+        # names; the workflow supplies only the
         # credential. GITHUB_TOKEN (with `packages: write`) is the credential
         # for GitHub's container registry. For another registry, pipe its
         # credential instead — a GAR key with --username _json_key, an ECR

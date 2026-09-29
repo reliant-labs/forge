@@ -59,6 +59,87 @@ type Context struct {
 	// does not own that ServiceAccount and Kubernetes unions pod-level pull
 	// secrets with the SA's own.
 	ImagePullSecrets []string
+
+	// DatabaseBackup, when set, is the object store a ManagedDatabase
+	// archives WAL and base backups to. Nil renders a Cluster with no
+	// backup stanza — see RenderManagedDatabase for why that stayed the
+	// default rather than becoming an error.
+	//
+	// IT IS A TARGET FACT, NOT A SPEC FIELD, for the same reason Namespace
+	// is: which bucket a database backs up to, and with which identity, is
+	// decided by whoever runs the environment. A hosted user declares that
+	// they want a database and (via spec.Restore) where to recover it
+	// from; they never name a bucket, and a spec field would let them name
+	// somebody else's.
+	DatabaseBackup *DatabaseBackup
+
+	// DatabasePlacement pins a ManagedDatabase's instances onto the nodes
+	// that may hold data. Empty renders no placement, which is what a
+	// single-pool cluster wants.
+	DatabasePlacement *DatabasePlacement
+}
+
+// DatabaseBackup is the object store behind the managed-database tier, as the
+// CNPG-I Barman Cloud plugin consumes it.
+//
+// THE PLUGIN, NOT spec.backup.barmanObjectStore. CNPG deprecated the in-tree
+// stanza in 1.26 and is removing it; a data tier that has to be migrated off
+// its backup mechanism after it holds customer rows is strictly worse than
+// one that adopts the replacement while it holds none.
+type DatabaseBackup struct {
+	// Bucket is the destination, as a barman destinationPath WITHOUT the
+	// per-database suffix: "s3://forge-db-backups/<org>/<env>" or
+	// "gs://...". RenderManagedDatabase appends the database's own segment,
+	// so two databases can never share a prefix.
+	// +required
+	Bucket string
+
+	// EndpointURL overrides the object store endpoint (an in-cluster
+	// S3-compatible store in dev and e2e). Empty uses the provider's real
+	// endpoint, which is what prod wants.
+	EndpointURL string
+
+	// CredentialSecret names a Secret in the database's namespace holding
+	// ACCESS_KEY_ID and ACCESS_SECRET_KEY. Empty means NO static
+	// credential: on GCS the instance authenticates with Workload Identity
+	// (googleCredentials.gkeEnvironment), which is the prod mode and the
+	// reason this is not required.
+	CredentialSecret string
+
+	// RetentionPolicy is a barman retention window ("30d"). Empty keeps
+	// backups forever, which is a cost decision rather than a safe default,
+	// so environments set it.
+	RetentionPolicy string
+
+	// ServerName overrides the WAL stream this database archives under,
+	// inside the bucket prefix. Empty derives one from the database name
+	// (see databaseServerName).
+	//
+	// THE PLATFORM OWNS STREAM IDENTITY BECAUSE THE DERIVED NAME IS NOT
+	// ENOUGH FOR A REPEATED IN-PLACE RESTORE. Restoring "app" from "app"
+	// derives the stream "app-restored". Do it a SECOND time — the first
+	// restore picked the wrong timestamp, which is the single most likely
+	// reason to restore twice — and the derived name is unchanged, so the
+	// new cluster tries to archive into a prefix that already has WAL in
+	// it. barman refuses ("Expected empty archive"), the recovery job
+	// crash-loops, and the failure arrives during an incident.
+	//
+	// An executor that can restore more than once must therefore allocate
+	// a fresh stream per restore (a counter, the deployment generation, a
+	// timestamp) and pass it here. forge cannot derive it: the number of
+	// times this database has been restored is not in the spec.
+	ServerName string
+}
+
+// DatabasePlacement is where a database's instances may run. A data tier's
+// placement is not the same question as a stateless workload's: these pods
+// own persistent volumes, so the nodes they land on decide where the data
+// physically lives and whether it survives a pool being recycled.
+type DatabasePlacement struct {
+	// NodeSelector restricts instances to matching nodes.
+	NodeSelector map[string]string
+	// Tolerations let instances onto tainted nodes.
+	Tolerations []v1alpha1.Toleration
 }
 
 // EnvNetworkPolicy is the input to the env-wide NetworkPolicy bundle
@@ -176,17 +257,44 @@ func DatabaseIdentifiers(name string) (database, role string) {
 // the one that ran live. enableSuperuserAccess is written as false rather
 // than left to CNPG's default: the value is the difference between a customer
 // holding an owner role and holding `postgres`, and a CNPG release changing
-// its default must not change that. There is NO backup stanza. That is a
-// gate, not an omission: a Cluster rendered with a backup section would LOOK
-// backed up while no restore had ever been drilled.
+// its default must not change that.
+//
+// # Backups are rendered when, and only when, the target offers a store
+//
+// ctx.DatabaseBackup nil still renders a Cluster with NO backup stanza, and
+// that remains deliberate: a Cluster carrying a backup section it cannot
+// reach would LOOK backed up while archiving nothing. What changed is that it
+// is no longer the ONLY thing this renders — an environment that has declared
+// an object store gets continuous WAL archiving, scheduled base backups and a
+// retention window, which is what the gate in control-plane's
+// manageddatabase/doc.go was waiting for.
+//
+// The stanza is the CNPG-I Barman Cloud plugin (`spec.plugins`), not
+// `spec.backup.barmanObjectStore`: the in-tree form is deprecated from CNPG
+// 1.26 and slated for removal, and moving a tier off its backup mechanism
+// after it holds customer data is the migration nobody wants to schedule.
+//
+// # serverName, and why a restore may not reuse one
+//
+// Each database archives under its OWN serverName inside the bucket prefix,
+// and a RESTORED database is given a fresh one (`<name>-r<n>`). This is not
+// tidiness. barman-cloud refuses to archive into a non-empty prefix: a
+// restored Cluster pointed at its source's serverName fails
+// barman-cloud-check-wal-archive with "Expected empty archive", the recovery
+// job crash-loops, and the restore never completes. Verified against CNPG
+// 1.30.0 with plugin v0.15.0 — the first restore attempt failed exactly this
+// way, and giving the restored cluster its own serverName fixed it.
+//
+// A fresh serverName also means a restore never writes into the WAL stream it
+// is reading, so a botched restore cannot corrupt the backups it came from.
 //
 // The Cluster is unstructured on purpose. Importing CNPG's typed API would
 // pull the whole operator module into every forge consumer to type-check six
 // fields.
 //
-// Self-hosted, applying this requires the CNPG operator in the cluster. The
-// executor should detect the postgresql.cnpg.io CRD and fail with a runbook
-// if it is missing.
+// Self-hosted, applying this requires the CNPG operator in the cluster (and,
+// for backups, the Barman Cloud plugin). The executor should detect the
+// postgresql.cnpg.io CRD and fail with a runbook if it is missing.
 func RenderManagedDatabase(name string, spec v1alpha1.ManagedDatabaseSpec, ctx Context) ([]*unstructured.Unstructured, error) {
 	if err := ctx.validate(); err != nil {
 		return nil, err
@@ -204,6 +312,76 @@ func RenderManagedDatabase(name string, spec v1alpha1.ManagedDatabaseSpec, ctx C
 	for k, v := range managedLabels(name, ctx.PartOf) {
 		labels[k] = v
 	}
+	clusterSpec := map[string]any{
+		"instances":             int64(spec.Instances),
+		"enableSuperuserAccess": false,
+		"bootstrap": map[string]any{
+			"initdb": map[string]any{"database": database, "owner": role},
+		},
+		"storage": map[string]any{"size": fmt.Sprintf("%dGi", spec.StorageGiB)},
+	}
+	if p := ctx.DatabasePlacement; p != nil {
+		if len(p.NodeSelector) > 0 {
+			sel := map[string]any{}
+			for k, v := range p.NodeSelector {
+				sel[k] = v
+			}
+			clusterSpec["nodeSelector"] = sel
+		}
+		if tols := databaseTolerations(p.Tolerations); len(tols) > 0 {
+			clusterSpec["tolerations"] = tols
+		}
+	}
+
+	objs := []*unstructured.Unstructured{}
+	if b := ctx.DatabaseBackup; b != nil {
+		store, err := renderObjectStore(name, spec, ctx, *b)
+		if err != nil {
+			return nil, err
+		}
+		objs = append(objs, store)
+
+		// The archiving serverName. A restored database gets its own, so
+		// it never writes into the stream it recovered from — barman
+		// refuses a non-empty archive outright.
+		clusterSpec["plugins"] = []any{map[string]any{
+			"name":          barmanPluginName,
+			"isWALArchiver": true,
+			"parameters": map[string]any{
+				"barmanObjectName": name,
+				"serverName":       databaseServerName(name, spec.Restore, b.ServerName),
+			},
+		}}
+	}
+
+	if r := spec.Restore; r != nil {
+		if ctx.DatabaseBackup == nil {
+			return nil, fmt.Errorf("manageddatabase %s: spec.restore needs an object store, and this environment declares none; a restore cannot read backups that were never taken", name)
+		}
+		recoveryTarget := map[string]any{}
+		if r.PointInTime != "" {
+			recoveryTarget["targetTime"] = r.PointInTime
+		}
+		recovery := map[string]any{"source": restoreSourceName}
+		if len(recoveryTarget) > 0 {
+			recovery["recoveryTarget"] = recoveryTarget
+		}
+		// REPLACES initdb. A Cluster bootstraps one way or the other, and
+		// declaring both is how you get an empty database that reports success.
+		clusterSpec["bootstrap"] = map[string]any{"recovery": recovery}
+		clusterSpec["externalClusters"] = []any{map[string]any{
+			"name": restoreSourceName,
+			"plugin": map[string]any{
+				"name": barmanPluginName,
+				"parameters": map[string]any{
+					"barmanObjectName": name,
+					// The SOURCE's stream, which is what makes this a restore.
+					"serverName": r.SourceDatabase,
+				},
+			},
+		}}
+	}
+
 	cluster := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "postgresql.cnpg.io/v1",
 		"kind":       "Cluster",
@@ -213,17 +391,118 @@ func RenderManagedDatabase(name string, spec v1alpha1.ManagedDatabaseSpec, ctx C
 			"labels":      labels,
 			"annotations": map[string]any{AnnotationDeletionPolicy: string(spec.DeletionPolicy)},
 		},
-		"spec": map[string]any{
-			"instances":             int64(spec.Instances),
-			"enableSuperuserAccess": false,
-			"bootstrap": map[string]any{
-				"initdb": map[string]any{"database": database, "owner": role},
-			},
-			"storage": map[string]any{"size": fmt.Sprintf("%dGi", spec.StorageGiB)},
-		},
+		"spec": clusterSpec,
 	}}
-	stampEnv([]*unstructured.Unstructured{cluster}, ctx.Env)
-	return []*unstructured.Unstructured{cluster}, nil
+	objs = append(objs, cluster)
+	stampEnv(objs, ctx.Env)
+	return objs, nil
+}
+
+// barmanPluginName is the CNPG-I plugin the Barman Cloud operator registers.
+const barmanPluginName = "barman-cloud.cloudnative-pg.io"
+
+// restoreSourceName is the externalClusters entry a recovery bootstrap reads.
+// Internal to the rendered object, so it is a constant rather than a knob.
+const restoreSourceName = "origin"
+
+// databaseServerName is the prefix a database's WAL and base backups are
+// written under, inside the environment's bucket.
+//
+// A restored database MUST NOT reuse its source's stream: barman-cloud's
+// pre-flight refuses to archive into a non-empty prefix ("Expected empty
+// archive") and the recovery job crash-loops. The restored database is also a
+// different timeline, so sharing a stream would interleave two histories in
+// one prefix even if barman allowed it.
+//
+// override wins when the platform allocated a stream itself, which an
+// executor that can restore the same database twice MUST do — see
+// DatabaseBackup.ServerName. The derived "-restored" suffix is correct for a
+// first restore and collides on a second.
+func databaseServerName(name string, restore *v1alpha1.DatabaseRestore, override string) string {
+	if override != "" {
+		return override
+	}
+	if restore == nil {
+		return name
+	}
+	return name + "-restored"
+}
+
+// renderObjectStore renders the plugin's ObjectStore: one per database, in the
+// database's own namespace, under its own prefix.
+//
+// THE PREFIX IS THE ISOLATION BOUNDARY. It is composed from the environment's
+// bucket and the database's name, both of which the platform controls — a
+// hosted user cannot name a path, so they cannot name anyone else's.
+func renderObjectStore(name string, spec v1alpha1.ManagedDatabaseSpec, ctx Context, b DatabaseBackup) (*unstructured.Unstructured, error) {
+	if b.Bucket == "" {
+		return nil, fmt.Errorf("manageddatabase %s: backup bucket is empty; an object store with no destination archives nothing", name)
+	}
+	configuration := map[string]any{
+		"destinationPath": strings.TrimSuffix(b.Bucket, "/") + "/" + name,
+		"wal":             map[string]any{"compression": "gzip"},
+		"data":            map[string]any{"compression": "gzip"},
+	}
+	if b.EndpointURL != "" {
+		configuration["endpointURL"] = b.EndpointURL
+	}
+	if b.CredentialSecret != "" {
+		configuration["s3Credentials"] = map[string]any{
+			"accessKeyId":     map[string]any{"name": b.CredentialSecret, "key": "ACCESS_KEY_ID"},
+			"secretAccessKey": map[string]any{"name": b.CredentialSecret, "key": "ACCESS_SECRET_KEY"},
+		}
+	} else {
+		// No secret at all: Workload Identity. The pod's own GCP identity
+		// authenticates, so there is no key to rotate, leak or forget.
+		configuration["googleCredentials"] = map[string]any{"gkeEnvironment": true}
+	}
+
+	storeSpec := map[string]any{"configuration": configuration}
+	if b.RetentionPolicy != "" {
+		storeSpec["retentionPolicy"] = b.RetentionPolicy
+	}
+
+	labels := map[string]any{}
+	for k, v := range managedLabels(name, ctx.PartOf) {
+		labels[k] = v
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "barmancloud.cnpg.io/v1",
+		"kind":       "ObjectStore",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": ctx.Namespace,
+			"labels":    labels,
+		},
+		"spec": storeSpec,
+	}}, nil
+}
+
+// databaseTolerations converts to the unstructured shape, omitting empty
+// fields so the rendered object stays diff-stable against the API server's
+// defaulting.
+func databaseTolerations(in []v1alpha1.Toleration) []any {
+	var out []any
+	for _, t := range in {
+		tol := map[string]any{}
+		if t.Key != "" {
+			tol["key"] = t.Key
+		}
+		if t.Operator != "" {
+			tol["operator"] = string(t.Operator)
+		}
+		if t.Value != "" {
+			tol["value"] = t.Value
+		}
+		if t.Effect != "" {
+			tol["effect"] = string(t.Effect)
+		}
+		if t.TolerationSeconds != nil {
+			tol["tolerationSeconds"] = *t.TolerationSeconds
+		}
+		out = append(out, tol)
+	}
+	return out
 }
 
 // toUnstructured converts typed objects and removes ONLY the noise the typed

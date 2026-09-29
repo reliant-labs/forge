@@ -63,22 +63,6 @@ repository = lambda image: str -> str {
     _no_digest[:_colon] if _colon > _last_slash else _no_digest
 }
 
-# `image` with its registry host REPLACED by `host`, keeping the rest of the
-# path and any `:tag` / `@digest` (`ghcr.io/acme/api` + `localhost:5051` →
-# `localhost:5051/acme/api`). A hostless image simply gains the host.
-#
-# This is what a LOCAL env does with a workload declared against a real
-# registry: a k3d cluster pulls from a host-local registry, so dev re-points
-# the same declaration rather than the project declaring its image twice. The
-# path is kept so two workloads that differ only in their org path stay
-# distinct after the swap.
-on_registry = lambda image: str, host: str -> str {
-    _first_slash = image.find("/")
-    _head = image[:_first_slash] if _first_slash > 0 else ""
-    _rest = image[_first_slash + 1:] if (_head != "" and (("." in _head) or (":" in _head) or (_head == "localhost"))) else image
-    "${host}/${_rest}"
-}
-
 # The KEY `image` is looked up under in the `image_digests` map.
 #
 # A DIGEST-pinned image has no key: it already names its bytes, and nothing

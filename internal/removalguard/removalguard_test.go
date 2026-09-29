@@ -487,8 +487,8 @@ var removals = []removal{
 				Name: "prose and helpers about the registry an IMAGE names",
 				Reason: "The registry did not stop existing — it moved onto the image. So the words " +
 					"`registry` and `registryHost` are everywhere they should be: reading the host off a " +
-					"reference (registryHost, is_local_registry, image_registry_host, " +
-					"image_on_registry), the `forge registry login` / `ref` commands, and the docstrings " +
+					"reference (registryHost, is_local_registry, image_registry_host), the " +
+					"`forge registry login` / `ref` commands, and the docstrings " +
 					"that teach where a registry IS declared. Only the spellings above — an env-wide " +
 					"field and the Go plumbing that read one — are forbidden.",
 				Token: regexp.MustCompile(`\benvRegistry\b|\bpushRegistryChoice\b|(?m)^\s*registry\s*=\s*"`),
@@ -1448,6 +1448,25 @@ var removals = []removal{
 				Reason: "They must write the refused spellings to prove each one fails.",
 				Paths:  []string{"internal/cli/build_push_registry_test.go"},
 			},
+		},
+	},
+	{
+		Name: "the image_on_registry string helper",
+		Why: "`forge.image_on_registry(image, host)` (and the lib/images.k `on_registry` " +
+			"behind it) swapped the registry host on an image reference so one env could " +
+			"re-point another env's declaration. It was string manipulation KCL already " +
+			"does, dressed up as forge API: a helper forge had to keep, document and teach " +
+			"forever in order to save an author one interpolation.\n" +
+			"The model now is the plain one: an image is a literal string on each workload, " +
+			"and an env that needs a different image sets `image` on that workload in its " +
+			"own KCL. A project that wants one source of truth writes its own constant — " +
+			"forge prescribes no pattern for it and ships no helper.",
+		Patterns: []*regexp.Regexp{
+			// The forge-namespaced export and the lib binding behind it.
+			// `\b`-anchored on both sides so a project's own identifier that
+			// merely ends in these words is not policed.
+			regexp.MustCompile(`\bimage_on_registry\b`),
+			regexp.MustCompile(`\bimg_lib\.on_registry\b|(?m)^on_registry\s*=`),
 		},
 	},
 }

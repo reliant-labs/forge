@@ -226,9 +226,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live-Secret checks too.
 
   cert-manager writes the Secret when it reconciles the Certificate, in the
-  same apply pass that creates the pods mounting it, exactly as `kubectl
-  apply` orders a rendered `kind: Secret` ahead of its consumers. Demanding
-  it exist beforehand made a first deploy of any cert-manager-backed workload
+  same apply pass that creates the pods mounting it, exactly as
+  `kubectl apply` orders a rendered `kind: Secret` ahead of its consumers.
+  Demanding it exist beforehand made a first deploy of any cert-manager-backed workload
   unsatisfiable by construction: the thing that provisions the Secret was the
   very deploy being blocked. The advice the gate printed — declare a
   `KubeconfigSecret` or an `ExternalSecret` — was actively wrong for a

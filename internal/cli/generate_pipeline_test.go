@@ -110,6 +110,10 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"check disowned-sibling dangling refs",
 		"check stale scaffold tests",
 		"go build (validate generated code)",
+		// After the emitters, because the tree it checks is the one they
+		// just produced. A deploy tree that does not compile fails generate
+		// rather than warning — see generate_kcl_loadable.go.
+		"deploy KCL loads",
 		"record generating forge build",
 	}
 

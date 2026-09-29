@@ -453,6 +453,18 @@ func generateSteps() []GenStep {
 		// next `go test`. See generate_stale_scaffold.go.
 		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepGoBuildValidate, Tag: "validate"},
+		// The deploy tree must COMPILE, and a tree that does not is a hard
+		// failure rather than a warning. See generate_kcl_loadable.go: a
+		// generate that exits 0 on an unrenderable tree defers the discovery
+		// to whatever runs next, which is how #322's closed-schema break
+		// surfaced at render with nothing pointing back at the generate that
+		// had already reported success. Runs after the emitters, because the
+		// tree it checks is the one they just produced.
+		// NOT marked ReadOnly, though it writes nothing itself: ReadOnly
+		// licenses the "No files were changed" report, and it is only true of
+		// a step that runs BEFORE the first writer. This one runs last, by
+		// which point the emitters have written the tree it checks.
+		{Name: "deploy KCL loads", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepKCLLoadable, Tag: "validate"},
 		// Last: record WHICH forge build produced this tree, so a later
 		// run by a different build can say so instead of failing
 		// confusingly. Runs only after everything above succeeded, so the

@@ -193,7 +193,6 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 		if stripped == e.src {
 			continue
 		}
-		e.newSrc = stripped
 		used := false
 		for workload := range bare {
 			if pullRegistries[workload][e.name] != "" {
@@ -228,7 +227,6 @@ type envFile struct {
 	name     string
 	path     string
 	src      string
-	newSrc   string
 	registry string
 	// bindings maps workload name → the runtime the binder it is passed to
 	// constructs ("OnCluster", "OnHost", …).

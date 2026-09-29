@@ -235,20 +235,6 @@ func imageRepository(image string) string {
 	return image
 }
 
-// imagePinnedTag is the tag an image reference pins, or "" when it pins none.
-// A registry-port colon sits before the last `/`, so a tag colon is the
-// rightmost `:` after the rightmost `/`; a digest-pinned image pins no tag.
-func imagePinnedTag(image string) string {
-	if strings.Contains(image, "@") {
-		return ""
-	}
-	lastSlash := strings.LastIndex(image, "/")
-	if colon := strings.LastIndex(image, ":"); colon > lastSlash {
-		return image[colon+1:]
-	}
-	return ""
-}
-
 // buildEnvArgRe is the shape of every env name (validateEnvName's rule): a
 // deploy/kcl/<env>/ directory and a KCL identifier segment.
 var buildEnvArgRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)

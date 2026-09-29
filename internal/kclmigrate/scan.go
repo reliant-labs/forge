@@ -59,8 +59,6 @@ var (
 	// `<ident> = fw.Workload {` / `forge.Workload {` — a declaration in
 	// workloads.k.
 	workloadStartRe = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:fw|forge)\.Workload[ \t]*\{`)
-	// `<ident> = forge.Frontend {` — a frontend assigned to a name.
-	frontendStartRe = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:fe|fw|forge)\.Frontend[ \t]*\{`)
 	// A frontend literal ANYWHERE, including inline in the Bundle's list
 	// (`frontends = [forge.Frontend {…}]`), which is what forge scaffolds and
 	// what hounders wrote. A reader that required a top-level assignment saw no
@@ -437,30 +435,45 @@ func declarationsIn(src string, startRe *regexp.Regexp, buildOf func(expr string
 		}
 		if m := buildFieldRe.FindStringSubmatch(block); m != nil {
 			d.HasBuild = true
-			expr := strings.TrimSpace(m[1])
-			// Inline: `build = forge.GoBuild {… output_name = "x"}`.
-			if om := outputNameRe.FindStringSubmatch(expr); om != nil {
-				d.OutputName = om[1]
-			} else if identifierRe.MatchString(expr) {
-				// A reference to a build declared elsewhere — the shape a
-				// project writes when several workloads share ONE build.
-				if buildOf == nil {
-					d.BuildUnresolved = true
-				} else if body, ok := buildOf(expr); ok {
-					if om := outputNameRe.FindStringSubmatch(body); om != nil {
-						d.OutputName = om[1]
-					}
-				} else {
-					d.BuildUnresolved = true
-				}
-			} else if !strings.Contains(expr, "{") {
-				// Something else that is neither inline nor a plain name.
-				d.BuildUnresolved = true
-			}
+			d.OutputName, d.BuildUnresolved = readOutputName(strings.TrimSpace(m[1]), buildOf)
 		}
 		out = append(out, d)
 	}
 	return out
+}
+
+// readOutputName reads a build's `output_name` from a `build = <expr>` RHS,
+// reporting whether the build could not be resolved at all.
+//
+// An unresolved build is NOT the same as one with no output_name: forge derives
+// the image from output_name, so a build this reader could not read means the
+// derived name would be a guess — and a wrong guess writes a reference to a
+// repository the build never pushes to. The caller turns that into a refusal.
+func readOutputName(expr string, buildOf func(string) (string, bool)) (name string, unresolved bool) {
+	// Inline: `build = forge.GoBuild {… output_name = "x"}`.
+	if om := outputNameRe.FindStringSubmatch(expr); om != nil {
+		return om[1], false
+	}
+	// A reference to a build declared elsewhere — the shape a project writes
+	// when several workloads share ONE build.
+	if identifierRe.MatchString(expr) {
+		if buildOf == nil {
+			return "", true
+		}
+		body, ok := buildOf(expr)
+		if !ok {
+			return "", true
+		}
+		if om := outputNameRe.FindStringSubmatch(body); om != nil {
+			return om[1], false
+		}
+		return "", false
+	}
+	// Something else that is neither inline nor a plain name.
+	if !strings.Contains(expr, "{") {
+		return "", true
+	}
+	return "", false
 }
 
 // hostedFrontendsIn returns every forge.Frontend declaration in src bound to

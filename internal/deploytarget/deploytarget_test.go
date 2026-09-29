@@ -13,7 +13,6 @@ func TestGroupServices_K8sClusterShared(t *testing.T) {
 	prod := &RawK8sCluster{
 		Cluster:   "prod",
 		Namespace: "ns-prod",
-		Registry:  "ghcr.io/x/y",
 		Spec:      &K8sClusterSpec{Replicas: 1},
 	}
 	groups, err := GroupServices("prod", []RawService{
@@ -43,9 +42,9 @@ func TestGroupServices_K8sClusterShared(t *testing.T) {
 // in DIFFERENT groups — each cluster-namespace tuple is one apply.
 func TestGroupServices_K8sClusterMixed(t *testing.T) {
 	groups, err := GroupServices("prod", []RawService{
-		{Name: "a", K8sCluster: &RawK8sCluster{Cluster: "c1", Namespace: "n1", Registry: "r", Spec: &K8sClusterSpec{}}},
-		{Name: "b", K8sCluster: &RawK8sCluster{Cluster: "c1", Namespace: "n1", Registry: "r", Spec: &K8sClusterSpec{}}},
-		{Name: "c", K8sCluster: &RawK8sCluster{Cluster: "c2", Namespace: "n2", Registry: "r", Spec: &K8sClusterSpec{}}},
+		{Name: "a", K8sCluster: &RawK8sCluster{Cluster: "c1", Namespace: "n1", Spec: &K8sClusterSpec{}}},
+		{Name: "b", K8sCluster: &RawK8sCluster{Cluster: "c1", Namespace: "n1", Spec: &K8sClusterSpec{}}},
+		{Name: "c", K8sCluster: &RawK8sCluster{Cluster: "c2", Namespace: "n2", Spec: &K8sClusterSpec{}}},
 	})
 	if err != nil {
 		t.Fatalf("GroupServices: %v", err)
@@ -62,7 +61,7 @@ func TestGroupServices_SkipsHostAndBuildOnly(t *testing.T) {
 	groups, err := GroupServices("dev", []RawService{
 		{Name: "host-svc"},  // no K8sCluster/Compose/HostInfra → skipped
 		{Name: "build-svc"}, // same
-		{Name: "deployable", K8sCluster: &RawK8sCluster{Cluster: "c", Namespace: "n", Registry: "r", Spec: &K8sClusterSpec{}}},
+		{Name: "deployable", K8sCluster: &RawK8sCluster{Cluster: "c", Namespace: "n", Spec: &K8sClusterSpec{}}},
 	})
 	if err != nil {
 		t.Fatalf("GroupServices: %v", err)

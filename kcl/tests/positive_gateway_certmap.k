@@ -14,7 +14,6 @@ import forge.workloads as fw
 _target = forge.ClusterTarget {
     cluster = "gke-example"
     namespace = "example-prod"
-    registry = "localhost:5050"
 }
 
 _bundle = forge.Bundle {
@@ -23,7 +22,7 @@ _bundle = forge.Bundle {
     workloads = [
         fw.Workload {
             name = "api"
-            image = "example"
+            image = "localhost:5050/example"
             ports = [fw.Port {name = "http", port = 8080}]
             runtime = forge.OnCluster {target = _target}
         }

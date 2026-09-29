@@ -8,7 +8,9 @@ records in `manifests`.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev"}
+# The image carries the registry — no env field does. forge appends the tag.
+_image = "localhost:5050/acme"
 _build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
 
 output = forge.render(forge.Bundle {
@@ -18,6 +20,7 @@ output = forge.render(forge.Bundle {
     workloads = [
         fw.Workload {
             name = "api"
+            image = _image
             build = _build
             args = ["api"]
             replicas = 2
@@ -29,10 +32,11 @@ output = forge.render(forge.Bundle {
             }
             runtime = forge.OnCluster {target = _k3d}
         }
-        fw.Workload {name = "migrate", kind = "job", build = _build, args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL], runtime = forge.OnCluster {target = _k3d}}
+        fw.Workload {name = "migrate", kind = "job", image = _image, build = _build, args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL], runtime = forge.OnCluster {target = _k3d}}
         fw.Workload {
             name = "nightly"
             kind = "cron"
+            image = _image
             build = _build
             args = ["sweep"]
             schedule = "@daily"
@@ -43,6 +47,7 @@ output = forge.render(forge.Bundle {
         fw.Workload {
             name = "workspace"
             kind = "operator"
+            image = _image
             build = _build
             args = ["workspace-controller"]
             crds = ["Workspace"]

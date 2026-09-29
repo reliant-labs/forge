@@ -179,10 +179,8 @@ type ControlPlaneEntity struct {
 	Endpoint     string `json:"endpoint"`
 	TokenEnv     string `json:"token_env,omitempty"`
 	Organization string `json:"organization,omitempty"`
-	// Registry is the image registry a hosted env declares: where
-	// `forge build <env> --push` pushes and what `forge registry login <env>`
-	// logs in to (declaredRegistry). Empty when the env declares none.
-	Registry string `json:"registry,omitempty"`
+	// NO Registry field. A hosted env declares no registry any more than a
+	// cluster env does — each workload declares its own, as part of its image.
 }
 
 // RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s
@@ -696,10 +694,6 @@ type DockerBuild struct {
 	Platform  string            `json:"platform,omitempty"`
 	Target    string            `json:"target,omitempty"`
 	BuildArgs map[string]string `json:"build_args,omitempty"`
-	// Registry is the tag registry for THIS service's image
-	// (registry-host[/namespace]). Empty is the registry the env declares
-	// (buildOptions.envRegistry); with none, the image is tagged bare.
-	Registry string `json:"registry,omitempty"`
 	// BuildContexts maps a `docker buildx --build-context name=value` entry
 	// THIS service's Dockerfile needs (a sibling-checkout path the Dockerfile
 	// `COPY --from=name`s, a `docker-image://` override, …). Same value shapes
@@ -848,6 +842,13 @@ type FrontendEntity struct {
 	// Bundle refuses a frontend with none. Zero only for a frontend bridged
 	// in from forge.yaml (mergeConfigFrontends), which is dev-served.
 	Runtime FrontendRuntime `json:"runtime"`
+	// Image is where an OnHosted frontend's site release is pushed: the
+	// reference the frontend DECLARES, registry host included. Empty for every
+	// other runtime (the render refuses it there, and requires it on hosted).
+	// forge appends the platform's static.v1 layout — see
+	// deploytarget.HostedStaticRepository — so the declared reference stays
+	// exactly what the author wrote.
+	Image string `json:"image,omitempty"`
 	// PublicDir is the build's static output dir relative to the frontend's
 	// code — declared, else the type's convention (resolved by the render).
 	PublicDir string `json:"public_dir,omitempty"`

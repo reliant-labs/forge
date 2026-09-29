@@ -14,7 +14,6 @@ import forge.workloads as fw
 _k3d = forge.ClusterTarget {
     cluster = "k3d-myapp"
     namespace = "myapp-dev"
-    registry = "localhost:5050"
 }
 
 # Host: air, cross-repo working_dir, declared listen port. No env on the
@@ -36,7 +35,7 @@ _admin = fw.Workload {
 _proxy = fw.Workload {
     name = "workspace-proxy"
     build = forge.GoBuild {cmd = "./cmd/myapp", output_name = "myapp"}
-    image = "myapp"
+    image = "localhost:5050/myapp"
     args = ["proxy"]
     replicas = 2
     ports = [
@@ -63,7 +62,7 @@ _daemon = fw.Workload {
 _op = fw.Workload {
     name = "workspace-controller"
     kind = "operator"
-    image = "myapp"
+    image = "localhost:5050/myapp"
     args = ["controller"]
     crds = ["Workspace"]
     clusterRBAC = [{apiGroups = ["forge.io"], resources = ["workspaces"], verbs = ["*"]}]
@@ -71,14 +70,14 @@ _op = fw.Workload {
 _cron = fw.Workload {
     name = "billing-sweeper"
     kind = "cron"
-    image = "myapp"
+    image = "localhost:5050/myapp"
     args = ["cron", "billing-sweep"]
     schedule = "@hourly"
 }
 _job = fw.Workload {
     name = "db-bootstrap"
     kind = "job"
-    image = "myapp"
+    image = "localhost:5050/myapp"
     args = ["db", "migrate", "up"]
 }
 
@@ -131,7 +130,11 @@ assert_host_spec_image_empty = "image" not in _w["admin-server"].spec or _w["adm
 
 # ── Cluster runtime block: the target's coordinates, resolved ──────
 _c = _w["workspace-proxy"].runtime
-assert_cluster_coords = _c.cluster == "k3d-myapp" and _c.namespace == "myapp-dev" and _c.registry == "localhost:5050"
+assert_cluster_coords = _c.cluster == "k3d-myapp" and _c.namespace == "myapp-dev"
+# The runtime block carries no registry: the registry is part of the workload's
+# image, which is where it is declared and where the spec resolves it from.
+assert_cluster_has_no_registry = "registry" not in _c
+assert_cluster_image_is_declared_ref = _w["workspace-proxy"].spec.image.startswith("localhost:5050/myapp:")
 assert_cluster_optional_null = _c.domain == None and _c.platform == None
 assert_cluster_replicas_in_spec = _w["workspace-proxy"].spec.replicas == 2
 assert_cluster_ports_in_spec = [p.name for p in _w["workspace-proxy"].spec.ports] == ["http", "grpc"]

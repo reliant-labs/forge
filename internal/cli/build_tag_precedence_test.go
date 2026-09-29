@@ -50,21 +50,21 @@ const tagPrecedenceFixture = `{
     "image_tag": "latest",
     "workloads": [
       {
-        "name": "echo", "kind": "service", "image": "echo", "build_image": "echo",
+        "name": "echo", "kind": "service", "image": "registry.example/prod/echo", "build_image": "registry.example/prod/echo",
         "build": {"type": "shell", "cmd": "echo ran > ran-echo.txt"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "registry": "registry.example/prod"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
       },
       {
-        "name": "gw", "kind": "service", "image": "gw", "build_image": "gw",
+        "name": "gw", "kind": "service", "image": "registry.example/prod/gw", "build_image": "registry.example/prod/gw",
         "build": {"type": "docker", "dockerfile": "Dockerfile"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "registry": "registry.example/prod"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
       },
       {
-        "name": "api", "kind": "service", "image": "reliant", "build_image": "reliant:e2e",
+        "name": "api", "kind": "service", "image": "registry.example/prod/reliant", "build_image": "registry.example/prod/reliant:e2e",
         "build": {"type": "shell", "cmd": "echo ran > ran-api.txt"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "registry": "registry.example/prod"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
         "spec": {"kind": "service"}
       }
     ]
@@ -135,10 +135,13 @@ func assertRecorded(t *testing.T, dir, service, image, tag string) {
 	if st.Tag != tag {
 		t.Errorf("%s: recorded tag %q, want %q", image, st.Tag, tag)
 	}
-	if st.Image != image {
-		t.Errorf("%s: recorded image %q, want %q (the deploy and ledger key)", service, st.Image, image)
+	// The recorded Image is the full REPOSITORY the workload declared — host
+	// included, because that is the ledger key and the push target.
+	wantImage := tagPrecedenceRegistry + "/" + image
+	if st.Image != wantImage {
+		t.Errorf("%s: recorded image %q, want %q (the deploy and ledger key)", service, st.Image, wantImage)
 	}
-	wantRef := tagPrecedenceRegistry + "/" + image + ":" + tag
+	wantRef := wantImage + ":" + tag
 	if st.Digest != digestOf(wantRef) {
 		t.Errorf("%s: recorded digest %q is not the digest of the pushed ref %s (%s)", image, st.Digest, wantRef, digestOf(wantRef))
 	}
@@ -260,9 +263,10 @@ func TestBuildTag_ReleaseWinsAndReachesTheLedger(t *testing.T) {
 	}
 	for service, image := range map[string]string{"echo": "echo", "gw": "gw", "api": "reliant"} {
 		assertRecorded(t, dir, service, image, "v2.0.0")
-		art, ok := rel.Artifacts[image]
+		// The ledger is keyed by the declared REPOSITORY, host included.
+		art, ok := rel.Artifacts[tagPrecedenceRegistry+"/"+image]
 		if !ok {
-			t.Errorf("release ledger has no %s artifact", image)
+			t.Errorf("release ledger has no %s/%s artifact", tagPrecedenceRegistry, image)
 			continue
 		}
 		if want := digestOf(tagPrecedenceRegistry + "/" + image + ":v2.0.0"); art.Digests[release.SharedVariant] != want {

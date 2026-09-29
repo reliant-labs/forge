@@ -16,16 +16,16 @@ this.
 import forge
 import forge.workloads as fw
 
-_t = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_t = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 
 output = forge.render(forge.Bundle {
     project = "demo"
     workloads = [_w | {runtime = forge.OnCluster {target = _t}} if not _w.runtime else _w for _w in [
-        fw.Workload {name = "api", image = "demo"}
+        fw.Workload {name = "api", image = "localhost:5050/demo"}
         fw.Workload {
             kind = "job"
             name = "provision"
-            image = "demo"
+            image = "localhost:5050/demo"
             args = ["provision"]
             # `apiserver` does not exist — the workload is called `api`.
             before = ["apiserver"]

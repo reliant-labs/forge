@@ -8,7 +8,10 @@ workload reaches the host api through the cluster's host gateway.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev"}
+# Declared once, used by whichever workloads run on a runtime that pulls one.
+# `api` and `migrate` run OnHost and `cli` is BuildOnly, so they need none.
+_image = "localhost:5050/acme"
 _build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
 
 output = forge.render(forge.Bundle {
@@ -28,6 +31,7 @@ output = forge.render(forge.Bundle {
         fw.Workload {name = "nats", runtime = forge.OnCompose {}}
         fw.Workload {
             name = "search"
+            image = _image
             build = _build
             args = ["search"]
             ports = [fw.Port {name = "http", port = 8080}]
@@ -37,6 +41,7 @@ output = forge.render(forge.Bundle {
         fw.Workload {
             name = "billing"
             kind = "worker"
+            image = _image
             build = _build
             args = ["billing"]
             env = {STRIPE_KEY = forge.ManagedSecret {name = "STRIPE_KEY"}}

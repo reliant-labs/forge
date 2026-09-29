@@ -20,6 +20,13 @@ import forge.workloads as fw
 
 _build = forge.GoBuild {cmd = "./cmd/example", output_name = "example"}
 
+# The image, registry INCLUDED. This is where a registry is declared — no env
+# field carries one, so the reference you read here is the one the build pushes
+# to and the cluster pulls. forge appends only the tag (and, after a push, the
+# digest), so binding this same declaration to a second env changes the tag,
+# never the registry. A workload that only ever runs OnHost needs no image.
+_image = "ghcr.io/acme/example"
+
 # A service built from this repo. `args` select the subcommand on every
 # runtime: `go run ./cmd/example api` on the host, `example api` in a pod.
 # forge writes its /readyz + /healthz probes into the spec.
@@ -48,6 +55,7 @@ _migrate = fw.Workload {
 _controller = fw.Workload {
     name = "workspace-controller"
     kind = "operator"
+    image = _image
     build = _build
     args = ["workspace-controller"]
     crds = ["Workspace"]
@@ -58,12 +66,14 @@ _controller = fw.Workload {
 _sweeper = fw.Workload {
     name = "billing-sweeper"
     kind = "cron"
+    image = _image
     build = _build
     args = ["cron", "billing-sweep"]
     schedule = "@hourly"
 }
 
-# Third-party infrastructure the compose file defines.
+# Third-party infrastructure the compose file defines. A compose service
+# runs no image forge resolves, so it declares none.
 _nats = fw.Workload {name = "nats"}
 
 # A CLI shipped in the release, never run: two ldflag variants.
@@ -78,7 +88,6 @@ _cli = fw.Workload {
 _k3d = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
-    registry = "localhost:5050"
 }
 
 output = forge.render(forge.Bundle {

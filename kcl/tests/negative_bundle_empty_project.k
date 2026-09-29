@@ -10,7 +10,7 @@ name, or the first workload's) silently selects the wrong set.
 import forge
 import forge.workloads as fw
 
-_t = forge.ClusterTarget {cluster = "k3d-x", namespace = "x", registry = "localhost:5051"}
+_t = forge.ClusterTarget {cluster = "k3d-x", namespace = "x"}
 _rt = forge.OnCluster {target = _t}
 
 output = forge.render(forge.Bundle {

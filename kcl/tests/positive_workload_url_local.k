@@ -14,7 +14,7 @@ so tooling can show what was authored.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev", registry = "localhost:5000"}
+_k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev"}
 
 _out = forge.render(forge.Bundle {
     project = "acme"

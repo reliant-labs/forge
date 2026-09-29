@@ -59,7 +59,7 @@ const imagelessInfraFixture = `{
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -68,8 +68,7 @@ const imagelessInfraFixture = `{
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -123,7 +122,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -132,8 +131,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -142,7 +140,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
       {
         "name": "ghost",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/ghost",
@@ -151,8 +149,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -201,7 +198,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -210,8 +207,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -220,7 +216,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
       {
         "name": "sib",
         "kind": "service",
-        "image": "sib",
+        "image": "registry.example/prod/sib",
         "build": {
           "type": "shell",
           "cmd": "docker push ${REGISTRY}/${IMAGE}:${TAG}",
@@ -229,8 +225,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -258,7 +253,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -267,8 +262,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -277,7 +271,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
       {
         "name": "vendored",
         "kind": "service",
-        "image": "somebody-elses",
+        "image": "registry.example/prod/somebody-elses",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -286,8 +280,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -312,17 +305,16 @@ const hostedStaticPlanFixture = `{
     "control_plane": {
       "type": "control_plane",
       "endpoint": "http://127.0.0.1:1",
-      "token_env": "FORGE_CONTROL_PLANE_TOKEN",
-      "registry": "ghcr.io/x"
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN"
     },
     "workloads": [
       {
         "name": "api",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {"type": "go", "cmd": "./cmd/pt", "output_name": "pt"},
         "runtime": {"type": "hosted"},
-        "spec": {"kind": "service", "image": "pt"}
+        "spec": {"kind": "service", "image": "registry.example/prod/pt"}
       }
     ],
     "frontends": [
@@ -331,6 +323,7 @@ const hostedStaticPlanFixture = `{
         "type": "nextjs",
         "path": "frontends/web",
         "public_dir": "out",
+        "image": "ghcr.io/x/web",
         "runtime": {"type": "hosted"}
       }
     ]
@@ -362,7 +355,7 @@ func TestBuildPlan_HostedStaticSiteIsAStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--plan --push --release on a hosted env: want nil, got %v\n%s", err, out)
 	}
-	for _, want := range []string{"static", "npm run build in frontends/web → out", "push ghcr.io/x/static.v1/web"} {
+	for _, want := range []string{"static", "npm run build in frontends/web → out", "push ghcr.io/x/web/static.v1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plan output lacks %q:\n%s", want, out)
 		}
@@ -406,7 +399,7 @@ func TestBuildPlan_HostedStaticSiteMissingPackageJSON(t *testing.T) {
 // `:latest` — so a cut that fails after its first push leaves every shared
 // tag where it was. Ordinary builds keep `:latest`.
 func TestImageTagSet_ReleaseWritesOnlyTheVersion(t *testing.T) {
-	rel := imageTagSet("reg.local", "control-plane", "gar.example/prod", "v1.7.0", true)
+	rel := imageTagSet("gar.example/prod/control-plane", "v1.7.0", true, true)
 	wantPush := []string{"gar.example/prod/control-plane:v1.7.0"}
 	if strings.Join(rel.push, ",") != strings.Join(wantPush, ",") {
 		t.Errorf("release push tags = %v, want exactly %v", rel.push, wantPush)
@@ -417,7 +410,7 @@ func TestImageTagSet_ReleaseWritesOnlyTheVersion(t *testing.T) {
 		}
 	}
 
-	ord := imageTagSet("reg.local", "control-plane", "gar.example/prod", "sha-abc", false)
+	ord := imageTagSet("gar.example/prod/control-plane", "sha-abc", true, false)
 	if !containsStr(ord.push, "gar.example/prod/control-plane:latest") || !containsStr(ord.push, "gar.example/prod/control-plane:sha-abc") {
 		t.Errorf("ordinary build push tags = %v, want :latest and :sha-abc", ord.push)
 	}
@@ -440,7 +433,7 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
       {
         "name": "pt",
         "kind": "service",
-        "image": "pt",
+        "image": "registry.example/prod/pt",
         "build": {
           "type": "go",
           "cmd": "./cmd/pt",
@@ -449,8 +442,7 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -519,8 +511,8 @@ func TestExternalBuildTag_ReleaseOverridesSharedTags(t *testing.T) {
 // path shares imageTagSet, so a release never tags it `:latest` either.
 func TestServiceDockerBuildArgs_ReleaseDropsLatest(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "control-plane"}
-	args, push := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{},
-		buildOptions{release: "v1.7.0", pushRegistry: "gar.example/prod"}, "", "v1.7.0")
+	args, push := serviceDockerBuildArgs(cfg, "gar.example/prod/svc", "Dockerfile", &DockerBuild{},
+		buildOptions{release: "v1.7.0", pushPlan: pushPlan{push: true}}, "", "v1.7.0")
 	for _, a := range args {
 		if strings.HasSuffix(a, ":latest") {
 			t.Errorf("release DockerBuild tagged %q", a)

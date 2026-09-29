@@ -17,6 +17,7 @@ output = forge.render(forge.Bundle {
     control_plane = forge.ControlPlane {}
     frontends = [forge.Frontend {
         name = "web"
+        image = "ghcr.io/acme/web"
         path = "web"
         type = "vite"
         cache_control = [forge.CacheRule {pattern = "**", cache_control = "no-cache"}]

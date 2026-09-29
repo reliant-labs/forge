@@ -130,7 +130,6 @@ func TestBuildStateRoundTrip(t *testing.T) {
 	want := BuildState{
 		Image:    "cp-forge",
 		Tag:      "2d54e0c-dirty",
-		Registry: "localhost:5051",
 		PushedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := WriteBuildState(dir, "dev-host", want); err != nil {
@@ -239,7 +238,7 @@ func TestResolveDeployImageTag_FlagOverrideWins(t *testing.T) {
 		}
 	}
 	must(WriteBuildState(dir, "dev", BuildState{
-		Image: "cp-forge", Tag: "from-state", Registry: "r", PushedAt: nowRFC3339(),
+		Image: "cp-forge", Tag: "from-state", PushedAt: nowRFC3339(),
 	}))
 	tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "from-flag", false)
 	if err != nil {
@@ -265,7 +264,7 @@ func TestResolveDeployImageTag_StateFileWinsOverFallback(t *testing.T) {
 		}
 	}
 	must(WriteBuildState(dir, "dev", BuildState{
-		Image: "cp-forge", Tag: "from-state-2d54e0c-dirty", Registry: "r", PushedAt: nowRFC3339(),
+		Image: "cp-forge", Tag: "from-state-2d54e0c-dirty", PushedAt: nowRFC3339(),
 	}))
 	tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "", false)
 	if err != nil {

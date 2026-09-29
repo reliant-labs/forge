@@ -31,7 +31,6 @@ import yaml
 _target = forge.ClusterTarget {
     cluster = "k3d-control-plane"
     namespace = "control-plane-e2e"
-    registry = "localhost:5051"
 }
 
 _bundle = forge.Bundle {
@@ -39,7 +38,7 @@ _bundle = forge.Bundle {
     cluster_target = _target
     workloads = [fw.Workload {
         name = "api"
-        image = "example"
+        image = "localhost:5051/example"
         ports = [fw.Port {name = "http", port = 8080}]
         runtime = forge.OnCluster {target = _target}
     }]

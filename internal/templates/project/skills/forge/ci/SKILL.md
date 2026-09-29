@@ -109,17 +109,21 @@ paths as changed before `forge generate` ran, not as generated-code drift.
 
 ### No workflow names a registry
 
-An image registry is declared in the env's KCL (`forge.ClusterTarget.registry`,
-or `forge.ControlPlane.registry` for a hosted env) and nowhere else — no
-`REGISTRY` env or repository variable, no value after `--push`, no
-`docker/login-action` or `docker/metadata-action` input. The workflows reach
-it through forge:
+An image registry is part of a WORKLOAD's `image` in `deploy/kcl/workloads.k`
+(`image = "ghcr.io/<owner>/<name>"`) and nowhere else. No env declares one, and
+no workflow names one — no `REGISTRY` env or repository variable, no value after
+`--push`, no `docker/login-action` or `docker/metadata-action` input. The
+workflows reach the registries through forge, which derives them from the
+images:
 
 ```bash
 printf '%s' "$TOKEN" | forge registry login <env> --username <user> --password-stdin
-forge build <env> --push                    # pushes to the declared registry
+forge build <env> --push                    # each image → its own declared reference
 forge registry ref <env> --github-output    # ref= image= digest= for later steps
 ```
+
+`login` logs in to every distinct host the env's images name, so an env whose
+workloads push to two registries needs no extra step.
 
 `build-images.yml` builds once per commit on main for the first deploy env
 (the one `deploy.yml` auto-deploys), then signs, SBOMs, attests and scans the
@@ -131,7 +135,7 @@ key with `--username _json_key`, an ECR token with `--username AWS`).
 ### Deploys go through forge
 
 `deploy.yml` runs, per env, `forge registry login <env>`, `forge build <env>
---push` (to the registry the env's KCL declares), then
+--push` (each image to the reference its workload declares), then
 `forge env deploy <env>` — never `kcl run | kubectl apply`, which cannot
 resolve `kcl_plugin.forge` and skips the declared-context binding, the
 per-env frontend `config.js` render, digest pinning and the live preflight.

@@ -85,7 +85,6 @@ _cp = forge.Cluster { name = "cp" }
 _target = forge.ClusterTarget {
     cluster = "k3d-cp"
     namespace = "dev"
-    registry = "localhost:5051"
 }
 _bundle = forge.Bundle {
     project = "fixture"

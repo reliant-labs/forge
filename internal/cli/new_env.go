@@ -430,17 +430,12 @@ func identSegment(env string) string {
 func transformLine(line, template, name, tIdent, nIdent string) []string {
 	indent := leadingWhitespace(line)
 
-	// 0. The registry declaration — the `_registry` var or a ClusterTarget
-	// `registry` field — in whichever spelling the template uses: a literal,
-	// a project `option("registry") or "…"`, or the retired forge.registry
-	// helper. The derived env declares it as a plain literal: forge emits no
-	// option of its own for it.
-	if m := registryAssignRe.FindStringSubmatch(line); m != nil {
-		return knobLines(indent, m[1], `"REPLACE_ME_REGISTRY"`,
-			"the image registry forge PUSHES to and the deploy PULLS from",
-			"a wrong/stale value SILENTLY ImagePullBackOff's at deploy time",
-			`run 'forge build `+name+` --push' (it pushes to this declared registry) and confirm the pushed ref matches the deploy ref`)
-	}
+	// There is NO registry knob. An env does not declare a registry — each
+	// workload declares its own, as part of its image in
+	// deploy/kcl/workloads.k — so a derived env has no registry to get wrong
+	// and nothing here to placeholder. A leftover `registry = …` copied from
+	// an old template is refused by the closed schema at render, which is a
+	// better signal than a placeholder forge would have to invent.
 
 	// 1. option("X") or "<default>" — image_tag / namespace.
 	if m := optionDefaultRe.FindStringSubmatch(line); m != nil {
@@ -546,7 +541,6 @@ var (
 	// A registry declaration: the `_registry` var or a ClusterTarget
 	// `registry` field, set to a literal, a project `option("registry") or
 	// "…"`, or the retired `forge.registry("…")`. Group 1 is the name.
-	registryAssignRe = regexp.MustCompile(`^\s*(_registry|registry)\s*=\s*(?:"[^"]*"|option\("registry"\)\s*or\s*"[^"]*"|forge\.registry\("[^"]*"\))\s*(?:#.*)?$`)
 	// cluster = "<value>" (inside a ClusterTarget / K8sCluster block).
 	clusterAssignRe = regexp.MustCompile(`^\s*cluster\s*=\s*"[^"]*"`)
 	// platform = "<value>".

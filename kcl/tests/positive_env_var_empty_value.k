@@ -11,13 +11,13 @@ instead of the explicit disable.
 import forge
 import forge.workloads as fw
 
-_target = forge.ClusterTarget {cluster = "k3d-empty-value", namespace = "empty-value-dev", registry = "localhost:5050"}
+_target = forge.ClusterTarget {cluster = "k3d-empty-value", namespace = "empty-value-dev"}
 
 output = forge.render(forge.Bundle {
     project = "demo"
     workloads = [fw.Workload {
         name = "api"
-        image = "api"
+        image = "localhost:5050/api"
         ports = [fw.Port {name = "http", port = 8080}]
         env = {
             RUNTIME_CLASS_NAME = ""

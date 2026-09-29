@@ -12,13 +12,13 @@ about the env's hosted workloads makes it hosted.
 import forge
 import forge.workloads as fw
 
-_k8s = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme", registry = "localhost:5000"}
+_k8s = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme"}
 
 hosted_env = forge.render(forge.Bundle {
     project = "acme"
     control_plane = forge.ControlPlane {}
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api:v1", ports = [fw.Port {name = "http", port = 8080}], runtime = forge.OnCluster {target = _k8s}}]
-    frontends = [forge.Frontend {name = "web", path = "web", type = "vite", runtime = forge.OnHosted {}}]
+    frontends = [forge.Frontend {name = "web", image = "ghcr.io/acme/web", path = "web", type = "vite", runtime = forge.OnHosted {}}]
 })
 
 bucket_env = forge.render(forge.Bundle {

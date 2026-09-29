@@ -25,7 +25,6 @@ import forge.workloads as fw
 _target = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-prod"
-    registry = "localhost:5050"
 }
 
 _issuer = "letsencrypt-dns01"
@@ -36,19 +35,19 @@ _bundle = forge.Bundle {
     workloads = [
         fw.Workload {
             name = "api"
-            image = "example"
+            image = "localhost:5050/example"
             ports = [fw.Port {name = "http", port = 8080}]
             runtime = forge.OnCluster {target = _target}
         }
         fw.Workload {
             name = "admin"
-            image = "example"
+            image = "localhost:5050/example"
             ports = [fw.Port {name = "http", port = 8081}]
             runtime = forge.OnCluster {target = _target}
         }
         fw.Workload {
             name = "daemon-gateway"
-            image = "example"
+            image = "localhost:5050/example"
             ports = [fw.Port {name = "http", port = 9190}]
             runtime = forge.OnCluster {target = _target}
         }

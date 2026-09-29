@@ -210,7 +210,6 @@ const bundleRenderedSecretsMainK = `import forge
 _target = forge.ClusterTarget {
     cluster = "k3d-rs"
     namespace = "rs-dev"
-    registry = "registry.localhost:5000"
 }
 
 _bundle = forge.Bundle {

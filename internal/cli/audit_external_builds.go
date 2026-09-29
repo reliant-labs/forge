@@ -244,7 +244,6 @@ func buildExternalBuildEntry(svc WorkloadEntity, projectDir string, envs []strin
 			Env:      env,
 			Image:    st.Image,
 			Tag:      st.Tag,
-			Registry: st.Registry,
 			PushedAt: st.PushedAt,
 		})
 	}

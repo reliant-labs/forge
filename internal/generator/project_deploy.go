@@ -85,7 +85,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			FrontendName:    g.FrontendName,
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
 			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
-			CloudRegistry:   scaffoldCloudRegistry(g.ModulePath),
+			ScaffoldImage:   codegen.ScaffoldImageRef(g.ModulePath, g.Name),
 		}
 		content, err := templates.DeployTemplates().Render(e.template, data)
 		if err != nil {
@@ -153,7 +153,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// moments later correctly refuses to rewrite a user-owned file, so
 	// nothing would ever fill it in and the project could not deploy the
 	// service it was created with.
-	if err := ScaffoldWorkloadsKCL(g.Path, g.Name,
+	if err := ScaffoldWorkloadsKCL(g.Path, g.ModulePath, g.Name,
 		g.bornComponents(), g.forScaffold().HasFrontend); err != nil {
 		return fmt.Errorf("scaffold %s: %w", codegen.WorkloadsKCLRelPath, err)
 	}
@@ -217,7 +217,7 @@ func (g *ProjectGenerator) bornComponents() codegen.Inventory {
 // same gate docker-compose.yml's `idp` service and the `auth.go` command
 // scaffold both use. A project with no browser never gets an IdP to
 // converge, so it never gets a job for converging one either.
-func ScaffoldWorkloadsKCL(projectDir, projectName string, components codegen.Inventory, hasFrontend bool) error {
+func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components codegen.Inventory, hasFrontend bool) error {
 	if codegen.WorkloadsKCLExists(projectDir) {
 		return nil
 	}
@@ -226,7 +226,7 @@ func ScaffoldWorkloadsKCL(projectDir, projectName string, components codegen.Inv
 		if i > 0 {
 			stanzas.WriteString("\n")
 		}
-		stanzas.WriteString(codegen.WorkloadStanza(projectName, c))
+		stanzas.WriteString(codegen.WorkloadStanza(modulePath, projectName, c))
 	}
 
 	// The deploy-time migration step, scaffolded as an ordinary one-shot
@@ -237,7 +237,7 @@ func ScaffoldWorkloadsKCL(projectDir, projectName string, components codegen.Inv
 	if len(components) > 0 {
 		stanzas.WriteString("\n")
 	}
-	stanzas.WriteString(codegen.MigrateWorkloadStanza(projectName))
+	stanzas.WriteString(codegen.MigrateWorkloadStanza(modulePath, projectName))
 
 	// The dev-IdP convergence step. Not broadcast-gated (see the stanza's
 	// own comment for why), so its position in the file has no ordering
@@ -245,7 +245,7 @@ func ScaffoldWorkloadsKCL(projectDir, projectName string, components codegen.Inv
 	// is the project's oldest one-shot.
 	if hasFrontend {
 		stanzas.WriteString("\n")
-		stanzas.WriteString(codegen.IDPProvisionWorkloadStanza(projectName))
+		stanzas.WriteString(codegen.IDPProvisionWorkloadStanza(modulePath, projectName))
 	}
 
 	// The identifier the docstring uses in its worked `wl.<name> | {...}`
@@ -367,16 +367,4 @@ func (g *ProjectGenerator) generateIDPSteps() error {
 		return fmt.Errorf("render idp-steps.yaml: %w", err)
 	}
 	return os.WriteFile(filepath.Join(g.Path, "idp-steps.yaml"), content, 0644)
-}
-
-// scaffoldCloudRegistry is the image registry a scaffolded cloud env declares
-// by default: GitHub's container registry under the module path's owner
-// (github.com/acme/shop → ghcr.io/acme), which a GitHub-hosted project can
-// push to with nothing but its workflow token. "" when the module path names
-// no GitHub owner, and the template writes a visible placeholder instead.
-func scaffoldCloudRegistry(modulePath string) string {
-	if owner := githubOwnerFromModulePath(modulePath); owner != "" {
-		return "ghcr.io/" + strings.ToLower(owner)
-	}
-	return ""
 }

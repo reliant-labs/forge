@@ -7,7 +7,7 @@ This file BINDS; it does not declare. `deploy/kcl/workloads.k` states what
 each workload is (build, subcommand, ports, credentials). This file says
 where each one runs here — one binding per workload, all on this env's
 cluster as scaffolded — and states the values only this environment knows:
-the cluster, namespace and registry, the capacity floor, the network
+the cluster and namespace, the capacity floor, the network
 policy, and where secrets come from.
 
 Each cluster-bound workload becomes a `forge.dev/v1alpha1 Workload` record,
@@ -39,23 +39,18 @@ import .ingress as ing
 # ---------------------------------------------------------------------------
 # WHERE: the cluster this env deploys to.
 # ---------------------------------------------------------------------------
-# Every workload bound to it renders into `namespace`, pulls from `registry`,
-# and is applied to the kubectl context named by `cluster` — forge checks it
-# is the context it deploys to, never the shell's current one.
+# Every workload bound to it renders into `namespace` and is applied to the
+# kubectl context named by `cluster` — forge checks it is the context it
+# deploys to, never the shell's current one.
+#
+# There is no `registry` here: a workload declares its own, as part of its
+# image in deploy/kcl/workloads.k. This env pushes each image to the reference
+# that workload names, so `forge build {{.EnvName}} --push`, `forge registry
+# login {{.EnvName}}` and `forge env deploy {{.EnvName}}` all follow the images.
 _cluster = forge.ClusterTarget {
     # The kubectl context name of the {{.EnvName}} cluster.
     cluster = "{{.ProjectName}}-{{.EnvName}}"
     namespace = "{{.ProjectName}}-{{.EnvName}}"
-    # The image registry this env pushes to and pulls from — declared here,
-    # and only here: `forge build {{.EnvName}} --push`, `forge registry login
-    # {{.EnvName}}` and `forge env deploy {{.EnvName}}` all read this one value.
-{{- if .CloudRegistry}}
-    registry = "{{.CloudRegistry}}"
-{{- else}}
-    # A visibly placeholder registry: set it to yours (ghcr.io/<owner>,
-    # <region>-docker.pkg.dev/<project>/<repo>, …).
-    registry = "ghcr.io/OWNER"
-{{- end}}
     # The node arch images are built for. Required on a cloud target:
     # without it a build on an arm64 laptop ships arm64 images to amd64 nodes.
     platform = "amd64"
@@ -102,8 +97,8 @@ _configured = lambda w: fw.Workload -> fw.Workload {
 # workload under its Restricted profile: kinds service/worker/job, no RBAC,
 # sidecars, volumes, or raw secretRef env — see the `deploy` skill.
 
-# A Deployment (or Job) on this env's cluster, from the image
-# `forge build {{.EnvName}} --push` pushes.
+# A Deployment (or Job) on this env's cluster, pulling the image the workload
+# declares — which is exactly what `forge build {{.EnvName}} --push` pushed.
 _on_cluster = lambda w: fw.Workload -> fw.Workload {
     _configured(w) | {resources = _resources, runtime = forge.OnCluster {target = _cluster}}
 }
@@ -137,8 +132,12 @@ _on_bucket = lambda f: forge.Frontend -> forge.Frontend {
 }
 # Platform static hosting on the forge control plane, which owns the bucket
 # and the CDN (needs `control_plane = forge.ControlPlane {}` on the Bundle).
+#
+# A hosted frontend's release is pushed to a registry, so it declares its own
+# `image` — the same rule a workload follows, because it is the same fact.
+# forge appends the platform's own layout segment to it.
 _hosted_frontend = lambda f: forge.Frontend -> forge.Frontend {
-    f | {runtime = forge.OnHosted {}}
+    f | {image = "{{.ScaffoldImage}}-{{.FrontendName}}", runtime = forge.OnHosted {}}
 }
 
 # The {{.FrontendName}} frontend's static build. A static runtime publishes

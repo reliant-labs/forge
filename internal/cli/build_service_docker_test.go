@@ -29,54 +29,50 @@ func countFlag(args []string, tok string) int {
 	return n
 }
 
-// TestServiceDockerBuildArgs_PerServiceRegistryWins asserts the per-service
-// DockerBuild.registry — a KCL declaration, per service and per env — tags
-// THIS service's image instead of the env-wide declared registry.
-func TestServiceDockerBuildArgs_PerServiceRegistryWins(t *testing.T) {
+// TestServiceDockerBuildArgs_TagsTheWorkloadsDeclaredRepository: a per-service
+// docker build is tagged under the repository the WORKLOAD declared, verbatim.
+//
+// This replaces the old per-build-vs-per-env registry precedence test.
+// Both of those fields are gone, and the precedence they encoded was the defect:
+// a build could be aimed at one registry while the spec the deploy reads named
+// another, which is an ErrImagePull that only surfaces at rollout. With one
+// declaration there is nothing to reconcile.
+func TestServiceDockerBuildArgs_TagsTheWorkloadsDeclaredRepository(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "control-plane"}
-	d := &DockerBuild{Registry: "us-docker.pkg.dev/svc-specific"}
-	opts := buildOptions{envRegistry: "ghcr.io/project-default"}
+	// serviceDockerBuildArgs takes the REPOSITORY, already resolved by
+	// serviceDockerImage from the workload's own image.
+	args, _ := serviceDockerBuildArgs(cfg, "us-docker.pkg.dev/svc-specific/workspace-base",
+		"Dockerfile", &DockerBuild{}, buildOptions{}, "", "v1.2.3")
 
-	args, _ := serviceDockerBuildArgs(cfg, "workspace-base", "Dockerfile", d, opts, "", "v1.2.3")
-
-	if !argsHave(args, "-t", "us-docker.pkg.dev/svc-specific/workspace-base:latest") {
-		t.Errorf("per-service registry not honored in :latest tag; args=%v", args)
+	for _, want := range []string{
+		"us-docker.pkg.dev/svc-specific/workspace-base:latest",
+		"us-docker.pkg.dev/svc-specific/workspace-base:v1.2.3",
+	} {
+		if !argsHave(args, "-t", want) {
+			t.Errorf("missing tag %q; args=%v", want, args)
+		}
 	}
-	if !argsHave(args, "-t", "us-docker.pkg.dev/svc-specific/workspace-base:v1.2.3") {
-		t.Errorf("per-service registry not honored in version tag; args=%v", args)
-	}
-	// The project-default registry must NOT leak into this service's tags.
+	// Nothing is composed from the project name: it is not a registry.
 	for _, a := range args {
-		if strings.Contains(a, "ghcr.io/project-default") {
-			t.Errorf("project-default registry leaked despite per-service override: %q", a)
+		if strings.HasPrefix(a, "control-plane/") {
+			t.Errorf("the project name was used as a registry; got tag %q", a)
 		}
 	}
 }
 
-// TestServiceDockerBuildArgs_RegistryFallback asserts a DockerBuild with no
-// registry of its own is tagged under the registry the env's KCL declares,
-// and — with no env, or an env that declares none — as a bare local image.
-// There is no forge.yaml registry and no project-name stand-in.
-func TestServiceDockerBuildArgs_RegistryFallback(t *testing.T) {
+// TestServiceDockerBuildArgs_UndeclaredImageIsTaggedBare: an artifact no
+// workload declares a reference for is tagged by its bare name. That is not a
+// silent mis-push — a bare name has no registry host, so nothing pushes it, and
+// the render is what refuses a bare image on a runtime that must pull one.
+func TestServiceDockerBuildArgs_UndeclaredImageIsTaggedBare(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "control-plane"}
-	t.Run("the env's declared registry", func(t *testing.T) {
-		args, _ := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{}, buildOptions{envRegistry: "ghcr.io/acme"}, "", "")
-		if !argsHave(args, "-t", "ghcr.io/acme/svc:latest") {
-			t.Errorf("expected the env-declared registry; args=%v", args)
-		}
-	})
-
-	t.Run("a bare local image when nothing is declared", func(t *testing.T) {
-		args, _ := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{}, buildOptions{}, "", "")
-		if !argsHave(args, "-t", "svc:latest") {
-			t.Errorf("expected a bare local tag; args=%v", args)
-		}
-		for _, a := range args {
-			if strings.HasPrefix(a, "control-plane/") {
-				t.Errorf("the project name is not a registry; got tag %q", a)
-			}
-		}
-	})
+	args, pushTags := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{}, buildOptions{}, "", "")
+	if !argsHave(args, "-t", "svc:latest") {
+		t.Errorf("expected a bare local tag; args=%v", args)
+	}
+	if len(pushTags) != 0 {
+		t.Errorf("a bare image has no push destination, got %v", pushTags)
+	}
 }
 
 // TestServiceDockerBuildArgs_PerServiceBuildContextsWin asserts a DockerBuild's

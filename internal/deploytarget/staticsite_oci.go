@@ -54,10 +54,16 @@ const (
 	StaticSiteRepositorySegment = "static.v1"
 )
 
-// HostedStaticRepository is the repository a site's releases are pushed to
-// under a registry push base (the org subtree).
-func HostedStaticRepository(pushBase, site string) string {
-	return strings.TrimSuffix(strings.TrimSpace(pushBase), "/") + "/" + StaticSiteRepositorySegment + "/" + site
+// HostedStaticRepository is the repository a site's releases are pushed to:
+// the frontend's OWN declared image reference plus the platform's layout
+// segment (`ghcr.io/acme/web` → `ghcr.io/acme/web/static.v1`).
+//
+// The segment is APPENDED rather than asked for. It exists so the control
+// plane can tell a site release from a backend image, which is forge's
+// business and not something an author should have to encode — so the
+// reference they wrote stays theirs and static.v1 never appears in their KCL.
+func HostedStaticRepository(image string) string {
+	return strings.TrimSuffix(strings.TrimSpace(image), "/") + "/" + StaticSiteRepositorySegment
 }
 
 // BuildStaticSiteTree builds and assembles one frontend with the shared

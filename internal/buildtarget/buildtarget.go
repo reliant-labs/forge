@@ -47,6 +47,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -302,10 +303,12 @@ type State struct {
 	// extends this one, and when both declare the same image the later file
 	// silently overwrites the earlier digest. Written by WriteState; verified
 	// on read, so a mismatched file is skipped rather than believed.
-	Env      string `json:"env,omitempty"`
+	Env string `json:"env,omitempty"`
+	// Image is the REPOSITORY, registry host included — the reference the
+	// workload declared, minus any tag. There is no Registry field: the
+	// registry is part of the image.
 	Image    string `json:"image"`
 	Tag      string `json:"tag"`
-	Registry string `json:"registry,omitempty"`
 	PushedAt string `json:"pushed_at"`
 	// Digest is the content-addressed manifest digest of the pushed image
 	// (canonical `sha256:...`, no `@` prefix, no repo), captured best-effort
@@ -414,4 +417,40 @@ func ReadState(projectDir, env, service string) (*State, error) {
 // the layout. Kept exported so the path lives in one place.
 func StatePath(projectDir, env, service string) string {
 	return statePath(projectDir, env, service)
+}
+
+// ListStates returns the service names that have a recorded build state for
+// env, sorted. It lives here because the filename convention does: a caller
+// globbing `build-<env>-*.json` itself has to re-derive the SafeSegment
+// encoding, and get the ambiguity right.
+//
+// THE AMBIGUITY. Both segments may contain "-", so build-dev-k8s-gateway.json
+// reads equally as (dev, k8s-gateway) and (dev-k8s, gateway) — a glob for one
+// env therefore also matches every env whose name EXTENDS it. So each candidate
+// is read and kept only when the file's own Env/Service agree
+// (StateBelongsTo), which is the check that keeps a sibling env's state out.
+func ListStates(projectDir, env string) ([]string, error) {
+	if env == "" {
+		env = "default"
+	}
+	prefix := "build-" + statefile.SafeSegment(env) + "-"
+	matches, err := filepath.Glob(statefile.Path(projectDir, prefix+"*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var services []string
+	for _, path := range matches {
+		base := filepath.Base(path)
+		if !strings.HasPrefix(base, prefix) || !strings.HasSuffix(base, ".json") {
+			continue
+		}
+		service := strings.TrimSuffix(strings.TrimPrefix(base, prefix), ".json")
+		st, err := statefile.Read[State](path, "build state")
+		if err != nil || st == nil || !StateBelongsTo(st, env, service) {
+			continue
+		}
+		services = append(services, service)
+	}
+	sort.Strings(services)
+	return services, nil
 }

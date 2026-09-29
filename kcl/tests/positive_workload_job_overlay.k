@@ -13,8 +13,8 @@ import forge
 import forge.workloads as fw
 
 _loaded = [
-    {name = "api", kind = "service", image = "demo"}
-    {name = "provision-idp", kind = "job", image = "demo", args = ["provision-idp"]}
+    {name = "api", kind = "service", image = "localhost:5050/demo"}
+    {name = "provision-idp", kind = "job", image = "localhost:5050/demo", args = ["provision-idp"]}
 ]
 
 _workloads = [
@@ -22,7 +22,7 @@ _workloads = [
     for c in _loaded
 ]
 
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 output = forge.render(forge.Bundle {project = "demo", workloads = [w | {runtime = forge.OnCluster {target = _k3d}} for w in _workloads]})
 _rec = {m.metadata.name: m.spec for m in output.manifests if m.kind == "Workload"}
 

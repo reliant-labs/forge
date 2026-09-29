@@ -16,7 +16,7 @@ resource bound per environment.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-hounders", namespace = "hounders-prod", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-hounders", namespace = "hounders-prod"}
 
 output = forge.render(forge.Bundle {
     project = "hounders"

@@ -42,10 +42,10 @@ func TestPinnedTagOf(t *testing.T) {
 const envImageTagFixture = `{"output": {
   "project": "control-plane", "env": "staging", "image_tag": "staging",
   "workloads": [
-    {"name": "reliant-api-server", "kind": "service", "image": "reliant",
+    {"name": "reliant-api-server", "kind": "service", "image": "localhost:5051/reliant",
      "runtime": {"type": "cluster", "cluster": "gke", "namespace": "control-plane-staging"},
      "spec": {"kind": "service", "image": "ghcr.io/reliant-labs/reliant:staging"}},
-    {"name": "admin-server", "kind": "service", "image": "control-plane",
+    {"name": "admin-server", "kind": "service", "image": "localhost:5051/control-plane",
      "runtime": {"type": "cluster", "cluster": "gke", "namespace": "control-plane-staging"},
      "spec": {"kind": "service", "image": "ghcr.io/reliant-labs/control-plane:staging"}}
   ]
@@ -62,21 +62,23 @@ func TestImagePinFor_ReadsTheBuildIdentity(t *testing.T) {
 	if got := imagePinFor(ents, "control-plane"); got != "" {
 		t.Errorf("imagePinFor(control-plane): got %q, want no pin", got)
 	}
-	ents.Workloads[0].BuildImage = "reliant:v1.4.2"
+	// BuildImage is the full repository plus the pin, as the render emits it —
+	// the registry is part of the image now, on the build side too.
+	ents.Workloads[0].BuildImage = "localhost:5051/reliant:v1.4.2"
 	if got := imagePinFor(ents, "reliant"); got != "v1.4.2" {
 		t.Errorf("imagePinFor(reliant) with a pinned build_image: got %q, want v1.4.2", got)
 	}
 	// A pin on the resolved spec.image alone is NOT the build's: build
 	// identity is read off the entity, the same on every runtime.
-	ents.Workloads[0].BuildImage = "reliant"
+	ents.Workloads[0].BuildImage = "localhost:5051/reliant"
 	ents.Workloads[0].Spec.Image = "ghcr.io/reliant-labs/reliant:v1.4.2"
 	if got := imagePinFor(ents, "reliant"); got != "" {
 		t.Errorf("imagePinFor(reliant) unpinned build_image: got %q, want no pin", got)
 	}
 	// An artifact with an org path matches the whole path.
-	ents.Workloads[0].Image = "acme/reliant"
-	ents.Workloads[0].BuildImage = "acme/reliant:e2e"
-	if got := imagePinFor(ents, "acme/reliant"); got != "e2e" {
+	ents.Workloads[0].Image = "localhost:5051/acme/reliant"
+	ents.Workloads[0].BuildImage = "localhost:5051/acme/reliant:e2e"
+	if got := imagePinFor(ents, "reliant"); got != "e2e" {
 		t.Errorf("imagePinFor(acme/reliant): got %q, want the pin e2e", got)
 	}
 	if got := imagePinFor(nil, "control-plane"); got != "" {
@@ -110,8 +112,7 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 		t.Fatalf("resolveBuildImageTag = (%q, %q, %v), want the env's image_tag staging", buildTag, source, err)
 	}
 	results := buildExternalServices(
-		context.Background(), services, opts,
-		"ghcr.io/reliant-labs", buildTag, projDir)
+		context.Background(), services, opts, buildTag, projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -146,8 +147,7 @@ func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	opts := buildOptions{env: "e2e", parallel: false}
 	// "staging" stands in for the build-wide tag (the env's image_tag).
 	results := buildExternalServices(
-		context.Background(), services, opts,
-		"registry.localhost:5051", "staging", projDir)
+		context.Background(), services, opts, "staging", projDir)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -168,7 +168,7 @@ const buildOnlyPinMain = `
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-e2e", registry = "localhost:5051"}
+_k3d = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-e2e"}
 
 output = forge.render(forge.Bundle {
     project = "cp"
@@ -178,18 +178,18 @@ output = forge.render(forge.Bundle {
         fw.Workload {
             name = "workspace-base"
             kind = "tool"
-            image = "workspace-base:dev-per-daemon"
+            image = "localhost:5051/workspace-base:dev-per-daemon"
             build = forge.ShellBuild {cmd = "true"}
             runtime = forge.BuildOnly {}
         }
         fw.Workload {
             name = "hostapp"
-            image = "hostapp:v3"
+            image = "localhost:5051/hostapp:v3"
             build = forge.ShellBuild {cmd = "true"}
             command = ["./bin/hostapp"]
             runtime = forge.OnHost {}
         }
-        fw.Workload {name = "api", build = forge.ShellBuild {cmd = "true"}, runtime = forge.OnCluster {target = _k3d}}
+        fw.Workload {name = "api", image = "localhost:5051/api", build = forge.ShellBuild {cmd = "true"}, runtime = forge.OnCluster {target = _k3d}}
     ]
 })
 `

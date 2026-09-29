@@ -17,7 +17,7 @@ import forge
 import forge.workloads as fw
 
 _project = "demo-project"
-_target = forge.ClusterTarget {cluster = "k3d-example", namespace = "example-prod", registry = "ghcr.io/reliant/example"}
+_target = forge.ClusterTarget {cluster = "k3d-example", namespace = "example-prod"}
 
 _bundle = forge.Bundle {
     project = _project
@@ -30,10 +30,10 @@ _bundle = forge.Bundle {
         objects = [{apiVersion = "v1", kind = "Secret", metadata = {name = "bootstrap", namespace = "example-prod"}}]
     }]
     workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in [
-        fw.Workload {name = "api", image = "api-img", ports = [fw.Port {name = "http", port = 8080}]}
-        fw.Workload {name = "controller", kind = "operator", image = "controller-img", crds = ["Widget"]}
-        fw.Workload {name = "cleanup", kind = "cron", image = "cleanup-img", args = ["cleanup"], schedule = "0 * * * *"}
-        fw.Workload {name = "migrate", kind = "job", image = "migrate-img", args = ["migrate"]}
+        fw.Workload {name = "api", image = "ghcr.io/reliant/example/api-img", ports = [fw.Port {name = "http", port = 8080}]}
+        fw.Workload {name = "controller", kind = "operator", image = "ghcr.io/reliant/example/controller-img", crds = ["Widget"]}
+        fw.Workload {name = "cleanup", kind = "cron", image = "ghcr.io/reliant/example/cleanup-img", args = ["cleanup"], schedule = "0 * * * *"}
+        fw.Workload {name = "migrate", kind = "job", image = "ghcr.io/reliant/example/migrate-img", args = ["migrate"]}
     ]]
 }
 

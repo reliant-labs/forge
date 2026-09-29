@@ -12,7 +12,7 @@ import forge
 _bundle = forge.Bundle {
     project = "fixture"
     cluster_target = forge.ClusterTarget {
-        cluster = "prod", namespace = "ns", registry = "ghcr.io/x"
+        cluster = "prod", namespace = "ns"
     }
     required_secrets = [
         forge.ExternalSecret {

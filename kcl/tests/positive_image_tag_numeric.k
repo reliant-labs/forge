@@ -15,11 +15,11 @@ forge does and pins the value reaching the resolved image.
 import forge
 import forge.workloads as fw
 
-_target = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-prod", registry = "localhost:5050"}
+_target = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-prod"}
 
 output = forge.render(forge.Bundle {
     project = "myapp"
-    workloads = [fw.Workload {name = "api", image = "myapp", runtime = forge.OnCluster {target = _target}}]
+    workloads = [fw.Workload {name = "api", image = "localhost:5050/myapp", runtime = forge.OnCluster {target = _target}}]
 })
 
 _tag = option("image_tag")

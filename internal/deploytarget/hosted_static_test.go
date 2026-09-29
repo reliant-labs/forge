@@ -173,7 +173,10 @@ func TestPushStaticSiteArtifactShape(t *testing.T) {
 	if m.ArtifactType != StaticSiteArtifactType || len(m.Layers) != 1 || m.Layers[0].MediaType != StaticSiteLayerMediaType {
 		t.Fatalf("manifest = %+v", m)
 	}
-	if got := HostedStaticRepository("reg.example/org1/", "web"); got != "reg.example/org1/static.v1/web" {
+	// The frontend's OWN declared reference, plus the platform's layout
+	// segment. The site name is already in the reference the author wrote, so
+	// it is not appended again — static.v1 is the only thing forge adds.
+	if got := HostedStaticRepository("reg.example/org1/web/"); got != "reg.example/org1/web/static.v1" {
 		t.Errorf("repository = %s", got)
 	}
 }

@@ -346,8 +346,7 @@ module_path: github.com/example/demo
         "runtime": {
           "type": "cluster",
           "cluster": "k3d-demo",
-          "namespace": "demo-dev",
-          "registry": "k3d-demo-registry:5000"
+          "namespace": "demo-dev"
         },
         "spec": {
           "kind": "service",
@@ -424,8 +423,7 @@ module_path: github.com/example/demo
         "runtime": {
           "type": "cluster",
           "cluster": "k3d-demo",
-          "namespace": "demo-dev",
-          "registry": "k3d-demo-registry:5000"
+          "namespace": "demo-dev"
         },
         "spec": {
           "kind": "service"

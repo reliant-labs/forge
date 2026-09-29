@@ -16,7 +16,6 @@ func TestBuildState_DigestRoundTrip(t *testing.T) {
 	want := BuildState{
 		Image:     "control-plane",
 		Tag:       "v1.4.0",
-		Registry:  "ghcr.io/reliant",
 		Pushed:    true,
 		PushedAt:  nowRFC3339(),
 		Digest:    "sha256:" + strings.Repeat("c", 64),

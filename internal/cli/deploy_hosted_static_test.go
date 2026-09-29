@@ -57,16 +57,22 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 	if out, err := runForge(t, "build", "hosted", "--push", "--tag", "t1"); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	if pushedTo != "localhost:5051/org1/static.v1/web" {
-		t.Fatalf("site pushed to %q, want the org's static.v1 subtree", pushedTo)
+	// The frontend's OWN declared reference plus the platform's layout segment,
+	// which forge appends — so static.v1 never appears in the author's KCL.
+	if pushedTo != "ghcr.io/acme/web/static.v1" {
+		t.Fatalf("site pushed to %q, want the declared reference plus static.v1", pushedTo)
 	}
 	if out, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
 		t.Fatalf("release cut: %v\n%s", err, out)
 	}
 	rel := fake.releases["v1"]
-	if len(rel.Artifacts) != 1 || rel.Artifacts[0].Name != "web" || rel.Artifacts[0].Digest != hostedStaticDigest ||
-		rel.Artifacts[0].Kind != "oci" || rel.Artifacts[0].URI != "localhost:5051/org1/static.v1" {
-		t.Fatalf("cut release = %+v, want one oci artifact web@%s under localhost:5051/org1/static.v1", rel, hostedStaticDigest)
+	// The artifact is NAMED by the repository it was pushed to — the
+	// frontend's declared reference plus the platform's layout segment — so
+	// the name is the address and there is no URI beside it to disagree.
+	const wantRepo = "ghcr.io/acme/web/static.v1"
+	if len(rel.Artifacts) != 1 || rel.Artifacts[0].Name != wantRepo || rel.Artifacts[0].Digest != hostedStaticDigest ||
+		rel.Artifacts[0].Kind != "oci" || rel.Artifacts[0].URI != "" {
+		t.Fatalf("cut release = %+v, want one oci artifact %s@%s with no URI", rel, wantRepo, hostedStaticDigest)
 	}
 	if out, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
 		t.Fatalf("promote: %v\n%s", err, out)
@@ -111,10 +117,10 @@ _bundle = forge.Bundle {
     control_plane = forge.ControlPlane {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
-        registry = "localhost:5051/org1"
     }
     frontends = [forge.Frontend {
         name = "web"
+        image = "ghcr.io/acme/web"
         path = "frontends/web"
         type = "vite"
         public_dir = "dist"

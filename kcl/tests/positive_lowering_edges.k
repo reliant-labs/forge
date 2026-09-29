@@ -19,7 +19,7 @@ Positive test — two lowering rules whose failure would be silent.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 _pinned = "ghcr.io/acme/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 _env = {
@@ -31,8 +31,8 @@ output = forge.render(forge.Bundle {
     project = "demo"
     control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
     workloads = [
-        fw.Workload {name = "cli", kind = "tool", build = forge.GoBuild {cmd = "./cmd/cli"}, image = "demo", args = ["admin"], runtime = forge.OnCluster {target = _k3d}}
-        fw.Workload {name = "api", image = "demo", args = ["api"], env = _env, runtime = forge.OnCluster {target = _k3d}}
+        fw.Workload {name = "cli", kind = "tool", build = forge.GoBuild {cmd = "./cmd/cli"}, image = "localhost:5050/demo", args = ["admin"], runtime = forge.OnCluster {target = _k3d}}
+        fw.Workload {name = "api", image = "localhost:5050/demo", args = ["api"], env = _env, runtime = forge.OnCluster {target = _k3d}}
         fw.Workload {name = "hosted-api", image = _pinned, ports = [fw.Port {name = "http", port = 8080, expose = True}], env = _env, runtime = forge.OnHosted {}}
     ]
 })

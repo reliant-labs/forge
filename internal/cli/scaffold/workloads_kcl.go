@@ -36,18 +36,18 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 		// Discovery cannot see it yet — a service whose proto has not been
 		// compiled into the descriptor, say. Print the stanza so the
 		// declaration is never silently skipped.
-		fmt.Printf("\n📝 %s\n", codegen.WorkloadStanzaHint(cfg.Name, config.ComponentConfig{
+		fmt.Printf("\n📝 %s\n", codegen.WorkloadStanzaHint(cfg.ModulePath, cfg.Name, config.ComponentConfig{
 			Name: spec.name,
 			Kind: kindFromCtxLabel(spec.ctxLabel),
 		}))
 		return
 	}
 
-	applied, err := codegen.AppendWorkloadStanza(root, cfg.Name, comp)
+	applied, err := codegen.AppendWorkloadStanza(root, cfg.ModulePath, cfg.Name, comp)
 	switch {
 	case err != nil:
 		fmt.Printf("\n⚠️  could not update %s: %v\n\n%s\n",
-			codegen.WorkloadsKCLRelPath, err, codegen.WorkloadStanzaHint(cfg.Name, comp))
+			codegen.WorkloadsKCLRelPath, err, codegen.WorkloadStanzaHint(cfg.ModulePath, cfg.Name, comp))
 	case applied:
 		fmt.Printf("   - %s (%s '%s' declared)\n",
 			// Report the WORKLOAD kind that was written, not the component
@@ -57,7 +57,7 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 	default:
 		// Already declared, or the file has been restructured past the point
 		// where an append is unambiguous. Either way: show, do not guess.
-		fmt.Printf("\n📝 %s\n", codegen.WorkloadStanzaHint(cfg.Name, comp))
+		fmt.Printf("\n📝 %s\n", codegen.WorkloadStanzaHint(cfg.ModulePath, cfg.Name, comp))
 	}
 	bindWorkloadInEnvs(root, comp)
 }

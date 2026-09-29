@@ -59,7 +59,7 @@ func TestPersistImageBuildStates_WritesFrontendState(t *testing.T) {
 	)
 
 	persistImageBuildStates(
-		buildOptions{env: "prod", pushRegistry: "us-central1-docker.pkg.dev/acme/prod"},
+		buildOptions{env: "prod", pushPlan: pushPlan{push: true, env: "prod"}},
 		[]buildResult{{
 			name:      image + " (docker)",
 			kind:      "docker",
@@ -137,7 +137,7 @@ func TestDockerBuildResult_CarriesImageName(t *testing.T) {
 	// result's SHAPE — the display name keeps its suffix, and nothing here
 	// may claim a digest it never captured.
 	res := dockerBuild(t.Context(), &config.ProjectConfig{Name: "control-plane"},
-		"internal-console", filepath.Join(dir, "frontends", "internal-console"), imageTagSet("", "internal-console", "", "v1", false), "")
+		"internal-console", filepath.Join(dir, "frontends", "internal-console"), imageTagSet("ghcr.io/acme/internal-console", "v1", false, false), "")
 
 	if res.err != nil {
 		t.Fatalf("no-Dockerfile build should skip cleanly, got %v", res.err)

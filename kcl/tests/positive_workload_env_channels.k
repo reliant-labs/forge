@@ -19,7 +19,7 @@ import forge.workloads as fw
 
 _base = fw.Workload {
     name = "api"
-    image = "demo"
+    image = "localhost:5050/demo"
     ports = [fw.Port {name = "http", port = 8080}]
     env = {
         LOG_LEVEL = "info"
@@ -41,7 +41,7 @@ _prod = _base | {env = _base.env | {
     NEW_FLAG = "on"
 }}
 
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-prod", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-prod"}
 output = forge.render(forge.Bundle {
     project = "demo"
     workloads = [_prod | {runtime = forge.OnCluster {target = _k3d}}]

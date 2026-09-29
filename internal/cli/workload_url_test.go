@@ -46,6 +46,7 @@ const hostedWorkloadURLBundle = `    project = "acme"
     }]
     frontends = [forge.Frontend {
         name = "web"
+        image = "ghcr.io/acme/web"
         path = "frontends/web"
         type = "vite"
         runtime_config = {
@@ -119,7 +120,7 @@ func TestWorkloadURL_LocalEnvResolvesAtRender(t *testing.T) {
 	}
 	dir := workloadURLProject(t, "dev", `    project = "acme"
     env = "dev"
-    cluster_target = forge.ClusterTarget { cluster = "k3d-acme", namespace = "acme-dev", registry = "localhost:5000" }
+    cluster_target = forge.ClusterTarget { cluster = "k3d-acme", namespace = "acme-dev" }
     workloads = [
         fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/acme"}, args = ["api"], runtime = forge.OnHost {listen_ports = [8085]}}
         fw.Workload {
@@ -127,7 +128,7 @@ func TestWorkloadURL_LocalEnvResolvesAtRender(t *testing.T) {
             image = "ghcr.io/acme/admin:v1"
             ports = [fw.Port {name = "http", port = 8080}]
             env = {CORS_ORIGINS = forge.WorkloadURL {workload = "web"}}
-            runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev", registry = "localhost:5000"}}
+            runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev"}}
         }
     ]
     frontends = [forge.Frontend {
@@ -192,7 +193,7 @@ func TestHostedStaticBuildShipsNoRuntimeConfig(t *testing.T) {
 	}
 	t.Cleanup(func() { hostedStaticPusher = prev })
 	t.Setenv("FORGE_HOME", t.TempDir())
-	if err := buildHostedStaticSites(context.Background(), dir, entities, buildOptions{env: "prod", pushRegistry: "localhost:5051/org1"}); err != nil {
+	if err := buildHostedStaticSites(context.Background(), dir, entities, buildOptions{env: "prod", pushPlan: pushPlan{push: true, env: "prod"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {

@@ -12,10 +12,11 @@ the old build_of existed to prevent is unrepresentable.
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev", registry = "localhost:5051"}
+_k3d = forge.ClusterTarget {cluster = "k3d-dev", namespace = "dev"}
 
 _go = fw.Workload {
     name = "trader"
+    image = "localhost:5051/trader"
     build = forge.GoBuild {
         cmd = "./cmd/trader"
         goarch = "arm64"
@@ -28,6 +29,7 @@ _go = fw.Workload {
 
 _docker = fw.Workload {
     name = "gateway"
+    image = "localhost:5051/gateway"
     build = forge.DockerBuild {
         dockerfile = "Dockerfile.gateway"
         platform = "linux/amd64"

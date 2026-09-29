@@ -41,12 +41,11 @@ _link = forge.ClusterClient {
 _target = forge.ClusterTarget {
     cluster = _cp.context
     namespace = "control-plane-prod"
-    registry = "ghcr.io/reliant/control-plane"
 }
 
 _consumer = fw.Workload {
     name = "workspace-controller"
-    image = "control-plane"
+    image = "ghcr.io/reliant/control-plane/control-plane"
     env = {CLUSTER_CONFIGS = _link.config_json}
     volumes = [_link.volume]
     runtime = forge.OnCluster {target = _target}

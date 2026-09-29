@@ -69,7 +69,6 @@
           "dockerfile": "images/base/Dockerfile",
           "output_name": null,
           "platform": null,
-          "registry": null,
           "target": null,
           "type": "docker"
         },

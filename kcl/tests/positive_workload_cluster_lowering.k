@@ -19,13 +19,12 @@ import forge.workloads as fw
 _prod = forge.ClusterTarget {
     cluster = "gke_acme_us-central1_prod"
     namespace = "acme-prod"
-    registry = "ghcr.io/reliant-labs"
     platform = "amd64"
 }
 
 _proxy = fw.Workload {
     name = "workspace-proxy"
-    image = "control-plane"
+    image = "ghcr.io/reliant-labs/control-plane"
     command = ["/app/control-plane"]
     args = ["workspace-proxy"]
     replicas = 3

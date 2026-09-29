@@ -29,7 +29,7 @@ import (
 // It returns applied=false, with no error and no write, when the file is
 // missing or the workload is already declared. The caller then PRINTS the
 // stanza for the user to paste.
-func AppendWorkloadStanza(projectDir, projectName string, c config.ComponentConfig) (applied bool, err error) {
+func AppendWorkloadStanza(projectDir, modulePath, projectName string, c config.ComponentConfig) (applied bool, err error) {
 	path := filepath.Join(projectDir, WorkloadsKCLRelPath)
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -94,7 +94,7 @@ func AppendWorkloadStanza(projectDir, projectName string, c config.ComponentConf
 		insertAt--
 	}
 
-	stanza := strings.TrimRight(WorkloadStanza(projectName, c), "\n")
+	stanza := strings.TrimRight(WorkloadStanza(modulePath, projectName, c), "\n")
 	out := append([]string{}, lines[:insertAt]...)
 	out = append(out, strings.Split(stanza, "\n")...)
 	out = append(out, "")
@@ -154,9 +154,9 @@ var (
 
 // WorkloadStanzaHint is the message shown when the stanza could not be
 // appended automatically: the exact text to paste, and where.
-func WorkloadStanzaHint(projectName string, c config.ComponentConfig) string {
+func WorkloadStanzaHint(modulePath, projectName string, c config.ComponentConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Add this workload to %s:\n\n", WorkloadsKCLRelPath)
-	b.WriteString(WorkloadStanza(projectName, c))
+	b.WriteString(WorkloadStanza(modulePath, projectName, c))
 	return b.String()
 }

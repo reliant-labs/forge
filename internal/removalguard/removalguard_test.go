@@ -417,6 +417,66 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "the env-level image registry",
+		Why: "An environment does not have a registry; a WORKLOAD does, as part of its image. " +
+			"ClusterTarget.registry, ControlPlane.registry and DockerBuild.registry are gone, along " +
+			"with every Go field that carried one env-wide value (buildOptions.envRegistry/pushRegistry, " +
+			"pushRegistryChoice, declaredRegistry, BuildState.Registry, buildtarget.State.Registry, " +
+			"ServiceGroup/RawK8sCluster.Registry) and the `registry` key the render used to project onto " +
+			"the cluster runtime. forge contributes only the tag and the digest, and composes them onto " +
+			"the reference the author wrote — so the image the build pushes and the image the cluster " +
+			"pulls cannot disagree, and two workloads in one env can ride two registries. " +
+			"This entry keeps the env-wide field from being reintroduced as a convenience.",
+		Patterns: []*regexp.Regexp{
+			// The Go fields that held the one env-wide value.
+			regexp.MustCompile(`\benvRegistry\b|\bpushRegistry\b|\bpushRegistryChoice\b`),
+			regexp.MustCompile(`\bdeclaredRegistry\b|\bdeclaredRegistryForEnv\b|\bundeclaredRegistryError\b`),
+			regexp.MustCompile(`\bexpandPushRegistries\b|\bresolvePushRegistry\b`),
+			// A KCL `registry` field on either env schema, in the module or a
+			// scaffold template. Scoped to an assignment so prose, and
+			// `registry_inherit` / `registry_mirror` (k3d plumbing, unrelated),
+			// stay clear.
+			regexp.MustCompile(`(?m)^\s*registry\s*=\s*"`),
+			regexp.MustCompile(`ClusterTarget\.registry|ControlPlane\.registry|DockerBuild\.registry`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the MIGRATION that removes the field, and the tests that prove it does",
+				Reason: "internal/kclmigrate exists to find `registry = \"…\"` in a project's KCL and move it " +
+					"onto the images, so its regexes, its fixtures and its tests must write the exact " +
+					"spelling being removed. The generate step that runs it, and the closed-schema " +
+					"fixtures that assert the field is REFUSED, name it for the same reason: they are the " +
+					"code that catches it coming back, so deleting the name to satisfy the guard would " +
+					"delete the enforcement.",
+				Paths: []string{
+					"internal/kclmigrate/",
+					"internal/cli/generate_pipeline.go",
+					"kcl/tests/closedschema_cluster_target_registry.k",
+					"kcl/tests/closedschema_control_plane_registry.k",
+					"CHANGELOG.md",
+				},
+			},
+			{
+				Name: "prose and helpers about the registry an IMAGE names",
+				Reason: "The registry did not stop existing — it moved onto the image. So the words " +
+					"`registry` and `registryHost` are everywhere they should be: reading the host off a " +
+					"reference (registryHost, is_local_registry, image_registry_host, " +
+					"image_on_registry), the `forge registry login` / `ref` commands, and the docstrings " +
+					"that teach where a registry IS declared. Only the spellings above — an env-wide " +
+					"field and the Go plumbing that read one — are forbidden.",
+				Token: regexp.MustCompile(`\benvRegistry\b|\bpushRegistryChoice\b|(?m)^\s*registry\s*=\s*"`),
+				Paths: []string{
+					"internal/cli/registry_cmd.go",
+					"internal/cli/build_push_registry.go",
+					"kcl/base.k",
+					"kcl/lib/images.k",
+					"kcl/schema.k",
+					"kcl/render.k",
+				},
+			},
+		},
+	},
+	{
 		Name: "ShellBuild ${TOKEN} substitution",
 		Why: "A ShellBuild `cmd` is a plain KCL string that forge runs byte-for-byte. " +
 			"deploytarget.ExpandVars, buildtarget.Vars/Expand, the Spec fields that fed them " +

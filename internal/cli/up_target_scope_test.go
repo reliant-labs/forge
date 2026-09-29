@@ -87,7 +87,7 @@ func TestUpTargetReachesTheBuildPhase(t *testing.T) {
 // pulls from. Asserted on the real runBuild (in --plan mode), not on the
 // options struct, because the regression lived between the two: env up handed
 // runBuild a registry but never switched push on, and runBuild's one resolver
-// (resolvePushRegistry) reads "no --push" as "push nothing" and overwrote it.
+// (resolvePushPlan) reads "no --push" as "push nothing" and overwrote it.
 // The build then printed "tagged locally, not pushed", the cluster kept
 // pulling whatever image last sat at that tag, and the rollout ran the old
 // code with nothing in the output saying so.

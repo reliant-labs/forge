@@ -240,11 +240,13 @@ set is discoverable from the `forge` surface:
 | `namespace`     | `forge.namespace(default)` | yes            | k8s namespace to deploy into                                                                  |
 | `image_digests` | `forge.image_digests()`    | when deploying | JSON name→digest map (pins each image to its digest)                                          |
 
-The image **registry** is not a render option. It is a field the env declares
-— `forge.ClusterTarget.registry`, or `forge.ControlPlane.registry` for a hosted
-env — as a literal in `deploy/kcl/<env>/main.k`. `forge build <env> --push`,
-`forge registry login <env>` and `forge env deploy <env>` all read that one
-declaration.
+The image **registry** is not a render option, and not an env field either: an
+environment does not have a registry. A **workload** does, as part of its
+`image` (`image = "ghcr.io/acme/api"` in `deploy/kcl/workloads.k`). forge
+contributes only the tag and, after a push, the digest, composing them onto the
+reference you wrote. `forge build <env> --push`, `forge registry login <env>`
+and `forge env deploy <env>` all follow the images — so two workloads in one env
+can ride two different registries.
 
 Per-env **config** is NOT passed via `-D`: it lives in the typed `AppConfig`
 instance in `deploy/kcl/<env>/config.k` and is projected into each workload's

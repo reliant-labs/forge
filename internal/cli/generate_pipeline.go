@@ -40,10 +40,12 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/codegen/schemadrift"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/kclmigrate"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/shellbuildtokens"
@@ -305,6 +307,7 @@ func generateSteps() []GenStep {
 		{Name: "forge version compatibility", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate", ReadOnly: true},
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate", ReadOnly: true},
 		{Name: "retired ShellBuild tokens", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepShellBuildTokens, Tag: "validate", ReadOnly: true},
+		{Name: "migrate env registries onto images", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepMigrateImageRegistry, Tag: "config"},
 		// Before every gate and emitter that reads the frontend inventory,
 		// so they all see one answer (the two pre-checks above read none). See
 		// generate_frontend_inventory.go for why a project can reach here
@@ -1258,6 +1261,50 @@ func stepShellBuildTokens(ctx *pipelineContext) error {
 	return shellbuildtokens.Error(stripFileLocations(findings))
 }
 
+// stepMigrateImageRegistry moves a project off env-level registries: it removes
+// `registry = …` from every ClusterTarget / ControlPlane in deploy/kcl and
+// prefixes the removed value onto a workload's bare `image`, where that is
+// unambiguous.
+//
+// It runs here, in generate, because the old tree NO LONGER COMPILES: `registry`
+// is not a field on either schema now, so every render — including generate's
+// own validate, and every forge command after it — fails until the tree moves.
+// A project that hit that error with no migration would have to hand-edit every
+// env, and would have to work out for itself which registry each workload's
+// image should carry.
+//
+// It is a NO-OP on an already-migrated tree (no `registry = …` to find, no bare
+// image to complete), so it costs nothing after the first run.
+//
+// AMBIGUITY IS REFUSED, not guessed. When the same workload is bound to a
+// pulling runtime in two envs that declared different registries, there is no
+// single reference that is right in both, and choosing one silently would point
+// an env at a repository its image was never pushed to. Nothing is written in
+// that case — a partial migration leaves a tree neither the old nor the new
+// forge understands — and the exact per-env KCL is printed instead.
+func stepMigrateImageRegistry(ctx *pipelineContext) error {
+	res, err := kclmigrate.ImageRegistry(ctx.ProjectDir, true)
+	if err != nil {
+		return err
+	}
+	if res.Refused() {
+		var b strings.Builder
+		b.WriteString("this project declares an image registry on an environment, and an environment no longer has one — a WORKLOAD declares its registry, as part of its image.\n\n")
+		b.WriteString("forge could not migrate it automatically, and wrote nothing:\n\n")
+		for _, a := range res.Ambiguous {
+			b.WriteString("  " + strings.ReplaceAll(a.Runbook(), "\n", "\n  ") + "\n")
+		}
+		return cliutil.UserErr("forge generate", "cannot migrate env registries onto images automatically", "deploy/kcl/", b.String())
+	}
+	for _, r := range res.Rewrites {
+		fmt.Printf("   - migrated: %s\n", r)
+	}
+	for _, d := range res.Dropped {
+		fmt.Printf("   - %s\n", d)
+	}
+	return nil
+}
+
 // stripFileLocations flattens located findings back to the bare Finding list
 // shellbuildtokens.Error formats. The file:line pairs stay in the lint output,
 // which has a column-aware renderer; generate's refusal is prose.
@@ -2157,7 +2204,7 @@ func stepCRDKCL(ctx *pipelineContext) error {
 
 func stepWorkloadsKCL(ctx *pipelineContext) error {
 	return ctx.warnOrFail("workloads.k scaffold",
-		generator.ScaffoldWorkloadsKCL(ctx.AbsPath, ctx.Cfg.Name, ctx.Components, len(ctx.Cfg.Frontends) > 0))
+		generator.ScaffoldWorkloadsKCL(ctx.AbsPath, ctx.Cfg.ModulePath, ctx.Cfg.Name, ctx.Components, len(ctx.Cfg.Frontends) > 0))
 }
 
 // stepPerEnvDeployConfig — was Step 8d-0.

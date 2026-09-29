@@ -1363,10 +1363,10 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 // declared in KCL carry their OWN build_contexts on the KCL DockerBuild block;
 // these are the project-image defaults / fallback.
 //
-// There is no registry here: an image registry is declared in the env's KCL
-// (forge.ClusterTarget.registry / forge.ControlPlane.registry) and nowhere
-// else, so the project image is tagged and pushed under the registry the
-// env it is built for declares.
+// There is no registry here, and none on any env either: an image registry is
+// part of a WORKLOAD's `image` in deploy/kcl/workloads.k. The project image is
+// tagged and pushed to the reference the workload declaring it wrote, which is
+// the same reference the runtime pulls.
 //
 // forge is FULLY base-image-AGNOSTIC: it does NOT discover, mirror, pin, or
 // inject base images, and offers no mirror/pull-through setting. A Dockerfile's

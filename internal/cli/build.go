@@ -107,29 +107,23 @@ type buildOptions struct {
 	parallelSet bool
 	buildDocker bool
 	debug       bool
-	// push is --push: push the built images to the registry the env's KCL
-	// declares. Implies --docker. It carries no value — the destination is
-	// resolved from the declaration (resolvePushRegistry), never passed.
+	// push is --push: push each built image to the reference its own workload
+	// declares. Implies --docker. It carries no value — every destination is
+	// resolved from the declarations (resolvePushPlan), never passed.
 	push bool
-	// pushIfDeclared is `forge env up`'s push mode: push to the registry the
-	// env's KCL declares when it declares one, and build locally (no error)
-	// when it declares none — a host-only env has no cluster to pull from.
-	// Unlike push, an undeclared registry is not a failure. Resolved by
-	// resolvePushRegistry like push; never set by a flag.
+	// pushIfDeclared is `forge env up`'s push mode: push to the workloads'
+	// declared references when the env has any pushable image, and build
+	// locally (no error) when it has none — a host-only env has no cluster to
+	// pull from. Unlike push, having none is not a failure. Resolved by
+	// resolvePushPlan like push; never set by a flag.
 	pushIfDeclared bool
-	// pushRegistry is the RESOLVED push destination, written by
-	// resolvePushRegistry from the env's declaration when push or
+	// pushPlan is the RESOLVED set of destinations, written by
+	// resolvePushPlan from the env's workload declarations when push or
 	// pushIfDeclared is on. Never set by a caller: any value is overwritten.
-	// When non-empty, built docker images are retagged to
-	// <registry>/<name>:<tag> and pushed.
-	pushRegistry string
-	// envRegistry is the registry the env's KCL declares (declaredRegistry),
-	// resolved with the render whether or not this build pushes. It is the
-	// registry a locally-built image is TAGGED under, and the one the
-	// post-build digest lookup composes its reference from. "" with no env,
-	// or an env that declares none — a local image is then tagged bare
-	// (<image>:<tag>).
-	envRegistry string
+	// It is also consulted when the build pushes NOTHING, because a local
+	// image is still TAGGED under its declared reference — that is what makes
+	// a later `--push` of the same build a retag rather than a rebuild.
+	pushPlan pushPlan
 	// targetArch overrides the GOARCH used for the Go binary build
 	// AND the docker buildx --platform when --docker / --push is set.
 	// Empty means "use host arch for plain go build; use forge.yaml
@@ -242,16 +236,16 @@ Examples:
   forge build -o bin                         # Output binaries to bin/
   forge build --docker                       # Also build Docker images
   forge build --debug                        # Build with debug symbols for Delve
-  forge build prod --push                    # Build + push to the registry deploy/kcl/prod/main.k declares
+  forge build prod --push                    # Build + push each image to the reference its workload declares
 
---push takes no value. The registry is DECLARED in the env's KCL — the
-env's forge.ClusterTarget.registry, or forge.ControlPlane.registry for a
-hosted env — the same value forge env up and forge env deploy read, so what
-is pushed is what is deployed. An env that declares none fails with the file
-and field to set; --push without an env asks for one.
+--push takes no value, and there is no registry to pass. Each image's
+destination is DECLARED on its workload, as part of its image field in
+deploy/kcl/workloads.k — the same reference forge env up and forge env deploy
+read, so what is pushed is what is deployed. Two workloads may name two
+different registries; both are pushed. --push without an env asks for one.
 
-When the declared registry is a k3d-local localhost:<port>, the image is
-also tagged registry.localhost:<port>/<name> (LOCAL alias only — the host
+When a declared reference is a k3d-local localhost:<port>, the image is
+also tagged registry.localhost:<port>/<path> (LOCAL alias only — the host
 can't DNS-resolve registry.localhost, so it isn't pushed; the containerd
 mirror config inside k3d resolves that reference at pull time).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -296,7 +290,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
-	cmd.Flags().BoolVar(&opts.push, "push", false, "Push docker images after build (implies --docker) to the registry the env's KCL declares (forge.ClusterTarget.registry, or forge.ControlPlane.registry for a hosted env, in deploy/kcl/<env>/main.k). Requires the environment argument; takes no value")
+	cmd.Flags().BoolVar(&opts.push, "push", false, "Push docker images after build (implies --docker), each to the reference its own workload declares (its image field in deploy/kcl/workloads.k). Requires the environment argument; takes no value and carries no registry")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
@@ -426,13 +420,21 @@ type buildResult struct {
 	// pushed manifest advertises, captured alongside.
 	digest    string
 	platforms []string
-	// image is the BARE image name this result built (`internal-console`),
-	// as opposed to name, which carries the " (docker)" display suffix. It is
-	// the key the KCL `_image_ref` seam looks up in image_digests, so a
-	// per-image build state can only be written for results that carry it.
+	// image is the artifact NAME this result built (`internal-console`), as
+	// opposed to name, which carries the " (docker)" display suffix. It keys
+	// the per-image build-state FILE, so a per-image build state can only be
+	// written for results that carry it — and it must stay a plain name, since
+	// a repository's slashes would escape the state directory.
 	// Set by the frontend docker path; the project image derives its own name
 	// from cfg.Name.
 	image string
+	// repository is the full destination this result was tagged and pushed to
+	// (`ghcr.io/acme/internal-console`) — the workload's declared reference
+	// minus its tag. It is what the build state and the release ledger RECORD,
+	// and the key the KCL `_image_ref` seam looks up in image_digests. Empty
+	// when the artifact has no declared repository, in which case the writer
+	// falls back to resolving `image` through the push plan.
+	repository string
 	// tag is the tag this result's image was BUILT and pushed as — the one
 	// its build state records. Carried on the result rather than recomputed
 	// by the state writer, so the two cannot disagree. Empty for non-image
@@ -536,9 +538,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// BEFORE tag resolution so the env's resolved image_tag can seed the
 	// default build tag.
 	//
-	// The same step decides where this build pushes (resolvePushRegistry:
-	// the registry the env's KCL declares, or a runbook) and writes it back
-	// into opts.pushRegistry, so everything below reads one resolved value.
+	// The same step decides where this build pushes (resolvePushPlan: each
+	// workload's declared reference, or a runbook) and writes it back into
+	// opts.pushPlan, so everything below reads one resolution.
 	entities, push, err := renderBuildInputs(ctx, cfg, &opts)
 	if err != nil {
 		return err
@@ -833,7 +835,8 @@ type buildTargetSet struct {
 // frontend path means every downstream consumer sees a real directory.
 //
 // It returns the env's render twice: declared is the FULL render, for the
-// env-wide facts a narrowed set can lose (resolvePushRegistry's registry);
+// facts a narrowed set can lose (resolvePushPlan's destinations, which a
+// --target narrowing can drop);
 // entities is the set this build acts on, narrowed by --target. Both are nil
 // without an env, or when the env has no KCL directory.
 func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions) (declared, entities *KCLEntities, err error) {
@@ -1275,10 +1278,6 @@ func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg
 	if len(externalSvcs) == 0 {
 		return nil, nil
 	}
-	externalRegistry := opts.pushRegistry
-	if externalRegistry == "" {
-		externalRegistry = opts.envRegistry
-	}
 	externalTag := resolvedTag
 	if externalTag == "" {
 		// The tag is recorded in build state and reported in the build
@@ -1293,7 +1292,7 @@ func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg
 		externalTag = t
 	}
 	projDir := projectDirForKCL()
-	return buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir), nil
+	return buildExternalServices(ctx, externalSvcs, opts, externalTag, projDir), nil
 }
 
 // persistProjectBuildState records the build→deploy tag handoff for a
@@ -1319,10 +1318,9 @@ func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, op
 	}
 	commit, gitTag, dirty := gitBuildProvenance(ctx)
 	state := BuildState{
-		Image:     cfg.Name,
+		Image:     opts.pushPlan.repositoryFor(cfg.Name),
 		Tag:       projectTag,
-		Registry:  opts.pushRegistry,
-		Pushed:    opts.pushRegistry != "",
+		Pushed:    opts.pushPlan.push,
 		Commit:    commit,
 		GitTag:    gitTag,
 		Dirty:     dirty,
@@ -1368,11 +1366,14 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 		if r.kind != "docker" || r.image == "" || r.tag == "" {
 			continue
 		}
+		repository := r.repository
+		if repository == "" {
+			repository = opts.pushPlan.repositoryFor(r.image)
+		}
 		state := buildtarget.State{
 			Service:   r.image,
-			Image:     r.image,
+			Image:     repository,
 			Tag:       r.tag,
-			Registry:  opts.pushRegistry,
 			PushedAt:  nowRFC3339(),
 			Digest:    r.digest,
 			Platforms: r.platforms,
@@ -2180,24 +2181,26 @@ type dockerImageTags struct {
 // "which tags does a build write" has ONE answer rather than three loops kept
 // in step by hand.
 //
-// Ordinarily an image is tagged `:latest` plus resolvedTag, locally under
-// registry — the registry the env declares, or none (a bare `<image>:<tag>`)
-// — and again under each push registry (the k3d `registry.localhost` mirror
-// is tagged but never pushed — the host cannot resolve it). The version tag is
-// pushed LAST because the digest capture inspects the last pushed ref.
+// `repository` is the FULL declared repository, registry host included — the
+// workload's own `image` minus any tag. There is no separate registry
+// parameter and no prefixing step: the destination was decided when the author
+// wrote the reference, and this only appends tags to it.
+//
+// An image is tagged `:latest` plus resolvedTag, and pushed to those same refs
+// when `push` is set. The version tag is pushed LAST because the digest
+// capture inspects the last pushed ref. A local k3d repository is ALSO tagged
+// under its `registry.localhost` mirror (tagged, never pushed — the host
+// cannot resolve that name), which is how the kubelet inside the node
+// container pulls what the host pushed to localhost.
 //
 // releaseScoped (a `--release` build) drops `:latest` entirely. A release
 // writes its images under the release version and NOTHING else, so a cut that
 // fails after its first push leaves every shared tag exactly where it was.
 // See releaseImageTag for the incident this closes.
-func imageTagSet(registry, image, pushRegistry, resolvedTag string, releaseScoped bool) dockerImageTags {
+func imageTagSet(repository, resolvedTag string, push, releaseScoped bool) dockerImageTags {
 	out := dockerImageTags{tag: resolvedTag}
 	seen := map[string]bool{}
-	add := func(reg string, pushed bool) {
-		repo := image
-		if reg != "" {
-			repo = reg + "/" + image
-		}
+	add := func(repo string, pushed bool) {
 		refs := make([]string, 0, 2)
 		if !releaseScoped {
 			refs = append(refs, repo+":latest")
@@ -2215,39 +2218,34 @@ func imageTagSet(registry, image, pushRegistry, resolvedTag string, releaseScope
 			out.push = append(out.push, refs...)
 		}
 	}
-	add(registry, false)
-	for i, reg := range expandPushRegistries(pushRegistry) {
-		// Only the first (the resolved push destination) is pushed.
-		add(reg, i == 0)
+	add(repository, push)
+	for _, mirror := range k3dMirrorRepositories(repository) {
+		add(mirror, false)
 	}
 	return out
 }
 
-// imageTags is the tag set this build writes for image: tagged under the
-// env's declared registry, pushed to the resolved push destination, and
-// release-scoped when --release is set. The one place a build's options turn
-// into an image's tags.
+// imageTags is the tag set this build writes for the artifact named `image`:
+// tagged (and pushed, when this build pushes) under the repository its workload
+// declared, and release-scoped when --release is set. The one place a build's
+// options turn into an image's tags.
 func (opts buildOptions) imageTags(image, resolvedTag string) dockerImageTags {
-	return imageTagSet(opts.envRegistry, image, opts.pushRegistry, resolvedTag, releaseImageTag(opts) != "")
+	return imageTagSet(opts.pushPlan.repositoryFor(image), resolvedTag,
+		opts.pushPlan.push, releaseImageTag(opts) != "")
 }
 
-// expandPushRegistries returns the set of registries to tag a built
-// image against. For non-localhost registries this is just the single
-// pushRegistry the caller passed. For `localhost:<port>` it also adds
-// `registry.localhost:<port>` — the canonical k3d pattern where the
-// host pushes to localhost and kubelet inside the node container pulls
-// from registry.localhost (the deploy/k3d.yaml mirrors block maps both
-// to the same backend). Returns nil when pushRegistry is empty.
-func expandPushRegistries(pushRegistry string) []string {
-	if pushRegistry == "" {
+// k3dMirrorRepositories is the additional LOCAL tag a `localhost:<port>`
+// repository gets: the same path under `registry.localhost:<port>`. The
+// canonical k3d pattern — the host pushes to localhost and the kubelet inside
+// the node container pulls from registry.localhost, with deploy/k3d.yaml's
+// mirrors block mapping both to one backend. Nil for any other host.
+func k3dMirrorRepositories(repository string) []string {
+	host, path, ok := strings.Cut(repository, "/")
+	if !ok || !strings.HasPrefix(host, "localhost:") {
 		return nil
 	}
-	registries := []string{pushRegistry}
-	if strings.HasPrefix(pushRegistry, "localhost:") {
-		port := strings.TrimPrefix(pushRegistry, "localhost:")
-		registries = append(registries, "registry.localhost:"+port)
-	}
-	return registries
+	port := strings.TrimPrefix(host, "localhost:")
+	return []string{"registry.localhost:" + port + "/" + path}
 }
 
 // countTags counts the `-t` flags in a docker build arg list for the
@@ -2651,8 +2649,8 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	for _, w := range e.Workloads {
 		switch w.Build.Type {
 		case "docker":
-			imageName, imageTag := serviceDockerImage(w, resolvedTag, opts)
-			out = append(out, buildServiceDocker(ctx, cfg, w.Name, imageName, w.Build.Docker, opts, cfgArchForDocker, imageTag))
+			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
+			out = append(out, buildServiceDocker(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag))
 		case "remote":
 			out = append(out, buildServiceRemote(w.Name))
 		}
@@ -2697,9 +2695,9 @@ func buildServiceRemote(svcName string) buildResult {
 // The two per-service `docker` facts NOT expressible in a Dockerfile resolve
 // here:
 //
-//   - registry — the local tag's registry. DockerBuild.registry (a KCL
-//     declaration) wins, then the registry the env declares; with neither the
-//     image is tagged bare.
+//   - the destination — the workload's own `image`, registry included. There is
+//     no registry knob on the build: where the image goes is where the runtime
+//     pulls it from, stated once.
 //   - build_contexts — DockerBuild.build_contexts win when set, else the
 //     project-level forge.yaml docker.build_contexts.
 //
@@ -2707,12 +2705,7 @@ func buildServiceRemote(svcName string) buildResult {
 // `--build-arg BASE_*` injection happens — the Dockerfile's `FROM` lines are
 // the whole story. The only `--build-arg`s are the service's explicit
 // DockerBuild.build_args.
-func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
-	registry := opts.envRegistry
-	if d != nil && d.Registry != "" {
-		registry = d.Registry
-	}
-
+func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
 	dockerArgs = []string{"build"}
 	// platform: the DockerBuild's explicit platform wins; otherwise the
 	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
@@ -2733,7 +2726,11 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile str
 			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
 		}
 	}
-	tags := imageTagSet(registry, imageName, opts.pushRegistry, resolvedTag, releaseImageTag(opts) != "")
+	// `repository` is already the declared destination (serviceDockerImage), so
+	// it is used as-is rather than resolved again through the push plan — a
+	// second lookup by name would not find a repository and would silently
+	// fall back to a bare tag.
+	tags := imageTagSet(repository, resolvedTag, opts.pushPlan.push, releaseImageTag(opts) != "")
 	for _, t := range tags.local {
 		dockerArgs = append(dockerArgs, "-t", t)
 	}
@@ -2824,25 +2821,31 @@ func checkServiceDockerContext(projectDir, svcName string, d *DockerBuild) error
 // WorkloadEntity.BuildImage), else the build-wide resolvedTag. The pin wins
 // over the build-wide tag because it IS the deploy ref; a --tag that
 // contradicts it is refused up front (checkExplicitTagAgainstPins).
-func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions) (name, tag string) {
-	name = w.Image
-	if name == "" {
-		name = w.Name
+// serviceDockerImage is the REPOSITORY a DockerBuild workload's image goes to
+// and the tag it carries. The repository is the workload's own declared image
+// minus any pin — registry host included, because that is where the build
+// pushes and where the deploy pulls. A workload that declares no image falls
+// back to its build's output_name / its own name, which names no host and so
+// is only ever tagged locally.
+func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions) (repository, tag string) {
+	repository = imageRepository(w.Image)
+	if repository == "" {
+		repository = w.Name
 		if d := w.Build.Docker; d != nil && d.OutputName != "" {
-			name = d.OutputName
+			repository = d.OutputName
 		}
 	}
 	pin, _ := w.PinnedBuildTag()
-	return name, buildTagFor(opts, pin, resolvedTag)
+	return repository, buildTagFor(opts, pin, resolvedTag)
 }
 
 // buildServiceDocker runs `docker build` for a DockerBuild service. It
 // reuses the same tag/registry/push/build-context primitives the project
 // image build uses (resolveBuildContext / appendBuildContexts /
-// expandPushRegistries) so a per-service image is tagged and pushed the
-// same way. imageName/resolvedTag come from serviceDockerImage. platform
+// k3dMirrorRepositories) so a per-service image is tagged and pushed the
+// same way. repository/resolvedTag come from serviceDockerImage. platform
 // overrides the env-wide arch.
-func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, imageName string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
+func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, repository string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 	if d != nil && d.Dockerfile != "" {
@@ -2860,7 +2863,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 
-	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, imageName, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
+	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
@@ -2895,6 +2898,9 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 	return buildResult{
 		name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
-		image: imageName, tag: resolvedTag, digest: digest, platforms: platforms,
+		// The state file is keyed by the SERVICE name (a path segment), while
+		// what it records is the repository. Keying it by the repository would
+		// put slashes in the filename.
+		image: svcName, repository: repository, tag: resolvedTag, digest: digest, platforms: platforms,
 	}
 }

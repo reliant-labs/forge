@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -51,15 +52,22 @@ func runDevInfo(configPath string) error {
 	ns := devNamespace(clusterName)
 	expectedCtx := "k3d-" + clusterName
 
-	registry := declaredRegistryForEnv(context.Background(), "dev")
-	if registry == "" {
-		registry = "(none declared in deploy/kcl/dev/main.k)"
+	// The registries the dev env's images name. There is no env registry, so
+	// this is a list: each workload declares its own, and a dev env that
+	// re-points them onto one local registry simply reports one entry.
+	var images []string
+	for _, d := range declaredImageDestinationsForEnv(context.Background(), "dev") {
+		images = append(images, d.repository)
+	}
+	declaredImages := "(no workload in deploy/kcl/dev/ declares a built image)"
+	if len(images) > 0 {
+		declaredImages = strings.Join(images, ", ")
 	}
 
 	fmt.Printf("Project:                    %s\n", store.Meta().Name)
 	fmt.Printf("Cluster (declared):         %s\n", clusterName)
 	fmt.Printf("Namespace (declared):       %s\n", ns)
-	fmt.Printf("Registry (declared):        %s\n", registry)
+	fmt.Printf("Images (declared):          %s\n", declaredImages)
 	fmt.Printf("kubectl context (expected): %s\n", expectedCtx)
 	fmt.Printf("k3d config:                 %s\n", configPath)
 	fmt.Println()

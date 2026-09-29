@@ -20,7 +20,7 @@ and build-only images side by side — so each workload's own runtime decides:
 import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-hounders", namespace = "hounders-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-hounders", namespace = "hounders-dev"}
 _pinned = "ghcr.io/acme/billing@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 output = forge.render(forge.Bundle {
@@ -39,7 +39,7 @@ output = forge.render(forge.Bundle {
         fw.Workload {
             name = "search"
             build = forge.GoBuild {cmd = "./cmd/hounders", output_name = "hounders"}
-            image = "hounders"
+            image = "localhost:5050/hounders"
             args = ["search"]
             ports = [fw.Port {name = "http", port = 8080}]
             runtime = forge.OnCluster {target = _k3d}

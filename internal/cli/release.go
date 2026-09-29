@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/gitsource"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -165,22 +166,24 @@ func ReadRelease(projectDir, version string) (*release.Release, error) {
 func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Artifact {
 	out := map[string]release.Artifact{}
 
-	add := func(image, digest, registry string, platforms []string) {
-		if image == "" || digest == "" {
+	// An OCI artifact is KEYED BY ITS REPOSITORY — registry host included,
+	// exactly as the workload declared it (`ghcr.io/acme/shop`). The key IS
+	// the address, which is why there is no separate URI to record and no way
+	// for the two to disagree.
+	//
+	// Keying by bare name could not survive a workload declaring its own
+	// registry: two envs building the same app to two different registries
+	// collapse onto one entry, and a prod promotion would read a digest that
+	// only ever existed in the dev registry. The host in the key keeps them
+	// distinct.
+	add := func(repository, digest string, platforms []string) {
+		if repository == "" || digest == "" {
 			return
 		}
-		out[image] = release.Artifact{
-			Kind:    release.KindOCI,
-			Mode:    release.ModeShared,
-			Digests: map[string]string{release.SharedVariant: digest},
-			// The registry the build pushed to. Recorded because a digest
-			// alone is not an ADDRESS: `sha256:…` says what the bytes are
-			// but not which host serves them, so a ledger without this can
-			// name an image it cannot prove exists. `forge release verify`
-			// reads it to fetch the manifest. Empty for a local/compose
-			// build that pushed nowhere, which verification then reports as
-			// unverifiable rather than passing it silently.
-			URI:       registry,
+		out[repository] = release.Artifact{
+			Kind:      release.KindOCI,
+			Mode:      release.ModeShared,
+			Digests:   map[string]string{release.SharedVariant: digest},
 			Platforms: platforms,
 		}
 	}
@@ -192,7 +195,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 		if err != nil || st == nil {
 			continue
 		}
-		add(st.Image, st.Digest, st.Registry, st.Platforms)
+		add(st.Image, st.Digest, st.Platforms)
 	}
 
 	// Per-service external-build states: build-<env>-<service>.json. Glob the
@@ -216,7 +219,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 			if err != nil || st == nil {
 				continue
 			}
-			add(st.Image, st.Digest, st.Registry, st.Platforms)
+			add(st.Image, st.Digest, st.Platforms)
 		}
 	}
 
@@ -364,13 +367,17 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		if s.Image == "" || s.Build.Type == "" || s.OnRuntime(RuntimeHost) || s.OnRuntime(RuntimeCompose) {
 			continue
 		}
-		if _, ok := artifacts[s.Image]; ok {
+		// Compare by REPOSITORY, which is how the ledger is keyed: the declared
+		// reference minus its tag. A workload pinning `repo:e2e` and the ledger
+		// entry for `repo` are the same artifact.
+		repo := imageRepository(s.Image)
+		if _, ok := artifacts[repo]; ok {
 			continue
 		}
-		if _, seen := missingImages[s.Image]; !seen {
-			imageOrder = append(imageOrder, s.Image)
+		if _, seen := missingImages[repo]; !seen {
+			imageOrder = append(imageOrder, repo)
 		}
-		missingImages[s.Image] = append(missingImages[s.Image], s.Name)
+		missingImages[repo] = append(missingImages[repo], s.Name)
 	}
 
 	var missing []string
@@ -384,7 +391,7 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		// frontend name (buildHostedStaticSites); the hosted deploy pins it
 		// as liveDigest, so a release without it cannot deploy the site.
 		if frontendIsHosted(fe) {
-			if _, ok := artifacts[fe.Name]; !ok {
+			if _, ok := artifacts[deploytarget.HostedStaticRepository(imageRepository(fe.Image))]; !ok {
 				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge build %s --push)", fe.Name, envNameOr(opts.env)))
 			}
 			continue

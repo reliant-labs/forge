@@ -22,7 +22,7 @@ import forge.tiers
 _bundle = forge.Bundle {
     project = "shop"
     env = "prod"
-    cluster_target = forge.ClusterTarget { cluster = "c", namespace = "shop-prod", registry = "ghcr.io/acme" }
+    cluster_target = forge.ClusterTarget { cluster = "c", namespace = "shop-prod" }
     databases = [
         forge.ManagedDatabase { name = "orders", namespace = "shop-prod" }
         forge.ManagedDatabase {

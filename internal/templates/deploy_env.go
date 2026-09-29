@@ -28,12 +28,12 @@ type EnvTemplateData struct {
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string
-	// CloudRegistry is the registry literal a cloud env declares on its
-	// ClusterTarget. Empty writes the visible ghcr.io/OWNER placeholder. It is
-	// a scaffold-time default the author edits in main.k — forge reads the
-	// registry from that declaration and nowhere else.
-	CloudRegistry string
-
+	// ScaffoldImage is the image reference a scaffolded workload declares
+	// (codegen.ScaffoldImageRef) — `ghcr.io/<owner>/<project>`, or a visibly
+	// placeholder host when the module path names no GitHub owner. The hosted
+	// frontend binder composes its own reference from it, so a project's
+	// frontend and its backends land under one registry by default.
+	ScaffoldImage string
 	// Cluster capacity floor (cloud envs only).
 	Replicas         int
 	CPURequest       string

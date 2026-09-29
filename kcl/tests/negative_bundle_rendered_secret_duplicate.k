@@ -11,7 +11,6 @@ import forge
 _target = forge.ClusterTarget {
     cluster = "k3d-cp"
     namespace = "cp-dev"
-    registry = "localhost:5051"
 }
 
 _bundle = forge.Bundle {

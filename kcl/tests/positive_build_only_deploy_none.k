@@ -12,13 +12,13 @@ The build projects through, so `forge build` still builds and pushes it.
 import forge
 import forge.workloads as fw
 
-_target = forge.ClusterTarget {cluster = "k3d-cp", namespace = "dev", registry = "localhost:5051"}
+_target = forge.ClusterTarget {cluster = "k3d-cp", namespace = "dev"}
 
 # A base image: built + pushed, never orchestrated.
 _base_image = fw.Workload {
     name = "workspace-base"
     kind = "tool"
-    image = "workspace-base"
+    image = "localhost:5051/workspace-base"
     build = forge.DockerBuild {dockerfile = "docker/Dockerfile.workspace-base"}
     runtime = forge.BuildOnly {}
 }
@@ -34,7 +34,7 @@ _cli = fw.Workload {
 # A normal cluster workload in the SAME bundle.
 _api = fw.Workload {
     name = "api"
-    image = "api"
+    image = "localhost:5051/api"
     ports = [fw.Port {name = "http", port = 8080}]
     runtime = forge.OnCluster {target = _target}
 }

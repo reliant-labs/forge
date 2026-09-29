@@ -31,6 +31,7 @@
         "dev_runner": "npm",
         "env_file": null,
         "env_vars": [],
+        "image": "ghcr.io/acme/web",
         "name": "web",
         "path": "frontends/web",
         "port": 3000,
@@ -80,8 +81,8 @@
           "tags": [],
           "type": "go"
         },
-        "build_image": "acme",
-        "image": "acme",
+        "build_image": "ghcr.io/acme/acme",
+        "image": "ghcr.io/acme/acme",
         "kind": "service",
         "name": "api",
         "runtime": {
@@ -116,7 +117,7 @@
               }
             }
           ],
-          "image": "acme",
+          "image": "ghcr.io/acme/acme",
           "kind": "service",
           "ports": [
             {
@@ -154,8 +155,8 @@
           "tags": [],
           "type": "go"
         },
-        "build_image": "acme",
-        "image": "acme",
+        "build_image": "ghcr.io/acme/acme",
+        "image": "ghcr.io/acme/acme",
         "kind": "job",
         "name": "migrate",
         "runtime": {
@@ -178,7 +179,7 @@
               "name": "DATABASE_URL"
             }
           ],
-          "image": "acme",
+          "image": "ghcr.io/acme/acme",
           "kind": "job",
           "replicas": 1,
           "resources": {

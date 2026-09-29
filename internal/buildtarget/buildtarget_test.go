@@ -295,10 +295,11 @@ func TestBuild_EmptyBuildCmdIsDispatcherBug(t *testing.T) {
 func TestWriteAndReadState(t *testing.T) {
 	projDir := t.TempDir()
 	want := State{
-		Service:  "daemon-gateway",
-		Image:    "reliant-daemon-gateway",
+		Service: "daemon-gateway",
+		// Image is the full repository, host included: the registry is part of
+		// the image, so State has no separate Registry field to disagree with.
+		Image:    "localhost:5051/reliant-daemon-gateway",
 		Tag:      "v1.2.3",
-		Registry: "localhost:5051",
 		PushedAt: "2026-06-05T16:00:00Z",
 	}
 	if err := WriteState(projDir, "dev", want); err != nil {
@@ -318,7 +319,7 @@ func TestWriteAndReadState(t *testing.T) {
 		t.Fatal("ReadState: got nil for an existing file")
 	}
 	if got.Service != want.Service || got.Image != want.Image || got.Tag != want.Tag ||
-		got.Registry != want.Registry || got.PushedAt != want.PushedAt {
+		got.PushedAt != want.PushedAt {
 		t.Errorf("round-trip mismatch:\n got: %+v\nwant: %+v", *got, want)
 	}
 	// Verify ReadState returns (nil, nil) for a missing file —
@@ -354,7 +355,6 @@ func TestWriteState_JSONShape(t *testing.T) {
 		Service:  "edge",
 		Image:    "edge",
 		Tag:      "v1",
-		Registry: "localhost:5051",
 		PushedAt: "2026-06-05T16:00:00Z",
 	}
 	if err := WriteState(projDir, "dev", state); err != nil {
@@ -368,9 +368,14 @@ func TestWriteState_JSONShape(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, k := range []string{"service", "image", "tag", "registry", "pushed_at"} {
+	// No "registry" key: the registry is part of "image", which holds the full
+	// repository. A separate key would be a second place for it to disagree.
+	for _, k := range []string{"service", "image", "tag", "pushed_at"} {
 		if _, ok := raw[k]; !ok {
 			t.Errorf("missing key %q in: %s", k, string(data))
 		}
+	}
+	if _, ok := raw["registry"]; ok {
+		t.Errorf("state carries a separate registry key; the image holds it: %s", string(data))
 	}
 }

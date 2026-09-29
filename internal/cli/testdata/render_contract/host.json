@@ -13,6 +13,7 @@
         "dev_runner": "npm",
         "env_file": null,
         "env_vars": [],
+        "image": null,
         "name": "web",
         "path": "frontends/web",
         "port": 3000,

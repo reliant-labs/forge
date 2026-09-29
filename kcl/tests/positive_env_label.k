@@ -25,7 +25,7 @@ The `-D env=` DEFAULT path is positive_env_option.k.
 import forge
 import forge.workloads as fw
 
-_target = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-shared", registry = "localhost:5050"}
+_target = forge.ClusterTarget {cluster = "k3d-myapp", namespace = "myapp-shared"}
 
 _raw = [
     {apiVersion = "cert-manager.io/v1", kind = "ClusterIssuer", metadata = {name = "letsencrypt"}, spec = {acme = {server = "https://example.invalid"}}}
@@ -33,8 +33,8 @@ _raw = [
 ]
 
 _workloads = [
-    fw.Workload {name = "api", image = "myapp", ports = [fw.Port {name = "http", port = 8080}]}
-    fw.Workload {name = "nightly", kind = "cron", image = "myapp", args = ["nightly"], schedule = "0 3 * * *"}
+    fw.Workload {name = "api", image = "localhost:5050/myapp", ports = [fw.Port {name = "http", port = 8080}]}
+    fw.Workload {name = "nightly", kind = "cron", image = "localhost:5050/myapp", args = ["nightly"], schedule = "0 3 * * *"}
 ]
 
 _KEY = "forge.dev/env"

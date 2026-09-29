@@ -52,7 +52,7 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 	if len(sites) == 0 {
 		return nil
 	}
-	if opts.pushRegistry == "" {
+	if !opts.pushPlan.push {
 		names := make([]string, 0, len(sites))
 		for _, f := range sites {
 			names = append(names, f.Name)
@@ -62,7 +62,6 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
 		return err
 	}
-	registry := strings.TrimSuffix(opts.pushRegistry, "/") + "/" + deploytarget.StaticSiteRepositorySegment
 	for _, f := range sites {
 		if err := checkDeployableFrontendMock(f); err != nil {
 			return err
@@ -72,17 +71,24 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		// any travelling in the built bundle removed.
 		fe.RuntimeConfigJS = ""
 		fe.StripRuntimeConfig = true
-		repository := deploytarget.HostedStaticRepository(opts.pushRegistry, f.Name)
+		// The frontend's OWN declared reference, plus the platform's static.v1
+		// layout. The render requires the reference and requires it to name a
+		// host, so there is nothing to resolve or default here.
+		repository := deploytarget.HostedStaticRepository(f.Image)
 		fmt.Printf("[build] %s: hosted static site → %s\n", f.Name, repository)
 		digest, err := hostedStaticPusher(ctx, projectDir, repository, fe)
 		if err != nil {
 			return fmt.Errorf("hosted static site %s: %w", f.Name, err)
 		}
 		state := buildtarget.State{
-			Service:  f.Name,
-			Image:    f.Name,
+			Service: f.Name,
+			// Image is the repository this release was actually PUSHED to —
+			// the declared reference plus the platform's layout segment, not
+			// the reference alone. It is the release ledger's key, so recording
+			// the bare reference here would leave the coverage gate looking up
+			// an entry that does not exist and refusing a complete build.
+			Image:    repository,
 			Tag:      digest,
-			Registry: registry,
 			PushedAt: nowRFC3339(),
 			Digest:   digest,
 		}

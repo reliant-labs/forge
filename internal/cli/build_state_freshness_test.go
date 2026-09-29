@@ -393,11 +393,10 @@ func TestResolveDeployImageTag_DirtyDefaultRecordDoesNotBlockReleaseDeploy(t *te
 
 	// The env-agnostic `default` record from someone's local dirty build.
 	if err := WriteBuildState(dir, "default", BuildState{
-		Tag:      "v0.1.0-50-gabcdef12-dirty",
-		Image:    "app",
-		Registry: "localhost:5051",
-		Commit:   builtCommit,
-		Dirty:    true,
+		Tag:    "v0.1.0-50-gabcdef12-dirty",
+		Image:  "app",
+		Commit: builtCommit,
+		Dirty:  true,
 	}); err != nil {
 		t.Fatalf("write state: %v", err)
 	}
@@ -424,11 +423,10 @@ func TestResolveDeployImageTag_CleanDefaultRecordStillRefuses(t *testing.T) {
 	bindEnvToRelease(t, dir, "prod", "v1.4.0", gitHeadSHA(t, dir))
 
 	if err := WriteBuildState(dir, "default", BuildState{
-		Tag:      "v0.1.0",
-		Image:    "app",
-		Registry: "ghcr.io",
-		Commit:   builtCommit,
-		GitTag:   "v0.1.0",
+		Tag:    "v0.1.0",
+		Image:  "app",
+		Commit: builtCommit,
+		GitTag: "v0.1.0",
 	}); err != nil {
 		t.Fatalf("write state: %v", err)
 	}
@@ -455,11 +453,10 @@ func TestResolveDeployImageTag_DirtyPerEnvRecordStillRefuses(t *testing.T) {
 	bindEnvToRelease(t, dir, "prod", "v1.4.0", gitHeadSHA(t, dir))
 
 	if err := WriteBuildState(dir, "prod", BuildState{
-		Tag:      "prod-dirty-build",
-		Image:    "app",
-		Registry: "ghcr.io",
-		Commit:   builtCommit,
-		Dirty:    true,
+		Tag:    "prod-dirty-build",
+		Image:  "app",
+		Commit: builtCommit,
+		Dirty:  true,
 	}); err != nil {
 		t.Fatalf("write state: %v", err)
 	}

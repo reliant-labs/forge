@@ -56,25 +56,24 @@ import forge.workloads as fw
 _target = forge.ClusterTarget {
     cluster = "k3d-rendertest"
     namespace = "rendertest-prod"
-    registry = "reg.example.com"
 }
 
 _bundle = forge.Bundle {
     project = "rendertest"
     cluster_target = _target
     workloads = [_w | {runtime = forge.OnCluster {target = _target}} if not _w.runtime else _w for _w in [
-        fw.Workload {name = "api", image = "rendertest"}
+        fw.Workload {name = "api", image = "reg.example.com/rendertest"}
         # A standalone job (no before): a batch/v1 Job in the stream.
-        fw.Workload {name = "migrate", kind = "job", image = "rendertest", args = ["db", "migrate", "up"]}
+        fw.Workload {name = "migrate", kind = "job", image = "reg.example.com/rendertest", args = ["db", "migrate", "up"]}
     ]]
 }
 
 output = forge.render(_bundle)
 `)
-	write(".forge/state/build-prod.json", `{"image": "rendertest", "tag": "abc1234", "registry": "reg.example.com", "pushed": true, "pushed_at": "2026-09-24T00:00:00Z", "digest": "`+renderBuiltDigest+`"}`)
+	write(".forge/state/build-prod.json", `{"image": "reg.example.com/rendertest", "tag": "abc1234", "pushed": true, "pushed_at": "2026-09-24T00:00:00Z", "digest": "`+renderBuiltDigest+`"}`)
 	if _, err := newFileBindingStore(dir).Append(context.Background(), releasepkg.Promotion{
 		Env: "prod", Release: "v1.0.0", Kind: releasepkg.KindPromote,
-		Resolved: map[string]string{"rendertest": renderReleaseDigest},
+		Resolved: map[string]string{"reg.example.com/rendertest": renderReleaseDigest},
 	}); err != nil {
 		t.Fatalf("write promotion: %v", err)
 	}

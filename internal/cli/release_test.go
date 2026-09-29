@@ -169,37 +169,41 @@ func TestHarvestReleaseArtifacts(t *testing.T) {
 	}
 }
 
-// TestHarvestReleaseArtifacts_RecordsRegistry pins the coordinate that makes
+// TestHarvestReleaseArtifacts_KeyIsTheRepository pins the coordinate that makes
 // an OCI artifact VERIFIABLE rather than merely named.
 //
 // A digest says what the bytes are; it does not say which host serves them. A
-// ledger that records `sha256:…` against a bare image name therefore names an
-// image nobody can look up, and `forge release verify` can only report it
+// ledger that recorded `sha256:…` against a BARE image name therefore named an
+// image nobody could look up, and `forge release verify` could only report it
 // UNVERIFIABLE — the same "claim nothing checks" shape that let v0.1.12 ship a
-// package that was never published. The registry the build pushed to is
-// already in the build state; carrying it into the ledger is what closes that.
+// package that was never published.
 //
-// An EMPTY registry is preserved as empty (not defaulted): a local or compose
-// build genuinely pushed nowhere, and inventing a host would turn an honest
-// "cannot check this" into a spurious failure against a registry that was
-// never involved.
-func TestHarvestReleaseArtifacts_RecordsRegistry(t *testing.T) {
+// The fix is the KEY: an artifact is keyed by the repository its workload
+// declared, host included, so the key IS the address. There is no URI field to
+// drift from it, and two envs building the same app to two registries stay two
+// entries rather than collapsing onto one — which is what would let a prod
+// promotion read a digest that only exists in the dev registry.
+//
+// A build that pushed NOWHERE keeps its hostless key: inventing a host would
+// turn an honest "cannot check this" into a spurious failure against a registry
+// that was never involved.
+func TestHarvestReleaseArtifacts_KeyIsTheRepository(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteBuildState(dir, "default", BuildState{
-		Image: "control-plane", Tag: "v1.4.0", Registry: "ghcr.io/reliant-labs",
+		Image: "ghcr.io/reliant-labs/control-plane", Tag: "v1.4.0",
 		Pushed: true, PushedAt: nowRFC3339(), Digest: sha("a"),
 	}); err != nil {
 		t.Fatalf("write aggregate: %v", err)
 	}
-	// An external build pushed to a DIFFERENT registry — each artifact must
-	// carry its own, not one borrowed from a sibling.
+	// An external build pushed to a DIFFERENT registry — each artifact keeps
+	// its own host, not one borrowed from a sibling.
 	if err := buildtarget.WriteState(dir, "default", buildtarget.State{
-		Service: "reliant", Image: "reliant", Tag: "v1.4.0",
-		Registry: "us-central1-docker.pkg.dev/proj/repo", PushedAt: nowRFC3339(), Digest: sha("b"),
+		Service: "reliant", Image: "us-central1-docker.pkg.dev/proj/repo/reliant",
+		Tag: "v1.4.0", PushedAt: nowRFC3339(), Digest: sha("b"),
 	}); err != nil {
 		t.Fatalf("write per-service: %v", err)
 	}
-	// A local build that pushed nowhere: no registry to record.
+	// A local build that pushed nowhere: its key names no host.
 	if err := buildtarget.WriteState(dir, "default", buildtarget.State{
 		Service: "local-only", Image: "local-only", Tag: "dev",
 		PushedAt: nowRFC3339(), Digest: sha("c"),
@@ -209,17 +213,28 @@ func TestHarvestReleaseArtifacts_RecordsRegistry(t *testing.T) {
 
 	got := harvestReleaseArtifacts(dir, "")
 
-	for image, wantURI := range map[string]string{
-		"control-plane": "ghcr.io/reliant-labs",
-		"reliant":       "us-central1-docker.pkg.dev/proj/repo",
-		"local-only":    "",
+	for _, key := range []string{
+		"ghcr.io/reliant-labs/control-plane",
+		"us-central1-docker.pkg.dev/proj/repo/reliant",
+		"local-only",
 	} {
-		art, ok := got[image]
+		art, ok := got[key]
 		if !ok {
-			t.Fatalf("%s missing from harvest", image)
+			t.Fatalf("%s missing from harvest — the key must be the declared repository", key)
 		}
-		if art.URI != wantURI {
-			t.Errorf("%s URI = %q, want %q", image, art.URI, wantURI)
+		// No URI: the key is the address, so a second copy could only disagree.
+		if art.URI != "" {
+			t.Errorf("%s recorded a URI %q; the key is the address", key, art.URI)
+		}
+	}
+	// The two pushed images resolve to their own hosts; the local one to none.
+	for key, wantHost := range map[string]string{
+		"ghcr.io/reliant-labs/control-plane":           "ghcr.io",
+		"us-central1-docker.pkg.dev/proj/repo/reliant": "us-central1-docker.pkg.dev",
+		"local-only": "",
+	} {
+		if host, _ := ociManifestCoordinates(key); host != wantHost {
+			t.Errorf("%s resolves to host %q, want %q", key, host, wantHost)
 		}
 	}
 }

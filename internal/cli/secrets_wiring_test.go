@@ -13,7 +13,7 @@ const sampleSecretProviderJSON = `{"output": {
   "workloads": [
     {
       "name": "api", "kind": "service",
-      "runtime": {"type": "cluster", "cluster": "c", "namespace": "dev", "registry": "r"},
+      "runtime": {"type": "cluster", "cluster": "c", "namespace": "dev"},
       "spec": {"kind": "service", "env": [
         {"name": "GITHUB_CLIENT_ID", "secretRef": {"name": "github-oauth", "key": "client-id"}},
         {"name": "TOKEN", "secretRef": {"name": "creds"}},

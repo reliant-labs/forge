@@ -155,9 +155,8 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 	// 3. Project image + image frontends (only with --docker; same gate as
 	// buildParallel's `opts.buildDocker`).
 	if opts.buildDocker {
-		registry := opts.envRegistry
 		if len(in.targets.goTargets) > 0 && !in.targets.skipProjectDocker {
-			tags := imageTagSet(registry, in.cfg.Name, opts.pushRegistry, in.projectTag, releaseScoped)
+			tags := imageTagSet(opts.pushPlan.repositoryFor(in.cfg.Name), in.projectTag, opts.pushPlan.push, releaseScoped)
 			// A missing root Dockerfile is a SKIP in the real build
 			// (dockerBuildProject), not a failure — the completeness gate
 			// below is what refuses a release that lacks the image.
@@ -169,7 +168,7 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 			report.steps = append(report.steps, step)
 		}
 		for _, fe := range in.targets.dockerFrontends {
-			tags := imageTagSet(registry, fe.Name, opts.pushRegistry, in.resolvedTag, releaseScoped)
+			tags := imageTagSet(opts.pushPlan.repositoryFor(fe.Name), in.resolvedTag, opts.pushPlan.push, releaseScoped)
 			df := filepath.Join(fe.DeclaredDir(), "Dockerfile")
 			step := buildPlanStep{kind: "docker", name: fe.Name, what: "docker build -f " + df, pushes: tags.push}
 			if !fileExists(df) {
@@ -370,10 +369,10 @@ func planHostedStaticSites(in planInputs) []buildPlanStep {
 		if err := checkDeployableFrontendMock(f); err != nil {
 			step.problem = err.Error()
 		}
-		if in.opts.pushRegistry == "" {
+		if !in.opts.pushPlan.push {
 			step.problem = errHostedSiteMustPush(in.opts.env, []string{f.Name}).Error()
 		} else {
-			step.pushes = []string{deploytarget.HostedStaticRepository(in.opts.pushRegistry, f.Name)}
+			step.pushes = []string{deploytarget.HostedStaticRepository(f.Image)}
 		}
 		out = append(out, step)
 	}
@@ -396,17 +395,17 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 		switch s.kind {
 		case "docker":
 			if len(s.pushes) > 0 {
-				would[imageNameOfPlanStep(in, s)] = placeholder
+				would[imageRepositoryOfPlanStep(in, s)] = placeholder
 			}
 		case "external":
 			if svc := in.entities.FindWorkload(s.name); svc != nil && svc.Image != "" {
-				would[svc.Image] = placeholder
+				would[imageRepository(svc.Image)] = placeholder
 			}
 		case "static":
-			// Recorded under the frontend's name, as buildHostedStaticSites
-			// writes its build state.
+			// Keyed by the REPOSITORY the release lands in, which is what
+			// buildHostedStaticSites records and what the ledger is keyed by.
 			if len(s.pushes) > 0 {
-				would[s.name] = placeholder
+				would[s.pushes[0]] = placeholder
 			}
 		}
 	}
@@ -432,14 +431,17 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 	return names, nil
 }
 
-// imageNameOfPlanStep returns the image a docker plan step builds: the project
-// image, a frontend, or a DockerBuild workload's artifact (serviceDockerImage).
-func imageNameOfPlanStep(in planInputs, s buildPlanStep) string {
+// imageRepositoryOfPlanStep returns the REPOSITORY a docker plan step pushes
+// to: the project image's, a frontend's, or a DockerBuild workload's
+// (serviceDockerImage). It is a repository rather than a name because that is
+// how the release ledger is keyed — the declared reference, host included — so
+// the coverage gate compares like with like.
+func imageRepositoryOfPlanStep(in planInputs, s buildPlanStep) string {
 	if svc := in.entities.FindWorkload(s.name); svc != nil && svc.Build.Type == "docker" {
-		name, _ := serviceDockerImage(*svc, in.resolvedTag, in.opts)
-		return name
+		repository, _ := serviceDockerImage(*svc, in.resolvedTag, in.opts)
+		return repository
 	}
-	return s.name
+	return in.opts.pushPlan.repositoryFor(s.name)
 }
 
 func printBuildPlan(r buildPlanReport, opts buildOptions) {

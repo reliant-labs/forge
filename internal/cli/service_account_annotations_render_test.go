@@ -34,7 +34,6 @@ import forge.workloads as fw
 _prod = forge.ClusterTarget {
     cluster = "gke_reliant-labs-475814_us-central1_prod"
     namespace = "control-plane-prod"
-    registry = "us-docker.pkg.dev/reliant-labs-475814/reliant-prod"
     platform = "amd64"
 }
 
@@ -45,13 +44,13 @@ _bundle = forge.Bundle {
     workloads = [_w | {runtime = forge.OnCluster {target = _prod}} if not _w.runtime else _w for _w in [
         fw.Workload {
             name = "admin-server"
-            image = "control-plane"
+            image = "us-docker.pkg.dev/reliant-labs-475814/reliant-prod/control-plane"
             ports = [fw.Port {name = "http", port = 8090}]
             serviceAccountAnnotations = {"` + gsaKey + `" = "` + gsa + `"}
         }
         fw.Workload {
             name = "plain"
-            image = "control-plane"
+            image = "us-docker.pkg.dev/reliant-labs-475814/reliant-prod/control-plane"
             ports = [fw.Port {name = "http", port = 8080}]
         }
     ]]

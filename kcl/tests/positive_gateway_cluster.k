@@ -84,7 +84,6 @@ _routing_key = "forge.dev/cluster"
 _target = forge.ClusterTarget {
     cluster = "control-plane"
     namespace = "cp-ns"
-    registry = "localhost:5050"
 }
 _bundle = forge.Bundle {
     project = "fixture"

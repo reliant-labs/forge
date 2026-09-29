@@ -11,7 +11,6 @@ import forge
 _t = forge.ClusterTarget {
     cluster = ""
     namespace = "ns"
-    registry = "ghcr.io/x"
 }
 
 _rt = forge.OnCluster {target = _t}

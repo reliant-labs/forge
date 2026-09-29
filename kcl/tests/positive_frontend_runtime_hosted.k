@@ -24,6 +24,7 @@ output = forge.render(forge.Bundle {
     }]
     frontends = [forge.Frontend {
         name = "site"
+        image = "ghcr.io/acme/site"
         path = "site"
         type = "vite"
         public_dir = "dist"

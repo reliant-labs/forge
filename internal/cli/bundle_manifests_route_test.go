@@ -16,8 +16,8 @@ const bundleManifestsMain = `
 import forge
 import forge.workloads as fw
 
-_primary = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-dev", registry = "localhost:5050"}
-_daemon = forge.ClusterTarget {cluster = "k3d-cp-daemon", namespace = "cp-dev", registry = "localhost:5050"}
+_primary = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-dev"}
+_daemon = forge.ClusterTarget {cluster = "k3d-cp-daemon", namespace = "cp-dev"}
 _build = forge.GoBuild {cmd = "./cmd/cp", output_name = "cp"}
 
 output = forge.render(forge.Bundle {
@@ -25,8 +25,8 @@ output = forge.render(forge.Bundle {
     env = "dev"
     cluster_target = _primary
     workloads = [_w | {runtime = forge.OnCluster {target = _primary}} if not _w.runtime else _w for _w in [
-        fw.Workload {name = "api", build = _build, args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
-        fw.Workload {name = "proxy", build = _build, args = ["proxy"], ports = [fw.Port {name = "http", port = 8081}], runtime = forge.OnCluster {target = _daemon}}
+        fw.Workload {name = "api", image = "localhost:5050/cp", build = _build, args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
+        fw.Workload {name = "proxy", image = "localhost:5050/cp", build = _build, args = ["proxy"], ports = [fw.Port {name = "http", port = 8081}], runtime = forge.OnCluster {target = _daemon}}
     ]]
     manifests = [
         forge.Manifests {objects = [
@@ -139,7 +139,7 @@ const manifestsOnlyClusterMain = `
 import forge
 import forge.workloads as fw
 
-_hub = forge.ClusterTarget {cluster = "ctx-hub", namespace = "app", registry = "ghcr.io/acme"}
+_hub = forge.ClusterTarget {cluster = "ctx-hub", namespace = "app"}
 
 output = forge.render(forge.Bundle {
     project = "repro"

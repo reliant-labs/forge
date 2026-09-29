@@ -131,10 +131,12 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 
 	// internal/handlers/<svc>/handlers_crud_ops_gen.go is emitted by
 	// stepCRUDHandlers (the Tier-1 projection half of the CRUD split; the
-	// RPC implementations live in user-owned handlers_crud.go). Gated on
-	// codegen-enabled AND ctx.HasServices. A no-services project (e.g.
-	// lib/CLI kind) shouldn't see stale CRUD-handler drift block its run.
-	{glob: "internal/handlers/*/handlers_crud_ops_gen.go", gate: gateCodegenHasServices},
+	// RPC implementations live in user-owned handlers_crud.go). The gate
+	// must be the emitter's own (gateCRUDProjection — codegen AND services
+	// AND features.orm), not a looser one: when the projection step is
+	// gated off, absence from WrittenThisRun says nothing about staleness,
+	// exactly as for the ORM entries below.
+	{glob: "internal/handlers/*/handlers_crud_ops_gen.go", gate: gateCRUDProjection},
 
 	// internal/db/orm_shared.go + internal/db/*_orm.go are emitted by
 	// stepInternalDBORM (M3: the ORM emitter records its outputs in the

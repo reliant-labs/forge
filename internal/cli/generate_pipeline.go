@@ -346,7 +346,7 @@ func generateSteps() []GenStep {
 		{Name: "frontend nav + dashboard", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendNav, Tag: "frontend"},
 		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
 		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no Connect services defined or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
-		{Name: "CRUD handlers", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCRUDHandlers, Tag: "codegen"},
+		{Name: "CRUD handlers", Gate: gateCRUDProjection, GateReason: "no Connect services defined, features.codegen=false, or features.orm=false", Run: stepCRUDHandlers, Tag: "codegen"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: gateContractsEnabled, GateReason: "features.contracts=false", Run: stepInternalContracts, Tag: "codegen"},
 		// Auth is owned code now (internal/app/auth.go's SetupAuth),
@@ -774,6 +774,33 @@ func gateOpenAPIEnabled(ctx *pipelineContext) bool {
 
 func gateORMHasServices(ctx *pipelineContext) bool {
 	return and(feature(config.FeaturesConfig.ORMEnabled), hasServices)(ctx)
+}
+
+// gateCRUDProjection gates the CRUD handler projection. It AND-s the ORM
+// gate into the codegen one because the projection does not merely
+// accompany the ORM — it COMPILES AGAINST IT. Every op the template
+// renders names `db.<Entity>`, `db.Create<Entity>`, `db.Get<Entity>ByID`,
+// `db.List<Entity>`, all of which exist only in the `internal/db/
+// <entity>_orm_gen.go` that stepInternalDBORM emits under gateORMHasServices.
+//
+// Pre-fix the two steps disagreed: the ORM half was gated on features.orm
+// and the projection half was not, so a project with `features.orm: false`
+// and a hand-written internal/db got a handlers_crud_ops_gen.go referring
+// to generated symbols that were never generated, and `forge generate`
+// failed its own `go build` validate step. That is not a recoverable
+// misconfiguration — turning the ORM off is the supported way to say "this
+// project's store layer is mine", and it must turn off everything that
+// consumes the ORM's output, not just the emitter.
+//
+// The trigger was a NAME COLLISION, which is what made it so surprising:
+// entity matching resolves a proto message to a table by name, so merely
+// naming a table `domains` alongside a `Domain` message was enough to fire
+// a projection the project could not compile. control-plane had to rename
+// the table to `custom_domains` to dodge it. Nothing about the project
+// asked for CRUD; the collision alone was sufficient, because no gate
+// asked whether the generated store this projection calls into exists.
+func gateCRUDProjection(ctx *pipelineContext) bool {
+	return and(gateCodegenHasServices, feature(config.FeaturesConfig.ORMEnabled))(ctx)
 }
 
 func gateDeployEnabled(ctx *pipelineContext) bool {

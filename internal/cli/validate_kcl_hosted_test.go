@@ -21,7 +21,7 @@ func hostedValidateBundle(api string) string {
     secret_provider = forge.HostedSecrets {}
     workloads = [fw.Workload {
         name = "api"
-        image = "hounders"
+        image = "ghcr.io/acme/hounders"
         build = forge.GoBuild {cmd = "./cmd/hounders", output_name = "hounders"}
         args = ["api"]
         runtime = forge.OnHosted {}

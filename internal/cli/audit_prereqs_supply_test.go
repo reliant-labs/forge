@@ -63,6 +63,7 @@ _bundle = forge.Bundle {
 ` + clusterTarget + `    project = "acme"
     workloads = [fw.Workload {
         name = "api"
+        image = "localhost:5050/acme"
         build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
         args = ["server"]
         ports = [fw.Port {name = "http", port = 8080, expose = True}]

@@ -46,6 +46,7 @@ const hostedWorkloadURLBundle = `    project = "acme"
     }]
     frontends = [forge.Frontend {
         name = "web"
+        image = "ghcr.io/acme/web"
         path = "frontends/web"
         type = "vite"
         runtime_config = {

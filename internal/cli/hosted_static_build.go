@@ -81,8 +81,13 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 			return fmt.Errorf("hosted static site %s: %w", f.Name, err)
 		}
 		state := buildtarget.State{
-			Service:  f.Name,
-			Image:    imageRepository(f.Image),
+			Service: f.Name,
+			// Image is the repository this release was actually PUSHED to —
+			// the declared reference plus the platform's layout segment, not
+			// the reference alone. It is the release ledger's key, so recording
+			// the bare reference here would leave the coverage gate looking up
+			// an entry that does not exist and refusing a complete build.
+			Image:    repository,
 			Tag:      digest,
 			PushedAt: nowRFC3339(),
 			Digest:   digest,

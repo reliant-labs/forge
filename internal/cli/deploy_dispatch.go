@@ -595,8 +595,12 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 			continue
 		}
 		services = append(services, deploytarget.ResolvedService{
-			Name:   f.Name,
-			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f), Artifact: f.Name},
+			Name: f.Name,
+			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f),
+				// The ledger keys a site by the repository it was pushed to —
+				// the frontend's declared reference plus the platform's layout
+				// segment — so the deploy must look it up under the same key.
+				Artifact: deploytarget.HostedStaticRepository(imageRepository(f.Image))},
 		})
 		names = append(names, f.Name)
 	}
@@ -667,7 +671,8 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 //     (deploytarget.HostedArtifactName), for an image built elsewhere.
 func hostedArtifactKey(w WorkloadEntity) string {
 	if w.Image != "" {
-		return w.Image
+		// The declared REPOSITORY, host included: the release ledger's key.
+		return imageRepository(w.Image)
 	}
 	return deploytarget.HostedArtifactName(w.Spec.Image)
 }

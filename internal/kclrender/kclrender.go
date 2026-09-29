@@ -211,29 +211,6 @@ func withDevStackDArgs(dArgs []string) []string {
 // as are the active dev-stack git facts, see withDevStackDArgs.
 // kpm progress/diagnostics go to stderr.
 func Run(workDir, source string, dArgs []string) ([]byte, error) {
-	return RunIn(workDir, workDir, source, dArgs)
-}
-
-// RunIn is Run with the two directories Run collapses into one held apart:
-// projectDir is the project root the kcl.mod migration checks read, and
-// workDir is the cwd KCL evaluates in.
-//
-// Every env render wants them equal — an env package is `deploy/kcl/<env>`
-// and relative `lib.*` imports resolve from the project root either way — so
-// Run stays the one-argument form and this is the exception.
-//
-// The exception is real, not hypothetical. A KCL file that is not an env
-// resolves its imports from ITS OWN kcl.mod package root:
-// control-plane's `deploy/kcl/lib/platform_local.k` says `import
-// lib.barman_plugin`, which resolves only with `deploy/kcl` as the cwd (the
-// scripts reading it all `cd` there first). Evaluating it with the project
-// root as workDir fails on the import; evaluating it with `deploy/kcl` as
-// BOTH would point the migration checks at a subtree, and
-// CheckRegistryHelper walks that subtree — so a stale helper elsewhere in the
-// project would go unreported for this render and be reported for every
-// other, which is the kind of difference between two renders of one project
-// that forge exists to remove.
-func RunIn(projectDir, workDir, source string, dArgs []string) ([]byte, error) {
 	// Make kcl_plugin.forge (resolve_port, …) available. Idempotent;
 	// the registry is process-global.
 	kclplugin.Register()
@@ -244,7 +221,7 @@ func RunIn(projectDir, workDir, source string, dArgs []string) ([]byte, error) {
 		return nil, err
 	}
 
-	forgeArg, err := forgeModuleArg(projectDir)
+	forgeArg, err := forgeModuleArg(workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +233,32 @@ func RunIn(projectDir, workDir, source string, dArgs []string) ([]byte, error) {
 	// Serialized: concurrent evaluations in one process corrupt each other's
 	// refusals (a refused render can come back as success, or carrying
 	// another render's message). See kclplugin.Serialized.
+	//
+	// The chdir to workDir lives INSIDE that lock, and it is not redundant
+	// with client.WithWorkDir. kpm's WithWorkDir decides where kpm resolves
+	// the PACKAGE from; it does NOT reach the KCL runtime's `file.read`,
+	// which resolves a relative path against the real process cwd. So a
+	// project whose KCL reads a file by project-relative path — control-plane's
+	// lib/barman_plugin.k reads "deploy/cnpg/plugin-barman-cloud.yaml" — got a
+	// different answer depending on where the CALLER stood: correct from the
+	// project root, "No such file or directory" from anywhere else. That is
+	// the `forge -C <dir>` defect, and it applied to every render path,
+	// `env render` included, not just to this one.
+	//
+	// The lock is what makes a process-global chdir safe here: it is the same
+	// lock every KCL evaluation in this process already takes, so no two
+	// evaluations can be mid-chdir at once, and the cwd is always restored
+	// before the next one starts. It is deliberately NOT a fix applied at one
+	// caller — a cwd that only some render paths honoured would reintroduce
+	// exactly the "two renders of one project disagree" failure that
+	// withKubeconfigDArg and withDevStackDArgs are centralized here to
+	// prevent.
 	res, err := kclplugin.Serialized(func() (*kcl.KCLResultList, error) {
+		restore, err := chdir(workDir)
+		if err != nil {
+			return nil, err
+		}
+		defer restore()
 		return c.Run(
 			client.WithRunSourceUrl(source),
 			client.WithWorkDir(workDir),
@@ -269,4 +271,28 @@ func RunIn(projectDir, workDir, source string, dArgs []string) ([]byte, error) {
 		return nil, fmt.Errorf("kpm run %s: %w", source, err)
 	}
 	return []byte(res.GetRawJsonResult()), nil
+}
+
+// chdir moves the process to dir and returns a func restoring the previous
+// cwd. Called only with the KCL evaluation lock held — see Run.
+//
+// A failure to restore is deliberately silent: there is nothing the caller can
+// do about it, and the alternative (overwriting a successful render's result
+// with a cwd error) would discard the answer the user asked for. The next
+// evaluation sets the cwd it needs regardless, so a missed restore cannot make
+// one render read another's directory.
+func chdir(dir string) (restore func(), err error) {
+	prev, err := os.Getwd()
+	if err != nil {
+		// No cwd to return to — a deleted working directory. Still chdir,
+		// since the render needs the right one; just don't promise a restore.
+		if cerr := os.Chdir(dir); cerr != nil {
+			return nil, fmt.Errorf("enter %s to render: %w", dir, cerr)
+		}
+		return func() {}, nil
+	}
+	if err := os.Chdir(dir); err != nil {
+		return nil, fmt.Errorf("enter %s to render: %w", dir, err)
+	}
+	return func() { _ = os.Chdir(prev) }, nil
 }

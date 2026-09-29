@@ -104,18 +104,29 @@ var ErrNoSuchField = errors.New("no such field")
 
 // Eval evaluates req.File and applies req.Selectors.
 //
-// The evaluation runs with the file's OWN kcl.mod package root as the cwd —
-// see PackageRoot — so a relative `lib.*` import resolves exactly as it does
-// for the scripts that `cd` there before calling kcl. The caller's cwd is
-// irrelevant: a caller in a subdirectory gets the same answer as one at the
-// project root, which is the bug `forge -C <dir> env render` had when it
-// resolved an env source against the cwd instead of the project.
+// The evaluation runs with the PROJECT ROOT as the working directory, exactly
+// as `env render` does, so one project has one evaluation semantics regardless
+// of which file is being evaluated or where the caller stands. Two things
+// follow, and they are the two the shell scripts this replaces had to know
+// about:
+//
+//   - A relative `lib.*` import resolves from the file's own kcl.mod package,
+//     because that is how kpm resolves a package — not from the cwd. The
+//     scripts' `cd deploy/kcl` was never what made their imports work.
+//   - A `file.read("deploy/...")` resolves from the project root, because the
+//     KCL runtime reads relative paths against the process cwd. THAT is what
+//     the `cd` was load-bearing for, and getting it wrong fails with "No such
+//     file or directory" naming a path that plainly exists.
+//
+// A caller in a subdirectory therefore gets the same answer as one at the
+// project root — the property `forge -C <dir>` was missing (see
+// kclrender.Run's chdir note).
 func Eval(req Request) (Result, error) {
 	abs, err := resolveFile(req.ProjectDir, req.File)
 	if err != nil {
 		return Result{}, err
 	}
-	raw, err := kclrender.RunIn(req.ProjectDir, PackageRoot(req.ProjectDir, abs), abs, req.Options)
+	raw, err := kclrender.Run(req.ProjectDir, abs, req.Options)
 	if err != nil {
 		return Result{}, err
 	}
@@ -162,34 +173,6 @@ func resolveFile(projectDir, file string) (string, error) {
 		return "", fmt.Errorf("%s is not a .k file", file)
 	}
 	return abs, nil
-}
-
-// PackageRoot is the directory KCL must evaluate file in: the nearest
-// ancestor holding a kcl.mod, bounded by projectDir, falling back to the
-// file's own directory.
-//
-// This is the whole of why relative imports work. control-plane's
-// `deploy/kcl/lib/platform_local.k` says `import lib.barman_plugin`, which
-// KCL resolves against the package root — `deploy/kcl`, where the kcl.mod
-// is — and not against the file's directory or the project root. Every shell
-// script reading one of those files therefore begins by cd'ing to
-// `deploy/kcl`, and that step is precisely what a caller should not have to
-// know about.
-//
-// The walk stops AT projectDir inclusive: a kcl.mod above the project is not
-// this project's package root.
-func PackageRoot(projectDir, file string) string {
-	dir := filepath.Dir(file)
-	root := filepath.Clean(projectDir)
-	for cur := dir; ; cur = filepath.Dir(cur) {
-		if _, err := os.Stat(filepath.Join(cur, "kcl.mod")); err == nil {
-			return cur
-		}
-		if cur == root || filepath.Dir(cur) == cur {
-			break
-		}
-	}
-	return dir
 }
 
 // selectFrom applies selectors to a decoded document.

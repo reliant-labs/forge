@@ -16,8 +16,8 @@ const bundleManifestsMain = `
 import forge
 import forge.workloads as fw
 
-_primary = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-dev", registry = "localhost:5050"}
-_daemon = forge.ClusterTarget {cluster = "k3d-cp-daemon", namespace = "cp-dev", registry = "localhost:5050"}
+_primary = forge.ClusterTarget {cluster = "k3d-cp", namespace = "cp-dev"}
+_daemon = forge.ClusterTarget {cluster = "k3d-cp-daemon", namespace = "cp-dev"}
 _build = forge.GoBuild {cmd = "./cmd/cp", output_name = "cp"}
 
 output = forge.render(forge.Bundle {
@@ -139,7 +139,7 @@ const manifestsOnlyClusterMain = `
 import forge
 import forge.workloads as fw
 
-_hub = forge.ClusterTarget {cluster = "ctx-hub", namespace = "app", registry = "ghcr.io/acme"}
+_hub = forge.ClusterTarget {cluster = "ctx-hub", namespace = "app"}
 
 output = forge.render(forge.Bundle {
     project = "repro"

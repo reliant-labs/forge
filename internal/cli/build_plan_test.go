@@ -68,8 +68,7 @@ const imagelessInfraFixture = `{
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -132,8 +131,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -151,8 +149,7 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -210,8 +207,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -229,8 +225,7 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -267,8 +262,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -286,8 +280,7 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -312,8 +305,7 @@ const hostedStaticPlanFixture = `{
     "control_plane": {
       "type": "control_plane",
       "endpoint": "http://127.0.0.1:1",
-      "token_env": "FORGE_CONTROL_PLANE_TOKEN",
-      "registry": "ghcr.io/x"
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN"
     },
     "workloads": [
       {
@@ -449,8 +441,7 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "registry.example/prod"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"

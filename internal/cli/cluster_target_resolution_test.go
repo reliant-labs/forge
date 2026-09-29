@@ -23,7 +23,6 @@ const clusterTargetJSON = `{
     "cluster_target": {
       "cluster": "gke_proj_us-central1_prod",
       "namespace": "control-plane-prod",
-      "registry": "us-central1-docker.pkg.dev/proj/reliant-prod",
       "platform": "amd64",
       "image_tag": "stable"
     },
@@ -46,7 +45,6 @@ const clusterTargetJSON = `{
           "type": "cluster",
           "cluster": "gke_proj_us-central1-a_prod-daemon-v2",
           "namespace": "kata-prepull",
-          "registry": "us-central1-docker.pkg.dev/proj/other",
           "platform": "arm64"
         },
         "spec": {
@@ -61,7 +59,6 @@ const clusterTargetJSON = `{
           "type": "cluster",
           "cluster": "gke_proj_us-central1_prod",
           "namespace": "control-plane-prod",
-          "registry": "us-central1-docker.pkg.dev/proj/reliant-prod",
           "platform": "amd64"
         },
         "spec": {
@@ -104,7 +101,6 @@ func TestK8sClusterField_PrefersDeclaredClusterTarget(t *testing.T) {
 	for field, want := range map[string]string{
 		"namespace": "control-plane-prod",
 		"cluster":   "gke_proj_us-central1_prod",
-		"registry":  "us-central1-docker.pkg.dev/proj/reliant-prod",
 	} {
 		if got := k8sClusterFieldFromEntities(e, field); got != want {
 			t.Errorf("%s: got %q, want the declared cluster_target's %q", field, got, want)
@@ -196,7 +192,6 @@ func TestK8sClusterField_NoClusterTargetKeepsServiceFallback(t *testing.T) {
           "type": "cluster",
           "cluster": "k3d-x",
           "namespace": "ns-x",
-          "registry": "r",
           "platform": "arm64"
         },
         "spec": {

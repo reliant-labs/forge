@@ -58,7 +58,6 @@ import forge.workloads as fw
 _cluster = forge.ClusterTarget {
     cluster = "k3d-acme"
     namespace = "acme-dev"
-    registry = "localhost:5050"
 }
 _bundle = forge.Bundle {
 ` + clusterTarget + `    project = "acme"
@@ -234,8 +233,7 @@ func TestEnvAppliesManifestsToCluster(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"
@@ -267,8 +265,7 @@ func TestEnvAppliesManifestsToCluster(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n",
-          "registry": "r"
+          "namespace": "n"
         },
         "spec": {
           "kind": "service"

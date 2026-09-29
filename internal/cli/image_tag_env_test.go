@@ -62,21 +62,23 @@ func TestImagePinFor_ReadsTheBuildIdentity(t *testing.T) {
 	if got := imagePinFor(ents, "control-plane"); got != "" {
 		t.Errorf("imagePinFor(control-plane): got %q, want no pin", got)
 	}
-	ents.Workloads[0].BuildImage = "reliant:v1.4.2"
+	// BuildImage is the full repository plus the pin, as the render emits it —
+	// the registry is part of the image now, on the build side too.
+	ents.Workloads[0].BuildImage = "localhost:5051/reliant:v1.4.2"
 	if got := imagePinFor(ents, "reliant"); got != "v1.4.2" {
 		t.Errorf("imagePinFor(reliant) with a pinned build_image: got %q, want v1.4.2", got)
 	}
 	// A pin on the resolved spec.image alone is NOT the build's: build
 	// identity is read off the entity, the same on every runtime.
-	ents.Workloads[0].BuildImage = "reliant"
+	ents.Workloads[0].BuildImage = "localhost:5051/reliant"
 	ents.Workloads[0].Spec.Image = "ghcr.io/reliant-labs/reliant:v1.4.2"
 	if got := imagePinFor(ents, "reliant"); got != "" {
 		t.Errorf("imagePinFor(reliant) unpinned build_image: got %q, want no pin", got)
 	}
 	// An artifact with an org path matches the whole path.
-	ents.Workloads[0].Image = "acme/reliant"
-	ents.Workloads[0].BuildImage = "acme/reliant:e2e"
-	if got := imagePinFor(ents, "acme/reliant"); got != "e2e" {
+	ents.Workloads[0].Image = "localhost:5051/acme/reliant"
+	ents.Workloads[0].BuildImage = "localhost:5051/acme/reliant:e2e"
+	if got := imagePinFor(ents, "reliant"); got != "e2e" {
 		t.Errorf("imagePinFor(acme/reliant): got %q, want the pin e2e", got)
 	}
 	if got := imagePinFor(nil, "control-plane"); got != "" {

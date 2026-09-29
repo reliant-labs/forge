@@ -62,7 +62,7 @@ func renderFrontendEnv(t *testing.T, frontends, bundleExtra string) *KCLEntities
 func TestFrontendRuntime_DecodeEveryRuntime(t *testing.T) {
 	e := renderFrontendEnv(t, `[
         forge.Frontend {name = "dev", path = "dev", port = 3100, runtime = forge.OnHost {}}
-        forge.Frontend {name = "site", path = "site", type = "vite", public_dir = "dist", runtime = forge.OnHosted {}}
+        forge.Frontend {name = "site", path = "site", type = "vite", public_dir = "dist", image = "ghcr.io/acme/site", runtime = forge.OnHosted {}}
         forge.Frontend {
             name = "admin-web"
             path = "admin-web"
@@ -219,6 +219,7 @@ func TestFrontendRuntime_DispatchTable(t *testing.T) {
 func TestFrontendRuntime_HostedPublishesTheSameStaticSiteSpec(t *testing.T) {
 	e := renderFrontendEnv(t, `[forge.Frontend {
         name = "web"
+        image = "ghcr.io/acme/web"
         path = "frontends/web"
         type = "vite"
         public_dir = "dist"

@@ -114,6 +114,7 @@ _bundle = forge.Bundle {
     }
     frontends = [forge.Frontend {
         name = "web"
+        image = "ghcr.io/acme/web"
         path = "frontends/web"
         type = "vite"
         public_dir = "dist"

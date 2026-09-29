@@ -47,13 +47,12 @@ _bundle = forge.Bundle {
     cluster_target = forge.ClusterTarget {
         cluster = "gke_example_us-central1_prod"
         namespace = "portblock-prod"
-        registry = "reg.example.com"
     }
     workloads = [fw.Workload {
         name = "api"
-        image = "portblock"
+        image = "reg.example.com/portblock"
         env = {WEB_PORT = "${_web_port}"}
-        runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "gke_example_us-central1_prod", namespace = "portblock-prod", registry = "reg.example.com"}}
+        runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "gke_example_us-central1_prod", namespace = "portblock-prod"}}
     }]
 }
 
@@ -74,13 +73,12 @@ _bundle = forge.Bundle {
     cluster_target = forge.ClusterTarget {
         cluster = "k3d-portblock"
         namespace = "portblock-dev"
-        registry = "registry.localhost:5000"
     }
     workloads = [fw.Workload {
         name = "api"
-        image = "portblock"
+        image = "reg.example.com/portblock"
         env = {WEB_PORT = "${_web_port}"}
-        runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "k3d-portblock", namespace = "portblock-dev", registry = "registry.localhost:5000"}}
+        runtime = forge.OnCluster {target = forge.ClusterTarget {cluster = "k3d-portblock", namespace = "portblock-dev"}}
     }]
 }
 

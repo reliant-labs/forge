@@ -47,6 +47,7 @@ output = forge.render(forge.Bundle {
     databases = [forge.ManagedDatabase {name = "db", runtime = forge.OnHosted {}}]
     frontends = [forge.Frontend {
         name = "web"
+        image = "ghcr.io/acme/web"
         type = "vite"
         path = "frontends/web"
         runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}

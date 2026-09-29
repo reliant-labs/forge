@@ -326,6 +326,7 @@ func TestDeclaredImageDestinations_TwoWorkloadsTwoRegistries(t *testing.T) {
 		// `forge registry login` demand docker.io credentials nothing needs.
 		clusterWL("nats", "c", "n", func(w *WorkloadEntity) {
 			w.Image = "docker.io/library/nats:2.10"
+			w.Build = BuildConfigEntity{} // forge builds nothing for it
 		}),
 	}}
 

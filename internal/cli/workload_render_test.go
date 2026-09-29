@@ -99,7 +99,6 @@ import forge.workloads as fw
 _prod = forge.ClusterTarget {
     cluster = "gke_acme_us-central1_prod"
     namespace = "acme-prod"
-    registry = "ghcr.io/reliant-labs"
     platform = "amd64"
 }
 
@@ -254,12 +253,12 @@ func TestWorkload_ForgeBuiltServiceIsHTTPProbed(t *testing.T) {
 	out := renderKCLProject(t, writeKCLProject(t, `import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 
 output = forge.render(forge.Bundle {
     project = "demo"
     workloads = [_w | {runtime = forge.OnCluster {target = _k3d}} if not _w.runtime else _w for _w in [
-        fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}, image = "demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
+        fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}, image = "localhost:5050/demo", args = ["api"], ports = [fw.Port {name = "http", port = 8080}]}
         fw.Workload {name = "redis", image = "redis:7.2", ports = [fw.Port {name = "redis", port = 6379}]}
     ]]
 })
@@ -292,7 +291,7 @@ func TestWorkload_RequestOnlyLimitsEqualRequests(t *testing.T) {
 	out := renderKCLProject(t, writeKCLProject(t, `import forge
 import forge.workloads as fw
 
-_t = forge.ClusterTarget {cluster = "c", namespace = "acme-prod", registry = "ghcr.io/acme"}
+_t = forge.ClusterTarget {cluster = "c", namespace = "acme-prod"}
 
 output = forge.render(forge.Bundle {
     project = "acme"
@@ -326,7 +325,7 @@ func TestWorkload_WorkerHasNoService(t *testing.T) {
 	out := renderKCLProject(t, writeKCLProject(t, `import forge
 import forge.workloads as fw
 
-_t = forge.ClusterTarget {cluster = "c", namespace = "acme-prod", registry = "ghcr.io/acme"}
+_t = forge.ClusterTarget {cluster = "c", namespace = "acme-prod"}
 
 output = forge.render(forge.Bundle {
     project = "acme"
@@ -352,7 +351,7 @@ func TestWorkload_NonClusterRuntimesApplyNothing(t *testing.T) {
 	out := renderKCLProject(t, writeKCLProject(t, `import forge
 import forge.workloads as fw
 
-_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev", registry = "localhost:5050"}
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 _pinned = "ghcr.io/acme/billing@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 output = forge.render(forge.Bundle {
@@ -362,7 +361,7 @@ output = forge.render(forge.Bundle {
     workloads = [
         fw.Workload {name = "local", build = forge.GoBuild {cmd = "./cmd/demo"}, args = ["local"], runtime = forge.OnHost {}}
         fw.Workload {name = "postgres", runtime = forge.OnCompose {service = "postgres"}}
-        fw.Workload {name = "search", image = "demo", ports = [fw.Port {name = "http", port = 8080}], runtime = forge.OnCluster {target = _k3d}}
+        fw.Workload {name = "search", image = "localhost:5050/demo", ports = [fw.Port {name = "http", port = 8080}], runtime = forge.OnCluster {target = _k3d}}
         fw.Workload {name = "billing", image = _pinned, ports = [fw.Port {name = "http", port = 8080, expose = True}], runtime = forge.OnHosted {}}
         fw.Workload {name = "cli", kind = "tool", build = forge.GoBuild {cmd = "./cmd/cli"}, runtime = forge.BuildOnly {}}
     ]
@@ -390,7 +389,7 @@ func TestManagedDatabase_WorkloadReachesDatabase(t *testing.T) {
 	out := renderKCLProject(t, writeKCLProject(t, `import forge
 import forge.workloads as fw
 
-_t = forge.ClusterTarget {cluster = "c", namespace = "shop-prod", registry = "ghcr.io/acme"}
+_t = forge.ClusterTarget {cluster = "c", namespace = "shop-prod"}
 
 output = forge.render(forge.Bundle {
     project = "shop"

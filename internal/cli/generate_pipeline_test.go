@@ -41,6 +41,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"forge version compatibility",
 		"pre-codegen contract check",
 		"retired ShellBuild tokens",
+		"migrate env registries onto images",
 		// Before every later gate and emitter that reads the frontend
 		// inventory, so it is settled before any of them runs. See
 		// generate_frontend_inventory.go.

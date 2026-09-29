@@ -34,6 +34,7 @@ func hostedValidateBundle(api string) string {
     }]
     frontends = [forge.Frontend {
         name = "web"
+        image = "ghcr.io/acme/web"
         path = "frontends/web"
         public_dir = "out"
         runtime = forge.OnHosted {}

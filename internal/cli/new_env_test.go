@@ -27,13 +27,11 @@ func writeProjectFixture(t *testing.T, template string) string {
 	// Note: the cluster-target var name follows the `_<env>_k8s` convention so
 	// the rename transform has something to rewrite.
 	main := `_image_tag = option("image_tag") or "` + template + `"
-_registry = option("registry") or "ghcr.io/acme"
 _namespace = option("namespace") or "app-` + template + `"
 
 _` + template + `_k8s = {
     cluster = "gke_acme_` + template + `"
     namespace = _namespace
-    registry = _registry
     platform = "amd64"
 }
 
@@ -69,7 +67,8 @@ func TestNewEnv_ScaffoldsPlaceholdersFromTemplate(t *testing.T) {
 	// The dangerous knobs must be neutralized to placeholders — NOT silently
 	// inherited from staging. This is the whole point of the command.
 	for _, want := range []string{
-		"REPLACE_ME_REGISTRY",
+		// No REPLACE_ME_REGISTRY: an env declares no registry, so a derived env
+		// has none to get wrong and nothing to placeholder.
 		"REPLACE_ME_NAMESPACE",
 		"REPLACE_ME_CLUSTER_CONTEXT",
 		"REPLACE_ME_PLATFORM",
@@ -245,30 +244,30 @@ func TestNewEnv_InvalidName(t *testing.T) {
 	})
 }
 
-// TestNewEnv_RegistryPlaceholderIsALiteralDeclaration: a derived env declares
-// its registry as a plain literal the author edits — forge never emits an
-// `option("registry")` (or the retired forge.registry helper) of its own —
-// whichever spelling the template env used.
-func TestNewEnv_RegistryPlaceholderIsALiteralDeclaration(t *testing.T) {
-	for name, tc := range map[string]struct{ line, want string }{
-		"var: project option":   {`_registry = option("registry") or "ghcr.io/acme"`, `_registry = "REPLACE_ME_REGISTRY"`},
-		"var: retired helper":   {`_registry = forge.registry("ghcr.io/acme")`, `_registry = "REPLACE_ME_REGISTRY"`},
-		"var: literal":          {`_registry = "ghcr.io/acme"`, `_registry = "REPLACE_ME_REGISTRY"`},
-		"field: retired helper": {`    registry = forge.registry("ghcr.io/acme")`, `    registry = "REPLACE_ME_REGISTRY"`},
-		"field: literal":        {`    registry = "ghcr.io/acme"`, `    registry = "REPLACE_ME_REGISTRY"`},
+// TestNewEnv_HasNoRegistryKnob: `forge env new` neither placeholders nor
+// rewrites a registry, because an env does not declare one — a WORKLOAD does,
+// as part of its image, and that declaration is shared by every env.
+//
+// This replaces the old REPLACE_ME_REGISTRY test. Emitting a placeholder now
+// would be worse than emitting nothing: `registry` is not a field on either
+// env schema, so the derived env would fail to load with an error about a
+// placeholder forge itself had just written.
+func TestNewEnv_HasNoRegistryKnob(t *testing.T) {
+	// A leftover registry line from an OLD template is passed through
+	// untouched. It is not this command's job to migrate it — `forge generate`
+	// does that (internal/kclmigrate), with the ambiguity judgment that needs
+	// the whole tree, which a per-line transform cannot make.
+	for _, line := range []string{
+		`    registry = "ghcr.io/acme"`,
+		`_registry = "ghcr.io/acme"`,
 	} {
-		line := tc.line
-		t.Run(name, func(t *testing.T) {
-			got := strings.Join(transformLine(line, "staging", "preview", "_staging_k8s", "_preview_k8s"), "\n")
-			if !strings.Contains(got, tc.want) {
-				t.Errorf("transformLine(%q) =\n%s\nwant the literal placeholder %s", line, got, tc.want)
-			}
-			for _, bad := range []string{`option("registry")`, "forge.registry", "ghcr.io/acme"} {
-				if strings.Contains(got, bad) {
-					t.Errorf("transformLine(%q) still carries %q:\n%s", line, bad, got)
-				}
-			}
-		})
+		got := strings.Join(transformLine(line, "staging", "preview", "_staging_k8s", "_preview_k8s"), "\n")
+		if got != line {
+			t.Errorf("transformLine(%q) = %q, want it passed through unchanged", line, got)
+		}
+		if strings.Contains(got, "REPLACE_ME_REGISTRY") {
+			t.Errorf("transformLine(%q) wrote a registry placeholder; an env has no registry field to place one in:\n%s", line, got)
+		}
 	}
 }
 
@@ -328,22 +327,19 @@ func TestNewEnv_BindRebindsOneWorkload(t *testing.T) {
 	})
 }
 
-// The scaffolded envs write the cluster target's namespace and registry as
-// LITERALS (`namespace = "acme-prod"`, `registry = "ghcr.io/acme"`), not the
-// option() form the transform first knew. Copied verbatim, a derived env
-// deploys into the template env's namespace — the exact hazard `env new`
-// exists to prevent.
-func TestNewEnv_NeutralizesLiteralNamespaceAndRegistry(t *testing.T) {
-	body := "_cluster = forge.ClusterTarget {\n    cluster = \"acme-prod\"\n    namespace = \"acme-prod\"\n    registry = \"ghcr.io/acme\"\n    platform = \"amd64\"\n}\n"
+// The scaffolded envs write the cluster target's namespace as a LITERAL
+// (`namespace = "acme-prod"`), not the option() form the transform first knew.
+// Copied verbatim, a derived env deploys into the template env's namespace —
+// the exact hazard `env new` exists to prevent.
+//
+// There is no registry half to this any more: the target declares none.
+func TestNewEnv_NeutralizesLiteralNamespace(t *testing.T) {
+	body := "_cluster = forge.ClusterTarget {\n    cluster = \"acme-prod\"\n    namespace = \"acme-prod\"\n    platform = \"amd64\"\n}\n"
 	out := transformEnvFile(body, "prod", "cloud")
-	for _, gone := range []string{`"acme-prod"`, `ghcr.io/acme`} {
-		if strings.Contains(out, gone) {
-			t.Errorf("derived env still carries %s:\n%s", gone, out)
-		}
+	if strings.Contains(out, `"acme-prod"`) {
+		t.Errorf("derived env still carries the template's namespace:\n%s", out)
 	}
-	for _, want := range []string{`namespace = "REPLACE_ME_NAMESPACE"`, `registry = "REPLACE_ME_REGISTRY"`} {
-		if !strings.Contains(out, want) {
-			t.Errorf("derived env lacks %s:\n%s", want, out)
-		}
+	if !strings.Contains(out, `namespace = "REPLACE_ME_NAMESPACE"`) {
+		t.Errorf("derived env lacks the namespace placeholder:\n%s", out)
 	}
 }

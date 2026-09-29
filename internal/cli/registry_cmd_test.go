@@ -105,16 +105,17 @@ func TestRegistryLogin_TakesNoRegistry(t *testing.T) {
 	}
 }
 
-// TestRegistryLogin_UndeclaredRegistryFails names the file and field.
-func TestRegistryLogin_UndeclaredRegistryFails(t *testing.T) {
+// TestRegistryLogin_BareImageFails names the file and the field to set — the
+// workload's image, which is where a registry is declared.
+func TestRegistryLogin_BareImageFails(t *testing.T) {
 	planProject(t, hostedPushFixture(""))
 	calls := stubDockerLogin(t)
 	_, err := runRegistryCommand(t, "x", "login", "prod", "--username", "u", "--password-stdin")
-	if err == nil || !strings.Contains(err.Error(), "deploy/kcl/prod/main.k") || !strings.Contains(err.Error(), "forge.ControlPlane") {
-		t.Fatalf("login against an env that declares no registry: want the runbook, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "deploy/kcl/workloads.k") || !strings.Contains(err.Error(), "image") {
+		t.Fatalf("login with no pushable image: want the runbook naming the image field, got %v", err)
 	}
 	if len(*calls) != 0 {
-		t.Errorf("no registry declared: must not log in; calls = %+v", *calls)
+		t.Errorf("nothing pushable: must not log in; calls = %+v", *calls)
 	}
 }
 
@@ -136,14 +137,23 @@ func TestRegistryLogin_LocalRegistryNeedsNoLogin(t *testing.T) {
 	}
 }
 
-// TestRegistryHost splits a registry reference to the host docker logs in to.
+// TestRegistryHost splits an image reference to the host docker logs in to.
+//
+// A reference with no host segment returns "" rather than guessing Docker Hub.
+// That is the point: with the registry declared on the image, a hostless
+// reference is an INCOMPLETE declaration, and the render refuses it by name.
+// Defaulting it here would have `forge registry login` ask for docker.io
+// credentials on behalf of an image that was never going to be pushed there.
 func TestRegistryHost(t *testing.T) {
 	for in, want := range map[string]string{
-		"ghcr.io/acme":                        "ghcr.io",
-		"us-central1-docker.pkg.dev/p/r":      "us-central1-docker.pkg.dev",
-		"localhost:5050":                      "localhost:5050",
-		"123.dkr.ecr.us-east-1.amazonaws.com": "123.dkr.ecr.us-east-1.amazonaws.com",
-		"acme":                                "docker.io",
+		"ghcr.io/acme/api":                        "ghcr.io",
+		"us-central1-docker.pkg.dev/p/r/api":      "us-central1-docker.pkg.dev",
+		"localhost:5050/api":                      "localhost:5050",
+		"123.dkr.ecr.us-east-1.amazonaws.com/api": "123.dkr.ecr.us-east-1.amazonaws.com",
+		"docker.io/library/nats":                  "docker.io",
+		// No host segment: not an address.
+		"acme":     "",
+		"acme/api": "",
 	} {
 		if got := registryHost(in); got != want {
 			t.Errorf("registryHost(%q) = %q, want %q", in, got, want)
@@ -158,7 +168,7 @@ const refDigest = "sha256:111111111111111111111111111111111111111111111111111111
 // the image, the digest — never a YAML literal.
 func TestRegistryRef_PrintsThePushedDigestRef(t *testing.T) {
 	dir := planProject(t, declaredRegistryFixture)
-	if err := WriteBuildState(dir, "prod", BuildState{Image: "pt", Tag: "t1", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {
+	if err := WriteBuildState(dir, "prod", BuildState{Image: "registry.example/prod/pt", Tag: "t1", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {
 		t.Fatal(err)
 	}
 	out, err := runRegistryCommand(t, "", "ref", "prod")
@@ -175,7 +185,7 @@ func TestRegistryRef_PrintsThePushedDigestRef(t *testing.T) {
 // registry pointer), so later steps read them as step outputs.
 func TestRegistryRef_WritesGitHubOutput(t *testing.T) {
 	dir := planProject(t, declaredRegistryFixture)
-	if err := WriteBuildState(dir, "prod", BuildState{Image: "pt", Tag: "t1", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {
+	if err := WriteBuildState(dir, "prod", BuildState{Image: "registry.example/prod/pt", Tag: "t1", Pushed: true, PushedAt: nowRFC3339(), Digest: refDigest}); err != nil {
 		t.Fatal(err)
 	}
 	outFile := filepath.Join(t.TempDir(), "gh_output")
@@ -199,7 +209,7 @@ func TestRegistryRef_WritesGitHubOutput(t *testing.T) {
 // records.
 func TestRegistryRef_UnpushedBuildFails(t *testing.T) {
 	dir := planProject(t, declaredRegistryFixture)
-	if err := WriteBuildState(dir, "prod", BuildState{Image: "pt", Tag: "t1", PushedAt: nowRFC3339()}); err != nil {
+	if err := WriteBuildState(dir, "prod", BuildState{Image: "registry.example/prod/pt", Tag: "t1", PushedAt: nowRFC3339()}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := runRegistryCommand(t, "", "ref", "prod")
@@ -211,7 +221,10 @@ func TestRegistryRef_UnpushedBuildFails(t *testing.T) {
 // TestRegistryRef_NamedImage reads a per-image state (a frontend, a DockerBuild).
 func TestRegistryRef_NamedImage(t *testing.T) {
 	planProject(t, declaredRegistryFixture)
-	persistImageBuildStates(buildOptions{env: "prod", pushPlan: pushPlan{push: true, env: "prod"}},
+	// The plan is what maps the artifact NAME the build knows ("web") to the
+	// repository a workload declared for it — the same join the real build makes.
+	persistImageBuildStates(buildOptions{env: "prod", pushPlan: pushPlan{push: true, env: "prod",
+		destinations: []imageDestination{{repository: "registry.example/prod/web", workload: "web"}}}},
 		[]buildResult{{kind: "docker", image: "web", tag: "t1", digest: refDigest}})
 	out, err := runRegistryCommand(t, "", "ref", "prod", "--image", "web")
 	if err != nil {

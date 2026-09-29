@@ -99,7 +99,13 @@ func imagePinFor(entities *KCLEntities, image string) string {
 		return ""
 	}
 	for _, w := range entities.Workloads {
-		if w.Image != image {
+		// `image` is the artifact NAME the build knows (the project name, a
+		// frontend's name); w.Image is the full repository the workload
+		// declared. They join on the repository's last path segment, which is
+		// the repository's own name: `ghcr.io/acme/shop` IS the artifact
+		// `shop`. Matching the whole string would silently find nothing and
+		// lose every pin.
+		if w.Image != image && repositoryName(imageRepository(w.Image)) != image {
 			continue
 		}
 		if tag, ok := w.PinnedBuildTag(); ok {

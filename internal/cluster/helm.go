@@ -28,6 +28,13 @@
 // standard Gateway API CRDs / cert-manager's CRDs at the matching chart
 // version and hands them in as HelmChartSpec.CRDs).
 //
+// `--skip-crds` is necessary but NOT sufficient. Envoy Gateway 1.9 moved the
+// safe-upgrades ValidatingAdmissionPolicy itself from the CRD bundle into the
+// chart's TEMPLATES, which --skip-crds does not touch — so the chart would
+// render a second copy of a resource forge already applies from its pinned
+// bundle. gatewayAPIChartValues turns that template off for any chart whose
+// Gateway API CRDs forge supplies, keeping ONE source for the whole group.
+//
 // But a chart ALSO ships its OWN, non-Gateway-API CRDs the controller
 // needs — envoy-gateway's eight `gateway.envoyproxy.io` CRDs the controller
 // starts informers on; `--skip-crds` would drop those too and the controller
@@ -88,6 +95,13 @@ type HelmChartSpec struct {
 	// fetches it (pinned standard Gateway API CRDs / cert-manager CRDs at
 	// the chart version). Empty when the chart needs no forge CRDs.
 	CRDs string
+	// CRDBundle NAMES the forge-supplied bundle CRDs holds the content of
+	// ("gateway-api", "cert-manager", or empty). CRDs alone cannot answer
+	// "which bundle is this?" — it is megabytes of YAML — and the render
+	// has to know, because a chart whose Gateway API CRDs forge supplies
+	// must also be told not to render the resources that ship ALONGSIDE
+	// those CRDs upstream. See gatewayAPIChartValues.
+	CRDBundle string
 	// Manifests is the consumer-declared raw manifest YAML (a `---`-joined
 	// stream) that rides this chart's `--target`: the cluster-scoped
 	// instances a chart's controller reconciles but the chart doesn't ship
@@ -207,6 +221,7 @@ func helmTemplate(ctx context.Context, spec HelmChartSpec) (string, error) {
 		"--skip-crds",
 		// include-crds is OFF by default; --skip-crds is explicit + future-proof.
 	}
+	args = append(args, gatewayAPIChartValues(spec)...)
 
 	chartRef := spec.OCI
 	if chartRef == "" {
@@ -508,6 +523,37 @@ func isPostOnlyHelmHook(doc string) bool {
 	return true
 }
 
+// gatewayAPIChartValues returns the `--set` arguments a chart needs when
+// forge supplies its Gateway API CRDs out of band, or nil for every other
+// chart.
+//
+// `--skip-crds` used to be enough. Envoy Gateway 1.9 moved the Gateway API
+// safe-upgrades ValidatingAdmissionPolicy (and its binding) OUT of the CRD
+// bundle and INTO the chart's templates, and --skip-crds does not skip a
+// TEMPLATE. So the chart now renders a second copy of a resource that is
+// already inside the standard-install bundle forge pins and applies itself —
+// two sources, two versions, each overwriting the other on alternate deploys.
+//
+// The policy denies CRD writes that look like a downgrade or a channel
+// switch, so the copy that wins decides whether forge's NEXT pinned bump is
+// admitted at all. That makes a self-denying install the failure mode, which
+// is exactly what forge supplying the bundle is meant to prevent.
+//
+// Upstream's answer for "the Gateway API resources are managed outside this
+// chart" is this value, so forge sets it whenever it owns the bundle rather
+// than naming envoy-gateway: any chart that delegates its Gateway API CRDs to
+// forge has the same conflict, and keying off the declared bundle keeps the
+// rule where the ownership decision already lives.
+//
+// Harmless on a chart with no such value — `--set` only defines a key, and a
+// chart that reads nothing at that path renders identically.
+func gatewayAPIChartValues(spec HelmChartSpec) []string {
+	if spec.CRDBundle != "gateway-api" {
+		return nil
+	}
+	return []string{"--set", "crds.gatewayAPI.safeUpgradePolicy.enabled=false"}
+}
+
 // standardGatewayAPIGroup is the CRD group forge OWNS at a pinned version
 // (the standard-channel Gateway API CRDs, v1.5.1). A chart that bundles its
 // OWN copy of this group (envoy gateway-helm ships an older,
@@ -586,6 +632,7 @@ func helmTemplateIncludeCRDs(ctx context.Context, spec HelmChartSpec) (string, e
 		"--namespace", spec.Namespace,
 		"--include-crds",
 	}
+	args = append(args, gatewayAPIChartValues(spec)...)
 	chartRef := spec.OCI
 	if chartRef == "" {
 		chartRef = spec.Chart

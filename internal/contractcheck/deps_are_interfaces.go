@@ -731,12 +731,300 @@ func (l *depsLinter) concreteTypeIsData(expr ast.Expr, imports map[string]string
 	if decls.embeds[sel.Sel.Name] {
 		return false
 	}
+	// Every method must be accessor-SHAPED in its signature, whatever else
+	// is true: a method taking a context, returning an error, or returning
+	// nothing is an operation, and a type with one is a collaborator. That
+	// clause alone is what keeps `Save(ctx, id) error` and a stubbed
+	// `Close()` on the collaborator side no matter what the type holds.
 	for _, m := range decls.methods[sel.Sel.Name] {
-		if !l.methodIsPureAccessor(m, decls) {
+		if !methodSignatureIsAccessorShaped(m, decls) {
+			return false
+		}
+	}
+	// With the signatures vouched for, there are two independent ways to be
+	// data, and a type needs only one:
+	//
+	//  1. Its FIELDS are inert AND no method reaches package-level state —
+	//     it holds nothing that could be faked and it reads no singleton, so
+	//     what the accessors compute over their own values is irrelevant.
+	//  2. Its METHOD BODIES are fully pure — the original test, and still
+	//     the answer for a type whose fields this rule cannot classify.
+	//
+	// Neither subsumes the other. A config that derives a value through a
+	// third-party parser fails (2) and passes (1); a type holding something
+	// unresolvable whose accessors plainly touch nothing fails (1) and
+	// passes (2).
+	//
+	// Route 1 keeps the package-state clause because inert fields say what a
+	// type HOLDS and say nothing about what it REACHES. A struct of one
+	// string whose accessor indexes a package-level map is holding its
+	// collaborator at package scope instead of in a field, and that is the
+	// one way an inert-field type can still be a collaborator.
+	if l.structFieldsAreInert(decls, sel.Sel.Name, 0) &&
+		l.methodsAvoidPackageState(decls, sel.Sel.Name) {
+		return true
+	}
+	// Route 2 additionally requires that the type not HOLD a collaborator.
+	//
+	// Pure method bodies alone were never sufficient, and this closes a hole
+	// that predates the inert-fields work: a struct holding a *sql.DB whose
+	// only declared method is `func (p *Pool) Name() string { return "pool" }`
+	// passed the purity walk outright, because the walk reads the methods
+	// that ARE declared and says nothing about the handle sitting in a field
+	// that none of them happens to touch. Testing the fields — now that
+	// there is a test for it — closes that from the other side.
+	//
+	// A type whose fields cannot be classified at all still reaches this
+	// route, which is its purpose: it is the answer for a struct this rule
+	// cannot see into, judged on the only evidence available.
+	if l.structHoldsCollaborator(decls, sel.Sel.Name) {
+		return false
+	}
+	for _, m := range decls.methods[sel.Sel.Name] {
+		if !l.methodBodyIsPure(m, decls) {
 			return false
 		}
 	}
 	return true
+}
+
+// structHoldsCollaborator reports whether the named struct has a field that
+// is UNAMBIGUOUSLY a collaborator: a pointer, a func, a channel, or an
+// interface. Each is a way of holding something a test would want to
+// substitute.
+//
+// This is the narrow converse of structFieldsAreInert, not its negation.
+// Inert asks "is every field provably harmless" and answers no for anything
+// unrecognised; this asks "is any field provably a handle" and answers no for
+// anything unrecognised. A type that is neither — one holding a value type
+// this rule cannot classify — falls through to the method-purity walk, which
+// is the right treatment for a shape it cannot see into.
+func (l *depsLinter) structHoldsCollaborator(decls typeDecls, name string) bool {
+	st, ok := decls.structs[name]
+	if !ok || st.Fields == nil {
+		return false
+	}
+	for _, f := range st.Fields.List {
+		switch ft := f.Type.(type) {
+		case *ast.StarExpr, *ast.FuncType, *ast.ChanType, *ast.InterfaceType:
+			return true
+		case *ast.Ident:
+			// A nested struct from this package: follow one level, so a
+			// handle does not hide behind a wrapper field.
+			if _, isStruct := decls.structs[ft.Name]; isStruct && ft.Name != name {
+				if l.structHoldsCollaborator(decls, ft.Name) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// methodsAvoidPackageState reports whether no method on the named type
+// reaches package-level VAR state, goroutines, channels, or an I/O-boundary
+// package — directly or through a package-level helper it calls.
+//
+// This is the companion clause to structFieldsAreInert. Inert fields say what
+// a type HOLDS; they say nothing about what it REACHES. A struct of one
+// string whose accessor indexes a package-level map is holding its
+// collaborator at package scope rather than in a field, and it would
+// otherwise walk straight through the inert-fields route.
+//
+// It is deliberately WEAKER than methodBodyIsPure: a call to a resolvable
+// pure helper is fine, and so is a call into a third-party value parser like
+// resource.ParseQuantity, which is the whole reason the inert-fields route
+// exists. What it refuses is the set of constructs that mean "this reaches
+// something outside its own values".
+func (l *depsLinter) methodsAvoidPackageState(decls typeDecls, name string) bool {
+	for _, m := range decls.methods[name] {
+		if !l.bodyAvoidsPackageState(m, decls, 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// helperFollowDepth bounds how far bodyAvoidsPackageState follows a
+// package-level helper. Config helpers chain a step or two; deeper than this
+// is not a shape to vouch for.
+const helperFollowDepth = 3
+
+// bodyAvoidsPackageState is methodsAvoidPackageState's per-body walk. See
+// that function for what it refuses and why it is weaker than
+// methodBodyIsPure.
+func (l *depsLinter) bodyAvoidsPackageState(m methodDecl, decls typeDecls, depth int) bool {
+	if m.body == nil {
+		return false
+	}
+	if depth > helperFollowDepth {
+		return false
+	}
+	ok := true
+	ast.Inspect(m.body, func(n ast.Node) bool {
+		if !ok {
+			return false
+		}
+		switch t := n.(type) {
+		case *ast.GoStmt, *ast.DeferStmt, *ast.SelectStmt, *ast.SendStmt:
+			ok = false
+		case *ast.UnaryExpr:
+			if t.Op == token.ARROW {
+				ok = false
+			}
+		case *ast.Ident:
+			// Package-level VAR: mutable shared state, the singleton route.
+			if decls.vars[t.Name] {
+				ok = false
+			}
+		case *ast.CallExpr:
+			switch fun := t.Fun.(type) {
+			case *ast.Ident:
+				// A local package-level helper: follow it, so state reached
+				// one frame down is caught too.
+				if decls.funcs[fun.Name] {
+					if callee, found := decls.funcDecls[fun.Name]; found {
+						if !l.bodyAvoidsPackageState(callee, decls, depth+1) {
+							ok = false
+						}
+					} else {
+						ok = false
+					}
+				}
+			case *ast.SelectorExpr:
+				// A call into an I/O-boundary package is out regardless of
+				// what it looks like. A qualified call into anything else
+				// (a value parser, a formatter) is allowed — that is the
+				// point of this route.
+				if pkgIdent, isIdent := fun.X.(*ast.Ident); isIdent {
+					if importPath, known := m.imports[pkgIdent.Name]; known && packageIsIOBoundary(importPath) {
+						ok = false
+					}
+				}
+			}
+		}
+		return ok
+	})
+	return ok
+}
+
+// inertFieldDepth bounds how far structFieldsAreInert follows a struct-typed
+// field into its own package. Config nests a level or two (a probe block, a
+// tier block); anything deeper is not a shape worth vouching for blind.
+const inertFieldDepth = 3
+
+// structFieldsAreInert reports whether every field of the named struct is
+// INERT: a primitive, a stdlib value type, or a collection or nested struct
+// built out of those. Nothing a test could want to substitute.
+//
+// # Why a second route to the data verdict
+//
+// The per-method purity walk asks "do these methods do anything". That is the
+// right question for a type that might hold a collaborator, and it is the
+// wrong one for a type that demonstrably cannot. A struct of eighteen
+// scalars, two probe blocks and a couple of string maps has no field that
+// could hold a database, a client, or a queue — so there is nothing behind it
+// to fake, whatever arithmetic its accessors perform on the way out.
+//
+// Measured on control-plane's `*config.WorkspaceConfig`, the type this
+// exemption was written for and named after. Its accessors were rewritten to
+// derive the docker ladder from the data ladder, which routes through
+// `resource.ParseQuantity` — a pure value parser in k8s apimachinery. No
+// purity walk short of type-checking a third-party module can clear that, and
+// chasing it would mean following calls into arbitrary dependencies. Asking
+// what the struct HOLDS answers the question in one step and does not depend
+// on how far a helper chain reaches.
+//
+// # Why it is not a hole
+//
+// A collaborator's defining property is that it holds something: a *sql.DB, a
+// client, a connection pool, a channel, a func. Any of those makes a field
+// non-inert and the exemption does not apply, regardless of naming, package,
+// or method count. The checks are deliberately narrow:
+//
+//   - an embedded field is never inert (it promotes a foreign method set)
+//   - a pointer field is never inert — a *T is how a struct holds a shared
+//     mutable thing, and the parse-free way to tell "*Tier" from "*sql.DB" is
+//     not available here
+//   - an interface, func, or chan field is never inert
+//   - a selector type is inert only for a KNOWN-VALUE stdlib set (time.Time,
+//     time.Duration, url.URL, big.Int …). Every other qualified type,
+//     including anything from a third-party module, is not.
+//   - a nested struct from the same package is followed, to inertFieldDepth,
+//     and must itself be inert
+//
+// So a repository cannot reach this shape: it has to hold its handle
+// somewhere, and every way of holding one fails the test.
+func (l *depsLinter) structFieldsAreInert(decls typeDecls, name string, depth int) bool {
+	if depth > inertFieldDepth {
+		return false
+	}
+	st, ok := decls.structs[name]
+	if !ok || st.Fields == nil {
+		return false
+	}
+	if decls.embeds[name] {
+		return false
+	}
+	for _, f := range st.Fields.List {
+		if len(f.Names) == 0 {
+			return false // embedded
+		}
+		if !l.typeIsInert(decls, f.Type, depth) {
+			return false
+		}
+	}
+	return true
+}
+
+// typeIsInert is structFieldsAreInert's per-field test. See that function for
+// what counts and why the unknown cases answer "not inert".
+func (l *depsLinter) typeIsInert(decls typeDecls, expr ast.Expr, depth int) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		if isPrimitiveType(t) {
+			return true
+		}
+		// A struct declared in this same package: follow it.
+		if _, isStruct := decls.structs[t.Name]; isStruct {
+			return l.structFieldsAreInert(decls, t.Name, depth+1)
+		}
+		// A named type that is not a struct here (an interface, or an alias
+		// to something unresolved) is not vouched for.
+		return false
+	case *ast.ArrayType:
+		return l.typeIsInert(decls, t.Elt, depth)
+	case *ast.MapType:
+		return l.typeIsInert(decls, t.Key, depth) && l.typeIsInert(decls, t.Value, depth)
+	case *ast.SelectorExpr:
+		return isInertStdlibValueType(t)
+	}
+	// Pointers, funcs, chans, interfaces, and anything unrecognised: a
+	// collaborator is held through exactly these, so none of them is inert.
+	return false
+}
+
+// inertStdlibValueTypes are the stdlib types that are VALUES — carrying data,
+// substituting for nothing. Deliberately a closed list rather than "any
+// stdlib type": *os.File, net.Conn and sql.DB are stdlib too, and each is a
+// live handle.
+var inertStdlibValueTypes = map[string]bool{
+	"time.Time": true, "time.Duration": true, "time.Month": true,
+	"url.URL": true, "net.IP": true, "net.IPNet": true,
+	"big.Int": true, "big.Float": true, "big.Rat": true,
+	"regexp.Regexp": true, "json.RawMessage": true,
+}
+
+// isInertStdlibValueType reports whether sel names one of the value types
+// above, matched on the qualifier's spelling. A local package aliased to
+// `time` could spoof this; it would also have to declare a type named `Time`
+// that holds a collaborator, which is not a shape that occurs by accident.
+func isInertStdlibValueType(sel *ast.SelectorExpr) bool {
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return inertStdlibValueTypes[pkgIdent.Name+"."+sel.Sel.Name]
 }
 
 // methodIsPureAccessor reports whether m is a pure value accessor: a
@@ -1188,6 +1476,10 @@ type typeDecls struct {
 	// routinely one.
 	funcs map[string]bool
 	vars  map[string]bool
+	// structs maps a declared struct type name to its AST, so the rule can
+	// ask what a type HOLDS rather than only what its methods do. See
+	// structFieldsAreInert.
+	structs map[string]*ast.StructType
 	// funcDecls carries the BODY of each package-level func, so a call to
 	// one can be judged on what it actually does instead of being assumed
 	// impure. See funcIsPure.
@@ -1225,6 +1517,7 @@ func (l *depsLinter) packageTypeDecls(dir string) typeDecls {
 		funcs:      map[string]bool{},
 		vars:       map[string]bool{},
 		funcDecls:  map[string]methodDecl{},
+		structs:    map[string]*ast.StructType{},
 		dir:        dir,
 	}
 	l.declCache[dir] = out
@@ -1257,8 +1550,11 @@ func (l *depsLinter) packageTypeDecls(dir string) typeDecls {
 						if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
 							out.interfaces[ts.Name.Name] = true
 						}
-						if st, isStruct := ts.Type.(*ast.StructType); isStruct && hasEmbeddedField(st) {
-							out.embeds[ts.Name.Name] = true
+						if st, isStruct := ts.Type.(*ast.StructType); isStruct {
+							if hasEmbeddedField(st) {
+								out.embeds[ts.Name.Name] = true
+							}
+							out.structs[ts.Name.Name] = st
 						}
 					}
 				case token.VAR:

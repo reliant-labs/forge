@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# release-web-runtime.sh — tag a release of the @reliantlabs/forge-web-runtime
-# npm package.
+# release-web-runtime.sh — validate, tag and PUBLISH a release of the
+# @reliantlabs/forge-web-runtime npm package.
+#
+# THIS IS THE ONLY PUBLISH PATH. .github/workflows/release-web-runtime.yml,
+# which published on a web-runtime/v* tag push, is deleted: releases are
+# local-only and CI runs checks only. There is nothing to trigger and nothing
+# to watch.
 #
 # The npm twin of scripts/release-pkg.sh, and it exists for the same reason:
 # minting a release by hand is easy to get subtly wrong, and the failure is
@@ -21,28 +26,32 @@
 #
 # Usage:
 #   scripts/release-web-runtime.sh [--dry-run] vX.Y.Z
+#   task release:web-runtime -- vX.Y.Z
 #
-# After a real (non-dry-run) invocation ONE step remains:
+# A real (non-dry-run) invocation runs every validation, tags, publishes to
+# npm, confirms the registry actually SERVES the version, and only then pushes
+# the tag. Nothing further is required.
 #
-#   git push origin web-runtime/vX.Y.Z
+# ORDER IS LOAD-BEARING: publish, verify, THEN push the tag. A pushed tag whose
+# version was never published is the drift this script exists to prevent —
+# web-runtime/v0.3.1 sat in exactly that state, invisible until a scaffolded
+# project failed to install days later, and v0.3.0 shipped a devlog module
+# that existed in the source and the templates but never reached the registry.
+# Pushing the tag last means the tag can only exist once the artifact does.
 #
-# That push IS the release. .github/workflows/release-web-runtime.yml triggers
-# on web-runtime/v*, re-runs these validations on a clean checkout, and
-# publishes. There is no `npm publish` to type.
+# WHAT WAS LOST WITH THE WORKFLOW, stated plainly. It authenticated by npm
+# TRUSTED PUBLISHING (OIDC): no stored credential, a token worthless off the
+# runner, and a --provenance attestation binding the tarball to the commit and
+# the CI run. A local publish cannot reproduce any of that — OIDC has no
+# meaning off a runner — so this authenticates with your own `npm login` and
+# the publish is attributed to a person. That is a genuine downgrade, and it
+# is the deliberate cost of the local-only rule.
 #
-# This script used to end by asking for a hand-typed publish, on the reasoning
-# that an irreversible act should not be automated. That did not hold up: we
-# already publish a notarized Electron app from CI on the same trigger shape,
-# which is more irreversible and more credential-sensitive than a scoped npm
-# publish. And the manual step had a cost — v0.3.0 was tagged but never
-# published, so its devlog module existed in the source and in forge's
-# templates while the registry copy lacked it, and every scaffold built
-# against the registry failed to typecheck.
-#
-# The script keeps its value as the LOCAL gate: it runs the checks before the
-# tag exists, which is where a failure costs nothing. CI repeats them on a
-# clean checkout, because a maintainer's node_modules cannot establish what a
-# stranger downloads.
+# It also ran on a clean checkout with a fresh install, which is the only place
+# "the tarball a stranger downloads is correct" can really be established. A
+# maintainer's node_modules cannot establish that. Mitigation: the pack-contents
+# check below asserts the tarball's actual surface, which is the specific
+# failure that clean-checkout property was there to catch.
 set -euo pipefail
 
 DRY_RUN=0
@@ -153,21 +162,80 @@ if [ "$RELEASE_MINOR" != "$DECLARED_MINOR" ]; then
   exit 1
 fi
 
-# ── 8. Tag ──────────────────────────────────────────────────────────
+# ── 8. provenance metadata ──────────────────────────────────────────
+# `--provenance` makes npm compare package.json's `repository` against the
+# repository in the signed provenance statement and reject the publish with a
+# 422 when they disagree — an ABSENT field reads as "" and fails that
+# comparison. This check exists because that failure happens at the WORST
+# possible moment: the first 0.3.1 publish was authenticated, packed, signed
+# and written to the sigstore transparency log before the registry refused it,
+# and everything upstream reported success. Catching it here costs a second.
+REPO_URL="$(node -p "require('./$PKG_DIR/package.json').repository?.url ?? ''")"
+case "$REPO_URL" in
+  *github.com/reliant-labs/forge*) ;;
+  *)
+    echo "error: $PKG_DIR/package.json repository.url is '${REPO_URL:-<absent>}'." >&2
+    echo "hint: npm publish --provenance rejects this with a 422 AFTER signing." >&2
+    echo "      Set it to git+https://github.com/reliant-labs/forge.git" >&2
+    exit 1 ;;
+esac
+
+# ── 9. Tag and PUBLISH ──────────────────────────────────────────────
+#
+# THIS SCRIPT PUBLISHES. It used to stop at the tag and leave the publish to
+# .github/workflows/release-web-runtime.yml, which triggered on the tag push.
+# That workflow is deleted: releases are local-only, and a CI publish path is
+# exactly what that rule forbids.
+#
+# AUTHENTICATION CHANGES WITH IT, and this is the real cost of the move. The
+# workflow used npm TRUSTED PUBLISHING — GitHub minted a short-lived OIDC
+# token, npm verified it came from this repo running that workflow file, and
+# issued a credential that expired minutes later. No stored secret existed.
+# A local publish cannot do that; OIDC has no meaning off a runner. So this
+# uses your own `npm login` session, which means the publish is attributed to
+# a PERSON rather than to a workflow. That is a real downgrade in provenance
+# strength and it is the deliberate trade the local-only rule makes.
+#
+# --provenance is kept. Off a runner npm cannot produce the CI attestation,
+# so it is passed only when npm reports it can; see below.
 if [ "$DRY_RUN" -eq 1 ]; then
   echo
-  echo "DRY RUN — every validation passed. Would create tag: $TAG"
-  echo "Then: git push origin $TAG   (that push publishes, via .github/workflows/release-web-runtime.yml)"
+  echo "DRY RUN — every validation passed. Would create tag $TAG and publish $PKG_NAME@$BARE."
   exit 0
 fi
 
+# Fail BEFORE tagging if the session cannot publish. A tag with no artifact is
+# the exact drift this whole script exists to prevent (web-runtime/v0.3.1).
+if ! NPM_WHOAMI="$(cd "$PKG_DIR" && npm whoami 2>/dev/null)"; then
+  echo "error: not logged in to npm — run 'npm login' first." >&2
+  echo "hint: publishing @reliantlabs/* needs a member of the reliantlabs org." >&2
+  exit 1
+fi
+echo "==> publishing as npm user: $NPM_WHOAMI"
+
 git tag -a "$TAG" -m "$PKG_NAME $VERSION"
+echo "==> created tag $TAG"
+
+# --access public is required: npm defaults a SCOPED package to restricted,
+# and a restricted package breaks `npm install` for everyone outside the org,
+# including every machine that scaffolds a project with a released forge.
+echo "==> npm publish"
+if ! ( cd "$PKG_DIR" && npm publish --access public ); then
+  echo >&2
+  echo "error: publish FAILED. The tag $TAG exists locally and has NOT been pushed." >&2
+  echo "hint: fix the cause, then 'git tag -d $TAG' and re-run. Do NOT push a tag" >&2
+  echo "      whose version was never published — that is the drift this guards." >&2
+  exit 1
+fi
+
+# `npm publish` exiting 0 means the registry ACCEPTED the upload, not that the
+# version is fetchable. Those came apart for real (see the script's header),
+# and a tag that exists while the registry serves nothing is invisible until a
+# scaffolded project fails to install days later.
+echo "==> confirming the registry serves it"
+"$REPO_ROOT/scripts/verify-npm-published.sh" \
+  --name "$PKG_NAME" --version "$BARE" --publish-reported-success
+
+git push origin "$TAG"
 echo
-echo "Created tag $TAG."
-echo
-echo "Remaining step — pushing the tag IS the release:"
-echo "  git push origin $TAG"
-echo
-echo "That triggers .github/workflows/release-web-runtime.yml, which re-runs these"
-echo "validations on a clean checkout and publishes to npm. Watch it with:"
-echo "  gh run watch \$(gh run list --workflow 'Release web-runtime' --limit 1 --json databaseId -q '.[0].databaseId')"
+echo "Published $PKG_NAME@$BARE and pushed $TAG."

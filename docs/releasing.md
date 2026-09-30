@@ -13,6 +13,30 @@ Dockerfile** to bump.
 See `docs/versioning.md` for the dev-vs-release dependency model. This file is
 the operational checklist for cutting a version.
 
+## ⛔ Releases are LOCAL-ONLY. CI never publishes.
+
+Every tag, build and publish of a release artifact happens on a maintainer's
+machine, through the scripts below. **CI runs checks and nothing else.**
+
+`.github/workflows/release-web-runtime.yml`, which published
+`@reliantlabs/forge-web-runtime` to npm on a `web-runtime/v*` tag push, is
+**deleted** — not disabled, and deliberately without a `workflow_dispatch`
+escape hatch. `scripts/release-web-runtime.sh` now performs the publish itself
+(see §1b).
+
+`TestNoCIPublishOrDeployWorkflows` (`internal/cli/`) fails the build if any
+workflow regains a publishing or deploying step, so the rule is enforced rather
+than remembered.
+
+**What this costs, stated honestly.** The deleted workflow used npm *trusted
+publishing*: GitHub minted a short-lived OIDC token, npm verified it came from
+this repo running that file, and `--provenance` signed an attestation binding
+the tarball to the commit and the run. No stored credential existed, and a
+leaked one would have been worthless off the runner. A local publish cannot
+reproduce any of that — OIDC has no meaning off a runner — so the publish now
+authenticates with a maintainer's `npm login` and is attributed to a person.
+That is a real reduction in supply-chain assurance, accepted deliberately.
+
 ## 1. Tag forge (from a clean `main`) — ONE command
 
 ```sh
@@ -68,6 +92,36 @@ mechanisms, all of which are now gone:
 A single module cannot require itself, so there is no unpushed version to
 resolve, no second tag to order, and no hand-maintained pin to drift.
 `scripts/release-pkg.sh` and `task release:pkg` are deleted.
+
+## 1b. Publish `@reliantlabs/forge-web-runtime` (only when it changed)
+
+The npm package is versioned and released independently of the Go module —
+release it only when `web-runtime/` actually changed.
+
+```sh
+cd forge
+npm login                                      # once; must be in the reliantlabs org
+task release:web-runtime -- vX.Y.Z --dry-run   # every validation, no side effects
+task release:web-runtime -- vX.Y.Z
+```
+
+`scripts/release-web-runtime.sh` validates the version shape, a clean
+`web-runtime/` tree, that the tag does not exist, that `package.json` agrees
+with the tag, a green build + typecheck + test, that the packed tarball really
+contains `dist/index.js` and `dist/index.d.ts`, that `repository.url` is
+present (an absent one makes npm reject the publish with a 422 *after*
+signing), and that forge's `webRuntimePublishedRange` tracks the version —
+so a released forge can never scaffold a range the registry cannot satisfy.
+
+Then it tags, publishes, polls the registry until it actually **serves** the
+version, and pushes the tag **last**.
+
+That order is load-bearing. `npm publish` exiting 0 means the registry accepted
+the upload, not that the version is fetchable — those came apart for real, and
+`web-runtime/v0.3.1` sat as a tag with nothing behind it, invisible until a
+scaffolded project failed to install days later. Publishing before pushing the
+tag means a tag can only exist once the artifact does. If the publish fails,
+the local tag is left unpushed and the script tells you to delete it.
 
 ## 2. Bump reliant — PR
 

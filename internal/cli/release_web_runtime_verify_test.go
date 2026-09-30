@@ -1,7 +1,7 @@
 // File: internal/cli/release_web_runtime_verify_test.go
 //
 // Exercises scripts/verify-npm-published.sh, the post-publish guard in
-// .github/workflows/release-web-runtime.yml.
+// scripts/release-web-runtime.sh.
 //
 // WHY THESE TESTS EXIST. The guard used to be inline YAML, which meant it had
 // never been run against a registry that refuses — and it was wrong. Its
@@ -193,29 +193,91 @@ func TestVerifyNPMPublished_DefaultWindowIsAtLeastTenMinutes(t *testing.T) {
 	}
 }
 
-// TestReleaseWebRuntimeWorkflowUsesTheVerifyScript keeps the workflow and the
-// tested script from drifting apart.
+// TestReleaseWebRuntimeScriptUsesTheVerifyScript keeps the publish path and
+// the tested script from drifting apart.
 //
-// The tests above prove the SCRIPT behaves. They prove nothing if the
-// workflow quietly goes back to an inline loop, which is exactly how the
-// untested version survived.
-func TestReleaseWebRuntimeWorkflowUsesTheVerifyScript(t *testing.T) {
+// The tests above prove the SCRIPT behaves. They prove nothing if the caller
+// quietly goes back to an inline loop, which is exactly how the untested
+// version survived.
+//
+// This used to read .github/workflows/release-web-runtime.yml. That workflow
+// is deleted — releases are local-only and CI publishes nothing — so the
+// publish path it guards is now scripts/release-web-runtime.sh.
+func TestReleaseWebRuntimeScriptUsesTheVerifyScript(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	path := filepath.Join(cwd, "..", "..", ".github", "workflows", "release-web-runtime.yml")
+	path := filepath.Join(cwd, "..", "..", "scripts", "release-web-runtime.sh")
 	body, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read release-web-runtime.yml: %v", err)
+		t.Fatalf("read release-web-runtime.sh: %v", err)
 	}
-	wf := string(body)
-	if !strings.Contains(wf, "scripts/verify-npm-published.sh") {
-		t.Errorf("the publish workflow no longer calls verify-npm-published.sh — " +
+	script := string(body)
+	if !strings.Contains(script, "verify-npm-published.sh") {
+		t.Errorf("the publish script no longer calls verify-npm-published.sh — " +
 			"the verification is only tested while it lives in that script")
 	}
-	if !strings.Contains(wf, "--publish-reported-success") {
-		t.Errorf("the workflow does not pass --publish-reported-success, so a timeout " +
+	if !strings.Contains(script, "--publish-reported-success") {
+		t.Errorf("the script does not pass --publish-reported-success, so a timeout " +
 			"will always be reported as the missing-artifact case even when the publish worked")
+	}
+	// The publish itself must be here, not delegated back to CI. A script that
+	// only tags is the state that shipped web-runtime/v0.3.1 as a tag with no
+	// artifact on the registry.
+	if !strings.Contains(script, "npm publish") {
+		t.Errorf("scripts/release-web-runtime.sh no longer publishes — releases are " +
+			"local-only, so this script is the ONLY publish path for the package")
+	}
+}
+
+// TestNoCIPublishOrDeployWorkflows fails if a workflow regains the ability to
+// ship bytes.
+//
+// Releases are local-only by explicit owner rule: every build, push, publish,
+// tag and deploy of a release artifact happens on a laptop, and CI runs checks
+// only. That rule is a property of the .github/workflows directory, so it is
+// checked here rather than remembered.
+//
+// The deleted workflow published to npm on a tag push. Restoring it, or adding
+// any other publishing step, should fail loudly rather than be noticed later by
+// whoever wonders why a release went out from a runner.
+func TestNoCIPublishOrDeployWorkflows(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	dir := filepath.Join(cwd, "..", "..", ".github", "workflows")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read workflows dir: %v", err)
+	}
+
+	// Substrings that only appear in a step that SHIPS something. A bare
+	// `npm pack`, `go build` or `docker build` without --push is a check and is
+	// deliberately absent from this list.
+	banned := []string{
+		"npm publish",
+		"docker push",
+		"--push",
+		"gh release create",
+		"forge env deploy",
+	}
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yml") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for _, b := range banned {
+			if strings.Contains(string(body), b) {
+				t.Errorf("%s contains %q — CI must not publish or deploy. "+
+					"Releases are local-only: use scripts/release-forge.sh or "+
+					"scripts/release-web-runtime.sh.", e.Name(), b)
+			}
+		}
 	}
 }

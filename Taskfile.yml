@@ -89,18 +89,23 @@ tasks:
       - ./scripts/release-forge.sh {{.CLI_ARGS}}
 
   release:web-runtime:
-    desc: "Tag a @reliantlabs/forge-web-runtime release: task release:web-runtime -- vX.Y.Z (add --dry-run to validate only)"
+    desc: "Publish a @reliantlabs/forge-web-runtime release to npm: task release:web-runtime -- vX.Y.Z (add --dry-run to validate only)"
     cmds:
-      # The npm twin of release:pkg. Validates version shape, a clean
-      # web-runtime/ tree, no existing tag, package.json/tag agreement, a
-      # green build+typecheck+test, that the packed tarball really contains
-      # dist/, and that forge's webRuntimePublishedRange tracks the version
-      # being released — so a released forge can never scaffold a range the
-      # registry cannot satisfy.
+      # THE publish path. .github/workflows/release-web-runtime.yml, which
+      # published on a web-runtime/v* tag push, is deleted: releases are
+      # local-only and CI runs checks only.
       #
-      # Pushing the tag and `npm publish` are deliberate manual steps the
-      # script prints at the end: both are irreversible, and npm requires a
-      # 2FA OTP to publish.
+      # Validates version shape, a clean web-runtime/ tree, no existing tag,
+      # package.json/tag agreement, a green build+typecheck+test, that the
+      # packed tarball really contains dist/, that provenance metadata agrees,
+      # and that forge's webRuntimePublishedRange tracks the version being
+      # released — so a released forge can never scaffold a range the registry
+      # cannot satisfy. Then it tags, publishes, confirms the registry SERVES
+      # the version, and pushes the tag last, so a tag can never exist for a
+      # version that was never published.
+      #
+      # Needs an `npm login` session in the reliantlabs org; it fails before
+      # tagging if there is none.
       - ./scripts/release-web-runtime.sh {{.CLI_ARGS}}
 
   test:

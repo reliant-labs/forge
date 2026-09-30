@@ -3,7 +3,9 @@
 # Confirm the npm registry actually SERVES a version, after `npm publish` has
 # reported success.
 #
-# WHY THIS IS A SEPARATE SCRIPT. It was inline YAML in
+# Called by scripts/release-web-runtime.sh immediately after `npm publish`.
+#
+# WHY THIS IS A SEPARATE SCRIPT. It was inline YAML in the (now deleted)
 # .github/workflows/release-web-runtime.yml, where it could not be tested —
 # and it was wrong in a way only a test would have caught (see the window
 # below). A release-day guard that has never been executed against a failing
@@ -41,7 +43,7 @@
 #     without an artifact, which is the drift this check was written for.
 #
 # The caller distinguishes them by passing --publish-reported-success (the
-# workflow sets it from the publish step's own outcome). Without it, a
+# release script sets it once `npm publish` has exited 0). Without it, a
 # timeout is reported as the more serious "not published" case, which is the
 # right default: assume the worse state when the evidence is absent.
 #

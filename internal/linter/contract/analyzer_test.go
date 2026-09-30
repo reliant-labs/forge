@@ -80,7 +80,7 @@ func TestRequireContract_NotInternal(t *testing.T) {
 // exported name, so "unexport it" is not an available repair.
 //
 // Measured on forge's own tree, this was 6 of 8 requirecontract findings
-// (deadcodeguard, vacuousguard, tierguard, pkgguard, schemadrift, devpg) —
+// (deadcodeguard, vacuousguard, tierguard, pkgguard, devpg) —
 // every one a `func (X) String() string` on a Finding/Verdict/Report value.
 // A rule whose only repair is "add an interface nobody consumes" trains
 // people to add exclusions, so the conventions are skipped instead.

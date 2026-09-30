@@ -42,7 +42,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/codegen/schemadrift"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclmigrate"
@@ -2438,25 +2437,22 @@ func stepRehashTracked(ctx *pipelineContext) error {
 // Runs the heuristic post-gen warnings (orphan handlers, etc.).
 // Always non-fatal: warnings only.
 //
-// It also prints the always-on schema-drift NOTICE: forge freezes proto→
-// schema truth into the born migration and never edits it, so a proto that
-// changed after birth can leave the DB's CHECK/columns behind what the
-// proto now declares. schemadrift.Detect reuses the already-parsed services
-// plus the applied-schema shadow to report the divergence with a suggested
-// ALTER. It never writes a migration and never fails generate — the same
-// non-fatal contract as the heuristic warnings above.
+// It no longer reports proto-vs-migration "schema drift". That check paired
+// proto message fields with migration columns BY NAME, which only made sense
+// while proto entity annotations declared the schema. Migrations are now the
+// only schema truth and proto is the wire shape, so the pairing compares two
+// things that were never required to agree: an API response message carries
+// derived fields (users.onboarding_completed) and fields the table stores
+// inside JSONB (plans.price_cents), and every one of them was reported as a
+// missing column with a suggested ALTER that must not be applied. In
+// control-plane it produced 19 such suggestions on a clean tree, so the
+// signal was noise by construction rather than by tuning.
 func stepPostGenValidate(ctx *pipelineContext) error {
 	if warnings := validateGeneratedProject(ctx.ProjectDir, ctx.Cfg, ctx.Services, ctx.EntityDefs); len(warnings) > 0 {
 		fmt.Fprintf(os.Stderr, "\n⚠️  Post-generation warnings:\n")
 		for _, w := range warnings {
 			fmt.Fprintf(os.Stderr, "  • %s\n", w)
 		}
-	}
-	// Best-effort: any detection failure (no postgres shadow, un-projectable
-	// entity) is swallowed — a missed notice never blocks a build.
-	if report, err := schemadrift.Detect(ctx.ProjectDir, ctx.Services); err == nil && !report.Empty() {
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprint(os.Stderr, report.String())
 	}
 	// Scaffold-once files forge has written before and that are now absent.
 	// The run that motivated this deleted one expecting a re-derivation, got

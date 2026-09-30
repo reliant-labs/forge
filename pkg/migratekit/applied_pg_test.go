@@ -54,7 +54,7 @@ func TestUpRefusesAVersionAppliedFromADifferentFile(t *testing.T) {
 	if len(mismatch.Mismatches) != 1 || mismatch.Mismatches[0] != (MigrationMismatch{Version: 3, Applied: "byo_clusters", Embedded: "retire_plans"}) {
 		t.Errorf("mismatches = %+v; want exactly version 3: byo_clusters applied, retire_plans embedded", mismatch.Mismatches)
 	}
-	for _, want := range []string{`"byo_clusters"`, `"retire_plans"`, "NOTHING WAS APPLIED", "DELETE FROM " + appliedTable + " WHERE version >= 3"} {
+	for _, want := range []string{`"byo_clusters"`, `"retire_plans"`, "NOTHING WAS APPLIED", "UPDATE " + appliedTable + " SET name ="} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not carry %q — it is the runbook for reconciling the schema:\n%v", want, err)
 		}
@@ -65,8 +65,13 @@ func TestUpRefusesAVersionAppliedFromADifferentFile(t *testing.T) {
 }
 
 // TestUpProceedsOnceTheRecordIsReconciled follows the error's own runbook: a
-// human applies main's 3 by hand, keeps the version at 3, and deletes the
-// stale record. Up then applies 4 and records main's files.
+// human applies main's 3 by hand, keeps the version at 3, and CORRECTS the
+// stale record to name the file the schema now reflects. Up then applies 4.
+//
+// The correction is an UPDATE, not a DELETE, and the difference is
+// load-bearing: a deleted row leaves version 3 at or below the schema's
+// version with no record, which is precisely a MISSING migration
+// (missing.go). Clearing the record would trade one refusal for another.
 func TestUpProceedsOnceTheRecordIsReconciled(t *testing.T) {
 	dsn := requirePG(t)
 	mustUp(t, release(merged(olderFiles, branchThird)), dsn)
@@ -74,7 +79,7 @@ func TestUpProceedsOnceTheRecordIsReconciled(t *testing.T) {
 	if _, err := db.Exec(mainThirdAndFourth["3_retire_plans.up.sql"]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("DELETE FROM " + appliedTable + " WHERE version >= 3"); err != nil {
+	if _, err := db.Exec("UPDATE " + appliedTable + " SET name = 'retire_plans' WHERE version = 3"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,9 +91,9 @@ func TestUpProceedsOnceTheRecordIsReconciled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 3 stays unrecorded: this Up did not apply it, and the record only
-	// states what a migrator ran.
-	want := map[uint]string{1: "accounts", 2: "plans", 4: "byo_clusters"}
+	// 3 carries the descriptor the human reconciled it to; this Up applied
+	// only 4.
+	want := map[uint]string{1: "accounts", 2: "plans", 3: "retire_plans", 4: "byo_clusters"}
 	if len(got) != len(want) {
 		t.Fatalf("record = %v, want %v", got, want)
 	}
@@ -118,6 +123,14 @@ func TestUpIgnoresAChangeOfZeroPadding(t *testing.T) {
 // record existed has no rows, so nothing is known about which files it ran.
 // That is not a mismatch — refusing would break every existing database on
 // the first deploy of this check.
+//
+// The bootstrap gives those versions a row (they must not read as MISSING —
+// see missing.go), but with an EMPTY descriptor, which is what keeps this
+// test's original point true: version 3 was applied from the branch's
+// byo_clusters while this binary embeds retire_plans under 3, and the
+// bootstrap must NOT certify either. An empty descriptor asserts "applied,
+// file unknown", so the mismatch check skips it rather than vouching for a
+// schema no record describes.
 func TestUpDoesNotCheckVersionsWithNoRecord(t *testing.T) {
 	dsn := requirePG(t)
 	mustUp(t, release(merged(olderFiles, branchThird)), dsn)
@@ -133,8 +146,23 @@ func TestUpDoesNotCheckVersionsWithNoRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[4] != "byo_clusters" {
-		t.Errorf("record = %v; want only the version this Up applied (4) — never a backfill of what it did not run", got)
+	// 4 is the version THIS Up applied, so it carries a real descriptor.
+	if got[4] != "byo_clusters" {
+		t.Errorf("record[4] = %q; want the descriptor of the migration this Up ran", got[4])
+	}
+	// 1, 2 and 3 were bootstrapped from the schema's high-water mark. They
+	// must be present (else they read as missing) and EMPTY (else the
+	// bootstrap has certified a file the database cannot vouch for — here
+	// it would claim 3 was main's retire_plans when the branch's
+	// byo_clusters is what actually ran).
+	for _, v := range []uint{1, 2, 3} {
+		name, ok := got[v]
+		if !ok {
+			t.Errorf("version %d has no row; the bootstrap must record what the schema version vouches for", v)
+		}
+		if name != "" {
+			t.Errorf("record[%d] = %q; a bootstrapped version must carry NO descriptor — the one fact a pre-record database cannot supply", v, name)
+		}
 	}
 }
 

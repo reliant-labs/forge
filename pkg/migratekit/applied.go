@@ -73,7 +73,14 @@ func (e *MigrationMismatchError) Error() string {
 	fmt.Fprintf(&b, " NOTHING WAS APPLIED. The schema_migrations version does not describe this schema, so "+
 		"no later migration can be trusted to apply. Reconcile by hand: apply this binary's migrations from %d "+
 		"that the database lacks, set schema_migrations to the highest version the schema now truly reflects, "+
-		"then `DELETE FROM %s WHERE version >= %d` so the record is rewritten as those versions are next applied", first, appliedTable, first)
+		"then correct the record so each version names the file the schema actually reflects — "+
+		"`UPDATE %s SET name = '<descriptor>' WHERE version = <version>` for each one listed above.",
+		first, appliedTable)
+	// Deleting those rows instead would leave versions at or below the
+	// schema's with no record, which is the definition of a MISSING
+	// migration (see missing.go) — the next run would refuse for a second
+	// reason and the runbook would loop. The record must be corrected in
+	// place, not cleared.
 	return b.String()
 }
 

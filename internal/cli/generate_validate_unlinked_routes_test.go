@@ -62,6 +62,10 @@ func TestValidateGeneratedProject_ReportsUnlinkedNavRoutes(t *testing.T) {
 	if err := os.WriteFile(navPath, []byte("// hand-rolled nav, no /customers link\nexport const ALL_ROUTES = [];\n"), 0o644); err != nil {
 		t.Fatalf("simulate user edit: %v", err)
 	}
+	// The page has to exist for the route to be unlinked rather than
+	// absent — an unlinked route is a page you cannot reach, so without
+	// a page there is nothing to reach.
+	writeListPage(t, projectDir, "customers")
 
 	warnings := validateGeneratedProject(projectDir, cfg, services, entities)
 
@@ -124,21 +128,25 @@ func TestBaseVersionPseudoVersionSuppressesPinWarning(t *testing.T) {
 	}
 }
 
-// TestValidateGeneratedProject_DeletedPageIsNotUnlinked: a route whose
-// page the user DELETED must not be reported as unlinked. There is
+// TestValidateGeneratedProject_RouteWithNoPageIsNotUnlinked: a route
+// with no page behind it must not be reported as unlinked. There is
 // nothing to link to, so "add it to ALL_ROUTES" would produce a 404.
 //
-// control-plane's internal-console hit this on every generate. It was
-// told to add /daemons, /plans, /deployments and /llm-keys — four pages
-// it had deliberately removed, because they are owner-scoped customer
-// surfaces that could only ever render empty against the operator
-// listener. The same generate output listed all thirteen of those
-// pages' files under "scaffold-once file(s) … left absent on purpose",
-// so forge contradicted itself within one run.
+// control-plane's internal-console hit this two different ways, and the
+// fix has to cover both because the user cannot act on them differently:
 //
-// Deleting a scaffold-once file is an act of ownership the ledger
-// records as recorded-and-absent, which is the signal used here.
-func TestValidateGeneratedProject_DeletedPageIsNotUnlinked(t *testing.T) {
+//   - DELETED. It was told to add /daemons, /plans, /deployments and
+//     /llm-keys — four pages it removed on purpose, being owner-scoped
+//     customer surfaces that could only render empty against the
+//     operator listener. The same run listed all thirteen of those
+//     files under "scaffold-once file(s) … left absent on purpose", so
+//     forge contradicted itself within one generate.
+//   - NEVER WRITTEN. A new org_member_grants entity produced
+//     /org-member-grants, for which this frontend has no page at all
+//     and the scaffold ledger has no entry.
+//
+// So the test is existence, not provenance: no page, no link to add.
+func TestValidateGeneratedProject_RouteWithNoPageIsNotUnlinked(t *testing.T) {
 	projectDir := t.TempDir()
 	cfg := &config.ProjectConfig{
 		Name:      "demo",
@@ -158,28 +166,66 @@ func TestValidateGeneratedProject_DeletedPageIsNotUnlinked(t *testing.T) {
 		t.Fatalf("simulate user edit: %v", err)
 	}
 
-	// ...because they deleted the page it pointed at. Record the birth
-	// and remove the file: recorded && absent is how the ledger spells
-	// "the user deleted this".
-	pageRel := filepath.Join("frontends", "web", "src", "app", "customers", "page.tsx")
-	pageAbs := filepath.Join(projectDir, pageRel)
-	if err := os.MkdirAll(filepath.Dir(pageAbs), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	// ...because there is no page behind it. No page is written here at
+	// all, which covers BOTH ways a route goes missing: the user deleted
+	// it, and forge never scaffolded it in the first place. Those look
+	// identical to the person reading the advice, because both make
+	// "add it to ALL_ROUTES" produce a 404.
+	for _, w := range validateGeneratedProject(projectDir, cfg, services, entities) {
+		if strings.Contains(w, "/customers") {
+			t.Errorf("a route with no page must not be reported as unlinked — "+
+				"linking to it would be a 404; got: %q", w)
+		}
 	}
-	if err := os.WriteFile(pageAbs, []byte("export default function P() { return null }\n"), 0o644); err != nil {
-		t.Fatalf("write page: %v", err)
+}
+
+// TestValidateGeneratedProject_NeverScaffoldedPageIsNotUnlinked is the
+// second half of the case above, isolated: a route the scaffold ledger
+// has never heard of. This is what a NEW entity produces in a frontend
+// whose pages forge did not write, and it is why the check cannot key
+// on the ledger's recorded-and-absent "user deleted it" state — there
+// is no ledger entry to consult.
+func TestValidateGeneratedProject_NeverScaffoldedPageIsNotUnlinked(t *testing.T) {
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:      "demo",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs"}},
 	}
-	checksums.RecordScaffold(projectDir, pageRel)
-	checksums.ResetScaffoldLedgerCache()
-	if err := os.Remove(pageAbs); err != nil {
-		t.Fatalf("delete page: %v", err)
+	services := unlinkedRoutesFixtureServices()
+	entities := unlinkedRoutesFixtureEntities()
+
+	cs := &checksums.FileChecksums{}
+	if err := generateFrontendNav(cfg, services, projectDir, entities, cs); err != nil {
+		t.Fatalf("generateFrontendNav: %v", err)
+	}
+	navPath := filepath.Join(projectDir, "frontends", "web", "src", "components", "nav.tsx")
+	if err := os.WriteFile(navPath, []byte("// hand-rolled nav\nexport const ALL_ROUTES = [];\n"), 0o644); err != nil {
+		t.Fatalf("simulate user edit: %v", err)
+	}
+
+	if checksums.ScaffoldRecorded(projectDir,
+		filepath.Join("frontends", "web", "src", "app", "customers", "page.tsx")) {
+		t.Fatal("fixture precondition: the page must NOT be in the scaffold ledger")
 	}
 
 	for _, w := range validateGeneratedProject(projectDir, cfg, services, entities) {
 		if strings.Contains(w, "/customers") {
-			t.Errorf("a deleted page must not be reported as an unlinked route — "+
-				"linking to it would be a 404; got: %q", w)
+			t.Errorf("a route forge never scaffolded a page for must not be "+
+				"reported as unlinked; got: %q", w)
 		}
+	}
+}
+
+// writeListPage creates the list page for a slug, which is what makes a
+// route real enough to be worth linking.
+func writeListPage(t *testing.T, projectDir, slug string) {
+	t.Helper()
+	page := filepath.Join(projectDir, "frontends", "web", "src", "app", slug, "page.tsx")
+	if err := os.MkdirAll(filepath.Dir(page), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", slug, err)
+	}
+	if err := os.WriteFile(page, []byte("export default function P() { return null }\n"), 0o644); err != nil {
+		t.Fatalf("write %s page: %v", slug, err)
 	}
 }
 

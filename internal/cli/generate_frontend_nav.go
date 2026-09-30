@@ -569,14 +569,16 @@ func missingNavRoutes(projectDir, navRel string, pages []templates.NavPageData) 
 		// thirteen of those pages' files as deliberately absent. Acting
 		// on the advice would have pointed the sidebar at four 404s.
 		//
-		// The check is "the user deleted it", not "the file is missing":
-		// a page forge has not written YET is still a genuine unlinked
-		// route once it appears, and must keep warning.
-		listPage := filepath.Join(appDir, p.Slug, "page.tsx")
-		if checksums.ScaffoldRecorded(projectDir, listPage) {
-			if _, err := os.Stat(filepath.Join(projectDir, listPage)); os.IsNotExist(err) {
-				continue
-			}
+		// The test is simply whether the page is THERE. Deletion is the
+		// common way a route goes missing, but it is not the only one:
+		// control-plane added an org_member_grants entity whose pages
+		// this frontend never scaffolded at all, and forge advised
+		// linking /org-member-grants — a route with no page behind it
+		// and no scaffold-ledger entry either. Distinguishing "deleted"
+		// from "never written" would be a distinction the reader cannot
+		// act on differently: both make the advice produce a 404.
+		if _, err := os.Stat(filepath.Join(projectDir, appDir, p.Slug, "page.tsx")); err != nil {
+			continue
 		}
 		missing = append(missing, "/"+p.Slug)
 	}

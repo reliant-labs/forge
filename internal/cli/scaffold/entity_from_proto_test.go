@@ -128,7 +128,7 @@ func TestAddEntityFromProto_SingleBirthsOwnedMigration(t *testing.T) {
 		t.Fatalf("runEntityFromProto: %v", err)
 	}
 
-	up := readFileT(t, filepath.Join(dir, "db", "migrations", "00001_create_invoices.up.sql"))
+	up := readFileT(t, birthMigrationPath(t, dir, "create_invoices"))
 	for _, want := range []string{
 		"-- Born from proto message services.tasks.v1.Invoice",
 		"CREATE TABLE invoices (",
@@ -158,8 +158,8 @@ func TestAddEntityFromProto_SingleBirthsOwnedMigration(t *testing.T) {
 			t.Errorf("up.sql must not contain %q before customers exists:\n%s", bad, up)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "db", "migrations", "00001_create_invoices.down.sql")); !os.IsNotExist(err) {
-		t.Errorf("birth must write no .down.sql (forge rolls forward only); stat err = %v", err)
+	if downs, _ := filepath.Glob(filepath.Join(dir, "db", "migrations", "*.down.sql")); len(downs) != 0 {
+		t.Errorf("birth must write no .down.sql (forge rolls forward only), found %v", downs)
 	}
 
 	// The evolution contract must be stated plainly in the next steps.
@@ -181,9 +181,7 @@ func TestAddEntityFromProto_DotFormDerivesName(t *testing.T) {
 	if err := runEntityFromProto(nil, "tasks.Invoice", entityOpts{}); err != nil {
 		t.Fatalf("runEntityFromProto: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "db", "migrations", "00001_create_invoices.up.sql")); err != nil {
-		t.Errorf("dot form should derive entity/table from the message name: %v", err)
-	}
+	birthMigrationPath(t, dir, "create_invoices") // fails unless the dot form derived entity/table
 }
 
 func TestAddEntityFromProto_RefusesEnvelopeMessages(t *testing.T) {
@@ -273,9 +271,7 @@ func TestAddEntityFromProto_ExplicitListCompletesQuintet(t *testing.T) {
 	}
 
 	// Migration half (descriptor-driven, as before).
-	if _, statErr := os.Stat(filepath.Join(dir, "db", "migrations", "00001_create_invoices.up.sql")); statErr != nil {
-		t.Errorf("migration not written: %v", statErr)
-	}
+	birthMigrationPath(t, dir, "create_invoices")
 	// Quintet half: the missing CRUD surface was injected into the raw proto.
 	proto := readFileT(t, filepath.Join(dir, protoRel))
 	for _, want := range []string{

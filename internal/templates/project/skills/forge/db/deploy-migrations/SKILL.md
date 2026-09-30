@@ -100,6 +100,35 @@ no longer describes the schema. The error names both files and the manual
 reconcile. Only the name after the version prefix is compared, so editing an
 old migration's comments or re-padding its number is not a mismatch.
 
+### A migration the schema has already passed
+
+golang-migrate tracks one number and applies only migrations **above** it, so a
+migration numbered *below* the current version can never run — it looks there,
+finds nothing pending, and reports the schema current. With timestamp versions
+this happens exactly one way: two branches are cut, A allocates an earlier
+timestamp than B, and **B merges and deploys first**. Main now carries A's
+migration at a version the database has already passed, and A's SQL silently
+never executes. The first symptom is a query for a column that does not exist,
+in a crash-looping pod far from the migration that owns it.
+
+So before applying anything, every embedded version at or below the schema's
+version must be recorded in `schema_migrations_applied`. One that is not is
+`*migratekit.MissingMigrationError`, and nothing runs.
+
+**The fix is to re-version the file**, which the error spells out: the migration
+has not run anywhere, so renaming it to a timestamp newer than the schema's
+version is safe and is all that is needed. Forge deliberately does **not** apply
+it out of order — that would make the schema depend on merge order, so
+A-then-B and B-then-A would produce different databases from the same commit
+with nothing reporting which one you got. `forge lint`'s
+`non-timestamp-migration-version` rule catches most of these at PR time, before
+a deploy can refuse.
+
+Versions applied before this record existed are backfilled **once**, when the
+table is created, from the schema's own version — so an existing database
+adopts the check without refusing. Those rows carry no filename: which file an
+old database ran under a given number is the one thing it cannot vouch for.
+
 There is no stepping a schema back, and no rollback of a release either — see
 "Roll forward only" below.
 

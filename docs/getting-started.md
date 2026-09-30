@@ -112,7 +112,7 @@ forge scaffold
 
 From that one marker you got:
 
-- **A migration** — `db/migrations/00001_create_bookmarks.up.sql`, with the
+- **A migration** — `db/migrations/20260115093042_create_bookmarks.up.sql` (the version is a UTC timestamp, so parallel branches cannot collide), with the
   right types, `NOT NULL` defaults, and managed timestamps.
 - **The CRUD quintet in your proto** — `CreateBookmark`, `GetBookmark`,
   `UpdateBookmark`, `DeleteBookmark`, `ListBookmarks`, written into the

@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/migrationver"
 )
 
 func newMigrateImportCmd() *cobra.Command {
@@ -114,12 +116,16 @@ func runMigrateImport(opts migrateImportOptions) error {
 		return nil
 	}
 
-	startIdx, err := nextMigrationIndex(destAbs)
+	// Allocate one version per source file up front. Some are skipped
+	// during planning (a goose file forge cannot convert), so a few
+	// allocated versions may go unused — harmless, since versions are
+	// sparse by design and nothing assumes version+1 exists.
+	versions, err := migrationver.NextN(destAbs, len(srcFiles))
 	if err != nil {
 		return err
 	}
 
-	plans, skipped, err := planGooseImport(srcFiles, startIdx)
+	plans, skipped, err := planGooseImport(srcFiles, versions)
 	if err != nil {
 		return err
 	}
@@ -187,9 +193,13 @@ func runMigrateImport(opts migrateImportOptions) error {
 }
 
 type importPlan struct {
-	Index  int
-	Stem   string
-	UpBody string
+	// Version is the allocated timestamp version prefix. The importer
+	// allocates the whole batch up front (migrationver.NextN), one distinct
+	// second each, so an import of forty goose files cannot collide with
+	// itself.
+	Version string
+	Stem    string
+	UpBody  string
 	// DroppedDown reports that the source carried a goose Down section
 	// with SQL in it, which the import discarded (forge rolls forward
 	// only). Surfaced so the drop is visible rather than silent.
@@ -198,7 +208,7 @@ type importPlan struct {
 }
 
 func (p importPlan) UpPath(destDir string) string {
-	return filepath.Join(destDir, fmt.Sprintf("%05d_%s.up.sql", p.Index, p.Stem))
+	return filepath.Join(destDir, fmt.Sprintf("%s_%s.up.sql", p.Version, p.Stem))
 }
 
 type importSkip struct {
@@ -226,34 +236,6 @@ func listGooseFiles(dir string) ([]string, error) {
 
 var migrationFilePattern = regexp.MustCompile(`^(\d+)_(.+)\.(up|down)\.sql$`)
 var gooseFilePattern = regexp.MustCompile(`^(\d+)_(.+)\.sql$`)
-
-func nextMigrationIndex(dir string) (int, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 1, nil
-		}
-		return 0, fmt.Errorf("read --dest-dir %q: %w", dir, err)
-	}
-	highest := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		m := migrationFilePattern.FindStringSubmatch(e.Name())
-		if m == nil {
-			continue
-		}
-		var idx int
-		if _, err := fmt.Sscanf(m[1], "%d", &idx); err != nil {
-			continue
-		}
-		if idx > highest {
-			highest = idx
-		}
-	}
-	return highest + 1, nil
-}
 
 func existingMigrationStems(dir string) (map[string]struct{}, error) {
 	entries, err := os.ReadDir(dir)
@@ -300,10 +282,10 @@ func existingMigrationFilesByStem(dir string) (map[string][]string, error) {
 	return out, nil
 }
 
-func planGooseImport(srcFiles []string, startIdx int) ([]importPlan, []importSkip, error) {
+func planGooseImport(srcFiles []string, versions []string) ([]importPlan, []importSkip, error) {
 	var plans []importPlan
 	var skips []importSkip
-	idx := startIdx
+	next := 0
 	for _, src := range srcFiles {
 		raw, err := os.ReadFile(src)
 		if err != nil {
@@ -314,14 +296,17 @@ func planGooseImport(srcFiles []string, startIdx int) ([]importPlan, []importSki
 			skips = append(skips, importSkip{Path: src, Reason: reason})
 			continue
 		}
+		if next >= len(versions) {
+			return nil, nil, fmt.Errorf("internal: allocated %d migration versions but the import needs more", len(versions))
+		}
 		plans = append(plans, importPlan{
-			Index:       idx,
+			Version:     versions[next],
 			Stem:        gooseSlug(src),
 			UpBody:      converted.Up,
 			DroppedDown: converted.HadDown,
 			SrcPath:     src,
 		})
-		idx++
+		next++
 	}
 	return plans, skips, nil
 }

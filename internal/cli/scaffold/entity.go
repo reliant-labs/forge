@@ -2,8 +2,6 @@ package scaffold
 
 import (
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 
 	"github.com/jinzhu/inflection"
@@ -270,30 +268,6 @@ type entityOpts struct {
 	// DryRun prints the birth plan and writes nothing (--from-proto
 	// forms only).
 	DryRun bool
-}
-
-// nextMigrationNumber returns the next 5-digit migration sequence number
-// for dir, scanning existing NNNNN_*.sql files.
-func nextMigrationNumber(dir string) int {
-	maxN := 0
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 1
-	}
-	for _, e := range entries {
-		base := e.Name()
-		if !strings.HasSuffix(base, ".sql") {
-			continue
-		}
-		prefix, _, ok := strings.Cut(base, "_")
-		if !ok {
-			continue
-		}
-		if n, err := strconv.Atoi(prefix); err == nil && n > maxN {
-			maxN = n
-		}
-	}
-	return maxN + 1
 }
 
 // ensureProtoImport adds `import "<path>";` after the last existing

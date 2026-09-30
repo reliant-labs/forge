@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/migrationver"
 )
 
 const entityTestProto = `syntax = "proto3";
@@ -72,11 +73,11 @@ func scaffoldEntityProject(t *testing.T) string {
 	return root
 }
 
-// TestWriteBirthMigration_SequencesAfterExistingAndWritesNoDown pins the
-// numbering every birth shares — the next migration lands after the highest
-// existing sequence — and the roll-forward policy: a birth writes the up
-// migration and nothing that claims to reverse it.
-func TestWriteBirthMigration_SequencesAfterExistingAndWritesNoDown(t *testing.T) {
+// TestWriteBirthMigration_TimestampVersionedAfterExistingAndWritesNoDown
+// pins the versioning every birth shares — a timestamp, sorting after the
+// existing sequential files it never renames — and the roll-forward policy:
+// a birth writes the up migration and nothing that claims to reverse it.
+func TestWriteBirthMigration_TimestampVersionedAfterExistingAndWritesNoDown(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "db", "migrations")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -88,8 +89,18 @@ func TestWriteBirthMigration_SequencesAfterExistingAndWritesNoDown(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(up) != "00008_create_things.up.sql" {
-		t.Errorf("expected sequence 00008, got %s", up)
+	// The birth is timestamp-versioned and sorts after the existing
+	// sequential file, which is what lets old migrations stay as they are.
+	base := filepath.Base(up)
+	version, stem, ok := strings.Cut(base, "_")
+	if !ok || stem != "create_things.up.sql" {
+		t.Fatalf("unexpected birth migration name %q", base)
+	}
+	if !migrationver.IsTimestamp(version) {
+		t.Errorf("birth migration %q is not timestamp-versioned", base)
+	}
+	if version <= "00007" {
+		t.Errorf("birth migration %q must sort after the existing 00007", base)
 	}
 	downs, _ := filepath.Glob(filepath.Join(dir, "*.down.sql"))
 	if len(downs) != 0 {
@@ -413,4 +424,24 @@ func readFileT(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// birthMigrationPath finds the birth migration for stem under the project's
+// db/migrations, failing the test if it is absent or ambiguous.
+//
+// Births are timestamp-versioned at the moment they are written, so a test
+// cannot name the file it expects without asserting on the clock. The stem
+// is the part forge actually derives (create_invoices from the Invoice
+// message), and it is what these tests mean to pin.
+func birthMigrationPath(t *testing.T, projectDir, stem string) string {
+	t.Helper()
+	pattern := filepath.Join(projectDir, "db", "migrations", "*_"+stem+".up.sql")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatalf("glob %s: %v", pattern, err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("want exactly one migration matching %s, got %v", pattern, matches)
+	}
+	return matches[0]
 }

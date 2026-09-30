@@ -73,29 +73,40 @@ func (e *MigrationMismatchError) Error() string {
 	fmt.Fprintf(&b, " NOTHING WAS APPLIED. The schema_migrations version does not describe this schema, so "+
 		"no later migration can be trusted to apply. Reconcile by hand: apply this binary's migrations from %d "+
 		"that the database lacks, set schema_migrations to the highest version the schema now truly reflects, "+
-		"then `DELETE FROM %s WHERE version >= %d` so the record is rewritten as those versions are next applied", first, appliedTable, first)
+		"then correct the record so each version names the file the schema actually reflects — "+
+		"`UPDATE %s SET name = '<descriptor>' WHERE version = <version>` for each one listed above.",
+		first, appliedTable)
+	// Deleting those rows instead would leave versions at or below the
+	// schema's with no record, which is the definition of a MISSING
+	// migration (see missing.go) — the next run would refuse for a second
+	// reason and the runbook would loop. The record must be corrected in
+	// place, not cleared.
 	return b.String()
 }
 
 // verifyApplied checks every version the database recorded as applied, at or
 // below the schema's current version, against the file this binary embeds
 // under that number. Versions the binary does not embed are the schema-ahead
-// case (classifyAhead's business), and versions with no record are unknown,
-// not wrong.
-func verifyApplied(ctx context.Context, db *sql.DB, source sourceSet, state State) error {
+// case (classifyAhead's business).
+//
+// A version with an EMPTY recorded descriptor is skipped: that is a bootstrap
+// row, written when appliedTable was created over a database that predates it
+// (see bootstrapApplied). It asserts the version was applied and deliberately
+// says nothing about which file — the one thing such a database cannot
+// vouch for. Comparing against it would manufacture a mismatch on every
+// pre-record database.
+//
+// A version with no row at all is findMissing's business, not a mismatch.
+func verifyApplied(records map[uint]string, source sourceSet, state State) error {
 	if !state.Applied {
 		return nil
-	}
-	records, err := readApplied(ctx, db)
-	if err != nil {
-		return err
 	}
 	var mismatches []MigrationMismatch
 	for _, m := range source {
 		if m.Version > state.Version {
 			break
 		}
-		if applied, ok := records[m.Version]; ok && applied != m.Descriptor {
+		if applied, ok := records[m.Version]; ok && applied != "" && applied != m.Descriptor {
 			mismatches = append(mismatches, MigrationMismatch{Version: m.Version, Applied: applied, Embedded: m.Descriptor})
 		}
 	}
@@ -143,6 +154,11 @@ func readApplied(ctx context.Context, db *sql.DB) (map[uint]string, error) {
 // applied, and a later binary disagreeing with it is the mismatch
 // verifyApplied reports, not a correction. A replica that lost the
 // advisory-lock race sees the same (before, after] and inserts nothing new.
+//
+// DO NOTHING also protects the empty descriptors bootstrapApplied writes.
+// Those rows mean "applied, by a migrator that did not record which file",
+// and this binary's filename is not evidence of what that database ran — so
+// an upgrade must leave them empty rather than fill them in with a guess.
 func recordApplied(ctx context.Context, db *sql.DB, source sourceSet, before, after State) error {
 	if !after.Applied {
 		return nil

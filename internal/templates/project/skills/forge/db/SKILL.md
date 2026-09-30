@@ -204,7 +204,7 @@ Statements the bare ephemeral DB can't satisfy (`CREATE EXTENSION` for an uninst
 Write a migration; the projections follow. Data movement is plain SQL in the same file.
 
 ```sql
--- db/migrations/00007_add_bookmark_rating.up.sql
+-- db/migrations/20260115093042_add_bookmark_rating.up.sql
 ALTER TABLE bookmarks ADD COLUMN rating BIGINT NOT NULL DEFAULT 0;
 UPDATE bookmarks SET rating = 5 WHERE done;
 ```
@@ -235,13 +235,15 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 Each takes `--dsn "$DATABASE_URL"`:
 
 ```
-forge db migration new <name>      # create an empty migration pair
+forge db migration new <name>      # create an empty migration (up only)
 forge db migrate up                # apply pending migrations
 forge db migrate status            # show what's applied
 forge db migrate force <version>   # clear a dirty migration state (runs no SQL)
 forge db introspect                # show live schema
 task dev-psql                      # interactive shell (no --dsn)
 ```
+
+Versions are **UTC timestamps**; never hand-type one. See **`db/versioning`**.
 
 ### Recovering a wedged dev database
 

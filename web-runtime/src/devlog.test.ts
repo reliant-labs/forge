@@ -187,9 +187,9 @@ describe("dev log forwarding", () => {
     expect(init.method).toBe("POST");
     expect(init.keepalive).toBe(true);
     expect(init.credentials).toBe("omit");
-    expect(
-      (init.headers as Record<string, string>)["Content-Type"],
-    ).toBe("application/json");
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
     expect(JSON.parse(String(init.body))).toEqual({
       entries: [{ level: "log", msg: "x" }],
     });
@@ -293,8 +293,9 @@ describe("dev log forwarding", () => {
     installDevLogging({ dev: true, mirrorToConsole: false });
 
     console.log("backgrounded");
-    (globalThis as { document: { visibilityState: string } }).document.visibilityState =
-      "hidden";
+    (
+      globalThis as { document: { visibilityState: string } }
+    ).document.visibilityState = "hidden";
     dom.fire("visibilitychange");
 
     expect(beacon.sent).toHaveLength(1);
@@ -305,7 +306,9 @@ describe("dev log forwarding", () => {
   // endpoint answers 204 and prints the batch as one empty line — every
   // frontend log line would vanish with no error anywhere.
   it("falls back to one-request-per-line against a pre-batch endpoint", async () => {
-    const f = stubFetch(() => Promise.resolve(new Response(null, { status: 204 })));
+    const f = stubFetch(() =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    );
     installDevLogging({ dev: true, mirrorToConsole: false });
 
     console.log("alpha");

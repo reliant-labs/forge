@@ -207,17 +207,19 @@ type podView struct {
 		Labels            map[string]string `json:"labels"`
 		CreationTimestamp time.Time         `json:"creationTimestamp"`
 		OwnerReferences   []struct {
-			Kind string `json:"kind"`
-			Name string `json:"name"`
+			Kind       string `json:"kind"`
+			Name       string `json:"name"`
+			Controller *bool  `json:"controller"`
 		} `json:"ownerReferences"`
 	} `json:"metadata"`
 	Status struct {
 		Phase      string `json:"phase"`
 		Conditions []struct {
-			Type    string `json:"type"`
-			Status  string `json:"status"`
-			Reason  string `json:"reason"`
-			Message string `json:"message"`
+			Type               string    `json:"type"`
+			Status             string    `json:"status"`
+			Reason             string    `json:"reason"`
+			Message            string    `json:"message"`
+			LastTransitionTime time.Time `json:"lastTransitionTime"`
 		} `json:"conditions"`
 		ContainerStatuses     []containerView `json:"containerStatuses"`
 		InitContainerStatuses []containerView `json:"initContainerStatuses"`
@@ -551,6 +553,7 @@ type workloadFinding struct {
 	severity Status // StatusFail or StatusWarn
 	target   string // "<context>/<namespace>"
 	workload string
+	kind     string
 	pod      string // empty when the finding is about the workload as a whole
 	// detail is the diagnosis, already assembled: "0/1 Ready
 	// CrashLoopBackOff last=OOMKilled(exit 137) restarts=37".
@@ -566,10 +569,10 @@ type workloadFinding struct {
 // is an evidence line per clean workload, and the fourth is the same
 // matched pods as structured [PodState]s for the JSON inventory.
 func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFinding, int, []string, map[*clusterWorkload][]PodState) {
-	byName := map[string]*clusterWorkload{}
+	byName := map[workloadKey]*clusterWorkload{}
 	byApp := map[string][]*clusterWorkload{}
 	for _, w := range t.workloads {
-		byName[w.name] = w
+		byName[workloadKey{w.kind, w.name}] = w
 		if w.app != "" {
 			byApp[w.app] = append(byApp[w.app], w)
 		}
@@ -590,6 +593,7 @@ func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFindin
 		mine := owned[w]
 		if len(mine) == 0 {
 			if f, bad := judgeMissing(t, w); bad {
+				f.kind = w.kind
 				findings = append(findings, f)
 				continue
 			}
@@ -600,6 +604,7 @@ func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFindin
 		clean := true
 		for _, p := range mine {
 			if f, bad := judgePod(t, w, p, now); bad {
+				f.kind = w.kind
 				findings = append(findings, f)
 				clean = false
 			}
@@ -818,12 +823,20 @@ func judgePod(t probeTarget, w *clusterWorkload, p podView, now time.Time) (work
 		return workloadFinding{severity: StatusWarn, target: t.label(), workload: w.name,
 			pod: p.Metadata.Name, detail: detail(), oom: true}, true
 	case !podReady:
+		// Pod age determines startup grace, but does not measure an outage:
+		// a years-old pod can have lost readiness only seconds ago.
+		var unreadyFor time.Duration
+		for _, c := range p.Status.Conditions {
+			if c.Type == "Ready" && c.Status == "False" && !c.LastTransitionTime.IsZero() {
+				unreadyFor = now.Sub(c.LastTransitionTime)
+			}
+		}
 		sev := StatusFail
 		if age >= 0 && age < podStartupGrace {
 			sev = StatusWarn // mid-rollout, not broken
 		}
 		return workloadFinding{severity: sev, target: t.label(), workload: w.name,
-			pod: p.Metadata.Name, detail: detail() + startingSuffix(sev, age)}, true
+			pod: p.Metadata.Name, detail: detail() + startingSuffix(sev, age, unreadyFor)}, true
 	case restarts >= restartWarnThreshold:
 		return workloadFinding{severity: StatusWarn, target: t.label(), workload: w.name,
 			pod: p.Metadata.Name, detail: detail() + " — Ready now, but it keeps dying", oom: false}, true
@@ -843,14 +856,14 @@ func oomPhrase(kind, container string, exit int) string {
 // stamp existed do not carry it, so its ABSENCE means nothing.
 const forgeEnvLabel = "forge.dev/env"
 
-func startingSuffix(sev Status, age time.Duration) string {
+func startingSuffix(sev Status, age, unreadyFor time.Duration) string {
 	if sev == StatusWarn {
 		return fmt.Sprintf(" — starting (%s old)", age.Round(time.Second))
 	}
-	if age <= 0 {
+	if unreadyFor <= 0 {
 		return " — not Ready"
 	}
-	return fmt.Sprintf(" — not Ready for %s", age.Round(time.Second))
+	return fmt.Sprintf(" — not Ready for %s", unreadyFor.Round(time.Second))
 }
 
 // lastTerminationSuffix appends WHY the container last died to a waiting
@@ -898,21 +911,43 @@ func unschedulableReason(p podView) string {
 // StatefulSet / DaemonSet / Job itself; stripping exactly one trailing
 // segment recovers the workload name without the prefix-matching that would
 // attribute `reliant-api-server`'s pods to a workload called `reliant-api`.
-// The label is the fallback for a bare pod, or one whose owner this env
-// does not render.
-func matchWorkload(p podView, byName map[string]*clusterWorkload, byApp map[string][]*clusterWorkload) *clusterWorkload {
-	for _, ref := range p.Metadata.OwnerReferences {
-		if w, ok := byName[ref.Name]; ok {
+// A known controller outside the rendered set rules out label fallback:
+// content-hashed Jobs deliberately share an app label across deployments.
+// Falling back would attribute an old failed Job's pods to its replacement.
+type workloadKey struct{ kind, name string }
+
+func matchWorkload(p podView, byName map[workloadKey]*clusterWorkload, byApp map[string][]*clusterWorkload) *clusterWorkload {
+	matchOwner := func(kind, name string) *clusterWorkload {
+		if w, ok := byName[workloadKey{kind, name}]; ok {
 			return w
 		}
-		if base, ok := stripGeneratedSuffix(ref.Kind, ref.Name); ok {
-			if w, found := byName[base]; found {
+		if base, ok := stripGeneratedSuffix(kind, name); ok {
+			parentKind := "Deployment"
+			if kind == "Job" {
+				parentKind = "CronJob"
+			}
+			return byName[workloadKey{parentKind, base}]
+		}
+		return nil
+	}
+	for _, ref := range p.Metadata.OwnerReferences {
+		if ref.Controller != nil && *ref.Controller {
+			return matchOwner(ref.Kind, ref.Name)
+		}
+	}
+	// Older/synthetic pod snapshots may omit controller. Preserve owner
+	// matching there, but never let a shared label override an explicit owner.
+	controlled := false
+	for _, ref := range p.Metadata.OwnerReferences {
+		if ref.Controller == nil {
+			controlled = true
+			if w := matchOwner(ref.Kind, ref.Name); w != nil {
 				return w
 			}
 		}
 	}
-	if w, ok := byName[p.Metadata.Name]; ok {
-		return w
+	if controlled {
+		return nil
 	}
 	// Ambiguous label (two rendered workloads share it — a Deployment and
 	// its migrate Job commonly do) attributes to neither: a wrong
@@ -936,6 +971,13 @@ func stripGeneratedSuffix(kind, name string) (string, bool) {
 	i := strings.LastIndex(name, "-")
 	if i <= 0 {
 		return "", false
+	}
+	if kind == "Job" {
+		// CronJobs append a numeric scheduled timestamp. A content hash on
+		// an unrelated standalone Job is not evidence of CronJob ownership.
+		if _, err := strconv.ParseUint(name[i+1:], 10, 64); err != nil {
+			return "", false
+		}
 	}
 	return name[:i], true
 }

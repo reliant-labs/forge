@@ -214,6 +214,13 @@ terminal attached, `env up` holds the foreground and tears the stack down on
 Ctrl-C. Without one, it starts everything, prints a summary, and **returns**.
 It will not hang waiting for a TTY that is not there.
 
+Host readiness includes compilation: Forge waits up to two minutes for the
+declared ports, prints progress, and reports a runner's exit immediately.
+On a slower machine, use `forge env up dev --host-ready-timeout 5m` (also
+available on `forge run`). A timeout reports the pending ports and log paths;
+it does not mean the process crashed, and started processes remain tracked
+for `forge env status` and `forge env down`.
+
 To see what is actually running — ports, log files, whether the binary is
 stale relative to your last commit:
 

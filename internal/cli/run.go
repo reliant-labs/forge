@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -38,8 +39,9 @@ import (
 // one-shot builds against).
 func newRunCmd() *cobra.Command {
 	var (
-		env    string
-		noSeed bool
+		env          string
+		noSeed       bool
+		readyTimeout time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "run [-- <dev-server flags>]",
@@ -77,18 +79,23 @@ Examples:
 		// actionable message. Mirrors the removed run command's shape.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if readyTimeout <= 0 {
+				return fmt.Errorf("--host-ready-timeout must be positive")
+			}
 			frontendArgs, err := runPassthroughArgs(args, cmd.ArgsLenAtDash())
 			if err != nil {
 				return err
 			}
 			return runUp(cmd.Context(), upOptions{
-				env:          env,
-				noSeed:       noSeed,
-				frontendArgs: frontendArgs,
+				env:              env,
+				noSeed:           noSeed,
+				hostReadyTimeout: readyTimeout,
+				frontendArgs:     frontendArgs,
 			})
 		},
 	}
 	cmd.Flags().StringVar(&env, "env", "dev", "Deploy environment whose deploy/kcl/<env>/ to run (default: dev)")
+	cmd.Flags().DurationVar(&readyTimeout, "host-ready-timeout", hostReadyTimeout, "Maximum wait for host services to bind their ports, including compilation; exited runners fail immediately")
 	cmd.Flags().BoolVar(&noSeed, "no-seed", false, "Skip the first-boot dev auto-seed (by default the fresh dev DB is seeded once when reachable and empty)")
 	return cmd
 }
@@ -127,15 +134,14 @@ func runPassthroughArgs(args []string, dashPos int) ([]string, error) {
 
 // managedProcess tracks a running child process started by the `forge env up`
 // orchestrator (up.go). name/cmd identify the child; pid is the PID
-// captured at Start time, which survives cmd.Process.Release() on the
-// `--background` detach path (Release resets cmd.Process.Pid to -1, so
-// reading it afterwards — for the persisted state file `forge env down`
-// reads — would record -1). Zero when unset; the foreground path reads
-// cmd.Process.Pid directly.
+// captured at Start time, so the PID ledger does not depend on the process
+// handle after Wait. done synchronizes the observed exit with readiness.
 type managedProcess struct {
-	name string
-	cmd  *exec.Cmd
-	pid  int
+	name    string
+	cmd     *exec.Cmd
+	pid     int
+	done    chan struct{} // closed after Wait; synchronizes access to waitErr
+	waitErr error
 }
 
 // loadProjectConfigEnv resolves the per-env app config from

@@ -1016,7 +1016,7 @@ func TestEvalHostReadiness(t *testing.T) {
 			t.Errorf("readiness error missing %q:\n%s", want, msg)
 		}
 	}
-	if !strings.Contains(msg, "stale/foreign") || !strings.Contains(msg, "failed to bind") {
+	if !strings.Contains(msg, "stale/foreign") || !strings.Contains(msg, "compilation or startup") {
 		t.Errorf("readiness error should distinguish foreign vs nobody:\n%s", msg)
 	}
 	// :8081 (ours) must NOT appear as a failure.
@@ -1047,7 +1047,9 @@ func TestWaitHostServicesReady_NoPortsIsInstantPass(t *testing.T) {
 		clusterWL("cluster-svc", "k3d-x", "ns", withPorts(9999)),
 	}}
 	done := make(chan error, 1)
-	go func() { done <- waitHostServicesReady(e, testProj, "dev", nil, hostReadyTimeout, hostReadyPoll) }()
+	go func() {
+		done <- waitHostServicesReady(context.Background(), e, testProj, "dev", nil, hostReadyTimeout, hostReadyPoll, nil)
+	}()
 	select {
 	case err := <-done:
 		if err != nil {

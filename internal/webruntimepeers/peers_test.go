@@ -17,7 +17,12 @@ import (
 //
 // If this fails, regenerate rather than hand-editing:
 //
-//	python3 -c 'import json;s=json.load(open("web-runtime/package.json"));json.dump({"peerDependencies":s["peerDependencies"]},open("internal/webruntimepeers/peers.json","w"),indent=2,sort_keys=True)'
+//	python3 -c 'import json;s=json.load(open("web-runtime/package.json"));f=open("internal/webruntimepeers/peers.json","w");json.dump({"peerDependencies":s["peerDependencies"]},f,indent=2,sort_keys=True);f.write("\n")'
+//
+// The trailing newline is not cosmetic: peers.json matches the prettier
+// pre-commit hook's file filter, and json.dump writes no final newline, so a
+// regeneration that omits it takes the pre-commit workflow red on the next
+// push with a diff that looks like nothing changed.
 func TestEmbeddedPeersMatchWebRuntime(t *testing.T) {
 	// t.Fatal, NOT t.Skip. web-runtime/package.json is on every checkout, so
 	// a skip here would be unfalsifiable — and the day the layout moves it

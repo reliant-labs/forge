@@ -1661,9 +1661,23 @@ func KubectlApplyNamespaced(ctx context.Context, kctx, namespace, manifests stri
 }
 
 // applyStreamInNamespace runs ONE server-side apply of a manifest stream with
-// an optional default namespace, including the immutable-field recovery and
-// the apply-completeness verification every forge apply is gated on.
+// an optional default namespace, including the immutable-field recovery, the
+// rollout-strategy recovery, and the apply-completeness verification every
+// forge apply is gated on.
 func applyStreamInNamespace(ctx context.Context, kctx, namespace, manifests string) error {
+	// The strategy recovery wraps the INNER apply, so it heals a
+	// stale-rollingUpdate wedge on the immutable recovery's re-applies too,
+	// not just the first attempt. Both recoveries are no-ops until an apply
+	// has already failed with their own specific error.
+	apply := func() (string, string, error) {
+		return applyWithStrategyRecovery(
+			manifests,
+			func() (string, string, error) { return applyOnce(ctx, kctx, namespace, manifests) },
+			func(t strategyTarget) error {
+				return kubectlPatchStrategy(ctx, kctx, t, namespace)
+			},
+		)
+	}
 	// The recovery's delete/get must be scoped the SAME way the apply was.
 	// immutableTarget.Namespace comes from the offending doc's
 	// `metadata.namespace`, which is empty for exactly the charts this fix is
@@ -1673,7 +1687,7 @@ func applyStreamInNamespace(ctx context.Context, kctx, namespace, manifests stri
 	// the target to the apply's namespace keeps the two in agreement.
 	applyStdout, err := applyWithImmutableRecovery(
 		manifests,
-		func() (string, string, error) { return applyOnce(ctx, kctx, namespace, manifests) },
+		apply,
 		func(t immutableTarget) error {
 			return kubectlDeleteResource(ctx, kctx, withDefaultNamespace(t, namespace))
 		},
@@ -2065,6 +2079,35 @@ func kubectlDeleteResource(ctx context.Context, kctx string, t immutableTarget) 
 	}
 	if t.Namespace != "" {
 		args = append(args, "-n", t.Namespace)
+	}
+	cmd := kubectlCmd(ctx, kctx, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// kubectlPatchStrategy issues the scoped JSON merge patch that reconciles one
+// Deployment's rollout strategy to what the manifest declares, removing a
+// rollingUpdate block another field manager's defaulting left stranded. See
+// strategy_recovery.go for why this cannot be expressed as an apply.
+//
+// A merge patch, not `--type=strategic` or an apply: `null` is a DELETION in a
+// JSON merge patch, which is the one operation available here — the field is
+// owned by kube-controller-manager, and SSA can only remove a field the
+// applying manager owns.
+//
+// The namespace is defaulted the same way the apply's was, so the patch
+// targets the object the apply actually failed on rather than `default`.
+func kubectlPatchStrategy(ctx context.Context, kctx string, t strategyTarget, namespace string) error {
+	patch, err := strategyMergePatch(t)
+	if err != nil {
+		return err
+	}
+	args := []string{"patch", strings.ToLower(t.Kind), t.Name, "--type=merge", "-p", patch}
+	// Same defaulting the immutable recovery uses: the manifest's own
+	// namespace when it declares one, otherwise the apply's default.
+	if ns := withDefaultNamespace(immutableTarget{Namespace: t.Namespace}, namespace).Namespace; ns != "" {
+		args = append(args, "-n", ns)
 	}
 	cmd := kubectlCmd(ctx, kctx, args...)
 	cmd.Stdout = os.Stdout

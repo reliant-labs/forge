@@ -685,7 +685,8 @@ func (l *depsLinter) dirForQualifier(qualifier string, imports map[string]string
 // So: T is data when it embeds nothing (an embedded field promotes a whole
 // foreign method set that no declaration in this package can see) and EVERY
 // method it declares is a pure value accessor — accessor-shaped in its
-// signature and pure in its body, see methodIsPureAccessor. A zero-method
+// signature (methodSignatureIsAccessorShaped) and, unless the type's fields
+// are provably inert, pure in its body (methodBodyIsPure). A zero-method
 // struct satisfies that vacuously, so the case the old test covered is
 // still covered.
 //
@@ -1025,27 +1026,6 @@ func isInertStdlibValueType(sel *ast.SelectorExpr) bool {
 		return false
 	}
 	return inertStdlibValueTypes[pkgIdent.Name+"."+sel.Sel.Name]
-}
-
-// methodIsPureAccessor reports whether m is a pure value accessor: a
-// function of the receiver's own fields and its arguments, and nothing
-// else. Both halves must hold — the SIGNATURE says what kind of method
-// this is, the BODY says what it actually does — and either alone has a
-// hole the other closes.
-//
-// The signature alone would vouch for `func (c *Client) BaseURL() string`
-// on a type that also dials; the conjunction over every method on the type
-// (in concreteTypeIsData) is what handles that, since the same Client's
-// `Do(ctx, req) (*Response, error)` fails the signature test.
-//
-// The body alone would vouch for a STUB — `func (c *Conn) Close() {}` is
-// syntactically pure and is plainly a collaborator's method. Nothing in the
-// body distinguishes a method that does no work yet from one that never
-// will, so the signature has to carry that, and it does: Close returns
-// nothing, and a method that computes a value from its own fields and
-// returns none has no purpose but to mutate or to do I/O.
-func (l *depsLinter) methodIsPureAccessor(m methodDecl, decls typeDecls) bool {
-	return methodSignatureIsAccessorShaped(m, decls) && l.methodBodyIsPure(m, decls)
 }
 
 // methodSignatureIsAccessorShaped applies the three signature tests that

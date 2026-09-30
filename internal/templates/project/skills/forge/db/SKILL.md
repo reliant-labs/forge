@@ -204,7 +204,7 @@ Statements the bare ephemeral DB can't satisfy (`CREATE EXTENSION` for an uninst
 Write a migration; the projections follow. Data movement is plain SQL in the same file.
 
 ```sql
--- db/migrations/00007_add_bookmark_rating.up.sql
+-- db/migrations/20260115093042_add_bookmark_rating.up.sql
 ALTER TABLE bookmarks ADD COLUMN rating BIGINT NOT NULL DEFAULT 0;
 UPDATE bookmarks SET rating = 5 WHERE done;
 ```
@@ -235,13 +235,28 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 Each takes `--dsn "$DATABASE_URL"`:
 
 ```
-forge db migration new <name>      # create an empty migration pair
+forge db migration new <name>      # create an empty forward-only migration
 forge db migrate up                # apply pending migrations
 forge db migrate status            # show what's applied
 forge db migrate force <version>   # clear a dirty migration state (runs no SQL)
 forge db introspect                # show live schema
 task dev-psql                      # interactive shell (no --dsn)
 ```
+
+### Migration versions are UTC timestamps
+
+`forge db migration new` names the file `<YYYYMMDDHHMMSS>_<name>.up.sql`. **Never hand-type a version number.**
+
+The reason is parallel branches. A sequential allocator picks `max+1` by reading the directory, so two branches cut from the same commit both read the same highest number and both pick the same next one — and neither sees the other until merge. Measured on one repo: ten version numbers each claimed by two *different* migrations, one of them on eight separate branches. A version is the schema's only identity, so whichever file reached a shared database first left the other permanently unapplied while every later `up` reported the schema current.
+
+Two rules keep that honest, both errors in `forge lint`:
+
+- **`duplicate-migration-version`** — two files claiming one version.
+- **`non-timestamp-migration-version`** — a *new* migration that is not a 14-digit UTC timestamp. "New" means added since the merge-base with your default branch, so existing sequential migrations are never flagged.
+
+**Existing sequential migrations stay exactly as they are.** A 14-digit timestamp is numerically larger than any 5-digit number, so new migrations sort after old ones with no renaming, no backfill and no flag day. A project mid-adoption holds both spellings and orders correctly.
+
+If a migration is refused because the schema has already passed its version (see `db/deploy-migrations`), the fix is to **re-version the file**, not to force anything: it has not run anywhere, so renaming it to a fresh timestamp is safe.
 
 ### Recovering a wedged dev database
 

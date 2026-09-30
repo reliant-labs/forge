@@ -183,6 +183,35 @@ func TestNewMigratedPostgresDB_AppliesUpMigrationsInVersionOrder(t *testing.T) {
 	}
 }
 
+// TestNewMigratedPostgresDB_AppliesTimestampVersionsAfterSequential is the
+// mid-adoption project: a migrations dir holding both 5-digit sequential files
+// and 14-digit UTC timestamp ones.
+//
+// The ordering must be NUMERIC across both spellings — 14 digits exceed 5, so
+// every timestamp migration applies after every sequential one. A version
+// parser that overflowed, or that fell back to lexicographic order, would run
+// the timestamp file first and the INSERT would fail on a column that does not
+// exist yet. That is exactly the failure this pins.
+func TestNewMigratedPostgresDB_AppliesTimestampVersionsAfterSequential(t *testing.T) {
+	requirePG(t)
+	t.Parallel()
+	mfs := fstest.MapFS{
+		"migrations/00001_init.up.sql": {Data: []byte(`CREATE TABLE accounts (id BIGINT PRIMARY KEY);`)},
+		// Timestamp-versioned, and it depends on the sequential one above.
+		"migrations/20260101120000_add_email.up.sql": {Data: []byte(`ALTER TABLE accounts ADD COLUMN email TEXT;`)},
+		"migrations/20260101120001_seed.up.sql":      {Data: []byte(`INSERT INTO accounts (id, email) VALUES (1, 'ada@example.com');`)},
+	}
+	db := testkit.NewMigratedPostgresDB(t, mfs)
+	row := db.QueryRow(context.Background(), `SELECT email FROM accounts WHERE id = 1`)
+	var email string
+	if err := row.Scan(&email); err != nil {
+		t.Fatalf("scan: %v (timestamp migrations not applied after sequential ones?)", err)
+	}
+	if email != "ada@example.com" {
+		t.Fatalf("email = %q, want %q", email, "ada@example.com")
+	}
+}
+
 func TestNewMigratedPostgresDB_RootLevelFS(t *testing.T) {
 	requirePG(t)
 	t.Parallel()

@@ -57,6 +57,24 @@ type domainWireRecord struct {
 	Type  string `json:"type,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Value string `json:"value,omitempty"`
+	// Resolved and Detail are the control plane's verdict on THIS record
+	// from its last verification pass.
+	//
+	// ⚠️ THESE MUST BE CARRIED, and forge dropping them is why they are
+	// commented. forge re-encodes the response into this struct, so a
+	// field absent here is a field absent from `--json` too — it does not
+	// pass through. Without them, `forge domain show` on a domain stuck in
+	// pending_dns said only "not verified yet" and the author had to guess
+	// WHICH of their records was wrong, which is the exact question the
+	// per-record checks were added to answer.
+	//
+	// Resolved=false with an empty Detail is a THIRD state, not a failure:
+	// "not checked yet", which is every record on a brand-new domain. The
+	// table below renders the three distinctly, because putting a red
+	// cross on a correct record the verifier has not reached yet sends
+	// someone to fix something that is not broken.
+	Resolved bool   `json:"resolved,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type domainWireBinding struct {
@@ -209,11 +227,30 @@ func writeDNSTable(out io.Writer, records []domainWireRecord) {
 	fmt.Fprintln(out, "\nSet these DNS records at your registrar:")
 	fmt.Fprintln(out)
 	tw := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(tw, "  TYPE\tNAME\tVALUE")
+	fmt.Fprintln(tw, "  TYPE\tNAME\tVALUE\tSTATUS")
 	for _, r := range records {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\n", r.Type, r.Name, r.Value)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", r.Type, r.Name, r.Value, recordStatus(r))
 	}
 	_ = tw.Flush()
+}
+
+// recordStatus renders one record's verdict in the three states it actually
+// has, rather than the two a boolean suggests.
+//
+// "not checked yet" is NOT a failure, and conflating it with one is the
+// mistake worth avoiding: on a brand-new domain it describes every record,
+// and a red cross there sends the author to re-check something correct. A
+// failure prints the control plane's own detail ("resolves to 203.0.113.7,
+// expected 34.63.203.181") because that names the fix; "failed" does not.
+func recordStatus(r domainWireRecord) string {
+	switch {
+	case r.Resolved:
+		return "ok"
+	case strings.TrimSpace(r.Detail) != "":
+		return "NOT YET — " + r.Detail
+	default:
+		return "not checked yet"
+	}
 }
 
 // writeDomainDetail is the human form of one domain: what it is doing, what

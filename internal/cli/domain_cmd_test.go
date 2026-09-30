@@ -424,3 +424,101 @@ func TestDomainClient_RequiresEnv(t *testing.T) {
 		t.Errorf("the message should explain what --env selects: %v", err)
 	}
 }
+
+// ── Per-record verdicts ──────────────────────────────────────────────────────
+
+// A domain whose apex is right and whose TXT is wrong — the case the
+// per-record checks exist for, and the one a single domain-level error
+// cannot express.
+const domainMixedVerdictJSON = `{"domain":{"id":"dom_01","hostname":"hounders.club",
+  "state":"DEPLOY_CUSTOM_DOMAIN_STATE_PENDING_DNS","source":"DOMAIN_SOURCE_EXTERNAL",
+  "requiredRecords":[
+    {"type":"A","name":"hounders.club","value":"34.63.203.181","resolved":true},
+    {"type":"TXT","name":"_reliant-challenge.hounders.club","value":"tok-123",
+     "detail":"no TXT record found at _reliant-challenge.hounders.club"}]}}`
+
+// THE REGRESSION TEST. forge re-encodes the control plane's response into
+// its own local struct, so a field it does not declare is a field it drops —
+// silently, and from `--json` as well as the table. The verdicts were being
+// dropped exactly that way, which left `forge domain show` on a stuck domain
+// saying only "not verified yet" while the control plane knew precisely
+// which record was wrong and why.
+//
+// MUTATION VERIFIED RED: removing Resolved/Detail from domainWireRecord
+// leaves this failing on every assertion below.
+func TestRunDomainShow_CarriesThePerRecordVerdicts(t *testing.T) {
+	f := newFakeDomainCP(t, map[string]string{"GetDomain": domainMixedVerdictJSON})
+	var out bytes.Buffer
+	if err := runDomainShow(context.Background(), domainTestClient(t, f), "hounders.club", false, &out); err != nil {
+		t.Fatalf("runDomainShow: %v", err)
+	}
+	rendered := out.String()
+	// The passing record says so, and the failing one says WHY — the
+	// detail is what names the fix.
+	for _, want := range []string{
+		"STATUS",
+		"ok",
+		"NOT YET — no TXT record found at _reliant-challenge.hounders.club",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("show output is missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+// --json carries them too, so a script sees what the table shows. The two
+// come from one struct, which is what keeps them in agreement.
+func TestRunDomainShow_JSONCarriesThePerRecordVerdicts(t *testing.T) {
+	f := newFakeDomainCP(t, map[string]string{"GetDomain": domainMixedVerdictJSON})
+	var out bytes.Buffer
+	if err := runDomainShow(context.Background(), domainTestClient(t, f), "hounders.club", true, &out); err != nil {
+		t.Fatalf("runDomainShow: %v", err)
+	}
+	var got struct {
+		Domain struct {
+			RequiredRecords []struct {
+				Type     string `json:"type"`
+				Resolved bool   `json:"resolved"`
+				Detail   string `json:"detail"`
+			} `json:"requiredRecords"`
+		} `json:"domain"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("parsing --json output: %v\n%s", err, out.String())
+	}
+	if len(got.Domain.RequiredRecords) != 2 {
+		t.Fatalf("got %d records, want 2", len(got.Domain.RequiredRecords))
+	}
+	for _, rec := range got.Domain.RequiredRecords {
+		switch rec.Type {
+		case "A":
+			if !rec.Resolved {
+				t.Error("the A record's resolved=true was dropped on the way through forge")
+			}
+		case "TXT":
+			if rec.Resolved {
+				t.Error("the TXT record reports resolved, but the control plane said it was not")
+			}
+			if rec.Detail == "" {
+				t.Error("the TXT record's detail was dropped; it is what names the fix")
+			}
+		}
+	}
+}
+
+// "Not checked yet" is a third state, and must not read as a failure. On a
+// brand-new domain it describes EVERY record, so rendering it as one sends
+// the author to re-check something that is perfectly correct.
+func TestWriteDNSTable_UncheckedRecordIsNotRenderedAsAFailure(t *testing.T) {
+	var out bytes.Buffer
+	writeDNSTable(&out, []domainWireRecord{
+		{Type: "A", Name: "hounders.club", Value: "34.63.203.181"},
+	})
+	rendered := out.String()
+	if !strings.Contains(rendered, "not checked yet") {
+		t.Errorf("an unchecked record should say so:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "NOT YET") {
+		t.Errorf("an unchecked record was rendered as a failure:\n%s", rendered)
+	}
+}

@@ -64,15 +64,16 @@ features:
 	}
 }
 
-// TestFeatureGraph_IngressRequiresDeploy: experimental ingress on while
-// deploy off → error.
+// TestFeatureGraph_IngressRequiresDeploy: ingress on while deploy off →
+// error. ingress graduated out of experimental, so it is declared at the
+// top level; the dependency edge is unchanged (ingress IS a deploy-time
+// Gateway API overlay).
 func TestFeatureGraph_IngressRequiresDeploy(t *testing.T) {
 	in := `name: demo
 module_path: github.com/example/demo
 features:
   deploy: false
-  experimental:
-    ingress: true
+  ingress: true
 `
 	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
 	if err == nil {

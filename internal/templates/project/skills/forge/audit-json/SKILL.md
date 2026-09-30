@@ -64,7 +64,7 @@ Each category is the same shape:
 
 ### Category keys
 
-`ingress` appears only under `features.experimental.ingress: true` and
+`ingress` appears only under `features.ingress: true` and
 `prerequisites` only for deploy-shaped projects; the rest are always emitted.
 Iterate `.categories | keys[]` rather than hard-coding the list.
 

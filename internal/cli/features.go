@@ -42,10 +42,9 @@ var featureDisplayOrder = []config.FeatureName{
 	config.FeatureCI,
 	config.FeatureBuild,
 	config.FeatureDeploy,
-	// Experimental — printed in the same list with an (experimental) tag.
 	config.FeatureIngress,
-	config.FeatureExternalBuilds,
 	config.FeatureOperators,
+	// Experimental — printed in the same list with an (experimental) tag.
 	config.FeatureStrictWiring,
 	config.FeatureReconcile,
 }

@@ -307,6 +307,13 @@ func generateSteps() []GenStep {
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate", ReadOnly: true},
 		{Name: "retired ShellBuild tokens", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepShellBuildTokens, Tag: "validate", ReadOnly: true},
 		{Name: "migrate env registries onto images", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepMigrateImageRegistry, Tag: "config"},
+		// Sits with the other config migration, AFTER the refusals: a
+		// refusal is only honest if it leaves the tree as it found it, and
+		// this step writes. The load above tolerates the old nesting (the
+		// keys are in removedSchemaKeys, so they warn rather than fail),
+		// and this step re-loads after rewriting so the migrated values
+		// take effect on THIS run rather than the next one.
+		{Name: "graduate experimental features", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepGraduateExperimental, Tag: "config"},
 		// Before every gate and emitter that reads the frontend inventory,
 		// so they all see one answer (the two pre-checks above read none). See
 		// generate_frontend_inventory.go for why a project can reach here
@@ -1293,6 +1300,38 @@ func stepShellBuildTokens(ctx *pipelineContext) error {
 // an env at a repository its image was never pushed to. Nothing is written in
 // that case — a partial migration leaves a tree neither the old nor the new
 // forge understands — and the exact per-env KCL is printed instead.
+// stepGraduateExperimental rewrites a forge.yaml that still nests ingress /
+// operators under features.experimental, and drops the deleted
+// external_builds key. See internal/generator/graduate_experimental.go for
+// why this migrates rather than tolerating the old spelling.
+//
+// Silent and byte-preserving on a project that never opted in, which is the
+// overwhelmingly common case: it runs on every generate.
+func stepGraduateExperimental(ctx *pipelineContext) error {
+	path := filepath.Join(ctx.ProjectDir, defaultProjectConfigFile)
+	if _, err := os.Stat(path); err != nil {
+		return nil // no forge.yaml: directory-scan fallback
+	}
+	res, err := generator.GraduateExperimentalFeatures(path)
+	if err != nil {
+		return err
+	}
+	if !res.Changed() {
+		return nil
+	}
+	for _, p := range res.Promoted {
+		fmt.Printf("   - migrated: %s\n", p)
+	}
+	for _, d := range res.Dropped {
+		fmt.Printf("   - dropped: %s\n", d)
+	}
+	// Re-load so the promoted values gate THIS run. Without it a project
+	// would generate once with ingress/operators off — silently skipping
+	// exactly the codegen it had opted into — and only pick them up on the
+	// next invocation.
+	return stepLoadConfig(ctx)
+}
+
 func stepMigrateImageRegistry(ctx *pipelineContext) error {
 	res, err := kclmigrate.ImageRegistry(ctx.ProjectDir, true)
 	if err != nil {
@@ -1382,7 +1421,7 @@ func stepRecordGeneratingBuild(ctx *pipelineContext) error {
 func stepDetectProtoDirs(ctx *pipelineContext) error {
 	rawHasOperators := populateComponentPresence(ctx)
 	if rawHasOperators && !ctx.HasOperators {
-		fmt.Println("[generate] operator scaffolds detected but features.experimental.operators is off — skipping operator codegen")
+		fmt.Println("[generate] operator scaffolds detected but features.operators is off — skipping operator codegen")
 	}
 
 	if ctx.Cfg == nil && !ctx.HasServices && !ctx.HasAPI && !ctx.HasDB && !ctx.HasConfig {

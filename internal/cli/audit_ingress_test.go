@@ -133,9 +133,7 @@ func TestAuditIngress_KCLRenderFailureWarn(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.ProjectConfig{
 		Name: "t",
-		Features: config.FeaturesConfig{
-			Experimental: config.ExperimentalConfig{Ingress: true},
-		},
+		Features: config.FeaturesConfig{Ingress: boolPtr(true)},
 	}
 	cat := auditIngress(cfg, dir) // no deploy/kcl/dev → RenderKCL errors
 	if cat.Status != audittype.StatusWarn {

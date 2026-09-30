@@ -96,22 +96,13 @@ func auditExternalBuilds(cfg *config.ProjectConfig, projectDir string) audittype
 		}
 	}
 
-	// Suppress the category entirely when the user hasn't opted into
-	// the experimental external_builds feature. The audit consumer
-	// branches on `.external_builds.status` so an "ok / not enabled"
-	// shape stays additive — `jq '.categories.external_builds.status'`
-	// keeps returning a stable scalar.
-	if !cfg.Features.ExternalBuildsEnabled() {
-		return audittype.Category{
-			Status:  audittype.StatusOK,
-			Summary: "feature 'external_builds' is experimental and not opted in (set features.experimental.external_builds: true to enable)",
-			Details: map[string]any{
-				"services": []externalBuildEntry{},
-				"enabled":  false,
-			},
-		}
-	}
-
+	// There is no external_builds gate any more. The flag had already
+	// been reduced to an inert key nothing consulted: `Service.build_cmd`
+	// is the build-side mirror of `External.deploy_cmd`, and since
+	// `forge env deploy` of an External target never required an opt-in,
+	// gating `forge build` of the same target left the pair with
+	// mismatched maturity gates (fr-da9a6614fb). build_cmd just builds,
+	// so the audit reports what is declared, unconditionally.
 	entities, err := RenderKCL(context.Background(), projectDir, "dev")
 	if err != nil {
 		// Environmental: kcl not on PATH or deploy/kcl/dev missing.

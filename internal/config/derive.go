@@ -91,6 +91,16 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 		FeatureObservability: isService,
 		FeatureHotReload:     isService,
 		FeatureDeploy:        isService,
+		// ingress and operators graduated out of experimental but keep
+		// their default-OFF semantics, expressed here as a derivation
+		// rather than as a plain-bool zero value. There is no project
+		// shape that implies either one: a service is not reachable via
+		// Gateway API unless someone said so, and an operator is a
+		// deliberate addition. "absent = enabled" — the historical
+		// default for a stable flag — would be wrong for both, which is
+		// exactly why they must derive rather than fall through.
+		FeatureIngress:   false,
+		FeatureOperators: false,
 	}
 }
 

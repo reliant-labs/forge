@@ -7,6 +7,10 @@
 // those is a fresh process, so the once-per-process atomic guard on the
 // warning does not cover them.
 //
+// (operators was the original fixture here; it has since GRADUATED to a
+// top-level feature flag, so the fixture uses strict_wiring — one of the
+// two features that are still genuinely experimental.)
+//
 // The result, measured in control-plane (features.experimental: ingress,
 // external_builds, operators), was 27 copies of
 //
@@ -118,7 +122,7 @@ func TestExperimentalWarningSilencedForMachineInvoked(t *testing.T) {
 			"database:\n  driver: postgres\n  migrations_dir: db/migrations\n"+
 			"ci:\n  provider: github\n"+
 			"k8s:\n  kcl_dir: deploy/kcl\n"+
-			"features:\n  experimental:\n    operators: true\n")
+			"features:\n  experimental:\n    strict_wiring: true\n")
 
 	run := func(cmd *cobra.Command) string {
 		// Each subprocess is a fresh process in production, so the

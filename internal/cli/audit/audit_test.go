@@ -443,8 +443,17 @@ func TestAuditFeatures_ZeroConfig(t *testing.T) {
 	if disabled == nil {
 		t.Error("details.disabled is nil — JSON encoding would emit null instead of []")
 	}
-	if len(disabled) != 0 {
-		t.Errorf("details.disabled = %v, want empty", disabled)
+	// ingress and operators are stable features that DERIVE to off: they
+	// graduated out of experimental without acquiring a shape that implies
+	// them, so a zero config reports them disabled.
+	wantOff := map[string]bool{config.FeatureIngress: true, config.FeatureOperators: true}
+	for _, name := range disabled {
+		if !wantOff[name] {
+			t.Errorf("unexpected disabled feature %q", name)
+		}
+	}
+	if len(disabled) != len(wantOff) {
+		t.Errorf("details.disabled = %v, want exactly %v", disabled, wantOff)
 	}
 }
 
@@ -464,7 +473,11 @@ func TestAuditFeatures_PartialDisable(t *testing.T) {
 	if !ok {
 		t.Fatalf("details.disabled wrong type: %T", cat.Details["disabled"])
 	}
-	wantDisabled := map[string]bool{config.FeatureBuild: true, config.FeatureDeploy: true}
+	wantDisabled := map[string]bool{
+		config.FeatureBuild: true, config.FeatureDeploy: true,
+		// Stable but default-off — see TestAuditFeatures_ZeroConfig.
+		config.FeatureIngress: true, config.FeatureOperators: true,
+	}
 	for _, name := range disabled {
 		if !wantDisabled[name] {
 			t.Errorf("unexpected disabled feature %q", name)
@@ -484,7 +497,7 @@ func TestAuditFeatures_ExperimentalBuckets(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Features: config.FeaturesConfig{
 			Experimental: config.ExperimentalConfig{
-				Ingress: true,
+				Reconcile: true,
 			},
 		},
 	}
@@ -493,7 +506,7 @@ func TestAuditFeatures_ExperimentalBuckets(t *testing.T) {
 	if !ok {
 		t.Fatalf("details.experimental_enabled wrong type: %T", cat.Details["experimental_enabled"])
 	}
-	wantEnabled := map[string]bool{config.FeatureIngress: true}
+	wantEnabled := map[string]bool{config.FeatureReconcile: true}
 	if len(expEnabled) != len(wantEnabled) {
 		t.Errorf("experimental_enabled = %v, want %v", expEnabled, wantEnabled)
 	}

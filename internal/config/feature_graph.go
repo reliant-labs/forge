@@ -71,9 +71,6 @@ type featureRequirement struct {
 //   - ingress → deploy: gateIngressEnabled is literally
 //     DeployEnabled() && IngressEnabled() — ingress is a deploy-time
 //     Gateway API overlay.
-//   - external_builds → build: external_builds is the `forge build
-//     --target external` shell escape hatch; it is a mode of the build
-//     pipeline.
 //
 // Operator components depend on features.operators — but that edge is
 // component-shape → feature, not feature → feature, so it lives in the
@@ -94,7 +91,7 @@ var featureDeps = map[FeatureName][]featureRequirement{
 		{Feature: FeatureBuild, fix: "enable build, or disable deploy"},
 	},
 	FeatureIngress: {
-		{Feature: FeatureDeploy, fix: "enable deploy, or disable experimental.ingress"},
+		{Feature: FeatureDeploy, fix: "enable deploy, or set features.ingress: false"},
 	},
 	// reconcile → deploy: the loop observes DEPLOY TARGETS through
 	// deploytarget.Provider, which only exist for a project with a deploy
@@ -103,9 +100,6 @@ var featureDeps = map[FeatureName][]featureRequirement{
 	FeatureReconcile: {
 		{Feature: FeatureDeploy, fix: "enable deploy, or disable experimental.reconcile"},
 	},
-	// FeatureExternalBuilds is a RETIRED, inert gate (see config.go's
-	// ExperimentalConfig docs): the build path no longer consults it, so it
-	// carries no dependency edge. Listing one here would gate a no-op flag.
 }
 
 // hasDatabaseDriver reports whether a concrete database driver is

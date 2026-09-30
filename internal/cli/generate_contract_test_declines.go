@@ -84,12 +84,23 @@ func (d *contractTestDeclines) report() {
 			fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (New is single-result)\n", p)
 		}
 	}
-	// One line, at default verbosity, because polishing the constructor is
-	// a change the author can make and forge will then scaffold the test.
-	// Names the first package so the line is actionable on its own; -v
-	// lists the rest rather than making this line grow without bound.
-	fmt.Printf("  ℹ️  %d package(s) would get a scaffolded contract_test.go if New returned (Service, error) — e.g. %s/. Run `%s generate -v` to list them.\n",
-		len(d.polish), d.polish[0], Name())
+	// One line rather than one per package — but still behind -v, because
+	// it is a standing fact, not an event.
+	//
+	// This was the closest call in the whole change. `func New(Deps)
+	// (Service, error)` IS forge's canonical shape and polishing to it
+	// re-enables the auto-scaffold, so the advice is genuinely real, which
+	// argues for default verbosity. What settles it is that the line is
+	// IDENTICAL on every run: these packages have the shape their authors
+	// chose, and control-plane would print the same count until someone
+	// changed seven constructors. Advice that never changes is
+	// documentation, and documentation printed on every build is read
+	// once and skipped forever — taking the block it sits in with it.
+	//
+	// So it keeps the count and the example (so one -v is enough to act),
+	// and `forge lint` remains the surface that judges package shape.
+	routinef("  ℹ️  %d package(s) would get a scaffolded contract_test.go if New returned (Service, error) — e.g. %s/.\n",
+		len(d.polish), d.polish[0])
 }
 
 // polishSummary renders what report() would print for the actionable set,

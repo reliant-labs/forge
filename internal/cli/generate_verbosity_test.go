@@ -63,6 +63,8 @@ func TestContractTestDeclinesCollapseToOneLine(t *testing.T) {
 		d.notePolish(pkg)
 	}
 
+	// Under -v it is ONE line with a count and an example — not one line
+	// per package, which is the spam this collapses.
 	summary := d.polishSummary()
 	if !strings.Contains(summary, "4 package(s)") {
 		t.Errorf("summary must carry the COUNT so the reader knows the scale without the list; got %q", summary)
@@ -77,13 +79,12 @@ func TestContractTestDeclinesCollapseToOneLine(t *testing.T) {
 	}
 
 	// The whole report at default verbosity is exactly that one line.
+	// At default verbosity the whole report is silent: the advice is real,
+	// but it is a STANDING fact (these packages have the shape their
+	// authors chose) and would print unchanged on every run.
 	defer setGenerateVerbosity(false)()
-	out := captureStdout(t, d.report)
-	if n := strings.Count(strings.TrimSpace(out), "\n"); n != 0 {
-		t.Errorf("default-verbosity report is %d lines, want exactly 1:\n%s", n+1, out)
-	}
-	if !strings.Contains(out, "4 package(s)") {
-		t.Errorf("the one line lost the count: %q", out)
+	if out := captureStdout(t, d.report); out != "" {
+		t.Errorf("default-verbosity report is not silent:\n%s", out)
 	}
 }
 
@@ -118,9 +119,19 @@ func TestScaffoldSkipLineRoutineOnlyWhenPresent(t *testing.T) {
 	root := t.TempDir()
 	const rel = ".github/workflows/ci.yml"
 
-	if _, routine := scaffoldSkipLine(root, rel); routine {
-		t.Error("a DELETED scaffold-once file was classified routine; the line that names " +
-			"`forge project rescaffold` must never be suppressed")
+	// Both branches are routine — each is identical on every run. What the
+	// deleted branch must never do is claim the file EXISTS, because that
+	// sends the reader hunting for a bug in the wrong place.
+	line, routine := scaffoldSkipLine(root, rel)
+	if !routine {
+		t.Error("a deleted scaffold-once file's line is identical on every run, so it is routine; " +
+			"the EVENT is reported by reportMissingScaffolds, which names the same command")
+	}
+	if strings.Contains(line, "exists") {
+		t.Errorf("the line claims a DELETED file exists: %q", line)
+	}
+	if !strings.Contains(line, "rescaffold") {
+		t.Errorf("the line must still name the command that restores it: %q", line)
 	}
 
 	if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o755); err != nil {
@@ -129,9 +140,12 @@ func TestScaffoldSkipLineRoutineOnlyWhenPresent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, rel), []byte("on: push\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	line, routine := scaffoldSkipLine(root, rel)
-	if !routine {
-		t.Errorf("a PRESENT scaffold-once file is routine — forge did nothing and will do nothing next run: %q", line)
+	presentLine, presentRoutine := scaffoldSkipLine(root, rel)
+	if !presentRoutine {
+		t.Errorf("a PRESENT scaffold-once file is routine — forge did nothing and will do nothing next run: %q", presentLine)
+	}
+	if !strings.Contains(presentLine, "exists") {
+		t.Errorf("a present file's line should say so: %q", presentLine)
 	}
 }
 

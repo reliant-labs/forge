@@ -16,21 +16,10 @@ func Register(ctx context.Context, path string, contexts, repositories, pins []s
 			return err
 		}
 		r := Runner{Policy: p}
-		b, err := r.command(ctx, "docker", "context", "show")
-		if err != nil {
+		if err := r.bindLocalContext(ctx); err != nil {
 			return err
 		}
-		current := strings.TrimSpace(string(b))
-		if p.DockerContext != "" && p.DockerContext != current {
-			return fmt.Errorf("storage policy belongs to Docker context %s, current context is %s", p.DockerContext, current)
-		}
-		if p.DockerContext == "" {
-			p.DockerContext = current
-			r.Policy = p
-		}
-		if err := r.Local(ctx); err != nil {
-			return err
-		}
+		p = r.Policy
 		for _, c := range contexts {
 			if strings.HasPrefix(c, "k3d-") && !contains(p.Clusters, c) {
 				p.Clusters = append(p.Clusters, c)
@@ -41,7 +30,7 @@ func Register(ctx context.Context, path string, contexts, repositories, pins []s
 				p.Pins = append(p.Pins, pin)
 			}
 		}
-		b, err = r.docker(ctx, "ps", "-aq", "--filter", "label=k3d.role=registry")
+		b, err := r.docker(ctx, "ps", "-aq", "--filter", "label=k3d.role=registry")
 		if err != nil {
 			return err
 		}

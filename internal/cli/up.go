@@ -405,7 +405,7 @@ func newEnvDownCmd() *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:   "down [environment]",
-		Short: "Stop this project's stack for an environment (or --all: every forge stack on this machine)",
+		Short: "Stop Forge host processes for an environment (or --all: across projects)",
 		Args:  cobra.MaximumNArgs(1),
 		Long: `Stop a running ` + "`forge env up`" + ` / ` + "`forge run`" + ` stack.
 
@@ -415,6 +415,9 @@ func newEnvDownCmd() *cobra.Command {
 Only processes forge itself started — the ones carrying its ownership
 markers for the project and environment being stopped — are ever signalled.
 A process forge did not start is never touched by either form.
+Docker Compose containers, Kubernetes workloads/clusters, and Docker Desktop
+are not stopped by this command. The per-environment form also stops declared
+host infrastructure servers while preserving their data.
 
 Use --all when a stack outlived its project directory: without a forge.yaml
 there is no project to scope to, and the per-environment form cannot reach
@@ -678,6 +681,11 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	}
 	cfg := store.Config()
 	projectDir := projectDirForKCL()
+	// Host runners and frontend dependency installs can build even with
+	// --no-build. Check physical headroom before rendering or starting work.
+	if err := checkBuildStorageFn(projectDir); err != nil {
+		return err
+	}
 	// Stable identity of THIS project, stamped onto every child and required to
 	// match on every reclaim decision below. Keying ownership on (projectID,
 	// env) — not env alone — is what stops the pre-flight reclaim / `env down`
@@ -1101,7 +1109,10 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 //     all the port probe was ever for. After (1) every remaining holder is
 //     foreign by construction — a foreign process is reported, never killed.
 func upPreflight(projectID, env string, e *KCLEntities, targets []string, frontendsOn bool) error {
-	stopped := stopStackScoped(projectID, env, targets)
+	stopped, err := stopStackScoped(projectID, env, targets)
+	if err != nil {
+		return err
+	}
 	if stopped > 0 {
 		scopeNote := ""
 		if len(targets) > 0 {
@@ -2526,6 +2537,11 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 		if !inTargetSet(targets, w.Name) {
 			continue
 		}
+		if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
+			fmt.Printf("[up] host %s: %v\n", w.Name, err)
+			failures++
+			continue
+		}
 		cmd, name, err := buildHostServiceCmd(ctx, cfg, w, secretsLayer, env)
 		if err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
@@ -3469,7 +3485,7 @@ func (p *procRegistry) shutdown() {
 		// Kill the whole process TREE so `go run`/Air's execed child — which
 		// may have moved into its own process group — dies with the parent
 		// instead of orphaning and squatting its port.
-		killProcessTree(pid, syscall.SIGTERM)
+		_ = killProcessTree(pid, syscall.SIGTERM)
 	}
 
 	done := make(chan struct{})
@@ -3500,7 +3516,7 @@ func (p *procRegistry) shutdown() {
 				continue
 			}
 			fmt.Printf("[up] %s: did not exit, killing.\n", mp.name)
-			killProcessTree(pid, syscall.SIGKILL)
+			_ = killProcessTree(pid, syscall.SIGKILL)
 		}
 		<-done
 	}
@@ -3563,7 +3579,10 @@ func runUpStop(env string) error {
 		return err
 	}
 	projectID := projectIDForDir(projectDir)
-	stopped := stopStack(projectID, env)
+	stopped, err := stopStack(projectID, env)
+	if err != nil {
+		return err
+	}
 
 	// Host infrastructure is stopped SEPARATELY, because it is not one of
 	// the child processes the ledger tracks. A host-run postgres is started
@@ -3576,22 +3595,25 @@ func runUpStop(env string) error {
 	// leaks the SysV IPC an orderly shutdown releases).
 	//
 	// Its DATA survives; this stops the server, it does not reset the
-	// database. Best-effort: a failure here is reported but must not stop
-	// the rest of the teardown.
+	// database. All declared servers are attempted, and a failure is returned
+	// rather than reporting a successful empty teardown.
 	infraStopped, err := stopHostInfra(env)
-	if err != nil {
-		fmt.Printf("[up] host infra: %v\n", err)
-	}
+	return reportUpStop(env, projectDir, stopped, infraStopped, err)
+}
 
-	if stopped == 0 && infraStopped == 0 {
-		fmt.Printf("[up] no forge processes running for env=%s in %s.\n", env, projectDir)
-		return nil
+func reportUpStop(env, projectDir string, stopped, infraStopped int, infraErr error) error {
+	if stopped == 0 {
+		fmt.Printf("[down] no owned Forge host processes found for env=%s in %s.\n", env, projectDir)
 	}
 	if stopped > 0 {
-		fmt.Printf("[up] stopped %d process tree(s) for env=%s.\n", stopped, env)
+		fmt.Printf("[down] signalled %d host process tree(s) for env=%s.\n", stopped, env)
 	}
 	if infraStopped > 0 {
-		fmt.Printf("[up] stopped %d host infrastructure server(s) for env=%s (data preserved).\n", infraStopped, env)
+		fmt.Printf("[down] stopped %d host infrastructure server(s) for env=%s (data preserved).\n", infraStopped, env)
+	}
+	fmt.Println("[down] Docker containers, Kubernetes workloads/clusters, and Docker Desktop were not stopped.")
+	if infraErr != nil {
+		return fmt.Errorf("environment shutdown incomplete: host infrastructure: %w", infraErr)
 	}
 	return nil
 }
@@ -3606,8 +3628,8 @@ func runUpStop(env string) error {
 // this project declares, and cannot mistake a colleague's (or another
 // project's) database for its own.
 //
-// A render failure is reported, not fatal: `forge env down` must still stop
-// the host processes it can reach even when the KCL no longer renders.
+// Host processes are stopped before this render. A render failure still makes
+// `forge env down` fail because declared infrastructure shutdown is unverified.
 func stopHostInfra(env string) (int, error) {
 	projectDir := projectDirForKCL()
 	entities, err := RenderKCL(context.Background(), projectDir, env)

@@ -228,7 +228,10 @@ func (s runningStack) label() string {
 // disk. The records only supply the NAME (project.json) for what the process
 // table already found. Sorted for stable output.
 func discoverRunningStacks() []runningStack {
-	facts := newOSProcFacts()
+	return discoverRunningStacksWithFacts(newOSProcFacts())
+}
+
+func discoverRunningStacksWithFacts(facts *osProcFacts) []runningStack {
 	grouped := discoverMarkedStacks(facts.pidList(), facts)
 	out := make([]runningStack, 0, len(grouped))
 	for key, pids := range grouped {
@@ -254,10 +257,25 @@ func discoverRunningStacks() []runningStack {
 }
 
 // stopStack tears down the (projectID, env) stack and returns the number of
-// process trees it signalled. The records are removed either way: the stack
-// they described is gone.
-func stopStack(projectID, env string) int {
-	return stopStackScoped(projectID, env, nil)
+// process trees it signalled. A failed process scan is not an empty stack:
+// preserve its records and report that teardown could not establish its scope.
+func stopStack(projectID, env string) (int, error) {
+	facts := newOSProcFacts()
+	return stopStackWithFacts(projectID, env, facts)
+}
+
+func stopStackWithFacts(projectID, env string, facts *osProcFacts) (int, error) {
+	if err := requireTeardownSnapshot(facts); err != nil {
+		return 0, err
+	}
+	return stopStackScopedWithFacts(projectID, env, nil, facts)
+}
+
+func requireTeardownSnapshot(facts *osProcFacts) error {
+	if facts == nil || len(facts.ppids) == 0 {
+		return errors.New("cannot inspect the host process table; environment shutdown is unverified and stack records were preserved (check process-inspection permissions)")
+	}
+	return nil
 }
 
 // stopStackScoped is stopStack narrowed to the services a run is about to
@@ -286,8 +304,14 @@ func stopStack(projectID, env string) int {
 // would strand them: `forge env down` and `forge env ps` read it. The
 // registry rewrites the ledger for the services it starts (see
 // procRegistry.persist), which merges rather than replaces for this reason.
-func stopStackScoped(projectID, env string, scope []string) int {
-	facts := newOSProcFacts()
+func stopStackScoped(projectID, env string, scope []string) (int, error) {
+	return stopStackScopedWithFacts(projectID, env, scope, newOSProcFacts())
+}
+
+func stopStackScopedWithFacts(projectID, env string, scope []string, facts *osProcFacts) (int, error) {
+	if err := requireTeardownSnapshot(facts); err != nil {
+		return 0, err
+	}
 	roots := stackTeardownRoots(projectID, env, trackedStack(projectID, env), facts.pidList(), processAlive, facts)
 	if len(scope) > 0 {
 		roots = filterRootsByService(roots, scope, facts)
@@ -295,11 +319,17 @@ func stopStackScoped(projectID, env string, scope []string) int {
 	for _, pid := range roots {
 		fmt.Printf("[up] %s: stopping (pid %d + tree)\n", serviceOfPID(pid, facts), pid)
 	}
-	killTreesAndWait(roots)
+	return completeStackStop(projectID, env, scope, roots, killTreesAndWait)
+}
+
+func completeStackStop(projectID, env string, scope []string, roots []int, stop func([]int) error) (int, error) {
+	if err := stop(roots); err != nil {
+		return 0, fmt.Errorf("environment shutdown incomplete; stack records preserved: %w", err)
+	}
 	if len(scope) == 0 {
 		removeStackRecords(projectID, env)
 	}
-	return len(roots)
+	return len(roots), nil
 }
 
 // filterRootsByService keeps only the teardown roots whose stamped service
@@ -447,14 +477,18 @@ func requireProjectDir(verb string) (string, error) {
 // changes is enumeration: the stacks are discovered FROM the markers instead of
 // being named by the caller.
 func runUpStopAll() error {
-	stacks := discoverRunningStacks()
+	facts := newOSProcFacts()
+	if err := requireTeardownSnapshot(facts); err != nil {
+		return err
+	}
+	stacks := discoverRunningStacksWithFacts(facts)
 	if len(stacks) == 0 {
-		fmt.Println("[up] no forge stacks are running on this machine.")
+		fmt.Println("[down] no owned Forge host processes were found on this machine; Docker containers and Kubernetes clusters were not stopped.")
 		return nil
 	}
-	total := stopDiscoveredStacks(stacks)
-	fmt.Printf("[up] stopped %d process tree(s) across %d stack(s).\n", total, len(stacks))
-	return nil
+	total, err := stopDiscoveredStacks(stacks)
+	fmt.Printf("[down] signalled %d host process tree(s) across %d stack(s); Docker containers and Kubernetes clusters were not stopped.\n", total, len(stacks))
+	return err
 }
 
 // stopDiscoveredStacks tears down each enumerated stack, naming it first, and
@@ -462,13 +496,18 @@ func runUpStopAll() error {
 // runUpStopAll's discovery so the teardown loop is testable against a chosen
 // set of stacks — a test that discovered for itself would tear down every stack
 // on the developer's machine.
-func stopDiscoveredStacks(stacks []runningStack) int {
+func stopDiscoveredStacks(stacks []runningStack) (int, error) {
 	total := 0
+	var failures []error
 	for _, s := range stacks {
-		fmt.Printf("[up] %s · env=%s\n", s.label(), s.env)
-		total += stopStack(s.projectID, s.env)
+		fmt.Printf("[down] %s · env=%s\n", s.label(), s.env)
+		stopped, err := stopStack(s.projectID, s.env)
+		total += stopped
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s env=%s: %w", s.label(), s.env, err))
+		}
 	}
-	return total
+	return total, errors.Join(failures...)
 }
 
 // newEnvPsCmd lists every forge stack running on this machine — across ALL

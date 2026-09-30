@@ -372,7 +372,7 @@ func TestForgeOwnership_RealProcess(t *testing.T) {
 	t.Cleanup(func() {
 		for _, c := range []*exec.Cmd{marked, unmarked} {
 			if c.Process != nil {
-				killProcessTree(c.Process.Pid, syscall.SIGKILL)
+				_ = killProcessTree(c.Process.Pid, syscall.SIGKILL)
 				_ = c.Wait()
 			}
 		}

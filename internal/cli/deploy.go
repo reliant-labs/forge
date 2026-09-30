@@ -2769,6 +2769,9 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 	// `forge env deploy`.
 	buildArgs = appendBuildContexts(buildArgs, cfg, "")
 	buildArgs = append(buildArgs, "-f", dockerfile, ".")
+	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
+		return err
+	}
 	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr

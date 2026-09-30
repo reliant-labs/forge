@@ -152,10 +152,15 @@ func CheckSpace(p Policy, paths ...string) ([]Disk, error) {
 			continue
 		}
 		seen[path] = true
-		d, err := DiskSpace(path)
+		existing, err := existingStoragePath(path)
 		if err != nil {
 			return disks, fmt.Errorf("host disk %s: %w", path, err)
 		}
+		d, err := DiskSpace(existing)
+		if err != nil {
+			return disks, fmt.Errorf("host disk %s: %w", path, err)
+		}
+		d.Path = path
 		disks = append(disks, d)
 		if d.Available < p.HostReserveGiB*GiB {
 			return disks, fmt.Errorf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted)", path, float64(d.Available)/float64(GiB), p.HostReserveGiB)
@@ -169,4 +174,37 @@ func CheckSpace(p Policy, paths ...string) ([]Disk, error) {
 func (p Policy) KubeletConfig() []byte {
 	b, _ := json.MarshalIndent(map[string]any{"apiVersion": "kubelet.config.k8s.io/v1beta1", "kind": "KubeletConfiguration", "imageMaximumGCAge": p.ImageUnused, "imageMinimumGCAge": "10m", "imageGCHighThresholdPercent": 80, "imageGCLowThresholdPercent": 70, "containerLogMaxSize": "10Mi", "containerLogMaxFiles": 3}, "", "  ")
 	return b
+}
+
+// CheckBuildSpace includes build scratch and explicitly configured Go caches,
+// which can live on different filesystems from the project and home directory.
+func CheckBuildSpace(p Policy, paths ...string) ([]Disk, error) {
+	paths = append(paths, os.TempDir())
+	for _, name := range []string{"GOTMPDIR", "GOCACHE", "GOMODCACHE"} {
+		if path := os.Getenv(name); path != "" && path != "off" {
+			paths = append(paths, path)
+		}
+	}
+	return CheckSpace(p, paths...)
+}
+
+// A new output/cache directory consumes the filesystem of its nearest existing
+// parent. Check that filesystem before the build creates the directory.
+func existingStoragePath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", fmt.Errorf("no existing parent for %s", path)
+		}
+		path = parent
+	}
 }

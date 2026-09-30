@@ -33,6 +33,17 @@ func newStorageCmd() *cobra.Command {
 		cfg, err := storage.Load(p)
 		return cfg, p, err
 	}
+	group.AddCommand(&cobra.Command{Use: "check [path...]", Args: cobra.ArbitraryArgs, Short: "Refuse a build below the physical host free-space reserve", RunE: func(cmd *cobra.Command, paths []string) error {
+		p, _, err := load()
+		if err != nil {
+			return err
+		}
+		if len(paths) == 0 {
+			paths = []string{"."}
+		}
+		_, err = storage.CheckBuildSpace(p, paths...)
+		return err
+	}})
 	group.AddCommand(&cobra.Command{Use: "status", Args: cobra.NoArgs, Short: "Report physical host capacity, Docker usage and node cleanup settings", RunE: func(cmd *cobra.Command, _ []string) error {
 		p, _, err := load()
 		if err != nil {
@@ -96,7 +107,7 @@ func newStorageCmd() *cobra.Command {
 		}
 		return storage.WithLock(path, func() error { return installStorageSchedule(cmd.Context(), cmd.OutOrStdout(), path, p) })
 	}})
-	var contexts, repos, pins []string
+	var contexts, repos, pins, builders []string
 	var ledgerDir string
 	register := &cobra.Command{Use: "register", Args: cobra.NoArgs, Short: "Register local cluster contexts, declared repositories or release pins", RunE: func(cmd *cobra.Command, _ []string) error {
 		_, path, err := load()
@@ -110,8 +121,17 @@ func newStorageCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		for _, builder := range builders {
+			if err := (storage.Runner{}).RegisterBuilder(cmd.Context(), path, builder); err != nil {
+				return err
+			}
+		}
+		if len(contexts) == 0 && len(repos) == 0 && len(pins) == 0 && len(historical) == 0 {
+			return nil
+		}
 		return storage.Register(cmd.Context(), path, contexts, repos, append(pins, historical...))
 	}}
+	register.Flags().StringSliceVar(&builders, "builder", nil, "local Docker builders whose cache to maintain")
 	register.Flags().StringVar(&ledgerDir, "ledger", ".forge/releases", "local release ledger directory to import before enabling cleanup")
 	register.Flags().StringSliceVar(&contexts, "context", nil, "local k3d contexts that can use these images")
 	register.Flags().StringSliceVar(&repos, "repository", nil, "declared local image repositories, including registry host")
@@ -152,7 +172,7 @@ var checkBuildStorageFn = func(project string) error {
 	if err != nil {
 		return err
 	}
-	_, err = storage.CheckSpace(p, project)
+	_, err = storage.CheckBuildSpace(p, project)
 	return err
 }
 
@@ -175,6 +195,14 @@ func addClusterStorageArgs(args []string) ([]string, error) {
 }
 
 func registerBuildStorage(ctx context.Context, project string, entities *KCLEntities, plan pushPlan) {
+	path, err := storage.DefaultPath()
+	if err == nil {
+		err = storage.RegisterProject(path, project)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "storage retention registration: %v\n", err)
+		return
+	}
 	if entities == nil {
 		return
 	}
@@ -193,17 +221,9 @@ func registerBuildStorage(ctx context.Context, project string, entities *KCLEnti
 	if len(contexts) == 0 || len(repositories) == 0 {
 		return
 	}
-	path, err := storage.DefaultPath()
+	pins, err := storage.LedgerPins(filepath.Join(project, ".forge", "releases"))
 	if err == nil {
-		err = storage.RegisterProject(path, project)
-	}
-	if err == nil {
-		pins, pinErr := storage.LedgerPins(filepath.Join(project, ".forge", "releases"))
-		if pinErr != nil {
-			err = pinErr
-		} else {
-			err = storage.Register(ctx, path, contexts, repositories, pins)
-		}
+		err = storage.Register(ctx, path, contexts, repositories, pins)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "storage retention registration: %v\n", err)
@@ -241,4 +261,28 @@ func pinStorageRelease(rel release.Release) error {
 		p.Pins = pins
 		return storage.Save(path, p)
 	})
+}
+
+// docker build uses the default builder unless BUILDX_BUILDER explicitly
+// overrides it; buildx use alone does not change docker build's selection.
+func prepareDockerBuildStorage(ctx context.Context, project string) error {
+	if err := checkBuildStorageFn(project); err != nil {
+		return err
+	}
+	builder := os.Getenv("BUILDX_BUILDER")
+	if builder == "" {
+		builder = "default"
+	}
+	registerDockerBuilderStorage(ctx, builder)
+	return nil
+}
+
+func registerDockerBuilderStorage(ctx context.Context, builder string) {
+	path, err := storage.DefaultPath()
+	if err == nil {
+		err = (storage.Runner{}).RegisterBuilder(ctx, path, builder)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "storage builder registration: %v\n", err)
+	}
 }

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -50,6 +51,13 @@ func (r Runner) print(format string, args ...any) {
 
 // Local refuses remote Docker endpoints.
 func (r Runner) Local(ctx context.Context) error {
+	// DOCKER_HOST overrides the selected context unless --context or
+	// DOCKER_CONTEXT is explicit. context inspect alone would miss it.
+	if r.Policy.DockerContext == "" && os.Getenv("DOCKER_CONTEXT") == "" {
+		if host := os.Getenv("DOCKER_HOST"); host != "" && !strings.HasPrefix(host, "unix://") && !strings.HasPrefix(host, "npipe://") {
+			return fmt.Errorf("storage maintenance refuses nonlocal DOCKER_HOST %q", host)
+		}
+	}
 	b, err := r.docker(ctx, "context", "inspect")
 	if err != nil {
 		return err
@@ -143,50 +151,25 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 	if err := r.Local(ctx); err != nil {
 		return err
 	}
+	var failures []error
 	for _, builder := range r.Policy.Builders {
-		// A local Docker context can still select a remote buildx builder.
-		b, err := r.docker(ctx, "buildx", "inspect", builder, "--format", "{{json .}}")
-		if err != nil {
-			return err
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
 		}
-		var info struct {
-			Driver string
-			Nodes  []struct{ Endpoint string }
-		}
-		if err := json.Unmarshal(b, &info); err != nil {
-			return err
-		}
-		if info.Driver != "docker" && info.Driver != "docker-container" {
-			return fmt.Errorf("builder %s is not a local Docker builder", builder)
-		}
-		for _, n := range info.Nodes {
-			if strings.Contains(n.Endpoint, "://") && !strings.HasPrefix(n.Endpoint, "unix://") && !strings.HasPrefix(n.Endpoint, "npipe://") {
-				return fmt.Errorf("builder %s uses nonlocal endpoint %s", builder, n.Endpoint)
-			}
-			if !strings.Contains(n.Endpoint, "://") {
-				probe := r
-				probe.Policy.DockerContext = n.Endpoint
-				if err := probe.Local(ctx); err != nil {
-					return err
-				}
-			}
-		}
-		r.print("builder %s: evict unused cache older than %s toward %d GiB\n", builder, r.Policy.BuildCacheUnused, r.Policy.BuildCacheGiB)
-		if apply {
-			b, err = r.docker(ctx, "buildx", "prune", "--builder", builder, "--force", "--max-used-space", fmt.Sprintf("%dB", r.Policy.BuildCacheGiB*GiB), "--filter", "until="+r.Policy.BuildCacheUnused)
-			if err != nil {
-				return err
-			}
-			r.print("%s\n", b)
+		if err := r.builderGC(ctx, builder, apply); err != nil {
+			failures = append(failures, fmt.Errorf("builder %s: %w", builder, err))
 		}
 	}
 	for _, registry := range r.Policy.Registries {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
 		if err := r.RegistryGC(ctx, registry, apply); err != nil {
-			return err
+			failures = append(failures, fmt.Errorf("registry %s: %w", registry.Container, err))
 		}
 	}
 	r.print("persistent volumes, worktrees, running containers and application data are retained\n")
-	return nil
+	return errors.Join(failures...)
 }
 
 // NodeConfigPath is stable across command exits; k3d bind mounts must never

@@ -1855,6 +1855,9 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	args = append(args, t.flags...)
 	args = append(args, t.cmd)
 
+	if err := checkBuildStorageFn(outputDir); err != nil {
+		return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
+	}
 	cmd := exec.CommandContext(ctx, "go", args...)
 	// CGO_ENABLED=0 is forge's pure-Go contract; a GoBuild.env entry can
 	// override it (and any other build-time var) since it's appended last.
@@ -1979,6 +1982,9 @@ func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildM
 	// purpose. Re-deriving through Dir would apply a containment check to
 	// a path that is legitimately external and undo the resolution.
 	feDir := fe.DeclaredDir()
+	if err := checkBuildStorageFn(feDir); err != nil {
+		return buildResult{name: fe.Name, kind: "frontend", duration: time.Since(start), err: err}
+	}
 	// forge.yaml's dev_runner picks the package manager; `<runner> run build`
 	// is the same invocation for npm, pnpm and yarn.
 	runner := fe.EffectiveDevRunner()
@@ -2151,6 +2157,9 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
+	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
+		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
+	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -2343,6 +2352,9 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
 
+	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
+		return buildResult{name: name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
+	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -2648,6 +2660,9 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 	}
 	args = append(args, buildCmd)
 
+	if err := checkBuildStorageFn(outputDir); err != nil {
+		return buildResult{name: svcName + ":" + v.Name, kind: "variant", duration: time.Since(start), err: err}
+	}
 	cmd := exec.CommandContext(ctx, "go", args...)
 	env := append(os.Environ(), "CGO_ENABLED=0")
 	if v.GOOS != "" {
@@ -2909,6 +2924,9 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
+	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
+	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

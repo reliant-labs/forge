@@ -21,13 +21,24 @@ an indication that a volume is safe to remove.
 The cache and log budgets are targets: recent/in-use cache and the diagnostic
 floor can exceed them. No budget overrides release or workload protection. The
 host-space check uses the host filesystem, not the much larger sparse disk that
-Docker Desktop exposes to Linux. Add a custom Docker data disk to `host_paths`.
+Docker Desktop exposes to Linux. Build checks also cover output paths, the OS
+temporary directory, and explicitly configured `GOTMPDIR`, `GOCACHE` and
+`GOMODCACHE` paths. Add a custom Docker data disk or cache mount configured
+through a tool-specific config file to `host_paths`.
+
+Direct Go, frontend, shell and Docker build lanes recheck capacity before starting.
+`forge env up` checks before startup and host launches. `forge storage check
+[path...]` exposes the same check for custom build/watch commands. New scaffolded
+Air configs prefix every rebuild with `forge storage check ./tmp &&`; add this
+prefix to existing/custom Air configs to guard their internal rebuild loop.
+These are admission checks, not disk reservations: concurrent builds and one
+large in-progress build can still consume the reserve.
 
 ## Set up a machine
 
 ```sh
 forge storage policy
-forge storage register --context k3d-control-plane --context k3d-daemon \
+forge storage register --builder relbuild --context k3d-control-plane --context k3d-daemon \
   --repository localhost:5051/control-plane \
   --repository localhost:5051/workspace-base
 forge storage gc --dry-run
@@ -36,7 +47,9 @@ forge storage install
 
 Registration imports `.forge/releases/*.json` from the current project;
 `--ledger` selects another ledger directory. Builds register their declared local
-repositories, local clusters and project log directory automatically. Release
+repositories, local clusters and project log directory automatically. Docker
+builds also register the builder they actually use (`BUILDX_BUILDER`, or
+`default`); shell builds register an explicitly declared `BUILDX_BUILDER`. Release
 cuts pin their digests before the ledger entry is published. Import old projects'
 ledgers when enabling cleanup for an existing shared registry. `--pin` accepts a
 full image reference or a canonical digest. Pins remain until an operator edits
@@ -46,7 +59,9 @@ The default policy is `forge/storage.json` inside the OS user configuration
 directory (`~/Library/Application Support` on macOS, `$XDG_CONFIG_HOME` or
 `~/.config` on Linux). `FORGE_STORAGE_POLICY` overrides it for all build hooks;
 `--policy` overrides a particular storage command. JSON is strict: unknown fields
-are errors. Edit `builders` to include custom builders, such as `relbuild`.
+are errors. Use `forge storage register --builder relbuild` to adopt another
+local builder. An unavailable builder fails its own cleanup; independent healthy
+builders and registries still receive maintenance.
 Remote Docker contexts/builders are refused. Registration pins the Docker context
 so a later context switch cannot redirect scheduled deletion elsewhere.
 

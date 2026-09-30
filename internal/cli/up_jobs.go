@@ -374,7 +374,7 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	startInOwnProcessGroup(cmd)
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
-			killProcessTree(cmd.Process.Pid, syscall.SIGKILL)
+			_ = killProcessTree(cmd.Process.Pid, syscall.SIGKILL)
 		}
 		return nil
 	}

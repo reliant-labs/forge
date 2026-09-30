@@ -195,10 +195,10 @@ func buildInventory(env string, overall Status, results []targetResult, findings
 
 	// Findings keyed by target+workload, so a workload deployed to two
 	// clusters gets each cluster's verdict rather than the union.
-	type fkey struct{ target, workload string }
+	type fkey struct{ target, kind, workload string }
 	byWorkload := map[fkey][]workloadFinding{}
 	for _, f := range findings {
-		k := fkey{f.target, f.workload}
+		k := fkey{f.target, f.kind, f.workload}
 		byWorkload[k] = append(byWorkload[k], f)
 	}
 
@@ -236,7 +236,7 @@ func buildInventory(env string, overall Status, results []targetResult, findings
 					st.Restarts = p.Restarts
 				}
 			}
-			for _, f := range byWorkload[fkey{label, w.name}] {
+			for _, f := range byWorkload[fkey{label, w.kind, w.name}] {
 				st.Findings = append(st.Findings, findingLine(f))
 				if f.severity == StatusFail {
 					st.Status = StatusFail

@@ -57,14 +57,15 @@ import (
 
 // upOptions bundles flags for `forge env up`.
 type upOptions struct {
-	env        string
-	noBuild    bool
-	noDeploy   bool
-	background bool // detach and write PID files; use `forge env down <env>` to teardown
-	watch      bool // force supervise (hold + Ctrl-C teardown) even without a TTY
-	noGenerate bool // skip the pre-build "ensure generated code" step (--no-generate)
-	noInstall  bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
-	noSeed     bool // skip the first-boot dev auto-seed (--no-seed)
+	env              string
+	noBuild          bool
+	noDeploy         bool
+	background       bool          // detach and write PID files; use `forge env down <env>` to teardown
+	watch            bool          // force supervise (hold + Ctrl-C teardown) even without a TTY
+	noGenerate       bool          // skip the pre-build "ensure generated code" step (--no-generate)
+	noInstall        bool          // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
+	noSeed           bool          // skip the first-boot dev auto-seed (--no-seed)
+	hostReadyTimeout time.Duration // zero uses the default for internal callers
 	// targets, when non-empty, scopes the WHOLE run to the named
 	// services/operators/frontends — build, deploy, host and frontend
 	// phases alike, mirroring `forge env deploy --target`. Naming a
@@ -184,6 +185,9 @@ Render options (-D):
   ` + "`env up`" + ` only — a cluster apply must stay reproducible from the repo alone.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.env = args[0]
+			if opts.hostReadyTimeout <= 0 {
+				return fmt.Errorf("--host-ready-timeout must be positive")
+			}
 			// --watch and --background both override the TTY default, in
 			// opposite directions (hold vs detach). They are not combinable:
 			// resolveUpLifecycle documents --background as the winner, but a
@@ -196,6 +200,7 @@ Render options (-D):
 		},
 	}
 
+	cmd.Flags().DurationVar(&opts.hostReadyTimeout, "host-ready-timeout", hostReadyTimeout, "Maximum wait for host services to bind their ports, including compilation; exited runners fail immediately")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge env down <env>`). Beats --watch and the TTY default.")
@@ -850,7 +855,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// default (--background wins if somehow both set; rejected upstream).
 	// `detach` collapses the lifecycle to the single behaviour the host
 	// phase + summary need: a "once" run detaches every child (log files,
-	// Process.Release, no foreground hold) so the stack OUTLIVES this
+	// no foreground hold) so the stack OUTLIVES this
 	// process, exactly as --background always has; a "supervise" run keeps
 	// the live prefixed streams and holds. detach is true for BOTH the
 	// explicit --background and the non-TTY default — they share the
@@ -915,7 +920,11 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// this run started are already tracked, so the next `forge env up` / `forge
 	// run` for this project+env reclaims them and `forge env down` stops them.
 	// Scoped by --target inside the gate.
-	if err := waitHostServicesReady(entities, projectID, opts.env, opts.targets, hostReadyTimeout, hostReadyPoll); err != nil {
+	readyTimeout := opts.hostReadyTimeout
+	if readyTimeout == 0 {
+		readyTimeout = hostReadyTimeout
+	}
+	if err := waitHostServicesReady(ctx, entities, projectID, opts.env, opts.targets, readyTimeout, hostReadyPoll, procs); err != nil {
 		return err
 	}
 	// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
@@ -1979,9 +1988,10 @@ func classifyPortReadiness(port int, projectID, envName string, listening func(i
 
 // hostReadyResult is one expected host-service bind port and how it resolved.
 type hostReadyResult struct {
-	name  string
-	port  int
-	state portReadyState
+	name   string
+	port   int
+	state  portReadyState
+	exited string // observed runner exit, not inferred from a missing listener
 	// holderPID / holderCmd identify the process actually on the port when
 	// state is portReadyForeign. Populated only for that state — for the
 	// others there is either no holder or the holder is our own child.
@@ -2054,13 +2064,16 @@ func hostReadyUnready(rs []hostReadyResult) []hostReadyResult {
 // `forge env down` (which the message points at) reaches them.
 func hostReadyError(envName string, unready []hostReadyResult, e *KCLEntities) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[up] host service(s) never came up under this run (env=%s):\n", envName)
+	fmt.Fprintf(&b, "[up] host service(s) not ready (env=%s):\n", envName)
 	for _, r := range unready {
-		reason := "nothing is listening — the service failed to bind its port"
+		reason := "nothing is listening yet — compilation or startup may still be in progress"
 		if r.state == portReadyForeign {
 			reason = "held by another process — not the child this run started (stale/foreign holder)"
+		} else if r.exited != "" {
+			reason = "runner exited before readiness (" + r.exited + ")"
 		}
 		fmt.Fprintf(&b, "       %-14s :%d  %s\n", r.name, r.port, reason)
+		fmt.Fprintf(&b, "       %-14s   log: %s/%s.log\n", "", upLogDir(envName), r.name)
 		if r.holderPID > 0 {
 			fmt.Fprintf(&b, "       %-14s   holder: pid %d%s\n", "", r.holderPID, holderCmdSuffix(r.holderCmd))
 		}
@@ -2132,15 +2145,10 @@ func holderCmdSuffix(cmd string) string {
 	return "  " + cmd
 }
 
-// hostReadyTimeout / hostReadyPoll bound the post-launch readiness gate: how
-// long to wait for host services to bind, and how often to re-check. Air /
-// go-run compile the binary on start, so the window must outlast a warm
-// incremental build's compile+bind; a genuinely cold first build can exceed
-// it, in which case the gate reports "nothing listening" for a service that
-// was merely slow — the accepted trade for catching the silent-bind and
-// stale-holder failures the summary used to paint green.
+// Host runners compile before listening. Allow cold builds by default, with
+// --host-ready-timeout for slower machines; an observed exit fails sooner.
 const (
-	hostReadyTimeout = 15 * time.Second
+	hostReadyTimeout = 2 * time.Minute
 	hostReadyPoll    = 250 * time.Millisecond
 )
 
@@ -2155,22 +2163,16 @@ const (
 // so an air re-exec / late fork is picked up. Nothing is killed: detect and
 // report only. A nil return means every declared host port is bound by us
 // (or nothing declared a port).
-func waitHostServicesReady(e *KCLEntities, projectID, envName string, targets []string, timeout, poll time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+func waitHostServicesReady(ctx context.Context, e *KCLEntities, projectID, envName string, targets []string, timeout, poll time.Duration, procs *procRegistry) error {
+	return waitHostReadiness(ctx, envName, e, timeout, poll, os.Stdout, func() []hostReadyResult {
 		rs := evalHostReadiness(e, projectID, envName, targets, portInUse, portListenerPID, newOSProcFacts())
-		if len(rs) == 0 {
-			return nil // no host service declares a bind port; nothing to gate
+		for i := range rs {
+			if rs[i].state == portReadyNobody {
+				rs[i].exited = procs.exitReason(rs[i].name)
+			}
 		}
-		unready := hostReadyUnready(rs)
-		if len(unready) == 0 {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return hostReadyError(envName, unready, e)
-		}
-		time.Sleep(poll)
-	}
+		return rs
+	})
 }
 
 // ── the CLUSTER half of the post-launch readiness gate ───────────────────
@@ -3162,16 +3164,15 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 			_ = logFile.Close()
 			return err
 		}
-		// Capture the PID BEFORE Release() — Release resets
-		// cmd.Process.Pid to -1, and persist()/the log line below need the
-		// real PID so `forge env down` can later SIGTERM it.
-		pid := 0
-		if cmd.Process != nil {
-			pid = cmd.Process.Pid
-			_ = cmd.Process.Release()
-		}
+		pid := cmd.Process.Pid
+		mp := &managedProcess{name: name, cmd: cmd, pid: pid}
+		// Keep observing the child while startup is pending. Releasing its
+		// handle here loses its exit status and turns compiler failures into
+		// readiness timeouts. Closing our copy does not close the child's fd.
+		mp.observeExit(nil)
+		_ = logFile.Close()
 		p.mu.Lock()
-		p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd, pid: pid})
+		p.processes = append(p.processes, mp)
 		p.mu.Unlock()
 		p.persist()
 		fmt.Printf("[up] %s: detached (pid=%d, log=%s)\n", name, pid, logPath)
@@ -3209,11 +3210,15 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
 	}
-	go streamUpOutput(prefix, stdout, sink)
-	go streamUpOutput(prefix, stderr, sink)
+	var streams sync.WaitGroup
+	streams.Add(2)
+	go func() { defer streams.Done(); streamUpOutput(prefix, stdout, sink) }()
+	go func() { defer streams.Done(); streamUpOutput(prefix, stderr, sink) }()
+	mp := &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid}
+	mp.observeExit(func() { streams.Wait() })
 
 	p.mu.Lock()
-	p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid})
+	p.processes = append(p.processes, mp)
 	p.mu.Unlock()
 	p.persist()
 	fmt.Printf("[up] %s: started (pid=%d)\n", name, cmd.Process.Pid)
@@ -3475,7 +3480,11 @@ func (p *procRegistry) shutdown() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_ = mp.cmd.Wait()
+				if mp.done != nil {
+					<-mp.done
+				} else {
+					_ = mp.cmd.Wait()
+				}
 			}()
 		}
 		wg.Wait()

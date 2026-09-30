@@ -16,5 +16,5 @@
 # channel explicitly first (server-side) so the CRD surface matches the
 # cloud install and so `kubectl wait` on Established gates the GatewayClass
 # apply deterministically.
-envoy_gateway=v1.7.2
-gateway_api=v1.5.1
+envoy_gateway=v1.9.2
+gateway_api=v1.6.2

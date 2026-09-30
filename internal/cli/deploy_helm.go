@@ -121,6 +121,7 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 			Namespace: c.Namespace,
 			Values:    c.Values,
 			CRDs:      crds,
+			CRDBundle: c.CRDs,
 			Manifests: extra,
 			Cluster:   c.Cluster,
 		})

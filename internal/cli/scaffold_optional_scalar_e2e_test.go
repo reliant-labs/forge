@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/migrationver"
 )
 
 // TestE2EOptionalScalarEntityBirthAndConversion is the acceptance gate
@@ -125,9 +127,40 @@ message Widget { string id = 1; string name = 2; optional string nickname = 3; }
 // the birth wrote.
 func readBornMigrationE2E(t *testing.T, projectDir, table string) string {
 	t.Helper()
+	return readFileE2E(t, bornMigrationPathE2E(t, projectDir, table))
+}
+
+// bornMigrationPathE2E locates the migration `forge scaffold` wrote to create
+// table, by glob rather than by a literal version prefix.
+//
+// Scaffolded migrations carry a 14-digit UTC timestamp version
+// (internal/migrationver), allocated at the instant the scaffold runs, so no
+// test can name one as a literal — and a test that tried would be asserting
+// on the clock.
+func bornMigrationPathE2E(t *testing.T, projectDir, table string) string {
+	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(projectDir, "db", "migrations", "*_create_"+table+".up.sql"))
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("expected exactly one create-%s migration, got %v (err %v)", table, matches, err)
 	}
-	return readFileE2E(t, matches[0])
+	return matches[0]
+}
+
+// nextMigrationPathE2E allocates the path for a migration the TEST adds by
+// hand, the same way `forge db migration new` allocates it.
+//
+// The allocation matters for ordering, not just for naming. A hand-written
+// migration in these fixtures almost always depends on a table the birth
+// migration created, so it must sort AFTER birth — and birth's timestamp
+// version is nine orders of magnitude larger than any 5-digit sequence
+// number. A literal "00002_" sorts FIRST, and the migration runs against a
+// table that does not exist yet.
+func nextMigrationPathE2E(t *testing.T, projectDir, stem string) string {
+	t.Helper()
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	version, err := migrationver.Next(migDir)
+	if err != nil {
+		t.Fatalf("allocate migration version for %s: %v", stem, err)
+	}
+	return filepath.Join(migDir, version+"_"+stem+".up.sql")
 }

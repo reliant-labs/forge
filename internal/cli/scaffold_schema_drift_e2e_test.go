@@ -73,7 +73,7 @@ message Order {
 	}
 
 	// A developer adds a column forge never projected — its own migration.
-	devMig := filepath.Join(projectDir, "db", "migrations", "00002_add_internal_note.up.sql")
+	devMig := nextMigrationPathE2E(t, projectDir, "add_internal_note")
 	if err := os.WriteFile(devMig, []byte("ALTER TABLE orders ADD COLUMN internal_note TEXT;\n"), 0o644); err != nil {
 		t.Fatalf("write dev migration: %v", err)
 	}

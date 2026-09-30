@@ -79,11 +79,10 @@ func TestE2EScaffoldReadOnlyColumnTakesItsSchemaDefault(t *testing.T) {
 	// Evolution the charter tells authors to write by hand: a non-zero
 	// default plus a range CHECK on the read-only column, and a
 	// `DEFAULT true` on a column the client DOES set.
-	migDir := filepath.Join(projectDir, "db", "migrations")
 	up := "ALTER TABLE gadgets ALTER COLUMN priority SET DEFAULT 5;\n" +
 		"ALTER TABLE gadgets ADD CONSTRAINT gadgets_priority_range CHECK (priority BETWEEN 1 AND 10);\n" +
 		"ALTER TABLE gadgets ALTER COLUMN active SET DEFAULT true;\n"
-	if err := os.WriteFile(filepath.Join(migDir, "00002_tighten_gadgets.up.sql"), []byte(up), 0o644); err != nil {
+	if err := os.WriteFile(nextMigrationPathE2E(t, projectDir, "tighten_gadgets"), []byte(up), 0o644); err != nil {
 		t.Fatalf("write evolution migration: %v", err)
 	}
 	runCmd(t, projectDir, forgeBin, "generate")

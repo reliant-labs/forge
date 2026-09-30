@@ -87,11 +87,10 @@ func TestE2ECRUDFixtureSurvivesAddedConstraints(t *testing.T) {
 	// already applied it, asserted above. Re-adding it by hand would fail
 	// with "constraint already exists", which is the schema saying the same
 	// thing.)
-	migDir := filepath.Join(projectDir, "db", "migrations")
 	up := "CREATE UNIQUE INDEX gadgets_sku_uniq ON gadgets (sku);\n" +
 		"CREATE UNIQUE INDEX gadgets_seq_uniq ON gadgets (seq);\n" +
 		"CREATE UNIQUE INDEX gadgets_name_uniq ON gadgets (name);\n"
-	if err := os.WriteFile(filepath.Join(migDir, "00090_constraints.up.sql"), []byte(up), 0o644); err != nil {
+	if err := os.WriteFile(nextMigrationPathE2E(t, projectDir, "constraints"), []byte(up), 0o644); err != nil {
 		t.Fatalf("write constraints migration: %v", err)
 	}
 

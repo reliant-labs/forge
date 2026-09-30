@@ -2273,7 +2273,10 @@ func itemSeamProbe() string { return "user-owned" }
 	}
 
 	// ── 3. migration semantics ───────────────────────────────────────
-	migration := readFileE2E(t, filepath.Join(projectDir, "db", "migrations", "00001_create_items.up.sql"))
+	// Located by glob, not by a hardcoded "00001_" prefix: scaffolded
+	// migrations carry a UTC timestamp version (internal/migrationver), so
+	// the number is different on every run and no literal can name it.
+	migration := readBornMigrationE2E(t, projectDir, "items")
 	if !strings.Contains(migration, "CHECK (id <> '')") {
 		t.Errorf("migration lacks CHECK (id <> '') on the string PK — empty-id rows were the silent-upsert data-loss vector; got:\n%s", migration)
 	}
@@ -2328,7 +2331,7 @@ message Bookmark {
 	if strings.Contains(itemProto, "forge.v1.entity") {
 		t.Errorf("scaffold entity emitted a forge.v1.entity annotation — entity protos are dead, SQL is the schema")
 	}
-	bookmarkMig := readFileE2E(t, filepath.Join(projectDir, "db", "migrations", "00002_create_bookmarks.up.sql"))
+	bookmarkMig := readBornMigrationE2E(t, projectDir, "bookmarks")
 	if !strings.Contains(bookmarkMig, "tags TEXT[] NOT NULL DEFAULT '{}'") {
 		t.Errorf("bookmark migration lacks the native array column; got:\n%s", bookmarkMig)
 	}
@@ -2363,7 +2366,7 @@ message Bookmark {
 	// generate. The projection must pick up the new column end to end:
 	// struct field, column allowlist (order_by=domain accepted via the
 	// real RPC), scan/insert.
-	writeCorpusFile(t, filepath.Join(projectDir, "db", "migrations", "00003_bookmark_domain.up.sql"), `
+	writeCorpusFile(t, nextMigrationPathE2E(t, projectDir, "bookmark_domain"), `
 ALTER TABLE bookmarks ADD COLUMN domain TEXT NOT NULL DEFAULT '';
 UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 `)
@@ -2402,7 +2405,7 @@ message Trade {
 `
 	writeFileE2E(t, lifecycleProtoPath, tradeProto)
 	runCmd(t, projectDir, forgeBin, "scaffold")
-	tradeMigPath := filepath.Join(projectDir, "db", "migrations", "00004_create_trades.up.sql")
+	tradeMigPath := bornMigrationPathE2E(t, projectDir, "trades")
 	tradeMig := readFileE2E(t, tradeMigPath)
 	tradeMig = strings.ReplaceAll(tradeMig,
 		"created_at TIMESTAMPTZ NOT NULL DEFAULT (now())", "created_at TEXT NOT NULL DEFAULT ''")

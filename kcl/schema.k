@@ -362,6 +362,26 @@ schema GatewayAddress:
     a NamedAddress the GKE load balancer keeps that reserved IP across
     Gateway recreation, which keeps DNS stable. forge models NamedAddress
     (the GKE reserved-IP case we need) and IPAddress (a literal IP).
+
+    HOW EACH TYPE REACHES THE CLUSTER — they take different paths, and
+    the difference is not cosmetic.
+
+    NamedAddress renders into Gateway API `spec.addresses` verbatim, for
+    the GKE cloud Gateway controller to resolve.
+
+    IPAddress does NOT. Envoy Gateway translates an IPAddress entry in
+    spec.addresses into the backing Service's `spec.externalIPs`, and
+    GKE's DenyServiceExternalIPs admission plugin rejects any Service
+    that carries one ("Use of external IPs is denied by admission
+    control"). The Gateway keeps serving on an already-attached LB, so
+    nothing looks broken — but Envoy Gateway can never update that
+    Service again, and a newly added listener port silently never takes
+    effect. So forge routes a literal IP through an EnvoyProxy
+    (`provider.kubernetes.envoyService.loadBalancerIP`) bound to the
+    Gateway via `spec.infrastructure.parametersRef`, which lands as
+    `spec.loadBalancerIP` — what GCP reads to attach a reserved REGIONAL
+    address, and what admission permits. Declaring it is the same one
+    line either way; only the rendered shape differs.
     """
     # NamedAddress (GKE reserved-IP reservation name) or IPAddress (a
     # literal IP). Defaults to NamedAddress — the GKE static-IP case.
@@ -416,12 +436,14 @@ schema Gateway:
     BackendTrafficPolicy / ClientTrafficPolicy, etc.) — emitted
     verbatim alongside the route.
 
-    `addresses` pins the Gateway to specific load-balancer addresses
-    (Gateway API `spec.addresses`). On GKE, reference a reserved global
-    static IP by its reservation name via a NamedAddress GatewayAddress
-    so the Gateway keeps its IP across delete/recreate (otherwise a
-    recreated Gateway gets a fresh ephemeral IP and breaks DNS). Empty
-    by default — the controller assigns an ephemeral address.
+    `addresses` pins the Gateway to specific load-balancer addresses so
+    it keeps its IP across delete/recreate (otherwise a recreated
+    Gateway gets a fresh ephemeral IP and breaks DNS). On GKE, reference
+    a reserved GLOBAL static IP by its reservation name with a
+    NamedAddress, or pin a reserved REGIONAL address with an IPAddress
+    literal. The two render differently — see GatewayAddress, where the
+    reason is spelled out. Empty by default; the controller assigns an
+    ephemeral address.
 
     `cluster` pins this Gateway to ONE cluster in a multi-cluster env. It
     is a REFERENCE to the `forge.Cluster` instance — NOT a bare name —

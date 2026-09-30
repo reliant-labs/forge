@@ -332,7 +332,7 @@ plugins:
 //
 // INSTALLING is the policy here, not warning and not failing first, and it
 // follows the convention forge already applies at every other point where a
-// missing toolchain would stop a run: `forge up` installs a frontend's deps
+// missing toolchain would stop a run: `forge env up` installs a frontend's deps
 // before the dev loop (ensureFrontendDeps), and `forge scaffold frontend`
 // installs them the moment the directory exists (runFrontendNpmInstall). A
 // generate that needs the plugin is the same situation, and a user who has to

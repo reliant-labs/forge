@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/migrationver"
 )
 
 type gooseFile struct {
@@ -48,6 +51,54 @@ func readMigrateImportFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(b)
+}
+
+// migrationWithStem finds the single imported migration whose name ends in
+// `_<stem>.up.sql`.
+//
+// Imported migrations are versioned with a UTC timestamp allocated at import
+// time, so a test cannot name the file it expects. It can still pin
+// everything that matters — which stems exist, their relative order, and
+// their contents — by looking them up by stem. Asserting on an exact version
+// would only be asserting on the clock.
+func migrationWithStem(t *testing.T, dir, stem string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "*_"+stem+".up.sql"))
+	if err != nil {
+		t.Fatalf("glob %s: %v", stem, err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("want exactly one migration with stem %q in %s, got %v", stem, dir, matches)
+	}
+	return matches[0]
+}
+
+// stemsInOrder returns the stems of every migration in dir, in version
+// order — the order the migrator will apply them.
+func stemsInOrder(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	for _, name := range readMigrationsDir(t, dir) {
+		base := strings.TrimSuffix(name, ".up.sql")
+		if _, stem, ok := strings.Cut(base, "_"); ok {
+			out = append(out, stem)
+		}
+	}
+	return out
+}
+
+// assertTimestampVersioned fails unless every migration in dir carries a
+// timestamp version. This is the property that makes parallel branches
+// collision-free, so it is asserted directly rather than inferred from a
+// filename.
+func assertTimestampVersioned(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range readMigrationsDir(t, dir) {
+		version, _, ok := strings.Cut(name, "_")
+		if !ok || !migrationver.IsTimestamp(version) {
+			t.Errorf("migration %q is not timestamp-versioned", name)
+		}
+	}
 }
 
 func TestMigrateImportRoundtrip(t *testing.T) {
@@ -93,22 +144,22 @@ DROP TABLE memberships;
 		t.Fatalf("runMigrateImport: %v", err)
 	}
 
-	got := readMigrationsDir(t, dest)
-	want := []string{
-		"00001_add_users.up.sql",
-		"00002_add_orgs.up.sql",
-		"00003_add_memberships.up.sql",
-	}
+	// The source order must be preserved: memberships references users and
+	// orgs, so an import that reordered them would produce migrations that
+	// cannot apply.
+	got := stemsInOrder(t, dest)
+	want := []string{"add_users", "add_orgs", "add_memberships"}
 	if len(got) != len(want) {
 		t.Fatalf("file count: got %v, want %v", got, want)
 	}
 	for i, w := range want {
 		if got[i] != w {
-			t.Errorf("file[%d]: got %q, want %q", i, got[i], w)
+			t.Errorf("migration[%d]: got stem %q, want %q", i, got[i], w)
 		}
 	}
+	assertTimestampVersioned(t, dest)
 
-	up := readMigrateImportFile(t, filepath.Join(dest, "00001_add_users.up.sql"))
+	up := readMigrateImportFile(t, migrationWithStem(t, dest, "add_users"))
 	if !strings.Contains(up, "CREATE TABLE users") {
 		t.Errorf("up file missing CREATE TABLE: %q", up)
 	}
@@ -131,7 +182,7 @@ DROP TABLE memberships;
 	if !strings.Contains(buf.String(), "Foreign-key check") {
 		t.Errorf("expected FK warning in stdout, got: %q", buf.String())
 	}
-	if !strings.Contains(buf.String(), "00003_add_memberships.up.sql") {
+	if !strings.Contains(buf.String(), "add_memberships.up.sql") {
 		t.Errorf("expected memberships flagged in FK warning, got: %q", buf.String())
 	}
 }
@@ -160,7 +211,7 @@ DROP INDEX CONCURRENTLY idx_users_email;
 		t.Fatalf("runMigrateImport: %v", err)
 	}
 
-	up := readMigrateImportFile(t, filepath.Join(dest, "00001_create_index.up.sql"))
+	up := readMigrateImportFile(t, migrationWithStem(t, dest, "create_index"))
 
 	if !strings.Contains(up, "x-no-tx-wrap: true") {
 		t.Errorf("up missing x-no-tx-wrap header: %q", up)
@@ -201,7 +252,7 @@ DROP FUNCTION foo();
 		t.Fatalf("runMigrateImport: %v", err)
 	}
 
-	up := readMigrateImportFile(t, filepath.Join(dest, "00001_create_fn.up.sql"))
+	up := readMigrateImportFile(t, migrationWithStem(t, dest, "create_fn"))
 
 	if strings.Contains(up, "StatementBegin") || strings.Contains(up, "StatementEnd") {
 		t.Errorf("up still contains Statement markers: %q", up)
@@ -214,7 +265,12 @@ DROP FUNCTION foo();
 	}
 }
 
-func TestMigrateImportRenumbersAfterPacks(t *testing.T) {
+// TestMigrateImportSortsAfterExistingSequentialPacks is the mid-adoption
+// case: a project whose migrations dir already holds 5-digit pack files
+// imports new ones, which are timestamp-versioned. The imported migrations
+// must sort AFTER every existing file — that ordering is the entire reason
+// old sequential files never need renaming.
+func TestMigrateImportSortsAfterExistingSequentialPacks(t *testing.T) {
 	dest := t.TempDir()
 	for _, name := range []string{
 		"00001_audit_log.up.sql",
@@ -255,12 +311,18 @@ DROP TABLE orgs;
 		t.Fatalf("runMigrateImport: %v", err)
 	}
 
-	for _, name := range []string{
-		"00004_add_users.up.sql",
-		"00005_add_orgs.up.sql",
-	} {
-		if _, err := os.Stat(filepath.Join(dest, name)); err != nil {
-			t.Errorf("expected %s to exist: %v", name, err)
+	// The pack files keep their sequential names, and the imports land
+	// after them in version order.
+	want := []string{"audit_log", "api_key", "session", "add_users", "add_orgs"}
+	if got := stemsInOrder(t, dest); !slices.Equal(got, want) {
+		t.Errorf("version order = %v, want %v (imports must sort after existing packs)", got, want)
+	}
+
+	for _, stem := range []string{"add_users", "add_orgs"} {
+		name := filepath.Base(migrationWithStem(t, dest, stem))
+		version, _, _ := strings.Cut(name, "_")
+		if !migrationver.IsTimestamp(version) {
+			t.Errorf("imported %s is not timestamp-versioned", name)
 		}
 	}
 
@@ -291,9 +353,7 @@ DROP TABLE users;
 	}); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dest, "00001_add_users.up.sql")); err != nil {
-		t.Fatalf("first run did not write expected file: %v", err)
-	}
+	migrationWithStem(t, dest, "add_users") // fails the test if absent
 
 	buf.Reset()
 	err := runMigrateImport(migrateImportOptions{
@@ -337,7 +397,8 @@ DROP TABLE users;
 	}); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	original := readMigrateImportFile(t, filepath.Join(dest, "00001_add_users.up.sql"))
+	firstPath := migrationWithStem(t, dest, "add_users")
+	original := readMigrateImportFile(t, firstPath)
 	if !strings.Contains(original, "id INT") {
 		t.Fatalf("first run produced unexpected content: %q", original)
 	}
@@ -363,10 +424,16 @@ DROP TABLE users;
 		t.Fatalf("force re-run: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dest, "00001_add_users.up.sql")); !os.IsNotExist(err) {
-		t.Errorf("expected old slot 1 to be removed, stat err: %v", err)
+	// --force replaces by STEM: the old file is removed and exactly one
+	// add_users migration remains, carrying the new content under a freshly
+	// allocated version.
+	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
+		t.Errorf("expected the old %s to be removed, stat err: %v", filepath.Base(firstPath), err)
 	}
-	newPath := filepath.Join(dest, "00002_add_users.up.sql")
+	newPath := migrationWithStem(t, dest, "add_users")
+	if newPath == firstPath {
+		t.Errorf("--force should have written a newly versioned file, got the original %s", newPath)
+	}
 	updated := readMigrateImportFile(t, newPath)
 	if !strings.Contains(updated, "BIGINT") {
 		t.Errorf("--force should have re-imported new content at %s, got: %q", newPath, updated)
@@ -406,7 +473,7 @@ DROP TABLE users;
 	if !strings.Contains(out, "Dry run") {
 		t.Errorf("expected 'Dry run' in output: %q", out)
 	}
-	if !strings.Contains(out, "00001_add_users.up.sql") {
+	if !strings.Contains(out, "add_users.up.sql") {
 		t.Errorf("expected planned filename in dry-run output: %q", out)
 	}
 }
@@ -436,7 +503,7 @@ CREATE TABLE users (id INT);
 		t.Fatalf("runMigrateImport: %v", err)
 	}
 
-	if got := readMigrationsDir(t, dest); len(got) != 1 || got[0] != "00001_no_down.up.sql" {
+	if got := stemsInOrder(t, dest); len(got) != 1 || got[0] != "no_down" {
 		t.Fatalf("want only the up migration, got %v", got)
 	}
 	if strings.Contains(buf.String(), "Dropped") {

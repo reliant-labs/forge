@@ -16,11 +16,16 @@ module_path: github.com/reliant-labs/forge
 # the whole template history as "behind", which is noise rather than a
 # signal. Note the pin is WEAK in this repo specifically: forge builds
 # forge, so the templates on disk ARE the templates being compared
-# against, and a dev build stamps a +dirty pseudo-version that changes on
-# every commit. Treat it as a reconciliation marker, not a dependency
+# against. Treat it as a reconciliation marker, not a dependency
 # version — for a downstream project the pin is meaningful; here it only
 # says "the four config files below were last merged at this vintage".
-forge_version: v0.0.4-0.20260807040731-181e67475a43+dirty
+#
+# It then sat at a stale `+dirty` pseudo-version long enough that every
+# `forge generate` in this repo warned about it. A pseudo-version is the
+# wrong thing to record here whatever its vintage: no module proxy can
+# serve one, so it names a forge nobody but its builder can obtain. Keep
+# this at the last RELEASED tag, and bump it when you cut the next one.
+forge_version: v0.1.27
 database:
   driver: ""
   migrations_dir: ""

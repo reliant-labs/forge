@@ -79,6 +79,51 @@ func TestValidateGeneratedProject_ReportsUnlinkedNavRoutes(t *testing.T) {
 	}
 }
 
+// TestBaseVersionPseudoVersionSuppressesPinWarning: a dev build in a
+// TAGGED repository must not nag about the pin.
+//
+// Both pseudo-version forms mean the same thing — this commit is named
+// by no tag, so no module proxy can serve it — but only the untagged
+// form (`v0.0.0-…`) was recognised. Once forge had tags, `task
+// install:dev` produced the base-version form (`v0.1.25-0.<ts>-<sha>`),
+// which fell through to the warning. Running `forge generate` in the
+// forge checkout itself therefore printed:
+//
+//	⚠️  forge.yaml pins forge_version v0.0.4-…+dirty but this binary is
+//	    v0.1.25-0.20260930072646-c80a24a951a5. …
+//
+// advising `forge project upgrade` to pin a version nobody can fetch.
+// That is unactionable by construction, which is exactly the noise
+// isUnreleasedBinaryVersion exists to suppress.
+func TestBaseVersionPseudoVersionSuppressesPinWarning(t *testing.T) {
+	unreleased := []string{
+		"v0.0.0-20260101120000-abcdef012345",          // untagged repo
+		"v0.1.25-0.20260930072646-c80a24a951a5",       // tagged repo, commit after the tag
+		"v0.1.25-0.20260930072646-c80a24a951a5+dirty", // ...with local edits
+		"dev", "(devel)", "",
+	}
+	for _, v := range unreleased {
+		if !isUnreleasedBinaryVersion(v) {
+			t.Errorf("binary version %q cannot be fetched from a proxy, so the "+
+				"pin warning is unactionable and must be suppressed", v)
+		}
+		if got := forgeVersionMismatchWarning("v0.1.20", v); got != "" {
+			t.Errorf("forgeVersionMismatchWarning(pin, %q) = %q, want silence", v, got)
+		}
+	}
+
+	// The other direction: a real release must still warn, and an
+	// ordinary pre-release tag is a real release — it is fetchable.
+	for _, v := range []string{"v0.1.25", "v1.2.3-rc1"} {
+		if isUnreleasedBinaryVersion(v) {
+			t.Errorf("%q is a fetchable release; the pin warning must still fire", v)
+		}
+		if got := forgeVersionMismatchWarning("v0.1.20", v); got == "" {
+			t.Errorf("forgeVersionMismatchWarning(pin, %q) was silent; want a warning", v)
+		}
+	}
+}
+
 // TestValidateGeneratedProject_DeletedPageIsNotUnlinked: a route whose
 // page the user DELETED must not be reported as unlinked. There is
 // nothing to link to, so "add it to ALL_ROUTES" would produce a 404.

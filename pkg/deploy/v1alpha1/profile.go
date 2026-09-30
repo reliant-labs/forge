@@ -137,9 +137,16 @@ var FieldProfiles = map[string]Profile{
 	"nodeSelector":   ProfileFull,
 	"tolerations":    ProfileFull,
 	"podAnnotations": ProfileFull,
+	// Pod priority ranks this pod against every other pod on the node,
+	// including other hosted users' pods.
+	"priorityClassName": ProfileFull,
 
 	// A timeout only ever shortens what runs, so it is not an escalation.
 	"activeDeadlineSeconds": ProfileRestricted,
+	// The rollout strategy trades the author's OWN availability against
+	// running one version at a time. It reaches nothing outside their
+	// workload, so a hosted user decides it.
+	"strategy": ProfileRestricted,
 	// The grace period holds a node's capacity past SIGTERM, and the pod
 	// identity is the platform's to set.
 	"terminationGracePeriodSeconds": ProfileFull,
@@ -168,6 +175,7 @@ var fullOnlyReasons = map[string]string{
 	"serviceAccount":                "hosted workloads run under a platform-owned ServiceAccount; naming another one would borrow its identity",
 	"nodeSelector":                  "hosted placement (the isolation pool) is decided by the platform, never by the workload's author",
 	"tolerations":                   "hosted placement (the isolation pool) is decided by the platform, never by the workload's author; a toleration would let a pod onto nodes reserved for something else",
+	"priorityClassName":             "the hosted platform ranks hosted pods itself, on its own priority ladder; a class you chose could preempt another hosted user's pods, or the platform's own",
 	"podAnnotations":                "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns",
 	"terminationGracePeriodSeconds": "the hosted platform sets the grace period, because it holds shared node capacity past SIGTERM; tune PRE_STOP_DELAY and SHUTDOWN_TIMEOUT, which it derives from",
 	"securityContext":               "the hosted platform owns the pod identity (uid, gid, filesystem) its isolation depends on",

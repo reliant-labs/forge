@@ -1587,6 +1587,54 @@ func TestTerminationGraceOverride(t *testing.T) {
 	}
 }
 
+// TestDeploymentStrategy: an explicit strategy wins, Recreate carries no
+// rollingUpdate parameters, and unset keeps Kubernetes' default (which the
+// storage rule still overrides).
+func TestDeploymentStrategy(t *testing.T) {
+	recreate := wl("workers", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Strategy: v1alpha1.StrategyRecreate})
+	dep := objects(t, render(t, v1alpha1.ProfileFull, recreate))["Deployment/workers"]
+	if got := get(dep, "spec", "strategy", "type"); got != "Recreate" {
+		t.Errorf("strategy type = %v, want Recreate", got)
+	}
+	if got := get(dep, "spec", "strategy", "rollingUpdate"); got != nil {
+		t.Errorf("Recreate carries rollingUpdate %v; Kubernetes refuses the combination", got)
+	}
+	rolling := wl("api", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, Strategy: v1alpha1.StrategyRollingUpdate})
+	if got := get(objects(t, render(t, v1alpha1.ProfileFull, rolling))["Deployment/api"], "spec", "strategy", "type"); got != "RollingUpdate" {
+		t.Errorf("strategy type = %v, want RollingUpdate", got)
+	}
+	bare := objects(t, render(t, v1alpha1.ProfileFull, svc("plain")))["Deployment/plain"]
+	if got := get(bare, "spec", "strategy", "type"); got != nil {
+		t.Errorf("unset strategy rendered %v; the cluster default must apply", got)
+	}
+	// The storage rule still forces Recreate on its own.
+	store := wl("store", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, StorageGiB: 10})
+	if got := get(objects(t, render(t, v1alpha1.ProfileFull, store))["Deployment/store"], "spec", "strategy", "type"); got != "Recreate" {
+		t.Errorf("storage strategy = %v, want Recreate", got)
+	}
+}
+
+// TestPriorityClassName: a declared class lands on the pod spec, for a
+// long-running kind and for a batch pod; unset renders nothing, so the
+// cluster's own default applies.
+func TestPriorityClassName(t *testing.T) {
+	w := wl("workspace-proxy", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, PriorityClassName: "reliant-platform"})
+	pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/workspace-proxy"])
+	if got := get(pod, "priorityClassName"); got != "reliant-platform" {
+		t.Errorf("priorityClassName = %v, want reliant-platform", got)
+	}
+	bare := podOf(objects(t, render(t, v1alpha1.ProfileFull, svc("api")))["Deployment/api"])
+	if got := get(bare, "priorityClassName"); got != nil {
+		t.Errorf("unset priorityClassName rendered %v; the cluster default must apply", got)
+	}
+	j := wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}, PriorityClassName: "reliant-platform"})
+	for k, o := range objects(t, render(t, v1alpha1.ProfileFull, j)) {
+		if strings.HasPrefix(k, "Job/") && get(podOf(o), "priorityClassName") != "reliant-platform" {
+			t.Errorf("job priorityClassName = %v", get(podOf(o), "priorityClassName"))
+		}
+	}
+}
+
 // TestActiveDeadline (N2): Job.spec.activeDeadlineSeconds on a standalone
 // Job, and on a CronJob's jobTemplate.
 func TestActiveDeadline(t *testing.T) {

@@ -436,7 +436,16 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 	// A ReadWriteOnce volume is mounted by one pod at a time. A rolling
 	// update starts the new pod while the old one still holds it, and
 	// wedges. Validate guarantees one replica; Recreate is the rollout.
-	if s.StorageGiB > 0 {
+	//
+	// An explicit strategy says the same thing for a workload whose replica
+	// count is a correctness bound rather than a capacity choice. Validate
+	// refuses RollingUpdate beside storage, so the two rules cannot
+	// disagree. Recreate carries no rollingUpdate parameters — Kubernetes
+	// refuses that combination.
+	switch {
+	case s.Strategy != "":
+		dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.DeploymentStrategyType(s.Strategy)}
+	case s.StorageGiB > 0:
 		dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 	}
 	objs := []runtime.Object{dep}
@@ -619,6 +628,12 @@ func (set *workloadSet) podSpec(w *workload, ctx Context, extraEnv []corev1.EnvV
 		Volumes:            volumes,
 		NodeSelector:       s.NodeSelector,
 		Tolerations:        tolerations(s.Tolerations),
+	}
+	// Unset leaves the pod at the cluster's default priority; naming a class
+	// the cluster does not have is refused at admission, so it is the
+	// author's to apply there.
+	if s.PriorityClassName != "" {
+		pod.PriorityClassName = s.PriorityClassName
 	}
 	// An explicit grace period (Full only) wins over the drain-derived one a
 	// long-running kind gets, and is the only one a batch pod gets.

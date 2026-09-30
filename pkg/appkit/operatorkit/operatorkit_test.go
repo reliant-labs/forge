@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -67,6 +68,25 @@ func TestOptionsAreTheOnlyInput(t *testing.T) {
 			t.Errorf("%s resolved to %v, want %v — an ambient environment variable decided a "+
 				"manager setting the caller declared", c.name, c.got, c.want)
 		}
+	}
+}
+
+// TestManagerReleasesTheLeaseOnCancel pins LeaderElectionReleaseOnCancel.
+//
+// Without it the outgoing leader stops renewing but does not release, so the
+// successor waits out the whole LeaseDuration — measured in prod as 45s with
+// no controller reconciling, on every rollout. This is only safe because
+// serverkit.Run waits for RunOperators to return (and therefore for
+// controller-runtime to have drained its controllers) before continuing
+// teardown; see the comment on the option.
+func TestManagerReleasesTheLeaseOnCancel(t *testing.T) {
+	got := managerOptions(Options{LeaderElectionID: "example.com/leader"}, runtime.NewScheme(), "ns", ":8081",
+		defaultLeaseDuration, defaultRenewDeadline, defaultRetryPeriod)
+	if !got.LeaderElectionReleaseOnCancel {
+		t.Error("LeaderElectionReleaseOnCancel is false: the successor waits out the full lease on every rollout")
+	}
+	if !got.LeaderElection {
+		t.Error("LeaderElection is false: releasing a lease nothing takes is meaningless")
 	}
 }
 

@@ -42,6 +42,8 @@ _all = [
         nodeSelector = {"pool" = "general"}
         tolerations = [fw.Toleration {key = "dedicated", operator = "Equal", value = "general", effect = "NoSchedule"}]
         podAnnotations = {"prometheus.io/scrape" = "true"}
+        priorityClassName = "demo-platform"
+        strategy = "Recreate"
     }
     fw.Workload {name = "store", image = "localhost:5050/demo", args = ["store"], ports = [fw.Port {name = "http", port = 8080}], storageGiB = 10}
     fw.Workload {name = "nightly", kind = "cron", image = "localhost:5050/demo", args = ["sweep"], schedule = "@daily"}
@@ -77,7 +79,7 @@ assert_spec_byte_equal = all n in _record {
 }
 # And not vacuously: the covered fields actually made it into the spec.
 _api = _record["api"]
-assert_fields_present = all k in ["kind", "image", "command", "args", "replicas", "resources", "ports", "env", "namespacedRBAC", "serviceAccountAnnotations", "sidecars", "volumes", "nodeSelector", "tolerations", "podAnnotations", "probes"] {
+assert_fields_present = all k in ["kind", "image", "command", "args", "replicas", "resources", "ports", "env", "namespacedRBAC", "serviceAccountAnnotations", "sidecars", "volumes", "nodeSelector", "tolerations", "podAnnotations", "priorityClassName", "strategy", "probes"] {
     k in _api
 }
 assert_storage = _record["store"].storageGiB == 10

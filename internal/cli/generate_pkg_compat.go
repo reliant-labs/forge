@@ -259,5 +259,3 @@ func retiredPkgModuleErr(projectDir string, retired []retiredPkgRequire) error {
 	base := cliutil.UserErr("forge generate (forge version compatibility)", what, "", fix.String())
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }
-
-

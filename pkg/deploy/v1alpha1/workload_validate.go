@@ -18,6 +18,9 @@ var (
 	annotationNameRE   = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
 	annotationPrefixRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 	labelValueRE       = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
+	// dnsSubdomainRE is RFC-1123's subdomain grammar, which names a
+	// cluster-scoped object (a PriorityClass, a ServiceAccount).
+	dnsSubdomainRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 	// appProtocolRE is Kubernetes' appProtocol grammar: an IANA service
 	// name, or a domain-prefixed name.
 	appProtocolRE = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
@@ -54,6 +57,8 @@ var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"nodeSelector":                  scheduledKinds,
 	"tolerations":                   scheduledKinds,
 	"podAnnotations":                scheduledKinds,
+	"priorityClassName":             scheduledKinds,
+	"strategy":                      deploymentKinds,
 	"terminationGracePeriodSeconds": scheduledKinds,
 	"activeDeadlineSeconds":         {KindJob: true, KindCron: true},
 	"securityContext":               scheduledKinds,
@@ -62,6 +67,11 @@ var kindCapabilities = map[string]map[WorkloadKind]bool{
 // scheduledKinds are the kinds that render a pod. A tool is never scheduled,
 // so every pod-level field is refused for it.
 var scheduledKinds = map[WorkloadKind]bool{KindService: true, KindWorker: true, KindJob: true, KindCron: true, KindOperator: true}
+
+// deploymentKinds are the kinds that render a Deployment, which is the only
+// object with a rollout strategy. A batch kind's pods are replaced by
+// creating a new Job, not by a strategy.
+var deploymentKinds = map[WorkloadKind]bool{KindService: true, KindWorker: true, KindOperator: true}
 
 // kindCapabilityReasons explains each refusal, naming the alternative.
 var kindCapabilityReasons = map[string]string{
@@ -85,6 +95,8 @@ var kindCapabilityReasons = map[string]string{
 	"nodeSelector":                  "a tool is never scheduled, so there is no pod to place",
 	"tolerations":                   "a tool is never scheduled, so there is no pod to place",
 	"podAnnotations":                "a tool is never scheduled, so there is no pod to annotate",
+	"priorityClassName":             "a tool is never scheduled, so there is no pod to rank",
+	"strategy":                      "only a Deployment rolls its pods out; a batch kind (job/cron) replaces them by creating a new Job, and a tool is never scheduled",
 	"terminationGracePeriodSeconds": "a tool is never scheduled, so there is no pod to stop",
 	"activeDeadlineSeconds":         "a deadline bounds a run to completion; a long-running kind never completes, so use probes, and a tool is never scheduled",
 	"securityContext":               "a tool is never scheduled, so there is no pod to run",
@@ -130,7 +142,8 @@ func (s WorkloadSpec) Validate(p Profile) error {
 			"ports", "replicas", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
 			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
 			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
-			"terminationGracePeriodSeconds", "activeDeadlineSeconds", "securityContext",
+			"priorityClassName", "strategy", "terminationGracePeriodSeconds", "activeDeadlineSeconds",
+			"securityContext",
 		} {
 			if s.declares(field) && !kindCapabilities[field][kind] {
 				errs = append(errs, fmt.Errorf("%s is not supported for kind %q: %s", field, kind, kindCapabilityReasons[field]))
@@ -144,6 +157,14 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	}
 	if s.StorageGiB < 0 {
 		errs = append(errs, errors.New("storageGiB must not be negative; omit it for a stateless workload"))
+	}
+	switch s.Strategy {
+	case "", StrategyRollingUpdate, StrategyRecreate:
+	default:
+		errs = append(errs, fmt.Errorf("strategy %q must be RollingUpdate or Recreate", s.Strategy))
+	}
+	if s.StorageGiB > 0 && s.Strategy == StrategyRollingUpdate {
+		errs = append(errs, errors.New("strategy RollingUpdate is not allowed with storageGiB: the volume is ReadWriteOnce, so the surge pod can never mount it and the rollout wedges; declare Recreate, or drop the strategy (storage already renders Recreate)"))
 	}
 	if s.StorageGiB > 0 && s.Replicas > 1 {
 		errs = append(errs, fmt.Errorf("storageGiB requires replicas 1 (got %d): the volume is ReadWriteOnce, so a second replica can never mount it, and the workload rolls out with Recreate", s.Replicas))
@@ -259,7 +280,10 @@ func (s WorkloadSpec) Validate(p Profile) error {
 		}
 	}
 
-	// --- grace, deadline, security ---
+	// --- priority, grace, deadline, security ---
+	if n := s.PriorityClassName; n != "" && (len(n) > 253 || !dnsSubdomainRE.MatchString(n)) {
+		errs = append(errs, fmt.Errorf("priorityClassName %q must be a DNS subdomain of at most 253 characters (lowercase alphanumerics, '-' and '.', starting and ending alphanumeric): it names a cluster-scoped PriorityClass", n))
+	}
 	if g := s.TerminationGracePeriodSeconds; g != nil && (*g < 0 || *g > 3600) {
 		errs = append(errs, fmt.Errorf("terminationGracePeriodSeconds must be 0-3600 (got %d)", *g))
 	}
@@ -291,7 +315,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 // deterministic errors.
 var gatingPodFields = []string{
 	"namespacedRBAC", "clusterRBAC", "serviceAccount", "serviceAccountAnnotations", "sidecars",
-	"volumes", "nodeSelector", "tolerations", "podAnnotations",
+	"volumes", "nodeSelector", "tolerations", "podAnnotations", "priorityClassName",
 	"terminationGracePeriodSeconds", "activeDeadlineSeconds", "securityContext",
 }
 
@@ -352,6 +376,10 @@ func (s WorkloadSpec) declares(field string) bool {
 		return len(s.Tolerations) > 0
 	case "podAnnotations":
 		return len(s.PodAnnotations) > 0
+	case "priorityClassName":
+		return s.PriorityClassName != ""
+	case "strategy":
+		return s.Strategy != ""
 	case "terminationGracePeriodSeconds":
 		return s.TerminationGracePeriodSeconds != nil
 	case "activeDeadlineSeconds":

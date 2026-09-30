@@ -36,7 +36,7 @@ of bindings.
 
 A binding is the same `|` an env uses for any refinement. Env NAMES mean
 nothing to forge — any env may bind any workload to any runtime, and one env
-may mix them. This env runs `item` on the forge control plane and keeps
+may mix them. This one runs `item` on the forge control plane and keeps
 `migrate` and `search` on a cluster it operates:
 
 ```kcl
@@ -102,9 +102,24 @@ forge env new cloud --check                                 # no placeholder lef
   `probes` only to change them. A third-party image with ports gets TCP on
   its first port; a worker or job gets none unless it declares one.
 - **Grace period** from the drain env (`PRE_STOP_DELAY + SHUTDOWN_TIMEOUT`),
-  so a rollout never SIGKILLs a pod mid-drain.
+  so a rollout never SIGKILLs a pod mid-drain;
+  `terminationGracePeriodSeconds` overrides it.
 - **Rollout safety** above one replica: a PodDisruptionBudget and soft
-  topology spread.
+  topology spread. Where your pods share nodes with pods that carry a
+  PriorityClass, add `priorityClassName` too — an unranked pod is priority
+  0, so it is preempted repeatedly and the rollout stalls in
+  `FailedScheduling`. The class is cluster-scoped and must already exist on
+  every cluster the workload lands on; a pod naming a missing one is
+  refused at admission.
+- **`strategy`** is how the Deployment replaces its pods. Unset is
+  Kubernetes' `RollingUpdate`, which surges a new pod before the old one
+  stops — so `replicas = 1` does NOT mean one process: two run for the
+  length of every rollout. When the replica count is a correctness bound
+  rather than a capacity choice (a sweeper that is not idempotent under
+  concurrency), declare `strategy = "Recreate"` and accept the gap with no
+  pod. Storage already forces Recreate, and `RollingUpdate` beside
+  `storageGiB` is refused — the ReadWriteOnce volume would deadlock the
+  surge pod.
 - **Pod hardening**: non-root, read-only root filesystem with a `/tmp`
   emptyDir, no ServiceAccount token unless the workload declares RBAC.
 - **`before` jobs** (`migrate` has `before = [fw.BEFORE_ALL]`) as an
@@ -115,13 +130,13 @@ forge env new cloud --check                                 # no placeholder lef
 A hosted workload shares nodes with other hosted users, so the control
 plane admits only what it can run safely there. forge runs the same check
 at render, so a refusal names the workload and field in your env file
-rather than after a publish.
+rather than after a publish. Bind a refused workload to a cluster you
+operate to keep it in a hosted env.
 
 - **Allowed:** kinds `service`, `worker`, `job`; `replicas`, `resources`,
-  `command`/`args`, `ports` (the platform routes the `expose = True` one;
-  its `domains` is NOT allowed here — see Custom domains), `probes`,
-  `storageGiB`,
-  `activeDeadlineSeconds`; env from a literal, `forge.ManagedSecret`,
+  `command`/`args`, `ports` (the platform routes the `expose = True` one),
+  `probes`, `storageGiB`,
+  `activeDeadlineSeconds`, `strategy`; env from a literal, `forge.ManagedSecret`,
   `forge.DatabaseRef` or `forge.WorkloadURL`. A config-projected
   `forge.SecretRef` lowers to a `forge.ManagedSecret` of the same store key
   automatically.
@@ -132,17 +147,14 @@ rather than after a publish.
   - `sidecars`, `volumes`, `securityContext`,
     `terminationGracePeriodSeconds`, `podAnnotations` — the platform
     composes the pod and owns its identity and grace period.
-  - `nodeSelector`, `tolerations` — the platform decides placement.
-  - `ports.domains` — a hosted hostname is a control-plane resource bound
-    per environment, not spec (`forge domain add` / `forge domain bind`).
+  - `nodeSelector`, `tolerations`, `priorityClassName` — the platform
+    decides placement, and ranks hosted pods on its own priority ladder.
+  - `ports.domains` — a hosted hostname is a control-plane resource, not
+    spec; see Custom domains.
   - Raw `secretRef`, `configMapRef` and `fieldRef` env — they address
     namespace objects you did not write.
   - A hostless or unpinned image — the release pins every artifact by
     digest.
-
-A workload the hosted runtime refuses can still live in a hosted env:
-bind it to a cluster you operate (`| {runtime = forge.OnCluster {target =
-...}}`).
 
 ## Pre-flight checks
 
@@ -171,7 +183,7 @@ its CMD the default subcommand (`server`), so a workload's `args` select
 what the pod runs, the same subcommand the host runtime runs.
 
 A hosted env declares no registry either: each workload — and each hosted
-frontend, via `forge.Frontend.image` — declares its own.
+frontend, via `forge.Frontend.image` — names its own.
 
 ### Docker build contexts
 
@@ -180,9 +192,8 @@ sets `context` (a project-root-relative directory) — set that when the
 Dockerfile expects to run from its own directory, or the un-prefixed `COPY
 package.json ./` fails as `failed to compute cache key: "/package.json": not
 found`. Separately, `docker.build_contexts` declares NAMED contexts for
-files outside the project tree, consumed via `COPY --from=<name>`. Both,
-including which one a given Dockerfile needs: load the
-`deploy/build-contexts` skill.
+files outside the project tree, consumed via `COPY --from=<name>`. For both,
+and which one a Dockerfile needs: load `deploy/build-contexts`.
 
 ## Deploy
 
@@ -198,20 +209,19 @@ forge env deploy prod --target item   # one workload
 Each workload deploys through its runtime: cluster workloads are applied to
 the kubectl context the ClusterTarget names (forge refuses when it is
 missing rather than using the current one), after a live preflight that
-every referenced Secret key and image exists. Hosted workloads are
-published to the env's control plane, admitted there under the Restricted
-profile.
+every referenced Secret key and image exists. Hosted workloads publish to
+the env's control plane, admitted there under the Restricted profile.
 
 ### Migrations run BEFORE the rollout
 
 A standalone `kind = "job"` workload is **pre-rollout by default**: `forge
-env deploy` applies it and waits for it to COMPLETE before it applies any
-Deployment in the same cluster group. If it fails, the deploy stops with no
-workload changed and the error prints the exact `kubectl logs` command. The
+env deploy` applies it and waits for it to COMPLETE before any Deployment in
+the same cluster group. If it fails, the deploy stops with no workload
+changed and the error prints the exact `kubectl logs` command. The
 scaffolded `migrate` goes further: `before = [fw.BEFORE_ALL]` runs it as an
-initContainer on every workload, so no new pod serves against an old
-schema. A job that needs this release's workloads running declares
-`deployPhase = "post-rollout"`.
+initContainer on every workload, so no new pod serves against an old schema.
+A job that needs this release's workloads running declares `deployPhase =
+"post-rollout"`.
 
 ### Frontends bind a runtime too
 
@@ -230,7 +240,7 @@ The build facts are the frontend's, the same on every runtime:
 `public_dir` (default `out` for Next.js, `dist` otherwise), `base_path`,
 `bundle`, `cache_control` (OnBucket only). A Next.js frontend published
 statically needs `output: static` in forge.yaml; a server-rendered one is a
-workload with a `forge.DockerBuild` instead.
+workload with a `forge.DockerBuild`.
 
 ```kcl
 _web = forge.Frontend {name = "web", path = "frontends/web", public_dir = "out"}
@@ -245,10 +255,10 @@ frontends.
 
 ### Hosted static sites
 
-A frontend on `forge.OnHosted {}` is published into the platform's bucket
-and CDN, as an OCI release with **no `config.js` in it**, so `forge env
-promote` moves one digest everywhere. `forge build <env> --push` pushes it.
-The frontend's `runtime_config` becomes the spec's `runtimeConfig`:
+A frontend on `forge.OnHosted {}` publishes into the platform's bucket and
+CDN, as an OCI release with **no `config.js` in it**, so `forge env promote`
+moves one digest everywhere. `forge build <env> --push` pushes it. The
+frontend's `runtime_config` becomes the spec's `runtimeConfig`:
 
 ```yaml
 runtimeConfig:
@@ -262,55 +272,29 @@ against workloads in the same environment.
 ### Custom domains
 
 Every hosted site and exposed hosted port already answers on a hostname the
-platform allocates — you never declare that one. To ALSO serve your own, use
-the `forge domain` commands. **A hosted domain is NOT spec**: there is no
-`domains` field on a hosted frontend or a hosted port, and a spec that
-carries one is refused at render.
+platform allocates. To ALSO serve your own, use the `forge domain` commands
+— **a hosted domain is NOT spec**, and a hosted frontend or port carrying
+`domains` is refused at render. `forge.OnCluster` is the exception and keeps
+`Port.domains`. The commands, the reasoning and how to read a bound domain's
+state: load `deploy/domains`.
 
-```
-forge domain add hounders.club --env prod                # prints the DNS to set
-forge domain bind hounders.club --env prod --target web
-forge domain bind www.hounders.club --env prod --redirect-to hounders.club
-```
+## Pod priority on shared nodes
 
-`ls`, `show`, `verify` (check DNS now), `unbind` (stop serving, keep the
-verification) and `rm` (give the hostname up) complete the group; every read
-takes `--json`. `--env` names which control plane to talk to — a domain has
-no environment, only its binding does.
-
-Why a resource, not a field: bringing a name takes an action at YOUR
-registrar, then verification, then a certificate — asynchronous and
-human-gated, none of which a deploy converges. It binds to ONE environment,
-while an env file renders to many. And the platform may allocate a hostname
-itself, which a spec field would contradict.
-
-**`forge.OnCluster` is the exception, and keeps `Port.domains`** — there you
-own the ingress, forge renders the Gateway and HTTPRoute, and
-`forge.WorkloadURL` resolves the exposed port's first domain. At most 8
-names, lowercase DNS, no wildcards, no duplicates.
+`priorityClassName` names a cluster-scoped PriorityClass that ranks a
+workload's pods against every other pod competing for a node. Declare it
+wherever your pods share nodes with pods that already carry one: an
+unranked pod is priority 0, so a higher-priority pod preempts it, and a
+rollout's surge pod can be evicted repeatedly before it ever runs.
 
 ```kcl
-# OnCluster only — on OnHosted this is a render error.
-ports = [fw.Port {name = "http", port = 8080, expose = True, domains = ["api.hounders.club"]}]
+proxy = fw.Workload {name = "proxy", kind = "service", priorityClassName = "acme-platform"}
 ```
 
-`forge env status <env>` and the post-deploy summary print each bound
-domain's state — `pending_dns` | `verifying` | `issuing` | `live` |
-`failed` | `conflict` — with the DNS still to set and the last error:
-
-```
-custom domains (prod):
-  web:
-    hounders.club: pending_dns
-      DNS record to set: A hounders.club → 34.63.203.181
-      DNS record to set: TXT _forge-challenge.hounders.club → tok-123
-    www.hounders.club: live since 2026-02-01T10:00:00Z
-```
-
-A domain that is not live is not a failed deploy: setting the record at your
-registrar is your step, which is why forge prints the record rather than
-blocking on it. `--json` carries the same under each workload's `domains`.
-`forge domain show <hostname>` prints the same for one name.
+Apply the PriorityClass to every cluster the workload lands on BEFORE the
+pods that name it — Kubernetes refuses a pod naming a class the cluster
+does not have. Unset means the cluster's default. `forge.OnCluster` only:
+the host and compose runtimes schedule nothing, and hosted ranks pods on
+its own ladder.
 
 ## forge env up — the local loop
 

@@ -37,6 +37,7 @@ schema Workload:
     nodeSelector?: {str:str}
     podAnnotations?: {str:str}
     ports?: [Port]
+    priorityClassName?: str
     probes?: Probes
     replicas: int = 1
     resources: Resources = Resources {}
@@ -46,6 +47,7 @@ schema Workload:
     serviceAccountAnnotations?: {str:str}
     sidecars?: [Container]
     storageGiB?: int
+    strategy?: str
     terminationGracePeriodSeconds?: int
     tolerations?: [Toleration]
     version?: str
@@ -72,6 +74,8 @@ schema Workload:
         nodeSelector == Undefined or len(nodeSelector) <= 32, "Workload.nodeSelector allows at most 32 entries"
         podAnnotations == Undefined or len(podAnnotations) <= 64, "Workload.podAnnotations allows at most 64 entries"
         ports == Undefined or len(ports) <= 16, "Workload.ports allows at most 16 entries"
+        priorityClassName == Undefined or regex.match(priorityClassName, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"), "Workload.priorityClassName must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+        priorityClassName == Undefined or len(priorityClassName) <= 253, "Workload.priorityClassName must be at most 253 characters"
         replicas >= 1, "Workload.replicas must be at least 1"
         schedule == Undefined or len(schedule) <= 128, "Workload.schedule must be at most 128 characters"
         serviceAccount == Undefined or regex.match(serviceAccount, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"), "Workload.serviceAccount must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
@@ -79,6 +83,7 @@ schema Workload:
         serviceAccountAnnotations == Undefined or len(serviceAccountAnnotations) <= 32, "Workload.serviceAccountAnnotations allows at most 32 entries"
         sidecars == Undefined or len(sidecars) <= 8, "Workload.sidecars allows at most 8 entries"
         storageGiB == Undefined or storageGiB >= 0, "Workload.storageGiB must be at least 0"
+        strategy == Undefined or strategy in ["RollingUpdate", "Recreate"], "Workload.strategy must be one of \"RollingUpdate\", \"Recreate\""
         terminationGracePeriodSeconds == Undefined or terminationGracePeriodSeconds >= 0, "Workload.terminationGracePeriodSeconds must be at least 0"
         terminationGracePeriodSeconds == Undefined or terminationGracePeriodSeconds <= 3600, "Workload.terminationGracePeriodSeconds must be at most 3600"
         tolerations == Undefined or len(tolerations) <= 32, "Workload.tolerations allows at most 32 entries"
@@ -104,6 +109,7 @@ workload_json = lambda v: Workload -> {str:} {
         "nodeSelector": v.nodeSelector
         "podAnnotations": v.podAnnotations
         "ports": [port_json(_i) for _i in v.ports] if v.ports else Undefined
+        "priorityClassName": v.priorityClassName
         "probes": probes_json(v.probes) if v.probes else Undefined
         "replicas": v.replicas
         "resources": resources_json(v.resources) if v.resources else Undefined
@@ -113,6 +119,7 @@ workload_json = lambda v: Workload -> {str:} {
         "serviceAccountAnnotations": v.serviceAccountAnnotations
         "sidecars": [container_json(_i) for _i in v.sidecars] if v.sidecars else Undefined
         "storageGiB": v.storageGiB
+        "strategy": v.strategy
         "terminationGracePeriodSeconds": v.terminationGracePeriodSeconds
         "tolerations": [toleration_json(_i) for _i in v.tolerations] if v.tolerations else Undefined
         "version": v.version
@@ -721,6 +728,7 @@ RESTRICTED_FIELD_REASONS: {str:str} = {
     "namespacedRBAC" = "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)"
     "nodeSelector" = "hosted placement (the isolation pool) is decided by the platform, never by the workload's author"
     "podAnnotations" = "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns"
+    "priorityClassName" = "the hosted platform ranks hosted pods itself, on its own priority ladder; a class you chose could preempt another hosted user's pods, or the platform's own"
     "schedule" = "cron is not available on hosted until metering covers it"
     "securityContext" = "the hosted platform owns the pod identity (uid, gid, filesystem) its isolation depends on"
     "serviceAccount" = "hosted workloads run under a platform-owned ServiceAccount; naming another one would borrow its identity"

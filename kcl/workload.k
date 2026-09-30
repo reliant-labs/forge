@@ -275,6 +275,20 @@ schema Workload:
     nodeSelector?: {str:str}
     tolerations?: [tiers.Toleration]
     podAnnotations?: {str:str}
+    # How the Deployment replaces its pods: "RollingUpdate" (the Kubernetes
+    # default — surges a new pod before the old one stops, so two versions
+    # run at once) or "Recreate" (stops every old pod first, so exactly one
+    # version ever runs, at the cost of a gap with none). Declare Recreate
+    # when the replica count is a CORRECTNESS bound rather than a capacity
+    # choice. Refused beside storageGiB when RollingUpdate: a ReadWriteOnce
+    # volume deadlocks the surge pod.
+    strategy?: str
+    # Ranks these pods against everything else competing for a node, so a
+    # pod is not preempted by neighbours that carry a class. The
+    # PriorityClass is cluster-scoped and must ALREADY EXIST on every
+    # cluster this lands on — a pod naming a missing one is refused at
+    # admission. Unset = the cluster default. Full profile only.
+    priorityClassName?: str
     # Pod-identity overrides (uid/gid, fsGroup, read-only root filesystem).
     securityContext?: tiers.PodSecurity
     # Overrides the grace period Go derives from the drain env

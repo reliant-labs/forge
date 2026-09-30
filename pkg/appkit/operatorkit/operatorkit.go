@@ -268,25 +268,7 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 		}
 	}
 
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:           scheme,
-		LeaderElection:   true,
-		LeaderElectionID: opts.LeaderElectionID,
-		// Empty in-cluster — controller-runtime infers the namespace from
-		// the ServiceAccount mount. Non-empty only via the
-		// Options.LeaderElectionNamespace opt-in above.
-		LeaderElectionNamespace: leaderNS,
-		// Hardened leader-election timings so a transient API-server latency
-		// spike doesn't trip RenewDeadline and self-terminate a healthy
-		// single-replica controller. See defaultLeaseDuration for rationale.
-		LeaseDuration:          &leaseDuration,
-		RenewDeadline:          &renewDeadline,
-		RetryPeriod:            &retryPeriod,
-		HealthProbeBindAddress: probeAddr,
-		// Per-object namespace scoping (nil ByObject leaves every informer
-		// cluster-wide — the legacy shape). See Options.ByObjectNamespaces.
-		Cache: cache.Options{ByObject: withLabelScopes(cacheByObject(opts.ByObjectNamespaces), opts.ByObjectLabels)},
-	})
+	mgr, err := ctrl.NewManager(cfg, managerOptions(opts, scheme, leaderNS, probeAddr, leaseDuration, renewDeadline, retryPeriod))
 	if err != nil {
 		return fmt.Errorf("creating controller manager: %w", err)
 	}
@@ -368,6 +350,53 @@ func withLabelScopes(rows map[client.Object]cache.ByObject, scopes map[client.Ob
 		rows[obj] = row
 	}
 	return rows
+}
+
+// managerOptions builds the ctrl.Options Run hands to NewManager. Split out
+// of Run so the resolved options can be asserted without a reachable
+// cluster: NewManager needs one, and every setting below is a decision this
+// package makes rather than something the environment supplies.
+func managerOptions(opts Options, scheme *runtime.Scheme, leaderNS, probeAddr string, leaseDuration, renewDeadline, retryPeriod time.Duration) ctrl.Options {
+	return ctrl.Options{
+		Scheme:           scheme,
+		LeaderElection:   true,
+		LeaderElectionID: opts.LeaderElectionID,
+		// Empty in-cluster — controller-runtime infers the namespace from
+		// the ServiceAccount mount. Non-empty only via the
+		// Options.LeaderElectionNamespace opt-in above.
+		LeaderElectionNamespace: leaderNS,
+		// Give the lease back on the way out, instead of letting it expire.
+		//
+		// Without this the outgoing leader simply stops renewing, so the
+		// successor waits out the FULL LeaseDuration before it may take
+		// over — 45s with no controller reconciling anything, on every
+		// rollout (measured in prod: "stopped leading" at T, "became
+		// leader" at T+45s). Releasing on cancel hands over in about the
+		// RetryPeriod instead.
+		//
+		// THE INVARIANT THIS DEPENDS ON: the process must have stopped
+		// reconciling by the time it releases, or two leaders act at once
+		// — the exact split-brain the lease exists to prevent.
+		// controller-runtime releases the lease as Start unwinds, after it
+		// has drained its own controllers, and serverkit.Run then WAITS on
+		// operatorWg for RunOperators to return before it continues its
+		// teardown (pkg/serverkit/run.go, "Wait for the operator/controller
+		// manager goroutine to drain"). So Start has returned — and every
+		// reconciler with it — before this process does anything else. A
+		// caller that runs the manager WITHOUT waiting for Run to return
+		// must not set this.
+		LeaderElectionReleaseOnCancel: true,
+		// Hardened leader-election timings so a transient API-server latency
+		// spike doesn't trip RenewDeadline and self-terminate a healthy
+		// single-replica controller. See defaultLeaseDuration for rationale.
+		LeaseDuration:          &leaseDuration,
+		RenewDeadline:          &renewDeadline,
+		RetryPeriod:            &retryPeriod,
+		HealthProbeBindAddress: probeAddr,
+		// Per-object namespace scoping (nil ByObject leaves every informer
+		// cluster-wide — the legacy shape). See Options.ByObjectNamespaces.
+		Cache: cache.Options{ByObject: withLabelScopes(cacheByObject(opts.ByObjectNamespaces), opts.ByObjectLabels)},
+	}
 }
 
 // orDefault* apply a declared value when the caller set one, and the

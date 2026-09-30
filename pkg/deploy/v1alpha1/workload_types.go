@@ -48,6 +48,21 @@ const (
 	DeployPhasePostRollout DeployPhase = "post-rollout"
 )
 
+// DeploymentStrategy is how a Deployment replaces its pods on a rollout.
+//
+// RollingUpdate starts the new pods before the old ones stop, so the
+// workload stays available and two versions of it run at once. Recreate
+// stops every old pod first, so exactly one version ever runs, at the cost
+// of a gap with none.
+//
+// +kubebuilder:validation:Enum=RollingUpdate;Recreate
+type DeploymentStrategy string
+
+const (
+	StrategyRollingUpdate DeploymentStrategy = "RollingUpdate"
+	StrategyRecreate      DeploymentStrategy = "Recreate"
+)
+
 // BeforeAll is the BROADCAST entry for Before: gate every workload in the
 // environment without naming any of them. Schema migration is the case it
 // exists for. An enumerated list of dependents goes stale the day a workload
@@ -298,6 +313,39 @@ type WorkloadSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
+	// Strategy is how the Deployment replaces its pods on a rollout.
+	//
+	// Unset is Kubernetes' default, RollingUpdate, which surges a new pod
+	// before the old one stops — so a workload whose replica count is a
+	// CORRECTNESS bound rather than a capacity choice (a sweeper that is not
+	// idempotent under concurrency) runs twice for the length of a rollout,
+	// which `replicas: 1` looks like it prevents and does not. Declare
+	// Recreate there and accept the gap with no pod.
+	//
+	// RollingUpdate alongside storageGiB is REFUSED: a ReadWriteOnce volume
+	// is mounted by one pod at a time, so the surge pod can never start and
+	// the rollout wedges. Storage alone already renders Recreate.
+	// +optional
+	Strategy DeploymentStrategy `json:"strategy,omitempty"`
+
+	// PriorityClassName names a PriorityClass that ranks these pods against
+	// everything else competing for a node: the scheduler places a higher
+	// priority pod first, and a preempting class evicts lower priority pods
+	// to make room. The case is a workload sharing nodes with pods that
+	// already carry a class — without one it is priority 0 and loses every
+	// contest, so a rollout's surge pod can be preempted repeatedly and take
+	// minutes to land.
+	//
+	// The class is CLUSTER-SCOPED and must already exist: Kubernetes REFUSES
+	// a pod naming a PriorityClass the cluster does not have, so the class
+	// has to be applied to every cluster this workload lands on, before the
+	// pods that name it. Unset leaves the pod at the cluster's default
+	// (globalDefault, else 0). Full profile only.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	PriorityClassName string `json:"priorityClassName,omitempty"`
 
 	// TerminationGracePeriodSeconds overrides the drain-derived grace
 	// period (PRE_STOP_DELAY + SHUTDOWN_TIMEOUT + 5 from the workload's env).

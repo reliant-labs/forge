@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,53 @@ func TestTerminationGracePeriodOverride(t *testing.T) {
 	mustFail(t, WorkloadSpec{Kind: KindTool, Image: pinnedImage, TerminationGracePeriodSeconds: ptr(int32(10))}.Validate(ProfileFull), `terminationGracePeriodSeconds is not supported for kind "tool"`)
 	mustFail(t, WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}, Before: []string{"api"}, TerminationGracePeriodSeconds: ptr(int32(10))}.Validate(ProfileFull),
 		"terminationGracePeriodSeconds is not allowed on a job with before")
+}
+
+// TestDeploymentStrategy: allowed under every profile (it trades only the
+// author's own availability), on the kinds that render a Deployment, and
+// never RollingUpdate alongside a ReadWriteOnce volume.
+func TestDeploymentStrategy(t *testing.T) {
+	for _, k := range []WorkloadKind{KindService, KindWorker, KindOperator} {
+		s := WorkloadSpec{Kind: k, Image: pinnedImage, Strategy: StrategyRecreate}
+		if k == KindOperator {
+			s.CRDs = []string{"W"}
+		}
+		mustPass(t, s, ProfileFull)
+	}
+	mustPass(t, WorkloadSpec{Kind: KindWorker, Image: pinnedImage, Strategy: StrategyRecreate}, ProfileRestricted)
+	mustFail(t, WorkloadSpec{Kind: KindWorker, Image: pinnedImage, Strategy: "recreate"}.Validate(ProfileFull),
+		`strategy "recreate" must be RollingUpdate or Recreate`)
+	for _, k := range []WorkloadKind{KindJob, KindCron, KindTool} {
+		s := WorkloadSpec{Kind: k, Image: pinnedImage, Args: []string{"x"}, Strategy: StrategyRecreate}
+		if k == KindCron {
+			s.Schedule = "@daily"
+		}
+		mustFail(t, s.Validate(ProfileFull), fmt.Sprintf("strategy is not supported for kind %q", k))
+	}
+	// A ReadWriteOnce volume cannot be mounted by a surge pod, so an
+	// explicit RollingUpdate beside storage would deadlock the rollout.
+	mustFail(t, WorkloadSpec{Kind: KindService, Image: pinnedImage, StorageGiB: 10, Strategy: StrategyRollingUpdate}.Validate(ProfileFull),
+		"strategy RollingUpdate is not allowed with storageGiB")
+	mustPass(t, WorkloadSpec{Kind: KindService, Image: pinnedImage, StorageGiB: 10, Strategy: StrategyRecreate}, ProfileFull)
+}
+
+// TestPriorityClassName: Full-only, pod-bearing kinds only, a DNS-1123
+// subdomain of at most 253 characters.
+func TestPriorityClassName(t *testing.T) {
+	ok := WorkloadSpec{Kind: KindWorker, Image: pinnedImage, PriorityClassName: "reliant-platform"}
+	mustPass(t, ok, ProfileFull)
+	mustFail(t, ok.Validate(ProfileRestricted), "priorityClassName: not allowed under the restricted profile")
+	for _, v := range []string{"Reliant-Platform", "-leading", "has_underscore", strings.Repeat("a", 254)} {
+		mustFail(t, WorkloadSpec{Kind: KindWorker, Image: pinnedImage, PriorityClassName: v}.Validate(ProfileFull),
+			"priorityClassName")
+	}
+	mustFail(t, WorkloadSpec{Kind: KindTool, Image: pinnedImage, PriorityClassName: "reliant-platform"}.Validate(ProfileFull),
+		`priorityClassName is not supported for kind "tool"`)
+	mustFail(t, WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}, Before: []string{"api"}, PriorityClassName: "reliant-platform"}.Validate(ProfileFull),
+		"priorityClassName is not allowed on a job with before")
+	if !strings.Contains(FullOnlyReason("priorityClassName"), "preempt") {
+		t.Errorf("priorityClassName's Restricted refusal must say why: %q", FullOnlyReason("priorityClassName"))
+	}
 }
 
 // TestActiveDeadlineSeconds (N2): Restricted-allowed, job/cron only, > 0.

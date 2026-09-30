@@ -30,6 +30,21 @@
 // block cannot see whether the string it is judging came from a raw string, it
 // would fire on a project's own legitimately-named env key, and the remediation
 // it needs to print is per-token prose that does not belong in a schema.
+//
+// surface is package-level pure functions over strings and a directory tree
+// (Check/ScanSource/ScanKCLTree/Error) plus two DISPLAY methods on the Finding
+// data record (Message/Remediation) — which are the only reason the
+// require-contract rule fires at all. There is no constructor, no Deps, no
+// state and no I/O beyond reading the KCL files it is pointed at, so there is
+// nothing a caller would substitute: a contract.go here could only restate the
+// free functions as an interface with exactly one implementation, which the
+// architecture rules call indirection rather than abstraction. Unexporting is
+// not available either — internal/cli/lint and internal/cli/generate_pipeline
+// are cross-package consumers of this surface, and Message/Remediation are how
+// a finding renders itself in both the text and JSON lint arms. Tests are the
+// consumer of the behaviour, exactly as in internal/pkgguard.
+//
+//forge:exclude-contract: analyzer-shaped check, not a service. The exported
 package shellbuildtokens
 
 import (

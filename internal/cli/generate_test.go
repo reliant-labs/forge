@@ -502,7 +502,7 @@ func TestForgeVersionMismatchWarning(t *testing.T) {
 			"explicit mismatch: bump from old to newer",
 			"1.4.0",
 			"1.6.0",
-			"forge.yaml declares forge_version: 1.4.0 but binary is 1.6.0",
+			"forge.yaml pins forge_version 1.4.0 but this binary is 1.6.0",
 		},
 		{
 			"matched version is silent",

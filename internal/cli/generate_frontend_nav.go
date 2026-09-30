@@ -545,11 +545,40 @@ func missingNavRoutes(projectDir, navRel string, pages []templates.NavPageData) 
 	}
 	nav := string(src)
 
+	// src/app, derived from the nav's own path: navRel is
+	// <feDir>/src/components/nav.tsx, so its grandparent is <feDir>/src.
+	appDir := filepath.Join(filepath.Dir(filepath.Dir(navRel)), "app")
+
 	var missing []string
 	for _, p := range pages {
-		if !strings.Contains(nav, `"/`+p.Slug+`"`) {
-			missing = append(missing, "/"+p.Slug)
+		if strings.Contains(nav, `"/`+p.Slug+`"`) {
+			continue
 		}
+		// A page the user DELETED cannot be unlinked — there is nothing
+		// to link to. The pages list is projected from services and
+		// entities, so it names every route forge would scaffold,
+		// including ones the user has since removed. Deleting a
+		// scaffold-once file is an act of ownership the ledger records
+		// (recorded && absent), and forge honors it everywhere else:
+		// the same run prints "scaffold-once file(s) … left absent on
+		// purpose" for exactly these paths.
+		//
+		// Without this, control-plane's internal-console was told on
+		// every generate to add /daemons, /plans, /deployments and
+		// /llm-keys to ALL_ROUTES, while the same output listed all
+		// thirteen of those pages' files as deliberately absent. Acting
+		// on the advice would have pointed the sidebar at four 404s.
+		//
+		// The check is "the user deleted it", not "the file is missing":
+		// a page forge has not written YET is still a genuine unlinked
+		// route once it appears, and must keep warning.
+		listPage := filepath.Join(appDir, p.Slug, "page.tsx")
+		if checksums.ScaffoldRecorded(projectDir, listPage) {
+			if _, err := os.Stat(filepath.Join(projectDir, listPage)); os.IsNotExist(err) {
+				continue
+			}
+		}
+		missing = append(missing, "/"+p.Slug)
 	}
 	return missing
 }

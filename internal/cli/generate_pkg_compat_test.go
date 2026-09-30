@@ -309,20 +309,20 @@ func TestCheckPkgCompat_RetiredPkgInGenModuleIsCaughtAndFixedPerModule(t *testin
 // Generate must never re-pin a project, so a running forge that differs from
 // forge.yaml's forge_version is SAID (and nothing is rewritten) — a silent
 // mismatch is how a `+dirty` build's version ended up committed as a pin.
-func TestWarnForgeVersionPinMismatch(t *testing.T) {
-	var b strings.Builder
-	warnForgeVersionPinMismatch(&b, "v0.1.17", "v0.1.18-0.20260926120145-7787cb0e2b05+dirty")
-	for _, want := range []string{"v0.1.17", "+dirty", "does not re-pin", "forge project upgrade"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("warning missing %q: %q", want, b.String())
+//
+// This used to test a SECOND warning function that said the same thing from
+// checkPkgCompat, so a pinned project got two warnings per generate for one
+// condition. The function is gone; the wording it protected has to survive in
+// the one warning that remains, which is what this now asserts.
+func TestForgeVersionMismatchWarningSaysGenerateDoesNotRePin(t *testing.T) {
+	got := forgeVersionMismatchWarning("v0.1.17", "v0.1.18")
+	for _, want := range []string{"v0.1.17", "v0.1.18", "does not re-pin", "project upgrade"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning missing %q: %q", want, got)
 		}
 	}
-	for _, tc := range [][2]string{{"", "v0.1.17"}, {"v0.1.17", "v0.1.17"}} {
-		b.Reset()
-		warnForgeVersionPinMismatch(&b, tc[0], tc[1])
-		if b.Len() != 0 {
-			t.Errorf("pinned=%q running=%q must be silent, got %q", tc[0], tc[1], b.String())
-		}
+	if got := forgeVersionMismatchWarning("v0.1.17", "v0.1.17"); got != "" {
+		t.Errorf("a matching pin must be silent, got %q", got)
 	}
 }
 

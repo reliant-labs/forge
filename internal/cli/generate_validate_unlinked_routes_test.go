@@ -79,6 +79,110 @@ func TestValidateGeneratedProject_ReportsUnlinkedNavRoutes(t *testing.T) {
 	}
 }
 
+// TestBaseVersionPseudoVersionSuppressesPinWarning: a dev build in a
+// TAGGED repository must not nag about the pin.
+//
+// Both pseudo-version forms mean the same thing — this commit is named
+// by no tag, so no module proxy can serve it — but only the untagged
+// form (`v0.0.0-…`) was recognised. Once forge had tags, `task
+// install:dev` produced the base-version form (`v0.1.25-0.<ts>-<sha>`),
+// which fell through to the warning. Running `forge generate` in the
+// forge checkout itself therefore printed:
+//
+//	⚠️  forge.yaml pins forge_version v0.0.4-…+dirty but this binary is
+//	    v0.1.25-0.20260930072646-c80a24a951a5. …
+//
+// advising `forge project upgrade` to pin a version nobody can fetch.
+// That is unactionable by construction, which is exactly the noise
+// isUnreleasedBinaryVersion exists to suppress.
+func TestBaseVersionPseudoVersionSuppressesPinWarning(t *testing.T) {
+	unreleased := []string{
+		"v0.0.0-20260101120000-abcdef012345",          // untagged repo
+		"v0.1.25-0.20260930072646-c80a24a951a5",       // tagged repo, commit after the tag
+		"v0.1.25-0.20260930072646-c80a24a951a5+dirty", // ...with local edits
+		"dev", "(devel)", "",
+	}
+	for _, v := range unreleased {
+		if !isUnreleasedBinaryVersion(v) {
+			t.Errorf("binary version %q cannot be fetched from a proxy, so the "+
+				"pin warning is unactionable and must be suppressed", v)
+		}
+		if got := forgeVersionMismatchWarning("v0.1.20", v); got != "" {
+			t.Errorf("forgeVersionMismatchWarning(pin, %q) = %q, want silence", v, got)
+		}
+	}
+
+	// The other direction: a real release must still warn, and an
+	// ordinary pre-release tag is a real release — it is fetchable.
+	for _, v := range []string{"v0.1.25", "v1.2.3-rc1"} {
+		if isUnreleasedBinaryVersion(v) {
+			t.Errorf("%q is a fetchable release; the pin warning must still fire", v)
+		}
+		if got := forgeVersionMismatchWarning("v0.1.20", v); got == "" {
+			t.Errorf("forgeVersionMismatchWarning(pin, %q) was silent; want a warning", v)
+		}
+	}
+}
+
+// TestValidateGeneratedProject_DeletedPageIsNotUnlinked: a route whose
+// page the user DELETED must not be reported as unlinked. There is
+// nothing to link to, so "add it to ALL_ROUTES" would produce a 404.
+//
+// control-plane's internal-console hit this on every generate. It was
+// told to add /daemons, /plans, /deployments and /llm-keys — four pages
+// it had deliberately removed, because they are owner-scoped customer
+// surfaces that could only ever render empty against the operator
+// listener. The same generate output listed all thirteen of those
+// pages' files under "scaffold-once file(s) … left absent on purpose",
+// so forge contradicted itself within one run.
+//
+// Deleting a scaffold-once file is an act of ownership the ledger
+// records as recorded-and-absent, which is the signal used here.
+func TestValidateGeneratedProject_DeletedPageIsNotUnlinked(t *testing.T) {
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:      "demo",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs"}},
+	}
+	services := unlinkedRoutesFixtureServices()
+	entities := unlinkedRoutesFixtureEntities()
+
+	cs := &checksums.FileChecksums{}
+	if err := generateFrontendNav(cfg, services, projectDir, entities, cs); err != nil {
+		t.Fatalf("generateFrontendNav: %v", err)
+	}
+
+	// The user takes over the nav and drops the /customers link...
+	navPath := filepath.Join(projectDir, "frontends", "web", "src", "components", "nav.tsx")
+	if err := os.WriteFile(navPath, []byte("// hand-rolled nav, no /customers link\nexport const ALL_ROUTES = [];\n"), 0o644); err != nil {
+		t.Fatalf("simulate user edit: %v", err)
+	}
+
+	// ...because they deleted the page it pointed at. Record the birth
+	// and remove the file: recorded && absent is how the ledger spells
+	// "the user deleted this".
+	pageRel := filepath.Join("frontends", "web", "src", "app", "customers", "page.tsx")
+	pageAbs := filepath.Join(projectDir, pageRel)
+	if err := os.MkdirAll(filepath.Dir(pageAbs), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(pageAbs, []byte("export default function P() { return null }\n"), 0o644); err != nil {
+		t.Fatalf("write page: %v", err)
+	}
+	checksums.RecordScaffold(projectDir, pageRel)
+	checksums.ResetScaffoldLedgerCache()
+	if err := os.Remove(pageAbs); err != nil {
+		t.Fatalf("delete page: %v", err)
+	}
+
+	for _, w := range validateGeneratedProject(projectDir, cfg, services, entities) {
+		if strings.Contains(w, "/customers") {
+			t.Errorf("a deleted page must not be reported as an unlinked route — "+
+				"linking to it would be a 404; got: %q", w)
+		}
+	}
+}
+
 // TestValidateGeneratedProject_PristineNavStaysSilent is the negative
 // control the task requires: a freshly scaffolded, never-touched nav.tsx
 // must NOT produce a warning, because forge is still keeping it current —

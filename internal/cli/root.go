@@ -169,6 +169,13 @@ authored protos, in one call.`,
 			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
 				return nil
 			}
+			// The warning is a nudge aimed at a person. A command forge
+			// runs as a subprocess of its own pipeline has no person to
+			// nudge, and buf spawns the plugin once per proto file — see
+			// machineInvokedAnnotation.
+			if machineInvoked(cmd) {
+				return nil
+			}
 			store, err := loadProjectStore()
 			if err != nil || store == nil {
 				return nil

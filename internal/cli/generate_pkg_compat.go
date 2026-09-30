@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -44,12 +43,11 @@ var legacyForgePkgRequireRE = regexp.MustCompile(
 // forge requirement, or a toolchain that won't tell us how forge resolved.
 // generate's existing validate step remains the backstop for those.
 func checkPkgCompat(projectDir string) error {
-	// A project whose go.mod requires forge has its pin converged to that
-	// require later in this run (stepReconcileForgePin), so a pin that
-	// differs from the RUNNING binary says nothing actionable about it.
-	if _, followsGoMod := goModForgeRequire(projectDir); !followsGoMod {
-		warnForgeVersionPinMismatch(os.Stderr, projectForgeVersionAt(projectDir), buildinfo.Version())
-	}
+	// The pin-vs-running-binary mismatch is said ONCE per generate, by
+	// stepAnnounceProject. It used to be said here too, in the same run
+	// and about the same condition, so every generate against a pinned
+	// project printed two warnings that gave the same advice in
+	// different words. Two spellings of one fact read as two problems.
 	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
 		return nil // no module → nothing to check; not our error to raise
@@ -262,29 +260,4 @@ func retiredPkgModuleErr(projectDir string, retired []retiredPkgRequire) error {
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }
 
-// warnForgeVersionPinMismatch says, once per generate, that the running forge
-// is not the one the project pins in forge.yaml — and that generate will NOT
-// change that.
-//
-// It applies only to projects whose go.mod does not require forge (a CLI or
-// library that never links it), where forge.yaml's forge_version is the pin
-// itself. A project that requires forge has its pin converged to go.mod's
-// require by stepReconcileForgePin instead — a version somebody chose with
-// `go get`, never this binary's.
-//
-// Generate never writes the RUNNING binary's version into a project. A
-// generate that did turned "which forge does this project use" into
-// "whichever forge last ran generate" — a `+dirty` local build no one else
-// can fetch, committed as the project's pin.
-//
-// It is a warning, not a refusal: running a newer or local forge against a
-// pinned project is ordinary development, and the real incompatibilities are
-// refused by checkPkgCompat on evidence, not on a string mismatch.
-func warnForgeVersionPinMismatch(w io.Writer, pinned, running string) {
-	if pinned == "" || running == "" || pinned == running {
-		return
-	}
-	fmt.Fprintf(w, "⚠️  forge.yaml pins forge_version %s; this is forge %s. Generating with it anyway — "+
-		"generate does not re-pin the project. To move the pin deliberately: `forge project upgrade`.\n",
-		pinned, running)
-}
+

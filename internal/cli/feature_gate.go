@@ -33,6 +33,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/spf13/cobra"
+
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
@@ -42,6 +44,27 @@ import (
 // the tree (root + subcommand), so without this guard `forge cluster
 // up` would print the warning twice.
 var experimentalWarningEmitted atomic.Bool
+
+// machineInvokedAnnotation marks a command that forge runs as a
+// subprocess of its own pipeline rather than one a person types. Such a
+// command must not emit interactive nudges: nobody is reading them, and
+// the parent invocation has already said whatever there was to say.
+//
+// The once-per-process guard on the experimental warning cannot cover
+// this, because each subprocess IS a fresh process. `protoc-gen-forge`
+// is spawned by buf once per proto file, so in a project with
+// experimental features on, `forge generate` printed the same
+// "warning: experimental: …" line 27 times in control-plane — once for
+// the user's own invocation and 26 more from plugin subprocesses that
+// no user asked for.
+const machineInvokedAnnotation = "forge.machine-invoked"
+
+// machineInvoked reports whether cmd is a forge-spawned subprocess
+// rather than a user-typed command.
+func machineInvoked(cmd *cobra.Command) bool {
+	_, ok := cmd.Annotations[machineInvokedAnnotation]
+	return ok
+}
 
 // emitExperimentalWarning prints the canonical "experimental features
 // are on" line to stderr the first time it's called per process.

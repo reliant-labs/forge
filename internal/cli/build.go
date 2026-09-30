@@ -636,6 +636,10 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if opts.plan {
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
+	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
+		return err
+	}
+	registerBuildStorage(ctx, projectDirForKCL(), entities, push)
 
 	// Create output directory
 	if err := os.MkdirAll(opts.outputDir, 0o755); err != nil {
@@ -1512,6 +1516,9 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	}
 	ledger, err := ledgerFor(ctx, projectDir, env)
 	if err != nil {
+		return release.Release{}, err
+	}
+	if err := pinStorageRelease(rel); err != nil {
 		return release.Release{}, err
 	}
 	created, err := ledger.Releases.Cut(ctx, rel)

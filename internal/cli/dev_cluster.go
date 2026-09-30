@@ -509,6 +509,11 @@ func startK3dCluster(ctx context.Context, name string) error {
 // injecting CoreDNS host aliases; authoritative running state plus Forge's
 // subsequent readiness/DNS reconciliation is sufficient to continue safely.
 func createK3dCluster(ctx context.Context, name string, args []string) error {
+	var storageErr error
+	args, storageErr = addClusterStorageArgs(args)
+	if storageErr != nil {
+		return storageErr
+	}
 	if err := runK3dClusterLifecycle(ctx, name, "create",
 		func(commandCtx context.Context) error {
 			return runK3dClusterCreateCommandFn(commandCtx, args)

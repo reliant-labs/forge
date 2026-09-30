@@ -199,8 +199,14 @@ func (kubectlImageLister) ListWorkloadImages(ctx context.Context, kubeContext, n
 type parsedImageRef struct {
 	// Name is the bare image name — the last path segment before any tag or
 	// digest ("control-plane" from "ghcr.io/acme/control-plane@sha256:…").
-	// This is the key a binding's Resolved map uses.
+	// Used for display and for matching a binding that names an image this
+	// way; it is NOT sufficient on its own to identify one (see Repository).
 	Name string
+	// Repository is the reference with tag and digest removed, registry host
+	// included ("ghcr.io/acme/control-plane"). This is the identity a
+	// binding's Resolved map actually keys by, because that is what promote
+	// pushed to and resolved a digest for.
+	Repository string
 	// Digest is the "sha256:…" portion, empty when the ref is tag-only.
 	Digest string
 	// Tag is the ":tag" portion, empty when absent.
@@ -232,12 +238,69 @@ func parseImageRef(ref string) parsedImageRef {
 		rest = rest[:idx]
 	}
 
+	out.Repository = rest
 	if idx := strings.LastIndex(rest, "/"); idx >= 0 {
 		out.Name = rest[idx+1:]
 	} else {
 		out.Name = rest
 	}
 	return out
+}
+
+// runningRef is one image reference observed in the cluster, with the workload
+// it was found on so a report can name where to look.
+type runningRef struct {
+	parsed   parsedImageRef
+	workload string
+}
+
+// matchDeclaredImage finds the cluster references that satisfy one declared
+// image name.
+//
+// A binding may name an image either as a full repository path (what promote
+// writes, and what every real ledger contains) or as a bare name (what a
+// hand-written fixture tends to contain). Both must resolve, so the match is:
+//
+//  1. exact repository equality — the normal case;
+//  2. otherwise, one is a PATH-SEGMENT SUFFIX of the other.
+//
+// SEGMENT-ALIGNED, not a raw strings.HasSuffix. "…/my-control-plane" ends with
+// "control-plane" as text while being a different image, and a verifier that
+// accepted it would report a match for something the release never published.
+// The boundary check is the difference between a suffix rule and a wrong
+// answer.
+//
+// The suffix is deliberately NOT reduced to the last segment alone. Two
+// registries can each host ".../reliant-prod/control-plane", and a cluster
+// pulling from the one the binding does not name is a real finding — the env
+// is running bytes from somewhere the release did not publish to. Comparing
+// bare names would call that clean.
+func matchDeclaredImage(byRepo map[string][]runningRef, declaredName string) []runningRef {
+	if refs, ok := byRepo[declaredName]; ok {
+		return refs
+	}
+	var out []runningRef
+	for repo, refs := range byRepo {
+		if repositorySuffixMatch(repo, declaredName) {
+			out = append(out, refs...)
+		}
+	}
+	return out
+}
+
+// repositorySuffixMatch reports whether two repository references name the
+// same image, allowing either to be the more qualified spelling.
+func repositorySuffixMatch(a, b string) bool {
+	if a == b {
+		return true
+	}
+	longer, shorter := a, b
+	if len(shorter) > len(longer) {
+		longer, shorter = shorter, longer
+	}
+	// The shorter must occupy whole trailing segments of the longer, which
+	// means the character before it is the separator.
+	return shorter != "" && strings.HasSuffix(longer, "/"+shorter)
 }
 
 // verifyEnvImages compares a binding's declared digests against what the
@@ -254,17 +317,22 @@ func parseImageRef(ref string) parsedImageRef {
 // release — a database, a sidecar proxy, another team's chart — and a verifier
 // that failed on those would be red permanently for correct environments.
 func verifyEnvImages(running []cluster.WorkloadImage, declared map[string]string) []imageVerification {
-	// Index the cluster's images by bare name. Several workloads commonly
-	// share one image (an api-server and a worker off the same build), so
-	// this is one-to-many.
-	type runningRef struct {
-		parsed   parsedImageRef
-		workload string
-	}
-	byName := map[string][]runningRef{}
+	// Index the cluster's images by REPOSITORY PATH — the reference with any
+	// tag and digest cut away, registry host included. Several workloads
+	// commonly share one image (an api-server and a worker off the same
+	// build), so this is one-to-many.
+	//
+	// NOT BY BARE NAME, which is what this did until it reported a healthy
+	// production namespace as four MISSING images. `forge env promote` keys
+	// a binding's Resolved map by the full path it pushed to
+	// ("us-central1-docker.pkg.dev/proj/repo/control-plane"), because that
+	// is the identity it resolved a digest for — so a bare-name index could
+	// never match a real binding. Every test declared bare names too, which
+	// is how the asymmetry stayed invisible.
+	byRepo := map[string][]runningRef{}
 	for _, w := range running {
 		p := parseImageRef(w.Image)
-		if p.Name == "" {
+		if p.Repository == "" {
 			continue
 		}
 		// A config-borne reference is labelled with the env var it came
@@ -274,7 +342,7 @@ func verifyEnvImages(running []cluster.WorkloadImage, declared map[string]string
 		if w.EnvVar != "" {
 			where = fmt.Sprintf("%s/%s[%s $%s]", w.Kind, w.Name, w.Container, w.EnvVar)
 		}
-		byName[p.Name] = append(byName[p.Name], runningRef{
+		byRepo[p.Repository] = append(byRepo[p.Repository], runningRef{
 			parsed:   p,
 			workload: where,
 		})
@@ -291,7 +359,7 @@ func verifyEnvImages(running []cluster.WorkloadImage, declared map[string]string
 		want := declared[name]
 		res := imageVerification{Image: name, Declared: want}
 
-		refs := byName[name]
+		refs := matchDeclaredImage(byRepo, name)
 		if len(refs) == 0 {
 			res.State = imageMissing
 			res.Detail = "declared by the binding but no workload in this namespace runs it — never deployed, or deleted since"

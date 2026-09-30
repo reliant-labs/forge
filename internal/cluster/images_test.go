@@ -136,3 +136,72 @@ func TestLooksLikeImageRef(t *testing.T) {
 		}
 	}
 }
+
+// TestParseWorkloadImages_FinishedJobsAreSkipped is the regression test for a
+// verifier that reported permanent DRIFT against a correctly deployed prod.
+//
+// THE BUG. Every Deployment in prod ran the digest release v1.7.5 declared,
+// but ten COMPLETED Jobs — `control-plane-migrate` and
+// `control-plane-idp-provision`, one surviving pair per past release — still
+// carried the digests of the releases that created them. Those were read as
+// running images, so the report said "workloads run 5 DIFFERENT digests — a
+// partial rollout", naming a rollout that had in fact fully succeeded.
+//
+// A FINISHED JOB IS A HISTORICAL RECORD, NOT A RUNNING WORKLOAD. Its pods are
+// gone; its image says which bytes ran once, in the past, on purpose. Counting
+// it means drift can NEVER clear: the evidence is immutable and accumulates
+// with every deploy, so the command is red forever on a healthy environment,
+// which is the failure mode that teaches people to stop reading it.
+//
+// An ACTIVE Job is still included — a migration mid-flight is genuinely
+// running, and that is exactly when someone wants to know which build it is.
+func TestParseWorkloadImages_FinishedJobsAreSkipped(t *testing.T) {
+	const jobsJSON = `{"items":[
+	  {"kind":"Job","metadata":{"name":"migrate-old"},
+	   "status":{"succeeded":1,"completionTime":"2026-01-01T00:00:00Z"},
+	   "spec":{"template":{"spec":{"containers":[
+	     {"name":"migrate","image":"reg.example.com/acme/control-plane@sha256:old"}]}}}},
+	  {"kind":"Job","metadata":{"name":"migrate-failed"},
+	   "status":{"failed":1},
+	   "spec":{"template":{"spec":{"containers":[
+	     {"name":"migrate","image":"reg.example.com/acme/control-plane@sha256:bad"}]}}}},
+	  {"kind":"Job","metadata":{"name":"migrate-running"},
+	   "status":{"active":1},
+	   "spec":{"template":{"spec":{"containers":[
+	     {"name":"migrate","image":"reg.example.com/acme/control-plane@sha256:now"}]}}}},
+	  {"kind":"Deployment","metadata":{"name":"api"},
+	   "spec":{"template":{"spec":{"containers":[
+	     {"name":"api","image":"reg.example.com/acme/control-plane@sha256:now"}]}}}}
+	]}`
+
+	images, err := parseWorkloadImages([]byte(jobsJSON))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	for _, img := range images {
+		switch img.Name {
+		case "migrate-old":
+			t.Error("a SUCCEEDED Job is history, not a running workload — counting it makes drift permanent")
+		case "migrate-failed":
+			t.Error("a FAILED Job's image never took over anything; it must not be read as running")
+		}
+	}
+
+	// The two things that ARE running must survive.
+	var sawActiveJob, sawDeployment bool
+	for _, img := range images {
+		if img.Name == "migrate-running" {
+			sawActiveJob = true
+		}
+		if img.Name == "api" {
+			sawDeployment = true
+		}
+	}
+	if !sawActiveJob {
+		t.Error("an ACTIVE Job is running right now — a migration mid-flight is exactly what you want to see")
+	}
+	if !sawDeployment {
+		t.Error("Deployments must still be read")
+	}
+}

@@ -116,6 +116,42 @@ type workloadItemJSON struct {
 			} `json:"spec"`
 		} `json:"jobTemplate"`
 	} `json:"spec"`
+	// Status is read for ONE purpose: telling a Job that is still running
+	// from one that has already finished. See finished().
+	Status struct {
+		Active         int    `json:"active"`
+		Succeeded      int    `json:"succeeded"`
+		Failed         int    `json:"failed"`
+		CompletionTime string `json:"completionTime"`
+	} `json:"status"`
+}
+
+// finished reports whether this item is a Job that has already run to a
+// conclusion, and whose image is therefore HISTORY rather than something the
+// namespace is running.
+//
+// WHY THIS EXISTS. A Job is not replaced on redeploy the way a Deployment is —
+// each release creates a new one and the old, completed Jobs remain as a
+// record. Reading their images made `forge env verify` report a fully and
+// correctly deployed production namespace as drifted across five digests,
+// because ten finished `control-plane-migrate` / `-idp-provision` Jobs still
+// carried the digests of the releases that created them. That drift could
+// never clear: the evidence is immutable and grows with every deploy, so the
+// command was permanently red on a healthy env.
+//
+// ONLY JOBS. A CronJob's template is the NEXT run's spec and is always live. A
+// Deployment, StatefulSet or DaemonSet has no terminal state to check.
+//
+// An ACTIVE Job is deliberately still counted: a migration in flight really is
+// running, and that is precisely when someone needs to know which build it is.
+func (w workloadItemJSON) finished() bool {
+	if w.Kind != "Job" {
+		return false
+	}
+	if w.Status.Active > 0 {
+		return false
+	}
+	return w.Status.Succeeded > 0 || w.Status.Failed > 0 || w.Status.CompletionTime != ""
 }
 
 // ListWorkloadImages returns every container image declared by every workload
@@ -169,6 +205,11 @@ func parseWorkloadImages(raw []byte) ([]WorkloadImage, error) {
 
 	var images []WorkloadImage
 	for _, item := range list.Items {
+		// A completed Job's image is a record of what ran once, not of what
+		// this namespace runs now.
+		if item.finished() {
+			continue
+		}
 		tmpl := item.Spec.Template
 		if tmpl == nil && item.Spec.JobTemplate != nil {
 			tmpl = item.Spec.JobTemplate.Spec.Template

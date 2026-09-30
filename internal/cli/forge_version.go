@@ -45,7 +45,14 @@ func forgeVersionMismatchWarning(yamlVersion, binaryVersion string) string {
 		return ""
 	}
 
-	return fmt.Sprintf("⚠️  forge.yaml declares forge_version: %s but binary is %s. Run '%s project upgrade' to migrate.", yamlVersion, binaryVersion, Name())
+	// Says the whole thing once. generate NOT re-pinning is the part
+	// users most need: a generate that wrote the running binary's
+	// version into forge.yaml is how a `+dirty` local build nobody else
+	// can fetch ended up committed as a project's pin.
+	return fmt.Sprintf("⚠️  forge.yaml pins forge_version %s but this binary is %s. "+
+		"Generating with it anyway — generate does not re-pin the project. "+
+		"To move the pin deliberately: '%s project upgrade'.",
+		yamlVersion, binaryVersion, Name())
 }
 
 // isUnreleasedBinaryVersion reports whether the binary's reported version

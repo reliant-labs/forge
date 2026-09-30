@@ -124,6 +124,22 @@ _render_listener = lambda l: any, gw_tls: any, gw_host: str -> any {
     }
 }
 
+# spec.allowedListeners — which ListenerSets may attach listeners to
+# this Gateway. Gateway API denies all of them by default, so a Gateway
+# that expects controller-managed listeners MUST say so.
+#
+# `selector` rides only the Selector form; the schema rejects setting it
+# otherwise, so it cannot be silently ignored here.
+_render_allowed_listeners = lambda al: any -> any {
+    {
+        namespaces = {
+            from = al.from_namespaces
+            if al.from_namespaces == "Selector":
+                selector = {matchLabels = al.selector}
+        }
+    }
+}
+
 # A literal IP pin does NOT go in spec.addresses — see the block comment
 # on render_gateway. These two helpers split a Gateway's addresses by the
 # mechanism that carries them to the cluster.
@@ -266,6 +282,12 @@ render_gateway = lambda gw: any, namespace: str -> [any] {
                         name = _lb_ip_proxy_name(gw)
                     }
                 }
+            # Which ListenerSets may attach listeners here. OMITTED when
+            # unset, deliberately: Gateway API's own default is to allow
+            # none, so rendering an empty block would state the default
+            # as config and churn every existing Gateway for no change.
+            if gw.allowed_listeners:
+                allowedListeners = _render_allowed_listeners(gw.allowed_listeners)
             listeners = [_render_listener(l, gw.tls, gw.host) for l in gw.listeners]
         }
     }] + render_gateway_lb_ip_proxy(gw, namespace)

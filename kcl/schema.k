@@ -392,6 +392,48 @@ schema GatewayAddress:
     check:
         value, "GatewayAddress.value is required (reservation name or IP)"
 
+schema GatewayAllowedListeners:
+    """Which ListenerSets may attach listeners to a Gateway
+    (spec.allowedListeners).
+
+    A ListenerSet (Gateway API v1.5+, standard channel) declares
+    listeners in its OWN object that attach to a Gateway. That is how a
+    controller adds a listener per hostname — a per-domain TLS
+    certificate, say — without read-modify-writing the shared Gateway,
+    and without spending one of its 64 listener slots each time.
+
+    ⚠️ ATTACHMENT IS DENIED BY DEFAULT. Gateway API's default is to allow
+    NO ListenerSets, so a Gateway that does not set this field rejects
+    every one of them. Verified on Envoy Gateway v1.9.2 / Gateway API
+    v1.6.2: without it the ListenerSet reports
+
+        Accepted=False  reason=NotAllowed
+        "ListenerSet attachment from namespace <ns> not allowed by Gateway <ns>/<name>"
+
+    and with `namespaces.from = "Same"` it reports Accepted=True,
+    Programmed=True, Conflicted=False while the Gateway's own listeners
+    keep their attached routes.
+
+    PREFER "Same". A ListenerSet supplies cert material for a hostname
+    the Gateway then serves, so admitting one from another namespace lets
+    that namespace terminate TLS on this load balancer. Keep it to the
+    namespace that owns the Gateway unless there is a deliberate reason
+    not to, and use `selector` rather than `All` when there is.
+    """
+    # Same     — only ListenerSets in the Gateway's own namespace.
+    # Selector — namespaces matching `selector` below.
+    # All      — any namespace. Rarely right; see the note above.
+    from_namespaces: "Same" | "Selector" | "All" = "Same"
+    # Label selector over NAMESPACES, used only when from_namespaces is
+    # "Selector". Maps to allowedListeners.namespaces.selector.matchLabels.
+    selector: {str:str} = {}
+
+    check:
+        from_namespaces != "Selector" or selector, \
+            "GatewayAllowedListeners.selector is required when from_namespaces == 'Selector' (an empty selector would match no namespace and silently deny every ListenerSet)"
+        from_namespaces == "Selector" or not selector, \
+            "GatewayAllowedListeners.selector is only used when from_namespaces == 'Selector' (it is ignored for '${from_namespaces}', which would be a silent no-op)"
+
 schema Gateway:
     """A Gateway API Gateway. One Gateway exposes one or more listeners
     on the cluster's load balancer (or k3d host port) and is referenced
@@ -468,6 +510,7 @@ schema Gateway:
     raw_policy: str = ""
     addresses: [GatewayAddress] = []
     cluster?: Cluster
+    allowed_listeners?: GatewayAllowedListeners
 
     check:
         name, "Gateway.name is required"

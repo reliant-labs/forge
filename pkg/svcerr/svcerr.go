@@ -472,6 +472,15 @@ func Cause(err error) error {
 // The corollary for callers: prose meant for a client goes in the
 // constructor's argument. Nothing outside it crosses.
 func clientMessage(err error) (string, bool) {
+	// An explicit WithMessage override wins over everything below it. It
+	// MUST be checked first: the error it wraps is usually a constructor
+	// result, so the detailError branch would otherwise match the inner
+	// error and publish the composed text the override exists to replace
+	// ("that coupon code isn't valid" losing to "coupon not found").
+	var me *messageError
+	if errors.As(err, &me) {
+		return me.msg, true
+	}
 	var de *detailError
 	if errors.As(err, &de) {
 		return de.detail, true
@@ -713,6 +722,73 @@ func WithDetail(err error, detail proto.Message) error {
 	}
 	ce.AddDetail(d)
 	return ce
+}
+
+// messageError replaces the text a client reads while leaving the error
+// chain — and therefore the Connect code — completely untouched.
+//
+// Error() is msg alone, which is what makes it the client-visible message:
+// connect.Error.Message() is literally err.Error(). Unwrap returns the
+// original, so errors.Is/errors.As, codeFor and codeForRecognized all keep
+// working through it, and the WRAPPED error survives as the server-side
+// cause (see [Cause]) exactly as it would have without the override.
+type messageError struct {
+	msg string
+	err error
+}
+
+func (e *messageError) Error() string { return e.msg }
+func (e *messageError) Unwrap() error { return e.err }
+
+// WithMessage sets the EXACT text the client reads, on any code, without
+// changing the code or breaking the error chain.
+//
+//	// service layer keeps its own domain sentinel:
+//	return svcerr.WithMessage(svcerr.NotFound("coupon"), "that coupon code isn't valid")
+//	// handler layer, unchanged: return nil, svcerr.Wrap(err)
+//
+// # Why this exists
+//
+// Every other constructor here composes its message from a DETAIL plus a
+// shape the package chose. NotFound is the clearest case: it appends " not
+// found", so NotFound("that coupon code isn't valid") renders "that coupon
+// code isn't valid not found" and there is no argument that produces the
+// sentence a user should see. Nor can WithCause be used for it — that
+// deliberately takes the OUTER error's message and demotes the inner one to
+// a server-side cause, so the display copy is the thing it drops.
+//
+// The practical consequence was that any handler needing user-facing copy on
+// a standard code had to leave svcerr and hand-roll
+// connect.NewError(connect.CodeNotFound, errors.New("...")) — which is the
+// per-handler error mapping forgeconv-no-handler-error-mapping exists to
+// stop, and which loses the sentinel, the reason header and the cause along
+// with it. The rule was right and the library had no answer; this is the
+// answer.
+//
+// # What it does NOT do
+//
+// It does not widen what reaches the wire. The message is a string the
+// application passes in deliberately — the same standing as the detail given
+// to any constructor — and it REPLACES the message rather than appending to
+// it, so no wrapped context comes along. An unrecognised driver error given
+// a message is still an unrecognised driver error: it keeps CodeInternal,
+// and its own text stays withheld as the cause.
+//
+// Behavior:
+//   - WithMessage(nil, _) returns nil.
+//   - WithMessage(err, "") returns err unchanged — an empty message is not a
+//     message, and silently publishing "" would be worse than declining.
+//   - Otherwise the returned error carries msg as its client-visible text,
+//     preserves err's Connect code, stays errors.Is/As-transparent, and
+//     composes with WithReason, WithCause and WithDetail in any order.
+func WithMessage(err error, msg string) error {
+	if err == nil {
+		return nil
+	}
+	if msg == "" {
+		return err
+	}
+	return &messageError{msg: msg, err: err}
 }
 
 // reasonError annotates an error with a stable machine-readable reason

@@ -177,6 +177,13 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+
+	// Version rules are about the SET of migrations, not any one file, so
+	// they run over the whole list rather than inside lintMigrationFile.
+	// The merge-base is resolved once: it is a git call, and it answers
+	// "which of these files are new on this branch".
+	mergeBaseMax, haveMergeBase := mergeBaseMaxVersion(repoRootOf(dir), dir)
+	findings = append(findings, lintVersions(files, mergeBaseMax, haveMergeBase)...)
 	if len(files) == 0 {
 		if len(findings) > 0 {
 			return Result{Findings: findings, Dir: dir}, nil
@@ -486,6 +493,10 @@ func RemediationFor(rule string) string {
 		return VolatileDefaultRemediation
 	case RuleNoDownMigration:
 		return NoDownMigrationRemediation
+	case RuleDuplicateVersion:
+		return DuplicateVersionRemediation
+	case RuleNonTimestampVersion:
+		return NonTimestampVersionRemediation
 	default:
 		return DestructiveChangeRemediation
 	}

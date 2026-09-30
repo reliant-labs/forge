@@ -284,7 +284,7 @@ func (mg *Migrator) Up() (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := verifyApplied(context.Background(), mg.db, mg.source, before); err != nil {
+	if err := checkApplied(context.Background(), mg.db, mg.source, before); err != nil {
 		return Result{}, err
 	}
 	if ahead, err := classifyAhead(context.Background(), mg.db, mg.source, before); err != nil || ahead != nil {

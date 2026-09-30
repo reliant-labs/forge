@@ -265,19 +265,19 @@ DROP FUNCTION foo();
 	}
 }
 
-// TestMigrateImportSortsAfterExistingSequentialPacks is the mid-adoption
-// case: a project whose migrations dir already holds 5-digit pack files
-// imports new ones, which are timestamp-versioned. The imported migrations
-// must sort AFTER every existing file — that ordering is the entire reason
-// old sequential files never need renaming.
-func TestMigrateImportSortsAfterExistingSequentialPacks(t *testing.T) {
+// TestMigrateImportSortsAfterExistingSequentialFiles is the mid-adoption
+// case: a project whose migrations dir already holds 5-digit sequential
+// files imports new ones, which are timestamp-versioned. The imported
+// migrations must sort AFTER every existing file — that ordering is the
+// entire reason old sequential files never need renaming.
+func TestMigrateImportSortsAfterExistingSequentialFiles(t *testing.T) {
 	dest := t.TempDir()
 	for _, name := range []string{
 		"00001_audit_log.up.sql",
 		"00002_api_key.up.sql",
 		"00003_session.up.sql",
 	} {
-		if err := os.WriteFile(filepath.Join(dest, name), []byte("-- pack\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dest, name), []byte("-- existing\n"), 0o644); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
 	}
@@ -311,11 +311,11 @@ DROP TABLE orgs;
 		t.Fatalf("runMigrateImport: %v", err)
 	}
 
-	// The pack files keep their sequential names, and the imports land
-	// after them in version order.
+	// The pre-existing files keep their sequential names, and the imports
+	// land after them in version order.
 	want := []string{"audit_log", "api_key", "session", "add_users", "add_orgs"}
 	if got := stemsInOrder(t, dest); !slices.Equal(got, want) {
-		t.Errorf("version order = %v, want %v (imports must sort after existing packs)", got, want)
+		t.Errorf("version order = %v, want %v (imports must sort after existing files)", got, want)
 	}
 
 	for _, stem := range []string{"add_users", "add_orgs"} {
@@ -326,8 +326,8 @@ DROP TABLE orgs;
 		}
 	}
 
-	if got := readMigrateImportFile(t, filepath.Join(dest, "00001_audit_log.up.sql")); got != "-- pack\n" {
-		t.Errorf("pack file 00001 was clobbered: %q", got)
+	if got := readMigrateImportFile(t, filepath.Join(dest, "00001_audit_log.up.sql")); got != "-- existing\n" {
+		t.Errorf("pre-existing file 00001 was clobbered: %q", got)
 	}
 }
 

@@ -483,10 +483,10 @@ Three things worth knowing before you rely on it:
 
 `forge.yaml`'s `features:` block gates `deploy`, `build`, `ci`, `codegen`,
 `orm`, `migrations`, `frontend`, `observability`, `hot_reload`,
-`contracts`, `docs` — plus experimental `ingress`, `external_builds`,
-`operators`, `strict_wiring` under `features.experimental:`. Each defaults
-from the project's derived shape; an explicit `features.<name>:
-true|false` wins.
+`contracts`, `docs`, `ingress`, `operators` — plus experimental
+`strict_wiring`, `reconcile` under `features.experimental:`. Each defaults
+from the derived shape; explicit `features.<name>` wins. `ingress` and
+`operators` derive false (opt-in).
 
 ## k3d local-registry mirror
 

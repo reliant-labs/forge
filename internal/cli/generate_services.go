@@ -179,9 +179,9 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 			}
 			if result.AllUpToDate {
 				if webhookOnly[svc.Name] {
-					fmt.Printf("  ⏭️  Skipped %s/ (webhook-only — no CRUD stubs emitted)\n", relServiceDir)
+					routinef("  ⏭️  Skipped %s/ (webhook-only — no CRUD stubs emitted)\n", relServiceDir)
 				} else {
-					fmt.Printf("  ⏭️  Skipped %s/ (all handlers up to date)\n", relServiceDir)
+					routinef("  ⏭️  Skipped %s/ (all handlers up to date)\n", relServiceDir)
 				}
 			} else {
 				fmt.Printf("  ✅ Scaffolded %d new handler stub(s) under %s/, one file per RPC (yours to edit): %s\n",
@@ -275,7 +275,7 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string, cs *
 		if written {
 			fmt.Printf("  ✅ Updated internal/handlers/mocks/%s_mock.go\n", mockName)
 		} else {
-			fmt.Printf("  ⏭️  Skipped internal/handlers/mocks/%s_mock.go (no RPCs)\n", mockName)
+			routinef("  ⏭️  Skipped internal/handlers/mocks/%s_mock.go (no RPCs)\n", mockName)
 		}
 	}
 

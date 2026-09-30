@@ -71,7 +71,7 @@ func missingScaffoldNotice(paths []string) string {
 	sort.Strings(sorted)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "\nℹ️  %d scaffold-once file(s) forge has written before are absent — left absent on purpose:\n", len(sorted))
+	fmt.Fprintf(&b, "\nℹ️  the set of absent scaffold-once files changed — %d now absent, left absent on purpose:\n", len(sorted))
 	for _, p := range sorted {
 		fmt.Fprintf(&b, "   - %s\n", p)
 	}
@@ -83,6 +83,7 @@ func missingScaffoldNotice(paths []string) string {
 	b.WriteString("    (e.g. a CRUD lifecycle test whose fixtures no longer match migrations you have\n")
 	b.WriteString("    since corrected), rescaffold it:\n")
 	fmt.Fprintf(&b, "      %s\n", rescaffoldHint(sorted))
+	fmt.Fprintf(&b, "    This prints only when the set CHANGES. To see it any time: %s project scaffolded --absent\n", Name())
 	return b.String()
 }
 
@@ -112,19 +113,37 @@ func rescaffoldHint(sorted []string) string {
 // scaffold-once decision refuses both a present file and a deleted one, and
 // the message only knew the first reason. A line claiming a file exists while
 // `ls` says otherwise sends the reader looking for a bug in the wrong place.
-func scaffoldSkipLine(root, relPath string) string {
+// The two branches differ in whether the reader has anything to DO, so they
+// differ in verbosity. "exists — yours to edit" is identical on every run
+// against an unchanged tree and reports forge correctly leaving a file
+// alone: routine. "absent, but deleted by you" names a file that is NOT
+// there and the command that brings it back, which is the sentence the run
+// in this file's header spent an hour failing to find: never suppressed.
+func scaffoldSkipLine(root, relPath string) (line string, routine bool) {
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relPath))); err == nil {
-		return fmt.Sprintf("  ⏭️  %s exists — yours to edit, leaving it untouched", relPath)
+		return fmt.Sprintf("  ⏭️  %s exists — yours to edit, leaving it untouched", relPath), true
 	}
 	return fmt.Sprintf("  ⏭️  %s is absent, but deleted by you (%s) — leaving it deleted. Re-create it: %s",
-		relPath, checksums.ScaffoldedFile, rescaffoldCmd(relPath))
+		relPath, checksums.ScaffoldedFile, rescaffoldCmd(relPath)), false
 }
 
 // reportMissingScaffolds writes the notice for root's absent scaffold-once
-// paths to w. Returns whether anything was reported, so callers (and tests)
-// can tell "nothing absent" from "reported".
+// paths to w, ONLY when that set changed since the last run. Returns whether
+// anything was reported, so callers (and tests) can tell "nothing to report"
+// from "reported".
+//
+// The change-gate is the difference between an event and a banner. The set
+// is a standing fact — control-plane reprinted the same 38 paths plus five
+// lines of explanation on every single run — while the thing worth saying is
+// the MOMENT a scaffold goes missing, which is what the run in this file's
+// header needed and did not get. A notice that prints unconditionally is one
+// the reader stops seeing by the third run, which costs exactly the
+// attention the notice was written to buy.
+//
+// The standing fact is still available whenever asked: `forge project
+// scaffolded`.
 func reportMissingScaffolds(w io.Writer, root string) bool {
-	notice := missingScaffoldNotice(checksums.AbsentScaffolds(root))
+	notice := missingScaffoldNotice(checksums.AbsentScaffoldsIfChanged(root))
 	if notice == "" {
 		return false
 	}

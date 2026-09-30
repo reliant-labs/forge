@@ -369,6 +369,10 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return err
 	}
 
+	// Routine "forge did nothing here" lines are printed by helpers well
+	// below this frame, to stdout. See generate_verbosity.go.
+	defer setGenerateVerbosity(flags.Verbose)()
+
 	if flags.SkipValidate {
 		fmt.Println("⏩ --skip-validate: final 'go build ./...' step will be skipped")
 	}

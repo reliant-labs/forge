@@ -509,6 +509,19 @@ var removedSchemaKeys = map[string]string{
 	// window still carry the old nesting.
 	"features.experimental.deploy": "move the value to `features.deploy` — or delete it entirely if it matches " +
 		"the derived default (true for kind: service).",
+	// ingress and operators graduated out of experimental: both are
+	// prod-critical, and warning on every invocation about a project's own
+	// production configuration bought nobody safety. `forge generate`
+	// rewrites these automatically (stepGraduateExperimental); the warning
+	// is for the commands that only read.
+	"features.experimental.ingress": "move the value to `features.ingress` — ingress graduated out of experimental. " +
+		"`forge generate` migrates this for you.",
+	"features.experimental.operators": "move the value to `features.operators` — operators graduated out of experimental. " +
+		"`forge generate` migrates this for you.",
+	// external_builds was deleted, not graduated: it had already been
+	// reduced to an inert key nothing consulted (fr-da9a6614fb).
+	"features.experimental.external_builds": "delete the key — `build_cmd` builds unconditionally, the same way " +
+		"`External.deploy_cmd` deploys unconditionally. `forge generate` removes this for you.",
 }
 
 // sliceIndexRe matches "[<digits>]" path segments so removed-key lookup

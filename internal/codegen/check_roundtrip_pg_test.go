@@ -15,12 +15,11 @@ import (
 // reads, and until this test nothing held the two ends together.
 //
 // FieldConstraints.SQLChecks is the sole WRITER: one protovalidate rule set
-// projects to a `CHECK (...)` in the born migration. But three subsystems READ
-// those same expressions back, each with its own hand-rolled regexes:
-// seeddata's LengthBounds / BoundsFromTables / PoolsFromTables (so synthesized
-// rows satisfy the constraints) and schemadrift (so a changed proto is
-// detected). A reader can silently stop matching the writer and NOTHING fails
-// — the seed just produces rows the DB rejects, or drift goes unnoticed.
+// projects to a `CHECK (...)` in the born migration. But seeddata READS those
+// same expressions back with its own hand-rolled regexes — LengthBounds /
+// BoundsFromTables / PoolsFromTables, so synthesized rows satisfy the
+// constraints. A reader can silently stop matching the writer and NOTHING
+// fails — the seed just produces rows the DB rejects.
 //
 // That is not hypothetical. seeddata's LengthBounds had a declared-varchar
 // branch that had NEVER matched a live schema: it keyed off DeclType, which is

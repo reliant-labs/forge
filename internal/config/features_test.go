@@ -54,7 +54,6 @@ func TestFeaturesConfig_ZeroValue_ExperimentalDisabled(t *testing.T) {
 		fn   func() bool
 	}{
 		{"IngressEnabled", f.IngressEnabled},
-		{"ExternalBuildsEnabled", f.ExternalBuildsEnabled},
 		{"OperatorsEnabled", f.OperatorsEnabled},
 		{"StrictWiringEnabled", f.StrictWiringEnabled},
 	}
@@ -195,9 +194,7 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		Observability: boolPtr(true),
 		HotReload:     boolPtr(false),
 		Deploy:        boolPtr(true),
-		Experimental: ExperimentalConfig{
-			Ingress: true,
-		},
+		Ingress:      boolPtr(true),
 	}
 
 	data, err := yaml.Marshal(&orig)
@@ -227,8 +224,10 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		{"HotReload", got.HotReload, boolPtr(false)},
 		{"Deploy", got.Deploy, boolPtr(true)},
 	}
-	if !got.Experimental.Ingress {
-		t.Errorf("Experimental.Ingress round-trip: got false, want true")
+	// ingress graduated to a stable top-level flag; it round-trips as a
+	// *bool like every other one.
+	if got.Ingress == nil || !*got.Ingress {
+		t.Errorf("Ingress round-trip: got %v, want true", got.Ingress)
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
@@ -298,16 +297,23 @@ func TestDisabledFeatureError_Format(t *testing.T) {
 	if depErr.Error() != depWant {
 		t.Errorf("DisabledFeatureError(deploy) text mismatch\n got: %q\nwant: %q", depErr.Error(), depWant)
 	}
-	// Experimental feature carries an experimental-flavoured message.
-	expErr := DisabledFeatureError(FeatureIngress)
-	if expErr == nil {
+	// ingress GRADUATED, so it must now carry the stable idiom and the
+	// top-level YAML path — the same assertion deploy gets above.
+	ingErr := DisabledFeatureError(FeatureIngress)
+	if ingErr == nil {
 		t.Fatal("DisabledFeatureError(ingress) returned nil")
 	}
-	expGot := expErr.Error()
-	if !strings.Contains(expGot, "feature 'ingress' is experimental") {
+	ingWant := "feature 'ingress' is disabled in forge.yaml. Set features.ingress: true to enable."
+	if ingErr.Error() != ingWant {
+		t.Errorf("DisabledFeatureError(ingress) text mismatch\n got: %q\nwant: %q", ingErr.Error(), ingWant)
+	}
+	// A still-experimental feature keeps the experimental-flavoured
+	// message: this change retires three features, not the mechanism.
+	expGot := DisabledFeatureError(FeatureReconcile).Error()
+	if !strings.Contains(expGot, "feature 'reconcile' is experimental") {
 		t.Errorf("experimental DisabledFeatureError missing 'experimental' marker: %q", expGot)
 	}
-	if !strings.Contains(expGot, "features.experimental.ingress: true") {
+	if !strings.Contains(expGot, "features.experimental.reconcile: true") {
 		t.Errorf("experimental DisabledFeatureError missing nested opt-in hint: %q", expGot)
 	}
 }
@@ -325,9 +331,14 @@ func TestEffectiveFeatures_MapShape(t *testing.T) {
 		FeatureFrontend, FeatureObservability, FeatureHotReload,
 		FeatureDeploy,
 	}
+	// ingress and operators are stable but default-OFF: they graduated out
+	// of experimental without acquiring a shape that implies them. They are
+	// asserted separately because the loop below requires "stable zero-value
+	// defaults" to be true.
+	stableDefaultOff := []string{FeatureIngress, FeatureOperators}
 	var f FeaturesConfig
 	resolved := f.EffectiveFeatures()
-	wantLen := len(stable) + len(ExperimentalFeatureNames)
+	wantLen := len(stable) + len(stableDefaultOff) + len(ExperimentalFeatureNames)
 	if len(resolved) != wantLen {
 		t.Errorf("EffectiveFeatures len = %d, want %d", len(resolved), wantLen)
 	}
@@ -339,6 +350,16 @@ func TestEffectiveFeatures_MapShape(t *testing.T) {
 		}
 		if !v {
 			t.Errorf("EffectiveFeatures[%q] = false, want true (stable zero-value defaults)", name)
+		}
+	}
+	for _, name := range stableDefaultOff {
+		v, ok := resolved[name]
+		if !ok {
+			t.Errorf("EffectiveFeatures missing stable key %q", name)
+			continue
+		}
+		if v {
+			t.Errorf("EffectiveFeatures[%q] = true, want false (graduated but still opt-in)", name)
 		}
 	}
 	for _, name := range ExperimentalFeatureNames {

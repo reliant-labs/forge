@@ -1765,6 +1765,21 @@ type FeaturesConfig struct {
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
 	Deploy        *bool `yaml:"deploy,omitempty"`        // deploy pipeline: KCL render → kubectl apply, per-env deploy config codegen
 
+	// Ingress and Operators GRADUATED out of experimental. Both are
+	// prod-critical: ingress is how a deployed service is reachable, and
+	// operators back real controllers. Keeping them behind an
+	// opt-in-and-be-warned gate meant every `forge` invocation in a project
+	// that uses them printed a warning about its own production
+	// configuration — in control-plane, on every generate, forever.
+	//
+	// They are *bool like every other stable flag, and they DERIVE to
+	// false (see DeriveFeatureDefaults): a project that does not use
+	// ingress or operators should not get either, and absent-means-enabled
+	// would be wrong for both. So graduating changes the spelling and the
+	// warning, not the effective behaviour of any project.
+	Ingress   *bool `yaml:"ingress,omitempty"`   // Gateway API + cert-manager + Envoy Gateway wiring
+	Operators *bool `yaml:"operators,omitempty"` // controller-runtime managers + CRD codegen
+
 	// Diagnostics was to enable runtime emission of pkg/diagnostics records
 	// at Bootstrap time. Nothing reads it: no codegen path emits the
 	// registration file the runtime would boot from, so the knob drives
@@ -1811,6 +1826,8 @@ func (f *FeaturesConfig) stablePtrs() map[FeatureName]**bool {
 		FeatureObservability: &f.Observability,
 		FeatureHotReload:     &f.HotReload,
 		FeatureDeploy:        &f.Deploy,
+		FeatureIngress:       &f.Ingress,
+		FeatureOperators:     &f.Operators,
 	}
 }
 
@@ -1824,7 +1841,7 @@ func (f FeaturesConfig) IsZero() bool {
 		f.CI == nil && f.Build == nil && f.Contracts == nil &&
 		f.Docs == nil && f.Frontend == nil && f.Observability == nil &&
 		f.HotReload == nil &&
-		f.Deploy == nil &&
+		f.Deploy == nil && f.Ingress == nil && f.Operators == nil &&
 		f.Diagnostics == nil && f.Experimental.IsZero()
 }
 
@@ -1834,23 +1851,12 @@ func (f FeaturesConfig) IsZero() bool {
 //
 // What lives here today:
 //
-//   - Ingress:        Gateway API codegen + cert-manager + Envoy
-//     Gateway wiring. Provider matrix is fragile and not yet
-//     proven across real cloud providers.
-//   - ExternalBuilds: RETIRED gate (kept as an accepted, inert key for
-//     back-compat). `Service.build_cmd` is the build-side
-//     mirror of `External.deploy_cmd`; since `forge env deploy`
-//     of an External target never required an opt-in,
-//     gating `forge build` of the same target behind this
-//     flag left the build/deploy pair with mismatched
-//     maturity gates (fr-da9a6614fb). The build path no
-//     longer consults this flag — build_cmd just builds.
-//     Setting it true is harmless (and still accepted so
-//     existing forge.yaml files don't trip the unknown-key
-//     check); a future major can drop the field.
-//   - Operators:      controller-runtime managers + CRD codegen. Niche,
-//     under-exercised, the API may need to change as we
-//     learn what real operator authors want.
+// Ingress and Operators GRADUATED to the top-level FeaturesConfig, and
+// ExternalBuilds was DELETED (it had already been reduced to an inert gate
+// no code consulted). See the migration in internal/kclmigrate and
+// removedSchemaKeys in validate.go — a forge.yaml that still nests them is
+// rewritten in place on the next generate.
+//
 //   - StrictWiring:   diagnostics fail-fast — any registered diagnostic
 //     terminates the process after Bootstrap. Implies
 //     Diagnostics: true. Stays experimental because the
@@ -1867,16 +1873,13 @@ func (f FeaturesConfig) IsZero() bool {
 //     unsupported, so a loop built on it today would be
 //     reconciling a minority of tiers.
 type ExperimentalConfig struct {
-	Ingress        bool `yaml:"ingress,omitempty"`
-	ExternalBuilds bool `yaml:"external_builds,omitempty"`
-	Operators      bool `yaml:"operators,omitempty"`
-	StrictWiring   bool `yaml:"strict_wiring,omitempty"`
-	Reconcile      bool `yaml:"reconcile,omitempty"`
+	StrictWiring bool `yaml:"strict_wiring,omitempty"`
+	Reconcile    bool `yaml:"reconcile,omitempty"`
 }
 
 // IsZero reports whether the experimental block carries nothing explicit.
 func (e ExperimentalConfig) IsZero() bool {
-	return !e.Ingress && !e.ExternalBuilds && !e.Operators && !e.StrictWiring && !e.Reconcile
+	return !e.StrictWiring && !e.Reconcile
 }
 
 // resolve resolves a stable feature flag by name: an explicit value wins;
@@ -1889,9 +1892,27 @@ func (f FeaturesConfig) resolve(name FeatureName) bool {
 		return *ptr
 	}
 	if f.derived == nil {
-		return true
+		// No derivation context (a hand-constructed FeaturesConfig, or a
+		// config that never went through the loader): fall back to the
+		// historical "absent = enabled" — except for the features that are
+		// default-OFF by construction. ingress and operators have no shape
+		// that implies them, so "absent" means "this project does not use
+		// it", and inheriting the permissive default here would turn on
+		// Gateway API codegen and CRD generation for every project that
+		// builds a config without the loader.
+		return !defaultOffFeatures[name]
 	}
 	return f.derived[name]
+}
+
+// defaultOffFeatures are the stable features whose absent state is OFF
+// rather than the historical ON. They graduated out of experimental and
+// kept their opt-in semantics: the spelling and the warning changed, not
+// the behaviour. DeriveFeatureDefaults says the same thing for a config
+// that DID go through the loader; this covers the one that did not.
+var defaultOffFeatures = map[FeatureName]bool{
+	FeatureIngress:   true,
+	FeatureOperators: true,
 }
 
 // EffectiveKind returns the project kind, defaulting to "service".
@@ -1973,28 +1994,17 @@ func (f FeaturesConfig) HotReloadEnabled() bool { return f.resolve(FeatureHotRel
 func (f FeaturesConfig) BuildEnabled() bool { return f.resolve(FeatureBuild) }
 
 // IngressEnabled reports whether Gateway API ingress is wired
-// (default: OFF — opt-in under `features.experimental.ingress: true`).
-// When off, forge skips ingress codegen, `forge cluster up` skips
-// the Envoy Gateway + GatewayClass install, `forge cluster urls` returns
-// nothing, and the audit ingress category is suppressed.
-func (f FeaturesConfig) IngressEnabled() bool { return f.Experimental.Ingress }
-
-// ExternalBuildsEnabled reports the raw value of the RETIRED
-// `features.experimental.external_builds` flag. It no longer gates the
-// build path: `build_cmd` is the build-side mirror of `External.deploy_cmd`
-// (which needs no opt-in), so `forge build` of a build_cmd service runs
-// unconditionally (fr-da9a6614fb). The accessor is retained for the
-// startup warning / `forge project audit` surface and any consumer still keyed off
-// the flag; the build dispatcher in internal/cli/build.go no longer calls
-// it.
-func (f FeaturesConfig) ExternalBuildsEnabled() bool { return f.Experimental.ExternalBuilds }
+// (`features.ingress`; derives to false). When off, forge skips ingress
+// codegen, `forge cluster up` skips the Envoy Gateway + GatewayClass
+// install, `forge cluster urls` returns nothing, and the audit ingress
+// category is suppressed.
+func (f FeaturesConfig) IngressEnabled() bool { return f.resolve(FeatureIngress) }
 
 // OperatorsEnabled reports whether controller-runtime operator codegen
-// + CRD manifest generation is wired (default: OFF — opt-in under
-// `features.experimental.operators: true`). When off, the operator
-// binary codegen + CRD scaffold steps skip silently and
-// `forge scaffold operator` errors.
-func (f FeaturesConfig) OperatorsEnabled() bool { return f.Experimental.Operators }
+// + CRD manifest generation is wired (`features.operators`; derives to
+// false). When off, the operator binary codegen + CRD scaffold steps skip
+// silently and `forge scaffold operator` errors.
+func (f FeaturesConfig) OperatorsEnabled() bool { return f.resolve(FeatureOperators) }
 
 // DisabledFeatureError returns the canonical user-facing error for a
 // disabled feature. Centralised so every gate site emits the same
@@ -2046,23 +2056,22 @@ const (
 	FeatureObservability FeatureName = "observability"
 	FeatureHotReload     FeatureName = "hot_reload"
 	FeatureDeploy        FeatureName = "deploy"
+	// Graduated out of experimental — prod-critical, and warning about a
+	// project's own production configuration on every invocation was not
+	// buying anyone safety. Both DERIVE to false.
+	FeatureIngress   FeatureName = "ingress"
+	FeatureOperators FeatureName = "operators"
 
 	// Experimental feature names — opt-in under
 	// `features.experimental.<name>: true`. Default OFF.
-	FeatureIngress        FeatureName = "ingress"
-	FeatureExternalBuilds FeatureName = "external_builds"
-	FeatureOperators      FeatureName = "operators"
-	FeatureStrictWiring   FeatureName = "strict_wiring"
-	FeatureReconcile      FeatureName = "reconcile"
+	FeatureStrictWiring FeatureName = "strict_wiring"
+	FeatureReconcile    FeatureName = "reconcile"
 )
 
 // ExperimentalFeatureNames lists every Feature* constant that lives
 // under `features.experimental:`. Iteration order is the stable display
 // order used by `forge project audit`, the startup warning, and `forge project features`.
 var ExperimentalFeatureNames = []FeatureName{
-	FeatureIngress,
-	FeatureExternalBuilds,
-	FeatureOperators,
 	FeatureStrictWiring,
 	FeatureReconcile,
 }
@@ -2085,11 +2094,8 @@ func IsExperimentalFeature(name FeatureName) bool {
 // Used by the startup warning and `forge project features`.
 func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
 	checks := map[FeatureName]bool{
-		FeatureIngress:        f.Experimental.Ingress,
-		FeatureExternalBuilds: f.Experimental.ExternalBuilds,
-		FeatureOperators:      f.Experimental.Operators,
-		FeatureStrictWiring:   f.Experimental.StrictWiring,
-		FeatureReconcile:      f.Experimental.Reconcile,
+		FeatureStrictWiring: f.Experimental.StrictWiring,
+		FeatureReconcile:    f.Experimental.Reconcile,
 	}
 	out := make([]FeatureName, 0, len(checks))
 	for _, name := range ExperimentalFeatureNames {
@@ -2122,7 +2128,6 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 		FeatureHotReload:      f.HotReloadEnabled(),
 		FeatureDeploy:         f.DeployEnabled(),
 		FeatureIngress:        f.IngressEnabled(),
-		FeatureExternalBuilds: f.ExternalBuildsEnabled(),
 		FeatureOperators:      f.OperatorsEnabled(),
 		FeatureStrictWiring:   f.StrictWiringEnabled(),
 		FeatureReconcile:      f.ReconcileEnabled(),

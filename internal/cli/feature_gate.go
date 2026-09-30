@@ -110,11 +110,10 @@ var featureChecks = map[string]featureCheck{
 	config.FeatureObservability:  func(f config.FeaturesConfig) bool { return f.ObservabilityEnabled() },
 	config.FeatureHotReload:      func(f config.FeaturesConfig) bool { return f.HotReloadEnabled() },
 	config.FeatureDeploy:         func(f config.FeaturesConfig) bool { return f.DeployEnabled() },
-	config.FeatureIngress:        func(f config.FeaturesConfig) bool { return f.IngressEnabled() },
-	config.FeatureExternalBuilds: func(f config.FeaturesConfig) bool { return f.ExternalBuildsEnabled() },
-	config.FeatureOperators:      func(f config.FeaturesConfig) bool { return f.OperatorsEnabled() },
-	config.FeatureStrictWiring:   func(f config.FeaturesConfig) bool { return f.StrictWiringEnabled() },
-	config.FeatureReconcile:      func(f config.FeaturesConfig) bool { return f.ReconcileEnabled() },
+	config.FeatureIngress:       func(f config.FeaturesConfig) bool { return f.IngressEnabled() },
+	config.FeatureOperators:     func(f config.FeaturesConfig) bool { return f.OperatorsEnabled() },
+	config.FeatureStrictWiring:  func(f config.FeaturesConfig) bool { return f.StrictWiringEnabled() },
+	config.FeatureReconcile:     func(f config.FeaturesConfig) bool { return f.ReconcileEnabled() },
 }
 
 // featureReader is the narrow slice of the project store the feature-gate

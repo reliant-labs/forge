@@ -110,6 +110,15 @@ func TestApplyKindFeatureDefaults_Service(t *testing.T) {
 			}
 			continue
 		}
+		// ingress and operators are stable but DERIVE to off: neither
+		// follows from a project's shape, so a scaffolded service does
+		// not get Gateway API wiring or CRD codegen until asked.
+		if name == config.FeatureIngress || name == config.FeatureOperators {
+			if on {
+				t.Errorf("kind=service: %q expected disabled (opt-in), got enabled", name)
+			}
+			continue
+		}
 		if !on {
 			t.Errorf("kind=service: stable feature %q expected enabled, got disabled", name)
 		}

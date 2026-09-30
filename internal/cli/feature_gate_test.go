@@ -62,11 +62,8 @@ func TestIsFeatureEnabled_ExperimentalExplicitTrue(t *testing.T) {
 			// is deliberate — the failure is what tells you a new
 			// experimental feature was added without a gate entry.
 			Experimental: config.ExperimentalConfig{
-				Ingress:        true,
-				ExternalBuilds: true,
-				Operators:      true,
-				StrictWiring:   true,
-				Reconcile:      true,
+				StrictWiring: true,
+				Reconcile:    true,
 			},
 		},
 	}

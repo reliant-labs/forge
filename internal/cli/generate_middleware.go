@@ -171,6 +171,9 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	}
 
 	generated := 0
+	// Declined contract_test.go scaffolds are collected and reported once
+	// after the walk — see generate_contract_test_declines.go.
+	declines := &contractTestDeclines{}
 	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -226,7 +229,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		// SkipDir here — descendants may still want codegen and carry their
 		// own directive; only THIS package opts out.
 		if codegen.HasExcludeContractDirective(path) {
-			fmt.Printf("  ⏭️  Skipped contract codegen for %s/ (//forge:exclude-contract)\n", rel)
+			routinef("  ⏭️  Skipped contract codegen for %s/ (//forge:exclude-contract)\n", rel)
 			// Retire this package only — the directive opts out exactly the
 			// package that carries it, matching the no-SkipDir note above.
 			return reportRetirement(contract.RetireExcludedArtifacts(path, contractOpts))
@@ -331,7 +334,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 				TestRoot:     testRoot,
 				TestRel:      testRel,
 				TestLedger:   testLedger,
-			}); err != nil {
+			}, declines); err != nil {
 				return err
 			}
 		}
@@ -346,6 +349,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	if generated > 0 {
 		fmt.Printf("🔧 Generated contracts for %d internal package(s)\n", generated)
 	}
+	declines.report()
 
 	return nil
 }
@@ -371,7 +375,7 @@ type contractTestBirth struct {
 // two-result-`New` package. Writing it anyway would hand back a package that
 // does not build, so each declined shape prints why and what to change to opt
 // back in.
-func birthContractTest(b contractTestBirth) error {
+func birthContractTest(b contractTestBirth, declines *contractTestDeclines) error {
 	cf, parseErr := contract.ParseContract(b.ContractPath)
 	if parseErr != nil {
 		return fmt.Errorf("parse contract for %s: %w", b.Rel, parseErr)
@@ -379,13 +383,13 @@ func birthContractTest(b contractTestBirth) error {
 
 	switch {
 	case len(cf.Interfaces) > 1:
-		fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (multi-interface package; write tests manually)\n", b.Rel)
+		declines.note(b.Rel, "multi-interface package; write tests manually")
 		return nil
 	case len(cf.Interfaces) == 1 && cf.Interfaces[0].Name != "Service":
-		fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (interface %q is not the canonical Service shape; write tests manually)\n", b.Rel, cf.Interfaces[0].Name)
+		declines.note(b.Rel, fmt.Sprintf("interface %q is not the canonical Service shape; write tests manually", cf.Interfaces[0].Name))
 		return nil
 	case !packageHasTwoResultNew(b.PkgDir):
-		fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (New is single-result; polish to `func New(Deps) (Service, error)` to enable auto-scaffold)\n", b.Rel)
+		declines.notePolish(b.Rel)
 		return nil
 	}
 

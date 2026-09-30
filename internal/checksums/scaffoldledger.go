@@ -99,6 +99,18 @@ type ScaffoldEntry struct {
 type scaffoldedJSON struct {
 	ForgeVersion string                   `json:"forge_version,omitempty"`
 	Files        map[string]ScaffoldEntry `json:"files"`
+	// AbsentReported is the absent set as of the last run that reported
+	// it. It is what turns the absent-scaffolds notice from a standing
+	// banner into an EVENT — see AbsentScaffoldsIfChanged.
+	//
+	// It lives here rather than in a sibling file because it is a fact
+	// about the same decisions this ledger already records, and because a
+	// second state file is a second thing to gitignore, migrate and
+	// explain. It is committed for the same reason the ledger is: the
+	// deletion belongs to the repository, so a teammate who clones after
+	// the notice was shown should not be shown it again for a set nobody
+	// changed.
+	AbsentReported []string `json:"absent_reported,omitempty"`
 }
 
 // scaffoldLedgers memoizes the per-root ledger for the life of the process,
@@ -107,6 +119,11 @@ type scaffoldedJSON struct {
 // absolute path, so the load has to be lazy and cached rather than threaded
 // through every signature.
 var scaffoldLedgers = map[string]map[string]ScaffoldEntry{}
+
+// scaffoldAbsentReported memoizes the per-root "absent set as last
+// reported" list, loaded and saved alongside the ledger it lives in.
+// Guarded by scaffoldMu, like scaffoldLedgers.
+var scaffoldAbsentReported = map[string][]string{}
 
 // scaffoldMu guards scaffoldLedgers AND the per-root ledger maps it hands
 // out. loadScaffoldLedger returns the live map rather than a copy, so the
@@ -124,6 +141,7 @@ func ResetScaffoldLedgerCache() {
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()
 	scaffoldLedgers = map[string]map[string]ScaffoldEntry{}
+	scaffoldAbsentReported = map[string][]string{}
 }
 
 // loadScaffoldLedger returns root's ledger, reading it from disk on first
@@ -142,8 +160,11 @@ func loadScaffoldLedgerLocked(root string) map[string]ScaffoldEntry {
 	led := map[string]ScaffoldEntry{}
 	if data, rerr := os.ReadFile(filepath.Join(abs, ScaffoldedFile)); rerr == nil {
 		var s scaffoldedJSON
-		if json.Unmarshal(data, &s) == nil && s.Files != nil {
-			led = s.Files
+		if json.Unmarshal(data, &s) == nil {
+			if s.Files != nil {
+				led = s.Files
+			}
+			scaffoldAbsentReported[abs] = s.AbsentReported
 		}
 	}
 	scaffoldLedgers[abs] = led
@@ -160,15 +181,16 @@ func saveScaffoldLedgerLocked(root string) {
 		abs = root
 	}
 	led := scaffoldLedgers[abs]
+	reported := scaffoldAbsentReported[abs]
 	full := filepath.Join(abs, ScaffoldedFile)
-	if len(led) == 0 {
+	if len(led) == 0 && len(reported) == 0 {
 		_ = os.Remove(full)
 		return
 	}
 	if mkErr := os.MkdirAll(filepath.Dir(full), 0o755); mkErr != nil {
 		return
 	}
-	data, merr := json.MarshalIndent(scaffoldedJSON{Files: led}, "", "  ")
+	data, merr := json.MarshalIndent(scaffoldedJSON{Files: led, AbsentReported: reported}, "", "  ")
 	if merr != nil {
 		return
 	}
@@ -287,6 +309,64 @@ func AbsentScaffolds(root string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// AbsentScaffoldsIfChanged returns the absent set only when it DIFFERS from
+// the set the last run reported, and records the new set as reported.
+// Returns nil (and writes nothing) when the set is unchanged.
+//
+// AbsentScaffolds answers "which scaffolds are deleted?", which is a
+// standing fact and therefore a standing banner: control-plane printed the
+// same 38-path list, plus five lines of explanation, on EVERY run. The
+// notice exists for the moment a scaffold GOES missing — the run that
+// deleted one and got a silent success. That is an event, and an event
+// reported unconditionally is indistinguishable from wallpaper by the third
+// run.
+//
+// Both directions count as a change. A path appearing is the original case.
+// A path DISAPPEARING from the set (the user rescaffolded it, or restored it
+// from git) is also worth one line, because the previous notice is now
+// stale, and because silently continuing to suppress would mean the next
+// deletion of that same path never reports.
+//
+// The standing fact remains available on demand — `forge project scaffolded`
+// lists it whenever the user asks, which is the right shape for a fact that
+// does not change.
+func AbsentScaffoldsIfChanged(root string) []string {
+	absent := AbsentScaffolds(root)
+
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	// Populate the memo (and scaffoldAbsentReported) from disk if this is
+	// the first touch of this root in the process.
+	loadScaffoldLedgerLocked(abs)
+
+	if sameStringSet(scaffoldAbsentReported[abs], absent) {
+		return nil
+	}
+	scaffoldAbsentReported[abs] = absent
+	saveScaffoldLedgerLocked(abs)
+	return absent
+}
+
+// sameStringSet compares two SORTED string slices for equality. Both
+// callers produce sorted input (AbsentScaffolds sorts; the persisted list
+// was sorted when it was written), so this is a cheap element-wise compare
+// rather than a set build.
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // SplitScaffoldPath resolves an absolute destination path into the

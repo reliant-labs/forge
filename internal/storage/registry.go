@@ -185,6 +185,33 @@ func (r Runner) inventory(ctx context.Context, container string) ([]Tag, error) 
 	return tags, nil
 }
 
+// revisions inventories every manifest link, including untagged indexes. Their
+// children must remain pullable even when a child has its own expired tag.
+func (r Runner) revisions(ctx context.Context, container string) ([]Version, error) {
+	script := `find /var/lib/registry/docker/registry/v2/repositories -path '*/_manifests/revisions/sha256/*/link' -type f -exec sh -ec 'for p do printf "%s\t%s\n" "$p" "$(cat "$p")"; done' sh {} +`
+	b, err := r.docker(ctx, "exec", container, "sh", "-ec", script)
+	if err != nil {
+		return nil, err
+	}
+	var versions []Version
+	const prefix = "/var/lib/registry/docker/registry/v2/repositories/"
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if line == "" {
+			continue
+		}
+		cols := strings.Split(line, "\t")
+		if len(cols) != 2 || !strings.HasPrefix(cols[0], prefix) || !digestPattern.MatchString(cols[1]) {
+			return nil, fmt.Errorf("invalid registry revision inventory")
+		}
+		repo, revision, ok := strings.Cut(strings.TrimPrefix(cols[0], prefix), "/_manifests/revisions/sha256/")
+		if !ok || repo == "" || revision != strings.TrimPrefix(cols[1], "sha256:")+"/link" {
+			return nil, fmt.Errorf("invalid registry revision path")
+		}
+		versions = append(versions, Version{repo, cols[1]})
+	}
+	return versions, nil
+}
+
 type containerInfo struct {
 	Image           string
 	State           struct{ Running bool }
@@ -252,11 +279,41 @@ func (r Runner) registryPlan(ctx context.Context, reg Registry, container, base 
 	if err != nil {
 		return nil, err
 	}
+	revisions, err := r.revisions(ctx, container)
+	if err != nil {
+		return nil, err
+	}
+	result, err := registryGraphPlan(tags, revisions, r.Policy, reg, protected, time.Now(), func(v Version) ([]byte, error) {
+		return registryRequest(ctx, base, "/v2/"+v.Repository+"/manifests/"+v.Digest, http.MethodGet)
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range result {
+		r.print("expire %s/%s@%s\n", reg.Container, v.Repository, v.Digest)
+	}
+	r.print("registry %s: %d eligible manifests; %d tags; retain %d days and %d versions\n", reg.Container, len(result), len(tags), r.Policy.RegistryDays, r.Policy.RegistryKeep)
+	return result, nil
+}
+
+// registryGraphPlan preserves the full graph of every retained manifest, not
+// only tagged roots. fetch errors abort the complete plan before deletion.
+func registryGraphPlan(tags []Tag, revisions []Version, policy Policy, reg Registry, protected map[string]map[string]bool, now time.Time, fetch func(Version) ([]byte, error)) ([]Version, error) {
 	selected := map[Version]bool{}
-	for _, v := range RegistryCandidates(tags, r.Policy, reg, protected, time.Now()) {
+	for _, v := range RegistryCandidates(tags, policy, reg, protected, now) {
 		selected[v] = true
 	}
 	var roots []Version
+	// A complete filesystem revision inventory lets us retain untagged indexes,
+	// which cannot be enumerated through the Distribution tags API. Global pins
+	// are applied by RegistryCandidates before selecting any tagged versions.
+	for _, v := range revisions {
+		if !selected[v] {
+			roots = append(roots, v)
+		}
+	}
+	// Include retained tag roots as well: inconsistent inventory must fail closed
+	// on manifest reads rather than silently losing protection.
 	for _, t := range tags {
 		v := Version{t.Repository, t.Digest}
 		if !selected[v] {
@@ -279,7 +336,7 @@ func (r Runner) registryPlan(ctx context.Context, reg Registry, container, base 
 		}
 		visited[v] = true
 		delete(selected, v)
-		b, err := registryRequest(ctx, base, "/v2/"+v.Repository+"/manifests/"+v.Digest, http.MethodGet)
+		b, err := fetch(v)
 		if err != nil {
 			return nil, err
 		}
@@ -304,10 +361,6 @@ func (r Runner) registryPlan(ctx context.Context, reg Registry, container, base 
 		}
 		return result[i].Repository < result[j].Repository
 	})
-	for _, v := range result {
-		r.print("expire %s/%s@%s\n", reg.Container, v.Repository, v.Digest)
-	}
-	r.print("registry %s: %d eligible manifests; %d tags; retain %d days and %d versions\n", reg.Container, len(result), len(tags), r.Policy.RegistryDays, r.Policy.RegistryKeep)
 	return result, nil
 }
 

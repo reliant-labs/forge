@@ -106,6 +106,40 @@ jobs:
             exit 1
           fi
 
+      # A scaffold pins `require github.com/reliant-labs/forge vX.Y.Z` at the
+      # version this binary reports (internal/generator/project_pkgdep.go). On
+      # a RELEASE COMMIT that is the tag release-forge.sh pushed moments ago —
+      # and proxy.golang.org discovers tags by polling, so for several minutes
+      # it 404s for the whole world. `go mod tidy` below then fails on a
+      # release that is completely correct, which is why this lane was red on
+      # every release commit for ~6 minutes.
+      #
+      # Waiting is the honest fix: the job's own dependency genuinely is not
+      # resolvable yet. On every non-release commit the version is long since
+      # ingested, so this costs exactly one HTTP probe and no sleep.
+      #
+      # The version is read from the GENERATED go.mod rather than from VERSION,
+      # so this tracks whatever the scaffold actually pinned instead of
+      # re-deriving it and drifting.
+      - name: Wait for the module proxy to serve the pinned forge version
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          PINNED="$(awk '$1 == "github.com/reliant-labs/forge" { print $2; exit }' go.mod)"
+          if [ -z "$PINNED" ]; then
+            echo "❌ scaffolded go.mod does not require github.com/reliant-labs/forge"
+            echo "   (project_pkgdep.go must never leave the require empty — see its header)"
+            sed -n '1,40p' go.mod
+            exit 1
+          fi
+          echo "scaffold pinned forge $PINNED"
+          if "$GITHUB_WORKSPACE/scripts/wait-for-go-proxy.sh" \
+              --module github.com/reliant-labs/forge --version "$PINNED" --tag-pushed; then
+            echo "✅ forge $PINNED is resolvable"
+          else
+            echo "❌ forge $PINNED never became resolvable within the window"
+            exit 1
+          fi
+
       - name: go mod tidy
         working-directory: ${{ env.E2E_DIR }}/e2e-test
         run: |

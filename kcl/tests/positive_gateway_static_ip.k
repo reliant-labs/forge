@@ -6,6 +6,11 @@ reservation name, so the Gateway keeps that IP across delete/recreate
 (otherwise a recreated Gateway gets a fresh ephemeral IP and breaks DNS).
 A Gateway with no addresses renders with NO `spec.addresses` key — so
 existing gateways don't churn and the controller assigns ephemerally.
+
+This fixture covers the NamedAddress mechanism only. A LITERAL IP
+(`type = "IPAddress"`) deliberately does NOT render into spec.addresses
+— Envoy Gateway would turn it into the Service's spec.externalIPs and
+GKE admission rejects that. See positive_gateway_lb_ip.k.
 """
 
 import forge

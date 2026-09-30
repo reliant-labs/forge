@@ -124,7 +124,90 @@ _render_listener = lambda l: any, gw_tls: any, gw_host: str -> any {
     }
 }
 
+# A literal IP pin does NOT go in spec.addresses — see the block comment
+# on render_gateway. These two helpers split a Gateway's addresses by the
+# mechanism that carries them to the cluster.
+_ip_addresses = lambda gw: any -> [any] {
+    [a for a in gw.addresses if a.type == "IPAddress"]
+}
+
+_named_addresses = lambda gw: any -> [any] {
+    [a for a in gw.addresses if a.type != "IPAddress"]
+}
+
+# The EnvoyProxy that carries a literal IP pin. Named off the Gateway so
+# it is stable across renders and obvious in `kubectl get envoyproxy`,
+# and placed in the GATEWAY's namespace because EG resolves
+# infrastructure.parametersRef namespace-locally (processGatewayParamsRef
+# does a plain Get in gtw.Namespace — a CR anywhere else is never found
+# and the Gateway silently keeps an ephemeral address).
+_lb_ip_proxy_name = lambda gw: any -> str {
+    "${gw.name}-lb-ip"
+}
+
+# Render the EnvoyProxy for an IPAddress-pinned Gateway, or nothing.
+#
+# ONLY loadBalancerIP is set. EG already defaults envoyService.type to
+# LoadBalancer and externalTrafficPolicy to Local
+# (api/v1alpha1/kubernetes_helpers.go DefaultKubernetesService), so
+# re-stating them here would take forge ownership of two fields it has
+# no opinion about — and any later drift between forge's copy and EG's
+# default would rewrite a live Service on the next reconcile.
+render_gateway_lb_ip_proxy = lambda gw: any, namespace: str -> [any] {
+    _ips = _ip_addresses(gw)
+    [{
+        apiVersion = "gateway.envoyproxy.io/v1alpha1"
+        kind = "EnvoyProxy"
+        metadata = {
+            name = _lb_ip_proxy_name(gw)
+            namespace = namespace
+            labels = _managed_labels(gw.name) | _cluster_label(_cluster_context(gw.cluster))
+        }
+        spec = {
+            provider = {
+                type = "Kubernetes"
+                kubernetes = {
+                    envoyService = {
+                        loadBalancerIP = _ips[0].value
+                    }
+                }
+            }
+        }
+    }] if _ips else []
+}
+
 # Render a Gateway resource.
+#
+# PINNING A LOAD-BALANCER IP: two mechanisms, and picking the wrong one
+# breaks the Gateway invisibly.
+#
+# Envoy Gateway translates every `spec.addresses` entry of type
+# IPAddress into the backing Service's `spec.externalIPs`
+# (internal/gatewayapi/address.go fills infra.Proxy.Addresses;
+# resource_provider.go then does `serviceSpec.ExternalIPs =
+# r.infra.Addresses` for any non-ClusterIP service). GKE runs the
+# `DenyServiceExternalIPs` admission plugin, which REJECTS that Service:
+#
+#     services "envoy-..." is forbidden:
+#     Use of external IPs is denied by admission control
+#
+# and the failure is near-silent. The Gateway keeps serving, because the
+# Service already exists and the cloud LB is already attached — but EG
+# can no longer update it, so the next listener port added to this
+# Gateway never reaches the Service and never receives traffic. Nothing
+# reports unhealthy; the port is just missing.
+#
+# So an IPAddress pin is carried by an EnvoyProxy instead
+# (`provider.kubernetes.envoyService.loadBalancerIP`, bound to this one
+# Gateway via `spec.infrastructure.parametersRef`), which lands on the
+# Service as `spec.loadBalancerIP` — the field GCP actually reads to
+# attach a reserved regional address, and one admission permits.
+#
+# A NamedAddress pin is left in `spec.addresses` untouched. It is a
+# different mechanism for a different controller: the GKE *cloud*
+# Gateway controller's extension, whose value is the NAME of a reserved
+# GLOBAL reservation rather than an IP. EG's address translator ignores
+# every non-IPAddress type, so it never becomes an externalIP.
 #
 # In cert_manager mode forge emits an EXPLICIT cert-manager Certificate
 # (see render_certificate below) with full control over dnsNames /
@@ -151,6 +234,8 @@ render_gateway = lambda gw: any, namespace: str -> [any] {
     _annotations = {
         "networking.gke.io/certmap" = gw.tls.certmap
     } if gw.tls and gw.tls.mode == "gke_certmap" else {}
+    _named = _named_addresses(gw)
+    _ips = _ip_addresses(gw)
     [{
         apiVersion = "gateway.networking.k8s.io/v1"
         kind = "Gateway"
@@ -163,16 +248,27 @@ render_gateway = lambda gw: any, namespace: str -> [any] {
         }
         spec = {
             gatewayClassName = gw.gateway_class_name
-            # Pin the Gateway to specific load-balancer addresses when set
-            # (e.g. a GKE reserved static IP by reservation name via a
-            # NamedAddress) so the IP survives delete/recreate. Omitted
-            # entirely when empty — emitting `addresses: []` would churn
-            # existing gateways and let the controller assign ephemerally.
-            if gw.addresses:
-                addresses = [{type = a.type, value = a.value} for a in gw.addresses]
+            # NamedAddress pins only (GKE cloud controller, reserved
+            # GLOBAL reservation by name). Omitted entirely when empty —
+            # emitting `addresses: []` would churn existing gateways and
+            # let the controller assign ephemerally. A literal IP is
+            # DELIBERATELY absent here; it rides the EnvoyProxy below,
+            # because in spec.addresses it becomes spec.externalIPs and
+            # GKE admission rejects the Service.
+            if _named:
+                addresses = [{type = a.type, value = a.value} for a in _named]
+            # Bind the EnvoyProxy that carries the literal IP pin.
+            if _ips:
+                infrastructure = {
+                    parametersRef = {
+                        group = "gateway.envoyproxy.io"
+                        kind = "EnvoyProxy"
+                        name = _lb_ip_proxy_name(gw)
+                    }
+                }
             listeners = [_render_listener(l, gw.tls, gw.host) for l in gw.listeners]
         }
-    }]
+    }] + render_gateway_lb_ip_proxy(gw, namespace)
 }
 
 # Render a cert-manager Certificate for a Gateway with TLS. The

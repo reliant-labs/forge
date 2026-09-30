@@ -559,3 +559,71 @@ func TestRunEnvVerify_DriftBeatsUnreachable(t *testing.T) {
 		t.Errorf("drift must outrank unreachable, got exit %d", code)
 	}
 }
+
+// TestVerifyEnvImages_DeclaredByRepositoryPath is the regression test for a
+// verifier that reported a perfectly healthy production environment as
+// entirely undeployed.
+//
+// THE BUG. Running images were indexed by BARE NAME ("control-plane"), and
+// every test in this file declared them the same way, so the comparison looked
+// symmetric. A real binding does not: `forge env promote` writes Resolved
+// keyed by the FULL REPOSITORY PATH it pushed to, because that is the
+// identity it resolved a digest for. Prod's binding therefore said
+//
+//	us-central1-docker.pkg.dev/reliant-labs-475814/reliant-prod/control-plane
+//
+// and the lookup asked for "control-plane". No key ever matched, so all four
+// images of release v1.7.5 came back MISSING — "never deployed, or deleted
+// since" — for a namespace whose fourteen deployments were up, ready, and
+// running those exact digests.
+//
+// WHY THIS IS THE DANGEROUS DIRECTION OF FAILURE. A verifier that cries
+// MISSING for a healthy env is not merely noisy: MISSING is indistinguishable
+// from a half-delivered release, so the documented response is to deploy
+// again. The one command whose job is to prove prod is fine was the command
+// arguing for an unnecessary prod deploy.
+//
+// The fix matches on the repository SUFFIX, so a binding may name an image
+// either way and both resolve.
+func TestVerifyEnvImages_DeclaredByRepositoryPath(t *testing.T) {
+	const repo = "us-central1-docker.pkg.dev/reliant-labs-475814/reliant-prod/control-plane"
+
+	running := []cluster.WorkloadImage{
+		deployImage("admin-server", repo+"@"+digestDeclared),
+	}
+	// Keyed exactly as a real promotion ledger keys it.
+	declared := map[string]string{repo: digestDeclared}
+
+	results := verifyEnvImages(running, declared)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 verdict, got %d", len(results))
+	}
+	if got := results[0]; got.State != imageMatch {
+		t.Fatalf("a cluster running the declared digest must MATCH, got %s (%s)", got.State, got.Detail)
+	}
+}
+
+// TestVerifyEnvImages_RegistryMoveIsNotAMatch pins the limit of that
+// suffix rule: sharing a trailing path segment is not identity.
+//
+// Two registries can both host ".../reliant-prod/control-plane", and a
+// binding that names one while the cluster runs the other is a REAL finding —
+// the env is pulling from somewhere the release did not publish. Matching on
+// the bare last segment would have called that clean, which is how a
+// suffix rule turns into a different silent pass.
+func TestVerifyEnvImages_RegistryMoveIsNotAMatch(t *testing.T) {
+	running := []cluster.WorkloadImage{
+		deployImage("admin-server", "other.registry.example/acme/control-plane@"+digestDeclared),
+	}
+	declared := map[string]string{
+		"us-central1-docker.pkg.dev/reliant-labs-475814/reliant-prod/control-plane": digestDeclared,
+	}
+
+	results := verifyEnvImages(running, declared)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 verdict, got %d", len(results))
+	}
+	if got := results[0]; got.State != imageMissing {
+		t.Fatalf("an image from a DIFFERENT registry must not satisfy the binding, got %s", got.State)
+	}
+}

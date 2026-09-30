@@ -85,8 +85,7 @@ interface DevLogResult {
 }
 
 function formatEntry(entry: DevLogEntry): string {
-  const level =
-    typeof entry.level === "string" && LEVELS.has(entry.level) ? entry.level : "log";
+  const level = typeof entry.level === "string" && LEVELS.has(entry.level) ? entry.level : "log";
   const msg = typeof entry.msg === "string" ? entry.msg : "";
   const line = msg.length > MAX_LINE ? `${msg.slice(0, MAX_LINE)}… (truncated)` : msg;
   return `[browser:${level}] ${line}`;

@@ -134,8 +134,7 @@ func TestE2ECRUDFixtureSatisfiesCheckConstraints(t *testing.T) {
 	// hand-written migrations") and what the failing run's author had done.
 	runCmd(t, projectDir, forgeBin, "scaffold")
 
-	migDir := filepath.Join(projectDir, "db", "migrations")
-	if err := os.WriteFile(filepath.Join(migDir, "00090_checks.up.sql"),
+	if err := os.WriteFile(nextMigrationPathE2E(t, projectDir, "checks"),
 		[]byte(checkConstraintMigration), 0o644); err != nil {
 		t.Fatalf("write checks migration: %v", err)
 	}
@@ -196,10 +195,9 @@ func TestE2ECRUDFixtureGuardFailsLoudlyOnUninvertibleCheck(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "scaffold")
 
 	// Tighten the born table with a CHECK forge's derivation cannot invert.
-	migDir := filepath.Join(projectDir, "db", "migrations")
 	up := "ALTER TABLE credentials ADD CONSTRAINT credentials_passcode_check " +
 		`CHECK (passcode ~ '^(?=.*[A-Z])[a-zA-Z]{8,}$');` + "\n"
-	if err := os.WriteFile(filepath.Join(migDir, "00090_passcode.up.sql"), []byte(up), 0o644); err != nil {
+	if err := os.WriteFile(nextMigrationPathE2E(t, projectDir, "passcode"), []byte(up), 0o644); err != nil {
 		t.Fatalf("write migration: %v", err)
 	}
 

@@ -149,7 +149,9 @@ let legacyEndpoint = false;
 function render(value: unknown): string {
   if (typeof value === "string") return value;
   if (value instanceof Error) {
-    return `${value.name}: ${value.message}${value.stack ? `\n${value.stack}` : ""}`;
+    return `${value.name}: ${value.message}${
+      value.stack ? `\n${value.stack}` : ""
+    }`;
   }
   try {
     const seen = new WeakSet<object>();
@@ -193,7 +195,10 @@ function capture(level: DevLogPayload["level"], args: unknown[]): void {
     return;
   }
 
-  const entry: DevLogPayload = { level, msg: truncate(args.map(render).join(" ")) };
+  const entry: DevLogPayload = {
+    level,
+    msg: truncate(args.map(render).join(" ")),
+  };
   const wasEmpty = buffer.length === 0;
   buffer.push(entry);
   bufferedBytes += entryBytes(entry);
@@ -364,7 +369,8 @@ function flushOnUnload(): void {
   if (buffer.length === 0) return;
 
   const canBeacon =
-    typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function";
+    typeof navigator !== "undefined" &&
+    typeof navigator.sendBeacon === "function";
   if (!canBeacon) {
     // No beacon: keepalive fetch is the only remaining option, and one request
     // has a better chance of leaving than a queue of them.

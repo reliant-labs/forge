@@ -104,11 +104,13 @@ func lintDepsAreInterfaces(rootDir string) (forgeconv.Result, error) {
 	}
 
 	lin := &depsLinter{
-		rootDir:    rootDir,
-		modulePath: readModulePath(rootDir),
-		declCache:  map[string]typeDecls{},
-		dirCache:   map[string]string{},
-		nameCache:  map[string]string{},
+		rootDir:            rootDir,
+		modulePath:         readModulePath(rootDir),
+		declCache:          map[string]typeDecls{},
+		dirCache:           map[string]string{},
+		nameCache:          map[string]string{},
+		purityCache:        map[string]bool{},
+		funcPurityVisiting: map[string]bool{},
 	}
 
 	var pkgDirs []string
@@ -178,7 +180,19 @@ type depsLinter struct {
 	// nameCache memoizes directory → package clause, for the qualifier
 	// fallback in dirForQualifier.
 	nameCache map[string]string
+	// purityCache memoizes "is this package-level func pure", keyed by
+	// purityKey(dir, name). funcPurityVisiting is the recursion guard for
+	// the same keys: a function reached while it is still being evaluated
+	// is part of a cycle, and a cycle is answered "impure" rather than
+	// recursed into forever.
+	purityCache        map[string]bool
+	funcPurityVisiting map[string]bool
 }
+
+// purityKey identifies one package-level function for the purity caches.
+// The directory (not the import path) is the identity, because that is what
+// packageTypeDecls is keyed on and what a qualifier already resolves to.
+func purityKey(dir, name string) string { return dir + "\x00" + name }
 
 // lintPkg parses every non-test .go file in a package and checks the
 // `type Deps struct` for non-interface fields. `Deps` is looked for
@@ -818,13 +832,19 @@ func isErrorType(expr ast.Expr, decls typeDecls) bool {
 //
 //   - no body at all (assembly, or //go:linkname) — nothing to inspect
 //   - go / defer / select / channel send or receive
-//   - a call that is neither a builtin nor a type conversion
-//   - a reference to a package-level func or var of the declaring package
+//   - a call that is neither a builtin, a type conversion, nor a
+//     package-level func whose own body passes this same walk
+//   - a reference to a package-level var of the declaring package, or to a
+//     package-level func used as a VALUE rather than called
 //
-// The CALL is the load-bearing one. `c.pool.Query(q)` and `c.Sizes[tier]`
-// are both rooted at the receiver, and only the call can reach a database,
-// so no attempt is made to distinguish a field that holds data from a field
-// that holds a collaborator — any call through one is impure.
+// The CALL is the load-bearing one, and the distinction is WHAT it reaches.
+// `c.pool.Query(q)` goes through a FIELD, and no syntax distinguishes a
+// field holding a map from one holding a database, so any call through a
+// field is impure. A call to a package-level func reaches exactly one
+// declaration, which is right there to be read — so it is read, recursively,
+// by funcIsPure. Refusing to read it is what made this rule fire on a config
+// struct whose accessor merely called a named helper, and pass on the same
+// struct once the helper was inlined.
 //
 // A CONVERSION is syntactically a call (`time.Duration(n)`, `string(b)`)
 // and is not one, so callIsPure resolves it: a qualified callee is a
@@ -842,6 +862,18 @@ func (l *depsLinter) methodBodyIsPure(m methodDecl, decls typeDecls) bool {
 	if m.body == nil {
 		return false
 	}
+	// Callee identifiers are collected up front so the Ident arm below can
+	// tell `helper(x)` — already judged on its body by callIsPure — from a
+	// bare `helper` used as a value, which nothing here can follow.
+	calleeIdents := map[*ast.Ident]bool{}
+	ast.Inspect(m.body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if id, ok := call.Fun.(*ast.Ident); ok {
+				calleeIdents[id] = true
+			}
+		}
+		return true
+	})
 	pure := true
 	ast.Inspect(m.body, func(n ast.Node) bool {
 		if !pure {
@@ -859,11 +891,25 @@ func (l *depsLinter) methodBodyIsPure(m methodDecl, decls typeDecls) bool {
 				pure = false
 			}
 		case *ast.Ident:
-			// A bare name the declaring package binds to a func or a var
-			// is package state. Locals, params, fields, consts and type
-			// names are not — and a local that SHADOWS a package-level
-			// name is misread as state, which errs toward "collaborator".
-			if decls.funcs[t.Name] || decls.vars[t.Name] {
+			// A bare name the declaring package binds to a VAR is mutable
+			// shared state — how a method reaches a singleton — so it is
+			// still rejected. Locals, params, fields, consts and type
+			// names are not state, and a local that SHADOWS a package-level
+			// name is misread as one, which errs toward "collaborator".
+			//
+			// A package-level FUNC is deliberately NOT rejected here. The
+			// CallExpr arm above already judged it on its body via
+			// callIsPure; rejecting the callee identifier as well would
+			// undo that verdict for every call, since a call's callee is
+			// also visited as an Ident by this same walk.
+			if decls.vars[t.Name] {
+				pure = false
+			}
+			if decls.funcs[t.Name] && !calleeIdents[t] {
+				// The func is referenced as a VALUE, not called — passed
+				// somewhere, or assigned. Nothing here evaluates what the
+				// receiver of that value will do with it, so the
+				// conservative answer stands.
 				pure = false
 			}
 		}
@@ -887,9 +933,15 @@ func (l *depsLinter) callIsPure(fun ast.Expr, imports map[string]string, decls t
 			return true
 		}
 		// A type declared by the package under inspection: a conversion.
-		// A func declared there is not, and is rejected by the Ident arm
-		// of methodIsPureFieldAccess as well.
-		return decls.declared[t.Name] && !decls.funcs[t.Name]
+		if decls.declared[t.Name] && !decls.funcs[t.Name] {
+			return true
+		}
+		// A package-level FUNC of the declaring package: look at what it
+		// actually does. See funcIsPure for why this is not a hole.
+		if decls.funcs[t.Name] {
+			return l.funcIsPure(decls, t.Name)
+		}
+		return false
 	case *ast.SelectorExpr:
 		// `pkg.X(v)` is a conversion when pkg declares X as a TYPE
 		// (`time.Duration(n)`) and a call when it declares it as a func
@@ -904,7 +956,109 @@ func (l *depsLinter) callIsPure(fun ast.Expr, imports map[string]string, decls t
 			return false // unresolvable, or a method on a local: conservative
 		}
 		other := l.packageTypeDecls(dir)
-		return other.declared[t.Sel.Name] && !other.funcs[t.Sel.Name]
+		if other.declared[t.Sel.Name] && !other.funcs[t.Sel.Name] {
+			return true
+		}
+		// A func in ANOTHER package of this module (or a resolvable
+		// dependency) gets the same body-based judgement as a local one —
+		// but only when that package is not itself an I/O boundary. See
+		// funcIsPure and packageIsIOBoundary.
+		if other.funcs[t.Sel.Name] {
+			if importPath, ok := imports[pkgIdent.Name]; ok && packageIsIOBoundary(importPath) {
+				return false
+			}
+			return l.funcIsPure(other, t.Sel.Name)
+		}
+		return false
+	}
+	return false
+}
+
+// funcIsPure reports whether the package-level function named fn, declared
+// in decls, computes from its arguments and package consts and nothing else.
+//
+// # Why this exists
+//
+// Calling a package-level helper used to disqualify a type from the
+// data-struct exemption outright, because the walk could not prove the
+// helper was pure and "cannot see" was answered "collaborator". That is
+// right for a call THROUGH A FIELD — `c.pool.Query(q)` reaches whatever the
+// field holds, and no syntax distinguishes a map from a database. It is
+// wrong for a package-level func, because that call reaches exactly one
+// declaration and it is right there to be read.
+//
+// Measured on control-plane: `*config.WorkspaceConfig` is a
+// YAML-deserialized bag of storage defaults whose accessors index its own
+// maps — the exact case the exemption's own comment names. It fired anyway,
+// solely because one accessor called a package-level tier helper, and
+// INLINING that helper made the finding disappear. A rule whose verdict
+// flips on whether a pure expression was given a name is not measuring
+// anything about the type.
+//
+// # Why it is not a hole
+//
+// The helper's body gets the SAME walk as a method body — no I/O, no
+// goroutines, no channels, no package-level vars, and every call it makes
+// recursively judged the same way. A helper that reaches a database fails
+// that walk exactly as an inlined copy of it would, so naming a statement
+// cannot launder it. Three further guards:
+//
+//   - A function whose body is unavailable (assembly, //go:linkname, or a
+//     package that did not parse) is impure: the default remains "cannot
+//     see means collaborator".
+//   - Recursion is answered impure via funcPurityVisiting rather than
+//     recursed into. A cycle is not a shape a config accessor has.
+//   - A call into a package that is an I/O boundary by construction (net,
+//     os, database/sql …) is rejected at the call site without reading it,
+//     because those bodies are pure-looking wrappers over syscalls. See
+//     packageIsIOBoundary.
+//
+// What remains exempt is a type whose every method computes over its own
+// fields, possibly by way of named helpers that do the same. That is data,
+// whether or not its author factored it into functions.
+func (l *depsLinter) funcIsPure(decls typeDecls, fn string) bool {
+	decl, ok := decls.funcDecls[fn]
+	if !ok || decl.body == nil {
+		return false // no body to read: conservative
+	}
+	key := purityKey(decls.dir, fn)
+	if got, ok := l.purityCache[key]; ok {
+		return got
+	}
+	if l.funcPurityVisiting[key] {
+		return false // recursive: not a config accessor's shape
+	}
+	l.funcPurityVisiting[key] = true
+	defer delete(l.funcPurityVisiting, key)
+
+	pure := l.methodBodyIsPure(decl, decls)
+	l.purityCache[key] = pure
+	return pure
+}
+
+// packageIsIOBoundary reports whether importPath names a package that
+// performs I/O by construction, so a call into it is rejected without
+// reading the body.
+//
+// Reading them would be worse than useless: `os.Getenv` and `net.Dial` are
+// thin wrappers whose Go-level bodies look pure, and `time.Now` reaches the
+// clock through a runtime linkname with no body at all. Any of those inside
+// a "config accessor" means the type is reaching outside itself, which is
+// the thing this rule exists to catch.
+//
+// Matched on the import path's stdlib root, plus any path segment naming a
+// well-known I/O concern, so a third-party client package is caught too.
+func packageIsIOBoundary(importPath string) bool {
+	root, _, _ := strings.Cut(importPath, "/")
+	switch root {
+	case "os", "net", "io", "syscall", "database", "bufio", "log", "time", "crypto", "runtime", "os/exec":
+		return true
+	}
+	for _, seg := range strings.Split(importPath, "/") {
+		switch seg {
+		case "http", "sql", "grpc", "client", "db", "redis", "nats", "kafka", "s3":
+			return true
+		}
 	}
 	return false
 }
@@ -1034,6 +1188,13 @@ type typeDecls struct {
 	// routinely one.
 	funcs map[string]bool
 	vars  map[string]bool
+	// funcDecls carries the BODY of each package-level func, so a call to
+	// one can be judged on what it actually does instead of being assumed
+	// impure. See funcIsPure.
+	funcDecls map[string]methodDecl
+	// dir is the directory these decls were parsed from, so a recursive
+	// purity check knows which package it is resolving names against.
+	dir string
 }
 
 // methodDecl is one method declared on a type, carried with the import
@@ -1063,6 +1224,8 @@ func (l *depsLinter) packageTypeDecls(dir string) typeDecls {
 		embeds:     map[string]bool{},
 		funcs:      map[string]bool{},
 		vars:       map[string]bool{},
+		funcDecls:  map[string]methodDecl{},
+		dir:        dir,
 	}
 	l.declCache[dir] = out
 
@@ -1120,6 +1283,12 @@ func (l *depsLinter) packageTypeDecls(dir string) typeDecls {
 					continue
 				}
 				out.funcs[d.Name.Name] = true
+				out.funcDecls[d.Name.Name] = methodDecl{
+					name:    d.Name.Name,
+					sig:     d.Type,
+					body:    d.Body,
+					imports: fileImports,
+				}
 			}
 		}
 	}

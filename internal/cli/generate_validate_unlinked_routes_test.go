@@ -79,6 +79,65 @@ func TestValidateGeneratedProject_ReportsUnlinkedNavRoutes(t *testing.T) {
 	}
 }
 
+// TestValidateGeneratedProject_DeletedPageIsNotUnlinked: a route whose
+// page the user DELETED must not be reported as unlinked. There is
+// nothing to link to, so "add it to ALL_ROUTES" would produce a 404.
+//
+// control-plane's internal-console hit this on every generate. It was
+// told to add /daemons, /plans, /deployments and /llm-keys — four pages
+// it had deliberately removed, because they are owner-scoped customer
+// surfaces that could only ever render empty against the operator
+// listener. The same generate output listed all thirteen of those
+// pages' files under "scaffold-once file(s) … left absent on purpose",
+// so forge contradicted itself within one run.
+//
+// Deleting a scaffold-once file is an act of ownership the ledger
+// records as recorded-and-absent, which is the signal used here.
+func TestValidateGeneratedProject_DeletedPageIsNotUnlinked(t *testing.T) {
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:      "demo",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs"}},
+	}
+	services := unlinkedRoutesFixtureServices()
+	entities := unlinkedRoutesFixtureEntities()
+
+	cs := &checksums.FileChecksums{}
+	if err := generateFrontendNav(cfg, services, projectDir, entities, cs); err != nil {
+		t.Fatalf("generateFrontendNav: %v", err)
+	}
+
+	// The user takes over the nav and drops the /customers link...
+	navPath := filepath.Join(projectDir, "frontends", "web", "src", "components", "nav.tsx")
+	if err := os.WriteFile(navPath, []byte("// hand-rolled nav, no /customers link\nexport const ALL_ROUTES = [];\n"), 0o644); err != nil {
+		t.Fatalf("simulate user edit: %v", err)
+	}
+
+	// ...because they deleted the page it pointed at. Record the birth
+	// and remove the file: recorded && absent is how the ledger spells
+	// "the user deleted this".
+	pageRel := filepath.Join("frontends", "web", "src", "app", "customers", "page.tsx")
+	pageAbs := filepath.Join(projectDir, pageRel)
+	if err := os.MkdirAll(filepath.Dir(pageAbs), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(pageAbs, []byte("export default function P() { return null }\n"), 0o644); err != nil {
+		t.Fatalf("write page: %v", err)
+	}
+	checksums.RecordScaffold(projectDir, pageRel)
+	checksums.ResetScaffoldLedgerCache()
+	if err := os.Remove(pageAbs); err != nil {
+		t.Fatalf("delete page: %v", err)
+	}
+
+	for _, w := range validateGeneratedProject(projectDir, cfg, services, entities) {
+		if strings.Contains(w, "/customers") {
+			t.Errorf("a deleted page must not be reported as an unlinked route — "+
+				"linking to it would be a 404; got: %q", w)
+		}
+	}
+}
+
 // TestValidateGeneratedProject_PristineNavStaysSilent is the negative
 // control the task requires: a freshly scaffolded, never-touched nav.tsx
 // must NOT produce a warning, because forge is still keeping it current —

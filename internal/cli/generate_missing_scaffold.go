@@ -112,12 +112,18 @@ func rescaffoldHint(sorted []string) string {
 // scaffold-once decision refuses both a present file and a deleted one, and
 // the message only knew the first reason. A line claiming a file exists while
 // `ls` says otherwise sends the reader looking for a bug in the wrong place.
-func scaffoldSkipLine(root, relPath string) string {
+// The two branches differ in whether the reader has anything to DO, so they
+// differ in verbosity. "exists — yours to edit" is identical on every run
+// against an unchanged tree and reports forge correctly leaving a file
+// alone: routine. "absent, but deleted by you" names a file that is NOT
+// there and the command that brings it back, which is the sentence the run
+// in this file's header spent an hour failing to find: never suppressed.
+func scaffoldSkipLine(root, relPath string) (line string, routine bool) {
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relPath))); err == nil {
-		return fmt.Sprintf("  ⏭️  %s exists — yours to edit, leaving it untouched", relPath)
+		return fmt.Sprintf("  ⏭️  %s exists — yours to edit, leaving it untouched", relPath), true
 	}
 	return fmt.Sprintf("  ⏭️  %s is absent, but deleted by you (%s) — leaving it deleted. Re-create it: %s",
-		relPath, checksums.ScaffoldedFile, rescaffoldCmd(relPath))
+		relPath, checksums.ScaffoldedFile, rescaffoldCmd(relPath)), false
 }
 
 // reportMissingScaffolds writes the notice for root's absent scaffold-once

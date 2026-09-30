@@ -27,8 +27,10 @@ func writeCIScaffold(root, relPath string, content []byte) error {
 	}
 	if written {
 		fmt.Printf("  ✅ Generated %s\n", relPath)
+	} else if line, routine := scaffoldSkipLine(root, relPath); routine {
+		routinef("%s\n", line)
 	} else {
-		fmt.Println(scaffoldSkipLine(root, relPath))
+		fmt.Println(line)
 	}
 	return nil
 }

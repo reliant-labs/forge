@@ -88,6 +88,13 @@ func TestRescaffold_DeletedWorkflowComesBackByteIdentical(t *testing.T) {
 	born := readRescaffoldFile(t, root, rel)
 	removeRescaffoldFile(t, root, rel)
 
+	// Under -v, because the per-path line is routine: it is identical on
+	// every run. The EVENT — the moment the file went missing — is
+	// reported at default verbosity by reportMissingScaffolds, which names
+	// the same command. What must never happen, at any verbosity, is the
+	// line claiming the file EXISTS; that is the bug this test was written
+	// for and it is asserted below.
+	defer setGenerateVerbosity(true)()
 	out := captureStdout(t, func() {
 		if err := generateCIWorkflows(root, cfg, nil, false); err != nil {
 			t.Fatalf("generateCIWorkflows: %v", err)

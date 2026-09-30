@@ -393,6 +393,31 @@ func TestClusterWorkloadsWarnsRatherThanFailsInsideTheStartupGrace(t *testing.T)
 	}
 }
 
+// Readiness duration comes from the condition transition, not pod creation.
+// Missing timestamps must not invent an outage lasting the pod's whole life.
+func TestClusterWorkloadsUsesReadinessTransitionForOutageDuration(t *testing.T) {
+	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, transition, want string
+	}{
+		{"recent outage", `,"lastTransitionTime":"2026-09-30T13:59:30Z"`, "not Ready for 30s"},
+		{"missing timestamp", "", " — not Ready"},
+		{"future timestamp", `,"lastTransitionTime":"2026-09-30T14:01:00Z"`, " — not Ready"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{"metadata":{"name":"bridge-old","creationTimestamp":"2026-09-27T05:00:00Z"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"False"` + tc.transition + `}],"containerStatuses":[{"name":"relay","ready":false}]}}`
+			var pod podView
+			if err := json.Unmarshal([]byte(raw), &pod); err != nil {
+				t.Fatal(err)
+			}
+			finding, bad := judgePod(probeTarget{}, &clusterWorkload{name: "bridge"}, pod, now)
+			if !bad || finding.severity != StatusFail || !strings.HasSuffix(finding.detail, tc.want) {
+				t.Fatalf("finding = %+v, bad = %v; want failure ending %q", finding, bad, tc.want)
+			}
+		})
+	}
+}
+
 // An unschedulable pod has NO container statuses at all: the reason lives on
 // the PodScheduled condition, and anything that does not read it reports a
 // blank "0/0 not Ready" that explains nothing.

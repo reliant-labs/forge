@@ -215,10 +215,11 @@ type podView struct {
 	Status struct {
 		Phase      string `json:"phase"`
 		Conditions []struct {
-			Type    string `json:"type"`
-			Status  string `json:"status"`
-			Reason  string `json:"reason"`
-			Message string `json:"message"`
+			Type               string    `json:"type"`
+			Status             string    `json:"status"`
+			Reason             string    `json:"reason"`
+			Message            string    `json:"message"`
+			LastTransitionTime time.Time `json:"lastTransitionTime"`
 		} `json:"conditions"`
 		ContainerStatuses     []containerView `json:"containerStatuses"`
 		InitContainerStatuses []containerView `json:"initContainerStatuses"`
@@ -822,12 +823,20 @@ func judgePod(t probeTarget, w *clusterWorkload, p podView, now time.Time) (work
 		return workloadFinding{severity: StatusWarn, target: t.label(), workload: w.name,
 			pod: p.Metadata.Name, detail: detail(), oom: true}, true
 	case !podReady:
+		// Pod age determines startup grace, but does not measure an outage:
+		// a years-old pod can have lost readiness only seconds ago.
+		var unreadyFor time.Duration
+		for _, c := range p.Status.Conditions {
+			if c.Type == "Ready" && c.Status == "False" && !c.LastTransitionTime.IsZero() {
+				unreadyFor = now.Sub(c.LastTransitionTime)
+			}
+		}
 		sev := StatusFail
 		if age >= 0 && age < podStartupGrace {
 			sev = StatusWarn // mid-rollout, not broken
 		}
 		return workloadFinding{severity: sev, target: t.label(), workload: w.name,
-			pod: p.Metadata.Name, detail: detail() + startingSuffix(sev, age)}, true
+			pod: p.Metadata.Name, detail: detail() + startingSuffix(sev, age, unreadyFor)}, true
 	case restarts >= restartWarnThreshold:
 		return workloadFinding{severity: StatusWarn, target: t.label(), workload: w.name,
 			pod: p.Metadata.Name, detail: detail() + " — Ready now, but it keeps dying", oom: false}, true
@@ -847,14 +856,14 @@ func oomPhrase(kind, container string, exit int) string {
 // stamp existed do not carry it, so its ABSENCE means nothing.
 const forgeEnvLabel = "forge.dev/env"
 
-func startingSuffix(sev Status, age time.Duration) string {
+func startingSuffix(sev Status, age, unreadyFor time.Duration) string {
 	if sev == StatusWarn {
 		return fmt.Sprintf(" — starting (%s old)", age.Round(time.Second))
 	}
-	if age <= 0 {
+	if unreadyFor <= 0 {
 		return " — not Ready"
 	}
-	return fmt.Sprintf(" — not Ready for %s", age.Round(time.Second))
+	return fmt.Sprintf(" — not Ready for %s", unreadyFor.Round(time.Second))
 }
 
 // lastTerminationSuffix appends WHY the container last died to a waiting

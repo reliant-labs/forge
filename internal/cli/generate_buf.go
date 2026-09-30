@@ -160,6 +160,14 @@ plugins:
 	if usesLocalTSPlugin(feBufGen) {
 		pluginRel, ok := resolveLocalTSPluginRel(projectDir, feDir)
 		if !ok {
+			// Install the frontend's dependencies rather than asking the
+			// user to. See ensureTSPluginInstalled.
+			if err := ensureTSPluginInstalled(fe.Name, projectDir, feDir); err != nil {
+				return err
+			}
+			pluginRel, ok = resolveLocalTSPluginRel(projectDir, feDir)
+		}
+		if !ok {
 			return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed, so no TypeScript "+
 				"stubs can be generated — run `npm install` in %s and re-run generate "+
 				"(continuing would emit hooks and mocks importing _pb modules that do not exist)",
@@ -282,7 +290,17 @@ plugins:
 	// runBufGenerateTypeScript for why a skip here is not survivable.
 	if usesLocalTSPlugin(bufGenPath) {
 		pluginPath := filepath.Join(absFeDir, "node_modules", ".bin", "protoc-gen-es")
-		if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
+		_, statErr := os.Stat(pluginPath)
+		if os.IsNotExist(statErr) {
+			// Same install-first policy as the per-frontend path. A
+			// workspace install at the frontend reconciles the hoisted
+			// root tree too, since npm resolves workspace members from it.
+			if instErr := ensureTSPluginInstalled(pluginFrontend.Name, projectDir, feDir); instErr != nil {
+				return instErr
+			}
+			_, statErr = os.Stat(pluginPath)
+		}
+		if os.IsNotExist(statErr) {
 			return fmt.Errorf("workspace TS gen: @bufbuild/protoc-gen-es is not installed, so no "+
 				"TypeScript stubs can be generated — run `npm install` (or `pnpm install`) at the "+
 				"project root and re-run generate (continuing would emit hooks and mocks importing "+
@@ -306,6 +324,61 @@ plugins:
 		return fmt.Errorf("workspace TypeScript generation failed: %w", err)
 	}
 	fmt.Println("  ✅ TypeScript stubs generated into packages/api/src/gen")
+	return nil
+}
+
+// ensureTSPluginInstalled installs a frontend's node_modules so that
+// protoc-gen-es exists, when `forge generate` finds it missing.
+//
+// INSTALLING is the policy here, not warning and not failing first, and it
+// follows the convention forge already applies at every other point where a
+// missing toolchain would stop a run: `forge env up` installs a frontend's deps
+// before the dev loop (ensureFrontendDeps), and `forge scaffold frontend`
+// installs them the moment the directory exists (runFrontendNpmInstall). A
+// generate that needs the plugin is the same situation, and a user who has to
+// be told to run `npm ci` before re-running generate has been handed a step
+// forge could have taken.
+//
+// `npm ci` is preferred because a lockfile is the exact thing this needs to
+// reproduce, and it is what CI runs; without a lockfile there is nothing for
+// `ci` to honour, so we fall back to `npm install`. A failure returns an error
+// naming the frontend, the directory, and the command — the run still fails,
+// because the alternative is the silent skip this whole path exists to
+// prevent.
+//
+// FORGE_SKIP_NPM_INSTALL=1 short-circuits the install, matching the seam
+// runFrontendNpmInstall already established for tests that care about the
+// generate logic rather than about node_modules. The caller re-resolves the
+// plugin afterwards and produces the actionable error if it is still absent,
+// so skipping here never converts a failure into a success.
+func ensureTSPluginInstalled(feName, projectDir, feDir string) error {
+	absFeDir := filepath.Join(projectDir, feDir)
+	if _, err := os.Stat(filepath.Join(absFeDir, "package.json")); err != nil {
+		// Not a node project (or no manifest) — nothing to install. The
+		// caller's re-resolve turns this into the actionable error.
+		return nil
+	}
+	if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
+		return nil
+	}
+
+	verb := "ci"
+	if _, err := os.Stat(filepath.Join(absFeDir, "package-lock.json")); err != nil {
+		verb = "install"
+	}
+	fmt.Printf("📦 %s: node_modules missing — running `npm %s` in %s so protoc-gen-es exists\n",
+		feName, verb, feDir)
+
+	cmd := exec.Command("npm", verb, "--no-audit", "--no-fund")
+	cmd.Dir = absFeDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed and `npm %s` in %s failed: %w "+
+			"— run it manually to see the full output, then re-run generate "+
+			"(continuing would emit hooks and mocks importing _pb modules that do not exist)",
+			feName, verb, feDir, err)
+	}
 	return nil
 }
 

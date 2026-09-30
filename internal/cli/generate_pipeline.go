@@ -1510,9 +1510,25 @@ func stepFrontendBufTS(ctx *pipelineContext) error {
 	}
 	for _, fe := range ctx.Cfg.Frontends {
 		if generatesTypeScript(fe.Type) {
-			if err := ctx.warnOrFail(fmt.Sprintf("TypeScript generation for %s", fe.Name),
-				runBufGenerateTypeScript(fe, ctx.Cfg, ctx.ProjectDir)); err != nil {
-				return err
+			// FATAL, deliberately not warnOrFail. TypeScript stubs are a
+			// REQUIRED codegen step, not a best-effort one: the hooks and
+			// mocks steps downstream emit TypeScript importing
+			// `@/gen/<svc>/v1/<svc>_pb` for every service, and this step is
+			// what writes those modules.
+			//
+			// Routed through warnOrFail, a frontend with no node_modules
+			// printed one warning and `forge generate` exited 0 having
+			// written no stubs at all — indistinguishable from a run that
+			// had nothing to write. The stale stubs already on disk then
+			// stayed stale, and the diagnostic surfaced much later as a
+			// build and lint failure in another repo, blamed on whichever
+			// service was added most recently. runBufGenerateTypeScript
+			// now installs the missing deps itself; if it still cannot
+			// produce stubs, that is an error, not a warning.
+			if err := runBufGenerateTypeScript(fe, ctx.Cfg, ctx.ProjectDir); err != nil {
+				return fmt.Errorf("TypeScript generation for %s failed — TS stubs are required "+
+					"codegen (hooks and mocks import the _pb modules this step writes), so "+
+					"continuing would emit a frontend that cannot compile: %w", fe.Name, err)
 			}
 		}
 	}

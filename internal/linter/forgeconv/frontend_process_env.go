@@ -101,6 +101,17 @@
 //     they cannot come from KCL (the bundler defines them statically, and
 //     dead-code elimination depends on that), so there is no typed field to
 //     redirect to. The scaffold's own providers.tsx uses NODE_ENV this way.
+//   - NEXT.JS SERVER-ONLY App Router modules — app/**/route.ts, middleware.ts,
+//     instrumentation.ts. This one is not a convenience: the rule's central
+//     premise is false for them. Next inlines process.env when building the
+//     CLIENT bundle; server-side code reads it LIVE at request time from the
+//     container's environment, which is the very runtime-injection the typed
+//     module exists to provide. Flagging a route handler therefore inverts the
+//     rule — control-plane's api/[...path]/route.ts reads a KCL-set,
+//     in-cluster ADMIN_API_URL, and moving it to the browser-facing config
+//     module would ship a cluster-DNS name to the browser AND turn a runtime
+//     read into a build-time one, losing promotability. See
+//     isNextServerOnlyModule.
 //   - src/gen/ (protobuf-es output), node_modules/, .next/, dist/, build/,
 //     coverage/ — vendored or built artefacts, mirroring the ignores the
 //     scaffolded eslint config already lists.
@@ -318,6 +329,94 @@ func isEnvExemptPath(feDir, path string) bool {
 	// Generated protobuf-es output.
 	if rel == "src/gen" || strings.HasPrefix(rel, "src/gen/") {
 		return true
+	}
+	// Next.js SERVER-ONLY App Router modules — route handlers, and the
+	// server files that bracket them. See isNextServerOnlyModule for why
+	// the rule's central premise does not apply to these.
+	if isNextServerOnlyModule(rel, base) {
+		return true
+	}
+	return false
+}
+
+// nextServerOnlyBasenames are the App Router files that Next.js NEVER bundles
+// for the browser. `route` is the route handler (an HTTP endpoint); the other
+// two are server-only by framework contract in the same way.
+//
+// A page.tsx or layout.tsx is deliberately NOT here: those are server
+// components by default but may carry "use client", and their code can be sent
+// to the browser. Only files the framework guarantees are server-side qualify.
+var nextServerOnlyBasenames = map[string]bool{
+	"route":           true, // app/**/route.ts — an HTTP endpoint
+	"middleware":      true, // runs on the server, never shipped to a browser
+	"instrumentation": true, // process-level startup hook
+}
+
+// isNextServerOnlyModule reports whether rel is a Next.js App Router module
+// that only ever executes on the server.
+//
+// ── Why these are exempt ──────────────────────────────────────────────
+//
+// This rule's load-bearing argument is PROMOTABILITY: both bundlers INLINE a
+// process.env read at BUILD time, freezing the artifact to the environment it
+// was built against, so `forge env promote` cannot move it without a rebuild.
+// That argument is correct for anything that reaches the browser, and it is
+// simply NOT TRUE of a Next.js route handler.
+//
+// Next.js inlines process.env when it is producing the CLIENT bundle — that is
+// what the NEXT_PUBLIC_ prefix opts a variable into. Server-side code (route
+// handlers, server components, server actions) runs on the Node runtime and
+// reads process.env LIVE, at request time, from the container's actual
+// environment. So a route handler reading a non-NEXT_PUBLIC_ variable is
+// already runtime-injected: the exact property the typed config module exists
+// to buy, obtained by the framework's own contract.
+//
+// Flagging it inverts the rule. control-plane's api/[...path]/route.ts is the
+// worked example: it is the same-origin proxy, `export const runtime =
+// "nodejs"`, and it reads ADMIN_API_URL — a value KCL sets per environment
+// (deploy/kcl/{dev,prod}/main.k) and which names an IN-CLUSTER host. Moving it
+// to the typed config module would be actively wrong on two counts. The module
+// is browser-facing, so the cluster-DNS name would be shipped to a browser that
+// cannot resolve it — inviting exactly the "fix" of pointing the browser back
+// at a port-forward, which is the cross-origin coupling that file was written
+// to delete. And it would make a runtime-read value build-time, LOSING
+// promotability rather than gaining it.
+//
+// ── Why not tell them to suppress it ──────────────────────────────────
+//
+// The remediation already offers `// forge:lint-disable-next-line`. That is
+// the right escape hatch for a genuine judgement call; it is the wrong answer
+// for a whole file category where the rule's premise does not hold. Every
+// scaffolded project with a server-side proxy would carry the same suppression
+// with the same reason — which is a rule telling users to silence it, i.e. a
+// rule that is wrong, and the noise trains people to suppress the cases that
+// DO matter.
+//
+// ── Structural, not a path blacklist ──────────────────────────────────
+//
+// The check requires BOTH the App Router location (an `app/` segment) and a
+// server-only basename, so `src/lib/route.ts` — an ordinary module that
+// happens to be called route.ts — stays subject to the rule. Vite frontends
+// have no app/ router, so nothing there is exempted by this.
+func isNextServerOnlyModule(rel, base string) bool {
+	ext := strings.ToLower(filepath.Ext(base))
+	if !scannedExts[ext] {
+		return false
+	}
+	stem := strings.TrimSuffix(base, ext)
+	if !nextServerOnlyBasenames[stem] {
+		return false
+	}
+	// middleware.ts and instrumentation.ts live at the frontend or src root
+	// by convention rather than under app/.
+	if stem == "middleware" || stem == "instrumentation" {
+		return rel == base || rel == "src/"+base
+	}
+	// A route handler must actually be in the App Router tree.
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "app" {
+			return true
+		}
 	}
 	return false
 }

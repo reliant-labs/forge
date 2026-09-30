@@ -330,9 +330,40 @@ echo "→ pushing atomically (branch + tag, all-or-nothing)"
 git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"
 
 echo ""
-echo "✅ released $VERSION at $RELEASE_SHA"
+echo "✅ committed and pushed $VERSION at $RELEASE_SHA"
+
+# ── 10. Wait for the proxy to ingest the tag ────────────────────────
+# The push above returns as soon as GitHub has the tag. proxy.golang.org has
+# not heard of it yet — it discovers versions by polling — and sum.golang.org
+# records a hash only after the proxy has fetched the tree. For a window
+# measured in MINUTES, `go mod download $ROOT_MODULE@$VERSION` 404s for
+# everyone, including our own CI.
+#
+# That window is why E2E Scaffold went red on every release commit for ~6
+# minutes: it scaffolds a project requiring the version just tagged and runs
+# `go mod tidy` against a proxy that does not have it. The release was always
+# correct; the lane was just asking too early. A lane that is red on every
+# release is a lane nobody believes, which is how a genuinely broken tag
+# ships unnoticed.
+#
+# So the release does not report DONE until the version is actually
+# resolvable. Everything downstream — the consumer bump in docs/releasing.md
+# steps 2-3, and any CI triggered by the pushed commit — depends on it.
+#
+# A timeout here does NOT mean the release failed: the tag is pushed and
+# immutable either way. The script says so explicitly, because the wrong
+# reaction (delete the tag, re-cut it) burns the version permanently.
 echo ""
-echo "Verify the proxy serves what was tagged:"
-echo "  GOPROXY=proxy.golang.org GOFLAGS=-mod=mod go mod download -x $ROOT_MODULE@$VERSION"
-echo ""
-echo "Then propagate the bump to consumers — see docs/releasing.md steps 2-3."
+if "$(dirname "$0")/wait-for-go-proxy.sh" --module "$ROOT_MODULE" --version "$VERSION" --tag-pushed; then
+  echo ""
+  echo "✅ released $VERSION at $RELEASE_SHA"
+  echo ""
+  echo "Then propagate the bump to consumers — see docs/releasing.md steps 2-3."
+else
+  echo ""
+  echo "⚠️  $VERSION is TAGGED AND PUSHED — the release itself succeeded."
+  echo "    The module proxy has not ingested it yet. Wait and re-check with:"
+  echo "      scripts/wait-for-go-proxy.sh --module $ROOT_MODULE --version $VERSION --tag-pushed"
+  echo "    Do NOT re-cut the tag. Hold off on the consumer bump until it resolves."
+  exit 1
+fi

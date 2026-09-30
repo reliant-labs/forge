@@ -102,6 +102,54 @@ func TestClusterManage_IsItsOwnAuthority(t *testing.T) {
 	}
 }
 
+// TestDomainScopes_AreTheirOwnAuthority pins domain:read/domain:write as a
+// first-class product, separate from deploy. A domain is a public identity and
+// a certificate is issued in the org's name, so a token that can ship a
+// release must not also be able to change which names point at it.
+func TestDomainScopes_AreTheirOwnAuthority(t *testing.T) {
+	for raw, want := range map[string]Scope{
+		"domain:read":  ScopeDomainRead,
+		"domain:write": ScopeDomainWrite,
+	} {
+		got, ok := ParseScope(raw)
+		if !ok || got != want {
+			t.Fatalf("ParseScope(%s) = %q, %v", raw, got, ok)
+		}
+	}
+
+	// Write implies read WITHIN the product, as it does for deploy and secret.
+	if !SetOf(ScopeDomainWrite).Permits(ScopeDomainRead) {
+		t.Error("domain:write must permit domain:read at the point of use")
+	}
+	if SetOf(ScopeDomainRead).Permits(ScopeDomainWrite) {
+		t.Error("domain:read must not permit domain:write")
+	}
+
+	// And no implication crosses the product boundary, in either direction.
+	if SetOf(ScopeDeployWrite).Permits(ScopeDomainWrite) {
+		t.Error("deploy:write permitted domain:write")
+	}
+	if SetOf(ScopeDomainWrite).Permits(ScopeDeployWrite) {
+		t.Error("domain:write permitted deploy:write")
+	}
+	dw := SetOf(ScopeDomainWrite)
+	for _, other := range AllScopes {
+		if other != ScopeDomainWrite && other != ScopeDomainRead && dw.Permits(other) {
+			t.Errorf("domain:write permitted %s", other)
+		}
+	}
+}
+
+// TestDomainScopes_NeedNoActingUser: a domain is org property, so an org CI
+// token manages one without acting as a person — the same as deploy and secret.
+func TestDomainScopes_NeedNoActingUser(t *testing.T) {
+	for _, s := range []Scope{ScopeDomainRead, ScopeDomainWrite} {
+		if RequiresActingUser(s) {
+			t.Errorf("%s must not require an acting user", s)
+		}
+	}
+}
+
 // TestCovers_IsTheNoMintBeyondYourScopesRule covers every scope, including the
 // new ones: a holder can grant exactly what it holds.
 func TestCovers_IsTheNoMintBeyondYourScopesRule(t *testing.T) {

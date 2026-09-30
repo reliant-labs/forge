@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/credentials"
 )
 
@@ -53,6 +54,10 @@ const (
 	SourceFlag  CredentialSource = "flag"             // --token
 	SourceEnv   CredentialSource = "env"              // the declared token_env
 	SourceLogin CredentialSource = "credentials file" // written by `forge login`
+	// SourceHost is a credential an embedding application deposited for
+	// this endpoint (pkg/cloudcred). forge does not know which application:
+	// the entry means "the host vouched for this user here".
+	SourceHost CredentialSource = "host application"
 )
 
 // Credential is a resolved bearer token plus where it came from.
@@ -108,19 +113,41 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 	if err != nil {
 		return Credential{}, err
 	}
-	stored, err := credentials.Lookup(path, ep.URL, ClientID)
-	switch {
-	case err == nil:
-		if stored.Expired(time.Now()) {
-			return Credential{}, fmt.Errorf("%w\nthe login for %s stored in %s expired at %s\nfix: %s",
-				ErrNoCredential, ep.URL, path, stored.ExpiresAt.Format(time.RFC3339), loginHint(ep))
+	// forge's OWN entry first, then one an embedding application deposited.
+	// That order keeps `forge login` authoritative: a human who ran it chose
+	// this credential deliberately for this endpoint, and a host application
+	// that happens to be signed in as somebody else must not displace it.
+	// The fallback is what makes "logged in to the host means logged in to
+	// forge" true without forge knowing the host exists (pkg/cloudcred).
+	for _, attempt := range []struct {
+		client string
+		source CredentialSource
+	}{
+		{ClientID, SourceLogin},
+		{cloudcred.HostClientID, SourceHost},
+	} {
+		stored, lookupErr := credentials.Lookup(path, ep.URL, attempt.client)
+		switch {
+		case lookupErr == nil:
+			if stored.Expired(time.Now()) {
+				// An expired HOST credential is not a dead end the way an
+				// expired login is: the host refreshes it on its own
+				// schedule. Still refused — presenting it would 401 — but
+				// the fix is to sign in to the host, not to run `forge login`.
+				if attempt.source == SourceHost {
+					return Credential{}, fmt.Errorf("%w\nthe credential deposited for %s in %s expired at %s\nfix: sign in again in the application hosting forge, or %s",
+						ErrNoCredential, ep.URL, path, stored.ExpiresAt.Format(time.RFC3339), loginHint(ep))
+				}
+				return Credential{}, fmt.Errorf("%w\nthe login for %s stored in %s expired at %s\nfix: %s",
+					ErrNoCredential, ep.URL, path, stored.ExpiresAt.Format(time.RFC3339), loginHint(ep))
+			}
+			return Credential{Token: stored.Token, Source: attempt.source, From: path}, nil
+		case !errors.Is(lookupErr, credentials.ErrNotFound):
+			// A file that exists but cannot be read is an ERROR, not "not
+			// logged in": the user did log in, and telling them otherwise
+			// sends them round a loop that cannot fix it.
+			return Credential{}, lookupErr
 		}
-		return Credential{Token: stored.Token, Source: SourceLogin, From: path}, nil
-	case !errors.Is(err, credentials.ErrNotFound):
-		// A file that exists but cannot be read is an ERROR, not "not
-		// logged in": the user did log in, and telling them otherwise sends
-		// them round a loop that cannot fix it.
-		return Credential{}, err
 	}
 
 	return Credential{}, fmt.Errorf(

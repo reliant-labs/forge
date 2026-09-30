@@ -68,6 +68,18 @@ const (
 	// ScopeSecretWrite sets and deletes managed secret values. Implies
 	// secret:read at the point of use.
 	ScopeSecretWrite Scope = "secret:write"
+
+	// ScopeDomainRead lists the org's custom domains and their bindings.
+	ScopeDomainRead Scope = "domain:read"
+	// ScopeDomainWrite registers domains, requests certificates and binds
+	// them to environments. Implies domain:read at the point of use.
+	//
+	// ITS OWN PRODUCT, NOT A DEPLOY ACTION. A domain is a PUBLIC IDENTITY
+	// and a certificate is issued in the org's name; binding one repoints
+	// live traffic. deploy:write moves a release onto hostnames the org
+	// already owns, and must not be able to change which names those are —
+	// the same separation cluster:manage has from deploy:write.
+	ScopeDomainWrite Scope = "domain:write"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -84,6 +96,8 @@ var AllScopes = []Scope{
 	ScopeMCPConnector,
 	ScopeSecretRead,
 	ScopeSecretWrite,
+	ScopeDomainRead,
+	ScopeDomainWrite,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an
@@ -170,6 +184,8 @@ func (s Set) Permits(want Scope) bool {
 		return s.Has(ScopeTokenWrite)
 	case ScopeSecretRead:
 		return s.Has(ScopeSecretWrite)
+	case ScopeDomainRead:
+		return s.Has(ScopeDomainWrite)
 	default:
 		return false
 	}

@@ -74,7 +74,8 @@ func fullWorkload() *Workload {
 		Status: WorkloadStatus{
 			TierStatus: TierStatus{Phase: PhaseReady, ObservedGeneration: 3, Hostname: "lively-ferret.apps.example", URL: "https://lively-ferret.apps.example", Message: "ok",
 				Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Unix(1700000000, 0)}}},
-			ServiceName: "api", WorkloadName: "api", ReadyReplicas: 1, ObservedImage: "ghcr.io/acme/api:v1.4.2", LastReadyAt: ptr(metav1.Unix(1700000000, 0)),
+			ServiceName: "api", WorkloadName: "api", ReadyReplicas: 1, UpdatedReplicas: 1, DesiredReplicas: 1,
+			ObservedImage: "ghcr.io/acme/api:v1.4.2", LastReadyAt: ptr(metav1.Unix(1700000000, 0)),
 		},
 	}
 }

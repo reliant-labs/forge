@@ -3,6 +3,7 @@ package release
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -60,15 +61,6 @@ func (k *PromotionKind) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Gate is one check that had passed when a promotion was recorded. EVIDENCE,
-// not enforcement: a gate that must block a promotion is checked before the
-// entry is written, because a recorded claim proves only that it was made.
-type Gate struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	URL    string `json:"url,omitempty"`
-}
-
 // Actor is who recorded a promotion: a human user, or a named automation
 // ("ci", "preview-bot"). A file ledger records whatever the caller states.
 type Actor struct {
@@ -97,7 +89,32 @@ type Promotion struct {
 	// Sources is the source-built half of the same snapshot.
 	Sources    map[string]Source `json:"sources,omitempty"`
 	PromotedBy Actor             `json:"promoted_by,omitempty"`
-	Gates      []Gate            `json:"gates,omitempty"`
+	// Gates is the PRE-promote evidence, frozen into the entry: what had
+	// already passed when the environment was bound.
+	Gates []Gate `json:"gates,omitempty"`
+	// RecordedGates is the POST-promote evidence — the wait, the smoke, a
+	// manual sign-off — appended after the binding. It is a separate field
+	// because the promotion entry is append-only: evidence that arrives
+	// later cannot be written into Gates without rewriting history, and
+	// the distinction is itself meaningful (what was known BEFORE the
+	// environment moved, versus what was learned after).
+	//
+	// A file ledger leaves it empty: there is nowhere to append to a line
+	// already written. A hosted backend fills it from its child table.
+	RecordedGates []Gate `json:"recorded_gates,omitempty"`
+	// Run is the pipeline attempt that made this promotion, or the zero
+	// Run for a promotion that belongs to none.
+	Run Run `json:"run,omitempty"`
+	// FromPromotionID is the SOURCE promotion this one copied pins from —
+	// the exact entry, not just the environment. FromEnv names where the
+	// bytes came from; this names WHEN, which is what makes a promote
+	// chain reconstructible after the source env has moved on.
+	FromPromotionID string `json:"from_promotion_id,omitempty"`
+	// SupersededInFlight records that this promotion replaced one whose
+	// rollout had not finished — a deliberate override, not an accident.
+	// Set by the backend that admitted the override; it is the audit trail
+	// for "who decided to interrupt a rollout".
+	SupersededInFlight bool `json:"superseded_in_flight,omitempty"`
 	// Note is the free-form "why" — the most valuable field on a promote
 	// that moves an environment backwards.
 	Note string `json:"note,omitempty"`
@@ -118,13 +135,45 @@ func (p Promotion) Validate() error {
 		return fmt.Errorf("%w: promotion kind %q (expected promote)", ErrInvalid, p.Kind)
 	case p.FromEnv != "" && p.FromEnv == p.Env:
 		return fmt.Errorf("%w: environment %q cannot be promoted from itself", ErrInvalid, p.Env)
+	case p.FromPromotionID != "" && p.FromPromotionID == p.ID:
+		return fmt.Errorf("%w: promotion %q cannot be promoted from itself", ErrInvalid, p.ID)
 	}
 	for image, d := range p.Resolved {
 		if !ValidDigest(d) {
 			return fmt.Errorf("%w: promotion of %q: resolved digest %q for %q is not canonical", ErrInvalid, p.Env, d, image)
 		}
 	}
+	if err := p.Run.Validate(); err != nil {
+		return fmt.Errorf("promotion of %q: %w", p.Env, err)
+	}
+	// Gates read back from a ledger written before the status set closed
+	// carry a RawStatus, and must still READ. So validation here covers
+	// only what makes a gate uninterpretable rather than merely old: a
+	// gate with no name cannot be attributed to a check at all.
+	for i, g := range p.Gates {
+		if strings.TrimSpace(g.Name) == "" {
+			return fmt.Errorf("%w: promotion of %q: gate %d has no name", ErrInvalid, p.Env, i)
+		}
+	}
+	for i, g := range p.RecordedGates {
+		if strings.TrimSpace(g.Name) == "" {
+			return fmt.Errorf("%w: promotion of %q: recorded gate %d has no name", ErrInvalid, p.Env, i)
+		}
+	}
 	return nil
+}
+
+// AllGates is the whole evidence trail in reading order: the pre-promote
+// gates frozen into the entry, then the post-promote gates appended after
+// it. One call, so a renderer cannot show half the evidence by forgetting a
+// field.
+func (p Promotion) AllGates() []Gate {
+	if len(p.RecordedGates) == 0 {
+		return p.Gates
+	}
+	out := make([]Gate, 0, len(p.Gates)+len(p.RecordedGates))
+	out = append(out, p.Gates...)
+	return append(out, p.RecordedGates...)
 }
 
 // NewPromotion freezes a release's pin set into a promotion of env. The

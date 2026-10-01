@@ -652,9 +652,39 @@ type WorkloadStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 
+	// UpdatedReplicas is how many replicas are running the CURRENT pod
+	// template — the one carrying ObservedImage — and are ready.
+	//
+	// It exists because ReadyReplicas alone cannot tell a finished rollout
+	// from a failing one. Under RollingUpdate the old replicas stay ready
+	// while the new ones crash-loop, so ReadyReplicas ≥ desired holds
+	// throughout, and a reader that gates on it alone passes a release
+	// that never served a request. UpdatedReplicas is the count that goes
+	// to zero in exactly that case, which is why it is the field a rollout
+	// gate reads.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+
+	// DesiredReplicas is how many the controller is working toward. It is
+	// reported rather than inferred from spec.replicas because the two can
+	// legitimately differ — mid-scale, or while a status describes a
+	// previous generation — and comparing UpdatedReplicas against the
+	// spec in that window would read a normal scale as a stalled rollout.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
+
 	// ObservedImage is the image the running workload was CONFIRMED to
 	// carry. It lags spec.image until a rollout completes, and that gap is
 	// the drift signal.
+	//
+	// CONFIRMED means the rollout to that template finished — the same
+	// completion test `kubectl rollout status` applies. Until it does, the
+	// field keeps its PREVIOUS value, the image last confirmed running,
+	// because reporting the pod template's image the moment it is written
+	// would make "observed" mean "declared" and leave nothing to compare
+	// a desired digest against.
 	// +optional
 	ObservedImage string `json:"observedImage,omitempty"`
 

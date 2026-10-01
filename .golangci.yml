@@ -17,7 +17,17 @@
 version: "2"
 
 run:
-  timeout: 5m
+  # A HANG GUARD, NOT A PERFORMANCE BUDGET. 5m was tight enough to fail
+  # healthy runs: with a COLD Go build cache (a fresh worktree, a fresh CI
+  # runner, a per-task GOCACHE), golangci-lint type-checks the whole module
+  # from scratch, and on a loaded machine that alone crossed 5m. The run
+  # then printed "0 issues" and exited 4 on "Timeout exceeded", so `forge
+  # lint` reported a red gate over code with no findings. Measured on a
+  # shared 16-core box at load ~15: warm cache 79s, cold cache over 5m. 20m
+  # still catches a wedged run; the CI job's own timeout is the outer bound.
+  # (golangci starts this clock AFTER taking the serial lock below, so time
+  # spent queued behind another run does not count against it.)
+  timeout: 20m
   # golangci-lint takes an exclusive OS file lock on $TMPDIR/golangci-lint.lock
   # for the whole of a run. That is ONE path shared by every golangci-lint on
   # the machine — not per-project, and not in the cache directory, so pointing

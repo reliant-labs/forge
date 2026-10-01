@@ -4,10 +4,36 @@ package cli
 // environment is running (control-plane docs/design/hosted-deploy-primitives.md
 // §3.4).
 //
-// OWNED BY F5. F2 declares the flags and the hook so promote.go is never
-// edited again; F5 replaces the body below, in this file.
+// THE RACE THIS CLOSES, AND WHY THE SERVER RESOLVES THE VERSION. "Promote
+// whatever staging runs" done entirely client-side is two calls: read
+// staging's current release, then promote that version to prod. If staging is
+// promoted between the two, prod gets a release that was NEVER the one
+// approved — and may still be rolling out on staging — and the client cannot
+// tell that it happened. So forge does not send a version it resolved and
+// call that provenance. It sends `from_promotion_id`: the promotion its
+// decision was made against. The server re-reads that promotion under the
+// TARGET environment's lock, takes the version from it, and refuses
+// `source_moved` if it is no longer what the source runs (C6). The read below
+// therefore feeds the PLAN — the preview a human reads — while the write's
+// authority stays server-side, where a lock can back it.
+//
+// WHY A PROMOTION ID AND NOT A VERSION. A version label is ambiguous about
+// time: staging may have run v1.4.0, moved to v1.5.0, and rolled forward to
+// v1.4.1. An id names exactly one entry, so "the build QA signed off on" and
+// "what staging happens to run now" cannot be confused for each other.
+//
+// SAME CONTROL PLANE ONLY. See promoteFromGuardError.
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/cloud"
+)
 
 // promoteFromOptions names the source of a promote.
 type promoteFromOptions struct {
@@ -22,27 +48,208 @@ type promoteFromOptions struct {
 func (o promoteFromOptions) requested() bool { return o.Env != "" || o.PromotionID != "" }
 
 // promoteSource is what a resolved --from contributes to the write.
-//
-// F5 adds the provenance it records (the source env and promotion) as fields
-// here AND sets them, and promote.go then copies them onto promoteWrite.
-// They are deliberately absent until something can set them: a field that
-// can only ever be zero is a claim nothing backs (deadcodeguard).
 type promoteSource struct {
 	// Version is the release to promote: the positional argument, or —
-	// once F5 lands — the one the source environment runs.
+	// when --from supplies it — the one the source environment runs.
 	Version string
+	// FromEnv is the source environment NAME. Recorded as provenance, so
+	// a ledger reader can reconstruct the path a release took rather than
+	// seeing each environment's promotions as unrelated events.
+	FromEnv string
+	// FromPromotionID is the source promotion the decision was made
+	// against. It is the field with teeth: the server resolves the
+	// version from it and refuses source_moved if the source has moved
+	// past it. FromEnv alone is provenance nobody checked.
+	FromPromotionID string
 }
 
-// errPromoteFromUnsupported is what --from returns until F5 wires it.
-var errPromoteFromUnsupported = errors.New(
-	"--from and --from-promotion are not supported by this forge build yet " +
-		"(hosted-deploy-primitives task F5); promote by version")
+// promoteEnvLedger is what --from needs to know about ONE environment: which
+// control plane records its promotions (nil for a file ledger), and the
+// ledger itself.
+type promoteEnvLedger struct {
+	// ControlPlane is the env's declared control plane, or nil when its
+	// promotions live in the project's own files.
+	ControlPlane *cloud.Declaration
+	// Ledger is that backend, already bound to a client.
+	Ledger envLedger
+}
+
+// promoteEnvLedgerFor resolves one environment's ledger and the control plane
+// that owns it. A seam, so a test can state two environments' ledgers instead
+// of staging two KCL trees and a control plane to imply them.
+var promoteEnvLedgerFor = promoteEnvLedgerOf
+
+// promoteEnvLedgerOf is the production resolver: render the env's KCL once,
+// and read BOTH answers out of it.
+//
+// It repeats ledgerFor's selection rather than calling it because it needs the
+// declaration the selection was made FROM, and ledgerFor returns only the
+// chosen backend — so calling it would mean rendering the same env's KCL a
+// second time to recover what the first render already knew. A --from promote
+// resolves two environments, which would be four renders of KCL for two
+// questions.
+func promoteEnvLedgerOf(ctx context.Context, projectDir, env string) (promoteEnvLedger, error) {
+	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err != nil {
+		// No KCL for this env in this checkout, so nothing can declare a
+		// control plane: the answer is the project's own files.
+		return promoteEnvLedger{Ledger: fileLedger(projectDir)}, nil
+	}
+	entities, err := RenderKCL(ctx, projectDir, env)
+	if err != nil {
+		return promoteEnvLedger{}, fmt.Errorf("choose the release ledger for env %q: render deploy/kcl/%s: %w", env, env, err)
+	}
+	ledger, err := ledgerForEntities(env, entities, projectDir)
+	if err != nil {
+		return promoteEnvLedger{}, err
+	}
+	out := promoteEnvLedger{Ledger: ledger}
+	// A LOCAL env's control plane is only its secret store — the platform
+	// runs nothing of it and records no promotions for it — so it is not a
+	// shared ledger and must not read as one.
+	if !isLocalControlPlaneEnv(entities) {
+		out.ControlPlane = declarationFromEntities(entities)
+	}
+	return out, nil
+}
 
 // resolvePromoteFrom resolves the source before the plan is computed. version
-// is the positional argument ("" when --from supplies it).
-func resolvePromoteFrom(version string, o promoteFromOptions) (promoteSource, error) {
-	if o.requested() {
-		return promoteSource{}, errPromoteFromUnsupported
+// is the positional argument ("" when --from supplies it), toEnv the
+// environment being promoted TO.
+//
+// Everything that can refuse the promote happens here, BEFORE the plan and so
+// before any write: a malformed flag pair, a source on another control plane,
+// a source that has never been promoted. A promote that cannot name its
+// source should never move the target's pointer first.
+func resolvePromoteFrom(ctx context.Context, version, toEnv, projectDir string, o promoteFromOptions) (promoteSource, error) {
+	if !o.requested() {
+		return promoteSource{Version: version}, nil
 	}
-	return promoteSource{Version: version}, nil
+	if o.Env == "" {
+		return promoteSource{}, fmt.Errorf(
+			"--from-promotion %s needs --from <env>: a promotion id alone does not say which environment it belongs to, "+
+				"and the source_moved check is against that environment's current promotion", o.PromotionID)
+	}
+	if o.Env == toEnv {
+		return promoteSource{}, fmt.Errorf(
+			"--from %s is also the target: an environment cannot be promoted from itself", o.Env)
+	}
+	if projectDir == "" {
+		projectDir = projectDirForKCL()
+	}
+
+	target, err := promoteEnvLedgerFor(ctx, projectDir, toEnv)
+	if err != nil {
+		return promoteSource{}, err
+	}
+	source, err := promoteEnvLedgerFor(ctx, projectDir, o.Env)
+	if err != nil {
+		return promoteSource{}, err
+	}
+	if err := sameControlPlane(o.Env, toEnv, source.ControlPlane, target.ControlPlane); err != nil {
+		return promoteSource{}, err
+	}
+
+	// READ THE SOURCE THROUGH THE SHARED CONTROL PLANE. The guard above
+	// has just established that both environments' ledgers are the same
+	// control plane — same endpoint, same organization, and the project is
+	// this checkout's for both — so the source's own store IS the target's
+	// control plane, reached by the source env's name.
+	current, bound, err := source.Ledger.Bindings.Current(ctx, o.Env)
+	if err != nil {
+		return promoteSource{}, fmt.Errorf("read what %s is running (--from): %w", o.Env, err)
+	}
+	if !bound {
+		return promoteSource{}, fmt.Errorf(
+			"--from %s: that environment has never been promoted, so there is nothing to promote from "+
+				"(promote a release to %s first, or name the release here)", o.Env, o.Env)
+	}
+
+	out := promoteSource{Version: version, FromEnv: o.Env, FromPromotionID: current.ID}
+	if version == "" {
+		// The plan previews what the SERVER will resolve from the
+		// promotion id sent beside it. The two agree unless the source
+		// moves in between, which is the case the server refuses.
+		out.Version = current.Release
+	}
+	if o.PromotionID != "" {
+		// --from-promotion pins an id captured earlier — at approval
+		// time (§3.6) — so it OUTRANKS what the source runs now. When
+		// the two differ the server refuses source_moved, which is the
+		// entire point of having captured it.
+		out.FromPromotionID = o.PromotionID
+	}
+	return out, nil
+}
+
+// sameControlPlane refuses a --from across two ledgers.
+//
+// A RELEASE LABEL DOES NOT IDENTIFY THE SAME BYTES ACROSS TWO LEDGERS. "v1.4.0"
+// is a name each ledger assigns independently, so copying it from one to the
+// other would promote whatever the target's control plane happens to call
+// v1.4.0 — not the artifact the source verified. Worse, the source_moved check
+// cannot be made at all: it is a comparison the TARGET's server performs
+// against a promotion row in its own database, and a row in a different
+// organization, or in a file on disk, is not there to be compared. So the
+// refusal is not a limitation being worked around — it is the absence of the
+// guarantee the flag exists to provide, stated instead of silently dropped.
+//
+// A file-ledger env is refused for the second reason even when both
+// environments share one project directory: there is no server to re-read the
+// source under the target's lock, so `--from` would decay into exactly the
+// client-side read-then-promote race §3.4 exists to close.
+func sameControlPlane(sourceEnv, targetEnv string, source, target *cloud.Declaration) error {
+	switch {
+	case target == nil && source == nil:
+		return promoteFromGuardError(sourceEnv, targetEnv,
+			"neither records promotions on a control plane")
+	case target == nil:
+		return promoteFromGuardError(sourceEnv, targetEnv,
+			fmt.Sprintf("%s records promotions in this project's files, not on a control plane", targetEnv))
+	case source == nil:
+		return promoteFromGuardError(sourceEnv, targetEnv,
+			fmt.Sprintf("%s records promotions in this project's files, not on a control plane", sourceEnv))
+	}
+	sourceEP, err := cloud.ResolveEndpoint(sourceEnv, source)
+	if err != nil {
+		return err
+	}
+	targetEP, err := cloud.ResolveEndpoint(targetEnv, target)
+	if err != nil {
+		return err
+	}
+	if sourceEP.URL != targetEP.URL {
+		return promoteFromGuardError(sourceEnv, targetEnv,
+			fmt.Sprintf("%s is on %s and %s is on %s", sourceEnv, sourceEP.URL, targetEnv, targetEP.URL))
+	}
+	if sourceEP.Organization != targetEP.Organization {
+		return promoteFromGuardError(sourceEnv, targetEnv,
+			fmt.Sprintf("both are on %s but in different organizations (%s vs %s)",
+				targetEP.URL, orgLabel(sourceEP.Organization), orgLabel(targetEP.Organization)))
+	}
+	return nil
+}
+
+// errPromoteFromCrossLedger marks every same-control-plane refusal, so a
+// caller (and a test) can recognise the CLASS without matching message text.
+var errPromoteFromCrossLedger = errors.New("--from requires both environments to share one release ledger")
+
+// promoteFromGuardError is the one refusal sentence, with the next step on it.
+// The detail names which of the two environments is the problem, because
+// "they do not share a ledger" alone leaves a reader to go and diff two KCL
+// files to find out which one to change.
+func promoteFromGuardError(sourceEnv, targetEnv, detail string) error {
+	return fmt.Errorf("%w: %s and %s do not share a ledger — %s\n"+
+		"  promote by version instead: forge env promote <version> --to %s\n"+
+		"  a release label is assigned per ledger, so it does not name the same bytes in both, "+
+		"and the source_moved check needs the source promotion to be a row in the TARGET's control plane",
+		errPromoteFromCrossLedger, sourceEnv, targetEnv, detail, targetEnv)
+}
+
+// orgLabel renders an organization for a refusal, naming the absence rather
+// than printing an empty string into the middle of a sentence.
+func orgLabel(org string) string {
+	if strings.TrimSpace(org) == "" {
+		return "none declared"
+	}
+	return org
 }

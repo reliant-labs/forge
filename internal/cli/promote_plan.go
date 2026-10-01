@@ -772,6 +772,11 @@ func applyPromotePlan(ctx context.Context, bindings bindingStore, plan *promoteP
 		Note:       w.Note,
 		Gates:      w.Gates,
 		Run:        w.Run,
+		// The source of a `promote --from`. The hosted store turns
+		// FromEnv into an environment id and sends the promotion id
+		// beside it; the server resolves and re-checks both.
+		FromEnv:         w.FromEnv,
+		FromPromotionID: w.FromPromotionID,
 	}
 	got, err := bindings.Append(ctx, p, w.Guard)
 	if err != nil {
@@ -798,6 +803,13 @@ type promoteWrite struct {
 	Gates []release.Gate
 	// Run is the CI run performing the promote (--run-id / CI default).
 	Run release.Run
+	// FromEnv and FromPromotionID are the resolved --from (F5): the source
+	// environment, and the promotion this promote's decision was made
+	// against. The id is the half with teeth — the server resolves the
+	// version from it and refuses source_moved if the source has moved
+	// past it — while FromEnv alone is unverified provenance.
+	FromEnv         string
+	FromPromotionID string
 }
 
 // promotedBySuffix renders ", by alice" / ", by ci" for a refusal's actual

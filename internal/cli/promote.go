@@ -254,7 +254,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if err != nil {
 		return err
 	}
-	source, err := resolvePromoteFrom(version, opts.From)
+	source, err := resolvePromoteFrom(ctx, version, env, opts.ProjectDir, opts.From)
 	if err != nil {
 		return err
 	}
@@ -316,6 +316,9 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			Guard: guard,
 			Gates: gates,
 			Run:   run,
+			// The resolved --from (F5, promote_from.go).
+			FromEnv:         source.FromEnv,
+			FromPromotionID: source.FromPromotionID,
 		})
 		if writeErr == nil {
 			writeErr = followPromote(ctx, env, plan, opts.Follow)

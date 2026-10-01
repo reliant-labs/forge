@@ -61,6 +61,27 @@ type fakeDeployService struct {
 	// refusalWithoutDetail sends a refusal as the reason header alone, the
 	// way a control plane without the detail descriptor would.
 	refusalWithoutDetail bool
+
+	// gates is the append-only child record RecordGate writes:
+	// promotion id → gates, in the order they were recorded (F4, §3.3).
+	gates map[string][]wireGate
+}
+
+// hasPromotion reports whether any env holds a promotion of this id. Called
+// under f.mu. Gate evidence hangs off a promotion, so an id nobody holds is
+// NotFound — the same answer the server's FK gives.
+func (f *fakeDeployService) hasPromotion(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, list := range f.promotions {
+		for _, p := range list {
+			if p.ID == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // refusePromote answers a Promote with the wire form control-plane's
@@ -360,6 +381,15 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:          time.Date(2026, 9, 23, 1, len(f.promotions[envID]), 0, 0, time.UTC),
 			SupersededInFlight: supersede && f.inFlightPhase != "",
 		}
+		// Pre-promote evidence is stored ON the entry (F4, §3.3): the
+		// promotion row's existing `gates` JSONB. Kept so ListGates can
+		// return it BEFORE the recorded gates, which is the order that
+		// carries "was this known before the environment moved".
+		var gateReq struct {
+			Gates []wireGate `json:"gates"`
+		}
+		_ = json.Unmarshal(raw, &gateReq)
+		p.Gates = gateReq.Gates
 		if fromID := str("fromEnvironmentId"); fromID != "" {
 			p.FromEnvironmentID = fromID
 			// The server sets the NAME from the join it already makes
@@ -370,6 +400,66 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.FromPromotionID = str("fromPromotionId")
 		f.promotions[envID] = append(f.promotions[envID], p)
 		_ = json.NewEncoder(w).Encode(map[string]any{"promotion": p})
+
+	case "/controlplane.v1.DeployService/RecordGate":
+		// Models control-plane C5. The rules asserted here are the
+		// SERVER's, so forge's client is tested against them rather
+		// than against a stub that accepts anything:
+		//   - the status set is closed → InvalidArgument
+		//   - a foreign promotion id → NotFound
+		//   - idempotent on (promotion, name, run id)
+		//   - recorded_by comes from the PRINCIPAL, never the request
+		var req struct {
+			PromotionID string   `json:"promotionId"`
+			Gate        wireGate `json:"gate"`
+		}
+		_ = json.Unmarshal(raw, &req)
+		if _, err := release.ParseGateStatus(req.Gate.Status); err != nil {
+			connectErr(w, http.StatusBadRequest, "invalid_argument",
+				"gate status must be one of passed, failed, skipped, error")
+			return
+		}
+		if !f.hasPromotion(req.PromotionID) {
+			connectErr(w, http.StatusNotFound, "not_found", "promotion "+req.PromotionID)
+			return
+		}
+		if f.gates == nil {
+			f.gates = map[string][]wireGate{}
+		}
+		for _, existing := range f.gates[req.PromotionID] {
+			if existing.Name == req.Gate.Name && existing.RunID == req.Gate.RunID {
+				_ = json.NewEncoder(w).Encode(map[string]any{"gate": existing, "created": false})
+				return
+			}
+		}
+		stored := req.Gate
+		// The server stamps attribution from the authenticated
+		// principal and IGNORES whatever the request carried.
+		stored.RecordedBy = "token:test-token"
+		at := time.Date(2026, 9, 24, 0, len(f.gates[req.PromotionID]), 0, 0, time.UTC)
+		stored.RecordedAt = &at
+		f.gates[req.PromotionID] = append(f.gates[req.PromotionID], stored)
+		_ = json.NewEncoder(w).Encode(map[string]any{"gate": stored, "created": true})
+
+	case "/controlplane.v1.DeployService/ListGates":
+		id := str("promotionId")
+		if !f.hasPromotion(id) {
+			connectErr(w, http.StatusNotFound, "not_found", "promotion "+id)
+			return
+		}
+		// Promote-time gates FIRST, then the recorded ones — §3.3's
+		// documented order, which carries "was this known before the
+		// environment moved".
+		out := make([]wireGate, 0, len(f.gates[id]))
+		for _, list := range f.promotions {
+			for _, p := range list {
+				if p.ID == id {
+					out = append(out, p.Gates...)
+				}
+			}
+		}
+		out = append(out, f.gates[id]...)
+		_ = json.NewEncoder(w).Encode(map[string]any{"gates": out})
 
 	case "/controlplane.v1.DeployService/ListPromotions":
 		list := f.promotions[str("environmentId")]

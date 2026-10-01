@@ -29,21 +29,23 @@ import (
 // catch. Checking that required reading live digests out of the cluster by
 // hand, one `kubectl get deploy -o jsonpath` per workload.
 //
-// WHY NOT CONTROL-PLANE. control-plane carries `observed_*` columns and an
-// ObservedState struct that look like exactly the right source, and they are
-// not. An audit found NOTHING WRITES THEM — the reconciler was never built, so
-// every row returns column defaults, and a verifier reading them would report a
-// confident, uniformly wrong answer. Even fully populated they would be the
-// wrong source: they are documented as a MIRROR maintained so a drift badge can
-// render without a cluster round-trip, and a mirror is the one thing a verifier
-// must not trust. A stale mirror and a lying ledger are the same class of
-// failure, and this command exists because of that class. The in-tree
-// precedent is control-plane's billing/inframeter, which takes the live
-// cluster as its candidate set on the money-critical path for this reason.
+// WHERE A CLUSTER ENV IS READ: THE CLUSTER, NOT THE CONTROL PLANE. For an env
+// forge can reach with kubectl, the live cluster is the only source, read
+// through the same path `forge env deploy` writes through, against the same
+// declaratively-derived context. control-plane's `observed_*` columns are a
+// MIRROR kept so a drift badge renders without a cluster round-trip, and when
+// the cluster itself is readable a mirror is the one thing a verifier must not
+// prefer over it: a stale mirror and a lying ledger are the same class of
+// failure, and this command exists because of that class.
 //
-// So: the cluster is the only source, read through the same kubectl path
-// `forge env deploy` writes through, targeting the same declaratively-derived
-// context.
+// WHERE A HOSTED ENV IS READ: THE CONTROL PLANE'S OBSERVER, said out loud. A
+// hosted env's cluster belongs to the control plane and forge cannot read it
+// by design, so the observer is the only witness there is
+// (env_verify_hosted.go). Both historical objections to it are now answered:
+// the tier observer writes the columns every pass, and the server's rollout
+// phase marks an observation older than 2 × its interval UNKNOWN
+// (control-plane #491), which this command reports as UNREACHABLE, never as
+// MATCH. Hosted results carry `source: control-plane observer`.
 
 // imageState is the verdict for ONE image named in a binding.
 //

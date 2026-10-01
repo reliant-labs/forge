@@ -440,7 +440,7 @@ func TestBindingStoreFor_RenderFailureIsNotAFallback(t *testing.T) {
 
 // ─── Consumers against a non-file backend ────────────────────────────────────
 
-// `forge env verify` runs end to end with its ledger served from memory, and
+// `forge env status` runs end to end with its ledger served from memory, and
 // reaches the real DRIFT verdict.
 func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 	dir := t.TempDir()
@@ -455,7 +455,7 @@ func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 		Image: "ghcr.io/acme/control-plane@" + sha("b"),
 	}}}
 
-	err := runEnvVerify(context.Background(), "prod", envVerifyOptions{
+	err := runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 		Lister:   lister,
 		Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 		Bindings: store,
@@ -470,7 +470,7 @@ func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 
 func TestRunEnvVerify_UnboundAgainstNonFileBackend(t *testing.T) {
 	t.Chdir(t.TempDir())
-	err := runEnvVerify(context.Background(), "prod", envVerifyOptions{
+	err := runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 		Lister:   &stubLister{},
 		Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 		Bindings: newMemBindingStore(nil),

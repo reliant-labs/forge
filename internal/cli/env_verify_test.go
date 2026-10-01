@@ -87,7 +87,7 @@ func TestVerifyEnvImages_Drift(t *testing.T) {
 	if !strings.Contains(got.Detail, digestDeclared) || !strings.Contains(got.Detail, digestRunning) {
 		t.Errorf("detail must name BOTH digests in full, got: %s", got.Detail)
 	}
-	if tally := tallyEnvVerifications(results); tally.Drift != 1 || tally.Match != 0 {
+	if tally := tallyEnvStatusRelease(results); tally.Drift != 1 || tally.Match != 0 {
 		t.Errorf("tally = %+v, want exactly 1 drift", tally)
 	}
 }
@@ -135,7 +135,7 @@ func TestVerifyEnvImages_Missing(t *testing.T) {
 	if got := byImage["reliant"].State; got != imageMissing {
 		t.Errorf("reliant = %s, want MISSING", got)
 	}
-	if tally := tallyEnvVerifications(results); tally.Missing != 1 {
+	if tally := tallyEnvStatusRelease(results); tally.Missing != 1 {
 		t.Errorf("tally = %+v, want 1 missing", tally)
 	}
 }
@@ -155,7 +155,7 @@ func TestVerifyEnvImages_ExtraRunningImagesAreNotFailures(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected only the declared image to be reported, got %d verdicts", len(results))
 	}
-	if tally := tallyEnvVerifications(results); tally.Drift != 0 || tally.Missing != 0 {
+	if tally := tallyEnvStatusRelease(results); tally.Drift != 0 || tally.Missing != 0 {
 		t.Errorf("an undeclared running image must not fail verification, tally = %+v", tally)
 	}
 }
@@ -173,7 +173,7 @@ func TestVerifyEnvImages_UntaggedIsNeitherMatchNorDrift(t *testing.T) {
 	if len(results) != 1 || results[0].State != imageUntagged {
 		t.Fatalf("expected UNTAGGED for a tag-only workload, got %+v", results)
 	}
-	tally := tallyEnvVerifications(results)
+	tally := tallyEnvStatusRelease(results)
 	if tally.Match != 0 || tally.Drift != 0 {
 		t.Errorf("untagged must be neither match nor drift, tally = %+v", tally)
 	}
@@ -251,7 +251,7 @@ func TestVerifyEnvImages_ConfigPinnedImageIsNotMissing(t *testing.T) {
 	if got := byImage["workspace-base"].State; got != imageMatch {
 		t.Errorf("a digest-pinned config reference must verify as MATCH, got %s", got)
 	}
-	if tally := tallyEnvVerifications(results); tally.Missing != 0 {
+	if tally := tallyEnvStatusRelease(results); tally.Missing != 0 {
 		t.Errorf("config-pinned image must not be MISSING, tally = %+v", tally)
 	}
 }
@@ -297,7 +297,7 @@ func TestUnreachableVerifications(t *testing.T) {
 			t.Errorf("%s detail must carry the cause, got: %s", r.Image, r.Detail)
 		}
 	}
-	tally := tallyEnvVerifications(results)
+	tally := tallyEnvStatusRelease(results)
 	if tally.Unreachable != 2 || tally.Drift != 0 || tally.Missing != 0 {
 		t.Errorf("unreachable must never count as drift or missing, tally = %+v", tally)
 	}
@@ -338,7 +338,7 @@ func TestParseImageRef(t *testing.T) {
 func runEnvVerifyInDir(t *testing.T, dir, envName string, lister clusterImageLister) error {
 	t.Helper()
 	t.Chdir(dir)
-	return runEnvVerify(context.Background(), envName, envVerifyOptions{
+	return runEnvStatusRelease(context.Background(), envName, envStatusOptions{
 		Lister:   lister,
 		Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 	})
@@ -484,7 +484,7 @@ func TestRunEnvVerify_NoDeclaredClusterExits2(t *testing.T) {
 	t.Chdir(dir)
 	var err error
 	out := captureStdout(t, func() {
-		err = runEnvVerify(context.Background(), "prod", envVerifyOptions{
+		err = runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 			Lister:   lister,
 			Resolver: stubResolver{target: envTarget{}}, // nothing declared
 		})
@@ -516,7 +516,7 @@ func TestRunEnvVerify_UndeclaredEnvSaysSo(t *testing.T) {
 	t.Chdir(dir)
 	var err error
 	out := captureStdout(t, func() {
-		err = runEnvVerify(context.Background(), "preprod", envVerifyOptions{
+		err = runEnvStatusRelease(context.Background(), "preprod", envStatusOptions{
 			Lister:   &stubLister{},
 			Resolver: stubResolver{target: envTarget{}},
 		})
@@ -542,7 +542,7 @@ func TestRunEnvVerify_DriftBeatsUnreachable(t *testing.T) {
 		{Image: "a", State: imageDrift},
 		{Image: "b", State: imageUnreachable},
 	}
-	tally := tallyEnvVerifications(results)
+	tally := tallyEnvStatusRelease(results)
 	if tally.Drift != 1 || tally.Unreachable != 1 {
 		t.Fatalf("tally = %+v", tally)
 	}

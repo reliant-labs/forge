@@ -19,13 +19,13 @@ package deploytarget
 //
 // The phase folds all three into one server-computed verdict, scoped to the
 // promotion whose pins this deploy published. So `forge env deploy`,
-// `forge env wait`, the in-flight promote refusal and the UI read ONE
+// `forge env status --wait`, the in-flight promote refusal and the UI read ONE
 // definition of done rather than four that drift apart.
 //
 // DEPLOY'S THRESHOLD IS DELIBERATELY NOT `env wait`'S. A deploy completes on
 // SUCCEEDED **or STABILIZING** — "published and serving" — because making
 // every deploy sit out the server's stability window would make every deploy
-// two minutes slower for no new information. `forge env wait` is the verb
+// two minutes slower for no new information. `forge env status --wait` is the verb
 // that holds for the window, because a release GATE is asking the stronger
 // question.
 //

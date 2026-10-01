@@ -310,8 +310,9 @@ declared port force-injected as `PORT`.
 
 ## Verify + recover — roll forward, never back
 
-After every deploy confirm the env runs what it claims: `forge env verify
-<env>`, `forge env status <env>`. Verify exit 2 + `ledger BEHIND` = pull first.
+After every deploy confirm the env runs what it claims: `forge env status
+<env>` — bound release, running digests, rollout, health, gates, ledger.
+Exit 2 + `ledger BEHIND` = pull first.
 
 **There is no rollback command, and that is deliberate.** A rollback claims
 to undo a release, and it cannot: by the time you would run it the release

@@ -1734,6 +1734,77 @@ var removals = []removal{
 			regexp.MustCompile(`\bimg_lib\.on_registry\b|(?m)^on_registry\s*=`),
 		},
 	},
+	{
+		Name: "the five absorbed `forge env` read verbs",
+		Why: "`forge env verify`, `forge env wait`, `forge env rollout`, `forge env topology` and " +
+			"`forge env history` were six views of one question (with `env status`), split by which " +
+			"half of the answer each happened to own — a reader had to know, before they could ask, " +
+			"that the bound release lived in `verify`, the rollout phase in `rollout`, the runtime " +
+			"ports in `status` and the promotion that caused all of it in `history`. Two were " +
+			"literal duplicates: `env rollout` WAS `env wait --timeout 0`.\n" +
+			"They are modes of `forge env status [environment...]` now: `--wait` blocks on the " +
+			"rollout (exit codes 0/1/2/5/6 unchanged), `--wait --timeout 0` is the old rollout " +
+			"snapshot, `--history` pages the promotion ledger, no environment is the old topology, " +
+			"and the default one-env view carries the release half verify owned. Pre-1.0, so the " +
+			"five spellings are DELETED, with no alias and no hidden name.\n" +
+			"A surviving `forge env verify prod` is a copy-pasteable command — in a doc, a skill, a " +
+			"KCL comment, a scaffolded CI job or a help string — that now dies on \"unknown command\". " +
+			"The internal helpers stay (runEnvWait, runEnvHistory, runEnvTopology, " +
+			"runEnvStatusRelease); only the command surface went.",
+		Patterns: []*regexp.Regexp{
+			// The removed spellings, on any surface. Requiring `forge env`
+			// IMMEDIATELY before the verb is what keeps the live siblings
+			// out: `forge release verify` (a RELEASE's artifacts, not an
+			// env — explicitly kept by the ADR), `forge release where`,
+			// `forge ci run`, and `kubectl rollout status`. The trailing
+			// \b keeps `forge env verifying` and the English "history" out.
+			regexp.MustCompile(`\bforge\s+env\s+(?:verify|wait|rollout|topology|history)\b`),
+			// The Go ARGV form: exec/test invocations pass the command as
+			// separate string args, so the tokens are never adjacent in
+			// the source and the pattern above cannot see them. Anchored
+			// on the "env" element so `runForge(t, "release", "verify")`
+			// and a bare `"wait"` kubectl arg are untouched.
+			regexp.MustCompile(`"env",\s*"(?:verify|wait|rollout|topology|history)"`),
+			// The constructors. A command that is still BUILT but no
+			// longer registered is worse than one that is registered: it
+			// compiles, it is covered by no test, and the next person to
+			// read env.go sees a verb that looks merely forgotten.
+			regexp.MustCompile(`\bnewEnv(?:Verify|Wait|Rollout|Topology|History)Cmd\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the CHANGELOG's record of the releases that SHIPPED these verbs",
+				Reason: "The CHANGELOG is an append-only history of what each release contained, and " +
+					"these verbs genuinely shipped under these names. Rewriting those entries to the " +
+					"new spelling would make the file assert that a past release shipped a command it " +
+					"did not, which is the one thing a changelog must never do — and it would erase " +
+					"the only record a reader has of why their pinned older forge has a verb this one " +
+					"does not.\n" +
+					"The removal itself gets its own entry, in the new release's section, naming the " +
+					"replacement. Scoped to the one file.",
+				Token: regexp.MustCompile(`\bforge\s+env\s+(?:verify|wait|rollout|topology|history)\b`),
+				Paths: []string{"CHANGELOG.md"},
+			},
+			{
+				Name: "the ADR that decided the merge, and the test that proves it happened",
+				Reason: "docs/adr/env-verbs.md names all six verbs in its \"Absorbs (deleted)\" column — " +
+					"that table IS the decision, and a reader who trips this guard needs it to tell a " +
+					"straggler from the record. env_status_cmd_test.go names them twice for the same " +
+					"reason: once to assert each no longer RESOLVES under `forge env`, and once to " +
+					"assert the merged help does not still point at them.\n" +
+					"Both are documentation OF the removal, and they are the text most likely to stop " +
+					"someone reintroducing a verb. Deleting them to satisfy the guard would delete the " +
+					"proof the removal is complete. Scoped to the two files, so a line in either that " +
+					"actually registered one of these commands still fails — the constructor pattern " +
+					"is not allowed here.",
+				Token: regexp.MustCompile(`\bforge\s+env\s+(?:verify|wait|rollout|topology|history)\b`),
+				Paths: []string{
+					"docs/adr/env-verbs.md",
+					"internal/cli/env_status_cmd_test.go",
+				},
+			},
+		},
+	},
 }
 
 // packOnDisk implements the "a referenced pack must exist" rule for the packs

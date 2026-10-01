@@ -7,7 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`forge env status` is the ONE read view of an environment.** Reading an env
+  used to take six verbs — `env status`, `env verify`, `env wait`,
+  `env rollout`, `env topology`, `env history` — and they were views of a
+  single question, split by which half of the answer each happened to own. A
+  reader had to know, before they could ask, that the bound release lived in
+  `verify`, the rollout phase in `rollout`, the runtime ports in `status`, and
+  the promotion that caused all of it in `history`. Two were literal
+  duplicates: `env rollout` WAS `env wait --timeout 0`.
+
+  They are modes of one command now:
+
+  ```bash
+  forge env status                  # every environment, and how far behind each is
+  forge env status prod             # prod right now: runtime AND release
+  forge env status prod --wait      # block until the rollout settles
+  forge env status prod --history   # prod's promotion ledger, newest first
+  ```
+
+  One env's report carries the bound release, verify (running digests vs the
+  binding, in all five states, through the control plane's observer for a
+  hosted env), the rollout phase per workload, runtime health, gates, and
+  ledger freshness. The two halves are deliberately asymmetric about failure:
+  runtime health REPORTS (a down stack is a state this command must be able to
+  print), while the release half makes a claim and so owns the exit code.
+
+  **Every exit code is unchanged**, because every mode reaches the same code
+  the old verb called: 0/1/2 for the read, plus 5 (timed out, still
+  progressing) and 6 (superseded) under `--wait`. `--timeout` serves two modes
+  with different budgets — 60s for a cluster read, 15m for a wait — so its
+  declared default is an unset sentinel resolved per mode; `--wait --timeout 0`
+  still means one read, never blocking.
+
+  `--json` emits one document carrying the standard envelope. Its release
+  fields stay FLAT (`bound`, `images`, `release`) because `forge gate record
+  --from` recognises the document by them.
+
 ### Removed
+
+- **BREAKING: `forge env verify|wait|rollout|topology|history` are deleted**,
+  with no alias and no hidden name — they are modes of `forge env status` (see
+  Changed, above). `forge release where` and `forge release verify` are
+  untouched: both answer a question about a RELEASE rather than an
+  environment. A removalguard entry pins all five spellings on every surface.
 
 - **BREAKING: `forge env promote` is gone — `forge env deploy <env> [vX | --from
   <src-env>]` does the whole job.** No alias and no hidden name; the old

@@ -1,7 +1,7 @@
 package cli
 
 // One page of an environment's promotion ledger, newest first — the read
-// `forge env history` is built on (hosted-deploy-primitives §3.5).
+// `forge env status --history` is built on (hosted-deploy-primitives §3.5).
 //
 // An optional capability of a binding store, declared here at its consumer:
 // the two backends answer it from what they already hold (the hosted one from

@@ -14,7 +14,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// `forge env topology` tests.
+// `forge env status` tests.
 //
 // These assert on the PARSED report rather than on substrings of stdout, for
 // the same reason env_verify_json_test.go does: the thing under test is a
@@ -335,7 +335,7 @@ func (l *recordingLister) ListWorkloadImages(context.Context, string, string) ([
 }
 
 // TestTopology_VerifyReconciles covers --verify: the states become real
-// verdicts, and drift flips the exit code to 1 exactly as `forge env verify`
+// verdicts, and drift flips the exit code to 1 exactly as `forge env status`
 // would for the same environment.
 func TestTopology_VerifyReconciles(t *testing.T) {
 	opts := realisticTopologyOpts(t)

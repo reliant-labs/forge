@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/finding"
+	"github.com/reliant-labs/forge/internal/migrationgit"
 )
 
 // Severity and Finding now live in the shared internal/linter/finding
@@ -182,7 +183,7 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 	// they run over the whole list rather than inside lintMigrationFile.
 	// The merge-base is resolved once: it is a git call, and it answers
 	// "which of these files are new on this branch".
-	mergeBaseMax, haveMergeBase := mergeBaseMaxVersion(repoRootOf(dir), dir)
+	mergeBaseMax, haveMergeBase := migrationgit.MergeBaseMax(migrationgit.RepoRoot(dir), dir)
 	findings = append(findings, lintVersions(files, mergeBaseMax, haveMergeBase)...)
 	if len(files) == 0 {
 		if len(findings) > 0 {

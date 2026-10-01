@@ -223,8 +223,8 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 - Each entity exports `<Entity>Columns`, the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.
 - Each entity also exports `<Entity>Constraint<Name>` for every named UNIQUE / CHECK / FOREIGN KEY on its table — the value **postgres** reports in a violation, including the names it auto-derives for inline declarations (`UNIQUE` on `jobs.estimate_id` → `jobs_estimate_id_key`) that appear nowhere in your migration text. Branch on them with `orm.ConstraintName(err)` rather than a hand-written string, so renaming a constraint in a migration is a compile error instead of a branch that stops matching. No constant for the primary key: `pkg/crud` generates the id, so nothing branches on a duplicate-PK insert. See `service-layer` for the classification switch.
 - `Get<Entity>ByID` answers a missing row with `svcerr.NotFound("<entity>")` — return or `svcerr.Wrap` it, never re-derive it. `Update`/`Delete` still give `orm.ErrNoRows`. Other repo errors → `Internal`, no SQL on the wire.
-- The delegates above are free functions, so `internal/db/store_gen.go` also exports them as INTERFACES: `<Entity>Store` per entity, and `Store` embedding all of them. That is what a service's `Deps` field names — **never hand-write an interface plus a passthrough adapter over the ORM**; forge generates both and asserts at generate time that they match. Depend on the narrowest one that works.
-- **To see what a store offers, read the interface, not forge:** `go doc ./internal/db Store` or `go doc ./internal/db <Entity>Store` prints the full method set (`go doc` renders interfaces in full — it is only structs it collapses). `forge project shapes --kind store` lists every one with its `file:line`. Do **not** go looking in forge's generator source for this: that code describes every project rather than your schema, and a measured run lost 11 turns to exactly that detour.
+- The delegates above are free functions, so `internal/db/store_gen.go` also exports them as INTERFACES: `<Entity>Store` per entity, and `Store` embedding all of them. That is what a service's `Deps` field names — **never hand-write an interface plus a passthrough adapter over the ORM**; forge generates both and asserts they match. Depend on the narrowest one that works.
+- **To see what a store offers, read the interface, not forge:** `go doc ./internal/db Store` or `go doc ./internal/db <Entity>Store` prints the full method set (`go doc` renders interfaces in full — it is only structs it collapses). `forge project shapes --kind store` lists every one with its `file:line`. Do **not** look in forge's generator source: that code describes every project rather than your schema, and a measured run lost 11 turns to that detour.
 
 ## Diverging from generated CRUD
 
@@ -236,6 +236,7 @@ Each takes `--dsn "$DATABASE_URL"`:
 
 ```
 forge db migration new <name>      # create an empty migration (up only)
+forge db migration rebase <file>   # re-version one the schema already passed
 forge db migrate up                # apply pending migrations
 forge db migrate status            # show what's applied
 forge db migrate force <version>   # clear a dirty migration state (runs no SQL)
@@ -247,7 +248,7 @@ Versions are **UTC timestamps**; never hand-type one. See **`db/versioning`**.
 
 ### Recovering a wedged dev database
 
-Never hand-edit `schema_migrations` or `DROP DATABASE` — measured, two runs did exactly that because they missed the two commands above. Match the symptom:
+Never hand-edit `schema_migrations` or `DROP DATABASE` — measured, two runs did exactly that, having missed the commands above. Match the symptom:
 
 | Symptom | Do this |
 |---|---|
@@ -257,7 +258,7 @@ Never hand-edit `schema_migrations` or `DROP DATABASE` — measured, two runs di
 
 `migrate force` **asserts** a version is applied without verifying it — forge cannot know how much of the failed migration landed. Inspect with `forge db introspect` and finish or undo the partial migration **first**; forcing past SQL that never ran leaves the schema permanently behind what forge thinks is applied. Use it only for a migration that genuinely failed mid-flight, never to skip one.
 
-`seed reset` fixes *data*, not migration state: it seeds, so on a dirty database it refuses just like `seed apply`. Clear the migration state first.
+`seed reset` fixes *data*, not migration state: on a dirty database it refuses just like `seed apply`. Clear the migration state first.
 
 **Correcting a born schema** (an enum gained a value, a constraint was wrong) is a *migration*, not a recovery: write one and `forge generate`.
 

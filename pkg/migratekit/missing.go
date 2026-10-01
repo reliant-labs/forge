@@ -42,6 +42,18 @@ import (
 // rare by construction, so refusing costs almost nothing and assuming costs
 // a schema nobody reviewed.
 
+// RebaseCommand is the forge command that re-versions a migration, named by
+// this package's refusal message.
+//
+// It is spelled out here rather than imported because pkg/ may not depend on
+// forge's internal packages — this error travels into user projects, which
+// link only pkg. The internal copy lives in
+// internal/linter/migrationlint.RebaseCommand, and a test in internal/cli
+// asserts that both spellings resolve to a real CLI command. That test is the
+// reason for this comment: this string was advice for a subcommand that did
+// not exist, and a user following it hit "unknown command".
+const RebaseCommand = "forge db migration rebase"
+
 // MissingMigration is one version this binary embeds that the database
 // skipped: at or below the schema's version, with no applied row.
 type MissingMigration struct {
@@ -72,11 +84,11 @@ func (e *MissingMigrationError) Error() string {
 		fmt.Fprintf(&b, " version %d (%s);", m.Version, m.Name)
 	}
 	fmt.Fprintf(&b, " the schema is at version %d, and migrations at or below it are never re-read. "+
-		"NOTHING WAS APPLIED. Fix it by giving each file a version NEWER than %d — `forge db migration rebase <file>` "+
+		"NOTHING WAS APPLIED. Fix it by giving each file a version NEWER than %d — `%s <file>` "+
 		"renames it to a fresh timestamp, or rename it by hand to <new-utc-timestamp>_<same-name>.up.sql. "+
 		"The migration has not run anywhere, so renaming it is safe. If instead the SQL was already applied by hand, "+
 		"record that fact with `INSERT INTO %s (version, name) VALUES (<version>, '<descriptor>')`",
-		e.Version, e.Version, appliedTable)
+		e.Version, e.Version, RebaseCommand, appliedTable)
 	return b.String()
 }
 

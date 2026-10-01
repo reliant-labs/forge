@@ -99,7 +99,7 @@ node_modules/
 # checkout; `forge lint` fails if one is tracked.
 .forge-kcl/
 
-# Seed data materializes at RUNTIME (`forge db seed` / `forge run`
+# Seed data materializes at RUNTIME (`forge db seed` / `forge env up`
 # auto-seed) — forge writes no seed files into the project. db/seeds/custom/
 # is your hand-authored demo-data overlay and IS committed. Legacy
 # auto-generated db/seeds/*.sql / db/fixtures/ from older forge versions can

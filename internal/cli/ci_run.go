@@ -4,10 +4,17 @@ package cli
 // (control-plane docs/design/hosted-deploy-primitives.md §3.7, task F8).
 //
 // THE SPEC CALLED THIS `forge run show`, and it was renamed for a collision:
-// `forge run` is the dev-server runner and takes positional arguments of its
-// own, so `run show` would have captured a dev-server argument named "show"
-// and given one word two unrelated meanings ("run my dev server" / "a CI
-// pipeline run"). The `ci` group already holds the CI-facing verbs.
+// at the time, a top-level `run` was the dev-server runner and took
+// positional arguments of its own, so `run show` would have captured a
+// dev-server argument named "show" and given one word two unrelated meanings
+// ("run my dev server" / "a CI pipeline run"). The `ci` group already holds
+// the CI-facing verbs.
+//
+// That dev-server command has since been deleted (the local lifecycle is
+// `forge env up <env>`), so the collision no longer exists — but the name
+// does not move back. `ci run` is where this verb shipped, and "run" as a
+// bare top-level verb is the ambiguity the `ci` prefix was chosen to avoid
+// in the first place.
 //
 // NOTHING HERE ASSEMBLES A TIMELINE. The control plane's GetRun derives every
 // stage from the ledger — the cut, each promotion, each recorded gate carrying

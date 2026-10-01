@@ -83,7 +83,7 @@ func loadProjectConfigEnvMap(projectDir, env string) (map[string]kclEnvSource, e
 	//
 	// With PER-BINARY configs there is no single app_config to project, so
 	// the probe merges every binary's env map instead. That is the honest
-	// host-mode answer: `forge run` starts every binary on one host, so the
+	// host-mode answer: `forge env up` starts every binary on one host, so the
 	// host env is the union of what those processes read — while each
 	// binary's CLUSTER Deployment still carries only its own vars, which is
 	// where the isolation matters. A name set by two binaries resolves to

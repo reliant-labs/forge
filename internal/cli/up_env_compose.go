@@ -7,130 +7,50 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// newRunCmd is `forge run`: the single-command dev runner for the current
-// working directory. It is a thin alias over `forge env up <env>` (the SAME
-// runUp, no duplicated launch logic), so behaviour — KCL render,
-// port-conflict guard, non-TTY detach, per-service logs — is identical to
-// that path.
+// upPassthroughArgs splits `forge env up`'s positional args at the cobra
+// `--` terminator: the env is the one positional BEFORE it, and everything
+// AFTER it is dev-server passthrough (forwarded to each frontend as
+// `npm run dev -- <flags>`).
 //
-// The one thing `run` adds is dev-server passthrough: tokens after `--` are
-// forwarded to each frontend's dev server (`npm run dev -- <flags>`). This is
-// what the reliant one-shot workflow relies on — `reliant forge run --
-// --host 0.0.0.0` starts the scaffolded Vite frontend bound to 0.0.0.0 so the
-// workspace proxy can reach it and hand the user a preview URL.
+// dashPos is cmd.ArgsLenAtDash(): the count of args before the `--`, or -1
+// when no `--` was given. Extracted from the RunE so the split and its
+// validation are unit-testable without a real project.
 //
-// It runs the WHOLE loop, and that is the point. `run` used to imply
-// --host-only, which silently rewrote every cluster-declared service into a
-// local `go run` — forge overruling the environment's own declaration from a
-// flag. A service that should run as a host process during dev says so in its
-// KCL (`host = forge.HostOverrides {...}`, with `-D host_runner=go-run`
-// selecting the runner); nothing here second-guesses that.
-//
-// No positional target: it brings up everything the env declares (the
-// scaffold's single service + frontend), so the workflow needs no target to
-// name. Env defaults to dev (the env `forge project new` scaffolds and the
-// one-shot builds against).
-func newRunCmd() *cobra.Command {
-	var (
-		env          string
-		noSeed       bool
-		readyTimeout time.Duration
-	)
-	cmd := &cobra.Command{
-		Use:   "run [-- <dev-server flags>]",
-		Short: "Run the project's dev loop against the current dir, forwarding flags after `--` to the frontend dev servers",
-		Long: `Run the project's dev loop against the current working directory.
-
-Brings up everything ` + "`deploy/kcl/<env>/`" + ` declares (default env: dev) —
-the inner loop for iterating on a scaffolded project. This is an alias for
-` + "`forge env up <env>`" + ` plus dev-server passthrough; see that command for
-the full lifecycle (non-TTY runs start everything and return, leaving the
-processes running; stop them with ` + "`forge env down <env>`" + `).
-
-To iterate on ONE service, name it: ` + "`forge env up dev --target <svc>`" + `
-scopes the whole run — build, deploy, host and frontend phases alike. A
-service that should run as a local process during dev declares a
-` + "`host = forge.HostOverrides {...}`" + ` block in its KCL, and
-` + "`-D host_runner=go-run`" + ` selects the runner.
-
-Tokens after ` + "`--`" + ` are forwarded to each frontend's dev server
-(` + "`npm run dev -- <flags>`" + `), so a Vite/Next dev server can be told
-to bind a specific host/port.
-
-On first boot against a dev environment the app boots alive: the fresh
-database is auto-seeded with deterministic, FK-coherent demo data derived
-from the applied schema — only when the DB is reachable and every seedable
-table is empty. Pass ` + "`--no-seed`" + ` to skip it, or inspect with
-` + "`forge db seed status`" + `.
-
-Examples:
-  forge run                        # the whole dev loop, env=dev
-  forge run --env=staging          # against the staging env's KCL
-  forge run -- --host 0.0.0.0      # forward --host 0.0.0.0 to the dev server`,
-		// Runtime failures (a port already bound, a child dying) are not
-		// usage errors — dumping the flag table after them buries the
-		// actionable message. Mirrors the removed run command's shape.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if readyTimeout <= 0 {
-				return fmt.Errorf("--host-ready-timeout must be positive")
-			}
-			frontendArgs, err := runPassthroughArgs(args, cmd.ArgsLenAtDash())
-			if err != nil {
-				return err
-			}
-			return runUp(cmd.Context(), upOptions{
-				env:              env,
-				noSeed:           noSeed,
-				hostReadyTimeout: readyTimeout,
-				frontendArgs:     frontendArgs,
-			})
-		},
-	}
-	cmd.Flags().StringVar(&env, "env", "dev", "Deploy environment whose deploy/kcl/<env>/ to run (default: dev)")
-	cmd.Flags().DurationVar(&readyTimeout, "host-ready-timeout", hostReadyTimeout, "Maximum wait for host services to bind their ports, including compilation; exited runners fail immediately")
-	cmd.Flags().BoolVar(&noSeed, "no-seed", false, "Skip the first-boot dev auto-seed (by default the fresh dev DB is seeded once when reachable and empty)")
-	return cmd
-}
-
-// runPassthroughArgs splits `forge run`'s positional args at the cobra
-// `--` terminator: everything AFTER `--` is dev-server passthrough
-// (forwarded to each frontend), and there must be nothing BEFORE it —
-// `forge run` takes no positional target (it brings up everything
-// host-mode). dashPos is cmd.ArgsLenAtDash(): the count of args before the
-// `--`, or -1 when no `--` was given. Extracted from the RunE so the
-// split/validation is unit-testable without a real project.
-func runPassthroughArgs(args []string, dashPos int) ([]string, error) {
-	const noPositional = "forge run takes no positional arguments; pass dev-server flags after `--` (e.g. forge run -- --host 0.0.0.0)"
+// This is the seam the deleted `forge env up` existed for. That command was a
+// thin alias over runUp whose only addition was this split, so it was one
+// spelling of `env up` that drifted from it — it carried an `--env` FLAG
+// where the env is a positional here, and defaulted it to dev, which made
+// "which env am I running?" answerable two different ways. The passthrough
+// moved onto `env up` and the alias went away.
+func upPassthroughArgs(args []string, dashPos int) ([]string, error) {
+	const usage = "forge env up takes exactly one positional argument, the environment; " +
+		"pass dev-server flags after `--` (e.g. forge env up dev -- --host 0.0.0.0)"
 	if dashPos < 0 {
-		// No `--` terminator. Any bare positional is a usage mistake.
-		if len(args) > 0 {
-			return nil, errors.New(noPositional)
+		// No `--` terminator: every arg is positional, and there must be
+		// exactly one (the env). MinimumNArgs(1) already rejected zero.
+		if len(args) > 1 {
+			return nil, errors.New(usage)
 		}
 		return nil, nil
 	}
-	if dashPos > 0 {
-		// Positional args appeared before the `--`.
-		return nil, errors.New(noPositional)
+	// With a terminator, exactly the env may precede it.
+	if dashPos != 1 {
+		return nil, errors.New(usage)
 	}
 	return args[dashPos:], nil
 }
 
 // This file holds the env-composition helpers shared by the host-mode
 // phase of `forge env up` (up.go) and the dev/prod parity check
-// (doctor_parity.go). The standalone `forge run` command — both the
-// docker-compose orchestrator and the single host-mode service runner —
-// was removed: the compose orchestrator is now a KCL deploy target
-// consumed by `forge env up`/`forge env deploy`, and the single-service runner
-// is `forge env up <env> --target <service>`. These helpers stayed
-// because non-run code still depends on them.
+// (doctor_parity.go). The standalone `forge env up` command was removed: it was
+// an alias over the same runUp, and its one distinct feature — dev-server
+// passthrough after `--` — is now `forge env up <env> -- <flags>`. The
+// single-service runner is `forge env up <env> --target <service>`. These
+// helpers stayed because non-run code still depends on them.
 
 // managedProcess tracks a running child process started by the `forge env up`
 // orchestrator (up.go). name/cmd identify the child; pid is the PID

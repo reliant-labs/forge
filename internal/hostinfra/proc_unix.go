@@ -11,7 +11,7 @@ import (
 // that started it.
 //
 // Without this the process dies with the launching shell's process group, and
-// a host-infra service started by `forge run` would not survive the command
+// a host-infra service started by `forge env up` would not survive the command
 // returning — which is the whole point of a host-infra service.
 func detachProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

@@ -98,7 +98,7 @@ in the steady state):
   (`--no-install` to skip).
 
 After a batch of proto edits, `forge scaffold` catches the tree up (see
-`forge` and `db`). `forge run` and `forge env up` also auto-seed a
+`forge` and `db`). `forge env up` also auto-seed a
 fresh dev DB from the applied schema on first boot, so a clean checkout comes up
 with FK-coherent demo data — dev only; `--no-seed` opts out, `forge db seed
 status` inspects.

@@ -210,10 +210,13 @@ authored protos, in one call.`,
 	// the ONE surface an agent that has never seen forge already reads —
 	// the `forge --help` command list.
 	rootCmd.AddCommand(newStartCmd())
-	// `forge run` is the single-command dev runner (alias for
-	// `forge env up` + dev-server passthrough) — restored for the
-	// reliant one-shot's `reliant forge run -- --host 0.0.0.0` preview flow.
-	rootCmd.AddCommand(newRunCmd())
+	// `forge env up` was REMOVED. It was a thin alias over the same runUp that
+	// `forge env up <env>` calls, and its one distinct feature — forwarding
+	// tokens after `--` to the frontend dev servers — moved onto `env up`
+	// itself: `forge env up dev -- --host 0.0.0.0`. Two spellings of one
+	// lifecycle drifted (the alias took the env as an `--env` FLAG with a
+	// `dev` default, where `env up` takes it as a required positional), so
+	// "which env is running?" had two answers. Local is now one verb.
 	rootCmd.AddCommand(newGenerateCmd())
 	// (`forge unfork`, the legacy-fork migration tool, was removed after
 	// its one-release deprecation window — the legacy-manifest migration

@@ -625,7 +625,7 @@ func generateAdditionalServices(targetPath, modulePath, projectName string, serv
 //
 // Port assignment mirrors the primary frontend's ephemeral model: when
 // baseFrontendPort is 0 (the fresh-scaffold default — the primary is portless,
-// FrontendConfig.Port omitempty, allocated at `forge run`/`up` launch) EVERY
+// FrontendConfig.Port omitempty, allocated at `forge env up`/`up` launch) EVERY
 // additional frontend is also written portless (0), so N frontends all get a
 // distinct free port assigned at launch by resolveEphemeralFrontendPorts and
 // two dev stacks never fight. Only when the caller passes an explicit base
@@ -831,7 +831,7 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 		out = append(out,
 			fmt.Sprintf("  %s scaffold service item", n),
 			"      ↳ name it after a DOMAIN ENTITY (item, order, user) — not after the binary",
-			fmt.Sprintf("  %s run", n),
+			fmt.Sprintf("  %s env up dev", n),
 			"      ↳ boots the stack; /healthz serves even before any service exists")
 	default:
 		svc := serviceNames[0]
@@ -854,10 +854,10 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 			"      ↳ the marker is the tablizing decision; custom RPCs go in the same file",
 			scaffold,
 			"      ↳ births every marked message — migration pair + CRUD quintet — then generates",
-			fmt.Sprintf("  %s run", n))
+			fmt.Sprintf("  %s env up dev", n))
 		if hasFrontend {
 			// Auth is fail-closed, so every RPC 401s until an identity
-			// provider is wired. `forge run` does that wiring itself and
+			// provider is wired. `forge env up` does that wiring itself and
 			// prints the credentials — but a reader who never gets there
 			// reads a 401 as a broken scaffold. Say it here, where they
 			// are already looking.

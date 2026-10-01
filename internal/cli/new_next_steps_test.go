@@ -27,7 +27,7 @@ import (
 // for pasting: each run of tokens starting at the forge invocation prefix
 // (Name(), which is "forge" standalone and "<host> forge" when embedded) and
 // running to the first token that carries sentence punctuation. Backticks are
-// treated as whitespace so an inline `forge run` reads as a command.
+// treated as whitespace so an inline `forge env up` reads as a command.
 //
 // The returned slices are the tokens AFTER the invocation prefix — i.e. what
 // the root command would receive as os.Args[1:].
@@ -128,7 +128,7 @@ func TestNewNextStepsArePasteable(t *testing.T) {
 			name:     "service kind, no services yet",
 			kind:     config.ProjectKindService,
 			services: nil,
-			wantCmds: []string{"scaffold service", "run"},
+			wantCmds: []string{"scaffold service", "env up"},
 		},
 		{
 			// An entity is declared in the proto, so the block names the
@@ -137,13 +137,13 @@ func TestNewNextStepsArePasteable(t *testing.T) {
 			name:     "service kind, one service",
 			kind:     config.ProjectKindService,
 			services: []string{"catalog"},
-			wantCmds: []string{"scaffold", "run", "project annotations"},
+			wantCmds: []string{"scaffold", "env up", "project annotations"},
 		},
 		{
 			name:     "service kind, two services (the sweep needs --service)",
 			kind:     config.ProjectKindService,
 			services: []string{"catalog", "orders"},
-			wantCmds: []string{"scaffold", "run", "project annotations"},
+			wantCmds: []string{"scaffold", "env up", "project annotations"},
 		},
 		{
 			name:     "cli kind",
@@ -207,12 +207,12 @@ func TestNewNextStepsResolveHelper(t *testing.T) {
 	}
 
 	// Inline + sentence-terminated forms both parse.
-	got = pasteableInvocations("  then rerun `forge run`. Field types: forge scaffold entity --help", "forge")
+	got = pasteableInvocations("  then rerun `forge env up`. Field types: forge scaffold entity --help", "forge")
 	if len(got) != 2 {
 		t.Fatalf("expected two invocations from a two-command line, got %v", got)
 	}
-	if strings.Join(got[0], " ") != "run" {
-		t.Errorf("first invocation = %v, want [run]", got[0])
+	if strings.Join(got[0], " ") != "env up" {
+		t.Errorf("first invocation = %v, want [env up]", got[0])
 	}
 	if strings.Join(got[1], " ") != "scaffold entity --help" {
 		t.Errorf("second invocation = %v, want [scaffold entity --help]", got[1])
@@ -238,7 +238,7 @@ func TestNewNextStepsResolveHelper(t *testing.T) {
 }
 
 // A scaffolded frontend means auth is live and fail-closed: every RPC 401s
-// until an identity provider is wired. `forge run` does that wiring and
+// until an identity provider is wired. `forge env up` does that wiring and
 // prints the credentials, but a reader who stops at this block reads the
 // first 401 as a broken scaffold. So the block has to say it, and only when
 // there is a frontend to sign in to.

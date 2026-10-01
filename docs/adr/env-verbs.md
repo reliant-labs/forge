@@ -1,4 +1,4 @@
-# ADR: four environment verbs — `forge env {dev,build,deploy,status} <env>`
+# ADR: four environment verbs — `forge env {up,build,deploy,status} <env>`
 
 Status: **approved by owner 2026-10-01**. Implementation tasks V1–V6 below.
 
@@ -18,7 +18,7 @@ Everything that targets an environment is `forge env <verb> <env>`, like
 
 | Verb | Meaning | Absorbs (deleted) |
 |---|---|---|
-| `forge env dev <env>` | Run the env on this machine: build, local apply, host processes, frontends. **Refuses** an env with any workload bound to a non-local runtime (hosted, a remote cluster) with: `<env> is not a local environment — use 'forge env deploy <env>'`. | `forge run`, `forge env up` |
+| `forge env up <env> [-- <dev-server flags>]` | Run the env on this machine: build, local apply, host processes, frontends. **Refuses** an env with any workload bound to a non-local runtime (hosted, a remote cluster) with: `<env> is not a local environment — use 'forge env deploy <env>'`. | `forge run` |
 | `forge env build <env> [--release vX] [--push]` | Build the env's artifacts. `--release vX` implies push and records an immutable release (the noun "release" stays: an immutable digest set). Without `--release`, builds (and `--push` pushes) only. | `forge build --push`, `forge build --release`, `forge release cut` |
 | `forge env deploy <env> [vX \| --from <src-env> [--from-promotion id]]` | Make `<env>` run release vX: record the promotion (CAS, `--expect-current`, `--supersede`), have it applied (hosted: the control-plane converger; self-managed: client-side render+apply in the same command), then **wait for health by default** (`--no-wait`, `--timeout`, `--fail-fast`). With no version on a self-managed env, renders the env's current binding (today's spec-change deploy). `--gate` records evidence. | `forge env promote`, `forge env deploy`'s old meaning, `promote --wait/--deploy` |
 | `forge env status <env> [--wait] [--history] [--json]` | One view: bound release, rollout phase per workload, health, verify (running digests vs binding), gates, ledger freshness. `--wait` blocks until the rollout settles (the old `env wait`; exit codes unchanged). `--history` pages promotions. Without `<env>`: all envs (old `topology`). | `env status`, `env verify`, `env wait`, `env rollout`, `env topology`, `env history` |
@@ -39,7 +39,7 @@ pins each deleted spelling. Docs, skills, the scaffold, generated CI and
 
 ## Tasks (disjoint ownership)
 
-- **V1 `env dev`** — move `run.go`+`up.go` into `env dev`; non-local refusal + test; delete `forge run` and `env up`.
+- **V1 `env up`** — fold `forge run` into the existing `forge env up` (the `--` dev-server passthrough moves onto it); non-local refusal + test; delete `forge run`. The local verb KEEPS the name `env up`: it is the spelling already in every doc, skill and scaffolded script, and renaming it to `env dev` would have churned all of them to say the same thing.
 - **V2 `env build`** — move build `--push/--release` and `release cut` into `env build`; top-level `forge build` becomes compile-only (refuses `--push/--release` with a pointer); delete `release cut`.
 - **V3 `env deploy`** — fold `promote.go`+`promote_*.go` into `deploy`: version/`--from` ⇒ promote path; wait-by-default; self-managed client-side apply after the ledger write; no version ⇒ current spec-change deploy. Delete `env promote`.
 - **V4 `env status`** — merge status/verify/wait/rollout/topology/history into one command with `--wait`/`--history`; delete the others.

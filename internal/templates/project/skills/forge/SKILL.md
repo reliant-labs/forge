@@ -20,7 +20,7 @@ forge scaffold --dry-run     # print the plan
 forge scaffold               # birth entities, then generate
 forge lint
 go build ./...
-forge run                    # host services + frontends, on a fresh seeded DB
+forge env up dev             # host services + frontends, on a fresh seeded DB
 ```
 
 ### Name every service up front
@@ -264,7 +264,7 @@ interface to `struct{ ... }` and lists no methods — it cannot tell you
 
 | Command | What it does |
 |---|---|
-| `forge run` | Host services + frontends; auto-seeds a fresh dev DB on first boot |
+| `forge env up` | Host services + frontends; auto-seeds a fresh dev DB on first boot |
 | `forge env up dev` | Full stack: Docker infra + Go services (hot reload) + frontends |
 | `forge env up <env>` | Build + deploy + host launch + frontend dev — reads `deploy/kcl/<env>/` |
 | `forge env deploy dev` | Deploy to local k3d (or whatever dev's KCL targets) |

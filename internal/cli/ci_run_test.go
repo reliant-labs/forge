@@ -210,14 +210,21 @@ func TestCIRun_RealWire(t *testing.T) {
 	}
 }
 
-// `forge ci run` is registered, and `forge run` keeps meaning the dev server.
+// `forge ci run` is registered — and it is the ONLY `run` forge has. The
+// top-level dev-server `run` was deleted (its lifecycle is `forge env up`),
+// which is what makes `forge run ...` unambiguous rather than a collision.
 func TestCIRun_IsUnderCIAndNotUnderRun(t *testing.T) {
 	ci := newCICmd()
 	sub, _, err := ci.Find([]string{"run"})
 	if err != nil || sub == nil || sub.Name() != "run" {
 		t.Fatalf("`forge ci run` is not registered: %v", err)
 	}
-	if show, _, _ := newRunCmd().Find([]string{"show"}); show != nil && show.Name() == "show" {
-		t.Fatal("`forge run show` exists — the run timeline lives at `forge ci run` (`forge run` is the dev server)")
+	// No top-level `run` may resolve: a resurrected dev-server alias would
+	// shadow nothing here, but it would reintroduce the second spelling of
+	// `env up` that V1 removed.
+	for _, c := range NewRootCmd().Commands() {
+		if c.Name() == "run" {
+			t.Fatal("a top-level `forge run` is registered again — the local lifecycle is `forge env up <env>`")
+		}
 	}
 }

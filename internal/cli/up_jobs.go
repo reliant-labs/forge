@@ -308,7 +308,7 @@ func runHostJobs(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities,
 		// takes down a stack it was not standing in front of — which is what
 		// happened to every second project on a machine: the dev IdP's port
 		// was already held by another stack, idp-provision could not
-		// converge, and `forge run` refused to start the app at all. The
+		// converge, and `forge env up` refused to start the app at all. The
 		// backend and frontend would have come up perfectly well; only
 		// sign-in was unavailable.
 		//

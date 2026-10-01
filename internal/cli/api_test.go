@@ -424,7 +424,7 @@ func TestBuildCurlCommand_Auth(t *testing.T) {
 			t.Fatalf("buildCurlCommand: %v", err)
 		}
 		if !strings.Contains(out, "ephemeral port") {
-			t.Errorf("default port should flag the `forge run` mismatch; output:\n%s", out)
+			t.Errorf("default port should flag the `forge env up` mismatch; output:\n%s", out)
 		}
 	})
 

@@ -146,7 +146,7 @@ func entitiesOnPort(port int) *KCLEntities {
 // kernel-assigned, and which is precisely why nothing conflicts. The pre-flight
 // must stop the predecessor anyway: "is my stack already running" is a question
 // about ownership, not about ports, and answering it inside a port-conflict
-// branch made the reclaim unreachable on every `forge run`. Eight rounds left
+// branch made the reclaim unreachable on every `forge env up`. Eight rounds left
 // 38 orphaned processes, 7.5 GB resident, on 15 ports nothing could name.
 func TestUpPreflight_StopsThePredecessorOnFreePorts(t *testing.T) {
 	requireProcInspection(t)

@@ -78,7 +78,9 @@ func TestHostReadinessCancellationInterruptsPolling(t *testing.T) {
 }
 
 func TestHostReadinessTimeoutFlags(t *testing.T) {
-	for _, newCmd := range []func() *cobra.Command{newEnvUpCmd, newRunCmd} {
+	// One command owns the host-ready timeout now: `forge env up` absorbed
+	// `forge env up`, so there is no second copy of this flag to keep in step.
+	for _, newCmd := range []func() *cobra.Command{newEnvUpCmd} {
 		cmd := newCmd()
 		if d, err := cmd.Flags().GetDuration("host-ready-timeout"); err != nil || d < time.Minute {
 			t.Fatalf("default does not allow cold builds: %s, %v", d, err)

@@ -15,7 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 )
 
-// Tests for `forge env wait` (control-plane
+// Tests for `forge env status --wait` (control-plane
 // docs/design/hosted-deploy-primitives.md §3.2, task F3).
 //
 // Every case SCRIPTS A PHASE SEQUENCE and asserts the exit code, because the
@@ -427,7 +427,7 @@ func TestEnvWait_UnimplementedIsAFastExitTwo(t *testing.T) {
 	if n := fake.callCount(); n != 1 {
 		t.Errorf("polled %d times; unimplemented will not become implemented within the budget", n)
 	}
-	if !strings.Contains(err.Error(), "forge env verify") {
+	if !strings.Contains(err.Error(), "forge env status") {
 		t.Errorf("the message must name the fallback verb, got: %v", err)
 	}
 }
@@ -482,7 +482,7 @@ func TestEnvWait_StableForRequiresAnUnbrokenRun(t *testing.T) {
 }
 
 // TestEnvWait_OnceReadsExactlyOnceAndNeverBlocks is the single-read mode
-// `forge env rollout` is built on (§3.5: "env wait --timeout 0: one read,
+// `forge env status <env> --wait --timeout 0` is (§3.5: "one read,
 // never blocks").
 //
 // Both halves matter. ONE read — a snapshot verb that polled would be a wait
@@ -594,7 +594,7 @@ func TestEnvWait_SelfManagedEnvCannotBeWaitedOn(t *testing.T) {
 	if got := exitCodeForError(err); got != exitUndetermined {
 		t.Fatalf("a self-managed env must exit %d, got %d (%v)", exitUndetermined, got, err)
 	}
-	for _, want := range []string{"declares no hosted control plane", "forge env verify prod"} {
+	for _, want := range []string{"declares no hosted control plane", "forge env status prod"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the message must say %q, got:\n%v", want, err)
 		}

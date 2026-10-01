@@ -11,7 +11,7 @@ package cli
 // used to mean reading live digests by hand, one
 // `kubectl get deploy -o jsonpath` per workload. This is that check.
 //
-// It is the old `forge env verify`, unchanged in substance: the same five
+// It is the retired `env verify`, unchanged in substance: the same five
 // outcomes, the same injected seams, and the same exit codes. Only the
 // command surface moved — status is the one read view now, and this is the
 // half of it that compares a declaration against reality.
@@ -105,6 +105,15 @@ type envStatusDocument struct {
 	// Detail carries the one-line human reason for a non-OK result, or the
 	// explanation of an unbound env. Empty on a clean verify.
 	Detail string `json:"detail,omitempty"`
+	// Runtime is the RUNTIME half of the same read: host services and
+	// frontends with their ports and log files, the compose infra, and the
+	// app/telemetry health checks. Nested (unlike the release fields,
+	// which are flat for gate record's sake) because it is a different
+	// question with its own vocabulary, and because `gate record` must
+	// NOT recognise a status document by anything in here.
+	//
+	// Nil when the runtime half did not run.
+	Runtime *upServicesReport `json:"runtime,omitempty"`
 	// Ledger says whether the declaration came from the newest copy of the
 	// ledger. Present only for a file ledger (a control plane is the ledger
 	// and has no copy to be behind). `behind` / `diverged` make the whole
@@ -178,6 +187,12 @@ type envStatusOptions struct {
 	// decide which struct a flag belongs to.
 	Signal  string
 	Verbose bool
+	// Runtime is the already-collected runtime half, folded into this
+	// document so `--json` emits exactly ONE document. Two documents on
+	// stdout produce a stream no `jq` invocation can read, and the failure
+	// looks like malformed JSON rather than like two halves sharing an
+	// output.
+	Runtime *upServicesReport
 	// HostedRollout reads a HOSTED env's rollout for a promotion. Nil uses
 	// the env's declared control plane (readDeclaredRollout). Setting it
 	// also selects the hosted path, so a test can state the observer's
@@ -220,7 +235,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	staleErr := staleLedgerError(envName, ledger)
 
 	if !bound {
-		return reportUnboundEnv(envName, opts.JSON, ledger, staleErr)
+		return reportUnboundEnv(envName, opts.JSON, opts.Runtime, ledger, staleErr)
 	}
 	if len(binding.Resolved) == 0 {
 		// A binding with no resolved digests is a defective binding: it
@@ -280,6 +295,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			Source:      source,
 			Images:      results,
 			Tally:       tally,
+			Runtime:     opts.Runtime,
 			Ledger:      ledger,
 		}
 		if failure != nil {
@@ -333,7 +349,7 @@ func verifyHosted(ctx context.Context, envName string, binding release.Promotion
 
 // readDeclaredRollout is the production hosted read: the env's declared
 // control plane, through the same target resolution and GetRollout call
-// `forge env wait` uses (F3), so verify and wait cannot disagree about what
+// `forge env status --wait` uses (F3), so verify and wait cannot disagree about what
 // the observer saw.
 func readDeclaredRollout(ctx context.Context, env, promotionID string) (wireRollout, error) {
 	target, err := resolveDeclaredWaitTarget(ctx, env)
@@ -424,7 +440,7 @@ func verifyCluster(ctx context.Context, projectDir, envName string, resolved map
 // not use releases, and a permanently-red gate is a deleted gate. Say plainly
 // what the state is and exit 0 — unless this checkout's copy of the ledger is
 // stale (staleErr), in which case "never promoted" is not known either.
-func reportUnboundEnv(envName string, jsonOut bool, ledger *ledgerFreshnessReport, staleErr error) error {
+func reportUnboundEnv(envName string, jsonOut bool, runtime *upServicesReport, ledger *ledgerFreshnessReport, staleErr error) error {
 	const unboundDetail = "no release binding — the environment has never been promoted, so nothing is declared and there is nothing to verify"
 	if jsonOut {
 		// Still a complete, valid report. `bound: false` is the
@@ -432,11 +448,12 @@ func reportUnboundEnv(envName string, jsonOut bool, ledger *ledgerFreshnessRepor
 		// healthy state, not a failure. Images is non-nil so a consumer
 		// ranging over it sees `[]`, not `null`.
 		report := envStatusDocument{
-			Env:    envName,
-			Bound:  false,
-			Images: []imageVerification{},
-			Detail: unboundDetail,
-			Ledger: ledger,
+			Env:     envName,
+			Bound:   false,
+			Images:  []imageVerification{},
+			Detail:  unboundDetail,
+			Runtime: runtime,
+			Ledger:  ledger,
 		}
 		if staleErr != nil {
 			report.Detail = staleErr.Error()

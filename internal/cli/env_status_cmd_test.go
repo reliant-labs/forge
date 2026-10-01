@@ -262,6 +262,42 @@ func TestEnvStatusHistory_PagesTheLedger(t *testing.T) {
 	}
 }
 
+// --release means "this version" in BOTH per-env modes, so it is one flag —
+// and it has to reach whichever mode is running. A --release that was wired
+// only to the wait would make `--history --release v1` return EVERY
+// promotion while looking like it filtered: the worst kind of wrong answer,
+// because it is plausible. Asserted through the command's own flag parsing,
+// which is the only place the relay happens.
+func TestEnvStatusHistory_ReleaseFilterReachesTheQuery(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"),
+		[]byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	declareEnvDir(t, dir, "prod")
+	t.Chdir(dir)
+	// prod: v1, v2, v1 — so a working filter serves TWO entries, and a
+	// filter that silently no-ops serves three.
+	for _, v := range []string{"v1", "v2", "v1"} {
+		writeBinding(t, dir, "prod", v, map[string]string{"api": sha("a")})
+	}
+
+	cmd := newEnvStatusCmd()
+	var out bytes.Buffer
+	cmd.SetArgs([]string{"prod", "--history", "--release", "v1"})
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("history --release: %v", err)
+	}
+	if got := strings.Count(out.String(), "v1"); got != 2 {
+		t.Errorf("--release v1 served %d v1 rows, want 2 — the filter did not reach the query:\n%s", got, out.String())
+	}
+	if strings.Contains(out.String(), "v2") {
+		t.Errorf("--release v1 served a v2 promotion:\n%s", out.String())
+	}
+}
+
 // Every --history flag is reachable on the merged command.
 func TestEnvStatusHistory_DeclaresEveryHistoryFlag(t *testing.T) {
 	cmd := newEnvStatusCmd()
@@ -467,6 +503,69 @@ func TestEnvStatusJSON_CarriesTheF0Envelope(t *testing.T) {
 	}
 	if drifted.Error == "" {
 		t.Error("a non-OK envelope must carry the reason")
+	}
+}
+
+// STDOUT CARRIES EXACTLY ONE DOCUMENT. The default view has two halves, and
+// the obvious implementation — let each half print its own JSON — produces a
+// stream no `jq` invocation can read. Worse, the failure looks like malformed
+// JSON rather than like two commands sharing an output, so the reader debugs
+// the wrong thing.
+//
+// Asserted by DECODING THE WHOLE STREAM: a json.Decoder that finds a second
+// top-level value is the only check that actually catches this, since
+// Unmarshal on the concatenation would stop happily after the first.
+func TestEnvStatusJSON_EmitsExactlyOneDocument(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"),
+		[]byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	declareEnvDir(t, dir, "dev")
+	writeBinding(t, dir, "dev", "v1", map[string]string{"ghcr.io/acme/api": sha("a")})
+	t.Chdir(dir)
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t,
+		`{"output":{"workloads":[{"name":"api","kind":"service","image":"ghcr.io/acme/api",`+
+			`"runtime":{"type":"host"},"spec":{"kind":"service","env":[{"name":"API_PORT","value":"59998"}]}}]}}`))
+
+	out := captureStdout(t, func() {
+		_ = runEnvStatus(context.Background(), "dev", envStatusOptions{
+			JSON:     true,
+			Bindings: newFileBindingStore(dir),
+			Lister:   &stubLister{images: []cluster.WorkloadImage{runningImage("ghcr.io/acme/api", sha("a"))}},
+			Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
+		})
+	})
+
+	dec := json.NewDecoder(strings.NewReader(out))
+	var first envStatusDocument
+	if err := dec.Decode(&first); err != nil {
+		t.Fatalf("the stream must open with one parseable document: %v\n%s", err, out)
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err == nil {
+		t.Fatalf("stdout carries MORE than one JSON document — no jq invocation can read this:\n%s", out)
+	}
+	// And the one document carries BOTH halves: the release fields flat,
+	// the runtime half nested.
+	if !first.Bound || first.Release != "v1" {
+		t.Errorf("the document lost the release half: bound=%v release=%q", first.Bound, first.Release)
+	}
+	if first.Runtime == nil {
+		t.Fatalf("the document lost the runtime half:\n%s", out)
+	}
+	if first.Runtime.Env != "dev" {
+		t.Errorf("runtime.env = %q, want dev", first.Runtime.Env)
+	}
+	// The runtime facts the pre-merge `env status --json` tests pinned,
+	// one level deeper: a non-nil workloads document (an empty list and
+	// "we could not reach the cluster" are different facts) and the
+	// runtime checks.
+	if first.Runtime.Workloads == nil {
+		t.Errorf("runtime.workloads serialised as null — the cluster's state would again be reachable only by parsing prose")
+	}
+	if len(first.Runtime.Checks) == 0 {
+		t.Error("runtime.checks is empty — the checks that moved here from `forge doctor` are gone")
 	}
 }
 

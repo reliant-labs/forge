@@ -1031,7 +1031,7 @@ func (p HostedProvider) publish(ctx context.Context, c HostedCaller, group Servi
 // succeed on bytes it was never asked about, a mid-rollout DIVERGED is not
 // read as drift, and an observation claiming the new digest while the new
 // ReplicaSet crash-loops is caught by the updated/desired replica pair. The
-// CLI's `forge env wait` reads the same RPC, so deploy and wait share ONE
+// CLI's `forge env status --wait` reads the same RPC, so deploy and wait share ONE
 // definition of done rather than two that drift (§3.2).
 //
 // Without one — an unbound env, or a control plane that does not serve
@@ -1042,7 +1042,7 @@ func (p HostedProvider) publish(ctx context.Context, c HostedCaller, group Servi
 // complete on a workload that is serving the right bytes without sitting out
 // the server's stability window (STABILIZING counts; see
 // rolloutPhaseServing). A deploy that waited for the window would be two
-// minutes slower every time, to answer a question `forge env wait` is the
+// minutes slower every time, to answer a question `forge env status --wait` is the
 // verb for.
 func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID, promotionID string, plan []hostedPlanItem, ids map[string]string) error {
 	policy := p.Rollout.Normalize()

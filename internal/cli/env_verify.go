@@ -98,7 +98,7 @@ func (s imageState) String() string {
 	}
 }
 
-// MarshalJSON emits the LOWERCASE string form so `forge env verify --json` is
+// MarshalJSON emits the LOWERCASE string form so `forge env status --json` is
 // readable by a human and by jq, rather than emitting the iota. Mirrors
 // deploytarget.Health.MarshalJSON.
 //

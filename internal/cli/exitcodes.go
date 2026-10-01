@@ -2,7 +2,7 @@ package cli
 
 // The exit-code table every hosted deploy verb shares.
 //
-// It extends the convention `forge release verify` and `forge env verify`
+// It extends the convention `forge release verify` and `forge env status`
 // already follow, where the distinction that matters is not pass/fail but
 // WHETHER WE LOOKED: 1 means "looked, and it is wrong", and 2 means "could
 // not determine". That difference is what lets CI tell a bad release from a

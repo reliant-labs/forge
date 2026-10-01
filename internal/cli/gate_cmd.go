@@ -166,7 +166,7 @@ forge --json document, deriving the check's name, verdict and summary from
 it. So every forge verb that can judge something is recordable with no glue
 script:
 
-  forge env wait prod --json  > wait.json   && forge gate record prod --from wait.json
+  forge env status prod --wait --json  > wait.json   && forge gate record prod --from wait.json
   forge env smoke prod --json > smoke.json  && forge gate record prod --from smoke.json
   forge lint --gate-json lint.json          && forge gate record prod --from lint.json
 

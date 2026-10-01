@@ -20,7 +20,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// `forge env topology` — the whole release/environment picture in ONE read.
+// `forge env status` — the whole release/environment picture in ONE read.
 //
 // WHY A WHOLE-PROJECT COMMAND EXISTS AT ALL. Every other release verb is
 // scoped to one env or one version, because every other release verb ACTS on
@@ -38,7 +38,7 @@ import (
 // which almost nobody has locally, and costs a round-trip per workload even
 // when they do. So the default reads the LEDGER only: fast, offline, and
 // correct about what was DECLARED. `--verify` additionally reads each env's
-// cluster through the same path `forge env verify` uses.
+// cluster through the same path `forge env status` uses.
 //
 // The consequence for the output contract is the part that must not be gotten
 // wrong: in the default mode every image's state is "not_verified", which is
@@ -54,7 +54,7 @@ import (
 // in: not_verified. It is a separate type rather than a reuse of imageState
 // because the sixth state is not a verification verdict at all — it is the
 // absence of one — and widening imageState to hold it would let "nobody
-// looked" leak into `forge env verify`, whose entire contract is that every
+// looked" leak into `forge env status`, whose entire contract is that every
 // value it emits is something it actually checked.
 //
 // THE ZERO VALUE IS not_verified, DELIBERATELY. In imageState the zero value
@@ -239,7 +239,7 @@ type topologyEnv struct {
 	// PromotedAt is RFC3339 for when the env was PROMOTED — not when it
 	// was deployed. Promotion writes a pointer; deployment moves bytes.
 	// A consumer rendering this as "shipped at" has reintroduced the bug
-	// `forge env verify` exists to catch.
+	// `forge env status` exists to catch.
 	PromotedAt string `json:"promoted_at,omitempty"`
 	// ReleaseKnown is true when the release ledger file for Release exists
 	// in this checkout. FALSE IS NOT AN ERROR: a release cut on another
@@ -301,7 +301,7 @@ type topologyEnv struct {
 	// carries none.
 	GatesSummary *gatesSummary `json:"gates_summary,omitempty"`
 	// RolloutPhase is the current promotion's rollout phase as the control
-	// plane computes it (`forge env rollout`'s answer): "succeeded",
+	// plane computes it (`forge env status --wait --timeout 0`'s answer): "succeeded",
 	// "progressing", "degraded", "unknown" … Hosted envs only; absent when
 	// the env keeps a file ledger or the read failed (Note says which).
 	RolloutPhase string `json:"rollout_phase,omitempty"`
@@ -710,7 +710,7 @@ func buildTopologyEnvRow(
 // It delegates to verifyEnvImages rather than re-deriving the comparison: the
 // five-state model has subtleties (a digest that matches where pinned while
 // some workload still runs a mutable tag is UNTAGGED, not MATCH) and a second
-// implementation would eventually disagree with `forge env verify` about the
+// implementation would eventually disagree with `forge env status` about the
 // same environment, which is worse than having no second view at all.
 func applyTopologyVerification(ctx context.Context, row *topologyEnv, opts envTopologyOptions) {
 	declared := map[string]string{}
@@ -929,7 +929,7 @@ func renderEnvTopologyText(report envTopologyReport) {
 
 	if len(report.Environments) == 0 {
 		fmt.Println("No environments found. Declare one under deploy/kcl/<env>/main.k, or name one explicitly:")
-		fmt.Println("  forge env topology staging")
+		fmt.Println("  forge env status staging")
 		return
 	}
 

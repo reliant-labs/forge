@@ -440,7 +440,7 @@ func TestBindingStoreFor_RenderFailureIsNotAFallback(t *testing.T) {
 
 // ─── Consumers against a non-file backend ────────────────────────────────────
 
-// `forge env verify` runs end to end with its ledger served from memory, and
+// `forge env status` runs end to end with its ledger served from memory, and
 // reaches the real DRIFT verdict.
 func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 	dir := t.TempDir()

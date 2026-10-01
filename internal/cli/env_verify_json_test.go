@@ -9,7 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 )
 
-// `forge env verify --json` tests.
+// `forge env status --json` tests.
 //
 // These assert on the PARSED report rather than on substrings of the output,
 // because the thing under test is a machine contract: a consumer does

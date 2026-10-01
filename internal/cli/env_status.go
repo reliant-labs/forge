@@ -161,86 +161,10 @@ Examples:
 		// drift failure would bury them under the flag list.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// --wait and --history are two different reads of one env,
-			// and asking both at once has no answer. Refused rather
-			// than silently preferring one.
-			if wait && history {
-				return fmt.Errorf("--wait and --history are two different reads: --wait blocks on the CURRENT rollout, --history pages PAST promotions. Pass one")
-			}
-			// No env: every env. There is nothing to block on and no
-			// single ledger to page, so the two per-env modes are
-			// refused here rather than quietly ignored.
-			if len(args) == 0 {
-				if wait || history {
-					return fmt.Errorf("--wait and --history need an environment: `forge env status` with no environment is the all-environments view")
-				}
-				return runEnvTopology(cmd.Context(), args, envTopologyOptions{
-					JSON:       jsonOut,
-					Verify:     verifyClusters,
-					Timeout:    timeout,
-					ProjectDir: projectDirForKCL(),
-					Lister:     kubectlImageLister{},
-					Resolver:   kclTargetResolver{},
-				})
-			}
-			// Several envs is the all-envs view, scoped. It is how an
-			// env bound in the ledger but absent from this checkout is
-			// included, which the per-env modes cannot do.
-			if len(args) > 1 {
-				if wait || history {
-					return fmt.Errorf("--wait and --history read ONE environment, got %d", len(args))
-				}
-				return runEnvTopology(cmd.Context(), args, envTopologyOptions{
-					JSON:       jsonOut,
-					Verify:     verifyClusters,
-					Timeout:    timeout,
-					ProjectDir: projectDirForKCL(),
-					Lister:     kubectlImageLister{},
-					Resolver:   kclTargetResolver{},
-				})
-			}
-
-			env := args[0]
-			switch {
-			case wait:
-				// `--timeout 0` means ONE READ, never block — the
-				// single-shot mode the old `forge env rollout` was.
-				//
-				// Those two have to be told apart, and a zero value
-				// cannot do it: Timeout's zero IS the unset value, so
-				// "0" and "not given" arrive identically. cobra's
-				// Changed is the only thing that knows the difference,
-				// and it is only available here, where the flag set
-				// is. Reading it wrong in either direction is bad in
-				// its own way — an unset flag becoming a single read
-				// would turn every plain --wait into a non-blocking
-				// poll, and an explicit 0 becoming 15m would make the
-				// snapshot block for a quarter of an hour.
-				changed := cmd.Flags().Changed("timeout")
-				switch {
-				case changed && timeout == 0:
-					waitOpts.Once = true
-				case changed:
-					waitOpts.Timeout = timeout
-				default:
-					waitOpts.Timeout = envWaitDefaultTimeout
-				}
-				waitOpts.JSON = jsonOut
-				return runEnvWaitForCmd(cmd.Context(), env, waitOpts)
-			case history:
-				store, err := bindingStoreFor(cmd.Context(), projectDirForKCL(), env)
-				if err != nil {
-					return exitCodeError{code: exitUndetermined, msg: err.Error()}
-				}
-				return runEnvHistory(cmd.Context(), store, env, histQ, jsonOut, cmd.OutOrStdout())
-			}
-			return runEnvStatus(cmd.Context(), env, envStatusOptions{
-				Timeout:  timeout,
-				JSON:     jsonOut,
-				Signal:   signal,
-				Verbose:  verbose,
-				Lister:   kubectlImageLister{},
-				Resolver: kclTargetResolver{},
+			return dispatchEnvStatus(cmd, args, envStatusModes{
+				wait: wait, history: history, verifyClusters: verifyClusters,
+				jsonOut: jsonOut, signal: signal, verbose: verbose,
+				timeout: timeout, waitOpts: waitOpts, histQ: histQ,
 			})
 		},
 	}
@@ -263,7 +187,7 @@ Examples:
 	flags.BoolVar(&verifyClusters, "verify", false,
 		"All-environments view only: also read each environment's cluster and reconcile it against the ledger (slow, needs credentials)")
 
-	// --wait: the old `forge env wait`, every flag unchanged.
+	// --wait: the retired `env wait`, every flag unchanged.
 	flags.BoolVar(&wait, "wait", false, "Block until the rollout settles, and prove it stayed up (exit 0/1/2/5/6)")
 	flags.StringVar(&waitOpts.PromotionID, "promotion", "",
 		"Promotion id to read (default: the env's current promotion). A CI retry passes the id the deploy returned")
@@ -280,7 +204,7 @@ Examples:
 	flags.BoolVar(&waitOpts.WatchJSON, "watch-json", false,
 		"--wait only: emit NDJSON, one line per phase change, as the rollout progresses")
 
-	// --history: the old `forge env history`, every flag unchanged.
+	// --history: the retired `env history`, every flag unchanged.
 	flags.BoolVar(&history, "history", false, "Page the environment's promotion ledger, newest first")
 	flags.IntVar(&histQ.Limit, "limit", defaultHistoryLimit, fmt.Sprintf("--history only: entries per page (1–%d)", maxHistoryLimit))
 	flags.StringVar(&histQ.Before, "before", "",
@@ -293,6 +217,116 @@ Examples:
 	cmd.MarkFlagsMutuallyExclusive("history", "verify")
 
 	return cmd
+}
+
+// envStatusModes is the resolved flag state one dispatch needs. A struct
+// rather than eleven parameters because they are read TOGETHER to pick a
+// mode, and a dispatcher that took them positionally would be impossible to
+// call correctly at a glance.
+type envStatusModes struct {
+	wait, history, verifyClusters bool
+	jsonOut, verbose              bool
+	signal                        string
+	timeout                       time.Duration
+	waitOpts                      envWaitOptions
+	histQ                         historyQuery
+}
+
+// dispatchEnvStatus picks the mode and runs it.
+//
+// Split out of the command's RunE so the mode CHOICE is one readable
+// sequence — arity first, then the per-env modes — instead of being buried
+// under two hundred lines of flag declarations and help text.
+func dispatchEnvStatus(cmd *cobra.Command, args []string, m envStatusModes) error {
+	perEnv := m.wait || m.history
+	// --wait and --history are two different reads of one env, and asking
+	// both at once has no answer. Refused rather than silently preferring
+	// one. (cobra also marks them exclusive; this is the backstop for a
+	// direct call.)
+	if m.wait && m.history {
+		return fmt.Errorf("--wait and --history are two different reads: --wait blocks on the CURRENT rollout, --history pages PAST promotions. Pass one")
+	}
+	// Not exactly one env: the all-environments view. There is nothing to
+	// block on and no single ledger to page, so the per-env modes are
+	// REFUSED rather than quietly ignored — silently dropping --wait would
+	// return an instant snapshot to a caller gating a release on it.
+	if len(args) != 1 {
+		if perEnv {
+			if len(args) == 0 {
+				return fmt.Errorf("--wait and --history need an environment: `forge env status` with no environment is the all-environments view")
+			}
+			return fmt.Errorf("--wait and --history read ONE environment, got %d", len(args))
+		}
+		return runEnvTopology(cmd.Context(), args, envTopologyOptions{
+			JSON:       m.jsonOut,
+			Verify:     m.verifyClusters,
+			Timeout:    m.timeout,
+			ProjectDir: projectDirForKCL(),
+			Lister:     kubectlImageLister{},
+			Resolver:   kclTargetResolver{},
+		})
+	}
+
+	env := args[0]
+	switch {
+	case m.wait:
+		m.waitOpts.Timeout, m.waitOpts.Once = resolveWaitBudget(cmd, m.timeout)
+		m.waitOpts.JSON = m.jsonOut
+		return runEnvWaitForCmd(cmd.Context(), env, m.waitOpts)
+	case m.history:
+		// --release means the same thing in both per-env modes ("this
+		// version"), so it is ONE flag — and it must be relayed to
+		// whichever mode is running. Reading it off the shared
+		// destination rather than declaring a second --release is what
+		// keeps `--wait --release` and `--history --release` from
+		// drifting apart.
+		m.histQ.Release = m.waitOpts.Release
+		store, err := bindingStoreFor(cmd.Context(), projectDirForKCL(), env)
+		if err != nil {
+			return exitCodeError{code: exitUndetermined, msg: err.Error()}
+		}
+		return runEnvHistory(cmd.Context(), store, env, m.histQ, m.jsonOut, cmd.OutOrStdout())
+	}
+	return runEnvStatus(cmd.Context(), env, envStatusOptions{
+		Timeout:  m.timeout,
+		JSON:     m.jsonOut,
+		Signal:   m.signal,
+		Verbose:  m.verbose,
+		Lister:   kubectlImageLister{},
+		Resolver: kclTargetResolver{},
+	})
+}
+
+// resolveWaitBudget turns --timeout into a wait budget, or into the
+// single-read mode.
+//
+// `--timeout 0` means ONE READ, never block — the snapshot the retired
+// `env rollout` was. An UNSET --timeout keeps the 15m budget.
+//
+// Those two have to be told apart, and a zero value cannot do it: Timeout's
+// zero IS the unset value, so "0" and "not given" arrive identically in the
+// struct. cobra's Changed is the only thing that knows the difference, and it
+// is only available at the command layer, which is why this takes the command
+// rather than a duration.
+//
+// Reading it wrong in either direction is bad in its own way. An unset flag
+// becoming a single read would turn every plain --wait into a non-blocking
+// poll that reports 5 the moment a rollout is mid-flight. An explicit 0
+// becoming 15m would make the snapshot block for a quarter of an hour.
+//
+// The 15m default also cannot live on the flag itself: the same --timeout
+// bounds the release half's cluster read, where the right budget is 60s. One
+// flag cannot declare two defaults, so the flag's default is the unset
+// sentinel and each mode resolves it.
+func resolveWaitBudget(cmd *cobra.Command, timeout time.Duration) (budget time.Duration, once bool) {
+	switch {
+	case !cmd.Flags().Changed("timeout"):
+		return envWaitDefaultTimeout, false
+	case timeout == 0:
+		return 0, true
+	default:
+		return timeout, false
+	}
 }
 
 // runEnvStatus is the DEFAULT view of one env: runtime first, then release.
@@ -309,12 +343,22 @@ func runEnvStatus(ctx context.Context, env string, opts envStatusOptions) error 
 	// The runtime half REPORTS. Its error is returned only for a usage
 	// mistake (a mistyped --signal), never for a down stack — see the file
 	// header on why the two halves are asymmetric about failure.
-	if err := runUpServices(ctx, env, opts.JSON, opts.Signal, opts.Verbose); err != nil {
+	if opts.JSON {
+		// COLLECTED, not printed: the release half emits the single
+		// document, with this nested inside it. Printing here would put
+		// two documents on stdout and produce a stream no `jq`
+		// invocation can read.
+		runtime, err := collectRuntimeStatus(ctx, env, opts.Signal, opts.Verbose)
+		if err != nil {
+			return err
+		}
+		opts.Runtime = &runtime
+		return runEnvStatusRelease(ctx, env, opts)
+	}
+	if err := renderRuntimeStatus(ctx, env, opts.Signal, opts.Verbose); err != nil {
 		return err
 	}
-	if !opts.JSON {
-		fmt.Println()
-	}
+	fmt.Println()
 	// The release half owns the exit code.
 	return runEnvStatusRelease(ctx, env, opts)
 }

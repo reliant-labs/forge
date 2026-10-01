@@ -31,7 +31,7 @@ func TestGateFromDocument_GoldenPerVerb(t *testing.T) {
 	}}
 	smokeDoc.Summary.Pass, smokeDoc.Summary.Fail, smokeDoc.Summary.OK = 1, 1, false
 
-	// `forge env verify --json` — the real envStatusDocument.
+	// `forge env status --json` — the real envStatusDocument.
 	bound := true
 	envVerify := envStatusDocument{
 		Env: "prod", Bound: bound, Release: "v1.4.0",
@@ -59,7 +59,7 @@ func TestGateFromDocument_GoldenPerVerb(t *testing.T) {
 		"exit_code": exitWrong,
 	}
 
-	// `forge env wait --json` (§3.2, F3's document). Exit 5 (timed out,
+	// `forge env status --wait --json` (§3.2, F3's document). Exit 5 (timed out,
 	// still progressing) is `error`, NOT `failed` — see
 	// TestGateFromDocument_ExitCodesThatAreNotFailures.
 	waitJSON := map[string]any{
@@ -300,7 +300,7 @@ func TestGateFromDocument_SmokeThatCheckedNothingIsSkipped(t *testing.T) {
 }
 
 // An env that has never been promoted has declared nothing to be wrong
-// about — and nothing to vouch for. `forge env verify` exits 0; the gate is
+// about — and nothing to vouch for. `forge env status` exits 0; the gate is
 // skipped, not passed.
 func TestGateFromDocument_UnboundEnvVerifyIsSkipped(t *testing.T) {
 	t.Parallel()

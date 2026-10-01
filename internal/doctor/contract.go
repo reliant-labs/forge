@@ -95,7 +95,7 @@ type DeployShaper func(env string, render []byte) (DeployShape, error)
 // is what a render that carries no `output` deploy contract gets.
 type DeployShape struct {
 	// Destinations are the destination kinds the environment deploys to, in
-	// the vocabulary of `forge env topology` (hosted, cluster, compose, host,
+	// the vocabulary of `forge env status` (hosted, cluster, compose, host,
 	// external, static), sorted. Nil when the render carries no deploy
 	// contract to read them from. Only an env with "cluster" among them
 	// needs its `output.manifests` stream to carry anything: an env that runs on

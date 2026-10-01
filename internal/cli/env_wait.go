@@ -1,6 +1,6 @@
 package cli
 
-// `forge env wait <env>`: the post-release health gate (control-plane
+// `forge env status <env> --wait`: the post-release health gate (control-plane
 // docs/design/hosted-deploy-primitives.md §3.2, task F3).
 //
 // WHAT THIS IS FOR, AND WHY IT IS NOT "POLL GetStatus UNTIL CONVERGED".
@@ -95,9 +95,10 @@ type envWaitOptions struct {
 	// Once for the explicit `--timeout 0` spelling.
 	Timeout time.Duration
 	// Once reads the phase exactly ONCE and returns, never blocking. It
-	// is what `forge env wait --timeout 0` means, and the primitive
-	// `forge env rollout` is built on (§3.5): report where this promotion
-	// has got to, right now.
+	// is what `forge env status <env> --wait --timeout 0` means: report
+	// where this promotion has got to, right now. It is the snapshot the
+	// retired single-read rollout verb was, and absorbing it is why it
+	// needed no code of its own.
 	//
 	// A separate field rather than Timeout == 0, because Timeout's zero
 	// value already means "unset, use the default" — the two are
@@ -260,7 +261,7 @@ func resolveDeclaredWaitTarget(ctx context.Context, env string) (waitTarget, err
 		// is just nothing here that can answer the question.
 		return waitTarget{}, undeterminedf(
 			"env %q declares no hosted control plane, so there is no server-computed rollout to wait on.\n"+
-				"  Prove it arrived instead with: forge env verify %s", env, env)
+				"  Prove it arrived instead with: forge env status %s", env, env)
 	}
 	ep, err := cloud.ResolveEndpoint(env, decl)
 	if err != nil {
@@ -490,7 +491,7 @@ func readRollout(ctx context.Context, client cloudCaller, envID, promotionID str
 		case hostedErrorHasCode(err, cloud.CodeUnimplemented):
 			return wireRollout{}, undeterminedf(
 				"this control plane does not serve GetRollout, so it cannot report a rollout phase.\n"+
-					"  `forge env wait` needs a control plane with the hosted deploy primitives; use `forge env verify` meanwhile: %v", err)
+					"  `--wait` needs a control plane with the hosted deploy primitives; read the release state with plain `forge env status <env>` meanwhile: %v", err)
 		case hostedErrorHasCode(err, cloud.CodeNotFound):
 			return wireRollout{}, &exitCodeError{code: exitConflict, msg: fmt.Sprintf(
 				"no such promotion on this control plane%s: %v", parenthesize(promotionID), err)}
@@ -665,7 +666,7 @@ func rolloutDeadlineError(env string, report envWaitReport, rollout wireRollout,
 		// The distinction a pipeline acts on, stated in the message as
 		// well as the code: this release was never judged bad.
 		hint = "\n  The rollout was still progressing, not failing. Retry the wait" +
-			" (`forge env wait " + env + " --promotion " + waitPromotionID(report) + "`); do not re-promote."
+			" (`forge env status " + env + " --wait --promotion " + waitPromotionID(report) + "`); do not re-promote."
 	}
 	return &exitCodeError{code: code, msg: fmt.Sprintf(
 		"rollout of %s to %s was still %s after %s: %s%s",

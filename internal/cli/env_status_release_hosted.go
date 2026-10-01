@@ -1,6 +1,6 @@
 package cli
 
-// `forge env verify <env>` for a HOSTED environment (hosted-deploy-primitives
+// `forge env status <env>` for a HOSTED environment (hosted-deploy-primitives
 // §3.5, task F7).
 //
 // A cluster env is verified by reading the cluster with kubectl (env_verify.go).

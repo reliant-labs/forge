@@ -106,7 +106,7 @@ func TestPromoteFrom_SendsTheSourcePromotionID(t *testing.T) {
 		t.Fatalf("prod is on %s, want staging's v2", cur.Release)
 	}
 	// FROMENV READS BACK AS A NAME, not the id it travels as (§3.4's
-	// read-back fix). An id here is unreadable in `forge env history`.
+	// read-back fix). An id here is unreadable in `forge env status --history`.
 	if cur.FromEnv != "staging" {
 		t.Errorf("FromEnv = %q, want the NAME %q", cur.FromEnv, "staging")
 	}

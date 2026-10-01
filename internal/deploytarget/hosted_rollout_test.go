@@ -196,7 +196,7 @@ func TestHostedWaitWithoutAPromotionKeepsTheStatusPoll(t *testing.T) {
 // TestHostedWaitStabilizingCompletesTheDeploy is the DOCUMENTED threshold
 // difference: a deploy completes on "published and serving", so STABILIZING
 // is done. Treating it as pending would make every deploy as slow as the
-// server's stability window — which is the question `forge env wait` is the
+// server's stability window — which is the question `forge env status --wait` is the
 // verb for, not this one.
 func TestHostedWaitStabilizingCompletesTheDeploy(t *testing.T) {
 	cp := &rolloutCP{phases: []string{wireRolloutPhaseStabilizing}}

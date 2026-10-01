@@ -1,6 +1,6 @@
 package cli
 
-// `forge env history <env>`: an environment's promotion ledger, newest first
+// `forge env status <env> --history`: an environment's promotion ledger, newest first
 // (hosted-deploy-primitives §3.5, task F7).
 //
 // What has <env> run, by whom, with what evidence? Each row is one ledger

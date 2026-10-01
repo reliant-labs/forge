@@ -1549,7 +1549,7 @@ type upServicesReport struct {
 	Checks []doctor.CheckResult `json:"checks,omitempty"`
 
 	// Destination / Endpoint / EnvironmentID / Verdict / Workloads: where
-	// this env runs — the same contract `forge env topology --json` carries
+	// this env runs — the same contract `forge env status --json` carries
 	// per env (see env_destination.go). Destination is always set; the rest
 	// are hosted-only. HostedNote explains a hosted status that could not
 	// be read (credentials, network), in which case the other hosted fields

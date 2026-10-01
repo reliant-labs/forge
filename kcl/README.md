@@ -80,13 +80,13 @@ workload-only fields on them (`runner`, `listen_ports`, `build_variants`, ...)
 are refused on a frontend, naming the field. `output.frontends[].runtime` is
 `{type, ...}`, and the Go dispatch keys on `type`:
 
-| Runtime                                         | `forge env deploy` does                                                                                              |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `OnHost {}`                                     | nothing — it is the dev server (`<dev_runner> dev` on `port`); `forge env up` runs it                                |
+| Runtime                                         | `forge env deploy` does                                                                                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `OnHost {}`                                     | nothing — it is the dev server (`<dev_runner> dev` on `port`); `forge env up` runs it                                    |
 | `OnHosted {}`                                   | `forge env build --push` pushes the site as an OCI release; the deploy publishes a StaticSite CR (needs `control_plane`) |
-| `OnBucket {bucket, cdn?, keep_releases}`        | builds, assembles, uploads `releases/<digest>/`, syncs `live/`, invalidates the CDN                                  |
-| `OnFirebase {project, site, target?, rewrites}` | builds, assembles, `firebase deploy`                                                                                 |
-| `BuildOnly {}`                                  | builds it, so a sibling frontend's `bundle` can assemble its output; ships nothing                                   |
+| `OnBucket {bucket, cdn?, keep_releases}`        | builds, assembles, uploads `releases/<digest>/`, syncs `live/`, invalidates the CDN                                      |
+| `OnFirebase {project, site, target?, rewrites}` | builds, assembles, `firebase deploy`                                                                                     |
+| `BuildOnly {}`                                  | builds it, so a sibling frontend's `bundle` can assemble its output; ships nothing                                       |
 
 `cache_control` is honoured only on `OnBucket` (forge sets the object headers
 there and nowhere else); `bundle` is refused on `OnHost`. `OnHosted` has no

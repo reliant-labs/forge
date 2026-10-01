@@ -491,6 +491,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		Run:           p.run,
 		Follow: &promoteFollowOptions{
 			NoWait:   p.noWait,
+			jsonOut:  f.jsonOut,
 			Timeout:  p.timeout,
 			FailFast: p.failFast,
 			clientDeploy: deployOptions{

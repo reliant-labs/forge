@@ -988,9 +988,11 @@ var removals = []removal{
 			// The removed FLAG, anchored on the verb it belonged to — which
 			// also catches the half-renamed `forge env up --env=dev`, the shape
 			// a mechanical sweep produces and the one that reads as correct.
-			// Anchoring on up/down is what leaves `forge build --push --env=dev`
-			// alone; requiring `=` or a space
-			// after the flag is what leaves `docker compose up --env-file` alone.
+			// Anchoring on up/down is what leaves the live `--env` flags
+			// alone — `forge release where --env`, `forge secret set --env`,
+			// `forge domain bind --env`, where the env really is a modifier;
+			// requiring `=` or a space after the flag is what leaves
+			// `docker compose up --env-file` alone.
 			regexp.MustCompile(`\b(?:up|down)\s+--env[= ]`),
 			// The Go ARGV form: exec/test invocations pass the command as
 			// separate string args, so the tokens are never adjacent in the
@@ -2082,7 +2084,7 @@ func TestLegitimateLookalikesAreStillPresent(t *testing.T) {
 		{"HostDeploy.listen_ports", "the host TCP ports a dev-mode service binds — a KCL deploy fact, unrelated to the removed per-component carrier", regexp.MustCompile(`listen_ports`)},
 		{"Workload.ports", "the container/Service port list a workload declares (fw.Workload, tiers.Workload, WorkloadSpec.Ports) — the home the cluster deploy block's ports moved TO", regexp.MustCompile(`ports\?: \[(tiers\.)?Port\]|Ports\s+\[\]Port\b`)},
 		{"forge cluster up", "the LIVE k3d-lifecycle verb — a `forge up` pattern widened to drop the word between `forge` and `up` swallows it", regexp.MustCompile(`forge cluster up`)},
-		{"forge build --push --env", "the LIVE flag on a command where the environment really is an optional modifier — the counter-example that keeps the `--env` pattern anchored on up/down. (It used to be `forge run --env`; that command was deleted, so the role passed to the other command that kept its flag.)", regexp.MustCompile(`forge build --push --env`)},
+		{"a live `--env` flag", "the LIVE flag on commands where the environment really IS an optional modifier rather than the subject — `forge release where --env` narrows which ledger to ask, `forge secret set --env` and `forge domain bind --env` name which env's resource to act on. This is the counter-example that keeps the `--env` pattern anchored on the up/down verbs it was written for. The spelling has moved twice as its host commands were absorbed (`forge run --env`, then `forge build --push --env`), which is itself the argument for matching the FLAG rather than one command: the rule being protected is \"--env is legal where the env is a modifier\", and that rule outlives any particular command.", regexp.MustCompile(`--env[ =]`)},
 		{"forge env deploy", "the LIVE spelling the env-noun verbs moved TO — a root-verb pattern widened to ignore what sits between `forge` and the verb swallows it", regexp.MustCompile(`forge env deploy`)},
 		{`the English "forge dev" adjective`, "\"every forge dev namespace\", \"the forge dev loop\", \"a forge dev capability\" — prose the `forge dev` pattern must not reach, which is why that pattern requires a subcommand after it. Matched as a family rather than one fixed sentence: any single phrasing can legitimately leave the tree with the file that held it (\"a forge dev server\" did), and the assertion worth keeping is that the adjective still has SOME live use the pattern spares", regexp.MustCompile(`(?i)\bforge dev (?:server|namespace|loop|capability|controller)\b`)},
 		{"`--type adapter`", "the LIVE scaffold flag value — the marker was renamed, the verb was NOT; a `forge:adapter` pattern widened to drop the `forge:` prefix swallows it", regexp.MustCompile(`--type[= ]adapter\b`)},

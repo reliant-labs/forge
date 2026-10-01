@@ -16,7 +16,7 @@ func preflightGroup(api v1alpha1.WorkloadSpec) ServiceGroup {
 		ProviderID: HostedProviderID,
 		Services: []ResolvedService{
 			{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierWorkload, Artifact: "hounders", Workload: &api}},
-			{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Static: &v1alpha1.StaticSiteSpec{
+			{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Artifact: staticSiteArtifact, Static: &v1alpha1.StaticSiteSpec{
 				RuntimeConfig: map[string]v1alpha1.RuntimeConfigValue{"API_URL": {WorkloadURL: &v1alpha1.WorkloadURLRef{Name: "api"}}},
 			}}},
 			{Name: "hounders", Hosted: &HostedWorkload{Tier: HostedTierDatabase, Database: &v1alpha1.ManagedDatabaseSpec{StorageGiB: 1}}},

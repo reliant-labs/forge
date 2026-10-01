@@ -4,13 +4,19 @@ package deploytarget
 //
 // forge assembles the site exactly as the self-hosted executor does (the
 // shared StagePlan), packs the tree into ONE deterministic tar.gz layer, and
-// pushes it to the org's registry subtree — the same `image_push_base` the
-// org already pushes backend images to, under the reserved `static.v1`
-// segment. The manifest digest IS the release: the ledger records it like any
-// image, promotion binds it, and the StaticSite spec pins it as liveDigest.
-// The control plane's operator derives the SAME repository from the CR's
-// platform-stamped org label, pulls the digest, and writes it into
-// sites/<org>/<env>/<site>/releases/<digest>/ before syncing live/.
+// pushes it to the frontend's own declared image reference under the reserved
+// `static.v1` segment. The manifest digest IS the release: the ledger records
+// it like any image, keyed by that full repository, and promotion binds it.
+//
+// The StaticSite spec then carries BOTH halves of the address —
+// releaseRepository and liveDigest — because the repository is a fact only
+// this push knows. The control plane's operator pulls exactly the recorded
+// reference and writes it into sites/<org>/<env>/<site>/releases/<digest>/
+// before syncing live/. It does not recompose a path from a registry base and
+// an org label: that was an independent second derivation of where the bytes
+// are, and when it disagreed with this push the operator 404'd on an artifact
+// that existed. Whether a caller may push where it claims to have pushed is
+// a platform policy, enforced as ADMISSION on the recorded reference instead.
 //
 // Why this and not a signed upload URL into the platform bucket: the org
 // then never holds any bucket credential at all (the bucket's only writer

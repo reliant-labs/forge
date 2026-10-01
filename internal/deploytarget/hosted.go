@@ -586,6 +586,22 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			}
 			spec := *w.Static
 			artifact := hostedArtifactOf(svc.Name, w)
+			// The artifact key IS the repository the site was pushed to,
+			// so it must be an ADDRESS. A key naming no registry host
+			// cannot be pulled by anyone, and publishing it would hand the
+			// platform a digest it has no way to locate — the failure this
+			// whole field exists to prevent, arriving one layer later.
+			// buildHostedGroup always supplies one (the render requires a
+			// registry-bearing `image` on forge.OnHosted), so this is
+			// reachable only from a hand-built group.
+			if !hostedImageNamesRegistry(artifact) {
+				errs = append(errs, fmt.Errorf("%s: the release artifact key %q names no registry host, so the site release has no "+
+					"pullable address.\n"+
+					"  fix: declare the frontend's full image reference (image = \"ghcr.io/<owner>/%s\"); forge appends the "+
+					"platform's static.v1 layout and records the result as the release's repository",
+					svc.Name, artifact, svc.Name))
+				continue
+			}
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no static site artifact %q.\n"+
@@ -594,9 +610,14 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 					svc.Name, group.Hosted.Release, artifact, group.Env, group.Env))
 				continue
 			}
-			// The release IS the digest. Nothing else in the spec says
-			// where bytes come from: the operator derives the repository
-			// from the org the CR belongs to, never from user input.
+			// A release is a REFERENCE plus a digest, and both are
+			// published. The artifact key IS the repository the site was
+			// pushed to (HostedStaticRepository of the frontend's declared
+			// image), so the spec carries the exact address the platform
+			// must pull — never a path it recomposes from a registry base
+			// and an org id, which is a second derivation free to disagree
+			// with where the bytes actually went.
+			spec.ReleaseRepository = artifact
 			spec.LiveDigest = digest
 			if err := spec.Validate(); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))

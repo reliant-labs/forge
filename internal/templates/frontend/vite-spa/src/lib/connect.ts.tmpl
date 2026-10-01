@@ -9,7 +9,7 @@ import { createMockTransport } from "@/lib/mock-transport_gen";
 // The API origin comes from the typed config module, which reads it at
 // RUNTIME from the KCL-rendered config.js. Reading import.meta.env.VITE_API_URL
 // here instead would let Vite inline the value at BUILD time, freezing this
-// artifact to the environment it was built against — so `forge env promote`
+// artifact to the environment it was built against — so `forge env deploy`
 // could not move the bundle without a rebuild, which is the one property
 // the runtime-config design exists to buy.
 //

@@ -149,7 +149,7 @@ Examples:
   forge env wait prod                                   # the current promotion, 15m budget
   forge env wait prod --timeout 0 --json                # where is it NOW? one read, no blocking
   forge env wait prod --release v1.4.0                  # refuse unless prod binds v1.4.0
-  ID=$(forge env promote v1.4.0 --to prod --json | jq -r .recorded.id)
+  ID=$(forge env deploy prod v1.4.0 --no-wait --json | jq -r .recorded.id)
   forge env wait prod --promotion "$ID" --timeout 20m   # a retry continues on the SAME release
   forge env wait prod --fail-fast --json | jq -r '.workloads[] | select(.phase=="degraded")'`,
 		Args: cobra.ExactArgs(1),
@@ -248,10 +248,18 @@ type envWaitOptions struct {
 	WatchJSON bool
 
 	// AllowNonConverging admits an env whose control plane does not
-	// converge promotions. Set by `promote --deploy --wait`, which has
-	// just applied the pins from the client side, so the thing the fast
-	// refusal exists to prevent (waiting out a timeout for a converger
-	// that was never going to run) cannot happen.
+	// converge promotions, suppressing the fast refusal for a caller that
+	// has ALREADY applied the pins itself.
+	//
+	// NOTHING IN PRODUCTION SETS IT TODAY. Its one setter was the retired
+	// promote verb's client-side-apply-then-wait pair, and when
+	// `forge env deploy` absorbed that (docs/adr/env-verbs.md, V3) the
+	// client-side apply stopped going through this wait at all: a
+	// self-managed env is gated by its own
+	// per-resource rollout wait, so there is no non-converging env left for
+	// this wait to be pointed at. Kept because the field is the right shape
+	// for the next such caller and the refusal it suppresses is real —
+	// delete it if none arrives.
 	AllowNonConverging bool
 
 	// Target is the seam: ONE function resolving everything this wait
@@ -538,7 +546,7 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 			report.WaitedMS = time.Since(start).Milliseconds()
 			return report, undeterminedf(
 				"env %q does not converge promotions on this control plane, so this promotion will not roll out on its own.\n"+
-					"  Run `forge env deploy %s` (or `forge env promote … --deploy`) to apply it, then wait.", env, env)
+					"  Run `forge env deploy %s <version>`, which applies it and waits.", env, env)
 		}
 
 		switch phase {

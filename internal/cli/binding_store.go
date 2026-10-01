@@ -11,7 +11,7 @@ package cli
 // know that a ledger is a file.
 //
 // THE FILE BACKEND IS THE DEFAULT, FOREVER. Not a stepping stone. forge with
-// no account, on a plane, must stay fully functional: `forge env promote` and
+// no account, on a plane, must stay fully functional: `forge env deploy <env> <version>` and
 // `forge env deploy` are core verbs, and a core verb that degrades without a
 // login is a product that lied about being local-first.
 //

@@ -1293,7 +1293,7 @@ type deployTagResolution struct {
 // precedence logic is testable without stubbing the whole pipeline.
 //
 // Digest resolution precedence (highest first):
-//  1. A bound RELEASE (env promoted via `forge env promote`): pins the digests the
+//  1. A bound RELEASE (bound via `forge env deploy <env> <version>`): pins the digests the
 //     release captured so every env on the same release deploys byte-identical
 //     images. Wins because a deliberate promotion is a stronger signal than the
 //     per-env build state.
@@ -2582,7 +2582,7 @@ func checkReleasePinned(entities *KCLEntities, digests map[string]string, boundR
 			"The release ledger and this deploy's build state carry digests under:\n%s\n\n"+
 			"Deploying would silently fall back to the mutable tag, which is not what the release names — so forge stopped.\n"+
 			"Fix: re-cut and re-promote the release so its artifacts are keyed by the repositories the KCL declares\n"+
-			"  forge env build %s --release <version> --push && forge env promote <version> --to %s\n"+
+			"  forge env build %s --release <version> --push && forge env deploy %s <version>\n"+
 			"Or deploy without the release's pins, deliberately: forge env deploy %s --no-digest",
 		envName, boundRelease, strings.Join(unpinned, "\n"), known, envName, envName, envName)
 }
@@ -2632,7 +2632,7 @@ func expandLegacyLedgerKeys(resolved, uris map[string]string) map[string]string 
 //
 // Precedence (highest first):
 //
-//  1. A bound RELEASE (env promoted via `forge env promote`). The release's
+//  1. A bound RELEASE (bound via `forge env deploy <env> <version>`). The release's
 //     resolved digests OVERRIDE the per-env build state per image: a deliberate
 //     promotion is the strongest signal, and pinning the release's digests is
 //     what makes every env on the same release deploy byte-identical images
@@ -2682,7 +2682,7 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		// deploy and an unchanged app, with nothing connecting the two.
 		if built, ok := base[image]; ok && built != digest {
 			fmt.Printf("  Note: %s was just built as %s, but release %s pins %s — deploying the RELEASE.\n"+
-				"        To ship the build instead: forge env build %s --release <version> --push && forge env promote <version> --to %s\n"+
+				"        To ship the build instead: forge env build %s --release <version> --push && forge env deploy %s <version>\n"+
 				"        Or deploy the built image directly: forge env deploy %s --no-digest --tag <tag>\n",
 				image, shortDigest(built), binding.Release, shortDigest(digest), envName, envName, envName)
 		}

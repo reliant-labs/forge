@@ -19,7 +19,7 @@ const hostedStaticDigest = "sha256:222222222222222222222222222222222222222222222
 //
 //	forge env build hosted --push               (site → OCI artifact, stubbed push)
 //	forge env build hosted --release v1 --no-build   (records web@<digest>)
-//	forge env promote v1 --to hosted
+//	forge env deploy hosted v1
 //	forge env deploy hosted                 (ensure → STATIC deployment pinned
 //	                                         to that digest → publish → ready)
 //
@@ -74,7 +74,7 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 		rel.Artifacts[0].Kind != "oci" || rel.Artifacts[0].URI != "" {
 		t.Fatalf("cut release = %+v, want one oci artifact %s@%s with no URI", rel, wantRepo, hostedStaticDigest)
 	}
-	if out, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
 		t.Fatalf("promote: %v\n%s", err, out)
 	}
 	envID := fake.envs["hosted"]

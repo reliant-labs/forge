@@ -118,7 +118,7 @@ type buildOptions struct {
 	// resolvePushPlan like push; never set by a flag.
 	pushIfDeclared bool
 	// gateJSON is a FILE path: write this build's result as a gate
-	// document, for `forge gate record` / `forge env promote --gate`. Not
+	// document, for `forge gate record` / `forge env deploy --gate`. Not
 	// a stdout mode — the build log and the exit code are unchanged.
 	gateJSON string
 	// pushPlan is the RESOLVED set of destinations, written by
@@ -194,7 +194,7 @@ type buildOptions struct {
 	// "v1.4.0") for a build-once → promote release. After the build's
 	// per-image digests are captured (the existing digest-capture flow),
 	// runBuild harvests them into a Release ledger at
-	// .forge/releases/<release>.json. `forge env promote <release> --to <env>`
+	// .forge/releases/<release>.json. `forge env deploy <env> <release>`
 	// then binds an env to it and `forge env deploy <env>` pins the SAME
 	// digests — build once, promote, no per-env rebuild. Implies --push
 	// in spirit (a release pins registry digests), but is enforced softly:
@@ -312,7 +312,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	// as `--no-generate forge build` in --help.
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
-	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env promote --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
+	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
 	cmd.Flags().StringVar(&opts.release, "release", "", "Moved to `forge env build <env> --release <version>` — a release's artifact set is discovered from the env's render, so cutting one is an environment act")
 	_ = cmd.Flags().MarkHidden("release")
 
@@ -366,7 +366,7 @@ func validateReleaseFlags(opts buildOptions) error {
 	return fmt.Errorf("--release requires an environment argument (`forge env build <env> --release <ver>`) so forge can build the full image set " +
 		"(including per-env external build_cmd images like reliant/workspace-base, which are declared " +
 		"in deploy/kcl/<env>/main.k); the images are still env-agnostic — pick any env that declares " +
-		"them, then promote the release to all envs with `forge env promote <version> --to <env>`")
+		"them, then deploy the release to all envs with `forge env deploy <env> <version>`")
 }
 
 // resolveBuildArch chooses the GOARCH for `go build`. The arg-shaped
@@ -1446,7 +1446,7 @@ func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KC
 //
 // Fails (does not silently no-op) when NOTHING was captured: a release is a
 // promise that "these exact bytes ship everywhere", and an empty promise is a
-// latent footgun (a later `forge env promote`/`deploy` would resolve nothing and
+// latent footgun (a later `forge env deploy` would resolve nothing and
 // fall back to tags — exactly the mutable-tag failure the release model exists
 // to kill). The actionable remedy is in the error: pass --push.
 //
@@ -1530,7 +1530,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	fmt.Printf("\n[build] %s release %s (%d image(s), %d package(s), %d file(s)): %s\n",
 		verb, rel.Version, images, packages, files, strings.Join(releaseImageNames(rel), ", "))
 	fmt.Printf("[build]   Ledger: %s\n", ledger.Releases.Location())
-	fmt.Printf("[build]   Promote: forge env promote %s --to <env>\n", rel.Version)
+	fmt.Printf("[build]   Deploy:  forge env deploy <env> %s\n", rel.Version)
 	return rel, nil
 }
 

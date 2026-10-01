@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// Tests for the promote change set: `forge env promote --plan` / `--json`.
+// Tests for the release change set: `forge env deploy <env> <version> --plan` / `--json`.
 //
 // Every test here runs through the bindingStore and promoteGitReader seams, so
 // none of them needs a cluster, a registry, or (except where the point IS the

@@ -15,7 +15,7 @@ import (
 
 // The promote CHANGE SET — computed once, rendered twice, applied optionally.
 //
-// WHY THIS FILE EXISTS. `forge env promote` is the one write verb in the
+// WHY THIS FILE EXISTS. `forge env deploy <env> <version>` is the one write verb in the
 // release model with genuinely reviewable semantics: forge builds once and
 // then binds digests, so promote moves a POINTER and rebuilds nothing. That
 // makes it cheap and, in principle, fully previewable — you can know the

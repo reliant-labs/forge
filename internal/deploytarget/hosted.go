@@ -165,7 +165,7 @@ type wireEnvironment struct {
 	// policy is not PINNED.
 	//
 	// It exists so a client can refuse FAST instead of waiting out a
-	// timeout. A `forge env promote --wait` against an environment that
+	// timeout. A `forge env deploy <env> vX` against an environment that
 	// converges nothing would poll for fifteen minutes and then report a
 	// failure whose cause is "nobody was ever going to apply this" —
 	// which looks exactly like a broken release. Reading this turns that
@@ -400,7 +400,7 @@ func checkImagePushBase(envName, base string, plan []hostedPlanItem) error {
 			errs = append(errs, fmt.Errorf("%s: image %s is not under this org's image push base %s, and the control plane "+
 				"refuses to publish it.\n"+
 				"  fix: push the image to %s/%s, re-cut the release (forge env build %s --release <version> --no-build), "+
-				"then re-promote it (forge env promote <version> --to %s)",
+				"then re-deploy it (forge env deploy %s <version>)",
 				item.Name, spec.Image, base, base, HostedArtifactName(spec.Image), envName, envName))
 		}
 	}
@@ -524,7 +524,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 	if group.Hosted.Release == "" && hostedGroupHasPinnedArtifact(group) {
 		return nil, fmt.Errorf("hosted env %q has no promoted release, so there is no digest to deploy.\n"+
 			"A hosted deploy ships only the digests a promotion froze — never a tag, never a local build.\n"+
-			"fix: forge env build %s --release <version> --no-build && forge env promote <version> --to %s",
+			"fix: forge env build %s --release <version> --no-build && forge env deploy %s <version>",
 			group.Env, group.Env, group.Env)
 	}
 	var (

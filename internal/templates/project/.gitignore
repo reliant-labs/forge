@@ -169,8 +169,9 @@ tmp/
 #                     it on their first generate. To want one back:
 #                     `forge project rescaffold <path>`.
 #   releases/       — the release ledger (`forge env build --release`,
-#   promotions/       `forge env promote`): what each version IS and which
-#                     version each environment runs, as an append-only log
+#   promotions/       `forge env deploy <env> <version>`): what each version
+#                     IS and which version each environment runs, as an
+#                     append-only log
 #                     per env. Only for envs that keep their ledger in the
 #                     repo; an env declaring forge.ControlPlane keeps it on
 #                     the control plane instead.

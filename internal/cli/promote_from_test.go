@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// Tests for `forge env promote --from` (control-plane
+// Tests for a release deploy's `--from` (control-plane
 // docs/design/hosted-deploy-primitives.md §3.4, task F5).
 //
 // The hosted cases run the real hostedStore over the real cloud.Client

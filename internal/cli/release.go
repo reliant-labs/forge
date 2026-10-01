@@ -24,7 +24,7 @@ import (
 //	forge env build --release v1.4.0   → builds the env-agnostic images ONCE,
 //	                                  records each image's digest in a
 //	                                  Release ledger (.forge/releases/<v>.json).
-//	forge env promote v1.4.0 --to prod → appends a promotion of prod → v1.4.0 to
+//	forge env deploy prod v1.4.0 → appends a promotion of prod → v1.4.0 to
 //	                                  the env's append-only ledger
 //	                                  (.forge/promotions/prod.jsonl, or the
 //	                                  hosted control plane). No rebuild.

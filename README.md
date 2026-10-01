@@ -129,7 +129,7 @@ prod. Our own control plane runs `dev`, `dev-k8s`, `e2e`, `staging`, `preprod`,
 and `prod` across k3d, Vultr, and two GKE clusters, from one definition.
 
 - **Build once, promote by digest.** `forge env build --release v1.4.0` captures
-  content-addressed digests; `forge env promote v1.4.0 --to prod` ships the
+  content-addressed digests; `forge env deploy prod v1.4.0` ships the
   exact bytes that passed staging.
 - **Preflight before apply.** On remote clusters, Forge verifies every
   referenced Secret key and every image against the live target and reports

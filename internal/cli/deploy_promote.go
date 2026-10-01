@@ -2,7 +2,7 @@ package cli
 
 // The RELEASE half of `forge env deploy <env> [vX | --from <src-env>]` (ADR
 // docs/adr/env-verbs.md, task V3). Was promote.go, reached as
-// `forge env promote <version> --to <env>`.
+// `forge env deploy <env> <version>`.
 //
 // WHAT THIS HALF DOES, AND WHAT IT DELIBERATELY DOES NOT. It reads the release
 // `forge env build --release` cut, freezes each image's digest, and APPENDS one

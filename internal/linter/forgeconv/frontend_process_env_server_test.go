@@ -6,7 +6,7 @@
 //
 // THE PREMISE. The rule's load-bearing argument is PROMOTABILITY: a bundler
 // INLINES a process.env read at BUILD time, freezing the artifact to the
-// environment it was built against, so `forge env promote` cannot move it
+// environment it was built against, so `forge env deploy` cannot move it
 // without a rebuild. True for anything that reaches the browser.
 //
 // WHY IT DOES NOT HOLD HERE. Next inlines process.env when it builds the

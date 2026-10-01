@@ -234,7 +234,7 @@ func TestHostedImagePushBase(t *testing.T) {
 			"ghcr.io/acme/api@" + digestA,                      // the image
 			"registry.reliant.dev/org-1",                       // the base
 			"push the image to registry.reliant.dev/org-1/api", // the fix
-			"forge env build", "forge env promote",
+			"forge env build", "forge env deploy",
 		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("refusal does not name %q:\n%v", want, err)
@@ -325,12 +325,12 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 }
 
 // TestHostedUnboundRefused: no promoted release means no digest to ship; the
-// refusal names the promote fix and makes no call.
+// refusal names the deploy fix and makes no call.
 func TestHostedUnboundRefused(t *testing.T) {
 	cp := &fakeCP{}
 	err := HostedProvider{Client: cp}.Deploy(context.Background(), hostedGroup("", nil, v1alpha1.Resources{}))
-	if err == nil || !strings.Contains(err.Error(), "forge env promote") {
-		t.Fatalf("err = %v, want the forge env promote fix", err)
+	if err == nil || !strings.Contains(err.Error(), "forge env deploy") {
+		t.Fatalf("err = %v, want the forge env deploy fix", err)
 	}
 	if len(cp.procs()) != 0 {
 		t.Fatalf("RPCs made for an unbound env: %v", cp.procs())

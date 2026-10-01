@@ -289,6 +289,24 @@ type topologyEnv struct {
 	EnvironmentID    string                              `json:"environment_id,omitempty"`
 	Verdict          string                              `json:"verdict,omitempty"`
 	Workloads        []deploytarget.HostedWorkloadStatus `json:"workloads,omitempty"`
+
+	// §3.5's additive fields (F7), so `topology --json` is the one-shot
+	// whole-screen read a dashboard polls.
+	//
+	// PromotionID is the current binding's ledger entry — the value
+	// `promote --expect-current` and `--from-promotion` take.
+	PromotionID string `json:"promotion_id,omitempty"`
+	// FromEnv is the environment the current binding was promoted from.
+	FromEnv string `json:"from_env,omitempty"`
+	// GatesSummary counts the current binding's evidence, both halves
+	// (claimed at promote time and recorded afterwards). Absent when it
+	// carries none.
+	GatesSummary *gatesSummary `json:"gates_summary,omitempty"`
+	// RolloutPhase is the current promotion's rollout phase as the control
+	// plane computes it (`forge env rollout`'s answer): "succeeded",
+	// "progressing", "degraded", "unknown" … Hosted envs only; absent when
+	// the env keeps a file ledger or the read failed (Note says which).
+	RolloutPhase string `json:"rollout_phase,omitempty"`
 }
 
 // topologyTally counts image cells by state across every environment, so a
@@ -459,6 +477,9 @@ type envTopologyOptions struct {
 	// contract). Nil renders the env's KCL and, for a hosted env, reads its
 	// status from the control plane.
 	Destinations func(ctx context.Context, projectDir, env string) envDestination
+	// Rollouts reads a hosted env's rollout for a promotion (rollout_phase).
+	// Nil uses the env's declared control plane, as `env rollout` does.
+	Rollouts func(ctx context.Context, env, promotionID string) (wireRollout, error)
 }
 
 // runEnvTopology assembles the report and renders it.
@@ -698,6 +719,24 @@ func buildTopologyEnvRow(
 	row.Release = binding.Release
 	row.Kind = binding.Kind
 	row.PromotedAt = formatLedgerTime(binding.PromotedAt)
+	row.PromotionID = binding.ID
+	row.FromEnv = binding.FromEnv
+	row.GatesSummary = summarizeGates(binding.Gates, binding.RecordedGates)
+	if ledger.Hosted {
+		read := opts.Rollouts
+		if read == nil {
+			read = readDeclaredRollout
+		}
+		// One read per hosted env, the same GetRollout `env rollout`
+		// makes. A failure leaves the phase absent — a dashboard row
+		// without a phase is honest; a row that blanked the whole screen
+		// because one control plane was slow is not.
+		if r, rerr := read(ctx, envName, binding.ID); rerr == nil {
+			row.RolloutPhase = rolloutPhaseName(r.Phase)
+		} else if row.Note == "" {
+			row.Note = fmt.Sprintf("rollout phase unavailable: %v", rerr)
+		}
+	}
 
 	if rel, ok := byVersion[binding.Release]; ok {
 		row.ReleaseKnown = true

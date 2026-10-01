@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // defaultEnvVerifyTimeout bounds the cluster read. Generous enough for a cold
@@ -51,6 +52,10 @@ type envVerifyReport struct {
 	// resolved, which is itself an UNREACHABLE condition.
 	KubeContext string `json:"kube_context,omitempty"`
 	Namespace   string `json:"namespace,omitempty"`
+	// Source is where a HOSTED env's verdicts came from — "control-plane
+	// observer" — because forge cannot read a hosted cluster. Absent for a
+	// cluster env, whose source is the cluster itself (kube_context).
+	Source string `json:"source,omitempty"`
 	// Images is one verdict per DECLARED image. Always non-nil so consumers
 	// see `[]` rather than `null`.
 	Images []imageVerification `json:"images"`
@@ -217,6 +222,11 @@ type envVerifyOptions struct {
 	// test of that comparison should be able to state the declaration
 	// directly instead of staging a file on disk to imply it.
 	Bindings bindingStore
+	// HostedRollout reads a HOSTED env's rollout for a promotion. Nil uses
+	// the env's declared control plane (readDeclaredRollout). Setting it
+	// also selects the hosted path, so a test can state the observer's
+	// answer without a control plane.
+	HostedRollout func(ctx context.Context, env, promotionID string) (wireRollout, error)
 }
 
 // runEnvVerify resolves the binding, reads the cluster, prints a per-image
@@ -283,76 +293,25 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 		}
 	}
 
-	target := opts.Resolver.Resolve(ctx, projectDir, envName)
-	kubeContext, namespace := target.KubeContext, target.Namespace
-
-	var results []imageVerification
-	switch {
-	case kubeContext == "" || namespace == "":
-		// Cannot even address the cluster. This is UNREACHABLE, not drift:
-		// nothing has been learned about what the env is running.
-		//
-		// The two reasons a target does not resolve need DIFFERENT
-		// messages, and conflating them sends the reader to the wrong
-		// place. An env bound in the ledger but absent from this checkout
-		// (a release cut on a branch that has the env, verified from one
-		// that does not) is not a KCL problem at all — telling that reader
-		// to add a field to deploy/kcl/<env>/main.k names a file they will
-		// not find, which is how a diagnostic costs more time than it saves.
-		mainK := filepath.Join(projectDir, "deploy", "kcl", envName, "main.k")
-		if _, statErr := os.Stat(mainK); statErr != nil {
-			results = unreachableVerifications(binding.Resolved, fmt.Errorf(
-				"environment %s is bound in the ledger but not declared in this checkout (%s does not exist) — "+
-					"verify from a checkout that declares it", envName, mainK))
-			break
-		}
-		missing := "forge.K8sCluster.cluster"
-		if namespace == "" && kubeContext != "" {
-			missing = "forge.K8sCluster.namespace"
-		} else if namespace == "" {
-			missing = "forge.K8sCluster.cluster and .namespace"
-		}
-		results = unreachableVerifications(binding.Resolved, fmt.Errorf(
-			"could not determine where %s runs — no %s declared in %s (a host-only or compose env has no cluster to verify)",
-			envName, missing, mainK))
-	default:
+	var (
+		results                []imageVerification
+		kubeContext, namespace string
+		source                 string
+	)
+	if _, hosted := opts.Bindings.(*hostedStore); hosted || opts.HostedRollout != nil {
+		// A HOSTED env: forge cannot read its cluster, so the control
+		// plane's observer is the witness (env_verify_hosted.go). The
+		// verdict below and the exit codes are the cluster path's own.
+		source = hostedVerifySource
 		if !opts.JSON {
-			fmt.Printf("  cluster  %s (namespace %s)\n", kubeContext, namespace)
+			fmt.Printf("  source   %s (forge cannot read a hosted env's cluster)\n", source)
 		}
-		readCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
-		running, lerr := opts.Lister.ListWorkloadImages(readCtx, kubeContext, namespace)
-		if lerr != nil {
-			results = unreachableVerifications(binding.Resolved, lerr)
-		} else {
-			results = verifyEnvImages(running, binding.Resolved)
-		}
+		results = verifyHosted(ctx, envName, binding, opts)
+	} else {
+		results, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, binding.Resolved, opts)
 	}
 	tally := tallyEnvVerifications(results)
-
-	// The verdict is decided ONCE, here, before either renderer runs. Both
-	// modes then report this same decision, which is what makes "--json
-	// exits identically to text mode" a structural property rather than
-	// two switches somebody has to keep in agreement.
-	var failure error
-	switch {
-	case staleErr != nil:
-		// FIRST, above drift. A drift against a declaration that is not
-		// the ledger is not evidence the release is wrong — after a
-		// release it is the expected result of reading the old one — and
-		// a match against it is not evidence the release shipped. The
-		// per-image findings are still printed; the verdict is "could not
-		// determine".
-		failure = staleErr
-	case tally.Drift > 0 || tally.Missing > 0:
-		failure = exitCodeError{code: 1, msg: fmt.Sprintf(
-			"environment %s does not match its binding: %d image(s) drifted, %d missing (declared release %s)",
-			envName, tally.Drift, tally.Missing, binding.Release)}
-	case tally.Unreachable > 0:
-		failure = exitCodeError{code: 2, msg: fmt.Sprintf(
-			"environment %s could not be checked: %d image(s) unreachable (cluster, context or credentials), %d matched, 0 drifted",
-			envName, tally.Unreachable, tally.Match)}
-	}
+	failure := envVerifyVerdict(envName, binding.Release, staleErr, tally)
 
 	if opts.JSON {
 		report := envVerifyReport{
@@ -362,6 +321,7 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 			PromotedAt:  formatLedgerTime(binding.PromotedAt),
 			KubeContext: kubeContext,
 			Namespace:   namespace,
+			Source:      source,
 			Images:      results,
 			Tally:       tally,
 			OK:          failure == nil,
@@ -396,6 +356,108 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 		fmt.Printf("\nNote: %d image(s) run by mutable tag and could not be digest-checked. Deploy without --no-digest to pin them.\n", tally.Untagged)
 	}
 	return nil
+}
+
+// verifyHosted reads the env's CURRENT promotion's rollout from its control
+// plane and maps it onto the five states. A read failure is every pinned image
+// UNREACHABLE (exit 2), never a guess.
+func verifyHosted(ctx context.Context, envName string, binding release.Promotion, opts envVerifyOptions) []imageVerification {
+	read := opts.HostedRollout
+	if read == nil {
+		read = readDeclaredRollout
+	}
+	readCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	rollout, err := read(readCtx, envName, binding.ID)
+	if err != nil {
+		return unreachableVerifications(binding.Resolved, err)
+	}
+	return verifyHostedRollout(rollout)
+}
+
+// readDeclaredRollout is the production hosted read: the env's declared
+// control plane, through the same target resolution and GetRollout call
+// `forge env wait` uses (F3), so verify and wait cannot disagree about what
+// the observer saw.
+func readDeclaredRollout(ctx context.Context, env, promotionID string) (wireRollout, error) {
+	target, err := resolveDeclaredWaitTarget(ctx, env)
+	if err != nil {
+		return wireRollout{}, err
+	}
+	return readRollout(ctx, target.Client, target.EnvironmentID, promotionID)
+}
+
+// envVerifyVerdict is the ONE decision, made before either renderer runs, so
+// "--json exits identically to text mode" is structural.
+func envVerifyVerdict(envName, release string, staleErr error, tally envVerifyTally) error {
+	switch {
+	case staleErr != nil:
+		// FIRST, above drift. A drift against a declaration that is not
+		// the ledger is not evidence the release is wrong — after a
+		// release it is the expected result of reading the old one — and
+		// a match against it is not evidence the release shipped. The
+		// per-image findings are still printed; the verdict is "could not
+		// determine".
+		return staleErr
+	case tally.Drift > 0 || tally.Missing > 0:
+		return exitCodeError{code: 1, msg: fmt.Sprintf(
+			"environment %s does not match its binding: %d image(s) drifted, %d missing (declared release %s)",
+			envName, tally.Drift, tally.Missing, release)}
+	case tally.Unreachable > 0:
+		return exitCodeError{code: 2, msg: fmt.Sprintf(
+			"environment %s could not be checked: %d image(s) unreachable (cluster, context, credentials, or a stale observation), %d matched, 0 drifted",
+			envName, tally.Unreachable, tally.Match)}
+	}
+	return nil
+}
+
+// verifyCluster is the kubectl path for an env forge can reach: unchanged.
+func verifyCluster(ctx context.Context, projectDir, envName string, resolved map[string]string, opts envVerifyOptions) (results []imageVerification, kubeContext, namespace string) {
+	target := opts.Resolver.Resolve(ctx, projectDir, envName)
+	kubeContext, namespace = target.KubeContext, target.Namespace
+
+	switch {
+	case kubeContext == "" || namespace == "":
+		// Cannot even address the cluster. This is UNREACHABLE, not drift:
+		// nothing has been learned about what the env is running.
+		//
+		// The two reasons a target does not resolve need DIFFERENT
+		// messages, and conflating them sends the reader to the wrong
+		// place. An env bound in the ledger but absent from this checkout
+		// (a release cut on a branch that has the env, verified from one
+		// that does not) is not a KCL problem at all — telling that reader
+		// to add a field to deploy/kcl/<env>/main.k names a file they will
+		// not find, which is how a diagnostic costs more time than it saves.
+		mainK := filepath.Join(projectDir, "deploy", "kcl", envName, "main.k")
+		if _, statErr := os.Stat(mainK); statErr != nil {
+			results = unreachableVerifications(resolved, fmt.Errorf(
+				"environment %s is bound in the ledger but not declared in this checkout (%s does not exist) — "+
+					"verify from a checkout that declares it", envName, mainK))
+			break
+		}
+		missing := "forge.K8sCluster.cluster"
+		if namespace == "" && kubeContext != "" {
+			missing = "forge.K8sCluster.namespace"
+		} else if namespace == "" {
+			missing = "forge.K8sCluster.cluster and .namespace"
+		}
+		results = unreachableVerifications(resolved, fmt.Errorf(
+			"could not determine where %s runs — no %s declared in %s (a host-only or compose env has no cluster to verify)",
+			envName, missing, mainK))
+	default:
+		if !opts.JSON {
+			fmt.Printf("  cluster  %s (namespace %s)\n", kubeContext, namespace)
+		}
+		readCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+		running, lerr := opts.Lister.ListWorkloadImages(readCtx, kubeContext, namespace)
+		if lerr != nil {
+			results = unreachableVerifications(resolved, lerr)
+		} else {
+			results = verifyEnvImages(running, resolved)
+		}
+	}
+	return results, kubeContext, namespace
 }
 
 // reportUnboundEnv is verify's answer for an env with no binding.

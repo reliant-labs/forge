@@ -136,6 +136,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Status verbs for hosted deploys** (hosted-deploy-primitives §3.5):
+  - `forge env rollout <env>`: where the current (or `--promotion`)
+    rollout has got to, read once. It is `forge env wait --timeout 0`, with
+    the same exit codes (0 succeeded, 1 degraded, 2 undetermined, 5 still
+    rolling out, 6 superseded).
+  - `forge env history <env> [--limit] [--before] [--release]`: the
+    promotion ledger, newest first, with from-env, actor, note, evidence
+    counts and the CI run. It pages with a keyset cursor (`next_before`;
+    empty means the last page), and both ledger backends page identically.
+  - `forge release where <version>`: which environments are currently bound
+    to a release. Exit 1 when none are.
+  - **`forge env verify` works for hosted envs.** forge cannot read a hosted
+    env's cluster, so it reads the control plane's observer through
+    GetRollout and reports the same five states with
+    `source: control-plane observer`. A stale observation is UNREACHABLE
+    (exit 2), never MATCH. Cluster envs are unchanged.
+  - `forge env topology --json` gains `promotion_id`, `from_env`,
+    `gates_summary` and, for hosted envs, `rollout_phase`.
 - **`forge ci run <run-id> [--env <env>] [--json]`**: one CI run's timeline
   from the hosted control plane. It shows the release cut, the recorded
   checks, every promotion and each promotion's rollout, with a verdict.

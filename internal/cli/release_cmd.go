@@ -31,6 +31,7 @@ with the coordinate and hash each one was cut with.`,
 	}
 	cmd.AddCommand(newReleaseVerifyCmd())
 	cmd.AddCommand(newReleaseCutCmd())
+	cmd.AddCommand(newReleaseWhereCmd())
 	cmd.AddCommand(newReleaseConvertLedgerCmd())
 	return cmdutil.StrictGroup(cmd)
 }

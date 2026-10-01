@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -302,7 +303,16 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			connectErr(w, http.StatusNotFound, "not_found", "release or environment")
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"release": rel})
+		// current_environment_ids: every env whose NEWEST promotion binds
+		// this release.
+		var current []string
+		for envID, list := range f.promotions {
+			if len(list) > 0 && list[len(list)-1].ReleaseVersion == rel.Version {
+				current = append(current, envID)
+			}
+		}
+		sort.Strings(current)
+		_ = json.NewEncoder(w).Encode(map[string]any{"release": rel, "currentEnvironmentIds": current})
 
 	case "/controlplane.v1.DeployService/ListReleases":
 		var out []wireRelease
@@ -462,15 +472,38 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"gates": out})
 
 	case "/controlplane.v1.DeployService/ListPromotions":
+		// C7's semantics: newest first; `beforePromotionId` is a keyset
+		// cursor (strictly older; an id foreign to this env is an EMPTY
+		// page, not an error); `releaseVersion` filters; the response's
+		// nextBeforePromotionId is empty on the last page.
 		list := f.promotions[str("environmentId")]
-		out := make([]wirePromotion, 0, len(list))
-		for i := len(list) - 1; i >= 0; i-- { // newest first
-			out = append(out, list[i])
+		newest := make([]wirePromotion, 0, len(list))
+		for i := len(list) - 1; i >= 0; i-- {
+			newest = append(newest, list[i])
 		}
+		start := 0
+		if before := str("beforePromotionId"); before != "" {
+			start = len(newest) // foreign cursor ⇒ empty page
+			for i, p := range newest {
+				if p.ID == before {
+					start = i + 1
+					break
+				}
+			}
+		}
+		var out []wirePromotion
+		for _, p := range newest[start:] {
+			if v := str("releaseVersion"); v != "" && p.ReleaseVersion != v {
+				continue
+			}
+			out = append(out, p)
+		}
+		next := ""
 		if lim, ok := body["limit"].(float64); ok && int(lim) < len(out) {
 			out = out[:int(lim)]
+			next = out[len(out)-1].ID
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"promotions": out})
+		_ = json.NewEncoder(w).Encode(map[string]any{"promotions": out, "nextBeforePromotionId": next})
 
 	default:
 		connectErr(w, http.StatusNotFound, "unimplemented", "no such procedure "+r.URL.Path)

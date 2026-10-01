@@ -173,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image is still reported, but the command exits **2** (could not determine)
   with the fix. `ahead` (recorded here, not yet merged) is shown, not failed.
   `--json` carries `ledger: {state, ref, local_entries, upstream_entries,
-  detail}`. A control-plane ledger has no copy to be behind and is unaffected.
+detail}`. A control-plane ledger has no copy to be behind and is unaffected.
 - **`forge env promote` always compare-and-sets.** The write asserts that the
   env is still on the promotion the plan read, and is refused if someone else
   moved it since. A hotfix that lands while a pipeline waits for approval now
@@ -282,6 +282,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compose saw a changed config and recreated every shared container, which
   dropped every other stack's connections and left the containers mounting
   files inside that worktree.
+
   - New `forge.OnCompose {shared = True}`: the stack is machine infrastructure
     every worktree uses, so forge drives it from the repo's PRIMARY checkout
     (`--project-directory`, with `file` and `env_file` resolved there) from

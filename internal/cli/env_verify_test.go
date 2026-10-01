@@ -566,7 +566,7 @@ func TestRunEnvVerify_DriftBeatsUnreachable(t *testing.T) {
 //
 // THE BUG. Running images were indexed by BARE NAME ("control-plane"), and
 // every test in this file declared them the same way, so the comparison looked
-// symmetric. A real binding does not: `forge env promote` writes Resolved
+// symmetric. A real binding does not: `forge env deploy <env> <version>` writes Resolved
 // keyed by the FULL REPOSITORY PATH it pushed to, because that is the
 // identity it resolved a digest for. Prod's binding therefore said
 //

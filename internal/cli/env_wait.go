@@ -149,7 +149,7 @@ Examples:
   forge env wait prod                                   # the current promotion, 15m budget
   forge env wait prod --timeout 0 --json                # where is it NOW? one read, no blocking
   forge env wait prod --release v1.4.0                  # refuse unless prod binds v1.4.0
-  ID=$(forge env promote v1.4.0 --to prod --json | jq -r .recorded.id)
+  ID=$(forge env deploy prod v1.4.0 --no-wait --json | jq -r .recorded.id)
   forge env wait prod --promotion "$ID" --timeout 20m   # a retry continues on the SAME release
   forge env wait prod --fail-fast --json | jq -r '.workloads[] | select(.phase=="degraded")'`,
 		Args: cobra.ExactArgs(1),
@@ -246,13 +246,6 @@ type envWaitOptions struct {
 	// phase change while waiting.
 	JSON      bool
 	WatchJSON bool
-
-	// AllowNonConverging admits an env whose control plane does not
-	// converge promotions. Set by `promote --deploy --wait`, which has
-	// just applied the pins from the client side, so the thing the fast
-	// refusal exists to prevent (waiting out a timeout for a converger
-	// that was never going to run) cannot happen.
-	AllowNonConverging bool
 
 	// Target is the seam: ONE function resolving everything this wait
 	// needs to reach a control plane. Nil resolves the env's declared one
@@ -534,11 +527,11 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 		// The fast refusal: nothing on this control plane will apply
 		// the promotion, so waiting can only ever time out, and a
 		// timeout would blame the release for a missing converger.
-		if !rollout.ConvergesPromotions && !opts.AllowNonConverging {
+		if !rollout.ConvergesPromotions {
 			report.WaitedMS = time.Since(start).Milliseconds()
 			return report, undeterminedf(
 				"env %q does not converge promotions on this control plane, so this promotion will not roll out on its own.\n"+
-					"  Run `forge env deploy %s` (or `forge env promote … --deploy`) to apply it, then wait.", env, env)
+					"  Run `forge env deploy %s <version>`, which applies it and waits.", env, env)
 		}
 
 		switch phase {

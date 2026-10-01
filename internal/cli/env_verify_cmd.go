@@ -87,7 +87,7 @@ func newEnvVerifyCmd() *cobra.Command {
 		Long: `Compare what an environment is actually running against what the binding
 ledger says it should run.
 
-WHY THIS EXISTS. ` + "`forge env promote`" + ` writes a binding — env → release, with
+WHY THIS EXISTS. ` + "`forge env deploy <env> <version>`" + ` writes a binding — env → release, with
 the per-image digests frozen at promote time. But ` + "`promoted_at`" + ` is stamped when
 the env is PROMOTED, not when it is deployed. Cutting a release is not shipping
 it, and until this command nothing in the tooling could tell the two apart: a
@@ -272,7 +272,7 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 		// against anything. Reporting "0 drifted" would read as success.
 		return fmt.Errorf("environment %s is bound to release %s but the binding resolved NO image digests — "+
 			"there is nothing to verify against.\n"+
-			"  Re-promote it with: forge env promote %s --to %s",
+			"  Re-deploy it with: forge env deploy %s %s",
 			envName, binding.Release, binding.Release, envName)
 	}
 
@@ -495,7 +495,7 @@ func reportUnboundEnv(envName string, jsonOut bool, ledger *ledgerFreshnessRepor
 		return staleErr
 	}
 	fmt.Printf("Environment %s has no release binding — nothing is declared, so there is nothing to verify.\n", envName)
-	fmt.Printf("  Bind one with: forge env promote <version> --to %s\n", envName)
+	fmt.Printf("  Bind one with: forge env deploy %s <version>\n", envName)
 	return nil
 }
 

@@ -325,7 +325,7 @@ func verifyEnvImages(running []cluster.WorkloadImage, declared map[string]string
 	// build), so this is one-to-many.
 	//
 	// NOT BY BARE NAME, which is what this did until it reported a healthy
-	// production namespace as four MISSING images. `forge env promote` keys
+	// production namespace as four MISSING images. `forge env deploy <env> <version>` keys
 	// a binding's Resolved map by the full path it pushed to
 	// ("us-central1-docker.pkg.dev/proj/repo/control-plane"), because that
 	// is the identity it resolved a digest for — so a bare-name index could

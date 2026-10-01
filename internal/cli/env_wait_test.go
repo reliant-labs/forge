@@ -254,21 +254,15 @@ func TestEnvWait_NonConvergingEnvRefusesFast(t *testing.T) {
 	}
 }
 
-// --deploy's wait has just applied the pins from this machine, so the
-// non-converging refusal must NOT fire: the thing it protects against cannot
-// happen when the client did the converging itself.
-func TestEnvWait_AllowNonConvergingAdmitsTheDeployBridge(t *testing.T) {
-	fake := newFakeRollout(wireRolloutPhaseProgressing, wireRolloutPhaseSucceeded)
-	fake.converges = false
-	opts := waitOpts(fake)
-	opts.AllowNonConverging = true
-	opts.Timeout = time.Minute
-	var err error
-	captureStdout(t, func() { err = runEnvWait(context.Background(), "prod", opts) })
-	if err != nil {
-		t.Fatalf("with AllowNonConverging the wait must proceed, got %v", err)
-	}
-}
+// TestEnvWait_AllowNonConvergingAdmitsTheDeployBridge lived here. It covered
+// envWaitOptions.AllowNonConverging, the bypass that let a caller which had
+// ALREADY applied the pins itself skip the non-converging refusal. Its only
+// setter was the retired promote verb's apply-then-wait pair, and when
+// `forge env deploy` absorbed that (docs/adr/env-verbs.md, V3) the client-side
+// apply stopped coming through this wait at all — a self-managed env is gated
+// by its own per-resource rollout wait. The field and the bypass are deleted
+// rather than left as a seam nothing reaches: a flag no production path sets
+// makes every read of it observe a value only a test wrote.
 
 // TestEnvWait_ReleaseMismatchIsSupersededNotATimeout: `--release v6` against
 // an env that has moved on to v7 must say so AT ONCE. Without this check it

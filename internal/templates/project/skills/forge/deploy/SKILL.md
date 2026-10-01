@@ -256,7 +256,7 @@ frontends.
 ### Hosted static sites
 
 A frontend on `forge.OnHosted {}` publishes into the platform's bucket and
-CDN, as an OCI release with **no `config.js` in it**, so `forge env promote`
+CDN, as an OCI release with **no `config.js` in it**, so `forge env deploy`
 moves one digest everywhere. `forge env build <env> --push` pushes it. The
 frontend's `runtime_config` becomes the spec's `runtimeConfig`:
 
@@ -320,14 +320,14 @@ no `--rollback`, no `rollback_cmd`, and no `kubectl rollout undo` path.
 Recovery is always a **new release that rolls forward**:
 
 ```bash
-forge env build prod --release v1.7.1 --push     # each image to its declared reference
-forge env promote v1.7.1 --to prod --plan    # read it: direction must be AHEAD
-forge env promote v1.7.1 --to prod --note "<incident>"
-forge env deploy prod
+forge env build prod --release v1.7.1 --push       # each image to its declared reference
+forge env deploy prod v1.7.1 --plan               # read it: direction must be AHEAD
+forge env deploy prod v1.7.1 --note "<incident>"  # records, applies, waits
 ```
 
-Promote compare-and-sets against the plan's read: exit **3** = the env moved
-meanwhile, nothing written — never retry blind. CI recipe: `forge env promote --help`.
+A release deploy compare-and-sets against the plan's read: exit **3** = the env
+moved meanwhile, nothing written — never retry blind. CI recipe:
+`forge env deploy --help`.
 
 A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
 migration before any workload changes, and a workload that never becomes

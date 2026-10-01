@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// Tests for `forge env promote --from` (control-plane
+// Tests for a release deploy's `--from` (control-plane
 // docs/design/hosted-deploy-primitives.md §3.4, task F5).
 //
 // The hosted cases run the real hostedStore over the real cloud.Client
@@ -328,7 +328,7 @@ func TestPromoteFrom_CrossLedgerIsRefusedBeforeAnyRPC(t *testing.T) {
 			if !errors.Is(err, errPromoteFromCrossLedger) {
 				t.Fatalf("want a cross-ledger refusal, got %v", err)
 			}
-			if !strings.Contains(err.Error(), "promote by version instead") {
+			if !strings.Contains(err.Error(), "deploy by version instead") {
 				t.Errorf("the refusal must name the way forward, got:\n%v", err)
 			}
 			// BEFORE ANY RPC: a promote that cannot verify its source

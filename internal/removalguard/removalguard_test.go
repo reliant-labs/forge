@@ -1449,6 +1449,107 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "the `forge env promote` verb",
+		Why: "`forge env promote <version> --to <env>` was absorbed into " +
+			"`forge env deploy <env> [vX | --from <src-env>]` (docs/adr/env-verbs.md, task V3) and " +
+			"DELETED — pre-1.0, no alias and no hidden name. Recording a binding ships nothing, so a " +
+			"pipeline step that only promoted reported success before any byte had moved and the " +
+			"release's real failure surfaced minutes later with nothing connecting the two. Every " +
+			"pipeline therefore spelled it `promote --deploy --wait`; the spellings that omitted " +
+			"either half were bugs waiting for an incident. So `deploy` means record + apply + wait, " +
+			"the health gate is ON by default (--no-wait opts out), and `promote --wait` / " +
+			"`--deploy` / `--to` are gone with the verb. A surviving `forge env promote` is a " +
+			"copy-pasteable command — in a doc, a skill, a KCL comment or a scaffolded CI step — " +
+			"that now dies on \"unknown command\"; worse, a surviving `--wait`/`--deploy` reads as " +
+			"if waiting and applying were still opt-in.",
+		Patterns: []*regexp.Regexp{
+			// The deleted verb, on any surface. Requiring `env`
+			// IMMEDIATELY before it is what leaves the live English verb
+			// ("forge promotes good practice", "cut and promoted like any
+			// other") alone; the root `forge promote` spelling is already
+			// policed by "the root spellings of the `forge env` verbs".
+			regexp.MustCompile(`\bforge\s+env\s+promote\b`),
+			// The Go ARGV form: exec/test invocations pass the command as
+			// separate string args, so the tokens are never adjacent in
+			// the source and the pattern above cannot see them.
+			regexp.MustCompile(`"env",\s*"promote"`),
+			// The command constructor and its file, so a revert that
+			// restores the Go surface without the doc surface is caught
+			// too.
+			regexp.MustCompile(`\bnewPromoteCmd\b`),
+			// The follow-through flags that became the default. `--to` is
+			// NOT policed: it is a live flag elsewhere (e.g. a range end),
+			// and the verb patterns above already catch every spelling
+			// that carried it.
+			regexp.MustCompile(`\bpromote\s+--(?:wait|deploy)\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the ADR that decided the removal",
+				Reason: "docs/adr/env-verbs.md is the approved decision record: its table names " +
+					"`forge env promote` in the \"Absorbs (deleted)\" column, and task V3's own " +
+					"description names `promote --wait/--deploy`. That text IS the removal — " +
+					"deleting it to satisfy the guard would delete the reason the guard exists.",
+				Token: regexp.MustCompile("`forge env promote`|`promote --wait/--deploy`|`forge env promote`,"),
+				Paths: []string{"docs/adr/env-verbs.md"},
+			},
+			{
+				Name: "the changelog entry announcing the removal",
+				Reason: "A Keep-a-Changelog `### Removed` entry has to name what was removed, or " +
+					"readers cannot tell which of their invocations broke. The older entries that " +
+					"describe `forge env promote`'s own past behaviour (always-CAS, the run flags) " +
+					"are history of a verb that existed at the time and must stay readable.",
+				Token: regexp.MustCompile("`forge env promote`|`forge env promote --rollback`|" +
+					"`forge env promote --run-id / --run-url / --no-run`|" +
+					"`forge env promote --wait`|forge env promote|" +
+					// The removed follow-through flags: the entry has to
+					// name them to say they were absorbed rather than
+					// renamed, which is the question a reader of a broken
+					// pipeline actually has.
+					"promote --deploy --wait|`promote --wait`|`promote --deploy`"),
+				Paths: []string{"CHANGELOG.md"},
+			},
+			{
+				Name: "the test that proves the verb no longer resolves",
+				Reason: "TestEnvCmd_HasNoPromoteVerb walks `forge env`'s subcommands asserting none " +
+					"is named (or aliased) promote, and the tests beside it record which spelling " +
+					"moved where. A test that what it checks is absent must name it. Scoped by " +
+					"path and token.",
+				Token: regexp.MustCompile("`forge env promote`|forge env promote"),
+				Paths: []string{"internal/cli/deploy_promote_test.go"},
+			},
+			{
+				Name: "the absorbed code saying which spelling it used to be reached by",
+				Reason: "deploy_promote_follow.go and its test are the MOVED machinery, and their " +
+					"header comments say so: \"was promote_wait.go, where the same machinery was " +
+					"reached by `promote --wait` / `--deploy`\". That sentence is why waiting is " +
+					"now the default — a reader who finds an unconditional wait and no record of " +
+					"the flag it replaced cannot tell deliberate from accidental. " +
+					"TestDeployCmd_DeclaresEveryReleaseFlag names the pair in order to assert both " +
+					"flags are ABSENT. Scoped to the flag spellings, so a line in these files that " +
+					"re-registered either flag still fails.",
+				Token: regexp.MustCompile(`promote\s+--(?:wait|deploy)`),
+				Paths: []string{
+					"internal/cli/deploy_promote_follow.go",
+					"internal/cli/deploy_promote_follow_test.go",
+					"internal/cli/deploy_promote_test.go",
+				},
+			},
+			{
+				Name: "the rollback entry's own prose, which names the retired flag pair",
+				Reason: "The `rollback` removal above says `forge env deploy --rollback` and " +
+					"`forge env promote --rollback` are both gone — it was written while promote " +
+					"existed, and its Why/allowances are the record of THAT removal. Rewriting it " +
+					"to drop the promote half would make it read as though only deploy ever had " +
+					"the flag. Scoped to the flag pairing, so a line here that revived the verb " +
+					"still fails.",
+				Token:   regexp.MustCompile("`forge env promote --rollback`|forge env promote --rollback|backwards `forge env promote`"),
+				Context: regexp.MustCompile(`rollback`),
+				Paths:   []string{"internal/removalguard/removalguard_test.go"},
+			},
+		},
+	},
+	{
 		Name: "rollback — recovery is roll forward",
 		Why: "forge has no rollback. `forge env deploy --rollback`, `forge env promote --rollback`, " +
 			"`forge.External.rollback_cmd`, the Provider.Rollback verb (kubectl rollout undo, compose " +
@@ -1776,6 +1877,33 @@ var skipFiles = map[string]bool{
 	"pnpm-lock.yaml":    true,
 	"yarn.lock":         true,
 	"kcl.mod.lock":      true,
+}
+
+// skipFilePrefixes are basename prefixes that are never a forge surface.
+//
+// PR_BODY*.md is an agent-authored PR description, written into the worktree
+// while a branch is in flight. It is prose ABOUT a change, and a PR body for a
+// REMOVAL names the removed spelling dozens of times by design — that is what
+// the description is for. Scanning one makes every mention read as a surviving
+// reference, so the guard would fail on exactly the branches that are doing the
+// removing properly. (Observed: V1 tracked PR_BODY_V1.md and turned main red.)
+//
+// The alternative — one allowance per PR body per removal — would mean a
+// standing carve-out in the table for text no release ever reads, which is
+// precisely the "too-permissive allowance" this file warns against.
+var skipFilePrefixes = []string{"PR_BODY"}
+
+// skipScannedFile reports whether a basename is outside forge's surfaces.
+func skipScannedFile(name string) bool {
+	if skipFiles[name] {
+		return true
+	}
+	for _, p := range skipFilePrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxFileSize caps a single scanned file. Anything larger is generated data,
@@ -2186,7 +2314,7 @@ func forEachScannedFile(t *testing.T, root string, fn func(rel string, content [
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		if skipFiles[d.Name()] || skipExts[strings.ToLower(filepath.Ext(p))] {
+		if skipScannedFile(d.Name()) || skipExts[strings.ToLower(filepath.Ext(p))] {
 			return nil
 		}
 		if info, statErr := d.Info(); statErr == nil && info.Size() > maxFileSize {

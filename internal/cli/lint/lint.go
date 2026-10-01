@@ -59,7 +59,7 @@ type lintFlags struct {
 	skipFrontends     bool
 	jsonOut           bool
 	// gateJSON is a FILE path: write this run's result as a gate document
-	// for `forge gate record` / `forge env promote --gate`. Not a stdout
+	// for `forge gate record` / `forge env deploy --gate`. Not a stdout
 	// mode — the human findings and the exit code are unchanged.
 	gateJSON string
 }
@@ -238,7 +238,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Deprecated: auto-fix of deterministic-safe issues is now the default; this flag is a no-op kept for back-compat (use --no-fix to opt out)")
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Skip the deterministic-safe auto-fix pre-pass (Go formatting, golangci autofixes, eslint --fix); gate only and mutate nothing (CI / read-only)")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
-	cmd.Flags().StringVar(&flags.gateJSON, "gate-json", "", "Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env promote --gate`. A FILE, not a stdout mode: the findings and the exit code are unchanged.")
+	cmd.Flags().StringVar(&flags.gateJSON, "gate-json", "", "Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the findings and the exit code are unchanged.")
 
 	// User-vs-maintainer surface split: the flags below are fully
 	// functional but hidden from --help (visible via --help-dev). The

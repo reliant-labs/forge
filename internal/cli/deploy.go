@@ -30,31 +30,101 @@ import (
 	"github.com/reliant-labs/forge/pkg/deploystate"
 )
 
-func newDeployCmd() *cobra.Command {
-	var (
-		tag           string
-		dryRun        bool
-		namespace     string
-		explain       bool
-		targetArch    string
-		prune         bool
-		targets       []string
-		skipFrontend  bool
-		frontendsOnly bool
-		skipPreflight bool
-		noDigest      bool
-		jsonOut       bool
+// deployCmdLong is `forge env deploy`'s help text, hoisted out of the command
+// declaration so the constructor reads as a declaration rather than as a
+// document with a cobra.Command buried in it.
+const deployCmdLong = `Make <environment> run a release — record the promotion, apply it, and wait
+for it to become healthy. With no version, re-apply the env's CURRENT binding
+(a spec-change deploy: the KCL moved, the release did not).
 
-		rolloutMode     string
-		rolloutTimeout  time.Duration
-		rolloutFailFast bool
-		rolloutOrder    []string
-	)
+  forge env deploy prod v1.4.0        # record, apply, wait
+  forge env deploy prod --from staging  # exactly what staging runs
+  forge env deploy prod               # re-apply prod's current binding
 
-	cmd := &cobra.Command{
-		Use:   "deploy <environment>",
-		Short: "Deploy services to the target declared in deploy/kcl/<env>/",
-		Long: `Deploy each service to the target declared on its Service.deploy block.
+THE VERB IS record + apply + wait, AND THAT IS NOT OPTIONAL. Recording a
+binding ships nothing, so a step that only recorded one reported success before
+any byte had moved and the release's actual failure surfaced minutes later with
+nothing connecting the two. So the health gate is ON by default; --no-wait is
+how you opt out, and it says what to run instead.
+
+WHO APPLIES IT IS DECLARED, NOT CHOSEN. An env whose KCL declares
+forge.ControlPlane is converged by that control plane — forge records the
+promotion and waits on the rollout the server computes. Every other env is
+SELF-MANAGED: the same command renders the new binding and applies it from this
+machine, and that apply's per-resource rollout wait IS the health gate. Both
+reach "the release is live or this command is red"; which machinery got there
+is an implementation detail of where the env runs.
+
+` + "`forge env build <env> --release <version>`" + ` builds the env-agnostic images
+ONCE, captures their content-addressed digests, and cuts a release. Naming that
+version here advances it BY REFERENCE: one entry — env, release, and the
+per-image digests frozen at this moment — appended to the env's append-only
+promotion ledger. No image is rebuilt, so the exact bytes cut as <version> are
+what every env running that release ships, byte-identical. This eliminates the
+per-env rebuild that re-cross-compiles (and can drift arch/tag) for every
+environment.
+
+WHERE THE LEDGER LIVES is declared by the environment, not chosen by a flag:
+an env whose KCL declares forge.ControlPlane records promotions on that control
+plane; every other env records them in .forge/promotions/<env>.jsonl.
+
+EVERY DEPLOY IS A NEW ENTRY, NOT AN EDIT. Re-deploying the release an env
+already runs appends nothing and still applies and waits; a CI retry is safe.
+
+THERE IS NO ROLLBACK. Recovery is ROLL FORWARD: cut a release with the fix and
+deploy it. Binding an env to an OLDER release is still possible — it is an
+ordinary deploy — but it cannot undo the newer release: that release's
+migrations stay applied and the data it wrote stays written, so the older code
+runs against a schema it was never tested on. The plan labels such a move
+` + "`direction: BEHIND`" + ` and says so; read it before you write it.
+
+SEE THE CHANGE BEFORE IT IS WRITTEN. --plan computes the ENTIRE change set and
+writes nothing: the release the env runs now versus the one it would move to,
+every image classified as unchanged / changed / added / removed (with both
+digests where they differ), the git commits between the two releases, and —
+the fact most worth reading twice — the DIRECTION. A deploy to an older
+release is reported as BEHIND rather than left for you to infer from version
+numbers. The plan and the real deploy are computed by the SAME function, so the
+preview cannot disagree with the write.
+
+EVERY RELEASE DEPLOY IS A COMPARE-AND-SET. The write asserts that the env is
+still on the promotion the plan read (` + "`current.promotion_id`" + ` in --json),
+and is REFUSED if someone else moved it since — so a hotfix that lands while a
+pipeline waits for approval turns the pipeline red instead of being
+overwritten. No flag is needed. --expect-current <id> replaces the planned
+value with one captured earlier (e.g. when the approval was requested);
+` + "`--expect-current unbound`" + ` (or --expect-unbound) asserts the env has never
+been promoted. Re-deploying the release the env already runs is a no-op
+whatever the expectation says, so a retried success is never a conflict.
+
+Exit codes (release deploys):
+  0  deployed and healthy, or already on this release (no-op), or --plan
+  1  failed: invalid input, unreadable ledger, release not found, DEGRADED
+  2  undetermined — we could not look (the control plane was unreachable)
+  3  promotion_conflict / source_moved — the env (or --from's source) moved
+     since the plan was read. Stop and look; retrying would overwrite it
+  4  rollout_in_flight / environment_pinned — declined, nothing lost. Wait
+     and retry, or pass --supersede (recorded) to replace an unfinished rollout
+  5  the wait's budget expired while the rollout was still progressing
+  6  superseded — the env was promoted past the promotion being waited on
+--json carries the same outcome: ` + "`applied`" + `, and a ` + "`refusal`" + ` object
+naming what was expected and what is actually there.
+
+Examples:
+  forge env build prod --release v1.4.0            # build once, cut the release
+  forge env deploy staging v1.4.0 --plan           # what WOULD change (writes nothing)
+  forge env deploy staging v1.4.0 --plan --json    # the same, machine-readable
+  forge env deploy staging v1.4.0                  # record, apply, wait
+  forge env deploy prod --from staging             # the bytes that passed staging
+  forge env deploy prod v1.3.0 --plan | grep BEHIND  # catch a backwards move
+  forge env deploy prod v1.4.0 --gate e2e.json     # freeze evidence onto the entry
+  ID=$(forge env deploy prod v1.4.0 --plan --json | jq -r '.current.promotion_id // "unbound"')
+  forge env deploy prod v1.4.0 --expect-current "$ID"  # after approval: exit 3 if prod moved
+
+─────────────────────────────────────────────────────────────────────────────
+THE APPLY (both paths, and the whole of a no-version deploy)
+
+Deploy each service to the target declared on its Service.deploy block.
 
 Supported deploy targets (declared in deploy/kcl/<env>/main.k):
 
@@ -128,38 +198,145 @@ Examples:
   forge env deploy dev --namespace custom-ns    # Override namespace
   forge env deploy dev --target admin-server    # Deploy only the admin-server app
   forge env deploy prod --target workspace-controller # Deploy only that operator
-  forge env deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`,
-		Args: cobra.ExactArgs(1),
+  forge env deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`
+
+func newDeployCmd() *cobra.Command {
+	// ONE struct and not twenty locals: the flag targets ARE the fields
+	// dispatchDeployCmd reads, so binding them directly removes the
+	// hand-copied struct literal that used to sit in RunE — the place a
+	// newly added flag was silently dropped by forgetting one line.
+	var apply deployCmdFlags
+
+	cmd := &cobra.Command{
+		Use:   "deploy <environment> [version]",
+		Short: "Make an environment run a release: record it, apply it, and wait for health",
+		Long:  deployCmdLong,
+		// <env> plus an OPTIONAL version. --from can supply the version
+		// instead, and no version at all is the spec-change deploy.
+		Args: cobra.RangeArgs(1, 2),
+		// A release deploy's change set IS the output; a cobra usage dump
+		// would bury it under the flag list.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return dispatchDeployCmd(cmd.Context(), args[0], deployCmdFlags{
-				tag: tag, dryRun: dryRun, namespace: namespace, explain: explain,
-				targetArch: targetArch, prune: prune, targets: targets,
-				skipFrontend: skipFrontend, frontendsOnly: frontendsOnly,
-				skipPreflight: skipPreflight, noDigest: noDigest, jsonOut: jsonOut,
-				rolloutMode: rolloutMode, rolloutTimeout: rolloutTimeout,
-				rolloutFailFast: rolloutFailFast, rolloutOrder: rolloutOrder,
-			})
+			if len(args) == 2 {
+				apply.promote.version = args[1]
+			}
+			return dispatchDeployCmd(cmd.Context(), args[0], apply)
 		},
 	}
 
-	cmd.Flags().StringVar(&tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
-	cmd.Flags().StringVar(&namespace, "namespace", "", "Override namespace from environment config")
-	cmd.Flags().BoolVar(&explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
-	cmd.Flags().StringVar(&targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
-	cmd.Flags().BoolVar(&prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
-	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
-	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
-	cmd.Flags().BoolVar(&frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to Firebase Hosting or a static-site bucket, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
-	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
-	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON describing the whole invocation — mode (explain/dry_run/apply), the declared-cluster guard verdict, the target cluster + namespace, the preflight findings, per-image digest-vs-tag pinning, the resource identities applied, and the per-resource rollout outcome (ready / failed / timed_out / not_waited). Works with --explain and --dry-run, which is how a UI previews a deploy. Same exit codes as text mode; the human output moves to stderr so stdout carries exactly one JSON document.")
-	cmd.Flags().StringVar(&rolloutMode, "rollout", "wait", "What to do after the manifests land: 'wait' (wait for every Deployment/Job and FAIL if any does not become ready — the default), 'warn' (wait and report, but exit 0), or 'skip' (apply and return immediately).")
-	cmd.Flags().DurationVar(&rolloutTimeout, "rollout-timeout", 0, "Per-resource readiness budget (e.g. 90s, 10m). Applies to EACH Deployment and one-shot Job, not the set. Default 5m.")
-	cmd.Flags().BoolVar(&rolloutFailFast, "rollout-fail-fast", false, "Stop at the FIRST resource that fails instead of waiting for the rest. Default reports every failure, which is usually what you want when diagnosing a bad deploy.")
-	cmd.Flags().StringArrayVar(&rolloutOrder, "rollout-order", nil, "Wait for these applications FIRST, in this order, before the rest (repeatable). A wait ordering, not an apply ordering — Kubernetes converges concurrently — so it controls what a phased deploy reports first: put the migration or the API server here and its failure surfaces before its dependents time out.")
+	registerDeployApplyFlags(cmd, &apply)
+	registerPromoteFlags(cmd, &apply.promote)
 
 	return cmd
+}
+
+// registerDeployApplyFlags declares the APPLY half of `forge env deploy`: the
+// flags that govern HOW the manifests land, whichever release they pin.
+//
+// Split from the command declaration for the same reason registerPromoteFlags
+// is: the two halves of this verb have different subjects — which bytes, and
+// how they are applied — and a 229-line constructor made that invisible.
+func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
+	flags := cmd.Flags()
+	flags.StringVar(&f.tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
+	flags.BoolVar(&f.dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
+	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
+	flags.BoolVar(&f.explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
+	flags.StringVar(&f.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
+	flags.BoolVar(&f.prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
+	flags.StringArrayVar(&f.targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
+	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
+	flags.BoolVar(&f.frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to Firebase Hosting or a static-site bucket, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
+	flags.BoolVar(&f.skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
+	flags.BoolVar(&f.noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
+	flags.BoolVar(&f.jsonOut, "json", false, "Emit machine-readable JSON describing the whole invocation — mode (explain/dry_run/apply), the declared-cluster guard verdict, the target cluster + namespace, the preflight findings, per-image digest-vs-tag pinning, the resource identities applied, and the per-resource rollout outcome (ready / failed / timed_out / not_waited). Works with --explain and --dry-run, which is how a UI previews a deploy. Same exit codes as text mode; the human output moves to stderr so stdout carries exactly one JSON document.")
+	flags.StringVar(&f.rolloutMode, "rollout", "wait", "What to do after the manifests land: 'wait' (wait for every Deployment/Job and FAIL if any does not become ready — the default), 'warn' (wait and report, but exit 0), or 'skip' (apply and return immediately).")
+	flags.DurationVar(&f.rolloutTimeout, "rollout-timeout", 0, "Per-resource readiness budget (e.g. 90s, 10m). Applies to EACH Deployment and one-shot Job, not the set. Default 5m.")
+	flags.BoolVar(&f.rolloutFailFast, "rollout-fail-fast", false, "Stop at the FIRST resource that fails instead of waiting for the rest. Default reports every failure, which is usually what you want when diagnosing a bad deploy.")
+	flags.StringArrayVar(&f.rolloutOrder, "rollout-order", nil, "Wait for these applications FIRST, in this order, before the rest (repeatable). A wait ordering, not an apply ordering — Kubernetes converges concurrently — so it controls what a phased deploy reports first: put the migration or the API server here and its failure surfaces before its dependents time out.")
+}
+
+// promoteCmdFlags is the RELEASE half of `forge env deploy`'s flag set: the
+// flags that only mean something when a version (or --from) names a release to
+// move the env to.
+//
+// Its own type, beside deployCmdFlags rather than merged into it, because the
+// two halves answer different questions and the split is what lets
+// refusePromoteFlagsWithoutRelease be a loop over "did anyone set one of
+// these?" instead of a hand-maintained list that drifts from the flag
+// declarations.
+type promoteCmdFlags struct {
+	// version is the positional release argument, or "" (then --from may
+	// supply it, or there is no release half at all).
+	version string
+
+	plan          bool
+	note          string
+	actor         string
+	expectCurrent string
+	expectUnbound bool
+	supersede     bool
+	gates         []string
+	run           runOptions
+
+	// --from / --from-promotion, held FLAT rather than as a nested
+	// promoteFromOptions so each is a plain flag target like every field
+	// above it. They are folded into the options struct at the call site.
+	fromEnv         string
+	fromPromotionID string
+
+	// The health gate. noWait is the opt-OUT: the gate is on by default,
+	// which is the whole of V3.
+	noWait   bool
+	timeout  time.Duration
+	failFast bool
+}
+
+// fromSource is the two --from flags as the options struct the release path
+// takes.
+func (f promoteCmdFlags) fromSource() promoteFromOptions {
+	return promoteFromOptions{Env: f.fromEnv, PromotionID: f.fromPromotionID}
+}
+
+// requestedRelease reports whether this invocation has a release half at all.
+// --from counts without a version: it supplies one.
+func (f promoteCmdFlags) requestedRelease() bool {
+	return f.version != "" || f.fromSource().requested()
+}
+
+// registerPromoteFlags declares the release half on `forge env deploy`.
+func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
+	flags := cmd.Flags()
+	flags.BoolVar(&f.plan, "plan", false, "Compute and print the full change set WITHOUT writing the binding or applying anything")
+	flags.StringVar(&f.note, "note", "", "Why — recorded on the ledger entry (most valuable on a deploy that moves the env BEHIND)")
+	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
+
+	// Anti-stomp. Every release deploy compare-and-sets against the plan's
+	// read; these replace that value, they do not enable it.
+	flags.StringVar(&f.expectCurrent, "expect-current", "",
+		"Promotion id the env must still be on (default: the one the plan read); `unbound` = --expect-unbound. Exit 3 if it moved")
+	flags.BoolVar(&f.expectUnbound, "expect-unbound", false, "Refuse (exit 3) unless the env has never been promoted")
+	cmd.MarkFlagsMutuallyExclusive("expect-current", "expect-unbound")
+	flags.BoolVar(&f.supersede, "supersede", false,
+		"Deploy even though the current promotion is still rolling out (recorded on the new entry); without it that is exit 4")
+
+	// The health gate, opt-OUT.
+	flags.BoolVar(&f.noWait, "no-wait", false,
+		"Record and apply, but do NOT wait for health. Gate on it later with `forge env status <env> --wait`")
+	flags.DurationVar(&f.timeout, "timeout", 0, "Whole health-gate budget (default 15m hosted, 5m per resource self-managed)")
+	flags.BoolVar(&f.failFast, "fail-fast", false, "Exit 1 on the first DEGRADED observation instead of waiting out --timeout")
+
+	// Evidence.
+	flags.StringArrayVar(&f.gates, "gate", nil,
+		"Pre-deploy evidence frozen onto the entry: a gate JSON file, or name=…,status=passed|failed|skipped|error[,url=…] (repeatable)")
+
+	// Source.
+	flags.StringVar(&f.fromEnv, "from", "", "Deploy exactly what this environment is running (same control plane only); the version may be omitted")
+	flags.StringVar(&f.fromPromotionID, "from-promotion", "", "With --from: the source promotion captured earlier; refused (exit 3, source_moved) if the source moved")
+
+	// Run identity: --run-id / --run-url / --no-run, defaulted from CI.
+	registerRunFlags(flags, &f.run)
 }
 
 // deployCmdFlags is the raw flag set `forge env deploy` parses, before it is
@@ -185,16 +362,36 @@ type deployCmdFlags struct {
 	rolloutTimeout  time.Duration
 	rolloutFailFast bool
 	rolloutOrder    []string
+
+	promote promoteCmdFlags
 }
 
-// dispatchDeployCmd validates the flag combination and routes to the explain
-// or deploy path.
+// dispatchDeployCmd validates the flag combination and routes to the release
+// path, the explain path, or the spec-change deploy.
 //
-// The report is constructed HERE, before the explain branch, because --json has
-// to work for --explain and --dry-run too: those are exactly what a UI calls to
-// preview a deploy, and a flag that only worked on the real thing would make
-// the preview the one case a consumer could not use.
+// THE FORK IS "DID THE CALLER NAME A RELEASE", and nothing else — not the env's
+// shape, not a flag. A version (or a --from that supplies one) means move the
+// env to that release: record the promotion, apply it, wait. No version means
+// re-apply what the env is already bound to, which is today's spec-change
+// deploy, unchanged.
+//
+// The report is constructed in the no-release path, before the explain branch,
+// because --json has to work for --explain and --dry-run too: those are exactly
+// what a UI calls to preview a deploy, and a flag that only worked on the real
+// thing would make the preview the one case a consumer could not use.
 func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) error {
+	if f.promote.requestedRelease() {
+		return dispatchReleaseDeploy(ctx, envName, f)
+	}
+	if err := refusePromoteFlagsWithoutRelease(f.promote); err != nil {
+		return err
+	}
+	return dispatchSpecChangeDeploy(ctx, envName, f)
+}
+
+// dispatchSpecChangeDeploy is `forge env deploy <env>` with no release named:
+// render the env's CURRENT binding and apply it. Unchanged behaviour.
+func dispatchSpecChangeDeploy(ctx context.Context, envName string, f deployCmdFlags) error {
 	rollout := cluster.RolloutPolicy{
 		Mode:     cluster.RolloutMode(f.rolloutMode),
 		Timeout:  f.rolloutTimeout,
@@ -235,6 +432,139 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) er
 		rollout:       rollout,
 		report:        report,
 	})
+}
+
+// dispatchReleaseDeploy is `forge env deploy <env> vX` / `--from <src>`: record
+// the promotion, have it applied, and wait for health.
+//
+// It assembles the client-side apply's options from the SAME flags the
+// no-release path uses, and hands them to the follow-through. That is what
+// makes `forge env deploy prod v1.4.0 --target api` and
+// `forge env deploy prod --target api` apply the same thing — the release half
+// decides WHICH bytes, the apply half decides HOW, and neither reimplements the
+// other.
+func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags) error {
+	p := f.promote
+	if f.explain {
+		// --explain answers "which cluster would this touch", which is a
+		// question about the APPLY. Naming a release as well asks forge to
+		// move a pointer and then explain instead of doing it, and the
+		// only honest reading — explain and write nothing — is what --plan
+		// already does, with the change set a release deploy actually
+		// wants.
+		return errors.New("--explain describes the apply target and writes nothing, so it cannot be combined with a release.\n" +
+			"  Preview the release change set with: forge env deploy " + envName + " " + emptyAs(p.version, "<version>") + " --plan\n" +
+			"  Or inspect the apply target on its own with: forge env deploy " + envName + " --explain")
+	}
+	if p.expectUnbound {
+		p.expectCurrent = expectUnboundLiteral
+	}
+	rollout := cluster.RolloutPolicy{
+		Mode:     cluster.RolloutMode(f.rolloutMode),
+		Timeout:  f.rolloutTimeout,
+		FailFast: f.rolloutFailFast,
+		Order:    f.rolloutOrder,
+	}
+	if err := rollout.Validate(); err != nil {
+		return err
+	}
+	// The env's ledger is resolved HERE, once, before anything is computed:
+	// it decides both where the promotion is recorded and who applies it,
+	// and resolving it up front is what keeps those two answers from being
+	// read at different moments from different places.
+	projectDir := projectDirForKCL()
+	ledger, err := resolveReleaseLedger(ctx, projectDir, envName)
+	if err != nil {
+		return err
+	}
+	return runPromote(ctx, p.version, envName, promoteOptions{
+		Ledger:        ledger,
+		DryRun:        p.plan,
+		JSON:          f.jsonOut,
+		ProjectDir:    projectDir,
+		Note:          p.note,
+		Actor:         p.actor,
+		ExpectCurrent: p.expectCurrent,
+		Supersede:     p.supersede,
+		Gates:         p.gates,
+		From:          p.fromSource(),
+		Run:           p.run,
+		Follow: &promoteFollowOptions{
+			NoWait:   p.noWait,
+			Timeout:  p.timeout,
+			FailFast: p.failFast,
+			clientDeploy: deployOptions{
+				imageTag:      f.tag,
+				dryRun:        f.dryRun,
+				namespace:     f.namespace,
+				targetArch:    f.targetArch,
+				prune:         f.prune,
+				targets:       f.targets,
+				skipFrontend:  f.skipFrontend,
+				frontendsOnly: f.frontendsOnly,
+				skipPreflight: f.skipPreflight,
+				noDigest:      f.noDigest,
+				rollout:       rollout,
+			},
+		},
+	})
+}
+
+// refusePromoteFlagsWithoutRelease refuses a release-only flag on a deploy that
+// names no release.
+//
+// SILENTLY DOING NOTHING IS THE FAILURE WORTH REFUSING. `forge env deploy prod
+// --expect-current abc123` with no version reads as an anti-stomp guard and
+// has none: there is no promotion to compare-and-set, so the deploy would apply
+// the current binding and report success while the guard the caller asked for
+// never ran. Same for --gate (evidence attached to nothing) and --supersede.
+//
+// The flags NOT listed here are the ones that mean something either way:
+// --no-wait/--timeout/--fail-fast tune the apply's own rollout wait, and --json
+// and --dry-run are shared by both halves.
+func refusePromoteFlagsWithoutRelease(f promoteCmdFlags) error {
+	var set []string
+	if f.plan {
+		set = append(set, "--plan")
+	}
+	if f.note != "" {
+		set = append(set, "--note")
+	}
+	if f.actor != "" {
+		set = append(set, "--actor")
+	}
+	if f.expectCurrent != "" {
+		set = append(set, "--expect-current")
+	}
+	if f.expectUnbound {
+		set = append(set, "--expect-unbound")
+	}
+	if f.supersede {
+		set = append(set, "--supersede")
+	}
+	if len(f.gates) > 0 {
+		set = append(set, "--gate")
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s %s a release to move the environment to, and this deploy names none, "+
+		"so there is nothing to record %s against.\n"+
+		"  Name the release:   forge env deploy <env> <version>\n"+
+		"  Or take it from an environment that passed:   forge env deploy <env> --from staging\n"+
+		"  A deploy with no version re-applies the env's CURRENT binding (a spec-change deploy) and writes no promotion",
+		strings.Join(set, ", "), pluralVerb(len(set), "needs", "need"), pluralVerb(len(set), "it", "them"))
+}
+
+// pluralVerb picks between a singular and a plural word. Inline rather than a
+// generic helper because the two call sites above are the only ones, and a
+// sentence that reads "–-plan needs a release" rather than "--plan need(s)" is
+// worth four lines.
+func pluralVerb(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 // runDeployExplain prints the resolved kubectl-context guard decision
@@ -969,7 +1299,7 @@ type deployTagResolution struct {
 // precedence logic is testable without stubbing the whole pipeline.
 //
 // Digest resolution precedence (highest first):
-//  1. A bound RELEASE (env promoted via `forge env promote`): pins the digests the
+//  1. A bound RELEASE (bound via `forge env deploy <env> <version>`): pins the digests the
 //     release captured so every env on the same release deploys byte-identical
 //     images. Wins because a deliberate promotion is a stronger signal than the
 //     per-env build state.
@@ -2258,7 +2588,7 @@ func checkReleasePinned(entities *KCLEntities, digests map[string]string, boundR
 			"The release ledger and this deploy's build state carry digests under:\n%s\n\n"+
 			"Deploying would silently fall back to the mutable tag, which is not what the release names — so forge stopped.\n"+
 			"Fix: re-cut and re-promote the release so its artifacts are keyed by the repositories the KCL declares\n"+
-			"  forge env build %s --release <version> --push && forge env promote <version> --to %s\n"+
+			"  forge env build %s --release <version> --push && forge env deploy %s <version>\n"+
 			"Or deploy without the release's pins, deliberately: forge env deploy %s --no-digest",
 		envName, boundRelease, strings.Join(unpinned, "\n"), known, envName, envName, envName)
 }
@@ -2308,7 +2638,7 @@ func expandLegacyLedgerKeys(resolved, uris map[string]string) map[string]string 
 //
 // Precedence (highest first):
 //
-//  1. A bound RELEASE (env promoted via `forge env promote`). The release's
+//  1. A bound RELEASE (bound via `forge env deploy <env> <version>`). The release's
 //     resolved digests OVERRIDE the per-env build state per image: a deliberate
 //     promotion is the strongest signal, and pinning the release's digests is
 //     what makes every env on the same release deploy byte-identical images
@@ -2358,7 +2688,7 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		// deploy and an unchanged app, with nothing connecting the two.
 		if built, ok := base[image]; ok && built != digest {
 			fmt.Printf("  Note: %s was just built as %s, but release %s pins %s — deploying the RELEASE.\n"+
-				"        To ship the build instead: forge env build %s --release <version> --push && forge env promote <version> --to %s\n"+
+				"        To ship the build instead: forge env build %s --release <version> --push && forge env deploy %s <version>\n"+
 				"        Or deploy the built image directly: forge env deploy %s --no-digest --tag <tag>\n",
 				image, shortDigest(built), binding.Release, shortDigest(digest), envName, envName, envName)
 		}

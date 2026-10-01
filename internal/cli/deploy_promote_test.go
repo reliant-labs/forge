@@ -8,12 +8,14 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// Tests for `forge env promote`'s compare-and-set (control-plane
-// docs/design/hosted-deploy-primitives.md §3.1, task F2).
+// Tests for the compare-and-set a release deploy asserts — `forge env deploy
+// <env> vX` (control-plane docs/design/hosted-deploy-primitives.md §3.1;
+// docs/adr/env-verbs.md task V3 moved it here from `forge env promote`).
 //
 // The hosted cases run the real hostedStore over the real cloud.Client
 // against fakeDeployService (hosted_ledger_test.go), which applies the
@@ -21,6 +23,21 @@ import (
 // answers refusals in control-plane's wire form (reason header + a
 // DeployPromoteRefusal detail). So each case asserts what forge SENT and what
 // it made of the answer, through the same bytes production carries.
+
+// declaredLedger resolves the env's ledger exactly as `forge env deploy` does,
+// for the tests whose subject IS the production file-ledger path (they chdir
+// into a project and assert what lands in .forge/promotions/). promoteOptions
+// .Ledger is required, so stating it through the real resolver is what keeps
+// those tests on the production path instead of substituting a fake for the
+// thing under test.
+func declaredLedger(t *testing.T, projectDir, env string) envLedger {
+	t.Helper()
+	l, err := resolveReleaseLedger(context.Background(), projectDir, env)
+	if err != nil {
+		t.Fatalf("resolve the ledger for env %q: %v", env, err)
+	}
+	return l
+}
 
 // hostedPromoteFixture is a hosted ledger with releases v1..v3 cut and the
 // env "prod" promoted along `promoted` in order.
@@ -63,8 +80,14 @@ func (f *fakeDeployService) lastPromoteBody(t *testing.T) map[string]any {
 func runHostedPromote(t *testing.T, store *hostedStore, version string, opts promoteOptions) (string, error) {
 	t.Helper()
 	opts.ProjectDir = t.TempDir()
-	opts.Bindings, opts.Releases = store, store
 	opts.Git = allCommitsPresent()
+	// Hosted:true is not a separate knob — it travels WITH the stores,
+	// because this store IS a control plane: it records the promotion and
+	// it converges it. Stating them apart is what would let a test describe
+	// an env whose ledger is a control plane that applies nothing.
+	if opts.Ledger.Bindings == nil {
+		opts.Ledger = envLedger{Bindings: store, Releases: store, Hosted: true}
+	}
 	opts.Run.None = true // the test process may itself be running in CI
 	var err error
 	out := captureStdout(t, func() { err = runPromote(context.Background(), version, "prod", opts) })
@@ -300,7 +323,8 @@ func TestPromote_RetryOfALandedPromoteIsANoOp(t *testing.T) {
 		rel("v1", "2026-01-01T00:00:00Z", "", false, map[string]string{"api": sha("1")}),
 		rel("v2", "2026-02-01T00:00:00Z", "", false, map[string]string{"api": sha("2")}),
 	)
-	opts := promoteOptions{ProjectDir: t.TempDir(), Bindings: store, Releases: releases, Git: allCommitsPresent(), ExpectCurrent: "p-1"}
+	opts := promoteOptions{ProjectDir: t.TempDir(), Git: allCommitsPresent(), ExpectCurrent: "p-1",
+		Ledger: envLedger{Bindings: store, Releases: releases}}
 	opts.Run.None = true
 	for attempt := 1; attempt <= 2; attempt++ {
 		var err error
@@ -354,44 +378,108 @@ func TestFileLedger_CompareAndSet(t *testing.T) {
 	}
 }
 
-// Every promote flag F3/F4/F5/F8 own is now WIRED, so there is no
-// "unwired flag" table left to assert on.
-//
-// TestPromote_UnwiredFlagsRefuseBeforeAnyWrite lived here through wave 3. It
-// pinned F2's staging contract: promote.go declares every flag up front, and
-// one whose owner had not landed yet refused the WHOLE promote rather than
-// moving the pointer and then failing on the part the caller asked for. Each
-// owner deleted its own row as it wired its flag, and F3 (--wait/--deploy/
-// --timeout/--fail-fast) removed the last of them.
-//
-// It is deleted rather than kept with an empty table because a table test
-// over no cases passes unconditionally — it would read as a live guarantee
-// while asserting nothing at all. The behaviour it protected now lives in
-// each flag's own test, where the assertion is about what the flag DOES:
-// promote_wait_test.go, promote_gates_test.go, promote_from_test.go. The
-// refuse-before-any-write property specifically is still pinned, by
-// TestPromoteWait_UnwiredCombinationsRefuseBeforeAnyWrite (a tuning flag
-// without --wait) and TestPromoteCmd_DeclaresEveryPlannedFlag below.
-
-// Every promote flag the plan names is declared on the command, so F3/F4/F5/
-// F8 never edit promote.go.
-func TestPromoteCmd_DeclaresEveryPlannedFlag(t *testing.T) {
-	cmd := newPromoteCmd()
+// Every flag the release half needs is declared on `forge env deploy`, which
+// is now the ONLY command that records a promotion.
+func TestDeployCmd_DeclaresEveryReleaseFlag(t *testing.T) {
+	cmd := newDeployCmd()
 	for _, name := range []string{
+		// The release half, absorbed from `env promote`.
+		"plan", "note", "actor",
 		"expect-current", "expect-unbound", "supersede",
-		"wait", "deploy", "timeout", "fail-fast",
 		"gate", "from", "from-promotion",
 		"run-id", "run-url", "no-run",
+		// The health gate, opt-OUT.
+		"no-wait", "timeout", "fail-fast",
+		// The apply half, which a release deploy forwards.
+		"target", "namespace", "dry-run", "json",
 	} {
 		if cmd.Flags().Lookup(name) == nil {
-			t.Errorf("--%s is not declared on `forge env promote`", name)
+			t.Errorf("--%s is not declared on `forge env deploy`", name)
 		}
 	}
-	cmd.SetArgs([]string{"v1", "--to", "prod", "--expect-current", "x", "--expect-unbound"})
+	// `promote --wait` / `--deploy` are gone, not renamed: waiting is the
+	// default and applying is what the verb means. A surviving flag would
+	// let a pipeline ask for what it already has and read as if the default
+	// were the other way.
+	for _, gone := range []string{"wait", "deploy", "to"} {
+		if cmd.Flags().Lookup(gone) != nil {
+			t.Errorf("--%s must not exist on `forge env deploy`", gone)
+		}
+	}
+	cmd.SetArgs([]string{"prod", "v1", "--expect-current", "x", "--expect-unbound"})
 	cmd.SetOut(&strings.Builder{})
 	cmd.SetErr(&strings.Builder{})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "expect-current") {
 		t.Fatalf("--expect-current and --expect-unbound together must be refused, got %v", err)
+	}
+}
+
+// `forge env promote` is GONE — no alias, no hidden name. A surviving spelling
+// would be a copy-pasteable command that records a promotion and never applies
+// it, which is the failure mode V3 removed.
+func TestEnvCmd_HasNoPromoteVerb(t *testing.T) {
+	for _, c := range newEnvCmd().Commands() {
+		if c.Name() == "promote" || c.HasAlias("promote") {
+			t.Fatalf("`forge env promote` still resolves (as %q)", c.Use)
+		}
+	}
+}
+
+// TestDeploy_ReleaseFlagsWithoutAReleaseAreRefused: a flag that only means
+// something beside a release must not be silently ignored on a deploy that
+// names none. `--expect-current abc123` with no version reads as an anti-stomp
+// guard and has none, so the deploy would apply and report success while the
+// guard the caller asked for never ran.
+func TestDeploy_ReleaseFlagsWithoutAReleaseAreRefused(t *testing.T) {
+	cases := map[string]promoteCmdFlags{
+		"--plan":           {plan: true},
+		"--note":           {note: "why"},
+		"--actor":          {actor: "ci"},
+		"--expect-current": {expectCurrent: "p-1"},
+		"--expect-unbound": {expectUnbound: true},
+		"--supersede":      {supersede: true},
+		"--gate":           {gates: []string{"name=e2e,status=passed"}},
+	}
+	for name, f := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := refusePromoteFlagsWithoutRelease(f)
+			if err == nil {
+				t.Fatalf("%s without a release must be refused", name)
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("the refusal must name %s, got: %v", name, err)
+			}
+			if !strings.Contains(err.Error(), "forge env deploy <env> <version>") {
+				t.Errorf("the refusal must say how to name a release, got: %v", err)
+			}
+		})
+	}
+	// The flags that mean something EITHER WAY are not refused: the gate
+	// flags tune the apply's own rollout wait on a spec-change deploy.
+	if err := refusePromoteFlagsWithoutRelease(promoteCmdFlags{noWait: true, timeout: time.Minute, failFast: true}); err != nil {
+		t.Fatalf("the health-gate flags tune a spec-change deploy too and must be accepted: %v", err)
+	}
+}
+
+// A version, or a --from that supplies one, is what forks the verb.
+func TestPromoteCmdFlags_RequestedRelease(t *testing.T) {
+	cases := []struct {
+		name string
+		in   promoteCmdFlags
+		want bool
+	}{
+		{"bare deploy", promoteCmdFlags{}, false},
+		{"a version", promoteCmdFlags{version: "v1"}, true},
+		{"--from", promoteCmdFlags{fromEnv: "staging"}, true},
+		{"--from-promotion alone", promoteCmdFlags{fromPromotionID: "p-1"}, true},
+		{"apply flags only", promoteCmdFlags{noWait: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.in.requestedRelease(); got != tc.want {
+				t.Fatalf("requestedRelease() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -407,8 +495,9 @@ func TestPromote_RunIdentityIsSent(t *testing.T) {
 		t.Fatal("--no-run must send no run")
 	}
 
-	opts = promoteOptions{ProjectDir: t.TempDir(), Bindings: store, Releases: store, Git: allCommitsPresent(),
-		Run: runOptions{ID: "manual-42", URL: "https://ci.example/42"}}
+	opts = promoteOptions{ProjectDir: t.TempDir(), Git: allCommitsPresent(),
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true},
+		Run:    runOptions{ID: "manual-42", URL: "https://ci.example/42"}}
 	captureStdout(t, func() { err = runPromote(context.Background(), "v3", "prod", opts) })
 	if err != nil {
 		t.Fatal(err)

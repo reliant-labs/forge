@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: `forge env promote` is gone — `forge env deploy <env> [vX | --from
+  <src-env>]` does the whole job.** No alias and no hidden name; the old
+  spelling dies on "unknown command".
+
+  ```bash
+  forge env deploy prod v1.4.0          # was: forge env promote v1.4.0 --to prod && forge env deploy prod
+  forge env deploy prod --from staging  # exactly what staging runs
+  forge env deploy prod                 # unchanged: re-apply prod's current binding
+  ```
+
+  **The verb now means record + apply + wait, and the wait is not a flag.**
+  Recording a binding ships nothing, so a pipeline step that only promoted
+  reported success before any byte had moved and the release's real failure
+  surfaced minutes later with nothing connecting the two. Every pipeline
+  therefore spelled it `promote --deploy --wait`, and the spellings that
+  omitted either half were bugs waiting for an incident. So the health gate is
+  ON by default; `--no-wait` opts out and names
+  `forge env status <env> --wait` as the way to gate later.
+
+  **Who applies it is read off the environment's ledger, not a flag** — the
+  same declarative fact as where the promotion is recorded, so the two cannot
+  disagree. An env whose KCL declares `forge.ControlPlane` is converged by
+  that control plane and forge waits on the rollout it computes, pinned to the
+  promotion just written. Every other env is self-managed: the same command
+  renders the new binding and applies it from this machine, and that apply's
+  per-resource rollout wait IS the health gate.
+
+  `promote --wait` and `promote --deploy` are removed with the verb rather than
+  renamed: both are now what the command does.
+
+  Everything else is unchanged and moved with the code — the compare-and-set
+  (`--expect-current` / `--expect-unbound` / `--supersede`), `--gate`,
+  `--from` / `--from-promotion`, `--plan`, the run flags, every exit code and
+  the JSON envelope. A deploy that names no version keeps today's spec-change
+  behaviour, and a release-only flag passed without a version is now refused
+  rather than silently ignored.
+
 - **BREAKING: an environment no longer has an image registry — a WORKLOAD has
   one, as part of its image.** `forge.ClusterTarget.registry`,
   `forge.ControlPlane.registry` and `forge.DockerBuild.registry` are all gone.

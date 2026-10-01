@@ -114,7 +114,7 @@ func runForge(t *testing.T, args ...string) (string, error) {
 // plane speaking Connect JSON:
 //
 //	forge env build hosted --release v1 --no-build
-//	forge env promote v1 --to hosted       (creates the env by name)
+//	forge env deploy hosted v1       (creates the env by name)
 //	forge env deploy hosted --json         (ensure → publish → readiness)
 //	forge env status hosted --json
 //	forge env topology --json
@@ -144,7 +144,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 	if !ok || len(rel.Artifacts) != 1 || rel.Artifacts[0].Name != "api" || rel.Artifacts[0].Digest != hostedTestDigest {
 		t.Fatalf("cut release = %+v, want one artifact api@%s", rel, hostedTestDigest)
 	}
-	if out, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
 		t.Fatalf("promote: %v\n%s", err, out)
 	}
 	envID := fake.envs["hosted"]
@@ -268,7 +268,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 //
 //	forge secret set hosted GREETING   (ensures the env by name)
 //	forge env build hosted --release v1 --no-build
-//	forge env promote v1 --to hosted
+//	forge env deploy hosted v1
 //	forge env deploy hosted
 //
 // All four land in ONE environment id. Mutation: making secret set resolve
@@ -309,7 +309,7 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"env", "build", "hosted", "--release", "v1", "--no-build"},
-		{"env", "promote", "v1", "--to", "hosted"},
+		{"env", "deploy", "hosted", "v1", "--no-wait"},
 		{"env", "deploy", "hosted", "--rollout-timeout", "2s"},
 	} {
 		if out, err := runForge(t, args...); err != nil {
@@ -355,7 +355,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 	t.Run("unbound", func(t *testing.T) {
 		fake, _ := setup(t, hostedOnBandSpec)
 		_, err := runForge(t, "env", "deploy", "hosted")
-		if err == nil || !strings.Contains(err.Error(), "forge env promote") {
+		if err == nil || !strings.Contains(err.Error(), "forge env deploy") {
 			t.Fatalf("err = %v, want the promote fix", err)
 		}
 		if n := writes(fake); n != 0 {
@@ -370,7 +370,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
+		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
 			t.Fatal(err)
 		}
 		fake.bodies = nil
@@ -393,7 +393,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
+		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
 			t.Fatal(err)
 		}
 		fake.bodies = nil

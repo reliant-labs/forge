@@ -698,10 +698,14 @@ func TestPromotionKindFromWire_Closed(t *testing.T) {
 
 // ─── End to end through the command tree ─────────────────────────────────────
 
-// `forge env build prod --release v1 --no-build` → `forge env promote v1 --to prod` →
+// `forge env build prod --release v1 --no-build` → `forge env deploy prod v1` →
 // `forge cloud releases prod`, for an env whose KCL declares forge.ControlPlane,
 // against the fake control plane. Nothing is written to the project's ledger
 // files: the env's declaration routed every write to the control plane.
+//
+// --no-wait because the fake serves no rollout: the subject here is the LEDGER
+// write reaching the control plane, and the health gate has its own tests
+// (deploy_promote_follow_test.go).
 func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	fake := newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})
 	srv := httptest.NewServer(fake)
@@ -737,8 +741,8 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	if out, err := run("env", "build", "prod", "--release", "v1", "--no-build"); err != nil {
 		t.Fatalf("forge env build --release: %v\n%s", err, out)
 	}
-	if out, err := run("env", "promote", "v1", "--to", "prod", "--actor", "ci"); err != nil {
-		t.Fatalf("forge env promote: %v\n%s", err, out)
+	if out, err := run("env", "deploy", "prod", "v1", "--actor", "ci", "--no-wait"); err != nil {
+		t.Fatalf("forge env deploy: %v\n%s", err, out)
 	}
 	out, err := run("cloud", "releases", "prod", "--json")
 	if err != nil {

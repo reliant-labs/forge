@@ -557,3 +557,76 @@ func mustGates(t *testing.T, promotionID string) ([]release.Gate, error) {
 	}
 	return backend.store.listGates(context.Background(), promotionID)
 }
+
+// AN EXPLICIT --name WINS over a document's derived name.
+//
+// The case is real and the consequence is silent: two `env wait` documents for
+// two environments both derive the name "wait", and the server's idempotency
+// key is (promotion, name, run id) — so under one run id the second record
+// would hand back the FIRST one's row rather than recording. The caller who
+// typed --name is distinguishing them, and that must be honoured.
+//
+// (Inside gateFromDocument the name is only a hint, because there a document
+// that names itself beats a default. Typed on the command line, it is not a
+// default.)
+func TestGateRecord_ExplicitNameWinsOverTheDocumentsOwn(t *testing.T) {
+	_, opts, current := gateFixture(t)
+	path := filepath.Join(t.TempDir(), "wait.json")
+	doc, _ := json.Marshal(map[string]any{
+		"ok": true, "exit_code": 0, "phase": "succeeded", "reason": "converged",
+	})
+	if err := os.WriteFile(path, doc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts.from, opts.name = path, "wait-prod"
+
+	if _, err := runRecord(t, opts); err != nil {
+		t.Fatal(err)
+	}
+	gates, err := mustGates(t, current.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gates) != 1 || gates[0].Name != "wait-prod" {
+		t.Fatalf("gates = %+v, want the explicit --name to win over the derived \"wait\"", gates)
+	}
+	// The document's verdict and summary still come from the document.
+	if gates[0].Status != release.GateStatusPassed || !strings.Contains(gates[0].Summary, "converged") {
+		t.Errorf("the document must still supply the verdict and summary: %+v", gates[0])
+	}
+}
+
+// Two waits for two environments, recorded under ONE run id, both land —
+// because their names differ. This is the collision the rule above prevents.
+func TestGateRecord_TwoNamedWaitsUnderOneRunBothLand(t *testing.T) {
+	_, opts, current := gateFixture(t)
+	dir := t.TempDir()
+	write := func(name, reason string) string {
+		p := filepath.Join(dir, name)
+		doc, _ := json.Marshal(map[string]any{
+			"ok": true, "exit_code": 0, "phase": "succeeded", "reason": reason,
+		})
+		if err := os.WriteFile(p, doc, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	opts.run = runOptions{ID: "github:acme/app/42/1"}
+
+	opts.from, opts.name = write("staging.json", "staging converged"), "wait-staging"
+	if _, err := runRecord(t, opts); err != nil {
+		t.Fatal(err)
+	}
+	opts.from, opts.name = write("prod.json", "prod converged"), "wait-prod"
+	if _, err := runRecord(t, opts); err != nil {
+		t.Fatal(err)
+	}
+
+	gates, err := mustGates(t, current.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gates) != 2 {
+		t.Fatalf("got %d gate(s), want 2 — distinct names must not collide on one run id: %+v", len(gates), gates)
+	}
+}

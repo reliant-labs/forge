@@ -336,6 +336,19 @@ func gateFromRecordOptions(opts gateRecordOptions) (release.Gate, error) {
 	if err != nil {
 		return release.Gate{}, err
 	}
+	// AN EXPLICIT --name WINS over the shape's derived one.
+	//
+	// Inside gateFromDocument the name is only a HINT, because there a
+	// document that names itself knows better than a default. Here it was
+	// TYPED: the caller is distinguishing two records of the same check,
+	// which is the case CI actually has — two `env wait` documents for two
+	// environments both derive the name "wait", and the server's
+	// idempotency key is (promotion, name, run id), so under one run id
+	// the second would return the FIRST one's row instead of recording.
+	// Letting the shape win would make that collision unavoidable.
+	if opts.name != "" {
+		gate.Name = opts.name
+	}
 	if opts.url != "" {
 		gate.URL = opts.url
 	}

@@ -101,11 +101,29 @@ type releaseLedger interface {
 type envLedger struct {
 	Bindings bindingStore
 	Releases releaseLedger
-	// Hosted reports whether this env's ledger is a control plane. Carried
-	// for output that must say so (the deploy banner), never for branching:
-	// every behavioural difference lives inside the two implementations.
+	// Hosted reports whether this env's ledger is a control plane, and so
+	// whether a promotion to it is converged server-side.
 	Hosted bool
+	// Mixed reports that a HOSTED env also declares workloads its control
+	// plane does not run — a cluster or compose workload, host infra, a
+	// cluster database, a shipped frontend (envAppliesLocally). Such an env
+	// needs BOTH halves of the follow-through: forge applies the part it
+	// owns, the control plane converges the rest.
+	//
+	// Meaningless unless Hosted, which is why it is not spelled
+	// "AppliesLocally": a self-managed env always applies from this
+	// machine, so a field naming that fact would have to be set on every
+	// ledger — and the one time it was forgotten, the deploy would record a
+	// binding and apply nothing. Mixed is the fact nothing else implies,
+	// and the zero value is right for both other shapes.
+	Mixed bool
 }
+
+// appliesLocally reports whether any part of the env is applied FROM THIS
+// MACHINE. A self-managed env always is: nothing watches a jsonl file, so if
+// this command does not apply the binding it just wrote, nothing ever will. A
+// hosted env is only when it is Mixed.
+func (l envLedger) appliesLocally() bool { return !l.Hosted || l.Mixed }
 
 // ─── Selection ───────────────────────────────────────────────────────────────
 
@@ -154,7 +172,13 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 		return envLedger{}, fmt.Errorf("env %q keeps its release ledger on the control plane at %s: %w", env, ep.URL, err)
 	}
 	ref := hostedEnvRefFor(env, entities)
-	return hostedLedger(cloud.NewClient(ep, cred), ep.URL, ref.Project, ref.Kind), nil
+	l := hostedLedger(cloud.NewClient(ep, cred), ep.URL, ref.Project, ref.Kind)
+	// A MIXED env: its ledger is this control plane, and it ALSO declares
+	// workloads the control plane does not run. Both facts come from the
+	// same render, so they are resolved together here rather than being
+	// re-derived later from a second render that could disagree.
+	l.Mixed = envAppliesLocally(entities)
+	return l, nil
 }
 
 // bindingStoreFor is ledgerFor for the callers that need only the promotion
@@ -167,6 +191,8 @@ func bindingStoreFor(ctx context.Context, projectDir, env string) (bindingStore,
 	return l.Bindings, nil
 }
 
+// fileLedger is a SELF-MANAGED env's ledger: Hosted false, so it applies from
+// this machine by definition (envLedger.appliesLocally).
 func fileLedger(projectDir string) envLedger {
 	return envLedger{
 		Bindings: newFileBindingStore(projectDir),

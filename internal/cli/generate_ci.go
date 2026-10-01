@@ -50,7 +50,7 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, _ *generator.Fi
 	}
 	const provider = "github"
 
-	for _, f := range generator.CIWorkflows(root, cfg, ciFrontends(root, cfg)) {
+	for _, f := range generator.CIWorkflowsFor(root, cfg, ciInputs(root, cfg)) {
 		content, err := templates.CITemplates(provider).Render(f.Template, f.Data)
 		if err != nil {
 			return fmt.Errorf("render %s: %w", f.Dest, err)
@@ -60,6 +60,14 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, _ *generator.Fi
 		}
 	}
 	return nil
+}
+
+// ciInputs gathers what only a live project's KCL can answer: the frontends,
+// and which envs are hosted (release.yml + forge-deploy are scaffolded for
+// those, and deploy.yml leaves them to it).
+func ciInputs(root string, cfg *config.ProjectConfig) generator.CIInputs {
+	topo := discoverCIHostedEnvs(root)
+	return generator.CIInputs{Frontends: ciFrontends(root, cfg), HostedEnvs: topo.Hosted, MixedEnvs: topo.Mixed}
 }
 
 // ciFrontends is the frontend list CI drives a Node toolchain for:

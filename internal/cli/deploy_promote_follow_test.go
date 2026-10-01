@@ -365,6 +365,89 @@ func TestDeployRelease_SelfManagedAppliesClientSide(t *testing.T) {
 	}
 }
 
+// ─── Mixed: the control plane converges its half, forge applies the rest ─────
+
+// TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits is the third shape,
+// and the one a two-way `hosted bool` could not express. A MIXED env keeps its
+// ledger on a control plane AND declares workloads that control plane does not
+// run — a cluster Deployment, a compose service, infra, a shipped frontend.
+//
+// Nothing converges that half. So a deploy that only recorded and waited on the
+// hosted rollout reported the release live while the cluster workloads still
+// ran the previous one — the precise failure V3 set out to close, reintroduced
+// for the env shape most likely to be mid-migration. Both halves must run: the
+// client-side apply for what forge owns, and the hosted wait for what the
+// control plane owns.
+func TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits(t *testing.T) {
+	var wait capturedWait
+	var apply capturedClientDeploy
+	wait.install(t)
+	apply.install(t)
+
+	_, store := hostedPromoteFixture(t, "v1")
+	if _, err := runHostedPromote(t, store, "v2", promoteOptions{
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true},
+		Follow: waitByDefault(),
+	}); err != nil {
+		t.Fatalf("mixed deploy: %v", err)
+	}
+	if len(apply.calls) != 1 {
+		t.Fatalf("a mixed env ran the client-side apply %d time(s), want 1 — "+
+			"no control plane converges its cluster half", len(apply.calls))
+	}
+	if len(wait.calls) != 1 {
+		t.Fatalf("a mixed env waited on the hosted rollout %d time(s), want 1 — "+
+			"its hosted half IS converged server-side", len(wait.calls))
+	}
+}
+
+// On a mixed env the apply runs BEFORE the hosted wait, and a failed apply
+// short-circuits it. Waiting out a 15-minute hosted budget after the half this
+// command owns has already failed costs the pipeline the time and tells it
+// nothing it did not know.
+func TestDeployRelease_MixedEnvApplyFailureSkipsTheHostedWait(t *testing.T) {
+	var wait capturedWait
+	wait.install(t)
+	apply := capturedClientDeploy{err: &exitCodeError{code: exitWrong, msg: "worker: CrashLoopBackOff"}}
+	apply.install(t)
+
+	_, store := hostedPromoteFixture(t, "v1")
+	_, err := runHostedPromote(t, store, "v2", promoteOptions{
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true},
+		Follow: waitByDefault(),
+	})
+	if got := exitCodeForError(err); got != exitWrong {
+		t.Fatalf("exit code = %d, want the apply's %d (%v)", got, exitWrong, err)
+	}
+	if len(wait.calls) != 0 {
+		t.Fatalf("a failed cluster apply must not go on to wait on the hosted half, waited %d time(s)", len(wait.calls))
+	}
+}
+
+// --no-wait on a mixed env still APPLIES. It removes the gate, never the
+// deploy, and the cluster half does not ship at all unless this command sends
+// it.
+func TestDeployRelease_MixedEnvNoWaitStillApplies(t *testing.T) {
+	var wait capturedWait
+	var apply capturedClientDeploy
+	wait.install(t)
+	apply.install(t)
+
+	_, store := hostedPromoteFixture(t, "v1")
+	if _, err := runHostedPromote(t, store, "v2", promoteOptions{
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true},
+		Follow: &promoteFollowOptions{NoWait: true},
+	}); err != nil {
+		t.Fatalf("mixed --no-wait: %v", err)
+	}
+	if len(apply.calls) != 1 {
+		t.Fatalf("--no-wait dropped the cluster apply (%d call(s)); it drops the GATE, not the deploy", len(apply.calls))
+	}
+	if len(wait.calls) != 0 {
+		t.Fatalf("--no-wait ran the hosted gate %d time(s)", len(wait.calls))
+	}
+}
+
 // A self-managed apply that fails makes the deploy fail — the release is not
 // live, and reporting success because the ledger entry landed is the gap this
 // verb exists to close.

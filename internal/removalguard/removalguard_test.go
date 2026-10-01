@@ -561,6 +561,75 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "the raw-curl cut-release CI job and `forge reconcile`",
+		Why: "build-images.yml's opt-in `cut-release` job cut and promoted by raw curl to " +
+			"DeployService, read DEPLOY_TOKEN where forge reads FORGE_CONTROL_PLANE_TOKEN, promoted " +
+			"by a hand-copied DEPLOY_ENVIRONMENT_ID, and was broken against the server (no artifact " +
+			"kind/mode). It is gone: a hosted project gets release.yml + the vendored forge-deploy " +
+			"action, which go through forge. `forge reconcile` was never a verb; reconcile.yml now " +
+			"runs `forge env status`. A surviving reference scaffolds a job that cannot work.",
+		Patterns: []*regexp.Regexp{
+			regexp.MustCompile(`\bcut-release\b`),
+			regexp.MustCompile(`\bDEPLOY_TOKEN\b|\bDEPLOY_ENVIRONMENT_ID\b`),
+			regexp.MustCompile("`forge reconcile`|run: forge reconcile\\b"),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the tests that pin the removal",
+				Reason: "They assert the rendered workflows do NOT contain these spellings, so " +
+					"they must name them.",
+				Paths: []string{
+					"internal/templates/ci_release_test.go",
+					"internal/generator/project_ci_reconcile_test.go",
+				},
+			},
+			{
+				Name:   "the changelog entries that record the job and its removal",
+				Reason: "The CHANGELOG has to name what it removed, or the entry cannot tell a reader upgrading what stopped existing.",
+				Paths:  []string{"CHANGELOG.md"},
+			},
+		},
+	},
+	{
+		Name: "the vendored action's promote/probe/wait steps and its `deploy:` input",
+		Why: "The composite action used to run FOUR forge commands to deploy one env: promote, " +
+			"a `forge env rollout` probe to decide whether this env converges its own promotions, " +
+			"a `forge env deploy` when it does not, and a `forge env wait` on the promotion the " +
+			"promote returned. `forge env deploy <env>` is all four (ADR docs/adr/env-verbs.md, V3): " +
+			"it records, applies and waits, and it decides who applies from what the env DECLARES " +
+			"rather than from a probe or a pipeline flag. So the action's `deploy: auto|true|false` " +
+			"input is gone too — there is nothing left for a caller to choose, and a project that " +
+			"still passed `deploy: \"true\"` would be configuring a decision forge now makes " +
+			"correctly from the env's own render (including the mixed case, which the probe got " +
+			"wrong whenever the rollout read exited 5). A surviving promote/rollout/wait step is a " +
+			"scaffolded command that exits non-zero, and a surviving `deploy:` input is a lie about " +
+			"where the decision lives.",
+		// SCOPED TO THE ACTION'S OWN SPELLINGS, deliberately narrowly.
+		// `converges_promotions` is still a real field forge reads, and
+		// `deploy: true` is an ordinary KCL/config key in a dozen unrelated
+		// places — so neither is a pattern here. What is retired is the
+		// PROBE that read the field from a shell pipeline, and the files it
+		// wrote.
+		Patterns: []*regexp.Regexp{
+			regexp.MustCompile(`jq -r '\.converges_promotions`),
+			regexp.MustCompile(`\$\{\{ inputs\.deploy \}\}|inputs\.deploy\b`),
+			regexp.MustCompile(`> rollout\.json|> promote\.json`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the tests that pin the removal",
+				Reason: "They assert the rendered action does NOT contain these spellings, so " +
+					"they must name them.",
+				Paths: []string{"internal/templates/ci_release_test.go"},
+			},
+			{
+				Name:   "the changelog entry that records what the action stopped doing",
+				Reason: "The CHANGELOG has to name the retired input, or a project upgrading cannot tell why its `deploy:` line is now ignored.",
+				Paths:  []string{"CHANGELOG.md"},
+			},
+		},
+	},
+	{
 		Name: "the vendored KCL-module downgrade guard",
 		Why: "`forge generate --allow-kcl-downgrade` and kclvendor.DowngradeError are gone. They " +
 			"guarded a committed project-local .forge-kcl/ copy against an older forge rewriting it; " +

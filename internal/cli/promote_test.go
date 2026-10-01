@@ -354,35 +354,24 @@ func TestFileLedger_CompareAndSet(t *testing.T) {
 	}
 }
 
-// TestPromote_UnwiredFlagsRefuseBeforeAnyWrite: every flag F3/F4/F5 own is
-// declared now (F2 owns promote.go), and until its owner wires it, it
-// refuses the whole promote — never moving the pointer and then failing on
-// the part the caller asked for.
-func TestPromote_UnwiredFlagsRefuseBeforeAnyWrite(t *testing.T) {
-	cases := map[string]promoteOptions{
-		"--wait":      {Follow: promoteFollowOptions{Wait: true}},
-		"--deploy":    {Follow: promoteFollowOptions{Deploy: true}},
-		"--timeout":   {Follow: promoteFollowOptions{Timeout: 1}},
-		"--fail-fast": {Follow: promoteFollowOptions{FailFast: true}},
-		// --from / --from-promotion are wired (F5); their behaviour is
-		// pinned in promote_from_test.go.
-		// --gate is wired (F4); its behaviour is pinned in
-		// promote_gates_test.go.
-	}
-	for flag, opts := range cases {
-		t.Run(flag, func(t *testing.T) {
-			fake, store := hostedPromoteFixture(t, "v1")
-			before := fake.callCount(procPromote)
-			_, err := runHostedPromote(t, store, "v2", opts)
-			if err == nil || !strings.Contains(err.Error(), "not supported by this forge build") {
-				t.Fatalf("%s must refuse with the not-supported message, got %v", flag, err)
-			}
-			if n := fake.callCount(procPromote); n != before {
-				t.Fatalf("%s refused AFTER writing: Promote called %d time(s)", flag, n-before)
-			}
-		})
-	}
-}
+// Every promote flag F3/F4/F5/F8 own is now WIRED, so there is no
+// "unwired flag" table left to assert on.
+//
+// TestPromote_UnwiredFlagsRefuseBeforeAnyWrite lived here through wave 3. It
+// pinned F2's staging contract: promote.go declares every flag up front, and
+// one whose owner had not landed yet refused the WHOLE promote rather than
+// moving the pointer and then failing on the part the caller asked for. Each
+// owner deleted its own row as it wired its flag, and F3 (--wait/--deploy/
+// --timeout/--fail-fast) removed the last of them.
+//
+// It is deleted rather than kept with an empty table because a table test
+// over no cases passes unconditionally — it would read as a live guarantee
+// while asserting nothing at all. The behaviour it protected now lives in
+// each flag's own test, where the assertion is about what the flag DOES:
+// promote_wait_test.go, promote_gates_test.go, promote_from_test.go. The
+// refuse-before-any-write property specifically is still pinned, by
+// TestPromoteWait_UnwiredCombinationsRefuseBeforeAnyWrite (a tuning flag
+// without --wait) and TestPromoteCmd_DeclaresEveryPlannedFlag below.
 
 // Every promote flag the plan names is declared on the command, so F3/F4/F5/
 // F8 never edit promote.go.

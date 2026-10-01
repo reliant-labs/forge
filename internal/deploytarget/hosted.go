@@ -1014,19 +1014,37 @@ func (p HostedProvider) publish(ctx context.Context, c HostedCaller, group Servi
 		}
 		fmt.Printf("  published %s → %s\n", item.Name, resp.Reference)
 	}
-	return p.wait(ctx, c, group.Env, envID, plan, ids)
+	return p.wait(ctx, c, group.Env, envID, promotionID, plan, ids)
 }
 
-// wait polls GetStatus{environmentId} until every published workload is
-// ready, or the budget expires.
+// wait polls until every published workload is confirmed running the bytes
+// this deploy published, or the budget expires. Timing out is reported as
+// TIMED OUT, never as success.
 //
-// READY is environmentVerdict CONVERGED, or — per workload — verdict
-// CONVERGED, or observed READY carrying the desired digest. The second arm
-// exists because CONVERGED additionally requires a stability window: a deploy
-// that just rolled out is running the right bytes and is healthy, and making
-// the CLI sit out the window would make every deploy as slow as the window.
-// Timing out is reported as TIMED OUT, never as success.
-func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID string, plan []hostedPlanItem, ids map[string]string) error {
+// WHICH READ DECIDES "DONE" depends on whether this deploy published a
+// promotion's pins.
+//
+// With a promotion (the normal case for a released env), the verdict comes
+// from **GetRollout**, the control plane's one server-computed rollout phase,
+// scoped to THAT promotion's frozen pins. That is what makes the answer
+// trustworthy: a promote of v7 landing mid-wait cannot make a wait on v6
+// succeed on bytes it was never asked about, a mid-rollout DIVERGED is not
+// read as drift, and an observation claiming the new digest while the new
+// ReplicaSet crash-loops is caught by the updated/desired replica pair. The
+// CLI's `forge env wait` reads the same RPC, so deploy and wait share ONE
+// definition of done rather than two that drift (§3.2).
+//
+// Without one — an unbound env, or a control plane that does not serve
+// GetRollout — it falls back to the GetStatus poll: per workload, verdict
+// CONVERGED or observed READY on the desired digest.
+//
+// THE DEPLOY THRESHOLD IS "PUBLISHED AND SERVING", NOT "STABLE". Both paths
+// complete on a workload that is serving the right bytes without sitting out
+// the server's stability window (STABILIZING counts; see
+// rolloutPhaseServing). A deploy that waited for the window would be two
+// minutes slower every time, to answer a question `forge env wait` is the
+// verb for.
+func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID, promotionID string, plan []hostedPlanItem, ids map[string]string) error {
 	policy := p.Rollout.Normalize()
 	if policy.Mode == cluster.RolloutSkip {
 		for _, item := range plan {
@@ -1041,8 +1059,69 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	}
 	deadline := time.Now().Add(policy.Timeout)
 	var last map[string]string
+	// rollout is sticky-off: once this wait has given up on the rollout
+	// read, every later poll goes straight to GetStatus. Re-asking each
+	// time would spend a call per poll re-learning the same answer.
+	rollout := promotionID != ""
+	rolloutFailures := 0
 	for {
 		pending, reasons, domains, err := p.pollOnce(ctx, c, envID, plan, ids)
+		if rollout {
+			rolloutPending, rolloutReasons, rerr := p.pollRolloutOnce(ctx, c, envID, promotionID, plan)
+			switch {
+			case errors.Is(rerr, errRolloutUnavailable):
+				// Said once, because the fallback is a WEAKER
+				// completion check and an operator reading a
+				// green deploy should know which question was
+				// actually answered.
+				fmt.Printf("  readiness: %s cannot report this promotion's rollout; falling back to the status poll\n", envName)
+				rollout = false
+			case errors.Is(rerr, errRolloutSuperseded):
+				// TERMINAL, and deliberately not a timeout: the
+				// bytes being waited on are no longer what the
+				// env wants, so no amount of further waiting
+				// can make this deploy's question answerable.
+				for _, item := range plan {
+					p.observe(item.Name, cluster.RolloutStateNotWaited, rerr)
+				}
+				werr := fmt.Errorf("hosted env %q: %w", envName, rerr)
+				if policy.Mode == cluster.RolloutWarn {
+					fmt.Printf("  Warning: %v\n", werr)
+					return nil
+				}
+				return werr
+			case rerr != nil:
+				// Any other failure is retried a FEW times and
+				// then abandoned in favour of the status poll.
+				//
+				// Retried, because a control plane restarting
+				// mid-rollout should not weaken the completion
+				// check for the rest of the deploy. Abandoned
+				// rather than retried forever, because the
+				// alternative is worse in both directions: a
+				// rollout read that keeps failing would
+				// otherwise consume the entire rollout budget
+				// and time the deploy out with "last status
+				// read failed", even though GetStatus was
+				// answering perfectly well the whole time. A
+				// weaker completion check, announced, beats a
+				// deploy that fails for a reason that has
+				// nothing to do with the deploy.
+				rolloutFailures++
+				if rolloutFailures >= rolloutReadAttempts {
+					fmt.Printf("  readiness: could not read this promotion's rollout (%v); falling back to the status poll\n", rerr)
+					rollout = false
+					break
+				}
+				// Only err == nil below updates `last`, so a
+				// retried tick keeps the previous reasons.
+				pending, reasons, err = nil, nil, rerr
+			default:
+				// The rollout decides readiness; the status read
+				// above contributes only its domains.
+				pending, reasons, err = rolloutPending, rolloutReasons, nil
+			}
+		}
 		if err == nil && len(pending) == 0 {
 			for _, item := range plan {
 				p.observe(item.Name, cluster.RolloutStateReady, nil)
@@ -1086,6 +1165,27 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 		case <-time.After(interval):
 		}
 	}
+}
+
+// errRolloutSuperseded ends the wait immediately: a newer promotion replaced
+// the one this deploy published, so the bytes being waited on are no longer
+// what the environment wants. Sitting out the timeout would report "this
+// deploy failed" for a deploy that was simply overtaken, and the operator's
+// next step is to look at the newer promotion rather than at this one.
+var errRolloutSuperseded = errors.New("a newer promotion replaced the one this deploy published")
+
+// pollRolloutOnce reads the promotion's rollout once and returns the plan
+// items not yet confirmed serving its pins, with a reason for each.
+func (p HostedProvider) pollRolloutOnce(ctx context.Context, c HostedCaller, envID, promotionID string, plan []hostedPlanItem) ([]string, map[string]string, error) {
+	rollout, err := readHostedRollout(ctx, c, envID, promotionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if rollout.Phase == wireRolloutPhaseSuperseded {
+		return nil, nil, fmt.Errorf("%w: %s", errRolloutSuperseded, emptyOr(rollout.Reason, "promotion "+promotionID+" was superseded"))
+	}
+	pending, reasons := rolloutPendingOf(plan, rollout)
+	return pending, reasons, nil
 }
 
 // pollOnce reads status once and returns the names still not ready, with a

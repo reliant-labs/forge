@@ -327,9 +327,23 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		}
 	}
 	// A refused write still renders: the plan is what the write WOULD have
-	// done, and the refusal says what is there instead. Any other write
-	// failure has no document worth reading beyond the error.
-	if writeErr != nil && plan.Refusal == nil {
+	// done, and the refusal says what is there instead. An APPLIED promote
+	// whose follow-through then failed renders too, and that case is the
+	// one worth spelling out: a wait that degrades, times out or is
+	// superseded (F3) arrives here in the same shape a failed write does,
+	// but the two want opposite treatment. A failed write recorded
+	// nothing, so there is no document worth reading beyond the error. A
+	// failed WAIT recorded a promotion — `recorded.id` exists, and it is
+	// precisely what the next pipeline step needs, because a red rollout
+	// is exactly when the gate evidence must be attached to it. Dropping
+	// the document there would leave CI's `gate record` with no promotion
+	// id for the one release that needed the trail.
+	//
+	// plan.stamp(writeErr) below carries the follow-through's exit code
+	// into ok/exit_code, so the document and the process status still
+	// agree — the document reports applied:true with exit_code 5, which
+	// is the truth: the pointer moved and the gate went red.
+	if writeErr != nil && plan.Refusal == nil && !plan.Applied {
 		return writeErr
 	}
 

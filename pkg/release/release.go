@@ -305,12 +305,20 @@ type Release struct {
 	// Artifacts maps the bare artifact name (an image name, a package name,
 	// a frontend name) → its identity.
 	Artifacts map[string]Artifact `json:"artifacts"`
+	// Run is the pipeline attempt that cut the release, or the zero Run
+	// when a human cut it. It is NOT part of the release's identity:
+	// [Release.SameContent] ignores it, so a CI retry that re-cuts the
+	// same bytes under a new run id is still an idempotent re-cut.
+	Run Run `json:"run,omitempty"`
 }
 
 // Validate checks the release and every artifact in it.
 func (r Release) Validate() error {
 	if strings.TrimSpace(r.Version) == "" {
 		return fmt.Errorf("%w: release version is required", ErrInvalid)
+	}
+	if err := r.Run.Validate(); err != nil {
+		return fmt.Errorf("release %q: %w", r.Version, err)
 	}
 	if len(r.Artifacts) == 0 {
 		return fmt.Errorf("%w: release %q names no artifacts — a release that names nothing cannot be promoted", ErrInvalid, r.Version)

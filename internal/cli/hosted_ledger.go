@@ -270,7 +270,13 @@ func (s *hostedStore) promotionFromWire(env string, w wirePromotion) (release.Pr
 		}
 	}
 	for _, g := range w.Gates {
-		p.Gates = append(p.Gates, release.Gate{Name: g.Name, Status: g.Status, URL: g.URL})
+		// The LENIENT read path. A control plane holding promotions
+		// recorded before the gate status set closed returns whatever
+		// free text the old scaffold wrote, and refusing to decode it
+		// would make those promotions unrenderable. An unrecognised
+		// value maps to error and is kept verbatim on RawStatus.
+		status, raw := release.GateStatusFromStored(g.Status)
+		p.Gates = append(p.Gates, release.Gate{Name: g.Name, Status: status, RawStatus: raw, URL: g.URL})
 	}
 	if err := p.Validate(); err != nil {
 		return release.Promotion{}, fmt.Errorf("control plane returned promotion %s: %w", w.ID, err)
@@ -347,7 +353,11 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion) (release.
 	if len(p.Gates) > 0 {
 		gates := make([]wireGate, 0, len(p.Gates))
 		for _, g := range p.Gates {
-			gates = append(gates, wireGate(g))
+			// Only the three fields today's server stores. The rest of
+			// release.Gate (summary, timing, run id, details) rides on
+			// the wire once P0's DeployGate lands; sending them now
+			// would be sending fields no deployed control plane reads.
+			gates = append(gates, wireGate{Name: g.Name, Status: string(g.Status), URL: g.URL})
 		}
 		req["gates"] = gates
 	}

@@ -52,8 +52,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
@@ -77,129 +75,6 @@ const (
 
 // procGetRollout is controlplane.v1.DeployService/GetRollout.
 const procGetRollout = "controlplane.v1.DeployService/GetRollout"
-
-// newEnvWaitCmd is `forge env wait <env>`.
-func newEnvWaitCmd() *cobra.Command {
-	var opts envWaitOptions
-
-	cmd := &cobra.Command{
-		Use:   "wait <environment>",
-		Short: "Wait for a promotion to finish rolling out, and prove it stayed up",
-		Long: `Block until the release an environment is promoted to has rolled out, and
-report whether it is actually serving.
-
-WHY THIS IS NOT ` + "`forge env verify`" + `. Verify asks "is the cluster running the
-digests the binding declares", once, right now. This asks the question a
-release pipeline gates on: did the bytes I just promoted take over, and did
-they STAY up past the stability window? A pod that becomes Ready and then
-crash-loops forty seconds later passes verify and fails this.
-
-PINNED TO ONE PROMOTION, NEVER TO "whatever the env declares now". The phase is
-judged against the frozen pins of the promotion being waited on. So a hotfix
-promoted while this wait is running does NOT make the wait succeed on bytes it
-was never asked about — it reports SUPERSEDED (exit 6) and says so.
-
-WHICH PROMOTION. By default, the environment's current one. --promotion <id>
-names one captured earlier (the id ` + "`env promote --json`" + ` printed), which is what
-makes a CI retry of a timed-out wait continue against the SAME release instead
-of silently adopting a newer one. --release <version> waits on the current
-promotion but REFUSES unless it binds that version.
-
-DEGRADED IS TOLERATED UNTIL THE DEADLINE, BY DEFAULT. A workload that
-crash-loops once on a cold start and then settles is common, so exiting on the
-first degraded observation would make this gate flaky. The rollout fails when
-the budget runs out while degraded — and the report names the workload, its
-replica counts and its last error. --fail-fast exits on the first degraded
-observation instead, for pipelines that prefer speed to tolerance.
-
-DATABASES AND THIRD-PARTY IMAGES DO NOT GATE A RELEASE. A workload the
-promotion does not pin is REPORTED (under ` + "`unpinned`" + `) and never fails the wait:
-a managed database cannot be release-bound, so letting it fail a release would
-make every release hostage to something the release did not change.
---include-unpinned opts into the stricter reading.
-
-EXIT CODES — a pipeline branches on these directly:
-
-  0  SUCCEEDED — every pinned workload served the promoted digest past the
-     stability window
-  1  DEGRADED — a workload is not serving (with --fail-fast, on the first such
-     observation; otherwise at the deadline)
-  2  could not determine — a workload is unobservable, the control plane was
-     unreachable or refused the credential, or the environment does not
-     converge promotions
-  5  TIMED OUT while still pending / progressing / stabilizing. The rollout was
-     PROGRESSING, so retry the wait; do not re-promote
-  6  SUPERSEDED — a newer promotion replaced the one being waited on
-
-5 and 6 are deliberately not 1. "We never saw this finish" and "the release
-was overtaken" are not "the release is bad", and reporting them as a failure
-would turn fine releases red.
-
---json emits one document at the end, with the same phase, every workload's
-state, and the phase transitions observed along the way. --watch-json emits
-NDJSON, one line per phase change, for a log stream or a UI.
-
-ONE READ, NEVER BLOCKING: --timeout 0. It reports where the rollout has got to
-right now and exits — the primitive ` + "`forge env rollout`" + ` is built on. The exit
-code is the same table a blocking wait uses, so a still-progressing snapshot is
-5 and a finished one is 0. An UNSET --timeout keeps the 15m budget; only an
-explicit 0 means a single read.
-
-Examples:
-  forge env wait prod                                   # the current promotion, 15m budget
-  forge env wait prod --timeout 0 --json                # where is it NOW? one read, no blocking
-  forge env wait prod --release v1.4.0                  # refuse unless prod binds v1.4.0
-  ID=$(forge env deploy prod v1.4.0 --no-wait --json | jq -r .recorded.id)
-  forge env wait prod --promotion "$ID" --timeout 20m   # a retry continues on the SAME release
-  forge env wait prod --fail-fast --json | jq -r '.workloads[] | select(.phase=="degraded")'`,
-		Args: cobra.ExactArgs(1),
-		// The report IS the output; a cobra usage dump on a degraded
-		// rollout would bury the workload that failed under the flag
-		// list.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// `--timeout 0` means ONE READ, never block — the
-			// single-shot mode `forge env rollout` is built on
-			// (§3.5). UNSET keeps the 15m default.
-			//
-			// Those two have to be told apart, and a zero value
-			// cannot do it: Timeout's zero IS the unset value, so
-			// "0" and "not given" arrive identically. cobra's
-			// Changed is the only thing that knows the difference,
-			// and it is only available here, where the flag set
-			// is. Reading it wrong in either direction is bad in
-			// its own way — an unset flag becoming a single read
-			// would turn every plain `env wait` into a
-			// non-blocking poll, and an explicit 0 becoming 15m
-			// would make `env rollout` block for a quarter of an
-			// hour.
-			if f := cmd.Flags().Lookup("timeout"); f != nil && f.Changed && opts.Timeout == 0 {
-				opts.Once = true
-			}
-			return runEnvWaitForCmd(cmd.Context(), args[0], opts)
-		},
-	}
-
-	flags := cmd.Flags()
-	flags.StringVar(&opts.PromotionID, "promotion", "",
-		"Promotion id to wait on (default: the env's current promotion). A CI retry passes the id the promote returned")
-	flags.StringVar(&opts.Release, "release", "",
-		"Wait on the current promotion, but refuse unless it binds this release version (exit 6 if it moved on)")
-	cmd.MarkFlagsMutuallyExclusive("promotion", "release")
-	flags.DurationVar(&opts.Timeout, "timeout", envWaitDefaultTimeout,
-		"Whole wait budget. `--timeout 0` reads the phase ONCE and never blocks (still progressing = exit 5)")
-	flags.DurationVar(&opts.StableFor, "stable-for", 0,
-		"Extra hold AFTER the phase reaches succeeded (default 0: the server's own stability window already applies)")
-	flags.BoolVar(&opts.FailFast, "fail-fast", false,
-		"Exit 1 on the FIRST degraded observation instead of waiting out --timeout")
-	flags.BoolVar(&opts.IncludeUnpinned, "include-unpinned", false,
-		"Let a degraded UNPINNED workload (a database, a third-party image) fail the gate too")
-	flags.DurationVar(&opts.Interval, "interval", envWaitDefaultInterval, "Poll cadence")
-	flags.BoolVar(&opts.JSON, "json", false, "Emit one machine-readable document at the end (same exit codes)")
-	flags.BoolVar(&opts.WatchJSON, "watch-json", false, "Emit NDJSON, one line per phase change, as the rollout progresses")
-
-	return cmd
-}
 
 // runEnvWaitForCmd is what the command runs. A var so a test can assert the
 // OPTIONS the flag layer resolved — specifically that an explicit

@@ -243,89 +243,68 @@ Render options (-D):
 	return cmd
 }
 
-// newEnvStatusCmd is the retrieve-after-the-fact half of the `forge env up`
-// summary: `forge env status <env>` re-derives the same host
-// service + frontend table long after the startup scrollback has scrolled
-// away, so a human (or an agent that reconnected to a running stack) can
-// re-discover every listening URL, its log file, and whether it's actually
-// up — without re-running `forge env up`. It renders the env's KCL through
-// the SAME devstack context `forge env up` uses (identical ports), probes
-// each declared port for a live listener, and cross-references the ownership
-// markers the reclaim guard stamps so it can tell "our process is up" from
-// "something else grabbed the port".
-func newEnvStatusCmd() *cobra.Command {
-	var (
-		jsonOut bool
-		signal  string
-		verbose bool
-	)
-	cmd := &cobra.Command{
-		Use:   "status <environment>",
-		Short: "Everything runtime about an env: host services, frontends, compose infra, app health, telemetry",
-		Args:  cobra.ExactArgs(1),
-		Long: `Report the runtime state of an environment.
-
-The TABLE lists every host service and frontend the env's ` + "`forge env up`" + `
-runs, with:
-
-  * its browser URL (http://localhost:<port>),
-  * its per-service log file (tail -f / grep target),
-  * whether a listener is accepting on the port RIGHT NOW (up/down),
-    including the holder pid and whether that process is forge-owned,
-  * for each host service, the live SERVER process(es) backing it with
-    build-freshness — binary path, its build/mtime, the process start
-    time, and whether it is stale vs the repo HEAD commit, and
-  * a loud DUPLICATE flag when more than one process is serving the same
-    host service (the "air spawned a new worker but didn't reap the old
-    one" symptom — stale and fresh build vintages running at once).
-
-The RUNTIME CHECKS underneath probe the rest of the stack: the compose
-infra, the app's /healthz + /readyz, pprof, the telemetry backends
-(Prometheus, Tempo, Loki, Pyroscope) and Delve. These used to live in
-` + "`forge doctor`" + `, which had to GUESS the app's port and reported the
-miss as a gray dash indistinguishable from "not applicable". They run
-here because this command already resolves the ports the stack actually
-bound. A check that cannot determine its answer says UNDETERMINED — it
-never reads as a pass.
-
-Reads the same rendered KCL + resolved ports ` + "`forge env up`" + ` uses, so
-the table matches what ` + "`forge env up <env>`" + ` printed — retrievable
-after the startup scrollback is gone. ALL declared frontends are listed (a
-project may declare several; each gets its own port row).
-
-Whether the project itself is well-formed — deployability, payload caps,
-tooling, cluster capability — is ` + "`forge doctor`" + `, which takes no env.
-
-Examples:
-  forge env status dev
-  forge env status dev --signal traces   # one runtime signal only
-  forge env status dev --json            # machine-readable for scripts/agents`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpServices(cmd.Context(), args[0], jsonOut, signal, verbose)
-		},
-	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (name/kind/url/port/log/listening/pid/owned + per-host-service serving[] build-freshness and a duplicate flag, plus the runtime checks)")
-	cmd.Flags().StringVar(&signal, "signal", "", "Run only one runtime signal: app, metrics, traces, logs, profiles (default: all)")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show evidence for all runtime checks (not just failures)")
-	return cmd
-}
-
 // runUpServices renders the env's KCL, probes each declared port, and
 // prints the host-service + frontend table (or JSON). It arms the SAME
 // devstack render context `forge env up`/`forge env deploy` arm so ports resolve
 // identically, then restores any resolve_port drift — this is a read-only
 // report and must not shift the stable port assignments a live stack is on.
 func runUpServices(ctx context.Context, env string, jsonOut bool, signal string, verbose bool) error {
+	if jsonOut {
+		rep, err := collectRuntimeStatus(ctx, env, signal, verbose)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+	return renderRuntimeStatus(ctx, env, signal, verbose)
+}
+
+// collectRuntimeStatus assembles the runtime report WITHOUT printing it, so
+// the merged `forge env status --json` can carry it as one section of ONE
+// document. Emitting here instead would put two JSON documents on stdout,
+// which produces a stream no `jq` invocation can read — and the failure looks
+// like malformed JSON rather than like two commands sharing an output.
+func collectRuntimeStatus(ctx context.Context, env, signal string, verbose bool) (upServicesReport, error) {
+	read, err := readRuntimeStatus(ctx, env)
+	if err != nil {
+		return upServicesReport{}, err
+	}
+	return buildUpServicesReport(ctx, buildUpServicesInput{
+		env: env, projectName: read.projectName, projectDir: read.projectDir,
+		entities: read.entities, rows: read.rows, resolved: read.resolved,
+		headCommit: read.headCommit, target: read.target, signal: signal, verbose: verbose,
+	})
+}
+
+// runtimeStatusRead is one render-and-probe pass: everything both the text
+// renderer and the JSON assembler need, resolved once. Shared rather than
+// repeated because the two must describe the SAME observation — a second pass
+// would re-render and re-probe, and could legitimately disagree with the
+// first about which ports are up.
+type runtimeStatusRead struct {
+	projectName, projectDir string
+	entities                *KCLEntities
+	rows                    []upServiceRow
+	resolved                *resolvedEnvState
+	headCommit              time.Time
+	target                  doctor.RuntimeTarget
+}
+
+// readRuntimeStatus renders the env, overlays the live ports, probes them and
+// derives the runtime-check target.
+func readRuntimeStatus(ctx context.Context, env string) (runtimeStatusRead, error) {
 	store, err := loadProjectStore()
 	if err != nil {
-		return err
+		return runtimeStatusRead{}, err
 	}
 	projectDir := projectDirForKCL()
 	_, restore := activateDevStack(ctx, projectDir, env, renderToLaunch, inspectBlocks)
 	entities, err := RenderKCL(ctx, projectDir, env)
 	restore() // revert resolve_port bytes; a status render must not drift ports
 	if err != nil {
-		return fmt.Errorf("render KCL: %w", err)
+		return runtimeStatusRead{}, fmt.Errorf("render KCL: %w", err)
 	}
 
 	// Honor the frontend feature gate so a frontends-off project's report
@@ -366,37 +345,21 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 	// env_status_checks.go.
 	target := runtimeTargetFor(entities, rows)
 
-	if jsonOut {
-		checks, checkErr := runEnvRuntimeChecks(ctx, store.Meta().Name, projectDir, env, target, signal, true, verbose)
-		if checkErr != nil {
-			return checkErr // a mistyped --signal is a usage error, not a stack state
-		}
-		rep := upServicesReport{
-			Env: env, Services: rows, Checks: checks.Checks,
-			// Lifted out of the Cluster Workloads check to the top level:
-			// it sits beside `services` because it is the other half of
-			// the same question, and a consumer should not have to know
-			// which check happens to carry it.
-			Workloads: doctor.InventoryOf(checks),
-		}
-		// DATABASE_URL is the other half of the discovery contract: an agent
-		// or script gets this worktree's API port (per-service `port`) AND its
-		// DSN from one call. Sourced from the launch-time persist; empty (and
-		// omitted) when no live stack persisted it.
-		if resolved != nil {
-			rep.DatabaseURL = resolved.DatabaseURL
-		}
-		if !headCommit.IsZero() {
-			rep.HeadCommitAt = headCommit.UTC().Format(time.RFC3339)
-		}
-		dest := resolveEnvDestination(ctx, env, entities, readHostedStatusFromDeclaration)
-		rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
-		rep.ControlPlaneKind = dest.ControlPlaneKind
-		rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(rep)
+	return runtimeStatusRead{
+		projectName: store.Meta().Name, projectDir: projectDir,
+		entities: entities, rows: rows, resolved: resolved,
+		headCommit: headCommit, target: target,
+	}, nil
+}
+
+// renderRuntimeStatus prints the host-service + frontend table and the
+// runtime checks under it.
+func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) error {
+	read, err := readRuntimeStatus(ctx, env)
+	if err != nil {
+		return err
 	}
+	rows, entities := read.rows, read.entities
 	if len(rows) == 0 {
 		fmt.Printf("[up] no host services or frontends declared in deploy/kcl/%s/\n", env)
 	} else {
@@ -418,8 +381,59 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 	// Printed AFTER the table: the table is the answer most invocations
 	// want, and the checks read as its detail. A project with no host rows
 	// still gets them — its compose infra is runtime state too.
-	_, err = runEnvRuntimeChecks(ctx, store.Meta().Name, projectDir, env, target, signal, false, verbose)
+	_, err = runEnvRuntimeChecks(ctx, read.projectName, read.projectDir, env, read.target, signal, false, verbose)
 	return err
+}
+
+// buildUpServicesInput carries everything the report needs, all of it already
+// resolved by the caller. A struct rather than ten parameters because every
+// field is derived from the SAME render + probe pass and they are meaningless
+// apart: a rows list without the entities it was collected from describes an
+// env nobody rendered.
+type buildUpServicesInput struct {
+	env, projectName, projectDir string
+	entities                     *KCLEntities
+	rows                         []upServiceRow
+	resolved                     *resolvedEnvState
+	headCommit                   time.Time
+	target                       doctor.RuntimeTarget
+	signal                       string
+	verbose                      bool
+}
+
+// buildUpServicesReport assembles the runtime report WITHOUT emitting it, so
+// it can be either the whole of `forge env status --json`'s runtime section or
+// one half of the merged document. Extracted rather than duplicated: two
+// assemblies of this report would eventually disagree about a field, and the
+// consumer reading `workloads` has no way to discover which one it got.
+func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServicesReport, error) {
+	checks, checkErr := runEnvRuntimeChecks(ctx, in.projectName, in.projectDir, in.env, in.target, in.signal, true, in.verbose)
+	if checkErr != nil {
+		return upServicesReport{}, checkErr
+	}
+	rep := upServicesReport{
+		Env: in.env, Services: in.rows, Checks: checks.Checks,
+		// Lifted out of the Cluster Workloads check to the top level:
+		// it sits beside `services` because it is the other half of
+		// the same question, and a consumer should not have to know
+		// which check happens to carry it.
+		Workloads: doctor.InventoryOf(checks),
+	}
+	// DATABASE_URL is the other half of the discovery contract: an agent
+	// or script gets this worktree's API port (per-service `port`) AND its
+	// DSN from one call. Sourced from the launch-time persist; empty (and
+	// omitted) when no live stack persisted it.
+	if in.resolved != nil {
+		rep.DatabaseURL = in.resolved.DatabaseURL
+	}
+	if !in.headCommit.IsZero() {
+		rep.HeadCommitAt = in.headCommit.UTC().Format(time.RFC3339)
+	}
+	dest := resolveEnvDestination(ctx, in.env, in.entities, readHostedStatusFromDeclaration)
+	rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
+	rep.ControlPlaneKind = dest.ControlPlaneKind
+	rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
+	return rep, nil
 }
 
 // newEnvDownCmd stops a running stack: this project's stack for one

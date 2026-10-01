@@ -455,7 +455,7 @@ func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 		Image: "ghcr.io/acme/control-plane@" + sha("b"),
 	}}}
 
-	err := runEnvVerify(context.Background(), "prod", envVerifyOptions{
+	err := runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 		Lister:   lister,
 		Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 		Bindings: store,
@@ -470,7 +470,7 @@ func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 
 func TestRunEnvVerify_UnboundAgainstNonFileBackend(t *testing.T) {
 	t.Chdir(t.TempDir())
-	err := runEnvVerify(context.Background(), "prod", envVerifyOptions{
+	err := runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 		Lister:   &stubLister{},
 		Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 		Bindings: newMemBindingStore(nil),

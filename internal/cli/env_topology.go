@@ -13,8 +13,6 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"github.com/spf13/cobra"
-
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/statefile"
@@ -370,84 +368,6 @@ type envTopologyReport struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// newEnvTopologyCmd is `forge env topology [environment...]`.
-func newEnvTopologyCmd() *cobra.Command {
-	var (
-		asJSON  bool
-		verify  bool
-		timeout time.Duration
-	)
-
-	cmd := &cobra.Command{
-		Use:   "topology [environment...]",
-		Short: "Show every environment, the release it runs, and how far behind it is",
-		Long: `Print the whole release topology of this project in ONE read: every
-environment, the release bound to it, the per-image digests that release
-froze, where the environment runs, and how far behind the newest release it
-is.
-
-WHY ONE COMMAND. ` + "`forge env verify`" + ` answers one env, ` + "`forge release verify`" + `
-answers one version. Neither can say how the environments RELATE — that prod
-is fifteen releases and ten weeks ahead of staging, and carries an image
-staging does not have at all. Assembling that from N single-env calls means
-the caller has re-implemented forge's release model, so forge answers it
-directly instead.
-
-LEDGER BY DEFAULT, CLUSTER ON REQUEST. With no flags this reads only the
-local ledgers: fast, offline, and needing no credentials for any environment.
-Every image's state is then ` + "`not_verified`" + `, which means UNKNOWN — nothing was
-compared against any cluster. Pass --verify to additionally read each
-environment's live workloads through the same path ` + "`forge env verify`" + ` uses,
-which turns those cells into match / drift / missing / untagged / unreachable.
-
-` + "`not_verified`" + ` IS NOT ` + "`match`" + `. A consumer that renders them alike shows a green
-screen over environments nobody looked at.
-
-WHICH ENVIRONMENTS. With no arguments, the environments declared in this
-checkout (deploy/kcl/<env>/main.k). Name environments explicitly to include
-one that is bound in the ledger but not declared here — a release promoted on
-a branch that has the env, inspected from one that does not. That is a real
-state and is reported as ` + "`declared: false`" + `, not as an error.
-
-EXIT CODES:
-
-  0  the topology was read (the default mode always exits 0 — reading a
-     ledger cannot prove anything wrong)
-  1  --verify found at least one image DRIFTED or MISSING
-  2  --verify could not read a cluster, and nothing outright drifted
-
-Examples:
-  forge env topology                       # the whole screen, offline
-  forge env topology --json                # the same, machine-readable
-  forge env topology --verify              # also reconcile against clusters
-  forge env topology staging preprod       # envs not declared in this checkout
-  forge env topology --json | jq -r '.environments[] | "\(.env) \(.release)"'`,
-		// The command's findings ARE its output; a cobra usage dump on a
-		// drift failure would bury them under the flag list.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// One projectDir for both seams: the ledger store and the
-			// declared-env scan must agree about which checkout they
-			// are describing.
-			projectDir := projectDirForKCL()
-			return runEnvTopology(cmd.Context(), args, envTopologyOptions{
-				JSON:       asJSON,
-				Verify:     verify,
-				Timeout:    timeout,
-				ProjectDir: projectDir,
-				Lister:     kubectlImageLister{},
-				Resolver:   kclTargetResolver{},
-			})
-		},
-	}
-
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit machine-readable JSON (same exit codes as text mode)")
-	cmd.Flags().BoolVar(&verify, "verify", false, "Also read each environment's cluster and reconcile it against the ledger (slow, needs credentials)")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultEnvVerifyTimeout, "Maximum time to spend reading each cluster (--verify only)")
-
-	return cmd
-}
-
 // envTopologyOptions carries the flags and the injected seams into the run
 // function. The three seams are the same ones env verify injects, for the
 // same reason: a test of this command's assembly should be able to state the
@@ -488,7 +408,7 @@ func runEnvTopology(ctx context.Context, envArgs []string, opts envTopologyOptio
 		ctx = context.Background()
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = defaultEnvVerifyTimeout
+		opts.Timeout = defaultEnvStatusReleaseTimeout
 	}
 	if opts.Resolver == nil {
 		opts.Resolver = kclTargetResolver{}

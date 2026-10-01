@@ -29,8 +29,8 @@ import (
 	"strings"
 )
 
-// hostedVerifySource names where a hosted verdict came from.
-const hostedVerifySource = "control-plane observer"
+// hostedObserverSource names where a hosted verdict came from.
+const hostedObserverSource = "control-plane observer"
 
 // verifyHostedRollout maps one GetRollout answer onto env verify's five image
 // states, one row per PINNED workload. Pure, so the mapping is table-tested

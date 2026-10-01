@@ -19,55 +19,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
-
 	"github.com/reliant-labs/forge/pkg/release"
 )
-
-func newEnvHistoryCmd() *cobra.Command {
-	var (
-		q       historyQuery
-		jsonOut bool
-	)
-	cmd := &cobra.Command{
-		Use:   "history <environment>",
-		Short: "Show an environment's promotion ledger, newest first — who promoted what, from where, with what evidence",
-		Long: `Show an environment's promotion ledger, newest first.
-
-Each entry is one promotion: the release, the environment it was promoted FROM,
-who promoted it, the note, its evidence (gates claimed at promote time, and
-gates recorded afterwards with ` + "`forge gate record`" + `), whether it superseded a
-rollout still in flight, and the CI run that wrote it.
-
-The ledger is the env's declared one: its control plane when its KCL declares
-forge.ControlPlane, otherwise .forge/promotions/<env>.jsonl.
-
-PAGING is a keyset cursor: pass the previous page's ` + "`next_before`" + ` as --before.
-An empty ` + "`next_before`" + ` means the last page; stop on that, not on a short page.
-
-Exit codes: 0 the ledger was read (an empty history included), 2 it could not
-be read.
-
-Examples:
-  forge env history prod
-  forge env history prod --limit 1 --json | jq -r '.promotions[0].id // "unbound"'   # capture for --expect-current
-  forge env history prod --release v1.4.0 --json`,
-		Args:         cobra.ExactArgs(1),
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := bindingStoreFor(cmd.Context(), projectDirForKCL(), args[0])
-			if err != nil {
-				return exitCodeError{code: exitUndetermined, msg: err.Error()}
-			}
-			return runEnvHistory(cmd.Context(), store, args[0], q, jsonOut, cmd.OutOrStdout())
-		},
-	}
-	cmd.Flags().IntVar(&q.Limit, "limit", defaultHistoryLimit, fmt.Sprintf("Entries per page (1–%d)", maxHistoryLimit))
-	cmd.Flags().StringVar(&q.Before, "before", "", "Return entries older than this promotion id (the previous page's next_before)")
-	cmd.Flags().StringVar(&q.Release, "release", "", "Only promotions of this release version")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (same exit codes as text mode)")
-	return cmd
-}
 
 // envHistoryDocument is the --json output.
 type envHistoryDocument struct {
@@ -132,7 +85,7 @@ func renderEnvHistory(out io.Writer, doc envHistoryDocument) {
 	}
 	_ = tw.Flush()
 	if doc.NextBefore != "" {
-		fmt.Fprintf(out, "\n  more: forge env history %s --before %s\n", doc.Env, doc.NextBefore)
+		fmt.Fprintf(out, "\n  more: forge env status %s --history --before %s\n", doc.Env, doc.NextBefore)
 	}
 }
 

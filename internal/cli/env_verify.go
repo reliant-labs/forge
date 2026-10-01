@@ -452,7 +452,7 @@ func unreachableVerifications(declared map[string]string, cause error) []imageVe
 	return out
 }
 
-// envVerifyTally counts verdicts by state, for the summary line and the exit
+// envStatusReleaseTally counts verdicts by state, for the summary line and the exit
 // code decision.
 //
 // All five buckets are carried into JSON separately, and Unreachable in
@@ -460,7 +460,7 @@ func unreachableVerifications(declared map[string]string, cause error) []imageVe
 // exists is that a cluster nobody could read is not evidence a release is
 // wrong, and a report that sums it into drift re-creates the confusion the
 // exit codes were split to prevent.
-type envVerifyTally struct {
+type envStatusReleaseTally struct {
 	Match       int `json:"match"`
 	Drift       int `json:"drift"`
 	Missing     int `json:"missing"`
@@ -468,8 +468,8 @@ type envVerifyTally struct {
 	Unreachable int `json:"unreachable"`
 }
 
-func tallyEnvVerifications(results []imageVerification) envVerifyTally {
-	var t envVerifyTally
+func tallyEnvStatusRelease(results []imageVerification) envStatusReleaseTally {
+	var t envStatusReleaseTally
 	for _, r := range results {
 		switch r.State {
 		case imageMatch:

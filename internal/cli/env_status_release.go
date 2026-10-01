@@ -1,5 +1,35 @@
 package cli
 
+// The RELEASE half of `forge env status <env>`: is this environment actually
+// RUNNING the release its binding claims?
+//
+// WHY THIS IS A SEPARATE QUESTION FROM RUNTIME HEALTH. A promotion writes a
+// binding — env → release, with the per-image digests frozen at promote time
+// — and `promoted_at` is stamped when the env is PROMOTED, not when it is
+// deployed. Cutting a release is not shipping it, and a binding claiming
+// v1.5.13 proves only that someone ran a promote. Confirming prod had moved
+// used to mean reading live digests by hand, one
+// `kubectl get deploy -o jsonpath` per workload. This is that check.
+//
+// It is the old `forge env verify`, unchanged in substance: the same five
+// outcomes, the same injected seams, and the same exit codes. Only the
+// command surface moved — status is the one read view now, and this is the
+// half of it that compares a declaration against reality.
+//
+// FIVE OUTCOMES, NOT TWO:
+//
+//	MATCH        the cluster runs the digest the binding declares.
+//	DRIFT        the cluster runs a DIFFERENT digest. Both are reported.
+//	MISSING      declared by the binding, running nowhere.
+//	UNTAGGED     the workload runs by mutable tag, so there is no digest to
+//	             compare. Nothing is proven either way.
+//	UNREACHABLE  the cluster could not be read. Says NOTHING about the env.
+//
+// Exit 2 is separate from 1 on purpose. A VPN drop or an expired credential
+// is not evidence that a release is wrong, and a gate that reports drift and
+// a network failure with the same code gets switched off the first week it is
+// wrong about one of them.
+
 import (
 	"context"
 	"encoding/json"
@@ -9,27 +39,38 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// defaultEnvVerifyTimeout bounds the cluster read. Generous enough for a cold
+// defaultEnvStatusReleaseTimeout bounds the cluster read. Generous enough for a cold
 // cloud API server behind a fresh credential exchange, short enough that an
 // unreachable cluster fails a CI job rather than hanging it.
-const defaultEnvVerifyTimeout = 60 * time.Second
+const defaultEnvStatusReleaseTimeout = 60 * time.Second
 
-// envVerifyReport is the `--json` output contract.
+// envStatusDocument is the `--json` output contract of `forge env status <env>`.
 //
 // It carries exactly what the text report carries, in the same five states,
-// and `OK` is false in exactly the cases where text mode exits non-zero — the
-// house convention (see internal/cli/lint/lint_json.go's header) is that the
-// two modes never disagree about the verdict, only about the rendering.
+// and the envelope's `ok` is false in exactly the cases where text mode exits
+// non-zero — the house convention (see internal/cli/lint/lint_json.go's
+// header) is that the two modes never disagree about the verdict, only about
+// the rendering.
+//
+// THE RELEASE FIELDS ARE FLAT, NOT NESTED, and that is load-bearing rather
+// than a style choice: `forge gate record --from` RECOGNISES this document by
+// the presence of top-level `bound` and `images` (gate_doc.go's "verify"
+// recipe). Moving them under a `release` key would make every recorded
+// deploy-verification gate fall through to the generic ok/exit_code reading,
+// silently losing the unbound-env-is-SKIPPED distinction — a green check in
+// the evidence trail attesting to images nobody checked.
 //
 // Extensions are ADDITIVE: new fields may be added, but no field is renamed or
 // repurposed, so a consumer reading `state` and `tally` keeps working.
-type envVerifyReport struct {
+type envStatusDocument struct {
+	// jsonEnvelope is the F0 head every env verb carries: ok, exit_code and
+	// error, stamped from the SAME error the text path returns so the two
+	// cannot disagree about the verdict.
+	jsonEnvelope
 	// Env is the environment name as given on the command line.
 	Env string `json:"env"`
 	// Bound is false for an env that has never been promoted. That is NOT a
@@ -60,11 +101,7 @@ type envVerifyReport struct {
 	// see `[]` rather than `null`.
 	Images []imageVerification `json:"images"`
 	// Tally counts the five states. Unreachable stays its own bucket.
-	Tally envVerifyTally `json:"tally"`
-	// OK is false exactly when text mode exits non-zero: drift, missing, or
-	// unreachable. Untagged does NOT flip it — nothing has been proven
-	// wrong — matching the text mode's note-and-exit-0 behaviour.
-	OK bool `json:"ok"`
+	Tally envStatusReleaseTally `json:"tally"`
 	// Detail carries the one-line human reason for a non-OK result, or the
 	// explanation of an unbound env. Empty on a clean verify.
 	Detail string `json:"detail,omitempty"`
@@ -74,95 +111,6 @@ type envVerifyReport struct {
 	// verdict undetermined: the cluster was compared against a release
 	// that may not be the one this env is bound to.
 	Ledger *ledgerFreshnessReport `json:"ledger,omitempty"`
-}
-
-// newEnvVerifyCmd is `forge env verify <environment>`.
-func newEnvVerifyCmd() *cobra.Command {
-	var timeout time.Duration
-	var jsonOut bool
-
-	cmd := &cobra.Command{
-		Use:   "verify <environment>",
-		Short: "Prove an environment is RUNNING the release its binding claims",
-		Long: `Compare what an environment is actually running against what the binding
-ledger says it should run.
-
-WHY THIS EXISTS. ` + "`forge env deploy <env> <version>`" + ` writes a binding — env → release, with
-the per-image digests frozen at promote time. But ` + "`promoted_at`" + ` is stamped when
-the env is PROMOTED, not when it is deployed. Cutting a release is not shipping
-it, and until this command nothing in the tooling could tell the two apart: a
-binding claiming v1.5.13 proves only that someone ran promote. Confirming prod
-had actually moved meant reading live digests by hand, one
-` + "`kubectl get deploy -o jsonpath`" + ` per workload. This is that check, as a command.
-
-WHAT IS READ. The cluster, directly — the same kubectl path ` + "`forge env deploy`" + `
-writes through, against the context the env's KCL declares
-(` + "`forge.K8sCluster.cluster`" + `). Every workload kind that can carry an application
-image is inspected (Deployments, StatefulSets, DaemonSets, CronJobs, Jobs), not
-just Deployments: forge renders CronJobs for ` + "`kind = \"cron\"`" + `, and a verifier
-blind to those would report clean while a drifted cron ran old bytes.
-
-FIVE OUTCOMES, NOT TWO:
-
-  MATCH        the cluster runs the digest the binding declares.
-  DRIFT        the cluster runs a DIFFERENT digest. Both are reported.
-  MISSING      declared by the binding, running nowhere — never deployed,
-               or deleted since.
-  UNTAGGED     the workload runs by mutable tag, so there is no digest to
-               compare. Nothing is proven either way (a --no-digest deploy).
-  UNREACHABLE  the cluster could not be read — no context, auth failure,
-               timeout. Says NOTHING about the environment.
-
-An env with NO binding is not a failure. It has never been promoted, so there
-is nothing to verify against, and the command says so and exits 0.
-
-EXIT CODES:
-
-  0  everything declared is running (or nothing is declared)
-  1  at least one image DRIFTED or is MISSING
-  2  the cluster could not be read, and nothing outright drifted
-
-Exit 2 is separate from 1 on purpose. A VPN drop or an expired credential is
-not evidence that a release is wrong, and a gate that reports drift and a
-network failure with the same code gets switched off the first week it is
-wrong about one of them.
-
-A STALE LEDGER IS ALSO EXIT 2. A file ledger (.forge/promotions/<env>.jsonl)
-is committed to git, so a checkout that has not pulled the latest release
-record compares the cluster against an OLDER promotion: a fine deploy reads
-as DRIFT, and a deploy that never happened can read as MATCH. verify compares
-the env's log with origin's default branch (as of your last fetch; it never
-fetches) and, when this copy is BEHIND or has DIVERGED, reports every image as
-usual but exits 2 with the fix. AHEAD (a release recorded here, not yet
-merged) is noted, not failed. A control-plane ledger has no copy to be behind.
-
---json emits the same verdict as a machine-readable report, with IDENTICAL exit
-codes. All five states survive into it as lowercase strings, so "unreachable"
-stays distinguishable from both "match" and "drift"; "ok" is false exactly when
-text mode exits non-zero. An unbound env reports {"bound": false, "ok": true}.
-
-Examples:
-  forge env verify prod                 # did prod actually receive its release?
-  forge env verify staging --timeout 2m # slow or distant cluster
-  forge env verify prod --json | jq -r '.images[] | select(.state == "drift")'`,
-		Args: cobra.ExactArgs(1),
-		// The command's findings ARE its output; a cobra usage dump on a
-		// drift failure would bury them under the flag list.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEnvVerify(cmd.Context(), args[0], envVerifyOptions{
-				Timeout:  timeout,
-				JSON:     jsonOut,
-				Lister:   kubectlImageLister{},
-				Resolver: kclTargetResolver{},
-			})
-		},
-	}
-
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultEnvVerifyTimeout, "Maximum time to spend reading the cluster")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (same exit codes as text mode)")
-
-	return cmd
 }
 
 // envTarget is WHERE an environment runs: the kubectl context and the
@@ -204,9 +152,9 @@ func (kclTargetResolver) Resolve(ctx context.Context, projectDir, envName string
 	}
 }
 
-// envVerifyOptions carries the flags and the injected seams into the run
+// envStatusOptions carries the flags and the injected seams into the run
 // function.
-type envVerifyOptions struct {
+type envStatusOptions struct {
 	Timeout time.Duration
 	// JSON switches the RENDERING only. Every verdict, every state and
 	// every exit code is computed before either renderer runs, so the two
@@ -222,6 +170,14 @@ type envVerifyOptions struct {
 	// test of that comparison should be able to state the declaration
 	// directly instead of staging a file on disk to imply it.
 	Bindings bindingStore
+	// Signal and Verbose scope and expand the RUNTIME half: one signal
+	// only (app, metrics, traces, logs, profiles), and evidence for every
+	// check rather than only the failures. They live here so the one
+	// options struct carries the whole command's flags — the two halves
+	// are one read, and splitting their options would make the caller
+	// decide which struct a flag belongs to.
+	Signal  string
+	Verbose bool
 	// HostedRollout reads a HOSTED env's rollout for a promotion. Nil uses
 	// the env's declared control plane (readDeclaredRollout). Setting it
 	// also selects the hosted path, so a test can state the observer's
@@ -229,14 +185,14 @@ type envVerifyOptions struct {
 	HostedRollout func(ctx context.Context, env, promotionID string) (wireRollout, error)
 }
 
-// runEnvVerify resolves the binding, reads the cluster, prints a per-image
+// runEnvStatusRelease resolves the binding, reads the cluster, prints a per-image
 // report, and returns an error carrying the right exit code.
-func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) error {
+func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = defaultEnvVerifyTimeout
+		opts.Timeout = defaultEnvStatusReleaseTimeout
 	}
 	if opts.Lister == nil {
 		opts.Lister = kubectlImageLister{}
@@ -302,7 +258,7 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 		// A HOSTED env: forge cannot read its cluster, so the control
 		// plane's observer is the witness (env_verify_hosted.go). The
 		// verdict below and the exit codes are the cluster path's own.
-		source = hostedVerifySource
+		source = hostedObserverSource
 		if !opts.JSON {
 			fmt.Printf("  source   %s (forge cannot read a hosted env's cluster)\n", source)
 		}
@@ -310,11 +266,11 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 	} else {
 		results, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, binding.Resolved, opts)
 	}
-	tally := tallyEnvVerifications(results)
-	failure := envVerifyVerdict(envName, binding.Release, staleErr, tally)
+	tally := tallyEnvStatusRelease(results)
+	failure := envStatusReleaseVerdict(envName, binding.Release, staleErr, tally)
 
 	if opts.JSON {
-		report := envVerifyReport{
+		report := envStatusDocument{
 			Env:         envName,
 			Bound:       true,
 			Release:     binding.Release,
@@ -324,7 +280,6 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 			Source:      source,
 			Images:      results,
 			Tally:       tally,
-			OK:          failure == nil,
 			Ledger:      ledger,
 		}
 		if failure != nil {
@@ -333,7 +288,8 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 		if report.Images == nil {
 			report.Images = []imageVerification{}
 		}
-		if err := writeEnvVerifyJSON(report); err != nil {
+		report.stamp(failure)
+		if err := writeEnvStatusReleaseJSON(report); err != nil {
 			return err
 		}
 		// The report is already on stdout; returning the same sentinel
@@ -343,7 +299,7 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 
 	fmt.Println()
 
-	printEnvVerifyImages(results)
+	printEnvStatusReleaseImages(results)
 
 	fmt.Printf("\n%d match, %d drifted, %d missing, %d untagged, %d unreachable\n",
 		tally.Match, tally.Drift, tally.Missing, tally.Untagged, tally.Unreachable)
@@ -361,7 +317,7 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 // verifyHosted reads the env's CURRENT promotion's rollout from its control
 // plane and maps it onto the five states. A read failure is every pinned image
 // UNREACHABLE (exit 2), never a guess.
-func verifyHosted(ctx context.Context, envName string, binding release.Promotion, opts envVerifyOptions) []imageVerification {
+func verifyHosted(ctx context.Context, envName string, binding release.Promotion, opts envStatusOptions) []imageVerification {
 	read := opts.HostedRollout
 	if read == nil {
 		read = readDeclaredRollout
@@ -387,9 +343,9 @@ func readDeclaredRollout(ctx context.Context, env, promotionID string) (wireRoll
 	return readRollout(ctx, target.Client, target.EnvironmentID, promotionID)
 }
 
-// envVerifyVerdict is the ONE decision, made before either renderer runs, so
+// envStatusReleaseVerdict is the ONE decision, made before either renderer runs, so
 // "--json exits identically to text mode" is structural.
-func envVerifyVerdict(envName, release string, staleErr error, tally envVerifyTally) error {
+func envStatusReleaseVerdict(envName, release string, staleErr error, tally envStatusReleaseTally) error {
 	switch {
 	case staleErr != nil:
 		// FIRST, above drift. A drift against a declaration that is not
@@ -412,7 +368,7 @@ func envVerifyVerdict(envName, release string, staleErr error, tally envVerifyTa
 }
 
 // verifyCluster is the kubectl path for an env forge can reach: unchanged.
-func verifyCluster(ctx context.Context, projectDir, envName string, resolved map[string]string, opts envVerifyOptions) (results []imageVerification, kubeContext, namespace string) {
+func verifyCluster(ctx context.Context, projectDir, envName string, resolved map[string]string, opts envStatusOptions) (results []imageVerification, kubeContext, namespace string) {
 	target := opts.Resolver.Resolve(ctx, projectDir, envName)
 	kubeContext, namespace = target.KubeContext, target.Namespace
 
@@ -475,18 +431,18 @@ func reportUnboundEnv(envName string, jsonOut bool, ledger *ledgerFreshnessRepor
 		// machine-readable marker; `ok` stays true because this is a
 		// healthy state, not a failure. Images is non-nil so a consumer
 		// ranging over it sees `[]`, not `null`.
-		report := envVerifyReport{
+		report := envStatusDocument{
 			Env:    envName,
 			Bound:  false,
 			Images: []imageVerification{},
-			OK:     staleErr == nil,
 			Detail: unboundDetail,
 			Ledger: ledger,
 		}
 		if staleErr != nil {
 			report.Detail = staleErr.Error()
 		}
-		if err := writeEnvVerifyJSON(report); err != nil {
+		report.stamp(staleErr)
+		if err := writeEnvStatusReleaseJSON(report); err != nil {
 			return err
 		}
 		return staleErr
@@ -527,12 +483,12 @@ func staleLedgerError(env string, ledger *ledgerFreshnessReport) error {
 		env, ledger.State, ledger.Ref, ledger.Detail, fix)}
 }
 
-// printEnvVerifyImages renders the per-image block of the text report — the
+// printEnvStatusReleaseImages renders the per-image block of the text report — the
 // human-readable twin of the Images array --json emits. It is the whole of
 // what text mode says about individual images, so it carries no verdict and
-// returns nothing: runEnvVerify decides pass/fail once, before either renderer
+// returns nothing: runEnvStatusRelease decides pass/fail once, before either renderer
 // runs, and this only describes what was found.
-func printEnvVerifyImages(results []imageVerification) {
+func printEnvStatusReleaseImages(results []imageVerification) {
 	for _, r := range results {
 		fmt.Printf("  %-12s %s\n", r.State, r.Image)
 		// Drift prints both digests on their own labelled lines. This is
@@ -554,9 +510,9 @@ func printEnvVerifyImages(results []imageVerification) {
 	}
 }
 
-// writeEnvVerifyJSON emits the report to stdout, indented, per the house
+// writeEnvStatusReleaseJSON emits the report to stdout, indented, per the house
 // convention (flag `--json`, indented json.Encoder to stdout).
-func writeEnvVerifyJSON(report envVerifyReport) error {
+func writeEnvStatusReleaseJSON(report envStatusDocument) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(report)

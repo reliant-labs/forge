@@ -31,9 +31,9 @@ func TestGateFromDocument_GoldenPerVerb(t *testing.T) {
 	}}
 	smokeDoc.Summary.Pass, smokeDoc.Summary.Fail, smokeDoc.Summary.OK = 1, 1, false
 
-	// `forge env verify --json` — the real envVerifyReport.
+	// `forge env verify --json` — the real envStatusDocument.
 	bound := true
-	envVerify := envVerifyReport{
+	envVerify := envStatusDocument{
 		Env: "prod", Bound: bound, Release: "v1.4.0",
 		Images: []imageVerification{{}, {}}, OK: true,
 	}
@@ -304,7 +304,7 @@ func TestGateFromDocument_SmokeThatCheckedNothingIsSkipped(t *testing.T) {
 // skipped, not passed.
 func TestGateFromDocument_UnboundEnvVerifyIsSkipped(t *testing.T) {
 	t.Parallel()
-	data, _ := json.Marshal(envVerifyReport{Env: "prod", Bound: false, Images: []imageVerification{}, OK: true})
+	data, _ := json.Marshal(envStatusDocument{Env: "prod", Bound: false, Images: []imageVerification{}, OK: true})
 	gate, err := gateFromDocument(data, "")
 	if err != nil {
 		t.Fatal(err)

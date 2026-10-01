@@ -551,15 +551,54 @@ func gateFromForgeDocument(doc gateDocument, nameHint string) (release.Gate, boo
 
 // statusFromEnvelope maps §3.A's envelope onto the closed status set.
 //
-// EXIT 2 IS `error`, NOT `failed`. The exit-code table's whole point is that
-// "we looked and it is wrong" and "we could not look" are different answers,
-// and the gate vocabulary preserves that distinction for exactly the same
-// reason: a check that could not reach a verdict has not reported one, and
-// recording it as a failure would blame the release for a broken control
-// plane.
+// ONLY exitWrong IS `failed`. Every other non-zero code in the shared table
+// means something that is NOT "we looked at the release and it is wrong", and
+// the gate vocabulary has to preserve that or the evidence lies — permanently,
+// because the ledger is append-only and there is no later row that can retract
+// a verdict.
+//
+// This is not a refinement; it is the table's own stated rule. exitcodes.go:
+// "5 and 6 are deliberately NOT 1. A timeout and an overtaken wait are both
+// 'we never saw this finish', and reporting either as 'the release is bad'
+// would fail builds for releases that were fine."
+//
+// The stakes are concrete. F6's composite runs
+// `gate record … --from wait.json` under `if: always()`, so a mapping that
+// folded these into `failed` would append a false "the release failed" gate to
+// every slow rollout and every overtaken promote, for good.
+//
+//	0 ok        → passed
+//	1 wrong     → failed    the only real verdict against the release
+//	2 undetermined → error  could not look (unreachable, auth, unobservable)
+//	3 conflict  → error     someone else moved the env; the check never ran
+//	4 refused   → error     the write was declined; nothing was judged
+//	5 timed out → error     still progressing — we never saw it finish
+//	6 superseded → skipped  the subject is gone; a newer promotion replaced it
+//
+// 6 is `skipped` rather than `error` because nothing went wrong at all: the
+// promotion being waited on was legitimately replaced, so the check did not
+// apply — which is what `skipped` means. C8 maps superseded the same way, so
+// the server's run view and forge's gate agree.
 func statusFromEnvelope(doc gateDocument) release.GateStatus {
-	if doc.ExitCode != nil && *doc.ExitCode == exitUndetermined {
-		return release.GateStatusError
+	if doc.ExitCode != nil {
+		switch *doc.ExitCode {
+		case exitOK:
+			// A zero exit still defers to `ok` below, so a verb that
+			// exits 0 while reporting ok:false is not laundered into
+			// a pass by this switch.
+		case exitWrong:
+			return release.GateStatusFailed
+		case exitSuperseded:
+			return release.GateStatusSkipped
+		case exitUndetermined, exitConflict, exitRefused, exitTimedOut:
+			return release.GateStatusError
+		default:
+			// A code this build does not know cannot be classified,
+			// and an unclassifiable outcome is `error` — never
+			// `failed`, which would assert something about the
+			// release, and never `passed`.
+			return release.GateStatusError
+		}
 	}
 	if doc.OK != nil {
 		if *doc.OK {
@@ -567,12 +606,7 @@ func statusFromEnvelope(doc gateDocument) release.GateStatus {
 		}
 		return release.GateStatusFailed
 	}
-	// An exit_code with no `ok`: 0 is a pass, anything else is a
-	// failure the code already classified.
-	if *doc.ExitCode == exitOK {
-		return release.GateStatusPassed
-	}
-	return release.GateStatusFailed
+	return release.GateStatusPassed
 }
 
 // ─── Writing a gate document (the --gate-json producers) ─────────────────────

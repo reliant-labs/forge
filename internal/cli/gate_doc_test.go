@@ -59,7 +59,9 @@ func TestGateFromDocument_GoldenPerVerb(t *testing.T) {
 		"exit_code": exitWrong,
 	}
 
-	// `forge env wait --json` (§3.2, F3's document).
+	// `forge env wait --json` (§3.2, F3's document). Exit 5 (timed out,
+	// still progressing) is `error`, NOT `failed` — see
+	// TestGateFromDocument_ExitCodesThatAreNotFailures.
 	waitJSON := map[string]any{
 		"ok": false, "exit_code": exitTimedOut,
 		"env": "prod", "phase": "progressing",
@@ -77,7 +79,7 @@ func TestGateFromDocument_GoldenPerVerb(t *testing.T) {
 		{"env verify", envVerify, "verify", release.GateStatusPassed, "release v1.4.0 over 2 declared image"},
 		{"release verify", relVerify, "release-verify", release.GateStatusFailed, "1 artifact missing"},
 		{"lint", lintJSON, "lint", release.GateStatusFailed, "1 error(s), 1 warning(s)"},
-		{"wait", waitJSON, "wait", release.GateStatusFailed, "rollout progressing: api has not reached"},
+		{"wait", waitJSON, "wait", release.GateStatusError, "rollout progressing: api has not reached"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -189,18 +191,89 @@ func TestGateFromDocument_StatusOutsideTheSetIsRefused(t *testing.T) {
 	}
 }
 
-// Exit code 2 is `error`, not `failed`. "Could not look" must not be recorded
-// as a verdict about the release — the same distinction the exit-code table
-// draws between 1 and 2.
-func TestGateFromDocument_Exit2IsErrorNotFailed(t *testing.T) {
+// EVERY NON-ZERO CODE EXCEPT 1 IS SOMETHING OTHER THAN `failed`, and this is
+// the table's own stated rule rather than a refinement of it (exitcodes.go:
+// "5 and 6 are deliberately NOT 1").
+//
+// Why this matters more than it looks: F6's composite runs
+// `gate record … --from wait.json` under `if: always()`, and the ledger is
+// APPEND-ONLY. A mapping that folded these into `failed` would append a
+// permanent, unretractable "the release failed" gate to every slow rollout and
+// every overtaken promote — releases that were fine.
+func TestGateFromDocument_ExitCodesThatAreNotFailures(t *testing.T) {
 	t.Parallel()
-	doc := []byte(`{"ok":false,"exit_code":2,"error":"control plane unreachable","phase":"unknown"}`)
-	gate, err := gateFromDocument(doc, "")
+	cases := map[string]struct {
+		exitCode int
+		want     release.GateStatus
+		why      string
+	}{
+		"1 wrong is the ONLY failure": {
+			exitWrong, release.GateStatusFailed,
+			"we looked at the release and it is wrong",
+		},
+		"2 undetermined": {
+			exitUndetermined, release.GateStatusError,
+			"could not look — unreachable, auth refused, unobservable",
+		},
+		"3 conflict": {
+			exitConflict, release.GateStatusError,
+			"someone else moved the env; the check never judged the release",
+		},
+		"4 refused": {
+			exitRefused, release.GateStatusError,
+			"the write was declined; nothing was judged",
+		},
+		"5 timed out": {
+			exitTimedOut, release.GateStatusError,
+			"still progressing — we never saw it finish",
+		},
+		"6 superseded": {
+			exitSuperseded, release.GateStatusSkipped,
+			"the subject is gone; the check did not apply (C8 agrees)",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			doc, _ := json.Marshal(map[string]any{
+				"ok": false, "exit_code": tc.exitCode,
+				"phase": "progressing", "reason": "whatever the verb said",
+			})
+			gate, err := gateFromDocument(doc, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gate.Status != tc.want {
+				t.Fatalf("exit %d recorded as %q, want %q — %s",
+					tc.exitCode, gate.Status, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// An exit code this build does not know is `error`: unclassifiable is not
+// `failed` (which asserts something about the release) and not `passed`.
+func TestGateFromDocument_UnknownExitCodeIsError(t *testing.T) {
+	t.Parallel()
+	gate, err := gateFromDocument([]byte(`{"ok":false,"exit_code":99,"phase":"odd"}`), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gate.Status != release.GateStatusError {
-		t.Fatalf("status = %q, want %q", gate.Status, release.GateStatusError)
+		t.Fatalf("status = %q, want error", gate.Status)
+	}
+}
+
+// A verb that exits 0 while reporting ok:false is not laundered into a pass
+// by the exit-code switch: `ok` still decides.
+func TestGateFromDocument_ZeroExitDefersToOK(t *testing.T) {
+	t.Parallel()
+	gate, err := gateFromDocument([]byte(`{"ok":false,"exit_code":0,"phase":"x"}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gate.Status != release.GateStatusFailed {
+		t.Fatalf("status = %q, want failed — ok:false must not be overridden by a zero exit", gate.Status)
 	}
 }
 

@@ -134,6 +134,52 @@ func TestEveryLookupReportsUnknownOutsideAGitRepository(t *testing.T) {
 	}
 }
 
+// A RELATIVE migrations dir must work, because that is what the CLI passes:
+// `--dir` defaults to "db/migrations" and nothing makes it absolute.
+//
+// This is the gap that shipped a broken refusal. Every other test here hands
+// in an absolute t.TempDir() path, and with an absolute path the code was
+// correct — so the whole suite passed while `forge db migration rebase`
+// happily renamed an already-merged migration in a real repository.
+//
+// The mechanism: `git rev-parse --show-toplevel` always reports a resolved
+// ABSOLUTE path, EvalSymlinks on a relative path returns it unchanged, and
+// filepath.Rel between the two produces a path git cannot resolve. Every
+// lookup then returned "cannot know", which each caller treats as a reason to
+// stop checking rather than an error. Nothing failed loudly; the guarantee
+// just quietly stopped holding.
+func TestLookupsWorkWithARelativeMigrationsDir(t *testing.T) {
+	repoRoot, _ := repo(t,
+		[]string{"20260101120000_add_users.up.sql"},
+		[]string{"20260501000000_add_sessions.up.sql"},
+	)
+	t.Chdir(repoRoot)
+
+	const relDir = "db/migrations"
+	root := RepoRoot(relDir)
+
+	max, ok := MergeBaseMax(root, relDir)
+	if !ok {
+		t.Fatal("MergeBaseMax reports \"cannot know\" for a relative dir inside a real repository — " +
+			"every caller then stops checking, and rebase stops refusing merged migrations")
+	}
+	if max != 20260101120000 {
+		t.Errorf("MergeBaseMax = %d, want 20260101120000", max)
+	}
+
+	versions, ok := DefaultBranchVersions(root, relDir)
+	if !ok {
+		t.Fatal("DefaultBranchVersions reports \"cannot know\" for a relative dir inside a real repository")
+	}
+	if _, found := versions[20260101120000]; !found {
+		t.Errorf("merged version missing from the default-branch set; got %v", versions)
+	}
+
+	if !IsTracked(root, filepath.Join(relDir, "20260101120000_add_users.up.sql")) {
+		t.Error("IsTracked says a committed file is untracked, so renames stop going through `git mv`")
+	}
+}
+
 // A tracked rename goes through `git mv` so it is staged as a rename rather
 // than a delete plus an untracked add — which is what makes the version
 // change reviewable as one file.

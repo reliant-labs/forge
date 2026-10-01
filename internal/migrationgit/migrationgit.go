@@ -80,7 +80,7 @@ func DefaultBranchVersions(repoRoot, migrationsDir string) (map[uint64]string, b
 // IsTracked reports whether path is tracked by git, which decides whether a
 // rename goes through `git mv` or a plain filesystem rename.
 func IsTracked(repoRoot, path string) bool {
-	rel, err := filepath.Rel(resolvePath(repoRoot), resolvePath(path))
+	rel, err := repoRelative(repoRoot, path)
 	if err != nil {
 		return false
 	}
@@ -92,8 +92,8 @@ func IsTracked(repoRoot, path string) bool {
 // rename is staged as a rename rather than appearing as a delete plus an
 // untracked add.
 func Move(repoRoot, from, to string) error {
-	fromRel, fromErr := filepath.Rel(resolvePath(repoRoot), resolvePath(from))
-	toRel, toErr := relativeToRepo(repoRoot, to)
+	fromRel, fromErr := repoRelative(repoRoot, from)
+	toRel, toErr := repoRelativeDest(repoRoot, to)
 	if fromErr == nil && toErr == nil && IsTracked(repoRoot, from) {
 		cmd := exec.Command("git", "mv", filepath.ToSlash(fromRel), filepath.ToSlash(toRel))
 		cmd.Dir = repoRoot
@@ -142,14 +142,7 @@ func versionsAt(repoRoot, migrationsDir string, rev revSpec) (map[uint64]string,
 	if !ok {
 		return nil, false
 	}
-	// Both paths go through EvalSymlinks before Rel. `git rev-parse
-	// --show-toplevel` reports a fully resolved path, while the caller's dir
-	// may still contain a symlink — on macOS every /var/... temp dir is
-	// really /private/var/..., so comparing the two unresolved produces a
-	// relative path like ../../private/var/... that ls-tree cannot resolve.
-	// The caller then silently degraded to its no-git fallback, which is the
-	// worst outcome: no error, no finding, and a reviewer told nothing.
-	rel, err := filepath.Rel(resolvePath(repoRoot), resolvePath(migrationsDir))
+	rel, err := repoRelative(repoRoot, migrationsDir)
 	if err != nil {
 		return nil, false
 	}
@@ -192,20 +185,46 @@ func defaultBranchRef(repoRoot string) (string, bool) {
 	return "", false
 }
 
-// relativeToRepo makes a DESTINATION path relative to repoRoot.
+// repoRelative makes an EXISTING path relative to repoRoot, for handing to a
+// git command that names a path inside the repository.
 //
-// It resolves symlinks on the destination's parent directory rather than on
-// the destination itself, because the destination does not exist yet:
-// EvalSymlinks fails on a missing path and returns the input unchanged. On
-// macOS, where every temp dir is really under /private/var, that left an
-// unresolved destination being compared against a resolved repo root, and
-// filepath.Rel produced a path like ../../private/var/... that `git mv`
-// cannot accept. The rename then fell through to a plain os.Rename, so git
+// MAKE IT ABSOLUTE BEFORE RESOLVING IT. This is the step that was missing and
+// it broke every lookup in the common case. The CLI passes a relative
+// migrations dir ("db/migrations"), while `git rev-parse --show-toplevel`
+// always reports a fully resolved absolute path — and on macOS every /tmp and
+// /var path really lives under /private. EvalSymlinks on a relative path
+// returns it unchanged, so filepath.Rel was comparing "/private/tmp/x"
+// against "db/migrations" and producing garbage like
+// ../../private/tmp/x/db/migrations, which ls-tree cannot resolve.
+//
+// Every caller then took its "cannot know" branch: the lint silently fell
+// back to its no-git rule, and rebase silently stopped refusing already-merged
+// migrations — the one thing it must never do. Nothing errored, which is why
+// a test using absolute paths could not see it.
+func repoRelative(repoRoot, path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Rel(resolvePath(repoRoot), resolvePath(abs))
+}
+
+// repoRelativeDest makes a path that does NOT EXIST YET relative to repoRoot,
+// for `git mv`'s destination.
+//
+// It resolves the parent directory rather than the path itself, because
+// EvalSymlinks fails on a missing path and hands back the input unchanged —
+// which left an unresolved destination compared against a resolved root, so
+// `git mv` rejected the path and Move fell through to os.Rename. Git then
 // recorded a delete plus an untracked add instead of a rename, and the
 // version change stopped being reviewable as one file.
-func relativeToRepo(repoRoot, path string) (string, error) {
-	parent := resolvePath(filepath.Dir(path))
-	return filepath.Rel(resolvePath(repoRoot), filepath.Join(parent, filepath.Base(path)))
+func repoRelativeDest(repoRoot, path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	parent := resolvePath(filepath.Dir(abs))
+	return filepath.Rel(resolvePath(repoRoot), filepath.Join(parent, filepath.Base(abs)))
 }
 
 // resolvePath returns path with every symlink resolved, falling back to the

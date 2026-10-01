@@ -235,6 +235,41 @@ func TestRebaseRefusesAnAlreadyMergedMigration(t *testing.T) {
 	}
 }
 
+// THE REFUSAL MUST HOLD WITH THE PATHS THE CLI ACTUALLY PASSES.
+//
+// `--dir` defaults to the relative "db/migrations" and nothing makes it
+// absolute. Every other test here builds absolute paths from t.TempDir(), and
+// with absolute paths the code was correct — so the suite was green while the
+// shipped binary renamed an already-merged migration on the first try. Caught
+// by smoke-testing the real `forge db migration rebase`, not by these tests.
+//
+// A relative dir made each git lookup report "cannot know", and "cannot know"
+// disables the refusal rather than failing. That is the worst shape a bug can
+// have here: the guarantee silently stops holding, and the command reports
+// success.
+func TestRefusalHoldsWithARelativeMigrationsDir(t *testing.T) {
+	repoRoot, _ := gitRepo(t,
+		[]string{"20260101120000_add_users.up.sql"},
+		[]string{"20260501000000_add_sessions.up.sql"},
+	)
+	t.Chdir(repoRoot)
+
+	const relDir = "db/migrations"
+	merged := filepath.Join(relDir, "20260101120000_add_users.up.sql")
+
+	results, err := RebaseMigrations(relDir, []string{merged})
+	if err == nil {
+		t.Fatalf("relative dir: renamed an already-merged migration (%+v) — the refusal does not hold on the paths the CLI passes", results)
+	}
+	var alreadyMerged *AlreadyMergedError
+	if !errors.As(err, &alreadyMerged) {
+		t.Fatalf("error is %T (%v), want *AlreadyMergedError", err, err)
+	}
+	if _, statErr := os.Stat(merged); statErr != nil {
+		t.Errorf("refused file was moved anyway: %v", statErr)
+	}
+}
+
 // A batch keeps its relative order. Migrations frequently depend on being
 // applied in sequence — a table then its index, a column then its backfill —
 // so a rebase that reordered them would produce a schema that fails to apply.

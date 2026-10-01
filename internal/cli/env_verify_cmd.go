@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -62,6 +63,12 @@ type envVerifyReport struct {
 	// Detail carries the one-line human reason for a non-OK result, or the
 	// explanation of an unbound env. Empty on a clean verify.
 	Detail string `json:"detail,omitempty"`
+	// Ledger says whether the declaration came from the newest copy of the
+	// ledger. Present only for a file ledger (a control plane is the ledger
+	// and has no copy to be behind). `behind` / `diverged` make the whole
+	// verdict undetermined: the cluster was compared against a release
+	// that may not be the one this env is bound to.
+	Ledger *ledgerFreshnessReport `json:"ledger,omitempty"`
 }
 
 // newEnvVerifyCmd is `forge env verify <environment>`.
@@ -114,6 +121,15 @@ Exit 2 is separate from 1 on purpose. A VPN drop or an expired credential is
 not evidence that a release is wrong, and a gate that reports drift and a
 network failure with the same code gets switched off the first week it is
 wrong about one of them.
+
+A STALE LEDGER IS ALSO EXIT 2. A file ledger (.forge/promotions/<env>.jsonl)
+is committed to git, so a checkout that has not pulled the latest release
+record compares the cluster against an OLDER promotion: a fine deploy reads
+as DRIFT, and a deploy that never happened can read as MATCH. verify compares
+the env's log with origin's default branch (as of your last fetch; it never
+fetches) and, when this copy is BEHIND or has DIVERGED, reports every image as
+usual but exits 2 with the fix. AHEAD (a release recorded here, not yet
+merged) is noted, not failed. A control-plane ledger has no copy to be behind.
 
 --json emits the same verdict as a machine-readable report, with IDENTICAL exit
 codes. All five states survive into it as lowercase strings, so "unreachable"
@@ -231,30 +247,14 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 	if err != nil {
 		return fmt.Errorf("read the promotion ledger for %s (%s): %w", envName, opts.Bindings.Location(), err)
 	}
+	// Read BEFORE any verdict, including the unbound one: "never promoted"
+	// in a checkout that has not pulled the first promotion is the stale
+	// case too.
+	ledger := ledgerFreshnessOf(ctx, opts.Bindings, envName)
+	staleErr := staleLedgerError(envName, ledger)
 
-	// NO BINDING IS NOT A FAILURE. An env that has never been promoted has
-	// declared nothing, so there is nothing to be wrong about. Exiting 1
-	// here would make the command red for a perfectly healthy env that
-	// simply does not use releases, and a permanently-red gate is a deleted
-	// gate. Say plainly what the state is and exit 0.
 	if !bound {
-		const unboundDetail = "no release binding — the environment has never been promoted, so nothing is declared and there is nothing to verify"
-		if opts.JSON {
-			// Still a complete, valid report. `bound: false` is the
-			// machine-readable marker; `ok` stays true because this is
-			// a healthy state, not a failure. Images is non-nil so a
-			// consumer ranging over it sees `[]`, not `null`.
-			return writeEnvVerifyJSON(envVerifyReport{
-				Env:    envName,
-				Bound:  false,
-				Images: []imageVerification{},
-				OK:     true,
-				Detail: unboundDetail,
-			})
-		}
-		fmt.Printf("Environment %s has no release binding — nothing is declared, so there is nothing to verify.\n", envName)
-		fmt.Printf("  Bind one with: forge env promote <version> --to %s\n", envName)
-		return nil
+		return reportUnboundEnv(envName, opts.JSON, ledger, staleErr)
 	}
 	if len(binding.Resolved) == 0 {
 		// A binding with no resolved digests is a defective binding: it
@@ -274,6 +274,12 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 			// and is not — so the report states what it actually means rather
 			// than leaving the reader to assume.
 			fmt.Printf("  promoted %s (promote time, NOT deploy time — that gap is what this command checks)\n", formatLedgerTime(binding.PromotedAt))
+		}
+		if ledger != nil {
+			// Said up front, before any per-image line: a reader who
+			// sees DRIFT first and this last has already started
+			// chasing the wrong problem.
+			fmt.Printf("  ledger   %s (%s)\n", strings.ToUpper(ledger.State.String()), ledger.Detail)
 		}
 	}
 
@@ -330,6 +336,14 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 	// two switches somebody has to keep in agreement.
 	var failure error
 	switch {
+	case staleErr != nil:
+		// FIRST, above drift. A drift against a declaration that is not
+		// the ledger is not evidence the release is wrong — after a
+		// release it is the expected result of reading the old one — and
+		// a match against it is not evidence the release shipped. The
+		// per-image findings are still printed; the verdict is "could not
+		// determine".
+		failure = staleErr
 	case tally.Drift > 0 || tally.Missing > 0:
 		failure = exitCodeError{code: 1, msg: fmt.Sprintf(
 			"environment %s does not match its binding: %d image(s) drifted, %d missing (declared release %s)",
@@ -351,6 +365,7 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 			Images:      results,
 			Tally:       tally,
 			OK:          failure == nil,
+			Ledger:      ledger,
 		}
 		if failure != nil {
 			report.Detail = failure.Error()
@@ -381,6 +396,73 @@ func runEnvVerify(ctx context.Context, envName string, opts envVerifyOptions) er
 		fmt.Printf("\nNote: %d image(s) run by mutable tag and could not be digest-checked. Deploy without --no-digest to pin them.\n", tally.Untagged)
 	}
 	return nil
+}
+
+// reportUnboundEnv is verify's answer for an env with no binding.
+//
+// NO BINDING IS NOT A FAILURE. An env that has never been promoted has
+// declared nothing, so there is nothing to be wrong about. Exiting 1 here
+// would make the command red for a perfectly healthy env that simply does
+// not use releases, and a permanently-red gate is a deleted gate. Say plainly
+// what the state is and exit 0 — unless this checkout's copy of the ledger is
+// stale (staleErr), in which case "never promoted" is not known either.
+func reportUnboundEnv(envName string, jsonOut bool, ledger *ledgerFreshnessReport, staleErr error) error {
+	const unboundDetail = "no release binding — the environment has never been promoted, so nothing is declared and there is nothing to verify"
+	if jsonOut {
+		// Still a complete, valid report. `bound: false` is the
+		// machine-readable marker; `ok` stays true because this is a
+		// healthy state, not a failure. Images is non-nil so a consumer
+		// ranging over it sees `[]`, not `null`.
+		report := envVerifyReport{
+			Env:    envName,
+			Bound:  false,
+			Images: []imageVerification{},
+			OK:     staleErr == nil,
+			Detail: unboundDetail,
+			Ledger: ledger,
+		}
+		if staleErr != nil {
+			report.Detail = staleErr.Error()
+		}
+		if err := writeEnvVerifyJSON(report); err != nil {
+			return err
+		}
+		return staleErr
+	}
+	if staleErr != nil {
+		return staleErr
+	}
+	fmt.Printf("Environment %s has no release binding — nothing is declared, so there is nothing to verify.\n", envName)
+	fmt.Printf("  Bind one with: forge env promote <version> --to %s\n", envName)
+	return nil
+}
+
+// ledgerFreshnessOf asks the binding store whether its copy of env's ledger
+// is the newest one, or returns nil for a store that has no copy to be
+// behind (a control plane).
+func ledgerFreshnessOf(ctx context.Context, store bindingStore, env string) *ledgerFreshnessReport {
+	checker, ok := store.(ledgerFreshnessChecker)
+	if !ok {
+		return nil
+	}
+	report := checker.LedgerFreshness(ctx, env)
+	return &report
+}
+
+// staleLedgerError is the verdict when the declaration came from a stale copy
+// of the ledger: exit 2, "could not determine", with the fix. nil when the
+// ledger is current, ahead, unknown, or hosted.
+func staleLedgerError(env string, ledger *ledgerFreshnessReport) error {
+	if ledger == nil || !ledger.State.stale() {
+		return nil
+	}
+	fix := "git pull (or rebase onto " + ledger.Ref + ") and re-run"
+	if ledger.State == ledgerDiverged {
+		fix = "reconcile the two promotion logs (each holds entries the other lacks), then re-run"
+	}
+	return exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
+		"cannot verify %s: this checkout's promotion ledger is %s %s — %s.\n  Fix: %s",
+		env, ledger.State, ledger.Ref, ledger.Detail, fix)}
 }
 
 // printEnvVerifyImages renders the per-image block of the text report — the

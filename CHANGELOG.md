@@ -136,6 +136,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge env verify` refuses to judge against a stale file ledger.** A
+  self-managed env's promotions live in `.forge/promotions/<env>.jsonl`,
+  committed to git, so a checkout that has not pulled the latest release
+  record compares the cluster against an OLDER promotion. A fine deploy then
+  reads as DRIFT, and a deploy that never happened can read as MATCH. verify
+  now compares the env's log with origin's default branch (as of the last
+  fetch; it never fetches). When this copy is `behind` or `diverged`, every
+  image is still reported, but the command exits **2** (could not determine)
+  with the fix. `ahead` (recorded here, not yet merged) is shown, not failed.
+  `--json` carries `ledger: {state, ref, local_entries, upstream_entries,
+  detail}`. A control-plane ledger has no copy to be behind and is unaffected.
 - **`forge env promote` always compare-and-sets.** The write asserts that the
   env is still on the promotion the plan read, and is refused if someone else
   moved it since. A hotfix that lands while a pipeline waits for approval now

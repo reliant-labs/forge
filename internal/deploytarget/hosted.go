@@ -1059,11 +1059,11 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	}
 	deadline := time.Now().Add(policy.Timeout)
 	var last map[string]string
-	// rollout is sticky-off: once a control plane has answered "I cannot
-	// report a rollout for this promotion", every later poll goes straight
-	// to GetStatus. Re-asking each time would spend a call per poll
-	// re-learning the same answer.
+	// rollout is sticky-off: once this wait has given up on the rollout
+	// read, every later poll goes straight to GetStatus. Re-asking each
+	// time would spend a call per poll re-learning the same answer.
 	rollout := promotionID != ""
+	rolloutFailures := 0
 	for {
 		pending, reasons, domains, err := p.pollOnce(ctx, c, envID, plan, ids)
 		if rollout {
@@ -1091,10 +1091,30 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				}
 				return werr
 			case rerr != nil:
-				// A transient failure keeps the rollout path and
-				// is retried on the next tick, exactly as a
-				// failed GetStatus is. Only err == nil below
-				// updates `last`.
+				// Any other failure is retried a FEW times and
+				// then abandoned in favour of the status poll.
+				//
+				// Retried, because a control plane restarting
+				// mid-rollout should not weaken the completion
+				// check for the rest of the deploy. Abandoned
+				// rather than retried forever, because the
+				// alternative is worse in both directions: a
+				// rollout read that keeps failing would
+				// otherwise consume the entire rollout budget
+				// and time the deploy out with "last status
+				// read failed", even though GetStatus was
+				// answering perfectly well the whole time. A
+				// weaker completion check, announced, beats a
+				// deploy that fails for a reason that has
+				// nothing to do with the deploy.
+				rolloutFailures++
+				if rolloutFailures >= rolloutReadAttempts {
+					fmt.Printf("  readiness: could not read this promotion's rollout (%v); falling back to the status poll\n", rerr)
+					rollout = false
+					break
+				}
+				// Only err == nil below updates `last`, so a
+				// retried tick keeps the previous reasons.
 				pending, reasons, err = nil, nil, rerr
 			default:
 				// The rollout decides readiness; the status read

@@ -398,10 +398,25 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 	for {
 		rollout, rerr := readRollout(ctx, client, envID, opts.PromotionID)
 		if rerr != nil {
-			// A read failure is retried while there is budget: a
-			// control plane restarting mid-rollout must not fail a
-			// release. Out of budget, it is exit 2 — we could not
-			// look, which is never folded into success.
+			// TERMINAL failures are returned at once, with the code
+			// readRollout already chose. A control plane that does
+			// not serve GetRollout will not start serving it inside
+			// the budget, and a promotion id it does not hold will
+			// not appear — retrying either spends the whole timeout
+			// to reach the answer the first call already gave, which
+			// is the opposite of a useful gate.
+			var coded *exitCodeError
+			if errors.As(rerr, &coded) {
+				report.WaitedMS = time.Since(start).Milliseconds()
+				if report.Phase == "" {
+					report.Phase = "unknown"
+				}
+				return report, rerr
+			}
+			// Everything else is TRANSIENT and retried while there
+			// is budget: a control plane restarting mid-rollout must
+			// not fail a release. Out of budget, it is exit 2 — we
+			// could not look, which is never folded into success.
 			if time.Now().After(deadline) || ctx.Err() != nil {
 				report.WaitedMS = time.Since(start).Milliseconds()
 				if report.Phase == "" {
@@ -410,9 +425,7 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 				return report, undeterminedf("wait for %s's rollout: %v", env, rerr)
 			}
 			fmt.Fprintf(progress, "  rollout read failed, retrying: %v\n", rerr)
-			if !sleepUntil(ctx, opts.Interval) {
-				continue
-			}
+			sleepUntil(ctx, opts.Interval)
 			continue
 		}
 

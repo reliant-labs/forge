@@ -44,6 +44,19 @@ import (
 // procGetRollout is controlplane.v1.DeployService/GetRollout.
 const procGetRollout = "controlplane.v1.DeployService/GetRollout"
 
+// rolloutReadAttempts is how many times a deploy's wait retries a FAILING
+// rollout read before falling back to the GetStatus poll for the rest of the
+// wait.
+//
+// Three, because the two failure shapes want opposite things. A control
+// plane restarting mid-rollout recovers within a tick or two, and giving up
+// instantly would weaken the completion check for the whole deploy over a
+// blip. But a read that keeps failing must NOT consume the rollout budget:
+// without a bound, a deploy whose GetStatus was answering fine the whole time
+// would still time out reporting "last status read failed", which blames the
+// deploy for a defect in one RPC.
+const rolloutReadAttempts = 3
+
 // The DeployRolloutPhase enum's value names, as protojson writes them.
 //
 // Only the ones this file branches on are named. An unrecognised phase is

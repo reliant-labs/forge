@@ -105,7 +105,7 @@ func followPromote(ctx context.Context, env string, plan promotePlan, o promoteF
 	if !o.Wait {
 		return nil
 	}
-	return runEnvWait(ctx, env, envWaitOptions{
+	wait := envWaitOptions{
 		PromotionID: promotionID,
 		Timeout:     o.Timeout,
 		FailFast:    o.FailFast,
@@ -120,8 +120,16 @@ func followPromote(ctx context.Context, env string, plan promotePlan, o promoteF
 		// which plan.stamp folds into the promote's envelope, so the
 		// exit code is still the wait's.
 		JSON: false,
-	})
+	}
+	return runPromoteWait(ctx, env, wait)
 }
+
+// runPromoteWait is the wait `promote --wait` performs. A var for ONE reason:
+// a test must be able to assert that the wait is scoped to the promotion id
+// the promote RETURNED rather than to the env's current one, and that fact is
+// only observable in the options the follow-through hands over. Production
+// is runEnvWait, unchanged.
+var runPromoteWait = runEnvWait
 
 // deployPromotedRelease is `--deploy`: the ordinary `forge env deploy <env>`
 // of the promotion just written.

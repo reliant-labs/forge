@@ -4,18 +4,41 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/gitsource"
 	"github.com/reliant-labs/forge/internal/storage"
 	"github.com/reliant-labs/forge/pkg/release"
 )
+
+// maintenanceRunner builds the Runner for a pass that RECLAIMS, as opposed to
+// one that only reports. Both absolute roots the reclaiming layers walk —
+// $TMPDIR and the cross-repo source cache — are named here rather than
+// defaulted inside the layer, because each layer REFUSES an unset root under
+// `go test`: a test that forgets to scope one gets a skip and a message, not a
+// sweep of the developer's real caches. Production is the only caller that
+// supplies them, and it supplies them in one place so a new reclaiming layer
+// cannot be wired up at three call sites and missed at the fourth.
+//
+// A source cache that cannot be located is left empty, which the layer reads as
+// "use the real machine-local default" in production and as "skip" under test.
+// os.UserCacheDir only fails on a host with no HOME, where there is also
+// nothing to reclaim.
+func maintenanceRunner(p storage.Policy, out io.Writer) storage.Runner {
+	sourceRoot, err := gitsource.DefaultCacheRoot()
+	if err != nil {
+		sourceRoot = ""
+	}
+	return storage.Runner{Policy: p, Out: out, TempRoot: os.TempDir(), SourceCacheRoot: sourceRoot}
+}
 
 func newStorageCmd() *cobra.Command {
 	var path string
@@ -68,7 +91,18 @@ func newStorageCmd() *cobra.Command {
 		}
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return storage.WithLock(path, func() error { return (storage.Runner{Policy: p, Out: cmd.OutOrStdout()}).GC(ctx, apply) })
+		return storage.WithLock(path, func() error {
+			if err := maintenanceRunner(p, cmd.OutOrStdout()).GC(ctx, apply); err != nil {
+				return err
+			}
+			if !apply {
+				return nil
+			}
+			// Stamp the same marker `forge env up`'s opportunistic pass reads,
+			// so a machine with the schedule installed (or a developer who runs
+			// this by hand) never pays a redundant pass at the end of an up.
+			return storage.RecordGC(path, time.Now())
+		})
 	}}
 	gc.Flags().BoolVar(&apply, "apply", false, "execute the cleanup plan")
 	gc.Flags().BoolVar(&dryRun, "dry-run", false, "preview only (the default)")
@@ -86,7 +120,9 @@ func newStorageCmd() *cobra.Command {
 		for {
 			p, path, err := load()
 			if err == nil {
-				err = storage.WithLock(path, func() error { return (storage.Runner{Policy: p, Out: cmd.OutOrStdout()}).GC(ctx, true) })
+				err = storage.WithLock(path, func() error {
+					return maintenanceRunner(p, cmd.OutOrStdout()).GC(ctx, true)
+				})
 			}
 			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "storage maintenance: %v\n", err)
@@ -149,6 +185,14 @@ func newStorageCmd() *cobra.Command {
 	}}
 	nodes.Flags().BoolVar(&restart, "apply", false, "install configuration and restart local k3d nodes sequentially")
 	group.AddCommand(nodes)
+	group.AddCommand(newStorageWorktreesCmd())
+	return cmdutil.StrictGroup(group)
+}
+
+// newStorageWorktreesCmd is `forge storage worktrees`. It reads no storage
+// policy — worktree cleanup is scoped by its own flags — so it is built apart
+// from the policy-loading subcommands above.
+func newStorageWorktreesCmd() *cobra.Command {
 	var repo, base string
 	var worktreeAge time.Duration
 	var remove bool
@@ -159,8 +203,7 @@ func newStorageCmd() *cobra.Command {
 	trees.Flags().StringVar(&base, "base", "origin/main", "existing integration branch (fetch it before cleanup)")
 	trees.Flags().DurationVar(&worktreeAge, "older-than", 30*24*time.Hour, "minimum age of directory and HEAD commit")
 	trees.Flags().BoolVar(&remove, "apply", false, "remove clean merged worktrees without forcing or deleting branches")
-	group.AddCommand(trees)
-	return group
+	return trees
 }
 
 var checkBuildStorageFn = func(project string) error {
@@ -175,6 +218,11 @@ var checkBuildStorageFn = func(project string) error {
 	_, err = storage.CheckBuildSpace(p, project)
 	return err
 }
+
+// addClusterStorageArgsFn is the seam every k3d creation path routes its argv
+// through, so a test can assert the kubelet mount is present without a policy
+// file on disk — and so a new creation path cannot quietly skip it.
+var addClusterStorageArgsFn = addClusterStorageArgs
 
 // Only actual k3d creation gains this mount. Existing nodes are never restarted
 // as a side effect of a build; storage status exposes their config for migration.
@@ -194,40 +242,61 @@ func addClusterStorageArgs(args []string) ([]string, error) {
 	return append(args, "--volume", filepath.Clean(file)+":/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/90-forge-storage.conf:ro@all"), nil
 }
 
-func registerBuildStorage(ctx context.Context, project string, entities *KCLEntities, plan pushPlan) {
-	path, err := storage.DefaultPath()
-	if err == nil {
-		err = storage.RegisterProject(path, project)
+// registerBuildStorage converges what the BUILD knows: the project whose
+// rotated logs forge may expire, the repositories this build pushes to a local
+// registry, the declared k3d contexts, and the project's release pins.
+//
+// The repositories are the half the cluster phase cannot supply, and they are
+// what completes a registry entry (see storage.Converge's completeness gate) —
+// so for a project that builds and pushes locally, activation finishes here
+// with no command anyone has to remember to run.
+//
+// ctx is unused now that this goes through Converge rather than Register's
+// live docker discovery; it is kept so the call site reads the same as the
+// other storage touch points and so a future fact source that needs a context
+// is not a signature change at every caller.
+func registerBuildStorage(_ context.Context, project string, entities *KCLEntities, plan pushPlan) {
+	facts := storage.Facts{Project: project}
+	if pins, err := storage.LedgerPins(filepath.Join(project, ".forge", "releases")); err == nil {
+		facts.Pins = pins
 	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "storage retention registration: %v\n", err)
-		return
+	if entities != nil {
+		facts.Contexts = localClusterContexts(entities.Clusters)
+		for _, d := range plan.destinations {
+			if isLocalRegistryHost(d.host()) {
+				facts.Repositories = append(facts.Repositories, d.repository)
+				// The destination host IS a verified alias of whichever local
+				// registry serves it: forge just pushed this reference there.
+				// The container name comes from the cluster phase's reading of
+				// the k3d config; a build with no cluster declaration supplies
+				// the repositories and leaves the entry incomplete until one
+				// does, which is the gate working as intended.
+				facts.Aliases = append(facts.Aliases, d.host())
+			}
+		}
+		facts.Registry = declaredRegistryContainer(entities.Clusters)
 	}
-	if entities == nil {
-		return
-	}
-	var contexts, repositories []string
-	for _, c := range entities.Clusters {
-		if c.Provider == "" || c.Provider == "k3d" {
-			contexts = append(contexts, "k3d-"+c.Name)
+	convergeStorageFn(facts)
+}
+
+// declaredRegistryContainer reads the registry container name out of the first
+// declared cluster whose k3d config references one via `registries.use`. An
+// unreadable or registry-less config yields "", which converges the other facts
+// and records no registry.
+func declaredRegistryContainer(clusters []ClusterEntity) string {
+	for _, c := range clusters {
+		if c.Config == "" {
+			continue
+		}
+		data, err := os.ReadFile(c.Config)
+		if err != nil {
+			continue
+		}
+		if container, _, err := registryFactsFromConfig(data); err == nil && container != "" {
+			return container
 		}
 	}
-	for _, d := range plan.destinations {
-		host := d.host()
-		if strings.HasPrefix(host, "localhost:") || strings.HasPrefix(host, "127.0.0.1:") || strings.Contains(host, ".localhost:") {
-			repositories = append(repositories, d.repository)
-		}
-	}
-	if len(contexts) == 0 || len(repositories) == 0 {
-		return
-	}
-	pins, err := storage.LedgerPins(filepath.Join(project, ".forge", "releases"))
-	if err == nil {
-		err = storage.Register(ctx, path, contexts, repositories, pins)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "storage retention registration: %v\n", err)
-	}
+	return ""
 }
 
 // Pin before publishing the ledger entry. If maintenance owns the lock, cutting

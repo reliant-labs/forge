@@ -40,6 +40,13 @@ func TestRegistryMaintenanceEndToEnd(t *testing.T) {
 	p.RegistryKeep = 2
 	r := Runner{Policy: p, Command: func(ctx context.Context, command string, args ...string) ([]byte, error) {
 		if command == "kubectl" {
+			// The scan asks which resources exist before listing them; an empty
+			// cluster still has to answer both questions.
+			for _, a := range args {
+				if a == "api-resources" {
+					return []byte("pods\nworkspaces.workspaces.reliant.dev\n"), nil
+				}
+			}
 			return []byte(`{"items":[]}`), nil
 		}
 		return Exec(ctx, command, args...)

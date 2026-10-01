@@ -14,7 +14,10 @@ an indication that a volume is safe to remove.
 | k3d node images | Kubelet removes unused images after 7 days; pressure GC at 80%, down to 70% |
 | Node container logs | 10 MiB × 3 files per container |
 | Registered local registry repositories | Keep 14 days and newest 5 distinct digests; protect workloads, release pins and stable aliases |
+| Forge dev logs (`forge env up` foreground tee) | Rotate at 50 MiB (`FORGE_LOG_ROTATE_BYTES`; `0` disables); the current stream keeps its path |
 | Rotated Forge logs | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment |
+| Cross-repo source cache (`<UserCacheDir>/forge/sources`) | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`) |
+| Temp scratch (`$TMPDIR`) | Remove allowlisted toolchain/test scratch idle 24h and open by no process; never a git worktree |
 | Worktrees | Explicit command only; clean, merged, directory and commit older than 30 days |
 | Database/PVC/workspace volumes | Never removed by storage GC |
 
@@ -36,24 +39,45 @@ large in-progress build can still consume the reserve.
 
 ## Set up a machine
 
+There is nothing to register by hand. forge converges the machine policy from
+facts it already holds, every time it touches them:
+
+- `forge env up` / `forge env deploy` reconcile each declared `forge.Cluster`
+  and record its context, the local registry its k3d config `registries.use`s,
+  every host alias in that config's mirror keys, and the project's
+  `.forge/releases` ledger pins. Warm clusters converge too, not only fresh
+  creates.
+- `forge build` records the local repositories it pushes and the Docker builder
+  it actually uses (`BUILDX_BUILDER`, or `default`).
+
+Convergence is additive and idempotent: it never removes an entry another
+project contributed, and a registry becomes a cleanup target only once its
+container, aliases, contexts and at least one repository are all known.
+
+At the end of a successful `forge env up`, if no maintenance pass has run in
+24 hours, forge runs the non-disruptive layers inline under a 2-minute budget:
+rotated logs, builder cache, the temp sweep and the source cache. It never runs
+registry GC or restarts nodes from that path. The attempt is stamped in
+`last-gc.json` next to the policy even when it fails, so a machine where it
+cannot succeed is not retried on every `up`.
+
+Registry GC, which briefly stops the registry, runs only from the scheduled job
+or an explicit `forge storage gc --apply`. Install the schedule once per machine:
+
 ```sh
-forge storage policy
-forge storage register --builder relbuild --context k3d-control-plane --context k3d-daemon \
-  --repository localhost:5051/control-plane \
-  --repository localhost:5051/workspace-base
-forge storage gc --dry-run
-forge storage install
+forge storage gc --dry-run   # review the plan
+forge storage install        # daily at 03:30
 ```
 
-Registration imports `.forge/releases/*.json` from the current project;
-`--ledger` selects another ledger directory. Builds register their declared local
-repositories, local clusters and project log directory automatically. Docker
-builds also register the builder they actually use (`BUILDX_BUILDER`, or
-`default`); shell builds register an explicitly declared `BUILDX_BUILDER`. Release
-cuts pin their digests before the ledger entry is published. Import old projects'
-ledgers when enabling cleanup for an existing shared registry. `--pin` accepts a
-full image reference or a canonical digest. Pins remain until an operator edits
-the policy; a failed release cut may leave a harmless extra pin.
+`forge env up` and `forge doctor` say so when registries are registered but no
+schedule is installed.
+
+`forge storage register` remains the manual escape hatch: importing an old
+project's ledger (`--ledger`), adopting a builder forge never used
+(`--builder relbuild`), or pinning an image (`--pin`, a full reference or a
+canonical digest). Release cuts pin their digests before the ledger entry is
+published. Pins remain until an operator edits the policy; a failed release cut
+may leave a harmless extra pin.
 
 The default policy is `forge/storage.json` inside the OS user configuration
 directory (`~/Library/Application Support` on macOS, `$XDG_CONFIG_HOME` or
@@ -75,12 +99,23 @@ macOS or the systemd journal on Linux.
 Registry maintenance briefly stops pulls and pushes, replans behind a temporary
 loopback-only registry, deletes eligible manifests, runs offline GC, then
 restarts the public registry. All connected k3d clusters must be registered and
-queryable, including scaled-to-zero controllers and ReplicaSets. Failure to read
-a protected set prevents deletion. Only explicitly registered repositories are
-eligible. Stable aliases (`dev`, `e2e`, `main`, `latest`, `stable`, exact semver)
-are retained. Index children and untagged manifests remain protected; GC never
-uses `--delete-untagged`. Arbitrary remote registries, customized registry
-containers, and application volumes are outside this local implementation.
+queryable. The protected set is every image reference found in ANY listable
+resource in those clusters, custom resources included (a `Workspace` CR's image
+is protected exactly like a Deployment's); only Secrets, Events and aggregated
+metrics are skipped. Failure to list any resource prevents deletion. Only
+explicitly registered repositories are eligible. Stable aliases (`dev`, `e2e`,
+`main`, `latest`, `stable`, exact semver) are retained.
+
+Untagged manifests are reclaimed by forge's own graph walk, never by
+distribution's `--delete-untagged` (unsafe with image indexes on 2.x). An
+untagged manifest is eligible only when it is older than the retention window
+AND unreachable from every retained root: retained tags, pins, protected
+digests, and the children of any retained index. That reclaims the history a
+re-pushed tag such as `:dev` leaves behind while keeping index children and OCI
+artifacts. Any unreadable manifest aborts the whole plan. Registries forge
+creates are created with `--delete-enabled`. Arbitrary remote registries,
+customized registry containers, and application volumes are outside this local
+implementation.
 
 ## Existing clusters
 

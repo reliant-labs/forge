@@ -7,8 +7,16 @@ import (
 	"strings"
 )
 
-// Register derives registry ownership from declared image repositories and live
-// k3d metadata. It never makes an arbitrary remote registry a cleanup target.
+// Register is the MANUAL escape hatch (`forge storage register`): it DISCOVERS
+// the registry facts from live k3d/docker metadata instead of being told them,
+// then applies them through exactly the same merge rule Converge uses
+// (upsertFacts) — one definition of "upsert, never remove, complete-or-nothing"
+// rather than two that can drift.
+//
+// Prefer Converge from inside forge's own commands: they already know these
+// facts declaratively, and discovery requires a reachable Docker daemon.
+// Register exists for a registry forge did not create, or to repair a policy
+// by hand. It never makes an arbitrary remote registry a cleanup target.
 func Register(ctx context.Context, path string, contexts, repositories, pins []string) error {
 	return WithLock(path, func() error {
 		p, err := Load(path)
@@ -20,74 +28,75 @@ func Register(ctx context.Context, path string, contexts, repositories, pins []s
 			return err
 		}
 		p = r.Policy
-		for _, c := range contexts {
-			if strings.HasPrefix(c, "k3d-") && !contains(p.Clusters, c) {
-				p.Clusters = append(p.Clusters, c)
-			}
-		}
-		for _, pin := range pins {
-			if !contains(p.Pins, pin) {
-				p.Pins = append(p.Pins, pin)
-			}
-		}
-		b, err := r.docker(ctx, "ps", "-aq", "--filter", "label=k3d.role=registry")
+		// Contexts and pins first, so the registry upsert below sees the
+		// complete local-context set (its protected set is the union of all
+		// of them — see upsertRegistry).
+		p, _ = upsertFacts(p, Facts{Contexts: contexts, Pins: pins})
+		discovered, err := r.discoverLocalRegistries(ctx)
 		if err != nil {
 			return err
 		}
-		for _, id := range strings.Fields(string(b)) {
-			data, err := r.docker(ctx, "inspect", id)
-			if err != nil {
-				return err
-			}
-			var containers []struct {
-				Name            string
-				NetworkSettings struct {
-					Ports map[string][]struct{ HostPort string }
-				}
-			}
-			if err := json.Unmarshal(data, &containers); err != nil {
-				return err
-			}
-			for _, c := range containers {
-				name := strings.TrimPrefix(c.Name, "/")
-				ports := c.NetworkSettings.Ports["5000/tcp"]
-				if len(ports) == 0 {
-					continue
-				}
-				aliases := []string{"localhost:" + ports[0].HostPort, "127.0.0.1:" + ports[0].HostPort, name + ":5000", strings.TrimPrefix(name, "k3d-") + ".localhost:" + ports[0].HostPort, "registry.localhost:5000", "registry.localhost:" + ports[0].HostPort}
-				reg := Registry{Container: name, Aliases: aliases, Contexts: append([]string{}, p.Clusters...)}
-				index := -1
-				for i, old := range p.Registries {
-					if old.Container == name {
-						reg = old
-						index = i
-						break
-					}
-				}
-				for _, context := range contexts {
-					if strings.HasPrefix(context, "k3d-") && !contains(reg.Contexts, context) {
-						reg.Contexts = append(reg.Contexts, context)
-					}
-				}
-				for _, repository := range repositories {
-					host, repo, ok := strings.Cut(repository, "/")
-					if ok && contains(aliases, host) && !contains(reg.Repositories, repo) {
-						reg.Repositories = append(reg.Repositories, repo)
-					}
-				}
-				if len(reg.Repositories) == 0 || len(reg.Contexts) == 0 {
-					continue
-				}
-				if index >= 0 {
-					p.Registries[index] = reg
-				} else {
-					p.Registries = append(p.Registries, reg)
-				}
-			}
+		for _, f := range discovered {
+			f.Repositories = repositories
+			p, _ = upsertFacts(p, f)
 		}
 		if err := Save(path, p); err != nil {
 			return fmt.Errorf("register local storage ownership: %w", err)
 		}
 		return nil
 	})
+}
+
+// discoverLocalRegistries reads every k3d-labelled registry container and
+// derives its host aliases from its published port. Returns one Facts per
+// registry, carrying container + aliases only — the caller supplies the
+// repositories that attribute an image to it.
+func (r Runner) discoverLocalRegistries(ctx context.Context) ([]Facts, error) {
+	b, err := r.docker(ctx, "ps", "-aq", "--filter", "label=k3d.role=registry")
+	if err != nil {
+		return nil, err
+	}
+	var out []Facts
+	for _, id := range strings.Fields(string(b)) {
+		data, err := r.docker(ctx, "inspect", id)
+		if err != nil {
+			return nil, err
+		}
+		var containers []struct {
+			Name            string
+			NetworkSettings struct {
+				Ports map[string][]struct{ HostPort string }
+			}
+		}
+		if err := json.Unmarshal(data, &containers); err != nil {
+			return nil, err
+		}
+		for _, c := range containers {
+			name := strings.TrimPrefix(c.Name, "/")
+			ports := c.NetworkSettings.Ports["5000/tcp"]
+			if len(ports) == 0 {
+				continue
+			}
+			out = append(out, Facts{Registry: name, Aliases: RegistryAliases(name, ports[0].HostPort)})
+		}
+	}
+	return out, nil
+}
+
+// RegistryAliases is every host name one local registry answers to: the host
+// ports a developer pushes to, the in-network `<container>:5000` that pods
+// pull by, and the `registry.localhost` names forge's containerd mirror config
+// templates. Retention attributes a repository to a registry by matching this
+// set, so a name missing here means images pushed under it look unowned.
+func RegistryAliases(container, hostPort string) []string {
+	aliases := []string{container + ":5000", "registry.localhost:5000"}
+	if hostPort != "" {
+		aliases = append(aliases,
+			"localhost:"+hostPort,
+			"127.0.0.1:"+hostPort,
+			strings.TrimPrefix(container, "k3d-")+".localhost:"+hostPort,
+			"registry.localhost:"+hostPort,
+		)
+	}
+	return aliases
 }

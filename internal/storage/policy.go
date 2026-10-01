@@ -18,20 +18,31 @@ const GiB = uint64(1 << 30)
 
 // Policy defines one machine’s cache budgets and protected references.
 type Policy struct {
-	Projects         []string   `json:"projects,omitempty"`
-	LogBudgetGiB     uint64     `json:"log_budget_gib"`
-	HostReserveGiB   uint64     `json:"host_reserve_gib"`
-	HostPaths        []string   `json:"host_paths,omitempty"`
-	BuildCacheGiB    uint64     `json:"build_cache_gib"`
-	BuildCacheUnused string     `json:"build_cache_unused"`
-	ImageUnused      string     `json:"image_unused"`
-	RegistryDays     int        `json:"registry_days"`
-	RegistryKeep     int        `json:"registry_keep"`
-	DockerContext    string     `json:"docker_context,omitempty"`
-	Builders         []string   `json:"builders"`
-	Registries       []Registry `json:"registries,omitempty"`
-	Clusters         []string   `json:"clusters,omitempty"`
-	Pins             []string   `json:"pins,omitempty"`
+	Projects         []string `json:"projects,omitempty"`
+	LogBudgetGiB     uint64   `json:"log_budget_gib"`
+	HostReserveGiB   uint64   `json:"host_reserve_gib"`
+	HostPaths        []string `json:"host_paths,omitempty"`
+	BuildCacheGiB    uint64   `json:"build_cache_gib"`
+	BuildCacheUnused string   `json:"build_cache_unused"`
+	ImageUnused      string   `json:"image_unused"`
+	// SourceCacheUnused is how long a cross-repo source clone may go
+	// unresolved before it becomes an eviction candidate. Longer than the
+	// image and build-cache windows because the cost of being wrong is a
+	// full re-clone of a repository, not a re-pull of a layer.
+	SourceCacheUnused string `json:"source_cache_unused"`
+	// SourceCacheKeep is how many of the most recently used clones of one
+	// repository are retained regardless of age. This is the floor that
+	// keeps an idle project's current pin warm, so it is validated at 1 or
+	// more: a policy that can empty a repository's only pin is not a policy
+	// anyone wants by accident.
+	SourceCacheKeep int        `json:"source_cache_keep"`
+	RegistryDays    int        `json:"registry_days"`
+	RegistryKeep    int        `json:"registry_keep"`
+	DockerContext   string     `json:"docker_context,omitempty"`
+	Builders        []string   `json:"builders"`
+	Registries      []Registry `json:"registries,omitempty"`
+	Clusters        []string   `json:"clusters,omitempty"`
+	Pins            []string   `json:"pins,omitempty"`
 }
 
 // Registry explicitly identifies a local registry and all of its consumers.
@@ -44,7 +55,7 @@ type Registry struct {
 
 // DefaultPolicy returns conservative local development budgets.
 func DefaultPolicy() Policy {
-	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", ImageUnused: "168h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"}}
+	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", ImageUnused: "168h", SourceCacheUnused: "336h", SourceCacheKeep: 2, RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"}}
 }
 
 // DefaultPath resolves the machine policy location.
@@ -82,7 +93,10 @@ func (p Policy) Validate() error {
 	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
 		return fmt.Errorf("storage: positive budgets and retention, and at least two registry versions are required")
 	}
-	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused} {
+	if p.SourceCacheKeep < 1 {
+		return fmt.Errorf("storage: source_cache_keep must retain at least one clone per repository, got %d", p.SourceCacheKeep)
+	}
+	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused} {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < time.Hour {
 			return fmt.Errorf("storage: invalid unused duration %q (minimum 1h)", v)

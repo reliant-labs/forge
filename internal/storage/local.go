@@ -18,6 +18,14 @@ type Runner struct {
 	Policy  Policy
 	Out     io.Writer
 	Command func(context.Context, string, ...string) ([]byte, error)
+	// SourceCacheRoot overrides the cross-repo source cache the Sources
+	// layer reclaims from. Empty means the real machine-local cache in
+	// production, and is REFUSED under `go test` — see sources.go.
+	SourceCacheRoot string
+	// TempRoot overrides the system temp directory the TempSweep layer
+	// reclaims from. Empty means os.TempDir() in production, and is
+	// REFUSED under `go test` — see tempsweep.go.
+	TempRoot string
 }
 
 // Exec runs a command with a bounded lifetime.
@@ -146,6 +154,12 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 		return err
 	}
 	if err := r.Logs(apply); err != nil {
+		return err
+	}
+	if err := r.TempSweep(apply); err != nil {
+		return err
+	}
+	if err := r.Sources(apply); err != nil {
 		return err
 	}
 	if err := r.Local(ctx); err != nil {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/goexec"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -1858,7 +1859,7 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	if err := checkBuildStorageFn(outputDir); err != nil {
 		return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
 	}
-	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
 	// CGO_ENABLED=0 is forge's pure-Go contract; a GoBuild.env entry can
 	// override it (and any other build-time var) since it's appended last.
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
@@ -2663,7 +2664,7 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 	if err := checkBuildStorageFn(outputDir); err != nil {
 		return buildResult{name: svcName + ":" + v.Name, kind: "variant", duration: time.Since(start), err: err}
 	}
-	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
 	env := append(os.Environ(), "CGO_ENABLED=0")
 	if v.GOOS != "" {
 		env = append(env, "GOOS="+v.GOOS)

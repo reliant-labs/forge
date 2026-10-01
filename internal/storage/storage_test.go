@@ -16,7 +16,7 @@ func TestRegistryRetentionProtectsDigestAliasesAndReleaseTags(t *testing.T) {
 	p := DefaultPolicy()
 	p.RegistryKeep = 2
 	reg := Registry{Repositories: []string{"app"}}
-	tags := []Tag{{"app", "new", "new", now}, {"app", "second", "second", now.Add(-time.Hour)}, {"app", "deployed", "keep", now.Add(-365 * 24 * time.Hour)}, {"app", "old-alias", "keep", now.Add(-100 * 24 * time.Hour)}, {"app", "v1.2.3", "release", now.Add(-365 * 24 * time.Hour)}, {"app", "expired", "drop", now.Add(-60 * 24 * time.Hour)}, {"tenant/config.v1/app", "old", "artifact", now.Add(-60 * 24 * time.Hour)}}
+	tags := []Tag{{"app", "new", "new", now}, {"app", "second", "second", now.Add(-time.Hour)}, {"app", "deployed", "keep", now.Add(-365 * 24 * time.Hour)}, {"app", "old-alias", "keep", now.Add(-100 * 24 * time.Hour)}, {"app", "v1.2.3", "release", now.Add(-365 * 24 * time.Hour)}, {"app", "expired", "drop", now.Add(-60 * 24 * time.Hour)}, {"unregistered/config.v1/app", "old", "artifact", now.Add(-60 * 24 * time.Hour)}}
 	got := RegistryCandidates(tags, p, reg, map[string]map[string]bool{"app": {"deployed": true}}, now)
 	if len(got) != 1 || got[0].Digest != "drop" {
 		t.Fatalf("unsafe plan: %+v", got)
@@ -48,12 +48,34 @@ func TestRecentImagesSurviveRegardlessOfRank(t *testing.T) {
 }
 
 func TestPolicyRejectsUnsafeValues(t *testing.T) {
-	for _, change := range []func(*Policy){func(p *Policy) { p.RegistryKeep = 1 }, func(p *Policy) { p.HostReserveGiB = 0 }, func(p *Policy) { p.ImageUnused = "0s" }, func(p *Policy) { p.Registries = []Registry{{Container: "remote"}} }} {
+	for _, change := range []func(*Policy){func(p *Policy) { p.RegistryKeep = 1 }, func(p *Policy) { p.HostReserveGiB = 0 }, func(p *Policy) { p.ImageUnused = "0s" }, func(p *Policy) { p.SourceCacheUnused = "30m" }, func(p *Policy) { p.SourceCacheUnused = "" }, func(p *Policy) { p.SourceCacheKeep = 0 }, func(p *Policy) { p.Registries = []Registry{{Container: "remote"}} }} {
 		p := DefaultPolicy()
 		change(&p)
 		if p.Validate() == nil {
 			t.Fatalf("accepted %+v", p)
 		}
+	}
+}
+
+// TestPolicyFileWithoutSourceCacheKeysGetsDefaults pins the compatibility
+// contract for every policy.json already on a developer's disk. Load decodes
+// over DefaultPolicy with DisallowUnknownFields, so a document that omits the
+// source-cache keys inherits the defaults — and must still Validate, because
+// Load returns Validate's error.
+func TestPolicyFileWithoutSourceCacheKeysGetsDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"registry_keep":3}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatalf("a policy predating the source-cache keys no longer loads: %v", err)
+	}
+	if p.SourceCacheUnused != "336h" || p.SourceCacheKeep != 2 {
+		t.Fatalf("source cache budgets = %q/%d, want the defaults 336h/2", p.SourceCacheUnused, p.SourceCacheKeep)
+	}
+	if p.RegistryKeep != 3 {
+		t.Fatalf("the document's own value was lost: registry_keep = %d", p.RegistryKeep)
 	}
 }
 

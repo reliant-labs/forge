@@ -510,7 +510,7 @@ func startK3dCluster(ctx context.Context, name string) error {
 // subsequent readiness/DNS reconciliation is sufficient to continue safely.
 func createK3dCluster(ctx context.Context, name string, args []string) error {
 	var storageErr error
-	args, storageErr = addClusterStorageArgs(args)
+	args, storageErr = addClusterStorageArgsFn(args)
 	if storageErr != nil {
 		return storageErr
 	}

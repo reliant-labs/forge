@@ -14,6 +14,35 @@ import (
 	"github.com/reliant-labs/forge/internal/storage"
 )
 
+// storageScheduleInstalledFn is the seam the notice reads through.
+var storageScheduleInstalledFn = storageScheduleInstalled
+
+// storageScheduleInstalled reports whether installStorageSchedule has run on
+// this machine, by the presence of the unit file it writes. Checking the FILE
+// rather than asking launchctl/systemctl keeps this cheap enough to call on
+// every `forge env up` and keeps it from printing an error of its own on a
+// platform where neither manager exists.
+//
+// An unreadable home directory, or any OS forge cannot schedule on, reports
+// true: the notice's only purpose is to tell someone to run a command, and on a
+// platform where that command prints "schedule it yourself" the notice is
+// noise.
+func storageScheduleInstalled() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return true
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		_, err = os.Stat(filepath.Join(home, "Library", "LaunchAgents", "com.reliant.forge-storage.plist"))
+	case "linux":
+		_, err = os.Stat(filepath.Join(home, ".config", "systemd", "user", "forge-storage.timer"))
+	default:
+		return true
+	}
+	return err == nil
+}
+
 func installStorageSchedule(ctx context.Context, out io.Writer, path string, p storage.Policy) error {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return fmt.Errorf("on %s schedule 'forge storage daemon --policy %s' with your service manager", runtime.GOOS, path)

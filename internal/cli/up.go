@@ -957,6 +957,16 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 
 	clusterErr := clusterWorkloadError(opts.env, clusterHealth)
 
+	// Opportunistic storage maintenance, after the summary so its output never
+	// pushes the URLs off screen, and only on an env that actually came up —
+	// a run that failed its cluster gate is a run the developer is about to
+	// re-run, which is the worst moment to spend two minutes pruning caches.
+	// Non-disruptive layers only (no registry GC, no node restarts), gated on
+	// a 24h timestamp, and never fatal. See storage_converge.go.
+	if clusterErr == nil {
+		maybeOpportunisticGC(ctx, os.Stdout)
+	}
+
 	if detach {
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
@@ -3169,6 +3179,18 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 			return err
 		}
+		// Background mode is NOT rotated, by design. The child's stdout and
+		// stderr ARE this file descriptor: a detached child is meant to
+		// outlive forge (`forge env up --background` / the non-TTY default
+		// both return while the stack keeps running, torn down later by
+		// `forge env down`). Rotating would mean handing the child a pipe and
+		// copying from a forge goroutine, which dies with forge — the child
+		// would then take SIGPIPE on its next write, so the stack would stop
+		// outliving the command that started it. Process supervision beats
+		// log rotation. The remaining gap: a detached stream grows unbounded
+		// until the next `up` truncates it. Mitigations that do not change
+		// supervision: `forge env down` + `up`, or a future detached relay
+		// process that owns the pipe independently of forge.
 		logFile, err := os.Create(logPath)
 		if err != nil {
 			return err
@@ -3209,13 +3231,18 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	// the live stream is the interleaved, prefixed terminal output. A
 	// failure to open the log file is non-fatal — the live stream still
 	// works; we just warn and carry on without the file sink. The single
-	// *os.File is shared by the stdout+stderr goroutines through a
+	// sink is shared by the stdout+stderr goroutines through a
 	// lockedWriter so their line writes don't interleave mid-line.
+	//
+	// The sink rotates past FORGE_LOG_ROTATE_BYTES (default 50 MiB) so one
+	// long-lived `up` can't grow an unbounded file; the current stream keeps
+	// this exact path, and rotated siblings are named for storage's
+	// rotatedLog expiry. See up_logrotate.go.
 	var sink io.Writer
 	if logPath, perr := upLogPath(p.env, name); perr == nil {
 		if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o755); mkErr == nil {
-			if f, ferr := os.Create(logPath); ferr == nil {
-				sink = &lockedWriter{w: f}
+			if rw, ferr := newRotatingLogWriter(logPath, upLogRotateBytes()); ferr == nil {
+				sink = &lockedWriter{w: rw}
 			} else {
 				fmt.Printf("[up] %s: warning: cannot open log file %s: %v\n", name, logPath, ferr)
 			}

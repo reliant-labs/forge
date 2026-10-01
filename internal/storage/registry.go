@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,27 @@ type Tag struct {
 type Version struct {
 	Repository string
 	Digest     string
+}
+
+// Revision is one manifest link on the registry filesystem and the moment it was
+// written. Untagged manifests have no push timestamp anywhere else, so the link
+// mtime is the only available age for them.
+type Revision struct {
+	Version
+	Modified time.Time
+}
+
+// PlanEntry is one manifest selected for deletion, with the reason it became
+// eligible and a size estimate when the manifest could be read.
+type PlanEntry struct {
+	Version
+	// Untagged marks a manifest no tag points at: an orphan left behind by a
+	// re-push of a reused tag, unreachable from anything retained.
+	Untagged bool
+	// Tags are the aliases that disappear with this manifest.
+	Tags  []string
+	Bytes uint64
+	Sized bool
 }
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -75,76 +97,53 @@ func RegistryCandidates(tags []Tag, p Policy, reg Registry, protected map[string
 	return result
 }
 
-func imageRefs(value any) []string {
-	var result []string
-	switch x := value.(type) {
-	case map[string]any:
-		for k, v := range x {
-			if k == "image" || k == "imageID" {
-				if s, ok := v.(string); ok {
-					result = append(result, strings.TrimPrefix(s, "docker-pullable://"))
-				}
-			}
-			result = append(result, imageRefs(v)...)
-		}
-	case []any:
-		for _, v := range x {
-			result = append(result, imageRefs(v)...)
-		}
+// clusterReferences scans every listable resource in a cluster, not a fixed list
+// of workload kinds. A custom resource can hold an image reference anywhere in
+// its spec — workspaces.reliant.dev carries one at spec.template.image — and a
+// kind allowlist silently leaves those unprotected.
+func (r Runner) clusterReferences(ctx context.Context, cluster string) ([]string, error) {
+	b, err := r.command(ctx, "kubectl", "--context", cluster, "--request-timeout=30s", "api-resources", "--verbs=list", "-o", "name")
+	if err != nil {
+		return nil, err
 	}
-	return result
+	kinds := listableResources(b)
+	if len(kinds) == 0 {
+		return nil, fmt.Errorf("no listable resources reported")
+	}
+	var refs []string
+	for _, batch := range resourceBatches(kinds, 25) {
+		selector := strings.Join(batch, ",")
+		b, err := r.command(ctx, "kubectl", "--context", cluster, "--request-timeout=120s", "get", selector, "-A", "--ignore-not-found", "-o", "json")
+		if err != nil {
+			return nil, fmt.Errorf("listing %s: %w", selector, err)
+		}
+		if len(bytes.TrimSpace(b)) == 0 {
+			continue
+		}
+		var v any
+		if err := json.Unmarshal(b, &v); err != nil {
+			return nil, fmt.Errorf("listing %s: %w", selector, err)
+		}
+		refs = append(refs, referenceCandidates(v)...)
+	}
+	return refs, nil
 }
 
 func (r Runner) protected(ctx context.Context, reg Registry) (map[string]map[string]bool, error) {
 	refs := append([]string{}, r.Policy.Pins...)
 	for _, cluster := range reg.Contexts {
-		b, err := r.command(ctx, "kubectl", "--context", cluster, "--request-timeout=20s", "get", "pods,deployments,statefulsets,daemonsets,replicasets,jobs,cronjobs,replicationcontrollers", "-A", "-o", "json")
+		clusterRefs, err := r.clusterReferences(ctx, cluster)
 		if err != nil {
 			return nil, fmt.Errorf("refusing registry cleanup: protected set for %s unavailable: %w", cluster, err)
 		}
-		var v any
-		if err := json.Unmarshal(b, &v); err != nil {
-			return nil, err
-		}
-		refs = append(refs, imageRefs(v)...)
+		refs = append(refs, clusterRefs...)
 	}
 	containerRefs, err := r.containerReferences(ctx)
 	if err != nil {
 		return nil, err
 	}
 	refs = append(refs, containerRefs...)
-
-	protected := map[string]map[string]bool{}
-	for _, ref := range refs {
-		if digestPattern.MatchString(ref) {
-			if protected["*"] == nil {
-				protected["*"] = map[string]bool{}
-			}
-			protected["*"][ref] = true
-			continue
-		}
-		host, path, ok := strings.Cut(ref, "/")
-		if !ok || !contains(reg.Aliases, host) {
-			continue
-		}
-		repo, version, ok := strings.Cut(path, "@")
-		if ok {
-			if i := strings.LastIndex(repo, ":"); i >= 0 {
-				repo = repo[:i]
-			}
-		} else {
-			repo = path
-			version = "latest"
-			if i := strings.LastIndex(path, ":"); i >= 0 {
-				repo, version = path[:i], path[i+1:]
-			}
-		}
-		if protected[repo] == nil {
-			protected[repo] = map[string]bool{}
-		}
-		protected[repo][version] = true
-	}
-	return protected, nil
+	return protectedRefs(refs, reg.Aliases), nil
 }
 
 func contains(xs []string, x string) bool {
@@ -186,41 +185,62 @@ func (r Runner) inventory(ctx context.Context, container string) ([]Tag, error) 
 }
 
 // revisions inventories every manifest link, including untagged indexes. Their
-// children must remain pullable even when a child has its own expired tag.
-func (r Runner) revisions(ctx context.Context, container string) ([]Version, error) {
-	script := `find /var/lib/registry/docker/registry/v2/repositories -path '*/_manifests/revisions/sha256/*/link' -type f -exec sh -ec 'for p do printf "%s\t%s\n" "$p" "$(cat "$p")"; done' sh {} +`
+// children must remain pullable even when a child has its own expired tag. The
+// link mtime is carried through because an untagged manifest has no push
+// timestamp anywhere else, and age is what makes one reclaimable.
+func (r Runner) revisions(ctx context.Context, container string) ([]Revision, error) {
+	script := `find /var/lib/registry/docker/registry/v2/repositories -path '*/_manifests/revisions/sha256/*/link' -type f -exec sh -ec 'for p do printf "%s\t%s\t%s\n" "$(stat -c %Y "$p")" "$p" "$(cat "$p")"; done' sh {} +`
 	b, err := r.docker(ctx, "exec", container, "sh", "-ec", script)
 	if err != nil {
 		return nil, err
 	}
-	var versions []Version
+	var revisions []Revision
 	const prefix = "/var/lib/registry/docker/registry/v2/repositories/"
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
 		if line == "" {
 			continue
 		}
 		cols := strings.Split(line, "\t")
-		if len(cols) != 2 || !strings.HasPrefix(cols[0], prefix) || !digestPattern.MatchString(cols[1]) {
+		if len(cols) != 3 || !strings.HasPrefix(cols[1], prefix) || !digestPattern.MatchString(cols[2]) {
 			return nil, fmt.Errorf("invalid registry revision inventory")
 		}
-		repo, revision, ok := strings.Cut(strings.TrimPrefix(cols[0], prefix), "/_manifests/revisions/sha256/")
-		if !ok || repo == "" || revision != strings.TrimPrefix(cols[1], "sha256:")+"/link" {
+		stamp, err := strconv.ParseInt(cols[0], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid registry revision timestamp: %w", err)
+		}
+		repo, revision, ok := strings.Cut(strings.TrimPrefix(cols[1], prefix), "/_manifests/revisions/sha256/")
+		if !ok || repo == "" || revision != strings.TrimPrefix(cols[2], "sha256:")+"/link" {
 			return nil, fmt.Errorf("invalid registry revision path")
 		}
-		versions = append(versions, Version{repo, cols[1]})
+		revisions = append(revisions, Revision{Version{repo, cols[2]}, time.Unix(stamp, 0)})
 	}
-	return versions, nil
+	return revisions, nil
 }
 
+// containerInfo is the subset of `docker inspect` output this package reads.
+// The json tags name the real wire keys explicitly rather than leaning on
+// encoding/json's case-insensitive fallback: the fallback makes the DECODER the
+// only writer a reader can infer, which is invisible to static analysis (see
+// internal/deadcodeguard), and it would silently keep matching if Docker ever
+// changed a key's case.
 type containerInfo struct {
-	Image           string
-	State           struct{ Running bool }
-	Config          struct{ Cmd []string }
-	Mounts          []struct{ Type, Destination string }
+	Image string `json:"Image"`
+	State struct {
+		Running bool `json:"Running"`
+	} `json:"State"`
+	Config struct {
+		Cmd []string `json:"Cmd"`
+	} `json:"Config"`
+	Mounts []struct {
+		Type        string `json:"Type"`
+		Destination string `json:"Destination"`
+	} `json:"Mounts"`
 	NetworkSettings struct {
-		Ports    map[string][]struct{ HostPort string }
-		Networks map[string]any
-	}
+		Ports map[string][]struct {
+			HostPort string `json:"HostPort"`
+		} `json:"Ports"`
+		Networks map[string]any `json:"Networks"`
+	} `json:"NetworkSettings"`
 }
 
 func (r Runner) inspect(ctx context.Context, name string) (containerInfo, error) {
@@ -270,7 +290,7 @@ func registryRequest(ctx context.Context, base, path, method string) ([]byte, er
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 }
 
-func (r Runner) registryPlan(ctx context.Context, reg Registry, container, base string) ([]Version, error) {
+func (r Runner) registryPlan(ctx context.Context, reg Registry, container, base string) ([]PlanEntry, error) {
 	protected, err := r.protected(ctx, reg)
 	if err != nil {
 		return nil, err
@@ -283,85 +303,206 @@ func (r Runner) registryPlan(ctx context.Context, reg Registry, container, base 
 	if err != nil {
 		return nil, err
 	}
-	result, err := registryGraphPlan(tags, revisions, r.Policy, reg, protected, time.Now(), func(v Version) ([]byte, error) {
+	plan, err := registryGraphPlan(tags, revisions, r.Policy, reg, protected, time.Now(), func(v Version) ([]byte, error) {
 		return registryRequest(ctx, base, "/v2/"+v.Repository+"/manifests/"+v.Digest, http.MethodGet)
 	})
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range result {
-		r.print("expire %s/%s@%s\n", reg.Container, v.Repository, v.Digest)
+	var untagged, total uint64
+	sized := true
+	for _, e := range plan {
+		total += e.Bytes
+		sized = sized && e.Sized
+		if e.Untagged {
+			untagged++
+			r.print("expire unreachable untagged manifest %s/%s@%s%s\n", reg.Container, e.Repository, e.Digest, sizeSuffix(e.Bytes, e.Sized))
+			continue
+		}
+		r.print("expire tagged version %s/%s@%s (%s)%s\n", reg.Container, e.Repository, e.Digest, strings.Join(e.Tags, ", "), sizeSuffix(e.Bytes, e.Sized))
 	}
-	r.print("registry %s: %d eligible manifests; %d tags; retain %d days and %d versions\n", reg.Container, len(result), len(tags), r.Policy.RegistryDays, r.Policy.RegistryKeep)
-	return result, nil
+	r.print("registry %s: %d eligible manifests (%d tagged versions, %d unreachable untagged); %d tags; retain %d days and %d versions\n", reg.Container, len(plan), uint64(len(plan))-untagged, untagged, len(tags), r.Policy.RegistryDays, r.Policy.RegistryKeep)
+	if len(plan) > 0 {
+		qualifier := "estimated reclaim"
+		if !sized {
+			qualifier = "estimated reclaim (partial: some manifests reported no sizes)"
+		}
+		r.print("registry %s: %s %s; layers shared with retained manifests are deduplicated, so the actual reclaim is lower\n", reg.Container, qualifier, formatBytes(total))
+	}
+	return plan, nil
+}
+
+func sizeSuffix(b uint64, sized bool) string {
+	if !sized {
+		return ""
+	}
+	return " (" + formatBytes(b) + ")"
+}
+
+func formatBytes(b uint64) string {
+	switch {
+	case b >= GiB:
+		return fmt.Sprintf("%.2f GiB", float64(b)/float64(GiB))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(b)/float64(1<<20))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
+// manifestBody is the subset of an image manifest or index needed to walk the
+// graph and estimate size. Config and layer sizes are the manifest's own
+// accounting; an index carries neither, because its children hold the bytes.
+// The json tags are the OCI/distribution wire names, which are lowercase — so
+// unlike Docker's inspect output these are not merely explicit, they are the
+// only spelling a reader could verify against the spec.
+type manifestBody struct {
+	Config struct {
+		Size uint64 `json:"size"`
+	} `json:"config"`
+	Layers []struct {
+		Size uint64 `json:"size"`
+	} `json:"layers"`
+	Manifests []struct {
+		Digest string `json:"digest"`
+	} `json:"manifests"`
 }
 
 // registryGraphPlan preserves the full graph of every retained manifest, not
-// only tagged roots. fetch errors abort the complete plan before deletion.
-func registryGraphPlan(tags []Tag, revisions []Version, policy Policy, reg Registry, protected map[string]map[string]bool, now time.Time, fetch func(Version) ([]byte, error)) ([]Version, error) {
-	selected := map[Version]bool{}
+// only tagged roots, and reclaims untagged manifests that nothing retained can
+// reach. fetch errors abort the complete plan before deletion.
+//
+// Retained roots are retained tags, protected digests, and untagged revisions
+// newer than the retention window; everything transitively reachable from them
+// is retained too. A manifest outside that closure is eligible — which covers
+// both an expired tagged version and the orphan a re-pushed tag left behind.
+// This is graph-safe selection, and is why Distribution's own
+// `garbage-collect --delete-untagged` must never be used: on 2.8.3 it deletes
+// index children (distribution#3178).
+func registryGraphPlan(tags []Tag, revisions []Revision, policy Policy, reg Registry, protected map[string]map[string]bool, now time.Time, fetch func(Version) ([]byte, error)) ([]PlanEntry, error) {
+	expiredTag := map[Version]bool{}
 	for _, v := range RegistryCandidates(tags, policy, reg, protected, now) {
-		selected[v] = true
+		expiredTag[v] = true
 	}
-	var roots []Version
-	// A complete filesystem revision inventory lets us retain untagged indexes,
-	// which cannot be enumerated through the Distribution tags API. Global pins
-	// are applied by RegistryCandidates before selecting any tagged versions.
-	for _, v := range revisions {
-		if !selected[v] {
-			roots = append(roots, v)
-		}
-	}
-	// Include retained tag roots as well: inconsistent inventory must fail closed
-	// on manifest reads rather than silently losing protection.
+	tagged := map[Version][]string{}
 	for _, t := range tags {
 		v := Version{t.Repository, t.Digest}
-		if !selected[v] {
+		tagged[v] = append(tagged[v], t.Name)
+	}
+	for _, names := range tagged {
+		sort.Strings(names)
+	}
+
+	ttl := time.Duration(policy.RegistryDays) * 24 * time.Hour
+	var roots []Version
+	// Retained tag roots are added even when the revision inventory does not list
+	// them: an inconsistent inventory must fail closed on the manifest read
+	// rather than silently lose protection.
+	for v := range tagged {
+		if !expiredTag[v] {
 			roots = append(roots, v)
 		}
 	}
+	// Protected digests root the graph in every registered repository. A bare
+	// digest names content, not a location, so it cannot be attributed to one.
 	for repo, refs := range protected {
 		for ref := range refs {
-			if digestPattern.MatchString(ref) {
-				roots = append(roots, Version{repo, ref})
+			if !digestPattern.MatchString(ref) {
+				continue
 			}
+			if repo == "*" {
+				for _, candidate := range reg.Repositories {
+					roots = append(roots, Version{candidate, ref})
+				}
+				continue
+			}
+			roots = append(roots, Version{repo, ref})
 		}
 	}
-	visited := map[Version]bool{}
+	for _, rev := range revisions {
+		if len(tagged[rev.Version]) > 0 {
+			continue
+		}
+		// An untagged manifest inside the retention window is a root in its own
+		// right: it may be an index or OCI artifact whose children must stay
+		// pullable, and a push that is still in flight has no tag yet.
+		if now.Sub(rev.Modified) <= ttl {
+			roots = append(roots, rev.Version)
+		}
+	}
+
+	retained := map[Version]bool{}
 	for len(roots) > 0 {
 		v := roots[len(roots)-1]
 		roots = roots[:len(roots)-1]
-		if visited[v] || !contains(reg.Repositories, v.Repository) {
+		if retained[v] || !contains(reg.Repositories, v.Repository) {
 			continue
 		}
-		visited[v] = true
-		delete(selected, v)
-		b, err := fetch(v)
+		retained[v] = true
+		body, err := fetchManifest(fetch, v)
 		if err != nil {
 			return nil, err
 		}
-		var manifest struct{ Manifests []struct{ Digest string } }
-		if err := json.Unmarshal(b, &manifest); err != nil {
-			return nil, err
-		}
-		for _, child := range manifest.Manifests {
-			if !digestPattern.MatchString(child.Digest) {
-				return nil, fmt.Errorf("invalid child digest")
-			}
+		for _, child := range body.Manifests {
 			roots = append(roots, Version{v.Repository, child.Digest})
 		}
 	}
-	var result []Version
-	for v := range selected {
-		result = append(result, v)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Repository == result[j].Repository {
-			return result[i].Digest < result[j].Digest
+
+	var plan []PlanEntry
+	seen := map[Version]bool{}
+	eligible := func(v Version) error {
+		if retained[v] || seen[v] || !contains(reg.Repositories, v.Repository) {
+			return nil
 		}
-		return result[i].Repository < result[j].Repository
+		seen[v] = true
+		body, err := fetchManifest(fetch, v)
+		if err != nil {
+			return err
+		}
+		size := body.Config.Size
+		for _, layer := range body.Layers {
+			size += layer.Size
+		}
+		plan = append(plan, PlanEntry{Version: v, Untagged: len(tagged[v]) == 0, Tags: tagged[v], Bytes: size, Sized: true})
+		return nil
+	}
+	for v := range expiredTag {
+		if err := eligible(v); err != nil {
+			return nil, err
+		}
+	}
+	for _, rev := range revisions {
+		if len(tagged[rev.Version]) > 0 || now.Sub(rev.Modified) <= ttl {
+			continue
+		}
+		if err := eligible(rev.Version); err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(plan, func(i, j int) bool {
+		if plan[i].Repository == plan[j].Repository {
+			return plan[i].Digest < plan[j].Digest
+		}
+		return plan[i].Repository < plan[j].Repository
 	})
-	return result, nil
+	return plan, nil
+}
+
+func fetchManifest(fetch func(Version) ([]byte, error), v Version) (manifestBody, error) {
+	var body manifestBody
+	b, err := fetch(v)
+	if err != nil {
+		return body, err
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		return body, err
+	}
+	for _, child := range body.Manifests {
+		if !digestPattern.MatchString(child.Digest) {
+			return body, fmt.Errorf("invalid child digest")
+		}
+	}
+	return body, nil
 }
 
 // RegistryGC deletes eligible manifests and collects blobs with all writers stopped.
@@ -463,7 +604,10 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	if _, err = r.docker(ctx, "stop", helper); err != nil {
 		return err
 	}
-	// Preserve untagged manifests: they can be index children or OCI artifacts.
+	// Never --delete-untagged: on 2.8.3 it deletes index children
+	// (distribution#3178). Unreachable untagged manifests were already selected
+	// by the graph walk and DELETEd above, so this pass only reclaims blobs that
+	// no remaining manifest references.
 	b, err = r.docker(ctx, "run", "--rm", "--pull=never", "--network", "none", "--name", gc, "--volumes-from", reg.Container+":rw", info.Image, "garbage-collect", "/etc/docker/registry/config.yml")
 	r.print("%s\n", b)
 	return err

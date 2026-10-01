@@ -32,9 +32,10 @@ import (
 
 // Infra is the OWNED provider set — everything the explicit composition
 // (internal/app/compose.go: NewComponents) wires into each component's Deps.
-// compose.go is regenerated every run from the discovered component set and
-// fills each Deps field INLINE off a field on THIS struct (there is NO by-type
-// injector). So a collaborator a component needs becomes a field here,
+// compose.go is yours too — forge writes it once and then reconciles only the
+// component set and the Deps literal's KEY set, never the value expressions.
+// It fills each Deps field INLINE off a field on THIS struct (there is NO
+// by-type injector). So a collaborator a component needs becomes a field here,
 // constructed in OpenInfra; NewComponents references it as `infra.<Field>`.
 //
 // Three categories of provider live here:
@@ -147,7 +148,7 @@ func (i *Infra) transport() http.RoundTripper {
 // bindings. NewComponents (compose.go) then constructs every component
 // INLINE off the returned *Infra. Late-bound / two-phase wiring (a setter on
 // one constructed component fed by another) goes in compose.go after the
-// component values exist — `forge project disown internal/app/compose.go` to own it.
+// component values exist — compose.go is already yours, so write it there.
 //
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //

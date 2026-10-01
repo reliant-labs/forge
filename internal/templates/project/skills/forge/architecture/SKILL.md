@@ -37,9 +37,9 @@ internal/                     # the application: components, DI, data access
   app/                        #   the LIVE dependency-injection composition root:
     providers.go              #     yours: Infra + OpenInfra(ctx, cfg, logger) — the owned provider set
     auth.go                   #     yours: SetupAuth() over forge/pkg/auth
-    compose.go                #     generated: Components + NewComponents(infra) — disown to hand-own
-    mounts_services.go        #     generated: typed Mount<Svc> methods + the data-only Inventory
-    lifecycle.go              #     generated: start/stop supervision for workers and operators
+    compose.go                #     yours: Components + NewComponents(infra) — reconciled: component set + Deps keys only
+    mounts_services_gen.go    #     generated: typed Mount<Svc> methods + the data-only Inventory
+    lifecycle.go              #     yours: start/stop supervision — reconciled: Worker<X>()/Operator<X>() accessors appended
   db/                         #   <entity>_orm.go (generated from schema) + <entity>_repo_ext.go (yours)
 pkg/app/                      # substrate: testing.go (per-component test harness) + migrate.go
 pkg/config/                   # typed config projected from proto/config/v1/config.proto
@@ -61,7 +61,7 @@ forge.yaml                    # project-GLOBAL config only: identity, frontends,
 |---|---|
 | `gen/` — Go stubs, TS clients, mocks | `internal/handlers/<svc>/service.go`, `rpc_<name>.go` — business logic |
 | `internal/handlers/<svc>/handlers_crud_ops_gen.go` | `internal/handlers/<svc>/handlers_crud.go` — CRUD delegations (access-control WHERE) |
-| `internal/app/compose.go`, `mounts_services.go`, `lifecycle.go` (disown to hand-own) | `internal/app/providers.go`, `auth.go` — the `Infra`/`OpenInfra`/`SetupAuth` seams |
+| `internal/app/mounts_services_gen.go` (disown to hand-own) | `internal/app/providers.go`, `auth.go` — the `Infra`/`OpenInfra`/`SetupAuth` seams; `compose.go` + `lifecycle.go` — yours, with only the component set / Deps keys / accessors reconciled |
 | `internal/db/<entity>_orm.go` — entity struct + ORM (from schema) | `db/migrations/` — schema truth; `internal/db/<entity>_repo_ext.go` — custom queries |
 | `pkg/config/`, `pkg/app/testing.go`, frontend `*-hooks.ts`, `gen/forge_descriptor.json` | `pkg/middleware/` — policy; `cmd/<binary>.go` — owned subcommands |
 
@@ -88,10 +88,10 @@ gen/ts/ → forge generate → frontends/<name>/src/hooks/*-hooks.ts
 
 ## The composition root (`internal/app/providers.go` + `internal/app/compose.go`)
 
-Wiring is **explicit, typed Go** — no registration file, no god-hook, no string-keyed lookup. The owned `providers.go` declares an `Infra` set + `OpenInfra` (pools, clients, adapters, interface bindings). The generated `compose.go` declares `NewComponents`, which builds the closure in type-topological order and hands each component its `Deps` as **interface-typed fields, resolved by type**:
+Wiring is **explicit, typed Go** — no registration file, no god-hook, no string-keyed lookup. The owned `providers.go` declares an `Infra` set + `OpenInfra` (pools, clients, adapters, interface bindings). The owned `compose.go` declares `NewComponents`, which builds the closure in type-topological order and hands each component its `Deps` as **interface-typed fields, resolved by type**:
 
 ```go
-// internal/app/compose.go (generated; disown to hand-own)
+// internal/app/compose.go (yours; only the component set + Deps keys are reconciled)
 func NewComponents(infra *Infra) (*Components, error) {
     c := &Components{}
     c.Users = user.New(user.Deps{DB: infra.DB})
@@ -105,7 +105,7 @@ func NewComponents(infra *Infra) (*Components, error) {
 
 - **The `Deps` interface is the seam.** A component depends on each dep's *interface* — the field is `Users user.Service`, never the concrete type — so it can't tell the real in-process service from a Connect client or a mock. Splitting a service out later is a one-line swap here (`Users: userclient.New(conn)`), consumer untouched.
 - **Resolution is compile-time, by type — never by name.** If `infra.Repo` doesn't satisfy `things.Repository`, it doesn't compile — no name-match layer to silently drop a narrow-interface mismatch as a nil field. Runtime typed containers (reflection/generics) are rejected for exactly this reason.
-- **Two-phase wiring is first-class.** Post-construction setters and near-diamonds are plain method calls after both ends exist: `forge project disown internal/app/compose.go` and edit by hand.
+- **Two-phase wiring is first-class.** Post-construction setters and near-diamonds are plain method calls after both ends exist — write them straight into `NewComponents`, which is yours; reconciliation keeps them.
 
 The cmd serve path calls `app.OpenInfra(...)` → `app.NewComponents(infra)`, mounts each service through the typed `Mount<Svc>` methods, and calls `serverkit.Run`. The `Inventory` beside them is data-only, for `forge project map`/`audit` — names are display-only, never a construction key.
 
@@ -147,7 +147,7 @@ This skill is the map. For depth, load: **proto** (annotations, CRUD naming, fie
 - Never hand-edit anything under `gen/` or any `*_gen.go`. Fix the proto or contract, then regenerate.
 - The app lives under `internal/`, by role; `pkg/` is generated substrate (config, middleware, test harness); top-level is otherwise `cmd/` + `api/`.
 - Wiring is the explicit composition (`NewComponents`) off the owned `providers.go` `Infra`/`OpenInfra` — `Deps` are interfaces resolved by type, never by name.
-- `forge generate` never touches `providers.go`/`auth.go`/`cmd/<binary>.go` (and `compose.go` only while forge-owned).
+- `forge generate` never touches `providers.go`/`auth.go`/`cmd/<binary>.go`, and in `compose.go`/`lifecycle.go` it reconciles only the projection — the component set, the Deps literal's keys, the worker/operator accessors — never your value expressions (`forge project disown` to stop even that).
 - One service per proto package; one `internal/handlers/<svc>/` per service. Field numbers are forever — mark removed fields `reserved`.
 - DB schema evolves via migrations, not proto; wire messages evolve independently and conversions map the intersection by name. An entity needs both halves.
 

@@ -21,7 +21,7 @@ forge project new <name>-next --kind cli --mod github.com/<owner>/<name>-next
 cmd/<name>-next/main.go    # Cobra root command
 internal/                  # DEFAULT HOME for your packages
 pkg/config/                # typed config — generated from proto config blocks
-internal/app/              # composition (providers.go owned + compose.go generated)
+internal/app/              # composition (providers.go + compose.go, both yours)
 forge.yaml                 # Project config (strictly top-level)
 go.work + go.mod           # Workspace + module
 ```
@@ -40,7 +40,7 @@ A CLI's settings live in a `<Component>Config` proto message annotated with `(fo
 
 ## Composition — owned providers, generated wiring, even for a CLI
 
-A binary still has a small typed composition for whatever it constructs: the owned `Infra` provider set + `OpenInfra` in `internal/app/providers.go`, plus the generated `NewComponents(infra *Infra) (*Components, error)` in `internal/app/compose.go` that builds the dependency closure in type-topological order, handing each component its `Deps` as interface-typed fields resolved by type off `infra.<Field>`, never by string name. For a one-package CLI this is a few lines; the point is that the logger, DB handle, and config flow through one owned place (`Infra`) — not a fresh ad-hoc logger per command. There is NO string-keyed registry and NO name-matched wiring.
+A binary still has a small typed composition for whatever it constructs: the owned `Infra` provider set + `OpenInfra` in `internal/app/providers.go`, plus `NewComponents(infra *Infra) (*Components, error)` in the owned `internal/app/compose.go` that builds the dependency closure in type-topological order, handing each component its `Deps` as interface-typed fields resolved by type off `infra.<Field>`, never by string name. For a one-package CLI this is a few lines; the point is that the logger, DB handle, and config flow through one owned place (`Infra`) — not a fresh ad-hoc logger per command. There is NO string-keyed registry and NO name-matched wiring.
 
 ## Adding a second binary
 

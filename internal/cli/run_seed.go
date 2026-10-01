@@ -72,6 +72,34 @@ func ensureDevDatabase(cfg *config.ProjectConfig, entities *KCLEntities, env str
 	return nil
 }
 
+// ensureDevDatabaseHook is ensureDevDatabase as the deploy dispatch's
+// before-clusters hook (dispatchDeployGroupsBeforeClusters): the dev
+// databases are created once the infrastructure groups have brought their
+// server up and before the first cluster workload is applied.
+//
+// WHY THE DEPLOY, NOT ONLY THE HOST PHASE. A dev env may run a workload
+// IN-CLUSTER against a database on the host's docker-compose postgres (its DSN
+// names host.k3d.internal, which devDatabaseDSNs already resolves). The host
+// phase is too late for it: `forge env up` reaches the host phase only after
+// the cluster rollout succeeds, and that rollout is waiting on a pod that
+// crash-loops on `database "…" does not exist` — a deadlock on every fresh
+// dev stack. `forge env deploy dev` never runs a host phase at all.
+//
+// The host phase keeps its own call: it covers an env with no cluster group
+// (where this hook never fires) and a `forge env up --no-deploy`. Both are
+// idempotent, so the second is a no-op.
+//
+// nil under --dry-run (a preview creates nothing) and for an env that is not
+// dev (ensureDevDatabase's own fail-closed classifier still applies).
+func ensureDevDatabaseHook(cfg *config.ProjectConfig, entities *KCLEntities, env string, dryRun bool) func(context.Context) error {
+	if dryRun {
+		return nil
+	}
+	return func(context.Context) error {
+		return ensureDevDatabase(cfg, entities, env)
+	}
+}
+
 // devDatabaseDSNs returns every distinct dev database forge should
 // ensure-create this run: the primary DSN plus every OTHER DATABASE_URL the
 // env's services declare, de-duplicated by (server, database).

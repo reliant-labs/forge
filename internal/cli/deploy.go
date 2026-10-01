@@ -1087,9 +1087,20 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
-		return dispatchDeployGroups(ctx, registry, in.groups)
+		return dispatchDeployGroupsBeforeClusters(ctx, registry, in.groups,
+			ensureDevDatabaseHook(in.cfg, in.topologyOrEntities(), in.envName, in.dryRun))
 	}
 	return nil
+}
+
+// topologyOrEntities is the WHOLE env's entity set when the deploy is
+// targeted (the databases a cluster workload dials are a property of the env,
+// not of the --target subset), else the deploy's own entities.
+func (in deployApplyInput) topologyOrEntities() *KCLEntities {
+	if in.topologyEntities != nil {
+		return in.topologyEntities
+	}
+	return in.entities
 }
 
 // buildDeployGroupsForEnv builds the deploy groups from the rendered entities
@@ -3458,7 +3469,9 @@ func verifyDeclaredContextsExist(ctx context.Context, envName string, groups []d
 //     Secrets; shipping those into a remote/prod cluster is a footgun,
 //     so we refuse and point the user at forge.ExternalSecrets {}.
 //  3. Render the Secret manifests and apply them via the same
-//     cluster.KubectlApply path the Deployments use.
+//     cluster.KubectlApply path the Deployments use — once per cluster and
+//     namespace whose workloads declare them (placeProviderSecretRefs), so
+//     a multi-cluster env's every consumer finds its Secret.
 //
 // external/none providers produce no manifests (RenderK8sSecrets returns
 // nil), so this is a no-op for them beyond the validation gate.
@@ -3513,40 +3526,126 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 		}
 	}
 
-	mans := secrets.RenderK8sSecrets(prov, secretRefsForK8sServices(entities), namespace)
-	if len(mans) == 0 {
-		return nil
-	}
-
-	// Marshal the []map[string]any into the `---`-separated YAML document
-	// stream cluster.KubectlApply consumes (identical shape to
-	// RenderManifests' output that the Deployment apply uses).
-	stream, merr := marshalManifestStream(mans)
-	if merr != nil {
-		return fmt.Errorf("render k8s secrets: %w", merr)
-	}
-
-	if dryRun {
-		fmt.Println("\n--- Generated Secret Manifests (dry-run) ---")
-		fmt.Println(stream)
-		fmt.Println("--- End Secret Manifests ---")
-		return nil
-	}
-
-	// The secret manifests are namespace-scoped, but the Namespace object
-	// itself lives in the MAIN manifest stream applied AFTER this — so on a
-	// fresh cluster the namespace doesn't exist yet and the secret apply
-	// fails "namespaces \"…\" not found". Ensure it first (idempotent; the
-	// later full apply re-applies it with labels). See cluster.EnsureNamespace.
-	if err := cluster.EnsureNamespace(ctx, kubeContext, namespace); err != nil {
-		return fmt.Errorf("ensure namespace %q before secrets: %w", namespace, err)
-	}
-
-	fmt.Printf("Applying %d secret manifest(s) into namespace %s...\n", len(mans), namespace)
-	if err := cluster.KubectlApply(ctx, kubeContext, stream); err != nil {
-		return fmt.Errorf("apply k8s secrets: %w", err)
+	// One render + apply per destination: every (cluster, namespace) whose
+	// workloads declare a ref receives the Secret, carrying the keys THOSE
+	// workloads declare. See placeProviderSecretRefs.
+	for _, p := range placeProviderSecretRefs(entities, groups, namespace, kubeContext) {
+		mans := secrets.RenderK8sSecrets(prov, p.refs, p.namespace)
+		if len(mans) == 0 {
+			continue
+		}
+		// Marshal the []map[string]any into the `---`-separated YAML document
+		// stream cluster.KubectlApply consumes (identical shape to
+		// RenderManifests' output that the Deployment apply uses).
+		stream, merr := marshalManifestStream(mans)
+		if merr != nil {
+			return fmt.Errorf("render k8s secrets: %w", merr)
+		}
+		if dryRun {
+			fmt.Printf("\n--- Generated Secret Manifests for %s/%s (dry-run) ---\n", p.cluster, p.namespace)
+			fmt.Println(stream)
+			fmt.Println("--- End Secret Manifests ---")
+			continue
+		}
+		// Never a write to whatever context happens to be current: a
+		// placement with no cluster has nowhere declared to land.
+		if strings.TrimSpace(p.cluster) == "" {
+			return fmt.Errorf("projected Secret(s) for namespace %q have no kubectl context to apply to: "+
+				"declare the consuming workload's cluster (a forge.ClusterTarget) in the env's KCL", p.namespace)
+		}
+		// The secret manifests are namespace-scoped, but the Namespace object
+		// itself lives in the MAIN manifest stream applied AFTER this — so on a
+		// fresh cluster the namespace doesn't exist yet and the secret apply
+		// fails "namespaces \"…\" not found". Ensure it first (idempotent; the
+		// later full apply re-applies it with labels). See cluster.EnsureNamespace.
+		if err := cluster.EnsureNamespace(ctx, p.cluster, p.namespace); err != nil {
+			return fmt.Errorf("ensure namespace %q in %q before secrets: %w", p.namespace, p.cluster, err)
+		}
+		fmt.Printf("Applying %d secret manifest(s) into %s/%s...\n", len(mans), p.cluster, p.namespace)
+		if err := cluster.KubectlApply(ctx, p.cluster, stream); err != nil {
+			return fmt.Errorf("apply k8s secrets to %s: %w", p.cluster, err)
+		}
 	}
 	return nil
+}
+
+// placedProviderRefs is the set of provider-projected secret refs bound for
+// ONE (cluster, namespace): the unit a single render + apply handles.
+type placedProviderRefs struct {
+	cluster, namespace string
+	refs               []secrets.SecretRef
+}
+
+// placeProviderSecretRefs decides where a value-resolving provider's
+// projected Secrets land: in EVERY k8s group (cluster, namespace) whose
+// workloads declare a ref to them, carrying exactly the refs those workloads
+// declare.
+//
+// WHY PER CONSUMER. A multi-cluster env runs workloads that read the same
+// Secret in more than one cluster. Applying the projection once, to the env's
+// primary context, left every other cluster's consumer stuck on
+// CreateContainerConfigError — and the only way around it was to call the
+// Secret out-of-band (a forge.ExternalSecret the live preflight then blocks
+// on) and create it with a script, whose values then drifted from the ones
+// forge projected into the primary cluster.
+//
+// Same trust boundary as the RenderedSecrets provider's inference
+// (placeDeclaredSecrets): a value lands only in a cluster that runs one of
+// its consumers, and only the keys that consumer declares.
+//
+// A cluster workload no group claims keeps the historical destination, the
+// env's resolved context and namespace, so a single-cluster env renders and
+// applies exactly what it did before. The result is grouped and sorted so the
+// apply order — and the dry-run output — is stable.
+func placeProviderSecretRefs(entities *KCLEntities, groups []deploytarget.ServiceGroup, fallbackNamespace, fallbackContext string) []placedProviderRefs {
+	if entities == nil {
+		return nil
+	}
+	type place struct{ cluster, namespace string }
+	at := map[string]place{}
+	for _, g := range groups {
+		if g.ProviderID != "k8s-cluster" {
+			continue
+		}
+		ns := g.Namespace
+		if ns == "" {
+			ns = fallbackNamespace
+		}
+		cl := g.Cluster
+		if cl == "" {
+			cl = fallbackContext
+		}
+		for _, s := range g.Services {
+			at[s.Name] = place{cl, ns}
+		}
+	}
+	byPlace := map[place][]secrets.SecretRef{}
+	for i := range entities.Workloads {
+		w := &entities.Workloads[i]
+		if !w.OnRuntime(RuntimeCluster) {
+			continue
+		}
+		refs := secretRefsForService(w)
+		if len(refs) == 0 {
+			continue
+		}
+		p, ok := at[w.Name]
+		if !ok {
+			p = place{fallbackContext, fallbackNamespace}
+		}
+		byPlace[p] = append(byPlace[p], refs...)
+	}
+	out := make([]placedProviderRefs, 0, len(byPlace))
+	for p, refs := range byPlace {
+		out = append(out, placedProviderRefs{cluster: p.cluster, namespace: p.namespace, refs: refs})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].cluster != out[j].cluster {
+			return out[i].cluster < out[j].cluster
+		}
+		return out[i].namespace < out[j].namespace
+	})
+	return out
 }
 
 // placedSecrets is the set of declared Secrets bound for ONE

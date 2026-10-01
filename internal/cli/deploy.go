@@ -55,7 +55,7 @@ machine, and that apply's per-resource rollout wait IS the health gate. Both
 reach "the release is live or this command is red"; which machinery got there
 is an implementation detail of where the env runs.
 
-` + "`forge build <env> --release <version> --push`" + ` builds the env-agnostic images
+` + "`forge env build <env> --release <version>`" + ` builds the env-agnostic images
 ONCE, captures their content-addressed digests, and cuts a release. Naming that
 version here advances it BY REFERENCE: one entry — env, release, and the
 per-image digests frozen at this moment — appended to the env's append-only
@@ -111,7 +111,7 @@ Exit codes (release deploys):
 naming what was expected and what is actually there.
 
 Examples:
-  forge build prod --release v1.4.0 --push         # build once, cut the release
+  forge env build prod --release v1.4.0            # build once, cut the release
   forge env deploy staging v1.4.0 --plan           # what WOULD change (writes nothing)
   forge env deploy staging v1.4.0 --plan --json    # the same, machine-readable
   forge env deploy staging v1.4.0                  # record, apply, wait

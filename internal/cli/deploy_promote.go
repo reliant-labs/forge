@@ -5,7 +5,7 @@ package cli
 // `forge env deploy <env> <version>`.
 //
 // WHAT THIS HALF DOES, AND WHAT IT DELIBERATELY DOES NOT. It reads the release
-// `forge build --release` cut, freezes each image's digest, and APPENDS one
+// `forge env build --release` cut, freezes each image's digest, and APPENDS one
 // entry to the env's promotion ledger — the project's
 // .forge/promotions/<env>.jsonl, or the control plane the env's KCL declares.
 // No build runs; the bytes that were cut as <version> are, by construction,

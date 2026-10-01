@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
 	"sort"
 	"strings"
@@ -377,6 +377,13 @@ type promotePlanBinding struct {
 	// field from an empty Release so "never promoted" is distinguishable
 	// from a binding carrying a blank version.
 	Bound bool `json:"bound"`
+	// PromotionID is the ledger entry the env is bound to — the value a
+	// real promote sends as its compare-and-set expectation. Capture it
+	// from `--plan --json` (e.g. when an approval is requested) and pass it
+	// back as --expect-current, so a hotfix that lands while the approval
+	// waits turns the pipeline red instead of being overwritten. Empty when
+	// unbound; --expect-current unbound captures that state.
+	PromotionID string `json:"promotion_id,omitempty"`
 	// Release is the version the env runs now. Empty when unbound.
 	Release string `json:"release,omitempty"`
 	// PromotedAt is RFC3339 for when this binding was WRITTEN — not when
@@ -468,14 +475,26 @@ type promotePlan struct {
 	NextStep string `json:"next_step"`
 	// Note is the human phrasing of ShipsNothing.
 	Note string `json:"note,omitempty"`
-	// OK is false exactly when text mode exits non-zero. Computing or
-	// applying a plan either succeeds (true) or returns an error, so a
-	// rendered plan is always true — a backwards move is not a failure.
-	OK bool `json:"ok"`
+	// ok / exit_code / error: F0's one envelope, stamped from the SAME
+	// error the command returns, so the document and the process status
+	// cannot disagree. A backwards move is not a failure; a refusal is
+	// (exit 3 or 4).
+	jsonEnvelope
 	// Recorded is the ledger entry the env now resolves to, after an
 	// apply: the new entry, or — for a retry of the env's current state —
-	// the existing one, unchanged. Nil under --plan.
+	// the existing one, unchanged. Nil under --plan and on a refusal.
 	Recorded *release.Promotion `json:"recorded,omitempty"`
+	// Expected is the compare-and-set the write asserts: the promotion id
+	// it requires to be current, or "unbound". Present under --plan too —
+	// it is what the real promote WOULD send — so a reviewer sees an
+	// --expect-current that disagrees with current.promotion_id before the
+	// write is refused for it.
+	Expected string `json:"expected,omitempty"`
+	// Refusal is set when the ledger DECLINED the write — applied is then
+	// false and nothing was written. It names what was expected, what is
+	// actually there, and (for rollout_in_flight) the phase that made it
+	// in flight.
+	Refusal *promoteRefusalJSON `json:"refusal,omitempty"`
 
 	// targetSources is the source-built frontend snapshot the binding will be
 	// written with, the non-container half of targetResolved. Carried on the
@@ -639,8 +658,8 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		NextStep:     fmt.Sprintf("forge env deploy %s", opts.Env),
 		Note: fmt.Sprintf("promote writes a POINTER and ships nothing — no image reaches %s until `forge env deploy %s` runs, "+
 			"and `forge env verify %s` proves it arrived", opts.Env, opts.Env, opts.Env),
-		OK: true,
 	}
+	plan.stamp(nil)
 
 	// THE TARGET RELEASE IS REQUIRED, and its absence stays an error in
 	// BOTH modes rather than becoming a plan state. Without the ledger
@@ -686,6 +705,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 	var currentRel release.Release
 	var currentKnown bool
 	if hadPrev {
+		plan.Current.PromotionID = prev.ID
 		plan.Current.Release = prev.Release
 		plan.Current.PromotedAt = formatLedgerTime(prev.PromotedAt)
 		if rel, found := byVersion[prev.Release]; found {
@@ -736,23 +756,63 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 // It APPENDS. The ledger decides (release.Decide) whether the entry is a real
 // move, a retry of the state the env is already in (nothing is written, and
 // the existing entry comes back). Applied reports whether a NEW entry was written.
-func applyPromotePlan(ctx context.Context, bindings bindingStore, plan *promotePlan, by release.Actor, note string) error {
+//
+// It ALWAYS compare-and-sets: w.Guard is the promotion the plan read (or the
+// caller's --expect-current), and the ledger refuses the write if the env has
+// moved since. A refusal is left on the plan (Refusal, applied false) AND
+// returned, so the document and the exit code describe the same outcome.
+func applyPromotePlan(ctx context.Context, bindings bindingStore, plan *promotePlan, w promoteWrite) error {
 	p := release.Promotion{
 		Env:        plan.Env,
 		Release:    plan.Target.Release,
 		Kind:       plan.Kind,
 		Resolved:   plan.targetResolved,
 		Sources:    plan.targetSources,
-		PromotedBy: by,
-		Note:       note,
+		PromotedBy: w.By,
+		Note:       w.Note,
+		Gates:      w.Gates,
+		Run:        w.Run,
 	}
-	got, err := bindings.Append(ctx, p)
+	got, err := bindings.Append(ctx, p, w.Guard)
 	if err != nil {
+		if plan.applyRefusal(err) {
+			// Not wrapped: the refusal's own message names the env, what
+			// was expected and what is there, and the location adds
+			// nothing a reader acts on.
+			return err
+		}
 		return fmt.Errorf("record %s of %s → %s in %s: %w", plan.Kind, plan.Env, plan.Target.Release, bindings.Location(), err)
 	}
 	plan.Recorded = &got
 	plan.Applied = true
 	return nil
+}
+
+// promoteWrite is everything a promote WRITE carries beyond the plan: who,
+// why, the compare-and-set, and the provenance the optional flags add.
+type promoteWrite struct {
+	By    release.Actor
+	Note  string
+	Guard appendGuard
+	// Gates is the pre-promote evidence (--gate, F4).
+	Gates []release.Gate
+	// Run is the CI run performing the promote (--run-id / CI default).
+	Run release.Run
+}
+
+// promotedBySuffix renders ", by alice" / ", by ci" for a refusal's actual
+// promotion — the "who moved it" a human acts on.
+func promotedBySuffix(a release.Actor) string {
+	switch {
+	case a.User != "" && a.Actor != "":
+		return ", by " + a.User + " via " + a.Actor
+	case a.User != "":
+		return ", by " + a.User
+	case a.Actor != "":
+		return ", by " + a.Actor
+	default:
+		return ""
+	}
 }
 
 // formatLedgerTime renders a ledger timestamp for the plan and topology
@@ -992,39 +1052,44 @@ func computePromoteCommitRange(ctx context.Context, git promoteGitReader, dir st
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
-// writePromotePlanJSON emits the plan to stdout, indented, per the house
-// convention every other --json command in this package follows.
-func writePromotePlanJSON(plan promotePlan) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(plan); err != nil {
-		return fmt.Errorf("write promote plan: %w", err)
-	}
-	return nil
-}
-
 // renderPromotePlanText prints the human report.
 //
 // The same value drives this and the JSON, and the same value drove (or did
 // not drive) the write — so the heading states which of those happened before
 // anything else, rather than leaving a reader to infer it from the absence of
 // a success line.
-func renderPromotePlanText(plan promotePlan) {
-	out := os.Stdout
-	if plan.Applied {
+func renderPromotePlanText(out io.Writer, plan promotePlan) {
+	switch {
+	case plan.Refusal != nil:
+		// The plan below is what the write WOULD have done. Said first,
+		// because a refused promote that read like a success is the stomp
+		// this whole path exists to prevent.
+		fmt.Fprintf(out, "REFUSED (%s — nothing was written): promote env %q → release %s\n",
+			plan.Refusal.Reason, plan.Env, plan.Target.Release)
+	case plan.Applied:
 		if plan.Current.Bound && plan.Current.Release != plan.Target.Release {
 			fmt.Fprintf(out, "Promoted env %q: %s → %s\n", plan.Env, plan.Current.Release, plan.Target.Release)
 		} else {
 			fmt.Fprintf(out, "Promoted env %q → release %s\n", plan.Env, plan.Target.Release)
 		}
-	} else {
+	default:
 		fmt.Fprintf(out, "PLAN (dry run — nothing was written): promote env %q → release %s\n", plan.Env, plan.Target.Release)
 	}
 
 	if plan.Current.Bound {
-		fmt.Fprintf(out, "  current   %s (promoted %s)\n", plan.Current.Release, plan.Current.PromotedAt)
+		fmt.Fprintf(out, "  current   %s (promoted %s, promotion %s)\n", plan.Current.Release, plan.Current.PromotedAt, plan.Current.PromotionID)
 	} else {
 		fmt.Fprintf(out, "  current   (never promoted)\n")
+	}
+	if plan.Expected != "" {
+		fmt.Fprintf(out, "  expected  %s  (compare-and-set: the write is refused if the env moved since)\n", plan.Expected)
+	}
+	if r := plan.Refusal; r != nil && r.ActualCurrent != nil {
+		fmt.Fprintf(out, "  actual    %s (promotion %s, promoted %s%s)\n", r.ActualCurrent.Release, r.ActualCurrent.ID,
+			formatLedgerTime(r.ActualCurrent.PromotedAt), promotedBySuffix(r.ActualCurrent.PromotedBy))
+	}
+	if r := plan.Refusal; r != nil && r.ActualPhase != "" {
+		fmt.Fprintf(out, "  rollout   %s\n", r.ActualPhase)
 	}
 	fmt.Fprintf(out, "  target    %s", plan.Target.Release)
 	if plan.Target.CreatedAt != "" {
@@ -1098,9 +1163,12 @@ func renderPromotePlanText(plan promotePlan) {
 	// Stated on every invocation, applied or not. Promote's effect is a
 	// pointer move, and the gap between "promoted" and "running" is the
 	// thing `forge env verify` had to be written to expose.
-	if plan.Applied {
+	switch {
+	case plan.Refusal != nil:
+		fmt.Fprintf(out, "  NOTHING WRITTEN: the ledger refused this promote (%s). %s\n", plan.Refusal.Reason, refusalHint(plan.Refusal.Reason))
+	case plan.Applied:
 		fmt.Fprintf(out, "  SHIPS NOTHING: the binding moved; no image reaches %s until you run the deploy below.\n", plan.Env)
-	} else {
+	default:
 		fmt.Fprintf(out, "  NOTHING WRITTEN: re-run without --plan to record this binding. Even then, no image ships until the deploy below.\n")
 	}
 	fmt.Fprintf(out, "  Deploy:   forge env deploy %s\n", plan.Env)

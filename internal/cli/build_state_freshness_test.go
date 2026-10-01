@@ -234,7 +234,7 @@ func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
 	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
 		Env: envName, Release: version, Kind: release.KindPromote,
 		Resolved: map[string]string{"app": sha("a")},
-	}); err != nil {
+	}, appendGuard{}); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 }

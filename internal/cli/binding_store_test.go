@@ -46,6 +46,9 @@ type memBindingStore struct {
 	history map[string][]release.Promotion
 	err     error
 	n       int
+	// guards records every guard Append was called with, so a test can
+	// assert what a promote SENT.
+	guards []appendGuard
 }
 
 // newMemBindingStore seeds each env with ONE current entry. Env and Kind are
@@ -73,11 +76,12 @@ func (m *memBindingStore) Current(_ context.Context, env string) (release.Promot
 	return h[len(h)-1], true, nil
 }
 
-func (m *memBindingStore) Append(_ context.Context, p release.Promotion) (release.Promotion, error) {
+func (m *memBindingStore) Append(_ context.Context, p release.Promotion, guard appendGuard) (release.Promotion, error) {
+	m.guards = append(m.guards, guard)
 	if m.err != nil {
 		return release.Promotion{}, m.err
 	}
-	existing, err := release.Decide(m.history[p.Env], p)
+	existing, err := admitPromotion(m.history[p.Env], p, guard)
 	if err != nil {
 		return release.Promotion{}, err
 	}
@@ -157,7 +161,7 @@ func TestFileBindingStore_AppendsOneLinePerPromotion(t *testing.T) {
 	ctx := context.Background()
 
 	first, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote,
-		Resolved: map[string]string{"api": sha("a")}})
+		Resolved: map[string]string{"api": sha("a")}}, appendGuard{})
 	if err != nil {
 		t.Fatalf("append v1: %v", err)
 	}
@@ -171,7 +175,7 @@ func TestFileBindingStore_AppendsOneLinePerPromotion(t *testing.T) {
 	}
 
 	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote,
-		Resolved: map[string]string{"api": sha("b")}}); err != nil {
+		Resolved: map[string]string{"api": sha("b")}}, appendGuard{}); err != nil {
 		t.Fatalf("append v2: %v", err)
 	}
 	afterSecond, _ := os.ReadFile(path)
@@ -201,16 +205,16 @@ func TestFileBindingStore_RetryIsNoOp(t *testing.T) {
 		return release.Promotion{Env: "prod", Release: v, Kind: release.KindPromote, Resolved: map[string]string{"api": sha("a")}}
 	}
 
-	first, _ := store.Append(ctx, p("v1"))
-	again, err := store.Append(ctx, p("v1"))
+	first, _ := store.Append(ctx, p("v1"), appendGuard{})
+	again, err := store.Append(ctx, p("v1"), appendGuard{})
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if again.ID != first.ID {
 		t.Errorf("a retry must return the EXISTING entry %s, got %s", first.ID, again.ID)
 	}
-	_, _ = store.Append(ctx, p("v2"))
-	_, _ = store.Append(ctx, p("v1"))
+	_, _ = store.Append(ctx, p("v2"), appendGuard{})
+	_, _ = store.Append(ctx, p("v1"), appendGuard{})
 	history, _ := store.History("prod")
 	if len(history) != 3 {
 		t.Fatalf("v1, v1(retry), v2, v1 must record 3 entries, got %d", len(history))
@@ -246,11 +250,11 @@ func TestFileBindingStore_LegacyRollbackLinesStillParse(t *testing.T) {
 	}
 	// A retry of the state the env is in appends nothing, legacy line or not.
 	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote,
-		Resolved: map[string]string{"api": sha("1")}}); err != nil {
+		Resolved: map[string]string{"api": sha("1")}}, appendGuard{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v3", Kind: release.KindPromote,
-		Resolved: map[string]string{"api": sha("3")}}); err != nil {
+		Resolved: map[string]string{"api": sha("3")}}, appendGuard{}); err != nil {
 		t.Fatal(err)
 	}
 	history, _ := store.History("prod")

@@ -108,7 +108,7 @@ func TestResolveDeployDigests_LegacyLedgerResolvesDeclaredRepositories(t *testin
 	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.7.0", Kind: release.KindPromote,
 		Resolved: map[string]string{"control-plane": sha("a")},
-	}); err != nil {
+	}, appendGuard{}); err != nil {
 		t.Fatalf("write binding: %v", err)
 	}
 

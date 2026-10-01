@@ -47,6 +47,7 @@ with the coordinate and hash each one was cut with.`,
 // env's KCL declares forge.ControlPlane, the project's files otherwise.
 func newReleaseCutCmd() *cobra.Command {
 	var envName string
+	var runOpts runOptions
 	cmd := &cobra.Command{
 		Use:   "cut <version> --env <env>",
 		Short: "Record a release over images an earlier build already pushed",
@@ -75,11 +76,12 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("render deploy/kcl/%s: %w", envName, err)
 			}
-			_, err = cutReleaseFromBuildState(cmd.Context(), projectDir, envName, args[0], "", entities, buildOptions{})
+			_, err = cutReleaseFromBuildState(cmd.Context(), projectDir, envName, args[0], "", entities, buildOptions{run: runOpts})
 			return err
 		},
 	}
 	cmd.Flags().StringVar(&envName, "env", "", "Environment whose declaration and build state the release covers (required)")
+	registerRunFlags(cmd.Flags(), &runOpts)
 	return cmd
 }
 

@@ -206,6 +206,12 @@ type buildOptions struct {
 	// completeness gate against the artifacts the build WOULD capture. See
 	// runBuildPlan.
 	plan bool
+	// run is the CI run identity recorded on the release this build cuts
+	// (--run-id / --run-url / --no-run). Zero means "default from the CI
+	// environment", which is what makes the run id a usable join key
+	// without every workflow threading a flag through every step. See
+	// run_identity.go.
+	run runOptions
 }
 
 func newBuildCmd() *cobra.Command {
@@ -1468,11 +1474,20 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	}
 
 	commit, gitTag, dirty := gitBuildProvenance(ctx)
+	// The CI run that cut this release: the join key that ties it to the
+	// promotions and gates from the same run (§3.A). Defaulted from the
+	// CI environment, so every step of one pipeline carries the same
+	// value without each workflow having to thread a flag.
+	run, err := opts.run.resolveRun()
+	if err != nil {
+		return release.Release{}, fmt.Errorf("--release %s: %w", version, err)
+	}
 	rel := release.Release{
 		Version:   version,
 		Git:       release.Git{Commit: commit, Tag: gitTag, Dirty: dirty},
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
 		Artifacts: artifacts,
+		Run:       run,
 	}
 	ledger, err := ledgerFor(ctx, projectDir, env)
 	if err != nil {

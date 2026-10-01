@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -91,6 +92,14 @@ func TestPromoteFrom_SendsTheSourcePromotionID(t *testing.T) {
 	if got := body["fromEnvironmentId"]; got != "env-staging-uuid" {
 		t.Errorf("fromEnvironmentId = %v, want staging's id", got)
 	}
+	// AND NO VERSION (§3.4: "--from without a version sends
+	// from_promotion_id and no version"). Sending one would make forge
+	// assert a release it read outside the target's lock — the stale read
+	// --from exists to eliminate — and would leave the server free to
+	// trust the client's value instead of resolving it.
+	if sent, present := body["version"]; present {
+		t.Errorf("version %q was sent: the server must resolve it from fromPromotionId (body %v)", sent, body)
+	}
 	// The version the source runs, not the one prod was on.
 	cur, _, _ := store.Current(context.Background(), "prod")
 	if cur.Release != "v2" {
@@ -164,12 +173,112 @@ func TestPromoteFrom_ExplicitVersionMustMatchTheSource(t *testing.T) {
 	}
 
 	// The same version the source runs is admitted: provenance, verified.
-	if _, err := runHostedPromote(t, store, "v2", promoteOptions{From: promoteFromOptions{Env: "staging"}}); err != nil {
+	fake, store2 := promoteFromFixture(t, []string{"v1", "v2"}, []string{"v1"})
+	if _, err := runHostedPromote(t, store2, "v2", promoteOptions{From: promoteFromOptions{Env: "staging"}}); err != nil {
 		t.Fatalf("an explicit version that MATCHES the source must be admitted: %v", err)
 	}
-	cur, _, _ := store.Current(context.Background(), "prod")
+	// AN EXPLICIT VERSION *IS* SENT, unlike the no-version case. The
+	// caller asserted two things — the release AND where they saw it —
+	// and the server's must-agree check is what turns a disagreement into
+	// a refusal. Dropping the version here would silently discard the
+	// second assertion, so "promote v1.4.0, which I saw on staging" would
+	// quietly become "promote whatever staging has".
+	if got := fake.lastPromoteBody(t)["version"]; got != "v2" {
+		t.Errorf("version = %v, want the caller's explicit v2 to be sent for the server's must-agree check", got)
+	}
+	cur, _, _ := store2.Current(context.Background(), "prod")
 	if cur.Release != "v2" || cur.FromEnv != "staging" {
 		t.Fatalf("want prod on v2 from staging, got %+v", cur)
+	}
+}
+
+// Under `--from-promotion X` where X is not what the source runs now, the
+// plan's target is the source's CURRENT release — forge cannot read X's, since
+// a promotion is reachable through this ledger only as an environment's
+// current entry. So the plan SAYS so, and names the refusal that is coming,
+// rather than previewing a target the write would never bind.
+func TestPromoteFrom_StalePromotionIsLabelledInThePlan(t *testing.T) {
+	fake, store := promoteFromFixture(t, []string{"v1"}, []string{"v1"})
+	captured, _, _ := store.Current(context.Background(), "staging")
+	if _, err := store.Append(context.Background(),
+		release.Promotion{Env: "staging", Release: "v2", Kind: release.KindPromote}, appendGuard{}); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.callCount(procPromote)
+
+	out, err := runHostedPromote(t, store, "",
+		promoteOptions{DryRun: true, JSON: true, From: promoteFromOptions{Env: "staging", PromotionID: captured.ID}})
+	if err != nil {
+		t.Fatalf("--plan must still render: %v", err)
+	}
+	if n := fake.callCount(procPromote); n != before {
+		t.Fatalf("--plan called Promote %d time(s)", n-before)
+	}
+	var doc promotePlan
+	if jerr := json.Unmarshal([]byte(out), &doc); jerr != nil {
+		t.Fatalf("decode: %v\n%s", jerr, out)
+	}
+	for _, want := range []string{captured.ID, reasonSourceMoved, "v2"} {
+		if !strings.Contains(doc.SourceNote, want) {
+			t.Errorf("source_note must mention %q, got %q", want, doc.SourceNote)
+		}
+	}
+
+	// A --from-promotion that IS current is unremarkable and must carry
+	// no warning: a note on every --from-promotion would be noise, and
+	// noise is how a real warning gets skipped.
+	_, store2 := promoteFromFixture(t, []string{"v1", "v2"}, []string{"v1"})
+	fresh, _, _ := store2.Current(context.Background(), "staging")
+	out, err = runHostedPromote(t, store2, "",
+		promoteOptions{DryRun: true, JSON: true, From: promoteFromOptions{Env: "staging", PromotionID: fresh.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clean promotePlan
+	if jerr := json.Unmarshal([]byte(out), &clean); jerr != nil {
+		t.Fatalf("decode: %v\n%s", jerr, out)
+	}
+	if clean.SourceNote != "" {
+		t.Errorf("a current --from-promotion must carry no warning, got %q", clean.SourceNote)
+	}
+}
+
+// The text plan renders the warning too — most operators never pass --json,
+// and a warning only a machine sees is not a warning.
+func TestPromoteFrom_StalePromotionWarningIsInTheTextPlan(t *testing.T) {
+	_, store := promoteFromFixture(t, []string{"v1"}, []string{"v1"})
+	captured, _, _ := store.Current(context.Background(), "staging")
+	if _, err := store.Append(context.Background(),
+		release.Promotion{Env: "staging", Release: "v2", Kind: release.KindPromote}, appendGuard{}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runHostedPromote(t, store, "",
+		promoteOptions{DryRun: true, From: promoteFromOptions{Env: "staging", PromotionID: captured.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "WARNING") || !strings.Contains(out, reasonSourceMoved) {
+		t.Errorf("the text plan must warn that the promote will be refused:\n%s", out)
+	}
+}
+
+// A file ledger has no server to resolve a release from a source promotion,
+// so it refuses the directive rather than writing the plan's preview as if it
+// had been verified. `--from` is already refused earlier for a file-ledger env
+// (the same-control-plane guard); this is the backstop that keeps that the
+// only way in.
+func TestFileLedger_RefusesAVersionItWasNotGiven(t *testing.T) {
+	store := newFileBindingStore(t.TempDir())
+	p := release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote,
+		Resolved: map[string]string{"api": sha("a")}}
+
+	_, err := store.Append(context.Background(), p, appendGuard{ResolveVersionFromSource: true})
+	if err == nil || !strings.Contains(err.Error(), "promote by version") {
+		t.Fatalf("want a refusal naming the way forward, got %v", err)
+	}
+	if history, _ := store.History("prod"); len(history) != 0 {
+		t.Fatalf("the refused append wrote %d entries", len(history))
 	}
 }
 

@@ -304,6 +304,16 @@ func (s fileBindingStore) Append(_ context.Context, p release.Promotion, guard a
 	if err := p.Validate(); err != nil {
 		return release.Promotion{}, err
 	}
+	if guard.ResolveVersionFromSource {
+		// A file ledger has no server to resolve a release under a lock,
+		// so it cannot honour this and must not pretend to by writing
+		// the caller's preview. `--from` is refused earlier for a
+		// file-ledger env (promote_from.go's same-control-plane guard);
+		// this is the backstop that keeps that the only way in.
+		return release.Promotion{}, fmt.Errorf(
+			"%s records promotions in %s, which cannot resolve a release from a source promotion: promote by version",
+			p.Env, s.Location())
+	}
 	existing, err := admitPromotion(history, p, guard)
 	if err != nil {
 		return release.Promotion{}, err

@@ -51,7 +51,30 @@ func (o promoteFromOptions) requested() bool { return o.Env != "" || o.Promotion
 type promoteSource struct {
 	// Version is the release to promote: the positional argument, or —
 	// when --from supplies it — the one the source environment runs.
+	//
+	// When VersionFromSource is set this value is FOR THE PLAN ONLY. See
+	// that field.
 	Version string
+	// VersionFromSource says the version above was read from the source
+	// environment rather than named by the caller, which makes it a
+	// PREVIEW and not an instruction.
+	//
+	// §3.4: "`--from` without a version sends `from_promotion_id` and no
+	// version". The server resolves the release from that promotion under
+	// the TARGET's lock, and it must be the only authority on which
+	// release the id names — otherwise forge is asserting a version it
+	// read earlier, outside any lock, which is the very race --from
+	// exists to close. So the plan previews this value and the wire omits
+	// it.
+	//
+	// IT CANNOT BE INFERRED FROM FromPromotionID. A caller who passes an
+	// explicit version BESIDE --from gets both fields sent, deliberately:
+	// the server's must-agree check is what turns "promote v1.4.0, which
+	// I saw on staging" into a refusal when staging was never on v1.4.0.
+	// Dropping the version there would silently discard the caller's
+	// second assertion. One bit distinguishes "I previewed this" from "I
+	// am asserting this".
+	VersionFromSource bool
 	// FromEnv is the source environment NAME. Recorded as provenance, so
 	// a ledger reader can reconstruct the path a release took rather than
 	// seeing each environment's promotions as unrelated events.
@@ -61,6 +84,10 @@ type promoteSource struct {
 	// version from it and refuses source_moved if the source has moved
 	// past it. FromEnv alone is provenance nobody checked.
 	FromPromotionID string
+	// Note is a plan warning about the source, or "". Set when
+	// --from-promotion names a promotion that is not what the source runs
+	// now, which the control plane will refuse.
+	Note string
 }
 
 // promoteEnvLedger is what --from needs to know about ONE environment: which
@@ -166,10 +193,11 @@ func resolvePromoteFrom(ctx context.Context, version, toEnv, projectDir string, 
 
 	out := promoteSource{Version: version, FromEnv: o.Env, FromPromotionID: current.ID}
 	if version == "" {
-		// The plan previews what the SERVER will resolve from the
-		// promotion id sent beside it. The two agree unless the source
-		// moves in between, which is the case the server refuses.
+		// A PREVIEW, not an instruction: the plan shows what the server
+		// will resolve from the promotion id sent beside it, and the
+		// wire carries no version at all (see VersionFromSource).
 		out.Version = current.Release
+		out.VersionFromSource = true
 	}
 	if o.PromotionID != "" {
 		// --from-promotion pins an id captured earlier — at approval
@@ -177,6 +205,21 @@ func resolvePromoteFrom(ctx context.Context, version, toEnv, projectDir string, 
 		// the two differ the server refuses source_moved, which is the
 		// entire point of having captured it.
 		out.FromPromotionID = o.PromotionID
+		if o.PromotionID != current.ID {
+			// SAY SO IN THE PLAN. forge cannot read that promotion's
+			// release — a promotion is reachable through this ledger
+			// only as an environment's CURRENT entry — so the preview
+			// above is the source's current release, which is NOT what
+			// this request names. Rather than show a target the write
+			// would never bind, the plan states the discrepancy and the
+			// refusal it leads to, so `--plan` surfaces it instead of
+			// the operator discovering it on apply.
+			out.Note = fmt.Sprintf(
+				"--from-promotion %s is not what %s runs now (it is on %s, promotion %s), so the control plane "+
+					"will refuse this promote with source_moved; the target below is %s's CURRENT release, "+
+					"not the one %s names",
+				o.PromotionID, o.Env, current.Release, current.ID, o.Env, o.PromotionID)
+		}
 	}
 	return out, nil
 }

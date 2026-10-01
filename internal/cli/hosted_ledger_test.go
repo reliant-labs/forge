@@ -303,6 +303,12 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			version = resolved
+		} else if version == "" {
+			// The server's own precondition: with no source promotion
+			// to resolve from, a version is the only thing that says
+			// what to promote.
+			connectErr(w, http.StatusBadRequest, "invalid_argument", "version is required without from_promotion_id")
+			return
 		}
 		rel, ok := f.releases[version]
 		if !ok {

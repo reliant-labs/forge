@@ -51,6 +51,21 @@ type appendGuard struct {
 	// finished rolling out. Recorded by the server on the new row; a file
 	// ledger has no rollout to supersede and ignores it.
 	SupersedeInFlight bool
+	// ResolveVersionFromSource: send NO version, and let the control plane
+	// resolve the release from the promotion's FromPromotionID under the
+	// target environment's lock (§3.4).
+	//
+	// WHY THIS IS ON THE GUARD and not read off the promotion. The
+	// promotion's Release carries the plan's PREVIEW of that release, and
+	// release.Promotion.Validate requires it to be non-empty — a
+	// promotion with no release is not a valid ledger entry, and blanking
+	// it to signal "ask the server" would make the domain type lie about
+	// what it records. So the preview stays on the promotion, where the
+	// plan and the recorded entry both want it, and the instruction
+	// "do not send it" travels here, beside SupersedeInFlight: this
+	// struct is already the bag of directives for HOW the write is
+	// performed, not only what it compares against.
+	ResolveVersionFromSource bool
 }
 
 // expects reports whether the guard asserts anything about the current

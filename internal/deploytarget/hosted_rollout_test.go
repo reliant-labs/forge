@@ -150,7 +150,14 @@ func promotedGroup(promotionID string) ServiceGroup {
 func TestHostedWaitUsesGetRolloutScopedToThePromotion(t *testing.T) {
 	cp := &rolloutCP{phases: []string{wireRolloutPhaseSucceeded}}
 	var outcomes []cluster.RolloutObservation
+	// A BOUNDED budget, deliberately: this fake's GetStatus answers
+	// PENDING forever, so an implementation that ignored the rollout and
+	// fell back to the status poll must fail here in milliseconds rather
+	// than hanging out the default five-minute policy timeout. A test that
+	// catches a regression only by timing out is a test nobody will wait
+	// for.
 	p := HostedProvider{Client: cp, PollInterval: time.Millisecond,
+		Rollout:   cluster.RolloutPolicy{Timeout: 50 * time.Millisecond},
 		OnRollout: func(o cluster.RolloutObservation) { outcomes = append(outcomes, o) }}
 	if err := p.Deploy(context.Background(), promotedGroup("promo-1")); err != nil {
 		t.Fatalf("deploy: %v", err)

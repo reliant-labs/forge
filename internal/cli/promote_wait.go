@@ -53,11 +53,6 @@ type promoteFollowOptions struct {
 	FailFast bool
 }
 
-// requested reports whether any follow-through flag was given.
-func (o promoteFollowOptions) requested() bool {
-	return o.Wait || o.Deploy || o.Timeout != 0 || o.FailFast
-}
-
 // validatePromoteFollow runs BEFORE the plan is computed or anything is
 // written, so a nonsensical combination refuses the whole promote rather than
 // moving the pointer and then failing on the part the caller asked for.

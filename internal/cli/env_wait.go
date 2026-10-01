@@ -206,13 +206,25 @@ type envWaitOptions struct {
 	// that was never going to run) cannot happen.
 	AllowNonConverging bool
 
-	// Client and EnvironmentID are the seams. Nil/empty resolves the
-	// env's declared control plane, exactly as the ledger does; a test
-	// states them and scripts a phase sequence instead of standing up a
-	// cluster. Endpoint is display only.
+	// Target is the seam: ONE function resolving everything this wait
+	// needs to reach a control plane. Nil resolves the env's declared one
+	// (resolveDeclaredWaitTarget), exactly as the ledger does.
+	//
+	// One function rather than a client/id/endpoint triple, because the
+	// three are resolved TOGETHER or not at all — a client without the
+	// env id it was resolved against addresses nothing. Three fields
+	// would also let production read id and endpoint that only a test
+	// ever writes, which is a shape production cannot produce.
+	Target func(ctx context.Context, env string) (waitTarget, error)
+}
+
+// waitTarget is a resolved control plane: who to call, which environment, and
+// where that is, for the report.
+type waitTarget struct {
 	Client        cloudCaller
 	EnvironmentID string
-	Endpoint      string
+	// Endpoint is display only — the Client already addresses it.
+	Endpoint string
 }
 
 // ─── The report ──────────────────────────────────────────────────────────────
@@ -314,32 +326,33 @@ func runEnvWait(ctx context.Context, env string, opts envWaitOptions) error {
 	return err
 }
 
-// resolveEnvWaitTarget resolves the control-plane client and the environment
-// id this wait reads. A stated Client short-circuits it entirely.
-func resolveEnvWaitTarget(ctx context.Context, env string, opts envWaitOptions) (cloudCaller, string, string, error) {
-	if opts.Client != nil {
-		return opts.Client, opts.EnvironmentID, opts.Endpoint, nil
-	}
+// resolveDeclaredWaitTarget is the production resolution: the control plane
+// the ENV'S OWN KCL declares, addressed by the env's control-plane id.
+//
+// Declarative, like every other hosted verb: the env name is the only input,
+// and nothing a previous command left behind can change which control plane
+// answers.
+func resolveDeclaredWaitTarget(ctx context.Context, env string) (waitTarget, error) {
 	decl, err := controlPlaneDeclaration(ctx, env)
 	if err != nil {
-		return nil, "", "", undeterminedf("env %q: %v", env, err)
+		return waitTarget{}, undeterminedf("env %q: %v", env, err)
 	}
 	if decl == nil {
 		// A self-managed env has no server-side rollout to read: its
 		// ledger is this project's files and nothing observes it. 2
 		// rather than 1 — there is nothing wrong with the env, there
 		// is just nothing here that can answer the question.
-		return nil, "", "", undeterminedf(
+		return waitTarget{}, undeterminedf(
 			"env %q declares no hosted control plane, so there is no server-computed rollout to wait on.\n"+
 				"  Prove it arrived instead with: forge env verify %s", env, env)
 	}
 	ep, err := cloud.ResolveEndpoint(env, decl)
 	if err != nil {
-		return nil, "", "", undeterminedf("%v", err)
+		return waitTarget{}, undeterminedf("%v", err)
 	}
 	cred, err := cloud.ResolveCredential("", ep)
 	if err != nil {
-		return nil, "", "", undeterminedf("env %q keeps its promotions on the control plane at %s: %v", env, ep.URL, err)
+		return waitTarget{}, undeterminedf("env %q keeps its promotions on the control plane at %s: %v", env, ep.URL, err)
 	}
 	client := cloud.NewClient(ep, cred)
 	envID, err := deploytarget.LookupHostedEnvironment(ctx, client, hostedProjectName(), env)
@@ -347,12 +360,12 @@ func resolveEnvWaitTarget(ctx context.Context, env string, opts envWaitOptions) 
 		if errors.Is(err, errHostedEnvNotFound) {
 			// Never promoted, never deployed: a conflict with what
 			// the caller asked for, not an unobservable env.
-			return nil, "", ep.URL, &exitCodeError{code: exitConflict, msg: fmt.Sprintf(
+			return waitTarget{Endpoint: ep.URL}, &exitCodeError{code: exitConflict, msg: fmt.Sprintf(
 				"the control plane at %s has no environment %q, so nothing has been promoted to it", ep.URL, env)}
 		}
-		return nil, "", ep.URL, undeterminedf("resolve env %q on %s: %v", env, ep.URL, err)
+		return waitTarget{Endpoint: ep.URL}, undeterminedf("resolve env %q on %s: %v", env, ep.URL, err)
 	}
-	return client, envID, ep.URL, nil
+	return waitTarget{Client: client, EnvironmentID: envID, Endpoint: ep.URL}, nil
 }
 
 // undeterminedf is exit 2: we could not look. Its own constructor because
@@ -381,12 +394,17 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 			msg: "--promotion and --release name the promotion two different ways; pass one"}
 	}
 
-	client, envID, endpoint, err := resolveEnvWaitTarget(ctx, env, opts)
-	report.EnvironmentID, report.Endpoint = envID, endpoint
+	resolve := opts.Target
+	if resolve == nil {
+		resolve = resolveDeclaredWaitTarget
+	}
+	target, err := resolve(ctx, env)
+	report.EnvironmentID, report.Endpoint = target.EnvironmentID, target.Endpoint
 	if err != nil {
 		report.Phase = "unknown"
 		return report, err
 	}
+	client, envID := target.Client, target.EnvironmentID
 
 	progress := progressWriter(opts.JSON || opts.WatchJSON)
 	start := time.Now()

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -125,11 +127,11 @@ func (f *fakeRolloutService) lastBody() map[string]any {
 // a budget short enough that the "never finishes" cases are instant.
 func waitOpts(fake *fakeRolloutService) envWaitOptions {
 	return envWaitOptions{
-		Client:        fake,
-		EnvironmentID: "env-prod-uuid",
-		Endpoint:      "https://cp.example",
-		Interval:      time.Millisecond,
-		Timeout:       40 * time.Millisecond,
+		Target: func(context.Context, string) (waitTarget, error) {
+			return waitTarget{Client: fake, EnvironmentID: "env-prod-uuid", Endpoint: "https://cp.example"}, nil
+		},
+		Interval: time.Millisecond,
+		Timeout:  40 * time.Millisecond,
 	}
 }
 
@@ -482,6 +484,38 @@ func TestEnvWait_StableForRequiresAnUnbrokenRun(t *testing.T) {
 	}
 	if n := fake.callCount(); n < 2 {
 		t.Errorf("--stable-for must keep polling past the first succeeded read, polled %d time(s)", n)
+	}
+}
+
+// TestEnvWait_SelfManagedEnvCannotBeWaitedOn exercises the PRODUCTION
+// resolution (no Target seam): an env whose KCL declares no control plane has
+// no server-computed rollout to read, because its ledger is this project's
+// files and nothing observes it.
+//
+// It is exit 2, not 1: there is nothing wrong with the env, there is just
+// nothing here that can answer the question — and the message names the verb
+// that can.
+func TestEnvWait_SelfManagedEnvCannotBeWaitedOn(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	declareEnvDir(t, dir, "prod")
+	t.Chdir(dir)
+	// A render that declares workloads and NO control_plane: the file
+	// ledger's shape.
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t,
+		`{"output":{"workloads":[{"name":"api","kind":"service","image":"api","runtime":{"type":"cluster","cluster":"c","namespace":"n"},"spec":{"kind":"service"}}]}}`))
+
+	var err error
+	captureStdout(t, func() { err = runEnvWait(context.Background(), "prod", envWaitOptions{Timeout: time.Second}) })
+	if got := exitCodeForError(err); got != exitUndetermined {
+		t.Fatalf("a self-managed env must exit %d, got %d (%v)", exitUndetermined, got, err)
+	}
+	for _, want := range []string{"declares no hosted control plane", "forge env verify prod"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message must say %q, got:\n%v", want, err)
+		}
 	}
 }
 

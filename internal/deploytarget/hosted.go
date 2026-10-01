@@ -111,6 +111,20 @@ type HostedTarget struct {
 	// Release is the version the env is promoted to. Empty means unbound,
 	// which a deploy refuses: a hosted deploy ships only promoted digests.
 	Release string
+	// PromotionID is the promotion whose frozen pins this deploy is
+	// publishing — the one forge read Digests from. Recorded server-side
+	// as Deployment.applied_promotion_id, which is what lets the
+	// converger tell "a promotion is waiting to be applied" from "this
+	// row has drifted": the two need opposite answers under the OBSERVE
+	// policy, and comparing digests cannot distinguish them because both
+	// read as "the row does not match the pin".
+	//
+	// Empty when the env is unbound, or when a control plane that
+	// predates the ledger's promotion ids returned none. An omitted
+	// promotion leaves the stored one untouched server-side, which is the
+	// correct reading of a hand-run deploy: that is drift, not a
+	// promotion.
+	PromotionID string
 	// Digests is the bound release's artifact → digest map (the ledger's
 	// Resolved set).
 	Digests map[string]string
@@ -474,6 +488,17 @@ type hostedPlanItem struct {
 	Tier          HostedTier
 	Spec          any
 	DesiredDigest string
+	// Artifact is the release artifact key this workload's digest is bound
+	// under, as hostedArtifactOf computed it — EMPTY for a managed
+	// database, which is never release-bound.
+	//
+	// It is carried on the plan rather than recomputed at publish time so
+	// the key forge SENDS is provably the key it looked the digest up
+	// under. Two computations of "the artifact" could disagree, and the
+	// symptom would be a server pairing a workload with a digest
+	// differently from the client — exactly what sending the key from the
+	// client exists to prevent.
+	Artifact string
 }
 
 // planHosted pins, validates and shape-checks every workload in a hosted
@@ -553,7 +578,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
 				continue
 			}
-			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest})
+			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest, Artifact: artifact})
 		case HostedTierStatic:
 			if w.Static == nil {
 				errs = append(errs, fmt.Errorf("%s: static site workload has no spec", svc.Name))
@@ -577,7 +602,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
 				continue
 			}
-			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest})
+			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest, Artifact: artifact})
 		case HostedTierDatabase:
 			if w.Database == nil {
 				errs = append(errs, fmt.Errorf("%s: database workload has no spec", svc.Name))
@@ -612,7 +637,34 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 // `forge build` records its site release under). One rule, read by both the
 // plan and PreflightHosted, so the preflight can never pin a key the deploy
 // would not look up.
+//
+// A MANAGED DATABASE IS NEVER RELEASE-BOUND, and that is the one case worth
+// stating here. A promotion moves a Workload's digest or a StaticSite's
+// release and nothing else, so a database has no artifact — the empty string
+// is its answer, not a missing one.
+//
+// This used to fall through to `return name` for any non-Workload tier,
+// which handed a database the deployment's own NAME. Nothing caught it
+// because the plan only asked about the two release-bound tiers, so the
+// wrong answer was latent rather than wrong-on-screen. It stops being latent
+// the moment the artifact is actually SENT (F1): the control plane refuses
+// an artifact on a database row twice over — InvalidArgument in
+// EnsureDeployment, and the schema's
+// ck_cp_deployments_artifact_release_bound_tier behind it — so the fallback
+// would turn every env with a hosted database into a failed deploy.
+//
+// The refusal is the right behaviour and this is the right fix: a name that
+// coincides with an artifact key is a convention, not a guarantee, and a
+// converger handed that pairing would silently repoint the wrong workload
+// the first time the two differed.
 func hostedArtifactOf(name string, w *HostedWorkload) string {
+	// Checked BEFORE the declared Artifact, deliberately. A declaration
+	// that names an artifact for a database is a declaration the platform
+	// will refuse, and honouring it here would only move the failure to
+	// the far side of the wire where the message is worse.
+	if w.Tier == HostedTierDatabase {
+		return ""
+	}
 	if w.Artifact != "" {
 		return w.Artifact
 	}
@@ -899,18 +951,44 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 // publish ensures every deployment, then publishes each, then waits.
 func (p HostedProvider) publish(ctx context.Context, c HostedCaller, group ServiceGroup, envID string, plan []hostedPlanItem) error {
 	ids := make(map[string]string, len(plan))
+	promotionID := ""
+	if group.Hosted != nil {
+		promotionID = group.Hosted.PromotionID
+	}
 	for _, item := range plan {
 		var resp struct {
 			Deployment wireDeployment `json:"deployment"`
 			Created    bool           `json:"created"`
 			Updated    bool           `json:"updated"`
 		}
-		if err := c.Call(ctx, procEnsureDeployment, map[string]any{
+		req := map[string]any{
 			"environmentId": envID,
 			"name":          item.Name,
 			"tier":          item.Tier.wireTier(),
 			"spec":          item.Spec,
-		}, &resp); err != nil {
+		}
+		// THE RELEASE BINDING. The client sends the artifact key rather
+		// than the server inferring it, so the two cannot pair a
+		// workload with a digest differently — this is the same key the
+		// plan looked the digest up under, carried on the plan item.
+		//
+		// Both fields are OMITTED when empty rather than sent as "".
+		// For the artifact that is required, not tidiness: a database
+		// is never release-bound and the control plane refuses an
+		// artifact on one (InvalidArgument, plus the schema's
+		// ck_cp_deployments_artifact_release_bound_tier). For the
+		// promotion it is the difference between two meanings — absent
+		// means "keep whatever is stored", which is the right reading
+		// of a hand-run deploy against an unbound env, while an empty
+		// value would be a claim that this row is pinned from no
+		// promotion.
+		if item.Artifact != "" {
+			req["artifact"] = item.Artifact
+		}
+		if promotionID != "" {
+			req["promotionId"] = promotionID
+		}
+		if err := c.Call(ctx, procEnsureDeployment, req, &resp); err != nil {
 			return fmt.Errorf("ensure deployment %s: %w", item.Name, err)
 		}
 		if resp.Deployment.ID == "" {

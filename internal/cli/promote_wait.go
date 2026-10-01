@@ -131,9 +131,14 @@ var runPromoteWait = runEnvWait
 //
 // It reuses the real deploy path rather than reimplementing a publish, which
 // is what keeps "promote --deploy" and "promote then deploy" the same thing.
-// The deploy resolves the digests from the ledger itself, and the ledger now
-// holds the promotion this command just appended, so it pins exactly those
-// bytes.
+//
+// The deploy re-reads the digests from the env's own ledger rather than being
+// handed them, and that is sound for both backends — worth stating, because
+// "the ledger" means two different things here. For a HOSTED env the read is
+// a ListPromotions call that returns the row the server just committed; for a
+// FILE env it re-reads the jsonl line this same process appended a moment
+// ago. Either way the newest entry is the promotion this command wrote, so
+// the deploy pins exactly the bytes that were just promoted.
 //
 // The rollout policy is left at its default (wait-and-fail): a --deploy whose
 // publish never became ready has not delivered the release, and reporting

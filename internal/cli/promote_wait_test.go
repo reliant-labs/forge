@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,80 @@ func TestPromoteWait_TheWaitsExitCodeIsThePromotes(t *testing.T) {
 	// reverted by its own gate would be the worst of both.
 	if cur, _, _ := store.Current(context.Background(), "prod"); cur.Release != "v2" {
 		t.Fatalf("a failed wait must not revert the promote: prod is on %s", cur.Release)
+	}
+}
+
+// TestPromoteWait_FailedWaitStillEmitsTheJSONDocument is the F2/F3 seam, and
+// it is the case that matters MOST for a pipeline.
+//
+// A wait that degrades, times out or is superseded arrives in runPromote as a
+// post-plan error — the same shape a FAILED WRITE has. F2's guard was written
+// when a failed write was the only such error, and a failed write has no
+// document worth reading because nothing was recorded. A failed WAIT is the
+// opposite: the promote was applied, `recorded.id` exists, and that id is
+// precisely what the next step needs.
+//
+// F6's forge-promote action does `promote --json > promote.json` and then
+// `jq -r .recorded.id` to record gates against the promotion. A failed
+// rollout is exactly when that evidence must be recorded, so dropping the
+// document leaves `gate record` with no promotion id — the gate evidence for
+// the bad release is the evidence that goes missing.
+//
+// So: the document is emitted whenever the plan was APPLIED or refused, and
+// its exit_code is the wait's.
+func TestPromoteWait_FailedWaitStillEmitsTheJSONDocument(t *testing.T) {
+	wait := capturedWait{err: &exitCodeError{code: exitTimedOut, msg: "still progressing"}}
+	wait.install(t)
+
+	_, store := hostedPromoteFixture(t, "v1")
+	out, err := runHostedPromote(t, store, "v2", promoteOptions{
+		JSON: true, Follow: promoteFollowOptions{Wait: true},
+	})
+	if got := exitCodeForError(err); got != exitTimedOut {
+		t.Fatalf("exit code = %d, want the wait's %d (%v)", got, exitTimedOut, err)
+	}
+
+	var doc map[string]any
+	if jerr := json.Unmarshal([]byte(out), &doc); jerr != nil {
+		t.Fatalf("a failed wait after an APPLIED promote must still emit the document: %v\nstdout=%q", jerr, out)
+	}
+	// applied:true is the fact that distinguishes this from a refusal.
+	// The pointer DID move; only the gate went red.
+	if doc["applied"] != true {
+		t.Errorf("applied = %v, want true — the promote landed", doc["applied"])
+	}
+	// The envelope carries the WAIT's code, so the document and the
+	// process status still agree.
+	if doc["ok"] != false || doc["exit_code"] != float64(exitTimedOut) {
+		t.Errorf("ok/exit_code = %v/%v, want false/%d", doc["ok"], doc["exit_code"], exitTimedOut)
+	}
+	// recorded.id is what F6's action pipes into `gate record`.
+	recorded, ok := doc["recorded"].(map[string]any)
+	if !ok {
+		t.Fatalf("`recorded` must be present — F6 reads recorded.id to record gates against this promotion:\n%s", out)
+	}
+	written, _, _ := store.Current(context.Background(), "prod")
+	if recorded["id"] != written.ID {
+		t.Errorf("recorded.id = %v, want the promotion that landed (%q)", recorded["id"], written.ID)
+	}
+	if _, present := doc["refusal"]; present {
+		t.Errorf("a failed WAIT is not a refusal — nothing declined the write:\n%s", out)
+	}
+}
+
+// The same seam in TEXT mode: the change set still prints, so a human sees
+// what moved before they read why the gate went red.
+func TestPromoteWait_FailedWaitStillRendersTheChangeSet(t *testing.T) {
+	wait := capturedWait{err: &exitCodeError{code: exitWrong, msg: "api: CrashLoopBackOff"}}
+	wait.install(t)
+
+	_, store := hostedPromoteFixture(t, "v1")
+	out, err := runHostedPromote(t, store, "v2", promoteOptions{Follow: promoteFollowOptions{Wait: true}})
+	if got := exitCodeForError(err); got != exitWrong {
+		t.Fatalf("exit code = %d, want %d (%v)", got, exitWrong, err)
+	}
+	if !strings.Contains(out, "v2") {
+		t.Errorf("the change set must still render after a failed wait, got:\n%s", out)
 	}
 }
 

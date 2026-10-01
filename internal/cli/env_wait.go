@@ -139,8 +139,15 @@ would turn fine releases red.
 state, and the phase transitions observed along the way. --watch-json emits
 NDJSON, one line per phase change, for a log stream or a UI.
 
+ONE READ, NEVER BLOCKING: --timeout 0. It reports where the rollout has got to
+right now and exits — the primitive ` + "`forge env rollout`" + ` is built on. The exit
+code is the same table a blocking wait uses, so a still-progressing snapshot is
+5 and a finished one is 0. An UNSET --timeout keeps the 15m budget; only an
+explicit 0 means a single read.
+
 Examples:
   forge env wait prod                                   # the current promotion, 15m budget
+  forge env wait prod --timeout 0 --json                # where is it NOW? one read, no blocking
   forge env wait prod --release v1.4.0                  # refuse unless prod binds v1.4.0
   ID=$(forge env promote v1.4.0 --to prod --json | jq -r .recorded.id)
   forge env wait prod --promotion "$ID" --timeout 20m   # a retry continues on the SAME release
@@ -151,7 +158,25 @@ Examples:
 		// list.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEnvWait(cmd.Context(), args[0], opts)
+			// `--timeout 0` means ONE READ, never block — the
+			// single-shot mode `forge env rollout` is built on
+			// (§3.5). UNSET keeps the 15m default.
+			//
+			// Those two have to be told apart, and a zero value
+			// cannot do it: Timeout's zero IS the unset value, so
+			// "0" and "not given" arrive identically. cobra's
+			// Changed is the only thing that knows the difference,
+			// and it is only available here, where the flag set
+			// is. Reading it wrong in either direction is bad in
+			// its own way — an unset flag becoming a single read
+			// would turn every plain `env wait` into a
+			// non-blocking poll, and an explicit 0 becoming 15m
+			// would make `env rollout` block for a quarter of an
+			// hour.
+			if f := cmd.Flags().Lookup("timeout"); f != nil && f.Changed && opts.Timeout == 0 {
+				opts.Once = true
+			}
+			return runEnvWaitForCmd(cmd.Context(), args[0], opts)
 		},
 	}
 
@@ -161,7 +186,8 @@ Examples:
 	flags.StringVar(&opts.Release, "release", "",
 		"Wait on the current promotion, but refuse unless it binds this release version (exit 6 if it moved on)")
 	cmd.MarkFlagsMutuallyExclusive("promotion", "release")
-	flags.DurationVar(&opts.Timeout, "timeout", envWaitDefaultTimeout, "Whole wait budget")
+	flags.DurationVar(&opts.Timeout, "timeout", envWaitDefaultTimeout,
+		"Whole wait budget. `--timeout 0` reads the phase ONCE and never blocks (still progressing = exit 5)")
 	flags.DurationVar(&opts.StableFor, "stable-for", 0,
 		"Extra hold AFTER the phase reaches succeeded (default 0: the server's own stability window already applies)")
 	flags.BoolVar(&opts.FailFast, "fail-fast", false,
@@ -175,6 +201,13 @@ Examples:
 	return cmd
 }
 
+// runEnvWaitForCmd is what the command runs. A var so a test can assert the
+// OPTIONS the flag layer resolved — specifically that an explicit
+// `--timeout 0` became a single read while an unset one kept the budget,
+// which is a decision made from cobra's Changed and is therefore only
+// observable here. Production is runEnvWait, unchanged.
+var runEnvWaitForCmd = runEnvWait
+
 // envWaitOptions is the verb's flags plus the two seams a test states.
 type envWaitOptions struct {
 	// PromotionID pins the wait to one promotion. Empty = the env's
@@ -183,8 +216,23 @@ type envWaitOptions struct {
 	// Release requires the promotion being waited on to bind this
 	// version. Exclusive with PromotionID.
 	Release string
-	// Timeout is the whole budget; zero means envWaitDefaultTimeout.
+	// Timeout is the whole budget. Zero means envWaitDefaultTimeout — see
+	// Once for the explicit `--timeout 0` spelling.
 	Timeout time.Duration
+	// Once reads the phase exactly ONCE and returns, never blocking. It
+	// is what `forge env wait --timeout 0` means, and the primitive
+	// `forge env rollout` is built on (§3.5): report where this promotion
+	// has got to, right now.
+	//
+	// A separate field rather than Timeout == 0, because Timeout's zero
+	// value already means "unset, use the default" — the two are
+	// indistinguishable in the struct, and only the command layer (which
+	// has cobra's Changed) can tell them apart.
+	//
+	// A still-progressing single read is exitTimedOut (5), through the
+	// same table a blocking wait uses: the rollout has not finished, and
+	// 5 is precisely "it was progressing when we stopped looking".
+	Once bool
 	// StableFor is an extra hold after SUCCEEDED, on top of the server's
 	// stability window.
 	StableFor time.Duration
@@ -386,8 +434,16 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 	if opts.Interval <= 0 {
 		opts.Interval = envWaitDefaultInterval
 	}
-	if opts.Timeout <= 0 {
+	if opts.Timeout <= 0 && !opts.Once {
 		opts.Timeout = envWaitDefaultTimeout
+	}
+	// A single read has no stability hold to observe: --stable-for is a
+	// claim about a span of time, and there is no span. Refused rather
+	// than ignored, because silently dropping it would report a rollout
+	// as stable on the strength of one observation.
+	if opts.Once && opts.StableFor > 0 {
+		return report, &exitCodeError{code: exitWrong,
+			msg: "--stable-for cannot be used with --timeout 0: a single read observes no span of time, so there is nothing to hold stable for"}
 	}
 	if opts.Release != "" && opts.PromotionID != "" {
 		return report, &exitCodeError{code: exitWrong,
@@ -433,9 +489,11 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 			}
 			// Everything else is TRANSIENT and retried while there
 			// is budget: a control plane restarting mid-rollout must
-			// not fail a release. Out of budget, it is exit 2 — we
-			// could not look, which is never folded into success.
-			if time.Now().After(deadline) || ctx.Err() != nil {
+			// not fail a release. Out of budget — or asked for a
+			// single read, which has no budget to retry within —
+			// it is exit 2: we could not look, which is never
+			// folded into success.
+			if opts.Once || time.Now().After(deadline) || ctx.Err() != nil {
 				report.WaitedMS = time.Since(start).Milliseconds()
 				if report.Phase == "" {
 					report.Phase = "unknown"
@@ -510,6 +568,14 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 			// deadline below is what turns a persistent one red.
 		}
 
+		// Once stops HERE, after exactly one read, and reports where
+		// the rollout has got to. The code comes from the same table a
+		// blocking wait uses, so `env rollout` and `env wait` cannot
+		// disagree about what a phase means.
+		if opts.Once {
+			report.WaitedMS = time.Since(start).Milliseconds()
+			return report, rolloutSingleReadError(env, report, rollout, phase)
+		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			report.WaitedMS = time.Since(start).Milliseconds()
 			return report, rolloutDeadlineError(env, report, rollout, phase, opts.Timeout)
@@ -698,6 +764,25 @@ func rolloutDegradedError(env string, report envWaitReport, rollout wireRollout)
 	return &exitCodeError{code: exitWrong, msg: fmt.Sprintf(
 		"rollout of %s to %s DEGRADED: %s", waitReleaseLabel(report), env,
 		emptyOr(describeUnhealthyWorkloads(rollout), emptyOr(rollout.Reason, "a workload is not serving")))}
+}
+
+// rolloutSingleReadError is `--timeout 0`'s outcome: one read, reported as
+// it stands.
+//
+// It is NOT a timeout message, because nothing timed out — the caller asked
+// for a snapshot and got one. But the CODE is the same, through the same
+// table: a rollout still progressing when we stopped looking is exitTimedOut
+// (5), which is exactly "it was progressing and we did not see it finish".
+// Giving a single read its own numbering would mean `env rollout` and
+// `env wait` reported different codes for the identical state.
+func rolloutSingleReadError(env string, report envWaitReport, rollout wireRollout, phase string) error {
+	code := exitCodeForRolloutPhase(phase)
+	if code == exitOK {
+		return nil
+	}
+	detail := emptyOr(describeUnhealthyWorkloads(rollout), emptyOr(rollout.Reason, "no workload status was reported"))
+	return &exitCodeError{code: code, msg: fmt.Sprintf(
+		"rollout of %s to %s is %s: %s", waitReleaseLabel(report), env, rolloutPhaseName(phase), detail)}
 }
 
 // rolloutDeadlineError is the budget running out. The CODE comes from the

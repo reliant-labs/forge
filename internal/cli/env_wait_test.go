@@ -487,6 +487,149 @@ func TestEnvWait_StableForRequiresAnUnbrokenRun(t *testing.T) {
 	}
 }
 
+// TestEnvWait_OnceReadsExactlyOnceAndNeverBlocks is the single-read mode
+// `forge env rollout` is built on (§3.5: "env wait --timeout 0: one read,
+// never blocks").
+//
+// Both halves matter. ONE read — a snapshot verb that polled would be a wait
+// wearing a different name. And the SAME exit-code table: a still-progressing
+// snapshot is 5, through exitCodeForRolloutPhase, so `env rollout` and
+// `env wait` cannot report different codes for the identical state.
+func TestEnvWait_OnceReadsExactlyOnceAndNeverBlocks(t *testing.T) {
+	cases := []struct {
+		name  string
+		phase string
+		want  int
+		// snapshotWording is true for the phases a single read
+		// REPORTS. SUPERSEDED is excluded because it is terminal in
+		// either mode and keeps its own dedicated sentence ("was
+		// SUPERSEDED") — correct in a snapshot too, since being
+		// overtaken is a fact and not a budget running out.
+		snapshotWording bool
+	}{
+		{"succeeded", wireRolloutPhaseSucceeded, exitOK, false},
+		{"progressing", wireRolloutPhaseProgressing, exitTimedOut, true},
+		{"pending", wireRolloutPhasePending, exitTimedOut, true},
+		{"stabilizing", wireRolloutPhaseStabilizing, exitTimedOut, true},
+		{"degraded", wireRolloutPhaseDegraded, exitWrong, true},
+		{"superseded", wireRolloutPhaseSuperseded, exitSuperseded, false},
+		{"unknown", wireRolloutPhaseUnknown, exitUndetermined, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The scripted sequence would reach SUCCEEDED on a
+			// second read, so a mode that polled even once more
+			// would report 0 and fail these rows.
+			fake := newFakeRollout(tc.phase, wireRolloutPhaseSucceeded)
+			opts := waitOpts(fake)
+			opts.Once = true
+			opts.Timeout = 0
+			// A generous interval: a single read must not sleep, so
+			// this would make the test crawl if Once ever polled.
+			opts.Interval = 10 * time.Second
+
+			start := time.Now()
+			var err error
+			captureStdout(t, func() { err = runEnvWait(context.Background(), "prod", opts) })
+			if got := exitCodeForError(err); got != tc.want {
+				t.Fatalf("exit code = %d, want %d (%v)", got, tc.want, err)
+			}
+			if n := fake.callCount(); n != 1 {
+				t.Errorf("read the rollout %d times; --timeout 0 means exactly ONE read", n)
+			}
+			if elapsed := time.Since(start); elapsed > time.Second {
+				t.Errorf("a single read must never block, took %s", elapsed)
+			}
+			// A snapshot REPORTS a state; it did not time out, and
+			// saying "still progressing after 0s" would describe a
+			// budget the caller never asked for. The code is shared
+			// with a real timeout (above); the wording is not.
+			if tc.snapshotWording {
+				if strings.Contains(err.Error(), "after 0s") {
+					t.Errorf("a single read must not read as a timeout, got: %v", err)
+				}
+				if !strings.Contains(err.Error(), " is "+rolloutPhaseName(tc.phase)) {
+					t.Errorf("the snapshot must state the phase as a fact, got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestEnvWaitCmd_ExplicitZeroTimeoutIsASingleRead pins the distinction a zero
+// value cannot express: an UNSET --timeout keeps the 15m budget, an EXPLICIT
+// `--timeout 0` is a single read.
+//
+// Both directions are bugs. An unset flag becoming a single read would turn
+// every plain `env wait` into a non-blocking poll that reports 5 the moment a
+// rollout is mid-flight. An explicit 0 becoming 15m would make `env rollout`
+// block for a quarter of an hour.
+//
+// The flag's 15m DEFAULT is what makes the unset case safe today, and that
+// is exactly why this test asserts the resolved Timeout as well as Once:
+// someone changing the default to 0 — which looks harmless, "zero means use
+// the default" — would silently turn every plain `env wait` into a single
+// read, and only the Timeout assertion catches it.
+func TestEnvWaitCmd_ExplicitZeroTimeoutIsASingleRead(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantOnce bool
+	}{
+		{"unset keeps the default budget", []string{"prod"}, false},
+		{"explicit zero is a single read", []string{"prod", "--timeout", "0"}, true},
+		{"explicit zero, long form", []string{"prod", "--timeout=0s"}, true},
+		{"an explicit non-zero budget blocks", []string{"prod", "--timeout", "30s"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// What is under test is the OPTIONS the flag layer
+			// resolved, so the wait itself is replaced rather than
+			// pointed at a control plane.
+			var seen envWaitOptions
+			prev := runEnvWaitForCmd
+			runEnvWaitForCmd = func(_ context.Context, _ string, opts envWaitOptions) error {
+				seen = opts
+				return nil
+			}
+			t.Cleanup(func() { runEnvWaitForCmd = prev })
+
+			cmd := newEnvWaitCmd()
+			cmd.SetArgs(tc.args)
+			cmd.SetOut(&strings.Builder{})
+			cmd.SetErr(&strings.Builder{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if seen.Once != tc.wantOnce {
+				t.Fatalf("Once = %v, want %v (args %v)", seen.Once, tc.wantOnce, tc.args)
+			}
+			if !tc.wantOnce && seen.Timeout <= 0 {
+				t.Errorf("a blocking wait must carry a positive budget, got %s", seen.Timeout)
+			}
+		})
+	}
+}
+
+// --stable-for is a claim about a span of time, and a single read observes no
+// span. Refused rather than ignored: silently dropping it would report a
+// rollout as stable on the strength of one observation.
+func TestEnvWait_OnceRefusesStableFor(t *testing.T) {
+	fake := newFakeRollout(wireRolloutPhaseSucceeded)
+	opts := waitOpts(fake)
+	opts.Once = true
+	opts.Timeout = 0
+	opts.StableFor = time.Minute
+	var err error
+	captureStdout(t, func() { err = runEnvWait(context.Background(), "prod", opts) })
+	if err == nil || !strings.Contains(err.Error(), "--stable-for") {
+		t.Fatalf("--stable-for with a single read must be refused, got %v", err)
+	}
+	if n := fake.callCount(); n != 0 {
+		t.Errorf("the refusal must precede any read, made %d", n)
+	}
+}
+
 // TestEnvWait_SelfManagedEnvCannotBeWaitedOn exercises the PRODUCTION
 // resolution (no Target seam): an env whose KCL declares no control plane has
 // no server-computed rollout to read, because its ledger is this project's

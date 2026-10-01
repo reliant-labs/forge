@@ -86,7 +86,7 @@ func (p ComposeProvider) observeOne(ctx context.Context, runner commandRunner, s
 	// rather than to resolve the file. A missing `${VAR}` yields a
 	// compose warning and an empty substitution, which surfaces as an
 	// honest unknown rather than a wrong answer.
-	envOverlay, ferr := loadEnvFile(spec.EnvFile)
+	envOverlay, ferr := loadEnvFile(composeEnvFile(spec))
 	if ferr != nil {
 		return ObservedItem{
 			Name:   svc.Name,
@@ -100,7 +100,11 @@ func (p ComposeProvider) observeOne(ctx context.Context, runner commandRunner, s
 	// compose lists only running containers and a crashed service is
 	// indistinguishable from one that was never created — "absent" and
 	// "it died" being the two states a caller most needs to tell apart.
-	args := []string{"compose", "-f", file, "ps", "--all", "--format", "json", target}
+	//
+	// composeArgs, not a bare `-f file`: a SHARED stack is selected by its
+	// pinned project directory, and observing it from a worktree without
+	// that would read the worktree's file and resolve a different config.
+	args := append(composeArgs(spec), "ps", "--all", "--format", "json", target)
 	raw, err := outputWithEnv(ctx, runner, envOverlay, "docker", args...)
 	if err != nil {
 		return ObservedItem{

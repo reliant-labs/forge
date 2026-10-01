@@ -606,6 +606,10 @@ type ComposeRuntime struct {
 	// — where the compose file's own `${VAR}` references interpolate from.
 	// Distinct from EnvFile, which only reaches containers.
 	Env map[string]string `json:"env,omitempty"`
+	// Shared marks the stack as machine infrastructure every worktree of
+	// the repo uses; forge drives it from the primary checkout. See
+	// OnCompose.shared in kcl/workload.k.
+	Shared bool `json:"shared,omitempty"`
 }
 
 // ClusterRuntime is forge.Cluster: a Kubernetes cluster the author operates.

@@ -159,7 +159,10 @@ func armMaterializer(projectDir string) {
 	if !lastActivatedRunsHere {
 		return
 	}
-	kclplugin.UseFileWriter(projectDir)
+	// shared=True writes go to the primary checkout's counterpart of this
+	// project — where a `shared = True` compose stack runs from, and so
+	// where the files it mounts must live.
+	kclplugin.UseFileWriter(projectDir, devstack.SharedProjectDir(projectDir))
 }
 
 // lastActivatedRunsHere records activateDevStack's verdict on whether the env

@@ -3,6 +3,7 @@ package deploytarget
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -101,11 +102,59 @@ func composeServiceName(spec *ComposeSpec, svcName string) string {
 // composeFile returns the file path the user declared. Empty falls
 // back to the docker-compose default — keeps the provider working
 // when KCL leaves the field unset (which is the common case).
+//
+// A relative file is resolved against ProjectDirectory when the spec pins
+// one: compose resolves `-f` against the PROCESS working directory, not
+// against --project-directory, so passing both relative would read the
+// invoking checkout's file while resolving its mounts somewhere else.
 func composeFile(spec *ComposeSpec) string {
-	if spec.ComposeFile != "" {
-		return spec.ComposeFile
+	file := spec.ComposeFile
+	if file == "" {
+		file = "docker-compose.yml"
 	}
-	return "docker-compose.yml"
+	if spec.ProjectDirectory != "" && !filepath.IsAbs(file) {
+		file = filepath.Join(spec.ProjectDirectory, file)
+	}
+	return file
+}
+
+// composeEnvFile resolves env_file the same way composeFile resolves the
+// file: against ProjectDirectory when the spec pins one. A home-relative
+// path (`~/…`, `$HOME/…`) is left for expandHomePath.
+func composeEnvFile(spec *ComposeSpec) string {
+	f := spec.EnvFile
+	if f == "" || spec.ProjectDirectory == "" || filepath.IsAbs(f) ||
+		strings.HasPrefix(f, "~") || strings.HasPrefix(f, "$HOME") {
+		return f
+	}
+	return filepath.Join(spec.ProjectDirectory, f)
+}
+
+// composeArgs is the `compose …` prefix that SELECTS the project — every
+// subcommand forge runs (pull, up, ps) starts with it, so all of them
+// resolve the same file, the same project name and the same bind-mount
+// sources. Two subcommands that selected the project differently would
+// inspect one config and deploy another.
+func composeArgs(spec *ComposeSpec) []string {
+	if spec.ProjectDirectory == "" {
+		return []string{"compose", "-f", composeFile(spec)}
+	}
+	return []string{"compose", "--project-directory", spec.ProjectDirectory, "-f", composeFile(spec)}
+}
+
+// composeProjectDir is the directory compose runs the project from, and
+// therefore the `com.docker.compose.project.working_dir` it stamps on the
+// containers: ProjectDirectory when pinned, else the directory of the
+// compose file (compose's own default).
+func composeProjectDir(spec *ComposeSpec) string {
+	if spec.ProjectDirectory != "" {
+		return spec.ProjectDirectory
+	}
+	abs, err := filepath.Abs(composeFile(spec))
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(abs)
 }
 
 // composeWait reports whether this deploy should block on readiness.
@@ -206,13 +255,19 @@ func appendComposeWaitArgs(args []string, spec *ComposeSpec) []string {
 func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, group ServiceGroup, svc ResolvedService) error {
 	spec := svc.Compose
 	file := composeFile(spec)
+	envFile := composeEnvFile(spec)
 	target := composeServiceName(spec, svc.Name)
-	fmt.Printf("  deploying %s via compose (file %s, service %s)...\n", svc.Name, file, target)
+	if spec.Shared {
+		fmt.Printf("  deploying %s via compose (SHARED stack, run from %s; file %s, service %s)...\n",
+			svc.Name, spec.ProjectDirectory, file, target)
+	} else {
+		fmt.Printf("  deploying %s via compose (file %s, service %s)...\n", svc.Name, file, target)
+	}
 
 	// 1. Pull — `docker compose pull` is a no-op when the local image
 	//    is current, so it's safe to always run. Surfacing pull
 	//    failures here (rather than at up time) gives a clearer error.
-	pullArgs := []string{"compose", "-f", file, "pull", target}
+	pullArgs := append(composeArgs(spec), "pull", target)
 
 	// 2. Up -d — compose decides whether to recreate based on its own
 	//    diff against the running container. We don't force --force-
@@ -227,9 +282,9 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	//    nothing downstream — the next service in the group, a host
 	//    process about to dial the database — could express "this must
 	//    be usable before I start".
-	upArgs := []string{"compose", "-f", file}
-	if spec.EnvFile != "" {
-		upArgs = append(upArgs, "--env-file", spec.EnvFile)
+	upArgs := composeArgs(spec)
+	if envFile != "" {
+		upArgs = append(upArgs, "--env-file", envFile)
 	}
 	upArgs = append(upArgs, "up", "-d")
 	upArgs = appendComposeWaitArgs(upArgs, spec)
@@ -247,7 +302,7 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	// only forwards values to *containers*; the compose file itself
 	// reads from the docker-compose process env. Layering both keeps
 	// the two cases in sync.
-	envOverlay, ferr := loadEnvFile(spec.EnvFile)
+	envOverlay, ferr := loadEnvFile(envFile)
 	if ferr != nil {
 		return fmt.Errorf("compose %s: env_file: %w", svc.Name, ferr)
 	}
@@ -266,6 +321,13 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	// job's target, the issuer both halves of auth enforce — stayed
 	// pointing at the old one. See Compose.env in kcl/schema.k.
 	envOverlay = mergeComposeEnv(envOverlay, spec.Env)
+
+	// 0. Ownership — refuse to take over containers another checkout is
+	//    running, BEFORE anything can recreate them. See
+	//    checkComposeOwnership.
+	if err := checkComposeOwnership(ctx, runner, envOverlay, spec, svc.Name); err != nil {
+		return err
+	}
 
 	if err := runner.RunWithEnv(ctx, envOverlay, "docker", pullArgs...); err != nil {
 		return fmt.Errorf("compose %s: pull: %w", svc.Name, err)
@@ -292,7 +354,7 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	//    every other compose subcommand: without the same overlay the up
 	//    used, a project whose ports come from `${VAR}` gets a warning and
 	//    a different resolved config than the one it just deployed.
-	psArgs := []string{"compose", "-f", file, "ps", "--status", "running", target}
+	psArgs := append(composeArgs(spec), "ps", "--status", "running", target)
 	out, err := outputWithEnv(ctx, runner, envOverlay, "docker", psArgs...)
 	if err != nil {
 		return fmt.Errorf("compose %s: health check: %w", svc.Name, err)

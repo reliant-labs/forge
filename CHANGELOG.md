@@ -274,6 +274,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge env up` from a linked git worktree no longer takes over and
+  recreates compose infrastructure another checkout is running.** Compose names
+  a project after its directory's basename and resolves relative bind mounts
+  against that directory. Two worktrees laid out as `<container>/<repo>` share
+  one basename, so they selected the SAME project with DIFFERENT mount sources:
+  compose saw a changed config and recreated every shared container, which
+  dropped every other stack's connections and left the containers mounting
+  files inside that worktree.
+  - New `forge.OnCompose {shared = True}`: the stack is machine infrastructure
+    every worktree uses, so forge drives it from the repo's PRIMARY checkout
+    (`--project-directory`, with `file` and `env_file` resolved there) from
+    whichever worktree runs. An `up` from any checkout is then a no-op once the
+    stack is running. A stack a worktree had already taken over is converged
+    back to the primary on the next run, with one recreate.
+  - New `fp.write_file(path, content, shared=True)`: writes into the primary
+    checkout, so every stack's render updates the ONE copy of a file the
+    shared stack mounts, instead of N diverging per-checkout copies.
+  - Every compose deploy now checks container ownership first. A non-shared
+    deploy whose containers carry another LIVE checkout's
+    `com.docker.compose.project.working_dir` is refused before pull/up, with
+    both fixes named. Containers from a checkout that no longer exists are
+    adopted.
+
 - **A cert-manager `Certificate` in the bundle now SUPPLIES the Secret it
   materialises, so the deploy preflight stops false-failing on it.** The
   render-time secret back-propagation gate recognised only `kind: Secret`

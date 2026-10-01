@@ -50,20 +50,38 @@ import (
 //     SIGHUP, a dev-server reload) fires only on a real change;
 //   - atomic (temp file + rename in the same directory), so a reader never
 //     sees half a config.
+//
+// SHARED FILES. `write_file(path, content, shared=True)` writes into the
+// repo's PRIMARY checkout instead of the current one (see UseFileWriter's
+// sharedRoot). It is for configuration that a machine-shared resource mounts
+// — control-plane's NATS config, mounted by the one NATS every worktree's
+// stack uses. Written per-checkout, each worktree held its own copy with its
+// own roster, the copies diverged until each re-rendered, and the shared NATS
+// mounted whichever checkout had last run compose. One file, one location:
+// every stack's render updates the copy the shared server actually reads.
 
 var (
-	fileWriterMu   sync.Mutex
-	fileWriterRoot string   // "" = unarmed
-	suppressed     []string // project-relative paths an unarmed render declined to write
+	fileWriterMu         sync.Mutex
+	fileWriterRoot       string   // "" = unarmed
+	fileWriterSharedRoot string   // where shared=True writes; defaults to fileWriterRoot
+	suppressed           []string // project-relative paths an unarmed render declined to write
 )
 
 // UseFileWriter arms write_file for this process, rooted at projectDir. Pass
 // "" to disarm. Call only on a render whose job is to materialize the env on
 // this machine.
-func UseFileWriter(projectDir string) {
+//
+// sharedRoot is where `shared=True` writes land — the primary checkout's
+// counterpart of projectDir (devstack.SharedProjectDir). Omitted or "", it
+// is projectDir: on the primary checkout the two are the same directory.
+func UseFileWriter(projectDir string, sharedRoot ...string) {
 	fileWriterMu.Lock()
 	defer fileWriterMu.Unlock()
 	fileWriterRoot = projectDir
+	fileWriterSharedRoot = projectDir
+	if len(sharedRoot) > 0 && sharedRoot[0] != "" && projectDir != "" {
+		fileWriterSharedRoot = sharedRoot[0]
+	}
 }
 
 // SuppressedWrites returns, and clears, the paths write_file declined to
@@ -77,11 +95,15 @@ func SuppressedWrites() []string {
 	return out
 }
 
-// writeFile is the body the plugin calls.
-func writeFile(path, content string) (string, error) {
+// writeFile is the body the plugin calls. shared selects the primary
+// checkout's root over the current one; the path is relative either way.
+func writeFile(path, content string, shared bool) (string, error) {
 	fileWriterMu.Lock()
 	root := fileWriterRoot
-	if root == "" {
+	if shared {
+		root = fileWriterSharedRoot
+	}
+	if fileWriterRoot == "" {
 		suppressed = append(suppressed, path)
 		fileWriterMu.Unlock()
 		return path, nil

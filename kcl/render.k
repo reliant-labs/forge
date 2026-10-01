@@ -410,6 +410,7 @@ _render_runtime = lambda w: any, rt: any -> any {
         "env_file": rt.env_file if rt.env_file else None
         "wait": rt.wait
         "wait_timeout": rt.wait_timeout
+        "shared": rt.shared
         # The compose PROCESS env: the workload's literal env under the
         # runtime's own (the runtime block is the more specific statement).
         "env": {k: v for k, v in w.env if typeof(v) == "str"} | rt.env

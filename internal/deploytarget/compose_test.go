@@ -40,6 +40,9 @@ func TestCompose_Deploy_HappyPath(t *testing.T) {
 		// Version probe first: --wait needs compose v2.17+, and asking
 		// once per group is cheaper than once per service.
 		"docker compose version --short",
+		// Ownership BEFORE pull/up: refuse to recreate containers another
+		// checkout is running (compose_ownership.go).
+		"docker compose -f docker-compose.yml ps --all --format",
 		"docker compose -f docker-compose.yml pull edge",
 		// --wait by default: the deploy blocks on the service's
 		// healthcheck rather than returning at container-create time.

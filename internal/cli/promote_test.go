@@ -360,13 +360,13 @@ func TestFileLedger_CompareAndSet(t *testing.T) {
 // the part the caller asked for.
 func TestPromote_UnwiredFlagsRefuseBeforeAnyWrite(t *testing.T) {
 	cases := map[string]promoteOptions{
-		"--wait":           {Follow: promoteFollowOptions{Wait: true}},
-		"--deploy":         {Follow: promoteFollowOptions{Deploy: true}},
-		"--timeout":        {Follow: promoteFollowOptions{Timeout: 1}},
-		"--fail-fast":      {Follow: promoteFollowOptions{FailFast: true}},
-		"--gate":           {Gates: []string{"name=lint,status=passed"}},
-		"--from":           {From: promoteFromOptions{Env: "staging"}},
-		"--from-promotion": {From: promoteFromOptions{PromotionID: "p-1"}},
+		"--wait":      {Follow: promoteFollowOptions{Wait: true}},
+		"--deploy":    {Follow: promoteFollowOptions{Deploy: true}},
+		"--timeout":   {Follow: promoteFollowOptions{Timeout: 1}},
+		"--fail-fast": {Follow: promoteFollowOptions{FailFast: true}},
+		"--gate":      {Gates: []string{"name=lint,status=passed"}},
+		// --from / --from-promotion are wired (F5); their behaviour is
+		// pinned in promote_from_test.go.
 	}
 	for flag, opts := range cases {
 		t.Run(flag, func(t *testing.T) {

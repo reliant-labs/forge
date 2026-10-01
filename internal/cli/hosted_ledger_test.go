@@ -292,6 +292,18 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case "/controlplane.v1.DeployService/Promote":
 		envID, version := str("environmentId"), str("version")
+		// C6 (§3.4): a from_promotion_id is resolved HERE, under the
+		// target's lock, before anything else looks at the version —
+		// so the version the write uses is the source promotion's, not
+		// one the client resolved and may have seen go stale.
+		if sourceID := str("fromPromotionId"); sourceID != "" {
+			resolved, refusal := f.resolveFromPromotion(sourceID, str("fromEnvironmentId"), version)
+			if refusal != "" {
+				f.refusePromote(w, reasonSourceMoved, refusal, body, f.promotions[envID], "")
+				return
+			}
+			version = resolved
+		}
 		rel, ok := f.releases[version]
 		if !ok {
 			connectErr(w, http.StatusBadRequest, "failed_precondition", "that version has not been built")
@@ -333,7 +345,10 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		wk := wireKindPromote
 		p := wirePromotion{
-			ID: fmt.Sprintf("promo-%d", len(f.promotions[envID])+1), EnvironmentID: envID, ReleaseID: rel.ID,
+			// GLOBALLY unique, like the server's uuid — not per-env.
+			// A counter scoped to one environment collides across two
+			// of them, and a `promote --from` compares ids from both.
+			ID: fmt.Sprintf("promo-%d", f.nextPromotionSeq()), EnvironmentID: envID, ReleaseID: rel.ID,
 			ReleaseVersion: version, Kind: wk, ResolvedArtifacts: relDomain.SharedDigests(),
 			PromotedByActor: str("promotedByActor"), Note: str("note"),
 			CreatedAt:          time.Date(2026, 9, 23, 1, len(f.promotions[envID]), 0, 0, time.UTC),
@@ -341,9 +356,13 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if fromID := str("fromEnvironmentId"); fromID != "" {
 			p.FromEnvironmentID = fromID
+			// The server sets the NAME from the join it already makes
+			// (§3.4), which is what lets a ledger reader render
+			// "staging → prod" without a lookup per row.
+			p.FromEnvironmentName = envName(fromID)
 		}
+		p.FromPromotionID = str("fromPromotionId")
 		f.promotions[envID] = append(f.promotions[envID], p)
-		_ = envName
 		_ = json.NewEncoder(w).Encode(map[string]any{"promotion": p})
 
 	case "/controlplane.v1.DeployService/ListPromotions":
@@ -360,6 +379,51 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		connectErr(w, http.StatusNotFound, "unimplemented", "no such procedure "+r.URL.Path)
 	}
+}
+
+// nextPromotionSeq hands out the next promotion id, across every
+// environment. Called under f.mu.
+func (f *fakeDeployService) nextPromotionSeq() int {
+	n := 0
+	for _, list := range f.promotions {
+		n += len(list)
+	}
+	return n + 1
+}
+
+// resolveFromPromotion is C6's server-side `promote --from` resolution
+// (control-plane internal/deploystore/store.go, §3.4), modelled in the same
+// order and with the same two refusals: the version comes from the named
+// source promotion, and the promote is refused if that promotion is no longer
+// the source environment's current one, or if a version supplied alongside it
+// disagrees. Returns the resolved version, or the refusal's detail sentence.
+//
+// Called under f.mu.
+func (f *fakeDeployService) resolveFromPromotion(sourceID, fromEnvID, version string) (string, string) {
+	for envID, list := range f.promotions {
+		for i, p := range list {
+			if p.ID != sourceID {
+				continue
+			}
+			if fromEnvID != "" && envID != fromEnvID {
+				// Scoped like the server's `environment_id = $3`: an
+				// id that belongs to another environment is not found.
+				continue
+			}
+			if i != len(list)-1 {
+				current := list[len(list)-1]
+				return "", fmt.Sprintf(
+					"environment %q is no longer on promotion %s (it is on %s (promotion %s))",
+					envID, sourceID, current.ReleaseVersion, current.ID)
+			}
+			if version != "" && version != p.ReleaseVersion {
+				return "", fmt.Sprintf("promotion %s of %q is on %s, not the requested %s",
+					sourceID, envID, p.ReleaseVersion, version)
+			}
+			return p.ReleaseVersion, ""
+		}
+	}
+	return "", fmt.Sprintf("source promotion %q not found", sourceID)
 }
 
 func (f *fakeDeployService) callCount(proc string) int {

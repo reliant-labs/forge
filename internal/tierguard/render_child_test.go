@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 )
@@ -147,7 +148,16 @@ func renderInChild(parent string, fx fixture) (*renderResult, error) {
 	// Inherit the environment: the pipeline shells out to buf, sqlc and
 	// go, all of which need PATH, HOME and the Go env as configured for
 	// the parent run.
-	cmd.Env = os.Environ()
+	//
+	// EXCEPT GOWORK. Each fixture's `project new` bridges the fixture to this
+	// forge checkout through the fixture's OWN go.work (this test binary is
+	// an unreleased forge, which no module proxy serves). An inherited
+	// GOWORK=off — the usual setting for a gate run from inside another
+	// project — disables that bridge for every `go` command the pipeline
+	// runs, and generate's version-compatibility check then (correctly)
+	// refuses the unbridged fixture. The guard must not depend on how the
+	// caller's shell is configured, so the child decides its own workspace.
+	cmd.Env = withoutEnv(os.Environ(), "GOWORK")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -193,4 +203,16 @@ func tail(s string) string {
 		return s
 	}
 	return "...(truncated)...\n" + s[len(s)-max:]
+}
+
+// withoutEnv returns env with every `key=...` entry removed.
+func withoutEnv(env []string, key string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

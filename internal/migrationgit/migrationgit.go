@@ -97,6 +97,10 @@ func Move(repoRoot, from, to string) error {
 	if fromErr == nil && toErr == nil && IsTracked(repoRoot, from) {
 		cmd := exec.Command("git", "mv", filepath.ToSlash(fromRel), filepath.ToSlash(toRel))
 		cmd.Dir = repoRoot
+		// Same reason as runGit: an inherited GIT_DIR / GIT_INDEX_FILE would
+		// stage this rename into the enclosing hook's repository and index
+		// rather than repoRoot's.
+		cmd.Env = scrubGitEnv(os.Environ())
 		if err := cmd.Run(); err == nil {
 			return nil
 		}
@@ -239,12 +243,61 @@ func resolvePath(path string) string {
 // runGit runs one git command in dir, returning its stdout and whether it
 // succeeded. A missing git binary is indistinguishable from a failed command
 // on purpose: both mean "cannot know", which is the only thing callers act on.
+//
+// THE INHERITED GIT ENVIRONMENT IS SCRUBBED, and that is not defensive
+// tidying — without it this package answers about the wrong repository. git
+// exports GIT_DIR (and often GIT_WORK_TREE, GIT_INDEX_FILE) to every hook it
+// runs, and those variables take PRECEDENCE over a child's working directory.
+// So inside a pre-push hook, `cmd.Dir = dir` was silently overridden: the
+// merge-base and ls-tree lookups resolved against the hook's repository,
+// failed, and MergeBaseMax reported "cannot know". The version lint then fell
+// back to its no-git rule and flagged a project's long-merged
+// `00001_*.up.sql` as "new but not a UTC timestamp".
+//
+// That produced the worst possible shape of failure: `forge lint` passed from
+// the shell and the identical check failed on `git push`, naming a file the
+// author had never touched. Clearing these is what makes dir authoritative.
 func runGit(dir string, args ...string) (string, bool) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = scrubGitEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false
 	}
 	return string(out), true
+}
+
+// gitEnvOverrides are the inherited variables that would redirect a git
+// invocation away from cmd.Dir. Each one names a repository, an index or a
+// work tree explicitly, which is precisely what this package is trying to
+// determine FROM the directory it was given.
+var gitEnvOverrides = []string{
+	"GIT_DIR=",
+	"GIT_WORK_TREE=",
+	"GIT_INDEX_FILE=",
+	"GIT_COMMON_DIR=",
+	"GIT_OBJECT_DIRECTORY=",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES=",
+}
+
+// scrubGitEnv returns env without the repository-pointing variables. Only
+// those are dropped: the rest of the environment (PATH, HOME, proxy and
+// credential settings, GIT_CONFIG_*) is what lets git run at all, and
+// clearing it wholesale would break the lookups in a different way.
+func scrubGitEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		drop := false
+		for _, prefix := range gitEnvOverrides {
+			if strings.HasPrefix(kv, prefix) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

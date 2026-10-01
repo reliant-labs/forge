@@ -111,7 +111,7 @@ Your adapter wraps whatever client you choose — raw HTTP, the vendor SDK, an R
 
 Adapters are leaf nodes at construction, but occasionally a downstream consumer registers a callback / sink / subscriber onto the adapter after both exist (e.g. an event-bus adapter receiving subscribers from services built later). Don't add the consumer to the adapter's `Deps` — that inverts the leaf rule, and constructor topo-ordering alone deadlocks on this shape.
 
-Use **construct-then-register** inside `NewComponents` (`forge project disown internal/app/compose.go` first to hand-own the construction site): build the adapter, build the consumer, then call the register/subscribe setter. It's an ordinary method call after both ends exist — not a framework seam.
+Use **construct-then-register** inside `NewComponents` (`internal/app/compose.go` is yours already): build the adapter, build the consumer, then call the register/subscribe setter. It's an ordinary method call after both ends exist — not a framework seam.
 
 ```go
 bus := eventbus.New(eventbus.Deps{Logger: log})
@@ -119,7 +119,7 @@ svc := orders.New(orders.Deps{Bus: bus})  // consumer holds the adapter interfac
 bus.Subscribe("order.created", svc.OnOrderCreated)  // phase two
 ```
 
-There is no `PostBootstrap` / `post_bootstrap.go` seam — late registration is plain Go in the disowned `compose.go`. See the `interactor` skill for the canonical two-phase shape.
+There is no `PostBootstrap` / `post_bootstrap.go` seam — late registration is plain Go in the `compose.go` you own. See the `interactor` skill for the canonical two-phase shape.
 
 <!-- @forge-only:start -->
 ## Forge scaffolding

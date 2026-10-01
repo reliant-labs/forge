@@ -146,8 +146,8 @@ longer route is a back-reference. Depth, and the cases forge resolves silently:
 
 The application lives under `internal/`, nested by role: `internal/handlers/<svc>/`
 (one service — owned and generated files in one directory), `internal/workers/<name>/`,
-`internal/operators/<name>/`, `internal/app/` (owned `providers.go` + generated
-`compose.go`), `internal/db/`. `pkg/` is the generated substrate the app imports;
+`internal/operators/<name>/`, `internal/app/` (owned `providers.go` + owned,
+reconciled `compose.go`), `internal/db/`. `pkg/` is the generated substrate the app imports;
 `cmd/` is entrypoints only. Full tree and the composition root: `architecture`.
 
 ### The scaffolded frontend is starter code
@@ -325,7 +325,7 @@ forge skill search migration  # find one by keyword
 - Load the skill before guessing — with `forge skill load`, not from a copy on disk.
 - Check `forge project capabilities` before concluding forge has no verb for this.
 - Check `forge project libraries` before writing a utility, and `go doc` to read one.
-- Never hand-edit `gen/` or any `*_gen.go`. `internal/app/providers.go` is owned code you wire; `internal/app/compose.go` is forge-owned and regenerated every run.
+- Never hand-edit `gen/` or any `*_gen.go`. `internal/app/providers.go` and `internal/app/compose.go` are both yours to wire — forge reconciles compose.go's component set and Deps keys and leaves your value expressions alone (`forge project disown` to opt out).
 - Run `forge generate` after any proto or migration change. It never touches business logic or migrations.
 - Declare schema in migrations, never in proto; the ORM follows the schema.
 - Use `forge scaffold` to scaffold — never copy-paste an existing directory.

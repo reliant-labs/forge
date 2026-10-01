@@ -291,7 +291,7 @@ Use `forge/pkg/svcerr` sentinels and constructors directly (`svcerr.NotFound("us
 
 ## Wiring in the composition root
 
-The service is constructed in `NewComponents` (the regenerated `internal/app/compose.go`) — no god-hook, no name-matched `*App` fields. `NewComponents` calls `things.New` and fills each `Deps` field **by type** off the owned `*Infra` (built in `internal/app/providers.go`, `OpenInfra`):
+The service is constructed in `NewComponents` (your `internal/app/compose.go`, whose component set and Deps keys forge reconciles) — no god-hook, no name-matched `*App` fields. `NewComponents` calls `things.New` and fills each `Deps` field **by type** off the owned `*Infra` (built in `internal/app/providers.go`, `OpenInfra`):
 
 ```go
 c.Things = things.New(things.Deps{
@@ -301,7 +301,7 @@ c.Things = things.New(things.Deps{
 })
 ```
 
-Each dep is passed as an *interface*, so `things` can't tell the in-process service from a Connect client or a mock; splitting it out to its own Deployment later is a one-line swap in `OpenInfra` (`infra.Users = userclient.New(conn)`), consumer untouched. To hand-customize (a carved cross-edge, a two-phase setter), `forge project disown internal/app/compose.go`. See `architecture` → **The composition root** for the full model.
+Each dep is passed as an *interface*, so `things` can't tell the in-process service from a Connect client or a mock; splitting it out to its own Deployment later is a one-line swap in `OpenInfra` (`infra.Users = userclient.New(conn)`), consumer untouched. To hand-customize (a carved cross-edge, a two-phase setter), just edit `NewComponents` — it is yours, and forge keeps what you write there. See `architecture` → **The composition root** for the full model.
 
 ### Deterministic time & IDs — the Clock / IDGen seam
 
@@ -310,7 +310,7 @@ Deps field typed exactly `func() time.Time` (a **Clock**) or `func() string`
 (an **IDGen**) — name it whatever reads well (`Now`, `Clock`, `NewID`, `IDs`),
 as `Deps` does under **The implementation** above.
 
-These are wired **by type**, automatically: `compose.go` fills them with the real impls (`time.Now` + a ULID generator) — you do NOT hand-wire them or add them to `Infra`; the generated test harness (`NewTest<Svc>`) defaults them to the same real impls (override via `With<Svc>Deps` for a frozen clock). They are guaranteed non-nil, so **do NOT** mark them `//forge:optional-dep` or nil-guard their use (marking one optional opts OUT of the seam). To supply a custom live impl, declare an `Infra` field of the SAME NAME (it wins over the seam), or disown `compose.go`. The DB layer already stamps IDs/timestamps at the persistence chokepoint — this seam is only for services that want deterministic time/ids in their own logic.
+These are wired **by type**, automatically: `compose.go` fills them with the real impls (`time.Now` + a ULID generator) — you do NOT hand-wire them or add them to `Infra`; the generated test harness (`NewTest<Svc>`) defaults them to the same real impls (override via `With<Svc>Deps` for a frozen clock). They are guaranteed non-nil, so **do NOT** mark them `//forge:optional-dep` or nil-guard their use (marking one optional opts OUT of the seam). To supply a custom live impl, declare an `Infra` field of the SAME NAME (it wins over the seam), or edit the fill in your `compose.go`. The DB layer already stamps IDs/timestamps at the persistence chokepoint — this seam is only for services that want deterministic time/ids in their own logic.
 
 ## Optional Deps fields
 

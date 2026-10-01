@@ -111,15 +111,16 @@ each host process gets its own port from `plugin.resolve_port` in
 
 ## Serving a service = composing it (the composition root)
 
-**What a binary serves is the set of constructors it calls — not a string row in a registry.** The explicit composition is split across two files under `internal/app/`: the owned `providers.go` (`Infra` + `OpenInfra`) and the generated `compose.go` (`Components` + `NewComponents(infra *Infra) (*Components, error)`). A binary serves a service because `NewComponents` constructs it and the serve path mounts its handler:
+**What a binary serves is the set of constructors it calls — not a string row in a registry.** The explicit composition is split across two files under `internal/app/`, **both yours**: `providers.go` (`Infra` + `OpenInfra`) and `compose.go` (`Components` + `NewComponents(infra *Infra) (*Components, error)`). A binary serves a service because `NewComponents` constructs it and the serve path mounts its handler:
 
 ```go
-// internal/app/compose.go (forge-owned, regenerated — disown to hand-own)
+// internal/app/compose.go (yours; reconciled — newly discovered components and
+// Deps keys are injected, your value expressions are kept)
 func NewComponents(infra *Infra) (*Components, error) {
     c := &Components{}
     c.Users = user.New(user.Deps{Repo: infra.Repo})
     c.Bill  = billing.New(billing.Deps{Users: c.Users})  // dep by INTERFACE, in-process default
-    // two-phase (bill.WithReliantAPIKeyIssuer(infra.LLM)) → disown compose.go and edit here
+    // two-phase (bill.WithReliantAPIKeyIssuer(infra.LLM)) → just add it here; it is kept
     return c, nil
 }
 ```

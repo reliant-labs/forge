@@ -140,7 +140,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 ## Wiring
 
-A worker's `Deps` are interface-typed fields filled **by type in `internal/app/compose.go` `NewComponents`**, not by string-matched field names and not by a generated `wire_gen.go`. You construct the worker in type-topological order, pass it its collaborators' interfaces (read off the owned `infra.<Field>`), and assign it onto its `Components` field. The generated `internal/app/lifecycle.go` `WorkerList(c)` adapts every constructed worker, and the cmd serve path supervises them — you don't append to a slice here:
+A worker's `Deps` are interface-typed fields filled **by type in `internal/app/compose.go` `NewComponents`**, not by string-matched field names and not by a generated `wire_gen.go`. You construct the worker in type-topological order, pass it its collaborators' interfaces (read off the owned `infra.<Field>`), and assign it onto its `Components` field. Your `internal/app/lifecycle.go` `WorkerList(c)` adapts every constructed worker — forge appends the accessor for a newly discovered one — and the cmd serve path supervises them, so you don't append to a slice here:
 
 ```go
 type Deps struct {
@@ -166,7 +166,7 @@ Because `Queue` is an interface, swapping a mock (in a test) or a Connect client
 
 ## Late-bound dependencies between workers
 
-When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** `forge project disown internal/app/compose.go`, then construct both ends and inject with a setter, by hand inside `NewComponents`.
+When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** construct both ends and inject with a setter, by hand inside `NewComponents`. No disown needed — `compose.go` is yours, and reconciliation only adds missing components and Deps keys; it never rewrites what you wrote.
 
 ```go
 func NewComponents(infra *Infra) (*Components, error) {
@@ -181,7 +181,7 @@ func NewComponents(infra *Infra) (*Components, error) {
 }
 ```
 
-This is the canonical seam for near-diamonds and producer/consumer pairs. Don't invent a parallel hook system (`PostBootstrap`, `wire_*_hooks.go`, post-Setup passes) — disowning `compose.go` lets `NewComponents` support construct-then-inject directly. See the `interactor` skill for the full pattern.
+This is the canonical seam for near-diamonds and producer/consumer pairs. Don't invent a parallel hook system (`PostBootstrap`, `wire_*_hooks.go`, post-Setup passes) — `NewComponents` is yours and supports construct-then-inject directly. See the `interactor` skill for the full pattern.
 
 ## Testing
 
@@ -211,6 +211,6 @@ Because `Deps` fields are interfaces filled in one place, instantiating a worker
 - `Stop()` receives a context with a deadline — finish cleanup before it expires.
 - Workers live under `internal/workers/<name>/`, never a top-level `workers/` dir. On-disk directory leaves must match the canonical snake_case form.
 - Worker `Deps` are interface-typed and filled by type in `internal/app/compose.go` `NewComponents`; scalars travel in a typed `<Component>Config` block, never as naked Deps fields.
-- Wire workers explicitly: construct in `NewComponents` onto the worker's `Components` field; the generated `lifecycle.go` `WorkerList` and the cmd serve path supervise them. For late-bound, cross-worker deps, `forge project disown internal/app/compose.go` and use setters. There is no `wire_gen.go` and no name-matched `*App` resolution.
+- Wire workers explicitly: construct in `NewComponents` onto the worker's `Components` field; `lifecycle.go`'s `WorkerList` and the cmd serve path supervise them. For late-bound, cross-worker deps, use setters directly in `NewComponents` — `compose.go` is yours and forge keeps those lines. There is no `wire_gen.go` and no name-matched `*App` resolution.
 - Use `forge scaffold worker`, not manual directory creation.
 - Cron workers require `--schedule` with a valid cron expression (5-field standard format).

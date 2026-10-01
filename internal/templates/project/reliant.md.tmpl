@@ -96,7 +96,7 @@ Load `architecture` for the deep version.
 |---------|----------|-----------|
 | Wire-format validation, auth extraction, proto↔internal conversion, error code mapping | `internal/handlers/<svc>/` | `api/handlers` |
 | Business decisions, DB calls, cross-service orchestration, transactions | `internal/<svc>/contract.go` (interface) + `service.go` (impl) | `service-layer` |
-| Wiring (constructing services, middleware chains, dep injection) | `internal/app/providers.go` (yours) — never `compose.go` (generated) | `services` |
+| Wiring (constructing services, middleware chains, dep injection) | `internal/app/providers.go` (yours — what fills a Deps field); `internal/app/compose.go` (also yours; forge reconciles the component set and Deps keys) | `services` |
 | DB schema | migrations under `db/migrations/` (the source of truth — entities/ORM are projected FROM the applied schema) | `db` |
 
 If a handler grows past six steps (validate / auth / convert / call service / convert / map error), the extra logic belongs in the service. If a service grows past one domain, it should split.
@@ -150,7 +150,7 @@ Forge deliberately does not guess your product's visual identity. A scaffold tha
 
 ## Critical rules
 
-1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`, and `internal/app/compose.go` / `mounts_services_gen.go` / `lifecycle.go`. All overwritten by `{{.CLI}} generate`. Edit the proto / `contract.go` / config instead.
+1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`, and `internal/app/mounts_services_gen.go`. All overwritten by `{{.CLI}} generate`. Edit the proto / `contract.go` / config instead. `internal/app/compose.go` and `lifecycle.go` are NOT in this list: they are yours, written once and then reconciled — forge injects newly discovered components and Deps keys (and drops keys for removed Deps fields) but never touches your value expressions or construction order. `{{.CLI}} project disown internal/app/compose.go` opts out entirely.
 2. **Proto is the API's canonical input** — API contracts and frontend hooks derive from proto definitions.
 3. **Migrations are the DB source of truth** — the schema comes from migrations; entities/ORM are projected from the APPLIED schema, not from proto.
 4. **Always run `{{.CLI}} lint` after `{{.CLI}} generate`.** The triple gate before you call a phase done:

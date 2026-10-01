@@ -101,7 +101,7 @@ type Charger interface { Charge(ctx context.Context, userID string, amount int64
 
 Sometimes package B needs a value that only exists *after* package A is constructed (worker A produces a snapshot saver that worker B consumes; service X exposes a registry that interactor Y registers handlers into). Putting that value in B's `Deps` creates a construction-order cycle — `New(Deps)` resolves its dep closure once and has no slot for "set this later".
 
-Construct-then-inject is a first-class plain method call in the composition, not a framework hook. `forge project disown internal/app/compose.go` to hand-own the construction site, then in `NewComponents` construct A and B, and call B's setter with A's product:
+Construct-then-inject is a first-class plain method call in the composition, not a framework hook. `internal/app/compose.go` is already yours — in `NewComponents` construct A and B, and call B's setter with A's product:
 
 ```go
 func NewComponents(infra *Infra) (*Components, error) {
@@ -116,7 +116,7 @@ func NewComponents(infra *Infra) (*Components, error) {
 }
 ```
 
-This is just ordinary Go in the disowned `compose.go` you own — no `PostBootstrap`, no `*App` field read by name, no parallel hook system. Near-diamonds and post-construction setters (`bill.WithReliantAPIKeyIssuer(llm)`) are the same pattern: construct, then inject. Any model based on pure constructor topo-ordering deadlocks on the real graph; `NewComponents` supports construct-then-inject explicitly.
+This is just ordinary Go in the `compose.go` you already own — no `PostBootstrap`, no `*App` field read by name, no parallel hook system. Near-diamonds and post-construction setters (`bill.WithReliantAPIKeyIssuer(llm)`) are the same pattern: construct, then inject. Any model based on pure constructor topo-ordering deadlocks on the real graph; `NewComponents` supports construct-then-inject explicitly.
 
 For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, the interface seam handles it — the consumer depends only on the dep's *interface*, so the fill in `NewComponents` is a one-line swap once the concrete type lands (real in-process instance, a Connect client, or a mock). There is no placeholder marker; see the "Deferred / cross-lane typing is handled by the seam" section of the `api` skill. That is distinct from the runtime construct-then-inject case above.
 
@@ -196,7 +196,7 @@ The scaffold ships with `Logger` and `Config` as its only deps, so `forge genera
 
 ## Wiring in the explicit composition (`NewComponents`)
 
-The interactor is wired in `internal/app/compose.go` `NewComponents` (generated; constructs every component INLINE off the owned `internal/app/providers.go` `Infra`), as typed interface fills in one place: adapters first, then the interactor on top, then the handler depending on the interactor. Each fill is resolved by type off `infra.<Field>` — no `*App` fields, no name-matching, no string-keyed registry.
+The interactor is wired in `internal/app/compose.go` `NewComponents` (yours; constructs every component INLINE off the owned `internal/app/providers.go` `Infra`), as typed interface fills in one place: adapters first, then the interactor on top, then the handler depending on the interactor. Each fill is resolved by type off `infra.<Field>` — no `*App` fields, no name-matching, no string-keyed registry.
 
 ```go
 func NewComponents(infra *Infra) (*Components, error) {

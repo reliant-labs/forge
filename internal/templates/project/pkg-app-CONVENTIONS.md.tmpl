@@ -6,7 +6,7 @@ generated `cmd/<bin>/cmd/serve.go` drives:
 
 ```
 OpenInfra    (internal/app/providers.go — yours, opens DB/NATS/clients)
-  → NewComponents (internal/app/compose.go — generated, EXPLICIT inline wiring)
+  → NewComponents (internal/app/compose.go — yours, EXPLICIT inline wiring)
   → mount/supervise via internal/app/mounts_services_gen.go + lifecycle.go
   → serverkit.Run
 ```
@@ -14,6 +14,14 @@ OpenInfra    (internal/app/providers.go — yours, opens DB/NATS/clients)
 Construction is EXPLICIT: `compose.go` builds every handler/worker/operator as
 a local value with its `Deps` wired inline off the owned `*Infra`, resolved by
 field type — no string-keyed name match, no hidden construction order.
+
+`compose.go` is YOURS. Forge writes it once, then reconciles only the
+projection: a newly discovered component gets its import, `Components` field
+and `New(Deps{…})` call injected, a component that gained a `Deps` field gets
+that key filled, and a key naming a field its `Deps` struct no longer has is
+dropped. The EXPRESSION beside a key that still exists, your construction
+order, and any carved cross-edge are never touched. `forge project disown
+internal/app/compose.go` stops reconciliation altogether.
 
 ## What lives under pkg/app
 

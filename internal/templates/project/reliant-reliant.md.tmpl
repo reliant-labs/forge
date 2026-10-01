@@ -53,7 +53,13 @@ The light/dark palette IS wired, though: semantic tokens in `globals.css` / `ind
 ## Do NOT Edit
 - `gen/` directory
 - `*_gen.go` files
-- `internal/app/compose.go`, `mounts_services_gen.go`, `lifecycle.go` (forge-owned until `{{.CLI}} project disown`)
+- `internal/app/mounts_services_gen.go` (forge-owned until `{{.CLI}} project disown`)
+
+`internal/app/compose.go` and `lifecycle.go` ARE yours to edit — forge writes
+each once, then reconciles only the projection (compose.go: the component set
+and Deps keys; lifecycle.go: the `Worker<X>()`/`Operator<X>()` accessors). Your
+value expressions, construction order and rewritten `All*` bodies are kept.
+`{{.CLI}} project disown <path>` stops reconciliation.
 - `internal/db/<entity>_orm.go`, `pkg/config/`
 - `frontends/*/src/hooks/*-hooks.ts`
 - `frontends/*/src/gen/`

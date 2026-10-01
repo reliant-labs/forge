@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -1453,17 +1454,49 @@ func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KC
 // A release with SOME kinds and not others is normal and never an error — a
 // project with no npm package simply cuts a release with no npm artifacts.
 func writeReleaseLedger(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
-	_, err := cutReleaseFromBuildState(ctx, projectDirForKCL(), opts.env, opts.release, opts.outputDir, entities, opts)
-	return err
+	cut, err := cutReleaseFromBuildState(ctx, projectDirForKCL(), opts.env, opts.release, opts.outputDir, entities, opts)
+	if err != nil {
+		return err
+	}
+	printReleaseCut(os.Stdout, cut)
+	return nil
+}
+
+// releaseCutOutcome is what one cut did — the release, whether THIS call
+// wrote it, and where. cutReleaseFromBuildState returns it instead of
+// printing, so `forge env build <env> --release` can render text and
+// `--release-json` a document from the same facts.
+type releaseCutOutcome struct {
+	Release release.Release
+	// Created is false when the same version over the same artifacts was
+	// already recorded: an idempotent re-cut, exit 0 all the same.
+	Created bool
+	// Ledger is where the release was recorded (a control plane URL or the
+	// project's .forge/releases).
+	Ledger string
+	// Images, Packages and Files count the artifacts by kind.
+	Images, Packages, Files int
+}
+
+// printReleaseCut is the text rendering of a cut.
+func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
+	verb := "Cut"
+	if !cut.Created {
+		verb = "Release already recorded (identical artifacts — nothing written):"
+	}
+	fmt.Fprintf(out, "\n[build] %s release %s (%d image(s), %d package(s), %d file(s)): %s\n",
+		verb, cut.Release.Version, cut.Images, cut.Packages, cut.Files, strings.Join(releaseImageNames(cut.Release), ", "))
+	fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
+	fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
 }
 
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build
 // captured for env, check it covers everything env declares, and record it in
 // env's release ledger — the project's files, or the control plane env's KCL
-// declares. `forge env build --release` calls it after building; `forge release
-// cut` calls it on its own, for the CI shape where images were built and
-// pushed by an earlier step.
-func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, outputDir string, entities *KCLEntities, opts buildOptions) (release.Release, error) {
+// declares. `forge env build <env> --release` calls it after building;
+// `--release --no-build` calls it on its own, for the CI shape where images
+// were built and pushed by an earlier step.
+func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, outputDir string, entities *KCLEntities, opts buildOptions) (releaseCutOutcome, error) {
 	artifacts := harvestReleaseArtifacts(projectDir, env)
 	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
 	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
@@ -1472,11 +1505,11 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// pushed them). Record each declared image so the release covers what
 	// the hosted deploy ships.
 	if err := harvestHostedBackendArtifacts(ctx, entities, artifacts); err != nil {
-		return release.Release{}, fmt.Errorf("--release %s: %w", version, err)
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
 	images := countOCIArtifacts(release.Release{Artifacts: artifacts})
 	if len(artifacts) == 0 {
-		return release.Release{}, fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
 			"  A release pins immutable digests, which require a registry push — re-run with --push\n"+
 			"  (forge env build %s --release %s --push pushes to each image's own registry).\n"+
 			"  A release built without --push has only a local tag, which can't be promoted across envs", version, env, version)
@@ -1487,7 +1520,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// resolved commit so the release covers the whole environment, not just
 	// the half that ships as containers.
 	if err := addFrontendSourceArtifacts(ctx, projectDir, entities, artifacts); err != nil {
-		return release.Release{}, fmt.Errorf("--release %s: %w", version, err)
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
 
 	// Completeness gate. Every image the env DECLARES must be in the ledger.
@@ -1496,7 +1529,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// like one, and ships an environment with a hole in it.
 	opts.env, opts.release = env, version
 	if err := checkReleaseCoversEnv(entities, artifacts, opts); err != nil {
-		return release.Release{}, err
+		return releaseCutOutcome{}, err
 	}
 
 	commit, gitTag, dirty := gitBuildProvenance(ctx)
@@ -1506,7 +1539,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// value without each workflow having to thread a flag.
 	run, err := opts.run.resolveRun()
 	if err != nil {
-		return release.Release{}, fmt.Errorf("--release %s: %w", version, err)
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
 	rel := release.Release{
 		Version:   version,
@@ -1517,21 +1550,16 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	}
 	ledger, err := ledgerFor(ctx, projectDir, env)
 	if err != nil {
-		return release.Release{}, err
+		return releaseCutOutcome{}, err
 	}
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
-		return release.Release{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
 	}
-	verb := "Cut"
-	if !created {
-		verb = "Release already recorded (identical artifacts — nothing written):"
-	}
-	fmt.Printf("\n[build] %s release %s (%d image(s), %d package(s), %d file(s)): %s\n",
-		verb, rel.Version, images, packages, files, strings.Join(releaseImageNames(rel), ", "))
-	fmt.Printf("[build]   Ledger: %s\n", ledger.Releases.Location())
-	fmt.Printf("[build]   Deploy:  forge env deploy <env> %s\n", rel.Version)
-	return rel, nil
+	return releaseCutOutcome{
+		Release: rel, Created: created, Ledger: ledger.Releases.Location(),
+		Images: images, Packages: packages, Files: files,
+	}, nil
 }
 
 // buildPlan carries the resolved inputs shared by buildParallel and

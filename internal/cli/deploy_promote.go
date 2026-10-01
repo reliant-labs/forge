@@ -188,7 +188,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			VersionFromSource: source.VersionFromSource,
 		})
 		if writeErr == nil && opts.Follow != nil {
-			writeErr = followPromote(ctx, env, plan, ledger.Hosted, *opts.Follow)
+			writeErr = followPromote(ctx, env, plan, ledger, *opts.Follow)
 		}
 	}
 	// A refused write still renders: the plan is what the write WOULD have

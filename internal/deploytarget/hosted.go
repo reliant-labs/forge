@@ -458,7 +458,7 @@ func hostedWorkloadRepository(image, artifact string, group ServiceGroup) (strin
 	}
 	if registry == "" {
 		return "", fmt.Errorf("image %q names no registry, and release %s recorded none for artifact %q — it was built without a push.\n"+
-			"  fix: forge env build %s --push, re-cut the release (forge env build %s --release <version> --no-build), then promote it",
+			"  fix: forge env build %s --push, re-cut the release (forge env build %s --release <version> --no-build), then deploy it",
 			image, group.Hosted.Release, artifact, group.Env, group.Env)
 	}
 	return registry + "/" + artifact, nil
@@ -555,7 +555,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no artifact %q (the workload's image %s).\n"+
-					"  fix: re-cut the release so it covers this workload (forge env build %s --release <version> --no-build), then promote it",
+					"  fix: re-cut the release so it covers this workload (forge env build %s --release <version> --no-build), then deploy it",
 					svc.Name, group.Hosted.Release, artifact, spec.Image, group.Env))
 				continue
 			}
@@ -590,7 +590,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no static site artifact %q.\n"+
 					"  fix: build and push the site (forge env build %s --push), re-cut the release "+
-					"(forge env build %s --release <version> --no-build), then promote it",
+					"(forge env build %s --release <version> --no-build), then deploy it",
 					svc.Name, group.Hosted.Release, artifact, group.Env, group.Env))
 				continue
 			}

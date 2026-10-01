@@ -176,8 +176,8 @@ func IsForgeGenerated(content []byte) bool {
 // (e2e.yml only with an e2e suite, reconcile.yml only with the reconcile
 // feature), and a staging render of `forge project new` must never smuggle in
 // one it would not emit.
-func CIWorkflowFileFor(projectDir string, cfg *config.ProjectConfig, frontends []templates.FrontendCIConfig, relPath string) (content []byte, ok bool, err error) {
-	for _, f := range CIWorkflows(projectDir, cfg, frontends) {
+func CIWorkflowFileFor(projectDir string, cfg *config.ProjectConfig, in CIInputs, relPath string) (content []byte, ok bool, err error) {
+	for _, f := range CIWorkflowsFor(projectDir, cfg, in) {
 		if f.Dest != filepath.ToSlash(relPath) {
 			continue
 		}
@@ -195,7 +195,7 @@ func CIWorkflowFileFor(projectDir string, cfg *config.ProjectConfig, frontends [
 // or not THIS project has it.
 func IsCIMapperPath(relPath string) bool {
 	rel := filepath.ToSlash(relPath)
-	if rel == ".github/dependabot.yml" {
+	if rel == ".github/dependabot.yml" || rel == ForgeDeployActionPath {
 		return true
 	}
 	if !strings.HasPrefix(rel, ".github/workflows/") {
@@ -207,6 +207,12 @@ func IsCIMapperPath(relPath string) bool {
 	}
 	want := strings.TrimPrefix(rel, ".github/workflows/") + ".tmpl"
 	for _, n := range names {
+		// The composite action's template lives beside the workflows but
+		// is not one: it lands at ForgeDeployActionPath, never under
+		// .github/workflows/.
+		if filepath.Base(n) == "forge-deploy-action.yml.tmpl" {
+			continue
+		}
 		if filepath.Base(n) == want {
 			return true
 		}
@@ -225,8 +231,14 @@ func CIWorkflowAbsenceReason(relPath string) string {
 		return "it is part of the reconcile feature: set features.experimental.reconcile: true in forge.yaml"
 	case ".github/workflows/proto-breaking.yml":
 		return "it checks service protos for breaking changes, which only a service project with codegen on has"
-	case ".github/workflows/build-images.yml", ".github/workflows/deploy.yml":
+	case ".github/workflows/release.yml", ForgeDeployActionPath:
+		return "it builds once and deploys that release through HOSTED environments, and this project declares none: " +
+			"an env needs forge.ControlPlane in its KCL and a workload or database the platform runs (forge.OnHosted)"
+	case ".github/workflows/build-images.yml":
 		return "it builds and deploys service images, which only a service-kind project has"
+	case ".github/workflows/deploy.yml":
+		return "it deploys service images to the envs that are not hosted, and only a service-kind project has one; " +
+			"when every env is hosted (forge.ControlPlane plus forge.OnHosted), .github/workflows/release.yml is the whole deploy path"
 	}
 	return "this project's shape does not include it"
 }

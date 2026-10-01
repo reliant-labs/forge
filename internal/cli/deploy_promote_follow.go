@@ -107,15 +107,33 @@ func validatePromoteFollow(o promoteFollowOptions) error {
 // health. plan.Recorded is the promotion the env now resolves to — the new
 // entry, or the existing one for an idempotent retry.
 //
-// hosted says which half runs, and it comes from the env's LEDGER (the single
-// declarative discriminator forge already has: envLedger.Hosted). The two
-// branches are exclusive on purpose. A self-managed env has no server-computed
-// rollout, so polling one could only time out; a hosted env is converged by
-// the control plane, so a client-side apply would be forge racing the
-// converger to write the same specs.
-func followPromote(ctx context.Context, env string, plan promotePlan, hosted bool, o promoteFollowOptions) error {
-	if !hosted {
-		return applySelfManaged(ctx, env, o)
+// WHICH HALVES RUN COMES FROM THE LEDGER, and there are THREE shapes, not two:
+//
+//	SELF-MANAGED (!Hosted)      apply from here; that apply's own per-resource
+//	                            rollout wait IS the health gate.
+//	HOSTED-ONLY  (Hosted)       apply nothing; wait on the rollout the control
+//	                            plane computes.
+//	MIXED        (Hosted+Mixed) BOTH. Apply the cluster/compose/infra half from
+//	                            here, then wait on the hosted half.
+//
+// The mixed row is why "hosted" alone cannot decide this. A control plane
+// converges only what it hosts, so an env with cluster workloads beside its
+// hosted ones ships nothing from those workloads unless this command applies
+// them — and a deploy that recorded, waited on the hosted rollout, and reported
+// the release live while the cluster half still ran the previous one is exactly
+// the gap this verb exists to close.
+//
+// ORDER: apply, then wait. The apply is the half this command can fail fast
+// on, and spending the hosted wait's budget after it has already failed buys
+// nothing.
+func followPromote(ctx context.Context, env string, plan promotePlan, ledger envLedger, o promoteFollowOptions) error {
+	if ledger.appliesLocally() {
+		if err := applySelfManaged(ctx, env, ledger.Hosted, o); err != nil {
+			return err
+		}
+	}
+	if !ledger.Hosted {
+		return nil
 	}
 	if o.NoWait {
 		// The control plane converges the binding on its own. Saying so
@@ -152,13 +170,19 @@ func followPromote(ctx context.Context, env string, plan promotePlan, hosted boo
 // appended a moment ago, so the newest entry is the promotion this command
 // wrote and the apply pins exactly the bytes that were just promoted.
 //
-// THE APPLY'S OWN ROLLOUT WAIT IS THE HEALTH GATE. A self-managed env has no
-// server-computed rollout to poll, so there is no second gate to run after
-// this one — cluster.RolloutPolicy already waits for every Deployment and
-// one-shot Job and fails the deploy if any does not become ready. --no-wait
-// and --timeout therefore tune THAT policy, which is why they are mapped onto
-// it here instead of being passed to a wait that would have nothing to read.
-func applySelfManaged(ctx context.Context, env string, o promoteFollowOptions) error {
+// THE APPLY'S OWN ROLLOUT WAIT IS THE HEALTH GATE, for a wholly self-managed
+// env: there is no server-computed rollout to poll, so there is no second gate
+// to run after this one — cluster.RolloutPolicy already waits for every
+// Deployment and one-shot Job and fails the deploy if any does not become
+// ready. --no-wait and --timeout therefore tune THAT policy, which is why they
+// are mapped onto it here instead of being passed to a wait that would have
+// nothing to read.
+//
+// On a MIXED env (mixed=true) this apply covers only the half forge owns, and
+// followPromote goes on to wait on the hosted half. The flags still tune this
+// policy — it is a real rollout wait over real resources — and the hosted wait
+// receives them too, so one --timeout does not silently mean "per half".
+func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFollowOptions) error {
 	opts := o.clientDeploy
 	if o.NoWait {
 		opts.rollout.Mode = cluster.RolloutSkip
@@ -169,7 +193,12 @@ func applySelfManaged(ctx context.Context, env string, o promoteFollowOptions) e
 	if o.FailFast {
 		opts.rollout.FailFast = true
 	}
-	fmt.Printf("\nApplying %s's newly recorded release (self-managed: no control plane converges it)\n", env)
+	if mixed {
+		fmt.Printf("\nApplying %s's locally-managed workloads at its newly recorded release "+
+			"(its control plane converges only the hosted ones)\n", env)
+	} else {
+		fmt.Printf("\nApplying %s's newly recorded release (self-managed: no control plane converges it)\n", env)
+	}
 	return runPromoteClientDeploy(ctx, env, opts)
 }
 

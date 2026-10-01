@@ -340,11 +340,10 @@ func TestDeployRelease_SelfManagedAppliesClientSide(t *testing.T) {
 	wait.install(t)
 	apply.install(t)
 
-	selfManaged := false
 	store, releases := selfManagedFixture()
 	opts := promoteOptions{
-		ProjectDir: t.TempDir(), Bindings: store, Releases: releases,
-		Git: allCommitsPresent(), Hosted: &selfManaged, Follow: waitByDefault(),
+		ProjectDir: t.TempDir(), Git: allCommitsPresent(), Follow: waitByDefault(),
+		Ledger: envLedger{Bindings: store, Releases: releases},
 	}
 	opts.Run.None = true
 	var err error
@@ -373,11 +372,10 @@ func TestDeployRelease_SelfManagedApplyFailureFailsTheDeploy(t *testing.T) {
 	apply := capturedClientDeploy{err: &exitCodeError{code: exitWrong, msg: "api: CrashLoopBackOff"}}
 	apply.install(t)
 
-	selfManaged := false
 	store, releases := selfManagedFixture()
 	opts := promoteOptions{
-		ProjectDir: t.TempDir(), Bindings: store, Releases: releases,
-		Git: allCommitsPresent(), Hosted: &selfManaged, Follow: waitByDefault(),
+		ProjectDir: t.TempDir(), Git: allCommitsPresent(), Follow: waitByDefault(),
+		Ledger: envLedger{Bindings: store, Releases: releases},
 	}
 	opts.Run.None = true
 	var err error
@@ -426,11 +424,10 @@ func TestDeployRelease_SelfManagedGateFlagsTuneTheRolloutPolicy(t *testing.T) {
 			var apply capturedClientDeploy
 			apply.install(t)
 
-			selfManaged := false
 			store, releases := selfManagedFixture()
 			opts := promoteOptions{
-				ProjectDir: t.TempDir(), Bindings: store, Releases: releases,
-				Git: allCommitsPresent(), Hosted: &selfManaged, Follow: tc.follow,
+				ProjectDir: t.TempDir(), Git: allCommitsPresent(), Follow: tc.follow,
+				Ledger: envLedger{Bindings: store, Releases: releases},
 			}
 			opts.Run.None = true
 			var err error
@@ -457,11 +454,10 @@ func TestDeployRelease_SelfManagedForwardsTheApplyFlags(t *testing.T) {
 	var apply capturedClientDeploy
 	apply.install(t)
 
-	selfManaged := false
 	store, releases := selfManagedFixture()
 	opts := promoteOptions{
-		ProjectDir: t.TempDir(), Bindings: store, Releases: releases,
-		Git: allCommitsPresent(), Hosted: &selfManaged,
+		ProjectDir: t.TempDir(), Git: allCommitsPresent(),
+		Ledger: envLedger{Bindings: store, Releases: releases},
 		Follow: &promoteFollowOptions{clientDeploy: deployOptions{
 			targets: []string{"api"}, namespace: "custom-ns", dryRun: true,
 		}},

@@ -52,6 +52,13 @@ func (f *fakeGit) CommitsBetween(_ context.Context, _, from, to string) ([]strin
 
 // allCommitsPresent is the common case: every commit the plan asks about is in
 // the checkout.
+// emptyMemLedger is an in-memory ledger with no promotions and no releases:
+// the shape that makes any named release a missing one. Self-managed (zero
+// Hosted), which is what a project's own .forge/promotions/ is.
+func emptyMemLedger() envLedger {
+	return envLedger{Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger()}
+}
+
 func allCommitsPresent(commits ...string) *fakeGit {
 	have := map[string]bool{}
 	for _, c := range commits {
@@ -418,9 +425,9 @@ func TestPromotePlan_TargetLedgerMissingIsAnError(t *testing.T) {
 	// And the same is true through the command, in BOTH modes: the exit
 	// behaviour must not depend on --plan or --json.
 	for _, opts := range []promoteOptions{
-		{ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger(), Git: allCommitsPresent()},
-		{DryRun: true, ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger(), Git: allCommitsPresent()},
-		{DryRun: true, JSON: true, ProjectDir: dir, Bindings: newMemBindingStore(nil), Releases: newMemReleaseLedger(), Git: allCommitsPresent()},
+		{ProjectDir: dir, Ledger: emptyMemLedger(), Git: allCommitsPresent()},
+		{DryRun: true, ProjectDir: dir, Ledger: emptyMemLedger(), Git: allCommitsPresent()},
+		{DryRun: true, JSON: true, ProjectDir: dir, Ledger: emptyMemLedger(), Git: allCommitsPresent()},
 	} {
 		if err := runPromote(context.Background(), "v9.9.9", "staging", opts); err == nil {
 			t.Errorf("runPromote(%+v) must fail on a missing target release", opts)
@@ -645,13 +652,14 @@ func TestRunPromotePlan_WritesNothing(t *testing.T) {
 		t.Fatalf("read ledger: %v", err)
 	}
 
-	// The dry run. Note ProjectDir/Bindings are left nil so this goes
-	// through exactly the production path — the file store the command
-	// constructs for itself.
+	// The dry run. Note ProjectDir is left nil and the ledger comes from the
+	// real resolver, so this goes through exactly the production path — the
+	// file store the command constructs for itself.
 	out := captureStdout(t, func() {
 		if err := runPromote(context.Background(), "v1.5.15", "staging", promoteOptions{
 			DryRun: true,
 			Git:    allCommitsPresent("aaaaaaaaaaaa", "cccccccccccc"),
+			Ledger: declaredLedger(t, dir, "staging"),
 		}); err != nil {
 			t.Fatalf("--plan must exit 0: %v", err)
 		}
@@ -689,7 +697,8 @@ func TestRunPromote_AppliesAndSaysSo(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{
-			Git: allCommitsPresent("bbbbbbbbbbbb"),
+			Git:    allCommitsPresent("bbbbbbbbbbbb"),
+			Ledger: declaredLedger(t, dir, "staging"),
 		}); err != nil {
 			t.Fatalf("promote: %v", err)
 		}
@@ -754,7 +763,7 @@ func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
 	planJSON := captureStdout(t, func() {
 		if err := runPromote(context.Background(), "v1.5.15", "staging", promoteOptions{
 			DryRun: true, JSON: true, ProjectDir: t.TempDir(),
-			Bindings: planStore, Releases: newMemReleaseLedger(releases...), Git: newGit(),
+			Ledger: envLedger{Bindings: planStore, Releases: newMemReleaseLedger(releases...)}, Git: newGit(),
 		}); err != nil {
 			t.Fatalf("plan: %v", err)
 		}
@@ -762,7 +771,7 @@ func TestPromotePlan_PlanAndApplyAgree(t *testing.T) {
 	applyJSON := captureStdout(t, func() {
 		if err := runPromote(context.Background(), "v1.5.15", "staging", promoteOptions{
 			JSON: true, ProjectDir: t.TempDir(),
-			Bindings: applyStore, Releases: newMemReleaseLedger(releases...), Git: newGit(),
+			Ledger: envLedger{Bindings: applyStore, Releases: newMemReleaseLedger(releases...)}, Git: newGit(),
 		}); err != nil {
 			t.Fatalf("apply: %v", err)
 		}
@@ -839,7 +848,7 @@ func TestPromotePlanJSON_ShapeAndFollowThrough(t *testing.T) {
 	out := captureStdout(t, func() {
 		if err := runPromote(context.Background(), "v1.5.15", "staging", promoteOptions{
 			DryRun: true, JSON: true, ProjectDir: t.TempDir(),
-			Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
+			Ledger: envLedger{Bindings: store, Releases: newMemReleaseLedger(releases...)}, Git: git,
 		}); err != nil {
 			t.Fatalf("plan --json: %v", err)
 		}

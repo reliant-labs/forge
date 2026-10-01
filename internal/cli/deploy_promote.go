@@ -5,7 +5,7 @@ package cli
 // `forge env deploy <env> <version>`.
 //
 // WHAT THIS HALF DOES, AND WHAT IT DELIBERATELY DOES NOT. It reads the release
-// `forge env build --release` cut, freezes each image's digest, and APPENDS one
+// `forge build --release` cut, freezes each image's digest, and APPENDS one
 // entry to the env's promotion ledger — the project's
 // .forge/promotions/<env>.jsonl, or the control plane the env's KCL declares.
 // No build runs; the bytes that were cut as <version> are, by construction,
@@ -65,22 +65,33 @@ type promoteOptions struct {
 	// real request for the default follow-through, and no bool
 	// combination can express that as distinctly as the pointer does.
 	Follow *promoteFollowOptions
-	// Hosted overrides who applies the binding: true = the env's control
-	// plane converges it, false = this command applies it client-side.
-	// Nil reads it off the env's resolved ledger (envLedger.Hosted), which
-	// is what production does. Stated only by a test that also states
-	// Bindings, where there is no ledger to read it from.
-	Hosted *bool
 
 	Gates []string
 	From  promoteFromOptions
 	// Run is the run identity; resolved against the CI environment.
 	Run runOptions
-	// Bindings and Releases are the env's ledger. Nil resolves the env's
-	// declared backend.
-	Bindings bindingStore
-	Releases releaseLedger
-	Git      promoteGitReader
+
+	// Ledger is the env's release ledger: where the promotion is recorded
+	// AND — through its Hosted field — who applies it.
+	//
+	// REQUIRED, and resolved by the CALLER. `forge env deploy` resolves it
+	// from the env's declaration (resolveReleaseLedger) before calling;
+	// a test states one directly. Leaving it nil for runPromote to resolve
+	// would make the field one no production path ever sets, so every read
+	// here would observe only a test's value — the shape
+	// internal/deadcodeguard calls a phantom field, and it is right to:
+	// the seam would be exercised exclusively by the tests that use it.
+	//
+	// ONE SEAM AND NOT THREE. An earlier shape had Bindings, Releases and a
+	// *bool Hosted as separate fields, which let a caller state a hosted
+	// store and leave Hosted false — describing an env whose promotions
+	// live on a control plane that then applies nothing. envLedger already
+	// holds the three together and cannot express that: the hosted
+	// constructor sets Hosted:true beside the stores, so where a promotion
+	// is recorded and who converges it are decided once, from one
+	// declaration.
+	Ledger envLedger
+	Git    promoteGitReader
 }
 
 // runPromote computes the change set and — unless --plan was passed — applies
@@ -133,38 +144,18 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if projectDir == "" {
 		projectDir = projectDirForKCL()
 	}
-	bindings, releases := opts.Bindings, opts.Releases
-	hosted := opts.Hosted
-	if bindings == nil || releases == nil || hosted == nil {
-		l, err := ledgerFor(ctx, projectDir, env)
-		if err != nil {
-			return err
-		}
-		if bindings == nil {
-			bindings = l.Bindings
-		}
-		if releases == nil {
-			releases = l.Releases
-		}
-		if hosted == nil {
-			// WHO APPLIES IS READ OFF THE LEDGER, which is the same
-			// declarative fact as WHERE the promotion is recorded: an
-			// env whose KCL declares forge.ControlPlane has its
-			// promotions converged by that control plane, and every
-			// other env is applied from here. One source for both
-			// means the two can never disagree — a binding recorded
-			// on a control plane that forge then also applied
-			// client-side would be forge racing the converger.
-			hosted = &l.Hosted
-		}
+	ledger := opts.Ledger
+	if ledger.Bindings == nil || ledger.Releases == nil {
+		return fmt.Errorf("internal: no release ledger resolved for env %q "+
+			"(the caller must pass promoteOptions.Ledger — see resolveReleaseLedger)", env)
 	}
 
 	plan, err := computePromotePlan(ctx, promotePlanOptions{
 		Env:        env,
 		Version:    version,
 		ProjectDir: projectDir,
-		Bindings:   bindings,
-		Releases:   releases,
+		Bindings:   ledger.Bindings,
+		Releases:   ledger.Releases,
 		Git:        opts.Git,
 	})
 	if err != nil {
@@ -185,7 +176,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// than the one that gets made.
 	var writeErr error
 	if !opts.DryRun {
-		writeErr = applyPromotePlan(ctx, bindings, &plan, promoteWrite{
+		writeErr = applyPromotePlan(ctx, ledger.Bindings, &plan, promoteWrite{
 			By:    promoteActor(opts.Actor),
 			Note:  opts.Note,
 			Guard: guard,
@@ -197,7 +188,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			VersionFromSource: source.VersionFromSource,
 		})
 		if writeErr == nil && opts.Follow != nil {
-			writeErr = followPromote(ctx, env, plan, *hosted, *opts.Follow)
+			writeErr = followPromote(ctx, env, plan, ledger.Hosted, *opts.Follow)
 		}
 	}
 	// A refused write still renders: the plan is what the write WOULD have
@@ -230,6 +221,21 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 	renderPromotePlanText(progressWriter(false), plan)
 	return writeErr
+}
+
+// resolveReleaseLedger is how `forge env deploy` answers both halves of "where
+// does this release live" before it starts: WHERE the promotion is recorded,
+// and — through envLedger.Hosted — WHO applies it.
+//
+// It is the production writer of promoteOptions.Ledger, and it exists as its
+// own function so that fact is visible at the command rather than buried as a
+// nil-check inside runPromote. Resolving it there would have made the seam a
+// field only tests ever set.
+func resolveReleaseLedger(ctx context.Context, projectDir, env string) (envLedger, error) {
+	if projectDir == "" {
+		projectDir = projectDirForKCL()
+	}
+	return ledgerFor(ctx, projectDir, env)
 }
 
 // promoteActor is who the ledger entry names. An explicit --actor is an

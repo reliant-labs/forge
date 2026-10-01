@@ -509,7 +509,7 @@ func TestRunPromote_AppendsThroughTheDeclaredStore(t *testing.T) {
 		t.Fatalf("write release: %v", err)
 	}
 	captureStdout(t, func() {
-		if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{ProjectDir: dir, Git: allCommitsPresent()}); err != nil {
+		if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{ProjectDir: dir, Git: allCommitsPresent(), Ledger: declaredLedger(t, dir, "staging")}); err != nil {
 			t.Errorf("promote: %v", err)
 		}
 	})
@@ -534,7 +534,7 @@ func TestRunPromote_BackwardsIsAPlainPromote(t *testing.T) {
 	run := func(v string) (string, error) {
 		var err error
 		out := captureStdout(t, func() {
-			err = runPromote(context.Background(), v, "prod", promoteOptions{ProjectDir: dir, Note: "why", Git: allCommitsPresent()})
+			err = runPromote(context.Background(), v, "prod", promoteOptions{ProjectDir: dir, Note: "why", Git: allCommitsPresent(), Ledger: declaredLedger(t, dir, "prod")})
 		})
 		return out, err
 	}

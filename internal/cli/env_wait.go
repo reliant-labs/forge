@@ -247,21 +247,6 @@ type envWaitOptions struct {
 	JSON      bool
 	WatchJSON bool
 
-	// AllowNonConverging admits an env whose control plane does not
-	// converge promotions, suppressing the fast refusal for a caller that
-	// has ALREADY applied the pins itself.
-	//
-	// NOTHING IN PRODUCTION SETS IT TODAY. Its one setter was the retired
-	// promote verb's client-side-apply-then-wait pair, and when
-	// `forge env deploy` absorbed that (docs/adr/env-verbs.md, V3) the
-	// client-side apply stopped going through this wait at all: a
-	// self-managed env is gated by its own
-	// per-resource rollout wait, so there is no non-converging env left for
-	// this wait to be pointed at. Kept because the field is the right shape
-	// for the next such caller and the refusal it suppresses is real —
-	// delete it if none arrives.
-	AllowNonConverging bool
-
 	// Target is the seam: ONE function resolving everything this wait
 	// needs to reach a control plane. Nil resolves the env's declared one
 	// (resolveDeclaredWaitTarget), exactly as the ledger does.
@@ -542,7 +527,7 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 		// The fast refusal: nothing on this control plane will apply
 		// the promotion, so waiting can only ever time out, and a
 		// timeout would blame the release for a missing converger.
-		if !rollout.ConvergesPromotions && !opts.AllowNonConverging {
+		if !rollout.ConvergesPromotions {
 			report.WaitedMS = time.Since(start).Milliseconds()
 			return report, undeterminedf(
 				"env %q does not converge promotions on this control plane, so this promotion will not roll out on its own.\n"+

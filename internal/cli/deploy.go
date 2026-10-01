@@ -30,34 +30,10 @@ import (
 	"github.com/reliant-labs/forge/pkg/deploystate"
 )
 
-func newDeployCmd() *cobra.Command {
-	var (
-		tag           string
-		dryRun        bool
-		namespace     string
-		explain       bool
-		targetArch    string
-		prune         bool
-		targets       []string
-		skipFrontend  bool
-		frontendsOnly bool
-		skipPreflight bool
-		noDigest      bool
-		jsonOut       bool
-
-		rolloutMode     string
-		rolloutTimeout  time.Duration
-		rolloutFailFast bool
-		rolloutOrder    []string
-
-		// The release half: `forge env deploy <env> vX` / `--from <src>`.
-		promote promoteCmdFlags
-	)
-
-	cmd := &cobra.Command{
-		Use:   "deploy <environment> [version]",
-		Short: "Make an environment run a release: record it, apply it, and wait for health",
-		Long: `Make <environment> run a release — record the promotion, apply it, and wait
+// deployCmdLong is `forge env deploy`'s help text, hoisted out of the command
+// declaration so the constructor reads as a declaration rather than as a
+// document with a cobra.Command buried in it.
+const deployCmdLong = `Make <environment> run a release — record the promotion, apply it, and wait
 for it to become healthy. With no version, re-apply the env's CURRENT binding
 (a spec-change deploy: the KCL moved, the release did not).
 
@@ -79,7 +55,7 @@ machine, and that apply's per-resource rollout wait IS the health gate. Both
 reach "the release is live or this command is red"; which machinery got there
 is an implementation detail of where the env runs.
 
-` + "`forge env build <env> --release <version>`" + ` builds the env-agnostic images
+` + "`forge build <env> --release <version> --push`" + ` builds the env-agnostic images
 ONCE, captures their content-addressed digests, and cuts a release. Naming that
 version here advances it BY REFERENCE: one entry — env, release, and the
 per-image digests frozen at this moment — appended to the env's append-only
@@ -135,7 +111,7 @@ Exit codes (release deploys):
 naming what was expected and what is actually there.
 
 Examples:
-  forge env build prod --release v1.4.0            # build once, cut the release
+  forge build prod --release v1.4.0 --push         # build once, cut the release
   forge env deploy staging v1.4.0 --plan           # what WOULD change (writes nothing)
   forge env deploy staging v1.4.0 --plan --json    # the same, machine-readable
   forge env deploy staging v1.4.0                  # record, apply, wait
@@ -222,7 +198,19 @@ Examples:
   forge env deploy dev --namespace custom-ns    # Override namespace
   forge env deploy dev --target admin-server    # Deploy only the admin-server app
   forge env deploy prod --target workspace-controller # Deploy only that operator
-  forge env deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`,
+  forge env deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`
+
+func newDeployCmd() *cobra.Command {
+	// ONE struct and not twenty locals: the flag targets ARE the fields
+	// dispatchDeployCmd reads, so binding them directly removes the
+	// hand-copied struct literal that used to sit in RunE — the place a
+	// newly added flag was silently dropped by forgetting one line.
+	var apply deployCmdFlags
+
+	cmd := &cobra.Command{
+		Use:   "deploy <environment> [version]",
+		Short: "Make an environment run a release: record it, apply it, and wait for health",
+		Long:  deployCmdLong,
 		// <env> plus an OPTIONAL version. --from can supply the version
 		// instead, and no version at all is the spec-change deploy.
 		Args: cobra.RangeArgs(1, 2),
@@ -231,40 +219,42 @@ Examples:
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 2 {
-				promote.version = args[1]
+				apply.promote.version = args[1]
 			}
-			return dispatchDeployCmd(cmd.Context(), args[0], deployCmdFlags{
-				tag: tag, dryRun: dryRun, namespace: namespace, explain: explain,
-				targetArch: targetArch, prune: prune, targets: targets,
-				skipFrontend: skipFrontend, frontendsOnly: frontendsOnly,
-				skipPreflight: skipPreflight, noDigest: noDigest, jsonOut: jsonOut,
-				rolloutMode: rolloutMode, rolloutTimeout: rolloutTimeout,
-				rolloutFailFast: rolloutFailFast, rolloutOrder: rolloutOrder,
-				promote: promote,
-			})
+			return dispatchDeployCmd(cmd.Context(), args[0], apply)
 		},
 	}
 
-	cmd.Flags().StringVar(&tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
-	cmd.Flags().StringVar(&namespace, "namespace", "", "Override namespace from environment config")
-	cmd.Flags().BoolVar(&explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
-	cmd.Flags().StringVar(&targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
-	cmd.Flags().BoolVar(&prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
-	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
-	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
-	cmd.Flags().BoolVar(&frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to Firebase Hosting or a static-site bucket, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
-	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
-	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON describing the whole invocation — mode (explain/dry_run/apply), the declared-cluster guard verdict, the target cluster + namespace, the preflight findings, per-image digest-vs-tag pinning, the resource identities applied, and the per-resource rollout outcome (ready / failed / timed_out / not_waited). Works with --explain and --dry-run, which is how a UI previews a deploy. Same exit codes as text mode; the human output moves to stderr so stdout carries exactly one JSON document.")
-	cmd.Flags().StringVar(&rolloutMode, "rollout", "wait", "What to do after the manifests land: 'wait' (wait for every Deployment/Job and FAIL if any does not become ready — the default), 'warn' (wait and report, but exit 0), or 'skip' (apply and return immediately).")
-	cmd.Flags().DurationVar(&rolloutTimeout, "rollout-timeout", 0, "Per-resource readiness budget (e.g. 90s, 10m). Applies to EACH Deployment and one-shot Job, not the set. Default 5m.")
-	cmd.Flags().BoolVar(&rolloutFailFast, "rollout-fail-fast", false, "Stop at the FIRST resource that fails instead of waiting for the rest. Default reports every failure, which is usually what you want when diagnosing a bad deploy.")
-	cmd.Flags().StringArrayVar(&rolloutOrder, "rollout-order", nil, "Wait for these applications FIRST, in this order, before the rest (repeatable). A wait ordering, not an apply ordering — Kubernetes converges concurrently — so it controls what a phased deploy reports first: put the migration or the API server here and its failure surfaces before its dependents time out.")
-
-	registerPromoteFlags(cmd, &promote)
+	registerDeployApplyFlags(cmd, &apply)
+	registerPromoteFlags(cmd, &apply.promote)
 
 	return cmd
+}
+
+// registerDeployApplyFlags declares the APPLY half of `forge env deploy`: the
+// flags that govern HOW the manifests land, whichever release they pin.
+//
+// Split from the command declaration for the same reason registerPromoteFlags
+// is: the two halves of this verb have different subjects — which bytes, and
+// how they are applied — and a 229-line constructor made that invisible.
+func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
+	flags := cmd.Flags()
+	flags.StringVar(&f.tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
+	flags.BoolVar(&f.dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
+	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
+	flags.BoolVar(&f.explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
+	flags.StringVar(&f.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
+	flags.BoolVar(&f.prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
+	flags.StringArrayVar(&f.targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
+	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
+	flags.BoolVar(&f.frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to Firebase Hosting or a static-site bucket, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
+	flags.BoolVar(&f.skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
+	flags.BoolVar(&f.noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
+	flags.BoolVar(&f.jsonOut, "json", false, "Emit machine-readable JSON describing the whole invocation — mode (explain/dry_run/apply), the declared-cluster guard verdict, the target cluster + namespace, the preflight findings, per-image digest-vs-tag pinning, the resource identities applied, and the per-resource rollout outcome (ready / failed / timed_out / not_waited). Works with --explain and --dry-run, which is how a UI previews a deploy. Same exit codes as text mode; the human output moves to stderr so stdout carries exactly one JSON document.")
+	flags.StringVar(&f.rolloutMode, "rollout", "wait", "What to do after the manifests land: 'wait' (wait for every Deployment/Job and FAIL if any does not become ready — the default), 'warn' (wait and report, but exit 0), or 'skip' (apply and return immediately).")
+	flags.DurationVar(&f.rolloutTimeout, "rollout-timeout", 0, "Per-resource readiness budget (e.g. 90s, 10m). Applies to EACH Deployment and one-shot Job, not the set. Default 5m.")
+	flags.BoolVar(&f.rolloutFailFast, "rollout-fail-fast", false, "Stop at the FIRST resource that fails instead of waiting for the rest. Default reports every failure, which is usually what you want when diagnosing a bad deploy.")
+	flags.StringArrayVar(&f.rolloutOrder, "rollout-order", nil, "Wait for these applications FIRST, in this order, before the rest (repeatable). A wait ordering, not an apply ordering — Kubernetes converges concurrently — so it controls what a phased deploy reports first: put the migration or the API server here and its failure surfaces before its dependents time out.")
 }
 
 // promoteCmdFlags is the RELEASE half of `forge env deploy`'s flag set: the
@@ -288,8 +278,13 @@ type promoteCmdFlags struct {
 	expectUnbound bool
 	supersede     bool
 	gates         []string
-	from          promoteFromOptions
 	run           runOptions
+
+	// --from / --from-promotion, held FLAT rather than as a nested
+	// promoteFromOptions so each is a plain flag target like every field
+	// above it. They are folded into the options struct at the call site.
+	fromEnv         string
+	fromPromotionID string
 
 	// The health gate. noWait is the opt-OUT: the gate is on by default,
 	// which is the whole of V3.
@@ -298,10 +293,16 @@ type promoteCmdFlags struct {
 	failFast bool
 }
 
+// fromSource is the two --from flags as the options struct the release path
+// takes.
+func (f promoteCmdFlags) fromSource() promoteFromOptions {
+	return promoteFromOptions{Env: f.fromEnv, PromotionID: f.fromPromotionID}
+}
+
 // requestedRelease reports whether this invocation has a release half at all.
 // --from counts without a version: it supplies one.
 func (f promoteCmdFlags) requestedRelease() bool {
-	return f.version != "" || f.from.requested()
+	return f.version != "" || f.fromSource().requested()
 }
 
 // registerPromoteFlags declares the release half on `forge env deploy`.
@@ -331,8 +332,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Pre-deploy evidence frozen onto the entry: a gate JSON file, or name=…,status=passed|failed|skipped|error[,url=…] (repeatable)")
 
 	// Source.
-	flags.StringVar(&f.from.Env, "from", "", "Deploy exactly what this environment is running (same control plane only); the version may be omitted")
-	flags.StringVar(&f.from.PromotionID, "from-promotion", "", "With --from: the source promotion captured earlier; refused (exit 3, source_moved) if the source moved")
+	flags.StringVar(&f.fromEnv, "from", "", "Deploy exactly what this environment is running (same control plane only); the version may be omitted")
+	flags.StringVar(&f.fromPromotionID, "from-promotion", "", "With --from: the source promotion captured earlier; refused (exit 3, source_moved) if the source moved")
 
 	// Run identity: --run-id / --run-url / --no-run, defaulted from CI.
 	registerRunFlags(flags, &f.run)
@@ -467,21 +468,26 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if err := rollout.Validate(); err != nil {
 		return err
 	}
-	// The checkout and its releases are resolved HERE, once, and passed
-	// down. runPromote still falls back when these are empty — that is what
-	// lets a test state them — but the production path states them too, so
-	// the fields carry a real value rather than only ever the zero one a
-	// test overwrites.
+	// The env's ledger is resolved HERE, once, before anything is computed:
+	// it decides both where the promotion is recorded and who applies it,
+	// and resolving it up front is what keeps those two answers from being
+	// read at different moments from different places.
+	projectDir := projectDirForKCL()
+	ledger, err := resolveReleaseLedger(ctx, projectDir, envName)
+	if err != nil {
+		return err
+	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
+		Ledger:        ledger,
 		DryRun:        p.plan,
 		JSON:          f.jsonOut,
-		ProjectDir:    projectDirForKCL(),
+		ProjectDir:    projectDir,
 		Note:          p.note,
 		Actor:         p.actor,
 		ExpectCurrent: p.expectCurrent,
 		Supersede:     p.supersede,
 		Gates:         p.gates,
-		From:          p.from,
+		From:          p.fromSource(),
 		Run:           p.run,
 		Follow: &promoteFollowOptions{
 			NoWait:   p.noWait,

@@ -328,7 +328,7 @@ func TestPromoteFrom_CrossLedgerIsRefusedBeforeAnyRPC(t *testing.T) {
 			if !errors.Is(err, errPromoteFromCrossLedger) {
 				t.Fatalf("want a cross-ledger refusal, got %v", err)
 			}
-			if !strings.Contains(err.Error(), "promote by version instead") {
+			if !strings.Contains(err.Error(), "deploy by version instead") {
 				t.Errorf("the refusal must name the way forward, got:\n%v", err)
 			}
 			// BEFORE ANY RPC: a promote that cannot verify its source

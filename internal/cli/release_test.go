@@ -344,7 +344,7 @@ func TestRunPromote_NoImagesReleaseSurfacesActionableError(t *testing.T) {
 		t.Fatalf("write release: %v", err)
 	}
 
-	err := runPromote(context.Background(), "v3.1.0", "staging", promoteOptions{})
+	err := runPromote(context.Background(), "v3.1.0", "staging", promoteOptions{Ledger: declaredLedger(t, dir, "staging")})
 	if err == nil {
 		t.Fatal("want error promoting a release with no images, got nil")
 	}
@@ -501,7 +501,7 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 		t.Fatalf("write release: %v", err)
 	}
 
-	if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{}); err != nil {
+	if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{Ledger: declaredLedger(t, dir, "staging")}); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 
@@ -526,7 +526,7 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 func TestRunPromote_UnknownReleaseErrors(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	if err := runPromote(context.Background(), "v9.9.9", "staging", promoteOptions{}); err == nil {
+	if err := runPromote(context.Background(), "v9.9.9", "staging", promoteOptions{Ledger: declaredLedger(t, dir, "staging")}); err == nil {
 		t.Fatal("want error promoting a non-existent release, got nil")
 	}
 }

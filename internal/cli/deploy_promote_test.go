@@ -24,6 +24,21 @@ import (
 // DeployPromoteRefusal detail). So each case asserts what forge SENT and what
 // it made of the answer, through the same bytes production carries.
 
+// declaredLedger resolves the env's ledger exactly as `forge env deploy` does,
+// for the tests whose subject IS the production file-ledger path (they chdir
+// into a project and assert what lands in .forge/promotions/). promoteOptions
+// .Ledger is required, so stating it through the real resolver is what keeps
+// those tests on the production path instead of substituting a fake for the
+// thing under test.
+func declaredLedger(t *testing.T, projectDir, env string) envLedger {
+	t.Helper()
+	l, err := resolveReleaseLedger(context.Background(), projectDir, env)
+	if err != nil {
+		t.Fatalf("resolve the ledger for env %q: %v", env, err)
+	}
+	return l
+}
+
 // hostedPromoteFixture is a hosted ledger with releases v1..v3 cut and the
 // env "prod" promoted along `promoted` in order.
 func hostedPromoteFixture(t *testing.T, promoted ...string) (*fakeDeployService, *hostedStore) {
@@ -65,14 +80,13 @@ func (f *fakeDeployService) lastPromoteBody(t *testing.T) map[string]any {
 func runHostedPromote(t *testing.T, store *hostedStore, version string, opts promoteOptions) (string, error) {
 	t.Helper()
 	opts.ProjectDir = t.TempDir()
-	opts.Bindings, opts.Releases = store, store
 	opts.Git = allCommitsPresent()
-	// Stating the ledger means there is no env KCL to read hosted-ness off,
-	// so the fixture states it: this store IS a control plane, so the
-	// control plane converges the binding and forge waits on it.
-	if opts.Hosted == nil {
-		hosted := true
-		opts.Hosted = &hosted
+	// Hosted:true is not a separate knob — it travels WITH the stores,
+	// because this store IS a control plane: it records the promotion and
+	// it converges it. Stating them apart is what would let a test describe
+	// an env whose ledger is a control plane that applies nothing.
+	if opts.Ledger.Bindings == nil {
+		opts.Ledger = envLedger{Bindings: store, Releases: store, Hosted: true}
 	}
 	opts.Run.None = true // the test process may itself be running in CI
 	var err error
@@ -309,7 +323,8 @@ func TestPromote_RetryOfALandedPromoteIsANoOp(t *testing.T) {
 		rel("v1", "2026-01-01T00:00:00Z", "", false, map[string]string{"api": sha("1")}),
 		rel("v2", "2026-02-01T00:00:00Z", "", false, map[string]string{"api": sha("2")}),
 	)
-	opts := promoteOptions{ProjectDir: t.TempDir(), Bindings: store, Releases: releases, Git: allCommitsPresent(), ExpectCurrent: "p-1"}
+	opts := promoteOptions{ProjectDir: t.TempDir(), Git: allCommitsPresent(), ExpectCurrent: "p-1",
+		Ledger: envLedger{Bindings: store, Releases: releases}}
 	opts.Run.None = true
 	for attempt := 1; attempt <= 2; attempt++ {
 		var err error
@@ -455,8 +470,8 @@ func TestPromoteCmdFlags_RequestedRelease(t *testing.T) {
 	}{
 		{"bare deploy", promoteCmdFlags{}, false},
 		{"a version", promoteCmdFlags{version: "v1"}, true},
-		{"--from", promoteCmdFlags{from: promoteFromOptions{Env: "staging"}}, true},
-		{"--from-promotion alone", promoteCmdFlags{from: promoteFromOptions{PromotionID: "p-1"}}, true},
+		{"--from", promoteCmdFlags{fromEnv: "staging"}, true},
+		{"--from-promotion alone", promoteCmdFlags{fromPromotionID: "p-1"}, true},
 		{"apply flags only", promoteCmdFlags{noWait: true}, false},
 	}
 	for _, tc := range cases {
@@ -480,8 +495,9 @@ func TestPromote_RunIdentityIsSent(t *testing.T) {
 		t.Fatal("--no-run must send no run")
 	}
 
-	opts = promoteOptions{ProjectDir: t.TempDir(), Bindings: store, Releases: store, Git: allCommitsPresent(),
-		Run: runOptions{ID: "manual-42", URL: "https://ci.example/42"}}
+	opts = promoteOptions{ProjectDir: t.TempDir(), Git: allCommitsPresent(),
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true},
+		Run:    runOptions{ID: "manual-42", URL: "https://ci.example/42"}}
 	captureStdout(t, func() { err = runPromote(context.Background(), "v3", "prod", opts) })
 	if err != nil {
 		t.Fatal(err)

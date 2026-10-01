@@ -112,12 +112,14 @@ type wireRollout struct {
 	// never gating for a release: a database that cannot be
 	// release-bound must not be able to fail a release. A DEPLOY still
 	// waits on them, because it just published them.
-	Unpinned            []wireWorkloadRollout `json:"unpinned,omitempty"`
-	StartedAt           *time.Time            `json:"startedAt,omitempty"`
-	FinishedAt          *time.Time            `json:"finishedAt,omitempty"`
-	StabilityWindowMS   int64                 `json:"stabilityWindowMs,omitempty"`
-	ConvergesPromotions bool                  `json:"convergesPromotions,omitempty"`
-	Reason              string                `json:"reason,omitempty"`
+	Unpinned   []wireWorkloadRollout `json:"unpinned,omitempty"`
+	StartedAt  *time.Time            `json:"startedAt,omitempty"`
+	FinishedAt *time.Time            `json:"finishedAt,omitempty"`
+	// A 64-bit proto scalar, so protojson sends it as a STRING — see
+	// wireInt64, which accepts that and a bare number.
+	StabilityWindowMS   wireInt64 `json:"stabilityWindowMs,omitempty"`
+	ConvergesPromotions bool      `json:"convergesPromotions,omitempty"`
+	Reason              string    `json:"reason,omitempty"`
 }
 
 // errRolloutUnavailable means this control plane cannot answer GetRollout for

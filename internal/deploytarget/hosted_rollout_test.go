@@ -89,7 +89,7 @@ func (f *rolloutCP) Call(_ context.Context, proc string, req, out any) error {
 			unpinned = `[{"deploymentId":"dep-orders","name":"orders","observedState":"DEPLOY_OBSERVED_STATE_READY","verdict":"DEPLOY_VERDICT_CONVERGED"}]`
 		}
 		reply = fmt.Sprintf(`{"rollout":{"promotion":{"id":"promo-1","releaseVersion":"v1"},
-		 "phase":%q,"workloads":%s,"unpinned":%s,"stabilityWindowMs":120000,
+		 "phase":%q,"workloads":%s,"unpinned":%s,"stabilityWindowMs":"120000",
 		 "convergesPromotions":true,"reason":"api: %s"}}`,
 			phase, workloads, unpinned, rolloutPhaseLabel(phase))
 	default:

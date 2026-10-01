@@ -305,10 +305,11 @@ type wireRollout struct {
 	// Unpinned are workloads the promotion does not pin: databases,
 	// third-party images. REPORTED, never gating — a database that cannot
 	// be release-bound must not be able to fail a release.
-	Unpinned          []wireWorkloadRollout `json:"unpinned,omitempty"`
-	StartedAt         *time.Time            `json:"startedAt,omitempty"`
-	FinishedAt        *time.Time            `json:"finishedAt,omitempty"`
-	StabilityWindowMS int64                 `json:"stabilityWindowMs,omitempty"`
+	Unpinned   []wireWorkloadRollout `json:"unpinned,omitempty"`
+	StartedAt  *time.Time            `json:"startedAt,omitempty"`
+	FinishedAt *time.Time            `json:"finishedAt,omitempty"`
+	// 64-bit proto scalar: protojson sends a STRING. See wireInt64.
+	StabilityWindowMS wireInt64 `json:"stabilityWindowMs,omitempty"`
 	// ConvergesPromotions false means nothing will move without a
 	// client-side deploy, so a caller should refuse FAST rather than wait
 	// out a timeout whose cause is "nobody was ever going to apply this".

@@ -82,15 +82,10 @@ move production.`,
 
 // gateRecordOptions are the flags of `forge gate record`.
 type gateRecordOptions struct {
-	// Which promotion. Exactly one of these, or neither for "the env's
-	// current promotion".
+	// Which promotion. --promotion names one exactly; --release asserts
+	// which one is current; neither means "the env's current promotion".
 	promotionID string
 	releaseVer  string
-	// hosted records which BACKEND answered. Post-promote evidence needs
-	// a control plane, and this is the only honest way to ask: a file
-	// ledger assigns promotion ids too (newPromotionID), so an id's
-	// presence says nothing about whether anything can be appended to it.
-	hosted bool
 
 	// Where the gate comes from: a document, or stated inline.
 	from    string
@@ -101,12 +96,56 @@ type gateRecordOptions struct {
 
 	jsonOut bool
 	run     runOptions
+}
 
-	// Seams for tests. Production leaves them nil and the command
-	// resolves the real ones from the env's declaration.
-	projectDir string
-	store      *gateStore
-	bindings   bindingStore
+// gateBackend is where an env's gate evidence lives, resolved from the env's
+// own declaration.
+//
+// EVERY FIELD IS WRITTEN BY resolveGateBackend AND ONLY THERE. That is the
+// point of it being a separate struct: these are resolved facts, not options,
+// so they cannot be set by a flag and a half-filled one is not a state any
+// caller can hold.
+type gateBackend struct {
+	// hosted records which ledger answered. This is the only honest way
+	// to ask whether post-promote evidence can be stored at all: a file
+	// ledger assigns promotion ids too (newPromotionID), so an id's
+	// presence says nothing about whether anything can be appended to it.
+	hosted bool
+	// store records and reads gates. nil for a file-backed env, which is
+	// refused before it is ever dereferenced.
+	store *gateStore
+	// bindings reads the env's current promotion.
+	bindings bindingStore
+}
+
+// resolveGateBackend resolves the env's gate backend.
+//
+// A PACKAGE-LEVEL FUNCTION VARIABLE, not a struct field, because it is the
+// SEAM — the same pattern readHostedSmokeStatus and newHostedSecretWriter use
+// in this package. The alternative, nilable store/bindings fields on the
+// options struct that only tests ever write, makes those fields permanently
+// zero in production: every branch reading them is then decoration, and the
+// tests setting them are green on a shape production cannot produce. The
+// repo's dead-code guard rejects exactly that, correctly.
+var resolveGateBackend = func(ctx context.Context, env string) (gateBackend, error) {
+	projectDir := projectDirForKCL()
+	ledger, err := ledgerFor(ctx, projectDir, env)
+	if err != nil {
+		return gateBackend{}, err
+	}
+	backend := gateBackend{hosted: ledger.Hosted, bindings: ledger.Bindings}
+	if !backend.hosted {
+		// Resolving a gate store would mean resolving a control plane
+		// this env does not declare. Refuse with the reason instead of
+		// with a credential error about an endpoint that is not there.
+		return backend, errGateNeedsHostedLedger(env, ledger.Bindings.Location())
+	}
+	store, err := gateStoreForEnv(ctx, projectDir, env)
+	if err != nil {
+		return backend, err
+	}
+	backend.store = store
+	return backend, nil
 }
 
 func newGateRecordCmd() *cobra.Command {
@@ -237,18 +276,18 @@ func recordGateInto(ctx context.Context, env string, opts gateRecordOptions, rep
 		gate.URL = run.URL
 	}
 
-	store, bindings, opts, err := opts.resolve(ctx, env)
+	backend, err := resolveGateBackend(ctx, env)
 	if err != nil {
 		return classifyGateError(err, "record gate")
 	}
 
-	promotionID, version, err := resolveGatePromotion(ctx, env, opts, bindings)
+	promotionID, version, err := resolveGatePromotion(ctx, env, opts.promotionID, opts.releaseVer, backend)
 	if err != nil {
 		return err
 	}
 	report.PromotionID, report.Release = promotionID, version
 
-	recorded, created, err := store.recordGate(ctx, promotionID, gate)
+	recorded, created, err := backend.store.recordGate(ctx, promotionID, gate)
 	if err != nil {
 		return classifyGateError(err, "record gate")
 	}
@@ -317,18 +356,18 @@ func gateFromRecordOptions(opts gateRecordOptions) (release.Gate, error) {
 // now. That is the same compare-before-write discipline promote applies, for
 // the same reason — evidence filed against the wrong promotion is worse than
 // no evidence, because it reads as a vouched-for release.
-func resolveGatePromotion(ctx context.Context, env string, opts gateRecordOptions, bindings bindingStore) (string, string, error) {
+func resolveGatePromotion(ctx context.Context, env, promotionID, releaseVer string, backend gateBackend) (string, string, error) {
 	// A FILE-BACKED env is refused before anything else, including before
 	// --promotion: there is no child record to append to whichever
 	// promotion is named, so an id would only make the failure arrive
 	// later and less clearly.
-	if !opts.hosted {
-		return "", "", errGateNeedsHostedLedger(env, bindings.Location())
+	if !backend.hosted {
+		return "", "", errGateNeedsHostedLedger(env, backend.bindings.Location())
 	}
-	if opts.promotionID != "" {
-		return opts.promotionID, "", nil
+	if promotionID != "" {
+		return promotionID, "", nil
 	}
-	current, ok, err := bindings.Current(ctx, env)
+	current, ok, err := backend.bindings.Current(ctx, env)
 	if err != nil {
 		return "", "", classifyGateError(err, "read the current promotion")
 	}
@@ -339,11 +378,11 @@ func resolveGatePromotion(ctx context.Context, env string, opts gateRecordOption
 			hint: "promote a release first, or name the promotion with --promotion",
 		}
 	}
-	if opts.releaseVer != "" && opts.releaseVer != current.Release {
+	if releaseVer != "" && releaseVer != current.Release {
 		return "", "", &gateExitError{
 			code: exitConflict,
 			msg: fmt.Sprintf("%s currently runs %s, not %s — the environment moved on",
-				env, current.Release, opts.releaseVer),
+				env, current.Release, releaseVer),
 			hint: "evidence recorded against the wrong promotion reads as a vouched-for release. " +
 				"Re-read the current promotion, or name the one you mean with --promotion",
 		}
@@ -370,34 +409,6 @@ func errGateNeedsHostedLedger(env, location string) error {
 
 // resolve builds the gate store and the binding store, from the seams a test
 // supplied or from the env's own declaration.
-// It returns the options with `hosted` filled in, because which backend
-// answered is resolved here and read by resolveGatePromotion.
-func (o gateRecordOptions) resolve(ctx context.Context, env string) (*gateStore, bindingStore, gateRecordOptions, error) {
-	if o.store != nil && o.bindings != nil {
-		return o.store, o.bindings, o, nil
-	}
-	projectDir := o.projectDir
-	if projectDir == "" {
-		projectDir = projectDirForKCL()
-	}
-	ledger, err := ledgerFor(ctx, projectDir, env)
-	if err != nil {
-		return nil, nil, o, err
-	}
-	o.hosted = ledger.Hosted
-	if !o.hosted {
-		// Resolving a gate store would mean resolving a control plane
-		// this env does not declare. Refuse with the reason instead of
-		// with a credential error about an endpoint that is not there.
-		return nil, ledger.Bindings, o, errGateNeedsHostedLedger(env, ledger.Bindings.Location())
-	}
-	store, err := gateStoreForEnv(ctx, projectDir, env)
-	if err != nil {
-		return nil, nil, o, err
-	}
-	return store, ledger.Bindings, o, nil
-}
-
 // gateStoreForEnv builds a gate store from the env's declared control plane —
 // the same endpoint and credential precedence every other hosted verb uses,
 // so a gate is recorded where the env's releases live and nowhere else.
@@ -426,11 +437,6 @@ func gateStoreForEnv(ctx context.Context, projectDir, env string) (*gateStore, e
 type gateListOptions struct {
 	promotionID string
 	jsonOut     bool
-
-	projectDir string
-	store      *gateStore
-	bindings   bindingStore
-	hosted     bool
 }
 
 func newGateListCmd() *cobra.Command {
@@ -490,21 +496,17 @@ func runGateList(ctx context.Context, env string, opts gateListOptions, out io.W
 }
 
 func listGatesInto(ctx context.Context, env string, opts gateListOptions, report *gateListReport) error {
-	recordOpts := gateRecordOptions{
-		promotionID: opts.promotionID, projectDir: opts.projectDir,
-		store: opts.store, bindings: opts.bindings, hosted: opts.hosted,
-	}
-	store, bindings, recordOpts, err := recordOpts.resolve(ctx, env)
+	backend, err := resolveGateBackend(ctx, env)
 	if err != nil {
 		return classifyGateError(err, "list gates")
 	}
-	promotionID, version, err := resolveGatePromotion(ctx, env, recordOpts, bindings)
+	promotionID, version, err := resolveGatePromotion(ctx, env, opts.promotionID, "", backend)
 	if err != nil {
 		return err
 	}
 	report.PromotionID, report.Release = promotionID, version
 
-	gates, err := store.listGates(ctx, promotionID)
+	gates, err := backend.store.listGates(ctx, promotionID)
 	if err != nil {
 		return classifyGateError(err, "list gates")
 	}

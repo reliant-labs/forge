@@ -117,6 +117,10 @@ type buildOptions struct {
 	// pull from. Unlike push, having none is not a failure. Resolved by
 	// resolvePushPlan like push; never set by a flag.
 	pushIfDeclared bool
+	// gateJSON is a FILE path: write this build's result as a gate
+	// document, for `forge gate record` / `forge env promote --gate`. Not
+	// a stdout mode — the build log and the exit code are unchanged.
+	gateJSON string
 	// pushPlan is the RESOLVED set of destinations, written by
 	// resolvePushPlan from the env's workload declarations when push or
 	// pushIfDeclared is on. Never set by a caller: any value is overwritten.
@@ -304,6 +308,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	// as `--no-generate forge build` in --help.
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
+	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env promote --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
 	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES the environment argument: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with 'forge env promote <version> --to <env>'. Captures each image's digest into a release ledger (.forge/releases/<version>.json); 'forge env deploy <env>' then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
@@ -779,6 +784,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	}
 	for _, r := range failed {
 		fmt.Printf("  FAIL %-20s %-8s %v\n", r.name, r.kind, r.err)
+	}
+
+	// The gate document, written for EVERY outcome and before the failure
+	// return below: a failed build is the one most worth recording, and
+	// returning first would write evidence only for the green case.
+	if opts.gateJSON != "" {
+		if gerr := writeBuildGate(opts.gateJSON, len(succeeded), len(failed), start); gerr != nil {
+			return gerr
+		}
 	}
 
 	if len(failed) > 0 {

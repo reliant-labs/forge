@@ -17,12 +17,32 @@ import (
 func gateFixture(t *testing.T) (*fakeDeployService, gateRecordOptions, release.Promotion) {
 	t.Helper()
 	fake, store := hostedPromoteFixture(t, "v1")
-	srv := newGateTestStore(t, fake)
+	gstore := newGateTestStore(t, fake)
+	useGateBackend(t, gateBackend{hosted: true, store: gstore, bindings: store})
+	useGateBackend(t, gateBackend{hosted: true, store: gstore, bindings: store})
 	current, ok, err := store.Current(context.Background(), "prod")
 	if err != nil || !ok {
 		t.Fatalf("fixture env is not promoted: %v", err)
 	}
-	return fake, gateRecordOptions{store: srv, bindings: store, hosted: true, run: runOptions{None: true}}, current
+	return fake, gateRecordOptions{run: runOptions{None: true}}, current
+}
+
+// useGateBackend installs the backend seam for one test, so the command runs
+// its real path against an httptest control plane. Restored on cleanup
+// because the seam is package-level.
+func useGateBackend(t *testing.T, backend gateBackend) {
+	t.Helper()
+	previous := resolveGateBackend
+	resolveGateBackend = func(context.Context, string) (gateBackend, error) { return backend, nil }
+	t.Cleanup(func() { resolveGateBackend = previous })
+}
+
+// useFailingGateBackend installs a backend whose resolution itself fails.
+func useFailingGateBackend(t *testing.T, backend gateBackend, err error) {
+	t.Helper()
+	previous := resolveGateBackend
+	resolveGateBackend = func(context.Context, string) (gateBackend, error) { return backend, err }
+	t.Cleanup(func() { resolveGateBackend = previous })
 }
 
 // newGateTestStore binds a gateStore to the fake, the same way
@@ -61,7 +81,7 @@ func TestGateRecord_AppendsToTheCurrentPromotion(t *testing.T) {
 		t.Errorf("output should name the promotion %q:\n%s", current.ID, out)
 	}
 
-	gates, err := opts.store.listGates(context.Background(), current.ID)
+	gates, err := mustGates(t, current.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +142,7 @@ func TestGateRecord_IsIdempotentOnPromotionNameAndRun(t *testing.T) {
 	if !strings.Contains(out, "already recorded") {
 		t.Errorf("a repeat should report itself as already recorded:\n%s", out)
 	}
-	gates, _ := opts.store.listGates(context.Background(), current.ID)
+	gates, _ := mustGates(t, current.ID)
 	if len(gates) != 1 {
 		t.Fatalf("got %d gates, want 1 — the repeat must not duplicate", len(gates))
 	}
@@ -149,7 +169,7 @@ func TestGateRecord_ASecondAttemptRecordsItsOwnRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gates, _ := opts.store.listGates(context.Background(), current.ID)
+	gates, _ := mustGates(t, current.ID)
 	if len(gates) != 2 {
 		t.Fatalf("got %d gates, want 2 — a re-run's evidence must not collide with the first attempt's", len(gates))
 	}
@@ -175,7 +195,7 @@ func TestGateRecord_FromAForgeJSONDocument(t *testing.T) {
 	if _, err := runRecord(t, opts); err != nil {
 		t.Fatal(err)
 	}
-	gates, _ := opts.store.listGates(context.Background(), current.ID)
+	gates, _ := mustGates(t, current.ID)
 	if len(gates) != 1 || gates[0].Name != "wait" {
 		t.Fatalf("gates = %+v, want one gate named wait", gates)
 	}
@@ -222,7 +242,7 @@ func TestGateRecord_UrlAndSummaryComposeWithADocument(t *testing.T) {
 	if _, err := runRecord(t, opts); err != nil {
 		t.Fatal(err)
 	}
-	gates, _ := opts.store.listGates(context.Background(), current.ID)
+	gates, _ := mustGates(t, current.ID)
 	if gates[0].URL != "https://ci.example/run/99" {
 		t.Errorf("url = %q, want the flag's", gates[0].URL)
 	}
@@ -303,7 +323,9 @@ func TestGateRecord_MatchingReleaseRecords(t *testing.T) {
 func TestGateRecord_AuthRefusedExitsUndetermined(t *testing.T) {
 	_, opts, _ := gateFixture(t)
 	opts.name, opts.status = "test", "passed"
-	opts.store = &gateStore{client: refusingCaller{code: cloud.CodePermissionDenied}, endpoint: "https://cp.example"}
+	_, bindings := hostedPromoteFixture(t, "v1")
+	useGateBackend(t, gateBackend{hosted: true, bindings: bindings,
+		store: &gateStore{client: refusingCaller{code: cloud.CodePermissionDenied}, endpoint: "https://cp.example"}})
 
 	_, err := runRecord(t, opts)
 	if err == nil {
@@ -322,7 +344,9 @@ func TestGateRecord_AuthRefusedExitsUndetermined(t *testing.T) {
 func TestGateRecord_UnimplementedExitsUndetermined(t *testing.T) {
 	_, opts, _ := gateFixture(t)
 	opts.name, opts.status = "test", "passed"
-	opts.store = &gateStore{client: refusingCaller{code: cloud.CodeUnimplemented}, endpoint: "https://cp.example"}
+	_, bindings := hostedPromoteFixture(t, "v1")
+	useGateBackend(t, gateBackend{hosted: true, bindings: bindings,
+		store: &gateStore{client: refusingCaller{code: cloud.CodeUnimplemented}, endpoint: "https://cp.example"}})
 
 	_, err := runRecord(t, opts)
 	if got := exitCodeForError(err); got != exitUndetermined {
@@ -345,10 +369,8 @@ func (r refusingCaller) Call(_ context.Context, procedure string, _, _ any) erro
 func TestGateRecord_UnpromotedEnvIsRefused(t *testing.T) {
 	fake := newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})
 	store, _ := newHostedTestStore(t, fake)
-	opts := gateRecordOptions{
-		store: newGateTestStore(t, fake), bindings: store, hosted: true,
-		name: "smoke", status: "passed", run: runOptions{None: true},
-	}
+	useGateBackend(t, gateBackend{hosted: true, store: newGateTestStore(t, fake), bindings: store})
+	opts := gateRecordOptions{name: "smoke", status: "passed", run: runOptions{None: true}}
 	_, err := runRecord(t, opts)
 	if err == nil || !strings.Contains(err.Error(), "never been promoted") {
 		t.Fatalf("want a refusal naming the unpromoted env, got %v", err)
@@ -364,10 +386,9 @@ func TestGateRecord_FileLedgerSaysWhyAndWhatToDoInstead(t *testing.T) {
 		release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote}, appendGuard{}); err != nil {
 		t.Fatal(err)
 	}
-	opts := gateRecordOptions{
-		store: &gateStore{}, bindings: ledger.Bindings, hosted: false,
-		name: "smoke", status: "passed", run: runOptions{None: true},
-	}
+	useFailingGateBackend(t, gateBackend{hosted: false, bindings: ledger.Bindings},
+		errGateNeedsHostedLedger("prod", ledger.Bindings.Location()))
+	opts := gateRecordOptions{name: "smoke", status: "passed", run: runOptions{None: true}}
 	_, err := runRecord(t, opts)
 	if err == nil {
 		t.Fatal("a file ledger must refuse post-promote evidence")
@@ -387,6 +408,7 @@ func TestGateRecord_FileLedgerSaysWhyAndWhatToDoInstead(t *testing.T) {
 func TestGateList_PromoteTimeGatesComeBeforeRecordedOnes(t *testing.T) {
 	fake, store := hostedPromoteFixture(t)
 	gstore := newGateTestStore(t, fake)
+	useGateBackend(t, gateBackend{hosted: true, store: gstore, bindings: store})
 
 	// Promote with pre-promote evidence.
 	if _, err := runHostedPromote(t, store, "v1", promoteOptions{
@@ -401,8 +423,7 @@ func TestGateList_PromoteTimeGatesComeBeforeRecordedOnes(t *testing.T) {
 
 	// Then record what was learned after.
 	recordOpts := gateRecordOptions{
-		store: gstore, bindings: store, hosted: true, run: runOptions{None: true},
-		name: "smoke", status: "failed",
+		run: runOptions{None: true}, name: "smoke", status: "failed",
 	}
 	if _, err := runRecord(t, recordOpts); err != nil {
 		t.Fatal(err)
@@ -410,7 +431,7 @@ func TestGateList_PromoteTimeGatesComeBeforeRecordedOnes(t *testing.T) {
 
 	var out strings.Builder
 	if err := runGateList(context.Background(), "prod",
-		gateListOptions{store: gstore, bindings: store, hosted: true}, &out); err != nil {
+		gateListOptions{}, &out); err != nil {
 		t.Fatal(err)
 	}
 
@@ -440,10 +461,11 @@ func TestGateList_PromoteTimeGatesComeBeforeRecordedOnes(t *testing.T) {
 func TestGateList_JSONEnvelope(t *testing.T) {
 	fake, store := hostedPromoteFixture(t, "v1")
 	gstore := newGateTestStore(t, fake)
+	useGateBackend(t, gateBackend{hosted: true, store: gstore, bindings: store})
 
 	out := captureStdout(t, func() {
 		if err := runGateList(context.Background(), "prod",
-			gateListOptions{store: gstore, bindings: store, hosted: true, jsonOut: true}, os.Stdout); err != nil {
+			gateListOptions{jsonOut: true}, os.Stdout); err != nil {
 			t.Errorf("gate list: %v", err)
 		}
 	})
@@ -523,4 +545,20 @@ func TestGateCmd_DeclaresItsFlags(t *testing.T) {
 			t.Errorf("`forge gate %s` is not declared", name)
 		}
 	}
+}
+
+// mustGates reads a promotion's gates through the installed backend seam, so
+// an assertion sees exactly what the command wrote.
+func mustGates(t *testing.T, promotionID string) ([]release.Gate, error) {
+	t.Helper()
+	backend, err := resolveGateBackend(context.Background(), "prod")
+	if err != nil {
+		return nil, err
+	}
+	return backend.store.listGates(context.Background(), promotionID)
+}
+
+func currentGates(t *testing.T, promotionID string) ([]release.Gate, error) {
+	t.Helper()
+	return mustGates(t, promotionID)
 }

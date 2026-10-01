@@ -58,6 +58,10 @@ type lintFlags struct {
 	strict            bool
 	skipFrontends     bool
 	jsonOut           bool
+	// gateJSON is a FILE path: write this run's result as a gate document
+	// for `forge gate record` / `forge env promote --gate`. Not a stdout
+	// mode — the human findings and the exit code are unchanged.
+	gateJSON string
 }
 
 func newCmd(_ *factory.Factory) *cobra.Command {
@@ -171,6 +175,9 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 			if flags.jsonOut {
 				return runLintJSON(cmd.Context(), flags, paths)
 			}
+			if flags.gateJSON != "" {
+				return runLintWithGate(cmd.Context(), flags, paths, flags.gateJSON)
+			}
 			return runLint(cmd.Context(), flags, paths)
 		},
 	}
@@ -212,6 +219,7 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Deprecated: auto-fix of deterministic-safe issues is now the default; this flag is a no-op kept for back-compat (use --no-fix to opt out)")
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Skip the deterministic-safe auto-fix pre-pass (Go formatting, golangci autofixes, eslint --fix); gate only and mutate nothing (CI / read-only)")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
+	cmd.Flags().StringVar(&flags.gateJSON, "gate-json", "", "Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env promote --gate`. A FILE, not a stdout mode: the findings and the exit code are unchanged.")
 
 	// User-vs-maintainer surface split: the flags below are fully
 	// functional but hidden from --help (visible via --help-dev). The
@@ -387,13 +395,14 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	// first so mechanical issues never gate. --no-fix opts out (CI / read-only);
 	// the legacy --fix flag is now redundant (auto-fix is the default) but still
 	// accepted so existing invocations keep working.
-	return runAllLinters(ctx, lintRunOptions{
+	_, err = runAllLinters(ctx, lintRunOptions{
 		fix:           !flags.noFix,
 		strict:        flags.strict,
 		skipFrontends: flags.skipFrontends,
 		paths:         paths,
 		cfg:           cfg,
 	})
+	return err
 }
 
 // lintRunOptions carries the whole-pipeline inputs from the flag layer to
@@ -1047,7 +1056,11 @@ func ensureEnvDefault(env []string, key, defaultValue string) []string {
 // the JSON aggregator (collectAllLintersJSON) renders. The ordering,
 // feature gates, dir checks, and gating verdict are declared ONCE in the
 // table; this driver only translates each step into human output.
-func runAllLinters(ctx context.Context, opts lintRunOptions) error {
+// It also returns what the run PROVED, in lanes (lintLaneTally), which is
+// what `--gate-json` records as evidence. Returned rather than recomputed so
+// the gate document and the final human line are rendered from one tally and
+// cannot disagree about whether a lane ran.
+func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, error) {
 	fmt.Println("🔍 Running all linters...")
 	fmt.Println()
 
@@ -1131,15 +1144,19 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) error {
 		}
 	}
 
+	tally := lintLaneTally{
+		ran: ranGating, skipped: skippedGating, unavailable: unavailable, failed: hasFailed,
+	}
+
 	if hasFailed {
-		return cliutil.UserErr("forge lint",
+		return tally, cliutil.UserErr("forge lint",
 			"one or more linters reported errors, or could not run under --strict",
 			"",
 			"address the per-linter errors above (each preceded by ❌); re-run 'forge lint' to confirm")
 	}
 
 	fmt.Println()
-	return reportLintVerdict(os.Stdout, ranGating, skippedGating, unavailable)
+	return tally, reportLintVerdict(os.Stdout, ranGating, skippedGating, unavailable)
 }
 
 // reportLintVerdict renders the final line of `forge lint` — the one a human

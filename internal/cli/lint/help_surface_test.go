@@ -99,6 +99,12 @@ func TestLintHelpSurface(t *testing.T) {
 		// the only place the drift is legible.
 		"fixture-drift",
 		"frontend-stores",
+		// Visible: a CI author has to be able to DISCOVER that lint's
+		// result can be recorded as release evidence. A hidden
+		// --gate-json would mean the evidence trail stays empty for
+		// every pipeline whose author never read the design doc, which
+		// is the adoption failure the flag exists to avoid.
+		"gate-json",
 		"generated-drift",
 		// Visible because it is the ONLY signal for a defect regenerating
 		// cannot reach: scaffolded pages are write-if-absent, so an edit

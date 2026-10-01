@@ -475,6 +475,17 @@ type promotePlan struct {
 	NextStep string `json:"next_step"`
 	// Note is the human phrasing of ShipsNothing.
 	Note string `json:"note,omitempty"`
+	// SourceNote warns about the `--from` source: set when
+	// --from-promotion names a promotion that is no longer what the source
+	// environment runs, which the control plane will refuse with
+	// source_moved. It is on the plan so `--plan` surfaces the coming
+	// refusal, rather than the operator meeting it on apply.
+	//
+	// Separate from Note, which is the invariant "promote ships nothing"
+	// sentence every plan carries: folding a conditional warning into it
+	// would make the one field mean two things, and a reader could not
+	// tell a warning from boilerplate.
+	SourceNote string `json:"source_note,omitempty"`
 	// ok / exit_code / error: F0's one envelope, stamped from the SAME
 	// error the command returns, so the document and the process status
 	// cannot disagree. A backwards move is not a failure; a refusal is
@@ -778,7 +789,9 @@ func applyPromotePlan(ctx context.Context, bindings bindingStore, plan *promoteP
 		FromEnv:         w.FromEnv,
 		FromPromotionID: w.FromPromotionID,
 	}
-	got, err := bindings.Append(ctx, p, w.Guard)
+	guard := w.Guard
+	guard.ResolveVersionFromSource = w.VersionFromSource
+	got, err := bindings.Append(ctx, p, guard)
 	if err != nil {
 		if plan.applyRefusal(err) {
 			// Not wrapped: the refusal's own message names the env, what
@@ -810,6 +823,11 @@ type promoteWrite struct {
 	// past it — while FromEnv alone is unverified provenance.
 	FromEnv         string
 	FromPromotionID string
+	// VersionFromSource says the plan's release was PREVIEWED from the
+	// source environment, not named by the caller, so the write must send
+	// no version and let the server resolve it from FromPromotionID
+	// (§3.4). See promoteSource.VersionFromSource.
+	VersionFromSource bool
 }
 
 // promotedBySuffix renders ", by alice" / ", by ci" for a refusal's actual
@@ -1126,6 +1144,11 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	}
 	if plan.Current.Note != "" {
 		fmt.Fprintf(out, "  note      %s\n", plan.Current.Note)
+	}
+	if plan.SourceNote != "" {
+		// WARNING, not note: this one says the promote is going to be
+		// refused, which a reader skimming "note" lines would skip.
+		fmt.Fprintf(out, "  WARNING   %s\n", plan.SourceNote)
 	}
 
 	fmt.Fprintln(out)

@@ -720,7 +720,16 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 	}
 	s.envIDs[p.Env] = id
 	s.mu.Unlock()
-	req := map[string]any{"environmentId": id, "version": p.Release}
+	req := map[string]any{"environmentId": id}
+	if !guard.ResolveVersionFromSource {
+		req["version"] = p.Release
+	}
+	// Otherwise NO version is sent (§3.4). p.Release holds the plan's
+	// preview of what fromPromotionId names, and sending it would make
+	// forge assert a release it read earlier, outside the target's lock —
+	// exactly the stale read `--from` exists to eliminate. The server
+	// resolves the release from the promotion id instead, and refuses
+	// source_moved if the source has moved past it.
 	if p.PromotedBy.Actor != "" {
 		req["promotedByActor"] = p.PromotedBy.Actor
 	}

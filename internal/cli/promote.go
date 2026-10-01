@@ -297,6 +297,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		return err
 	}
 	plan.DryRun = opts.DryRun
+	plan.SourceNote = source.Note
 	guard := guardFor(plan, opts.ExpectCurrent, opts.Supersede)
 	if guard.ExpectUnbound {
 		plan.Expected = expectUnboundLiteral
@@ -317,8 +318,9 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			Gates: gates,
 			Run:   run,
 			// The resolved --from (F5, promote_from.go).
-			FromEnv:         source.FromEnv,
-			FromPromotionID: source.FromPromotionID,
+			FromEnv:           source.FromEnv,
+			FromPromotionID:   source.FromPromotionID,
+			VersionFromSource: source.VersionFromSource,
 		})
 		if writeErr == nil {
 			writeErr = followPromote(ctx, env, plan, opts.Follow)

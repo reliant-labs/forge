@@ -136,6 +136,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge ci run <run-id> [--env <env>] [--json]`**: one CI run's timeline
+  from the hosted control plane. It shows the release cut, the recorded
+  checks, every promotion and each promotion's rollout, with a verdict.
+  Exit codes: 0 every stage passed, 1 a stage failed or errored, 5 still
+  running, 2 could not read the control plane. A run id nothing has written
+  under exits 5, never 0. `--env` picks which control plane to ask;
+  without it, the project's single declared control plane is used. The
+  design spec named this `forge run show`; that would have collided with the
+  dev-server `forge run`, which takes its own positional arguments.
 - **`forge env verify` refuses to judge against a stale file ledger.** A
   self-managed env's promotions live in `.forge/promotions/<env>.jsonl`,
   committed to git, so a checkout that has not pulled the latest release

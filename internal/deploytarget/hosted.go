@@ -144,6 +144,24 @@ type wireEnvironment struct {
 	// control plane admits this org's images from. Empty means it admits
 	// none (no registry base is configured), so every workload publish fails.
 	ImagePushBase string `json:"imagePushBase,omitempty"`
+
+	// ConvergesPromotions reports whether a promotion to this environment
+	// will be APPLIED server-side (DeployEnvironment.converges_promotions,
+	// tag 17): the control plane runs a converger and the env's reconcile
+	// policy is not PINNED.
+	//
+	// It exists so a client can refuse FAST instead of waiting out a
+	// timeout. A `forge env promote --wait` against an environment that
+	// converges nothing would poll for fifteen minutes and then report a
+	// failure whose cause is "nobody was ever going to apply this" —
+	// which looks exactly like a broken release. Reading this turns that
+	// into an immediate, accurate "this env does not converge promotions;
+	// add --deploy".
+	//
+	// DERIVED server-side, not stored: it is a fact about the control
+	// plane's own configuration and the env's policy, so a stored copy
+	// could disagree with either.
+	ConvergesPromotions bool `json:"convergesPromotions,omitempty"`
 }
 
 type wireObserved struct {
@@ -167,6 +185,32 @@ type wireDeployment struct {
 	Tier     string        `json:"tier,omitempty"`
 	Observed *wireObserved `json:"observed,omitempty"`
 	RunState string        `json:"runState,omitempty"`
+
+	// Artifact is the release artifact KEY whose digest this deployment
+	// runs (Deployment.artifact, tag 12) — the same key forge computes for
+	// its own plan, which is why the client sends it rather than the
+	// server inferring it: the two cannot then pair a workload with a
+	// digest differently.
+	//
+	// EMPTY MEANS NOT RELEASE-BOUND: a ManagedDatabase, or a third-party
+	// image pinned directly in the spec. The server's converger SKIPS an
+	// empty one rather than guessing a pairing from the deployment's name.
+	// Names coinciding with artifact keys is a convention, not a
+	// guarantee, and a converger that guessed would silently repoint the
+	// wrong workload the first time they differed.
+	Artifact string `json:"artifact,omitempty"`
+
+	// AppliedPromotionID is the promotion whose pins this row's spec
+	// currently carries (tag 13).
+	//
+	// It is the discriminator between "a promotion is waiting to be
+	// applied" and "this row has drifted", which need opposite answers
+	// under the OBSERVE policy: a promotion is a declared change and
+	// ships, while drift is corrected only under CONVERGE. Comparing
+	// digests cannot tell them apart — both read as "the row does not
+	// match the pin" — which is why this is a promotion id and not a
+	// digest comparison.
+	AppliedPromotionID string `json:"appliedPromotionId,omitempty"`
 }
 
 type wireDeploymentStatus struct {

@@ -52,9 +52,10 @@ func NewClient(ep Endpoint, cred Credential) *Client {
 // "controlplane.v1.DeployService/ListReleases".
 //
 // req is marshalled to JSON and out is unmarshalled from the reply. A
-// non-200 is converted by connectError, which preserves the server's own
-// message — a bare status code would throw away the only part of the
-// response that says what went wrong.
+// non-200 becomes a *[Error] (see error.go), which carries the Connect code,
+// the domain reason and the server's error details as DATA. Callers branch
+// on those fields — never on the message text, which is display copy the
+// server is free to improve.
 func (c *Client) Call(ctx context.Context, procedure string, req, out any) error {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -91,7 +92,7 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 		return fmt.Errorf("read %s response: %w", procedure, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return c.connectError(procedure, resp.StatusCode, raw)
+		return c.connectError(procedure, resp, raw)
 	}
 	if out == nil {
 		return nil
@@ -107,58 +108,4 @@ func (c *Client) httpClient() *http.Client {
 		return c.HTTP
 	}
 	return http.DefaultClient
-}
-
-// connectError renders a failed call as an actionable message.
-//
-// An auth failure gets special handling because a bare 401 is the least
-// useful thing forge could print: the user cannot tell whether they have
-// no credential, a wrong one, or the right one for a different
-// environment. Naming the endpoint, the source of the credential forge
-// actually used, and both ways to supply a better one turns it into a
-// message that can be acted on without a second run.
-func (c *Client) connectError(procedure string, status int, raw []byte) error {
-	var envelope struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal(raw, &envelope)
-	detail := strings.TrimSpace(envelope.Message)
-	if detail == "" {
-		detail = strings.TrimSpace(string(raw))
-	}
-	if len(detail) > 500 {
-		detail = detail[:500] + "…"
-	}
-
-	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf(
-			"%s rejected the credential (HTTP %d%s)\n"+
-				"  endpoint:   %s   (declared by env %q)\n"+
-				"  credential: from %s\n"+
-				"fix: forge login            (human — opens a browser)\n"+
-				"     export %s=<token>      (CI — a pipeline has no browser)%s",
-			procedure, status, codeSuffix(envelope.Code), c.Endpoint.URL, c.Endpoint.Env,
-			c.Credential.From, c.Endpoint.TokenEnv, detailSuffix(detail))
-	case http.StatusNotImplemented:
-		return fmt.Errorf("%s is not implemented by %s%s", procedure, c.Endpoint.URL, detailSuffix(detail))
-	default:
-		return fmt.Errorf("%s failed (HTTP %d%s) against %s%s",
-			procedure, status, codeSuffix(envelope.Code), c.Endpoint.URL, detailSuffix(detail))
-	}
-}
-
-func codeSuffix(code string) string {
-	if code == "" {
-		return ""
-	}
-	return ", " + code
-}
-
-func detailSuffix(detail string) string {
-	if detail == "" {
-		return ""
-	}
-	return "\n  server said: " + detail
 }

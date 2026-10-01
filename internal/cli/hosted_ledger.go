@@ -17,6 +17,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -24,9 +25,42 @@ import (
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
 )
+
+// hostedErrorHasCode reports whether err is a control-plane failure carrying
+// the given Connect code.
+//
+// This is the ONE place a hosted caller classifies a wire failure, and it
+// reads the code as DATA. The previous spelling was
+// `strings.Contains(err.Error(), "already_exists")`, which is wrong in both
+// directions: a server that improves its prose breaks forge's control flow
+// silently, and forge's own message text contains the words it searches for,
+// so a message that merely MENTIONS a code reads as that code.
+//
+// errors.As rather than a type assertion, so the classification survives the
+// `fmt.Errorf("...: %w", err)` wrapping every caller adds for context.
+func hostedErrorHasCode(err error, code string) bool {
+	var cerr *cloud.Error
+	return errors.As(err, &cerr) && cerr.HasCode(code)
+}
+
+// hostedErrorReason is the app-defined domain reason a refusal carries, or
+// "" when the failure is not a control-plane error or carried none.
+//
+// The Connect code is the CATEGORY — every promote refusal is
+// FailedPrecondition — and this is what says WHICH refusal, so it is what an
+// exit code is mapped from (§3.A: every primitive maps reasons, not message
+// text).
+func hostedErrorReason(err error) string {
+	var cerr *cloud.Error
+	if errors.As(err, &cerr) {
+		return cerr.Reason
+	}
+	return ""
+}
 
 const (
 	procCutRelease     = "controlplane.v1.DeployService/CutRelease"
@@ -72,12 +106,47 @@ type wireRelease struct {
 	Artifacts       []wireArtifact `json:"artifacts"`
 	CreatedByUserID string         `json:"createdByUserId,omitempty"`
 	CreatedAt       time.Time      `json:"createdAt"`
+	// Run is the CI run that cut this release (DeployRelease.run, tag 9).
+	Run *wireRun `json:"run,omitempty"`
 }
 
+// wireRun is controlplane.v1.DeployRun: the id that joins a release, its
+// promotions and its gates into one readable story. Opaque to the control
+// plane, and `provider` is display only.
+type wireRun struct {
+	ID       string `json:"id"`
+	URL      string `json:"url,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// wireGate is controlplane.v1.DeployGate, in full.
+//
+// Status is a plain STRING rather than a release.GateStatus even though the
+// set is closed, because the read path must stay lenient: a control plane
+// holding promotions recorded before the set closed returns whatever free
+// text the old scaffold wrote, and a typed field would refuse to decode
+// them — making historical promotions unrenderable. The mapping happens in
+// gateFromWire via release.GateStatusFromStored; the WRITE path is strict
+// (release.ParseGateStatus) in gateToWire.
 type wireGate struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	URL    string `json:"url,omitempty"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	URL     string `json:"url,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	// The check's OWN window, not when it was recorded.
+	StartedAt  *time.Time `json:"startedAt,omitempty"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	// RunID ties this check to one run. Optional: a manual sign-off
+	// belongs to a promotion and to no run.
+	RunID string `json:"runId,omitempty"`
+	// Details is small and structured — counts and verdicts, capped
+	// server-side at 8 KiB. The full report is behind URL.
+	Details map[string]any `json:"details,omitempty"`
+	// RecordedBy and RecordedAt are SET BY THE SERVER and ignored on a
+	// request: evidence whose author the author chose is not
+	// attributable. forge reads them and never sends them.
+	RecordedBy string     `json:"recordedBy,omitempty"`
+	RecordedAt *time.Time `json:"recordedAt,omitempty"`
 }
 
 type wirePromotion struct {
@@ -94,6 +163,310 @@ type wirePromotion struct {
 	Gates             []wireGate            `json:"gates,omitempty"`
 	Note              string                `json:"note,omitempty"`
 	CreatedAt         time.Time             `json:"createdAt"`
+
+	// RecordedGates is evidence that arrived AFTER this row was written,
+	// through RecordGate. Kept separate from Gates because the two answer
+	// different questions: Gates is what the promoter claimed at the
+	// moment they promoted, and these are results that came later.
+	// Merging them would lose "was this known before the button was
+	// pressed?", the first question asked about a bad release.
+	RecordedGates []wireGate `json:"recordedGates,omitempty"`
+	// SupersededInFlight: this promote overrode an unfinished rollout
+	// (`--supersede`). Recorded because an override that leaves no trace
+	// is indistinguishable from the refusal never having fired.
+	SupersededInFlight bool `json:"supersededInFlight,omitempty"`
+	// FromEnvironmentName is the NAME of FromEnvironmentID, so a ledger
+	// reader renders "staging → prod" without a lookup per row. This is
+	// what lets promotionFromWire report a name where it previously had
+	// to fall back to the opaque id.
+	FromEnvironmentName string `json:"fromEnvironmentName,omitempty"`
+	// FromPromotionID is the specific promotion this release was taken
+	// from (`promote --from staging`). FromEnvironmentID says WHERE it
+	// came from; this says exactly WHAT was there, which is what keeps
+	// "promote whatever staging is running" auditable after staging has
+	// moved on.
+	FromPromotionID string `json:"fromPromotionId,omitempty"`
+	// Run is the CI run that performed this promotion.
+	Run *wireRun `json:"run,omitempty"`
+}
+
+// ─── Rollout, refusal and run (P0's read shapes) ─────────────────────────────
+//
+// These are the documents the §3.2 wait, the §3.1 refusal and the §3.7 run
+// view read. They are declared HERE, with F0, rather than by each verb that
+// consumes them, so the wire contract has ONE spelling: F3's wait, F2's
+// promote refusal and F8's run show all decode the same structs, and a field
+// the server renamed breaks in one place instead of three. §4.3 makes this
+// explicit — "a missing wire field is an F0 follow-up".
+
+// The DeployRolloutPhase enum's value names, as protojson writes them.
+//
+// A rollout phase is DERIVED on read, never stored, and the distinctions
+// matter to the exit codes: SUPERSEDED and UNKNOWN are their own outcomes
+// rather than failures, because "overtaken" and "we cannot see it" are not
+// "the release is bad".
+const (
+	wireRolloutPhasePrefix      = "DEPLOY_ROLLOUT_PHASE_"
+	wireRolloutPhaseUnspecified = "DEPLOY_ROLLOUT_PHASE_UNSPECIFIED"
+	wireRolloutPhasePending     = "DEPLOY_ROLLOUT_PHASE_PENDING"
+	wireRolloutPhaseProgressing = "DEPLOY_ROLLOUT_PHASE_PROGRESSING"
+	wireRolloutPhaseStabilizing = "DEPLOY_ROLLOUT_PHASE_STABILIZING"
+	wireRolloutPhaseSucceeded   = "DEPLOY_ROLLOUT_PHASE_SUCCEEDED"
+	wireRolloutPhaseDegraded    = "DEPLOY_ROLLOUT_PHASE_DEGRADED"
+	wireRolloutPhaseSuperseded  = "DEPLOY_ROLLOUT_PHASE_SUPERSEDED"
+	wireRolloutPhaseUnknown     = "DEPLOY_ROLLOUT_PHASE_UNKNOWN"
+)
+
+// rolloutPhaseName renders a phase enum value for a human and for --json:
+// "DEPLOY_ROLLOUT_PHASE_DEGRADED" → "degraded". An unrecognised value is
+// returned verbatim rather than mapped to a known phase, because a phase
+// forge does not understand must not read as a success or a failure.
+func rolloutPhaseName(wire string) string {
+	if wire == "" || wire == wireRolloutPhaseUnspecified {
+		return "unspecified"
+	}
+	if trimmed := strings.TrimPrefix(wire, wireRolloutPhasePrefix); trimmed != wire {
+		return strings.ToLower(trimmed)
+	}
+	return wire
+}
+
+// exitCodeForRolloutPhase maps a terminal phase to §3.A's exit code.
+//
+// The three non-obvious rows are the point of the table. A rollout still
+// PENDING / PROGRESSING / STABILIZING at the deadline is exitTimedOut (5),
+// not exitWrong — it was progressing, and a pipeline should retry the WAIT
+// rather than conclude the release is bad. SUPERSEDED is 6, its own outcome:
+// the wait's subject is gone, so neither retry nor failure is right.
+// UNKNOWN is exitUndetermined (2), never folded into either: "we cannot see
+// it" is not permission.
+func exitCodeForRolloutPhase(wire string) int {
+	switch wire {
+	case wireRolloutPhaseSucceeded:
+		return exitOK
+	case wireRolloutPhaseDegraded:
+		return exitWrong
+	case wireRolloutPhaseSuperseded:
+		return exitSuperseded
+	case wireRolloutPhaseUnknown:
+		return exitUndetermined
+	case wireRolloutPhasePending, wireRolloutPhaseProgressing, wireRolloutPhaseStabilizing:
+		return exitTimedOut
+	default:
+		// A phase forge does not recognise is unobservable to forge,
+		// which is exactly what 2 means. Reading it as a pass would be
+		// the dangerous default.
+		return exitUndetermined
+	}
+}
+
+// wireWorkloadRollout is controlplane.v1.DeployWorkloadRollout: one
+// workload's progress toward one promotion's pin.
+type wireWorkloadRollout struct {
+	DeploymentID string `json:"deploymentId"`
+	Name         string `json:"name"`
+	// Artifact is the release artifact key this workload runs
+	// (Deployment.artifact). Empty on an unpinned row.
+	Artifact string `json:"artifact,omitempty"`
+	// PinnedDigest comes from THIS promotion's resolvedArtifacts — the
+	// frozen pin, not whatever the deployment row declares now. That is
+	// the whole point of scoping a rollout to a promotion: a wait must
+	// not succeed on bytes it was never asked about because somebody
+	// promoted again underneath it.
+	PinnedDigest string `json:"pinnedDigest,omitempty"`
+	// DesiredDigest is what the row currently declares, which differs
+	// from PinnedDigest while a promotion is unapplied.
+	DesiredDigest  string     `json:"desiredDigest,omitempty"`
+	ObservedDigest string     `json:"observedDigest,omitempty"`
+	ObservedState  string     `json:"observedState,omitempty"`
+	Verdict        string     `json:"verdict,omitempty"`
+	Phase          string     `json:"phase,omitempty"`
+	StableSince    *time.Time `json:"stableSince,omitempty"`
+	ConvergedAt    *time.Time `json:"convergedAt,omitempty"`
+	LastError      string     `json:"lastError,omitempty"`
+	// UpdatedReplicas and DesiredReplicas are what stop a rollout being
+	// reported healthy before it is. Under RollingUpdate, old ready pods
+	// keep readyReplicas up while the new ReplicaSet crash-loops, so
+	// "ready ≥ wanted" is true of a release that never served a request.
+	// Comparing UPDATED against DESIRED is the completion test
+	// `kubectl rollout status` applies.
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
+}
+
+// wireRollout is controlplane.v1.DeployRollout: the single server-computed
+// answer to "is v6 done". Computed in one place on purpose, so wait, the
+// in-flight refusal, the UI and a run timeline cannot hold four different
+// opinions about whether a release landed.
+type wireRollout struct {
+	Promotion wirePromotion         `json:"promotion"`
+	Phase     string                `json:"phase,omitempty"`
+	Workloads []wireWorkloadRollout `json:"workloads,omitempty"`
+	// Unpinned are workloads the promotion does not pin: databases,
+	// third-party images. REPORTED, never gating — a database that cannot
+	// be release-bound must not be able to fail a release.
+	Unpinned          []wireWorkloadRollout `json:"unpinned,omitempty"`
+	StartedAt         *time.Time            `json:"startedAt,omitempty"`
+	FinishedAt        *time.Time            `json:"finishedAt,omitempty"`
+	StabilityWindowMS int64                 `json:"stabilityWindowMs,omitempty"`
+	// ConvergesPromotions false means nothing will move without a
+	// client-side deploy, so a caller should refuse FAST rather than wait
+	// out a timeout whose cause is "nobody was ever going to apply this".
+	ConvergesPromotions bool   `json:"convergesPromotions,omitempty"`
+	Reason              string `json:"reason,omitempty"`
+}
+
+// wirePromoteRefusal is controlplane.v1.DeployPromoteRefusal, carried as a
+// Connect error detail on the FailedPrecondition a refused promote returns.
+//
+// It names WHAT IS THERE, not just that something was. A refusal reading
+// "someone else promoted" sends a human to a dashboard; one carrying the
+// actual current promotion lets the pipeline print "prod is on v1.9.1,
+// promoted by alice 4 minutes ago" without a second round trip.
+type wirePromoteRefusal struct {
+	// Reason is one of the reason* constants (promotion_conflict |
+	// rollout_in_flight | environment_pinned).
+	Reason string `json:"reason"`
+	// Echoed back from the request, so a log line is self-contained.
+	ExpectedCurrentPromotionID string `json:"expectedCurrentPromotionId,omitempty"`
+	ExpectedUnbound            bool   `json:"expectedUnbound,omitempty"`
+	// ActualCurrent is the promotion that landed instead.
+	ActualCurrent *wirePromotion `json:"actualCurrent,omitempty"`
+	// ActualPhase is set for rollout_in_flight: the phase that made it
+	// in flight.
+	ActualPhase string `json:"actualPhase,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+}
+
+// promoteRefusalType is the protobuf full name under which a refusal rides
+// as a Connect error detail.
+const promoteRefusalType = "controlplane.v1.DeployPromoteRefusal"
+
+// promoteRefusalOf decodes the refusal detail from a failed promote, if the
+// server sent one.
+//
+// A refusal WITHOUT a decodable detail is not an error here: the reason
+// header alone is enough to choose an exit code (exitCodeForRefusal), and
+// the detail only enriches the message. Treating a missing detail as a
+// failure would make forge refuse to report a refusal.
+func promoteRefusalOf(err error) (wirePromoteRefusal, bool) {
+	var cerr *cloud.Error
+	if !errors.As(err, &cerr) {
+		return wirePromoteRefusal{}, false
+	}
+	payload, ok := cerr.DetailJSON(promoteRefusalType)
+	if !ok {
+		return wirePromoteRefusal{}, false
+	}
+	var refusal wirePromoteRefusal
+	if jsonErr := json.Unmarshal(payload, &refusal); jsonErr != nil {
+		return wirePromoteRefusal{}, false
+	}
+	// The header is authoritative when both are present; a detail that
+	// states no reason still carries the useful part (actual_current).
+	if refusal.Reason == "" {
+		refusal.Reason = cerr.Reason
+	}
+	return refusal, true
+}
+
+// wireRunStage is controlplane.v1.DeployRunStage: one step in a run's
+// timeline, ASSEMBLED FROM THE LEDGER. Nothing here is a stored event —
+// a stage is a release cut, a promotion, a recorded gate carrying the run
+// id, or a promotion's derived rollout.
+type wireRunStage struct {
+	Kind          string     `json:"kind"`
+	Name          string     `json:"name,omitempty"`
+	EnvironmentID string     `json:"environmentId,omitempty"`
+	PromotionID   string     `json:"promotionId,omitempty"`
+	Status        string     `json:"status,omitempty"`
+	StartedAt     *time.Time `json:"startedAt,omitempty"`
+	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
+	URL           string     `json:"url,omitempty"`
+	Summary       string     `json:"summary,omitempty"`
+}
+
+// ─── Gate conversion (through R1's vocabulary) ───────────────────────────────
+
+// gateFromWire is the LENIENT read path. A control plane holding promotions
+// recorded before the gate status set closed returns whatever free text the
+// old scaffold wrote, and refusing to decode it would make those promotions
+// unrenderable — the ledger is append-only, so no migration could clean
+// them up. An unrecognised value maps to `error` and is kept verbatim on
+// RawStatus, which is exactly release.GateStatusFromStored's contract.
+func gateFromWire(w wireGate) release.Gate {
+	status, raw := release.GateStatusFromStored(w.Status)
+	return release.Gate{
+		Name:       w.Name,
+		Status:     status,
+		RawStatus:  raw,
+		URL:        w.URL,
+		Summary:    w.Summary,
+		StartedAt:  w.StartedAt,
+		FinishedAt: w.FinishedAt,
+		RunID:      w.RunID,
+		Details:    w.Details,
+		RecordedBy: w.RecordedBy,
+		RecordedAt: w.RecordedAt,
+	}
+}
+
+func gatesFromWire(in []wireGate) []release.Gate {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]release.Gate, 0, len(in))
+	for _, w := range in {
+		out = append(out, gateFromWire(w))
+	}
+	return out
+}
+
+// gateToWire is the STRICT write path: release.Gate.Validate refuses a
+// status outside the closed set, and a gate carrying a RawStatus (one that
+// only survived a READ because it was mapped) cannot be written back.
+//
+// RecordedBy and RecordedAt are deliberately NOT sent. The server sets them
+// from the authenticated principal, and a client-supplied attribution would
+// be a client claiming who vouched for a check — the one part of a piece of
+// evidence that must not come from the party being vouched for.
+func gateToWire(g release.Gate) (wireGate, error) {
+	if err := g.Validate(); err != nil {
+		return wireGate{}, err
+	}
+	return wireGate{
+		Name:       g.Name,
+		Status:     string(g.Status),
+		URL:        g.URL,
+		Summary:    g.Summary,
+		StartedAt:  g.StartedAt,
+		FinishedAt: g.FinishedAt,
+		RunID:      g.RunID,
+		Details:    g.Details,
+	}, nil
+}
+
+func gatesToWire(in []release.Gate) ([]wireGate, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]wireGate, 0, len(in))
+	for _, g := range in {
+		w, err := gateToWire(g)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// runFromWire and runToWire convert controlplane.v1.DeployRun.
+func runFromWire(w *wireRun) release.Run {
+	if w == nil {
+		return release.Run{}
+	}
+	return release.Run{ID: w.ID, URL: w.URL, Provider: w.Provider}
 }
 
 // The DeployPromotionKind enum's value names, as protojson writes them.
@@ -151,6 +524,7 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 		CreatedAt: w.CreatedAt,
 		CreatedBy: w.CreatedByUserID,
 		Artifacts: map[string]release.Artifact{},
+		Run:       runFromWire(w.Run),
 	}
 	for _, row := range w.Artifacts {
 		a, seen := r.Artifacts[row.Name]
@@ -254,12 +628,21 @@ func (s *hostedStore) promotionFromWire(env string, w wirePromotion) (release.Pr
 		Note:       w.Note,
 		PromotedAt: w.CreatedAt,
 	}
-	if w.FromEnvironmentID != "" {
-		// The wire carries the SOURCE env's id; forge speaks names. The id
-		// is kept verbatim rather than dropped when no name is known, so the
-		// promotion path stays auditable.
+	switch {
+	case w.FromEnvironmentName != "":
+		// P0 added the NAME beside the id, so a ledger reader renders
+		// "staging → prod" without a lookup per row. forge speaks
+		// names, so prefer it.
+		p.FromEnv = w.FromEnvironmentName
+	case w.FromEnvironmentID != "":
+		// A control plane that predates fromEnvironmentName sends only
+		// the id. Kept verbatim rather than dropped, so the promotion
+		// path stays auditable even when the name is unknown.
 		p.FromEnv = w.FromEnvironmentID
 	}
+	p.FromPromotionID = w.FromPromotionID
+	p.SupersededInFlight = w.SupersededInFlight
+	p.Run = runFromWire(w.Run)
 	if p.Resolved == nil {
 		p.Resolved = map[string]string{}
 	}
@@ -269,15 +652,12 @@ func (s *hostedStore) promotionFromWire(env string, w wirePromotion) (release.Pr
 			p.Sources[name] = release.Source(src)
 		}
 	}
-	for _, g := range w.Gates {
-		// The LENIENT read path. A control plane holding promotions
-		// recorded before the gate status set closed returns whatever
-		// free text the old scaffold wrote, and refusing to decode it
-		// would make those promotions unrenderable. An unrecognised
-		// value maps to error and is kept verbatim on RawStatus.
-		status, raw := release.GateStatusFromStored(g.Status)
-		p.Gates = append(p.Gates, release.Gate{Name: g.Name, Status: status, RawStatus: raw, URL: g.URL})
-	}
+	// Both halves of the evidence trail: what the promoter claimed when
+	// they promoted, and what arrived afterwards through RecordGate. Kept
+	// in separate fields because merging them would lose "was this known
+	// before the button was pressed?".
+	p.Gates = gatesFromWire(w.Gates)
+	p.RecordedGates = gatesFromWire(w.RecordedGates)
 	if err := p.Validate(); err != nil {
 		return release.Promotion{}, fmt.Errorf("control plane returned promotion %s: %w", w.ID, err)
 	}
@@ -351,15 +731,24 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion) (release.
 		req["fromEnvironmentId"] = fromID
 	}
 	if len(p.Gates) > 0 {
-		gates := make([]wireGate, 0, len(p.Gates))
-		for _, g := range p.Gates {
-			// Only the three fields today's server stores. The rest of
-			// release.Gate (summary, timing, run id, details) rides on
-			// the wire once P0's DeployGate lands; sending them now
-			// would be sending fields no deployed control plane reads.
-			gates = append(gates, wireGate{Name: g.Name, Status: string(g.Status), URL: g.URL})
+		// The STRICT write path: a status outside the closed set, or a
+		// gate that only survived a READ because its status was mapped,
+		// is refused here rather than recorded as evidence.
+		gates, gerr := gatesToWire(p.Gates)
+		if gerr != nil {
+			return release.Promotion{}, fmt.Errorf("promote %s to %s: %w", p.Release, p.Env, gerr)
 		}
 		req["gates"] = gates
+	}
+	// RecordedGates are NOT sent: they are the post-promote half of the
+	// trail and are appended through RecordGate (§3.3), against a
+	// promotion that must already exist. Sending them on the promote
+	// would claim evidence that arrived later was known beforehand.
+	if run := runWireFields(p.Run); run != nil {
+		req["run"] = run
+	}
+	if p.FromPromotionID != "" {
+		req["fromPromotionId"] = p.FromPromotionID
 	}
 	var resp struct {
 		Promotion wirePromotion `json:"promotion"`
@@ -382,11 +771,20 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		"gitTag":    r.Git.Tag,
 		"gitDirty":  r.Git.Dirty,
 	}
+	if run := runWireFields(r.Run); run != nil {
+		req["run"] = run
+	}
 	var resp struct {
 		Created bool `json:"created"`
 	}
 	if err := s.client.Call(ctx, procCutRelease, req, &resp); err != nil {
-		if strings.Contains(err.Error(), "already_exists") {
+		// THE CONNECT CODE, not the message text. A re-cut of a version
+		// whose artifacts differ is the one failure this turns into a
+		// domain error, and recognising it by searching the message
+		// would break the moment the server reworded it — silently,
+		// because the branch simply stops matching and the conflict
+		// falls through as a generic failure.
+		if hostedErrorHasCode(err, cloud.CodeAlreadyExists) {
 			return false, fmt.Errorf("release %q: %w: %v", r.Version, release.ErrReleaseConflict, err)
 		}
 		return false, err
@@ -401,9 +799,10 @@ func (s *hostedStore) Get(ctx context.Context, version string) (*release.Release
 		Release wireRelease `json:"release"`
 	}
 	if err := s.client.Call(ctx, procGetRelease, map[string]any{"version": version}, &resp); err != nil {
-		// cloud.Client surfaces the Connect code in its message; not_found
-		// is the one this read turns into an answer rather than a failure.
-		if strings.Contains(err.Error(), "not_found") {
+		// not_found is the one code this read turns into an ANSWER
+		// rather than a failure: a version nobody cut is the file
+		// backend's "never cut", not an error.
+		if hostedErrorHasCode(err, cloud.CodeNotFound) {
 			return nil, nil
 		}
 		return nil, err

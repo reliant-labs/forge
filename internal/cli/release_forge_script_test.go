@@ -25,6 +25,9 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,14 +112,68 @@ func newForgeFixtureRepo(t *testing.T) string {
 	return root
 }
 
+// runForgeScript runs the release script HERMETICALLY: both of its network
+// reads — the pre-push immutable-version check and the post-push ingest wait —
+// are pointed at ingestingRegistry, never at proxy.golang.org / sum.golang.org.
+//
+// It used to inherit the real network. A push test then waited out the full
+// 600s ingest window polling the public proxy for a fixture version that will
+// never be published there, which is how `go test ./internal/cli` came to hang
+// for ten minutes on every full run.
 func runForgeScript(t *testing.T, repo string, args ...string) (string, error) {
 	t.Helper()
 	script := releaseForgeScriptPath(t)
 	full := append([]string{script, "--repo", repo}, args...)
 	cmd := exec.CommandContext(context.Background(), "bash", full...)
-	cmd.Env = os.Environ()
+	registry := ingestingRegistry(t, repo)
+	cmd.Env = append(os.Environ(),
+		// ONE override for the proxy: release-forge.sh forwards it to the
+		// wait (GOPROXY_WAIT_BASE), so this also proves the forwarding.
+		"FORGE_RELEASE_PROXY_BASE="+registry,
+		"GOSUMDB_WAIT_BASE="+registry,
+		// Belt and braces: a regression that stopped forwarding must fail
+		// in seconds, not hang for the default 600.
+		"GOPROXY_WAIT_MAX_SECONDS=20",
+		"GOPROXY_WAIT_FIRST_DELAY=1",
+		"GOPROXY_WAIT_MAX_DELAY=1",
+	)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// ingestingRegistry is a fixture Go module proxy AND checksum database that
+// behaves like the real pair: a version is unknown (404) until its tag has
+// been pushed to the repo's `origin` remote, then the proxy serves its .info
+// and the sumdb its lookup. That keeps the pre-push gate passing ("not yet
+// published") and lets the post-push wait observe ingestion, with no network.
+// A repo with no origin (dry runs) simply never ingests anything.
+func ingestingRegistry(t *testing.T, repo string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		version := ""
+		switch {
+		case strings.Contains(r.URL.Path, "/@v/") && strings.HasSuffix(r.URL.Path, ".info"):
+			version = strings.TrimSuffix(r.URL.Path[strings.LastIndex(r.URL.Path, "/@v/")+len("/@v/"):], ".info")
+		case strings.HasPrefix(r.URL.Path, "/lookup/") && strings.Contains(r.URL.Path, "@"):
+			version = r.URL.Path[strings.LastIndex(r.URL.Path, "@")+1:]
+		}
+		if version == "" || !originHasTag(repo, version) {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintf(w, `{"Version":%q}`, version)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// originHasTag reports whether the repo's origin remote holds tag. Errors
+// (no origin, a dry-run fixture) read as "not pushed".
+func originHasTag(repo, tag string) bool {
+	cmd := exec.CommandContext(context.Background(), "git", "ls-remote", "--tags", "origin", "refs/tags/"+tag)
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
 // TestReleaseForgeScript_DryRunLeavesNoTrace: a dry run validates and edits,

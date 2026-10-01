@@ -102,3 +102,27 @@ func TestProjectGitignore_ForgeStateNegations(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectGitignore_IgnoresProjectLocalGoBuildCache: a scaffolded project
+// must ignore a project-local GOCACHE.
+//
+// GOCACHE is normally per-user, but an agent or CI job working in parallel
+// worktrees points it at $WORKTREE/.gocache so concurrent builds don't
+// contend on one cache. Tens of thousands of build-cache files then sit
+// inside the project, and `git add -A` sweeps them into a commit — which is
+// exactly what happened in this workspace before the rule existed.
+//
+// Unlike .forge/ this is the DIRECTORY form: nothing in a build cache ever
+// needs negating back in, so there is no child-rule subtlety to preserve.
+func TestProjectGitignore_IgnoresProjectLocalGoBuildCache(t *testing.T) {
+	content, err := templates.ProjectTemplates().Get(".gitignore")
+	if err != nil {
+		t.Fatalf("read project .gitignore template: %v", err)
+	}
+	for _, l := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(l) == ".gocache/" {
+			return
+		}
+	}
+	t.Error(".gitignore template must ignore .gocache/ (a project-local GOCACHE is machine-local build output, never committed)")
+}

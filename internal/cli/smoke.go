@@ -156,6 +156,19 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 	// path below.
 	flowResults := runSmokeFlowChecks(ctx, env, opts.flowChecks, opts.flowProbe, flowCheckTimeout(opts.timeout))
 
+	// A HOSTED env's ingress is not in its render — the platform allocates
+	// the URL, so nothing in the KCL names it. Its targets come from the
+	// control plane's status instead (smoke_hosted.go, §3.3). Dispatched
+	// before extractSmokeTargets because that finds nothing here, which is
+	// exactly how a hosted smoke used to exit 0 having probed nothing.
+	if entities.HasHosted() {
+		status, err := readHostedSmokeStatus(ctx, env, entities)
+		if err != nil {
+			return fmt.Errorf("smoke %s: read the hosted environment's status: %w", env, err)
+		}
+		return runHostedSmoke(ctx, env, opts, status, probeHostedURL, flowResults, out)
+	}
+
 	targets := extractSmokeTargets(entities)
 	if len(targets) == 0 {
 		// No HOST-bearing routes. Before giving up, try the PORT-based

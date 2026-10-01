@@ -271,6 +271,7 @@ authored protos, in one call.`,
 	// `forge release verify` proves every artifact the ledger names really
 	// exists in its public registry and matches the recorded bytes.
 	rootCmd.AddCommand(newReleaseCmd())
+	rootCmd.AddCommand(newGateCmd())
 	// `project` is the project-structure noun: the commands that create,
 	// retire, or INSPECT a project as a whole (new/delete/disown/migrate/
 	// upgrade/map/graph/introspect/features/annotations). The flat members

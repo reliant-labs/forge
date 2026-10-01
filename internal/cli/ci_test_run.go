@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -36,6 +37,7 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 		maxRatio float64
 		minTests int
 		warnOnly bool
+		gateJSON string
 	)
 
 	cmd := &cobra.Command{
@@ -81,6 +83,11 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 			"`set -o pipefail` reports only the LAST command's status — a checker that\n" +
 			"ignored them would launder a red suite green.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The check's own window starts here. It measures the
+			// VERIFICATION, not the test run — forge did not run the
+			// tests (see the comment above), and claiming their
+			// duration would be inventing a measurement.
+			startedAt := time.Now()
 			policy, projectNote, err := resolveTestSkipPolicy(cmd, maxRatio, minTests)
 			if err != nil {
 				return err
@@ -118,6 +125,17 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), projectNote)
 			}
 			report.Render(cmd.OutOrStdout(), analysis)
+
+			// The gate document, before the exit-code switch below,
+			// so the evidence is written for EVERY outcome — a
+			// failing or undetermined run is the one most worth
+			// recording, and returning first would write it only
+			// for the green case.
+			if gateJSON != "" {
+				if err := writeTestRunGate(gateJSON, analysis, startedAt); err != nil {
+					return err
+				}
+			}
 
 			switch analysis.Status() {
 			case testreport.StatusUndetermined:
@@ -159,6 +177,9 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 		"Sample-size floor for the mass-skip rule (a package that skipped EVERY test is reported regardless)")
 	cmd.Flags().BoolVar(&warnOnly, "warn-only", false,
 		"Report skip findings without failing (adoption ramp; UNDETERMINED and test failures still fail)")
+	cmd.Flags().StringVar(&gateJSON, "gate-json", "",
+		"Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env promote --gate`. "+
+			"A FILE, not a stdout mode: the report and the exit code are unchanged.")
 
 	return cmd
 }

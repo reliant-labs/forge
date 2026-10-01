@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -241,11 +242,33 @@ func splitHostedGroups(groups []deploytarget.ServiceGroup) (local, hosted []depl
 	return local, hosted
 }
 
+// rolloutApplier is a provider whose deploy is an apply followed by a wait
+// for the target to converge, and which can do the apply alone. The k8s
+// cluster provider is one: its wait is the rollout wait, and splitting it off
+// is what lets a deploy apply every cluster before it waits on any.
+type rolloutApplier interface {
+	ApplyNoWait(ctx context.Context, group deploytarget.ServiceGroup) (*cluster.PendingRollout, error)
+}
+
 // dispatchDeployGroups runs every group through its provider. Per-
 // group failures abort the loop (deploy.go's pre-v2 behavior was
 // fail-fast on the single apply) but each failure is wrapped to
 // include the provider id + group target so users can tell at a
 // glance which group failed.
+//
+// A run of consecutive cluster groups is APPLIED in turn and then awaited
+// TOGETHER, with one cluster.WaitRollouts. One env may span several clusters
+// with readiness dependencies between them — a workload on the first cluster
+// that cannot become ready until one on the second is running — and awaiting
+// each cluster before applying the next deadlocks that env on every fresh
+// deploy: the first wait expires on a dependency that was never sent, and the
+// second cluster is never applied. Kubernetes converges concurrently, so the
+// deploy applies everything first and then reports every cluster's rollout in
+// one verdict.
+//
+// Any other provider is a barrier: the pending cluster rollouts are awaited
+// before it runs, so a group still starts only once every group ahead of it
+// has finished, exactly as before.
 //
 // A failed group is NOT reverted: there is no rollback. The failure is
 // returned as-is and recovery is roll forward — fix, then deploy again.
@@ -253,17 +276,55 @@ func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, 
 	if registry == nil {
 		return errors.New("deploy dispatch: nil provider registry")
 	}
+	var (
+		pending    []*cluster.PendingRollout
+		pendingIDs []string
+	)
+	// awaitPending waits on every cluster applied since the last barrier.
+	awaitPending := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		err := cluster.WaitRollouts(ctx, pending...)
+		ids := strings.Join(pendingIDs, "+")
+		pending, pendingIDs = nil, nil
+		if err != nil {
+			return fmt.Errorf("deploy %s: %w", ids, err)
+		}
+		return nil
+	}
 	for _, group := range groups {
 		p := registry.Lookup(group.ProviderID)
 		if p == nil {
 			return fmt.Errorf("deploy dispatch: no provider for %q (group: %s)", group.ProviderID, deploytarget.FormatGroupSummary(group))
+		}
+		if applier, ok := p.(rolloutApplier); ok {
+			fmt.Printf("\n%s\n", deploytarget.FormatGroupSummary(group))
+			rollout, err := applier.ApplyNoWait(ctx, group)
+			if err != nil {
+				// A failed APPLY stops the deploy here, as it always has:
+				// no later group is applied. The clusters already applied
+				// keep converging (there is no rollback) but are not
+				// awaited — their rollout may well depend on the cluster
+				// that just failed, and waiting out its timeout would only
+				// delay the error that already decides this deploy.
+				return fmt.Errorf("deploy %s: %w", group.ProviderID, err)
+			}
+			pending = append(pending, rollout)
+			if !slices.Contains(pendingIDs, group.ProviderID) {
+				pendingIDs = append(pendingIDs, group.ProviderID)
+			}
+			continue
+		}
+		if err := awaitPending(); err != nil {
+			return err
 		}
 		fmt.Printf("\n%s\n", deploytarget.FormatGroupSummary(group))
 		if err := p.Deploy(ctx, group); err != nil {
 			return fmt.Errorf("deploy %s: %w", group.ProviderID, err)
 		}
 	}
-	return nil
+	return awaitPending()
 }
 
 // applyOptsContext carries the deploy-wide envelope that

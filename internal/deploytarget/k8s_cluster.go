@@ -67,9 +67,31 @@ func (K8sClusterProvider) Name() string { return "k8s-cluster" }
 // the dispatcher layer; this just hands cluster.Apply the env-wide
 // knobs (namespace, image tag) and lets it shell `kcl run` against
 // the env's main.k.
+//
+// Deploy is ApplyNoWait followed by the rollout wait. A dispatcher deploying
+// several cluster groups uses ApplyNoWait for each and waits once, so one
+// cluster's rollout is never awaited before another cluster it depends on has
+// been applied.
 func (p K8sClusterProvider) Deploy(ctx context.Context, group ServiceGroup) error {
+	pending, err := p.ApplyNoWait(ctx, group)
+	if err != nil {
+		return err
+	}
+	return cluster.WaitRollouts(ctx, pending)
+}
+
+// ApplyNoWait applies the group to its cluster — render, select, scope,
+// apply, and the pre-rollout Job gate — and returns the rollout still to be
+// awaited, for the caller to hand to cluster.WaitRollouts together with every
+// other cluster's. See cluster.ApplyNoWait for why the two halves are
+// separable.
+//
+// Every error, and the pending rollout's own verdict, names the group's
+// namespace and cluster: in a multi-cluster deploy that is the only thing
+// that says which cluster a failure belongs to.
+func (p K8sClusterProvider) ApplyNoWait(ctx context.Context, group ServiceGroup) (*cluster.PendingRollout, error) {
 	if group.Namespace == "" {
-		return errors.New("k8s-cluster: ServiceGroup.Namespace is empty (forge.yaml or K8sCluster.namespace must declare it)")
+		return nil, errors.New("k8s-cluster: ServiceGroup.Namespace is empty (forge.yaml or K8sCluster.namespace must declare it)")
 	}
 	var opts cluster.ApplyOpts
 	if p.ApplyOptsBuilder != nil {
@@ -83,9 +105,10 @@ func (p K8sClusterProvider) Deploy(ctx context.Context, group ServiceGroup) erro
 			Namespace: group.Namespace,
 		}
 	}
-	if err := cluster.Apply(ctx, opts); err != nil {
-		return fmt.Errorf("k8s-cluster deploy (ns=%s, cluster=%s): %w",
-			group.Namespace, group.Cluster, err)
+	label := fmt.Sprintf("k8s-cluster deploy (ns=%s, cluster=%s)", group.Namespace, group.Cluster)
+	pending, err := cluster.ApplyNoWait(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
 	}
-	return nil
+	return pending.WithLabel(label), nil
 }

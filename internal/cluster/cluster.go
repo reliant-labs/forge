@@ -203,31 +203,21 @@ func (p RolloutPolicy) classifyApplyResult(err error) error {
 	return err
 }
 
-// orderDeployments returns names sorted so that anything named in Order
-// comes first, in Order's sequence, with the remainder following in their
-// original order. Unknown names in Order are skipped.
-func (p RolloutPolicy) orderDeployments(names []string) []string {
-	if len(p.Order) == 0 {
-		return names
-	}
-	present := make(map[string]bool, len(names))
-	for _, n := range names {
-		present[n] = true
-	}
-	out := make([]string, 0, len(names))
-	taken := make(map[string]bool, len(names))
-	for _, want := range p.Order {
-		if present[want] && !taken[want] {
-			out = append(out, want)
-			taken[want] = true
+// waitRank is name's position in Order — its first occurrence — or len(Order)
+// for a name Order does not mention, which sorts it after every named one. A
+// stable sort by rank is the whole of the ordering rule: anything named in
+// Order comes first, in Order's sequence, and the remainder follows in its
+// original order. Unknown names in Order are simply never matched. Ranking
+// rather than filtering a name list is what lets the wait order every
+// cluster's Deployments together (see orderWaitQueue) without collapsing two
+// clusters' same-named Deployments into one.
+func (p RolloutPolicy) waitRank(name string) int {
+	for i, n := range p.Order {
+		if n == name {
+			return i
 		}
 	}
-	for _, n := range names {
-		if !taken[n] {
-			out = append(out, n)
-		}
-	}
-	return out
+	return len(p.Order)
 }
 
 // ApplyOpts expresses the differences between the three existing call
@@ -529,34 +519,6 @@ func ManifestGroups(manifests string) []string {
 // before, so existing consumers are unaffected.
 const ClusterRoutingLabel = "forge.dev/cluster"
 
-// waitForDeploymentRollouts waits for each managed Deployment in the policy's
-// order, skipping those the caller runs on the host instead.
-//
-// It reports whether the caller should stop immediately: a fail-fast policy in
-// RolloutWait mode abandons the remaining waits on the first failure. Failures
-// themselves are recorded by note, which owns the failures slice.
-func waitForDeploymentRollouts(
-	ctx context.Context,
-	opts ApplyOpts,
-	policy RolloutPolicy,
-	deployments []string,
-	note func(indent, kind, name string, err error),
-) (failFast bool) {
-	for _, dep := range policy.orderDeployments(deployments) {
-		state, err := WaitRolloutObserved(ctx, opts.Context, dep, opts.Namespace, policy.Timeout)
-		observeRollout(opts, "Deployment", dep, state, err)
-		if err == nil {
-			fmt.Printf("  %s: ready\n", dep)
-			continue
-		}
-		note("  ", "rollout", dep, err)
-		if policy.FailFast && policy.Mode == RolloutWait {
-			return true
-		}
-	}
-	return false
-}
-
 // reportRolloutListFailure handles the case where the rollout wait cannot
 // enumerate Deployments at all.
 //
@@ -775,12 +737,46 @@ func renderApplyManifests(ctx context.Context, opts ApplyOpts) (string, error) {
 // `runDevClusterReload` shapes exactly (including stdout framing,
 // warning messages, and ordering); per-call differences are expressed
 // through ApplyOpts fields.
+//
+// Apply is ApplyNoWait followed by WaitRollouts of that one apply. A caller
+// deploying to SEVERAL clusters must not call it once per cluster: see
+// ApplyNoWait.
 func Apply(ctx context.Context, opts ApplyOpts) error {
-	manifests, err := renderApplyManifests(ctx, opts)
+	pending, err := ApplyNoWait(ctx, opts)
 	if err != nil {
 		return err
 	}
-	return applyRendered(ctx, opts, manifests)
+	return WaitRollouts(ctx, pending)
+}
+
+// ApplyNoWait is Apply without the rollout wait: it renders, selects, scopes
+// and applies — the pre-rollout Job gate included — and returns what is left
+// to await as a PendingRollout. Hand it, with every other cluster's, to ONE
+// WaitRollouts call.
+//
+// WHY THE WAIT IS SEPARABLE. One env may span several clusters, and a
+// workload on one can be unable to become ready until a workload on another
+// is running (control-plane's workspace-proxy-bridge cannot pass readiness
+// until workspace-proxy, on the daemon cluster, answers it). Applying and
+// awaiting each cluster in turn deadlocks that env on every fresh deploy: the
+// first cluster's wait expires on a dependency the second cluster has not been
+// sent yet, the deploy fails, and the second cluster is never applied at all.
+// Kubernetes converges concurrently — RolloutPolicy.Order is documented as a
+// wait ordering, not an apply ordering, for exactly this reason — so the
+// deploy applies every cluster first and then waits on all of them together.
+//
+// The pre-rollout gate stays INSIDE the apply, per cluster: it holds back a
+// cluster's own workloads until that cluster's migration Jobs complete, which
+// is an ordering within one apply, not a wait on convergence.
+//
+// A nil PendingRollout with a nil error means there is nothing to wait for (a
+// dry run, a platform-only apply); WaitRollouts accepts it.
+func ApplyNoWait(ctx context.Context, opts ApplyOpts) (*PendingRollout, error) {
+	manifests, err := renderApplyManifests(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return applyRenderedNoWait(ctx, opts, manifests)
 }
 
 // selectAndScope narrows the rendered env stream to what THIS apply owns and
@@ -838,6 +834,16 @@ func selectAndScope(opts ApplyOpts, manifests string) (selectedCharts []HelmChar
 // A test that could only reach it through a render would be testing the
 // renderer too, and would be skipped wherever KCL is unavailable.
 func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error {
+	pending, err := applyRenderedNoWait(ctx, opts, manifests)
+	if err != nil {
+		return err
+	}
+	return WaitRollouts(ctx, pending)
+}
+
+// applyRenderedNoWait is ApplyNoWait after the KCL render: select, scope and
+// apply, returning the rollout still to be awaited.
+func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) (*PendingRollout, error) {
 	selectedCharts, manifests, crdOwner := selectAndScope(opts, manifests)
 
 	// Split the stream into its apply passes NOW, before the dry-run return
@@ -862,7 +868,7 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	config, rest := PartitionConfigManifests(remainder)
 	phases, err := partitionRolloutPhases(rest)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Render the selected platform deps (helm-as-a-RENDERER). Each chart's
@@ -872,7 +878,7 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	// shows the chart manifests too — they flow through the SAME pipeline.
 	renderedCharts, err := renderSelectedCharts(ctx, selectedCharts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Report the final stream — filtered, scoped, charts folded in — to an
@@ -885,7 +891,7 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 
 	if opts.DryRun {
 		printDryRunManifests(manifests, renderedCharts, opts.DryRunFramed)
-		return nil
+		return nil, nil
 	}
 
 	// Apply the platform deps FIRST: a `--target=<platform>` apply must
@@ -895,13 +901,13 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	// Established → the --skip-crds controllers). When this apply also
 	// carries app manifests (a mixed --target), the charts land before them.
 	if err := applyRenderedCharts(ctx, opts.Context, renderedCharts, opts.Quiet); err != nil {
-		return err
+		return nil, err
 	}
 
 	// A platform-only apply (every --target named a chart) is done once the
 	// charts are applied — there are no env/app manifests to apply or wait on.
 	if strings.TrimSpace(manifests) == "" && len(renderedCharts) > 0 {
-		return nil
+		return nil, nil
 	}
 
 	if !opts.Quiet {
@@ -928,14 +934,14 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	// classifyApplyResult).
 	policy := opts.Rollout.Normalize()
 	if err := applyEarlyBatch(ctx, opts.Context, "", earlyCRDs, earlyNS); err != nil {
-		return policy.classifyApplyResult(err)
+		return nil, policy.classifyApplyResult(err)
 	}
 	if strings.TrimSpace(config) != "" {
 		if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, config)); err != nil {
 			if opts.Quiet {
-				return fmt.Errorf("kubectl apply (config): %w", err)
+				return nil, fmt.Errorf("kubectl apply (config): %w", err)
 			}
-			return fmt.Errorf("kubectl apply failed (config): %w", err)
+			return nil, fmt.Errorf("kubectl apply failed (config): %w", err)
 		}
 	}
 	// The pre-rollout gate. When the stream carries a pre-rollout Job (a
@@ -949,7 +955,7 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 	// the one pass it always was.
 	if phases.gated() {
 		if err := applyPreRolloutGate(ctx, opts, policy, phases); err != nil {
-			return err
+			return nil, err
 		}
 		// Everything but the held-back workloads has landed. A stream that
 		// was only support objects and pre-rollout Jobs has nothing left.
@@ -963,9 +969,9 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 			// Reload uses the shorter "kubectl apply:" wrap; the framed
 			// deploy/up path uses the longer "kubectl apply failed:" form.
 			if opts.Quiet {
-				return fmt.Errorf("kubectl apply: %w", err)
+				return nil, fmt.Errorf("kubectl apply: %w", err)
 			}
-			return fmt.Errorf("kubectl apply failed: %w", err)
+			return nil, fmt.Errorf("kubectl apply failed: %w", err)
 		}
 	}
 
@@ -986,66 +992,21 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 		if !opts.Quiet {
 			fmt.Println("Skipping rollout wait (rollout mode: skip)")
 		}
-		return nil
-	}
-
-	// failures collects every resource that did not become ready. In
-	// RolloutWait mode a non-empty set is what makes Apply return an
-	// error — the whole point of the policy.
-	var failures []string
-	// note reports one resource's failure in the mode's voice: a warning
-	// when the caller opted into warn-only, an error otherwise.
-	note := func(indent, kind, name string, err error) {
-		if policy.Mode == RolloutWarn {
-			fmt.Printf("%sWarning: %s for %s: %v\n", indent, kind, name, err)
-			return
-		}
-		fmt.Printf("%sFAILED: %s for %s: %v\n", indent, kind, name, err)
-		failures = append(failures, name)
-	}
-
-	if !opts.Quiet {
-		fmt.Println("Waiting for rollouts...")
-	}
-	deployments, lerr := ListManagedDeployments(ctx, opts.Context, opts.Namespace)
-	if lerr != nil {
-		return reportRolloutListFailure(lerr, opts.Quiet, policy.Mode)
-	}
-	if failFast := waitForDeploymentRollouts(ctx, opts, policy, deployments, note); failFast {
-		return rolloutError(failures)
+		return nil, nil
 	}
 
 	// Wait set = every `kind: Job` in the stream this apply just sent,
 	// and nothing else. See oneShotWaitSet for why a caller-supplied
 	// list is not unioned in any more. A pre-rollout Job already completed
 	// at the gate — the workloads would not have been applied otherwise —
-	// so only the post-rollout Jobs are left to wait on here.
+	// so only the post-rollout Jobs are left to wait on.
+	var jobs []string
 	for _, name := range oneShotWaitSet(manifests) {
-		if phases.awaited(name) {
-			continue
-		}
-		fmt.Printf("Waiting for one-shot Job %q to complete...\n", name)
-		state, jerr := WaitJobCompleteObserved(ctx, opts.Context, name, opts.Namespace, policy.Timeout)
-		observeRollout(opts, "Job", name, state, jerr)
-		if err := jerr; err != nil {
-			// A failed one-shot Job is if anything MORE serious than a
-			// failed Deployment: it is the migration that did not run,
-			// and every workload above it is now talking to a schema
-			// that never moved.
-			note("  ", "job", name, err)
-			if policy.FailFast && policy.Mode == RolloutWait {
-				return rolloutError(failures)
-			}
-		} else {
-			fmt.Printf("  %s: complete\n", name)
+		if !phases.awaited(name) {
+			jobs = append(jobs, name)
 		}
 	}
-
-	if len(failures) > 0 {
-		return rolloutError(failures)
-	}
-
-	return nil
+	return &PendingRollout{opts: opts, policy: policy, jobs: jobs}, nil
 }
 
 // oneShotWaitSet is the set of Jobs Apply blocks on after applying:

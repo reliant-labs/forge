@@ -101,10 +101,40 @@ type StaticSiteSpec struct {
 	// +kubebuilder:validation:Pattern=`^/.*$`
 	BasePath string `json:"basePath,omitempty"`
 
+	// ReleaseRepository is the OCI repository LiveDigest was pushed to —
+	// the whole reference, registry host included, with no tag or digest
+	// on it. Together with LiveDigest it is the complete address of the
+	// release: `<releaseRepository>@<liveDigest>`.
+	//
+	// IT IS RECORDED, NOT RECONSTRUCTED, and that is the whole point of
+	// the field. A site's release goes to the frontend's OWN declared
+	// image reference plus the platform's layout segment
+	// (deploytarget.HostedStaticRepository), which is a reference only the
+	// builder knows: it may be an org's registry subtree, or a registry
+	// the platform does not host at all. Anything that recomposed a path
+	// from a registry base, an org id and a site name would be writing
+	// down a second, independent derivation of where the bytes are — and
+	// when the two disagree, the puller 404s on an artifact that exists.
+	// That is exactly the defect this field closes, and it is the same
+	// rule a workload's image already follows: the reference carries its
+	// registry, and the release ledger keys artifacts by full reference.
+	//
+	// WHERE a caller may push is therefore a platform policy enforced as
+	// ADMISSION on this recorded value — a reference inside the platform's
+	// own registry must be inside that org's subtree — never by deriving
+	// the value and calling the derivation a boundary.
+	//
+	// Empty before the first deploy, like LiveDigest. A spec carrying a
+	// digest but no repository is not pullable, and whoever executes it
+	// must refuse rather than guess a path.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	ReleaseRepository string `json:"releaseRepository,omitempty"`
+
 	// LiveDigest is the release the live prefix must serve. A digest, never
 	// a tag: a tag is a mutable pointer, and re-pointing one would void
 	// "the bytes that passed staging are the bytes in prod". Empty before
-	// the first deploy.
+	// the first deploy. Addressed within ReleaseRepository.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
 	LiveDigest string `json:"liveDigest,omitempty"`

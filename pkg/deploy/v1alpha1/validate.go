@@ -210,6 +210,38 @@ func validateDomains(field string, domains []string) error {
 	return errors.Join(errs...)
 }
 
+// validateReleaseRepository checks a site's recorded release repository: a
+// bare repository reference naming its registry host explicitly.
+//
+// A TAG OR DIGEST ON IT IS REFUSED rather than trimmed. The release is
+// addressed as `<releaseRepository>@<liveDigest>`, so a repository that
+// already carried a pin would compose into a reference with two of them —
+// and silently trimming it would leave the spec claiming one release while
+// the field named another. Empty is legal: a site has no release until its
+// first deploy.
+func validateReleaseRepository(repository string) error {
+	if repository == "" {
+		return nil
+	}
+	if strings.ContainsAny(repository, " \t\n") {
+		return fmt.Errorf("releaseRepository %q contains whitespace", repository)
+	}
+	host, _, found := strings.Cut(repository, "/")
+	if !found || !(strings.ContainsAny(host, ".:") || host == "localhost") {
+		return fmt.Errorf("releaseRepository %q must name its registry host explicitly (e.g. ghcr.io/acme/web/static.v1): "+
+			"it is the recorded address of the pushed release, and a host-less path is not pullable", repository)
+	}
+	if strings.Contains(repository, "@") {
+		return fmt.Errorf("releaseRepository %q must not carry a digest: the release is addressed as "+
+			"<releaseRepository>@<liveDigest>, so the digest belongs in liveDigest alone", repository)
+	}
+	if last := repository[strings.LastIndex(repository, "/")+1:]; strings.Contains(last, ":") {
+		return fmt.Errorf("releaseRepository %q must not carry a tag: it is a repository, and the release it serves "+
+			"is pinned by liveDigest", repository)
+	}
+	return nil
+}
+
 // Validate checks a StaticSite spec.
 func (s StaticSiteSpec) Validate() error {
 	var errs []error
@@ -218,6 +250,9 @@ func (s StaticSiteSpec) Validate() error {
 	}
 	if s.BasePath != "" && !strings.HasPrefix(s.BasePath, "/") {
 		errs = append(errs, fmt.Errorf("basePath %q must start with '/'", s.BasePath))
+	}
+	if err := validateReleaseRepository(s.ReleaseRepository); err != nil {
+		errs = append(errs, err)
 	}
 	for field, d := range map[string]string{"liveDigest": s.LiveDigest, "previousDigest": s.PreviousDigest} {
 		if d != "" && !sha256RE.MatchString(d) {

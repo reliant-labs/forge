@@ -364,9 +364,10 @@ func TestPromote_UnwiredFlagsRefuseBeforeAnyWrite(t *testing.T) {
 		"--deploy":    {Follow: promoteFollowOptions{Deploy: true}},
 		"--timeout":   {Follow: promoteFollowOptions{Timeout: 1}},
 		"--fail-fast": {Follow: promoteFollowOptions{FailFast: true}},
-		"--gate":      {Gates: []string{"name=lint,status=passed"}},
 		// --from / --from-promotion are wired (F5); their behaviour is
 		// pinned in promote_from_test.go.
+		// --gate is wired (F4); its behaviour is pinned in
+		// promote_gates_test.go.
 	}
 	for flag, opts := range cases {
 		t.Run(flag, func(t *testing.T) {

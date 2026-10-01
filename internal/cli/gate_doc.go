@@ -37,7 +37,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -671,34 +670,4 @@ func renderGateTable(gates []release.Gate) string {
 		}
 	}
 	return b.String()
-}
-
-// sortGatesForDisplay orders gates oldest first by the window they report,
-// falling back to the recording time and then the name.
-//
-// Promote-time gates come back from the server before recorded ones (§3.3's
-// ListGates contract), and that order is preserved rather than re-derived:
-// "what was known before the environment moved" is the first question asked
-// about a bad release, and sorting purely by time would mix the two halves.
-func sortGatesForDisplay(gates []release.Gate) {
-	sort.SliceStable(gates, func(i, j int) bool {
-		a, b := gateOrderKey(gates[i]), gateOrderKey(gates[j])
-		if !a.Equal(b) {
-			return a.Before(b)
-		}
-		return gates[i].Name < gates[j].Name
-	})
-}
-
-func gateOrderKey(g release.Gate) time.Time {
-	switch {
-	case g.StartedAt != nil:
-		return *g.StartedAt
-	case g.RecordedAt != nil:
-		return *g.RecordedAt
-	case g.FinishedAt != nil:
-		return *g.FinishedAt
-	default:
-		return time.Time{}
-	}
 }

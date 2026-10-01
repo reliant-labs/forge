@@ -773,26 +773,13 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// that is exactly the case where the frontend's own state was missing.
 	persistImageBuildStates(opts, succeeded)
 
-	// Print summary
-	fmt.Println()
-	fmt.Println(strings.Repeat("-", 50))
-	fmt.Printf("[build] Summary (%s)\n", time.Since(start).Truncate(time.Millisecond))
-	fmt.Println(strings.Repeat("-", 50))
-
-	for _, r := range succeeded {
-		fmt.Printf("  OK   %-20s %-8s (%s)\n", r.name, r.kind, r.duration.Truncate(time.Millisecond))
-	}
-	for _, r := range failed {
-		fmt.Printf("  FAIL %-20s %-8s %v\n", r.name, r.kind, r.err)
-	}
+	printBuildSummary(succeeded, failed, start)
 
 	// The gate document, written for EVERY outcome and before the failure
 	// return below: a failed build is the one most worth recording, and
 	// returning first would write evidence only for the green case.
-	if opts.gateJSON != "" {
-		if gerr := writeBuildGate(opts.gateJSON, len(succeeded), len(failed), start); gerr != nil {
-			return gerr
-		}
+	if gerr := emitBuildGate(opts, len(succeeded), len(failed), start); gerr != nil {
+		return gerr
 	}
 
 	if len(failed) > 0 {
@@ -817,6 +804,26 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
 	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
 	return nil
+}
+
+// printBuildSummary prints the per-target table runBuild ends with.
+//
+// Extracted because it is pure rendering over the two result slices, and
+// leaving it inline kept runBuild at its statement budget — so the next
+// person to add a step there had to choose between their change and a lint
+// failure that is not about their change.
+func printBuildSummary(succeeded, failed []buildResult, start time.Time) {
+	fmt.Println()
+	fmt.Println(strings.Repeat("-", 50))
+	fmt.Printf("[build] Summary (%s)\n", time.Since(start).Truncate(time.Millisecond))
+	fmt.Println(strings.Repeat("-", 50))
+
+	for _, r := range succeeded {
+		fmt.Printf("  OK   %-20s %-8s (%s)\n", r.name, r.kind, r.duration.Truncate(time.Millisecond))
+	}
+	for _, r := range failed {
+		fmt.Printf("  FAIL %-20s %-8s %v\n", r.name, r.kind, r.err)
+	}
 }
 
 // buildTargetSet is the resolved set of build inputs runBuild derives from the

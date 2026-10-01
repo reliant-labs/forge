@@ -180,3 +180,14 @@ func writeGateWithRun(path string, gate release.Gate) error {
 	}
 	return writeGateDocument(path, gate)
 }
+
+// emitBuildGate is the --gate-json hook `forge build` calls. A function
+// rather than four lines inline because runBuild is already at its statement
+// budget, and because the no-flag case belongs with the gate code rather than
+// as another conditional in the build's main line.
+func emitBuildGate(opts buildOptions, succeeded, failed int, startedAt time.Time) error {
+	if opts.gateJSON == "" {
+		return nil
+	}
+	return writeBuildGate(opts.gateJSON, succeeded, failed, startedAt)
+}

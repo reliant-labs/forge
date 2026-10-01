@@ -557,8 +557,3 @@ func mustGates(t *testing.T, promotionID string) ([]release.Gate, error) {
 	}
 	return backend.store.listGates(context.Background(), promotionID)
 }
-
-func currentGates(t *testing.T, promotionID string) ([]release.Gate, error) {
-	t.Helper()
-	return mustGates(t, promotionID)
-}

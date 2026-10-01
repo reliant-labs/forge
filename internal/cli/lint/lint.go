@@ -182,6 +182,25 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 		},
 	}
 
+	registerLintFlags(cmd, &flags)
+
+	return cmd
+}
+
+// registerLintFlags declares every `forge lint` flag and the visible /
+// hidden split between them.
+//
+// Split out of newCmd because that function is a long help text plus this
+// list, and the two grow independently: leaving them together kept newCmd at
+// its funlen budget, so the next person adding a lane had to choose between
+// their flag and a lint failure that is not about their change.
+//
+// collapsing it into a table would hide the visible/hidden split and the
+// per-flag notes about cobra's backtick parsing, which are the only reason
+// several of these usage strings are written the way they are.
+//
+//nolint:funlen // One declaration per flag, and the list IS the surface:
+func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.contract, "contract", false, "Run contract interface enforcement linter")
 	cmd.Flags().BoolVar(&flags.exportedVars, "exported-vars", false, "Run exported vars linter")
 	cmd.Flags().BoolVar(&flags.migrationSafety, "migration-safety", false, "Run SQL migration safety checks")
@@ -241,8 +260,6 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 		"suggest-buf-excepts", // one-shot migration/setup helper
 		"check-workarounds",   // parallel-lane agent-workflow audit
 	)
-
-	return cmd
 }
 
 // run each check, aggregate. The statements ARE the pipeline, and hiding

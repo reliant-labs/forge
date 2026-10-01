@@ -51,6 +51,46 @@ type fakeDeployService struct {
 	// imagePushBase overrides the environment reads' imagePushBase; see
 	// pushBase.
 	imagePushBase string
+
+	// Promote's refusals, in the SERVER's order (control-plane C3/C3b):
+	// pinned refuses before anything else; then the idempotent no-op; then
+	// the compare-and-set (always modelled); then, when inFlightPhase is
+	// set, rollout_in_flight unless the request supersedes.
+	pinned        bool
+	inFlightPhase string
+	// refusalWithoutDetail sends a refusal as the reason header alone, the
+	// way a control plane without the detail descriptor would.
+	refusalWithoutDetail bool
+}
+
+// refusePromote answers a Promote with the wire form control-plane's
+// promoteError produces: FailedPrecondition, the reason under
+// x-forge-error-reason, and a DeployPromoteRefusal detail whose `debug`
+// member is the protojson payload. Called under f.mu.
+func (f *fakeDeployService) refusePromote(w http.ResponseWriter, reason, detail string, body map[string]any, list []wirePromotion, phase string) {
+	refusal := map[string]any{"reason": reason, "detail": detail}
+	if id, _ := body["expectedCurrentPromotionId"].(string); id != "" {
+		refusal["expectedCurrentPromotionId"] = id
+	}
+	if unbound, _ := body["expectUnbound"].(bool); unbound {
+		refusal["expectedUnbound"] = true
+	}
+	if len(list) > 0 {
+		refusal["actualCurrent"] = list[len(list)-1]
+	}
+	if phase != "" {
+		refusal["actualPhase"] = phase
+	}
+	envelope := map[string]any{"code": "failed_precondition", "message": detail}
+	if !f.refusalWithoutDetail {
+		debug, _ := json.Marshal(refusal)
+		envelope["details"] = []map[string]any{{
+			"type": promoteRefusalType, "value": "cHJvdG8", "debug": json.RawMessage(debug),
+		}}
+	}
+	w.Header().Set(cloud.ReasonHeader, reason)
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(envelope)
 }
 
 type fakeDeployment struct {
@@ -259,8 +299,13 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		kind := release.KindPromote
 		relDomain, _ := releaseFromWire(rel)
+		list := f.promotions[envID]
+		if f.pinned {
+			f.refusePromote(w, reasonEnvironmentPinned, "the environment is pinned", body, list, "")
+			return
+		}
 		var history []release.Promotion
-		for _, p := range f.promotions[envID] {
+		for _, p := range list {
 			k, _ := promotionKindFromWire(p.Kind)
 			history = append(history, release.Promotion{Env: envID, Release: p.ReleaseVersion, Kind: k})
 		}
@@ -270,8 +315,20 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if existing != nil {
-			list := f.promotions[envID]
 			_ = json.NewEncoder(w).Encode(map[string]any{"promotion": list[len(list)-1]})
+			return
+		}
+		expectedID := str("expectedCurrentPromotionId")
+		expectUnbound, _ := body["expectUnbound"].(bool)
+		switch {
+		case expectUnbound && len(list) > 0,
+			expectedID != "" && (len(list) == 0 || list[len(list)-1].ID != expectedID):
+			f.refusePromote(w, reasonPromotionConflict, "the environment's current promotion is not the one you expected", body, list, "")
+			return
+		}
+		supersede, _ := body["supersedeInFlight"].(bool)
+		if f.inFlightPhase != "" && len(list) > 0 && !supersede {
+			f.refusePromote(w, reasonRolloutInFlight, "the current promotion is still rolling out", body, list, f.inFlightPhase)
 			return
 		}
 		wk := wireKindPromote
@@ -279,7 +336,8 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ID: fmt.Sprintf("promo-%d", len(f.promotions[envID])+1), EnvironmentID: envID, ReleaseID: rel.ID,
 			ReleaseVersion: version, Kind: wk, ResolvedArtifacts: relDomain.SharedDigests(),
 			PromotedByActor: str("promotedByActor"), Note: str("note"),
-			CreatedAt: time.Date(2026, 9, 23, 1, len(f.promotions[envID]), 0, 0, time.UTC),
+			CreatedAt:          time.Date(2026, 9, 23, 1, len(f.promotions[envID]), 0, 0, time.UTC),
+			SupersededInFlight: supersede && f.inFlightPhase != "",
 		}
 		if fromID := str("fromEnvironmentId"); fromID != "" {
 			p.FromEnvironmentID = fromID
@@ -371,22 +429,22 @@ func TestHostedStore_LedgerRoundTrip(t *testing.T) {
 	// The client sends a BOGUS Resolved map; the server must ignore it and
 	// freeze from the release it holds.
 	p, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote,
-		Resolved: map[string]string{"api": sha("f")}})
+		Resolved: map[string]string{"api": sha("f")}}, appendGuard{})
 	if err != nil {
 		t.Fatalf("promote v1: %v", err)
 	}
 	if p.Resolved["api"] != sha("1") || p.Env != "prod" || p.Kind != release.KindPromote || p.Release != "v1" {
 		t.Errorf("promotion must carry the server-frozen pin and forge names, got %+v", p)
 	}
-	again, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote})
+	again, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote}, appendGuard{})
 	if err != nil || again.ID != p.ID {
 		t.Fatalf("a retry must return the existing entry %s, got %+v %v", p.ID, again, err)
 	}
-	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote}); err != nil {
+	if _, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote}, appendGuard{}); err != nil {
 		t.Fatal(err)
 	}
 	// Moving prod back to v1 is an ordinary promote through the Promote RPC.
-	back, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote, Note: "5xx"})
+	back, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote, Note: "5xx"}, appendGuard{})
 	if err != nil || back.Kind != release.KindPromote {
 		t.Fatalf("backwards promote to v1: %+v %v", back, err)
 	}
@@ -425,7 +483,7 @@ func TestHostedStore_UnknownEnvironment(t *testing.T) {
 	if _, bound, err := store.Current(context.Background(), "prod"); err != nil || bound {
 		t.Fatalf("read of an unknown env must be unbound, got bound=%v err=%v", bound, err)
 	}
-	p, err := store.Append(context.Background(), release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote})
+	p, err := store.Append(context.Background(), release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote}, appendGuard{})
 	if err != nil {
 		t.Fatalf("first promote of a fresh hosted env: %v", err)
 	}

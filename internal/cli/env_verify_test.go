@@ -358,7 +358,7 @@ func writeBinding(t *testing.T, dir, envName, release string, resolved map[strin
 	t.Helper()
 	if _, err := newFileBindingStore(dir).Append(context.Background(), releasepkg.Promotion{
 		Env: envName, Release: release, Kind: releasepkg.KindPromote, Resolved: resolved,
-	}); err != nil {
+	}, appendGuard{}); err != nil {
 		t.Fatalf("write binding ledger: %v", err)
 	}
 }

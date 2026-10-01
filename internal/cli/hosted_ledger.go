@@ -694,7 +694,11 @@ func (s *hostedStore) Current(ctx context.Context, env string) (release.Promotio
 // release it holds — the Resolved/Sources on p are the client's PREVIEW and
 // are deliberately not sent, because a request that could state digests
 // would be a request that could ship bytes nobody cut.
-func (s *hostedStore) Append(ctx context.Context, p release.Promotion) (release.Promotion, error) {
+//
+// The guard rides as PromoteReleaseRequest tags 7–9 and is checked by the
+// SERVER, under the env row lock, after its own idempotent no-op. A refusal
+// comes back as a *promoteRefusedError carrying what is actually current.
+func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard appendGuard) (release.Promotion, error) {
 	if err := p.Validate(); err != nil {
 		return release.Promotion{}, err
 	}
@@ -750,10 +754,14 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion) (release.
 	if p.FromPromotionID != "" {
 		req["fromPromotionId"] = p.FromPromotionID
 	}
+	guardWireFields(guard, req)
 	var resp struct {
 		Promotion wirePromotion `json:"promotion"`
 	}
 	if err := s.client.Call(ctx, procPromote, req, &resp); err != nil {
+		if refused := s.refusalFromWire(p.Env, err); refused != nil {
+			return release.Promotion{}, refused
+		}
 		return release.Promotion{}, err
 	}
 	return s.promotionFromWire(p.Env, resp.Promotion)

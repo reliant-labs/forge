@@ -635,7 +635,7 @@ func TestRunPromotePlan_WritesNothing(t *testing.T) {
 	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
 		Env: "staging", Release: "v1.3.0", Kind: release.KindPromote,
 		Resolved: map[string]string{"reliant": sha("old")},
-	}); err != nil {
+	}, appendGuard{}); err != nil {
 		t.Fatalf("seed binding: %v", err)
 	}
 

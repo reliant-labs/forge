@@ -326,6 +326,9 @@ forge env promote v1.7.1 --to prod --note "<incident>"
 forge env deploy prod
 ```
 
+Promote compare-and-sets against the plan's read: exit **3** = the env moved
+meanwhile, nothing written — never retry blind. CI recipe: `forge env promote --help`.
+
 A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
 migration before any workload changes, and a workload that never becomes
 ready leaves the previous ReplicaSet serving. Binding an env to an OLDER

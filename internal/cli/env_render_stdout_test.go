@@ -74,7 +74,7 @@ output = forge.render(_bundle)
 	if _, err := newFileBindingStore(dir).Append(context.Background(), releasepkg.Promotion{
 		Env: "prod", Release: "v1.0.0", Kind: releasepkg.KindPromote,
 		Resolved: map[string]string{"reg.example.com/rendertest": renderReleaseDigest},
-	}); err != nil {
+	}, appendGuard{}); err != nil {
 		t.Fatalf("write promotion: %v", err)
 	}
 	return dir

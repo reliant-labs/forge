@@ -383,7 +383,7 @@ func TestResolveDeployDigests_BoundEnvUsesRelease(t *testing.T) {
 	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote,
 		Resolved: map[string]string{"control-plane": sha("a"), "reliant": sha("b")},
-	}); err != nil {
+	}, appendGuard{}); err != nil {
 		t.Fatalf("write bindings: %v", err)
 	}
 
@@ -423,7 +423,7 @@ func TestResolveDeployDigests_ReleaseOverridesTaggedKeys(t *testing.T) {
 	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote,
 		Resolved: map[string]string{"reliant": sha("a")},
-	}); err != nil {
+	}, appendGuard{}); err != nil {
 		t.Fatalf("write bindings: %v", err)
 	}
 
@@ -470,7 +470,7 @@ func TestResolveDeployDigests_NoDigestSkipsRelease(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote, Resolved: map[string]string{"control-plane": sha("a")},
-	}); err != nil {
+	}, appendGuard{}); err != nil {
 		t.Fatalf("write bindings: %v", err)
 	}
 

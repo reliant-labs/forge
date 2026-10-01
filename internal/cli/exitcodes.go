@@ -78,6 +78,10 @@ const (
 	// reasonEnvironmentPinned: the environment's reconcile policy is
 	// pinned, which refuses every change.
 	reasonEnvironmentPinned = "environment_pinned"
+	// reasonSourceMoved: `promote --from` named a source promotion that is
+	// no longer the source environment's current one. A conflict — someone
+	// else moved the source — so it shares exitConflict.
+	reasonSourceMoved = "source_moved"
 )
 
 // exitCodeForRefusal maps a refusal REASON to its exit code — the one table
@@ -98,7 +102,7 @@ const (
 // tell CI to retry a write that will be refused identically.
 func exitCodeForRefusal(reason string) int {
 	switch reason {
-	case reasonPromotionConflict:
+	case reasonPromotionConflict, reasonSourceMoved:
 		return exitConflict
 	case reasonRolloutInFlight, reasonEnvironmentPinned:
 		return exitRefused

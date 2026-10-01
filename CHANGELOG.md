@@ -136,6 +136,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge env promote` always compare-and-sets.** The write asserts that the
+  env is still on the promotion the plan read, and is refused if someone else
+  moved it since. A hotfix that lands while a pipeline waits for approval now
+  turns that pipeline red (exit 3, `promotion_conflict`) instead of being
+  overwritten. No flag is needed. `--expect-current <id>` replaces the planned
+  value with one captured earlier; `--expect-current unbound` /
+  `--expect-unbound` asserts the env was never promoted. Re-promoting the
+  release an env already runs is still a no-op whatever the expectation says,
+  so a retried success is never a conflict. `--supersede` admits a promote
+  while the current rollout is in flight and is recorded on the new entry.
+  Exit 4 is `rollout_in_flight` / `environment_pinned`. `--plan --json` now
+  shows `current.promotion_id` (the value to capture) and `expected`; a
+  refused `--json` document carries `applied: false` and
+  `refusal: {reason, expected…, actual_current, actual_phase}`, and its
+  `ok`/`exit_code` match the process status. The file ledger applies the same
+  check against the history it reads. Hosted CAS needs a control plane with
+  the P0 contract — an older one ignores the fields.
+- `forge env promote --run-id / --run-url / --no-run`: the promotion records
+  the CI run, defaulted from `GITHUB_*` / `CI_PIPELINE_*`. `--wait`,
+  `--deploy`, `--timeout`, `--fail-fast`, `--gate`, `--from` and
+  `--from-promotion` are declared and refuse with "not supported by this
+  forge build" until they are wired.
 - `service_account_annotations: {str:str}` on `forge.K8sOverrides`,
   `forge.RenderedWorkload` and `forge.workloads.Workload`: annotations stamped
   on the ServiceAccount forge GENERATES for the workload, and on no other

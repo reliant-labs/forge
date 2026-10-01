@@ -64,7 +64,13 @@ type bindingStore interface {
 	// release.Decide's rules and returns the entry the ledger now holds:
 	// the newly appended one, or — for a retry of the current state — the
 	// EXISTING entry, unchanged. The backend stamps ID and PromotedAt.
-	Append(ctx context.Context, p release.Promotion) (release.Promotion, error)
+	//
+	// guard is the compare-and-set the write asserts (see promote_cas.go),
+	// checked by the backend AFTER the idempotent no-op and against the
+	// history it holds at the moment of the write. A write the guard
+	// refuses is a *promoteRefusedError and appends nothing. The zero
+	// guard asserts nothing.
+	Append(ctx context.Context, p release.Promotion, guard appendGuard) (release.Promotion, error)
 
 	// Location names where promotions are recorded, for human-facing
 	// output — a directory for the file backend, the endpoint URL for a
@@ -282,9 +288,15 @@ func (s fileBindingStore) Current(_ context.Context, env string) (release.Promot
 	return history[len(history)-1], true, nil
 }
 
-// Append applies release.Decide to the env's history and, when the entry is a
-// real move, appends ONE line with a single O_APPEND write.
-func (s fileBindingStore) Append(_ context.Context, p release.Promotion) (release.Promotion, error) {
+// Append applies release.Decide and the guard to the env's history and, when
+// the entry is a real move the guard admits, appends ONE line with a single
+// O_APPEND write.
+//
+// The compare-and-set is checked against the history read HERE, so it closes
+// the stale-plan stomp (a plan read minutes ago, an approval in between) but
+// not the two-concurrent-writers race documented on fileBindingStore — that
+// needs a lock this backend deliberately does not take.
+func (s fileBindingStore) Append(_ context.Context, p release.Promotion, guard appendGuard) (release.Promotion, error) {
 	history, err := s.History(p.Env)
 	if err != nil {
 		return release.Promotion{}, err
@@ -292,7 +304,7 @@ func (s fileBindingStore) Append(_ context.Context, p release.Promotion) (releas
 	if err := p.Validate(); err != nil {
 		return release.Promotion{}, err
 	}
-	existing, err := release.Decide(history, p)
+	existing, err := admitPromotion(history, p, guard)
 	if err != nil {
 		return release.Promotion{}, err
 	}

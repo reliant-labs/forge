@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/commitpolicy"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2009,7 +2011,12 @@ func forEachScannedFile(t *testing.T, root string, fn func(rel string, content [
 		}
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			if rel != "." && skipDirs[d.Name()] {
+			// A Go build cache is not source. Its entries are verbatim
+			// copies of compiler input, so a cached `rbac.pb.go` reads as a
+			// live reference to a removed feature. Keyed on Go's own
+			// sentinel because GOCACHE is configurable — agents here point
+			// it at $WORKTREE/.gocache, but the name is a convention.
+			if rel != "." && (skipDirs[d.Name()] || commitpolicy.IsGoBuildCacheDir(p)) {
 				return filepath.SkipDir
 			}
 			return nil

@@ -15,6 +15,20 @@ vendor/
 *.prof
 *.pprof
 
+# ── Go build cache — a project-local GOCACHE ──
+# GOCACHE is normally per-user (~/Library/Caches/go-build), but an agent or CI
+# job working in parallel worktrees points it at $WORKTREE/.gocache so
+# concurrent builds don't contend on one shared cache. That makes tens of
+# thousands of files appear inside the project, which `git add -A` would
+# otherwise sweep into a commit.
+#
+# `forge lint` does NOT depend on this rule: its generated-file scan skips any
+# directory carrying Go's own GOCACHE sentinel README, whatever it is named
+# (see internal/commitpolicy.IsGoBuildCacheDir). A cache entry is a verbatim
+# copy of compiler input, generated Go source included, so without that skip
+# every entry looked like generated code that had been wrongly ignored.
+.gocache/
+
 # Go workspace — local, per-developer dev-loop wiring; NEVER committed.
 # The root go.mod already carries `replace <module>/gen => ./gen`, so a
 # plain `go build ./...` resolves root↔gen with no go.work at all. A

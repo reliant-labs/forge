@@ -194,7 +194,7 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		Observability: boolPtr(true),
 		HotReload:     boolPtr(false),
 		Deploy:        boolPtr(true),
-		Ingress:      boolPtr(true),
+		Ingress:       boolPtr(true),
 	}
 
 	data, err := yaml.Marshal(&orig)

@@ -67,10 +67,9 @@ func waitForGoProxyScriptPath(t *testing.T) string {
 // proxyReadyAfter / sumdbReadyAfter are 1-based probe counts on their own
 // endpoint. 1 means "serves immediately"; 0 means "never".
 type ingestingProxy struct {
-	url          string
-	proxyProbes  atomic.Int64
-	sumdbProbes  atomic.Int64
-	proxyResolve func() bool
+	url         string
+	proxyProbes atomic.Int64
+	sumdbProbes atomic.Int64
 }
 
 func newIngestingProxy(t *testing.T, proxyReadyAfter, sumdbReadyAfter int) *ingestingProxy {

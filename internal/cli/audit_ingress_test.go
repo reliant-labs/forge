@@ -132,7 +132,7 @@ func TestCrossCheckIngress_GRPCRoutesAlsoChecked(t *testing.T) {
 func TestAuditIngress_KCLRenderFailureWarn(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.ProjectConfig{
-		Name: "t",
+		Name:     "t",
 		Features: config.FeaturesConfig{Ingress: boolPtr(true)},
 	}
 	cat := auditIngress(cfg, dir) // no deploy/kcl/dev → RenderKCL errors

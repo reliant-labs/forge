@@ -44,6 +44,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -79,6 +80,26 @@ type promoteFollowOptions struct {
 	// caller choosing a follow-through; a test states the two exported
 	// fields and leaves this zero.
 	clientDeploy deployOptions
+
+	// jsonOut mirrors the command's --json. The follow stage's progress
+	// notices are for a HUMAN, so under --json they must go to stderr:
+	// `--json` promises stdout carries exactly one JSON document, and a
+	// notice printed beside it makes the document undecodable for every
+	// consumer — which is how `--json --no-wait` came to emit
+	// "Recorded. …" and then a perfectly good document that no caller
+	// could parse.
+	jsonOut bool
+}
+
+// notice writes a human progress line for the follow stage. It goes to stderr
+// under --json (see promoteFollowOptions.jsonOut) and stdout otherwise, so the
+// machine contract holds without the human losing the message.
+func (o promoteFollowOptions) notice(format string, args ...any) {
+	w := os.Stdout
+	if o.jsonOut {
+		w = os.Stderr
+	}
+	fmt.Fprintf(w, format, args...)
 }
 
 // validatePromoteFollow runs BEFORE the plan is computed or anything is
@@ -140,7 +161,7 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 		// is the difference between "forge is done" and "the release is
 		// live", and a caller who opted out of the gate is exactly the
 		// one who needs to know which they got.
-		fmt.Printf("\nRecorded. %s is converged by its control plane; gate on it with: forge env status %s --wait\n", env, env)
+		o.notice("\nRecorded. %s is converged by its control plane; gate on it with: forge env status %s --wait\n", env, env)
 		return nil
 	}
 	promotionID := ""
@@ -201,10 +222,10 @@ func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFoll
 		opts.rollout.FailFast = true
 	}
 	if mixed {
-		fmt.Printf("\nApplying %s's locally-managed workloads at its newly recorded release "+
+		o.notice("\nApplying %s's locally-managed workloads at its newly recorded release "+
 			"(its control plane converges only the hosted ones)\n", env)
 	} else {
-		fmt.Printf("\nApplying %s's newly recorded release (self-managed: no control plane converges it)\n", env)
+		o.notice("\nApplying %s's newly recorded release (self-managed: no control plane converges it)\n", env)
 	}
 	return runPromoteClientDeploy(ctx, env, opts)
 }

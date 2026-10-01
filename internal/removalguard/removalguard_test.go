@@ -1879,6 +1879,33 @@ var skipFiles = map[string]bool{
 	"kcl.mod.lock":      true,
 }
 
+// skipFilePrefixes are basename prefixes that are never a forge surface.
+//
+// PR_BODY*.md is an agent-authored PR description, written into the worktree
+// while a branch is in flight. It is prose ABOUT a change, and a PR body for a
+// REMOVAL names the removed spelling dozens of times by design — that is what
+// the description is for. Scanning one makes every mention read as a surviving
+// reference, so the guard would fail on exactly the branches that are doing the
+// removing properly. (Observed: V1 tracked PR_BODY_V1.md and turned main red.)
+//
+// The alternative — one allowance per PR body per removal — would mean a
+// standing carve-out in the table for text no release ever reads, which is
+// precisely the "too-permissive allowance" this file warns against.
+var skipFilePrefixes = []string{"PR_BODY"}
+
+// skipScannedFile reports whether a basename is outside forge's surfaces.
+func skipScannedFile(name string) bool {
+	if skipFiles[name] {
+		return true
+	}
+	for _, p := range skipFilePrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // maxFileSize caps a single scanned file. Anything larger is generated data,
 // not a surface a human wrote a feature reference into.
 const maxFileSize = 4 << 20
@@ -2287,7 +2314,7 @@ func forEachScannedFile(t *testing.T, root string, fn func(rel string, content [
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		if skipFiles[d.Name()] || skipExts[strings.ToLower(filepath.Ext(p))] {
+		if skipScannedFile(d.Name()) || skipExts[strings.ToLower(filepath.Ext(p))] {
 			return nil
 		}
 		if info, statErr := d.Info(); statErr == nil && info.Size() > maxFileSize {

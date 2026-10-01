@@ -129,3 +129,19 @@ for the `AllowNonConverging` deletion and the stale cross-references the
 removalguard required; `forge env build` is **not** used anywhere — that is V2's
 verb and has not landed, so build references keep today's `forge build` spelling
 for V2/V5 to sweep.
+
+## Drive-by: `origin/main` was already red, and this fixes it
+
+Rebasing onto V1 (#379) surfaced that `internal/removalguard` fails on
+`origin/main` **independently of this branch**. V1 committed `PR_BODY_V1.md`,
+and a PR description for a removal names the removed spelling dozens of times —
+that is what the description is for — so the guard reports every mention as a
+surviving reference. Verified against a clean worktree of `origin/main`: 4
+surviving references to "the top-level `forge run` dev runner", all of them
+lines in that file.
+
+Fixed by skipping `PR_BODY*.md` by basename prefix, beside `go.sum` and the
+lockfiles in the existing "not a forge surface" seam. The alternative — one
+allowance per PR body per removal — would be a standing carve-out in the table
+for text no release ever reads, which is the too-permissive-allowance failure
+that file explicitly warns against.

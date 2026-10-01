@@ -164,11 +164,30 @@ func decodeSummaries(data []byte, doc *gateDocument) {
 	if json.Unmarshal(data, &asLint) == nil && asLint.Summary != nil {
 		doc.LintSummary = asLint.Summary
 	}
+	// A smoke summary must be recognised by its OWN keys being present,
+	// not merely by decoding without error: release verify's summary is
+	// {verified,failed,unverifiable,unreachable}, which decodes into
+	// smokeSummaryProbe as all-zeroes-plus-`failed` and would otherwise
+	// read as a smoke that probed nothing. Requiring `pass` and `ok` —
+	// which only smoke emits — keeps the two apart.
 	var asSmoke struct {
-		Summary *smokeSummaryProbe `json:"summary"`
+		Summary *struct {
+			Pass *int  `json:"pass"`
+			Warn *int  `json:"warn"`
+			Fail *int  `json:"fail"`
+			OK   *bool `json:"ok"`
+		} `json:"summary"`
 	}
-	if json.Unmarshal(data, &asSmoke) == nil && asSmoke.Summary != nil {
-		doc.SmokeSummary = asSmoke.Summary
+	if json.Unmarshal(data, &asSmoke) == nil && asSmoke.Summary != nil &&
+		asSmoke.Summary.Pass != nil && asSmoke.Summary.OK != nil {
+		s := smokeSummaryProbe{Pass: *asSmoke.Summary.Pass, OK: *asSmoke.Summary.OK}
+		if asSmoke.Summary.Warn != nil {
+			s.Warn = *asSmoke.Summary.Warn
+		}
+		if asSmoke.Summary.Fail != nil {
+			s.Fail = *asSmoke.Summary.Fail
+		}
+		doc.SmokeSummary = &s
 	}
 }
 
@@ -355,7 +374,14 @@ var documentShapes = []documentShape{
 		// summary.
 		name: "smoke",
 		recognises: func(doc gateDocument) bool {
-			return doc.SmokeSummary != nil && doc.Routes != nil
+			// Recognised by the pass/warn/fail summary ALONE, not by
+			// the routes array. A smoke that probed nothing emits
+			// `"routes": null`, and that is precisely the run whose
+			// verdict matters most — requiring a non-nil array would
+			// make the checked-nothing document the one shape this
+			// parser could not read, and it would fall through to
+			// "states no verdict".
+			return doc.SmokeSummary != nil
 		},
 		summarise: func(doc gateDocument) string {
 			s := doc.SmokeSummary

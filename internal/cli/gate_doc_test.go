@@ -138,6 +138,43 @@ func TestGateFromDocument_GateShapeIsReadAsItself(t *testing.T) {
 	}
 }
 
+// Two `summary` shapes must never be mistaken for one another. Release
+// verify's {verified,failed,unverifiable,unreachable} decodes into the smoke
+// probe as all-zeroes, which would read as "a smoke that probed nothing" —
+// recording a SKIPPED gate over a release verify that actually found a
+// missing artifact. The smoke probe therefore requires smoke's own keys.
+func TestGateFromDocument_ReleaseVerifySummaryIsNotASmokeSummary(t *testing.T) {
+	t.Parallel()
+	data, _ := json.Marshal(releaseVerifyReport{
+		Release: "v1.4.0", Artifacts: []artifactVerification{{}},
+		OK: false, Diagnostic: "1 artifact missing from its registry",
+	})
+	gate, err := gateFromDocument(data, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gate.Name != "release-verify" {
+		t.Fatalf("name = %q, want release-verify — a release verify must not read as a smoke", gate.Name)
+	}
+	if gate.Status != release.GateStatusFailed {
+		t.Errorf("status = %q, want failed", gate.Status)
+	}
+}
+
+// Conversely, a smoke that probed nothing emits `"routes": null`, and that is
+// the run whose verdict matters most. It must still be recognised.
+func TestGateFromDocument_SmokeWithNullRoutesIsStillASmoke(t *testing.T) {
+	t.Parallel()
+	doc := []byte(`{"env":"prod","routes":null,"summary":{"pass":0,"warn":0,"fail":0,"ok":true}}`)
+	gate, err := gateFromDocument(doc, "")
+	if err != nil {
+		t.Fatalf("a checked-nothing smoke document must be recordable: %v", err)
+	}
+	if gate.Name != "smoke" || gate.Status != release.GateStatusSkipped {
+		t.Fatalf("gate = %+v, want a skipped smoke", gate)
+	}
+}
+
 // A gate document whose status is outside the closed set is REFUSED on the
 // write path — the typo fails before anything is recorded, which is the
 // reason ParseGateStatus and GateStatusFromStored are two functions.

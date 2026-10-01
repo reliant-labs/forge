@@ -79,10 +79,10 @@ type upOptions struct {
 	// either. See internal/cli/up_options.go.
 	renderOptions []string
 	// frontendArgs are passthrough tokens forwarded to each frontend's dev
-	// server command (`npm run dev -- <frontendArgs>`). Not bound to a
-	// `forge env up` flag — it's the seam `forge run -- <flags>` sets so the
-	// reliant one-shot's `forge run -- --host 0.0.0.0` reaches Vite. Empty
-	// (the default, and always for `forge env up`) is a no-op.
+	// server command (`npm run dev -- <frontendArgs>`): everything after the
+	// `--` terminator on `forge env up <env> -- <flags>`. This is how an
+	// agent-driven preview flow reaches Vite
+	// (`forge env up dev -- --host 0.0.0.0`). Empty (no `--`) is a no-op.
 	frontendArgs []string
 }
 
@@ -104,13 +104,24 @@ func newEnvUpCmd() *cobra.Command {
 	var opts upOptions
 
 	cmd := &cobra.Command{
-		Use:   "up <environment>",
-		Short: "Bring the whole dev loop up: build + deploy + host + frontend",
-		Args:  cobra.ExactArgs(1),
-		Long: `Bring the whole dev loop up for an environment.
+		Use:   "up <environment> [-- <dev-server flags>]",
+		Short: "Bring the whole dev loop up on this machine: build + deploy + host + frontend",
+		// The env is required; anything after `--` is dev-server
+		// passthrough. upPassthroughArgs enforces the shape (exactly one
+		// positional before the terminator) with a message that names the
+		// mistake, which ExactArgs(1) cannot do once `--` is in play.
+		Args: cobra.MinimumNArgs(1),
+		Long: `Bring the whole dev loop up for an environment, on this machine.
 
 Reads deploy/kcl/<env>/ to figure out which services run in-cluster vs
 on the host and which frontends to start.
+
+LOCAL ONLY. This verb builds, applies and runs the env HERE. An env with
+anything bound to a non-local runtime — a forge.OnHosted workload, a
+hosted database, a frontend that ships to a bucket, a cluster that is not
+a local one (k3d / kind / docker-desktop / minikube / colima / orbstack) —
+is refused with a pointer to ` + "`forge env deploy <env>`" + `, before any
+work is done.
 
 Phases:
   1. build:    docker build + push every cluster image; go build
@@ -155,12 +166,25 @@ the old process is not the process you asked for. Only processes carrying
 forge's own ownership markers for THIS project and env are ever signalled;
 a port held by anything else is an error, never a kill.
 
+Tokens after ` + "`--`" + ` are forwarded to each frontend's dev server
+(` + "`npm run dev -- <flags>`" + `), so a Vite/Next dev server can be told
+to bind a specific host or port. This is what an agent-driven preview flow
+uses: ` + "`forge env up dev -- --host 0.0.0.0`" + ` starts the scaffolded
+frontend bound to 0.0.0.0 so a workspace proxy can reach it.
+
+On first boot against a dev environment the app boots alive: the fresh
+database is auto-seeded with deterministic, FK-coherent demo data derived
+from the applied schema — only when the DB is reachable and every seedable
+table is empty. Pass ` + "`--no-seed`" + ` to skip it, or inspect with
+` + "`forge db seed status`" + `.
+
 Examples:
   forge env up dev
   forge env up dev --no-build
   forge env up dev --target admin-server -D host_runner=go-run
   forge env up dev --watch        # hold + Ctrl-C teardown even when piped
   forge env up dev --background
+  forge env up dev -- --host 0.0.0.0   # forward flags to the dev servers
   forge env down dev
 
 Render options (-D):
@@ -184,7 +208,12 @@ Render options (-D):
   worktree, branch) are not yours to set and are rejected. -D is accepted on
   ` + "`env up`" + ` only — a cluster apply must stay reproducible from the repo alone.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			frontendArgs, err := upPassthroughArgs(args, cmd.ArgsLenAtDash())
+			if err != nil {
+				return err
+			}
 			opts.env = args[0]
+			opts.frontendArgs = frontendArgs
 			if opts.hostReadyTimeout <= 0 {
 				return fmt.Errorf("--host-ready-timeout must be positive")
 			}
@@ -207,7 +236,7 @@ Render options (-D):
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Force the hold-and-teardown lifecycle (block until Ctrl-C, then cascade-stop) even without a TTY. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge env up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge env up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
-	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default `forge run`/`forge env up` seeds a dev database once when it is reachable and all seedable tables are empty.")
+	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default `forge env up` seeds a dev database once when it is reachable and all seedable tables are empty.")
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the whole run — build, deploy, host and frontend phases — to specific services/operators/frontends by name (repeatable). Targeting only host/frontend apps builds no images. An unknown name is an error listing the env's app names. Default: everything.")
 	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with `forge env options <env>`.")
 
@@ -407,7 +436,7 @@ func newEnvDownCmd() *cobra.Command {
 		Use:   "down [environment]",
 		Short: "Stop this project's stack for an environment (or --all: every forge stack on this machine)",
 		Args:  cobra.MaximumNArgs(1),
-		Long: `Stop a running ` + "`forge env up`" + ` / ` + "`forge run`" + ` stack.
+		Long: `Stop a running ` + "`forge env up`" + ` stack.
 
   forge env down dev     stop THIS project's dev stack
   forge env down --all   stop every forge stack on this machine, all projects
@@ -744,6 +773,17 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		return fmt.Errorf("no services/operators/frontends/cronjobs declared in deploy/kcl/%s/", opts.env)
 	}
 
+	// LOCALITY GATE. `forge env up` runs an env on THIS machine; an env with
+	// anything bound to a non-local runtime belongs to `forge env deploy`.
+	// Checked here — the first point where the env's own declaration is
+	// known, and still before the build, the apply or any process start — so
+	// a hosted env fails on the wrong-verb message instead of on a missing
+	// cluster or an unreachable registry several phases later. See
+	// env_up_locality.go.
+	if v := classifyEnvLocality(entities); !v.local() {
+		return refuseNonLocalEnvUp(opts.env, v)
+	}
+
 	// A --target that names nothing is a typo, and the cost of treating it
 	// as a filter that simply matches no entity is the worst outcome
 	// available: the pre-flight below still tears down the running stack,
@@ -1017,7 +1057,7 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// declares as infrastructure and knows nothing about what those
 		// servers ARE. The scaffolded dev env declares postgres as a
 		// `forge.HostInfra` — a real postgres forge runs as a HOST PROCESS,
-		// so a `forge run` needs no container runtime at all — and (only when
+		// so a `forge env up` needs no container runtime at all — and (only when
 		// the project ships a frontend) the dev IdP as a `forge.Compose`
 		// container. A project that wants its database containerized too says
 		// `forge.Compose` there as well and this loop brings that up instead.
@@ -1033,7 +1073,7 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// before they boot — the runtime counterpart to the generate-time
 		// shadow DB, which forge already ensure-creates on the fly. A freshly
 		// scaffolded dev DSN (…:5434/<project>) names a database nothing has
-		// issued CREATE DATABASE for, so the first `forge run` boot would
+		// issued CREATE DATABASE for, so the first `forge env up` boot would
 		// otherwise die with `FATAL: database "<project>" does not exist`
 		// before AUTO_MIGRATE could apply the schema. ensureDevDatabase is a
 		// no-op off dev (seedTargetIsDev gates it) and off a resolved DSN, so
@@ -1095,7 +1135,7 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 //     PORT-INDEPENDENT, which is the whole point. It used to hang off a port
 //     conflict, and then ephemeral dev ports arrived: a second stack takes a
 //     free port, collides with nothing, and the reclaim never ran. Eight rounds
-//     of `forge run` left 38 orphaned processes, 7.5 GB resident, on 15 ports.
+//     of `forge env up` left 38 orphaned processes, 7.5 GB resident, on 15 ports.
 //
 //  2. Refuse to start against a port held by something we do NOT own. That is
 //     all the port probe was ever for. After (1) every remaining holder is
@@ -2597,7 +2637,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	if cfg != nil && env != "" {
 		projectConfigEnv = loadProjectConfigEnv(cfg, env)
 	}
-	// Dev-run defaults: on a dev env, `forge run` marks the runtime as
+	// Dev-run defaults: on a dev env, `forge env up` marks the runtime as
 	// development AND auto-applies migrations on boot, so a fresh dev DB
 	// comes up with its schema without any hand-set env vars. Lowest
 	// precedence — overridden by project config, secrets, the declared env
@@ -2666,7 +2706,7 @@ func forceHostBindPorts(env []string, svcName string, declared map[string]string
 }
 
 // withDevRunDefaults layers the dev-run environment UNDER the project config
-// when isDev, so `forge run` / `forge env up dev` boots a fresh dev app
+// when isDev, so `forge env up dev` boots a fresh dev app
 // turnkey with zero hand-set env vars:
 //
 //   - ENVIRONMENT=development — marks the runtime as development so dev
@@ -2677,7 +2717,7 @@ func forceHostBindPorts(env []string, svcName string, declared map[string]string
 //     freshly-created dev DB has its schema before the host-services
 //     readiness gate + first-boot auto-seed run (maybeAutoSeed assumes the
 //     schema is current — it seeds, it does not migrate). Without this a
-//     `forge run` against an empty DB serves an unmigrated, tableless app.
+//     `forge env up` against an empty DB serves an unmigrated, tableless app.
 //
 // CORS needs no entry here. ENVIRONMENT=development is itself what enables
 // the backend's CORS layer (serverkit.Config.CORSEnabled) and selects the
@@ -2701,7 +2741,7 @@ func forceHostBindPorts(env []string, svcName string, declared map[string]string
 // dev defaults dead code for every field the scaffold doesn't pin. ENVIRONMENT
 // is the field that makes this rule load-bearing: it is what puts the backend
 // in the development posture, and an unpinned "" arriving from the total
-// projection would silently demote a `forge run` to a deployed posture — a
+// projection would silently demote a `forge env up` to a deployed posture — a
 // backend that then refuses its own frontend's preflight, so every CRUD page
 // renders "Couldn't load data / Failed to fetch" against a seeded DB.
 // Pin a field in deploy/kcl/<env>/config.k to override for real.
@@ -3045,9 +3085,9 @@ func markFrontendInstallOK(dir string) {
 // when that allocation failed, in which case the dev server picks its own.
 //
 // frontendArgs are passthrough tokens forwarded to the dev server after a
-// `--` separator (`npm run dev -- <frontendArgs>`), so `forge run --
-// --host 0.0.0.0` reaches Vite/Next. Empty (the `forge env up` default) leaves
-// the command untouched.
+// `--` separator (`npm run dev -- <frontendArgs>`), so
+// `forge env up dev -- --host 0.0.0.0` reaches Vite/Next. Empty (no `--` on
+// the invocation) leaves the command untouched.
 func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv, frontendArgs []string, apiBaseURL string) *exec.Cmd {
 	runner := fe.DevRunner
 	if runner == "" {

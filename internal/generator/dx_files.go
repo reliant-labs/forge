@@ -187,7 +187,7 @@ func (g *ProjectGenerator) generateDevcontainer() error {
 	var forward []string
 	if g.isService() {
 		forward = append(forward, fmt.Sprintf("%d", g.ServicePort))
-		// FrontendPort 0 = ephemeral (allocated at `forge run` time), so there
+		// FrontendPort 0 = ephemeral (allocated at `forge env up` time), so there
 		// is no stable port to pre-declare here; skip it rather than forward
 		// port "0". An explicit frontend port (>0) is still forwarded.
 		if g.FrontendName != "" && g.FrontendPort > 0 {
@@ -836,7 +836,7 @@ the equivalent) so re-running is safe.
 // generateSeeds documents the runtime seed model and scaffolds the
 // user-owned db/seeds/custom/ overlay ONCE. forge writes no seed .sql files
 // into the project: the deterministic dataset materializes at runtime via
-// `forge db seed apply` (and `forge run` first-boot auto-seed). The only
+// `forge db seed apply` (and `forge env up` first-boot auto-seed). The only
 // on-disk artifact is the custom overlay — the sanctioned hook for
 // hand-authored / domain-flavored demo data — which is user-owned from
 // birth and never regenerated.
@@ -851,7 +851,7 @@ runtime, deterministically, from the applied schema:
     forge db seed status    # per-table seeded-row counts
     forge db seed reset     # wipe seeded tables and re-seed (dev only)
 
-` + "`forge run`" + ` auto-seeds a fresh dev database on first boot (all tables
+` + "`forge env up`" + ` auto-seeds a fresh dev database on first boot (all tables
 empty). apply/reset refuse any non-dev environment — seeding never runs
 against staging or production, and the applier is not compiled into your
 server binary.

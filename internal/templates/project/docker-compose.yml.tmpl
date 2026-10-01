@@ -3,7 +3,7 @@ services:
   # scaffolded dev environment runs.
   #
   # `deploy/kcl/dev/main.k` declares postgres as a `forge.HostInfra`, so
-  # `forge run` starts a real postgres binary as a host process and never
+  # `forge env up` starts a real postgres binary as a host process and never
   # touches this service. The reasoning is there, in the file that makes the
   # choice; the short version is that a dev loop whose own code runs on the
   # host should not require a container runtime underneath it, and on a small
@@ -80,7 +80,7 @@ services:
       # differ; here they do not, so discovery would work too.
       #
       # THIS CONTAINER is the exception, and it is why the dev loop for
-      # a project with an IdP is `forge run` (host processes) rather
+      # a project with an IdP is `forge env up` (host processes) rather
       # than `docker compose up app`. Zitadel resolves WHICH instance a
       # request is for from the request's Host header, and the instance
       # only knows the domain it was configured with (`localhost`). A
@@ -168,7 +168,7 @@ services:
   # status the `postgres` service above has.
   #
   # `deploy/kcl/dev/main.k` declares the IdP as a `forge.HostInfra` with
-  # `engine = "zitadel"`, so `forge run` downloads the pinned Zitadel binary
+  # `engine = "zitadel"`, so `forge env up` downloads the pinned Zitadel binary
   # once and supervises it as a host process. That is what makes a
   # scaffolded project start ZERO containers: Zitadel is a single static Go
   # binary, and a dev loop whose own code runs on the host should not need a
@@ -347,7 +347,7 @@ services:
   # also means there is no second port to declare in KCL. The IdP reaches it
   # at `idp-db:5432` on this network.
   #
-  # It is only running while the IdP is. `forge run` starts the IdP, which
+  # It is only running while the IdP is. `forge env up` starts the IdP, which
   # `depends_on` this and waits for its healthcheck, so it comes and goes
   # with the one service that uses it. A project that drops the IdP from
   # deploy/kcl/dev/main.k starts neither.

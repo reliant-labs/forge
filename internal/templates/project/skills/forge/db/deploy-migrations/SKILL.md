@@ -139,7 +139,7 @@ There is no stepping a schema back, and no rollback of a release either — see
 ## Where AUTO_MIGRATE still fits
 
 `AUTO_MIGRATE=true` migrates **in-process at startup**. It is not a duplicate
-of the init container — it serves the HOST loop (`forge run`), where there is
+of the init container — it serves the HOST loop (`forge env up`), where there is
 no pod and therefore no init container. The scaffold sets it true in `dev`'s
 `config.k` and leaves it false everywhere else.
 

@@ -23,7 +23,7 @@ import (
 // after the job, the declared value is right.
 //
 // But config.js is rendered by `forge generate`, and the job runs during
-// `forge run`. On a FRESH project those happen in that order exactly once,
+// `forge env up`. On a FRESH project those happen in that order exactly once,
 // with the wrong result: generate renders the document while the client id
 // is still the empty stub, the job then publishes the real one, and nothing
 // re-reads it. The browser gets `"OIDC_CLIENT_ID": ""` — which the frontend

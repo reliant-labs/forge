@@ -48,7 +48,7 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"    sample_rate: float = 0.0\n" +
 		"\n" +
 		"# Every ENV_VAR AppConfig declares `sensitive: true` for. Used by forge's\n" +
-		"# host-mode config probe, which resolves the whole config for `forge run`\n" +
+		"# host-mode config probe, which resolves the whole config for `forge env up`\n" +
 		"# and the parity report. A WORKLOAD must not use it: naming every\n" +
 		"# credential is the broadcast that put one feature's secretKeyRef on\n" +
 		"# every pod. Declare what a workload reads in its `config_secrets` instead.\n" +

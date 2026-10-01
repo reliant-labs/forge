@@ -21,7 +21,7 @@ Use this skill whenever you need to introduce a new network-facing service, inte
 
 ## The fast path: scaffold everything the protos imply
 
-The per-component commands above are the granular path. When you author the proto directly, there is a one-command batch alternative: mark each entity message with a leading `// forge:entity` comment, add your custom RPCs, then run **`forge scaffold`**. It births every marked entity (missing CRUD quintet injected + owned create-table migration) and runs generate, which emits a pb-through handler stub for every custom RPC — in one visible, phased run (`--dry-run` plans; a re-run with nothing missing is a clean no-op). In dev the app boots alive: `forge run` auto-seeds a fresh DB from the applied schema. The entity/seed halves live in the `db` skill, the pb-through RPC handlers in `api`, and the standalone domain package (when you extract one) in `service-layer` / `contracts`.
+The per-component commands above are the granular path. When you author the proto directly, there is a one-command batch alternative: mark each entity message with a leading `// forge:entity` comment, add your custom RPCs, then run **`forge scaffold`**. It births every marked entity (missing CRUD quintet injected + owned create-table migration) and runs generate, which emits a pb-through handler stub for every custom RPC — in one visible, phased run (`--dry-run` plans; a re-run with nothing missing is a clean no-op). In dev the app boots alive: `forge env up` auto-seeds a fresh DB from the applied schema. The entity/seed halves live in the `db` skill, the pb-through RPC handlers in `api`, and the standalone domain package (when you extract one) in `service-layer` / `contracts`.
 
 ## One-shot steps: the `job` workload kind
 

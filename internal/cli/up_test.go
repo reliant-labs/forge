@@ -1062,12 +1062,12 @@ func TestWaitHostServicesReady_NoPortsIsInstantPass(t *testing.T) {
 
 // withDevRunDefaults injects the dev-run env defaults (ENVIRONMENT=development,
 // AUTO_MIGRATE=true) at the lowest precedence for a dev env, and passes the
-// project config through untouched for non-dev — so `forge run` boots a
+// project config through untouched for non-dev — so `forge env up` boots a
 // migrated schema in dev while production stays unchanged (turnkey dev migrate).
 //
 // ENVIRONMENT carries the CORS story: it is what enables the backend's CORS
 // layer (serverkit.Config.CORSEnabled) and selects the origin-reflecting dev
-// policy. `forge run` therefore synthesizes NO CORS_ORIGINS of its own — it
+// policy. `forge env up` therefore synthesizes NO CORS_ORIGINS of its own — it
 // used to derive one from the declared frontend ports purely to trip
 // serverkit's old "origins non-empty" gate, a value the generated factory's
 // dev branch then discarded. That derivation could not work in general

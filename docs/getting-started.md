@@ -196,7 +196,7 @@ the line.
 ## 5. Run it
 
 ```bash
-forge run
+forge env up dev
 ```
 
 This is the inner loop: host services plus frontends, no cluster. It
@@ -217,7 +217,7 @@ It will not hang waiting for a TTY that is not there.
 Host readiness includes compilation: Forge waits up to two minutes for the
 declared ports, prints progress, and reports a runner's exit immediately.
 On a slower machine, use `forge env up dev --host-ready-timeout 5m` (also
-available on `forge run`). A timeout reports the pending ports and log paths;
+available on `forge env up`). A timeout reports the pending ports and log paths;
 it does not mean the process crashed, and started processes remain tracked
 for `forge env status` and `forge env down`.
 

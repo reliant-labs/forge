@@ -195,13 +195,13 @@ func buildCurlCommand(projectDir, target string, opts curlOptions) (string, erro
 		curl += authNote
 	}
 	// The dev loop binds a KERNEL-ASSIGNED port at launch (so several stacks
-	// coexist on one host) and never persists it — it exists in the `forge run`
+	// coexist on one host) and never persists it — it exists in the `forge env up`
 	// banner and nowhere on disk. So this default is right for a deployed env
 	// and wrong for the local stack the user most likely wants to hit, and
 	// saying so is cheaper than the round-trip through a connection refused.
 	if opts.port == 0 {
 		curl += fmt.Sprintf(
-			"\n# Port %d is the AppConfig default. `forge run` binds an ephemeral port instead —\n# take it from the launch banner (or `forge env status <env>`) and pass --port.",
+			"\n# Port %d is the AppConfig default. `forge env up` binds an ephemeral port instead —\n# take it from the launch banner (or `forge env status <env>`) and pass --port.",
 			defaultServePort)
 	}
 	if streamingNote != "" {

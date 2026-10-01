@@ -203,7 +203,7 @@ func withMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cob
 //
 // A binary embedding no migrations is not an error there. A project that has
 // not written its first migration is the state every project starts in, and
-// `forge project new` tells the user to run `forge run` next: a migrate step
+// `forge project new` tells the user to run `forge env up` next: a migrate step
 // that hard-fails on an empty db/migrations/ means the scaffold cannot
 // execute its own next step. The job gates every workload in the
 // environment, so nothing started at all — a fresh project could not boot.

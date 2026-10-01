@@ -1070,6 +1070,95 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "`forge release cut` and the publishing flags on top-level `forge build`",
+		Why: "Publishing is an ENVIRONMENT act, so it moved onto the env noun as " +
+			"`forge env build <env> [--push] [--release vX]`. Both flags always NEEDED an env to " +
+			"resolve — a push destination is declared per workload in the env's render, and a " +
+			"release's artifact set (including the per-env external build_cmd images that exist " +
+			"nowhere else) is discovered from deploy/kcl/<env>/main.k — so on a command whose env " +
+			"argument is OPTIONAL they were a combination that could only be rejected at runtime. " +
+			"Top-level `forge build` is now compile-only: a local check that the tree builds, which " +
+			"is exactly why its env argument can stay optional.\n" +
+			"`forge release cut` was DELETED in the same move. It was the cut WITHOUT the build, for " +
+			"a pipeline whose build and release are separate jobs — that is " +
+			"`forge env build <env> --release vX --no-build`, the same code path with the build " +
+			"phase off. Two spellings of one cut meant two places for the release's completeness " +
+			"gate to drift, and that gate is the only thing standing between a release with a hole " +
+			"in it and a promotion that ships one. A surviving `forge build --push`, " +
+			"`forge build --release` or `forge release cut` is a copy-pasteable command — in a doc, " +
+			"a skill, a CI workflow or a scaffolded script — that now exits non-zero.",
+		Patterns: []*regexp.Regexp{
+			// The deleted subcommand, in any invocation shape.
+			regexp.MustCompile(`\bforge release cut\b`),
+			regexp.MustCompile("`release cut`"),
+			// The publishing flags ON `forge build` specifically. Anchored on
+			// `forge build` so the LIVE `forge env build <env> --push` and
+			// `--release` are untouched — `forge env build` does not match
+			// `forge build` (the word `env` sits between), which is the whole
+			// reason this pattern can be this narrow.
+			regexp.MustCompile(`\bforge build\b[^\n]{0,60}--push\b`),
+			regexp.MustCompile(`\bforge build\b[^\n]{0,60}--release\b`),
+			// The Go ARGV form: exec/test invocations pass the command and
+			// flag as separate string args, so the tokens are never adjacent
+			// in the source and the patterns above cannot see them.
+			regexp.MustCompile(`"release",\s*"cut"`),
+			// The deleted Go constructor, so a resurrection is caught before
+			// it acquires any help text.
+			regexp.MustCompile(`\bnewReleaseCutCmd\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the ADR that decided the env verbs",
+				Reason: "docs/adr/env-verbs.md states the problem it solves by LISTING the overlapping " +
+					"entry points it removed — `forge build [--push] [--release]` and " +
+					"`forge release cut` among them — and records in its Decision table which " +
+					"commands each new verb absorbed, including the observation that `release cut` " +
+					"was literally the tail of `build --release`. Naming a deleted spelling in order " +
+					"to say it is deleted is the removal, not a reference, and this is the text that " +
+					"explains why this guard entry exists. Scoped to the one file, so a doc that " +
+					"TELLS someone to run it still fails.",
+				// The ADR writes these as inline code spans inside a markdown
+				// table cell and a task bullet, so the matched text runs
+				// across backticks and punctuation ("forge build --push`,
+				// `forge build --release", "forge build` becomes compile-only
+				// (refuses `--push/--release"). Allow `forge build` followed
+				// by either flag anywhere on the line, in this ONE file.
+				Token: regexp.MustCompile("`forge release cut`|`release cut`|forge build[^\n]*--(?:push|release)"),
+				Paths: []string{"docs/adr/env-verbs.md"},
+			},
+			{
+				Name: "the text that documents where `release cut` went",
+				Reason: "Three places name the deleted command in order to say it is deleted and where it " +
+					"went: env_build.go's doc comment (the command that absorbed it, explaining that " +
+					"--no-build IS the cut-only half), release_cmd.go's note on why the release noun " +
+					"holds no cut verb, and the tests that assert `cut` is no longer registered and " +
+					"that the run flags moved with it. That last one is the Go-level guard which " +
+					"catches a resurrection before any doc mentions it, so deleting the text to " +
+					"satisfy this sweep would remove the check. Scoped to those files.",
+				Token: regexp.MustCompile("`forge release cut`|`release cut`"),
+				Paths: []string{
+					"internal/cli/env_build.go",
+					"internal/cli/env_build_test.go",
+					"internal/cli/release_cmd.go",
+					"internal/cli/run_identity_test.go",
+				},
+			},
+			{
+				Name: "the English noun \"release cut\"",
+				Reason: "\"The release cut\" is the ordinary name for the EVENT of cutting a release, and " +
+					"forge still cuts releases — pkg/release's StageCut is literally that stage, and " +
+					"the ledger/verify/deploy code describes a release's own provenance in those " +
+					"words (\"a release cut on a different machine\", \"an idempotent release cut\"). " +
+					"Only the COMMAND went away. A pattern broad enough to catch stale prose also " +
+					"catches the noun, and a pattern that cries wolf gets weakened — which would " +
+					"defeat this guard for every removal in the table. The command-shaped patterns " +
+					"above require either `forge ` immediately before it or the backticked code " +
+					"span, so this allowance only needs to cover the bare English phrase.",
+				Token: regexp.MustCompile(`(?i)\b(?:the|a|an|every|idempotent|same) release cut\b|release cut (?:is|was|on|with|resolves|keys|today)\b`),
+			},
+		},
+	},
+	{
 		Name: "the `forge dev` command group",
 		Why: "The k3d lifecycle and dev-state introspection verbs were promoted flat out of the " +
 			"`dev` namespace onto `forge cluster`: `forge cluster up|down|reset|reload|status|" +

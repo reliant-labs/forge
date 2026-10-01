@@ -698,7 +698,7 @@ func TestPromotionKindFromWire_Closed(t *testing.T) {
 
 // ─── End to end through the command tree ─────────────────────────────────────
 
-// `forge release cut v1 --env prod` → `forge env promote v1 --to prod` →
+// `forge env build prod --release v1 --no-build` → `forge env promote v1 --to prod` →
 // `forge cloud releases prod`, for an env whose KCL declares forge.ControlPlane,
 // against the fake control plane. Nothing is written to the project's ledger
 // files: the env's declaration routed every write to the control plane.
@@ -716,7 +716,7 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	t.Setenv("FORGE_E2E_CP_TOKEN", "rlat_e2e")
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fmt.Sprintf(
 		`{"output":{"control_plane":{"type":"control_plane","endpoint":%q,"token_env":"FORGE_E2E_CP_TOKEN"},"workloads":[{"name":"api","kind":"service","image":"api","runtime":{"type":"cluster","cluster":"c","namespace":"n"},"spec":{"kind":"service"}}],"databases":[{"name":"orders","runtime":"hosted"}]}}`, srv.URL)))
-	// The build state an earlier `forge build prod --push` left behind.
+	// The build state an earlier `forge env build prod --push` left behind.
 	if err := WriteBuildState(dir, "prod", BuildState{
 		Image: "api", Tag: "v1", Pushed: true, PushedAt: nowRFC3339(), Digest: sha("1"),
 	}); err != nil {
@@ -734,8 +734,8 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 		return out + buf.String(), err
 	}
 
-	if out, err := run("release", "cut", "v1", "--env", "prod"); err != nil {
-		t.Fatalf("forge release cut: %v\n%s", err, out)
+	if out, err := run("env", "build", "prod", "--release", "v1", "--no-build"); err != nil {
+		t.Fatalf("forge env build --release: %v\n%s", err, out)
 	}
 	if out, err := run("env", "promote", "v1", "--to", "prod", "--actor", "ci"); err != nil {
 		t.Fatalf("forge env promote: %v\n%s", err, out)

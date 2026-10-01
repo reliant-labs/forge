@@ -19,7 +19,7 @@ without forge ever touching your additions.
 | `.github/workflows/ci.yml` | Tier-1 | Lint (golangci-lint, buf lint, frontend lint+typecheck, migration safety), test (`go test -race -count=1 ./...`, frontend vitest), build (Go binaries with `-trimpath -buildvcs=true`, frontend `next build`), `forge ci verify-generated`, KCL validation, vuln scan (govulncheck, npm audit, Trivy), license check (go-licenses), Docker build, optional E2E |
 | `.github/workflows/proto-breaking.yml` | Tier-1 | `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow. |
 | `.github/workflows/build-images.yml` | Tier-1 | The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml` |
-| `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge build <env> --push` + `forge env deploy <env>`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
+| `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge env build <env> --push` + `forge env deploy <env>`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
 | `.github/workflows/e2e.yml` | Tier-1 | E2E suite, label-gated on PRs (`run-e2e`) — emitted when there is a suite to run: the generated `e2e/` harness exists, or `ci.e2e.enabled: true`. docker-compose or k3d runtime |
 | `.github/workflows/pre-commit.yml` | Tier-2 | Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after) |
 | `.github/dependabot.yml` | Tier-1 | Weekly bumps for `gomod` (root + `/gen` + each frontend), `npm` (frontend), `docker`, and `github-actions` |
@@ -118,7 +118,7 @@ images:
 
 ```bash
 printf '%s' "$TOKEN" | forge registry login <env> --username <user> --password-stdin
-forge build <env> --push                    # each image → its own declared reference
+forge env build <env> --push                    # each image → its own declared reference
 forge registry ref <env> --github-output    # ref= image= digest= for later steps
 ```
 

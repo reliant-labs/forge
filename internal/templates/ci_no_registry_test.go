@@ -9,7 +9,7 @@ import (
 // A registry is DECLARED as part of a workload's (or frontend's) `image` in
 // the project's KCL, and nowhere else — an environment does not have one. A
 // scaffolded workflow therefore never names a registry: it logs in with
-// `forge registry login <env>`, builds with `forge build <env> --push`, and
+// `forge registry login <env>`, builds with `forge env build <env> --push`, and
 // reads the pushed ref back with `forge registry ref <env>` — each of which
 // reads the images' own references. A registry host in a workflow, a REGISTRY
 // env/var, or a --push carrying a value is a second source of truth that
@@ -56,12 +56,12 @@ func TestScaffoldedWorkflowsGoThroughForgeForTheRegistry(t *testing.T) {
 	w := renderedWorkflows(t)
 	for _, tc := range []struct{ name, want string }{
 		{"build-images", `forge registry login "$FORGE_ENV" --username`},
-		{"build-images", `forge build "$FORGE_ENV" --target demo --push --tag "$tag"`},
+		{"build-images", `forge env build "$FORGE_ENV" --target demo --push --tag "$tag"`},
 		{"build-images", `forge registry ref "$FORGE_ENV" --github-output`},
 		{"build-images", `image-ref: ${{ needs.build-push.outputs.ref }}`},
 		{"build-images", `run: cosign sign --yes "$IMAGE_REF"`},
 		{"deploy", `forge registry login "${{ matrix.env }}" --username`},
-		{"deploy", `run: forge build "${{ matrix.env }}" --push` + "\n"},
+		{"deploy", `run: forge env build "${{ matrix.env }}" --push` + "\n"},
 	} {
 		if !strings.Contains(string(w[tc.name]), tc.want) {
 			t.Errorf("%s.yml lacks %q", tc.name, tc.want)

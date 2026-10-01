@@ -688,7 +688,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		}
 		if rel == nil {
 			return promotePlan{}, fmt.Errorf("release %q not found in %s.\n"+
-				"  Cut it first with: forge build %s --release %s --push",
+				"  Cut it first with: forge env build %s --release %s --push",
 				opts.Version, releaseStore.Location(), opts.Env, opts.Version)
 		}
 		target = *rel

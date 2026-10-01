@@ -974,7 +974,7 @@ type deployTagResolution struct {
 //     images. Wins because a deliberate promotion is a stronger signal than the
 //     per-env build state.
 //  2. The per-env build state: the aggregate + per-service build-<env>.json
-//     digests `forge build --push` wrote.
+//     digests `forge env build --push` wrote.
 //  3. The mutable :tag (resolveDeployImageTag) for any image with no captured
 //     digest.
 //
@@ -1460,7 +1460,7 @@ func warnUndeployedFrontends(w io.Writer, cfg *config.ProjectConfig, entities *K
 //	firebase    built, assembled, `firebase deploy` (FirebaseProvider)
 //	hosted      NOT here: published to the control plane by the hosted
 //	            group (buildHostedGroup), from a release artifact
-//	            `forge build <env> --push` pushed
+//	            `forge env build <env> --push` pushed
 //
 // envCfgKV (the per-env -D config) is layered UNDER the frontend's KCL
 // env_vars so an explicit env_var wins, and is only injected when the env
@@ -1937,7 +1937,7 @@ func kclEntitiesHaveK8sCluster(entities *KCLEntities) bool {
 //
 //  1. flagOverride — `--tag` on the CLI. CI pipelines that pin a release
 //     number land here.
-//  2. .forge/state/build-<env>.json — what `forge build --push` last
+//  2. .forge/state/build-<env>.json — what `forge env build --push` last
 //     pushed for this env. This is the load-bearing path that closes
 //     the build/deploy tag divergence: build records the exact tag it
 //     pushed, deploy reads it back, the working-tree state between the
@@ -1947,7 +1947,7 @@ func kclEntitiesHaveK8sCluster(entities *KCLEntities) bool {
 //     build, no override — recompute the tag the way build would.
 //
 // DIGEST PINNING: when the build-state record carries a content-addressed
-// Digest (captured by `forge build --push`), the returned reference is the
+// Digest (captured by `forge env build --push`), the returned reference is the
 // IMMUTABLE digest form `@sha256:...` instead of the mutable :tag — unless
 // noDigest is set. The KCL `_image_ref` seam recognises an `@`-prefixed
 // image_tag and pins `<image>@sha256:...`, dropping the env tag. A digest
@@ -2258,7 +2258,7 @@ func checkReleasePinned(entities *KCLEntities, digests map[string]string, boundR
 			"The release ledger and this deploy's build state carry digests under:\n%s\n\n"+
 			"Deploying would silently fall back to the mutable tag, which is not what the release names — so forge stopped.\n"+
 			"Fix: re-cut and re-promote the release so its artifacts are keyed by the repositories the KCL declares\n"+
-			"  forge build %s --release <version> --push && forge env promote <version> --to %s\n"+
+			"  forge env build %s --release <version> --push && forge env promote <version> --to %s\n"+
 			"Or deploy without the release's pins, deliberately: forge env deploy %s --no-digest",
 		envName, boundRelease, strings.Join(unpinned, "\n"), known, envName, envName, envName)
 }
@@ -2314,7 +2314,7 @@ func expandLegacyLedgerKeys(resolved, uris map[string]string) map[string]string 
 //     what makes every env on the same release deploy byte-identical images
 //     (build once, promote). This is the new layer.
 //  2. The per-env build state (today's flow): resolveDeployImageDigests reads
-//     the aggregate + per-service build-<env>.json digests `forge build --push`
+//     the aggregate + per-service build-<env>.json digests `forge env build --push`
 //     wrote.
 //  3. The mutable :tag (resolveDeployImageTag, the caller's separate step) for
 //     any image still carrying no digest.
@@ -2353,12 +2353,12 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		// Name every image whose freshly-built digest the release is about to
 		// discard. The release winning is correct — a promotion is a
 		// deliberate "these exact bytes ship" — but doing it SILENTLY is how a
-		// successful `forge build --push` becomes a deploy that ships the old
+		// successful `forge env build --push` becomes a deploy that ships the old
 		// image and still reports a clean rollout. The operator sees a green
 		// deploy and an unchanged app, with nothing connecting the two.
 		if built, ok := base[image]; ok && built != digest {
 			fmt.Printf("  Note: %s was just built as %s, but release %s pins %s — deploying the RELEASE.\n"+
-				"        To ship the build instead: forge build %s --release <version> --push && forge env promote <version> --to %s\n"+
+				"        To ship the build instead: forge env build %s --release <version> --push && forge env promote <version> --to %s\n"+
 				"        Or deploy the built image directly: forge env deploy %s --no-digest --tag <tag>\n",
 				image, shortDigest(built), binding.Release, shortDigest(digest), envName, envName, envName)
 		}
@@ -2416,7 +2416,7 @@ func (a freshnessAnchor) describe() string {
 // again), where an unbound env just rebuilds from HEAD.
 func (a freshnessAnchor) remedy(envName string) string {
 	if a.Release != "" {
-		return fmt.Sprintf("rebuild the release (forge build %s --release %s --push), then re-promote and deploy", envName, a.Release)
+		return fmt.Sprintf("rebuild the release (forge env build %s --release %s --push), then re-promote and deploy", envName, a.Release)
 	}
 	return "rebuild from HEAD (forge build --docker ...), then deploy"
 }
@@ -2740,7 +2740,7 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 	imageRef := repository + ":" + tag
 
 	// Skip the rebuild if the image is already present at the tag (e.g.
-	// the user just ran `forge build --push` against the same registry).
+	// the user just ran `forge env build --push` against the same registry).
 	// `docker manifest inspect` is cheap (HEAD against the registry) and
 	// avoids an O(minutes) docker build + push on the hot path.
 	if imageExistsInRegistry(ctx, imageRef) {
@@ -2815,7 +2815,7 @@ func resolveDeployArch(cfgArch, flagArch string) string {
 // imageExistsInRegistry returns true when `docker manifest inspect` can
 // resolve the given image:tag, i.e. it's already in the registry. Used
 // by buildAndPushLocal to short-circuit the redundant deploy-time build
-// when `forge build --push` has already pushed the same tag. Any error
+// when `forge env build --push` has already pushed the same tag. Any error
 // (manifest absent, registry unreachable, manifest API disabled) yields
 // false so we fall through to the normal build+push path.
 //

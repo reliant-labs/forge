@@ -40,7 +40,7 @@ pins each deleted spelling. Docs, skills, the scaffold, generated CI and
 ## Tasks (disjoint ownership)
 
 - **V1 `env up`** — fold `forge run` into the existing `forge env up` (the `--` dev-server passthrough moves onto it); non-local refusal + test; delete `forge run`. The local verb KEEPS the name `env up`: it is the spelling already in every doc, skill and scaffolded script, and renaming it to `env dev` would have churned all of them to say the same thing.
-- **V2 `env build`** — move build `--push/--release` and `release cut` into `env build`; top-level `forge build` becomes compile-only (refuses `--push/--release` with a pointer); delete `release cut`.
+- **V2 `env build`** — move build `--push/--release` and `release cut` into `env build`; top-level `forge build` becomes compile-only (refuses `--push/--release` with a pointer); delete `release cut`. The cut-without-build that `release cut` served is `forge env build <env> --release vX --no-build`, so the pipeline shape whose build and release are separate jobs keeps working off one code path.
 - **V3 `env deploy`** — fold `promote.go`+`promote_*.go` into `deploy`: version/`--from` ⇒ promote path; wait-by-default; self-managed client-side apply after the ledger write; no version ⇒ current spec-change deploy. Delete `env promote`.
 - **V4 `env status`** — merge status/verify/wait/rollout/topology/history into one command with `--wait`/`--history`; delete the others.
 - **V5 docs/skills/scaffold** — every skill, doc, template, CHANGELOG, help text; removalguard entries for all deleted spellings. Runs after V1–V4 land (or in parallel, rebasing).

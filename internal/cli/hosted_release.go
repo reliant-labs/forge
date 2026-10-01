@@ -17,7 +17,7 @@ var hostedBackendDigestResolver = func(ctx context.Context, ref string) (string,
 }
 
 // harvestHostedBackendArtifacts records the image every HOSTED workload that
-// forge does not build declares — so `forge release cut` covers the workloads
+// forge does not build declares — so a release cut covers the workloads
 // a hosted deploy ships, and `forge env deploy` can pin them from the binding.
 //
 // WHY THIS IS SEPARATE FROM THE BUILD-STATE HARVEST. Such a workload names an

@@ -146,7 +146,7 @@ tmp/
 
 # ── Forge internal state ──
 # .forge/ contains debug-session.json, caches, .forge/state/build-<env>.json
-# (handoff from `forge build --push` to `forge env deploy`), transient side
+# (handoff from `forge env build --push` to `forge env deploy`), transient side
 # renders (.forge/render/ holds `--explain-drift` diff inputs), and
 # other runtime state. Generated files certify THEMSELVES (each carries
 # an embedded `forge:hash` marker), so there is no generated-state
@@ -168,7 +168,7 @@ tmp/
 #                     to inherit "we removed that file", not re-acquire
 #                     it on their first generate. To want one back:
 #                     `forge project rescaffold <path>`.
-#   releases/       — the release ledger (`forge build --release`,
+#   releases/       — the release ledger (`forge env build --release`,
 #   promotions/       `forge env promote`): what each version IS and which
 #                     version each environment runs, as an append-only log
 #                     per env. Only for envs that keep their ledger in the

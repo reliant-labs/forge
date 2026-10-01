@@ -91,7 +91,7 @@ func TestImagePinFor_ReadsTheBuildIdentity(t *testing.T) {
 // (the deploy ref), an external build of the `reliant` service with NO
 // per-service pin must use `staging` as ${TAG} — NOT the env-wide
 // build-loop tag the caller threaded (here a stand-in git-describe
-// value). This is what makes `forge build staging --push` push
+// value). This is what makes `forge env build staging --push` push
 // the SAME tag `forge env deploy staging` references, instead of pushing
 // git-describe and deploying "staging" → ImagePullBackOff.
 func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {

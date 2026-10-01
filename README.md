@@ -128,7 +128,7 @@ KCL under `deploy/kcl/<env>/`, and the same source renders dev, staging, and
 prod. Our own control plane runs `dev`, `dev-k8s`, `e2e`, `staging`, `preprod`,
 and `prod` across k3d, Vultr, and two GKE clusters, from one definition.
 
-- **Build once, promote by digest.** `forge build --release v1.4.0` captures
+- **Build once, promote by digest.** `forge env build --release v1.4.0` captures
   content-addressed digests; `forge env promote v1.4.0 --to prod` ships the
   exact bytes that passed staging.
 - **Preflight before apply.** On remote clusters, Forge verifies every

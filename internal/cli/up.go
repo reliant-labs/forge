@@ -2404,7 +2404,7 @@ func entitiesEmpty(e *KCLEntities) bool {
 // upBuildCluster builds the project docker image with the per-env KCL filter
 // applied (deliverable 3's runBuild path) and pushes each image to the
 // reference its own workload declares — resolved inside runBuild by
-// resolvePushPlan, the same resolution `forge build <env> --push` uses. An env
+// resolvePushPlan, the same resolution `forge env build <env> --push` uses. An env
 // whose workloads all run on the host has nothing pulling an image, so its
 // images are built locally and nothing is pushed; forge never substitutes a
 // registry of its own.

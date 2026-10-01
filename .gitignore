@@ -141,7 +141,7 @@ tmp/
 
 # ── Forge internal state ──
 # .forge/ contains debug-session.json, caches, .forge/state/build-<env>.json
-# (handoff from `forge build --push` to `forge env deploy`), transient side
+# (handoff from `forge env build --push` to `forge env deploy`), transient side
 # renders (.forge/render/ holds `--explain-drift` diff inputs), and
 # other runtime state. Generated files certify THEMSELVES (each carries
 # an embedded `forge:hash` marker), so there is no generated-state

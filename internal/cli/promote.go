@@ -12,7 +12,7 @@ import (
 
 // newPromoteCmd is `forge env promote <version> --to <env>`: bind an env to a
 // release. This is the "promote, don't rebuild" half of the build-once model.
-// It reads the release `forge build --release` cut, freezes each image's
+// It reads the release `forge env build --release` cut, freezes each image's
 // digest, and APPENDS one entry to the env's promotion ledger — the project's
 // .forge/promotions/<env>.jsonl, or the control plane the env's KCL declares.
 // No build runs; the bytes that were cut as <version> are, by construction,
@@ -38,7 +38,7 @@ func newPromoteCmd() *cobra.Command {
 		Short: "Bind an environment to a release (build once, promote — no rebuild)",
 		Long: `Bind an environment to an already-built release.
 
-` + "`forge build --release <version>`" + ` builds the env-agnostic images ONCE,
+` + "`forge env build --release <version>`" + ` builds the env-agnostic images ONCE,
 captures their content-addressed digests, and cuts a release. ` + "`forge env promote`" + `
 advances that release to an environment BY REFERENCE: it appends one entry —
 env, release, and the per-image digests frozen at this moment — to the env's
@@ -101,7 +101,7 @@ Exit codes:
 what was expected and what is actually there.
 
 Examples:
-  forge build prod --release v1.4.0 --push   # build once, cut the release (prod's declared registry)
+  forge env build prod --release v1.4.0 --push   # build once, cut the release (prod's declared registry)
   forge env promote v1.4.0 --to staging --plan            # what WOULD change (writes nothing)
   forge env promote v1.4.0 --to staging --plan --json     # the same, machine-readable
   forge env promote v1.4.0 --to staging                  # bind staging → v1.4.0

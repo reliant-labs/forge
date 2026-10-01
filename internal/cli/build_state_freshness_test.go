@@ -218,7 +218,7 @@ func TestResolveDeployImageTag_NoCommitSkipsFreshnessCheck(t *testing.T) {
 
 // bindEnvToRelease writes both halves of a release-bound env: the release
 // ledger (which records the commit the images were built from) and the
-// env→release binding. This is the state a real `forge build --release` +
+// env→release binding. This is the state a real `forge env build --release` +
 // `forge env promote` pair leaves behind.
 func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
 	t.Helper()

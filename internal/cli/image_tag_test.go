@@ -13,7 +13,7 @@ import (
 
 // TestResolveImageTag_DirtyTree exercises the canonical bug case: a
 // working tree with a modified tracked file produces a `*-dirty` tag,
-// which is exactly what `forge build --push` will tag the image with.
+// which is exactly what `forge env build --push` will tag the image with.
 // This is the contract that both build and deploy now consume.
 //
 // Note: `git describe --dirty` only considers MODIFIED tracked files

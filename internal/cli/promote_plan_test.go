@@ -220,15 +220,15 @@ func TestPromotePlan_FirstPromote(t *testing.T) {
 	}
 }
 
-// TestPromoteCmd_RollbackFlagRemoved: `forge env promote --rollback` is gone.
-// A backwards promote is an ordinary promote; the flag must be an unknown-flag
-// error rather than a silently accepted no-op.
+// TestPromoteCmd_RollbackFlagRemoved: `--rollback` is gone. A backwards
+// release deploy is an ordinary deploy; the flag must be an unknown-flag error
+// rather than a silently accepted no-op.
 func TestPromoteCmd_RollbackFlagRemoved(t *testing.T) {
-	cmd := newPromoteCmd()
+	cmd := newDeployCmd()
 	if cmd.Flags().Lookup("rollback") != nil {
-		t.Fatal("--rollback is registered on `forge env promote` again")
+		t.Fatal("--rollback is registered on `forge env deploy` again")
 	}
-	cmd.SetArgs([]string{"v1", "--to", "prod", "--rollback"})
+	cmd.SetArgs([]string{"prod", "v1", "--rollback"})
 	cmd.SetOut(&strings.Builder{})
 	cmd.SetErr(&strings.Builder{})
 	err := cmd.Execute()

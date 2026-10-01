@@ -354,7 +354,14 @@ echo "✅ committed and pushed $VERSION at $RELEASE_SHA"
 # immutable either way. The script says so explicitly, because the wrong
 # reaction (delete the tag, re-cut it) burns the version permanently.
 echo ""
-if "$(dirname "$0")/wait-for-go-proxy.sh" --module "$ROOT_MODULE" --version "$VERSION" --tag-pushed; then
+# ONE PROXY, ONE OVERRIDE. The immutable-version check (step 1) and this wait
+# ask the same proxy about the same version, so they read the same base:
+# FORGE_RELEASE_PROXY_BASE, forwarded as the wait script's own seam unless the
+# caller already set that. Two independent defaults meant a run pointed at a
+# fixture proxy for step 1 still polled proxy.golang.org here — for a version
+# that will never appear there — and sat out the full 600s window.
+if GOPROXY_WAIT_BASE="${GOPROXY_WAIT_BASE:-$PROXY_BASE}" \
+  "$(dirname "$0")/wait-for-go-proxy.sh" --module "$ROOT_MODULE" --version "$VERSION" --tag-pushed; then
   echo ""
   echo "✅ released $VERSION at $RELEASE_SHA"
   echo ""

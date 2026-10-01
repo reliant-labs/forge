@@ -18,7 +18,7 @@ import (
 
 // `forge registry` is what a CI job needs to work from an env's DECLARATIONS
 // alone: log docker in to the registries the env's workloads name, and read
-// back the digest-pinned refs of what `forge build <env> --push` pushed there.
+// back the digest-pinned refs of what `forge env build <env> --push` pushed there.
 //
 // NEITHER COMMAND TAKES A REGISTRY, and neither has a flag that could carry
 // one. The registry is part of a workload's `image` in deploy/kcl/workloads.k,
@@ -37,7 +37,7 @@ workload's ` + "`image`" + ` in deploy/kcl/workloads.k carries its own registry,
 environment declares one.
 
 The registry is never passed to forge: these commands read it from the workload
-declarations, exactly as ` + "`forge build <env> --push`" + ` and ` + "`forge env deploy <env>`" + ` do.
+declarations, exactly as ` + "`forge env build <env> --push`" + ` and ` + "`forge env deploy <env>`" + ` do.
 An env whose workloads name two registries is handled by both commands without
 forge needing a concept for it.`,
 	}
@@ -68,7 +68,7 @@ func newRegistryLoginCmd() *cobra.Command {
 		Use:   "login <environment> --username <user> --password-stdin",
 		Short: "docker login to every registry the env's workloads declare",
 		Long: `Log docker in to each registry host named by the images the env's workloads
-declare, so that ` + "`forge build <env> --push`" + ` and any signing / SBOM / scanning step
+declare, so that ` + "`forge env build <env> --push`" + ` and any signing / SBOM / scanning step
 that follows can reach them.
 
 The registry HOSTS come from the workload declarations and nowhere else — there
@@ -167,8 +167,8 @@ func newRegistryRefCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "ref <environment> [--image <name>]",
-		Short: "Print the digest-pinned refs `forge build <env> --push` pushed",
-		Long: `Print ` + "`<image>@<digest>`" + ` for each image the last ` + "`forge build <env> --push`" + `
+		Short: "Print the digest-pinned refs `forge env build <env> --push` pushed",
+		Long: `Print ` + "`<image>@<digest>`" + ` for each image the last ` + "`forge env build <env> --push`" + `
 pushed — the immutable references a signing, SBOM, provenance or vulnerability
 scan step should act on. They are read from .forge/state/ (what the build
 recorded), so each ref names the registry its own workload declared.
@@ -251,7 +251,7 @@ type imageRef struct {
 
 func (r imageRef) String() string { return r.repository + "@" + r.digest }
 
-// pushedImageRefs reads what `forge build <env> --push` recorded and returns
+// pushedImageRefs reads what `forge env build <env> --push` recorded and returns
 // the digest-pinned ref of each pushed image, sorted by repository. only, when
 // set, narrows to the image whose repository or artifact name matches it.
 func pushedImageRefs(ctx context.Context, projectDir, env, only string) ([]imageRef, error) {
@@ -307,7 +307,7 @@ func pushedImageRefs(ctx context.Context, projectDir, env, only string) ([]image
 func notPushedError(env, what string) error {
 	return cliutil.UserErr("forge registry ref "+env,
 		fmt.Sprintf("%s with a pushed digest recorded for env %q", what, env), "",
-		fmt.Sprintf("run forge build %s --push first — it records the digest of what it pushed to each image's declared reference", env))
+		fmt.Sprintf("run forge env build %s --push first — it records the digest of what it pushed to each image's declared reference", env))
 }
 
 // readAllImageBuildStates reads every per-image build state recorded for env.

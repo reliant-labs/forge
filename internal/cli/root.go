@@ -268,7 +268,7 @@ authored protos, in one call.`,
 	// env is an optional modifier (e.g. `forge build [env]`) stay at root.
 	rootCmd.AddCommand(newEnvCmd())
 	// `release` is the release-ledger noun. Cutting a ledger stays on
-	// `forge build --release` and advancing one stays on `forge env
+	// `forge env build --release` and advancing one stays on `forge env
 	// promote` — both act on the thing that owns them. What lives here is
 	// the verb that acts on a LEDGER itself, with no environment involved:
 	// `forge release verify` proves every artifact the ledger names really

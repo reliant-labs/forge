@@ -164,7 +164,7 @@ func TestRegistryHost(t *testing.T) {
 const refDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 // TestRegistryRef_PrintsThePushedDigestRef: the ref a scan/sign step needs is
-// what `forge build <env> --push` recorded — the image's own reference, host
+// what `forge env build <env> --push` recorded — the image's own reference, host
 // included, and the digest — never a YAML literal.
 func TestRegistryRef_PrintsThePushedDigestRef(t *testing.T) {
 	dir := planProject(t, declaredRegistryFixture)
@@ -213,8 +213,8 @@ func TestRegistryRef_UnpushedBuildFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := runRegistryCommand(t, "", "ref", "prod")
-	if err == nil || !strings.Contains(err.Error(), "forge build prod --push") {
-		t.Fatalf("ref of an unpushed build: want a runbook naming `forge build prod --push`, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "forge env build prod --push") {
+		t.Fatalf("ref of an unpushed build: want a runbook naming `forge env build prod --push`, got %v", err)
 	}
 }
 

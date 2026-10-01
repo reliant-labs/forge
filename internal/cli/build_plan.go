@@ -19,7 +19,7 @@ import (
 
 // `forge build --plan` — the release cut, checked without cutting.
 //
-// WHY THIS EXISTS. control-plane's v1.7.0 cut (`forge build prod --release
+// WHY THIS EXISTS. control-plane's v1.7.0 cut (`forge env build prod --release
 // v1.7.0 --push`, pushing to prod's GAR) failed eleven minutes in, on a `go build
 // ./cmd/prod-daemon-cluster` for a package that never existed: an image-less
 // infra service had been given a synthesized GoBuild. The two PRs that
@@ -426,7 +426,7 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 	// captured nothing at all.
 	if len(would) == 0 {
 		return nil, fmt.Errorf("--release %s: this build would capture no image digest to record — a release pins immutable digests, which require "+
-			"a push (forge build %s --release %s --push pushes to each image's own registry)", in.opts.release, in.opts.env, in.opts.release)
+			"a push (forge env build %s --release %s --push pushes to each image's own registry)", in.opts.release, in.opts.env, in.opts.release)
 	}
 	return names, nil
 }

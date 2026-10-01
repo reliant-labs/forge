@@ -24,6 +24,7 @@ func newEnvCmd() *cobra.Command {
 		Short: "Manage deploy environments: bring stacks up/down, deploy, promote, and inspect",
 	}
 	cmd.AddCommand(newEnvUpCmd())
+	cmd.AddCommand(newEnvBuildCmd())
 	cmd.AddCommand(newEnvDownCmd())
 	cmd.AddCommand(newEnvStatusCmd())
 	cmd.AddCommand(newEnvPsCmd())

@@ -121,7 +121,7 @@ func TestDispatchBuild_Errors(t *testing.T) {
 // a workload forge builds (ADR 0002 §5), so a workload with no build block —
 // a compose service, a third-party image, a sibling binary, an image-less
 // infra workload — is simply not built. The old synthesized ./cmd/<name>
-// default is what sent `forge build --release` at packages that did not
+// default is what sent `forge env build --release` at packages that did not
 // exist.
 func TestNoSynthesizedBuild(t *testing.T) {
 	for _, w := range []WorkloadEntity{

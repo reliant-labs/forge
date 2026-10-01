@@ -15,7 +15,7 @@ import (
 
 // The regression these tests pin, found by control-plane's hosted e2e:
 //
-//	forge build <env> --target echo --tag t1 --push
+//	forge env build <env> --target echo --tag t1 --push
 //
 // printed `Tag: t1 (explicit --tag flag)` and then ran the ShellBuild with
 // ${TAG}=latest — the env's image_tag — and recorded `latest` in build state.

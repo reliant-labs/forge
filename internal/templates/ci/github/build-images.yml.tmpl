@@ -76,7 +76,7 @@ jobs:
         run: printf '%s' "$LOGIN_TOKEN" | forge registry login "$FORGE_ENV" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
 
       - name: Build and push
-        # `forge build <env> --push` pushes to the env's declared registry
+        # `forge env build <env> --push` pushes to the env's declared registry
         # and records the tag and digest in .forge/state/. `--target
         # {{.ProjectName}}` builds the project image alone: frontend images
         # are per-env (each renders that env's config.js), so deploy.yml
@@ -86,7 +86,7 @@ jobs:
           IMAGE_TAG_OVERRIDE: ${{"{{"}} github.event.inputs.image_tag {{"}}"}}
         run: |
           tag="${IMAGE_TAG_OVERRIDE:-sha-${GITHUB_SHA::7}}"
-          forge build "$FORGE_ENV" --target {{.ProjectName}} --push --tag "$tag"
+          forge env build "$FORGE_ENV" --target {{.ProjectName}} --push --tag "$tag"
 
       - name: Pushed image ref
         id: ref
@@ -175,7 +175,7 @@ jobs:
 {{- /*
   No frontend job here. A frontend image is ENVIRONMENT-SPECIFIC — each env
   renders its own config.js (API origin, OIDC client, telemetry) into the
-  build — so it cannot be built once on main. `forge build <env> --push` in
+  build — so it cannot be built once on main. `forge env build <env> --push` in
   deploy.yml builds it, after re-rendering config.js from that env's KCL. The
   raw `docker buildx build frontends/*` this replaced baked whatever
   config.js happened to be on disk (the DEV document, or nothing on a clean

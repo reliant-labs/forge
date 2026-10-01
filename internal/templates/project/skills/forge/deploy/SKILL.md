@@ -170,7 +170,7 @@ forge doctor --signal deploy   # probes, resources, Secrets, migrations
 
 ```
 forge build <env>                 # what <env> declares (host workloads need no image)
-forge build <env> --push          # and push each image to the reference its workload declares
+forge env build <env> --push          # and push each image to the reference its workload declares
 forge registry login <env> -u <user> --password-stdin   # login to every host they name
 forge registry ref <env>          # <image>@<digest> per image the last build pushed
 forge build <env> --plan          # resolve + preflight the build set; build nothing
@@ -257,7 +257,7 @@ frontends.
 
 A frontend on `forge.OnHosted {}` publishes into the platform's bucket and
 CDN, as an OCI release with **no `config.js` in it**, so `forge env promote`
-moves one digest everywhere. `forge build <env> --push` pushes it. The
+moves one digest everywhere. `forge env build <env> --push` pushes it. The
 frontend's `runtime_config` becomes the spec's `runtimeConfig`:
 
 ```yaml
@@ -320,7 +320,7 @@ no `--rollback`, no `rollback_cmd`, and no `kubectl rollout undo` path.
 Recovery is always a **new release that rolls forward**:
 
 ```bash
-forge build prod --release v1.7.1 --push     # each image to its declared reference
+forge env build prod --release v1.7.1 --push     # each image to its declared reference
 forge env promote v1.7.1 --to prod --plan    # read it: direction must be AHEAD
 forge env promote v1.7.1 --to prod --note "<incident>"
 forge env deploy prod

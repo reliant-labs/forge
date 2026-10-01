@@ -96,7 +96,7 @@ jobs:
         run: printf '%s' "$LOGIN_TOKEN" | forge registry login "$FORGE_ENV" --username "${{ github.actor }}" --password-stdin
 
       - name: Build and push
-        # `forge build <env> --push` pushes to the env's declared registry
+        # `forge env build <env> --push` pushes to the env's declared registry
         # and records the tag and digest in .forge/state/. `--target
         # demo` builds the project image alone: frontend images
         # are per-env (each renders that env's config.js), so deploy.yml
@@ -106,7 +106,7 @@ jobs:
           IMAGE_TAG_OVERRIDE: ${{ github.event.inputs.image_tag }}
         run: |
           tag="${IMAGE_TAG_OVERRIDE:-sha-${GITHUB_SHA::7}}"
-          forge build "$FORGE_ENV" --target demo --push --tag "$tag"
+          forge env build "$FORGE_ENV" --target demo --push --tag "$tag"
 
       - name: Pushed image ref
         id: ref

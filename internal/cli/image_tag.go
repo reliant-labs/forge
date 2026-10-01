@@ -19,7 +19,7 @@ import (
 //
 // When the working tree changes between phases (the original bug:
 // untracked files appear/disappear, `-dirty` toggles), only the state
-// file written by `forge build --push` keeps the two phases in lock-
+// file written by `forge env build --push` keeps the two phases in lock-
 // step. resolveImageTag is the standalone-deploy fallback for when no
 // state file exists.
 //

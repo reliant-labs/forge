@@ -132,7 +132,7 @@ type HostedTarget struct {
 	// image was pushed (the release artifact's URI). It locates the bytes of
 	// a workload whose image THIS project builds, which is declared
 	// registry-less (`image = "api"`): the registry is declared once, on the
-	// env's forge.ControlPlane, and recorded here by `forge build <env> --push`.
+	// env's forge.ControlPlane, and recorded here by `forge env build <env> --push`.
 	Registries map[string]string
 }
 
@@ -399,7 +399,7 @@ func checkImagePushBase(envName, base string, plan []hostedPlanItem) error {
 		if !strings.HasPrefix(repo, base+"/") {
 			errs = append(errs, fmt.Errorf("%s: image %s is not under this org's image push base %s, and the control plane "+
 				"refuses to publish it.\n"+
-				"  fix: push the image to %s/%s, re-cut the release (forge release cut <version> --env %s), "+
+				"  fix: push the image to %s/%s, re-cut the release (forge env build %s --release <version> --no-build), "+
 				"then re-promote it (forge env promote <version> --to %s)",
 				item.Name, spec.Image, base, base, HostedArtifactName(spec.Image), envName, envName))
 		}
@@ -443,7 +443,7 @@ func HostedArtifactName(image string) string {
 //   - A registry-less spec image (`api`) is one THIS project builds. Its
 //     repository is where the release recorded pushing it: the artifact's
 //     registry + "/" + the artifact name — the same coordinates
-//     `forge build --push` wrote the digest under.
+//     `forge env build --push` wrote the digest under.
 //
 // A registry-less image whose release recorded no registry was built without
 // --push, so there are no addressable bytes to pin: refused, naming the fix.
@@ -458,7 +458,7 @@ func hostedWorkloadRepository(image, artifact string, group ServiceGroup) (strin
 	}
 	if registry == "" {
 		return "", fmt.Errorf("image %q names no registry, and release %s recorded none for artifact %q — it was built without a push.\n"+
-			"  fix: forge build %s --push, re-cut the release (forge release cut <version> --env %s), then promote it",
+			"  fix: forge env build %s --push, re-cut the release (forge env build %s --release <version> --no-build), then promote it",
 			image, group.Hosted.Release, artifact, group.Env, group.Env)
 	}
 	return registry + "/" + artifact, nil
@@ -524,7 +524,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 	if group.Hosted.Release == "" && hostedGroupHasPinnedArtifact(group) {
 		return nil, fmt.Errorf("hosted env %q has no promoted release, so there is no digest to deploy.\n"+
 			"A hosted deploy ships only the digests a promotion froze — never a tag, never a local build.\n"+
-			"fix: forge release cut <version> --env %s && forge env promote <version> --to %s",
+			"fix: forge env build %s --release <version> --no-build && forge env promote <version> --to %s",
 			group.Env, group.Env, group.Env)
 	}
 	var (
@@ -555,7 +555,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no artifact %q (the workload's image %s).\n"+
-					"  fix: re-cut the release so it covers this workload (forge release cut <version> --env %s), then promote it",
+					"  fix: re-cut the release so it covers this workload (forge env build %s --release <version> --no-build), then promote it",
 					svc.Name, group.Hosted.Release, artifact, spec.Image, group.Env))
 				continue
 			}
@@ -589,8 +589,8 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no static site artifact %q.\n"+
-					"  fix: build and push the site (forge build %s --push), re-cut the release "+
-					"(forge release cut <version> --env %s), then promote it",
+					"  fix: build and push the site (forge env build %s --push), re-cut the release "+
+					"(forge env build %s --release <version> --no-build), then promote it",
 					svc.Name, group.Hosted.Release, artifact, group.Env, group.Env))
 				continue
 			}

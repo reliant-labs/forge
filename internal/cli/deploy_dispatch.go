@@ -723,7 +723,7 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 }
 
 // hostedArtifactKey is the ONE rule for which release artifact a hosted
-// workload's digest is bound under, shared by `forge release cut` (which
+// workload's digest is bound under, shared by `forge env build --release` (which
 // records it) and the hosted deploy (which pins by it):
 //
 //   - the workload's own artifact name (`image`), when forge builds it —

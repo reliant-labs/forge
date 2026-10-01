@@ -17,8 +17,8 @@ const hostedStaticDigest = "sha256:222222222222222222222222222222222222222222222
 // TestHostedStaticSiteCLIEndToEnd drives a hosted StaticSite through the real
 // commands against an httptest control plane:
 //
-//	forge build hosted --push               (site → OCI artifact, stubbed push)
-//	forge release cut v1 --env hosted       (records web@<digest>)
+//	forge env build hosted --push               (site → OCI artifact, stubbed push)
+//	forge env build hosted --release v1 --no-build   (records web@<digest>)
 //	forge env promote v1 --to hosted
 //	forge env deploy hosted                 (ensure → STATIC deployment pinned
 //	                                         to that digest → publish → ready)
@@ -54,7 +54,7 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() { hostedStaticPusher = prevPush })
 
-	if out, err := runForge(t, "build", "hosted", "--push", "--tag", "t1"); err != nil {
+	if out, err := runForge(t, "env", "build", "hosted", "--push", "--tag", "t1"); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	// The frontend's OWN declared reference plus the platform's layout segment,
@@ -62,8 +62,8 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 	if pushedTo != "ghcr.io/acme/web/static.v1" {
 		t.Fatalf("site pushed to %q, want the declared reference plus static.v1", pushedTo)
 	}
-	if out, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
-		t.Fatalf("release cut: %v\n%s", err, out)
+	if out, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
+		t.Fatalf("record the release: %v\n%s", err, out)
 	}
 	rel := fake.releases["v1"]
 	// The artifact is NAMED by the repository it was pushed to — the

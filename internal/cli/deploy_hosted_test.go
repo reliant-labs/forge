@@ -113,7 +113,7 @@ func runForge(t *testing.T, args ...string) (string, error) {
 // TestHostedCLIEndToEnd drives the real commands against an httptest control
 // plane speaking Connect JSON:
 //
-//	forge release cut v1 --env hosted
+//	forge env build hosted --release v1 --no-build
 //	forge env promote v1 --to hosted       (creates the env by name)
 //	forge env deploy hosted --json         (ensure → publish → readiness)
 //	forge env status hosted --json
@@ -137,7 +137,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 	t.Cleanup(func() { hostedPollInterval = prevPoll })
 	stubHostedRegistry(t)
 
-	if out, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
+	if out, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 		t.Fatalf("release cut: %v\n%s", err, out)
 	}
 	rel, ok := fake.releases["v1"]
@@ -267,7 +267,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 // its pod never starts without the value:
 //
 //	forge secret set hosted GREETING   (ensures the env by name)
-//	forge release cut v1 --env hosted
+//	forge env build hosted --release v1 --no-build
 //	forge env promote v1 --to hosted
 //	forge env deploy hosted
 //
@@ -308,7 +308,7 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 		t.Fatalf("secret landed in %q, env is %q", secretEnv, envID)
 	}
 	for _, args := range [][]string{
-		{"release", "cut", "v1", "--env", "hosted"},
+		{"env", "build", "hosted", "--release", "v1", "--no-build"},
 		{"env", "promote", "v1", "--to", "hosted"},
 		{"env", "deploy", "hosted", "--rollout-timeout", "2s"},
 	} {
@@ -367,7 +367,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 		fake, _ := setup(t, `        image = "localhost:5051/acme/api:v1"
         ports = [fw.Port {name = "http", port = 8080, expose = True}]
         resources = fw.Resources {cpuRequestMillicores = 500, memoryRequestBytes = 1073741824}`)
-		if _, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
+		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
@@ -390,7 +390,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 	t.Run("foreign registry", func(t *testing.T) {
 		fake, _ := setup(t, hostedOnBandSpec)
 		fake.imagePushBase = "registry.reliant.dev/org-1"
-		if _, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
+		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {

@@ -21,7 +21,7 @@ import (
 // service's manifest to its own `@sha256:...`). This file adds the layer
 // that lets a SINGLE build feed MANY envs:
 //
-//	forge build --release v1.4.0   → builds the env-agnostic images ONCE,
+//	forge env build --release v1.4.0   → builds the env-agnostic images ONCE,
 //	                                  records each image's digest in a
 //	                                  Release ledger (.forge/releases/<v>.json).
 //	forge env promote v1.4.0 --to prod → appends a promotion of prod → v1.4.0 to
@@ -189,7 +189,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 	}
 
 	// Aggregate project-image build state(s): env-specific, then the
-	// env-agnostic default a plain `forge build --release` (no --env) writes.
+	// env-agnostic default a plain `forge env build --release` (no --env) writes.
 	for _, key := range buildStateLookupEnvs(envName) {
 		st, err := ReadBuildState(projectDir, key)
 		if err != nil || st == nil {
@@ -200,7 +200,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 
 	// Per-service external-build states: build-<env>-<service>.json. Glob the
 	// state dir for each lookup env's per-service files and read each typed
-	// record. A `forge build --release` runs env-agnostic (env ""), so the
+	// record. A `forge env build --release` runs env-agnostic (env ""), so the
 	// per-service external builds land under the "default" key — iterating the
 	// same buildStateLookupEnvs fallback the aggregate uses keeps the two
 	// sources symmetric (and a release built with an explicit --env still picks
@@ -392,7 +392,7 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		// as liveDigest, so a release without it cannot deploy the site.
 		if frontendIsHosted(fe) {
 			if _, ok := artifacts[deploytarget.HostedStaticRepository(imageRepository(fe.Image))]; !ok {
-				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge build %s --push)", fe.Name, envNameOr(opts.env)))
+				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge env build %s --push)", fe.Name, envNameOr(opts.env)))
 			}
 			continue
 		}
@@ -471,7 +471,7 @@ func resolveReleaseDigests(r release.Release) (map[string]string, error) {
 		// A release that pins nothing is a dead end for promote/deploy: the
 		// whole point is to advance content-addressed digests by reference.
 		// The single most common way to reach here is a release cut with an
-		// EMPTY artifact map — `forge build --release X` ran but captured no
+		// EMPTY artifact map — `forge env build --release X` ran but captured no
 		// digests (forgot --push, no services built, external builds skipped
 		// for a missing build_cwd). The previous message ("carries no shared
 		// image digests to pin") read like an internal invariant and left the
@@ -482,7 +482,7 @@ func resolveReleaseDigests(r release.Release) (map[string]string, error) {
 			return nil, fmt.Errorf(
 				"release %q was cut with no image digests. This can happen if:\n"+
 					"  (1) no docker images were built (check --env and that KCL declares services),\n"+
-					"  (2) digests were not captured (re-run the build with --push: forge build <env> --release <version> --push), or\n"+
+					"  (2) digests were not captured (re-run the build with --push: forge env build <env> --release <version> --push), or\n"+
 					"  (3) all external builds were skipped due to a missing build_cwd.\n"+
 					"Inspect the release file with `forge project audit` to see what was recorded",
 				r.Version)

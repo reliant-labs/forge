@@ -223,9 +223,20 @@ func newBuildCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "build [environment]",
-		Short: "Build the project binary and frontends",
+		Short: "Compile the project's binaries and frontends locally (never publishes)",
 		Args:  cobra.MaximumNArgs(1),
-		Long: `Build the project's services and frontends.
+		Long: `Compile the project's services and frontends. A LOCAL CHECK.
+
+This command never publishes anything. Pushing images and recording a
+release are environment acts — a push destination is declared per workload
+in an env's render, and a release's artifact set is discovered from it — so
+they live on ` + "`forge env build <env>`" + `:
+
+  forge env build prod --push             # build + push to declared registries
+  forge env build prod --release v1.4.0   # build + push + record the release
+
+which is also why THIS command's environment argument is optional: it scopes
+docker builds and tag resolution, and nothing here needs an env to compile.
 
 This command is a PURE EXECUTOR of the per-service, per-env build
 declaration in KCL. With an environment argument it iterates the
@@ -240,19 +251,12 @@ It also builds Next.js frontends (npm run build) and, with --docker,
 the shared project image. Output binaries land in the output dir.
 
 Examples:
-  forge build                                # Build everything
+  forge build                                # Compile everything
   forge build staging                        # Scope docker builds/tag resolution to deploy/kcl/staging/
   forge build -t web                         # Build only the "web" frontend
   forge build -o bin                         # Output binaries to bin/
-  forge build --docker                       # Also build Docker images
+  forge build --docker                       # Also build Docker images (locally; never pushed)
   forge build --debug                        # Build with debug symbols for Delve
-  forge build prod --push                    # Build + push each image to the reference its workload declares
-
---push takes no value, and there is no registry to pass. Each image's
-destination is DECLARED on its workload, as part of its image field in
-deploy/kcl/workloads.k — the same reference forge env up and forge env deploy
-read, so what is pushed is what is deployed. Two workloads may name two
-different registries; both are pushed. --push without an env asks for one.
 
 When a declared reference is a k3d-local localhost:<port>, the image is
 also tagged registry.localhost:<port>/<path> (LOCAL alias only — the host
@@ -265,26 +269,18 @@ mirror config inside k3d resolves that reference at pull time).`,
 				}
 				opts.env = args[0]
 			}
-			if opts.push && opts.env == "" {
-				return errPushNeedsEnv()
+			// COMPILE-ONLY. Publishing moved to `forge env build <env>`,
+			// where the environment is the subject rather than an optional
+			// modifier. Refused here before any work, naming the
+			// replacement command. See refuseBuildPublishFlag in
+			// env_build.go.
+			if cmd.Flags().Changed("push") {
+				return refuseBuildPublishFlag("push", opts.env)
+			}
+			if cmd.Flags().Changed("release") {
+				return refuseBuildPublishFlag("release", opts.env)
 			}
 			if _, err := requireFeature(config.FeatureBuild); err != nil {
-				return err
-			}
-			// --push implies --docker so users don't have to pass both.
-			if opts.push {
-				opts.buildDocker = true
-			}
-			// --release pins immutable image digests, which only a docker
-			// image build produces — so a release build is always a docker
-			// build, even if the user forgot --docker/--push.
-			if opts.release != "" {
-				opts.buildDocker = true
-			}
-			// Validate the --release/--env coupling up front, before any
-			// build work, so the failure is a clear message rather than a
-			// missing-image surprise. Pure + tested in build_test.go.
-			if err := validateReleaseFlags(opts); err != nil {
 				return err
 			}
 			// Did the user pin concurrency explicitly? If so it's honoured
@@ -300,7 +296,15 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
-	cmd.Flags().BoolVar(&opts.push, "push", false, "Push docker images after build (implies --docker), each to the reference its own workload declares (its image field in deploy/kcl/workloads.k). Requires the environment argument; takes no value and carries no registry")
+	// --push and --release are REGISTERED but REFUSED here, on purpose.
+	// They moved to `forge env build <env>`, and the two surfaces fail very
+	// differently: an unregistered flag gets cobra's bare "unknown flag:
+	// --push", which tells a user with a working command in their shell
+	// history nothing about where it went. Registered, the RunE answers with
+	// the exact replacement. Hidden so they do not advertise themselves in
+	// --help as things this command can do.
+	cmd.Flags().BoolVar(&opts.push, "push", false, "Moved to `forge env build <env> --push` — a push destination is declared per workload in an env's render, so publishing is an environment act")
+	_ = cmd.Flags().MarkHidden("push")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
@@ -309,7 +313,8 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
 	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env promote --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
-	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES the environment argument: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with 'forge env promote <version> --to <env>'. Captures each image's digest into a release ledger (.forge/releases/<version>.json); 'forge env deploy <env>' then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
+	cmd.Flags().StringVar(&opts.release, "release", "", "Moved to `forge env build <env> --release <version>` — a release's artifact set is discovered from the env's render, so cutting one is an environment act")
+	_ = cmd.Flags().MarkHidden("release")
 
 	return cmd
 }
@@ -334,7 +339,7 @@ func releaseImageTag(opts buildOptions) string {
 	return opts.release
 }
 
-// validateReleaseFlags enforces that `forge build <env> --release <ver>` is
+// validateReleaseFlags enforces that `forge env build <env> --release <ver>` is
 // run with an environment argument. A release must pin the FULL image set,
 // including the per-env external build_cmd images (e.g. reliant,
 // workspace-base) that exist ONLY in deploy/kcl/<env>/main.k. Without an
@@ -358,7 +363,7 @@ func validateReleaseFlags(opts buildOptions) error {
 	if opts.env != "" {
 		return nil
 	}
-	return fmt.Errorf("--release requires an environment argument (`forge build <env> --release <ver>`) so forge can build the full image set " +
+	return fmt.Errorf("--release requires an environment argument (`forge env build <env> --release <ver>`) so forge can build the full image set " +
 		"(including per-env external build_cmd images like reliant/workspace-base, which are declared " +
 		"in deploy/kcl/<env>/main.k); the images are still env-agnostic — pick any env that declares " +
 		"them, then promote the release to all envs with `forge env promote <version> --to <env>`")
@@ -567,7 +572,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	//  2. --tag flag (explicit).
 	//  3. With --env: the env's RESOLVED image_tag, read off the rendered
 	//     manifests. This is the exact tag `forge env deploy <env>`
-	//     references — so `forge build --env <env> --push` then `forge env
+	//     references — so `forge env build --env <env> --push` then `forge env
 	//     deploy <env>` push and deploy the SAME tag by construction, instead
 	//     of build tagging from git-describe while the manifests bake the env
 	//     literal (e.g. "staging") → ImagePullBackOff.
@@ -997,7 +1002,7 @@ func narrowBuildEntities(projectName string, entities *KCLEntities, opts buildOp
 	// The PROJECT name narrows too, to the workloads the project image is
 	// built for. It is the command a CI job runs to publish that one image,
 	// and without this it ran every ShellBuild and DockerBuild the env
-	// declares — `forge build prod --target control-plane --push` needed a
+	// declares — `forge env build prod --target control-plane --push` needed a
 	// sibling-repo checkout for images it was never asked to build.
 	// Precedence is resolveNamedBuildTarget's: frontend, project, service.
 	switch t := opts.buildTarget; {
@@ -1376,7 +1381,7 @@ func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, op
 // `<image>@sha256:...` for it like any other.
 //
 // Why this exists: the project image was the ONLY thing that recorded state, so
-// a successful `forge build <env> --target <frontend> --push` left no trace. The
+// a successful `forge env build <env> --target <frontend> --push` left no trace. The
 // following `forge env deploy <env> --target <frontend>` then found nothing for
 // that image, fell through to the release ledger's stale digest, and redeployed
 // the OLD image while reporting a clean rollout — a silent no-op deploy that is
@@ -1455,7 +1460,7 @@ func writeReleaseLedger(ctx context.Context, opts buildOptions, entities *KCLEnt
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build
 // captured for env, check it covers everything env declares, and record it in
 // env's release ledger — the project's files, or the control plane env's KCL
-// declares. `forge build --release` calls it after building; `forge release
+// declares. `forge env build --release` calls it after building; `forge release
 // cut` calls it on its own, for the CI shape where images were built and
 // pushed by an earlier step.
 func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, outputDir string, entities *KCLEntities, opts buildOptions) (release.Release, error) {
@@ -1473,7 +1478,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	if len(artifacts) == 0 {
 		return release.Release{}, fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
 			"  A release pins immutable digests, which require a registry push — re-run with --push\n"+
-			"  (forge build %s --release %s --push pushes to each image's own registry).\n"+
+			"  (forge env build %s --release %s --push pushes to each image's own registry).\n"+
 			"  A release built without --push has only a local tag, which can't be promoted across envs", version, env, version)
 	}
 

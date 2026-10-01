@@ -304,7 +304,7 @@ forge generate --check
 # build + push each image to the reference its own workload declares in
 # deploy/kcl/workloads.k — the same reference `forge env deploy staging` pulls.
 # --push takes no value: to push elsewhere, change the workload's image.
-forge build staging --push
+forge env build staging --push
 
 # deploy with context guard
 forge env deploy staging

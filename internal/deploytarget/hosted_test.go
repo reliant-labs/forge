@@ -234,7 +234,7 @@ func TestHostedImagePushBase(t *testing.T) {
 			"ghcr.io/acme/api@" + digestA,                      // the image
 			"registry.reliant.dev/org-1",                       // the base
 			"push the image to registry.reliant.dev/org-1/api", // the fix
-			"forge release cut", "forge env promote",
+			"forge env build", "forge env promote",
 		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("refusal does not name %q:\n%v", want, err)
@@ -304,7 +304,7 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 		cp := &fakeCP{status: readyStatus(digestA), pushBase: "localhost:5051/org-1"}
 		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(), group(nil))
 		if err == nil || !strings.Contains(err.Error(), "--push") {
-			t.Fatalf("err = %v, want a refusal naming forge build --push", err)
+			t.Fatalf("err = %v, want a refusal naming forge env build --push", err)
 		}
 		if len(cp.procs()) != 0 {
 			t.Fatalf("RPCs made: %v", cp.procs())

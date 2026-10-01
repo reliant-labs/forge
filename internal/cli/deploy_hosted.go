@@ -142,9 +142,10 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	report.setHostedTarget(ep.URL, envID)
 
 	var (
-		release    string
-		digests    map[string]string
-		registries map[string]string
+		release     string
+		promotionID string
+		digests     map[string]string
+		registries  map[string]string
 	)
 	ledger := hostedLedger(client, ep.URL, ref.Project, ref.Kind)
 	binding, bound, berr := ledger.Bindings.Current(ctx, envName)
@@ -153,6 +154,12 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	}
 	if bound {
 		release, digests = binding.Release, binding.Resolved
+		// The promotion these digests were frozen by. Sent on every
+		// EnsureDeployment as applied_promotion_id, so the server can
+		// tell a row pinned FROM this promotion from one that has
+		// drifted away from it — the discriminator the converger needs
+		// and that a digest comparison cannot provide.
+		promotionID = binding.ID
 		// The promotion froze digests; WHERE each was pushed lives on the
 		// (immutable) release. A workload this project builds is published
 		// by its artifact name and pinned under that recorded registry.
@@ -178,7 +185,8 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	}
 	for i := range groups {
 		groups[i].DryRun = opts.dryRun
-		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Project: ref.Project, Release: release, Digests: digests, Registries: registries}
+		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Project: ref.Project, Release: release,
+			PromotionID: promotionID, Digests: digests, Registries: registries}
 	}
 
 	registry := &deploytarget.Registry{}

@@ -566,7 +566,7 @@ func applyRolloutToReport(report *envWaitReport, rollout wireRollout, includeUnp
 	report.Reason = rollout.Reason
 	report.StartedAt = rollout.StartedAt
 	report.FinishedAt = rollout.FinishedAt
-	report.StabilityWindowMS = rollout.StabilityWindowMS
+	report.StabilityWindowMS = rollout.StabilityWindowMS.Int64()
 	report.ConvergesPromotions = rollout.ConvergesPromotions
 	report.Workloads = waitWorkloadsJSON(rollout.Workloads)
 	report.Unpinned = waitWorkloadsJSON(rollout.Unpinned)

@@ -115,9 +115,13 @@ So before applying anything, every embedded version at or below the schema's
 version must be recorded in `schema_migrations_applied`. One that is not is
 `*migratekit.MissingMigrationError`, and nothing runs.
 
-**The fix is to re-version the file**, which the error spells out: the migration
-has not run anywhere, so renaming it to a timestamp newer than the schema's
-version is safe and is all that is needed. Forge deliberately does **not** apply
+**The fix is to re-version the file** with `forge db migration rebase <file>`,
+which the error spells out: the migration has not run anywhere, so renaming it
+to a timestamp newer than the schema's version is safe and is all that is
+needed. Rebase allocates the new version above both the directory's max and
+the default branch's, and **refuses** a migration that has already merged —
+that one is recorded in a database under its current name, so it must keep its
+version and be repaired by a new forward migration instead. Forge deliberately does **not** apply
 it out of order — that would make the schema depend on merge order, so
 A-then-B and B-then-A would produce different databases from the same commit
 with nothing reporting which one you got. `forge lint`'s

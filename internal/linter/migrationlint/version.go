@@ -2,7 +2,6 @@ package migrationlint
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,7 +24,7 @@ import (
 const RuleDuplicateVersion = "duplicate-migration-version"
 
 // DuplicateVersionRemediation is the fix text for a duplicate-version finding.
-const DuplicateVersionRemediation = `two migrations claim the same version, so the schema version cannot say which one was applied — re-version the newer file to a fresh UTC timestamp (` + "`forge db migration new`" + ` allocates one, or rename it to <YYYYMMDDHHMMSS>_<same-name>.up.sql). The file that has already been applied somewhere must keep its version; rename the one that has not`
+const DuplicateVersionRemediation = `two migrations claim the same version, so the schema version cannot say which one was applied — re-version the newer file to a fresh UTC timestamp with ` + "`" + RebaseCommand + ` <file>` + "`" + `. The file that has already been applied somewhere must keep its version; rebase the one that has not`
 
 // RuleNonTimestampVersion is the rule ID for a NEW migration that is not
 // timestamp-versioned.
@@ -37,7 +36,18 @@ const DuplicateVersionRemediation = `two migrations claim the same version, so t
 const RuleNonTimestampVersion = "non-timestamp-migration-version"
 
 // NonTimestampVersionRemediation is the fix text for a non-timestamp finding.
-const NonTimestampVersionRemediation = `new migrations must be versioned with a UTC timestamp (<YYYYMMDDHHMMSS>_<name>.up.sql) so parallel branches cannot claim the same version — create it with ` + "`forge db migration new <name>`" + `, or rename the file to a 14-digit UTC timestamp. Existing sequential migrations are left alone: a timestamp sorts after any of them, so nothing needs renumbering`
+const NonTimestampVersionRemediation = `new migrations must be versioned with a UTC timestamp (<YYYYMMDDHHMMSS>_<name>.up.sql) so parallel branches cannot claim the same version — re-version this file with ` + "`" + RebaseCommand + ` <file>` + "`" + `, or create the next one with ` + "`forge db migration new <name>`" + `. Existing sequential migrations are left alone: a timestamp sorts after any of them, so nothing needs renumbering`
+
+// RebaseCommand is the command that re-versions a migration, named by every
+// message that tells a user to do so.
+//
+// It is a constant shared with the migrator's own refusal
+// (pkg/migratekit.MissingMigrationError) because both previously named
+// `forge db migration rebase` when no such subcommand existed — a user
+// following either message hit "unknown command". A test asserts this string
+// resolves to a real CLI command, so the advice and the binary cannot drift
+// apart again.
+const RebaseCommand = "forge db migration rebase"
 
 // lintVersions reports every duplicate version among the migration files of
 // one directory, and every NEW migration that is not timestamp-versioned.
@@ -152,114 +162,4 @@ func isNewNonTimestamp(version uint64, allVersions []uint64, mergeBaseMax uint64
 		return version > mergeBaseMax
 	}
 	return len(fmt.Sprint(version)) >= migrationver.Digits
-}
-
-// repoRootOf returns the git repository root containing dir, or dir itself
-// when there is none. Every git call is scoped to it, so the lint never reads
-// a parent repository that happens to sit above an untracked project.
-func repoRootOf(dir string) string {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return dir
-	}
-	out, ok := runGit(abs, "rev-parse", "--show-toplevel")
-	if !ok {
-		return abs
-	}
-	root := strings.TrimSpace(out)
-	if root == "" {
-		return abs
-	}
-	return root
-}
-
-// mergeBaseMaxVersion returns the highest migration version present in dir as
-// of the merge-base between HEAD and the default branch — the state this
-// branch started from.
-//
-// Every failure is reported as "unknown" (false) rather than an error. The
-// linter runs in a checkout it does not control: a shallow CI clone, an
-// exported tarball, a repository with no default branch, or a migrations
-// directory that is not tracked at all. A version rule that failed the lint
-// in those conditions would be a rule people disable.
-func mergeBaseMaxVersion(repoRoot, migrationsDir string) (uint64, bool) {
-	defaultBranch, ok := defaultBranchRef(repoRoot)
-	if !ok {
-		return 0, false
-	}
-	base, ok := runGit(repoRoot, "merge-base", "HEAD", defaultBranch)
-	if !ok {
-		return 0, false
-	}
-	// Both paths go through EvalSymlinks before Rel. `git rev-parse
-	// --show-toplevel` reports a fully resolved path, while the caller's dir
-	// may still contain a symlink — on macOS every /var/... temp dir is
-	// really /private/var/..., so comparing the two unresolved produces a
-	// relative path like ../../private/var/... that ls-tree cannot resolve.
-	// The rule then silently degraded to its no-git fallback, which is the
-	// worst outcome: no error, no finding, and a reviewer told nothing.
-	rel, err := filepath.Rel(resolvePath(repoRoot), resolvePath(migrationsDir))
-	if err != nil {
-		return 0, false
-	}
-	out, ok := runGit(repoRoot, "ls-tree", "--name-only", strings.TrimSpace(base)+":"+filepath.ToSlash(rel))
-	if !ok {
-		// The directory did not exist at the merge-base: every migration
-		// in it is new, which is a real and useful answer (0).
-		return 0, true
-	}
-	var max uint64
-	for _, name := range strings.Split(out, "\n") {
-		name = strings.TrimSpace(name)
-		if name == "" || !strings.HasSuffix(name, ".sql") {
-			continue
-		}
-		if v, ok := migrationver.ParseVersion(name); ok && v > max {
-			max = v
-		}
-	}
-	return max, true
-}
-
-// defaultBranchRef resolves the default branch to compare against, preferring
-// the remote's own declaration over a guess.
-func defaultBranchRef(repoRoot string) (string, bool) {
-	// What the remote says its default branch is — the authoritative answer
-	// when the repository has a remote.
-	if out, ok := runGit(repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD"); ok {
-		ref := strings.TrimSpace(out)
-		if ref != "" {
-			return ref, true
-		}
-	}
-	// A local-only repository, or one whose origin/HEAD was never set.
-	for _, candidate := range []string{"origin/main", "origin/master", "main", "master"} {
-		if _, ok := runGit(repoRoot, "rev-parse", "--verify", candidate); ok {
-			return candidate, true
-		}
-	}
-	return "", false
-}
-
-// resolvePath returns path with every symlink resolved, falling back to the
-// input when it cannot be resolved. See mergeBaseMaxVersion for why this
-// matters.
-func resolvePath(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
-	}
-	return path
-}
-
-// runGit runs one git command in dir, returning its stdout and whether it
-// succeeded. A missing git binary is indistinguishable from a failed command
-// on purpose: both mean "cannot know", which is the only thing callers act on.
-func runGit(dir string, args ...string) (string, bool) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", false
-	}
-	return string(out), true
 }

@@ -413,15 +413,23 @@ func newDBMigrationCommand() *cobra.Command {
 
 	migrationCmd := &cobra.Command{
 		Use:   "migration",
-		Short: "Create new SQL migration files (forward only)",
-		Long: `Create a new forward-only SQL migration in db/migrations/.
+		Short: "Create and re-version forward-only SQL migration files",
+		Long: `Create a new forward-only SQL migration in db/migrations/, or re-version one.
 
-This scaffolds a sequentially-numbered .up.sql file, continuing
-the project's existing numbering (00001_, 00002_, …) so new migrations stay
-consistent with the scaffold births and never collide. The .up.sql file
-includes rich schema context so LLMs can immediately write the migration SQL.
+Versions are 14-digit UTC timestamps (<YYYYMMDDHHMMSS>_<name>.up.sql), never
+sequential numbers. A sequential allocator picks max+1 by reading the
+directory, which is collision-free on one checkout and collision-prone across
+branches: every branch cut from the same commit reads the same highest number
+and picks the same next one. A timestamp cannot collide without two branches
+allocating in the same second. Existing sequential files are never renamed —
+a 14-digit timestamp sorts after any 5-digit number, so adoption costs nothing.
 
-Context includes:
+Commands:
+  new     allocate a fresh timestamp and scaffold the .up.sql file
+  rebase  re-version an existing file whose version the schema has passed
+
+The .up.sql file includes rich schema context so LLMs can immediately write
+the migration SQL. Context includes:
   - Current schema (parsed from existing migrations, or from DB with --dsn)
   - Previous migration content
   - Migration history
@@ -429,13 +437,28 @@ Context includes:
 Examples:
   forge db migration new add_users_table
   forge db migration new add_preferences --dsn "$DATABASE_URL"
-  forge db migration new "backfill account status" --dir db/migrations`,
+  forge db migration new "backfill account status" --dir db/migrations
+  forge db migration rebase db/migrations/20260101120000_add_users.up.sql
+  forge db migration rebase --all-pending`,
 	}
 
 	newCmd := &cobra.Command{
 		Use:   "new [name]",
-		Short: "Create a new forward-only migration with schema context",
-		Args:  cobra.ExactArgs(1),
+		Short: "Create a new forward-only migration with a fresh UTC timestamp version",
+		Long: `Create a new forward-only migration in the migrations directory.
+
+The file is named <YYYYMMDDHHMMSS>_<name>.up.sql, using a UTC timestamp
+allocated to sort after every version already in the directory. Never
+hand-type a version number: max+1 is what makes parallel branches claim the
+same one.
+
+There is no .down.sql. Forge rolls forward — a bad migration is repaired by a
+new migration written against the state the database is actually in.
+
+Examples:
+  forge db migration new add_users_table
+  forge db migration new add_preferences --dsn "$DATABASE_URL"`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := &database.MigrationOptions{
 				DSN: dsn,
@@ -446,8 +469,100 @@ Examples:
 	newCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
 	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection")
 	migrationCmd.AddCommand(newCmd)
+	migrationCmd.AddCommand(newDBMigrationRebaseCommand())
 
 	return cmdutil.StrictGroup(migrationCmd)
+}
+
+// rebaseCommand is the exact command string the rebase refusal and the
+// version lint tell users to run.
+//
+// It is a constant because those messages previously named a command that did
+// not exist — `forge db migration rebase` was advice, not a subcommand, and a
+// user following the error hit "unknown command". A test asserts this string
+// resolves to a real command, so the advice and the CLI cannot drift apart
+// again.
+const rebaseCommand = "forge db migration rebase"
+
+// newDBMigrationRebaseCommand creates the `db migration rebase` subcommand.
+func newDBMigrationRebaseCommand() *cobra.Command {
+	var (
+		migDir     string
+		allPending bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "rebase [file...]",
+		Short: "Re-version migrations to fresh timestamps that sort after everything merged",
+		Long: `Re-version one or more migrations to fresh UTC timestamps.
+
+WHEN YOU NEED THIS. A migration whose version is below the schema's current
+version can never run: golang-migrate applies only what is above its recorded
+high-water mark, so the file is not pending, it is invisible. That happens one
+way — branches A and B are cut, A allocates the earlier timestamp, and B
+merges and deploys first. Main now holds A's SQL at a version the database has
+already passed, and every later ` + "`up`" + ` reports the schema current. The first
+symptom is a query for a column that does not exist.
+
+The file has not run anywhere, so re-versioning it is safe and is the fix.
+Both the migrator's refusal and ` + "`forge lint`" + `'s version rules point here.
+
+Each file keeps its name stem and gains a fresh timestamp that sorts after
+every version in the directory AND after the highest version on the default
+branch, allocated by the same allocator as ` + "`forge db migration new`" + `. Tracked
+files are moved with ` + "`git mv`" + `. A batch keeps its relative order.
+
+WHAT IT REFUSES. A migration already on the default branch keeps its version,
+always. Some database has recorded it as applied under its current filename,
+and renaming it would leave that database with a recorded version whose file
+no longer exists — worse than the problem, and unrecoverable without editing
+schema_migrations by hand. Write a new forward migration instead.
+
+Examples:
+  forge db migration rebase db/migrations/20260101120000_add_users.up.sql
+  forge db migration rebase --all-pending`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if allPending && len(args) > 0 {
+				return fmt.Errorf("--all-pending rebases every migration new on this branch; do not also name files")
+			}
+			if !allPending && len(args) == 0 {
+				return fmt.Errorf("name the migration file(s) to re-version, or pass --all-pending")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			paths := args
+			if allPending {
+				pending, err := database.PendingMigrations(migDir)
+				if err != nil {
+					return err
+				}
+				if len(pending) == 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "No migrations are new on this branch — nothing to re-version.\n")
+					return nil
+				}
+				paths = pending
+			}
+
+			results, err := database.RebaseMigrations(migDir, paths)
+			if err != nil {
+				return err
+			}
+			if len(results) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Nothing to re-version.\n")
+				return nil
+			}
+			for _, r := range results {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s → %s\n", filepath.Base(r.OldPath), filepath.Base(r.NewPath))
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "\nRe-versioned %d migration(s). Review the rename, then `forge db migrate up`.\n", len(results))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	cmd.Flags().BoolVar(&allPending, "all-pending", false, "Re-version every migration added on this branch (above the default branch's merge-base)")
+
+	return cmd
 }
 
 // newDBMigrateCommand creates the migrate subcommand.

@@ -163,6 +163,65 @@ func NextN(dir string, n int) ([]string, error) {
 	return allocate(taken, time.Now().UTC(), n), nil
 }
 
+// AllocateAfter allocates n versions that avoid every version in taken,
+// for a caller whose "already claimed" set is wider than one directory.
+//
+// `forge db migration rebase` is that caller. Re-versioning a migration has
+// to clear more than the files on disk: the file being renamed may itself be
+// the directory's highest version, and a fresh version equal to one already
+// merged and deployed on another branch would be just as unapplyable as the
+// one being fixed. So rebase seeds taken with the default branch's versions
+// and the merge-base high-water mark as well as the directory's contents,
+// which Scan alone cannot know about.
+//
+// Every allocated version is strictly GREATER than every version in taken,
+// not merely different from it. Skipping collisions is not enough here: the
+// whole point of a rebase is to move a file ABOVE a mark it currently sits
+// below, and a version that merely differs from the mark can still be under
+// it. A version dated in the future — a clock skew on the machine that
+// allocated it, or a hand-typed value — would otherwise keep winning, and
+// the rebase would produce a file just as unapplyable as the one it fixed.
+//
+// taken is not modified.
+func AllocateAfter(taken map[uint64]bool, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	seed := make(map[uint64]bool, len(taken))
+	var max uint64
+	for v := range taken {
+		seed[v] = true
+		if v > max {
+			max = v
+		}
+	}
+	return allocate(seed, startAfter(max, time.Now().UTC()), n)
+}
+
+// startAfter returns the instant to begin allocating from so that every
+// version produced exceeds max.
+//
+// Normally that is simply now: wall-clock time is ahead of every version
+// allocated in the past, and a sequential version (5 digits) is nine orders
+// of magnitude below any timestamp. The exception is a max that is itself a
+// future-dated timestamp, where now would allocate BELOW it — then the floor
+// is the second after max.
+func startAfter(max uint64, now time.Time) time.Time {
+	now = now.UTC().Truncate(time.Second)
+	maxText := strconv.FormatUint(max, 10)
+	if !IsTimestamp(maxText) {
+		return now
+	}
+	maxTime, err := time.Parse(Layout, maxText)
+	if err != nil {
+		return now
+	}
+	if maxTime.UTC().Before(now) {
+		return now
+	}
+	return maxTime.UTC().Add(time.Second)
+}
+
 // allocate is NextN's decision, separated from the filesystem and the clock
 // so the collision behaviour is testable without either.
 //

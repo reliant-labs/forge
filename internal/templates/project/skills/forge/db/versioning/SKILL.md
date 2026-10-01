@@ -42,6 +42,15 @@ golang-migrate applies only migrations **above** the recorded version, so one nu
 
 The migrator refuses with `*migratekit.MissingMigrationError` and applies nothing. **The fix is to re-version the file** — it has not run anywhere, so renaming it to a fresh timestamp is safe, and the error text says so.
 
+```bash
+forge db migration rebase db/migrations/20260101120000_add_users.up.sql
+forge db migration rebase --all-pending   # every migration added on this branch
+```
+
+Rebase keeps the name stem, allocates a version above both the directory's max and the default branch's (so a squashed-away migration still on main is accounted for), `git mv`s tracked files, and prints `old → new`.
+
+It **refuses** a migration that is already on the default branch, with no override. That one has been recorded as applied under its current filename by every database that ran it, so renaming it would leave those databases with a recorded version whose file does not exist — worse than the problem, and unrecoverable without hand-editing `schema_migrations`. A migration that has merged keeps its version; repair it with a new forward migration.
+
 Forge deliberately does not apply it out of order. That would make the schema depend on merge order, so A-then-B and B-then-A would produce different databases from the same commit with nothing reporting which one you got — a `DROP COLUMN` landing after the migration that reads the column is a different schema from the reverse. For the least reversible thing that ships, a loud refusal beats a quiet guess.
 
 See `db/deploy-migrations` for the full record model (`schema_migrations_applied`, the mismatch check, and the one-time bootstrap that lets an existing database adopt the check without refusing).

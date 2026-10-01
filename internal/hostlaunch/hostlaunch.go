@@ -1,3 +1,5 @@
+//forge:exclude-contract: pure command-construction matrix + env-file parser shared by `forge run` and `forge env up`; its only methods are on the RunnerSpec value type, it runs nothing itself, and nothing substitutes it
+
 // Package hostlaunch composes exec.Cmds for host-mode services and
 // frontends, plus the small env-file helpers both call sites need.
 //

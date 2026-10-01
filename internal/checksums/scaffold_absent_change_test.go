@@ -83,7 +83,7 @@ func TestAbsentScaffoldsIfChanged_RestorationReports(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "b.go"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("restore b.go: %v", err)
 	}
-	if got := AbsentScaffoldsIfChanged(root); got != nil && len(got) != 0 {
+	if got := AbsentScaffoldsIfChanged(root); len(got) != 0 {
 		// An empty (not nil) result is the honest "changed, and now empty".
 		t.Logf("restoration reported: %v", got)
 	}

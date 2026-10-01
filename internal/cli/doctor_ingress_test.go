@@ -244,7 +244,7 @@ func TestRunIngressDoctorChecks_FeatureOffReturnsNil(t *testing.T) {
 // metrics-only output; ingress is irrelevant).
 func TestRunIngressDoctorChecks_SignalFilter(t *testing.T) {
 	cfg := &config.ProjectConfig{
-		Name: "t",
+		Name:     "t",
 		Features: config.FeaturesConfig{Ingress: boolPtr(true)},
 	}
 	results := runIngressDoctorChecks(context.Background(), cfg, t.TempDir(), "metrics")
@@ -258,7 +258,7 @@ func TestRunIngressDoctorChecks_SignalFilter(t *testing.T) {
 // skipped ingress check with the reason rather than failing.
 func TestRunIngressDoctorChecks_KCLFailureSurfacedAsSkip(t *testing.T) {
 	cfg := &config.ProjectConfig{
-		Name: "t",
+		Name:     "t",
 		Features: config.FeaturesConfig{Ingress: boolPtr(true)},
 	}
 	results := runIngressDoctorChecks(context.Background(), cfg, t.TempDir(), "")

@@ -474,17 +474,10 @@ Examples:
 	return cmdutil.StrictGroup(migrationCmd)
 }
 
-// rebaseCommand is the exact command string the rebase refusal and the
-// version lint tell users to run.
-//
-// It is a constant because those messages previously named a command that did
-// not exist — `forge db migration rebase` was advice, not a subcommand, and a
-// user following the error hit "unknown command". A test asserts this string
-// resolves to a real command, so the advice and the CLI cannot drift apart
-// again.
-const rebaseCommand = "forge db migration rebase"
-
 // newDBMigrationRebaseCommand creates the `db migration rebase` subcommand.
+// The command string every refusal and lint message names is
+// migrationlint.RebaseCommand; TestRebaseCommandExists asserts it resolves
+// here.
 func newDBMigrationRebaseCommand() *cobra.Command {
 	var (
 		migDir     string

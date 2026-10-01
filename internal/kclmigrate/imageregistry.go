@@ -1,3 +1,5 @@
+//forge:exclude-contract: one-shot textual rewrite of a local deploy/kcl tree; its only methods are on result value types (ImageRegistryResult, Unaccounted, AmbiguousImage), it does no outbound I/O, and nothing substitutes it
+
 // Package kclmigrate rewrites a project's deploy/kcl tree across a forge
 // change that moved a declaration from one place to another.
 //

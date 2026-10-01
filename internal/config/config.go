@@ -2116,21 +2116,21 @@ func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
 // need to distinguish the two tiers.
 func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 	return map[string]bool{
-		FeatureORM:            f.ORMEnabled(),
-		FeatureCodegen:        f.CodegenEnabled(),
-		FeatureMigrations:     f.MigrationsEnabled(),
-		FeatureCI:             f.CIEnabled(),
-		FeatureBuild:          f.BuildEnabled(),
-		FeatureContracts:      f.ContractsEnabled(),
-		FeatureDocs:           f.DocsEnabled(),
-		FeatureFrontend:       f.FrontendEnabled(),
-		FeatureObservability:  f.ObservabilityEnabled(),
-		FeatureHotReload:      f.HotReloadEnabled(),
-		FeatureDeploy:         f.DeployEnabled(),
-		FeatureIngress:        f.IngressEnabled(),
-		FeatureOperators:      f.OperatorsEnabled(),
-		FeatureStrictWiring:   f.StrictWiringEnabled(),
-		FeatureReconcile:      f.ReconcileEnabled(),
+		FeatureORM:           f.ORMEnabled(),
+		FeatureCodegen:       f.CodegenEnabled(),
+		FeatureMigrations:    f.MigrationsEnabled(),
+		FeatureCI:            f.CIEnabled(),
+		FeatureBuild:         f.BuildEnabled(),
+		FeatureContracts:     f.ContractsEnabled(),
+		FeatureDocs:          f.DocsEnabled(),
+		FeatureFrontend:      f.FrontendEnabled(),
+		FeatureObservability: f.ObservabilityEnabled(),
+		FeatureHotReload:     f.HotReloadEnabled(),
+		FeatureDeploy:        f.DeployEnabled(),
+		FeatureIngress:       f.IngressEnabled(),
+		FeatureOperators:     f.OperatorsEnabled(),
+		FeatureStrictWiring:  f.StrictWiringEnabled(),
+		FeatureReconcile:     f.ReconcileEnabled(),
 	}
 }
 

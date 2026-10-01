@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
@@ -149,6 +150,77 @@ func TestDispatchDeployGroups_FailureIsNotReverted(t *testing.T) {
 	}
 	if len(failing.deployCalls) != 1 || len(after.deployCalls) != 0 {
 		t.Errorf("dispatch must stop at the failed group: failing=%d after=%d", len(failing.deployCalls), len(after.deployCalls))
+	}
+}
+
+// fakeRolloutApplier is a provider that applies without waiting, like the
+// k8s cluster provider. It records into a log shared with the other fakes, so
+// a test can assert the interleaving of every provider's calls.
+type fakeRolloutApplier struct {
+	fakeProvider
+	log      *[]string
+	applyErr map[string]error
+}
+
+func (f *fakeRolloutApplier) ApplyNoWait(_ context.Context, g deploytarget.ServiceGroup) (*cluster.PendingRollout, error) {
+	*f.log = append(*f.log, "apply "+g.Cluster)
+	return nil, f.applyErr[g.Cluster]
+}
+
+// orderedProvider is a provider that only deploys, recording into a shared log.
+type orderedProvider struct {
+	fakeProvider
+	log *[]string
+}
+
+func (o *orderedProvider) Deploy(_ context.Context, g deploytarget.ServiceGroup) error {
+	*o.log = append(*o.log, "deploy "+g.ProviderID)
+	return nil
+}
+
+// TestDispatchDeployGroups_NonClusterGroupsKeepTheirPlace: only a run of
+// cluster groups is applied together and then awaited; any other provider is
+// a barrier, so a compose group between two cluster groups still runs after
+// the first and before the second, exactly as it did before cluster applies
+// were split from their waits.
+func TestDispatchDeployGroups_NonClusterGroupsKeepTheirPlace(t *testing.T) {
+	var log []string
+	reg := &deploytarget.Registry{}
+	reg.Register(&fakeRolloutApplier{fakeProvider: fakeProvider{id: "k8s-cluster"}, log: &log})
+	reg.Register(&orderedProvider{fakeProvider: fakeProvider{id: "compose"}, log: &log})
+	groups := []deploytarget.ServiceGroup{
+		{ProviderID: "k8s-cluster", Cluster: "k3d-alpha", Namespace: "ns"},
+		{ProviderID: "compose"},
+		{ProviderID: "k8s-cluster", Cluster: "k3d-beta", Namespace: "ns"},
+	}
+	if err := dispatchDeployGroups(context.Background(), reg, groups); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got, want := strings.Join(log, ", "), "apply k3d-alpha, deploy compose, apply k3d-beta"; got != want {
+		t.Errorf("dispatch order = %s, want %s", got, want)
+	}
+}
+
+// TestDispatchDeployGroups_FailedClusterApplyStopsTheDeploy: a cluster whose
+// APPLY fails stops the deploy there, as any failed group always has — no
+// later group is applied, and nothing already applied is reverted.
+func TestDispatchDeployGroups_FailedClusterApplyStopsTheDeploy(t *testing.T) {
+	var log []string
+	reg := &deploytarget.Registry{}
+	reg.Register(&fakeRolloutApplier{
+		fakeProvider: fakeProvider{id: "k8s-cluster"}, log: &log,
+		applyErr: map[string]error{"k3d-alpha": errors.New("kubectl apply failed: boom")},
+	})
+	groups := []deploytarget.ServiceGroup{
+		{ProviderID: "k8s-cluster", Cluster: "k3d-alpha", Namespace: "ns"},
+		{ProviderID: "k8s-cluster", Cluster: "k3d-beta", Namespace: "ns"},
+	}
+	err := dispatchDeployGroups(context.Background(), reg, groups)
+	if err == nil || !strings.Contains(err.Error(), "deploy k8s-cluster: kubectl apply failed: boom") {
+		t.Fatalf("want the apply error wrapped with the provider id, got %v", err)
+	}
+	if got := strings.Join(log, ", "); got != "apply k3d-alpha" {
+		t.Errorf("a failed apply must stop the dispatch, got %s", got)
 	}
 }
 

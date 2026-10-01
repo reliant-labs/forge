@@ -73,36 +73,52 @@ func TestDefaultRolloutTimeoutIsCloudRealistic(t *testing.T) {
 	}
 }
 
+// orderNames runs names through the wait's real ordering, orderWaitQueue, as
+// the Deployments of one cluster.
+func orderNames(p RolloutPolicy, names []string) []string {
+	w := &rolloutWait{p: &PendingRollout{policy: p}}
+	queue := make([]deploymentWait, len(names))
+	for i, n := range names {
+		queue[i] = deploymentWait{w: w, name: n}
+	}
+	orderWaitQueue(queue)
+	out := make([]string, len(queue))
+	for i, item := range queue {
+		out[i] = item.name
+	}
+	return out
+}
+
 // TestRolloutOrderPutsNamedFirst pins the phased-wait ordering: named
 // resources are reported first, in the caller's order, and everything
 // else keeps its natural order behind them.
 func TestRolloutOrderPutsNamedFirst(t *testing.T) {
 	all := []string{"web", "worker", "api", "migrate"}
 
-	got := RolloutPolicy{Order: []string{"migrate", "api"}}.orderDeployments(all)
+	got := orderNames(RolloutPolicy{Order: []string{"migrate", "api"}}, all)
 	want := []string{"migrate", "api", "web", "worker"}
 	if !equal(got, want) {
-		t.Errorf("orderDeployments = %v, want %v", got, want)
+		t.Errorf("order = %v, want %v", got, want)
 	}
 
 	// A name that is not in the namespace (e.g. excluded by --target) is
 	// skipped rather than erroring or inserting a phantom entry.
-	got = RolloutPolicy{Order: []string{"nope", "api"}}.orderDeployments(all)
+	got = orderNames(RolloutPolicy{Order: []string{"nope", "api"}}, all)
 	want = []string{"api", "web", "worker", "migrate"}
 	if !equal(got, want) {
 		t.Errorf("unknown name in Order changed the set: got %v, want %v", got, want)
 	}
 
 	// No ordering is a pure pass-through — same slice, same order.
-	if got := (RolloutPolicy{}).orderDeployments(all); !equal(got, all) {
+	if got := orderNames(RolloutPolicy{}, all); !equal(got, all) {
 		t.Errorf("empty Order reordered: got %v, want %v", got, all)
 	}
 
 	// Every input must survive: an ordering must not DROP a resource, or
 	// the deploy would silently stop waiting on it.
-	got = RolloutPolicy{Order: []string{"worker"}}.orderDeployments(all)
+	got = orderNames(RolloutPolicy{Order: []string{"worker"}}, all)
 	if len(got) != len(all) {
-		t.Errorf("orderDeployments dropped resources: got %v from %v", got, all)
+		t.Errorf("order dropped resources: got %v from %v", got, all)
 	}
 }
 

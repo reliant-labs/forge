@@ -147,6 +147,13 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	if plan.Recorded != nil {
 		promotionID = plan.Recorded.ID
 	}
+	// A hosted promotion the control plane cannot converge has nothing to
+	// wait for, and waiting anyway is a 15-minute silence ending in UNKNOWN.
+	// Refuse now, naming the one command that fixes it. See
+	// refuseUnpublishedHostedDeploy.
+	if err := refuseUnpublishedHostedDeploy(ctx, env, promotionID); err != nil {
+		return err
+	}
 	return runPromoteWait(ctx, env, envWaitOptions{
 		PromotionID: promotionID,
 		Timeout:     o.Timeout,

@@ -16,7 +16,7 @@ func convergePolicyPath(t *testing.T) string {
 
 func completeFacts() Facts {
 	return Facts{
-		Project:      "/tmp/proj-a",
+		Project:      "/work/proj-a",
 		Contexts:     []string{"k3d-control-plane"},
 		Registry:     "k3d-cp-registry",
 		Aliases:      []string{"localhost:5051", "k3d-cp-registry:5000"},
@@ -140,7 +140,7 @@ func TestConvergeRecordsCompleteRegistry(t *testing.T) {
 	if !contains(p.Clusters, "k3d-control-plane") || len(p.Pins) != 1 {
 		t.Errorf("clusters = %v pins = %v; want both converged", p.Clusters, p.Pins)
 	}
-	if want, _ := filepath.Abs("/tmp/proj-a"); !contains(p.Projects, want) {
+	if want, _ := filepath.Abs("/work/proj-a"); !contains(p.Projects, want) {
 		t.Errorf("projects = %v; want the absolute project dir", p.Projects)
 	}
 }
@@ -210,7 +210,7 @@ func TestConvergeNeverRemovesAnotherProjectsEntries(t *testing.T) {
 	// A different project, a different cluster, a different repository in the
 	// SAME registry, and no overlap in pins.
 	other := Facts{
-		Project:      "/tmp/proj-b",
+		Project:      "/work/proj-b",
 		Contexts:     []string{"k3d-cp-daemon"},
 		Registry:     "k3d-cp-registry",
 		Aliases:      []string{"localhost:5051"},
@@ -303,7 +303,7 @@ func TestConvergeWithholdsIncompleteRegistry(t *testing.T) {
 func TestConvergeCompletesAcrossCalls(t *testing.T) {
 	path := convergePolicyPath(t)
 	clusterPhase := Facts{
-		Project:  "/tmp/proj-a",
+		Project:  "/work/proj-a",
 		Contexts: []string{"k3d-control-plane"},
 		Registry: "k3d-cp-registry",
 		Aliases:  []string{"localhost:5051", "k3d-cp-registry:5000"},

@@ -197,7 +197,20 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
-	failures := r.hostLayers(apply)
+	var failures []error
+	// Stale clusters and projects are pruned first: a registered cluster
+	// that no longer exists makes the registry layer's protected-set scan
+	// fail on every pass (see prune.go). A preview prunes in memory only,
+	// so it shows what an apply would do without writing anything.
+	if next, changed := r.pruned(ctx); changed {
+		r.Policy = next
+		if apply && r.PolicyPath != "" {
+			if err := Save(r.PolicyPath, next); err != nil {
+				failures = append(failures, fmt.Errorf("save pruned storage policy: %w", err))
+			}
+		}
+	}
+	failures = append(failures, r.hostLayers(apply)...)
 	if err := r.Local(ctx); err != nil {
 		return errors.Join(append(failures, err)...)
 	}

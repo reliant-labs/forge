@@ -54,9 +54,12 @@ type Facts struct {
 //
 //   - IDEMPOTENT. Converging the same facts twice leaves the file untouched
 //     (it is not even rewritten), so warm runs cost one read.
-//   - ADDITIVE ONLY. Nothing is ever removed. Several projects on one machine
-//     converge into the same policy, and a project that stops using a context
-//     must not silently un-protect it for everybody else.
+//   - ADDITIVE ONLY. Nothing is ever removed here. Several projects on one
+//     machine converge into the same policy, and a project that stops using a
+//     context must not silently un-protect it for everybody else. Entries that
+//     are GONE — a cluster no longer in kubeconfig or docker, a deleted
+//     project directory — are removed by Prune at the start of GC, never here.
+//     A project under the temp dir is never added at all.
 //   - COMPLETE-OR-NOTHING for a registry. A registry becomes a cleanup target
 //     only once the container, its aliases, the protecting contexts and at
 //     least one repository are all known. Recording a registry whose
@@ -87,8 +90,10 @@ func Converge(policyPath string, f Facts) error {
 func upsertFacts(p Policy, f Facts) (Policy, bool) {
 	before := p.fingerprint()
 
+	// A project under the temp dir is a test fixture or a scratch scaffold,
+	// never one whose logs should be maintained (see underTempDir).
 	if f.Project != "" {
-		if absolute, err := filepath.Abs(f.Project); err == nil && !contains(p.Projects, absolute) {
+		if absolute, err := filepath.Abs(f.Project); err == nil && !underTempDir(absolute) && !contains(p.Projects, absolute) {
 			p.Projects = append(p.Projects, absolute)
 		}
 	}

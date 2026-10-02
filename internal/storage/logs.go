@@ -109,6 +109,9 @@ func RegisterProject(path, project string) error {
 		return err
 	}
 	return WithLock(path, func() error {
+		if underTempDir(absolute) {
+			return fmt.Errorf("refusing to register %s: it is under the temp directory, so it is a fixture or scratch project, not one whose logs forge should maintain", absolute)
+		}
 		p, err := Load(path)
 		if err != nil {
 			return err

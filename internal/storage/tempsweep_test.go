@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/openfiles"
 )
 
 // newTempSweep builds a sweep over a test-owned root with a faked lsof, so
@@ -19,11 +21,15 @@ func newTempSweep(t *testing.T, root string, open map[string]bool, lsofErr error
 		root:   root,
 		now:    time.Now(),
 		maxAge: tempSweepAge,
-		openPaths: func() (map[string]bool, error) {
+		openPaths: func() (openfiles.Snapshot, error) {
 			if lsofErr != nil {
-				return nil, lsofErr
+				return openfiles.Snapshot{}, lsofErr
 			}
-			return open, nil
+			var paths []string
+			for p := range open {
+				paths = append(paths, p)
+			}
+			return openfiles.FromPaths(paths), nil
 		},
 		print: func(format string, args ...any) { fmt.Fprintf(out, format, args...) },
 	}
@@ -323,6 +329,7 @@ func TestGCDoesNotSweepTheRealTempDir(t *testing.T) {
 // TestTempSweepHonorsAnExplicitRoot is the other half: the refusal must not be
 // achievable by making the layer inert. Given a root, it still sweeps.
 func TestTempSweepHonorsAnExplicitRoot(t *testing.T) {
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
 	root := t.TempDir()
 	doomed := writeTempEntry(t, root, "go-link-scoped", 48*time.Hour)
 
@@ -569,5 +576,80 @@ func TestTempSweepPrefixAllowlistIsClosed(t *testing.T) {
 		if tempSweepAllowed(name) {
 			t.Errorf("tempSweepAllowed(%q) = true, want false — the allowlist must stay closed", name)
 		}
+	}
+}
+
+// symlinkedTempRoot returns a temp root reached through a symlink, plus the
+// fully resolved spelling of the same directory. This is macOS's shape for
+// os.TempDir() (/var/folders/… is /private/var/folders/…) and for /tmp, made
+// explicit so it holds on every platform.
+func symlinkedTempRoot(t *testing.T) (link, real string) {
+	t.Helper()
+	target := t.TempDir()
+	link = filepath.Join(t.TempDir(), "tmp-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	return link, resolved(t, target)
+}
+
+// TestTempSweepRetainsEntriesHeldOpenThroughASymlinkedRoot is the B1
+// regression. lsof reports the path the kernel resolved, the sweep joined
+// candidates from the unresolved root, and the exact-string comparison
+// between them never matched: on one Mac 264 of 266 open files under $TMPDIR
+// were invisible to it, so a live `go run` binary's go-build dir, or a quiet
+// embedded-postgres log, was swept on age alone.
+func TestTempSweepRetainsEntriesHeldOpenThroughASymlinkedRoot(t *testing.T) {
+	link, real := symlinkedTempRoot(t)
+	entry := writeTempEntry(t, link, "go-build-live", 48*time.Hour, filepath.Join("exe", "server"))
+	fakeLsof(t, "p4242\nftxt\nn"+filepath.Join(real, "go-build-live", "exe", "server")+"\n", "exit 0")
+
+	var out strings.Builder
+	r := Runner{Policy: DefaultPolicy(), Out: &out, TempRoot: link}
+	if err := r.TempSweep(true); err != nil {
+		t.Fatalf("TempSweep: %v", err)
+	}
+	if _, err := os.Stat(entry); err != nil {
+		t.Fatalf("swept an entry a live process holds open (%v):\n%s", err, out.String())
+	}
+}
+
+// TestTempSweepRefusesAPartialLsofListing: a killed lsof has already printed
+// part of the machine. The old reader accepted any output that parsed into a
+// path, so the processes lsof never reached were treated as holding nothing.
+func TestTempSweepRefusesAPartialLsofListing(t *testing.T) {
+	for _, tc := range []struct{ name, tail string }{
+		{"killed mid-listing", "kill -9 $$"},
+		{"unexpected exit status", "exit 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			entry := writeTempEntry(t, root, "go-link-partial", 48*time.Hour)
+			fakeLsof(t, unrelatedOpenFile, tc.tail)
+			var out strings.Builder
+			r := Runner{Policy: DefaultPolicy(), Out: &out, TempRoot: root}
+			if err := r.TempSweep(true); err != nil {
+				t.Fatalf("TempSweep: %v", err)
+			}
+			if _, err := os.Stat(entry); err != nil {
+				t.Fatalf("swept on a partial lsof listing (%v):\n%s", err, out.String())
+			}
+		})
+	}
+}
+
+// TestTempSweepStillReclaimsThroughASymlinkedRoot is the control: resolving
+// the root must scope the sweep, not disable it.
+func TestTempSweepStillReclaimsThroughASymlinkedRoot(t *testing.T) {
+	link, _ := symlinkedTempRoot(t)
+	entry := writeTempEntry(t, link, "go-link-idle", 48*time.Hour)
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
+	var out strings.Builder
+	r := Runner{Policy: DefaultPolicy(), Out: &out, TempRoot: link}
+	if err := r.TempSweep(true); err != nil {
+		t.Fatalf("TempSweep: %v", err)
+	}
+	if _, err := os.Stat(entry); !os.IsNotExist(err) {
+		t.Fatalf("an idle, unheld entry survived (%v):\n%s", err, out.String())
 	}
 }

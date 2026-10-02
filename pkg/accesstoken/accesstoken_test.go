@@ -213,8 +213,25 @@ func TestGrant_Validate(t *testing.T) {
 		}, ErrInvalidGrant},
 		"unknown binding kind": {func(g *Grant) { g.Resource = &Resource{Kind: "bucket", ID: "b"} }, ErrInvalidGrant},
 		"binding with no id":   {func(g *Grant) { g.Resource = &Resource{Kind: ResourceDaemon} }, ErrInvalidGrant},
-		"unbindable scope bound": {func(g *Grant) {
-			g.Scopes = SetOf(ScopeDeployRead)
+		// cluster:manage and token:* are org-ADMINISTRATION authority, not a
+		// person's authority over their own resources, so they stay unbindable
+		// on every kind — including a daemon. See daemonBindableScopes.
+		"org-administration scope bound to a daemon": {func(g *Grant) {
+			g.Scopes = SetOf(ScopeClusterManage)
+		}, ErrInvalidGrant},
+		"token scope bound to a daemon": {func(g *Grant) {
+			g.Scopes = SetOf(ScopeTokenWrite)
+		}, ErrInvalidGrant},
+		// A user-authority scope may ride a DAEMON binding but not a port one:
+		// a share link has no acting user, so deploy authority on it would be
+		// attributed to nobody.
+		"user-authority scope bound to a port": {func(g *Grant) {
+			g.Scopes = SetOf(ScopeProxyPort, ScopeDeployRead)
+			g.Resource = &Resource{Kind: ResourcePort, ID: PortResourceID("d1", 80)}
+		}, ErrInvalidGrant},
+		"user-authority scope bound to a connector": {func(g *Grant) {
+			g.Scopes = SetOf(ScopeMCPConnector, ScopeDeployRead)
+			g.Resource = &Resource{Kind: ResourceConnector, ID: "c1"}
 		}, ErrInvalidGrant},
 		"port scope unbound": {func(g *Grant) {
 			g.Scopes, g.Resource, g.Ephemeral = SetOf(ScopeProxyPort), nil, false
@@ -258,6 +275,48 @@ func TestGrant_Validate(t *testing.T) {
 		if err := g.Validate(now); err != nil {
 			t.Errorf("%s refused: %v", name, err)
 		}
+	}
+}
+
+// TestGrant_DaemonBindingCarriesUserAuthority is the managed-daemon
+// credential: ONE token, bound to the daemon so teardown revokes it, carrying
+// the authority its acting user already holds.
+//
+// Before daemonBindableScopes this grant was REFUSED ("scope deploy:read
+// cannot be bound to a resource"), which left a managed daemon's forge unable
+// to authenticate at all — `forge env status` returned 403 permission_denied
+// on DeployService/ListEnvironments. The alternative was minting UNBOUND,
+// which would have dropped the blast-radius property the binding exists for.
+func TestGrant_DaemonBindingCarriesUserAuthority(t *testing.T) {
+	now := time.Now()
+
+	// The full reliant-cli scope set, bound to one daemon, acting as the user.
+	managed := Grant{
+		OrgID:        "org",
+		Name:         "managed:ws-1",
+		Scopes:       SetOf(ScopeDaemonConnect, ScopeReliantAPI, ScopeDeployRead, ScopeDeployWrite, ScopeSecretRead, ScopeSecretWrite, ScopeDomainRead, ScopeDomainWrite),
+		ActingUserID: "user",
+		Resource:     &Resource{Kind: ResourceDaemon, ID: "d1"},
+	}
+	if err := managed.Validate(now); err != nil {
+		t.Fatalf("the managed-daemon credential was refused: %v", err)
+	}
+
+	// Each user-authority scope is independently bindable to a daemon, so a
+	// member clipped down to a subset still mints.
+	for _, s := range daemonBindableScopes {
+		clipped := managed
+		clipped.Scopes = SetOf(ScopeDaemonConnect, s)
+		if err := clipped.Validate(now); err != nil {
+			t.Errorf("daemon:connect + %s was refused: %v", s, err)
+		}
+	}
+
+	// THE BINDING IS STILL A BINDING. Widening which scopes may ride it must
+	// not make the token usable against another daemon.
+	p := &Principal{Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}, Scopes: managed.Scopes}
+	if !p.MayActOn(ResourceDaemon, "d1") || p.MayActOn(ResourceDaemon, "d2") {
+		t.Fatal("a wide daemon-bound token escaped its binding")
 	}
 }
 

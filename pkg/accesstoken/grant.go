@@ -49,8 +49,9 @@ func PortResourceID(daemonID string, port int32) string {
 //	           is a user registering a new daemon; a bound one is a managed
 //	           daemon that may authenticate as that daemon only.
 //
-// A scope with no entry may not be bound at all: a deploy token bound to a
-// port is a contradiction, and refusing it keeps a binding's meaning exact.
+// A scope with no entry may not be bound at all unless some binding kind
+// admits it via daemonBindableScopes: a deploy token bound to a PORT is a
+// contradiction, and refusing it keeps a binding's meaning exact.
 var scopeResourceRules = map[Scope]struct {
 	kind     ResourceKind
 	required bool
@@ -58,6 +59,47 @@ var scopeResourceRules = map[Scope]struct {
 	ScopeDaemonConnect: {kind: ResourceDaemon, required: false},
 	ScopeProxyPort:     {kind: ResourcePort, required: true},
 	ScopeMCPConnector:  {kind: ResourceConnector, required: true},
+}
+
+// daemonBindableScopes are the USER-AUTHORITY scopes a token bound to a DAEMON
+// may additionally carry. They are the authority the acting user already holds
+// over their own resources, exercised from inside their own daemon.
+//
+// ── WHY A DAEMON BINDING IS DIFFERENT FROM A PORT OR CONNECTOR ────────
+//
+// A managed daemon runs forge on the user's behalf: the reliant UI's Deploy
+// button re-execs the daemon, and that subprocess inherits the daemon's
+// credential and nothing else. Without this, forge inside a managed daemon
+// cannot authenticate at all — the only way in would be `forge login` in a
+// daemon shell, which needs a browser loopback a remote pod does not have.
+//
+// The binding is what makes this SAFE rather than a widening. The token acts
+// as the user (ActingUserID), in the one org on the row, and is confined to
+// the one daemon — so it does what that person could do from their laptop, in
+// a place they already control, and teardown of that daemon revokes it. The
+// minting site still clips these scopes to the user's real authority, so this
+// list is a CEILING, never a grant.
+//
+// A port or connector binding gets none of this. Those credentials are not a
+// person acting in their own environment: a share link has no acting user at
+// all and may be held by anyone with the URL. Carrying deploy authority on one
+// would be authority attributed to nobody, which is why the kinds are
+// distinguished here rather than the rule being relaxed for every binding.
+var daemonBindableScopes = []Scope{
+	ScopeReliantAPI,
+	ScopeDeployRead, ScopeDeployWrite,
+	ScopeSecretRead, ScopeSecretWrite,
+	ScopeDomainRead, ScopeDomainWrite,
+}
+
+// bindableToDaemon reports whether scope may ride a daemon-bound token.
+func bindableToDaemon(scope Scope) bool {
+	for _, s := range daemonBindableScopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
 }
 
 // actingUserScopes are the scopes that ACT AS A PERSON: their authority is the
@@ -174,6 +216,12 @@ func (g Grant) validateResource() error {
 			continue
 		}
 		rule, bindable := scopeResourceRules[scope]
+		// A DAEMON binding additionally admits the user-authority scopes —
+		// see daemonBindableScopes for why this kind and no other.
+		if !bindable && g.Resource != nil &&
+			g.Resource.Kind == ResourceDaemon && bindableToDaemon(scope) {
+			continue
+		}
 		switch {
 		case !bindable && g.Resource != nil:
 			return fmt.Errorf("%w: scope %s cannot be bound to a resource", ErrInvalidGrant, scope)

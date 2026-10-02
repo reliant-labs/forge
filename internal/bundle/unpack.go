@@ -1,9 +1,55 @@
-package deployartifact
+package bundle
+
+// Defensive unpack — every measure, and the attack it closes.
+//
+// A tar archive is a sequence of ATTACKER-CHOSEN PATHS carrying
+// ATTACKER-CHOSEN LENGTHS. Both must be bounded before anything touches the
+// filesystem, and the bounds must hold even when the archive lies about
+// itself (a header's Size field is a claim, not a fact). control-plane's
+// buildservice reaches the same conclusion from the other direction: its
+// pusher parses an OCI layout as a non-root, no-capabilities, read-only-
+// rootfs container specifically because it "parses untrusted bytes, so it is
+// treated as a parser of untrusted bytes". forge has no container to hide
+// behind here, so the checks in this file are the whole boundary.
+//
+// A BUNDLE IS NOT LESS HOSTILE FOR BEING FORGE'S OWN. It is fetched from a
+// registry, and a registry is reachable by anything that holds a push
+// credential — which, for a BYO registry declared in KCL, is not necessarily
+// the same set of people who can deploy. The digest proves the bytes are the
+// ones recorded; it proves nothing about whether the recorder was honest.
+//
+//  1. PATH TRAVERSAL — "../../.ssh/authorized_keys". The classic. Closed by
+//     resolving every entry against the destination root and REFUSING
+//     anything that escapes it, rather than by scrubbing ".." out of the name
+//     (a scrub is a blocklist, and blocklists lose).
+//  2. ABSOLUTE PATHS — "/etc/cron.d/x". Closed by the same check;
+//     filepath.Join would otherwise silently re-root them.
+//  3. SYMLINK ESCAPE — the subtle one, and the reason a path check alone is
+//     not enough. An archive writes `link -> /etc`, then writes
+//     `link/passwd`; each entry passes a naive containment check because
+//     neither NAME escapes, but the second write lands outside. Closed by
+//     refusing symlinks and hardlinks ENTIRELY: a manifest layer has no need
+//     for them, so allowing them buys nothing and costs the whole boundary.
+//  4. DECOMPRESSION BOMB — a few KB of gzip expanding to terabytes. Closed
+//     by a hard ceiling on TOTAL DECOMPRESSED BYTES, enforced by an
+//     io.LimitedReader on the read side. The header's Size field is NOT
+//     trusted for this: it is attacker-supplied, so a bomb would simply
+//     declare a small size. The limit counts what was actually read.
+//  5. ENTRY-COUNT EXHAUSTION — millions of empty files, which the byte
+//     ceiling alone does not bound. Closed by a separate entry cap.
+//  6. DEVICE / SETUID EXOTICA — block devices, fifos, setuid bits. Closed by
+//     an ALLOW-LIST of entry types (regular files and directories only) and
+//     by masking permissions to a fixed mode rather than honouring the
+//     archive's.
+//
+// The caps below are generous for a bundle and tiny compared to a disk. Doc
+// §4.1 measures control-plane prod at 246 KB compressed, 2.34 MB
+// uncompressed, so these are three orders of magnitude of headroom. They
+// exist to make the failure LOUD AND EARLY rather than to be tuned.
 
 import (
 	"archive/tar"
 	"compress/gzip"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,83 +58,42 @@ import (
 	"strings"
 )
 
-// Defensive unpack — every measure, and the attack it closes.
-//
-// A tar archive is a sequence of ATTACKER-CHOSEN PATHS carrying
-// ATTACKER-CHOSEN LENGTHS. Both must be bounded before anything touches
-// the filesystem, and the bounds must hold even when the archive lies
-// about itself (a header's Size field is a claim, not a fact).
-// control-plane's buildservice reaches the same conclusion from the other
-// direction: its pusher parses an OCI layout as a non-root,
-// no-capabilities, read-only-rootfs container specifically because it
-// "parses untrusted bytes, so it is treated as a parser of untrusted
-// bytes". forge has no container to hide behind here, so the checks in
-// this file are the whole boundary.
-//
-//  1. PATH TRAVERSAL — "../../.ssh/authorized_keys". The classic. Closed
-//     by resolving every entry against the destination root and REFUSING
-//     anything that escapes it, rather than by scrubbing ".." out of the
-//     name (a scrub is a blocklist, and blocklists lose).
-//  2. ABSOLUTE PATHS — "/etc/cron.d/x". Closed by the same check;
-//     filepath.Join would otherwise silently re-root them.
-//  3. SYMLINK ESCAPE — the subtle one, and the reason a path check alone
-//     is not enough. An archive writes `link -> /etc`, then writes
-//     `link/passwd`; each entry passes a naive containment check because
-//     neither NAME escapes, but the second write lands outside. Closed by
-//     refusing symlinks and hardlinks ENTIRELY: a desired-state artifact
-//     has no need for them, so allowing them buys nothing and costs the
-//     whole boundary.
-//  4. DECOMPRESSION BOMB — a few KB of gzip expanding to terabytes.
-//     Closed by a hard ceiling on TOTAL DECOMPRESSED BYTES, enforced by
-//     an io.LimitedReader on the read side. The header's Size field is
-//     NOT trusted for this: it is attacker-supplied, so a bomb would
-//     simply declare a small size. The limit counts what was actually
-//     read.
-//  5. ENTRY-COUNT EXHAUSTION — millions of empty files, which the byte
-//     ceiling alone does not bound. Closed by a separate entry cap.
-//  6. DEVICE / SETUID EXOTICA — block devices, fifos, setuid bits.
-//     Closed by an ALLOW-LIST of entry types (regular files and
-//     directories only) and by masking permissions to a fixed mode
-//     rather than honouring the archive's.
-//
-// The caps below are generous for a manifest bundle and tiny compared to
-// a disk. They exist to make the failure LOUD AND EARLY rather than to
-// be tuned.
-
 const (
-	// MaxTotalBytes caps total decompressed output. A desired-state
-	// artifact is manifests and a JSON document; 64 MiB is orders of
-	// magnitude of headroom over any real one.
-	MaxTotalBytes int64 = 64 << 20
+	// MaxLayerBytes caps total decompressed output per layer.
+	MaxLayerBytes int64 = 64 << 20
 	// MaxEntries caps the entry count, which the byte ceiling does not
 	// bound (a million zero-length files cost no bytes).
 	MaxEntries = 4096
-	// MaxFileBytes caps any SINGLE file. Redundant against MaxTotalBytes
-	// for a one-file bomb and not redundant for the shape that matters:
-	// it localises the error to the offending entry instead of reporting
-	// "the archive is too big" after a well-formed archive was half
-	// written.
+	// MaxFileBytes caps any SINGLE file. Redundant against MaxLayerBytes
+	// for a one-file bomb and not redundant for the shape that matters: it
+	// localises the error to the offending entry instead of reporting "the
+	// archive is too big" after a well-formed archive was half written.
 	MaxFileBytes int64 = 16 << 20
+	// MaxManifestBytes caps an OCI manifest and a config blob. The server
+	// bounds both at 1 MiB (doc §6.3's RecordBundle), and forge refuses
+	// the same size rather than a larger one: a bundle forge would push
+	// and the server would refuse is a build that fails at the last step.
+	MaxManifestBytes int64 = 1 << 20
 
 	// unpackFileMode / unpackDirMode are the FIXED modes every extracted
 	// entry gets. The archive's own mode bits are discarded rather than
 	// masked, because honouring them is how a setuid or world-writable
-	// file arrives, and nothing in a desired-state artifact needs to be
-	// executable.
+	// file arrives, and nothing in a bundle needs to be executable.
 	unpackFileMode os.FileMode = 0o644
 	unpackDirMode  os.FileMode = 0o755
 )
 
-// ErrUnsafeArchive is the sentinel every defensive refusal wraps, so a
-// caller can distinguish "this artifact is hostile or corrupt" from an
-// ordinary IO failure.
-var ErrUnsafeArchive = errors.New("forge: refusing to unpack artifact")
+// ErrUnsafeArchive is the sentinel every defensive refusal wraps, so a caller
+// can distinguish "this bundle is hostile or corrupt" from an ordinary IO
+// failure.
+var ErrUnsafeArchive = errors.New("forge: refusing to unpack bundle")
 
-// Unpack extracts a gzipped tar layer into destDir, enforcing every
-// measure documented above. It creates destDir if absent.
+// Unpack extracts a gzipped tar layer into destDir, enforcing every measure
+// documented above. It creates destDir if absent.
 //
-// Returns the list of extracted repo-relative paths, so a caller can see
-// what an artifact actually contained without walking the tree again.
+// Returns the extracted paths, relative to destDir and slash-separated, so a
+// caller can see what a bundle actually contained without walking the tree
+// again — and, for the manifest layer, apply them in that order.
 func Unpack(r io.Reader, destDir string) ([]string, error) {
 	root, err := filepath.Abs(destDir)
 	if err != nil {
@@ -108,7 +113,7 @@ func Unpack(r io.Reader, destDir string) ([]string, error) {
 	// fields, is the entire point: a header's Size is attacker-supplied,
 	// so a bomb declares a small one. +1 so hitting the limit exactly is
 	// distinguishable from exceeding it.
-	limited := &io.LimitedReader{R: gz, N: MaxTotalBytes + 1}
+	limited := &io.LimitedReader{R: gz, N: MaxLayerBytes + 1}
 	tr := tar.NewReader(limited)
 
 	// exhausted reports whether the total-bytes ceiling has been hit.
@@ -122,7 +127,7 @@ func Unpack(r io.Reader, destDir string) ([]string, error) {
 	// Checking the limit first turns that back into the refusal it is.
 	exhausted := func() bool { return limited.N <= 0 }
 	bombErr := func() error {
-		return fmt.Errorf("%w: decompressed output exceeds %d bytes", ErrUnsafeArchive, MaxTotalBytes)
+		return fmt.Errorf("%w: decompressed output exceeds %d bytes", ErrUnsafeArchive, MaxLayerBytes)
 	}
 
 	var written []string
@@ -163,12 +168,12 @@ func Unpack(r io.Reader, destDir string) ([]string, error) {
 			rel, _ := filepath.Rel(root, target)
 			written = append(written, filepath.ToSlash(rel))
 		default:
-			// ALLOW-LIST, not a blocklist. Symlinks and hardlinks are the
-			// escape described in (3) above; devices, fifos and the rest
-			// have no business in a manifest bundle. Refusing loudly
-			// rather than skipping silently matters: a skipped entry
-			// produces an artifact that unpacked "successfully" while
-			// missing something a caller will later look for.
+			// ALLOW-LIST, not a blocklist. Symlinks and hardlinks are
+			// the escape described in (3) above; devices, fifos and the
+			// rest have no business in a bundle. Refusing loudly rather
+			// than skipping silently matters: a skipped entry produces a
+			// bundle that unpacked "successfully" while missing an
+			// object a deploy would then never apply.
 			return nil, fmt.Errorf("%w: entry %q has disallowed type %q "+
 				"(only regular files and directories are extracted; symlinks in particular can escape "+
 				"the destination even when their own name does not)",
@@ -182,14 +187,14 @@ func Unpack(r io.Reader, destDir string) ([]string, error) {
 	return written, nil
 }
 
-// safeJoin resolves one archive entry name against the destination root
-// and refuses anything that escapes it.
+// safeJoin resolves one archive entry name against the destination root and
+// refuses anything that escapes it.
 //
 // The containment test is on the RESOLVED path against the resolved root,
-// with a separator appended to the prefix — not a string search for
-// "..". A blocklist of dangerous substrings loses to encodings nobody
-// enumerated; asking "is the result inside the root" is the property that
-// actually matters, and it is decidable.
+// with a separator appended to the prefix — not a string search for "..". A
+// blocklist of dangerous substrings loses to encodings nobody enumerated;
+// asking "is the result inside the root" is the property that actually
+// matters, and it is decidable.
 func safeJoin(root, name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("%w: entry with empty name", ErrUnsafeArchive)
@@ -235,36 +240,4 @@ func writeRegular(tr io.Reader, target string) error {
 		return fmt.Errorf("%w: file %q exceeds %d bytes", ErrUnsafeArchive, target, MaxFileBytes)
 	}
 	return nil
-}
-
-// ArtifactDocName is the file inside the artifact carrying the typed item
-// list. A fixed name rather than a search: a loop that picked "the first
-// JSON it found" would change behaviour when an artifact grew a second
-// JSON file.
-const ArtifactDocName = "forge-artifact.json"
-
-// ReadArtifactDoc reads and validates the artifact document from an
-// unpacked directory.
-//
-// The document is parsed from a path built with safeJoin for the same
-// reason everything else here is: dir is trusted (the caller chose it)
-// but the NAME is a package constant, so this is belt-and-braces against
-// a future caller parameterising it.
-func ReadArtifactDoc(dir string) (Artifact, error) {
-	path, err := safeJoin(dir, ArtifactDocName)
-	if err != nil {
-		return Artifact{}, err
-	}
-	raw, rerr := os.ReadFile(path)
-	if rerr != nil {
-		return Artifact{}, fmt.Errorf("%w: reading %s: %w", ErrInvalidArtifact, ArtifactDocName, rerr)
-	}
-	var a Artifact
-	if jerr := json.Unmarshal(raw, &a); jerr != nil {
-		return Artifact{}, fmt.Errorf("%w: parsing %s: %w", ErrInvalidArtifact, ArtifactDocName, jerr)
-	}
-	if verr := a.Validate(); verr != nil {
-		return Artifact{}, verr
-	}
-	return a, nil
 }

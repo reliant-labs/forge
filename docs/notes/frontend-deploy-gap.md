@@ -22,7 +22,7 @@ from reading code alone.
 >   `Service.deploy?: … | SimpleBackend | …`
 > - `static-site` is a real provider id in `deploytarget.go`, with
 >   `staticsite.go`, `staticstage.go`, `observe_staticsite.go`, plus
->   `pkg/deploystate` (decide/policy/store) and `internal/deployartifact`.
+>   `pkg/deploystate` (decide/policy/store) and `internal/bundle`.
 > - 14 KCL positive/negative/closed-schema tests for the new schemas.
 >
 > It still builds green on its own tree, and is **32 commits behind main**.

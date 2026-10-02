@@ -192,7 +192,7 @@ func TestProjectShapeRedactsEverySecretValue(t *testing.T) {
 // implementation.
 func secretDocumentHash(t *testing.T, data map[string]any) string {
 	t.Helper()
-	hash, err := hashDocument(map[string]any{
+	hash, err := release.HashDocument(map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Secret",
 		"metadata": map[string]any{
@@ -204,7 +204,7 @@ func secretDocumentHash(t *testing.T, data map[string]any) string {
 		"data": data,
 	})
 	if err != nil {
-		t.Fatalf("hashDocument: %v", err)
+		t.Fatalf("HashDocument: %v", err)
 	}
 	return hash
 }

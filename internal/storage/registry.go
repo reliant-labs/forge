@@ -231,16 +231,67 @@ type containerInfo struct {
 	Config struct {
 		Cmd []string `json:"Cmd"`
 	} `json:"Config"`
-	Mounts []struct {
-		Type        string `json:"Type"`
-		Destination string `json:"Destination"`
-	} `json:"Mounts"`
+	Mounts          []containerMount `json:"Mounts"`
 	NetworkSettings struct {
 		Ports map[string][]struct {
 			HostPort string `json:"HostPort"`
 		} `json:"Ports"`
 		Networks map[string]any `json:"Networks"`
 	} `json:"NetworkSettings"`
+}
+
+// containerMount is one entry of `docker inspect`'s Mounts. Name is set for a
+// volume, Source for a bind.
+type containerMount struct {
+	Type        string `json:"Type"`
+	Name        string `json:"Name"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	RW          bool   `json:"RW"`
+}
+
+// maintenanceMounts reproduces a container's mounts as `--mount` flags whose
+// sources are all EXPLICIT: a volume by its name, a bind by its host path.
+//
+// This replaces `--volumes-from`, and the difference is the registry's data.
+// k3d's registry keeps /var/lib/registry in an ANONYMOUS volume, and a
+// container that inherits an anonymous volume through --volumes-from and is
+// run with --rm removes that volume when it exits — moby's removeMountPoints
+// spares only mounts with an explicit source, and ignores "in use". The
+// registry container's own reference was all that kept every pushed image
+// alive; if it was removed during a maintenance pass (a k3d registry delete
+// or recreate), the helper's exit deleted the store. A volume named in
+// --mount has an explicit source, so --rm never removes it.
+//
+// Anything that cannot be named — a volume with no name, a bind with no
+// source, any other mount type — is refused rather than dropped: the helper
+// must see exactly the filesystem the registry does.
+func maintenanceMounts(info containerInfo) ([]string, error) {
+	var args []string
+	for _, m := range info.Mounts {
+		var src string
+		switch m.Type {
+		case "volume":
+			src = m.Name
+		case "bind":
+			src = m.Source
+		default:
+			return nil, fmt.Errorf("registry mount %s has type %q, which maintenance cannot reproduce", m.Destination, m.Type)
+		}
+		if src == "" || m.Destination == "" {
+			return nil, fmt.Errorf("registry %s mount at %q has no explicit source", m.Type, m.Destination)
+		}
+		// --mount is CSV: a comma or quote in a value would re-split it.
+		if strings.ContainsAny(src+m.Destination, `,"`) {
+			return nil, fmt.Errorf("registry mount %q -> %q cannot be expressed as a --mount flag", src, m.Destination)
+		}
+		spec := "type=" + m.Type + ",src=" + src + ",dst=" + m.Destination
+		if !m.RW {
+			spec += ",readonly"
+		}
+		args = append(args, "--mount", spec)
+	}
+	return args, nil
 }
 
 func (r Runner) inspect(ctx context.Context, name string) (containerInfo, error) {
@@ -546,6 +597,10 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	if !volume || len(info.Config.Cmd) != 1 || info.Config.Cmd[0] != "/etc/docker/registry/config.yml" {
 		return fmt.Errorf("registry %s is not a supported standalone k3d filesystem registry", reg.Container)
 	}
+	mounts, err := maintenanceMounts(info)
+	if err != nil {
+		return fmt.Errorf("registry %s: %w", reg.Container, err)
+	}
 	if err := r.verifyConsumers(ctx, reg, info); err != nil {
 		return err
 	}
@@ -594,7 +649,10 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	if _, err = r.docker(ctx, "stop", "--time", "30", reg.Container); err != nil {
 		return err
 	}
-	if _, err = r.docker(ctx, "run", "-d", "--rm", "--pull=never", "--name", helper, "--volumes-from", reg.Container+":rw", "-p", "127.0.0.1::5000", "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", info.Image); err != nil {
+	// Never --volumes-from with --rm: see maintenanceMounts.
+	helperArgs := append([]string{"run", "-d", "--rm", "--pull=never", "--name", helper}, mounts...)
+	helperArgs = append(helperArgs, "-p", "127.0.0.1::5000", "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", info.Image)
+	if _, err = r.docker(ctx, helperArgs...); err != nil {
 		return err
 	}
 	base, err = r.endpoint(ctx, helper)
@@ -630,7 +688,9 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	// (distribution#3178). Unreachable untagged manifests were already selected
 	// by the graph walk and DELETEd above, so this pass only reclaims blobs that
 	// no remaining manifest references.
-	b, err = r.docker(ctx, "run", "--rm", "--pull=never", "--network", "none", "--name", gc, "--volumes-from", reg.Container+":rw", info.Image, "garbage-collect", "/etc/docker/registry/config.yml")
+	gcArgs := append([]string{"run", "--rm", "--pull=never", "--network", "none", "--name", gc}, mounts...)
+	gcArgs = append(gcArgs, info.Image, "garbage-collect", "/etc/docker/registry/config.yml")
+	b, err = r.docker(ctx, gcArgs...)
 	r.print("%s\n", b)
 	return err
 }

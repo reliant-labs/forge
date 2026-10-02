@@ -166,6 +166,21 @@ type promoteRefusedError struct {
 	ActualPhase string
 	// Detail is one human sentence, the server's when it sent one.
 	Detail string
+	// CurrentPlan is the plan the server recomputed under the env row lock
+	// and judged against, sent with plan_stale and plan_unacknowledged
+	// (O-13). Nil for every other reason, and nil when the plan the server
+	// sent could not be read.
+	//
+	// It is what lets a refusal print "this is what the deploy looks like
+	// NOW" rather than only "your approval is out of date". The operator's
+	// next decision is made against this plan, so carrying it here — rather
+	// than re-planning after the refusal — is what keeps the thing they
+	// look at and the thing that refused them the same plan.
+	CurrentPlan *release.Plan
+	// Unacknowledged are the stop-class finding codes the recomputed plan
+	// holds that the request did not name. Set for plan_unacknowledged, and
+	// derived from CurrentPlan so the list and the plan cannot disagree.
+	Unacknowledged []string
 	// cause is the wire error, for errors.As/Unwrap — never for display
 	// beyond what Detail already says.
 	cause error
@@ -199,8 +214,78 @@ func refusalHint(reason string) string {
 		return "the current promotion is still rolling out. Wait for it (`forge env status --wait`), or pass --supersede to replace it on purpose (recorded)."
 	case reasonEnvironmentPinned:
 		return "the environment's reconcile policy is pinned, which refuses every change. Unpin it on the control plane first."
+	case reasonPlanStale:
+		return "the environment changed after the plan was computed, so the approval no longer describes this deploy. Re-plan and approve the new plan; the refusal above shows what is there now."
+	case reasonPlanUnacknowledged:
+		return "this deploy destroys something that cannot be recreated by re-running it. Acknowledge each finding by code (--acknowledge-destructive <code>); --yes does not cover a stop-class finding."
+	case reasonBundleMissing:
+		return "the bundle's blob is no longer in the registry, so there are no bytes to apply. Re-build and re-record the bundle (`forge env build <env>`)."
 	default:
 		return ""
+	}
+}
+
+// applyRefusalFromWire turns a refused BeginApply into the same domain
+// refusal a refused Promote produces, or nil when err is not a refusal.
+//
+// ONE TYPE FOR BOTH WRITES. BeginApply applies the same CAS, the same
+// plan-digest recompute and the same stop-class check as Promote, under the
+// same row lock, and refuses with the same reasons — so a second error type
+// would mean a second exit-code mapping and a second --json refusal object,
+// which could then disagree about what reason 3 means.
+//
+// It takes no env name, which is why it is a function rather than a method
+// like hostedStore.refusalFromWire: an apply refusal's ActualCurrent is not
+// decoded. A promotion needs an env name to validate, the store caches those,
+// and an apply client has no such cache — while the reason, the detail and
+// the recomputed plan, which are what the operator acts on, need none.
+func applyRefusalFromWire(err error) *promoteRefusedError {
+	out := &promoteRefusedError{Reason: hostedErrorReason(err), cause: err}
+	if w, ok := promoteRefusalOf(err); ok {
+		out.Reason = w.Reason
+		out.ExpectedCurrentPromotionID = w.ExpectedCurrentPromotionID
+		out.ExpectedUnbound = w.ExpectedUnbound
+		out.ActualPhase = w.ActualPhase
+		out.Detail = w.Detail
+		out.adoptCurrentPlan(w.CurrentPlan)
+	}
+	if out.Reason == "" {
+		return nil
+	}
+	if out.Detail == "" {
+		var cerr *cloud.Error
+		if errors.As(err, &cerr) {
+			out.Detail = strings.TrimSpace(cerr.Message)
+		}
+	}
+	return out
+}
+
+// adoptCurrentPlan decodes the recomputed plan a refusal carried, and the
+// stop codes it holds.
+//
+// A plan that will not decode — an unknown finding class, a digest that does
+// not recompute — is DROPPED and the refusal still stands. The reason already
+// decided the exit code; the plan only enriches the message, and turning a
+// clear refusal into a decode error would hide why the write was declined
+// behind a complaint about the explanation. The dropped plan is not silent
+// either: the operator still sees the reason and the hint, which name
+// re-planning as the next step.
+func (e *promoteRefusedError) adoptCurrentPlan(w *wirePlan) {
+	if w == nil {
+		return
+	}
+	p, err := planFromWire(*w)
+	if err != nil {
+		return
+	}
+	e.CurrentPlan = &p
+	if e.Reason == reasonPlanUnacknowledged {
+		// Derived from the plan rather than parsed out of the message, so
+		// the codes printed and the plan shown cannot disagree. Nothing
+		// was acknowledged from this error's point of view: it is the
+		// server's verdict on the request that was sent.
+		e.Unacknowledged = p.StopCodes()
 	}
 }
 
@@ -219,6 +304,7 @@ func (s *hostedStore) refusalFromWire(env string, err error) *promoteRefusedErro
 		out.ExpectedUnbound = w.ExpectedUnbound
 		out.ActualPhase = w.ActualPhase
 		out.Detail = w.Detail
+		out.adoptCurrentPlan(w.CurrentPlan)
 		if w.ActualCurrent != nil {
 			// The actual promotion is DISPLAY data on a failure path. One
 			// the server sent that forge cannot validate must not turn a
@@ -272,6 +358,12 @@ type promoteRefusalJSON struct {
 	// rollout_in_flight.
 	ActualPhase string `json:"actual_phase,omitempty"`
 	Detail      string `json:"detail,omitempty"`
+	// CurrentPlan is the plan the server recomputed and refused against
+	// (plan_stale, plan_unacknowledged). Emitted so a pipeline that reads
+	// --json gets the same evidence a human reading the message does.
+	CurrentPlan *release.Plan `json:"current_plan,omitempty"`
+	// Unacknowledged are the stop-class codes still needing acknowledgement.
+	Unacknowledged []string `json:"unacknowledged,omitempty"`
 }
 
 func (e *promoteRefusedError) toJSON() *promoteRefusalJSON {
@@ -281,6 +373,8 @@ func (e *promoteRefusedError) toJSON() *promoteRefusalJSON {
 		ExpectedUnbound:            e.ExpectedUnbound,
 		ActualCurrent:              e.ActualCurrent,
 		Detail:                     e.Detail,
+		CurrentPlan:                e.CurrentPlan,
+		Unacknowledged:             e.Unacknowledged,
 	}
 	if e.ActualPhase != "" {
 		out.ActualPhase = rolloutPhaseName(e.ActualPhase)

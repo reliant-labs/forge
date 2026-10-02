@@ -188,6 +188,26 @@ type wirePromotion struct {
 	FromPromotionID string `json:"fromPromotionId,omitempty"`
 	// Run is the CI run that performed this promotion.
 	Run *wireRun `json:"run,omitempty"`
+
+	// PlanDigest, ApprovedBy and AcknowledgedFindings are O-13's record of
+	// the review this promotion was written under (tags 23–25): which plan,
+	// who approved it, and which stop-class findings they accepted by name.
+	//
+	// ApprovedBy is SERVER-SET from the credential and read-only here, for
+	// the reason RecordedBy on a gate is: an approval whose approver the
+	// approver chose is not an approval.
+	//
+	// All three are empty on a promotion written before O-13, and on an env
+	// whose promotions nothing converges (where the plan is optional). Empty
+	// therefore means "no plan was recorded", never "the plan was empty" —
+	// a reader must not render an unreviewed promotion as an approved one.
+	PlanDigest           string   `json:"planDigest,omitempty"`
+	ApprovedBy           string   `json:"approvedBy,omitempty"`
+	AcknowledgedFindings []string `json:"acknowledgedFindings,omitempty"`
+	// ImportedFrom is set on a promotion that came from `forge ledger
+	// import` (§11): the git path it was read from. Its presence is what
+	// labels the row as history rather than something that happened here.
+	ImportedFrom string `json:"importedFrom,omitempty"`
 }
 
 // ─── Rollout, refusal and run (P0's read shapes) ─────────────────────────────
@@ -326,7 +346,8 @@ type wireRollout struct {
 // promoted by alice 4 minutes ago" without a second round trip.
 type wirePromoteRefusal struct {
 	// Reason is one of the reason* constants (promotion_conflict |
-	// rollout_in_flight | environment_pinned).
+	// rollout_in_flight | environment_pinned | plan_stale |
+	// plan_unacknowledged | bundle_missing).
 	Reason string `json:"reason"`
 	// Echoed back from the request, so a log line is self-contained.
 	ExpectedCurrentPromotionID string `json:"expectedCurrentPromotionId,omitempty"`
@@ -337,6 +358,16 @@ type wirePromoteRefusal struct {
 	// in flight.
 	ActualPhase string `json:"actualPhase,omitempty"`
 	Detail      string `json:"detail,omitempty"`
+	// CurrentPlan is the FRESHLY RECOMPUTED plan, sent with plan_stale and
+	// plan_unacknowledged (DeployPromoteRefusal tag 8, O-13).
+	//
+	// It is on the refusal so a refused caller can show the operator WHAT
+	// CHANGED without a second round trip — and more importantly without a
+	// second PlanDeploy, which would be computed at yet another moment and
+	// so could differ from the one that actually refused the write. The
+	// refusal carries the plan the server judged against, which is the only
+	// plan the operator's next decision should be based on.
+	CurrentPlan *wirePlan `json:"currentPlan,omitempty"`
 }
 
 // promoteRefusalType is the protobuf full name under which a refusal rides
@@ -659,6 +690,12 @@ func (s *hostedStore) promotionFromWire(env string, w wirePromotion) (release.Pr
 	// before the button was pressed?".
 	p.Gates = gatesFromWire(w.Gates)
 	p.RecordedGates = gatesFromWire(w.RecordedGates)
+	// O-13's review record, read back so a promote that just landed can
+	// print which plan it was approved against and who approved it. The
+	// approver comes from here and never from what forge sent.
+	p.PlanDigest = w.PlanDigest
+	p.ApprovedBy = w.ApprovedBy
+	p.AcknowledgedFindings = w.AcknowledgedFindings
 	if err := p.Validate(); err != nil {
 		return release.Promotion{}, fmt.Errorf("control plane returned promotion %s: %w", w.ID, err)
 	}
@@ -763,6 +800,29 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 	}
 	if p.FromPromotionID != "" {
 		req["fromPromotionId"] = p.FromPromotionID
+	}
+	// The approved plan (O-13), as PromoteReleaseRequest tags 13–14.
+	//
+	// Wherever a converger applies promotions, writing the promotion IS the
+	// deploy, so the review has to precede the record and this names which
+	// review. The server RECOMPUTES the plan under the env row lock and
+	// refuses on a mismatch (reasonPlanStale) or an unacknowledged
+	// stop-class finding (reasonPlanUnacknowledged) — it never trusts the
+	// digest as submitted, which is what makes it a guarantee rather than a
+	// claim.
+	//
+	// Both are sent only when set. A control plane that predates O-13
+	// discards them as unknown fields, so a new forge can send them before
+	// the server deploys; a promote with no plan is still recorded, and the
+	// server decides whether its own env requires one.
+	//
+	// ApprovedBy is NOT sent. The server sets it from the credential: an
+	// approval whose approver the approver chose is not an approval (O-11).
+	if p.PlanDigest != "" {
+		req["planDigest"] = p.PlanDigest
+	}
+	if len(p.AcknowledgedFindings) > 0 {
+		req["acknowledgedFindings"] = p.AcknowledgedFindings
 	}
 	guardWireFields(guard, req)
 	var resp struct {

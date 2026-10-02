@@ -44,12 +44,20 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 	}
 	if !entities.HasHosted() {
 		if entities.ControlPlane != nil && opts.purpose != renderToLaunch && !envAppliesLocally(entities) {
+			// REFUSED BEFORE ANY RPC, and therefore before any
+			// declaration is recorded. A deploy forge is about to
+			// reject must not write to the control plane, and
+			// resolving a credential here would replace this
+			// actionable message with "no control-plane credential".
 			return true, refuseLocalEnvDeploy(envName)
 		}
-		return false, nil
+		return false, recordDeployDeclaration(ctx, envName, entities, opts)
 	}
 	if envAppliesLocally(entities) {
-		return false, nil
+		return false, recordDeployDeclaration(ctx, envName, entities, opts)
+	}
+	if derr := recordDeployDeclaration(ctx, envName, entities, opts); derr != nil {
+		return true, derr
 	}
 	if opts.frontendsOnly {
 		return true, fmt.Errorf("--frontends-only is not supported on hosted env %q", envName)
@@ -60,6 +68,25 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 	}
 	_, hostedGroups := splitHostedGroups(groups)
 	return true, runHostedDeploy(ctx, envName, entities, hostedGroups, opts)
+}
+
+// recordDeployDeclaration records what the env declares, for every env that
+// declares a control plane — hosted, self-managed or mixed.
+//
+// A deploy is the other moment forge has rendered the env and knows what it
+// is, so a project whose pipeline deploys without a preceding `forge env
+// build` still keeps its declaration current. It runs AFTER the LOCAL
+// refusal and before anything is published or applied: a deploy that forge
+// is going to reject writes nothing.
+//
+// A --dry-run records nothing. It previews a deploy, and a preview that wrote
+// to the control plane would be the one command that cannot be run safely to
+// find out what would happen.
+func recordDeployDeclaration(ctx context.Context, envName string, entities *KCLEntities, opts deployOptions) error {
+	if opts.dryRun {
+		return nil
+	}
+	return recordEnvDeclaration(ctx, envName, entities)
 }
 
 // envAppliesLocally reports whether any part of the env is applied FROM THIS

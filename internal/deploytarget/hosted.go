@@ -40,6 +40,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // HostedProviderID is the registry id of the hosted provider.
@@ -284,13 +285,34 @@ const (
 )
 
 // HostedEnvRef addresses one control-plane environment: (project, name) in
-// the caller's org, plus the kind an ensure creates it with.
+// the caller's org, plus the kind an ensure creates it with, plus — for the
+// paths that have rendered the env — what its KCL declares.
 type HostedEnvRef struct {
 	// Project is the forge project name (forge.yaml `name`).
 	Project string
 	Name    string
 	Kind    HostedEnvKind
+
+	// Shape is the env's rendered shape, recorded as the DECLARATION:
+	// what runs, where, which secrets it needs, one hash per object. It is
+	// what lets a reader answer "what kind, which secrets, which provider"
+	// with no checkout and no daemon, which is the whole point of
+	// recording it.
+	//
+	// NIL MEANS "I DID NOT RENDER", NOT "THE ENV DECLARES NOTHING". An
+	// absent shape leaves the stored one untouched server-side, so the
+	// ensures that run without a render — `forge secret set`, a promote —
+	// cannot erase a declaration that a build recorded. Only a path that
+	// actually rendered the env may set it.
+	Shape *release.Shape
+	// DeclaredBy is the provenance of the render Shape came from: which
+	// commit, which checkout, which forge. It is a CLAIM, recorded as
+	// one — identity is the caller's token, never this (O-11).
+	DeclaredBy *release.Provenance
 }
+
+// DeclaresShape reports whether this ref carries a declaration to record.
+func (r HostedEnvRef) DeclaresShape() bool { return r.Shape != nil }
 
 // LookupHostedEnvironment resolves an environment (project, NAME) to the
 // control plane's id, by listing the caller's environments and matching the
@@ -360,6 +382,22 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 	spec := map[string]any{"name": ref.Name, "kind": string(ref.Kind)}
 	if ref.Project != "" {
 		spec["project"] = ref.Project
+	}
+	if ref.Shape != nil {
+		// DeployEnvironmentSpec.shape is a google.protobuf.Struct, whose
+		// proto3-JSON form is the object itself. So the shape rides as
+		// its canonical JSON decoded back into a map: encoding it once
+		// through Shape.Encode is what guarantees the server stores the
+		// same bytes `forge env shape` printed, rather than whatever
+		// Go's marshaller happened to emit for the struct.
+		shape, err := shapeWireFields(*ref.Shape)
+		if err != nil {
+			return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, err)
+		}
+		spec["shape"] = shape
+		if ref.DeclaredBy != nil {
+			spec["declaredBy"] = ProvenanceWireFields(*ref.DeclaredBy)
+		}
 	}
 	if err := c.Call(ctx, procEnsureEnvironment, map[string]any{"spec": spec}, &ensured); err != nil {
 		return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, err)

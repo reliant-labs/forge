@@ -197,10 +197,14 @@ Environment is a positional arg — `forge env deploy dev`, not `forge env deplo
 
 ```
 forge env render prod             # every object, and the cluster it lands on — changes nothing
+forge env shape prod              # what the env IS, not its objects — see deploy/shape
 forge env deploy prod             # build state → pinned digests → apply / publish → rollout wait
 forge env deploy prod --dry-run   # render/print without applying
 forge env deploy prod --target item   # one workload
 ```
+
+`build` and `deploy` also record that shape on the control plane, so a console
+can read an env with no daemon online.
 
 Each workload deploys through its runtime: cluster workloads are applied to
 the kubectl context the ClusterTarget names (forge refuses when it is
@@ -268,11 +272,10 @@ against workloads in the same environment.
 ### Custom domains
 
 Every hosted site and exposed hosted port already answers on a hostname the
-platform allocates. To ALSO serve your own, use the `forge domain` commands
-— **a hosted domain is NOT spec**, and a hosted frontend or port carrying
-`domains` is refused at render. `forge.OnCluster` is the exception and keeps
-`Port.domains`. The commands, the reasoning and how to read a bound domain's
-state: load `deploy/domains`.
+platform allocates. To ALSO serve your own, use the `forge domain` commands —
+**a hosted domain is NOT spec**, and a hosted frontend or port carrying
+`domains` is refused at render. `forge.OnCluster` keeps `Port.domains`. For
+the commands and how to read a bound domain's state: load `deploy/domains`.
 
 ## Pod priority on shared nodes
 

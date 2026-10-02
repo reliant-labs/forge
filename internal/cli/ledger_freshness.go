@@ -1,43 +1,37 @@
 package cli
 
-// Is this checkout's FILE ledger the ledger?
+// "Is this checkout's copy of the ledger stale?" — a question that no longer
+// has a subject.
 //
-// A self-managed env records its promotions in .forge/promotions/<env>.jsonl,
-// committed to git. So "what is prod supposed to run" is answered by whatever
-// commit this checkout happens to have. A checkout that has not pulled the
-// latest `chore(ledger): record vX` commit holds an OLDER promotion, and every
-// verdict computed against it is wrong in a way the verdict cannot show:
+// IT USED TO. A self-managed env recorded its promotions in
+// .forge/promotions/<env>.jsonl, COMMITTED TO GIT, so "what is prod supposed
+// to run" was answered by whatever commit this checkout happened to have. A
+// checkout that had not pulled the latest `chore(ledger): record vX` commit
+// held an older promotion, and every verdict computed against it was wrong in
+// a way the verdict could not show:
 //
 //   - the cluster runs the new release → every image reports DRIFT from the
 //     old one, and an operator chases a deploy that went fine;
 //   - the cluster ALSO runs the old release (the new one never deployed) →
 //     MATCH, and the gate goes green on exactly the failure it exists for.
 //
-// The file is append-only, which makes the comparison exact: the working
-// tree's log and the upstream's log are either equal, or one is a prefix of
-// the other, or they diverged. No heuristics, no timestamps.
+// Moving the ledger out of the checkout removes the staleness rather than
+// detecting it. Neither store can be behind: a control plane IS the ledger,
+// and the machine ledger is one directory per PROJECT outside every
+// checkout, so all of a project's worktrees read the same file whatever
+// branch they are on. That was one of the three reasons for the move.
 //
-// The comparison is against origin's DEFAULT branch — where the ledger's
-// truth lands — not this branch's upstream: a feature branch cut before the
-// last release is behind in the sense that matters even when it is level
-// with its own remote. It reads only what the last fetch brought in and never
-// fetches itself: verify is a read-only command that runs in shared
-// checkouts, and a network call it did not need would make an offline
-// verify fail for a reason unrelated to the cluster.
-//
-// The hosted backend implements none of this. A control plane IS the ledger;
-// there is no copy that can be behind.
+// What remains here is the vocabulary (the enum, its JSON, the report
+// struct), because the --json field and the verify verdict that consume it
+// live in files this change does not own. They now always see nil, which is
+// the honest answer. Retiring the type, the field and the verdict together
+// belongs to whoever owns env_status next.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"time"
 )
 
 // ledgerFreshness is the answer to "does this checkout hold the newest copy
@@ -119,102 +113,33 @@ type ledgerFreshnessReport struct {
 
 // ledgerFreshnessChecker is the optional half of a binding store that can say
 // whether its copy of an env's ledger is the newest one. Declared here, at
-// the consumer: the file store implements it, the hosted store has nothing to
-// be behind and does not.
+// the consumer.
+//
+// NOTHING IMPLEMENTS IT ANY MORE, and that is the correct end state rather
+// than an oversight. The question "is my copy of the ledger stale" only
+// existed because the ledger was a file COMMITTED TO THE CHECKOUT, so a
+// branch that had not pulled the latest `chore(ledger): record vX` commit
+// held an older history. Both of today's stores make the question
+// meaningless:
+//
+//   - the control plane IS the ledger, so there is no copy to be behind;
+//   - the machine ledger lives outside every checkout, keyed by project, so
+//     every worktree on this machine reads the same one file.
+//
+// So ledgerFreshnessOf (env_status_release.go) now always reports nil and
+// staleLedgerError never fires, which is a true answer: no checkout can be
+// behind a ledger it does not hold. The vocabulary is kept because its
+// consumer and its --json field live in files this change does not own;
+// removing the type, the report field and the verify verdict together is
+// cleanup for the task that owns env_status.
 type ledgerFreshnessChecker interface {
 	LedgerFreshness(ctx context.Context, env string) ledgerFreshnessReport
 }
 
-// ledgerGitTimeout bounds each read-only git call. A wedged git must not hang
-// a verify whose real work is a cluster read.
-const ledgerGitTimeout = 10 * time.Second
-
-// LedgerFreshness compares env's promotion log in the working tree with the
-// same path on origin's default branch.
-func (s fileBindingStore) LedgerFreshness(ctx context.Context, env string) ledgerFreshnessReport {
-	git := func(args ...string) (string, error) {
-		cctx, cancel := context.WithTimeout(ctx, ledgerGitTimeout)
-		defer cancel()
-		cmd := exec.CommandContext(cctx, "git", args...)
-		cmd.Dir = s.projectDir
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		out, err := cmd.Output()
-		if err != nil {
-			return "", fmt.Errorf("git %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-		}
-		return string(out), nil
-	}
-	unknown := func(detail string) ledgerFreshnessReport {
-		return ledgerFreshnessReport{State: ledgerFreshnessUnknown, Detail: detail}
-	}
-
-	// The project's path WITHIN the repository, as git computes it. Asking
-	// git — rather than filepath.Rel against --show-toplevel — is what
-	// keeps a symlinked checkout path (macOS's /var → /private/var, a
-	// ~/src symlink) from reading as "outside the repository": git resolves
-	// both sides the same way.
-	prefix, err := git("rev-parse", "--show-prefix")
-	if err != nil {
-		return unknown("not a git checkout, so there is no upstream copy of the ledger to compare against")
-	}
-	ref := defaultUpstreamRef(git)
-	if ref == "" {
-		return unknown("no origin default branch has been fetched (tried origin/HEAD, origin/main, origin/master)")
-	}
-
-	logPath := promotionLogPath(s.projectDir, env)
-	logRel, err := filepath.Rel(s.projectDir, logPath)
-	if err != nil {
-		return unknown(fmt.Sprintf("locate %s: %v", logPath, err))
-	}
-	rel := strings.TrimSpace(prefix) + filepath.ToSlash(logRel)
-
-	local, err := os.ReadFile(logPath) //nolint:gosec // promotionLogPath confines the env stem to the promotions dir
-	if err != nil && !os.IsNotExist(err) {
-		return unknown(fmt.Sprintf("read %s: %v", logPath, err))
-	}
-	// An absent file on the upstream is an empty log, exactly as an absent
-	// file locally is: "never promoted there".
-	upstream, _ := git("show", ref+":"+rel)
-
-	report := ledgerFreshnessReport{Ref: ref}
-	localLines, upstreamLines := ledgerLines(string(local)), ledgerLines(upstream)
-	report.LocalEntries, report.UpstreamEntries = len(localLines), len(upstreamLines)
-	report.State = compareLedgerLogs(localLines, upstreamLines)
-	switch report.State {
-	case ledgerCurrent:
-		report.Detail = fmt.Sprintf("%s matches %s", rel, ref)
-	case ledgerBehind:
-		report.Detail = fmt.Sprintf("%s on %s has %d promotion(s) this checkout does not — the release verify compares against is stale",
-			rel, ref, len(upstreamLines)-len(localLines))
-	case ledgerAhead:
-		report.Detail = fmt.Sprintf("this checkout has %d promotion(s) not yet on %s — merge the ledger change so other checkouts verify against it",
-			len(localLines)-len(upstreamLines), ref)
-	case ledgerDiverged:
-		report.Detail = fmt.Sprintf("%s and %s each hold promotions the other does not — two copies of the ledger were written separately, and neither is authoritative",
-			rel, ref)
-	}
-	return report
-}
-
-// defaultUpstreamRef is origin's default branch as this checkout last saw it.
-func defaultUpstreamRef(git func(...string) (string, error)) string {
-	if out, err := git("symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"); err == nil {
-		if ref := strings.TrimSpace(out); ref != "" {
-			return ref
-		}
-	}
-	for _, ref := range []string{"origin/main", "origin/master"} {
-		if _, err := git("rev-parse", "--verify", "-q", ref); err == nil {
-			return ref
-		}
-	}
-	return ""
-}
-
-// ledgerLines splits a promotion log into its non-blank lines, ignoring
-// line-ending differences a checkout's autocrlf may have introduced.
+// ledgerLines splits a jsonl log into its non-blank lines, ignoring
+// line-ending differences a checkout's autocrlf may have introduced. Still
+// used for reading the RETIRED in-checkout ledger when deciding whether it
+// has been imported (ledger_unimported.go).
 func ledgerLines(log string) []string {
 	var out []string
 	for _, line := range strings.Split(strings.ReplaceAll(log, "\r\n", "\n"), "\n") {
@@ -223,23 +148,4 @@ func ledgerLines(log string) []string {
 		}
 	}
 	return out
-}
-
-// compareLedgerLogs classifies two append-only logs. Because entries are only
-// ever appended, "one is a prefix of the other" is the whole relation.
-func compareLedgerLogs(local, upstream []string) ledgerFreshness {
-	common := min(len(local), len(upstream))
-	for i := 0; i < common; i++ {
-		if local[i] != upstream[i] {
-			return ledgerDiverged
-		}
-	}
-	switch {
-	case len(local) == len(upstream):
-		return ledgerCurrent
-	case len(local) < len(upstream):
-		return ledgerBehind
-	default:
-		return ledgerAhead
-	}
 }

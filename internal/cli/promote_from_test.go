@@ -269,7 +269,7 @@ func TestPromoteFrom_StalePromotionWarningIsInTheTextPlan(t *testing.T) {
 // (the same-control-plane guard); this is the backstop that keeps that the
 // only way in.
 func TestFileLedger_RefusesAVersionItWasNotGiven(t *testing.T) {
-	store := newFileBindingStore(t.TempDir())
+	store := testBindings(t, newLedgerTestProject(t, "scratch"))
 	p := release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote,
 		Resolved: map[string]string{"api": sha("a")}}
 
@@ -277,7 +277,7 @@ func TestFileLedger_RefusesAVersionItWasNotGiven(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "promote by version") {
 		t.Fatalf("want a refusal naming the way forward, got %v", err)
 	}
-	if history, _ := store.History("prod"); len(history) != 0 {
+	if history, _ := storeHistory(t, store, "prod"); len(history) != 0 {
 		t.Fatalf("the refused append wrote %d entries", len(history))
 	}
 }
@@ -307,14 +307,14 @@ func TestPromoteFrom_CrossLedgerIsRefusedBeforeAnyRPC(t *testing.T) {
 		},
 		"a file-ledger source": func(s *hostedStore) map[string]promoteEnvLedger {
 			return map[string]promoteEnvLedger{
-				"staging": {Ledger: fileLedger(t.TempDir())},
+				"staging": {Ledger: testLedger(t, t.TempDir())},
 				"prod":    hosted(s, "https://cp.example", "acme"),
 			}
 		},
 		"a file-ledger target": func(s *hostedStore) map[string]promoteEnvLedger {
 			return map[string]promoteEnvLedger{
 				"staging": hosted(s, "https://cp.example", "acme"),
-				"prod":    {Ledger: fileLedger(t.TempDir())},
+				"prod":    {Ledger: testLedger(t, t.TempDir())},
 			}
 		},
 	}

@@ -93,7 +93,7 @@ func TestResolveDeployDigests_LegacyLedgerResolvesDeclaredRepositories(t *testin
 	const gar = "us-central1-docker.pkg.dev/reliant-labs-475814/reliant-prod"
 
 	// A release in the legacy shape: keyed by bare name, repository in URI.
-	if err := WriteRelease(dir, release.Release{
+	if err := testCutRelease(t, dir, release.Release{
 		Version: "v1.7.0",
 		Artifacts: map[string]release.Artifact{
 			"control-plane": {
@@ -105,7 +105,7 @@ func TestResolveDeployDigests_LegacyLedgerResolvesDeclaredRepositories(t *testin
 	}); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
-	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.7.0", Kind: release.KindPromote,
 		Resolved: map[string]string{"control-plane": sha("a")},
 	}, appendGuard{}); err != nil {
@@ -114,7 +114,7 @@ func TestResolveDeployDigests_LegacyLedgerResolvesDeclaredRepositories(t *testin
 
 	digests, boundRel, err := resolveDeployDigests(
 		context.Background(), dir, "prod", false,
-		newFileBindingStore(dir), fileReleaseLedger{projectDir: dir},
+		testBindings(t, dir), testReleases(t, dir),
 	)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

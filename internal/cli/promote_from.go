@@ -118,8 +118,12 @@ var promoteEnvLedgerFor = promoteEnvLedgerOf
 func promoteEnvLedgerOf(ctx context.Context, projectDir, env string) (promoteEnvLedger, error) {
 	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err != nil {
 		// No KCL for this env in this checkout, so nothing can declare a
-		// control plane: the answer is the project's own files.
-		return promoteEnvLedger{Ledger: fileLedger(projectDir)}, nil
+		// control plane: the answer is this machine's ledger.
+		ledger, err := machineLedger(projectDir)
+		if err != nil {
+			return promoteEnvLedger{}, err
+		}
+		return promoteEnvLedger{Ledger: ledger}, nil
 	}
 	entities, err := RenderKCL(ctx, projectDir, env)
 	if err != nil {
@@ -130,12 +134,13 @@ func promoteEnvLedgerOf(ctx context.Context, projectDir, env string) (promoteEnv
 		return promoteEnvLedger{}, err
 	}
 	out := promoteEnvLedger{Ledger: ledger}
-	// A LOCAL env's control plane is only its secret store — the platform
-	// runs nothing of it and records no promotions for it — so it is not a
-	// shared ledger and must not read as one.
-	if !isLocalControlPlaneEnv(entities) {
-		out.ControlPlane = declarationFromEntities(entities)
-	}
+	// The declaration, whatever the env's KIND. A LOCAL env that declares a
+	// control plane now records there too (see ledgerForEntities), so the
+	// previous exception here — which excluded LOCAL on the reasoning that
+	// the platform runs nothing of it — would make this function disagree
+	// with the selection it exists to mirror, and a --from promote between
+	// two envs on one control plane would read as crossing control planes.
+	out.ControlPlane = declarationFromEntities(entities)
 	return out, nil
 }
 

@@ -15,7 +15,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
-	"github.com/reliant-labs/forge/internal/statefile"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -477,7 +476,7 @@ func buildEnvTopology(
 	opts envTopologyOptions,
 ) (envTopologyReport, error) {
 	report := envTopologyReport{
-		Ledger:       filepath.Join(projectDir, promotionsDirRel),
+		Ledger:       machineLedgerLocation(projectDir),
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		Releases:     []string{},
 		Images:       []string{},
@@ -846,32 +845,28 @@ func declaredEnvNames(projectDir string) []string {
 	return envs
 }
 
-// readReleaseLedgers loads every release ledger in the project, NEWEST FIRST.
+// readReleaseLedgers loads this project's releases from the MACHINE ledger,
+// NEWEST FIRST.
 //
-// The version is taken from INSIDE each file rather than from its filename.
-// releaseFileStem flattens filesystem-unsafe bytes, so a stem is a lossy
-// projection of a version label and reversing it would mis-name any release
-// whose label needed flattening — ".forge/releases/v1_0_0.json" is a real file
-// in a real project here, and its stem is not its version.
+// It reads the non-hosted store because that is where a project's own cut
+// releases are recorded; an env whose ledger is a control plane contributes
+// its releases through its own ledger, which the per-env loop below reads
+// (buildEnvTopology's ledger.Releases.List).
 //
-// An unreadable or malformed ledger is SKIPPED, not fatal. This command's job
-// is to show the shape of a project's releases; refusing to show any of them
-// because one file on disk is corrupt trades a complete answer for no answer.
+// An unreadable ledger is EMPTY, not fatal. This command's job is to show
+// the shape of a project's releases; refusing to show any of them because
+// the store could not be opened trades a complete answer for no answer.
 func readReleaseLedgers(projectDir string) []release.Release {
-	matches, err := filepath.Glob(filepath.Join(projectDir, releasesDirRel, "*.json"))
+	store, err := openMachineLedger(projectDir)
 	if err != nil {
 		return nil
 	}
-	out := make([]release.Release, 0, len(matches))
-	for _, path := range matches {
-		rel, rerr := statefile.Read[release.Release](path, "release")
-		if rerr != nil || rel == nil || rel.Version == "" || rel.Validate() != nil {
-			continue
-		}
-		out = append(out, *rel)
+	all, err := store.Releases()
+	if err != nil {
+		return nil
 	}
-	sortReleasesNewestFirst(out)
-	return out
+	sortReleasesNewestFirst(all)
+	return all
 }
 
 // sortReleasesNewestFirst orders releases newest first.

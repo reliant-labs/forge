@@ -381,7 +381,7 @@ func TestGateRecord_UnpromotedEnvIsRefused(t *testing.T) {
 // already written. Said plainly, with the promote-time alternative.
 func TestGateRecord_FileLedgerSaysWhyAndWhatToDoInstead(t *testing.T) {
 	dir := t.TempDir()
-	ledger := fileLedger(dir)
+	ledger := testLedger(t, dir)
 	if _, err := ledger.Bindings.Append(context.Background(),
 		release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote}, appendGuard{}); err != nil {
 		t.Fatal(err)

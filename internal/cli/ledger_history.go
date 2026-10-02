@@ -69,52 +69,8 @@ func (q historyQuery) limit() (int, error) {
 	}
 }
 
-// HistoryPage serves the file ledger's history. The log is oldest-first and
-// small, so the page is cut in memory with the SAME semantics the server
-// applies: newest first, strictly before the cursor, optionally one release.
-func (s fileBindingStore) HistoryPage(_ context.Context, env string, q historyQuery) (historyPage, error) {
-	limit, err := q.limit()
-	if err != nil {
-		return historyPage{}, err
-	}
-	all, err := s.History(env)
-	if err != nil {
-		return historyPage{}, err
-	}
-	// Newest first.
-	newestFirst := make([]release.Promotion, len(all))
-	for i := range all {
-		newestFirst[len(all)-1-i] = all[i]
-	}
-	start := 0
-	if q.Before != "" {
-		start = -1
-		for i, p := range newestFirst {
-			if p.ID == q.Before {
-				start = i + 1
-				break
-			}
-		}
-		if start < 0 {
-			return historyPage{}, fmt.Errorf("%w: --before %q names no promotion of %s", errHistoryQueryInvalid, q.Before, env)
-		}
-	}
-	var page historyPage
-	for i := start; i < len(newestFirst); i++ {
-		p := newestFirst[i]
-		if q.Release != "" && p.Release != q.Release {
-			continue
-		}
-		if len(page.Promotions) == limit {
-			// There is at least one more matching entry, so this page
-			// is not the last: the cursor is the last entry SERVED.
-			page.Next = page.Promotions[len(page.Promotions)-1].ID
-			break
-		}
-		page.Promotions = append(page.Promotions, p)
-	}
-	return page, nil
-}
+// The MACHINE ledger's HistoryPage lives beside its other methods, in
+// binding_store.go, with the store it reads.
 
 // HistoryPage serves the hosted ledger's history through ListPromotions, with
 // C7's cursor and version filter. An environment the control plane has never

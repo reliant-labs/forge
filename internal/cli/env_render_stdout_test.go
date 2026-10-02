@@ -71,7 +71,7 @@ _bundle = forge.Bundle {
 output = forge.render(_bundle)
 `)
 	write(".forge/state/build-prod.json", `{"image": "reg.example.com/rendertest", "tag": "abc1234", "pushed": true, "pushed_at": "2026-09-24T00:00:00Z", "digest": "`+renderBuiltDigest+`"}`)
-	if _, err := newFileBindingStore(dir).Append(context.Background(), releasepkg.Promotion{
+	if _, err := testBindings(t, dir).Append(context.Background(), releasepkg.Promotion{
 		Env: "prod", Release: "v1.0.0", Kind: releasepkg.KindPromote,
 		Resolved: map[string]string{"reg.example.com/rendertest": renderReleaseDigest},
 	}, appendGuard{}); err != nil {

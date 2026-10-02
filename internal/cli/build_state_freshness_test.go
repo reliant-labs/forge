@@ -75,7 +75,7 @@ func gitCommitEmpty(t *testing.T, dir, msg string) {
 // guard: build state records commit C, HEAD has moved to C', the tree is
 // clean — deploy must REFUSE rather than silently ship the old image.
 func TestResolveDeployImageTag_StaleCommitRefuses(t *testing.T) {
-	dir := newGitRepo(t)
+	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
 	// The build was at builtCommit; now advance HEAD past it.
@@ -177,7 +177,7 @@ func TestResolveDeployImageTag_DirtyTrackedFileSkipsFreshnessCheck(t *testing.T)
 // doesn't move HEAD. A stale build with only untracked clutter present
 // still refuses.
 func TestResolveDeployImageTag_UntrackedFileDoesNotMaskStaleness(t *testing.T) {
-	dir := newGitRepo(t)
+	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
 	gitCommitEmpty(t, dir, "advance head")
@@ -222,7 +222,7 @@ func TestResolveDeployImageTag_NoCommitSkipsFreshnessCheck(t *testing.T) {
 // `forge env deploy` pair leaves behind.
 func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
 	t.Helper()
-	if err := WriteRelease(dir, release.Release{
+	if err := testCutRelease(t, dir, release.Release{
 		Version: version,
 		Git:     release.Git{Commit: builtCommit, Tag: version},
 		Artifacts: map[string]release.Artifact{
@@ -231,7 +231,7 @@ func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
 	}); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
-	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
 		Env: envName, Release: version, Kind: release.KindPromote,
 		Resolved: map[string]string{"app": sha("a")},
 	}, appendGuard{}); err != nil {

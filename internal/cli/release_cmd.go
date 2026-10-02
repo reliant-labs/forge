@@ -38,44 +38,16 @@ with the coordinate and hash each one was cut with.`,
 	}
 	cmd.AddCommand(newReleaseVerifyCmd())
 	cmd.AddCommand(newReleaseWhereCmd())
-	cmd.AddCommand(newReleaseConvertLedgerCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 
-// newReleaseConvertLedgerCmd is the one-time conversion from the retired
-// ledger format.
-func newReleaseConvertLedgerCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "convert-ledger",
-		Short: "Convert a project from .forge/env-releases.json to per-env promotion logs (one time)",
-		Long: `Rewrite a project's release ledger into the current format, once.
-
-  - Every .forge/releases/*.json gains the artifact ` + "`kind`" + ` that is now
-    required (oci for an image, git for a source-pinned frontend).
-  - .forge/env-releases.json becomes one append-only log per environment,
-    .forge/promotions/<env>.jsonl, holding that env's current binding as its
-    first entry — then it is deleted.
-
-The digests each environment is bound to are carried over unchanged, so a
-render or deploy after conversion pins exactly what it pinned before.
-Commit the result.`,
-		Args:         cobra.NoArgs,
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			done, err := convertLegacyLedger(projectDirForKCL())
-			for _, line := range done {
-				fmt.Fprintln(cmd.OutOrStdout(), "  "+line)
-			}
-			if err != nil {
-				return err
-			}
-			if len(done) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "Nothing to convert — the ledger is already in the current format.")
-			}
-			return nil
-		},
-	}
-}
+// `forge release convert-ledger` IS DELETED. It converted
+// .forge/env-releases.json into .forge/promotions/<env>.jsonl — one retired
+// in-checkout format into another. Neither is read any more: the ledger is
+// the control plane or the machine store, and the path from a checkout's
+// committed ledger to either one is `forge ledger import --from-git`, which
+// imports history rather than rewriting files in the tree. A conversion
+// command that produced files nothing reads would be worse than its absence.
 
 // defaultVerifyTimeout bounds each registry request. Generous enough for a
 // cold TLS handshake to a slow registry, short enough that a hung endpoint
@@ -221,14 +193,18 @@ func runReleaseVerify(ctx context.Context, version string, opts verifyOptions) e
 	}
 
 	projectDir := projectDirForKCL()
-	rel, err := ReadRelease(projectDir, version)
+	store, err := openMachineLedger(projectDir)
+	if err != nil {
+		return err
+	}
+	rel, err := store.Release(version)
 	if err != nil {
 		return fmt.Errorf("read release %q: %w", version, err)
 	}
 	if rel == nil {
-		return fmt.Errorf("release %q not found at %s.\n"+
+		return fmt.Errorf("release %q is not recorded in %s.\n"+
 			"  Cut it first with: forge env build <env> --release %s --push",
-			version, releasePath(projectDir, version), version)
+			version, store.Dir(), version)
 	}
 	if len(rel.Artifacts) == 0 {
 		// An empty ledger cannot fail verification, and reporting "0 failed"

@@ -356,7 +356,7 @@ func (s stubResolver) Resolve(_ context.Context, _, _ string) envTarget { return
 // writeBinding appends one promotion of envName to the file ledger.
 func writeBinding(t *testing.T, dir, envName, release string, resolved map[string]string) {
 	t.Helper()
-	if _, err := newFileBindingStore(dir).Append(context.Background(), releasepkg.Promotion{
+	if _, err := testBindings(t, dir).Append(context.Background(), releasepkg.Promotion{
 		Env: envName, Release: release, Kind: releasepkg.KindPromote, Resolved: resolved,
 	}, appendGuard{}); err != nil {
 		t.Fatalf("write binding ledger: %v", err)

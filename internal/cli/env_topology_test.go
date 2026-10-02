@@ -40,10 +40,11 @@ func dg(label string) string {
 // topologyBindings wires opts to STATE each env's ledger: bindings from the
 // given store, releases from the project's files. An in-memory store makes
 // the "ledger read failed" path reachable, which a file backend makes awkward.
-func topologyBindings(opts envTopologyOptions, store bindingStore) envTopologyOptions {
-	dir := opts.ProjectDir
+func topologyBindings(t *testing.T, opts envTopologyOptions, store bindingStore) envTopologyOptions {
+	t.Helper()
+	releases := testReleases(t, opts.ProjectDir)
 	opts.Ledgers = func(context.Context, string) (envLedger, error) {
-		return envLedger{Bindings: store, Releases: fileReleaseLedger{projectDir: dir}}, nil
+		return envLedger{Bindings: store, Releases: releases}, nil
 	}
 	return opts
 }
@@ -65,7 +66,7 @@ func stageReleaseLedger(t *testing.T, dir, version, createdAt string, dirty bool
 		CreatedAt: mustTime(t, createdAt),
 		Artifacts: artifacts,
 	}
-	if err := WriteRelease(dir, rel); err != nil {
+	if err := testCutRelease(t, dir, rel); err != nil {
 		t.Fatalf("write release %s: %v", version, err)
 	}
 }
@@ -128,7 +129,7 @@ func realisticTopologyOpts(t *testing.T) envTopologyOptions {
 		declareEnvDir(t, dir, env)
 	}
 
-	return topologyBindings(envTopologyOptions{ProjectDir: dir}, newMemBindingStore(map[string]release.Promotion{
+	return topologyBindings(t, envTopologyOptions{ProjectDir: dir}, newMemBindingStore(map[string]release.Promotion{
 		"prod": {
 			Release:    "v1.5.15",
 			PromotedAt: mustTime(t, "2026-09-10T13:53:22Z"),
@@ -436,7 +437,7 @@ func TestTopology_UnboundEnv(t *testing.T) {
 // omitted rather than guessed.
 func TestTopology_BindingWithMissingReleaseLedger(t *testing.T) {
 	opts := realisticTopologyOpts(t)
-	opts = topologyBindings(opts, newMemBindingStore(map[string]release.Promotion{
+	opts = topologyBindings(t, opts, newMemBindingStore(map[string]release.Promotion{
 		"prod": {
 			Release:    "v9.9.9-branch",
 			PromotedAt: mustTime(t, "2026-10-01T00:00:00Z"),
@@ -478,7 +479,7 @@ func TestTopology_BindingWithMissingReleaseLedger(t *testing.T) {
 // declared:false with no cluster resolved, rather than dropped or errored.
 func TestTopology_UndeclaredEnvIsReported(t *testing.T) {
 	opts := realisticTopologyOpts(t)
-	opts = topologyBindings(opts, newMemBindingStore(map[string]release.Promotion{
+	opts = topologyBindings(t, opts, newMemBindingStore(map[string]release.Promotion{
 		"hotfix": {
 			Release:    "v1.3.0",
 			PromotedAt: mustTime(t, "2026-07-02T00:00:00Z"),
@@ -585,7 +586,7 @@ func TestTopologyImageState_RejectsUnknown(t *testing.T) {
 // blank the whole screen.
 func TestTopology_LedgerReadFailureIsPerRow(t *testing.T) {
 	opts := realisticTopologyOpts(t)
-	opts = topologyBindings(opts, &memBindingStore{err: context.DeadlineExceeded})
+	opts = topologyBindings(t, opts, &memBindingStore{err: context.DeadlineExceeded})
 
 	report, code, out := runTopologyJSON(t, []string{"prod"}, opts)
 	if code != 0 {

@@ -248,7 +248,7 @@ func TestBuildTag_NoFlagUsesPinThenEnvTag(t *testing.T) {
 // pin and the env tag, and the ledger records the digest of exactly the ref
 // each build pushed under it.
 func TestBuildTag_ReleaseWinsAndReachesTheLedger(t *testing.T) {
-	dir := planProject(t, tagPrecedenceFixture)
+	dir := useTestLedger(t, planProject(t, tagPrecedenceFixture))
 	fakeRegistry(t)
 	fakeDocker(t)
 
@@ -257,7 +257,7 @@ func TestBuildTag_ReleaseWinsAndReachesTheLedger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runBuild --release: %v\n%s", err, out)
 	}
-	rel, err := ReadRelease(dir, "v2.0.0")
+	rel, err := testGetRelease(t, dir, "v2.0.0")
 	if err != nil || rel == nil {
 		t.Fatalf("read release ledger: %v", err)
 	}

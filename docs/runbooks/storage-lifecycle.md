@@ -7,19 +7,19 @@ an indication that a volume is safe to remove.
 
 ## Defaults
 
-| Storage | Policy |
-| --- | --- |
-| Physical host filesystem | Refuse a build below 20 GiB available |
-| BuildKit | Remove cache unused for 7 days toward 20 GiB per registered local builder |
-| k3d node images | Kubelet removes unused images after 7 days; pressure GC at 80%, down to 70% |
-| Node container logs | 10 MiB × 3 files per container |
-| Registered local registry repositories | Keep 14 days and newest 5 distinct digests; protect workloads, release pins and stable aliases |
-| Forge dev logs (`forge env up` foreground tee) | Rotate at 50 MiB (`FORGE_LOG_ROTATE_BYTES`; `0` disables); the current stream keeps its path |
-| Rotated Forge logs | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment |
-| Cross-repo source cache (`<UserCacheDir>/forge/sources`) | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`) |
-| Temp scratch (`$TMPDIR`) | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata |
-| Worktrees | Explicit command only; clean, merged, directory and commit older than 30 days |
-| Database/PVC/workspace volumes | Never removed by storage GC |
+| Storage                                                  | Policy                                                                                                                                                                                               |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Physical host filesystem                                 | Refuse a build below 20 GiB available                                                                                                                                                                |
+| BuildKit                                                 | Remove cache unused for 7 days toward 20 GiB per registered local builder                                                                                                                            |
+| k3d node images                                          | Kubelet removes unused images after 7 days; pressure GC at 80%, down to 70%                                                                                                                          |
+| Node container logs                                      | 10 MiB × 3 files per container                                                                                                                                                                       |
+| Registered local registry repositories                   | Keep 14 days and newest 5 distinct digests; protect workloads, release pins and stable aliases                                                                                                       |
+| Forge dev logs (`forge env up` foreground tee)           | Rotate at 50 MiB (`FORGE_LOG_ROTATE_BYTES`; `0` disables); the current stream keeps its path                                                                                                         |
+| Rotated Forge logs                                       | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment                                                                                                                |
+| Cross-repo source cache (`<UserCacheDir>/forge/sources`) | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`)                                                                                      |
+| Temp scratch (`$TMPDIR`)                                 | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata |
+| Worktrees                                                | Explicit command only; clean, merged, directory and commit older than 30 days                                                                                                                        |
+| Database/PVC/workspace volumes                           | Never removed by storage GC                                                                                                                                                                          |
 
 The cache and log budgets are targets: recent/in-use cache and the diagnostic
 floor can exceed them. No budget overrides release or workload protection. The

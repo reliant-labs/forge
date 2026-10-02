@@ -18,6 +18,7 @@ GC at 85%, BuildKit's default budget) sees a near-empty disk and never fires.
 
 The first three commits on this branch (`internal/storage/` + `forge storage …`)
 implement most of the machinery:
+
 - Machine policy `~/Library/Application Support/forge/storage.json`
   (`internal/storage/policy.go`): absolute budgets — host reserve 20 GiB,
   BuildKit 20 GiB / 168h unused, kubelet `imageMaximumGCAge` 168h, registry
@@ -45,6 +46,7 @@ Philosophy: declarative, converge, working defaults.
 ## Gaps measured today, and the decisions
 
 ### G1 — Zero-touch activation (converge, don't register)
+
 forge already knows, at `forge env up` / `forge env deploy` / `forge build`:
 the env's declared `forge.Cluster`s (contexts), the local registry container
 (from k3d config `registries.use` / `ensureConfigRegistries`), its host aliases
@@ -65,6 +67,7 @@ short budget: builder prune, rotated logs, temp-dir sweep. Never registry GC
 (that stops the registry) and never node restarts from an opportunistic pass.
 
 ### G2 — CRD / arbitrary-resource image references
+
 The protected set reads only core workload kinds. `workspaces.reliant.dev`
 CRs reference `workspace-base` tags; they survived today only by age.
 Decision: protect by **scanning every listable namespaced+cluster resource for
@@ -77,6 +80,7 @@ Secrets (noise / never reference images we can't see elsewhere — Secrets are
 skipped for safety of not reading them). Unit-test with a fake CR.
 
 ### G3 — Untagged manifests under reused tags (~25 GB today)
+
 `:dev` is re-pushed hundreds of times; each push orphans the prior manifest.
 They are never reclaimed because "untagged" can also mean "index child / OCI
 artifact". The branch already builds the complete reference graph (every
@@ -88,6 +92,7 @@ eligible. This is graph-safe GC, distinct from distribution's unsafe
 `--delete-untagged`. DELETE goes through the API by digest like tagged ones.
 
 ### G4 — kubelet GC on every forge-created cluster
+
 `addClusterStorageArgs` covers `createK3dCluster` (declarative + `forge cluster
 up`). The `forge env deploy` fallback (`deploy.go` ~L2649/2667 — raw
 `exec.Command("k3d","cluster","create",...)`) bypasses it. Route both through
@@ -97,6 +102,7 @@ flag, verified) so API deletes work without the helper dance for new
 registries (keep the helper path for existing ones).
 
 ### G5 — Test/temp leaks (forge's own suites)
+
 - `forge-e2e-bin-*` (`internal/cli/scaffold_e2e_test.go` ~L428),
   `forge-skill-validate-*` (`internal/templates/skills_validation_test.go`
   ~L166), `forge-kcl-module-test-*` (`internal/templates/kcl_module_test.go`
@@ -118,6 +124,7 @@ registries (keep the helper path for existing ones).
   the `tierguard-` / `forge-` prefixes, never for unknown names.
 
 ### G6 — Dev log growth during a long `forge env up`
+
 Logs are truncated per `up` but unbounded during one. Add a size-capped
 rotating sink in the up tee (`internal/cli/up.go` `procRegistry.start`, both
 background and foreground branches): rotate at 50 MiB to
@@ -129,6 +136,7 @@ foreground/tee path if the background path can't be done without changing
 process supervision; document the remaining gap.
 
 ### G7 — Visibility: `forge doctor` disk check
+
 New doctor check "Disk": host free bytes (statfs on project dir + TMPDIR),
 Docker data allocated (Docker Desktop: `du` of Docker.raw if present), builder
 cache size, registry volume size, policy activation state (registries
@@ -137,6 +145,7 @@ the schedule is absent with registries registered; FAIL under the host reserve.
 Model on `internal/doctor/orphanedcluster.go` (probe struct with fakeable fns).
 
 ## Explicit non-goals (this wave)
+
 - Switching the local registry to zot (research recommends it; it is the right
   long-term answer — online GC + declarative retention, no write outage — but it
   changes registry ownership and k3d integration. Separate design.)
@@ -151,4 +160,3 @@ Model on `internal/doctor/orphanedcluster.go` (probe struct with fakeable fns).
   is not an activity signal (any `git status` touches it), and a worktree whose
   repo was deleted is invisible to `git worktree list` — find them by their
   `.git` file instead.
-

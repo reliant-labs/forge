@@ -131,6 +131,16 @@ func TestNewNextStepsArePasteable(t *testing.T) {
 			wantCmds: []string{"scaffold service", "env up"},
 		},
 		{
+			// A frontend-first project (a static site, or a SPA over an API
+			// that lives elsewhere): the frontend's dev loop, the static
+			// deploy path, and — one command away — a service.
+			name:        "service kind, frontends but no services",
+			kind:        config.ProjectKindService,
+			services:    nil,
+			hasFrontend: true,
+			wantCmds:    []string{"skill load", "scaffold service"},
+		},
+		{
 			// An entity is declared in the proto, so the block names the
 			// bare sweep (`forge scaffold`) rather than a per-entity
 			// command with a field list.
@@ -234,6 +244,39 @@ func TestNewNextStepsResolveHelper(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A project created with frontends and no services is a frontend-first
+// project — a landing page, a marketing or docs site, a SPA over an API that
+// lives elsewhere. Its first step is its frontend, not a Go service: telling
+// it to `scaffold service item` is how an agent ends up building a CRUD
+// backend for a site that has no data. The service path stays one command
+// away, so a frontend-first project that later grows an API is not stranded.
+func TestNewNextSteps_FrontendFirstProjectStartsWithItsFrontend(t *testing.T) {
+	lines := newNextSteps("demo", false, config.ProjectKindService, nil, true)
+	block := strings.Join(lines, "\n")
+
+	for _, want := range []string{"frontends/", "deploy/static-site"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("frontend-first next steps must mention %q:\n%s", want, block)
+		}
+	}
+	// A static site and an API-backed app split here; both must be reachable,
+	// and the frontend comes FIRST — the service is the fallback, not the lead.
+	frontendAt := strings.Index(block, "frontends/")
+	serviceAt := strings.Index(block, "scaffold service")
+	if serviceAt < 0 {
+		t.Errorf("frontend-first next steps must still name how to add an API (`scaffold service`):\n%s", block)
+	} else if frontendAt < 0 || serviceAt < frontendAt {
+		t.Errorf("a project with frontends and no services must lead with its frontend, not the service step:\n%s", block)
+	}
+
+	// The no-frontend, no-service block is unchanged: a bare service project
+	// still starts with its first domain-entity service.
+	bare := strings.Join(newNextSteps("demo", false, config.ProjectKindService, nil, false), "\n")
+	if !strings.Contains(bare, "DOMAIN ENTITY") {
+		t.Errorf("a bare service project must still lead with the domain-entity service step:\n%s", bare)
 	}
 }
 

@@ -23,6 +23,10 @@ import (
 // `forge` invocation. We can't use \b here — \b matches between `-` and `f`,
 // causing "cp-forge cp-forge-dev" to be read as "forge cp-forge-dev".
 //
+// The separators are `[ \t]+`, never `\s+`: a command is one line. With `\s+`
+// a KCL block opening `import forge` glued the next line's `output = ...` on
+// and reported a phantom `forge output` command.
+//
 // Examples of what this matches:
 //
 //	"forge generate"              -> ["generate"]
@@ -30,7 +34,20 @@ import (
 //	"forge debug break file:42"   -> ["debug", "break"]
 //	"forge env up --background"   -> ["env", "up"]
 //	"forge package new <name>"    -> ["package", "new"]
-var forgeCommandRE = regexp.MustCompile(`(?:^|[^\w-])forge\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,2})`)
+var forgeCommandRE = regexp.MustCompile(`(?:^|[^\w-])forge[ \t]+([a-z][a-z-]*(?:[ \t]+[a-z][a-z-]*){0,2})`)
+
+// A command reference never spans lines. `import forge` is how every KCL env
+// file opens, and the line after it is usually `output = ...` — read across
+// the newline, that is a `forge output` command that does not exist.
+func TestForgeCommandREStaysOnOneLine(t *testing.T) {
+	if m := forgeCommandRE.FindAllStringSubmatch("import forge\n\noutput = forge.render(b)\n", -1); len(m) != 0 {
+		t.Fatalf("a KCL `import forge` line must not match a command, got %q", m)
+	}
+	m := forgeCommandRE.FindStringSubmatch("forge env deploy prod\nnext line")
+	if m == nil || m[1] != "env deploy prod" {
+		t.Fatalf("a one-line command must still match whole, got %q", m)
+	}
+}
 
 // extractFencedBlocks returns the concatenated contents of every fenced code
 // block (``` ... ```) in a markdown document. We only scan for `forge`

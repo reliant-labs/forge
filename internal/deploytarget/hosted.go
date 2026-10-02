@@ -135,6 +135,22 @@ type HostedTarget struct {
 	// registry-less (`image = "api"`): the registry is declared once, on the
 	// env's forge.ControlPlane, and recorded here by `forge env build <env> --push`.
 	Registries map[string]string
+	// Shape and DeclaredBy are the env's rendered DECLARATION, recorded by
+	// the EnsureEnvironment this deploy already performs rather than by a
+	// write of their own.
+	//
+	// That placement is the contract, not a convenience. The order in this
+	// file's header exists so nothing is written until everything is known
+	// to be admissible — every workload validated, the hosted set rendered
+	// as the platform will — and a deploy that forge is about to refuse
+	// (unbound, off shape band, image outside the push base) must leave the
+	// control plane untouched. A declaration sent ahead of the plan would
+	// be the one write that escaped that rule.
+	//
+	// Nil means "no render to record", which leaves the stored shape
+	// untouched server-side.
+	Shape      *release.Shape
+	DeclaredBy *release.Provenance
 }
 
 // ─── Wire (controlplane.v1, proto3 JSON) ─────────────────────────────────────
@@ -987,7 +1003,11 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if err != nil {
 		return err
 	}
-	env, created, err := ensureHostedEnvironment(ctx, c, HostedEnvRef{Project: groupProject(group), Name: group.Env, Kind: HostedEnvPersistent})
+	ref := HostedEnvRef{Project: groupProject(group), Name: group.Env, Kind: HostedEnvPersistent}
+	if group.Hosted != nil {
+		ref.Shape, ref.DeclaredBy = group.Hosted.Shape, group.Hosted.DeclaredBy
+	}
+	env, created, err := ensureHostedEnvironment(ctx, c, ref)
 	if err != nil {
 		return err
 	}

@@ -525,7 +525,18 @@ func recordEnvDeclaration(ctx context.Context, envName string, entities *KCLEnti
 	}
 	doc, err := projectEnvShapeFn(ctx, os.Stderr, envName)
 	if err != nil {
-		return err
+		// A PROJECTION failure is loud but not fatal, and the asymmetry
+		// with the recording below is the point. The caller asked to
+		// BUILD; refusing that because the env could not be projected —
+		// a project whose KCL writes a file during render, an env this
+		// forge cannot render for an unrelated reason — would break a
+		// working command over a declaration nobody requested. A
+		// REFUSED shape is different: that means the server read it and
+		// said no, and continuing would leave every Live surface on a
+		// stale declaration behind a green build.
+		fmt.Printf("[declare] Warning: env %s's declaration was not recorded (%v).\n"+
+			"[declare]   The build continues; `forge env shape %s` reproduces this.\n", envName, err, envName)
+		return nil
 	}
 	ref := hostedEnvRefFor(envName, entities)
 	ref.Shape, ref.DeclaredBy = &doc.Shape, &doc.Provenance

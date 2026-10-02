@@ -13,6 +13,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -346,6 +348,116 @@ func TestRecordEnvDeclarationFailsLoudlyOnARefusedShape(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "prod") || !strings.Contains(err.Error(), "https://cp.example.test") {
 		t.Errorf("the failure must name the env and the control plane: %v", err)
+	}
+}
+
+// TestHostedDeployCarriesTheDeclarationOnItsOwnEnsure: a hosted deploy
+// records the declaration on the EnsureEnvironment it already performs, not
+// on a write of its own.
+//
+// The placement is the contract. The hosted order exists so nothing is
+// written until everything is known to be admissible, and a deploy forge is
+// about to refuse must leave the control plane untouched — which an earlier
+// version of this change broke by ensuring ahead of the plan, caught by
+// TestHostedDeployRefusals and TestDispatchHostedDeploy_RefusesLocalEnvBeforeAnyRPC.
+func TestHostedDeployCarriesTheDeclarationOnItsOwnEnsure(t *testing.T) {
+	shape := declarationFixtureShape()
+	provenance := release.Provenance{
+		Commit: "1111111111111111111111111111111111111111", Branch: "main", ForgeVersion: "v9.9.9",
+		Worktree: release.Worktree{Key: "wt", Path: "/Users/someone/src/shop"},
+	}
+	fake := &fakeCPCaller{ensureID: "env-prod"}
+
+	// Rollout skip: the fake serves no status, and the subject here is what
+	// the ENSURE carried. Without it the provider polls GetStatus for its
+	// full default timeout — measured at 300s, which is five minutes added
+	// to every run of this package for no extra coverage.
+	err := deploytarget.HostedProvider{
+		Client:  fake,
+		Rollout: cluster.RolloutPolicy{Mode: cluster.RolloutSkip},
+	}.Deploy(context.Background(), deploytarget.ServiceGroup{
+		Env: "prod",
+		Hosted: &deploytarget.HostedTarget{
+			Endpoint: "https://cp.example.test", Project: "acme",
+			Shape: shape, DeclaredBy: &provenance,
+		},
+	})
+	// The deploy itself goes no further than the ensure against this fake —
+	// the assertion is about what the ensure carried.
+	_ = err
+
+	ensures := fake.callsTo(procEnsureEnv)
+	if len(ensures) != 1 {
+		t.Fatalf("EnsureEnvironment calls = %d, want exactly 1 (the deploy's own): %v", len(ensures), procNames(fake.calls))
+	}
+	if ensures[0].Proc != fake.calls[0].Proc {
+		t.Errorf("the ensure is not the deploy's first call: %v", procNames(fake.calls))
+	}
+	spec, _ := ensures[0].Body["spec"].(map[string]any)
+	if _, present := spec["shape"]; !present {
+		t.Errorf("the hosted deploy's ensure carries no shape: %v", spec)
+	}
+	declaredBy, ok := spec["declaredBy"].(map[string]any)
+	if !ok {
+		t.Fatalf("the hosted deploy's ensure carries no declaredBy: %v", spec)
+	}
+	if raw, _ := json.Marshal(declaredBy); strings.Contains(string(raw), "/Users/") {
+		t.Errorf("declaredBy carries a filesystem path: %s", raw)
+	}
+}
+
+// TestHostedDeployDryRunCarriesNoDeclaration: a preview must be runnable
+// safely to find out what would happen.
+func TestHostedDeployDryRunCarriesNoDeclaration(t *testing.T) {
+	prev := projectEnvShapeFn
+	projectEnvShapeFn = func(context.Context, io.Writer, string) (envShapeDoc, error) {
+		t.Fatal("a --dry-run must not even project the env's declaration")
+		return envShapeDoc{}, nil
+	}
+	t.Cleanup(func() { projectEnvShapeFn = prev })
+
+	shape, declaredBy := deployDeclarationFor(context.Background(), "prod", deployOptions{dryRun: true})
+	if shape != nil || declaredBy != nil {
+		t.Errorf("a --dry-run carries a declaration: shape=%v declaredBy=%v", shape, declaredBy)
+	}
+}
+
+// TestDeployDeclarationSurvivesAProjectionFailure: the deploy's own render has
+// already succeeded by the time this runs, so the only way the projection
+// fails is the purity check — and refusing to deploy a project whose KCL
+// writes a file would break a working deploy over a declaration it did not
+// ask for. It warns and continues.
+func TestDeployDeclarationSurvivesAProjectionFailure(t *testing.T) {
+	prev := projectEnvShapeFn
+	projectEnvShapeFn = func(context.Context, io.Writer, string) (envShapeDoc, error) {
+		return envShapeDoc{}, errors.New("the render wrote 1 file(s)")
+	}
+	t.Cleanup(func() { projectEnvShapeFn = prev })
+
+	shape, declaredBy := deployDeclarationFor(context.Background(), "prod", deployOptions{})
+	if shape != nil || declaredBy != nil {
+		t.Errorf("a failed projection must yield no declaration, got shape=%v declaredBy=%v", shape, declaredBy)
+	}
+}
+
+// TestBuildDeclarationSurvivesAProjectionFailure is the same asymmetry on the
+// build side: a projection failure warns, a REFUSED shape fails. Those are
+// different situations — one means forge could not describe the env, the
+// other means the server read the description and said no — and conflating
+// them would either break working builds or hide a stale declaration behind
+// a green one.
+func TestBuildDeclarationSurvivesAProjectionFailure(t *testing.T) {
+	fake := withDeclarationRecorder(t, declarationFixtureShape())
+	projectEnvShapeFn = func(context.Context, io.Writer, string) (envShapeDoc, error) {
+		return envShapeDoc{}, errors.New("the render wrote 1 file(s)")
+	}
+
+	entities := &KCLEntities{ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example.test"}}
+	if err := recordEnvDeclaration(context.Background(), "prod", entities); err != nil {
+		t.Fatalf("a projection failure must warn, not fail the build: %v", err)
+	}
+	if n := len(fake.callsTo(procEnsureEnv)); n != 0 {
+		t.Errorf("a failed projection recorded %d declaration(s)", n)
 	}
 }
 

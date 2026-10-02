@@ -237,6 +237,9 @@ func LastGC(policyPath string) time.Time {
 
 // RecordGC writes the completion marker atomically.
 func RecordGC(policyPath string, at time.Time) error {
+	if err := guardMachinePolicy(policyPath); err != nil {
+		return err
+	}
 	path := GCStampPath(policyPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err

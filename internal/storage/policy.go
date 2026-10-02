@@ -6,10 +6,12 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -115,8 +117,50 @@ func (p Policy) Validate() error {
 	return nil
 }
 
+// ErrMachinePolicyUnderTest refuses a write to the developer's real machine
+// policy from inside `go test`. Callers on a warn-never-fail path (the
+// zero-touch converge hooks, builder registration, release pinning) treat it
+// as "skip": a test has nothing real to register.
+var ErrMachinePolicyUnderTest = errors.New("storage: refusing to write the machine storage policy under test " +
+	"(set FORGE_STORAGE_POLICY to a t.TempDir() path to exercise policy writes)")
+
+// guardMachinePolicy refuses path when it is the machine-default policy and
+// the process is a test binary that did not name it explicitly.
+//
+// The zero-touch activation (converge.go) makes `forge build`, a release cut
+// and the cluster phase WRITE the policy as a side effect. Under `go test`
+// those paths are exercised constantly by tests that are about something else
+// entirely, and each one wrote the developer's real storage.json — measured:
+// 65 leaked `TestBuildTag_*/001` temp projects and fake pins in one machine's
+// policy, and Policy.Projects is the set the Logs layer expires files under.
+// This is the same hole TempRoot and SourceCacheRoot close (tempsweep.go,
+// sources.go), closed the same way: the default is unreachable from a test, so
+// a silent write becomes a message naming what to set.
+//
+// FORGE_STORAGE_POLICY set explicitly is a deliberate scope and is honoured —
+// DefaultPath returns it, so it is never "the default" here. Reads are not
+// guarded: loading the policy cannot change the machine.
+func guardMachinePolicy(path string) error {
+	if !testing.Testing() || os.Getenv("FORGE_STORAGE_POLICY") != "" {
+		return nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		// No resolvable machine policy location means path cannot be it.
+		return nil
+	}
+	machine := filepath.Join(dir, "forge", "storage.json")
+	if absolute, err := filepath.Abs(path); err == nil && filepath.Clean(absolute) == filepath.Clean(machine) {
+		return ErrMachinePolicyUnderTest
+	}
+	return nil
+}
+
 // Save atomically replaces a validated policy file.
 func Save(path string, p Policy) error {
+	if err := guardMachinePolicy(path); err != nil {
+		return err
+	}
 	if err := p.Validate(); err != nil {
 		return err
 	}

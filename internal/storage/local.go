@@ -134,6 +134,11 @@ func (r Runner) Status(ctx context.Context) error {
 
 // WithLock serializes policy updates and maintenance on this machine.
 func WithLock(policyPath string, fn func() error) error {
+	// Refused before the mkdir: the lock file would otherwise be created
+	// beside the real machine policy even when every write inside is refused.
+	if err := guardMachinePolicy(policyPath); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(policyPath), 0700); err != nil {
 		return err
 	}

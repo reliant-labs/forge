@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,6 +31,85 @@ func repeat64(c byte) string {
 		b[i] = c
 	}
 	return string(b)
+}
+
+// machinePolicyStandIn redirects os.UserConfigDir to a temp HOME, so the path
+// DefaultPath resolves to — the developer's real machine policy outside a test
+// — is a file this test owns and can inspect.
+func machinePolicyStandIn(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("FORGE_STORAGE_POLICY", "")
+	path, err := DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(path, home) {
+		t.Fatalf("DefaultPath() = %s; the stand-in HOME %s did not take effect", path, home)
+	}
+	return path
+}
+
+// TestMachinePolicyIsNeverWrittenUnderTest pins the guard on the accident the
+// zero-touch activation would otherwise cause. Converge runs as a side effect
+// of `forge build`, a release cut and the cluster phase, so every cli test
+// reaching one of those wrote the developer's REAL storage.json. Measured on
+// one machine: 65 `TestBuildTag_*/001` temp projects and fake pins
+// (sha256:1111…, sha256:2222…) in ~/Library/Application Support/forge/
+// storage.json — and Policy.Projects is the set the Logs layer expires files
+// under.
+//
+// A test cannot be expected to remember to scope the policy, so the refusal is
+// at the write: the machine-default path is not writable under `go test`
+// unless FORGE_STORAGE_POLICY names it explicitly.
+func TestMachinePolicyIsNeverWrittenUnderTest(t *testing.T) {
+	path := machinePolicyStandIn(t)
+
+	// Every path that mutates the policy or creates files beside it: the
+	// converge touch points, the manual register commands, the GC stamp, and
+	// the maintenance lock (which would otherwise mkdir the directory and
+	// leave a .lock file behind even when nothing else is written).
+	writers := map[string]func() error{
+		"Converge":        func() error { return Converge(path, completeFacts()) },
+		"Save":            func() error { return Save(path, DefaultPolicy()) },
+		"RecordGC":        func() error { return RecordGC(path, time.Now()) },
+		"RegisterProject": func() error { return RegisterProject(path, t.TempDir()) },
+		"WithLock":        func() error { return WithLock(path, func() error { return nil }) },
+	}
+	for name, write := range writers {
+		err := write()
+		if !errors.Is(err, ErrMachinePolicyUnderTest) {
+			t.Errorf("%s on the machine-default policy under test: err = %v, want ErrMachinePolicyUnderTest", name, err)
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) > 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("a test wrote the machine policy directory %s: %v", filepath.Dir(path), names)
+	}
+}
+
+// TestMachinePolicyGuardHonorsAnExplicitPath is the other half: the guard must
+// not disable the layer. A test that sets FORGE_STORAGE_POLICY — even to the
+// very path the default would resolve to — has scoped it, and writes land.
+func TestMachinePolicyGuardHonorsAnExplicitPath(t *testing.T) {
+	path := machinePolicyStandIn(t)
+	t.Setenv("FORGE_STORAGE_POLICY", path)
+	if err := Converge(path, completeFacts()); err != nil {
+		t.Fatalf("Converge on an explicitly named policy: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("explicitly named policy was not written: %v", err)
+	}
+
+	other := convergePolicyPath(t) // any non-default path is always writable
+	if err := Converge(other, completeFacts()); err != nil {
+		t.Fatalf("Converge on a non-default path: %v", err)
+	}
 }
 
 // TestConvergeRecordsCompleteRegistry is the activation claim: a command that

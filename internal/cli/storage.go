@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -306,7 +307,7 @@ func pinStorageRelease(rel release.Release) error {
 	if err != nil {
 		return err
 	}
-	return storage.WithLock(path, func() error {
+	err = storage.WithLock(path, func() error {
 		p, err := storage.Load(path)
 		if err != nil {
 			return err
@@ -330,6 +331,13 @@ func pinStorageRelease(rel release.Release) error {
 		p.Pins = pins
 		return storage.Save(path, p)
 	})
+	// A release cut by a test pins nothing real, and the machine policy is
+	// unwritable under `go test`; refusing the cut over it would fail every
+	// test that exercises `--release`.
+	if errors.Is(err, storage.ErrMachinePolicyUnderTest) {
+		return nil
+	}
+	return err
 }
 
 // docker build uses the default builder unless BUILDX_BUILDER explicitly
@@ -351,7 +359,7 @@ func registerDockerBuilderStorage(ctx context.Context, builder string) {
 	if err == nil {
 		err = (storage.Runner{}).RegisterBuilder(ctx, path, builder)
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, storage.ErrMachinePolicyUnderTest) {
 		fmt.Fprintf(os.Stderr, "storage builder registration: %v\n", err)
 	}
 }

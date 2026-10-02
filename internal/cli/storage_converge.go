@@ -19,6 +19,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -40,7 +41,9 @@ func convergeStorage(facts storage.Facts) {
 	if err == nil {
 		err = storage.Converge(path, facts)
 	}
-	if err != nil {
+	// Under `go test` the machine policy is deliberately unwritable; a test
+	// has nothing real to register, so that is a skip, not a warning.
+	if err != nil && !errors.Is(err, storage.ErrMachinePolicyUnderTest) {
 		fmt.Fprintf(os.Stderr, "storage retention registration: %v\n", err)
 	}
 }

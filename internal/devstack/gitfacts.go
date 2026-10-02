@@ -310,6 +310,35 @@ func RepoAnchor(projectDir string) string {
 	return filepath.Dir(commonDir)
 }
 
+// SharedProjectDir returns projectDir's counterpart in the repo's PRIMARY
+// checkout, as an absolute path: the directory a machine-shared resource is
+// driven from, whichever worktree forge runs in.
+//
+// It is RepoAnchor plus projectDir's offset within its own working tree, so a
+// forge project nested in a monorepo (`<repo>/services/api`) maps to
+// `<primary>/services/api`, not to the primary's repo root. Outside a repo,
+// or where the anchor falls back to projectDir (a bare repo), projectDir is
+// its own shared directory.
+//
+// Shared compose infrastructure (OnCompose.shared) and the files it mounts
+// (fp.write_file(..., shared=True)) resolve here. Driving one compose project
+// from N directories that share a basename is what made a linked worktree
+// recreate every shared container: compose resolves relative bind mounts
+// against the directory it runs from, so each checkout produced a different
+// config for the SAME project.
+func SharedProjectDir(projectDir string) string {
+	anchor := RepoAnchor(projectDir)
+	if !sameDir(anchor, projectDir) {
+		if prefix := gitOut(projectDir, "rev-parse", "--show-prefix"); prefix != "" {
+			anchor = filepath.Join(anchor, filepath.FromSlash(prefix))
+		}
+	}
+	if abs, err := filepath.Abs(anchor); err == nil {
+		return abs
+	}
+	return anchor
+}
+
 // Branch returns the current git branch for projectDir, sanitized DNS-safe,
 // or "" outside a repo or on a detached HEAD. Unlike Worktree, Branch is
 // reported for the primary checkout too — a consumer that WANTS to key on

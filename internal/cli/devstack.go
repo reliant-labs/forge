@@ -120,7 +120,10 @@ generate / forge ci render without one). Write the generated file with
 fp.write_file(path, content), not KCL's file.write: file.write fires on every
 evaluation, so ci, lint, doctor and env render would rewrite it from whatever
 roster they saw; fp.write_file writes only on forge env up and an applying
-forge env deploy of a local env.`,
+forge env deploy of a local env. A roster file that SHARED infrastructure
+mounts (one NATS for every stack) takes fp.write_file(path, content,
+shared=True): it lands in the primary checkout, so every stack's render
+updates the one copy the shared server reads.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if stacksOnly {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
@@ -99,16 +100,25 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 			})
 		case RuntimeCompose:
 			cm := w.Runtime.Compose
+			spec := &deploytarget.ComposeSpec{
+				ComposeFile:        cm.File,
+				Service:            cm.Service,
+				EnvFile:            cm.EnvFile,
+				Wait:               cm.Wait,
+				WaitTimeoutSeconds: cm.WaitTimeout,
+				Env:                cm.Env,
+				Shared:             cm.Shared,
+			}
+			if cm.Shared {
+				// Machine infrastructure every worktree shares runs from
+				// ONE place — the primary checkout — so every checkout
+				// resolves the same compose config and an `up` from any of
+				// them is a no-op once it is running.
+				spec.ProjectDirectory = devstack.SharedProjectDir(projectDirForKCL())
+			}
 			raw = append(raw, deploytarget.RawService{
-				Name: w.Name,
-				Compose: &deploytarget.ComposeSpec{
-					ComposeFile:        cm.File,
-					Service:            cm.Service,
-					EnvFile:            cm.EnvFile,
-					Wait:               cm.Wait,
-					WaitTimeoutSeconds: cm.WaitTimeout,
-					Env:                cm.Env,
-				},
+				Name:    w.Name,
+				Compose: spec,
 				Secrets: secretEnv,
 			})
 		default:

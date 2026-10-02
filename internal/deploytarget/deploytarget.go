@@ -251,6 +251,24 @@ type ComposeSpec struct {
 	// job forever. Zero means "no explicit ceiling" and lets the
 	// healthcheck's own retries x interval bound it.
 	WaitTimeoutSeconds int
+
+	// ProjectDirectory is the directory compose runs the stack FROM: it
+	// resolves ComposeFile and EnvFile, it is what every relative bind
+	// mount in the file resolves against, and it is the
+	// `com.docker.compose.project.working_dir` compose stamps on the
+	// containers. Empty means the process working directory — a stack the
+	// current checkout owns.
+	//
+	// The dispatcher sets it to the repo's PRIMARY checkout for a
+	// `shared = True` stack (OnCompose.shared), so every worktree drives
+	// the SAME containers with the SAME resolved config and an `up` from
+	// any of them is a no-op once the stack is running.
+	ProjectDirectory string
+
+	// Shared records that the stack is machine infrastructure every
+	// worktree uses (OnCompose.shared). It changes how a FOREIGN owner is
+	// treated — see checkComposeOwnership.
+	Shared bool
 }
 
 // HostInfraSpec is the per-service host-infra deploy spec. Mirrors the
@@ -390,7 +408,10 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 			})
 
 		case s.Compose != nil:
-			key := fmt.Sprintf("compose|%s", s.Compose.ComposeFile)
+			// The project directory is part of the key: the same file run
+			// from the primary checkout (a shared stack) and from this one
+			// is two different compose projects' worth of mount sources.
+			key := fmt.Sprintf("compose|%s|%s", s.Compose.ProjectDirectory, s.Compose.ComposeFile)
 			grp, ok := groups[key]
 			if !ok {
 				grp = &ServiceGroup{
@@ -502,6 +523,9 @@ func groupTarget(g ServiceGroup) string {
 		return fmt.Sprintf("cluster=%s ns=%s", g.Cluster, g.Namespace)
 	case "compose":
 		if len(g.Services) > 0 && g.Services[0].Compose != nil {
+			if c := g.Services[0].Compose; c.Shared {
+				return "file=" + c.ComposeFile + " shared, from " + c.ProjectDirectory
+			}
 			return "file=" + g.Services[0].Compose.ComposeFile
 		}
 		return "file=?"

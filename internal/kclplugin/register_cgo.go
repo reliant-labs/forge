@@ -3,12 +3,28 @@
 package kclplugin
 
 import (
+	"fmt"
 	"sync"
 
 	"kcl-lang.io/kcl-go/pkg/plugin"
 )
 
 var registerOnce sync.Once
+
+// boolCallArg reads an optional boolean argument by keyword or position.
+// Absent is false. A non-bool is an error rather than a guess: `shared="no"`
+// must not quietly mean true.
+func boolCallArg(args *plugin.MethodArgs, index int, key string) (bool, error) {
+	v := args.GetCallArg(index, key)
+	if v == nil {
+		return false, nil
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s must be a bool, got %T (%v)", key, v, v)
+	}
+	return b, nil
+}
 
 // Available reports whether this binary can service kcl_plugin.forge.*
 // calls — true here, false in the CGO-free build (register_nocgo.go).
@@ -105,9 +121,18 @@ func Register() {
 				// unchanged. Use this, not KCL's file.write, for any file a
 				// render generates: file.write fires on every evaluation,
 				// read-only ones included. See materialize.go.
+				//
+				// shared=True (keyword, or a third positional) writes into
+				// the repo's PRIMARY checkout instead of this one — for a
+				// file a machine-shared resource mounts, so every worktree's
+				// render updates the one copy that resource reads.
 				"write_file": {
 					Body: func(args *plugin.MethodArgs) (*plugin.MethodResult, error) {
-						p, err := writeFile(args.StrArg(0), args.StrArg(1))
+						shared, err := boolCallArg(args, 2, "shared")
+						if err != nil {
+							return nil, fmt.Errorf("write_file: %w", err)
+						}
+						p, err := writeFile(args.StrArg(0), args.StrArg(1), shared)
 						if err != nil {
 							return nil, err
 						}

@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -224,6 +226,124 @@ func TestRegistryGraphReclaimsUnreachableUntaggedManifests(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A protected digest roots the graph only where the registry actually holds
+// that manifest. A bare digest names content, not a location, and much of what
+// the protected-set scan collects is not a manifest in THIS registry at all: a
+// container started by image ID (`docker run sha256:<config>` — which is
+// exactly how RegistryGC starts its own retention helper), a kubelet imageID
+// from another registry, or a release pin for a sibling repository. Rooting
+// such a digest in every repository and fetching it 404s by construction, and
+// one 404 aborted the entire plan. TestRegistryMaintenanceEndToEnd failed in CI
+// on precisely that: GET /v2/app/manifests/<registry:2's image ID>.
+func TestRegistryGraphRootsProtectedDigestsOnlyWhereTheManifestExists(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-30 * 24 * time.Hour)
+	p := DefaultPolicy()
+	p.RegistryKeep = 1
+	p.RegistryDays = 14
+
+	live, appOrphan := testDigest("a"), testDigest("b")
+	sibPinned, sibOrphan := testDigest("c"), testDigest("d")
+	imageID := testDigest("e") // a config digest: never a manifest anywhere
+	appPinned := testDigest("f")
+
+	reg := Registry{Repositories: []string{"app", "sib"}}
+	tags := []Tag{{"app", "dev", live, now}}
+	revisions := []Revision{
+		{Version{"app", live}, now},
+		{Version{"app", appOrphan}, old},
+		{Version{"sib", sibPinned}, old},
+		{Version{"sib", sibOrphan}, old},
+	}
+	bodies := map[Version]string{
+		{"app", live}:      singleArch(1, 2),
+		{"app", appOrphan}: singleArch(1, 2),
+		{"sib", sibPinned}: singleArch(1, 2),
+		{"sib", sibOrphan}: singleArch(1, 2),
+	}
+	protected := map[string]map[string]bool{
+		// A bare release pin held only by sib, and an image ID held by nobody.
+		"*": {sibPinned: true, imageID: true},
+		// A repository-qualified digest for content the registry no longer has
+		// (a pod still referencing an image that was already reclaimed).
+		"app": {appPinned: true},
+	}
+	var fetched []Version
+	got, err := registryGraphPlan(tags, revisions, p, reg, protected, now, func(v Version) ([]byte, error) {
+		fetched = append(fetched, v)
+		body, ok := bodies[v]
+		if !ok {
+			return nil, fmt.Errorf("registry GET /v2/%s/manifests/%s: HTTP 404", v.Repository, v.Digest)
+		}
+		return []byte(body), nil
+	})
+	if err != nil {
+		t.Fatalf("a protected digest that is no manifest here aborted the plan: %v", err)
+	}
+	if want := []string{appOrphan, sibOrphan}; !equalStrings(planDigests(got), want) {
+		t.Fatalf("plan = %v, want only the two orphans %v (the sib pin must stay protected)", planDigests(got), want)
+	}
+	for _, v := range fetched {
+		if _, ok := bodies[v]; !ok {
+			t.Errorf("fetched %s/%s, which the inventory says this registry does not hold", v.Repository, v.Digest)
+		}
+	}
+}
+
+// The same defect end to end through Runner.registryPlan: the protected set is
+// assembled from `docker inspect` of every container, and a container whose
+// Config.Image is a bare image ID — RegistryGC's own `-forge-retention` helper,
+// started from the registry container's image ID — must not abort the plan.
+// Only the docker CLI and the registry HTTP API are faked; the inventory
+// parsing, protected-set assembly and graph walk are the production code.
+func TestRegistryPlanSurvivesAContainerStartedByImageID(t *testing.T) {
+	now := time.Now()
+	live, orphan := testDigest("a"), testDigest("b")
+	imageID := testDigest("e")
+	const prefix = "/var/lib/registry/docker/registry/v2/repositories/app/_manifests/"
+	manifests := map[string]string{live: singleArch(1, 2), orphan: singleArch(3, 4)}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		digest := strings.TrimPrefix(req.URL.Path, "/v2/app/manifests/")
+		body, ok := manifests[digest]
+		if req.Method != http.MethodGet || !ok {
+			http.NotFound(w, req)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	r := Runner{Policy: DefaultPolicy(), Command: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "docker" {
+			return nil, fmt.Errorf("unexpected command %s %v", name, args)
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case joined == "ps -aq":
+			return []byte("helper\n"), nil
+		case joined == "inspect helper":
+			return []byte(`[{"Config":{"Image":"` + imageID + `"},"Image":"` + imageID + `"}]`), nil
+		case joined == "image inspect "+imageID:
+			return []byte(`[{"RepoDigests":[]}]`), nil
+		case args[0] == "exec" && strings.Contains(joined, "_manifests/tags/"):
+			return []byte(fmt.Sprintf("%d\t%stags/dev/current/link\t%s\n", now.Unix(), prefix, live)), nil
+		case args[0] == "exec" && strings.Contains(joined, "_manifests/revisions/"):
+			old := now.Add(-30 * 24 * time.Hour).Unix()
+			return []byte(fmt.Sprintf("%d\t%srevisions/sha256/%s/link\t%s\n%d\t%srevisions/sha256/%s/link\t%s\n",
+				now.Unix(), prefix, strings.TrimPrefix(live, "sha256:"), live,
+				old, prefix, strings.TrimPrefix(orphan, "sha256:"), orphan)), nil
+		}
+		return nil, fmt.Errorf("unexpected docker %v", args)
+	}}
+	plan, err := r.registryPlan(context.Background(), Registry{Container: "reg", Repositories: []string{"app"}}, "reg", srv.URL)
+	if err != nil {
+		t.Fatalf("registry plan aborted on a container started by image ID: %v", err)
+	}
+	if got := planDigests(plan); !equalStrings(got, []string{orphan}) {
+		t.Fatalf("plan = %v, want [%s]", got, orphan)
 	}
 }
 

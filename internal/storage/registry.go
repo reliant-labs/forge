@@ -403,20 +403,42 @@ func registryGraphPlan(tags []Tag, revisions []Revision, policy Policy, reg Regi
 			roots = append(roots, v)
 		}
 	}
-	// Protected digests root the graph in every registered repository. A bare
-	// digest names content, not a location, so it cannot be attributed to one.
+	// Protected digests root the graph wherever the registry HOLDS that
+	// manifest. A bare digest names content, not a location, so it is tried in
+	// every registered repository — but only kept where a revision link exists.
+	//
+	// That restriction is what keeps protection from aborting the plan, and it
+	// loosens nothing. Much of the protected set is not a manifest in this
+	// registry at all: a container run by image ID (RegistryGC's own retention
+	// helper is started from the registry's image ID, a config digest), a
+	// kubelet imageID from another registry, a release pin for a sibling
+	// repository. Distribution resolves GET-by-digest through the very revision
+	// link the inventory lists, so such a root 404s by construction, and one
+	// 404 used to abort the whole plan. And since the deletion set below is
+	// drawn only from tags and that same inventory, a digest the inventory does
+	// not hold can never be deleted, so there is nothing for it to protect.
+	//
+	// Retained TAG roots and index children are deliberately NOT filtered this
+	// way: those come from the registry's own metadata, so a missing manifest
+	// there is an inconsistent inventory and must still fail closed.
+	held := map[Version]bool{}
+	for _, rev := range revisions {
+		held[rev.Version] = true
+	}
 	for repo, refs := range protected {
 		for ref := range refs {
 			if !digestPattern.MatchString(ref) {
 				continue
 			}
+			candidates := []string{repo}
 			if repo == "*" {
-				for _, candidate := range reg.Repositories {
-					roots = append(roots, Version{candidate, ref})
-				}
-				continue
+				candidates = reg.Repositories
 			}
-			roots = append(roots, Version{repo, ref})
+			for _, candidate := range candidates {
+				if v := (Version{candidate, ref}); held[v] {
+					roots = append(roots, v)
+				}
+			}
 		}
 	}
 	for _, rev := range revisions {

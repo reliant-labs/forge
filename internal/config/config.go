@@ -461,7 +461,7 @@ type FrontendConfig struct {
 	// than through editing the pin — see internal/gitsource.
 	Source *GitSource `yaml:"source,omitempty"`
 	// Port is the frontend's dev-server listen port. Omitted / 0 means
-	// EPHEMERAL: `forge run` / `forge env up` allocate a free OS port at
+	// EPHEMERAL: `forge env up` allocate a free OS port at
 	// launch and report it (see resolveEphemeralFrontendPorts). omitempty so
 	// a scaffolded ephemeral frontend writes no `port:` line at all; an
 	// explicit port is honored verbatim.
@@ -945,7 +945,7 @@ type DatabaseConfig struct {
 }
 
 // SeedConfig controls the deterministic development seed data materialized at
-// runtime by `forge db seed` and `forge run` auto-seed. Seeds are never
+// runtime by `forge db seed` and `forge env up` auto-seed. Seeds are never
 // written into the project as files, and these settings only ever reach a dev
 // database: `forge db seed apply`/`reset` refuse any other environment, and
 // the migrate path — the one thing that runs against production — has no seed
@@ -959,7 +959,7 @@ type SeedConfig struct {
 	Salt int `yaml:"salt,omitempty"`
 	// RowsPerTable overrides Rows for specific tables.
 	RowsPerTable map[string]int `yaml:"rows_per_table,omitempty"`
-	// Auto controls `forge run` / `forge env up` first-boot auto-seed. Nil =
+	// Auto controls `forge env up` first-boot auto-seed. Nil =
 	// on by default. `auto: false` is the per-project opt-out; the
 	// per-run one is --no-seed.
 	Auto *bool `yaml:"auto,omitempty"`
@@ -984,7 +984,7 @@ func (c SeedConfig) EffectiveRows() int {
 	return 20
 }
 
-// AutoEnabled reports whether `forge run` first-boot auto-seed is on. Nil
+// AutoEnabled reports whether `forge env up` first-boot auto-seed is on. Nil
 // Auto means "on by default".
 func (c SeedConfig) AutoEnabled() bool {
 	return c.Auto == nil || *c.Auto

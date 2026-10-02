@@ -481,7 +481,7 @@ func devAPIURL(cfg *config.ProjectConfig, projectDir string) string {
 // fails loud rather than guessing a port.
 //
 // This is a GENERATE-time value baked into apiurl_gen.ts, so it cannot be the
-// ephemeral port `forge run` / `forge env up` allocate at launch: those inject
+// ephemeral port `forge env up` allocate at launch: those inject
 // the live URL through NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL,
 // which always wins over this baked fallback (see src/lib/connect.ts).
 func resolveDevAPIPort(cfg *config.ProjectConfig, projectDir string) int {

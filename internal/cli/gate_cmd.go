@@ -60,7 +60,7 @@ that this credential claimed this result at this time.
 
 Two attachment points, because they answer different questions:
 
-  forge env promote … --gate lint.json    what had passed BEFORE the
+  forge env deploy … --gate lint.json     what had passed BEFORE the
                                           environment moved (frozen into
                                           the promotion entry)
   forge gate record prod --from wait.json what was learned AFTER (appended
@@ -166,7 +166,7 @@ forge --json document, deriving the check's name, verdict and summary from
 it. So every forge verb that can judge something is recordable with no glue
 script:
 
-  forge env wait prod --json  > wait.json   && forge gate record prod --from wait.json
+  forge env status prod --wait --json  > wait.json   && forge gate record prod --from wait.json
   forge env smoke prod --json > smoke.json  && forge gate record prod --from smoke.json
   forge lint --gate-json lint.json          && forge gate record prod --from lint.json
 
@@ -416,7 +416,7 @@ func errGateNeedsHostedLedger(env, location string) error {
 		msg: fmt.Sprintf("environment %q keeps its ledger in files (%s), which cannot hold post-promote evidence",
 			env, location),
 		hint: "a file ledger's entries are lines already written, with nowhere to append to. " +
-			"Attach the evidence at promote time instead: `forge env promote <version> --to " + env + " --gate <file.json>`",
+			"Attach the evidence at deploy time instead: `forge env deploy " + env + " <version> --gate <file.json>`",
 	}
 }
 

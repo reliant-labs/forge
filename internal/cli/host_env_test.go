@@ -134,7 +134,7 @@ STRIPE_SECRET_KEY=sk_test_xxx
 
 // TestHostEnvComposition_SecretsMissingIsWarnNotError: a missing
 // secrets file is non-fatal — the runner warns and continues.
-// `forge run` / `forge env up` should still launch the subprocess.
+// `forge env up` should still launch the subprocess.
 func TestHostEnvComposition_SecretsMissingIsWarnNotError(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "does-not-exist.secrets")
@@ -208,7 +208,7 @@ binary: shared
 }
 
 // TestHostEnvComposition_ProjectConfigUnderSecretsFile pins the
-// precedence chain `forge run` host-mode applies:
+// precedence chain `forge env up` host-mode applies:
 //
 //	os.Environ() ⊕ forge.yaml config ⊕ .env.<env> ⊕ KCL env_vars
 //

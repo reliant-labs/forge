@@ -282,7 +282,7 @@ func TestLoadSecretsFile_CrossRepoPath(t *testing.T) {
 	}
 
 	// LoadSecretsFile resolves relative paths against the caller's
-	// working directory, mirroring how `forge run` invokes it after
+	// working directory, mirroring how `forge env up` invokes it after
 	// chdir'ing into the project dir. Restore cwd on cleanup so the
 	// rest of the suite isn't affected.
 	prev, err := os.Getwd()

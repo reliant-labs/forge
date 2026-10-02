@@ -12,7 +12,7 @@ import (
 
 // The regression these tests pin, in full, because the failure was invisible:
 //
-// `forge build prod --target internal-console --docker --push` built and
+// `forge env build prod --target internal-console --docker --push` built and
 // pushed the frontend image correctly, but recorded NOTHING. Only the PROJECT
 // image wrote a build-state file (persistProjectBuildState matched exactly
 // cfg.Name+" (docker)"), so a frontend's successful push left no trace on disk.

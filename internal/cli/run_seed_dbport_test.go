@@ -11,7 +11,7 @@ import (
 
 // composeAt writes a scaffold-shaped docker-compose.yml (postgres published
 // on ${POSTGRES_PORT:-5432}) into dir and chdirs there, so the reconcile
-// resolves the project dir the way `forge run` does.
+// resolves the project dir the way `forge env up` does.
 func composeAt(t *testing.T, dir string) {
 	t.Helper()
 	body := "services:\n  postgres:\n    image: postgres:17-alpine\n    ports:\n      - \"127.0.0.1:${POSTGRES_PORT:-5432}:5432\"\n"

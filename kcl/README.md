@@ -83,7 +83,7 @@ are refused on a frontend, naming the field. `output.frontends[].runtime` is
 | Runtime                                         | `forge env deploy` does                                                                                              |
 | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `OnHost {}`                                     | nothing — it is the dev server (`<dev_runner> dev` on `port`); `forge env up` runs it                                |
-| `OnHosted {}`                                   | `forge build --push` pushes the site as an OCI release; the deploy publishes a StaticSite CR (needs `control_plane`) |
+| `OnHosted {}`                                   | `forge env build <env> --push` pushes the site as an OCI release; the deploy publishes a StaticSite CR (needs `control_plane`) |
 | `OnBucket {bucket, cdn?, keep_releases}`        | builds, assembles, uploads `releases/<digest>/`, syncs `live/`, invalidates the CDN                                  |
 | `OnFirebase {project, site, target?, rewrites}` | builds, assembles, `firebase deploy`                                                                                 |
 | `BuildOnly {}`                                  | builds it, so a sibling frontend's `bundle` can assemble its output; ships nothing                                   |
@@ -244,7 +244,7 @@ The image **registry** is not a render option, and not an env field either: an
 environment does not have a registry. A **workload** does, as part of its
 `image` (`image = "ghcr.io/acme/api"` in `deploy/kcl/workloads.k`). forge
 contributes only the tag and, after a push, the digest, composing them onto the
-reference you wrote. `forge build <env> --push`, `forge registry login <env>`
+reference you wrote. `forge env build <env> --push`, `forge registry login <env>`
 and `forge env deploy <env>` all follow the images — so two workloads in one env
 can ride two different registries.
 

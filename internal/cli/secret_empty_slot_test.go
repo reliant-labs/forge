@@ -13,7 +13,7 @@ import (
 //
 // Injected verbatim that blank is not "no value": it is a real env var bound
 // to the empty string, sitting in a layer that outranks project config. The
-// measured failure: `forge run` on a fresh project brought postgres up and
+// measured failure: `forge env up` on a fresh project brought postgres up and
 // then killed the migrate job with
 //
 //	Error: load config: required config field database_url is not set (env: DATABASE_URL)

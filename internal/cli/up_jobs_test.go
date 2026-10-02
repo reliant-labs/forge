@@ -247,7 +247,7 @@ func TestRunHostJobs_StopsAtFirstFailure(t *testing.T) {
 
 // The wildcard is a SELECTOR, not a name. Treating it as a name is the
 // bug this pins: validateJobOrdering rejected `*` as a dangling
-// reference, which failed every `forge run` of a project that scaffolds
+// reference, which failed every `forge env up` of a project that scaffolds
 // a migration — with a message telling the reader to fix a name that was
 // never wrong.
 func TestValidateJobOrdering_BroadcastIsNotADanglingName(t *testing.T) {

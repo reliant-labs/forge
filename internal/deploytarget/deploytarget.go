@@ -24,7 +24,7 @@
 //     container. See internal/hostinfra.
 //   - FirebaseProvider / StaticSiteProvider — frontends.
 //
-// Host-bound and build-only workloads aren't providers — `forge run` /
+// Host-bound and build-only workloads aren't providers — `forge env up` /
 // `forge env up` own the host story, and BuildOnly is consumed by `forge
 // build`. The dispatcher skips both rather than routing them through a
 // Provider.
@@ -346,7 +346,7 @@ func (r *Registry) IDs() []string {
 
 // GroupServices walks a rendered service list and returns the deploy
 // groups it should be split into. Services with deploy types `host`
-// and `build-only` are NOT included — those are owned by `forge run`
+// and `build-only` are NOT included — those are owned by `forge env up`
 // and `forge build`.
 //
 // Cluster grouping rule: services sharing a (Cluster, Namespace,

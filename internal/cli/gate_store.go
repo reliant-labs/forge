@@ -164,7 +164,7 @@ func classifyGateError(err error, what string) error {
 	case cerr.HasCode(cloud.CodeNotFound):
 		return &gateExitError{
 			code: exitWrong, msg: fmt.Sprintf("%s: %s", what, cerr.Message), cause: err,
-			hint: "check the promotion id with `forge env history <env>`, or name the release with --release",
+			hint: "check the promotion id with `forge env status <env> --history`, or name the release with --release",
 		}
 	case cerr.HasCode(cloud.CodeUnauthenticated), cerr.HasCode(cloud.CodePermissionDenied):
 		// COULD NOT LOOK, not "the check failed". Recording evidence

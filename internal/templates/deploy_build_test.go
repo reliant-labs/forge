@@ -52,7 +52,7 @@ func TestDeployTemplate_DeploysThroughForge(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`forge build "${{ matrix.env }}" --push` + "\n",
+		`forge env build "${{ matrix.env }}" --push` + "\n",
 		`forge env deploy "${{ matrix.env }}"`,
 		// The same run-time install every CI job uses.
 		installForgeRun(8),
@@ -178,7 +178,7 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 	}
 
 	// No frontend images here: they are per-env (config.js is rendered
-	// into the build), built by `forge build <env> --push` in deploy.yml.
+	// into the build), built by `forge env build <env> --push` in deploy.yml.
 	// The raw `docker buildx build frontends/*` baked the on-disk (dev, or
 	// absent) config.js into every image.
 	if strings.Contains(s, "build-push-frontends:") || strings.Contains(s, "frontends/*/Dockerfile") {

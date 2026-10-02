@@ -40,6 +40,31 @@ type CIWorkflowFile struct {
 // caller supplies them because only it knows the authoritative source (the
 // KCL topology on a live project, the requested frontend at scaffold time).
 func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.FrontendCIConfig) []CIWorkflowFile {
+	return CIWorkflowsFor(root, cfg, CIInputs{Frontends: frontends})
+}
+
+// CIInputs are the facts only the caller can answer, because they come from a
+// KCL render of a live project (a freshly scaffolded one has no topology yet).
+type CIInputs struct {
+	// Frontends are the repo-relative frontend directories CI drives a Node
+	// toolchain for.
+	Frontends []templates.FrontendCIConfig
+	// HostedEnvs are the declared envs a control plane RUNS (forge.ControlPlane
+	// plus a hosted workload or database). Non-empty ⇒ release.yml and the
+	// vendored forge-deploy action are scaffolded, and deploy.yml stops
+	// rebuilding per env for them (release.yml builds once and deploys that
+	// one release through each of them).
+	HostedEnvs []string
+	// MixedEnvs is the subset of HostedEnvs that ALSO apply a part from CI —
+	// a cluster or compose workload, a cluster database, infra. Their
+	// release.yml stage always deploys client-side (a control plane never
+	// converges a cluster half) and carries the kubeconfig step.
+	MixedEnvs []string
+}
+
+// CIWorkflowsFor is CIWorkflows with every caller-supplied input.
+func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWorkflowFile {
+	frontends := in.Frontends
 	isService := cfg.IsServiceKind()
 	hasFrontends := isService && len(frontends) > 0
 	if !hasFrontends {
@@ -61,12 +86,44 @@ func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.F
 
 	kclEnvs := declaredKCLEnvs(root)
 	deployEnvs := ciDeployEnvs(cfg, kclEnvs)
-	// The once-per-commit image is built for the first deploy env in
-	// promotion order — the one deploy.yml auto-deploys — and pushed to the
-	// registry THAT env's KCL declares. With no deploy env there is no
-	// registry to push to, so no build-images workflow is emitted.
+	// Hosted envs leave deploy.yml: release.yml builds ONCE and deploys
+	// the same bytes through them, where deploy.yml would rebuild per env
+	// (staging and prod would run different digests). Cluster and compose
+	// envs keep today's job unchanged.
+	//
+	// A MIXED env (hosted AND cluster parts) leaves WHOLE, not split. Its
+	// ledger is the control plane, so once promoted, `forge env deploy`
+	// pins both halves to the bound release: a deploy.yml rebuild of the
+	// cluster half would build, push, and then deploy the OLD release's
+	// digests — a green run that shipped nothing. One env, one pipeline.
+	hosted := map[string]bool{}
+	for _, e := range in.HostedEnvs {
+		hosted[e] = true
+	}
+	mixed := map[string]bool{}
+	for _, e := range in.MixedEnvs {
+		mixed[e] = true
+	}
+	var hostedEnvs, clusterEnvs []templates.DeployEnv
+	for _, e := range deployEnvs {
+		if hosted[e.Name] {
+			hostedEnvs = append(hostedEnvs, e)
+		} else {
+			clusterEnvs = append(clusterEnvs, e)
+		}
+	}
+	// The once-per-commit image is built for the first env deploy.yml
+	// deploys — the one it auto-deploys — and pushed to the registry THAT
+	// env's KCL declares. A project whose every env is hosted still gets
+	// the per-commit build (its signing, provenance and scan run on every
+	// push to main), against the first hosted env's registry. With no
+	// deploy env there is no registry to push to, so no build-images
+	// workflow is emitted.
 	var buildEnv string
-	if len(deployEnvs) > 0 {
+	switch {
+	case len(clusterEnvs) > 0:
+		buildEnv = clusterEnvs[0].Name
+	case len(deployEnvs) > 0:
 		buildEnv = deployEnvs[0].Name
 	}
 	e2eRuntime := cfg.CI.E2E.Runtime
@@ -133,25 +190,38 @@ func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.F
 				ProjectName: cfg.Name,
 				BuildEnv:    buildEnv,
 				VulnDocker:  ci.VulnDocker,
-				// Cut-release + promote talks to a control plane, the same
-				// server the reconcile workflow does, so it rides the same
-				// opt-in gate: a project without one must not get a job
-				// that fails on every push to main.
-				CutRelease: cfg.Features.ReconcileEnabled(),
 			}})
 		}
-		files = append(files,
-			CIWorkflowFile{"deploy.yml.tmpl", ".github/workflows/deploy.yml", templates.DeployWorkflowData{
-				ProjectName:      cfg.Name,
-				Environments:     deployEnvs,
-				HasFrontends:     hasFrontends,
-				FrontendPath:     firstFrontendPath,
-				FrontendDeploy:   cfg.Deploy.FrontendDeploy,
-				MigrationTest:    cfg.Deploy.MigrationTest,
-				Concurrency:      cfg.Deploy.IsConcurrencyEnabled(),
-				CancelInProgress: cfg.Deploy.Concurrency.CancelInProgress,
-			}},
-		)
+		// deploy.yml exists while it has an env to deploy. A project whose
+		// every env is hosted has none — release.yml is its whole deploy
+		// path — and a deploy.yml with no env renders no trigger and no
+		// job, which GitHub rejects as an invalid workflow on every push.
+		// A project with NO deploy env at all keeps today's placeholder.
+		if len(clusterEnvs) > 0 || len(hostedEnvs) == 0 {
+			files = append(files,
+				CIWorkflowFile{"deploy.yml.tmpl", ".github/workflows/deploy.yml", templates.DeployWorkflowData{
+					ProjectName:      cfg.Name,
+					Environments:     clusterEnvs,
+					HasFrontends:     hasFrontends,
+					FrontendPath:     firstFrontendPath,
+					FrontendDeploy:   cfg.Deploy.FrontendDeploy,
+					MigrationTest:    cfg.Deploy.MigrationTest,
+					Concurrency:      cfg.Deploy.IsConcurrencyEnabled(),
+					CancelInProgress: cfg.Deploy.Concurrency.CancelInProgress,
+				}},
+			)
+		}
+		if len(hostedEnvs) > 0 {
+			data := templates.ReleaseWorkflowData{
+				ProjectName: cfg.Name,
+				BuildEnv:    hostedEnvs[0].Name,
+				Stages:      templates.ReleaseStages(hostedEnvs, mixed),
+			}
+			files = append(files,
+				CIWorkflowFile{"release.yml.tmpl", ".github/workflows/release.yml", data},
+				CIWorkflowFile{"forge-deploy-action.yml.tmpl", ForgeDeployActionPath, data},
+			)
+		}
 		if hasE2E {
 			files = append(files, CIWorkflowFile{"e2e.yml.tmpl", ".github/workflows/e2e.yml", templates.E2EWorkflowData{
 				ProjectName:  cfg.Name,
@@ -164,9 +234,10 @@ func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.F
 	if ci.LintBufBreaking {
 		files = append(files, CIWorkflowFile{"proto-breaking.yml.tmpl", ".github/workflows/proto-breaking.yml", ci})
 	}
-	// OPT-IN, OFF BY DEFAULT: `forge reconcile` only exists for a project
-	// whose reconcile loop is wired, so an unconditional scheduled workflow
-	// would hand every project an hourly failing job.
+	// OPT-IN, OFF BY DEFAULT: the scheduled drift report (`forge env status`
+	// per env) is part of the reconcile feature, so an unconditional
+	// scheduled workflow would hand every project an hourly job it never
+	// asked for.
 	if isService && cfg.Features.ReconcileEnabled() {
 		files = append(files, CIWorkflowFile{"reconcile.yml.tmpl", ".github/workflows/reconcile.yml", templates.ReconcileWorkflowData{
 			ProjectName:  cfg.Name,
@@ -176,6 +247,11 @@ func CIWorkflows(root string, cfg *config.ProjectConfig, frontends []templates.F
 	files = append(files, CIWorkflowFile{"dependabot.yml.tmpl", ".github/dependabot.yml", struct{ FrontendName string }{firstFrontendName}})
 	return files
 }
+
+// ForgeDeployActionPath is where the vendored composite action lands
+// (hosted-deploy-primitives §3.6, owner ruling Q5: vendored per repo, not
+// published, so it versions with the project's forge pin).
+const ForgeDeployActionPath = ".github/actions/forge-deploy/action.yml"
 
 // declaredKCLEnvs lists every env with a deploy/kcl/<env>/main.k, sorted.
 func declaredKCLEnvs(root string) []string {

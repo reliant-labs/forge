@@ -22,7 +22,7 @@ import (
 //
 // The rule itself is right — a build-time-inlined NEXT_PUBLIC_* / VITE_*
 // read freezes the artifact to the environment it was built against, so
-// `forge env promote` cannot move it. The scaffold simply has to follow it.
+// `forge env deploy` cannot move it. The scaffold simply has to follow it.
 //
 // Asserting through the ANALYZER rather than by grepping the templates is
 // deliberate: the analyzer owns the allowlist (generated banners, config

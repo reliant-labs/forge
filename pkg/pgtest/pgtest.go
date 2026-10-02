@@ -564,7 +564,7 @@ func NewAtURL(baseURL string) (*sql.DB, func(), error) {
 // database. Where NewAtURL creates a uniquely-named database and DROPS it on
 // cleanup (generate-time schema introspection), EnsureDatabase creates the ONE
 // named database the app will actually run against and NEVER drops it: a fresh
-// `forge run` against a scaffolded dev DSN would otherwise die with
+// `forge env up` against a scaffolded dev DSN would otherwise die with
 // `FATAL: database "<project>" does not exist (SQLSTATE 3D000)` because nothing
 // had issued CREATE DATABASE.
 //

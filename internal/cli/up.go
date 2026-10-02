@@ -79,10 +79,10 @@ type upOptions struct {
 	// either. See internal/cli/up_options.go.
 	renderOptions []string
 	// frontendArgs are passthrough tokens forwarded to each frontend's dev
-	// server command (`npm run dev -- <frontendArgs>`). Not bound to a
-	// `forge env up` flag — it's the seam `forge run -- <flags>` sets so the
-	// reliant one-shot's `forge run -- --host 0.0.0.0` reaches Vite. Empty
-	// (the default, and always for `forge env up`) is a no-op.
+	// server command (`npm run dev -- <frontendArgs>`): everything after the
+	// `--` terminator on `forge env up <env> -- <flags>`. This is how an
+	// agent-driven preview flow reaches Vite
+	// (`forge env up dev -- --host 0.0.0.0`). Empty (no `--`) is a no-op.
 	frontendArgs []string
 }
 
@@ -104,13 +104,24 @@ func newEnvUpCmd() *cobra.Command {
 	var opts upOptions
 
 	cmd := &cobra.Command{
-		Use:   "up <environment>",
-		Short: "Bring the whole dev loop up: build + deploy + host + frontend",
-		Args:  cobra.ExactArgs(1),
-		Long: `Bring the whole dev loop up for an environment.
+		Use:   "up <environment> [-- <dev-server flags>]",
+		Short: "Bring the whole dev loop up on this machine: build + deploy + host + frontend",
+		// The env is required; anything after `--` is dev-server
+		// passthrough. upPassthroughArgs enforces the shape (exactly one
+		// positional before the terminator) with a message that names the
+		// mistake, which ExactArgs(1) cannot do once `--` is in play.
+		Args: cobra.MinimumNArgs(1),
+		Long: `Bring the whole dev loop up for an environment, on this machine.
 
 Reads deploy/kcl/<env>/ to figure out which services run in-cluster vs
 on the host and which frontends to start.
+
+LOCAL ONLY. This verb builds, applies and runs the env HERE. An env with
+anything bound to a non-local runtime — a forge.OnHosted workload, a
+hosted database, a frontend that ships to a bucket, a cluster that is not
+a local one (k3d / kind / docker-desktop / minikube / colima / orbstack) —
+is refused with a pointer to ` + "`forge env deploy <env>`" + `, before any
+work is done.
 
 Phases:
   1. build:    docker build + push every cluster image; go build
@@ -155,12 +166,25 @@ the old process is not the process you asked for. Only processes carrying
 forge's own ownership markers for THIS project and env are ever signalled;
 a port held by anything else is an error, never a kill.
 
+Tokens after ` + "`--`" + ` are forwarded to each frontend's dev server
+(` + "`npm run dev -- <flags>`" + `), so a Vite/Next dev server can be told
+to bind a specific host or port. This is what an agent-driven preview flow
+uses: ` + "`forge env up dev -- --host 0.0.0.0`" + ` starts the scaffolded
+frontend bound to 0.0.0.0 so a workspace proxy can reach it.
+
+On first boot against a dev environment the app boots alive: the fresh
+database is auto-seeded with deterministic, FK-coherent demo data derived
+from the applied schema — only when the DB is reachable and every seedable
+table is empty. Pass ` + "`--no-seed`" + ` to skip it, or inspect with
+` + "`forge db seed status`" + `.
+
 Examples:
   forge env up dev
   forge env up dev --no-build
   forge env up dev --target admin-server -D host_runner=go-run
   forge env up dev --watch        # hold + Ctrl-C teardown even when piped
   forge env up dev --background
+  forge env up dev -- --host 0.0.0.0   # forward flags to the dev servers
   forge env down dev
 
 Render options (-D):
@@ -184,7 +208,12 @@ Render options (-D):
   worktree, branch) are not yours to set and are rejected. -D is accepted on
   ` + "`env up`" + ` only — a cluster apply must stay reproducible from the repo alone.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			frontendArgs, err := upPassthroughArgs(args, cmd.ArgsLenAtDash())
+			if err != nil {
+				return err
+			}
 			opts.env = args[0]
+			opts.frontendArgs = frontendArgs
 			if opts.hostReadyTimeout <= 0 {
 				return fmt.Errorf("--host-ready-timeout must be positive")
 			}
@@ -207,77 +236,10 @@ Render options (-D):
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Force the hold-and-teardown lifecycle (block until Ctrl-C, then cascade-stop) even without a TTY. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge env up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge env up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
-	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default `forge run`/`forge env up` seeds a dev database once when it is reachable and all seedable tables are empty.")
+	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default `forge env up` seeds a dev database once when it is reachable and all seedable tables are empty.")
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the whole run — build, deploy, host and frontend phases — to specific services/operators/frontends by name (repeatable). Targeting only host/frontend apps builds no images. An unknown name is an error listing the env's app names. Default: everything.")
 	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with `forge env options <env>`.")
 
-	return cmd
-}
-
-// newEnvStatusCmd is the retrieve-after-the-fact half of the `forge env up`
-// summary: `forge env status <env>` re-derives the same host
-// service + frontend table long after the startup scrollback has scrolled
-// away, so a human (or an agent that reconnected to a running stack) can
-// re-discover every listening URL, its log file, and whether it's actually
-// up — without re-running `forge env up`. It renders the env's KCL through
-// the SAME devstack context `forge env up` uses (identical ports), probes
-// each declared port for a live listener, and cross-references the ownership
-// markers the reclaim guard stamps so it can tell "our process is up" from
-// "something else grabbed the port".
-func newEnvStatusCmd() *cobra.Command {
-	var (
-		jsonOut bool
-		signal  string
-		verbose bool
-	)
-	cmd := &cobra.Command{
-		Use:   "status <environment>",
-		Short: "Everything runtime about an env: host services, frontends, compose infra, app health, telemetry",
-		Args:  cobra.ExactArgs(1),
-		Long: `Report the runtime state of an environment.
-
-The TABLE lists every host service and frontend the env's ` + "`forge env up`" + `
-runs, with:
-
-  * its browser URL (http://localhost:<port>),
-  * its per-service log file (tail -f / grep target),
-  * whether a listener is accepting on the port RIGHT NOW (up/down),
-    including the holder pid and whether that process is forge-owned,
-  * for each host service, the live SERVER process(es) backing it with
-    build-freshness — binary path, its build/mtime, the process start
-    time, and whether it is stale vs the repo HEAD commit, and
-  * a loud DUPLICATE flag when more than one process is serving the same
-    host service (the "air spawned a new worker but didn't reap the old
-    one" symptom — stale and fresh build vintages running at once).
-
-The RUNTIME CHECKS underneath probe the rest of the stack: the compose
-infra, the app's /healthz + /readyz, pprof, the telemetry backends
-(Prometheus, Tempo, Loki, Pyroscope) and Delve. These used to live in
-` + "`forge doctor`" + `, which had to GUESS the app's port and reported the
-miss as a gray dash indistinguishable from "not applicable". They run
-here because this command already resolves the ports the stack actually
-bound. A check that cannot determine its answer says UNDETERMINED — it
-never reads as a pass.
-
-Reads the same rendered KCL + resolved ports ` + "`forge env up`" + ` uses, so
-the table matches what ` + "`forge env up <env>`" + ` printed — retrievable
-after the startup scrollback is gone. ALL declared frontends are listed (a
-project may declare several; each gets its own port row).
-
-Whether the project itself is well-formed — deployability, payload caps,
-tooling, cluster capability — is ` + "`forge doctor`" + `, which takes no env.
-
-Examples:
-  forge env status dev
-  forge env status dev --signal traces   # one runtime signal only
-  forge env status dev --json            # machine-readable for scripts/agents`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpServices(cmd.Context(), args[0], jsonOut, signal, verbose)
-		},
-	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (name/kind/url/port/log/listening/pid/owned + per-host-service serving[] build-freshness and a duplicate flag, plus the runtime checks)")
-	cmd.Flags().StringVar(&signal, "signal", "", "Run only one runtime signal: app, metrics, traces, logs, profiles (default: all)")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show evidence for all runtime checks (not just failures)")
 	return cmd
 }
 
@@ -287,16 +249,62 @@ Examples:
 // identically, then restores any resolve_port drift — this is a read-only
 // report and must not shift the stable port assignments a live stack is on.
 func runUpServices(ctx context.Context, env string, jsonOut bool, signal string, verbose bool) error {
+	if jsonOut {
+		rep, err := collectRuntimeStatus(ctx, env, signal, verbose)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+	return renderRuntimeStatus(ctx, env, signal, verbose)
+}
+
+// collectRuntimeStatus assembles the runtime report WITHOUT printing it, so
+// the merged `forge env status --json` can carry it as one section of ONE
+// document. Emitting here instead would put two JSON documents on stdout,
+// which produces a stream no `jq` invocation can read — and the failure looks
+// like malformed JSON rather than like two commands sharing an output.
+func collectRuntimeStatus(ctx context.Context, env, signal string, verbose bool) (upServicesReport, error) {
+	read, err := readRuntimeStatus(ctx, env)
+	if err != nil {
+		return upServicesReport{}, err
+	}
+	return buildUpServicesReport(ctx, buildUpServicesInput{
+		env: env, projectName: read.projectName, projectDir: read.projectDir,
+		entities: read.entities, rows: read.rows, resolved: read.resolved,
+		headCommit: read.headCommit, target: read.target, signal: signal, verbose: verbose,
+	})
+}
+
+// runtimeStatusRead is one render-and-probe pass: everything both the text
+// renderer and the JSON assembler need, resolved once. Shared rather than
+// repeated because the two must describe the SAME observation — a second pass
+// would re-render and re-probe, and could legitimately disagree with the
+// first about which ports are up.
+type runtimeStatusRead struct {
+	projectName, projectDir string
+	entities                *KCLEntities
+	rows                    []upServiceRow
+	resolved                *resolvedEnvState
+	headCommit              time.Time
+	target                  doctor.RuntimeTarget
+}
+
+// readRuntimeStatus renders the env, overlays the live ports, probes them and
+// derives the runtime-check target.
+func readRuntimeStatus(ctx context.Context, env string) (runtimeStatusRead, error) {
 	store, err := loadProjectStore()
 	if err != nil {
-		return err
+		return runtimeStatusRead{}, err
 	}
 	projectDir := projectDirForKCL()
 	_, restore := activateDevStack(ctx, projectDir, env, renderToLaunch, inspectBlocks)
 	entities, err := RenderKCL(ctx, projectDir, env)
 	restore() // revert resolve_port bytes; a status render must not drift ports
 	if err != nil {
-		return fmt.Errorf("render KCL: %w", err)
+		return runtimeStatusRead{}, fmt.Errorf("render KCL: %w", err)
 	}
 
 	// Honor the frontend feature gate so a frontends-off project's report
@@ -337,37 +345,21 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 	// env_status_checks.go.
 	target := runtimeTargetFor(entities, rows)
 
-	if jsonOut {
-		checks, checkErr := runEnvRuntimeChecks(ctx, store.Meta().Name, projectDir, env, target, signal, true, verbose)
-		if checkErr != nil {
-			return checkErr // a mistyped --signal is a usage error, not a stack state
-		}
-		rep := upServicesReport{
-			Env: env, Services: rows, Checks: checks.Checks,
-			// Lifted out of the Cluster Workloads check to the top level:
-			// it sits beside `services` because it is the other half of
-			// the same question, and a consumer should not have to know
-			// which check happens to carry it.
-			Workloads: doctor.InventoryOf(checks),
-		}
-		// DATABASE_URL is the other half of the discovery contract: an agent
-		// or script gets this worktree's API port (per-service `port`) AND its
-		// DSN from one call. Sourced from the launch-time persist; empty (and
-		// omitted) when no live stack persisted it.
-		if resolved != nil {
-			rep.DatabaseURL = resolved.DatabaseURL
-		}
-		if !headCommit.IsZero() {
-			rep.HeadCommitAt = headCommit.UTC().Format(time.RFC3339)
-		}
-		dest := resolveEnvDestination(ctx, env, entities, readHostedStatusFromDeclaration)
-		rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
-		rep.ControlPlaneKind = dest.ControlPlaneKind
-		rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(rep)
+	return runtimeStatusRead{
+		projectName: store.Meta().Name, projectDir: projectDir,
+		entities: entities, rows: rows, resolved: resolved,
+		headCommit: headCommit, target: target,
+	}, nil
+}
+
+// renderRuntimeStatus prints the host-service + frontend table and the
+// runtime checks under it.
+func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) error {
+	read, err := readRuntimeStatus(ctx, env)
+	if err != nil {
+		return err
 	}
+	rows, entities := read.rows, read.entities
 	if len(rows) == 0 {
 		fmt.Printf("[up] no host services or frontends declared in deploy/kcl/%s/\n", env)
 	} else {
@@ -389,8 +381,59 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 	// Printed AFTER the table: the table is the answer most invocations
 	// want, and the checks read as its detail. A project with no host rows
 	// still gets them — its compose infra is runtime state too.
-	_, err = runEnvRuntimeChecks(ctx, store.Meta().Name, projectDir, env, target, signal, false, verbose)
+	_, err = runEnvRuntimeChecks(ctx, read.projectName, read.projectDir, env, read.target, signal, false, verbose)
 	return err
+}
+
+// buildUpServicesInput carries everything the report needs, all of it already
+// resolved by the caller. A struct rather than ten parameters because every
+// field is derived from the SAME render + probe pass and they are meaningless
+// apart: a rows list without the entities it was collected from describes an
+// env nobody rendered.
+type buildUpServicesInput struct {
+	env, projectName, projectDir string
+	entities                     *KCLEntities
+	rows                         []upServiceRow
+	resolved                     *resolvedEnvState
+	headCommit                   time.Time
+	target                       doctor.RuntimeTarget
+	signal                       string
+	verbose                      bool
+}
+
+// buildUpServicesReport assembles the runtime report WITHOUT emitting it, so
+// it can be either the whole of `forge env status --json`'s runtime section or
+// one half of the merged document. Extracted rather than duplicated: two
+// assemblies of this report would eventually disagree about a field, and the
+// consumer reading `workloads` has no way to discover which one it got.
+func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServicesReport, error) {
+	checks, checkErr := runEnvRuntimeChecks(ctx, in.projectName, in.projectDir, in.env, in.target, in.signal, true, in.verbose)
+	if checkErr != nil {
+		return upServicesReport{}, checkErr
+	}
+	rep := upServicesReport{
+		Env: in.env, Services: in.rows, Checks: checks.Checks,
+		// Lifted out of the Cluster Workloads check to the top level:
+		// it sits beside `services` because it is the other half of
+		// the same question, and a consumer should not have to know
+		// which check happens to carry it.
+		Workloads: doctor.InventoryOf(checks),
+	}
+	// DATABASE_URL is the other half of the discovery contract: an agent
+	// or script gets this worktree's API port (per-service `port`) AND its
+	// DSN from one call. Sourced from the launch-time persist; empty (and
+	// omitted) when no live stack persisted it.
+	if in.resolved != nil {
+		rep.DatabaseURL = in.resolved.DatabaseURL
+	}
+	if !in.headCommit.IsZero() {
+		rep.HeadCommitAt = in.headCommit.UTC().Format(time.RFC3339)
+	}
+	dest := resolveEnvDestination(ctx, in.env, in.entities, readHostedStatusFromDeclaration)
+	rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
+	rep.ControlPlaneKind = dest.ControlPlaneKind
+	rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
+	return rep, nil
 }
 
 // newEnvDownCmd stops a running stack: this project's stack for one
@@ -407,7 +450,7 @@ func newEnvDownCmd() *cobra.Command {
 		Use:   "down [environment]",
 		Short: "Stop Forge host processes for an environment (or --all: across projects)",
 		Args:  cobra.MaximumNArgs(1),
-		Long: `Stop a running ` + "`forge env up`" + ` / ` + "`forge run`" + ` stack.
+		Long: `Stop a running ` + "`forge env up`" + ` stack.
 
   forge env down dev     stop THIS project's dev stack
   forge env down --all   stop every forge stack on this machine, all projects
@@ -752,6 +795,17 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		return fmt.Errorf("no services/operators/frontends/cronjobs declared in deploy/kcl/%s/", opts.env)
 	}
 
+	// LOCALITY GATE. `forge env up` runs an env on THIS machine; an env with
+	// anything bound to a non-local runtime belongs to `forge env deploy`.
+	// Checked here — the first point where the env's own declaration is
+	// known, and still before the build, the apply or any process start — so
+	// a hosted env fails on the wrong-verb message instead of on a missing
+	// cluster or an unreachable registry several phases later. See
+	// env_up_locality.go.
+	if v := classifyEnvLocality(entities); !v.local() {
+		return refuseNonLocalEnvUp(opts.env, v)
+	}
+
 	// A --target that names nothing is a typo, and the cost of treating it
 	// as a filter that simply matches no entity is the worst outcome
 	// available: the pre-flight below still tears down the running stack,
@@ -1035,7 +1089,7 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// declares as infrastructure and knows nothing about what those
 		// servers ARE. The scaffolded dev env declares postgres as a
 		// `forge.HostInfra` — a real postgres forge runs as a HOST PROCESS,
-		// so a `forge run` needs no container runtime at all — and (only when
+		// so a `forge env up` needs no container runtime at all — and (only when
 		// the project ships a frontend) the dev IdP as a `forge.Compose`
 		// container. A project that wants its database containerized too says
 		// `forge.Compose` there as well and this loop brings that up instead.
@@ -1051,7 +1105,7 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// before they boot — the runtime counterpart to the generate-time
 		// shadow DB, which forge already ensure-creates on the fly. A freshly
 		// scaffolded dev DSN (…:5434/<project>) names a database nothing has
-		// issued CREATE DATABASE for, so the first `forge run` boot would
+		// issued CREATE DATABASE for, so the first `forge env up` boot would
 		// otherwise die with `FATAL: database "<project>" does not exist`
 		// before AUTO_MIGRATE could apply the schema. ensureDevDatabase is a
 		// no-op off dev (seedTargetIsDev gates it) and off a resolved DSN, so
@@ -1113,7 +1167,7 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 //     PORT-INDEPENDENT, which is the whole point. It used to hang off a port
 //     conflict, and then ephemeral dev ports arrived: a second stack takes a
 //     free port, collides with nothing, and the reclaim never ran. Eight rounds
-//     of `forge run` left 38 orphaned processes, 7.5 GB resident, on 15 ports.
+//     of `forge env up` left 38 orphaned processes, 7.5 GB resident, on 15 ports.
 //
 //  2. Refuse to start against a port held by something we do NOT own. That is
 //     all the port probe was ever for. After (1) every remaining holder is
@@ -1516,7 +1570,7 @@ type upServicesReport struct {
 	Checks []doctor.CheckResult `json:"checks,omitempty"`
 
 	// Destination / Endpoint / EnvironmentID / Verdict / Workloads: where
-	// this env runs — the same contract `forge env topology --json` carries
+	// this env runs — the same contract `forge env status --json` carries
 	// per env (see env_destination.go). Destination is always set; the rest
 	// are hosted-only. HostedNote explains a hosted status that could not
 	// be read (credentials, network), in which case the other hosted fields
@@ -2385,7 +2439,7 @@ func entitiesEmpty(e *KCLEntities) bool {
 // upBuildCluster builds the project docker image with the per-env KCL filter
 // applied (deliverable 3's runBuild path) and pushes each image to the
 // reference its own workload declares — resolved inside runBuild by
-// resolvePushPlan, the same resolution `forge build <env> --push` uses. An env
+// resolvePushPlan, the same resolution `forge env build <env> --push` uses. An env
 // whose workloads all run on the host has nothing pulling an image, so its
 // images are built locally and nothing is pushed; forge never substitutes a
 // registry of its own.
@@ -2623,7 +2677,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	if cfg != nil && env != "" {
 		projectConfigEnv = loadProjectConfigEnv(cfg, env)
 	}
-	// Dev-run defaults: on a dev env, `forge run` marks the runtime as
+	// Dev-run defaults: on a dev env, `forge env up` marks the runtime as
 	// development AND auto-applies migrations on boot, so a fresh dev DB
 	// comes up with its schema without any hand-set env vars. Lowest
 	// precedence — overridden by project config, secrets, the declared env
@@ -2692,7 +2746,7 @@ func forceHostBindPorts(env []string, svcName string, declared map[string]string
 }
 
 // withDevRunDefaults layers the dev-run environment UNDER the project config
-// when isDev, so `forge run` / `forge env up dev` boots a fresh dev app
+// when isDev, so `forge env up dev` boots a fresh dev app
 // turnkey with zero hand-set env vars:
 //
 //   - ENVIRONMENT=development — marks the runtime as development so dev
@@ -2703,7 +2757,7 @@ func forceHostBindPorts(env []string, svcName string, declared map[string]string
 //     freshly-created dev DB has its schema before the host-services
 //     readiness gate + first-boot auto-seed run (maybeAutoSeed assumes the
 //     schema is current — it seeds, it does not migrate). Without this a
-//     `forge run` against an empty DB serves an unmigrated, tableless app.
+//     `forge env up` against an empty DB serves an unmigrated, tableless app.
 //
 // CORS needs no entry here. ENVIRONMENT=development is itself what enables
 // the backend's CORS layer (serverkit.Config.CORSEnabled) and selects the
@@ -2727,7 +2781,7 @@ func forceHostBindPorts(env []string, svcName string, declared map[string]string
 // dev defaults dead code for every field the scaffold doesn't pin. ENVIRONMENT
 // is the field that makes this rule load-bearing: it is what puts the backend
 // in the development posture, and an unpinned "" arriving from the total
-// projection would silently demote a `forge run` to a deployed posture — a
+// projection would silently demote a `forge env up` to a deployed posture — a
 // backend that then refuses its own frontend's preflight, so every CRUD page
 // renders "Couldn't load data / Failed to fetch" against a seeded DB.
 // Pin a field in deploy/kcl/<env>/config.k to override for real.
@@ -3071,9 +3125,9 @@ func markFrontendInstallOK(dir string) {
 // when that allocation failed, in which case the dev server picks its own.
 //
 // frontendArgs are passthrough tokens forwarded to the dev server after a
-// `--` separator (`npm run dev -- <frontendArgs>`), so `forge run --
-// --host 0.0.0.0` reaches Vite/Next. Empty (the `forge env up` default) leaves
-// the command untouched.
+// `--` separator (`npm run dev -- <frontendArgs>`), so
+// `forge env up dev -- --host 0.0.0.0` reaches Vite/Next. Empty (no `--` on
+// the invocation) leaves the command untouched.
 func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv, frontendArgs []string, apiBaseURL string) *exec.Cmd {
 	runner := fe.DevRunner
 	if runner == "" {

@@ -330,7 +330,7 @@ func TestHarvestFileArtifacts_IgnoresNonBuildOnlyServices(t *testing.T) {
 }
 
 // TestHarvestFileArtifacts_NilEntitiesIsEmpty covers the env-less build: a
-// plain `forge build --release` with no --env renders no KCL, so entities is
+// plain `forge env build --release` with no --env renders no KCL, so entities is
 // nil. That must harvest nothing rather than panic.
 func TestHarvestFileArtifacts_NilEntitiesIsEmpty(t *testing.T) {
 	got := harvestFileArtifacts(t.TempDir(), "bin", nil)

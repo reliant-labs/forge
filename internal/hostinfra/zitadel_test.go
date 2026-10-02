@@ -82,7 +82,7 @@ func TestZitadelAsset_CoversEveryPublishedPlatform(t *testing.T) {
 		}
 	}
 	// An unpublished platform must report so rather than composing a URL
-	// that 404s halfway through a `forge run`.
+	// that 404s halfway through a `forge env up`.
 	if _, ok := zitadelAsset("plan9", "riscv64"); ok {
 		t.Error("plan9/riscv64 reported as supported")
 	}
@@ -240,7 +240,7 @@ func TestZitadelPIDFile_RoundTripsPIDAndPort(t *testing.T) {
 }
 
 // A crashed predecessor must not read as "already running" — that would
-// make the next `forge run` skip the start and then fail against an IdP
+// make the next `forge env up` skip the start and then fail against an IdP
 // that is not there.
 func TestReapDeadZitadel_ClearsAStalePIDFile(t *testing.T) {
 	dir := t.TempDir()

@@ -91,7 +91,7 @@ func sha(c string) string {
 }
 
 // TestRelease_LedgerRoundTrip locks the on-disk contract: a Release written by
-// `forge build --release` reads back intact, including the per-image shared
+// `forge env build --release` reads back intact, including the per-image shared
 // digest map and platforms.
 func TestRelease_LedgerRoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -137,7 +137,7 @@ func TestReadRelease_MissingIsNilNil(t *testing.T) {
 func TestHarvestReleaseArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	// Aggregate project image (what dockerBuildProject captures), written under
-	// the env-agnostic "default" key a plain `forge build --release` produces.
+	// the env-agnostic "default" key a plain `forge env build --release` produces.
 	if err := WriteBuildState(dir, "default", BuildState{
 		Image: "control-plane", Tag: "v1.4.0", Pushed: true, PushedAt: nowRFC3339(),
 		Digest: sha("a"), Platforms: []string{"linux/amd64"},
@@ -344,7 +344,7 @@ func TestRunPromote_NoImagesReleaseSurfacesActionableError(t *testing.T) {
 		t.Fatalf("write release: %v", err)
 	}
 
-	err := runPromote(context.Background(), "v3.1.0", "staging", promoteOptions{})
+	err := runPromote(context.Background(), "v3.1.0", "staging", promoteOptions{Ledger: declaredLedger(t, dir, "staging")})
 	if err == nil {
 		t.Fatal("want error promoting a release with no images, got nil")
 	}
@@ -490,7 +490,7 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	// A release ledger exists (as `forge build --release` would have written).
+	// A release ledger exists (as `forge env build --release` would have written).
 	if err := WriteRelease(dir, release.Release{
 		Version: "v1.4.0",
 		Artifacts: map[string]release.Artifact{
@@ -501,7 +501,7 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 		t.Fatalf("write release: %v", err)
 	}
 
-	if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{}); err != nil {
+	if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{Ledger: declaredLedger(t, dir, "staging")}); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 
@@ -526,7 +526,7 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 func TestRunPromote_UnknownReleaseErrors(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	if err := runPromote(context.Background(), "v9.9.9", "staging", promoteOptions{}); err == nil {
+	if err := runPromote(context.Background(), "v9.9.9", "staging", promoteOptions{Ledger: declaredLedger(t, dir, "staging")}); err == nil {
 		t.Fatal("want error promoting a non-existent release, got nil")
 	}
 }

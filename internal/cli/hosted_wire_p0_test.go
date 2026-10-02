@@ -227,7 +227,7 @@ func TestWireRollout_DecodesEveryP0Field(t *testing.T) {
       "phase": "DEPLOY_ROLLOUT_PHASE_DEGRADED",
       "startedAt": "2026-10-01T00:00:00Z",
       "finishedAt": "2026-10-01T00:05:00Z",
-      "stabilityWindowMs": 120000,
+      "stabilityWindowMs": "120000",
       "convergesPromotions": true,
       "reason": "api: not serving on sha256:ab12",
       "workloads": [{

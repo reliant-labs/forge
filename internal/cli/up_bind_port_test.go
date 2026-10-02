@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// `forge run` allocates an ephemeral API port, PRINTS it, inlines it into the
+// `forge env up` allocates an ephemeral API port, PRINTS it, inlines it into the
 // frontend bundle as NEXT_PUBLIC_API_URL, and hands it to the readiness gate
 // and the pre-flight conflict guard. Only the process itself reads the port
 // out of the environment — and host env layering is shell-wins, so an

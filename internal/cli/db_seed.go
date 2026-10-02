@@ -22,7 +22,7 @@ import (
 
 // devModeValue is the runtime MODE value that marks an environment as
 // development (config.Mode() keys off the CONFIG_FIELD_ROLE_MODE field). The
-// dev env's config.k is scaffolded with it, and `forge run` layers it onto the
+// dev env's config.k is scaffolded with it, and `forge env up` layers it onto the
 // dev host env.
 const devModeValue = "development"
 

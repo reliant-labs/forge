@@ -13,9 +13,10 @@ import (
 
 // The console contract for WHERE an environment runs.
 //
-// `forge env topology --json` and `forge env status --json` both carry these
-// fields on their env-level object. They are ADDITIVE: no existing field
-// changes meaning, and a consumer that ignores them sees the old document.
+// `forge env status --json` carries these as fields on its env-level object,
+// in both its one-env and its all-environments form. They are ADDITIVE: no
+// existing field changes meaning, and a consumer that ignores them sees the
+// old document.
 //
 //   - destination     hosted | cluster | compose | host | static | mixed
 //     Always set for an env declared in this checkout. Derived from the

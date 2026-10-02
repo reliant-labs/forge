@@ -86,7 +86,7 @@ pkg/middleware/*_gen.go
 /mocks/
 /handlers/mocks/
 
-# Seed data materializes at RUNTIME (`forge db seed` / `forge run`
+# Seed data materializes at RUNTIME (`forge db seed` / `forge env up`
 # auto-seed) — forge writes no seed files into the project. db/seeds/custom/
 # is your hand-authored demo-data overlay and IS committed. Legacy
 # auto-generated db/seeds/*.sql / db/fixtures/ from older forge versions can
@@ -141,7 +141,7 @@ tmp/
 
 # ── Forge internal state ──
 # .forge/ contains debug-session.json, caches, .forge/state/build-<env>.json
-# (handoff from `forge build --push` to `forge env deploy`), transient side
+# (handoff from `forge env build --push` to `forge env deploy`), transient side
 # renders (.forge/render/ holds `--explain-drift` diff inputs), and
 # other runtime state. Generated files certify THEMSELVES (each carries
 # an embedded `forge:hash` marker), so there is no generated-state

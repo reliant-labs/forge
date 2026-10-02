@@ -18,7 +18,7 @@ import (
 // ships it.
 //
 // Nothing here is a second opinion. The destinations are destinationOf's
-// votes (the `forge env topology` vocabulary), the hosted selection and its
+// votes (the `forge env status` vocabulary), the hosted selection and its
 // refusal are buildDeployGroups' own (buildHostedGroup), and admission is
 // deploytarget.PreflightHosted — the deploy's plan with placeholder
 // digests. A rule added to any of them reaches CI with no change here.

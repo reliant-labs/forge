@@ -698,10 +698,22 @@ func TestPromotionKindFromWire_Closed(t *testing.T) {
 
 // ─── End to end through the command tree ─────────────────────────────────────
 
-// `forge release cut v1 --env prod` → `forge env promote v1 --to prod` →
+// `forge env build prod --release v1 --no-build` → `forge env deploy prod v1` →
 // `forge cloud releases prod`, for an env whose KCL declares forge.ControlPlane,
 // against the fake control plane. Nothing is written to the project's ledger
 // files: the env's declaration routed every write to the control plane.
+//
+// --no-wait because the fake serves no rollout: the subject here is the LEDGER
+// write reaching the control plane, and the health gate has its own tests
+// (deploy_promote_follow_test.go).
+//
+// The env is HOSTED-ONLY — its one workload is forge.OnHosted — so the deploy
+// records and applies nothing locally. That is deliberate: an env with a
+// CLUSTER workload beside its hosted database would be MIXED, and `forge env
+// deploy` would (correctly) go on to apply that half from here, which needs a
+// kubeconfig and a complete forge.yaml and would make this test about the
+// apply rather than about where the promotion was recorded. The mixed shape is
+// covered by TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits.
 func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	fake := newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})
 	srv := httptest.NewServer(fake)
@@ -715,8 +727,8 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	t.Chdir(dir)
 	t.Setenv("FORGE_E2E_CP_TOKEN", "rlat_e2e")
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fmt.Sprintf(
-		`{"output":{"control_plane":{"type":"control_plane","endpoint":%q,"token_env":"FORGE_E2E_CP_TOKEN"},"workloads":[{"name":"api","kind":"service","image":"api","runtime":{"type":"cluster","cluster":"c","namespace":"n"},"spec":{"kind":"service"}}],"databases":[{"name":"orders","runtime":"hosted"}]}}`, srv.URL)))
-	// The build state an earlier `forge build prod --push` left behind.
+		`{"output":{"control_plane":{"type":"control_plane","endpoint":%q,"token_env":"FORGE_E2E_CP_TOKEN"},"workloads":[{"name":"api","kind":"service","image":"api","runtime":{"type":"hosted"},"spec":{"kind":"service"}}],"databases":[{"name":"orders","runtime":"hosted"}]}}`, srv.URL)))
+	// The build state an earlier `forge env build prod --push` left behind.
 	if err := WriteBuildState(dir, "prod", BuildState{
 		Image: "api", Tag: "v1", Pushed: true, PushedAt: nowRFC3339(), Digest: sha("1"),
 	}); err != nil {
@@ -734,11 +746,11 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 		return out + buf.String(), err
 	}
 
-	if out, err := run("release", "cut", "v1", "--env", "prod"); err != nil {
-		t.Fatalf("forge release cut: %v\n%s", err, out)
+	if out, err := run("env", "build", "prod", "--release", "v1", "--no-build"); err != nil {
+		t.Fatalf("forge env build --release: %v\n%s", err, out)
 	}
-	if out, err := run("env", "promote", "v1", "--to", "prod", "--actor", "ci"); err != nil {
-		t.Fatalf("forge env promote: %v\n%s", err, out)
+	if out, err := run("env", "deploy", "prod", "v1", "--actor", "ci", "--no-wait"); err != nil {
+		t.Fatalf("forge env deploy: %v\n%s", err, out)
 	}
 	out, err := run("cloud", "releases", "prod", "--json")
 	if err != nil {

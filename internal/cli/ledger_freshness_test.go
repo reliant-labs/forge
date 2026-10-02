@@ -88,7 +88,7 @@ func (r *ledgerRepo) verify(lister clusterImageLister, jsonOut bool) (string, er
 	r.t.Chdir(r.dir)
 	var err error
 	out := captureStdout(r.t, func() {
-		err = runEnvVerify(context.Background(), "prod", envVerifyOptions{
+		err = runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 			JSON:     jsonOut,
 			Lister:   lister,
 			Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
@@ -194,7 +194,7 @@ func TestVerify_UnboundButBehindIsUndetermined(t *testing.T) {
 	t.Chdir(r.dir)
 	var err error
 	captureStdout(t, func() {
-		err = runEnvVerify(context.Background(), "staging", envVerifyOptions{
+		err = runEnvStatusRelease(context.Background(), "staging", envStatusOptions{
 			Lister:   &stubLister{},
 			Resolver: stubResolver{target: envTarget{KubeContext: "c", Namespace: "n"}},
 		})

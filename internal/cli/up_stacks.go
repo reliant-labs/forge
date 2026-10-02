@@ -1,5 +1,5 @@
 // Package cli — the machine-local record of which stacks `forge env up` /
-// `forge run` started, and the teardown that acts on it.
+// `forge env up` started, and the teardown that acts on it.
 //
 // Three files are written per (project, env), under
 // $HOME/.cache/forge/up/<project-id>/:
@@ -524,7 +524,7 @@ func newEnvPsCmd() *cobra.Command {
 		Use:   "ps",
 		Short: "List every forge stack running on this machine, across all projects",
 		Args:  cobra.NoArgs,
-		Long: `List every stack ` + "`forge env up`" + ` / ` + "`forge run`" + ` has running on this
+		Long: `List every stack ` + "`forge env up`" + ` has running on this
 machine, across every project — not just the one in the working directory.
 
 Each row is one (project, env) stack, with the number of live processes and

@@ -82,7 +82,7 @@ func loadFrontendRuntimeConfig(projectDir, env string, configs []codegen.Fronten
 // This is the deploy-time consumer of the KCL runtime projection, and the
 // reason runtime injection was chosen over build-time inlining in the first
 // place. A bundle with NEXT_PUBLIC_* / VITE_* inlined is frozen to the
-// environment it was built against, which makes `forge env promote` a lie;
+// environment it was built against, which makes `forge env deploy` a lie;
 // a bundle that reads window.__FORGE_CONFIG__ is environment-agnostic, and
 // this function produces the one file that differs between environments.
 //

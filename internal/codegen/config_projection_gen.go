@@ -114,7 +114,7 @@ func KCLConfigName(messageName string) (schema, lambda string) {
 //
 // It exists so the one caller that legitimately wants EVERY credential —
 // forge's own host-mode config probe, which resolves what the env's config
-// evaluates to for `forge run`, the parity report and the seed gate — can say
+// evaluates to for `forge env up`, the parity report and the seed gate — can say
 // so by name instead of hand-listing vars that would go stale the moment a
 // field is added. A cluster WORKLOAD must never use it: naming the whole set
 // is precisely the broadcast this design removed.
@@ -378,7 +378,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	// even when empty so the probe's reference resolves in a project that
 	// declares no credentials at all.
 	fmt.Fprintf(&b, "# Every ENV_VAR %s declares `sensitive: true` for. Used by forge's\n", schemaName)
-	b.WriteString("# host-mode config probe, which resolves the whole config for `forge run`\n")
+	b.WriteString("# host-mode config probe, which resolves the whole config for `forge env up`\n")
 	b.WriteString("# and the parity report. A WORKLOAD must not use it: naming every\n")
 	b.WriteString("# credential is the broadcast that put one feature's secretKeyRef on\n")
 	b.WriteString("# every pod. Declare what a workload reads in its `config_secrets` instead.\n")

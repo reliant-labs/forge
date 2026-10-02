@@ -406,24 +406,67 @@ type BuildImagesWorkflowData struct {
 	// `npm run build` — so this job needs no Node toolchain.
 	VulnDocker bool // trivy scanning
 
-	// CutRelease emits the job that records a release against a control
-	// plane and promotes an environment to it — the step between "the image
-	// is pushed" and "something is running it".
-	//
-	// OFF BY DEFAULT, because it is the one job in this workflow that talks
-	// to a server forge did not scaffold. A project with no control plane
-	// would get a job that fails on every push to main, and a CI file that is
-	// red by default is a CI file people stop reading.
-	CutRelease bool
+}
+
+// ReleaseWorkflowData holds data for release.yml and the vendored
+// forge-deploy composite action. Emitted only
+// for a project with at least one HOSTED env — one whose KCL declares
+// forge.ControlPlane and a workload or database the platform runs.
+type ReleaseWorkflowData struct {
+	ProjectName string
+	// BuildEnv is the hosted env the release's images are built and cut
+	// against (the first in promotion order): its declared registry and
+	// control plane are where the bytes and the release live.
+	BuildEnv string
+	// Stages are the hosted envs, in promotion order, one job each. The
+	// first is promoted by version; every later one `--from` the stage
+	// before it, so a release reaches prod exactly as it ran on the stage
+	// before. Prev/Next are precomputed here rather than derived with index
+	// arithmetic in YAML, so the chain is testable Go and the template stays
+	// readable.
+	Stages []ReleaseStage
+}
+
+// ReleaseStage is one hosted env's deploy job in release.yml.
+type ReleaseStage struct {
+	Env DeployEnv
+	// Prev is the stage promoted from (empty for the first, which is
+	// promoted by version). Its job's promotion id is --from-promotion.
+	Prev string
+	// Next is the stage after this one (empty for the last). This job
+	// captures Next's current promotion BEFORE Next's approval wait, so
+	// Next's deploy can assert it with --expect-current.
+	Next string
+	// Mixed is set for an env that also applies a cluster/compose part from
+	// CI. Its stage always deploys client-side — a control plane converges
+	// only what it hosts — and writes the kubeconfig that deploy needs.
+	Mixed bool
+}
+
+// ReleaseStages chains hosted envs (already in promotion order) into stages.
+// mixed names the envs that also apply a part from CI (see ReleaseStage.Mixed).
+func ReleaseStages(envs []DeployEnv, mixed map[string]bool) []ReleaseStage {
+	out := make([]ReleaseStage, len(envs))
+	for i, e := range envs {
+		out[i].Env = e
+		out[i].Mixed = mixed[e.Name]
+		if i > 0 {
+			out[i].Prev = envs[i-1].Name
+		}
+		if i+1 < len(envs) {
+			out[i].Next = envs[i+1].Name
+		}
+	}
+	return out
 }
 
 // ReconcileWorkflowData holds data for the scheduled reconcile workflow.
 //
 // The workflow is emitted ONLY when features.experimental.reconcile is on —
 // the generator gates it, not this struct. Everything in forge is opt-in and à
-// la carte, and a scheduled job that runs `forge reconcile` in a project whose
-// reconcile loop is not wired would fail hourly, forever, for a feature the
-// user never asked for.
+// la carte, and a scheduled drift report (`forge env status` per env) against
+// envs that were never wired to report anything would fail hourly, forever,
+// for a feature the user never asked for.
 type ReconcileWorkflowData struct {
 	ProjectName string
 	// Environments the matrix sweeps. Reconcile is per-environment because

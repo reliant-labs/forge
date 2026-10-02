@@ -2211,7 +2211,7 @@ func itemSeamProbe() string { return "user-owned" }
 	// ships deploy/kcl/dev/main.k on the KCL-native config path (it
 	// imports `config_gen` + the per-env `.config`), so a pristine
 	// generate MUST emit those files or the scaffold's own KCL imports
-	// are unresolvable and `forge run` can't compose per-env config (the
+	// are unresolvable and `forge env up` can't compose per-env config (the
 	// J1 features.deploy catch-22: gate said deploy=false, schema
 	// rejected features.deploy, main.k imported the never-generated
 	// file).

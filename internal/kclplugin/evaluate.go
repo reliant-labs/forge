@@ -28,7 +28,7 @@ var evalMu sync.Mutex
 //   - a stale record: ANOTHER evaluation's message, from a different file.
 //
 // All three were seen in CI as TestKCLModule_NegativeChecks failing a
-// different fixture each run. `forge env topology` renders every env
+// different fixture each run. `forge env status` renders every env
 // concurrently, and build/up fan out too, so users were exposed to the same
 // corruption. The kcl-go client is a single process-wide handle, so there is
 // no per-evaluation instance to isolate instead; the lock is the fix until

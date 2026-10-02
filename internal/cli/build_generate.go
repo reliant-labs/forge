@@ -86,7 +86,7 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 // A `use` path may be ABSOLUTE — forge's own dev bridge writes one
 // (`use /path/to/forge/pkg`) so a scaffold compiles against a working-copy
 // forge/pkg. Joining that onto projectDir yields a path that cannot exist,
-// which reported the module missing on every invocation and made `forge run`
+// which reported the module missing on every invocation and made `forge env up`
 // pay a full regenerate (≈9s and ~60 lines of output) before every single
 // boot. Resolve absolute paths as given; only relative ones hang off the
 // project root.
@@ -125,7 +125,7 @@ func missingGoWorkModule(projectDir string) string {
 // src/lib/config_gen.ts reads window.__FORGE_CONFIG__ then boots with no
 // config at all: the bundle's loadConfig() throws "invalid runtime
 // configuration" from inside the provider that wraps the whole app. So the
-// dev loop (`forge env up`, `forge run`) and `forge build` regenerate first.
+// dev loop (`forge env up`) and `forge build` regenerate first.
 //
 // Only frontends that actually consume the document are considered: one with
 // the generated config module AND a served static root. React Native has

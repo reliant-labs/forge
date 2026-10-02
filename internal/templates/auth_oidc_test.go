@@ -138,7 +138,7 @@ func TestDevCompose_IdentityProviderScaffoldsOnlyForABrowser(t *testing.T) {
 
 	// The IdP must be part of the DEFAULT service set for a project that has
 	// one: it is declared infrastructure now, named directly by
-	// deploy/kcl/dev/main.k, so `forge run` brings it up with no profile to
+	// deploy/kcl/dev/main.k, so `forge env up` brings it up with no profile to
 	// select and no second command to remember.
 	if !activeServices(withFE)["idp"] {
 		t.Error("the idp service is not active by default — it is declared infrastructure, so bringing the env up must start it")

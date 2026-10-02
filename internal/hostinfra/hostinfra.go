@@ -3,7 +3,7 @@
 //
 // # Why this exists
 //
-// `forge run` already runs the project's OWN code on the host — that is the
+// `forge env up` already runs the project's OWN code on the host — that is the
 // whole point of the host dev loop. But the infrastructure underneath it
 // (postgres, first and foremost) arrived as docker containers, so a dev loop
 // that touched no container of its own still could not start without docker.
@@ -47,7 +47,7 @@
 //     Start, and when DataPath is unset the data directory lives INSIDE
 //     RuntimePath — so an unconfigured instance silently wipes the database on
 //     every boot.)
-//   - The SERVER OUTLIVES THE PROCESS THAT STARTED IT. `forge run` returns
+//   - The SERVER OUTLIVES THE PROCESS THAT STARTED IT. `forge env up` returns
 //     while the stack keeps serving, exactly as a `docker compose up -d`
 //     postgres does. There is no reference counting and no teardown-on-exit:
 //     the server is stopped explicitly, by `forge env down`.
@@ -203,7 +203,7 @@ const probeConnectTimeoutSeconds = 5
 
 // Start brings the instance up, or confirms it is already up, and returns
 // only once it is actually SERVING — not merely spawned. It is idempotent:
-// running `forge run` twice in a row does not start a second postgres, and
+// running `forge env up` twice in a row does not start a second postgres, and
 // does not fail the second time.
 //
 // The already-up check dials the port and authenticates rather than looking
@@ -286,7 +286,7 @@ func startPostgres(ctx context.Context, projectDir string, spec Spec) error {
 	}
 
 	// The server now OUTLIVES this process by design (see the package doc):
-	// `forge run` returns while the stack keeps serving. embedded-postgres
+	// `forge env up` returns while the stack keeps serving. embedded-postgres
 	// starts postgres via `pg_ctl start`, which daemonizes — so there is no
 	// child of ours to detach, and nothing to do here but stop holding the
 	// handle. Teardown goes through Stop (`forge env down`), which finds the
@@ -318,7 +318,7 @@ func postgresConfig(spec Spec, dataDir string) embeddedpostgres.Config {
 		// DATA and RUNTIME are separate directories, and that is load-bearing:
 		// Start() does RemoveAll(RuntimePath) every time, and an unset DataPath
 		// defaults to a subdirectory OF RuntimePath — so leaving it unset would
-		// silently wipe the developer's database on every `forge run`.
+		// silently wipe the developer's database on every `forge env up`.
 		DataPath(filepath.Join(dataDir, "data")).
 		RuntimePath(filepath.Join(dataDir, "runtime")).
 		// mmap-backed shared memory instead of System V. The sysv default

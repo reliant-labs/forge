@@ -38,7 +38,7 @@ const expectUnboundLiteral = "unbound"
 // override the in-flight refusal admits.
 //
 // The zero value asserts nothing — the shape every non-promote caller (a
-// fixture seeding a ledger, a conversion) passes. `forge env promote` never
+// fixture seeding a ledger, a conversion) passes. a release deploy never
 // sends the zero value: it always expects SOMETHING, because the plan always
 // read something.
 type appendGuard struct {
@@ -196,7 +196,7 @@ func refusalHint(reason string) string {
 	case reasonSourceMoved:
 		return "the source environment moved after its promotion was captured. Re-capture the source promotion and re-run."
 	case reasonRolloutInFlight:
-		return "the current promotion is still rolling out. Wait for it (`forge env wait`), or pass --supersede to replace it on purpose (recorded)."
+		return "the current promotion is still rolling out. Wait for it (`forge env status --wait`), or pass --supersede to replace it on purpose (recorded)."
 	case reasonEnvironmentPinned:
 		return "the environment's reconcile policy is pinned, which refuses every change. Unpin it on the control plane first."
 	default:

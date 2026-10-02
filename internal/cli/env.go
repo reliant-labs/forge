@@ -21,9 +21,10 @@ import (
 func newEnvCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "env",
-		Short: "Manage deploy environments: bring stacks up/down, deploy, promote, and inspect",
+		Short: "Manage deploy environments: bring stacks up/down, deploy releases, and inspect",
 	}
 	cmd.AddCommand(newEnvUpCmd())
+	cmd.AddCommand(newEnvBuildCmd())
 	cmd.AddCommand(newEnvDownCmd())
 	cmd.AddCommand(newEnvStatusCmd())
 	cmd.AddCommand(newEnvPsCmd())
@@ -33,12 +34,6 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newEnvRenderCmd())
 	cmd.AddCommand(newEnvNewCmd())
 	cmd.AddCommand(newDeployCmd())
-	cmd.AddCommand(newPromoteCmd())
-	cmd.AddCommand(newEnvWaitCmd())
-	cmd.AddCommand(newEnvVerifyCmd())
-	cmd.AddCommand(newEnvTopologyCmd())
-	cmd.AddCommand(newEnvHistoryCmd())
-	cmd.AddCommand(newEnvRolloutCmd())
 	cmd.AddCommand(newSmokeCmd())
 	cmd.AddCommand(newSecretsCmd())
 	cmd.AddCommand(newDevStackCmd())

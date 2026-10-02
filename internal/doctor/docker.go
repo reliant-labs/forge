@@ -65,7 +65,7 @@ func hasComposeFile(projectDir string) bool {
 // published ports for use by downstream checks.
 //
 // It covers ONLY the compose half of a dev stack. The host-service half —
-// what `forge run` launches — is `forge env status <env>`'s own table, which
+// what `forge env up` launches — is `forge env status <env>`'s own table, which
 // reports holder pid, forge-ownership and build freshness; a compose probe
 // can see none of that, and doctor's old attempt to answer both was how
 // `forge doctor` came to FAIL on a completely healthy host-mode stack.

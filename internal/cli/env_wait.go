@@ -1,6 +1,6 @@
 package cli
 
-// `forge env wait <env>`: the post-release health gate (control-plane
+// `forge env status <env> --wait`: the post-release health gate (control-plane
 // docs/design/hosted-deploy-primitives.md §3.2, task F3).
 //
 // WHAT THIS IS FOR, AND WHY IT IS NOT "POLL GetStatus UNTIL CONVERGED".
@@ -52,8 +52,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
@@ -78,129 +76,6 @@ const (
 // procGetRollout is controlplane.v1.DeployService/GetRollout.
 const procGetRollout = "controlplane.v1.DeployService/GetRollout"
 
-// newEnvWaitCmd is `forge env wait <env>`.
-func newEnvWaitCmd() *cobra.Command {
-	var opts envWaitOptions
-
-	cmd := &cobra.Command{
-		Use:   "wait <environment>",
-		Short: "Wait for a promotion to finish rolling out, and prove it stayed up",
-		Long: `Block until the release an environment is promoted to has rolled out, and
-report whether it is actually serving.
-
-WHY THIS IS NOT ` + "`forge env verify`" + `. Verify asks "is the cluster running the
-digests the binding declares", once, right now. This asks the question a
-release pipeline gates on: did the bytes I just promoted take over, and did
-they STAY up past the stability window? A pod that becomes Ready and then
-crash-loops forty seconds later passes verify and fails this.
-
-PINNED TO ONE PROMOTION, NEVER TO "whatever the env declares now". The phase is
-judged against the frozen pins of the promotion being waited on. So a hotfix
-promoted while this wait is running does NOT make the wait succeed on bytes it
-was never asked about — it reports SUPERSEDED (exit 6) and says so.
-
-WHICH PROMOTION. By default, the environment's current one. --promotion <id>
-names one captured earlier (the id ` + "`env promote --json`" + ` printed), which is what
-makes a CI retry of a timed-out wait continue against the SAME release instead
-of silently adopting a newer one. --release <version> waits on the current
-promotion but REFUSES unless it binds that version.
-
-DEGRADED IS TOLERATED UNTIL THE DEADLINE, BY DEFAULT. A workload that
-crash-loops once on a cold start and then settles is common, so exiting on the
-first degraded observation would make this gate flaky. The rollout fails when
-the budget runs out while degraded — and the report names the workload, its
-replica counts and its last error. --fail-fast exits on the first degraded
-observation instead, for pipelines that prefer speed to tolerance.
-
-DATABASES AND THIRD-PARTY IMAGES DO NOT GATE A RELEASE. A workload the
-promotion does not pin is REPORTED (under ` + "`unpinned`" + `) and never fails the wait:
-a managed database cannot be release-bound, so letting it fail a release would
-make every release hostage to something the release did not change.
---include-unpinned opts into the stricter reading.
-
-EXIT CODES — a pipeline branches on these directly:
-
-  0  SUCCEEDED — every pinned workload served the promoted digest past the
-     stability window
-  1  DEGRADED — a workload is not serving (with --fail-fast, on the first such
-     observation; otherwise at the deadline)
-  2  could not determine — a workload is unobservable, the control plane was
-     unreachable or refused the credential, or the environment does not
-     converge promotions
-  5  TIMED OUT while still pending / progressing / stabilizing. The rollout was
-     PROGRESSING, so retry the wait; do not re-promote
-  6  SUPERSEDED — a newer promotion replaced the one being waited on
-
-5 and 6 are deliberately not 1. "We never saw this finish" and "the release
-was overtaken" are not "the release is bad", and reporting them as a failure
-would turn fine releases red.
-
---json emits one document at the end, with the same phase, every workload's
-state, and the phase transitions observed along the way. --watch-json emits
-NDJSON, one line per phase change, for a log stream or a UI.
-
-ONE READ, NEVER BLOCKING: --timeout 0. It reports where the rollout has got to
-right now and exits — the primitive ` + "`forge env rollout`" + ` is built on. The exit
-code is the same table a blocking wait uses, so a still-progressing snapshot is
-5 and a finished one is 0. An UNSET --timeout keeps the 15m budget; only an
-explicit 0 means a single read.
-
-Examples:
-  forge env wait prod                                   # the current promotion, 15m budget
-  forge env wait prod --timeout 0 --json                # where is it NOW? one read, no blocking
-  forge env wait prod --release v1.4.0                  # refuse unless prod binds v1.4.0
-  ID=$(forge env promote v1.4.0 --to prod --json | jq -r .recorded.id)
-  forge env wait prod --promotion "$ID" --timeout 20m   # a retry continues on the SAME release
-  forge env wait prod --fail-fast --json | jq -r '.workloads[] | select(.phase=="degraded")'`,
-		Args: cobra.ExactArgs(1),
-		// The report IS the output; a cobra usage dump on a degraded
-		// rollout would bury the workload that failed under the flag
-		// list.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// `--timeout 0` means ONE READ, never block — the
-			// single-shot mode `forge env rollout` is built on
-			// (§3.5). UNSET keeps the 15m default.
-			//
-			// Those two have to be told apart, and a zero value
-			// cannot do it: Timeout's zero IS the unset value, so
-			// "0" and "not given" arrive identically. cobra's
-			// Changed is the only thing that knows the difference,
-			// and it is only available here, where the flag set
-			// is. Reading it wrong in either direction is bad in
-			// its own way — an unset flag becoming a single read
-			// would turn every plain `env wait` into a
-			// non-blocking poll, and an explicit 0 becoming 15m
-			// would make `env rollout` block for a quarter of an
-			// hour.
-			if f := cmd.Flags().Lookup("timeout"); f != nil && f.Changed && opts.Timeout == 0 {
-				opts.Once = true
-			}
-			return runEnvWaitForCmd(cmd.Context(), args[0], opts)
-		},
-	}
-
-	flags := cmd.Flags()
-	flags.StringVar(&opts.PromotionID, "promotion", "",
-		"Promotion id to wait on (default: the env's current promotion). A CI retry passes the id the promote returned")
-	flags.StringVar(&opts.Release, "release", "",
-		"Wait on the current promotion, but refuse unless it binds this release version (exit 6 if it moved on)")
-	cmd.MarkFlagsMutuallyExclusive("promotion", "release")
-	flags.DurationVar(&opts.Timeout, "timeout", envWaitDefaultTimeout,
-		"Whole wait budget. `--timeout 0` reads the phase ONCE and never blocks (still progressing = exit 5)")
-	flags.DurationVar(&opts.StableFor, "stable-for", 0,
-		"Extra hold AFTER the phase reaches succeeded (default 0: the server's own stability window already applies)")
-	flags.BoolVar(&opts.FailFast, "fail-fast", false,
-		"Exit 1 on the FIRST degraded observation instead of waiting out --timeout")
-	flags.BoolVar(&opts.IncludeUnpinned, "include-unpinned", false,
-		"Let a degraded UNPINNED workload (a database, a third-party image) fail the gate too")
-	flags.DurationVar(&opts.Interval, "interval", envWaitDefaultInterval, "Poll cadence")
-	flags.BoolVar(&opts.JSON, "json", false, "Emit one machine-readable document at the end (same exit codes)")
-	flags.BoolVar(&opts.WatchJSON, "watch-json", false, "Emit NDJSON, one line per phase change, as the rollout progresses")
-
-	return cmd
-}
-
 // runEnvWaitForCmd is what the command runs. A var so a test can assert the
 // OPTIONS the flag layer resolved — specifically that an explicit
 // `--timeout 0` became a single read while an unset one kept the budget,
@@ -220,9 +95,10 @@ type envWaitOptions struct {
 	// Once for the explicit `--timeout 0` spelling.
 	Timeout time.Duration
 	// Once reads the phase exactly ONCE and returns, never blocking. It
-	// is what `forge env wait --timeout 0` means, and the primitive
-	// `forge env rollout` is built on (§3.5): report where this promotion
-	// has got to, right now.
+	// is what `forge env status <env> --wait --timeout 0` means: report
+	// where this promotion has got to, right now. It is the snapshot the
+	// retired single-read rollout verb was, and absorbing it is why it
+	// needed no code of its own.
 	//
 	// A separate field rather than Timeout == 0, because Timeout's zero
 	// value already means "unset, use the default" — the two are
@@ -246,13 +122,6 @@ type envWaitOptions struct {
 	// phase change while waiting.
 	JSON      bool
 	WatchJSON bool
-
-	// AllowNonConverging admits an env whose control plane does not
-	// converge promotions. Set by `promote --deploy --wait`, which has
-	// just applied the pins from the client side, so the thing the fast
-	// refusal exists to prevent (waiting out a timeout for a converger
-	// that was never going to run) cannot happen.
-	AllowNonConverging bool
 
 	// Target is the seam: ONE function resolving everything this wait
 	// needs to reach a control plane. Nil resolves the env's declared one
@@ -392,7 +261,7 @@ func resolveDeclaredWaitTarget(ctx context.Context, env string) (waitTarget, err
 		// is just nothing here that can answer the question.
 		return waitTarget{}, undeterminedf(
 			"env %q declares no hosted control plane, so there is no server-computed rollout to wait on.\n"+
-				"  Prove it arrived instead with: forge env verify %s", env, env)
+				"  Prove it arrived instead with: forge env status %s", env, env)
 	}
 	ep, err := cloud.ResolveEndpoint(env, decl)
 	if err != nil {
@@ -534,11 +403,11 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 		// The fast refusal: nothing on this control plane will apply
 		// the promotion, so waiting can only ever time out, and a
 		// timeout would blame the release for a missing converger.
-		if !rollout.ConvergesPromotions && !opts.AllowNonConverging {
+		if !rollout.ConvergesPromotions {
 			report.WaitedMS = time.Since(start).Milliseconds()
 			return report, undeterminedf(
 				"env %q does not converge promotions on this control plane, so this promotion will not roll out on its own.\n"+
-					"  Run `forge env deploy %s` (or `forge env promote … --deploy`) to apply it, then wait.", env, env)
+					"  Run `forge env deploy %s <version>`, which applies it and waits.", env, env)
 		}
 
 		switch phase {
@@ -622,7 +491,7 @@ func readRollout(ctx context.Context, client cloudCaller, envID, promotionID str
 		case hostedErrorHasCode(err, cloud.CodeUnimplemented):
 			return wireRollout{}, undeterminedf(
 				"this control plane does not serve GetRollout, so it cannot report a rollout phase.\n"+
-					"  `forge env wait` needs a control plane with the hosted deploy primitives; use `forge env verify` meanwhile: %v", err)
+					"  `--wait` needs a control plane with the hosted deploy primitives; read the release state with plain `forge env status <env>` meanwhile: %v", err)
 		case hostedErrorHasCode(err, cloud.CodeNotFound):
 			return wireRollout{}, &exitCodeError{code: exitConflict, msg: fmt.Sprintf(
 				"no such promotion on this control plane%s: %v", parenthesize(promotionID), err)}
@@ -697,7 +566,7 @@ func applyRolloutToReport(report *envWaitReport, rollout wireRollout, includeUnp
 	report.Reason = rollout.Reason
 	report.StartedAt = rollout.StartedAt
 	report.FinishedAt = rollout.FinishedAt
-	report.StabilityWindowMS = rollout.StabilityWindowMS
+	report.StabilityWindowMS = rollout.StabilityWindowMS.Int64()
 	report.ConvergesPromotions = rollout.ConvergesPromotions
 	report.Workloads = waitWorkloadsJSON(rollout.Workloads)
 	report.Unpinned = waitWorkloadsJSON(rollout.Unpinned)
@@ -797,7 +666,7 @@ func rolloutDeadlineError(env string, report envWaitReport, rollout wireRollout,
 		// The distinction a pipeline acts on, stated in the message as
 		// well as the code: this release was never judged bad.
 		hint = "\n  The rollout was still progressing, not failing. Retry the wait" +
-			" (`forge env wait " + env + " --promotion " + waitPromotionID(report) + "`); do not re-promote."
+			" (`forge env status " + env + " --wait --promotion " + waitPromotionID(report) + "`); do not re-promote."
 	}
 	return &exitCodeError{code: code, msg: fmt.Sprintf(
 		"rollout of %s to %s was still %s after %s: %s%s",

@@ -21,7 +21,7 @@ const scaffoldPrettierVersion = "3.1.0"
 // renderedWorkflows renders every GitHub Actions template across the data
 // shapes the generator feeds them, so each conditional branch that emits a
 // scalar is exercised: frontends on and off, e2e under both runtimes, the
-// reconcile / cut-release opt-in, and a lone env.
+// reconcile opt-in, the hosted release pipeline, and a lone env.
 func renderedWorkflows(t *testing.T) map[string][]byte {
 	t.Helper()
 	fe := []FrontendCIConfig{{Name: "web", Path: "frontends/web"}}
@@ -51,7 +51,9 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		{"ci minimal", "ci.yml.tmpl", minimal},
 		{"proto-breaking", "proto-breaking.yml.tmpl", full},
 		{"build-images", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true}},
-		{"build-images cut-release", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, CutRelease: true}},
+		{"release", "release.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, nil)}},
+		{"release mixed", "release.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, map[string]bool{"prod": true})}},
+		{"forge-deploy action", "forge-deploy-action.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, nil)}},
 		{"deploy", "deploy.yml.tmpl", DeployWorkflowData{ProjectName: "demo", Environments: envs, HasFrontends: true, FrontendPath: "frontends/web", Concurrency: true}},
 		{"deploy lone env", "deploy.yml.tmpl", DeployWorkflowData{ProjectName: "demo", Environments: envs[1:]}},
 		{"e2e", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "docker-compose", HasFrontends: true, FrontendPath: "frontends/web"}},

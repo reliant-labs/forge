@@ -132,7 +132,7 @@ type HostedTarget struct {
 	// image was pushed (the release artifact's URI). It locates the bytes of
 	// a workload whose image THIS project builds, which is declared
 	// registry-less (`image = "api"`): the registry is declared once, on the
-	// env's forge.ControlPlane, and recorded here by `forge build <env> --push`.
+	// env's forge.ControlPlane, and recorded here by `forge env build <env> --push`.
 	Registries map[string]string
 }
 
@@ -165,7 +165,7 @@ type wireEnvironment struct {
 	// policy is not PINNED.
 	//
 	// It exists so a client can refuse FAST instead of waiting out a
-	// timeout. A `forge env promote --wait` against an environment that
+	// timeout. A `forge env deploy <env> vX` against an environment that
 	// converges nothing would poll for fifteen minutes and then report a
 	// failure whose cause is "nobody was ever going to apply this" —
 	// which looks exactly like a broken release. Reading this turns that
@@ -399,8 +399,8 @@ func checkImagePushBase(envName, base string, plan []hostedPlanItem) error {
 		if !strings.HasPrefix(repo, base+"/") {
 			errs = append(errs, fmt.Errorf("%s: image %s is not under this org's image push base %s, and the control plane "+
 				"refuses to publish it.\n"+
-				"  fix: push the image to %s/%s, re-cut the release (forge release cut <version> --env %s), "+
-				"then re-promote it (forge env promote <version> --to %s)",
+				"  fix: push the image to %s/%s, re-cut the release (forge env build %s --release <version> --no-build), "+
+				"then re-deploy it (forge env deploy %s <version>)",
 				item.Name, spec.Image, base, base, HostedArtifactName(spec.Image), envName, envName))
 		}
 	}
@@ -443,7 +443,7 @@ func HostedArtifactName(image string) string {
 //   - A registry-less spec image (`api`) is one THIS project builds. Its
 //     repository is where the release recorded pushing it: the artifact's
 //     registry + "/" + the artifact name — the same coordinates
-//     `forge build --push` wrote the digest under.
+//     `forge env build --push` wrote the digest under.
 //
 // A registry-less image whose release recorded no registry was built without
 // --push, so there are no addressable bytes to pin: refused, naming the fix.
@@ -458,7 +458,7 @@ func hostedWorkloadRepository(image, artifact string, group ServiceGroup) (strin
 	}
 	if registry == "" {
 		return "", fmt.Errorf("image %q names no registry, and release %s recorded none for artifact %q — it was built without a push.\n"+
-			"  fix: forge build %s --push, re-cut the release (forge release cut <version> --env %s), then promote it",
+			"  fix: forge env build %s --push, re-cut the release (forge env build %s --release <version> --no-build), then deploy it",
 			image, group.Hosted.Release, artifact, group.Env, group.Env)
 	}
 	return registry + "/" + artifact, nil
@@ -524,7 +524,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 	if group.Hosted.Release == "" && hostedGroupHasPinnedArtifact(group) {
 		return nil, fmt.Errorf("hosted env %q has no promoted release, so there is no digest to deploy.\n"+
 			"A hosted deploy ships only the digests a promotion froze — never a tag, never a local build.\n"+
-			"fix: forge release cut <version> --env %s && forge env promote <version> --to %s",
+			"fix: forge env build %s --release <version> --no-build && forge env deploy %s <version>",
 			group.Env, group.Env, group.Env)
 	}
 	var (
@@ -555,7 +555,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no artifact %q (the workload's image %s).\n"+
-					"  fix: re-cut the release so it covers this workload (forge release cut <version> --env %s), then promote it",
+					"  fix: re-cut the release so it covers this workload (forge env build %s --release <version> --no-build), then deploy it",
 					svc.Name, group.Hosted.Release, artifact, spec.Image, group.Env))
 				continue
 			}
@@ -586,17 +586,38 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			}
 			spec := *w.Static
 			artifact := hostedArtifactOf(svc.Name, w)
+			// The artifact key IS the repository the site was pushed to,
+			// so it must be an ADDRESS. A key naming no registry host
+			// cannot be pulled by anyone, and publishing it would hand the
+			// platform a digest it has no way to locate — the failure this
+			// whole field exists to prevent, arriving one layer later.
+			// buildHostedGroup always supplies one (the render requires a
+			// registry-bearing `image` on forge.OnHosted), so this is
+			// reachable only from a hand-built group.
+			if !hostedImageNamesRegistry(artifact) {
+				errs = append(errs, fmt.Errorf("%s: the release artifact key %q names no registry host, so the site release has no "+
+					"pullable address.\n"+
+					"  fix: declare the frontend's full image reference (image = \"ghcr.io/<owner>/%s\"); forge appends the "+
+					"platform's static.v1 layout and records the result as the release's repository",
+					svc.Name, artifact, svc.Name))
+				continue
+			}
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no static site artifact %q.\n"+
-					"  fix: build and push the site (forge build %s --push), re-cut the release "+
-					"(forge release cut <version> --env %s), then promote it",
+					"  fix: build and push the site (forge env build %s --push), re-cut the release "+
+					"(forge env build %s --release <version> --no-build), then deploy it",
 					svc.Name, group.Hosted.Release, artifact, group.Env, group.Env))
 				continue
 			}
-			// The release IS the digest. Nothing else in the spec says
-			// where bytes come from: the operator derives the repository
-			// from the org the CR belongs to, never from user input.
+			// A release is a REFERENCE plus a digest, and both are
+			// published. The artifact key IS the repository the site was
+			// pushed to (HostedStaticRepository of the frontend's declared
+			// image), so the spec carries the exact address the platform
+			// must pull — never a path it recomposes from a registry base
+			// and an org id, which is a second derivation free to disagree
+			// with where the bytes actually went.
+			spec.ReleaseRepository = artifact
 			spec.LiveDigest = digest
 			if err := spec.Validate(); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
@@ -1031,7 +1052,7 @@ func (p HostedProvider) publish(ctx context.Context, c HostedCaller, group Servi
 // succeed on bytes it was never asked about, a mid-rollout DIVERGED is not
 // read as drift, and an observation claiming the new digest while the new
 // ReplicaSet crash-loops is caught by the updated/desired replica pair. The
-// CLI's `forge env wait` reads the same RPC, so deploy and wait share ONE
+// CLI's `forge env status --wait` reads the same RPC, so deploy and wait share ONE
 // definition of done rather than two that drift (§3.2).
 //
 // Without one — an unbound env, or a control plane that does not serve
@@ -1042,7 +1063,7 @@ func (p HostedProvider) publish(ctx context.Context, c HostedCaller, group Servi
 // complete on a workload that is serving the right bytes without sitting out
 // the server's stability window (STABILIZING counts; see
 // rolloutPhaseServing). A deploy that waited for the window would be two
-// minutes slower every time, to answer a question `forge env wait` is the
+// minutes slower every time, to answer a question `forge env status --wait` is the
 // verb for.
 func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID, promotionID string, plan []hostedPlanItem, ids map[string]string) error {
 	policy := p.Rollout.Normalize()

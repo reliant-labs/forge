@@ -1,14 +1,8 @@
 package bundle
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -89,68 +83,18 @@ func ProjectShape(in ShapeInput) (release.Shape, error) {
 	return shape, nil
 }
 
-// projectObjects turns the manifest stream into one [release.ShapeObject] per
-// (document, cluster) pair.
-//
-// PER PAIR, not per document: an unattributed env-level resource is applied
-// to every cluster the env deploys to, and drift is a per-cluster fact — the
-// same Namespace can be correct on one cluster and missing from another. A
-// shape that named it once could not say which.
+// projectObjects turns the manifest stream into the shape's objects, through
+// the SAME parse [Build] packages from — see parse.go on why that matters.
 func projectObjects(in ShapeInput) ([]release.ShapeObject, error) {
-	stateful := map[string]bool{}
-	for _, name := range in.StatefulWorkloads {
-		stateful[name] = true
+	docs, err := parseStream(in.Manifests)
+	if err != nil {
+		return nil, fmt.Errorf("shape: %w", err)
 	}
-	normalize := imageNormalizer(in.Images)
-
-	var out []release.ShapeObject
-	for i, doc := range splitStream(in.Manifests) {
-		var body any
-		if err := yaml.Unmarshal([]byte(doc.yaml), &body); err != nil {
-			return nil, fmt.Errorf("shape: manifest document %d does not parse as YAML: %w", i+1, err)
-		}
-		if body == nil {
-			continue
-		}
-		body = redactSecretValues(body)
-		meta := readMeta(body)
-		if meta.kind == "" || meta.name == "" {
-			return nil, fmt.Errorf("shape: manifest document %d has no kind or metadata.name", i+1)
-		}
-		hash, err := hashDocument(body)
-		if err != nil {
-			return nil, fmt.Errorf("shape: hash %s %s: %w", meta.kind, meta.name, err)
-		}
-		configHash, err := hashDocument(normalize(body))
-		if err != nil {
-			return nil, fmt.Errorf("shape: config-hash %s %s: %w", meta.kind, meta.name, err)
-		}
-		obj := release.ShapeObject{
-			APIVersion: meta.apiVersion,
-			Kind:       meta.kind,
-			Namespace:  meta.namespace,
-			Name:       meta.name,
-			Workload:   meta.workload,
-			Hash:       hash,
-			ConfigHash: configHash,
-			Images:     imagesIn(doc.yaml, in.Images),
-			Stateful:   stateful[meta.workload],
-			Identity:   identityOf(meta.kind, body),
-		}
-		// A document attributed to no cluster is still part of the env's
-		// shape — a host-only env renders objects nobody applies, and a
-		// reader has to see them rather than have them silently dropped.
-		if len(doc.clusters) == 0 {
-			out = append(out, obj)
-			continue
-		}
-		for _, c := range doc.clusters {
-			perCluster := obj
-			perCluster.Cluster = c
-			out = append(out, perCluster)
-		}
+	objects, err := shapeObjects(docs, in.Images, in.StatefulWorkloads)
+	if err != nil {
+		return nil, fmt.Errorf("shape: %w", err)
 	}
-	return out, nil
+	return objects, nil
 }
 
 // ─── The stream ──────────────────────────────────────────────────────────────
@@ -213,183 +157,6 @@ func parseClusters(line string) []string {
 		}
 	}
 	return out
-}
-
-// ─── Hashing ────────────────────────────────────────────────────────────────
-
-// hashDocument is the per-object hash: sha256 over the document's CANONICAL
-// JSON.
-//
-// Canonical JSON rather than the rendered YAML, because the hash has to mean
-// "this object" and not "these bytes". encoding/json sorts an object's keys,
-// so a renderer that reorders a map, reflows a list or changes its
-// indentation produces the same hash — while any change to a VALUE changes
-// it. Comparing YAML text would make every cosmetic render change look like
-// drift, which is the signal this hash exists to carry.
-func hashDocument(body any) (string, error) {
-	canonical, err := json.Marshal(jsonable(body))
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(canonical)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
-// jsonable converts a YAML-decoded value into something encoding/json can
-// marshal deterministically. yaml.v3 decodes a mapping into
-// map[string]interface{} when the target is `any`, but a mapping with a
-// non-string key decodes into map[interface{}]interface{}, which json
-// refuses; such a key is stringified rather than failing the whole hash.
-func jsonable(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			out[k] = jsonable(val)
-		}
-		return out
-	case map[any]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			out[fmt.Sprint(k)] = jsonable(val)
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, val := range t {
-			out[i] = jsonable(val)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
-// ─── Secret redaction (F-13) ────────────────────────────────────────────────
-
-// secretValueFields are the two places a Kubernetes Secret holds a value.
-var secretValueFields = []string{"data", "stringData"}
-
-// redactSecretValues replaces every value under a Secret's `data` /
-// `stringData` with the hash of that value, in place of the value.
-//
-// It runs BEFORE the document is hashed, so no hash input ever contains a
-// secret — which matters because a shape is stored forever, shown to every
-// member of an org, and (once F2 lands) sealed inside a bundle that is
-// cached and shared. A leak there is permanent.
-//
-// The KEYS survive. "which keys does this Secret carry" is a shape fact an
-// operator needs; "what are they" is not, and the hash is what keeps
-// "a secret value changed" visible without carrying the value.
-func redactSecretValues(body any) any {
-	doc, ok := body.(map[string]any)
-	if !ok || doc["kind"] != "Secret" {
-		return body
-	}
-	for _, field := range secretValueFields {
-		values, ok := doc[field].(map[string]any)
-		if !ok {
-			continue
-		}
-		redacted := make(map[string]any, len(values))
-		for key, value := range values {
-			redacted[key] = redactValue(value)
-		}
-		doc[field] = redacted
-	}
-	return doc
-}
-
-func redactValue(value any) string {
-	sum := sha256.Sum256([]byte(fmt.Sprint(value)))
-	return release.RedactedSecretPrefix + "sha256:" + hex.EncodeToString(sum[:])
-}
-
-// ─── Images and the config hash ─────────────────────────────────────────────
-
-// artifactPlaceholder is what a release-bound image digest becomes in the
-// document a ConfigHash is taken over.
-const artifactPlaceholder = "forge.dev/artifact:"
-
-// imagesIn reports which release artifacts' pinned digests appear in a
-// document, as artifact key → digest.
-//
-// Searched as TEXT, over the whole document, because an image reference is
-// not confined to a container's `image` field: forge's own operators carry
-// the image they launch as an env-var value (control-plane's
-// workspace-controller pins the workspace base image in DAEMON_IMAGE), and a
-// chart's values can put one anywhere. A reader that only looked at pod specs
-// would report such an object as carrying no image while a deploy very much
-// changes which bytes it runs.
-func imagesIn(doc string, images map[string]string) map[string]string {
-	var found map[string]string
-	for _, artifact := range sortedKeys(images) {
-		digest := images[artifact]
-		if digest == "" || !strings.Contains(doc, digest) {
-			continue
-		}
-		if found == nil {
-			found = map[string]string{}
-		}
-		found[artifact] = digest
-	}
-	return found
-}
-
-// imageNormalizer returns a function that rewrites every release-bound image
-// digest in a document to its artifact key, which is what makes ConfigHash
-// the identity of the deploy's SHAPE rather than of its images.
-//
-// Two bundles with equal ConfigHashes differ, at most, in which release they
-// pin — so "promote a new release" and "the KCL moved" are told apart by one
-// comparison instead of by re-rendering and diffing YAML.
-//
-// Only the digest is replaced, not the whole reference: the repository is
-// part of the config (pushing an image somewhere else IS a change), and the
-// digest is the only part a promotion moves. Artifacts are applied in sorted
-// order so two artifacts that happen to share a digest normalize the same way
-// every time.
-func imageNormalizer(images map[string]string) func(any) any {
-	replacements := make([]string, 0, 2*len(images))
-	for _, artifact := range sortedKeys(images) {
-		if digest := images[artifact]; digest != "" {
-			replacements = append(replacements, digest, artifactPlaceholder+artifact)
-		}
-	}
-	if len(replacements) == 0 {
-		return func(body any) any { return body }
-	}
-	replacer := strings.NewReplacer(replacements...)
-	return func(body any) any { return replaceStrings(body, replacer.Replace) }
-}
-
-// replaceStrings rewrites every string in a decoded document, returning a
-// copy. A copy, because the caller still needs the original to hash.
-func replaceStrings(v any, rewrite func(string) string) any {
-	switch t := v.(type) {
-	case string:
-		return rewrite(t)
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			out[k] = replaceStrings(val, rewrite)
-		}
-		return out
-	case map[any]any:
-		out := make(map[any]any, len(t))
-		for k, val := range t {
-			out[k] = replaceStrings(val, rewrite)
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, val := range t {
-			out[i] = replaceStrings(val, rewrite)
-		}
-		return out
-	default:
-		return v
-	}
 }
 
 // ─── Identity ───────────────────────────────────────────────────────────────
@@ -516,13 +283,4 @@ func stringAt(m map[string]any, path ...string) string {
 	}
 	s, _ := m[path[0]].(string)
 	return s
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

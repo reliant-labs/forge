@@ -290,6 +290,11 @@ func storagePolicyForOpportunisticGC(t *testing.T) string {
 	if err := storage.Save(path, policy); err != nil {
 		t.Fatalf("save policy: %v", err)
 	}
+	// Registry retention is healthy unless a test says otherwise, so these
+	// tests see only the opportunistic gate they are about.
+	if err := storage.RecordFullGC(path, storage.GCResult{At: time.Now(), OK: true}); err != nil {
+		t.Fatalf("record full GC: %v", err)
+	}
 	t.Setenv("FORGE_STORAGE_POLICY", path)
 	return path
 }
@@ -303,8 +308,8 @@ func TestOpportunisticGC_SkipsWhenRecent(t *testing.T) {
 	storageScheduleInstalledFn = func() bool { return true }
 	t.Cleanup(func() { storageScheduleInstalledFn = origSchedule })
 
-	if err := storage.RecordGC(path, time.Now().Add(-time.Hour)); err != nil {
-		t.Fatalf("RecordGC: %v", err)
+	if err := storage.RecordAutoGC(path, storage.GCResult{At: time.Now().Add(-time.Hour), OK: true}); err != nil {
+		t.Fatalf("RecordAutoGC: %v", err)
 	}
 	var out bytes.Buffer
 	maybeOpportunisticGC(t.Context(), &out)
@@ -324,8 +329,8 @@ func TestOpportunisticGC_RunsWhenStale(t *testing.T) {
 	t.Cleanup(func() { storageScheduleInstalledFn = origSchedule })
 
 	stale := time.Now().Add(-48 * time.Hour)
-	if err := storage.RecordGC(path, stale); err != nil {
-		t.Fatalf("RecordGC: %v", err)
+	if err := storage.RecordAutoGC(path, storage.GCResult{At: stale, OK: true}); err != nil {
+		t.Fatalf("RecordAutoGC: %v", err)
 	}
 	var out bytes.Buffer
 	maybeOpportunisticGC(t.Context(), &out)
@@ -340,8 +345,8 @@ func TestOpportunisticGC_RunsWhenStale(t *testing.T) {
 	}
 	// The stamp advances whether or not docker was reachable in this
 	// environment; a pass that could not advance it would retry on every up.
-	if got := storage.LastGC(path); !got.After(stale) {
-		t.Fatalf("LastGC = %v; want it advanced past %v", got, stale)
+	if got, _ := storage.LastAutoGC(path); !got.At.After(stale) {
+		t.Fatalf("last attempt = %v; want it advanced past %v", got.At, stale)
 	}
 }
 
@@ -354,8 +359,8 @@ func TestOpportunisticGC_NoticesMissingSchedule(t *testing.T) {
 	origSchedule := storageScheduleInstalledFn
 	storageScheduleInstalledFn = func() bool { return false }
 	t.Cleanup(func() { storageScheduleInstalledFn = origSchedule })
-	if err := storage.RecordGC(path, time.Now()); err != nil {
-		t.Fatalf("RecordGC: %v", err)
+	if err := storage.RecordAutoGC(path, storage.GCResult{At: time.Now(), OK: true}); err != nil {
+		t.Fatalf("RecordAutoGC: %v", err)
 	}
 
 	var out bytes.Buffer
@@ -387,16 +392,16 @@ func TestOpportunisticGC_AdvancesStampOnFailure(t *testing.T) {
 	}
 
 	stale := time.Now().Add(-48 * time.Hour)
-	if err := storage.RecordGC(path, stale); err != nil {
-		t.Fatalf("RecordGC: %v", err)
+	if err := storage.RecordAutoGC(path, storage.GCResult{At: stale, OK: true}); err != nil {
+		t.Fatalf("RecordAutoGC: %v", err)
 	}
 	var out bytes.Buffer
 	maybeOpportunisticGC(t.Context(), &out)
 	if !bytes.Contains(out.Bytes(), []byte("cleanup pass incomplete")) {
 		t.Fatalf("a failing pass did not report:\n%s", out.String())
 	}
-	if got := storage.LastGC(path); !got.After(stale) {
-		t.Fatalf("LastGC = %v; a failed pass must still rate-limit the next attempt", got)
+	if got, _ := storage.LastAutoGC(path); !got.At.After(stale) {
+		t.Fatalf("last attempt = %v; a failed pass must still rate-limit the next attempt", got.At)
 	}
 	// Immediately after, the gate is closed again.
 	out.Reset()
@@ -421,8 +426,8 @@ func TestOpportunisticGC_SilentWithoutRegistries(t *testing.T) {
 	origSchedule := storageScheduleInstalledFn
 	storageScheduleInstalledFn = func() bool { return false }
 	t.Cleanup(func() { storageScheduleInstalledFn = origSchedule })
-	if err := storage.RecordGC(path, time.Now()); err != nil {
-		t.Fatalf("RecordGC: %v", err)
+	if err := storage.RecordAutoGC(path, storage.GCResult{At: time.Now(), OK: true}); err != nil {
+		t.Fatalf("RecordAutoGC: %v", err)
 	}
 
 	var out bytes.Buffer

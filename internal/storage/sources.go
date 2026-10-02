@@ -70,7 +70,7 @@ func (r Runner) Sources(apply bool) error {
 	policy := gitsource.EvictPolicy{MaxAge: maxAge, KeepPerSlug: r.Policy.SourceCacheKeep}
 	got, err := gitsource.Evict(root, time.Now(), policy, apply, r.Out)
 	if err != nil {
-		return fmt.Errorf("source cache: %w", err)
+		return err
 	}
 	if len(got.Removed) > 0 {
 		r.print("source cache: %d entries, %.1f GiB (%d retained)\n",

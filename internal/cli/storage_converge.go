@@ -100,16 +100,14 @@ func localClusterContexts(declared []ClusterEntity) []string {
 	return contexts
 }
 
-// opportunisticGCInterval is how stale the last maintenance pass must be before
-// `forge env up` runs the non-disruptive layers itself. One day matches the
-// installed schedule's period, and `forge storage gc --apply` stamps the same
-// marker, so a machine WITH the schedule installed never does redundant work
-// here.
+// opportunisticGCInterval is how long the opportunistic pass waits after its
+// own last ATTEMPT before trying again. One day matches the installed
+// schedule's period.
 const opportunisticGCInterval = 24 * time.Hour
 
 // nonDisruptiveGCFn is the pass itself, seamed so the GATING decisions (is it
-// stale, does the stamp advance, is the notice printed) are testable without a
-// Docker daemon — the real pass shells out to docker and takes tens of seconds.
+// stale, what is recorded, what is printed) are testable without a Docker
+// daemon — the real pass shells out to docker and takes tens of seconds.
 var nonDisruptiveGCFn = func(ctx context.Context, r storage.Runner) error {
 	return r.NonDisruptiveGC(ctx, true)
 }
@@ -120,9 +118,9 @@ const opportunisticGCBudget = 2 * time.Minute
 
 // maybeOpportunisticGC is the other half of zero-touch: on a machine where
 // nobody ran `forge storage install`, nothing ever reclaims anything. At the end
-// of a successful `forge env up`, if maintenance has not completed within
+// of a successful `forge env up`, if this pass has not been attempted within
 // opportunisticGCInterval, run the NON-DISRUPTIVE layers — rotated-log expiry,
-// builder-cache prune, temp sweep — and record the completion.
+// builder-cache prune, temp sweep, source eviction.
 //
 // Explicitly NOT run here: registry GC (it takes the registry offline, and `up`
 // is typically the command that just pushed to it) and node reconfiguration
@@ -130,18 +128,14 @@ const opportunisticGCBudget = 2 * time.Minute
 // commands. That restriction, not the time budget, is what makes this safe to
 // do behind the user's back.
 //
-// It runs SYNCHRONOUSLY under a 2-minute context, rather than in a detached
-// goroutine. `forge env up` has two exit shapes — it holds the foreground, or
-// it detaches and RETURNS — and in the detaching shape the process exits within
-// milliseconds of this call, so a background goroutine would be killed
-// mid-prune most times it mattered. A synchronous pass bounded at two minutes
-// is honest about the cost and actually completes; the alternative is work that
-// appears to be scheduled and silently is not.
+// Because it never runs the registry layer, this pass records only its own
+// ATTEMPT (last-auto-gc.json), which is its rate limit. It never writes the
+// full-GC record: an earlier version stamped one shared "last GC" marker here,
+// even on failure, and `forge doctor` read it as "GC scheduled, last ran 2h
+// ago" on a machine where registry retention had never once run.
 //
-// Also prints the one-line notice when the policy has registries and no
-// schedule is installed — the registry layer is the one that reclaims the most
-// and the one this pass will never run, so a machine with registered registries
-// genuinely needs the LaunchAgent.
+// It also prints at most ONE line about storage health: that no schedule is
+// installed, or else that the last full GC failed, is stale, or never ran.
 func maybeOpportunisticGC(ctx context.Context, out io.Writer) {
 	path, err := storage.DefaultPath()
 	if err != nil {
@@ -153,8 +147,13 @@ func maybeOpportunisticGC(ctx context.Context, out io.Writer) {
 	}
 	if len(policy.Registries) > 0 && !storageScheduleInstalledFn() {
 		fmt.Fprintf(out, "[up] storage: %d local registr(ies) registered but no maintenance schedule is installed — run `forge storage install` to reclaim registry versions daily.\n", len(policy.Registries))
+	} else {
+		last, ok := storage.LastFullGC(path)
+		if problem := storage.FullGCProblem(policy, last, ok, time.Now()); problem != "" {
+			fmt.Fprintf(out, "[up] storage: %s, so registry images are not being reclaimed — run `forge storage gc --dry-run` to see why.\n", problem)
+		}
 	}
-	if since := time.Since(storage.LastGC(path)); since < opportunisticGCInterval {
+	if attempt, ok := storage.LastAutoGC(path); ok && time.Since(attempt.At) < opportunisticGCInterval {
 		return
 	}
 	fmt.Fprintf(out, "[up] storage: last cleanup is over %s old — pruning build cache and rotated logs (registry cleanup is left to `forge storage gc`)...\n", opportunisticGCInterval)
@@ -162,18 +161,15 @@ func maybeOpportunisticGC(ctx context.Context, out io.Writer) {
 	ctx, cancel := context.WithTimeout(ctx, opportunisticGCBudget)
 	defer cancel()
 	// The lock is held for the pass, so this never races the scheduled
-	// daemon or a concurrent `forge storage gc`. A busy lock is not an error
-	// worth reporting: somebody else is already doing this work.
+	// daemon or a concurrent `forge storage gc`.
 	runErr := storage.WithLock(path, func() error {
 		gcErr := nonDisruptiveGCFn(ctx, maintenanceRunner(policy, path, out))
-		// The stamp advances even when the pass failed, which is deliberate: an
-		// ATTEMPT is what the interval rate-limits. A stamp written only on
-		// success would mean a machine where this reliably fails — no Docker
-		// daemon, a remote DOCKER_HOST, a builder that no longer exists —
-		// re-attempts and re-prints the failure on EVERY `forge env up`, which
-		// is noise the user cannot act on from here. The real reclaim path is
-		// the installed schedule, and the notice above is what points at it.
-		if err := storage.RecordGC(path, time.Now()); err != nil && gcErr == nil {
+		// The attempt is recorded whether or not it succeeded: the interval
+		// rate-limits ATTEMPTS, so a machine where this reliably fails (no
+		// Docker daemon, a vanished builder) does not retry and re-print on
+		// every `forge env up`. It is recorded as what it was, a failure, in
+		// the opportunistic pass's own record and nowhere else.
+		if err := storage.RecordAutoGC(path, storage.NewGCResult(time.Now(), gcErr)); err != nil && gcErr == nil {
 			return err
 		}
 		return gcErr

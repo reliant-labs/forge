@@ -206,28 +206,28 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 		r.Policy = next
 		if apply && r.PolicyPath != "" {
 			if err := Save(r.PolicyPath, next); err != nil {
-				failures = append(failures, fmt.Errorf("save pruned storage policy: %w", err))
+				failures = append(failures, layerErr("policy prune", err))
 			}
 		}
 	}
 	failures = append(failures, r.hostLayers(apply)...)
 	if err := r.Local(ctx); err != nil {
-		return errors.Join(append(failures, err)...)
+		return errors.Join(append(failures, layerErr("docker", err))...)
 	}
 	for _, builder := range r.Policy.Builders {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(append(failures, err)...)
+			return errors.Join(append(failures, layerErr("builder "+builder, err))...)
 		}
 		if err := r.builderGC(ctx, builder, apply); err != nil {
-			failures = append(failures, fmt.Errorf("builder %s: %w", builder, err))
+			failures = append(failures, layerErr("builder "+builder, err))
 		}
 	}
 	for _, registry := range r.Policy.Registries {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(append(failures, err)...)
+			return errors.Join(append(failures, layerErr("registry "+registry.Container, err))...)
 		}
 		if err := r.RegistryGC(ctx, registry, apply); err != nil {
-			failures = append(failures, fmt.Errorf("registry %s: %w", registry.Container, err))
+			failures = append(failures, layerErr("registry "+registry.Container, err))
 		}
 	}
 	r.print("persistent volumes, worktrees, running containers and application data are retained\n")
@@ -240,13 +240,13 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 func (r Runner) hostLayers(apply bool) []error {
 	var failures []error
 	if err := r.Logs(apply); err != nil {
-		failures = append(failures, fmt.Errorf("logs: %w", err))
+		failures = append(failures, layerErr("logs", err))
 	}
 	if err := r.TempSweep(apply); err != nil {
-		failures = append(failures, fmt.Errorf("temp sweep: %w", err))
+		failures = append(failures, layerErr("temp sweep", err))
 	}
 	if err := r.Sources(apply); err != nil {
-		failures = append(failures, err)
+		failures = append(failures, layerErr("source cache", err))
 	}
 	return failures
 }

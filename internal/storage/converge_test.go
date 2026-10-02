@@ -74,7 +74,8 @@ func TestMachinePolicyIsNeverWrittenUnderTest(t *testing.T) {
 	writers := map[string]func() error{
 		"Converge":        func() error { return Converge(path, completeFacts()) },
 		"Save":            func() error { return Save(path, DefaultPolicy()) },
-		"RecordGC":        func() error { return RecordGC(path, time.Now()) },
+		"RecordFullGC":    func() error { return RecordFullGC(path, NewGCResult(time.Now(), nil)) },
+		"RecordAutoGC":    func() error { return RecordAutoGC(path, NewGCResult(time.Now(), nil)) },
 		"RegisterProject": func() error { return RegisterProject(path, t.TempDir()) },
 		"WithLock":        func() error { return WithLock(path, func() error { return nil }) },
 	}
@@ -352,30 +353,27 @@ func TestConvergeKeepsPolicyValid(t *testing.T) {
 	}
 }
 
-// TestGCStampRoundTrip pins the opportunistic pass's gate: a missing stamp
-// reads as the zero time (so the first run is eligible), and a recorded one
-// reads back.
-func TestGCStampRoundTrip(t *testing.T) {
+// TestGCRecordsAreBesideThePolicyAndTolerateCorruption pins the opportunistic
+// pass's gate: a missing record reads as "never attempted" (so the first run
+// is eligible), and a corrupt one must never fail the caller's command.
+func TestGCRecordsAreBesideThePolicyAndTolerateCorruption(t *testing.T) {
 	path := convergePolicyPath(t)
-	if got := LastGC(path); !got.IsZero() {
-		t.Fatalf("LastGC with no stamp = %v; want zero (first run is eligible)", got)
+	if _, ok := LastAutoGC(path); ok {
+		t.Fatal("an attempt is recorded before any pass")
 	}
-	at := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
-	if err := RecordGC(path, at); err != nil {
-		t.Fatalf("RecordGC: %v", err)
+	for _, record := range []string{AutoGCRecordPath(path), FullGCRecordPath(path)} {
+		if filepath.Dir(record) != filepath.Dir(path) {
+			t.Fatalf("record %q is not beside the policy", record)
+		}
+		if err := os.WriteFile(record, []byte("{not json"), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if got := LastGC(path); !got.Equal(at) {
-		t.Fatalf("LastGC = %v; want %v", got, at)
+	if _, ok := LastAutoGC(path); ok {
+		t.Fatal("a corrupt attempt record was read as an attempt")
 	}
-	if GCStampPath(path) != filepath.Join(filepath.Dir(path), "last-gc.json") {
-		t.Fatalf("stamp path %q is not beside the policy", GCStampPath(path))
-	}
-	// A corrupt stamp must never fail the caller's command.
-	if err := os.WriteFile(GCStampPath(path), []byte("{not json"), 0600); err != nil {
-		t.Fatalf("corrupt stamp: %v", err)
-	}
-	if got := LastGC(path); !got.IsZero() {
-		t.Fatalf("LastGC on a corrupt stamp = %v; want zero", got)
+	if _, ok := LastFullGC(path); ok {
+		t.Fatal("a corrupt full-GC record was read as a pass")
 	}
 }
 

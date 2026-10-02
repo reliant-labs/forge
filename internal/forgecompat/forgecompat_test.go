@@ -15,7 +15,13 @@ func TestDecide(t *testing.T) {
 		want    Verdict
 	}{
 		{"pin equals binary", binary, "v0.1.16", "", false, OK},
-		{"pin newer than binary", binary, "v0.1.17", "", false, OK},
+		// A pin NEWER than the binary used to be OK on the grounds that
+		// older templates calling a newer library is the ordinary upgrade
+		// order. That holds for the Go half and not for KCL: forge's KCL
+		// schema module is embedded in the binary, so an older binary
+		// renders the project's KCL against an older schema and blames the
+		// project's own line number. See skew.go and BinaryBehindPin.
+		{"pin newer than binary", binary, "v0.1.17", "", false, BehindPin},
 		{"pin older than binary", binary, "v0.1.15", "", false, StalePin},
 		{"pin older by patch", binary, "v0.1.16-rc.1", "", false, StalePin},
 

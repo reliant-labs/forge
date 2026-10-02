@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -60,6 +61,39 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 	}
 	_, hostedGroups := splitHostedGroups(groups)
 	return true, runHostedDeploy(ctx, envName, entities, hostedGroups, opts)
+}
+
+// deployDeclarationFor is the declaration a hosted deploy carries on its
+// EnsureEnvironment: the env's rendered shape and that render's provenance.
+//
+// IT RIDES THE ENSURE THE DEPLOY ALREADY PERFORMS, rather than being a write
+// of its own. The hosted order (see internal/deploytarget/hosted.go) exists
+// so nothing is written until everything is known to be admissible, and a
+// deploy forge is about to refuse — unbound, off its shape band, an image
+// outside the registry the platform admits — must leave the control plane
+// untouched. A declaration sent ahead of the plan would be the one write that
+// escaped that rule, and three existing tests pin it.
+//
+// A --dry-run carries none: it previews a deploy, and a preview that wrote to
+// the control plane would be the one command that cannot be run safely to
+// find out what would happen.
+//
+// A projection failure is NOT fatal. The deploy's own render has already
+// succeeded by this point, so the only way this fails is the purity check —
+// and refusing to deploy a project whose KCL writes a file would break a
+// working deploy over a declaration it did not ask for. The warning says what
+// was not recorded and why.
+func deployDeclarationFor(ctx context.Context, envName string, opts deployOptions) (*release.Shape, *release.Provenance) {
+	if opts.dryRun {
+		return nil, nil
+	}
+	doc, err := projectEnvShapeFn(ctx, os.Stderr, envName)
+	if err != nil {
+		fmt.Printf("  Warning: env %s's declaration was not recorded (%v).\n"+
+			"           The deploy continues; `forge env shape %s` reproduces this.\n", envName, err, envName)
+		return nil, nil
+	}
+	return &doc.Shape, &doc.Provenance
 }
 
 // envAppliesLocally reports whether any part of the env is applied FROM THIS
@@ -183,10 +217,12 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		fmt.Println("Nothing to publish — the env binds nothing to the control plane.")
 		return nil
 	}
+	shape, declaredBy := deployDeclarationFor(ctx, envName, opts)
 	for i := range groups {
 		groups[i].DryRun = opts.dryRun
 		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Project: ref.Project, Release: release,
-			PromotionID: promotionID, Digests: digests, Registries: registries}
+			PromotionID: promotionID, Digests: digests, Registries: registries,
+			Shape: shape, DeclaredBy: declaredBy}
 	}
 
 	registry := &deploytarget.Registry{}

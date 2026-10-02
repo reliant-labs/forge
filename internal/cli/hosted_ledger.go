@@ -792,6 +792,23 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 	if run := runWireFields(r.Run); run != nil {
 		req["run"] = run
 	}
+	// The full provenance, beside the three legacy git fields rather than
+	// instead of them. gitCommit/Tag/Dirty are what a control plane that
+	// predates provenance reads, and dropping them would make a new forge
+	// record LESS than an old one against such a server; they are filled
+	// from the same provenance (Release.SetProvenance), so the two cannot
+	// disagree.
+	if r.Provenance != nil {
+		req["provenance"] = deploytarget.ProvenanceWireFields(*r.Provenance)
+	}
+	// The project the version belongs to. A release's identity on the
+	// control plane is (org, version), so without this a second project in
+	// the same org cutting "v1.0.0" collides with the first — and the
+	// collision is reported as "a release of that version already exists
+	// with different artifacts", which is true and useless.
+	if r.Project != "" {
+		req["project"] = r.Project
+	}
 	var resp struct {
 		Created bool `json:"created"`
 	}
@@ -816,7 +833,15 @@ func (s *hostedStore) Get(ctx context.Context, version string) (*release.Release
 	var resp struct {
 		Release wireRelease `json:"release"`
 	}
-	if err := s.client.Call(ctx, procGetRelease, map[string]any{"version": version}, &resp); err != nil {
+	// Scoped to this project, for the reason Cut sends it: a version is
+	// unique per ORG, so an unscoped read of "v1.0.0" in an org with two
+	// forge projects can return the other project's release — whose
+	// artifacts a deploy would then pin.
+	req := map[string]any{"version": version}
+	if s.project != "" {
+		req["project"] = s.project
+	}
+	if err := s.client.Call(ctx, procGetRelease, req, &resp); err != nil {
 		// not_found is the one code this read turns into an ANSWER
 		// rather than a failure: a version nobody cut is the file
 		// backend's "never cut", not an error.
@@ -839,7 +864,14 @@ func (s *hostedStore) List(ctx context.Context) ([]release.Release, error) {
 	var resp struct {
 		Releases []wireRelease `json:"releases"`
 	}
-	if err := s.client.Call(ctx, procListReleases, map[string]any{"limit": hostedReleaseListLimit}, &resp); err != nil {
+	// Scoped to this project: promote's direction logic orders this list to
+	// decide whether a promote moves forward or back, and another project's
+	// versions interleaved into it would make that ordering meaningless.
+	req := map[string]any{"limit": hostedReleaseListLimit}
+	if s.project != "" {
+		req["project"] = s.project
+	}
+	if err := s.client.Call(ctx, procListReleases, req, &resp); err != nil {
 		return nil, err
 	}
 	out := make([]release.Release, 0, len(resp.Releases))

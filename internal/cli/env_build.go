@@ -130,6 +130,26 @@ Examples:
 			}
 			opts.parallelSet = cmd.Flags().Changed("parallel")
 
+			// Record what the env DECLARES before producing anything.
+			//
+			// This is the whole point of the slice, and the ordering is
+			// the contract: `forge env build <env>` with no --release and
+			// even with --no-build still tells the control plane what the
+			// env is, because every other surface — the Live view, the
+			// set-secret form, a deploy plan — needs that and nothing
+			// else. A build that fails half-way has still answered "what
+			// kind, which secrets, which provider", which is the question
+			// that previously required a daemon and a checkout.
+			//
+			// --plan is excluded: it preflights a build and writes
+			// nothing, so recording a declaration from it would make a
+			// dry run the thing that changed the world.
+			if !opts.plan {
+				if err := recordEnvBuildDeclaration(cmd.Context(), opts.env); err != nil {
+					return err
+				}
+			}
+
 			if noBuild {
 				return runEnvBuildCutOnly(cmd.Context(), opts)
 			}
@@ -155,6 +175,30 @@ Examples:
 
 	return cmd
 }
+
+// recordEnvBuildDeclaration is `forge env build`'s declaration step: render
+// the env and, if it declares a control plane, ensure it there with its shape
+// and that render's provenance.
+//
+// A render failure here is NOT fatal, and that is a deliberate asymmetry with
+// the recording itself. An env with no deploy/kcl/<env>/ at all is a legitimate
+// `forge env build` target (a test project, an env named only on the command
+// line), and refusing to build it because nothing could be projected would
+// break a command that has always worked. A render that SUCCEEDS and then
+// fails to record is a different matter: that failure is returned, because
+// the build would otherwise report success while every Live surface reads a
+// stale declaration.
+func recordEnvBuildDeclaration(ctx context.Context, envName string) error {
+	entities, err := renderKCLForDeclaration(ctx, projectDirForKCL(), envName)
+	if err != nil || entities == nil {
+		return nil
+	}
+	return recordEnvDeclaration(ctx, envName, entities)
+}
+
+// renderKCLForDeclaration is RenderKCL, as a var so a test can state the
+// env's declaration without a project on disk.
+var renderKCLForDeclaration = RenderKCL
 
 // runEnvBuildCutOnly records a release over the build state an earlier push
 // left behind, with no build of its own. This is what `forge release cut`

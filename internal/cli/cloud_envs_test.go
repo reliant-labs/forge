@@ -61,12 +61,17 @@ func localEnvEntities(endpoint string) *KCLEntities {
 
 // fakeCPCaller is an in-process control plane speaking the proto3-JSON subset.
 type fakeCPCaller struct {
-	mu       sync.Mutex
-	calls    []fakeCPCall
-	envs     []map[string]any
-	secrets  []map[string]any
-	pullErr  error
-	ensureID string
+	mu      sync.Mutex
+	calls   []fakeCPCall
+	envs    []map[string]any
+	secrets []map[string]any
+	pullErr error
+	// ensureErr is what EnsureEnvironment returns instead of succeeding.
+	// It exists for F-15: a server that READ the shape and refused it must
+	// fail the command loudly rather than be treated like an old server
+	// that ignored the field.
+	ensureErr error
+	ensureID  string
 }
 
 type fakeCPCall struct {
@@ -86,7 +91,25 @@ func (f *fakeCPCaller) Call(_ context.Context, proc string, req, out any) error 
 	case "controlplane.v1.DeployService/ListEnvironments":
 		reply = map[string]any{"environments": f.envs}
 	case "controlplane.v1.DeployService/EnsureEnvironment":
+		if f.ensureErr != nil {
+			return f.ensureErr
+		}
 		reply = map[string]any{"environment": map[string]any{"id": f.ensureID, "name": "x"}, "created": true}
+	case "controlplane.v1.DeployService/CutRelease":
+		reply = map[string]any{"created": true}
+	case "controlplane.v1.DeployService/GetRelease":
+		// A release that names NO artifact is refused by releaseFromWire —
+		// correctly, since it could not be promoted — so the fake answers
+		// with a minimal valid one.
+		reply = map[string]any{"release": map[string]any{
+			"id": "rel-1", "version": "v1.0.0", "createdAt": "2026-01-01T00:00:00Z",
+			"artifacts": []any{map[string]any{
+				"name": "api", "kind": "oci", "mode": "shared",
+				"variant": "*", "digest": "sha256:" + strings.Repeat("c", 64),
+			}},
+		}}
+	case "controlplane.v1.DeployService/ListReleases":
+		reply = map[string]any{"releases": []any{}}
 	case "controlplane.v1.LocalSecretService/PullSecrets":
 		if f.pullErr != nil {
 			return f.pullErr

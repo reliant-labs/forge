@@ -3,18 +3,14 @@ package cli
 // The HOSTED half of F3's record seams (binding_store.go): the twin of
 // machineRecordStore.
 //
-// ONE OF THE THREE IS IMPLEMENTED HERE, AND THAT IS NOT AN OVERSIGHT.
-// `sessionReporter` is satisfied in full below. `bundleRecorder` and
-// `applyRecorder` are NOT, because their signatures cannot express what the
-// hosted RPCs require, and satisfying them anyway would mean a hosted path
-// that is silently weaker than the file one. The two gaps, and what to do
-// about them, are written out at the bottom of this file for F6a — the task
-// that owns the callers and can change the seams.
-//
-// The clients themselves are complete and consumer-shaped
-// (hostedBundleClient, hostedApplyClient, hostedSessionClient). Nothing is
-// missing from the wire layer; what is missing is a seam wide enough to drive
-// it through.
+// ALL THREE ARE IMPLEMENTED HERE. F4 left two of them unsatisfied on purpose,
+// because the seams as declared could not express what the hosted RPCs
+// require and satisfying them anyway would have produced a hosted path
+// silently weaker than the file one. Both seams are now wide enough:
+// bundleRecorder carries the bundle's own BYTES (the server records what it
+// verifies), and applyRecorder.BeginApply carries the appendGuard (the
+// compare-and-set the server checks under the env row lock). See
+// binding_store.go for why each is shaped that way.
 
 import (
 	"context"
@@ -87,96 +83,97 @@ func (s hostedRecordStore) Bundle(ctx context.Context, id string) (*release.Bund
 	return hostedBundleClient{client: s.client}.GetBundleByID(ctx, "", id)
 }
 
+// RecordBundle satisfies the write half of bundleRecorder: it sends the
+// BYTES and lets the server derive the record from them.
+//
+// The BundleRecord parameter supplies only what the wire is keyed on and what
+// the returned record is labelled with — the env NAME. Everything a reader
+// downstream trusts (shape, provenance, config digest, release) comes back
+// from the server's own strict decode of the verified config blob, never from
+// the description this client could have written. That is the point of the
+// seam carrying both: the caller states where it pushed and hands over the
+// bytes, and has no way to state a shape at all.
+func (s hostedRecordStore) RecordBundle(ctx context.Context, b release.BundleRecord, blobs bundleBlobs) (release.BundleRecord, bool, error) {
+	envID, err := s.EnsureEnvironmentID(ctx, b.Env, hostedKindForRecord(b.Shape.Kind))
+	if err != nil {
+		return release.BundleRecord{}, false, err
+	}
+	return hostedBundleClient{client: s.client}.RecordBundle(
+		ctx, b.Env, envID, blobs.Repository, blobs.Manifest, blobs.Config, b.Run)
+}
+
+// BeginApply satisfies applyRecorder, forwarding the guard so the server
+// checks the compare-and-set under the env row lock.
+//
+// Nothing is pre-checked with a read here. A client-side read of the env's
+// current promotion, followed by a write asserting what it saw, is exactly
+// the race the server's lock exists to close.
+func (s hostedRecordStore) BeginApply(ctx context.Context, a release.Apply, guard appendGuard) (release.Apply, error) {
+	envID, err := s.envID(ctx, a.Env)
+	if err != nil {
+		return release.Apply{}, err
+	}
+	return hostedApplyClient{client: s.client}.BeginApply(ctx, envID, a, guard)
+}
+
+// FinishApply reports the outcome. The `created` flag the client returns is
+// dropped: to a CALLER, "this call recorded the outcome" and "the same
+// outcome was already recorded" are the same success — an apply ended once,
+// and a retry after a lost response must not read as a failure (F-2). A
+// DIFFERENT outcome for one apply is still an error, from the server.
+func (s hostedRecordStore) FinishApply(ctx context.Context, env string, o release.ApplyOutcome) error {
+	_, _, err := hostedApplyClient{client: s.client}.FinishApply(ctx, env, o)
+	return err
+}
+
+// hostedKindForRecord maps a shape's env kind to the hosted kind an ensure
+// carries — the inverse of hostedControlPlaneKindName.
+//
+// A bundle is recorded for an env the project's KCL declares, so whichever
+// verb reaches the control plane first creates it. The kind is IMMUTABLE
+// server-side, so a kind that disagrees with the existing row is refused
+// there, by the party that holds the row, rather than reconciled here.
+//
+// An unrecognised kind maps to the empty kind rather than to a plausible
+// default. A guess would be a client quietly choosing an env's kind, and the
+// one it would most likely guess — persistent — is the kind whose secrets are
+// write-only and whose promotions the converger applies.
+func hostedKindForRecord(kind release.EnvKind) deploytarget.HostedEnvKind {
+	switch kind {
+	case release.EnvLocal:
+		return deploytarget.HostedEnvLocal
+	case release.EnvPersistent:
+		return deploytarget.HostedEnvPersistent
+	case release.EnvSelfManaged:
+		return deploytarget.HostedEnvSelfManaged
+	default:
+		return ""
+	}
+}
+
 // envID resolves an env name to the control plane's id.
 func (s hostedRecordStore) envID(ctx context.Context, env string) (string, error) {
 	return s.resolver.ResolveEnvironmentID(ctx, env)
 }
 
-// Compile-time proof of the one seam this backend satisfies in full. The
-// assertion is what keeps a rename from silently dropping the hosted store
-// out of a capability its consumers type-assert for.
-var _ sessionReporter = hostedRecordStore{}
+// Compile-time proof that the hosted backend satisfies every seam it claims,
+// exactly as binding_store.go asserts for the machine backend. The assertions
+// are what keep a method rename from silently dropping a store out of a
+// capability its consumers type-assert for.
+var (
+	_ sessionReporter = hostedRecordStore{}
+	_ bundleRecorder  = hostedRecordStore{}
+	_ applyRecorder   = hostedRecordStore{}
+)
 
-// ─── THE TWO SEAMS THIS BACKEND DOES NOT SATISFY, AND WHY ────────────────────
+// Applies is the configured apply client, for the paths that need more of it
+// than the applyRecorder seam exposes — ListApplies for a reader, and
+// FinishApplyWithObserved for the drift objects a self-managed deploy reads
+// back (F-17), which is optional and so deliberately not on the seam.
 //
-// Both gaps are the same shape: the seam's parameter list carries less than
-// the hosted RPC requires, and the missing part is a SAFETY property rather
-// than a convenience. Implementing the method anyway would compile, and would
-// produce a hosted path quietly weaker than the file path it is supposed to
-// mirror. Neither is a wire-layer problem — hostedBundleClient and
-// hostedApplyClient are complete — so the fix belongs with whoever owns the
-// callers and the seams, which is F6a.
-//
-// 1. bundleRecorder.RecordBundle(ctx, b release.BundleRecord)
-//
-//    RecordBundle on a control plane takes the bundle's OWN BYTES — the OCI
-//    manifest and the config blob — plus the repository they were pushed to.
-//    The server checks digest = sha256(manifest), checks that the manifest's
-//    config descriptor names sha256(config), decodes the config strictly as a
-//    release.BundleDoc, and takes the shape, provenance, config digest and
-//    release FROM THE VERIFIED DOCUMENT (doc §6.3).
-//
-//    A release.BundleRecord carries the DESCRIPTION of all of that and none
-//    of the bytes. So the only way to satisfy this signature would be to send
-//    the description — which is exactly what §6.3 forbids, because a client
-//    that can state a shape can record one that disagrees with the bytes it
-//    pushed, and every reader downstream then trusts the description over the
-//    artifact. The file ledger has the same asymmetry and gets away with it:
-//    its blobs are in a local OCI layout it also owns, so there is no second
-//    party to lie to.
-//
-//    RECOMMENDATION for F6a: widen the seam to carry the bytes, e.g.
-//
-//        RecordBundle(ctx context.Context, b release.BundleRecord, blobs release.BundleBlobs) (…)
-//
-//    where BundleBlobs is {Repository string; Manifest, Config []byte}. The
-//    machine backend ignores the blobs it already holds; the hosted backend
-//    sends them and ignores the description. That keeps ONE seam, and keeps
-//    "the bytes are the contract" true on the side where it matters.
-//    hostedBundleClient.RecordBundle already takes exactly that: (env,
-//    environmentID, bundleBlobs, run).
-//
-// 2. applyRecorder.BeginApply(ctx, a release.Apply, supersede bool)
-//
-//    BeginApply on a control plane asserts a COMPARE-AND-SET — the env's
-//    current promotion must be the one the plan was read against, or the env
-//    must be unbound — and the server checks it under the env row lock before
-//    anything moves (doc §6.3, F-5, F-19). release.Apply has no field for
-//    that expectation, and `supersede` is the in-flight override, not the CAS.
-//
-//    Satisfying the signature would mean sending no expectation at all, and
-//    connect-go discards what is not sent: the apply would reach the server
-//    asserting NOTHING. The anti-stomp guard would not fire, and the failure
-//    is invisible — no error, no log line, just a deploy that overwrites
-//    whatever landed under it. That is the precise stomp promote_cas.go
-//    exists to close, reopened on the apply path.
-//
-//    A client-side read of Current(env) to fill the expectation is NOT a fix:
-//    read-then-write from a client is the race the server's row lock exists
-//    to close, and hosted_ledger.go's header says so.
-//
-//    RECOMMENDATION for F6a: carry the guard, which both backends already
-//    speak — appendGuard is the promote path's own type:
-//
-//        BeginApply(ctx context.Context, a release.Apply, guard appendGuard) (release.Apply, error)
-//
-//    appendGuard already holds SupersedeInFlight, so the bool folds into it
-//    and the parameter count does not grow. The machine backend applies the
-//    same rule locally (admitPromotion does this for promotions); the hosted
-//    backend forwards it. hostedApplyClient.BeginApply already takes exactly
-//    that: (environmentID, release.Apply, appendGuard).
-//
-// Until those land, a caller drives the hosted side through
-// hostedBundleClient and hostedApplyClient directly. Both are exported within
-// the package and fully tested against control-plane's own protojson.
-
-// hostedApplyRecorder is the apply client bound to a project, for the caller
-// that drives it directly until the seam above is widened.
-//
-// It exists so F6a has ONE place to get a configured apply client — the same
-// service hostedRecordStoreFor provides for sessions — rather than
-// assembling a hostedApplyClient and an env resolver at each call site and
-// risking two different opinions about which env.
+// ONE place to get a configured client, rather than assembling a
+// hostedApplyClient and an env resolver at each call site and risking two
+// different opinions about which env.
 func (s hostedRecordStore) Applies() hostedApplyClient {
 	return hostedApplyClient{client: s.client}
 }

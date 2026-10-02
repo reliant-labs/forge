@@ -111,11 +111,46 @@ type releaseLedger interface {
 // caller type-asserts — the pattern ledgerFreshnessChecker and
 // bindingHistoryReader already use.
 
+// bundleBlobs is a bundle's OWN BYTES, plus where they were pushed.
+//
+// Declared HERE, at the consumer, rather than in pkg/release beside
+// BundleRecord — the boundary rule this package follows for bindingStore and
+// clusterImageLister. A BundleRecord is a DOMAIN record, readable from either
+// store and shown to a user; these are transport bytes, meaningful only to
+// the two backends and the one command that produces them. Putting them on
+// the domain type would also invite a reader to expect a record read back
+// from a ledger to carry them, which it never does.
+type bundleBlobs struct {
+	// Repository is where the bytes were pushed — the reference the
+	// control plane checks against the registry subtree it admits, or an
+	// OCI-layout reference for the machine ledger.
+	Repository string
+	// Manifest is the OCI image manifest, the bytes the digest is over.
+	// Config is the bundle document blob the manifest's config descriptor
+	// names.
+	Manifest, Config []byte
+}
+
 // bundleRecorder records a built bundle and reads one back. A bundle IS its
 // content, so recording is idempotent on (env, digest) and a retry after a
 // failed record is free.
+//
+// IT CARRIES THE BYTES, NOT A DESCRIPTION OF THEM, and that asymmetry is the
+// whole contract on the hosted side. RecordBundle on a control plane checks
+// digest = sha256(manifest), checks the manifest's config descriptor names
+// sha256(config), then decodes that blob strictly and takes the shape,
+// provenance, config digest and release FROM THE VERIFIED DOCUMENT (doc
+// §6.3). A seam that passed only the BundleRecord could not express that: a
+// client able to STATE a shape can state one that disagrees with the bytes it
+// pushed, and every reader downstream would then trust the description over
+// the artifact.
+//
+// So both are passed, and each backend uses the half it can verify. The
+// machine backend indexes the record and ignores the blobs, which it already
+// holds in an OCI layout it owns — there is no second party for it to lie to.
+// The hosted backend sends the blobs and lets the server derive the record.
 type bundleRecorder interface {
-	RecordBundle(ctx context.Context, b release.BundleRecord) (record release.BundleRecord, created bool, err error)
+	RecordBundle(ctx context.Context, b release.BundleRecord, blobs bundleBlobs) (record release.BundleRecord, created bool, err error)
 	Bundle(ctx context.Context, id string) (*release.BundleRecord, error)
 }
 
@@ -126,8 +161,23 @@ type bundleRecorder interface {
 // its deadline it reads as abandoned, and "we could not look" is its own
 // answer. A single Record("it worked") call after the fact could not express
 // that, and would have nothing to say when the applier crashed mid-apply.
+//
+// BeginApply TAKES THE GUARD, not a supersede bool. An apply asserts the same
+// compare-and-set a promote does — the env's current promotion must be the
+// one the plan was read against, or the env must be unbound — and the server
+// checks it under the env row lock before anything moves (doc §6.3, F-5,
+// F-19). A bool could carry only the in-flight override, so the CAS would
+// reach the server asserting NOTHING: connect-go discards what is not sent,
+// the anti-stomp guard would not fire, and the failure would be invisible —
+// no error, no log line, just a deploy that overwrote whatever landed under
+// it. appendGuard already holds SupersedeInFlight, so the bool folds into it
+// and the parameter count does not grow.
+//
+// Filling the expectation from a client-side read of Current(env) is NOT the
+// alternative: read-then-write from a client is precisely the race the
+// server's row lock exists to close.
 type applyRecorder interface {
-	BeginApply(ctx context.Context, a release.Apply, supersede bool) (release.Apply, error)
+	BeginApply(ctx context.Context, a release.Apply, guard appendGuard) (release.Apply, error)
 	FinishApply(ctx context.Context, env string, o release.ApplyOutcome) error
 }
 
@@ -520,7 +570,20 @@ func recordStoreFor(projectDir string) (machineRecordStore, error) {
 	return machineRecordStore{store: store}, nil
 }
 
-func (s machineRecordStore) RecordBundle(_ context.Context, b release.BundleRecord) (release.BundleRecord, bool, error) {
+// RecordBundle indexes the record and IGNORES the blobs.
+//
+// That is not a shortcut, and it is the one place the two backends
+// legitimately differ. The machine ledger's blobs live in an OCI layout it
+// owns (Store.OCIDir), written by the same command, in the same pass, before
+// this call — so there is no second party that could be told a shape
+// disagreeing with the bytes. The hosted backend has one, which is why it
+// sends the blobs and lets the server derive the record from them instead.
+//
+// The blobs are still a PARAMETER here rather than a hosted-only method,
+// because the caller must not have to know which backend it holds. A
+// command that had to branch would eventually record a bundle on one store
+// and not the other.
+func (s machineRecordStore) RecordBundle(_ context.Context, b release.BundleRecord, _ bundleBlobs) (release.BundleRecord, bool, error) {
 	return s.store.RecordBundle(b)
 }
 
@@ -528,8 +591,72 @@ func (s machineRecordStore) Bundle(_ context.Context, id string) (*release.Bundl
 	return s.store.Bundle(id)
 }
 
-func (s machineRecordStore) BeginApply(_ context.Context, a release.Apply, supersede bool) (release.Apply, error) {
-	return s.store.BeginApply(a, supersede)
+// BeginApply applies the same compare-and-set rule the control plane applies
+// under its env row lock.
+//
+// A refused guard is a *promoteRefusedError, the type a refused promote
+// produces, so the exit code and the --json refusal object have one source
+// whichever write was declined and whichever backend declined it.
+//
+// NOT YET ONE CRITICAL SECTION, and that is a named gap rather than an
+// oversight. internal/ledgerfile takes its lock per CALL: reading the
+// promotion history and appending the apply are two separate acquisitions, so
+// a concurrent promote between them would be admitted — the very
+// read-then-write race the lock exists to close, and which
+// machineBindingStore.Append avoids by handing ledgerfile an Admit callback
+// that runs INSIDE its critical section.
+//
+// The fix is the same shape: ledgerfile.Store.BeginApply needs to accept an
+// admit callback the way AppendPromotion already does, so this guard is
+// evaluated against the history on disk at the instant of the write. That is
+// a change to internal/ledgerfile, which this task consumes rather than owns,
+// so it is raised with the orchestrator rather than worked around here. The
+// window is small and local-only (the hosted backend forwards the guard and
+// the server checks it under a real row lock), but it is a window, and
+// pretending otherwise in a comment would be worse than saying so.
+func (s machineRecordStore) BeginApply(_ context.Context, a release.Apply, guard appendGuard) (release.Apply, error) {
+	if guard.expects() {
+		history, err := s.store.Promotions(a.Env)
+		if err != nil {
+			return release.Apply{}, err
+		}
+		if err := admitApplyGuard(a.Env, history, guard); err != nil {
+			return release.Apply{}, err
+		}
+	}
+	return s.store.BeginApply(a, guard.SupersedeInFlight)
+}
+
+// admitApplyGuard is the CAS an apply asserts, over the promotion history.
+//
+// It is admitPromotion's guard half without release.Decide: an apply is never
+// an idempotent no-op the way a re-promote of the current state is — it moves
+// bytes — so there is nothing to collapse, only an expectation to check.
+func admitApplyGuard(env string, history []release.Promotion, guard appendGuard) error {
+	var current *release.Promotion
+	if n := len(history); n > 0 {
+		current = &history[n-1]
+	}
+	switch {
+	case guard.ExpectUnbound && current == nil:
+		return nil
+	case !guard.ExpectUnbound && current != nil && current.ID == guard.ExpectedCurrentID:
+		return nil
+	}
+	refusal := &promoteRefusedError{
+		Reason:                     reasonPromotionConflict,
+		ExpectedCurrentPromotionID: guard.ExpectedCurrentID,
+		ExpectedUnbound:            guard.ExpectUnbound,
+	}
+	if current != nil {
+		cur := *current
+		refusal.ActualCurrent = &cur
+		refusal.Detail = fmt.Sprintf("%s is on %s (promotion %s), not on the %s this apply expected",
+			env, cur.Release, cur.ID, guard.describe())
+	} else {
+		refusal.Detail = fmt.Sprintf("%s has no promotion, not the %s this apply expected", env, guard.describe())
+	}
+	return refusal
 }
 
 func (s machineRecordStore) FinishApply(_ context.Context, env string, o release.ApplyOutcome) error {

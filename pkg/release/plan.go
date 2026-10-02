@@ -180,9 +180,13 @@ type PlanInput struct {
 	// observable for this env (an unknown finding), else the objects found
 	// diverged from the applied bundle (possibly none).
 	Drift *DriftObservation
-	// SecretPresence maps a secret name to whether its value is set; nil
-	// when presence cannot be read (an external provider). A name absent
-	// from a non-nil map is not set.
+	// SecretPresence maps a secret name to whether its value is set, for
+	// the secrets whose presence the caller COULD read (a managed store).
+	// A name the map does not contain is UNVERIFIABLE — an external
+	// provider, or a store that could not be read — never "missing": one env
+	// commonly mixes providers, and reading every external secret as
+	// missing would make the warning meaningless. nil means nothing could
+	// be read.
 	SecretPresence map[string]bool
 }
 
@@ -270,10 +274,11 @@ func BuildPlan(in PlanInput) (Plan, error) {
 	}
 
 	for _, s := range diff.SecretsAdded {
+		set, known := in.SecretPresence[s.Name]
 		switch {
-		case in.SecretPresence == nil:
+		case !known:
 			add(FindingSecretNeeded, ClassWarn, SectionSecrets, s.Name, "newly declared; presence not verifiable for provider "+s.Provider)
-		case in.SecretPresence[s.Name]:
+		case set:
 			add(FindingSecretNeeded, ClassInfo, SectionSecrets, s.Name, "newly declared; set")
 		default:
 			add(FindingSecretNeeded, ClassWarn, SectionSecrets, s.Name, "newly declared; MISSING — set it before the workload starts")

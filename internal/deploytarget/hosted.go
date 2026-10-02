@@ -275,6 +275,12 @@ const (
 	// (`forge env up`); the control plane is only its secret store, and its
 	// secrets are pullable.
 	HostedEnvLocal HostedEnvKind = "DEPLOY_ENVIRONMENT_KIND_LOCAL"
+	// HostedEnvSelfManaged is an env whose ledger the control plane keeps
+	// while forge applies it to a cluster the author operates: nothing is
+	// hosted, something runs on a cluster. The platform places nothing, and
+	// its secrets are write-only — a cluster env's secrets must never be
+	// pullable the way a LOCAL env's are.
+	HostedEnvSelfManaged HostedEnvKind = "DEPLOY_ENVIRONMENT_KIND_SELF_MANAGED"
 )
 
 // HostedEnvRef addresses one control-plane environment: (project, name) in

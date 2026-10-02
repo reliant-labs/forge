@@ -1354,14 +1354,14 @@ func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, op
 	if !projectDockerSucceeded || projectTag == "" {
 		return
 	}
-	commit, gitTag, dirty := gitBuildProvenance(ctx)
+	prov := captureBuildProvenance(ctx, projectDirForKCL())
 	state := BuildState{
 		Image:     opts.pushPlan.repositoryFor(cfg.Name),
 		Tag:       projectTag,
 		Pushed:    opts.pushPlan.push,
-		Commit:    commit,
-		GitTag:    gitTag,
-		Dirty:     dirty,
+		Commit:    prov.Commit,
+		GitTag:    prov.Tag,
+		Dirty:     prov.Dirty,
 		PushedAt:  nowRFC3339(),
 		Digest:    projectDigest,
 		Platforms: projectPlatforms,
@@ -1537,7 +1537,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		return releaseCutOutcome{}, err
 	}
 
-	commit, gitTag, dirty := gitBuildProvenance(ctx)
+	prov := captureBuildProvenance(ctx, projectDir)
 	// The CI run that cut this release: the join key that ties it to the
 	// promotions and gates from the same run (§3.A). Defaulted from the
 	// CI environment, so every step of one pipeline carries the same
@@ -1548,11 +1548,12 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	}
 	rel := release.Release{
 		Version:   version,
-		Git:       release.Git{Commit: commit, Tag: gitTag, Dirty: dirty},
+		Project:   hostedProjectName(),
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
 		Artifacts: artifacts,
 		Run:       run,
 	}
+	rel.SetProvenance(prov)
 	ledger, err := ledgerFor(ctx, projectDir, env)
 	if err != nil {
 		return releaseCutOutcome{}, err

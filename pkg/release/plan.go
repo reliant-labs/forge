@@ -1,0 +1,468 @@
+package release
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+)
+
+// The deploy PLAN (owner decision O-13).
+//
+// With a promotion converger on, writing a promotion IS the deploy: nothing
+// stands between the write and the rollout. So the review has to happen
+// BEFORE the record, and the approval has to be bound to exactly what was
+// reviewed. A Plan is that review: the bundle about to be deployed, compared
+// against what is live, classified so the dangerous changes cannot hide among
+// the ordinary ones, and digested so an approval names one plan and no other.
+//
+// # One function, both sides
+//
+// [BuildPlan] is the ONLY place a plan is computed. A hosted backend
+// recomputes it under the environment's row lock when the approval arrives
+// and refuses unless the digests match; a file ledger does the same under its
+// lock. Because both call this function, a digest mismatch means the world
+// moved between plan and approve — never that two implementations disagreed
+// about the rules. The table tests over the stop-class rules are therefore
+// the acceptance tests for every backend.
+//
+// # What the digest covers
+//
+// The digest is sha256 over the canonical JSON of the plan's MEANING: the
+// environment and bundle, the live basis it was computed against, whether the
+// config was identical, and each finding's code, class, section and subject.
+// It excludes the digest itself, ComputedAt (two computations of one plan
+// happen at two times), and each finding's Detail — prose, which may be worded
+// differently by two forge versions without the plan meaning anything
+// different. Everything Detail says is derived from fields the digest covers
+// (the bundle pins its images; the basis names what is live).
+
+// FindingClass is how much a finding gates a deploy. Closed.
+type FindingClass string
+
+const (
+	// ClassInfo: a change the operator should see. Approval covers it.
+	ClassInfo FindingClass = "info"
+	// ClassWarn: something to read before approving — a missing secret,
+	// drift the deploy will overwrite, a section that could not be
+	// computed. Approval covers it.
+	ClassWarn FindingClass = "warn"
+	// ClassStop: a change a general approval must NOT cover — a stateful
+	// deletion, a load balancer's identity changing. It needs its own
+	// acknowledgement BY CODE, even with --yes, because --yes is the flag
+	// that ends up hard-coded in CI and would otherwise pre-approve every
+	// future destructive change.
+	ClassStop FindingClass = "stop"
+)
+
+// FindingClasses is the closed set, least to most severe.
+var FindingClasses = []FindingClass{ClassInfo, ClassWarn, ClassStop}
+
+// Valid reports whether c is one of [FindingClasses].
+func (c FindingClass) Valid() bool {
+	for _, k := range FindingClasses {
+		if c == k {
+			return true
+		}
+	}
+	return false
+}
+
+// UnmarshalJSON refuses an unknown class.
+func (c *FindingClass) UnmarshalJSON(data []byte) error {
+	names := make([]string, len(FindingClasses))
+	for i, k := range FindingClasses {
+		names[i] = string(k)
+	}
+	return decodeClosed(data, "plan finding class", func(s string) bool { return FindingClass(s).Valid() }, names, (*string)(c))
+}
+
+// Finding codes. Closed: a consumer switches on them, and a stop-class code
+// is what an operator names to acknowledge it.
+const (
+	FindingObjectAdded      = "object_added"
+	FindingObjectChanged    = "object_changed"
+	FindingObjectRemoved    = "object_removed"
+	FindingImageChanged     = "image_changed"
+	FindingConfigChanged    = "config_changed"
+	FindingSecretNeeded     = "secret_needed"
+	FindingStatefulDeletion = "stateful_deletion"
+	FindingLBIdentityChange = "lb_identity_change"
+	FindingDrift            = "drift"
+	// FindingUnknown: a section could not be computed (no recorded live
+	// config, drift not observable, secret presence not readable). It is a
+	// WARN, never silence: a blank section must not read as "nothing
+	// changes" (F-20).
+	FindingUnknown = "unknown"
+)
+
+// FindingCodes is the closed set of codes.
+var FindingCodes = []string{
+	FindingObjectAdded, FindingObjectChanged, FindingObjectRemoved,
+	FindingImageChanged, FindingConfigChanged, FindingSecretNeeded,
+	FindingStatefulDeletion, FindingLBIdentityChange, FindingDrift, FindingUnknown,
+}
+
+// Plan sections, in display order (§8.6).
+const (
+	SectionObjects  = "objects"
+	SectionStateful = "stateful_deletions"
+	SectionLB       = "lb_identity"
+	SectionImages   = "images"
+	SectionConfig   = "config"
+	SectionSecrets  = "secrets"
+	SectionDrift    = "drift"
+)
+
+// PlanSections is the closed set, in display order.
+var PlanSections = []string{SectionStateful, SectionLB, SectionObjects, SectionImages, SectionConfig, SectionSecrets, SectionDrift}
+
+// Plan is one reviewed deploy. Field names match controlplane.v1.DeployPlan.
+type Plan struct {
+	Digest         string        `json:"digest"`
+	EnvironmentID  string        `json:"environment_id"`
+	BundleID       string        `json:"bundle_id"`
+	ReleaseVersion string        `json:"release_version,omitempty"`
+	LiveBasis      PlanBasis     `json:"live_basis"`
+	Findings       []PlanFinding `json:"findings"`
+	// ConfigIdentical: the bundle's config digest equals the live one, so
+	// the deploy changes images at most. A no-op deploy says so instead of
+	// manufacturing a diff to approve.
+	ConfigIdentical bool      `json:"config_identical"`
+	ComputedAt      time.Time `json:"computed_at"`
+}
+
+// PlanBasis is what a plan was computed AGAINST. Any change to it — another
+// promotion, another bundle applied, drift appearing — changes the digest, so
+// an approval of a plan computed against an older Live is refused as stale.
+type PlanBasis struct {
+	CurrentPromotionID  string `json:"current_promotion_id,omitempty"`
+	AppliedBundleID     string `json:"applied_bundle_id,omitempty"`
+	AppliedConfigDigest string `json:"applied_config_digest,omitempty"`
+	DriftObserved       bool   `json:"drift_observed"`
+}
+
+// PlanFinding is one thing the plan says.
+type PlanFinding struct {
+	Code    string       `json:"code"`
+	Class   FindingClass `json:"class"`
+	Section string       `json:"section"`
+	// Subject is "<cluster>/<kind>/<ns>/<name>" for an object, else the
+	// workload, artifact or secret name, or the section for an unknown.
+	Subject string `json:"subject"`
+	// Detail is human-readable and NEVER a secret value. Not digested.
+	Detail string `json:"detail,omitempty"`
+}
+
+// PlanInput is everything [BuildPlan] reads. It is assembled by the caller
+// from records it already holds — the candidate bundle and the live state —
+// so BuildPlan itself does no I/O.
+type PlanInput struct {
+	EnvironmentID  string
+	BundleID       string
+	ReleaseVersion string
+
+	Candidate             Shape
+	CandidateConfigDigest string
+
+	// Live is the applied bundle's shape, else the env's declared shape;
+	// nil when nothing is recorded (every object then reads as added, and
+	// the plan carries an unknown finding).
+	Live *Shape
+	// Basis is the live state the plan is bound to. AppliedConfigDigest is
+	// also what ConfigIdentical compares against.
+	Basis PlanBasis
+
+	// Drift is the live-cluster observation: nil when drift is not
+	// observable for this env (an unknown finding), else the objects found
+	// diverged from the applied bundle (possibly none).
+	Drift *DriftObservation
+	// SecretPresence maps a secret name to whether its value is set; nil
+	// when presence cannot be read (an external provider). A name absent
+	// from a non-nil map is not set.
+	SecretPresence map[string]bool
+}
+
+// DriftObservation is what an observer saw of the live cluster.
+type DriftObservation struct {
+	Drifted []ObjectKey
+}
+
+// statefulKinds are object kinds whose removal destroys data or everything
+// under them. Removing one is a stop-class finding. ShapeObject.Stateful marks
+// anything else that holds data (a declared database's objects).
+var statefulKinds = map[string]bool{
+	"PersistentVolumeClaim":    true,
+	"PersistentVolume":         true,
+	"StatefulSet":              true,
+	"Secret":                   true,
+	"Namespace":                true,
+	"CustomResourceDefinition": true,
+}
+
+// BuildPlan computes the plan. Pure and deterministic: the same input yields
+// the same findings in the same order and the same digest. ComputedAt is the
+// only clock-dependent field and is left for the caller to set.
+func BuildPlan(in PlanInput) (Plan, error) {
+	if err := in.Candidate.Validate(); err != nil {
+		return Plan{}, fmt.Errorf("plan: candidate %w", err)
+	}
+	if in.Live != nil {
+		if err := in.Live.Validate(); err != nil {
+			return Plan{}, fmt.Errorf("plan: live %w", err)
+		}
+		if in.Live.Kind != in.Candidate.Kind {
+			return Plan{}, fmt.Errorf("%w: plan: the environment is %s, but the bundle renders it as %s — an environment's kind is immutable", ErrInvalid, in.Live.Kind, in.Candidate.Kind)
+		}
+	}
+	diff := DiffShapes(in.Live, in.Candidate)
+	p := Plan{
+		EnvironmentID:  in.EnvironmentID,
+		BundleID:       in.BundleID,
+		ReleaseVersion: in.ReleaseVersion,
+		LiveBasis:      in.Basis,
+		ConfigIdentical: in.CandidateConfigDigest != "" &&
+			in.CandidateConfigDigest == in.Basis.AppliedConfigDigest,
+	}
+	add := func(code string, class FindingClass, section, subject, detail string) {
+		p.Findings = append(p.Findings, PlanFinding{Code: code, Class: class, Section: section, Subject: subject, Detail: detail})
+	}
+
+	if diff.LiveUnknown {
+		add(FindingUnknown, ClassWarn, SectionObjects, SectionObjects,
+			"no recorded config to compare against: every object appears added, and deletions cannot be detected")
+	}
+	for _, o := range diff.Added {
+		add(FindingObjectAdded, ClassInfo, SectionObjects, o.Key().String(), "")
+	}
+	for _, o := range diff.Removed {
+		switch {
+		case o.Stateful || statefulKinds[o.Kind]:
+			add(FindingStatefulDeletion, ClassStop, SectionStateful, o.Key().String(),
+				fmt.Sprintf("%s %q is removed; the data it holds is not recoverable", o.Kind, o.Name))
+		case hasExternalIdentity(o):
+			add(FindingLBIdentityChange, ClassStop, SectionLB, o.Key().String(),
+				fmt.Sprintf("%s %q is removed and with it its external address (%s)", o.Kind, o.Name, identitySummary(o.Identity)))
+		default:
+			add(FindingObjectRemoved, ClassWarn, SectionObjects, o.Key().String(), "")
+		}
+	}
+	for _, c := range diff.Changed {
+		subject := c.Candidate.Key().String()
+		if why, changed := identityChange(c.Live, c.Candidate); changed {
+			add(FindingLBIdentityChange, ClassStop, SectionLB, subject, why)
+		}
+		for _, img := range c.Images {
+			add(FindingImageChanged, ClassInfo, SectionImages, subject+"#"+img.Artifact,
+				fmt.Sprintf("%s: %s → %s", img.Artifact, shortDigest(img.From), shortDigest(img.To)))
+		}
+		switch {
+		case c.Live.ConfigHash == "" || c.Candidate.ConfigHash == "":
+			if len(c.Images) == 0 {
+				add(FindingObjectChanged, ClassInfo, SectionObjects, subject, "")
+			}
+		case c.ConfigChanged:
+			add(FindingConfigChanged, ClassInfo, SectionConfig, subject, "")
+		}
+	}
+
+	for _, s := range diff.SecretsAdded {
+		switch {
+		case in.SecretPresence == nil:
+			add(FindingSecretNeeded, ClassWarn, SectionSecrets, s.Name, "newly declared; presence not verifiable for provider "+s.Provider)
+		case in.SecretPresence[s.Name]:
+			add(FindingSecretNeeded, ClassInfo, SectionSecrets, s.Name, "newly declared; set")
+		default:
+			add(FindingSecretNeeded, ClassWarn, SectionSecrets, s.Name, "newly declared; MISSING — set it before the workload starts")
+		}
+	}
+
+	if in.Drift == nil {
+		add(FindingUnknown, ClassWarn, SectionDrift, SectionDrift, "live drift is not observable for this environment")
+	} else {
+		for _, k := range sortedKeys(in.Drift.Drifted) {
+			add(FindingDrift, ClassWarn, SectionDrift, k.String(),
+				"changed outside forge since the last apply; this deploy overwrites it")
+		}
+	}
+	p.LiveBasis.DriftObserved = in.Drift != nil && len(in.Drift.Drifted) > 0
+
+	sortFindings(p.Findings)
+	if p.Findings == nil {
+		p.Findings = []PlanFinding{}
+	}
+	d, err := p.computeDigest()
+	if err != nil {
+		return Plan{}, err
+	}
+	p.Digest = d
+	return p, nil
+}
+
+// StopCodes is the set of stop-class finding codes in the plan, sorted.
+func (p Plan) StopCodes() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range p.Findings {
+		if f.Class == ClassStop && !seen[f.Code] {
+			seen[f.Code] = true
+			out = append(out, f.Code)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Unacknowledged returns the stop-class codes the acknowledgements do not
+// name. Empty means the plan may be approved. Acknowledgement is by CODE, so
+// one acknowledgement covers every finding of that code in THIS plan — and,
+// because the digest binds the approval to this plan, nothing beyond it.
+func (p Plan) Unacknowledged(acknowledged []string) []string {
+	ack := map[string]bool{}
+	for _, a := range acknowledged {
+		ack[strings.TrimSpace(a)] = true
+	}
+	var out []string
+	for _, c := range p.StopCodes() {
+		if !ack[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// VerifyDigest recomputes the digest and reports whether it matches Digest.
+func (p Plan) VerifyDigest() (bool, error) {
+	d, err := p.computeDigest()
+	if err != nil {
+		return false, err
+	}
+	return d == p.Digest, nil
+}
+
+// planDigestBody is exactly what the digest covers. A separate type rather
+// than a filtered Plan, so adding a field to Plan cannot silently change (or
+// silently fail to change) the digest — it has to be added here on purpose.
+type planDigestBody struct {
+	EnvironmentID   string              `json:"environment_id"`
+	BundleID        string              `json:"bundle_id"`
+	ReleaseVersion  string              `json:"release_version"`
+	LiveBasis       PlanBasis           `json:"live_basis"`
+	ConfigIdentical bool                `json:"config_identical"`
+	Findings        []planDigestFinding `json:"findings"`
+}
+
+type planDigestFinding struct {
+	Code    string       `json:"code"`
+	Class   FindingClass `json:"class"`
+	Section string       `json:"section"`
+	Subject string       `json:"subject"`
+}
+
+func (p Plan) computeDigest() (string, error) {
+	findings := append([]PlanFinding(nil), p.Findings...)
+	sortFindings(findings)
+	body := planDigestBody{
+		EnvironmentID:   p.EnvironmentID,
+		BundleID:        p.BundleID,
+		ReleaseVersion:  p.ReleaseVersion,
+		LiveBasis:       p.LiveBasis,
+		ConfigIdentical: p.ConfigIdentical,
+		Findings:        make([]planDigestFinding, len(findings)),
+	}
+	for i, f := range findings {
+		body.Findings[i] = planDigestFinding{Code: f.Code, Class: f.Class, Section: f.Section, Subject: f.Subject}
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("plan digest: %w", err)
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func sortFindings(fs []PlanFinding) {
+	rank := map[string]int{}
+	for i, s := range PlanSections {
+		rank[s] = i
+	}
+	sort.SliceStable(fs, func(i, j int) bool {
+		a, b := fs[i], fs[j]
+		if rank[a.Section] != rank[b.Section] {
+			return rank[a.Section] < rank[b.Section]
+		}
+		if a.Code != b.Code {
+			return a.Code < b.Code
+		}
+		return a.Subject < b.Subject
+	})
+}
+
+func sortedKeys(keys []ObjectKey) []ObjectKey {
+	out := append([]ObjectKey(nil), keys...)
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// hasExternalIdentity reports whether removing the object releases an
+// external address: a LoadBalancer Service, or anything holding a static or
+// load-balancer IP.
+func hasExternalIdentity(o ShapeObject) bool {
+	return o.Identity[IdentityType] == "LoadBalancer" ||
+		o.Identity[IdentityLoadBalancerIP] != "" || o.Identity[IdentityStaticIP] != ""
+}
+
+// identityChange reports whether an object that survives the deploy changes
+// its external identity, and why. Becoming a LoadBalancer from nothing gains
+// an address and takes none away, so it is not a change of identity; every
+// other move of type, class or address to or from a load balancer is.
+func identityChange(live, cand ShapeObject) (string, bool) {
+	lt, ct := live.Identity[IdentityType], cand.Identity[IdentityType]
+	var why []string
+	if lt != ct && lt == "LoadBalancer" {
+		why = append(why, fmt.Sprintf("type %s → %s releases its load balancer", lt, orNone(ct)))
+	}
+	for _, k := range []string{IdentityLoadBalancerIP, IdentityLoadBalancerClass, IdentityStaticIP} {
+		if l, c := live.Identity[k], cand.Identity[k]; l != "" && l != c {
+			why = append(why, fmt.Sprintf("%s %s → %s", k, l, orNone(c)))
+		}
+	}
+	if len(why) == 0 {
+		return "", false
+	}
+	return strings.Join(why, "; "), true
+}
+
+func identitySummary(id map[string]string) string {
+	keys := make([]string, 0, len(id))
+	for k := range id {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + id[k]
+	}
+	return strings.Join(parts, ", ")
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+func shortDigest(d string) string {
+	if d == "" {
+		return "(none)"
+	}
+	d = strings.TrimPrefix(d, "sha256:")
+	if len(d) > 12 {
+		d = d[:12]
+	}
+	return d
+}

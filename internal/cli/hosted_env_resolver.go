@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // hostedEnvResolver maps a forge environment NAME to the control plane's id
@@ -99,9 +100,21 @@ var hostedProjectName = func() string {
 //   - anything hosted (a workload bound to OnHosted, a hosted
 //     ManagedDatabase, an OnHosted frontend) → PERSISTENT: the platform
 //     runs it, and its secrets are write-only.
-//   - nothing hosted → LOCAL: its workloads run on a developer machine or a
-//     cluster the author operates, and the control plane is only its secret
-//     store (pullable).
+//   - nothing hosted, something on a cluster the author operates (a
+//     workload bound to OnCluster, or a cluster ManagedDatabase) →
+//     SELF_MANAGED: the control plane keeps its ledger, forge applies it,
+//     and its secrets are write-only.
+//   - otherwise → LOCAL: every workload runs on a developer machine, and
+//     the control plane is only its secret store (pullable).
+//
+// The SELF_MANAGED split is what keeps "runs on my laptop" and "runs on my
+// own cluster" apart. Before it, a cluster env with a control plane was
+// classified LOCAL, which made its production secrets readable back through
+// the local-secret pull.
+//
+// An env-wide cluster_target alone does not make an env self-managed: it
+// carries support objects (a Namespace, gateways) for workloads that still
+// run on the developer's machine.
 //
 // "" when the env declares no control plane. The kind is a PREDICATE over
 // the env's items, never a mode an env selects.
@@ -112,7 +125,24 @@ func hostedEnvKindOf(e *KCLEntities) deploytarget.HostedEnvKind {
 	if e.HasHosted() {
 		return deploytarget.HostedEnvPersistent
 	}
+	if runsOnOwnCluster(e) {
+		return deploytarget.HostedEnvSelfManaged
+	}
 	return deploytarget.HostedEnvLocal
+}
+
+// runsOnOwnCluster reports whether anything in the env runs on a cluster the
+// author operates: a cluster-bound workload or a cluster ManagedDatabase.
+func runsOnOwnCluster(e *KCLEntities) bool {
+	if len(e.WorkloadsOn(RuntimeCluster)) > 0 {
+		return true
+	}
+	for _, d := range e.Databases {
+		if !d.Hosted() {
+			return true
+		}
+	}
+	return false
 }
 
 // isLocalControlPlaneEnv reports whether the env declares a control plane that
@@ -122,13 +152,16 @@ func isLocalControlPlaneEnv(e *KCLEntities) bool {
 }
 
 // hostedControlPlaneKindName is the lower-case vocabulary the JSON reports
-// use for a kind: "local" | "persistent" | "".
+// use for a kind: "local" | "persistent" | "self_managed" | "" — the same
+// words as pkg/release.EnvKind.
 func hostedControlPlaneKindName(k deploytarget.HostedEnvKind) string {
 	switch k {
 	case deploytarget.HostedEnvLocal:
-		return "local"
+		return string(release.EnvLocal)
 	case deploytarget.HostedEnvPersistent:
-		return "persistent"
+		return string(release.EnvPersistent)
+	case deploytarget.HostedEnvSelfManaged:
+		return string(release.EnvSelfManaged)
 	default:
 		return ""
 	}

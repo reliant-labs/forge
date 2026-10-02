@@ -357,16 +357,60 @@ func TestHostedEnvKindOf(t *testing.T) {
 		// Hosting is per workload: one hosted and one cluster workload in
 		// one env is a PERSISTENT env whose destination is mixed.
 		{"hosted + cluster", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{backend, onCluster}}, deploytarget.HostedEnvPersistent, destinationMixed},
+		// The SELF_MANAGED split: a control plane, nothing hosted, something
+		// on a cluster the author operates. Classifying these LOCAL made a
+		// cluster env's secrets pullable.
+		{"cluster only", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{onCluster}}, deploytarget.HostedEnvSelfManaged, destinationCluster},
+		{"host + cluster", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{host, onCluster}}, deploytarget.HostedEnvSelfManaged, destinationMixed},
+		{"cluster database only", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{host}, Databases: []DatabaseEntity{{Name: "db", Runtime: RuntimeCluster}}}, deploytarget.HostedEnvSelfManaged, destinationMixed},
+		// A support cluster_target alone carries a Namespace and gateways
+		// for workloads that still run on this machine: still LOCAL.
+		{"host + support cluster_target", &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{host}, ClusterTarget: &ClusterTargetEntity{Cluster: "k3d-x"}}, deploytarget.HostedEnvLocal, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := hostedEnvKindOf(c.e); got != c.want {
 				t.Errorf("kind = %q, want %q", got, c.want)
 			}
+			if c.dest == "" {
+				return
+			}
 			if got := destinationOf(c.e); got != c.dest {
 				t.Errorf("destination = %q, want %q", got, c.dest)
 			}
 		})
+	}
+}
+
+// F-12: a control-plane env whose workloads run on a cluster the author
+// operates is SELF_MANAGED, and its secrets are write-only. `forge env up`
+// must never pull its values, and armed values must never be served to it —
+// before the kind split it was classified LOCAL and both happened.
+func TestSelfManagedEnv_NeverPullsSecrets(t *testing.T) {
+	e := localEnvEntities("https://cp.example.com")
+	e.Workloads = append(e.Workloads, clusterWL("search", "k3d-x", "ns"))
+	if got := hostedEnvKindOf(e); got != deploytarget.HostedEnvSelfManaged {
+		t.Fatalf("kind = %q, want self-managed", got)
+	}
+	prev := pullLocalSecretsFor
+	t.Cleanup(func() { pullLocalSecretsFor = prev; disarmPulledSecrets() })
+	pullLocalSecretsFor = func(context.Context, string, *KCLEntities) (map[string]string, error) {
+		t.Fatal("a self-managed env's secret values were pulled")
+		return nil, nil
+	}
+	if err := armLocalSecretsForUp(context.Background(), "prod-sim", e, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	armPulledSecrets("prod-sim", map[string]string{"STRIPE_SECRET_KEY": "sk_canary"})
+	if _, ok := pulledSecretsFor(e); ok {
+		t.Fatal("armed values were served to a self-managed env")
+	}
+	d := resolveEnvDestination(context.Background(), "prod-sim", e, nil)
+	if d.ControlPlaneKind != "self_managed" {
+		t.Fatalf("reported kind = %q, want self_managed", d.ControlPlaneKind)
+	}
+	if !envAppliesManifestsToCluster(e) {
+		t.Fatal("a self-managed env's manifests are applied from this machine; its mounts are demand")
 	}
 }
 

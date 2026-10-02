@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -188,12 +190,47 @@ Examples:
 // fails to record is a different matter: that failure is returned, because
 // the build would otherwise report success while every Live surface reads a
 // stale declaration.
+//
+// A BUILD NEVER NEEDS A REACHABLE CONTROL PLANE. `forge env build` builds and
+// pushes images; it is the primitive a CI build job runs, and the one a
+// developer runs on a plane. So when the declaration cannot be DELIVERED —
+// no credential configured, the control plane unreachable, the transport
+// failing — the build warns once and carries on: nothing about the env is
+// wrong, and the next build or deploy that reaches the control plane records
+// it (a deploy cannot proceed without one anyway). What still fails the build
+// is the control plane ANSWERING and saying no: a refused shape, a kind
+// change, a credential it rejected. Those are facts about the env or its
+// configuration, and a green build over them would leave Live wrong.
 func recordEnvBuildDeclaration(ctx context.Context, envName string) error {
 	entities, err := renderKCLForDeclaration(ctx, projectDirForKCL(), envName)
 	if err != nil || entities == nil {
 		return nil
 	}
-	return recordEnvDeclaration(ctx, envName, entities)
+	err = recordEnvDeclaration(ctx, envName, entities)
+	if err != nil && declarationUndeliverable(err) {
+		fmt.Printf("[declare] Warning: env %s's declaration was not recorded: %v\n"+
+			"[declare]   The build continues; the next build or deploy that reaches the control plane records it.\n", envName, err)
+		return nil
+	}
+	return err
+}
+
+// declarationUndeliverable reports whether a declaration failed to REACH the
+// control plane, as opposed to reaching it and being refused. No credential,
+// a transport error and an Unavailable/DeadlineExceeded answer are
+// undeliverable; any other control-plane answer — InvalidArgument,
+// FailedPrecondition, PermissionDenied, Unauthenticated — is a refusal.
+func declarationUndeliverable(err error) bool {
+	if errors.Is(err, cloud.ErrNoCredential) {
+		return true
+	}
+	var cerr *cloud.Error
+	if errors.As(err, &cerr) {
+		return cerr.HasCode(cloud.CodeUnavailable) || cerr.HasCode(cloud.CodeDeadlineExceeded)
+	}
+	// Not a control-plane answer at all: the request never got one (refused
+	// connection, DNS, TLS, a timeout in the transport).
+	return true
 }
 
 // renderKCLForDeclaration is RenderKCL, as a var so a test can state the

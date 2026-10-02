@@ -994,10 +994,14 @@ schema ControlPlane:
     #
     # `forge env build <env> --push` pushes each image to the reference it
     # declares, and `forge registry login <env>` logs in to the hosts those
-    # images name. A hosted env may one day inherit a default from the
-    # control plane's advertised image push base — see the
-    # _HOSTED_IMAGE_BASE_SEAM in render.k — but that base is not pushable yet
-    # (control-plane ADR 0003 / #334), so the reference is declared.
+    # images name.
+    #
+    # A forge.OnHosted item is the ONE exception, and it is a bare NAME rather
+    # than an env-level registry field: the control plane admits images from
+    # exactly one subtree, so forge resolves `image = "api"` against the base
+    # the platform reports (ADR-0003 F1). A host-bearing reference is still
+    # used verbatim, and one outside that subtree is reported at render and
+    # lint time rather than at publish time.
 
     check:
         type == "control_plane", "ControlPlane.type must be 'control_plane'"

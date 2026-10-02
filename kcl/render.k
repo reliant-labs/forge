@@ -315,28 +315,23 @@ _check_image_names_registry = lambda w: any, rt: any, image: str -> bool {
         + "`image = \"ghcr.io/<owner>/${image}\"` (or `localhost:5051/${image}` for a k3d-local registry). " \
         + "There is no env-level registry — a ClusterTarget declares the cluster, namespace and platform; " \
         + "the workload declares what to pull."
-    assert not (image and rt.type == "hosted" and not img_lib.has_registry_host(image)), \
-        "workload '${w.name}': image '${image}' names no registry host, and it is bound to forge.OnHosted, " \
-        + "which publishes the image for the control plane to pull. Declare the full reference on the workload, " \
-        + "e.g. `image = \"ghcr.io/<owner>/${image}\"`, and `forge registry login <env>` / `forge env build <env> --push` " \
-        + "will use it. " + _HOSTED_IMAGE_BASE_SEAM
+    # forge.OnHosted DELIBERATELY DOES NOT REQUIRE A HOST (ADR-0003 F1).
+    #
+    # The registry lives on the image for every runtime whose registry the
+    # AUTHOR chooses. A hosted workload is the one case where they do not: the
+    # control plane admits images from exactly one subtree,
+    # `<registry_base>/<org>`, and refuses every other — so a hosted author
+    # writing a host was transcribing a value the platform already knew, and
+    # getting it wrong produced a publish-time refusal.
+    #
+    # So a bare hosted image renders as-is and forge resolves it against the
+    # base the control plane reports (internal/cli: resolveHostedImageBase).
+    # It is NOT resolved here, because KCL has no network and a render must
+    # stay an offline, reproducible projection — the full reference appears in
+    # the build's push plan and in the deploy's pinned spec, both of which
+    # read the base from the ensure they already make.
     True
 }
-
-# THE SEAM for the hosted default. A hosted env could one day take its
-# registry from the control plane's advertised `image_push_base`
-# (`<registry_base>/<org>`, already returned on every environment read), so a
-# hosted workload would not have to declare a host at all. That base is not
-# pushable yet — the Reliant-hosted registry gateway is control-plane ADR 0003
-# / PR #334, a draft, not a running service — and forge does not invent a
-# default for a registry that does not exist.
-#
-# When it lands, this is the ONE place that changes: the hosted branch of
-# _check_image_names_registry stops refusing and _spec_image composes the
-# advertised base onto a bare image. Deliberately one named constant rather
-# than a scattering of TODOs, so the follow-up is a single edit.
-_HOSTED_IMAGE_BASE_SEAM = "A hosted env does not yet inherit a registry from the control plane's advertised image push base " \
-    + "(control-plane ADR 0003 / #334); until it does, declare the reference."
 
 # The image a runtime runs, resolved per runtime (module docstring). The
 # author's registry is kept verbatim; forge contributes the tag and digest.
@@ -850,8 +845,12 @@ _frontend_violations = lambda f: Frontend -> [str] {
             if f.image and _t != "hosted" else []) \
         + (["image is REQUIRED on forge.OnHosted: the site release is pushed to a registry, and the registry is part of the reference (e.g. image = \"ghcr.io/<owner>/${f.name}\"). forge appends the platform's own static.v1 layout to it. There is no env-level registry"] \
             if _t == "hosted" and not f.image else []) \
-        + (["image '${f.image}' names no registry host, and an OnHosted frontend's release is pushed to one. Declare the full reference, e.g. image = \"ghcr.io/<owner>/${f.name}\""] \
-            if _t == "hosted" and f.image and not img_lib.has_registry_host(f.image) else [])
+        # A BARE image is accepted on forge.OnHosted, exactly as it is on a
+        # hosted workload (ADR-0003 F1, _check_image_names_registry): forge
+        # resolves it against the base the control plane reports, and appends
+        # the platform's static.v1 layout to the result. The image is still
+        # REQUIRED — the release is pushed to a registry and keyed by its
+        # repository — but its host is the platform's to supply.
 }
 
 # A frontend's runtime_config as the StaticSite spec's `runtimeConfig` wire

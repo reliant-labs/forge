@@ -281,25 +281,32 @@ func TestBuildCmd_HostedEnvPushesToTheWorkloadReference(t *testing.T) {
 	}
 }
 
-// TestBuildCmd_HostedBareImageFails: a hosted workload whose image names no
-// registry host fails --push with a runbook naming the image field. The
-// control plane's advertised push base is not consulted yet (control-plane ADR
-// 0003 / #334), and forge never invents a default for a registry that is not
-// pushable — so the runbook asks for the reference rather than implying a
-// field exists that would supply it.
-func TestBuildCmd_HostedBareImageFails(t *testing.T) {
+// TestBuildCmd_HostedBareImageWithNoPushBaseFails: a hosted workload whose
+// image names no registry host, in a project that has never learned the
+// platform's push base, fails --push with the full-reference remedy.
+//
+// This is the NARROWED version of a rule that used to be absolute. Before
+// ADR-0003 F1 a bare hosted image was refused outright, because forge had no
+// registry to resolve it against and would not invent one. It now resolves
+// against the base the control plane reports (TestResolveHostedImageBase), so
+// the refusal survives only for the case that is still genuinely unresolvable:
+// no base known, nothing to compose. The remedy is unchanged for that case,
+// because declaring the reference is still the only thing the author can do.
+func TestBuildCmd_HostedBareImageWithNoPushBaseFails(t *testing.T) {
 	planProject(t, hostedPushFixture(""))
 
 	_, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
 	if err == nil {
-		t.Fatal("--push with a hosted workload whose image names no registry: want an error, got nil")
+		t.Fatal("--push with a bare hosted image and no push base: want an error, got nil")
 	}
-	for _, want := range []string{"image", "deploy/kcl/workloads.k"} {
+	for _, want := range []string{"image", "declare the full reference"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("runbook error should name %q; got: %v", want, err)
 		}
 	}
-	// It must NOT point at an env-level field: there is none to set.
+	// It must NOT point at an env-level field: there is none to set. The
+	// platform's base is not one either — it is read from the control plane,
+	// never declared.
 	for _, gone := range []string{"forge.ControlPlane", "ClusterTarget"} {
 		if strings.Contains(err.Error(), gone) {
 			t.Errorf("runbook must not name the removed env field %q; got: %v", gone, err)

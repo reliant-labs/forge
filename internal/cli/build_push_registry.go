@@ -47,6 +47,12 @@ type pushPlan struct {
 	destinations []imageDestination
 	// env is the environment these images belong to, for the header.
 	env string
+	// pushBase is the platform registry subtree a BARE hosted image was
+	// resolved under (resolveHostedImageBase), or "" when the env has no
+	// control plane or the platform stated none. Recorded on the plan so a
+	// consumer can say WHERE a resolved reference came from rather than
+	// leaving the author to guess which half of it they wrote.
+	pushBase string
 }
 
 // printHeader prints where this build's images are tagged and pushed. One
@@ -138,8 +144,19 @@ func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *bui
 // env whose workloads declare no pullable image builds locally instead of
 // failing: a host-only env has no cluster to pull from.
 func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error) {
-	dests := declaredImageDestinations(declared)
-	plan := pushPlan{env: opts.env, destinations: dests}
+	// The platform's push base, as last stated by the control plane. A bare
+	// hosted image resolves under it; an env with no hosted item never reads
+	// it. Cached rather than fetched because resolving a push destination
+	// must not depend on a credential being present — see hosted_push_base.go.
+	pushBase := ""
+	if declared != nil && declared.ControlPlane != nil {
+		pushBase = cachedHostedPushBase(projectDirForKCL(), opts.env)
+	}
+	if err := checkHostedImagesResolve(opts.env, declared, pushBase); err != nil {
+		return pushPlan{}, err
+	}
+	dests := declaredImageDestinationsWithBase(declared, pushBase)
+	plan := pushPlan{env: opts.env, destinations: dests, pushBase: pushBase}
 	if !opts.push {
 		plan.push = opts.pushIfDeclared && opts.env != "" && len(dests) > 0
 		return plan, nil
@@ -152,6 +169,36 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 	}
 	plan.push = true
 	return plan, nil
+}
+
+// resolveHostedImageBase is the ONE rule for what a bare image on a hosted
+// item resolves to (ADR-0003 F1): `<image_push_base>/<name>`.
+//
+// WHY A BARE IMAGE IS NOW LEGITIMATE HERE, AND ONLY HERE. The registry is
+// declared on the workload and nowhere else, which is right for every runtime
+// whose registry the AUTHOR chooses. forge.OnHosted is the one case where they
+// do not choose it: the control plane admits images from exactly one subtree,
+// `<registry_base>/<org>`, and refuses everything else (checkImagePushBase).
+// So a hosted author writing a host was transcribing a value the platform
+// already knew, and getting it wrong produced a publish-time refusal — the
+// defect this closes. A host-bearing reference is still used VERBATIM, because
+// an author who named one meant it, and the admit check is what judges it.
+//
+// base "" means the platform did not state one. That is NOT a licence to
+// invent a default: a bare image with nowhere to go is refused, naming the
+// full-reference remedy (errHostedImageNeedsPushBase).
+//
+// Non-hosted runtimes are untouched. A bare image on a cluster workload is
+// still refused at render, by KCL, because no platform owns that registry.
+func resolveHostedImageBase(base, image string) string {
+	if registryHost(image) != "" {
+		return image
+	}
+	base = normalizePushBase(base)
+	if base == "" || image == "" {
+		return image
+	}
+	return base + "/" + image
 }
 
 // declaredImageDestinations is every distinct repository the env's workloads
@@ -179,8 +226,17 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 // only publishable thing is a hosted site still has a push destination, and
 // omitting it made `forge env build <env> --push` refuse a project that had one.
 //
+// A BARE image on a hosted item resolves under pushBase
+// (resolveHostedImageBase); pushBase "" leaves it bare, which keeps it out of
+// the destination set exactly as before, and the caller that needs to REFUSE
+// that reports it (checkHostedImagesResolve).
+//
 // Sorted by repository so every consumer enumerates the same order.
 func declaredImageDestinations(e *KCLEntities) []imageDestination {
+	return declaredImageDestinationsWithBase(e, "")
+}
+
+func declaredImageDestinationsWithBase(e *KCLEntities, pushBase string) []imageDestination {
 	if e == nil {
 		return nil
 	}
@@ -204,13 +260,21 @@ func declaredImageDestinations(e *KCLEntities) []imageDestination {
 		case RuntimeHost, RuntimeCompose:
 			continue
 		}
-		add(imageRepository(w.Image), w.Name)
+		image := imageRepository(w.Image)
+		if w.Runtime.Type == RuntimeHosted {
+			image = resolveHostedImageBase(pushBase, image)
+		}
+		add(image, w.Name)
 	}
 	for _, f := range e.Frontends {
 		if f.Image == "" || f.Runtime.Type != RuntimeHosted {
 			continue
 		}
-		add(deploytarget.HostedStaticRepository(imageRepository(f.Image)), f.Name)
+		// The static layout segment is appended to the RESOLVED reference,
+		// so a bare hosted frontend lands at
+		// `<push_base>/<name>/static.v1` — the same shape a host-bearing
+		// one reaches, and the same key the release ledger records.
+		add(deploytarget.HostedStaticRepository(resolveHostedImageBase(pushBase, imageRepository(f.Image))), f.Name)
 	}
 	out := make([]imageDestination, 0, len(seen))
 	for repo, workload := range seen {

@@ -540,7 +540,7 @@ func recordEnvDeclaration(ctx context.Context, envName string, entities *KCLEnti
 	}
 	ref := hostedEnvRefFor(envName, entities)
 	ref.Shape, ref.DeclaredBy = &doc.Shape, &doc.Provenance
-	if _, err := ensureHostedEnv(ctx, client, ref); err != nil {
+	if err := ensureHostedEnvRecordingPushBase(ctx, client, ref); err != nil {
 		// F-15, stated loudly. A control plane that predates the shape
 		// IGNORES the field (connect's JSON codec discards unknown
 		// fields), so there is nothing to special-case for an old

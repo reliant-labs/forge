@@ -385,6 +385,36 @@ func EnsureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 	return env.ID, created, err
 }
 
+// EnsuredHostedEnvironment is what an ensure LEARNED about the environment,
+// beyond its id: the registry subtree the control plane admits this org's
+// images from.
+//
+// It exists so the push base can be remembered from the ensure forge was
+// already making (ADR-0003 F1) rather than from a read of its own. The base
+// is a fact about the platform that a render and a lint need offline, and an
+// extra RPC to learn it would be a second place for the answer to come from.
+//
+// PushBase is "" when the control plane did not state one — an older server,
+// or no registry configured. That is distinguishable from "it admits none",
+// which checkImagePushBase reports at publish time, and the two must not be
+// collapsed: one means "we do not know" and the other "we asked and the
+// answer is nothing".
+type EnsuredHostedEnvironment struct {
+	ID       string
+	Created  bool
+	PushBase string
+}
+
+// EnsureHostedEnvironmentFull is EnsureHostedEnvironment, reporting everything
+// the response carried. Same single call; a wider return.
+func EnsureHostedEnvironmentFull(ctx context.Context, c HostedCaller, ref HostedEnvRef) (EnsuredHostedEnvironment, error) {
+	env, created, err := ensureHostedEnvironment(ctx, c, ref)
+	if err != nil {
+		return EnsuredHostedEnvironment{}, err
+	}
+	return EnsuredHostedEnvironment{ID: env.ID, Created: created, PushBase: env.ImagePushBase}, nil
+}
+
 func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvRef) (wireEnvironment, bool, error) {
 	if ref.Kind == "" {
 		// Never defaulted: the kind is immutable server-side, so a guess

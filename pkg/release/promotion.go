@@ -118,6 +118,17 @@ type Promotion struct {
 	// Note is the free-form "why" — the most valuable field on a promote
 	// that moves an environment backwards.
 	Note string `json:"note,omitempty"`
+	// PlanDigest is the approved deploy plan this promotion was written
+	// under ([Plan.Digest]). Writing the promotion IS the deploy wherever a
+	// converger applies it, so the review precedes the record, and this
+	// names which review.
+	PlanDigest string `json:"plan_digest,omitempty"`
+	// ApprovedBy is who approved that plan. A backend sets it from the
+	// credential; a client never supplies it as identity.
+	ApprovedBy string `json:"approved_by,omitempty"`
+	// AcknowledgedFindings are the stop-class finding codes the approver
+	// accepted by name.
+	AcknowledgedFindings []string `json:"acknowledged_findings,omitempty"`
 	// PromotedAt is when the entry was written. It is PROMOTE time, not
 	// deploy time: a promotion moves no bytes.
 	PromotedAt time.Time `json:"promoted_at"`
@@ -145,6 +156,9 @@ func (p Promotion) Validate() error {
 	}
 	if err := p.Run.Validate(); err != nil {
 		return fmt.Errorf("promotion of %q: %w", p.Env, err)
+	}
+	if p.PlanDigest != "" && !ValidDigest(p.PlanDigest) {
+		return fmt.Errorf("%w: promotion of %q: plan digest %q is not canonical", ErrInvalid, p.Env, p.PlanDigest)
 	}
 	// Gates read back from a ledger written before the status set closed
 	// carry a RawStatus, and must still READ. So validation here covers

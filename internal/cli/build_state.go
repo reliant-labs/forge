@@ -3,12 +3,16 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/statefile"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // BuildState records what `forge env build --push` actually pushed to a
@@ -184,21 +188,27 @@ func imageToolsPlatforms(ctx context.Context, ref string) []string {
 	return platforms
 }
 
-// gitBuildProvenance captures the HEAD commit, an exact tag on HEAD (if
-// any), and whether the working tree is dirty — recorded into BuildState
-// so deploy can flag non-reproducible builds. Best-effort: missing git
-// yields zero values, never an error (the build already succeeded).
-func gitBuildProvenance(ctx context.Context) (commit, gitTag string, dirty bool) {
-	if out, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output(); err == nil {
-		commit = strings.TrimSpace(string(out))
+// captureBuildProvenance records where projectDir's content came from, through
+// the ONE capture every ledger record uses (release.CaptureProvenance): the
+// commit, branch, tag, dirty flag, the tree hash of what was actually built,
+// the checkout's devstack key, and this forge's version. It feeds BuildState
+// (so deploy can flag a non-reproducible build) and every release and bundle.
+//
+// Best-effort: the build already succeeded, so a capture error is printed
+// once and whatever was captured is returned — never a failed build.
+func captureBuildProvenance(ctx context.Context, projectDir string) release.Provenance {
+	p, err := release.CaptureProvenance(ctx, projectDir, release.CaptureOptions{
+		ForgeVersion: buildinfo.Version(),
+		WorktreeKey:  devstack.Worktree(projectDir),
+		Host:         release.HostID(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[build]   warning: source provenance is incomplete: %v\n", err)
 	}
-	if out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--exact-match").Output(); err == nil {
-		gitTag = strings.TrimSpace(string(out))
+	if p.Unhashed() {
+		fmt.Fprintf(os.Stderr, "[build]   note: the working tree was too large to hash within %s; provenance records the commit and dirty flag only\n", release.CaptureTreeTimeout)
 	}
-	if out, err := exec.CommandContext(ctx, "git", "status", "--porcelain").Output(); err == nil {
-		dirty = strings.TrimSpace(string(out)) != ""
-	}
-	return commit, gitTag, dirty
+	return p
 }
 
 // buildStatePath returns the absolute path to the per-env build-state

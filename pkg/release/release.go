@@ -296,7 +296,17 @@ type Release struct {
 	// Version is the label ("v1.4.0"). Releases are ADDRESSED by it, in
 	// every backend.
 	Version string `json:"release"`
-	Git     Git    `json:"git"`
+	// Project is the forge project (forge.yaml `name`) the version belongs
+	// to. A version label is unique within a project, not across an org:
+	// two projects may both cut v1.0.0. "" is a release recorded before
+	// releases carried a project.
+	Project string `json:"project,omitempty"`
+	// Git is the legacy provenance view, kept filled from Provenance (see
+	// SetProvenance) so readers that predate Provenance keep working.
+	Git Git `json:"git"`
+	// Provenance is where the release's images were built from. Nil on a
+	// release recorded before it existed.
+	Provenance *Provenance `json:"provenance,omitempty"`
 	// CreatedAt is when the release was cut.
 	CreatedAt time.Time `json:"created_at"`
 	// CreatedBy is who cut it, when the backend knows (a hosted ledger
@@ -312,10 +322,25 @@ type Release struct {
 	Run Run `json:"run,omitempty"`
 }
 
+// SetProvenance records where the release was built from, and keeps the
+// legacy Git view in step with it. A release is shared — promoted between
+// envs, imported, shown to every member — so it never carries the build
+// machine's checkout path ([Provenance.ForHosted]).
+func (r *Release) SetProvenance(p Provenance) {
+	p = p.ForHosted()
+	r.Provenance = &p
+	r.Git = p.Git()
+}
+
 // Validate checks the release and every artifact in it.
 func (r Release) Validate() error {
 	if strings.TrimSpace(r.Version) == "" {
 		return fmt.Errorf("%w: release version is required", ErrInvalid)
+	}
+	if r.Provenance != nil {
+		if err := r.Provenance.Validate(); err != nil {
+			return fmt.Errorf("release %q: %w", r.Version, err)
+		}
 	}
 	if err := r.Run.Validate(); err != nil {
 		return fmt.Errorf("release %q: %w", r.Version, err)

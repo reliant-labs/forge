@@ -108,3 +108,15 @@ linters:
       - path: ^controller/controllertest/
         linters:
           - forbidigo
+
+      # release.CaptureProvenance runs `git` against the caller's checkout,
+      # and a child git needs the ambient environment to run at all (PATH,
+      # HOME for its config, GIT_* for a worktree). The ONE variable it adds
+      # is GIT_INDEX_FILE, pointing at a temporary index so the user's own
+      # index is never touched. Nothing read here changes how the library
+      # behaves — it is passed through to a subprocess, not consulted.
+      # Scoped to the capture file alone: the rest of pkg/release (the
+      # ledger vocabulary, the plan and diff rules) stays under the guard.
+      - path: ^release/capture(_test)?\.go$
+        linters:
+          - forbidigo

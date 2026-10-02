@@ -33,6 +33,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/audittype"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 // auditPrerequisites renders the dev env and reports the declared external
@@ -117,7 +118,10 @@ func envAppliesManifestsToCluster(e *KCLEntities) bool {
 	if e == nil {
 		return false
 	}
-	if e.ControlPlane != nil && !isLocalControlPlaneEnv(e) {
+	// Only a PERSISTENT env's manifests are applied by the platform. A LOCAL
+	// or SELF_MANAGED control-plane env is applied from this machine, so its
+	// mounts are demand forge must meet.
+	if hostedEnvKindOf(e) == deploytarget.HostedEnvPersistent {
 		return false
 	}
 	return kclEntitiesHaveK8sCluster(e)

@@ -15,13 +15,13 @@ func TestBuilderRegistrationRejectsUnknownOrRemoteNodes(t *testing.T) {
 		name, info           string
 		remoteContext, valid bool
 	}{
-		{name: "local socket", info: `{"Driver":"docker-container","Nodes":[{"Endpoint":"unix:///var/run/docker.sock"}]}`, valid: true},
-		{name: "local named context", info: `{"Driver":"docker","Nodes":[{"Endpoint":"desktop-linux"}]}`, valid: true},
-		{name: "no nodes", info: `{"Driver":"docker-container","Nodes":[]}`},
-		{name: "empty endpoint", info: `{"Driver":"docker-container","Nodes":[{"Endpoint":""}]}`},
-		{name: "remote endpoint", info: `{"Driver":"docker-container","Nodes":[{"Endpoint":"ssh://prod"}]}`},
-		{name: "remote named context", info: `{"Driver":"docker-container","Nodes":[{"Endpoint":"prod"}]}`, remoteContext: true},
-		{name: "remote driver", info: `{"Driver":"remote","Nodes":[{"Endpoint":"unix:///var/run/buildkit.sock"}]}`},
+		{name: "local socket", info: buildxInspectText("relbuild", "docker-container", "unix:///var/run/docker.sock"), valid: true},
+		{name: "local named context", info: buildxInspectText("relbuild", "docker", "desktop-linux"), valid: true},
+		{name: "no nodes", info: buildxInspectText("relbuild", "docker-container")},
+		{name: "empty endpoint", info: buildxInspectText("relbuild", "docker-container", "")},
+		{name: "remote endpoint", info: buildxInspectText("relbuild", "docker-container", "ssh://prod")},
+		{name: "remote named context", info: buildxInspectText("relbuild", "docker-container", "prod"), remoteContext: true},
+		{name: "remote driver", info: buildxInspectText("relbuild", "remote", "unix:///var/run/buildkit.sock")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "storage.json")
@@ -35,7 +35,7 @@ func TestBuilderRegistrationRejectsUnknownOrRemoteNodes(t *testing.T) {
 						return []byte(`[{"Endpoints":{"docker":{"Host":"ssh://prod"}}}]`), nil
 					}
 					return []byte(`[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]`), nil
-				case strings.Contains(joined, "buildx inspect relbuild "):
+				case strings.HasSuffix(joined, "buildx inspect relbuild"):
 					return []byte(tc.info), nil
 				default:
 					t.Fatalf("unexpected command %s %s", name, joined)
@@ -78,10 +78,10 @@ func TestGCContinuesHealthyBuilderAfterIndependentFailure(t *testing.T) {
 		switch {
 		case joined == "context inspect":
 			return []byte(`[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]`), nil
-		case strings.HasPrefix(joined, "buildx inspect gone "):
+		case joined == "buildx inspect gone":
 			return nil, fmt.Errorf("builder no longer exists")
-		case strings.HasPrefix(joined, "buildx inspect healthy "):
-			return []byte(`{"Driver":"docker-container","Nodes":[{"Endpoint":"unix:///var/run/docker.sock"}]}`), nil
+		case joined == "buildx inspect healthy":
+			return []byte(buildxInspectText("healthy", "docker-container", "unix:///var/run/docker.sock")), nil
 		case strings.HasPrefix(joined, "buildx prune --builder healthy "):
 			pruned = append(pruned, "healthy")
 			return nil, nil
@@ -96,6 +96,174 @@ func TestGCContinuesHealthyBuilderAfterIndependentFailure(t *testing.T) {
 	}
 	if strings.Join(pruned, ",") != "healthy" {
 		t.Fatalf("pruned %v", pruned)
+	}
+}
+
+// buildxInspectText renders `docker buildx inspect <name>` the way buildx
+// actually prints it (v0.37: there is no --format flag; this text is the only
+// output). Captured from a Docker Desktop Mac, nested Labels/Devices sections
+// included: a docker-driver node's Devices block carries its own indented
+// `Name:` line, which once read as a phantom second node with no endpoint.
+func buildxInspectText(name, driver string, endpoints ...string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Name:          %s\nDriver:        %s\nLast Activity: 2026-10-02 05:08:33 +0000 UTC\n\nNodes:\n", name, driver)
+	for i, endpoint := range endpoints {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "Name:             %s%d\nEndpoint:         %s\nStatus:           running\nBuildKit version: v0.33.0\n", name, i, endpoint)
+		b.WriteString("Platforms:        linux/arm64, linux/amd64\nLabels:\n org.mobyproject.buildkit.worker.moby.host-gateway-ip: 192.168.65.254\n")
+		b.WriteString("Devices:\n Name:                  docker.com/gpu=webgpu\n Automatically allowed: false\n")
+		b.WriteString("GC Policy rule#0:\n All:            false\n Filters:        type==source.local\n Keep Duration:  48h0m0s\n")
+	}
+	return b.String()
+}
+
+// TestParseBuildxInspectMatchesRealOutput pins the parser to buildx's real
+// text, nested sections and all. The node count is load-bearing twice over:
+// localBuilder rejects any node without an endpoint, and builderRunner only
+// pins a docker-driver builder to its context when it has exactly one node.
+func TestParseBuildxInspectMatchesRealOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+		want       builderInfo
+	}{
+		{"docker driver", buildxInspectText("default", "docker", "default"), builderInfo{"docker", []string{"default"}}},
+		{"docker-container, two nodes", buildxInspectText("relbuild", "docker-container", "desktop-linux", "unix:///var/run/docker.sock"),
+			builderInfo{"docker-container", []string{"desktop-linux", "unix:///var/run/docker.sock"}}},
+		{"node without an endpoint", "Name: x\nDriver: docker-container\n\nNodes:\nName: x0\nStatus: inactive\n", builderInfo{"docker-container", []string{""}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseBuildxInspect([]byte(tc.text))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Driver != tc.want.Driver || strings.Join(got.Endpoints, "|") != strings.Join(tc.want.Endpoints, "|") {
+				t.Fatalf("parseBuildxInspect = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+	if _, err := parseBuildxInspect([]byte("ERROR: something else\n")); err == nil {
+		t.Fatal("output with no Driver line was accepted")
+	}
+}
+
+// realBuildx emulates the two buildx behaviours storage maintenance has to get
+// right, both observed on a Docker Desktop Mac with contexts `default` and
+// `desktop-linux` (current):
+//
+//   - `buildx inspect` has no --format flag and fails with "unknown flag";
+//   - a `docker`-driver builder is the built-in builder OF one context, and
+//     buildx refuses `du`/`prune --builder <it>` from any other context.
+type realBuildx struct {
+	current  string            // the current Docker context
+	builders map[string]string // builder name -> inspect text
+	drivers  map[string]string // builder name -> driver
+	ran      []string
+}
+
+func (f *realBuildx) command(_ context.Context, name string, args ...string) ([]byte, error) {
+	if name != "docker" {
+		return nil, fmt.Errorf("unexpected command %s %v", name, args)
+	}
+	active := f.current
+	if len(args) >= 2 && args[0] == "--context" {
+		active, args = args[1], args[2:]
+	}
+	joined := strings.Join(args, " ")
+	f.ran = append(f.ran, "["+active+"] "+joined)
+	switch {
+	case joined == "context inspect":
+		return []byte(`[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]`), nil
+	case joined == "context show":
+		return []byte(f.current + "\n"), nil
+	case joined == "system df":
+		return []byte("TYPE TOTAL\n"), nil
+	case strings.HasPrefix(joined, "buildx inspect "):
+		if strings.Contains(joined, "--format") {
+			return nil, fmt.Errorf("exit status 125: unknown flag: --format")
+		}
+		text, ok := f.builders[strings.TrimPrefix(joined, "buildx inspect ")]
+		if !ok {
+			return nil, fmt.Errorf("no builder %q found", joined)
+		}
+		return []byte(text), nil
+	case strings.HasPrefix(joined, "buildx du --builder "), strings.HasPrefix(joined, "buildx prune --builder "):
+		builder := strings.Fields(joined)[3]
+		if f.drivers[builder] == "docker" && builder != active {
+			return nil, fmt.Errorf("exit status 1: ERROR: use `docker --context=%s buildx` to switch to context %q", builder, builder)
+		}
+		return []byte("Total:\t\t5.05GB\n"), nil
+	}
+	return nil, fmt.Errorf("unexpected docker %v", args)
+}
+
+func dockerDesktopBuildx() *realBuildx {
+	return &realBuildx{
+		current: "desktop-linux",
+		builders: map[string]string{
+			"default":       buildxInspectText("default", "docker", "default"),
+			"desktop-linux": buildxInspectText("desktop-linux", "docker", "desktop-linux"),
+			"relbuild":      buildxInspectText("relbuild", "docker-container", "desktop-linux"),
+		},
+		drivers: map[string]string{"default": "docker", "desktop-linux": "docker", "relbuild": "docker-container"},
+	}
+}
+
+// TestGCPrunesEveryBuilderAgainstRealBuildx pins builder maintenance to the
+// buildx CLI that actually ships, not to a convenient fake. Before this,
+// localBuilder asked for `buildx inspect --format '{{json .}}'` (no such flag),
+// and pruned the policy's default builder — `default`, a docker-driver builder
+// of a context that is not current on Docker Desktop — from the current
+// context, which buildx refuses. Either failure alone meant `forge storage gc`
+// never pruned BuildKit on that machine, the layer the absolute 20 GiB budget
+// exists for.
+func TestGCPrunesEveryBuilderAgainstRealBuildx(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "")
+	fake := dockerDesktopBuildx()
+	p := DefaultPolicy()
+	p.Builders = []string{"default", "relbuild"}
+	var out strings.Builder
+	r := Runner{Policy: p, Out: &out, Command: fake.command}
+	if err := r.GC(context.Background(), true); err != nil {
+		t.Fatalf("GC against real buildx behaviour: %v\ncommands:\n%s", err, strings.Join(fake.ran, "\n"))
+	}
+	var pruned []string
+	for _, c := range fake.ran {
+		if strings.Contains(c, "buildx prune --builder ") {
+			pruned = append(pruned, c)
+		}
+	}
+	want := []string{"[default] buildx prune --builder default", "[desktop-linux] buildx prune --builder relbuild"}
+	if len(pruned) != len(want) {
+		t.Fatalf("pruned %v, want both builders", pruned)
+	}
+	for i := range want {
+		if !strings.HasPrefix(pruned[i], want[i]) {
+			t.Errorf("prune %d ran as %q, want %q… (a docker-driver builder runs in its own context)", i, pruned[i], want[i])
+		}
+	}
+}
+
+// TestStatusReportsEveryBuilderAgainstRealBuildx: `forge storage status` died
+// at the builder step on a Docker Desktop Mac with buildx's own refusal, so the
+// node GC configuration below it was never reported either.
+func TestStatusReportsEveryBuilderAgainstRealBuildx(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "")
+	fake := dockerDesktopBuildx()
+	p := DefaultPolicy()
+	p.Builders = []string{"default", "relbuild"}
+	var out strings.Builder
+	r := Runner{Policy: p, Out: &out, Command: fake.command}
+	if err := r.Status(context.Background()); err != nil {
+		t.Fatalf("Status against real buildx behaviour: %v\ncommands:\n%s", err, strings.Join(fake.ran, "\n"))
+	}
+	for _, builder := range p.Builders {
+		if !strings.Contains(out.String(), "builder "+builder+" (budget") {
+			t.Errorf("status did not report builder %s:\n%s", builder, out.String())
+		}
 	}
 }
 

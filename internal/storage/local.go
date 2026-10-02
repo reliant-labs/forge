@@ -104,7 +104,7 @@ func (r Runner) Status(ctx context.Context) error {
 	}
 	r.print("%s\n", b)
 	for _, builder := range r.Policy.Builders {
-		b, err = r.docker(ctx, "buildx", "du", "--builder", builder)
+		b, err = r.builderUsage(ctx, builder)
 		if err != nil {
 			return err
 		}

@@ -105,12 +105,8 @@ forge env new cloud --check                                 # no placeholder lef
   so a rollout never SIGKILLs a pod mid-drain;
   `terminationGracePeriodSeconds` overrides it.
 - **Rollout safety** above one replica: a PodDisruptionBudget and soft
-  topology spread. Where your pods share nodes with pods that carry a
-  PriorityClass, add `priorityClassName` too — an unranked pod is priority
-  0, so it is preempted repeatedly and the rollout stalls in
-  `FailedScheduling`. The class is cluster-scoped and must already exist on
-  every cluster the workload lands on; a pod naming a missing one is
-  refused at admission.
+  topology spread. On nodes shared with ranked pods, also declare
+  `priorityClassName` — see Pod priority on shared nodes.
 - **`strategy`** is how the Deployment replaces its pods. Unset is
   Kubernetes' `RollingUpdate`, which surges a new pod before the old one
   stops — so `replicas = 1` does NOT mean one process: two run for the
@@ -284,7 +280,7 @@ state: load `deploy/domains`.
 workload's pods against every other pod competing for a node. Declare it
 wherever your pods share nodes with pods that already carry one: an
 unranked pod is priority 0, so a higher-priority pod preempts it, and a
-rollout's surge pod can be evicted repeatedly before it ever runs.
+rollout's surge pod can be evicted repeatedly, stalling in `FailedScheduling`.
 
 ```kcl
 proxy = fw.Workload {name = "proxy", kind = "service", priorityClassName = "acme-platform"}

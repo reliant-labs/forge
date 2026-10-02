@@ -125,7 +125,7 @@ func foreignOwnerError(svcName, here string, owner composeOwner, shared bool) er
 		"    - infrastructure every git worktree shares: set `shared = True` on the workload's\n"+
 		"      forge.OnCompose — forge then drives it from the repo's primary checkout, from any worktree;\n"+
 		"    - a stack each checkout runs for itself: give it its own compose project name, e.g.\n"+
-		"      `env = {COMPOSE_PROJECT_NAME = \"<name>-<worktree>\"}` on the forge.OnCompose.",
+		"      `env = {COMPOSE_PROJECT_NAME = \"<name>-<worktree>\"}` on the forge.OnCompose",
 		svcName, strings.Join(owner.services, ", "), owner.dir, why, here)
 }
 

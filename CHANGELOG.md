@@ -421,6 +421,22 @@ detail}`. A control-plane ledger has no copy to be behind and is unaffected.
 
 ### Fixed
 
+- **The host disk reserve no longer refuses builds on a CI runner.** v0.1.43's
+  admission check refused every build lane below a fixed 20 GiB of free disk,
+  and a stock GitHub runner starts with ~14 GiB — so `forge env build` failed
+  on a runner before compiling anything, with a remedy (`forge storage gc`)
+  that reclaims caches a fresh runner does not have:
+
+  ```
+  host disk /tmp/... has 2.3 GiB free, below the 20 GiB reserve; run
+  'forge storage status' and 'forge storage gc --apply' before building
+  ```
+
+  On a CI runner (`CI` / `GITHUB_ACTIONS`) a measured shortfall is now a
+  warning and the build proceeds; an unreadable disk or unloadable policy
+  still refuses. `FORGE_STORAGE_ENFORCE_RESERVE=1` keeps the refusal for a
+  persistent self-hosted runner. Developer machines are unchanged.
+
 - **A store-backed Secret now reaches EVERY cluster that consumes it.** A
   `FileSecrets` (or pulled local hosted) provider projects the Secrets its
   cluster workloads declare by `secret_ref` — but forge applied that

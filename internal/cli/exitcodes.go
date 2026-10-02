@@ -15,22 +15,42 @@ package cli
 // pipeline's `if [ $? -eq 3 ]`, and a reader of that pipeline has no way to
 // discover the drift.
 //
-// 3–6 are the codes the hosted primitives add. Each names ONE outcome a
+// 3–8 are the codes the hosted primitives add. Each names ONE outcome a
 // pipeline reacts to differently:
 //
 //   - 3 (conflict) means someone else moved the environment. The pipeline
 //     must stop and page a human: retrying would stomp whatever landed.
 //   - 4 (refused) means the write was declined, not lost — a rollout is in
 //     flight, or the environment is pinned. A pipeline may wait and retry.
-//   - 5 (timed out) means the rollout was still progressing when the budget
-//     ran out. Retrying the WAIT is correct; re-promoting is not.
+//   - 5 (plan unconfirmed) means nobody approved the plan. Nothing was
+//     written; the pipeline must add --yes (or approve interactively).
 //   - 6 (superseded) means a newer promotion replaced the one being waited
 //     on. The wait's subject is gone, so neither retry nor failure is right
 //     — the pipeline's release was overtaken.
+//   - 8 (timed out) means the rollout was still progressing when the budget
+//     ran out. Retrying the WAIT is correct; re-promoting is not.
 //
-// 5 and 6 are deliberately NOT 1. A timeout and an overtaken wait are both
+// 6 and 8 are deliberately NOT 1. A timeout and an overtaken wait are both
 // "we never saw this finish", and reporting either as "the release is bad"
 // would fail builds for releases that were fine.
+//
+// WHY 5 MOVED, AND WHY THAT IS THE RIGHT TRADE. 5 meant "the wait's budget
+// expired" until O-13 gave `forge env deploy` a confirmation gate, which
+// needed a code of its own for the one outcome a pipeline must never
+// misread: nothing was deployed because nobody approved it. The two
+// candidates were a NEW code for the gate, or a new code for the timeout.
+//
+// The gate took 5 because it is the one that must be impossible to confuse
+// with success. A pipeline that upgrades without adding --yes now exits 5,
+// and the worst available reading of 5 is "a wait timed out" — which also
+// means "not deployed", so a stale handler still fails the job rather than
+// passing it. Had the gate taken 8 instead, an old handler's `[ $? -eq 5 ]`
+// → "retry the wait" branch would retry a deploy that had never been
+// approved. Pre-1.0, so the renumber is a clean break rather than an alias:
+// `forge env deploy --help`'s table is the contract, and
+// internal/cli/exitcodes.go is the only place either number is written.
+// Known consumer: reliant's internal/toolexec/daemonruntime/cmd_forge_deploy.go
+// carries forge's exit code as DATA and branches on no specific value.
 const (
 	// exitOK is success, or an idempotent no-op. A re-run of a promote
 	// that already landed exits 0: reaching the requested end state is
@@ -56,13 +76,22 @@ const (
 	// only.
 	exitRefused = 4
 
-	// exitTimedOut: the budget expired while the rollout was still
-	// progressing. Wait only.
-	exitTimedOut = 5
+	// exitPlanUnconfirmed: the deploy plan was computed and printed, and
+	// nobody approved it — no TTY to prompt on and no --yes. NOTHING was
+	// promoted. Deploy only (O-13, §13 F-18).
+	//
+	// It is not exitRefused (4), which means a write was attempted and
+	// declined by the server. Here forge declined to attempt one, which a
+	// pipeline fixes by adding a flag rather than by waiting and retrying.
+	exitPlanUnconfirmed = 5
 
 	// exitSuperseded: the environment was promoted past the promotion
 	// being waited on. Wait only.
 	exitSuperseded = 6
+
+	// exitTimedOut: the budget expired while the rollout was still
+	// progressing. Wait only. (Was 5 before O-13 — see the header.)
+	exitTimedOut = 8
 )
 
 // The domain reasons a control plane sends on a refused promote, under

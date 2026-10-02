@@ -465,6 +465,14 @@ type promotePlan struct {
 	// Changed is false only when this promote would alter nothing at all —
 	// same release, same digest set. A caller can use it to skip a no-op.
 	Changed bool `json:"changed"`
+	// Confirmed reports whether the O-13 approval gate let this deploy
+	// write (deploy_confirm.go). It is in the document because consent is
+	// the one thing a consumer must never infer: "applied: false" alone
+	// cannot distinguish "nobody approved it" from "the write was refused"
+	// from "--plan", and those want three different responses from a
+	// pipeline. False with ok:true and exit_code 0 is the approval-declined
+	// / --plan-only shape; false with exit_code 5 is plan_unconfirmed.
+	Confirmed bool `json:"confirmed"`
 	// ShipsNothing is always TRUE, and it is in the contract on purpose.
 	// Promote writes a pointer; not one byte reaches any cluster until
 	// `forge env deploy` runs. `forge env status` exists precisely because
@@ -687,9 +695,11 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 			return promotePlan{}, fmt.Errorf("read release %q: %w", opts.Version, err)
 		}
 		if rel == nil {
-			return promotePlan{}, fmt.Errorf("release %q not found in %s.\n"+
-				"  Cut it first with: forge env build %s --release %s --push",
-				opts.Version, releaseStore.Location(), opts.Env, opts.Version)
+			// The fix is the verb that BUILDS it (O-15), never
+			// `--release <v> --no-build`: a version nobody cut has no
+			// pushed digests in .forge/state either, so a cut-only
+			// re-run would record a release with no images in it.
+			return promotePlan{}, errUnknownReleaseForDeploy(opts.Env, opts.Version, releases)
 		}
 		target = *rel
 	}

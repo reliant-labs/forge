@@ -33,13 +33,34 @@ import (
 // deployCmdLong is `forge env deploy`'s help text, hoisted out of the command
 // declaration so the constructor reads as a declaration rather than as a
 // document with a cobra.Command buried in it.
-const deployCmdLong = `Make <environment> run a release — record the promotion, apply it, and wait
-for it to become healthy. With no version, re-apply the env's CURRENT binding
-(a spec-change deploy: the KCL moved, the release did not).
+const deployCmdLong = `Make <environment> run a release. TWO FORMS, and the difference is whether you
+name a version.
 
-  forge env deploy prod v1.4.0        # record, apply, wait
+  forge env deploy prod               # SHIP THIS CHECKOUT: build, push, cut a
+                                      # release, plan, confirm, deploy, wait
+  forge env deploy prod v1.4.0        # deploy a release that already exists
   forge env deploy prod --from staging  # exactly what staging runs
-  forge env deploy prod               # re-apply prod's current binding
+
+NO VERSION DOES ALL THE DEPLOYMENT BITS. In order: build the env's artifacts at
+the current checkout (images, static artifacts) exactly as ` + "`forge env build`" + `
+does, push them, cut a release named ` + "`<YYYYMMDD>.<HHMMSS>-<tree12>`" + ` for this
+tree, record the env's declared shape, compute the plan, ask you to confirm it,
+then promote, apply and wait. A release whose provenance tree already matches
+this checkout is REUSED rather than cut again, so a retried deploy never cuts
+twice.
+
+NAMING A VERSION BUILDS NOTHING. It deploys a release that was already cut — a
+redeploy, a move to an older one, or a spec-change deploy (the KCL moved and the
+release did not: name the version the env already runs). A version nobody cut is
+an error whose fix is ` + "`forge env deploy <env>`" + `, the form that builds it.
+
+NOTHING IS WRITTEN UNTIL YOU CONFIRM. A promotion IS the deploy — the converger
+picks it up within minutes — so the plan is printed and approved BEFORE the
+write, not after it. On a terminal you are prompted (default no). In CI pass
+--yes, which means "I read the plan". With no terminal and no --yes the command
+refuses (exit 5) having built, pushed and cut but written NO promotion, so
+approving it afterwards needs no rebuild. --plan-only stops after the plan and
+is the first stage of a two-stage pipeline.
 
 THE VERB IS record + apply + wait, AND THAT IS NOT OPTIONAL. Recording a
 binding ships nothing, so a step that only recorded one reported success before
@@ -98,17 +119,28 @@ been promoted. Re-deploying the release the env already runs is a no-op
 whatever the expectation says, so a retried success is never a conflict.
 
 Exit codes (release deploys):
-  0  deployed and healthy, or already on this release (no-op), or --plan
+  0  deployed and healthy, or already on this release (no-op), or --plan /
+     --plan-only, or a confirmation answered "no" (nothing was written)
   1  failed: invalid input, unreadable ledger, release not found, DEGRADED
   2  undetermined — we could not look (the control plane was unreachable)
   3  promotion_conflict / source_moved — the env (or --from's source) moved
      since the plan was read. Stop and look; retrying would overwrite it
   4  rollout_in_flight / environment_pinned — declined, nothing lost. Wait
      and retry, or pass --supersede (recorded) to replace an unfinished rollout
-  5  the wait's budget expired while the rollout was still progressing
+  5  plan_unconfirmed — the plan was printed and nobody approved it: no
+     terminal to prompt on and no --yes. NOTHING was promoted. Add --yes
   6  superseded — the env was promoted past the promotion being waited on
---json carries the same outcome: ` + "`applied`" + `, and a ` + "`refusal`" + ` object
-naming what was expected and what is actually there.
+  8  the wait's budget expired while the rollout was still progressing
+
+5 USED TO MEAN THE TIMEOUT, which is now 8. The confirmation gate took 5
+because it is the one outcome that must be impossible to misread as success:
+a pipeline that upgrades without adding --yes exits 5, and even a handler
+that still reads 5 as "the wait timed out" fails the job rather than passing
+it. Pre-1.0, so this is a clean renumber with no alias.
+
+--json carries the same outcome: ` + "`applied`" + `, ` + "`confirmed`" + ` (whether the gate let
+the write happen), and a ` + "`refusal`" + ` object naming what was expected and what is
+actually there.
 
 Examples:
   forge env build prod --release v1.4.0            # build once, cut the release
@@ -280,6 +312,11 @@ type promoteCmdFlags struct {
 	gates         []string
 	run           runOptions
 
+	// The O-13 approval gate. yes is the opt-IN: the gate is on by
+	// default, which is the whole of O-13 — see deploy_confirm.go.
+	yes      bool
+	planOnly bool
+
 	// --from / --from-promotion, held FLAT rather than as a nested
 	// promoteFromOptions so each is a plain flag target like every field
 	// above it. They are folded into the options struct at the call site.
@@ -310,6 +347,13 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 	flags := cmd.Flags()
 	flags.BoolVar(&f.plan, "plan", false, "Compute and print the full change set WITHOUT writing the binding or applying anything")
 	flags.StringVar(&f.note, "note", "", "Why — recorded on the ledger entry (most valuable on a deploy that moves the env BEHIND)")
+
+	// The approval gate (O-13). On by default; --yes is the opt-out of the
+	// PROMPT, never of the plan — the plan is always computed and printed.
+	flags.BoolVar(&f.yes, "yes", false,
+		"Proceed without the interactive confirmation: \"I read the plan\". The paved CI path. The plan is still computed and printed")
+	flags.BoolVar(&f.planOnly, "plan-only", false,
+		"Build, push and cut as usual, print the plan, and STOP without writing the promotion (exit 0). The first stage of a two-stage pipeline")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 
 	// Anti-stomp. Every release deploy compare-and-sets against the plan's
@@ -383,10 +427,18 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) er
 	if f.promote.requestedRelease() {
 		return dispatchReleaseDeploy(ctx, envName, f)
 	}
-	if err := refusePromoteFlagsWithoutRelease(f.promote); err != nil {
-		return err
+	// --explain and --dry-run are READ-ONLY questions about the apply
+	// target: "which cluster would this touch", "what would the manifests
+	// be". They are answered from the env's current binding and must not
+	// build, push or cut anything — a preview that produced a release would
+	// be the one command nobody could run safely to find out what would
+	// happen. So they keep the apply-only path.
+	if f.explain || f.dryRun {
+		return dispatchSpecChangeDeploy(ctx, envName, f)
 	}
-	return dispatchSpecChangeDeploy(ctx, envName, f)
+	// O-15: no version means DO EVERYTHING — build at this checkout, push,
+	// cut, plan, confirm, promote, apply, wait.
+	return runDeployEverything(ctx, envName, f)
 }
 
 // dispatchSpecChangeDeploy is `forge env deploy <env>` with no release named:
@@ -489,6 +541,9 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		Gates:         p.gates,
 		From:          p.fromSource(),
 		Run:           p.run,
+		// The O-13 gate. Always stated by the command, so the verb always
+		// shows the plan and asks before writing a promotion.
+		Confirm: newDeployConfirm(p, ""),
 		Follow: &promoteFollowOptions{
 			NoWait:   p.noWait,
 			jsonOut:  f.jsonOut,

@@ -1,0 +1,220 @@
+package cli
+
+// The confirmation gate: the plan is shown, and nothing is written until
+// somebody says yes (owner decision O-13, doc §8.6).
+//
+// WHY THE REVIEW MOVED IN FRONT OF THE WRITE. With the promotion converger
+// on, writing a promotion IS the deploy — the converger picks it up within
+// minutes and rolls the stack. That was verified in prod during the v1.7.13
+// release: everything had rolled roughly three minutes after `promote`,
+// BEFORE the operator's client-side `kubectl diff` finished. The review
+// happened, and it happened after the change it was reviewing.
+//
+// The alternative was splitting promote from a separate imperative apply so
+// there would be a gap to review in. That was rejected: it re-introduces the
+// two-step, drift-prone path the whole deploy-source-of-truth design exists
+// to remove, and "the record is the deploy" is the property that makes the
+// ledger trustworthy. What was wrong was never that the write deploys; it was
+// that nothing stood between the operator and the write. So: plan, then
+// approve, then write.
+//
+// NO TTY IS NOT CONSENT. A non-interactive caller with no flag is REFUSED
+// (exit 5, plan_unconfirmed) rather than defaulted to yes. That breaks
+// existing non-interactive callers on purpose (§13 F-18): the point of O-13
+// is that nothing deploys without a human having seen the plan, and a default
+// of "no TTY means yes" would reproduce the v1.7.13 situation in exactly the
+// place it is most likely to recur — automation. Breaking loudly at the
+// upgrade is cheap; a silent pre-approval is not.
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/cliutil"
+)
+
+// deployConfirm carries the approval inputs into runPromote.
+//
+// The zero value REQUIRES confirmation, which is the safe default: a caller
+// that forgets to thread a flag gets the gate, not a bypass.
+type deployConfirm struct {
+	// Yes is --yes: "I read the plan, proceed."
+	Yes bool
+	// PlanOnly is --plan-only: print the plan (and the version a no-version
+	// deploy cut) and stop, exit 0, writing no promotion.
+	PlanOnly bool
+	// AutoVersion is the version a no-version deploy cut, for the
+	// --plan-only line and the JSON document. Empty for a versioned deploy.
+	AutoVersion string
+
+	// Interactive is whether forge may prompt. PRODUCTION ALWAYS SETS IT,
+	// from cliutil.StdinIsTTY at the command boundary
+	// (newDeployConfirm) — it is not a seam with a nil fallback.
+	//
+	// The difference matters. A fallback that read the real terminal
+	// whenever the field was unset would mean production never wrote it,
+	// so every test that stated "no TTY" would be exercising a shape
+	// production cannot produce, and the only code reading the field would
+	// be reading a test's value. Resolving it once, where the process's
+	// actual stdin is known, keeps one answer for the whole command.
+	Interactive bool
+	// prompt is the one seam: a test must be able to answer the question
+	// without a pty. nil = the real terminal prompt.
+	prompt func(question string) (bool, error)
+	// out is where the plan and the prompt are rendered. nil = stdout (or
+	// stderr under --json, which progressWriter decides).
+	out io.Writer
+}
+
+// newDeployConfirm is the PRODUCTION constructor: it resolves whether forge
+// may prompt from the process's own stdin, once, at the command boundary.
+//
+// Every `forge env deploy` path goes through it, which is what keeps
+// Interactive a field production writes rather than one only tests set.
+func newDeployConfirm(p promoteCmdFlags, autoVersion string) *deployConfirm {
+	return &deployConfirm{
+		Yes:         p.yes,
+		PlanOnly:    p.planOnly,
+		AutoVersion: autoVersion,
+		Interactive: cliutil.StdinIsTTY(),
+	}
+}
+
+// deployConfirmOutcome is what the gate decided.
+type deployConfirmOutcome struct {
+	// Confirmed is whether the promotion may be written. It is the field
+	// --json reports, so a consumer never has to infer consent from an
+	// exit code plus a message.
+	Confirmed bool
+	// Err is non-nil when the command must stop. It carries the exit code:
+	// 5 for an unconfirmed non-interactive caller, 0 (nil) for --plan-only
+	// and for a declined prompt.
+	Err error
+}
+
+// renderForConfirmation prints the plan a reviewer is about to approve.
+//
+// It is the SAME renderer `--plan` uses, deliberately: the thing being
+// approved must be the thing a preview would have shown, or the approval is
+// of a different document than the one the operator read. Under --json it
+// goes to stderr, so stdout still carries exactly one document.
+func (p promotePlan) renderForConfirmation(jsonMode bool) {
+	renderPromotePlanText(progressWriter(jsonMode), p)
+}
+
+// confirmDeployPlan is the gate. It is called AFTER the plan is computed and
+// BEFORE anything is written, and it is the only thing between them.
+//
+// The order of the branches is the policy:
+//
+//  1. --plan-only stops here, exit 0. It is the first stage of a two-stage
+//     pipeline, and it must write nothing even when --yes is also present.
+//  2. --yes proceeds. "I read the plan."
+//  3. A TTY prompts, defaulting to NO. A bare Enter must not deploy.
+//  4. Anything else refuses with exit 5, printing the plan and the exact
+//     flag to add.
+func confirmDeployPlan(env string, plan promotePlan, c deployConfirm) deployConfirmOutcome {
+	out := c.out
+	if out == nil {
+		out = progressWriter(false)
+	}
+
+	if c.PlanOnly {
+		if c.AutoVersion != "" {
+			fmt.Fprintf(out, "\n--plan-only: release %s was cut and pushed; NO promotion was written.\n", c.AutoVersion)
+			fmt.Fprintf(out, "  Approve it with: forge env deploy %s %s --yes\n", env, c.AutoVersion)
+		} else {
+			fmt.Fprintf(out, "\n--plan-only: NO promotion was written.\n")
+			fmt.Fprintf(out, "  Approve it with: forge env deploy %s %s --yes\n", env, plan.Target.Release)
+		}
+		return deployConfirmOutcome{Confirmed: false}
+	}
+
+	if c.Yes {
+		return deployConfirmOutcome{Confirmed: true}
+	}
+
+	if c.Interactive {
+		ask := c.prompt
+		if ask == nil {
+			ask = promptYesNo
+		}
+		ok, err := ask(fmt.Sprintf("Deploy %s to env %q?", deployConfirmSubject(plan, c), env))
+		if err != nil {
+			return deployConfirmOutcome{Err: err}
+		}
+		if !ok {
+			fmt.Fprintln(out, "Cancelled — nothing was written.")
+			return deployConfirmOutcome{Confirmed: false}
+		}
+		return deployConfirmOutcome{Confirmed: true}
+	}
+
+	return deployConfirmOutcome{Err: errPlanUnconfirmed(env, plan, c)}
+}
+
+// deployConfirmSubject names what is being deployed, for the prompt.
+func deployConfirmSubject(plan promotePlan, c deployConfirm) string {
+	if c.AutoVersion != "" {
+		return "release " + c.AutoVersion
+	}
+	if plan.Target.Release != "" {
+		return "release " + plan.Target.Release
+	}
+	return "this release"
+}
+
+// errPlanUnconfirmed is the no-TTY, no-flag refusal: exit 5,
+// plan_unconfirmed.
+//
+// It names the EXACT command to re-run, including the version a no-version
+// deploy already cut — because that release exists, was pushed, and must not
+// be built a second time to approve it. A message that only said "pass --yes"
+// would send a CI author back to the no-version form, which would cut
+// another release for the same tree (reused, but the build would re-run).
+func errPlanUnconfirmed(env string, plan promotePlan, c deployConfirm) error {
+	version := c.AutoVersion
+	if version == "" {
+		version = plan.Target.Release
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "the deploy plan was not confirmed (plan_unconfirmed), so NO promotion was written.\n")
+	if c.AutoVersion != "" {
+		fmt.Fprintf(&b, "  Release %s WAS cut and its images pushed — approving it needs no rebuild.\n", c.AutoVersion)
+	}
+	fmt.Fprintf(&b, "  There is no terminal to confirm on and no --yes was given, and forge never reads\n"+
+		"  \"no TTY\" as consent: a promotion IS the deploy, so the converger would roll this out\n"+
+		"  within minutes of the write.\n")
+	fmt.Fprintf(&b, "  fix: re-run with --yes (the CI path, after reading the plan above):\n")
+	if version != "" {
+		fmt.Fprintf(&b, "    forge env deploy %s %s --yes\n", env, version)
+	} else {
+		fmt.Fprintf(&b, "    forge env deploy %s --yes\n", env)
+	}
+	fmt.Fprintf(&b, "  or compute the plan alone first: forge env deploy %s --plan-only", env)
+	return exitCodeError{code: exitPlanUnconfirmed, msg: b.String()}
+}
+
+// promptYesNo asks on the terminal, DEFAULTING TO NO.
+//
+// A bare Enter must not deploy. The default is the conservative answer for
+// the same reason the whole gate exists: the write is the deploy, and a
+// reflexive keystroke should not be able to ship one.
+func promptYesNo(question string) (bool, error) {
+	fmt.Fprintf(os.Stderr, "\n%s [y/N] ", question)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		// A closed stdin is not a yes. It is the non-interactive case
+		// arriving late, and it must refuse like one.
+		return false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}

@@ -92,6 +92,14 @@ type promoteOptions struct {
 	// declaration.
 	Ledger envLedger
 	Git    promoteGitReader
+
+	// Confirm is the O-13 approval gate, run between the plan and the write
+	// (deploy_confirm.go). NIL MEANS NO GATE, and only the callers whose
+	// subject is the ledger itself pass nil — the plan/CAS/gates/provenance
+	// tests and `forge release`'s fixtures, exactly the callers that also
+	// pass a nil Follow. `forge env deploy` always states it, so the verb
+	// always shows the plan and asks before writing.
+	Confirm *deployConfirm
 }
 
 // runPromote computes the change set and — unless --plan was passed — applies
@@ -168,6 +176,37 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		plan.Expected = expectUnboundLiteral
 	} else {
 		plan.Expected = guard.ExpectedCurrentID
+	}
+
+	// THE CONFIRMATION GATE (O-13). The plan is printed and approved before
+	// anything is written — see deploy_confirm.go for why the review had to
+	// move in front of the write rather than beside it.
+	//
+	// It runs for BOTH deploy forms, because both write a promotion and a
+	// promotion is the deploy. --plan was already a write-nothing preview, so
+	// it skips the gate: there is no write to gate.
+	//
+	// Nil Confirm means "no gate", and the only callers that pass nil are the
+	// ones whose subject IS the ledger — the plan/CAS/gates/provenance tests
+	// and `forge release`'s fixtures, the same callers that pass a nil Follow.
+	// Production always states it.
+	if !opts.DryRun && opts.Confirm != nil {
+		plan.renderForConfirmation(opts.JSON)
+		outcome := confirmDeployPlan(env, plan, *opts.Confirm)
+		if outcome.Err != nil {
+			return outcome.Err
+		}
+		if !outcome.Confirmed {
+			// Declined, or --plan-only. Nothing was written, and that is a
+			// SUCCESS: the caller asked what would happen and found out.
+			plan.Confirmed = false
+			plan.stamp(nil)
+			if opts.JSON {
+				return emitJSONDocument(plan)
+			}
+			return nil
+		}
+		plan.Confirmed = true
 	}
 
 	// THE ONLY WRITE IN THIS COMMAND, and it is downstream of the plan. A

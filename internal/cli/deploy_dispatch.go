@@ -283,6 +283,21 @@ type rolloutApplier interface {
 // A failed group is NOT reverted: there is no rollback. The failure is
 // returned as-is and recovery is roll forward — fix, then deploy again.
 func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, groups []deploytarget.ServiceGroup) error {
+	return dispatchDeployGroupsBeforeClusters(ctx, registry, groups, nil)
+}
+
+// dispatchDeployGroupsBeforeClusters is dispatchDeployGroups with one hook:
+// beforeClusters runs exactly once, immediately before the FIRST cluster
+// group is applied — after every infrastructure group ahead of it (compose,
+// host-infra sort first) has deployed, and before any cluster workload
+// exists. A nil hook, or a deploy with no cluster group, never runs it.
+//
+// It exists for preparation the cluster workloads depend on but that needs
+// the infrastructure to already be up: creating the dev databases an
+// in-cluster workload dials (ensureDevDatabaseHook). A hook error stops the
+// deploy before any workload is applied, the same fail-closed rule as the
+// pre-rollout Job gate.
+func dispatchDeployGroupsBeforeClusters(ctx context.Context, registry *deploytarget.Registry, groups []deploytarget.ServiceGroup, beforeClusters func(context.Context) error) error {
 	if registry == nil {
 		return errors.New("deploy dispatch: nil provider registry")
 	}
@@ -309,6 +324,12 @@ func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, 
 			return fmt.Errorf("deploy dispatch: no provider for %q (group: %s)", group.ProviderID, deploytarget.FormatGroupSummary(group))
 		}
 		if applier, ok := p.(rolloutApplier); ok {
+			if beforeClusters != nil {
+				if err := beforeClusters(ctx); err != nil {
+					return err
+				}
+				beforeClusters = nil
+			}
 			fmt.Printf("\n%s\n", deploytarget.FormatGroupSummary(group))
 			rollout, err := applier.ApplyNoWait(ctx, group)
 			if err != nil {

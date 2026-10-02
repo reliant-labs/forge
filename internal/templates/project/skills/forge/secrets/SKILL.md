@@ -244,7 +244,7 @@ and injects it differently per runtime:
 |---|---|
 | host / air | Each service gets the keys **it declares** via `secret_ref` — not the whole store. Per-service `HostDeploy.secrets_file` is only a backward-compat fallback when no bundle provider is declared. |
 | compose / external | Values are merged **under** the `env_file` overlay — an explicit `env_file` wins. |
-| k8s | Forge **renders** Secret objects CLI-side from the declared cluster `secret_ref`s and `kubectl apply`s them **before** the Deployments, so `secretKeyRef` resolves. Guarded by an `isLocalCluster` check — forge **refuses** to render plaintext into a non-local cluster (only k3d / kind / docker-desktop / minikube / rancher-desktop / colima / orbstack). |
+| k8s | Forge **renders** Secret objects CLI-side from the declared cluster `secret_ref`s and `kubectl apply`s them **before** the Deployments, so `secretKeyRef` resolves. Each Secret lands in **every cluster and namespace whose workloads declare it**, carrying only the keys those workloads declare — a multi-cluster dev env needs no `forge.ExternalSecret` or mirror script for a store-backed Secret. Guarded by an `isLocalCluster` check — forge **refuses** to render plaintext into a non-local cluster (only k3d / kind / docker-desktop / minikube / rancher-desktop / colima / orbstack). |
 
 **Validation:** `forge env up` / `forge env deploy` **fail-fast** if a declared
 `secret_ref` has no value in the store (a file store, or a LOCAL env's pulled

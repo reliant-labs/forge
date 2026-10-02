@@ -421,6 +421,33 @@ detail}`. A control-plane ledger has no copy to be behind and is unaffected.
 
 ### Fixed
 
+- **A store-backed Secret now reaches EVERY cluster that consumes it.** A
+  `FileSecrets` (or pulled local hosted) provider projects the Secrets its
+  cluster workloads declare by `secret_ref` — but forge applied that
+  projection once, into the env's primary kubectl context. A multi-cluster
+  dev env whose second cluster also reads the Secret got nothing there, so the
+  pod stalled on CreateContainerConfigError. control-plane worked around it by
+  declaring the Secret a `forge.ExternalSecret` (which then blocked every
+  fresh worktree's deploy preflight) and creating + mirroring it with a shell
+  script, whose randomly generated HMACs then disagreed with the store values
+  forge projected into the first cluster. The projection is now placed per
+  consuming (cluster, namespace), with exactly the keys that cluster's
+  workloads declare — the same trust boundary `RenderedSecrets` already keeps.
+  A single-cluster env renders and applies exactly what it did before.
+
+- **The dev databases exist before the first cluster workload is applied.**
+  `ensureDevDatabase` already creates every declared dev DSN — including one
+  an in-cluster workload reaches through `host.k3d.internal` — but it ran in
+  `forge env up`'s host phase, which starts only after the cluster rollout
+  converges. A cluster workload dialing a per-worktree database therefore
+  crash-looped on `database "…" does not exist`, the rollout never converged,
+  and the step that would have created the database never ran. The deploy
+  dispatch now ensures the dev databases at the infra→cluster boundary — after
+  compose / host-infra have brought the server up, before any cluster group is
+  applied — so `forge env up dev` and an applying `forge env deploy dev` both
+  start a fresh stack with no manual `CREATE DATABASE`. Dry runs create
+  nothing; non-dev envs are untouched (the same fail-closed dev classifier).
+
 - **`forge env up` from a linked git worktree no longer takes over and
   recreates compose infrastructure another checkout is running.** Compose names
   a project after its directory's basename and resolves relative bind mounts

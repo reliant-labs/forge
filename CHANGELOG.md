@@ -7,7 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`forge env status` is the ONE read view of an environment.** Reading an env
+  used to take six verbs — `env status`, `env verify`, `env wait`,
+  `env rollout`, `env topology`, `env history` — and they were views of a
+  single question, split by which half of the answer each happened to own. A
+  reader had to know, before they could ask, that the bound release lived in
+  `verify`, the rollout phase in `rollout`, the runtime ports in `status`, and
+  the promotion that caused all of it in `history`. Two were literal
+  duplicates: `env rollout` WAS `env wait --timeout 0`.
+
+  They are modes of one command now:
+
+  ```bash
+  forge env status                  # every environment, and how far behind each is
+  forge env status prod             # prod right now: runtime AND release
+  forge env status prod --wait      # block until the rollout settles
+  forge env status prod --history   # prod's promotion ledger, newest first
+  ```
+
+  One env's report carries the bound release, verify (running digests vs the
+  binding, in all five states, through the control plane's observer for a
+  hosted env), the rollout phase per workload, runtime health, gates, and
+  ledger freshness. The two halves are deliberately asymmetric about failure:
+  runtime health REPORTS (a down stack is a state this command must be able to
+  print), while the release half makes a claim and so owns the exit code.
+
+  **Every exit code is unchanged**, because every mode reaches the same code
+  the old verb called: 0/1/2 for the read, plus 5 (timed out, still
+  progressing) and 6 (superseded) under `--wait`. `--timeout` serves two modes
+  with different budgets — 60s for a cluster read, 15m for a wait — so its
+  declared default is an unset sentinel resolved per mode; `--wait --timeout 0`
+  still means one read, never blocking.
+
+  `--json` emits one document carrying the standard envelope. Its release
+  fields stay FLAT (`bound`, `images`, `release`) because `forge gate record
+--from` recognises the document by them.
+
 ### Removed
+
+- **BREAKING: `forge env verify|wait|rollout|topology|history` are deleted**,
+  with no alias and no hidden name — they are modes of `forge env status` (see
+  Changed, above). `forge release where` and `forge release verify` are
+  untouched: both answer a question about a RELEASE rather than an
+  environment. A removalguard entry pins all five spellings on every surface.
+
+- **BREAKING: `forge env promote` is gone — `forge env deploy <env> [vX | --from
+<src-env>]` does the whole job.** No alias and no hidden name; the old
+  spelling dies on "unknown command".
+
+  ```bash
+  forge env deploy prod v1.4.0          # was: forge env promote v1.4.0 --to prod && forge env deploy prod
+  forge env deploy prod --from staging  # exactly what staging runs
+  forge env deploy prod                 # unchanged: re-apply prod's current binding
+  ```
+
+  **The verb now means record + apply + wait, and the wait is not a flag.**
+  Recording a binding ships nothing, so a pipeline step that only promoted
+  reported success before any byte had moved and the release's real failure
+  surfaced minutes later with nothing connecting the two. Every pipeline
+  therefore spelled it `promote --deploy --wait`, and the spellings that
+  omitted either half were bugs waiting for an incident. So the health gate is
+  ON by default; `--no-wait` opts out and names
+  `forge env status <env> --wait` as the way to gate later.
+
+  **Who applies it is read off the environment's ledger, not a flag** — the
+  same declarative fact as where the promotion is recorded, so the two cannot
+  disagree. An env whose KCL declares `forge.ControlPlane` is converged by
+  that control plane and forge waits on the rollout it computes, pinned to the
+  promotion just written. Every other env is self-managed: the same command
+  renders the new binding and applies it from this machine, and that apply's
+  per-resource rollout wait IS the health gate.
+
+  `promote --wait` and `promote --deploy` are removed with the verb rather than
+  renamed: both are now what the command does.
+
+  Everything else is unchanged and moved with the code — the compare-and-set
+  (`--expect-current` / `--expect-unbound` / `--supersede`), `--gate`,
+  `--from` / `--from-promotion`, `--plan`, the run flags, every exit code and
+  the JSON envelope. A deploy that names no version keeps today's spec-change
+  behaviour, and a release-only flag passed without a version is now refused
+  rather than silently ignored.
 
 - **BREAKING: an environment no longer has an image registry — a WORKLOAD has
   one, as part of its image.** `forge.ClusterTarget.registry`,
@@ -136,6 +217,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Scaffolded CI for hosted environments** (ADR `docs/adr/env-verbs.md`,
+  task V6). A project with at least one hosted env (an env whose KCL declares
+  `forge.ControlPlane` and something the platform runs) now gets two new
+  files. The first is `.github/workflows/release.yml`. On a `v*` tag it runs
+  checks once (`forge lint --gate-json`, plus `task test -- -json` fed to
+  `forge ci verify-test-run --gate-json`). It then builds, pushes and records
+  the release in ONE command (`forge env build <env> --release "$VERSION"`;
+  `--release` implies `--push`). Finally it deploys the release through the
+  hosted envs in promotion order, one job per env, each under its GitHub
+  Environment. Each stage after the first deploys `--from` the stage before
+  it, pinned with `--from-promotion`. It asserts `--expect-current`, which the
+  previous job captured before this stage's approval wait. A hotfix that lands
+  while an approval is pending therefore turns the run red (exit 3) instead of
+  being overwritten. The second file is
+  `.github/actions/forge-deploy/action.yml`, a composite action vendored into
+  the repo so that it versions with the project's forge pin. It is one
+  `forge env deploy` — which records, applies and waits for health itself — and
+  then records that outcome as rollout evidence on the promotion the deploy
+  wrote and summarizes it into the job summary. Because the verb decides who
+  applies from what the env DECLARES, the action carries no promote step, no
+  "does this env converge its own promotions" probe, no separate wait and no
+  `deploy:` input.
+  Existing projects get both via
+  `forge project rescaffold .github/workflows/release.yml`.
+  Neither file uses curl or environment ids, and no token appears in a URL.
+  The only secret is `FORGE_CONTROL_PLANE_TOKEN`.
+- **`forge cloud token create|list|revoke`** mints and manages the org
+  automation token that CI deploys with. An org token has no acting user, so
+  it outlives any one person. Scopes are validated before the round trip.
+  `--json` carries the one-time secret, so
+  `… --json | jq -r .secret | gh secret set FORGE_CONTROL_PLANE_TOKEN` never
+  echoes it to a terminal.
+- **`forge ci summarize <doc.json>...`** renders forge `--json` documents as
+  Markdown for `$GITHUB_STEP_SUMMARY`. It renders the verdict from the
+  envelope, a field table and row tables. It decides nothing: it exits 0
+  whatever the documents say, and 1 only when an input cannot be read.
+- **`forge env deploy` applies a MIXED env's cluster half.** An env that keeps
+  its ledger on a control plane AND declares workloads that control plane does
+  not run — a cluster Deployment, a compose service, host infra, a shipped
+  frontend — now gets both halves of the deploy: the client-side apply for what
+  forge owns, then the wait on the rollout the control plane computes. Before,
+  the follow-through branched on "is this env hosted" alone, so a mixed env
+  recorded its promotion and waited on the hosted rollout while its cluster
+  workloads silently stayed on the previous release — a green deploy that
+  shipped half a release. The apply runs first and a failure short-circuits the
+  wait. Nothing is configured: the shape comes from the env's own render.
 - **Status verbs for hosted deploys** (hosted-deploy-primitives §3.5):
   - `forge env rollout <env>`: where the current (or `--promotion`)
     rollout has got to, read once. It is `forge env wait --timeout 0`, with
@@ -221,6 +348,26 @@ detail}`. A control-plane ledger has no copy to be behind and is unaffected.
 
 ### Changed
 
+- **Scaffolded CI: the build-once release pipeline owns hosted envs, and the
+  broken pieces are gone.**
+  - `deploy.yml` no longer rebuilds per env for a hosted env. If it did,
+    staging and prod would run different digests, and `release.yml` builds
+    once instead. A mixed env, one with both hosted and cluster parts, also
+    moves wholly to `release.yml`. Its ledger is the control plane, so once
+    it has been promoted, `forge env deploy` pins both halves to the
+    release. A `deploy.yml` rebuild of its cluster half would then deploy
+    the old digests and still report success. A mixed stage writes the
+    kubeconfig, because `forge env deploy` applies that half from CI itself.
+    When every env is hosted, `deploy.yml` is not emitted at all.
+  - `build-images.yml`'s opt-in `cut-release` job is deleted. It cut and
+    promoted by raw curl, read `DEPLOY_TOKEN` instead of
+    `FORGE_CONTROL_PLANE_TOKEN`, and was broken against the server because
+    it sent no artifact kind or mode.
+  - `reconcile.yml` runs `forge env status <env> --json`. It used to call
+    `forge reconcile`, which was never a verb, and its matrix expressions
+    were missing their `$`.
+  - Every rendered workflow is now checked by `actionlint`, when it is on
+    PATH.
 - **BREAKING (one require line): `github.com/reliant-labs/forge/pkg` is no
   longer a module.** forge is now a single module,
   `github.com/reliant-labs/forge`, carrying both the CLI and the `pkg/*`

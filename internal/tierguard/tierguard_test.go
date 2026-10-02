@@ -45,7 +45,16 @@ func TestMain(m *testing.M) {
 		runRenderChild()
 		return
 	}
-	os.Exit(m.Run())
+	exitCode := m.Run()
+	// The fixtures are shared across tests, so only the parent test process
+	// can remove them after the entire suite, including failed tests, finishes.
+	if renderBase != "" {
+		if err := os.RemoveAll(renderBase); err != nil {
+			fmt.Fprintf(os.Stderr, "remove tierguard fixtures: %v\n", err)
+			exitCode = 1
+		}
+	}
+	os.Exit(exitCode)
 }
 
 // maxConcurrentRenders bounds how many fixture render children run at once.
@@ -70,6 +79,7 @@ const maxConcurrentRenders = 2
 // the same set, so they are built once per binary.
 var (
 	renderOnce   sync.Once
+	renderBase   string
 	renderInputs []*renderResult
 	renderC      *renderResult
 	renderErr    error
@@ -88,12 +98,13 @@ func renders(t *testing.T) (inputs []*renderResult, identity *renderResult) {
 	t.Helper()
 	renderOnce.Do(func() {
 		// Not t.TempDir: the trees outlive the first test that asks for
-		// them, and a failure message points at them for inspection.
+		// them. TestMain removes the shared directory after all tests finish.
 		base, err := os.MkdirTemp("", "tierguard-*")
 		if err != nil {
 			renderErr = err
 			return
 		}
+		renderBase = base
 
 		// The four fixtures are independent trees, but render() cannot
 		// run concurrently IN THIS PROCESS: forgeIn drives the pipeline
@@ -262,7 +273,7 @@ func TestTier1FilesAreDerivedFromUserInput(t *testing.T) {
 			fmt.Fprintf(&msg, "      template: %s\n", tp)
 		}
 	}
-	msg.WriteString("\nRendered trees kept for inspection:\n")
+	msg.WriteString("\nRendered trees (removed when the test suite finishes):\n")
 	for _, r := range inputs {
 		fmt.Fprintf(&msg, "  %s: %s\n", r.Label, r.Root)
 	}

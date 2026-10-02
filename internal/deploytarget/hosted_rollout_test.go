@@ -89,7 +89,7 @@ func (f *rolloutCP) Call(_ context.Context, proc string, req, out any) error {
 			unpinned = `[{"deploymentId":"dep-orders","name":"orders","observedState":"DEPLOY_OBSERVED_STATE_READY","verdict":"DEPLOY_VERDICT_CONVERGED"}]`
 		}
 		reply = fmt.Sprintf(`{"rollout":{"promotion":{"id":"promo-1","releaseVersion":"v1"},
-		 "phase":%q,"workloads":%s,"unpinned":%s,"stabilityWindowMs":120000,
+		 "phase":%q,"workloads":%s,"unpinned":%s,"stabilityWindowMs":"120000",
 		 "convergesPromotions":true,"reason":"api: %s"}}`,
 			phase, workloads, unpinned, rolloutPhaseLabel(phase))
 	default:
@@ -196,7 +196,7 @@ func TestHostedWaitWithoutAPromotionKeepsTheStatusPoll(t *testing.T) {
 // TestHostedWaitStabilizingCompletesTheDeploy is the DOCUMENTED threshold
 // difference: a deploy completes on "published and serving", so STABILIZING
 // is done. Treating it as pending would make every deploy as slow as the
-// server's stability window — which is the question `forge env wait` is the
+// server's stability window — which is the question `forge env status --wait` is the
 // verb for, not this one.
 func TestHostedWaitStabilizingCompletesTheDeploy(t *testing.T) {
 	cp := &rolloutCP{phases: []string{wireRolloutPhaseStabilizing}}

@@ -170,7 +170,7 @@ forge doctor --signal deploy   # probes, resources, Secrets, migrations
 
 ```
 forge build <env>                 # what <env> declares (host workloads need no image)
-forge build <env> --push          # and push each image to the reference its workload declares
+forge env build <env> --push          # and push each image to the reference its workload declares
 forge registry login <env> -u <user> --password-stdin   # login to every host they name
 forge registry ref <env>          # <image>@<digest> per image the last build pushed
 forge build <env> --plan          # resolve + preflight the build set; build nothing
@@ -256,8 +256,8 @@ frontends.
 ### Hosted static sites
 
 A frontend on `forge.OnHosted {}` publishes into the platform's bucket and
-CDN, as an OCI release with **no `config.js` in it**, so `forge env promote`
-moves one digest everywhere. `forge build <env> --push` pushes it. The
+CDN, as an OCI release with **no `config.js` in it**, so `forge env deploy`
+moves one digest everywhere. `forge env build <env> --push` pushes it. The
 frontend's `runtime_config` becomes the spec's `runtimeConfig`:
 
 ```yaml
@@ -310,8 +310,9 @@ declared port force-injected as `PORT`.
 
 ## Verify + recover — roll forward, never back
 
-After every deploy confirm the env runs what it claims: `forge env verify
-<env>`, `forge env status <env>`. Verify exit 2 + `ledger BEHIND` = pull first.
+After every deploy confirm the env runs what it claims: `forge env status
+<env>` — bound release, running digests, rollout, health, gates, ledger.
+Exit 2 + `ledger BEHIND` = pull first.
 
 **There is no rollback command, and that is deliberate.** A rollback claims
 to undo a release, and it cannot: by the time you would run it the release
@@ -320,14 +321,14 @@ no `--rollback`, no `rollback_cmd`, and no `kubectl rollout undo` path.
 Recovery is always a **new release that rolls forward**:
 
 ```bash
-forge build prod --release v1.7.1 --push     # each image to its declared reference
-forge env promote v1.7.1 --to prod --plan    # read it: direction must be AHEAD
-forge env promote v1.7.1 --to prod --note "<incident>"
-forge env deploy prod
+forge env build prod --release v1.7.1 --push       # each image to its declared reference
+forge env deploy prod v1.7.1 --plan               # read it: direction must be AHEAD
+forge env deploy prod v1.7.1 --note "<incident>"  # records, applies, waits
 ```
 
-Promote compare-and-sets against the plan's read: exit **3** = the env moved
-meanwhile, nothing written — never retry blind. CI recipe: `forge env promote --help`.
+A release deploy compare-and-sets against the plan's read: exit **3** = the env
+moved meanwhile, nothing written — never retry blind. CI recipe:
+`forge env deploy --help`.
 
 A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
 migration before any workload changes, and a workload that never becomes

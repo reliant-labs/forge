@@ -145,7 +145,7 @@ func (r *PortResolver) Resolve(name string, preferred int) (int, error) {
 	//    The check that used to be here re-probed the port and moved on
 	//    when it was busy, which produced exactly the wrong answer in the
 	//    most ordinary situation there is: the thing that OWNS this port is
-	//    still running from the last `forge run`. It answers, so the probe
+	//    still running from the last `forge env up`. It answers, so the probe
 	//    called it busy, so the render handed out a different port — and
 	//    the stack came up beside its own still-running database instead of
 	//    reusing it, with the app now dialling a port nothing was on.

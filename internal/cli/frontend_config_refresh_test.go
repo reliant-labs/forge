@@ -16,7 +16,7 @@ import (
 //
 // On a fresh project the order of events is fixed and cannot be
 // rearranged: `forge generate` renders config.js while the OIDC client id
-// is still the empty stub, then `forge run` executes the idp-provision job,
+// is still the empty stub, then `forge env up` executes the idp-provision job,
 // which registers the browser application and publishes the GENERATED id
 // into deploy/kcl/dev/idp_identity_gen.k. Nothing re-read that file, so the
 // browser was served `"OIDC_CLIENT_ID": ""` — the frontend's no-auth
@@ -59,7 +59,7 @@ func TestRefreshFrontendRuntimeConfigs_PicksUpTheConvergedClientID(t *testing.T)
 
 	got := readConfigJS(t, projectDir, cfg)
 	if !strings.Contains(got, `"OIDC_CLIENT_ID": "converged-client-id"`) {
-		t.Errorf("config.js still carries the pre-provision client id — a first `forge run` cannot sign in:\n%s", got)
+		t.Errorf("config.js still carries the pre-provision client id — a first `forge env up` cannot sign in:\n%s", got)
 	}
 	// The issuer rides the same published file. A refresh that recovered
 	// the id but dropped the issuer leaves the frontend half-configured,
@@ -72,12 +72,12 @@ func TestRefreshFrontendRuntimeConfigs_PicksUpTheConvergedClientID(t *testing.T)
 // IDEMPOTENT. From the second run on, the identity is already published
 // and the rendered bytes are identical — so nothing is rewritten and
 // nothing is reported. Rewriting an unchanged file would touch its mtime
-// on every `forge run`, which a watching dev server reads as a reason to
+// on every `forge env up`, which a watching dev server reads as a reason to
 // reload the browser.
 // The file this compares against is the one the WRITER produced, stamp and
 // all — which is the trap. A generated file carries a `forge:hash=` line
 // that the renderer does not emit, so a raw byte comparison never matches
-// and every `forge run` reports refreshing a file it did not change. The
+// and every `forge env up` reports refreshing a file it did not change. The
 // second write below is what makes that visible: it is the real
 // second-run-in-a-row, against real on-disk bytes.
 func TestRefreshFrontendRuntimeConfigs_IsANoOpWhenAlreadyCurrent(t *testing.T) {
@@ -91,7 +91,7 @@ func TestRefreshFrontendRuntimeConfigs_IsANoOpWhenAlreadyCurrent(t *testing.T) {
 
 	// First run: the document is genuinely new, so it is written — through
 	// the real writer, so what lands on disk is stamped exactly as a
-	// `forge run` leaves it.
+	// `forge env up` leaves it.
 	if changed, err := writeFrontendRuntimeDocs(cfg, projectDir, map[string]string{"web": current}); err != nil || changed != 1 {
 		t.Fatalf("first write = (%d, %v), want (1, nil)", changed, err)
 	}
@@ -115,7 +115,7 @@ func TestRefreshFrontendRuntimeConfigs_IsANoOpWhenAlreadyCurrent(t *testing.T) {
 }
 
 // A project with NO frontend has no runtime document, and must not be made
-// to render one — this runs on every `forge run`, including for the
+// to render one — this runs on every `forge env up`, including for the
 // API-key / worker / CLI projects that never wanted an IdP.
 func TestRefreshFrontendRuntimeConfigs_SkipsAProjectWithNoFrontend(t *testing.T) {
 	projectDir := identityProject(t)

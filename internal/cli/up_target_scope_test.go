@@ -114,7 +114,7 @@ func TestUpBuildPushesToTheDeclaredRegistry(t *testing.T) {
 // TestUpBuildWithoutDeclaredRegistryBuildsLocally is the other half: env up
 // is also the host-only dev loop, and an env that declares no registry has no
 // cluster to pull from. Its build must succeed and push nothing — unlike
-// `forge build <env> --push`, where an undeclared registry is a runbook error.
+// `forge env build <env> --push`, where an undeclared registry is a runbook error.
 func TestUpBuildWithoutDeclaredRegistryBuildsLocally(t *testing.T) {
 	planProject(t, `{
   "output": {

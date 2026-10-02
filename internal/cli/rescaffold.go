@@ -159,12 +159,12 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 
 	// CI paths answer to the mapper, and a workflow the mapper does not
 	// emit for this project is not re-created from any other renderer.
-	frontends := ciFrontends(root, cfg)
+	inputs := ciInputs(root, cfg)
 	for _, p := range paths {
 		if !generator.IsCIMapperPath(p) {
 			continue
 		}
-		if _, ok, rerr := generator.CIWorkflowFileFor(root, cfg, frontends, p); rerr != nil {
+		if _, ok, rerr := generator.CIWorkflowFileFor(root, cfg, inputs, p); rerr != nil {
 			return rerr
 		} else if !ok {
 			return rescaffoldErr(paths, fmt.Sprintf("this project has no %s: %s", p, generator.CIWorkflowAbsenceReason(p)),

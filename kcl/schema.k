@@ -992,7 +992,7 @@ schema ControlPlane:
     #
     #     wl.api | {image = "ghcr.io/acme/api", runtime = forge.OnHosted {}}
     #
-    # `forge build <env> --push` pushes each image to the reference it
+    # `forge env build <env> --push` pushes each image to the reference it
     # declares, and `forge registry login <env>` logs in to the hosts those
     # images name. A hosted env may one day inherit a default from the
     # control plane's advertised image push base — see the

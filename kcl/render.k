@@ -318,7 +318,7 @@ _check_image_names_registry = lambda w: any, rt: any, image: str -> bool {
     assert not (image and rt.type == "hosted" and not img_lib.has_registry_host(image)), \
         "workload '${w.name}': image '${image}' names no registry host, and it is bound to forge.OnHosted, " \
         + "which publishes the image for the control plane to pull. Declare the full reference on the workload, " \
-        + "e.g. `image = \"ghcr.io/<owner>/${image}\"`, and `forge registry login <env>` / `forge build <env> --push` " \
+        + "e.g. `image = \"ghcr.io/<owner>/${image}\"`, and `forge registry login <env>` / `forge env build <env> --push` " \
         + "will use it. " + _HOSTED_IMAGE_BASE_SEAM
     True
 }

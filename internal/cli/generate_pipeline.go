@@ -2377,7 +2377,7 @@ func stepGrafanaDashboards(ctx *pipelineContext) error {
 // Seed data is no longer projected into the user project as .sql files:
 // under the vertical-scaffolding law forge writes no new forge-owned files
 // into user space. Seeds now materialize at RUNTIME via `forge db seed`
-// (pkg/seedplan) and `forge run` auto-seed — this step no longer emits
+// (pkg/seedplan) and `forge env up` auto-seed — this step no longer emits
 // anything. It survives only to parse the entity protos once and stash the
 // EntityDefs that stepFrontendMocks consumes (frontend mock values still
 // mirror the seed vocabulary).

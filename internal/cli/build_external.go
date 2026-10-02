@@ -151,6 +151,17 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 			BuildCwd: svc.EffectiveBuildCwd(),
 			BuildEnv: svc.EffectiveBuildEnv(),
 		}
+		cwd, err := buildtarget.ResolveCwd(spec)
+		if err == nil {
+			err = checkBuildStorageFn(cwd)
+		}
+		if err != nil {
+			resultCh <- buildResult{name: svc.Name + " (external)", kind: "external", err: err}
+			return
+		}
+		if builder := spec.BuildEnv["BUILDX_BUILDER"]; builder != "" {
+			registerDockerBuilderStorage(ctx, builder)
+		}
 		fmt.Printf("[build] %s: ShellBuild (tag %s)\n", svc.Name, svcTag)
 		res := runner.Build(ctx, spec)
 

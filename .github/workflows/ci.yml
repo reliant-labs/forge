@@ -172,6 +172,8 @@ jobs:
         # than as one slow package. A generous explicit budget keeps a genuine
         # deadlock detectable while making the failure mode legible.
         run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
+      - name: Local registry maintenance integration
+        run: go test -race -tags=integration -count=1 -timeout=5m ./internal/storage
 
   test-guards:
     name: Test (guards)

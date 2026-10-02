@@ -1,6 +1,6 @@
 package cli
 
-// `forge env verify <env>` for a HOSTED environment (hosted-deploy-primitives
+// `forge env status <env>` for a HOSTED environment (hosted-deploy-primitives
 // §3.5, task F7).
 //
 // A cluster env is verified by reading the cluster with kubectl (env_verify.go).
@@ -29,8 +29,8 @@ import (
 	"strings"
 )
 
-// hostedVerifySource names where a hosted verdict came from.
-const hostedVerifySource = "control-plane observer"
+// hostedObserverSource names where a hosted verdict came from.
+const hostedObserverSource = "control-plane observer"
 
 // verifyHostedRollout maps one GetRollout answer onto env verify's five image
 // states, one row per PINNED workload. Pure, so the mapping is table-tested

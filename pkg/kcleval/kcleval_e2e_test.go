@@ -14,6 +14,7 @@ package kcleval_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +29,39 @@ var (
 	buildOnce sync.Once
 	forgeBin  string
 	buildErr  error
+	// buildDir is the temp directory holding the built binary. Package-level
+	// so TestMain can remove it; see TestMain for why t.Cleanup cannot.
+	buildDir string
 )
+
+// TestMain removes the directory holding the forge binary this suite builds.
+//
+// The binary is ~138 MB and is built once per test binary through buildOnce,
+// which is exactly why t.Cleanup cannot own it: the first test to finish would
+// delete the binary every later test still executes. Nothing else could, so it
+// leaked one copy per run — two were on disk (0.28 GB) when this was found.
+//
+// Kept on failure, with the path printed: a failing render is diagnosed by
+// running that binary by hand, and deleting it would leave a message about an
+// executable that no longer exists.
+//
+// This file is the only test file in the package, so the TestMain lives under
+// the same `//go:build e2e` tag as the fixture it cleans up — there is no
+// untagged test binary for it to conflict with.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if buildDir != "" {
+		if code == 0 {
+			if err := os.RemoveAll(buildDir); err != nil {
+				fmt.Fprintf(os.Stderr, "kcleval: remove %s: %v\n", buildDir, err)
+				code = 1
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "kcleval: kept the forge binary at %s for diagnosis\n", buildDir)
+		}
+	}
+	os.Exit(code)
+}
 
 // forgeBinary builds the forge CLI from this checkout once per test binary,
 // with CGO enabled because the kcl_plugin.forge namespace is a CGO bridge and
@@ -41,6 +74,7 @@ func forgeBinary(t *testing.T) string {
 			buildErr = err
 			return
 		}
+		buildDir = dir
 		out := filepath.Join(dir, "forge")
 		cmd := exec.Command("go", "build", "-o", out, "./cmd/forge")
 		cmd.Dir = repoRoot(t)

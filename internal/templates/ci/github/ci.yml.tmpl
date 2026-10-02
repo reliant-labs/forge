@@ -440,7 +440,7 @@ jobs:
         run: forge cluster up e2e --wait
       - name: Build images
         # Pushes each image to the registry its own reference names.
-        run: forge build e2e --push
+        run: forge env build e2e --push
       - name: Deploy and test
         # `forge env deploy` waits for every workload to become ready.
         run: |

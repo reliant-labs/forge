@@ -7,7 +7,7 @@
 # applied by a script that has to be run in order against a live system, so a
 # teammate who clones this repo gets the same IdP from:
 #
-#     forge run
+#     forge env up dev
 #
 # That holds however the IdP runs. The scaffolded dev environment supervises
 # Zitadel as a HOST PROCESS (deploy/kcl/dev/main.k declares it as a
@@ -23,7 +23,7 @@
 #     psql "postgres://postgres:postgres@localhost:<postgres port>/postgres" \
 #         -c 'DROP DATABASE zitadel'
 #     rm -f .forge/idp/pat.txt
-#     forge run
+#     forge env up dev
 #
 # (The postgres port is the one deploy/kcl/dev/main.k declares; `forge env
 # status` prints it. On the container path it is `docker compose down idp`

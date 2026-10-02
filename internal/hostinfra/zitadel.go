@@ -255,7 +255,7 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(), spec.zitadelEnv(patPath)...)
-	// Its OWN session, so it OUTLIVES the `forge run` that started it — the
+	// Its OWN session, so it OUTLIVES the `forge env up` that started it — the
 	// same lifecycle postgres has (pg_ctl daemonizes to get there). Without
 	// this it would die with the launching shell's process group, and the
 	// dev stack would not survive the command returning.
@@ -378,7 +378,7 @@ func stopZitadel(projectDir string, spec Spec) (bool, error) {
 	}
 	// Would not go quietly. The state that matters is in postgres and is
 	// already durable, so this is safe — and leaving it running would hold
-	// the port against the next `forge run`.
+	// the port against the next `forge env up`.
 	_ = killProcess(pid)
 	removeZitadelPID(dataDir)
 	return true, nil

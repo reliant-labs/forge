@@ -4,7 +4,7 @@ package cli
 // (hosted-deploy-primitives §3.5, task F7).
 //
 // "Runs" means "is the env's CURRENT binding", which is the ledger's answer.
-// Whether the bytes actually reached the cluster is `forge env verify`'s
+// Whether the bytes actually reached the cluster is `forge env status`'s
 // question, not this one's; the help says so rather than letting a reader
 // assume.
 //
@@ -38,7 +38,7 @@ func newReleaseWhereCmd() *cobra.Command {
 		Long: `Show which environments are currently bound to a release.
 
 "Bound" is the ledger's answer: the release is the environment's CURRENT
-promotion. It does not prove the bytes arrived — ` + "`forge env verify <env>`" + ` does.
+promotion. It does not prove the bytes arrived — ` + "`forge env status <env>`" + ` does.
 
 With --env, the release is looked up on that env's control plane (hosted) or
 in this project's files. Without it, every environment this checkout declares
@@ -176,7 +176,7 @@ func runReleaseWhere(ctx context.Context, version string, sources []whereSource,
 		names = append(names, e.Env)
 	}
 	fmt.Fprintf(out, "Release %s is the current binding of: %s\n", version, strings.Join(names, ", "))
-	fmt.Fprintln(out, "  (bound in the ledger — `forge env verify <env>` proves the bytes arrived)")
+	fmt.Fprintln(out, "  (bound in the ledger — `forge env status <env>` proves the bytes arrived)")
 	return nil
 }
 

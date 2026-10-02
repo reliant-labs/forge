@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -88,7 +89,7 @@ func TestCIWorkflows_CLIGetsTheBuildableSubset(t *testing.T) {
 	}
 }
 
-// A CLI never gets the reconcile workflow or the cut-release job, even with
+// A CLI never gets the reconcile workflow or a deploy workflow, even with
 // the flag set: there is no image and nothing deployed to reconcile.
 func TestCIWorkflows_CLIIgnoresReconcileFlag(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "tool", Kind: config.ProjectKindCLI}
@@ -159,6 +160,159 @@ func TestSortByPromotionOrder_ProdIsLast(t *testing.T) {
 			}
 		})
 	}
+}
+
+// hostedRoot is a service project declaring staging and prod (dev excluded
+// from CI by ciDeployEnvs).
+func hostedRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	writeEnvMain(t, root, "dev", "staging", "prod")
+	return root
+}
+
+func ciDests(files []CIWorkflowFile) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range files {
+		out[f.Dest] = true
+	}
+	return out
+}
+
+// A project with no hosted env gets exactly the cluster pipeline it got
+// before F6: no release.yml, no vendored action, and a deploy.yml over every
+// declared env — the same data the hosted-unaware entry point plans.
+func TestCIWorkflows_ClusterOnlyProjectIsUnchanged(t *testing.T) {
+	root := hostedRoot(t)
+	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{})
+	dests := ciDests(files)
+	if dests[".github/workflows/release.yml"] || dests[ForgeDeployActionPath] {
+		t.Fatalf("a cluster-only project got the hosted release pipeline: %v", dests)
+	}
+	deploy, ok := ciFile(files, ".github/workflows/deploy.yml").(templates.DeployWorkflowData)
+	if !ok {
+		t.Fatal("a cluster-only project lost deploy.yml")
+	}
+	var names []string
+	for _, e := range deploy.Environments {
+		names = append(names, e.Name)
+	}
+	if strings.Join(names, ",") != "staging,prod" {
+		t.Errorf("deploy.yml envs = %v, want staging,prod", names)
+	}
+	if !reflectDeepEqualFiles(files, CIWorkflows(root, serviceCfg(), nil)) {
+		t.Error("CIWorkflowsFor with no hosted input must plan exactly what CIWorkflows does")
+	}
+	images := ciFile(files, ".github/workflows/build-images.yml").(templates.BuildImagesWorkflowData)
+	if images.BuildEnv != "staging" {
+		t.Errorf("build-images builds for %q, want staging", images.BuildEnv)
+	}
+}
+
+// Every env hosted: release.yml + the action carry the whole deploy path,
+// deploy.yml is NOT emitted (it would render no trigger and no job, which
+// GitHub rejects), and the per-commit image build stays — its signing and
+// scanning still run on every push — against the first hosted env.
+func TestCIWorkflows_HostedEnvsGetReleaseWorkflow(t *testing.T) {
+	root := hostedRoot(t)
+	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{HostedEnvs: []string{"prod", "staging"}})
+	dests := ciDests(files)
+	if !dests[".github/workflows/release.yml"] || !dests[ForgeDeployActionPath] {
+		t.Fatalf("a hosted project must get release.yml and the forge-deploy action: %v", dests)
+	}
+	if dests[".github/workflows/deploy.yml"] {
+		t.Error("deploy.yml planned with no non-hosted env to deploy")
+	}
+	rel := ciFile(files, ".github/workflows/release.yml").(templates.ReleaseWorkflowData)
+	if rel.BuildEnv != "staging" || len(rel.Stages) != 2 || rel.Stages[0].Env.Name != "staging" || rel.Stages[1].Env.Name != "prod" {
+		t.Errorf("release stages must follow promotion order from staging: %+v", rel)
+	}
+	if rel.Stages[1].Prev != "staging" || rel.Stages[0].Next != "prod" {
+		t.Errorf("stages must chain: %+v", rel.Stages)
+	}
+	images, ok := ciFile(files, ".github/workflows/build-images.yml").(templates.BuildImagesWorkflowData)
+	if !ok || images.BuildEnv != "staging" {
+		t.Errorf("build-images must still build per commit, for the first hosted env: %+v", images)
+	}
+}
+
+// Some envs hosted: deploy.yml keeps the others, release.yml takes the
+// hosted ones, and the per-commit build follows the env deploy.yml deploys.
+func TestCIWorkflows_PartlyHostedSplitsByEnv(t *testing.T) {
+	root := hostedRoot(t)
+	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{HostedEnvs: []string{"prod"}})
+	deploy := ciFile(files, ".github/workflows/deploy.yml").(templates.DeployWorkflowData)
+	if len(deploy.Environments) != 1 || deploy.Environments[0].Name != "staging" {
+		t.Errorf("deploy.yml must keep only the cluster env: %+v", deploy.Environments)
+	}
+	rel := ciFile(files, ".github/workflows/release.yml").(templates.ReleaseWorkflowData)
+	if len(rel.Stages) != 1 || rel.Stages[0].Env.Name != "prod" || rel.Stages[0].Prev != "" {
+		t.Errorf("release.yml must hold only prod, promoted by version: %+v", rel.Stages)
+	}
+	images := ciFile(files, ".github/workflows/build-images.yml").(templates.BuildImagesWorkflowData)
+	if images.BuildEnv != "staging" {
+		t.Errorf("build-images must build for deploy.yml's env, got %q", images.BuildEnv)
+	}
+}
+
+// A MIXED env leaves deploy.yml WHOLE. Its ledger is the control plane, so a
+// promoted env's `forge env deploy` pins both halves to the release — a
+// deploy.yml rebuild of the cluster half would ship the OLD digests while
+// reporting success. Its release.yml stage is marked Mixed (kubeconfig +
+// always deploy).
+func TestCIWorkflows_MixedEnvIsWhollyReleaseYml(t *testing.T) {
+	root := hostedRoot(t)
+	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{HostedEnvs: []string{"staging", "prod"}, MixedEnvs: []string{"prod"}})
+	if ciFile(files, ".github/workflows/deploy.yml") != nil {
+		t.Error("a mixed env must not keep a deploy.yml job: a promoted env deploys its release, not the rebuild")
+	}
+	rel := ciFile(files, ".github/workflows/release.yml").(templates.ReleaseWorkflowData)
+	if rel.Stages[0].Mixed || !rel.Stages[1].Mixed {
+		t.Errorf("only prod is mixed: %+v", rel.Stages)
+	}
+}
+
+// `forge project rescaffold` reaches the new files through the CI mapper: the
+// vendored action is a mapper path although it is not under workflows/, and
+// its template's name under workflows/ is NOT one. A hosted project re-emits
+// both; a cluster-only project is told why it has neither.
+func TestRescaffold_HostedReleaseFilesAreMapperPaths(t *testing.T) {
+	for path, want := range map[string]bool{
+		ForgeDeployActionPath:                       true,
+		".github/workflows/release.yml":             true,
+		".github/workflows/forge-deploy-action.yml": false,
+	} {
+		if got := IsCIMapperPath(path); got != want {
+			t.Errorf("IsCIMapperPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+
+	root := hostedRoot(t)
+	hosted := CIInputs{HostedEnvs: []string{"staging", "prod"}}
+	for _, p := range []string{ForgeDeployActionPath, ".github/workflows/release.yml"} {
+		content, ok, err := CIWorkflowFileFor(root, serviceCfg(), hosted, p)
+		if err != nil || !ok || len(content) == 0 {
+			t.Errorf("a hosted project must re-emit %s (ok=%v err=%v)", p, ok, err)
+		}
+		if _, ok, _ := CIWorkflowFileFor(root, serviceCfg(), CIInputs{}, p); ok {
+			t.Errorf("a cluster-only project must not get %s", p)
+		}
+		if reason := CIWorkflowAbsenceReason(p); !strings.Contains(reason, "HOSTED") {
+			t.Errorf("absence reason for %s should name hosted envs: %q", p, reason)
+		}
+	}
+}
+
+func reflectDeepEqualFiles(a, b []CIWorkflowFile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Dest != b[i].Dest || a[i].Template != b[i].Template || !reflect.DeepEqual(a[i].Data, b[i].Data) {
+			return false
+		}
+	}
+	return true
 }
 
 // forge.yaml's deploy.environments, when declared, is used verbatim —

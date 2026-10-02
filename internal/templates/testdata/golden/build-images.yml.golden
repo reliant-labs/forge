@@ -96,7 +96,7 @@ jobs:
         run: printf '%s' "$LOGIN_TOKEN" | forge registry login "$FORGE_ENV" --username "${{ github.actor }}" --password-stdin
 
       - name: Build and push
-        # `forge build <env> --push` pushes to the env's declared registry
+        # `forge env build <env> --push` pushes to the env's declared registry
         # and records the tag and digest in .forge/state/. `--target
         # demo` builds the project image alone: frontend images
         # are per-env (each renders that env's config.js), so deploy.yml
@@ -106,7 +106,7 @@ jobs:
           IMAGE_TAG_OVERRIDE: ${{ github.event.inputs.image_tag }}
         run: |
           tag="${IMAGE_TAG_OVERRIDE:-sha-${GITHUB_SHA::7}}"
-          forge build "$FORGE_ENV" --target demo --push --tag "$tag"
+          forge env build "$FORGE_ENV" --target demo --push --tag "$tag"
 
       - name: Pushed image ref
         id: ref
@@ -221,12 +221,14 @@ jobs:
     steps:
       - name: Summary
         run: |
-          echo "## Build Images Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image | Status |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| demo | ${{ needs.build-push.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| trivy scan | ${{ needs.trivy-scan.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Tag:** \`sha-$(echo ${{ github.sha }} | cut -c1-7)\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Build Images Summary"
+            echo ""
+            echo "| Image | Status |"
+            echo "|-------|--------|"
+            echo "| demo | ${{ needs.build-push.result }} |"
+            echo "| trivy scan | ${{ needs.trivy-scan.result }} |"
+            echo ""
+            echo "**Commit:** \`$GITHUB_SHA\`"
+            echo "**Tag:** \`sha-${GITHUB_SHA::7}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

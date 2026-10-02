@@ -9,7 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 )
 
-// `forge env verify --json` tests.
+// `forge env status --json` tests.
 //
 // These assert on the PARSED report rather than on substrings of the output,
 // because the thing under test is a machine contract: a consumer does
@@ -25,20 +25,20 @@ import (
 // runEnvVerifyJSON runs the command in --json mode against a stubbed cluster,
 // capturing stdout and parsing it. It returns the parsed report, the process
 // exit code, and the raw output for diagnostics.
-func runEnvVerifyJSON(t *testing.T, dir, envName string, lister clusterImageLister, target envTarget) (envVerifyReport, int, string) {
+func runEnvVerifyJSON(t *testing.T, dir, envName string, lister clusterImageLister, target envTarget) (envStatusDocument, int, string) {
 	t.Helper()
 	t.Chdir(dir)
 
 	var err error
 	out := captureStdout(t, func() {
-		err = runEnvVerify(context.Background(), envName, envVerifyOptions{
+		err = runEnvStatusRelease(context.Background(), envName, envStatusOptions{
 			JSON:     true,
 			Lister:   lister,
 			Resolver: stubResolver{target: target},
 		})
 	})
 
-	var report envVerifyReport
+	var report envStatusDocument
 	if jsonErr := json.Unmarshal([]byte(out), &report); jsonErr != nil {
 		t.Fatalf("--json output must be parseable JSON, got error %v for output:\n%s", jsonErr, out)
 	}

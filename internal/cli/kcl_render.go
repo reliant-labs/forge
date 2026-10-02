@@ -55,7 +55,7 @@ import (
 // RESOLVED runtime — host, compose, cluster, hosted or build-only — so the
 // placement question "where does this run" is answered per workload, never
 // env-wide. Callers (`forge build`, `forge env deploy`, `forge env up`,
-// `forge run`) read this rather than reaching back into forge.yaml,
+// `forge env up`) read this rather than reaching back into forge.yaml,
 // because placement is a per-env decision that lives in the KCL layer.
 type KCLEntities struct {
 	// Project and Env are the bundle's project name and the env it was

@@ -20,7 +20,7 @@ forge scaffold --dry-run     # print the plan
 forge scaffold               # birth entities, then generate
 forge lint
 go build ./...
-forge run                    # host services + frontends, on a fresh seeded DB
+forge env up dev             # host services + frontends, on a fresh seeded DB
 ```
 
 ### Name every service up front
@@ -264,13 +264,13 @@ interface to `struct{ ... }` and lists no methods — it cannot tell you
 
 | Command | What it does |
 |---|---|
-| `forge run` | Host services + frontends; auto-seeds a fresh dev DB on first boot |
+| `forge env up` | Host services + frontends; auto-seeds a fresh dev DB on first boot |
 | `forge env up dev` | Full stack: Docker infra + Go services (hot reload) + frontends |
 | `forge env up <env>` | Build + deploy + host launch + frontend dev — reads `deploy/kcl/<env>/` |
 | `forge env deploy dev` | Deploy to local k3d (or whatever dev's KCL targets) |
 | `forge generate` | Re-project from protos + applied migrations. Safe anytime; never touches business logic |
 | `forge lint` | Go + proto + frontend linters |
-| `forge build` | Binaries + frontends. Docker images only with `--docker` or `--push` (`forge build <env> --push` pushes each image to the reference its own workload declares — a workload's `image` is the only place a registry is set) |
+| `forge build` | Binaries + frontends. Docker images only with `--docker` or `--push` (`forge env build <env> --push` pushes each image to the reference its own workload declares — a workload's `image` is the only place a registry is set) |
 | `task test` / `task test:e2e` | Unit + frontends / E2E (needs a stack up); `task test:all` adds integration |
 
 Auth is enforced in every mode — present a real bearer token (`auth`). There is

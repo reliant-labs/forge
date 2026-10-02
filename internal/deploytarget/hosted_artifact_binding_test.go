@@ -2,6 +2,7 @@ package deploytarget
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,12 +86,41 @@ func TestHostedArtifactOf_PerTier(t *testing.T) {
 	if got := hostedArtifactOf("web", static); got != "ghcr.io/acme/web/site" {
 		t.Errorf("a static site's artifact = %q", got)
 	}
-	// With none declared it falls back to the frontend NAME, which is the
-	// key `forge build` records a site release under. Unlike the database
-	// case this fallback is correct: a static site IS release-bound.
+	// With none declared it still falls back to the frontend NAME — but a
+	// bare name is no longer a usable key for a site, because a site's
+	// artifact key IS the repository the release was pushed to, and the
+	// published spec hands it to the platform as the address to pull. So
+	// the PLAN refuses it rather than publishing an unpullable spec; see
+	// TestHostedStaticPlanRefusesAnUnaddressableArtifact.
 	bare := &HostedWorkload{Tier: HostedTierStatic, Static: &v1alpha1.StaticSiteSpec{}}
 	if got := hostedArtifactOf("web", bare); got != "web" {
 		t.Errorf("a static site with no declared artifact = %q, want the name %q", got, "web")
+	}
+}
+
+// TestHostedStaticPlanRefusesAnAnaddressableArtifact: a site whose artifact
+// key names no registry host has no pullable address, so the plan refuses it
+// before any RPC rather than publishing a digest the platform cannot locate.
+//
+// This is the defect's own failure mode moved one layer earlier: an
+// unlocatable release used to be discovered by the operator, as a 404 on an
+// artifact that existed.
+//
+// MUTATION VERIFIED RED: dropping the hostedImageNamesRegistry guard in
+// planHostedWith → the bare key publishes and the refusal disappears.
+func TestHostedStaticPlanRefusesAnUnaddressableArtifact(t *testing.T) {
+	cp := &fakeCP{status: staticReadyStatus(digestB)}
+	group := ServiceGroup{
+		Env: "prod", ProviderID: HostedProviderID,
+		Hosted:   &HostedTarget{Endpoint: "https://cp.example", Release: "v2", Digests: map[string]string{"web": digestB}},
+		Services: []ResolvedService{{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Static: &v1alpha1.StaticSiteSpec{}}}},
+	}
+	err := HostedProvider{Client: cp}.Deploy(context.Background(), group)
+	if err == nil || !strings.Contains(err.Error(), "names no registry host") {
+		t.Fatalf("err = %v, want a refusal naming the unaddressable artifact", err)
+	}
+	if n := len(cp.procs()); n != 0 {
+		t.Fatalf("%d RPCs before the refusal", n)
 	}
 }
 
@@ -137,18 +167,18 @@ func TestHostedEnsureDeployment_SendsArtifactPerTier(t *testing.T) {
 func TestHostedEnsureDeployment_SendsStaticArtifact(t *testing.T) {
 	cp := &fakeCP{status: staticReadyStatus(digestB)}
 	p := HostedProvider{Client: cp, PollInterval: time.Millisecond}
-	if err := p.Deploy(context.Background(), staticGroup("v2", map[string]string{"web": digestB})); err != nil {
+	if err := p.Deploy(context.Background(), staticGroup("v2", map[string]string{staticSiteArtifact: digestB})); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	web := ensureBodyFor(t, cp, "web")
 	if web["tier"] != "DEPLOY_TIER_STATIC" {
 		t.Fatalf("web tier = %v", web["tier"])
 	}
-	// staticGroup declares Artifact: "web", and the digest was looked up
-	// under that same key — which is the invariant: what forge SENDS is
-	// what forge looked the digest up under.
-	if got := web["artifact"]; got != "web" {
-		t.Errorf("static artifact = %v, want %q", got, "web")
+	// The digest was looked up under the site's release repository, and
+	// that same key is what forge SENDS — the invariant being that the
+	// artifact a deployment is bound to is the key its digest came from.
+	if got := web["artifact"]; got != staticSiteArtifact {
+		t.Errorf("static artifact = %v, want %q", got, staticSiteArtifact)
 	}
 }
 

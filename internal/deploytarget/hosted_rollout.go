@@ -19,13 +19,13 @@ package deploytarget
 //
 // The phase folds all three into one server-computed verdict, scoped to the
 // promotion whose pins this deploy published. So `forge env deploy`,
-// `forge env wait`, the in-flight promote refusal and the UI read ONE
+// `forge env status --wait`, the in-flight promote refusal and the UI read ONE
 // definition of done rather than four that drift apart.
 //
 // DEPLOY'S THRESHOLD IS DELIBERATELY NOT `env wait`'S. A deploy completes on
 // SUCCEEDED **or STABILIZING** — "published and serving" — because making
 // every deploy sit out the server's stability window would make every deploy
-// two minutes slower for no new information. `forge env wait` is the verb
+// two minutes slower for no new information. `forge env status --wait` is the verb
 // that holds for the window, because a release GATE is asking the stronger
 // question.
 //
@@ -112,12 +112,14 @@ type wireRollout struct {
 	// never gating for a release: a database that cannot be
 	// release-bound must not be able to fail a release. A DEPLOY still
 	// waits on them, because it just published them.
-	Unpinned            []wireWorkloadRollout `json:"unpinned,omitempty"`
-	StartedAt           *time.Time            `json:"startedAt,omitempty"`
-	FinishedAt          *time.Time            `json:"finishedAt,omitempty"`
-	StabilityWindowMS   int64                 `json:"stabilityWindowMs,omitempty"`
-	ConvergesPromotions bool                  `json:"convergesPromotions,omitempty"`
-	Reason              string                `json:"reason,omitempty"`
+	Unpinned   []wireWorkloadRollout `json:"unpinned,omitempty"`
+	StartedAt  *time.Time            `json:"startedAt,omitempty"`
+	FinishedAt *time.Time            `json:"finishedAt,omitempty"`
+	// A 64-bit proto scalar, so protojson sends it as a STRING — see
+	// wireInt64, which accepts that and a bare number.
+	StabilityWindowMS   wireInt64 `json:"stabilityWindowMs,omitempty"`
+	ConvergesPromotions bool      `json:"convergesPromotions,omitempty"`
+	Reason              string    `json:"reason,omitempty"`
 }
 
 // errRolloutUnavailable means this control plane cannot answer GetRollout for

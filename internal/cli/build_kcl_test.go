@@ -180,7 +180,7 @@ func TestBuildTargetNarrowing_FrontendNameScopesEntities(t *testing.T) {
 
 // `--target <project>` builds the PROJECT image and nothing else. It is the
 // command a CI job runs to publish that one image (forge's own scaffolded
-// build-images.yml: `forge build <env> --target <project> --push`), so every
+// build-images.yml: `forge env build <env> --target <project> --push`), so every
 // other artifact the env declares is out of scope: a ShellBuild's build_cmd
 // (control-plane's sibling-repo reliant images, which need a ../reliant
 // checkout CI does not have), a DockerBuild workload (a containerised

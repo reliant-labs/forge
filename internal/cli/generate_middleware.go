@@ -642,7 +642,7 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	// oidc_scopes / log_level, because a browser client and a server need
 	// the same facts under the same names — so a project scaffolded with a
 	// frontend failed config generation outright and produced no
-	// config_gen.k, which then failed `forge run` at the KCL render with
+	// config_gen.k, which then failed `forge env up` at the KCL render with
 	// "Cannot find the module .config", a message naming neither the real
 	// cause nor this file.
 	//

@@ -45,7 +45,7 @@ import .ingress as ing
 #
 # There is no `registry` here: a workload declares its own, as part of its
 # image in deploy/kcl/workloads.k. This env pushes each image to the reference
-# that workload names, so `forge build {{.EnvName}} --push`, `forge registry
+# that workload names, so `forge env build {{.EnvName}} --push`, `forge registry
 # login {{.EnvName}}` and `forge env deploy {{.EnvName}}` all follow the images.
 _cluster = forge.ClusterTarget {
     # The kubectl context name of the {{.EnvName}} cluster.
@@ -98,7 +98,7 @@ _configured = lambda w: fw.Workload -> fw.Workload {
 # sidecars, volumes, or raw secretRef env — see the `deploy` skill.
 
 # A Deployment (or Job) on this env's cluster, pulling the image the workload
-# declares — which is exactly what `forge build {{.EnvName}} --push` pushed.
+# declares — which is exactly what `forge env build {{.EnvName}} --push` pushed.
 _on_cluster = lambda w: fw.Workload -> fw.Workload {
     _configured(w) | {resources = _resources, runtime = forge.OnCluster {target = _cluster}}
 }

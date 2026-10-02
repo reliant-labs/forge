@@ -45,7 +45,7 @@ const (
 	configDBURLEnvVar = "DATABASE_URL"
 	// configAutoMigrateEnvVar is the env var of the boolean field the dev
 	// scaffold seeds True so a freshly-created dev DB is migrated on the first
-	// `forge run` boot — the app applies its migrations, THEN auto-seed
+	// `forge env up` boot — the app applies its migrations, THEN auto-seed
 	// populates the schema. Non-dev envs inherit the proto default (false): a
 	// prod deploy owns its migration story (a Job/initContainer), never an
 	// implicit on-boot migrate.
@@ -85,7 +85,7 @@ const (
 // on a multi-stack dev machine, another project's database — where it created
 // the database, ran migrations and seeded rows, then printed a healthy banner
 // and exited 0. Deriving both from one input is what makes that
-// unrepresentable; `forge run` re-checks the pair at boot (devpg.Reconcile)
+// unrepresentable; `forge env up` re-checks the pair at boot (devpg.Reconcile)
 // because a project scaffolded under one port can be run under another.
 func devDatabaseDSN(projectName string) string {
 	return devpg.DSN(projectName)
@@ -159,7 +159,7 @@ func writeConfigNativeShared(body, projectDir, kclDirAbs string, cs *checksums.F
 // Rewriting user-owned files needs justifying, since forge's rule is that
 // it does not touch them. The alternative is worse: the module those files
 // import no longer exists, so a project that regenerates without this fix
-// gets a KCL tree that does not load at all — `forge run`, `forge env
+// gets a KCL tree that does not load at all — `forge env up`, `forge env
 // deploy` and every render fail on an unresolved import until the user
 // hand-edits every env. This is the same reconciliation
 // ReconcileScaffoldTestHelperName performs when a forge-owned identifier
@@ -369,7 +369,7 @@ func EnvSecretsFileName(envName string) string {
 // EMPTY as a labelled slot to fill. That includes DATABASE_URL: the env's KCL
 // declares the dev connection string from the port it resolves per render, so
 // a copy here could only go stale — see devSecretValue for the full rationale.
-// `forge run` stays turnkey because the KCL declaration supplies the value.
+// `forge env up` stays turnkey because the KCL declaration supplies the value.
 //
 // Only local envs get one. A cloud env declares `forge.ExternalSecrets {}` —
 // forge never sees those values, so scaffolding a store there would create a
@@ -410,7 +410,7 @@ func generateEnvSecretsBody(sensitive []ConfigField, projectName, envName string
 	b.WriteString("# Every config field marked `sensitive: true` in proto/config/v1/config.proto\n")
 	b.WriteString("# is projected into the manifest as a valueFrom.secretKeyRef, NOT an inline\n")
 	b.WriteString("# value — so its VALUE lives here, keyed by env-var NAME. forge reads this\n")
-	b.WriteString("# file to (a) layer the values onto host processes (`forge run`) and (b) render\n")
+	b.WriteString("# file to (a) layer the values onto host processes (`forge env up`) and (b) render\n")
 	b.WriteString("# + apply the backing Secret into LOCAL clusters only.\n")
 	b.WriteString("#\n")
 	b.WriteString("# A value only reaches a service that DECLARES it via `EnvVar.secret_ref` —\n")
@@ -489,7 +489,7 @@ func yamlScalar(v string) string {
 //   - it is the dev env's MODE field (seeded "development" so the dev env is
 //     positively development), or
 //   - it is the dev env's AUTO_MIGRATE field (seeded True so the app applies
-//     its migrations on the first `forge run` boot — a fresh dev DB comes up
+//     its migrations on the first `forge env up` boot — a fresh dev DB comes up
 //     with its schema; dev boots alive), or
 //   - it is a required field with no schema default (KCL makes such a field
 //     mandatory in every AppConfig instance, so config.k must supply it; it
@@ -549,7 +549,7 @@ func configKValueLines(fields []ConfigField, projectName, envName string) []stri
 			lines = append(lines, fmt.Sprintf("    %s = %q", f.KCLPath(), configDevModeValue))
 		case isDev && f.EnvVar == configAutoMigrateEnvVar:
 			// Dev boots alive: the app applies its migrations on the first
-			// `forge run` so a freshly-created dev DB has its schema before the
+			// `forge env up` so a freshly-created dev DB has its schema before the
 			// first-boot auto-seed runs. KCL bool literals are capitalized
 			// (True/False); the config projection lowercases this to
 			// AUTO_MIGRATE=true for the runtime loader. DEV ONLY — a non-dev env
@@ -558,7 +558,7 @@ func configKValueLines(fields []ConfigField, projectName, envName string) []stri
 			lines = append(lines, fmt.Sprintf("    %s = True", f.KCLPath()))
 		case f.EnvVar == configDBURLEnvVar && isDev:
 			// A database URL the project chose NOT to mark sensitive still
-			// gets the turnkey local DSN so `forge run` boots against the dev
+			// gets the turnkey local DSN so `forge env up` boots against the dev
 			// postgres. (The scaffolded proto DOES mark it sensitive, so this
 			// branch is only reached by a project that un-marked it.)
 			lines = append(lines, fmt.Sprintf("    %s = %q", f.KCLPath(), devDatabaseDSN(projectName)))

@@ -19,7 +19,7 @@
 //	  as newly added (forge scaffold service / hand-edited forge.yaml): the
 //	  handlers scaffold and row constructor still generate so the user
 //	  can implement-then-register, but the service is NOT served — no
-//	  auth skip-list entries, `forge run` skips it, and
+//	  auth skip-list entries, `forge env up` skips it, and
 //	  `forge project audit` warns that the row constructor is unreferenced.
 //	  The registration line is written by the USER (or their agent) —
 //	  forge prints it but never edits the file. That's the design: the

@@ -26,7 +26,7 @@ const FrontendConfigGlobal = "__FORGE_CONFIG__"
 // Next.js and Vite both inline NEXT_PUBLIC_* / VITE_* at BUILD time: the
 // value becomes a string literal in the bundle. That makes a built artifact
 // environment-SPECIFIC — it carries staging's issuer forever — which is
-// exactly what `forge env promote` exists to avoid. Promoting a bundle
+// exactly what `forge env deploy` exists to avoid. Promoting a bundle
 // built against staging into production would point real users at the
 // staging IdP.
 //

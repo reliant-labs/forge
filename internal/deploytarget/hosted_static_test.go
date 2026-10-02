@@ -27,13 +27,20 @@ func staticReadyStatus(digest string) func(int) string {
 	}
 }
 
+// staticSiteArtifact is the fixture site's release repository: the declared
+// image plus the platform's layout segment, which is what `forge build
+// --push` records and the ledger is keyed by.
+var staticSiteArtifact = HostedStaticRepository("ghcr.io/acme/web")
+
 func staticGroup(release string, digests map[string]string) ServiceGroup {
 	keep := int32(5)
 	return ServiceGroup{
 		Env: "prod", ProviderID: HostedProviderID,
 		Hosted: &HostedTarget{Endpoint: "https://cp.example", Release: release, Digests: digests},
 		Services: []ResolvedService{{Name: "web", Hosted: &HostedWorkload{
-			Tier: HostedTierStatic, Artifact: "web",
+			// A site's artifact key IS the repository it was pushed to, so
+			// it carries a registry host exactly as buildHostedGroup's does.
+			Tier: HostedTierStatic, Artifact: staticSiteArtifact,
 			Static: &v1alpha1.StaticSiteSpec{BasePath: "/app", KeepReleases: &keep},
 		}}},
 	}
@@ -42,7 +49,8 @@ func staticGroup(release string, digests map[string]string) ServiceGroup {
 // TestHostedStaticDeployCallOrderAndPinnedRelease: a hosted StaticSite is
 // published as ensure env → ensure deployment{tier STATIC, spec.liveDigest =
 // the BOUND release digest} → publish → status, and nothing in the spec names
-// a bucket or a repository (the platform derives both from the org).
+// a bucket or a cdn (the platform owns both). The release's repository IS
+// published — see TestHostedStaticPublishesTheRecordedReleaseRepository.
 //
 // MUTATIONS VERIFIED RED:
 //   - dropping `spec.LiveDigest = digest` in planHostedWith → liveDigest absent;
@@ -52,7 +60,7 @@ func staticGroup(release string, digests map[string]string) ServiceGroup {
 func TestHostedStaticDeployCallOrderAndPinnedRelease(t *testing.T) {
 	cp := &fakeCP{status: staticReadyStatus(digestB)}
 	p := HostedProvider{Client: cp, PollInterval: time.Millisecond}
-	if err := p.Deploy(context.Background(), staticGroup("v2", map[string]string{"web": digestB})); err != nil {
+	if err := p.Deploy(context.Background(), staticGroup("v2", map[string]string{staticSiteArtifact: digestB})); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	want := "EnsureEnvironment,EnsureDeployment,PublishDeploymentConfig,GetStatus"
@@ -95,7 +103,7 @@ func TestHostedStaticUnboundRefused(t *testing.T) {
 func TestHostedStaticReleaseMissingSiteRefused(t *testing.T) {
 	cp := &fakeCP{status: staticReadyStatus(digestB)}
 	err := HostedProvider{Client: cp}.Deploy(context.Background(), staticGroup("v2", map[string]string{"api": digestA}))
-	if err == nil || !strings.Contains(err.Error(), `static site artifact "web"`) {
+	if err == nil || !strings.Contains(err.Error(), `static site artifact "`+staticSiteArtifact+`"`) {
 		t.Fatalf("err = %v", err)
 	}
 	if n := len(cp.procs()); n != 0 {

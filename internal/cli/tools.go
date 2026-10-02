@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // frontendTSPluginPackage is the npm package providing the local TS codegen
@@ -267,7 +268,7 @@ func runToolsInstall(ctx context.Context, version string, force bool) error {
 
 		spec := t.Module + "@" + resolveToolVersion(ctx, ".", t, version)
 		fmt.Printf("📦 Installing %-26s (go install %s)\n", t.Binary, spec)
-		out, err := exec.CommandContext(ctx, "go", "install", spec).CombinedOutput()
+		out, err := goexec.Graceful(exec.CommandContext(ctx, "go", "install", spec)).CombinedOutput()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  ❌ go install %s failed: %v\n", spec, err)
 			if len(out) > 0 {

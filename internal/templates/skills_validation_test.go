@@ -169,9 +169,12 @@ func scaffoldOnce(t *testing.T) {
 			return
 		}
 		scaffoldTreeOnce.root = root
-		// NOTE: intentionally not removed on test exit via t.Cleanup —
-		// the tree is shared across tests via sync.Once. It lives in the
-		// OS temp dir and is tiny.
+		// Not t.Cleanup: the tree is shared across tests via sync.Once, so
+		// the first test to finish must not delete what the rest still read.
+		// TestMain (main_test.go) removes it after the whole suite, and keeps
+		// it on failure so a scaffold assertion can be diagnosed against the
+		// bytes that were actually generated.
+		templates.RegisterSharedTempDir(root)
 		gen := generator.NewProjectGenerator("demo", root, "example.com/demo")
 		gen.ServiceName = "users"
 		gen.FrontendName = "web"

@@ -1606,12 +1606,12 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 
 	// Port 0 = EPHEMERAL, and it stays that way. `forge project new` already
 	// scaffolds FrontendPort: 0 for this reason (see project.go): the
-	// frontend port is omitempty in forge.yaml, and `forge run` / `forge env
+	// frontend port is omitempty in forge.yaml, and `forge env up` / `forge env
 	// up` allocate a free OS port at launch and print it in the summary.
 	//
 	// This used to auto-assign 3000 (then 3001, …) instead, which put a
 	// literal in forge.yaml that no longer had anything to do with what was
-	// free — so on a host running several forge stacks, `forge run` failed
+	// free — so on a host running several forge stacks, `forge env up` failed
 	// on a port another project already held and the fix was to hand-edit
 	// forge.yaml. Scaffolding a frontend now teaches the same "discover the
 	// dev port from forge's output, don't hardcode 3000" pattern the rest of

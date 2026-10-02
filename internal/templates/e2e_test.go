@@ -58,7 +58,7 @@ func TestE2EWorkflowTemplate_K3d(t *testing.T) {
 	for _, want := range []string{
 		"k3d cluster delete e2e",
 		"forge cluster up e2e --wait",
-		"forge build e2e --push",
+		"forge env build e2e --push",
 		"forge env deploy e2e",
 		installForgeRun(8),
 		"frontends/web/package.json",

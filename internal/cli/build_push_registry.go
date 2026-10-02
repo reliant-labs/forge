@@ -16,7 +16,7 @@ import (
 // nowhere else. Not on the env, not on a flag, not in a `-D` binding forge
 // owns, not in an environment variable or a forge.yaml key.
 //
-// `forge build <env> --push` is a switch — "push these builds" — and each
+// `forge env build <env> --push` is a switch — "push these builds" — and each
 // build's destination is the reference its own workload declares, which is the
 // same reference `forge env deploy` pulls. They agree by construction rather
 // than because a CI script restated a registry correctly, and two workloads in
@@ -148,7 +148,7 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 		return pushPlan{}, errPushNeedsEnv()
 	}
 	if len(dests) == 0 {
-		return pushPlan{}, noPushableImagesError(fmt.Sprintf("forge build %s --push", opts.env), opts.env, declared)
+		return pushPlan{}, noPushableImagesError(fmt.Sprintf("forge env build %s --push", opts.env), opts.env, declared)
 	}
 	plan.push = true
 	return plan, nil
@@ -177,7 +177,7 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 // exactly as a backend image is — it just lands under the platform's own layout
 // segment, which forge appends rather than asking the author for. An env whose
 // only publishable thing is a hosted site still has a push destination, and
-// omitting it made `forge build <env> --push` refuse a project that had one.
+// omitting it made `forge env build <env> --push` refuse a project that had one.
 //
 // Sorted by repository so every consumer enumerates the same order.
 func declaredImageDestinations(e *KCLEntities) []imageDestination {
@@ -253,7 +253,7 @@ func validateBuildEnvArg(arg string) error {
 			fmt.Sprintf("%q is not an environment name — it looks like an image registry, and forge build takes no registry", arg),
 			"",
 			"the registry is part of a workload's image: set `image = \"<registry>/<name>\"` on the workload in "+
-				"deploy/kcl/workloads.k and run forge build <env> --push")
+				"deploy/kcl/workloads.k and run forge env build <env> --push")
 	}
 	return cliutil.UserErr("forge build",
 		fmt.Sprintf("invalid environment name %q", arg),
@@ -264,15 +264,15 @@ func validateBuildEnvArg(arg string) error {
 // errPushNeedsEnv is --push with no environment argument: without an env there
 // is nothing to render, so no workload's image can be read.
 func errPushNeedsEnv() error {
-	return cliutil.UserErr("forge build --push",
+	return cliutil.UserErr("forge env build --push",
 		"--push pushes each built image to the reference its workload declares, and no environment argument was given",
 		"",
-		"name the env whose workloads to build: forge build <env> --push")
+		"name the env whose workloads to build: forge env build <env> --push")
 }
 
 // noPushableImagesError is the runbook for an env with nothing to push,
 // shaped by WHY it has nothing. context is the command that needed a
-// destination (`forge build prod --push`, `forge registry login prod`).
+// destination (`forge env build prod --push`, `forge registry login prod`).
 func noPushableImagesError(context, env string, declared *KCLEntities) error {
 	mainK := fmt.Sprintf("deploy/kcl/%s/main.k", env)
 	workloadsK := "deploy/kcl/workloads.k"

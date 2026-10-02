@@ -84,11 +84,20 @@ func hostedPushFixture(registry string) string {
 
 // runBuildCommand drives the REAL cobra command — flag parsing included — and
 // returns what it printed. --plan keeps it from building or pushing anything.
+//
+// It drives the command that OWNS pushing and releasing: `forge env build
+// <env>`. These tests moved with the flags, because the top-level
+// compile-only verb now refuses them and can no longer resolve a push plan
+// at all.
+//
+// The env is a POSITIONAL here, so the "push first" / "push last" orderings
+// below still prove what they always did: flag position does not change the
+// resolved plan.
 func runBuildCommand(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var runErr error
 	out := captureStdout(t, func() {
-		cmd := newBuildCmd()
+		cmd := newEnvBuildCmd()
 		cmd.SetArgs(args)
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
@@ -101,9 +110,9 @@ func runBuildCommand(t *testing.T, args ...string) (string, error) {
 // what makes `--push <anything>` impossible to express, rather than a value
 // the code has to remember to ignore.
 func TestBuildCmd_PushIsABooleanSwitch(t *testing.T) {
-	f := newBuildCmd().Flags().Lookup("push")
+	f := newEnvBuildCmd().Flags().Lookup("push")
 	if f == nil {
-		t.Fatal("--push is not registered on forge build")
+		t.Fatal("--push is not registered on forge env build")
 	}
 	if f.Value.Type() != "bool" {
 		t.Fatalf("--push is a %s flag; it must be a bool — each registry is declared on its workload's image, never passed", f.Value.Type())
@@ -146,11 +155,17 @@ func TestBuildCmd_PushRefusesARegistryValue(t *testing.T) {
 		args []string
 		want string
 	}{
-		"equals":         {[]string{"prod", "--push=ghcr.io/acme", "--plan", "--no-generate"}, `invalid argument "ghcr.io/acme" for "--push"`},
-		"space after":    {[]string{"prod", "--push", "ghcr.io/acme", "--plan", "--no-generate"}, "accepts at most 1 arg"},
-		"space, no env":  {[]string{"--push", "localhost:5051", "--plan", "--no-generate"}, "forge build takes no registry"},
-		"space, first":   {[]string{"--push", "ghcr.io/acme", "prod", "--plan", "--no-generate"}, "accepts at most 1 arg"},
-		"env-like value": {[]string{"prod", "--push", "acme", "--plan", "--no-generate"}, "accepts at most 1 arg"},
+		// A value attached with `=` is still rejected by the bool flag itself.
+		"equals": {[]string{"prod", "--push=ghcr.io/acme", "--plan", "--no-generate"}, `invalid argument "ghcr.io/acme" for "--push"`},
+		// A detached value becomes a second POSITIONAL, and on `forge env
+		// build <env>` the env is a required positional — so cobra's arity
+		// check rejects it before any flag handling. That is a stronger
+		// refusal than the old command's: there, the env was optional, so
+		// `--push ghcr.io/acme` was arity-legal and a registry could be
+		// mistaken for the env name.
+		"space after":    {[]string{"prod", "--push", "ghcr.io/acme", "--plan", "--no-generate"}, "accepts 1 arg"},
+		"space, first":   {[]string{"--push", "ghcr.io/acme", "prod", "--plan", "--no-generate"}, "accepts 1 arg"},
+		"env-like value": {[]string{"prod", "--push", "acme", "--plan", "--no-generate"}, "accepts 1 arg"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := runBuildCommand(t, tc.args...)
@@ -231,12 +246,23 @@ func TestBuildCmd_PushBareImageFails(t *testing.T) {
 }
 
 // TestBuildCmd_PushWithoutEnvFails: with no env there is no declaration to
-// read, so --push asks for the env instead of building without pushing.
+// read, so a push cannot resolve a destination.
+//
+// V2 turned this from a RUNTIME runbook into a STRUCTURAL guarantee. The old
+// spelling took the environment as an OPTIONAL positional, so "push with no
+// env" was a legal command line that had to be caught in RunE and explained.
+// On `forge env build <environment>` the env is a required positional, so
+// cobra refuses the invocation outright — the combination is now
+// unrepresentable rather than merely rejected, which is the whole reason the
+// flags moved onto the env noun.
 func TestBuildCmd_PushWithoutEnvFails(t *testing.T) {
 	planProject(t, declaredRegistryFixture)
 	_, err := runBuildCommand(t, "--push", "--plan", "--no-generate")
-	if err == nil || !strings.Contains(err.Error(), "forge build <env> --push") {
-		t.Fatalf("--push with no env: want a runbook naming `forge build <env> --push`, got %v", err)
+	if err == nil {
+		t.Fatal("a push with no environment must be refused")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("want cobra's arity refusal (the env is a required positional), got %v", err)
 	}
 }
 
@@ -248,7 +274,7 @@ func TestBuildCmd_HostedEnvPushesToTheWorkloadReference(t *testing.T) {
 
 	out, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
 	if err != nil {
-		t.Fatalf("forge build prod --push (hosted env): %v", err)
+		t.Fatalf("forge env build prod --push (hosted env): %v", err)
 	}
 	if !strings.Contains(out, `Image:    registry.example/org-7/pt (declared by workload "api"; pushed)`) {
 		t.Errorf("hosted --push should push to the workload's own reference; plan output:\n%s", out)

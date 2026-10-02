@@ -462,8 +462,8 @@ that broke prod."
 context is read solely from the environment's KCL. No CLI override, no
 fallback to your current context.
 
-**Build once, promote by digest.** `forge build --release v1.4.0` captures
-content-addressed digests; `forge env promote v1.4.0 --to prod` pins the same
+**Build once, promote by digest.** `forge env build staging --release v1.4.0` captures
+content-addressed digests; `forge env deploy prod v1.4.0` pins the same
 ones. The bytes that passed staging are the bytes that ship.
 
 **Preflight before the first apply.** On remote clusters Forge verifies every

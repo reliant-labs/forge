@@ -18,7 +18,7 @@
 //   - PROMOTABILITY     — the load-bearing one. Both bundlers INLINE these
 //     reads at BUILD time, freezing the artifact to the environment it was
 //     built against. A bundle built with staging's issuer carries it
-//     forever, so `forge env promote` cannot move it to prod without a
+//     forever, so `forge env deploy` cannot move it to prod without a
 //     rebuild. That is the property the whole runtime-injection design
 //     exists to buy, and one raw read gives it back.
 //
@@ -359,7 +359,7 @@ var nextServerOnlyBasenames = map[string]bool{
 //
 // This rule's load-bearing argument is PROMOTABILITY: both bundlers INLINE a
 // process.env read at BUILD time, freezing the artifact to the environment it
-// was built against, so `forge env promote` cannot move it without a rebuild.
+// was built against, so `forge env deploy` cannot move it without a rebuild.
 // That argument is correct for anything that reaches the browser, and it is
 // simply NOT TRUE of a Next.js route handler.
 //
@@ -493,7 +493,7 @@ func scanFrontendSourceForEnv(root, feDir, path string, declared map[string]bool
 			Message: fmt.Sprintf(
 				"%s reads %s directly; this bypasses the typed config module (no schema, no defaults, "+
 					"no secret refusal) and — because the bundler INLINES it at build time — freezes the "+
-					"artifact to the environment it was built against, so `forge env promote` cannot move it",
+					"artifact to the environment it was built against, so `forge env deploy` cannot move it",
 				feRel, name),
 			Remediation: processEnvFixHint(name, declared),
 		}

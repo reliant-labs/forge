@@ -178,7 +178,7 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&warnOnly, "warn-only", false,
 		"Report skip findings without failing (adoption ramp; UNDETERMINED and test failures still fail)")
 	cmd.Flags().StringVar(&gateJSON, "gate-json", "",
-		"Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env promote --gate`. "+
+		"Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. "+
 			"A FILE, not a stdout mode: the report and the exit code are unchanged.")
 
 	return cmd

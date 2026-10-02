@@ -24,7 +24,7 @@ import (
 // `Note:` did to control-plane's prod render.
 
 const (
-	// renderBuiltDigest is what `forge build --push` recorded for the image.
+	// renderBuiltDigest is what `forge env build --push` recorded for the image.
 	renderBuiltDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	// renderReleaseDigest is what the promoted release pins for it. They
 	// DIFFER on purpose: that disagreement is what makes resolveDeployDigests

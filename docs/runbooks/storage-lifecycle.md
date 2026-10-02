@@ -53,13 +53,35 @@ facts it already holds, every time it touches them:
 Convergence is additive and idempotent: it never removes an entry another
 project contributed, and a registry becomes a cleanup target only once its
 container, aliases, contexts and at least one repository are all known.
+Projects under the system temp directory are never registered.
 
-At the end of a successful `forge env up`, if no maintenance pass has run in
-24 hours, forge runs the non-disruptive layers inline under a 2-minute budget:
-rotated logs, builder cache, the temp sweep and the source cache. It never runs
-registry GC or restarts nodes from that path. The attempt is stamped in
-`last-gc.json` next to the policy even when it fails, so a machine where it
-cannot succeed is not retried on every `up`.
+Each `forge storage gc` starts by pruning entries that no longer exist. A
+project is dropped when its directory is gone. A cluster is dropped only when
+both of these hold: its context is missing from kubeconfig, and docker shows no
+container (running or stopped) labelled with it. A context that exists but is
+unreachable, or a cluster whose nodes are only stopped, stays registered, and
+registry cleanup keeps refusing on it. If either source cannot be read, nothing
+is pruned. A preview reports the pruning but does not write it.
+
+At the end of a successful `forge env up`, if the opportunistic pass has not
+been attempted in 24 hours, forge starts the non-disruptive layers in the
+background and returns immediately: rotated logs, builder cache, the temp sweep
+and the source cache. The pass runs as a detached `forge storage auto-gc`
+process. Its log is `logs/auto-gc.log`, next to the policy. The whole pass,
+including each layer's `lsof` snapshot and its walk over entries, is bounded at
+2 minutes. A layer cut off by that limit removes nothing further, and the rest is
+picked up by the next pass. It never runs registry GC or restarts nodes from
+that path. Set `FORGE_STORAGE_AUTO=0` to turn it off. It records each attempt,
+failures included, in `last-auto-gc.json` next to the policy. That record is only
+a rate limit: a machine where the pass cannot succeed is not retried on every
+`up`.
+
+Every applied full pass (`forge storage gc --apply`, and the scheduled job)
+records its outcome in `last-full-gc.json`: when it ran, whether it succeeded,
+and which layers failed. Only the full pass runs registry retention, so this
+record is how forge knows whether that retention is working. If registries are
+registered and the last full pass failed, is more than 48 hours old, or never
+completed, `forge doctor` warns and `forge env up` prints one line saying so.
 
 Registry GC, which briefly stops the registry, runs only from the scheduled job
 or an explicit `forge storage gc --apply`. Install the schedule once per machine:
@@ -143,17 +165,30 @@ forge storage worktrees --repo /path/to/repo --base origin/main --apply
 ```
 
 This preserves the primary/current worktree, locked trees, unmerged commits,
-dirty trees and untracked source files. Git performs removal without `--force`;
-branches remain. Ignored build outputs in a removed tree are rebuildable. Review
-the preview and avoid running this while someone is using an old clean tree.
+dirty trees, and any tree holding an untracked or **ignored** file. Git's own
+removal deletes ignored files, and that is where a worktree keeps application
+data (`./data/` databases, `.env`, `.forge/hostinfra/` Postgres). A tree that any
+running process uses, through an open file or a working directory inside it, is
+also preserved. If `lsof` cannot produce a complete snapshot, the command refuses
+to remove anything. Git performs removal without `--force`; branches remain.
 Worktree removal is intentionally excluded from the daily cache job.
 
 ## Recovery and rollout
 
+Before forge stops a registry for GC, it records a marker beside the policy
+(`registry-maintenance/<container>.stopped`). After the pass, forge restarts the
+registry and checks that it is running and answering, retrying for up to two
+minutes. If it still is not serving, the pass fails and names the registry. A
+pass that was killed partway leaves the marker, and the next `forge storage gc`
+(a preview is enough) restarts the registry. A registry that someone stopped by
+hand has no marker, so forge leaves it alone.
+
 A hard kill or Docker outage can leave a `-forge-retention`/`-forge-gc` container.
-Inspect and stop it before restarting the public registry; never run filesystem
+The registry is never restarted while one is still running; never run filesystem
 GC concurrently with a registry writer. Normal cancellation gets a separate
 cleanup timeout. A stale helper blocks the next pass instead of overlapping GC.
+Maintenance containers mount the registry's data volume by name, so removing one
+can never remove the volume.
 
 Disable any older ad hoc registry-retention launch agent before installing the
 Forge job, and migrate its repository/context allowlist and pins. Two independent

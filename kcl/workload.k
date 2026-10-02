@@ -169,6 +169,18 @@ schema OnCompose:
     workload that depends on it starts against something serving.
     `wait_timeout` is a ceiling in seconds, 0 = none. Requires docker
     compose v2.17.0+.
+
+    `shared` declares that this compose stack is MACHINE infrastructure
+    every git worktree of the repo uses — one postgres, one NATS — rather
+    than something each checkout runs for itself. forge then drives it from
+    the repo's PRIMARY checkout, whichever worktree runs `forge env up`:
+    `file` and `env_file` resolve there, and so does every relative bind
+    mount in the file. Without it, a linked worktree's compose project has
+    the same NAME (the directory basename) but different absolute mount
+    sources, so compose sees a changed config and RECREATES the shared
+    containers out from under every other stack, then leaves them mounting
+    files inside that worktree. Pair it with `fp.write_file(...,
+    shared=True)` for any config the shared stack mounts.
     """
     type: "compose" = "compose"
     # The compose service name. Default: the workload's name.
@@ -178,6 +190,7 @@ schema OnCompose:
     wait: bool = True
     wait_timeout: int = 0
     env: {str: str} = {}
+    shared: bool = False
 
     check:
         wait_timeout >= 0, "OnCompose.wait_timeout must be >= 0 (0 = no explicit ceiling)"

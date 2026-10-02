@@ -58,7 +58,6 @@ package doctor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,7 +90,7 @@ const (
 	// diskGCStaleAfter is when a recorded last-GC timestamp stops being
 	// reassuring. The installed schedule runs daily, so a last run older
 	// than this means the schedule is present but not firing.
-	diskGCStaleAfter = 48 * time.Hour
+	diskGCStaleAfter = storage.FullGCStaleAfter
 )
 
 // hostSpace is one filesystem's capacity as statfs reports it, against the
@@ -141,11 +140,12 @@ type diskProbe struct {
 	// schedule reports whether the daily GC schedule is installed, and the
 	// path that was looked at so the evidence can name it.
 	schedule func() (installed bool, where string)
-	// lastGC reads the last completed GC time from the policy directory.
-	// ok is false when no record exists — which is the state on every
-	// machine until the first scheduled pass completes, and must read as
-	// "not known yet" rather than "never ran".
-	lastGC func(policyDir string) (at time.Time, ok bool)
+	// fullGC reads the record the last APPLIED full GC wrote beside the
+	// policy: when it ran, and whether it succeeded. ok is false when no
+	// full pass has ever completed. Only the full pass runs registry
+	// retention, so this, not any other timestamp, says whether the
+	// registries are being reclaimed.
+	fullGC func(policyPath string) (storage.GCResult, bool)
 	// now is the clock, injected so a last-GC-age assertion is not a
 	// function of when the test runs.
 	now func() time.Time
@@ -162,7 +162,7 @@ func CheckDisk(ctx context.Context, env *Environment) CheckResult {
 		policyPath: storage.DefaultPath,
 		policy:     storage.Load,
 		schedule:   storageScheduleInstalled,
-		lastGC:     readLastGC,
+		fullGC:     storage.LastFullGC,
 		now:        time.Now,
 	})
 }
@@ -210,9 +210,10 @@ func checkDisk(ctx context.Context, env *Environment, probe diskProbe) CheckResu
 	}
 
 	scheduled, scheduleWhere := probe.schedule()
-	lastGC, lastGCOK := time.Time{}, false
+	var lastGC storage.GCResult
+	lastGCOK := false
 	if policyPath != "" {
-		lastGC, lastGCOK = probe.lastGC(filepath.Dir(policyPath))
+		lastGC, lastGCOK = probe.fullGC(policyPath)
 	}
 
 	return summariseDisk(diskFacts{
@@ -221,6 +222,7 @@ func checkDisk(ctx context.Context, env *Environment, probe diskProbe) CheckResu
 		raw:           raw,
 		rawOK:         rawOK,
 		reserve:       policy.HostReserveGiB,
+		policy:        policy,
 		registries:    len(policy.Registries),
 		policyPath:    policyPath,
 		scheduled:     scheduled,
@@ -260,13 +262,20 @@ type diskFacts struct {
 	raw           dockerRawUsage
 	rawOK         bool
 	reserve       uint64
+	policy        storage.Policy
 	registries    int
 	policyPath    string
 	scheduled     bool
 	scheduleWhere string
-	lastGC        time.Time
+	lastGC        storage.GCResult
 	lastGCOK      bool
 	now           time.Time
+}
+
+// retentionProblem is why registry retention is not known to be running, or
+// "" — the same judgement `forge env up` prints (storage.FullGCProblem).
+func (f diskFacts) retentionProblem() string {
+	return storage.FullGCProblem(f.policy, f.lastGC, f.lastGCOK, f.now)
 }
 
 // tightest is the filesystem with the least free space — the one that will
@@ -291,6 +300,7 @@ func (f diskFacts) tightest() (hostSpace, bool) {
 const (
 	diskFixGC      = "forge storage gc --dry-run"
 	diskFixInstall = "forge storage install"
+	diskFixFullGC  = "forge storage gc --apply"
 )
 
 // summariseDisk applies the status rules: FAIL below the policy's host
@@ -338,6 +348,17 @@ func summariseDisk(f diskFacts) CheckResult {
 				f.registries, gib(tight.Free), diskFixInstall),
 			Evidence: evidence,
 		}
+	case f.retentionProblem() != "":
+		// Scheduled, but not working: the last full pass failed, is older
+		// than the daily schedule allows, or none ever completed. This used
+		// to PASS, because the opportunistic pass stamped the same "last
+		// GC" record — on failure too — and never runs the registry layer.
+		return CheckResult{
+			Status: StatusWarn,
+			Message: fmt.Sprintf("%s, so registry images are not being reclaimed (%s free now) — run: %s",
+				f.retentionProblem(), gib(tight.Free), diskFixFullGC),
+			Evidence: evidence,
+		}
 	}
 
 	return CheckResult{
@@ -381,7 +402,7 @@ func diskPassMessage(f diskFacts, tight hostSpace) string {
 	case f.registries == 0:
 		parts = append(parts, "no local registries registered for cleanup")
 	case f.lastGCOK:
-		parts = append(parts, fmt.Sprintf("GC scheduled, last ran %s ago", age(f.now.Sub(f.lastGC))))
+		parts = append(parts, fmt.Sprintf("GC scheduled, last full GC %s ago", age(f.now.Sub(f.lastGC.At))))
 	default:
 		parts = append(parts, "GC scheduled, no completed pass recorded yet")
 	}
@@ -428,13 +449,16 @@ func diskEvidence(f diskFacts) string {
 	}
 	switch {
 	case f.lastGCOK:
-		d := f.now.Sub(f.lastGC)
-		fmt.Fprintf(&b, "  last GC:    %s ago (%s)\n", age(d), f.lastGC.Format(time.RFC3339))
+		d := f.now.Sub(f.lastGC.At)
+		fmt.Fprintf(&b, "  last full GC: %s ago (%s), %s\n", age(d), f.lastGC.At.Format(time.RFC3339), f.lastGC.Summary())
+		if f.lastGC.Error != "" {
+			fmt.Fprintf(&b, "                %s\n", f.lastGC.Error)
+		}
 		if d > diskGCStaleAfter {
-			fmt.Fprintf(&b, "              older than %s — the daily pass is not firing\n", age(diskGCStaleAfter))
+			fmt.Fprintf(&b, "                older than %s — the daily pass is not firing\n", age(diskGCStaleAfter))
 		}
 	default:
-		b.WriteString("  last GC:    no completed pass recorded\n")
+		b.WriteString("  last full GC: no completed pass recorded\n")
 	}
 
 	if len(f.holes) > 0 {
@@ -558,64 +582,4 @@ func storageScheduleInstalled() (bool, string) {
 	}
 	_, serr := os.Stat(path)
 	return serr == nil, path
-}
-
-// readLastGC reads the timestamp of the last completed GC from
-// `last-gc.json` beside the policy.
-//
-// The file's schema is deliberately not pinned here. It is written by the
-// GC path, which owns it; this check only reads it, and a doctor check that
-// breaks because a field was renamed would be reporting on forge's own
-// internals rather than on the disk. So any RFC3339 string anywhere in the
-// document is accepted and the newest one wins, with the file's mtime as
-// the fallback — a record that exists at all is evidence a pass completed,
-// whatever it chose to call its field.
-func readLastGC(policyDir string) (time.Time, bool) {
-	path := filepath.Join(policyDir, "last-gc.json")
-	fi, err := os.Stat(path)
-	if err != nil {
-		return time.Time{}, false
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return time.Time{}, false
-	}
-	if at, ok := newestTimestamp(b); ok {
-		return at, true
-	}
-	return fi.ModTime(), true
-}
-
-// newestTimestamp finds the latest RFC3339 instant among a JSON document's
-// string values, at any depth.
-func newestTimestamp(b []byte) (time.Time, bool) {
-	var doc any
-	if err := json.Unmarshal(b, &doc); err != nil {
-		return time.Time{}, false
-	}
-	var newest time.Time
-	found := false
-	var walk func(any)
-	walk = func(v any) {
-		switch t := v.(type) {
-		case string:
-			at, err := time.Parse(time.RFC3339, t)
-			if err != nil {
-				return
-			}
-			if !found || at.After(newest) {
-				newest, found = at, true
-			}
-		case []any:
-			for _, item := range t {
-				walk(item)
-			}
-		case map[string]any:
-			for _, item := range t {
-				walk(item)
-			}
-		}
-	}
-	walk(doc)
-	return newest, found
 }

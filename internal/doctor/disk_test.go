@@ -35,8 +35,10 @@ func fakeDiskProbe(free uint64, opts ...func(*diskProbe)) diskProbe {
 			return storage.DefaultPolicy(), nil
 		},
 		schedule: func() (bool, string) { return true, "/fake/LaunchAgents/com.reliant.forge-storage.plist" },
-		lastGC:   func(string) (time.Time, bool) { return time.Time{}, false },
-		now:      func() time.Time { return diskTestNow },
+		fullGC: func(string) (storage.GCResult, bool) {
+			return storage.GCResult{At: diskTestNow.Add(-time.Hour), OK: true}, true
+		},
+		now: func() time.Time { return diskTestNow },
 	}
 	for _, o := range opts {
 		o(&p)
@@ -318,69 +320,21 @@ func TestCheckDisk_DockerRawPresentShowsBothNumbers(t *testing.T) {
 	}
 }
 
-// TestReadLastGC pins the tolerance that matters: the file is written by
-// another part of forge, is absent on every machine until the first pass
-// completes, and must not be able to break this check by renaming a field.
-func TestReadLastGC(t *testing.T) {
-	t.Parallel()
-
-	t.Run("absent is not an error and not a zero time", func(t *testing.T) {
-		t.Parallel()
-		if _, ok := readLastGC(t.TempDir()); ok {
-			t.Error("readLastGC reported a time with no last-gc.json present")
-		}
-	})
-
-	t.Run("any RFC3339 field is accepted", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		// Deliberately NOT the field name the GC path happens to use. This
-		// check reads someone else's file; a rename there must not turn
-		// into a doctor finding here.
-		body := `{"schemaVersion":2,"completed_at":"2026-09-30T04:00:00Z","layers":{"builder":"2026-09-29T04:00:00Z"}}`
-		if err := os.WriteFile(filepath.Join(dir, "last-gc.json"), []byte(body), 0o600); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		at, ok := readLastGC(dir)
-		if !ok {
-			t.Fatal("readLastGC found no timestamp in a document that has two")
-		}
-		// The NEWEST instant wins — an older per-layer entry must not be
-		// mistaken for the last completed pass.
-		if want := time.Date(2026, 9, 30, 4, 0, 0, 0, time.UTC); !at.Equal(want) {
-			t.Errorf("at = %s, want %s", at, want)
-		}
-	})
-
-	t.Run("unparseable document falls back to mtime", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "last-gc.json"), []byte("not json"), 0o600); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		if _, ok := readLastGC(dir); !ok {
-			t.Error("a last-gc.json that exists at all is evidence a pass completed")
-		}
-	})
-}
-
 // TestCheckDisk_LastGCAgeReported pins that a recorded pass shows its age,
-// and that a stale one says so. A schedule that is installed but not firing
-// looks identical to a working one on every other signal.
+// and that a stale one is a finding. A schedule that is installed but not
+// firing looks identical to a working one on every other signal, so a 5-day-
+// old pass against a daily schedule WARNs — it used to PASS while its own
+// evidence said "the daily pass is not firing".
 func TestCheckDisk_LastGCAgeReported(t *testing.T) {
 	t.Parallel()
 
-	probe := fakeDiskProbe(400*storage.GiB, withRegistries(1))
-	probe.lastGC = func(string) (time.Time, bool) {
-		return diskTestNow.Add(-5 * 24 * time.Hour), true
-	}
-
+	probe := fakeDiskProbe(400*storage.GiB, withRegistries(1), fullGC(diskTestNow.Add(-5*24*time.Hour), true))
 	res := checkDisk(context.Background(), &Environment{ProjectDir: t.TempDir()}, probe)
-	if res.Status != StatusPass {
-		t.Fatalf("status = %q, want pass: %s", res.Status, res.Message)
+	if res.Status != StatusWarn {
+		t.Fatalf("status = %q, want warn: %s", res.Status, res.Message)
 	}
-	if !strings.Contains(res.Message, "last ran 5d ago") {
-		t.Errorf("pass line should state the GC age:\n%s", res.Message)
+	if !strings.Contains(res.Message, "5d ago") {
+		t.Errorf("the line should state the GC age:\n%s", res.Message)
 	}
 	if !strings.Contains(res.Evidence, "the daily pass is not firing") {
 		t.Errorf("a 5-day-old pass against a daily schedule should be called out:\n%s", res.Evidence)
@@ -401,4 +355,62 @@ func TestCheckDisk_RealMachine(t *testing.T) {
 	t.Logf("status:  %s", res.Status)
 	t.Logf("message: %s", res.Message)
 	t.Logf("evidence:\n%s", res.Evidence)
+}
+
+// noFullGC is a machine on which no full GC has ever completed.
+func noFullGC(p *diskProbe) {
+	p.fullGC = func(string) (storage.GCResult, bool) { return storage.GCResult{}, false }
+}
+
+// fullGC states the last full storage GC's record.
+func fullGC(at time.Time, ok bool, failed ...string) func(*diskProbe) {
+	return func(p *diskProbe) {
+		p.fullGC = func(string) (storage.GCResult, bool) {
+			return storage.GCResult{At: at, OK: ok, FailedLayers: failed}, true
+		}
+	}
+}
+
+// TestCheckDisk_WarnsWhenRegistryRetentionIsNotRunning is the review's
+// "protection reported as on while off". The disk check stayed PASS — "GC
+// scheduled, last ran 2h ago" — when every full pass had failed (registry GC
+// refusing on a stale context), because the opportunistic pass stamped the
+// same record on failure and never runs the registry layer at all.
+func TestCheckDisk_WarnsWhenRegistryRetentionIsNotRunning(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		opts []func(*diskProbe)
+		want string
+	}{
+		{"last full GC failed", []func(*diskProbe){fullGC(diskTestNow.Add(-2*time.Hour), false, "registry k3d-cp-registry")}, "failed in registry k3d-cp-registry"},
+		{"last full GC is stale", []func(*diskProbe){fullGC(diskTestNow.Add(-72*time.Hour), true)}, "3d ago"},
+		{"no full GC ever completed", []func(*diskProbe){noFullGC}, "no full storage GC has ever completed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opts := append([]func(*diskProbe){withRegistries(1)}, tc.opts...)
+			probe := fakeDiskProbe(400*storage.GiB, opts...)
+			res := checkDisk(context.Background(), &Environment{ProjectDir: t.TempDir()}, probe)
+			if res.Status != StatusWarn {
+				t.Fatalf("status = %q, want warn: %s", res.Status, res.Message)
+			}
+			if !strings.Contains(res.Message, tc.want) {
+				t.Errorf("message does not say why:\n%s", res.Message)
+			}
+			if !strings.HasSuffix(res.Message, "run: "+diskFixFullGC) {
+				t.Errorf("message does not end with the command that shows the failure:\n%s", res.Message)
+			}
+		})
+	}
+}
+
+// TestCheckDisk_PassesWithARecentSuccessfulFullGC is the control.
+func TestCheckDisk_PassesWithARecentSuccessfulFullGC(t *testing.T) {
+	t.Parallel()
+	probe := fakeDiskProbe(400*storage.GiB, withRegistries(1), fullGC(diskTestNow.Add(-3*time.Hour), true))
+	res := checkDisk(context.Background(), &Environment{ProjectDir: t.TempDir()}, probe)
+	if res.Status != StatusPass || !strings.Contains(res.Message, "last full GC 3h ago") {
+		t.Fatalf("status = %q: %s", res.Status, res.Message)
+	}
 }

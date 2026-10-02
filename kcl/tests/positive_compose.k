@@ -35,6 +35,13 @@ assert_spec_env_into_compose_env = _w["worker"].runtime.env["QUEUE"] == "jobs"
 assert_default_file = _w["alt"].runtime.file == "docker-compose.yml"
 assert_default_service = _w["alt"].runtime.service == "alt"
 assert_default_wait = _w["alt"].runtime.wait == True
+# Per-checkout by default; `shared` is the opt-in for machine infrastructure
+# every git worktree uses (forge drives it from the primary checkout).
+assert_default_not_shared = _w["alt"].runtime.shared == False
+_infra = forge.render(forge.Bundle {project = "demo", workloads = [
+    fw.Workload {name = "dev-infra", runtime = forge.OnCompose {shared = True}}
+]}).workloads[0]
+assert_shared_projected = _infra.runtime.shared == True
 
 # Compose workloads are not built by forge and render no record.
 assert_not_built = _w["worker"].build == None

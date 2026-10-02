@@ -42,14 +42,20 @@
 //
 // # Why an entry in use cannot be evicted
 //
-// The recency guard is the real protection, not the process scan. Resolve
-// touches the metadata on every cache HIT, so any process currently
-// building from an entry touched it moments ago and cannot be in a set
-// whose youngest member is MaxAge (default 14 days) old. The open-file
-// scan below is defense in depth for the pathological case — a process
-// that resolved an entry and then held it open for longer than MaxAge —
-// and when it is unavailable (no lsof, Windows) eviction proceeds on the
-// recency guard alone rather than disabling itself entirely.
+// The recency guard is the first protection. Resolve touches the metadata
+// on every cache HIT, so any process currently building from an entry
+// touched it moments ago and cannot be in a set whose youngest member is
+// MaxAge (default 14 days) old. The open-file scan covers the case the
+// recency guard cannot — a process that resolved an entry and then held it
+// (an open file, or its cwd) for longer than MaxAge, such as a dev server
+// left running from a cached frontend source.
+//
+// When the scan is unavailable (no lsof, Windows) or does not finish, every
+// candidate is retained. It used to proceed on recency alone, and it also
+// accepted a killed lsof's partial listing as complete; both decided a
+// deletion on evidence that could not see the process using the entry.
+// Retaining costs disk until the next pass; deleting a live checkout costs
+// the process using it.
 //
 // Nothing persists a resolved cache path into a project's .forge/ state;
 // the resolved directory is rewritten into an in-memory FrontendConfig
@@ -59,16 +65,17 @@
 package gitsource
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/openfiles"
 )
 
 // DefaultEvictMaxAge is how long an entry may go unresolved before it
@@ -104,8 +111,21 @@ type EvictPolicy struct {
 	// InUse reports whether a live process holds the entry directory as
 	// its cwd or has a file open under it. nil installs the default
 	// open-file scan (one lsof snapshot, taken once, only when there are
-	// candidates). Tests inject a stub so they never shell out.
+	// candidates, and retaining everything when it cannot be taken). Tests
+	// inject a stub so they never shell out.
 	InUse func(entry string) bool
+
+	// Ctx bounds the eviction: the open-file snapshot, and the removals,
+	// which stop at the deadline with everything not yet removed retained.
+	// Nil means unbounded.
+	Ctx context.Context
+}
+
+func (p EvictPolicy) ctx() context.Context {
+	if p.Ctx != nil {
+		return p.Ctx
+	}
+	return context.Background()
 }
 
 func (p EvictPolicy) maxAge() time.Duration {
@@ -218,12 +238,27 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 
 	inUse := policy.InUse
 	if inUse == nil && len(doomed) > 0 {
-		inUse = openPathProbe()
+		snap, err := openfiles.Take(policy.ctx())
+		if ctxErr := policy.ctx().Err(); ctxErr != nil {
+			result.Kept += len(doomed)
+			return result, fmt.Errorf("source cache eviction stopped before removing anything: %w", ctxErr)
+		}
+		if err != nil {
+			// Fail closed: see the package comment.
+			result.Kept += len(doomed)
+			printf(out, "keep %d source cache entries: cannot determine which are in use (%v)\n", len(doomed), err)
+			return result, nil
+		}
+		inUse = snap.Holds
 	}
 
-	for _, c := range doomed {
+	for i, c := range doomed {
+		if err := policy.ctx().Err(); err != nil {
+			result.Kept += len(doomed) - i
+			return result, fmt.Errorf("source cache eviction stopped after %d of %d entries: %w", len(result.Removed), len(doomed), err)
+		}
 		entry := filepath.Join(root, c.name)
-		if inUse != nil && inUse(entry) {
+		if inUse(entry) {
 			result.Kept++
 			result.Held = append(result.Held, c.name)
 			printf(out, "keep source cache %s (in use by a running process)\n", entry)
@@ -306,40 +341,6 @@ func removeAllWritable(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
-}
-
-// openPathProbe builds the in-use predicate from ONE lsof snapshot, taken
-// lazily on first use so a preview with no candidates never shells out.
-//
-// Returns nil when no snapshot is obtainable (lsof absent, Windows, or a
-// failing invocation). nil means "cannot tell", and Evict proceeds on the
-// recency guard rather than refusing to reclaim anything — see the
-// package comment for why that is the safe direction here.
-func openPathProbe() func(string) bool {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	// -Fn emits one field per line, open paths prefixed 'n'. -w silences
-	// the permission warnings an unprivileged scan always produces.
-	out, err := exec.Command("lsof", "-Fn", "-w").Output()
-	if err != nil && len(out) == 0 {
-		return nil
-	}
-	var open []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if len(line) > 1 && line[0] == 'n' && line[1] == '/' {
-			open = append(open, line[1:])
-		}
-	}
-	return func(entry string) bool {
-		prefix := entry + string(os.PathSeparator)
-		for _, p := range open {
-			if p == entry || strings.HasPrefix(p, prefix) {
-				return true
-			}
-		}
-		return false
-	}
 }
 
 func printf(out io.Writer, format string, args ...any) {

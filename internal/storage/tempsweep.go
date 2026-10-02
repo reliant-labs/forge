@@ -1,18 +1,18 @@
 package storage
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/reliant-labs/forge/internal/openfiles"
 )
 
 // Temp sweep: reclaim abandoned scratch directories in the system temp dir.
@@ -41,18 +41,22 @@ import (
 //     the entry — not the root's own mtime, which a directory keeps from its
 //     creation while files churn underneath it.
 //   - Not open by any process. One lsof snapshot covers every candidate, and
-//     a missing or failing lsof skips the whole layer: without that evidence
-//     the age test alone cannot distinguish abandoned from merely idle.
+//     a missing, failing, killed or timed-out lsof skips the whole layer:
+//     without that evidence the age test alone cannot distinguish abandoned
+//     from merely idle. The root is resolved before anything is compared,
+//     because lsof reports resolved paths and os.TempDir() on macOS is not
+//     one (/var/folders/… is /private/var/folders/…).
 //   - Never a git worktree. A `.git` FILE is the gitdir pointer a real
 //     worktree has, so it means stop. A `.git` DIR is allowed only under
 //     `tierguard-`, whose fixtures `git init` a scaffolded project on purpose.
 type tempSweep struct {
+	ctx    context.Context
 	root   string
 	now    time.Time
 	maxAge time.Duration
-	// openPaths reports every path currently held open by any process.
-	// Injectable so tests need neither a real lsof nor a real open file.
-	openPaths func() (map[string]bool, error)
+	// openPaths snapshots every path a live process holds. Injectable so
+	// tests need neither a real lsof nor a real open file.
+	openPaths func() (openfiles.Snapshot, error)
 	print     func(string, ...any)
 }
 
@@ -120,11 +124,23 @@ func (r Runner) TempSweep(apply bool) error {
 		r.print("skip temp sweep (%v)\n", err)
 		return nil
 	}
+	// Candidates are named from the RESOLVED root so they are spelled the
+	// way lsof spells what it reports. A root that cannot be resolved is
+	// skipped, never swept under its unresolved name.
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			r.print("skip temp sweep (cannot resolve %s: %v)\n", root, err)
+		}
+		return nil
+	}
+	ctx := r.hostCtx()
 	s := tempSweep{
-		root:      root,
+		ctx:       ctx,
+		root:      resolved,
 		now:       time.Now(),
 		maxAge:    tempSweepAge,
-		openPaths: lsofOpenPaths,
+		openPaths: func() (openfiles.Snapshot, error) { return openfiles.Take(ctx) },
 		print:     r.print,
 	}
 	return s.run(apply)
@@ -134,6 +150,16 @@ type tempCandidate struct {
 	path   string
 	size   int64
 	newest time.Time
+}
+
+// done reports the sweep's deadline or cancellation, if it has passed. A
+// sweep cut off by it stops where it is: everything not yet removed is
+// retained, and the caller learns the pass did not finish.
+func (s tempSweep) done() error {
+	if s.ctx == nil {
+		return nil
+	}
+	return s.ctx.Err()
 }
 
 func (s tempSweep) run(apply bool) error {
@@ -162,6 +188,9 @@ func (s tempSweep) run(apply bool) error {
 	}
 
 	open, err := s.openPaths()
+	if ctxErr := s.done(); ctxErr != nil {
+		return fmt.Errorf("temp sweep stopped before removing anything: %w", ctxErr)
+	}
 	if err != nil {
 		// Fail closed. Age alone cannot tell an abandoned entry from one a
 		// live process is still writing to, and deleting the latter breaks a
@@ -173,8 +202,11 @@ func (s tempSweep) run(apply bool) error {
 	var candidates []tempCandidate
 	var skippedOpen, skippedYoung, skippedGit int
 	for _, name := range named {
+		if err := s.done(); err != nil {
+			return fmt.Errorf("temp sweep stopped before removing anything: %w", err)
+		}
 		path := filepath.Join(s.root, name)
-		if pathHeldOpen(open, path) {
+		if open.Holds(path) {
 			skippedOpen++
 			continue
 		}
@@ -196,6 +228,9 @@ func (s tempSweep) run(apply bool) error {
 	var total int64
 	var removed int
 	for _, c := range candidates {
+		if err := s.done(); err != nil {
+			return fmt.Errorf("temp sweep stopped after %d of %d entries: %w", removed, len(candidates), err)
+		}
 		s.print("temp sweep: %s (%d bytes, idle %s)\n", c.path, c.size, s.now.Sub(c.newest).Round(time.Hour))
 		if !apply {
 			total += c.size
@@ -358,61 +393,6 @@ func orphanedGoTestTempDir(root string, entry fs.DirEntry) bool {
 		}
 	}
 	return true
-}
-
-// pathHeldOpen reports whether any open path IS the entry or lives under it.
-func pathHeldOpen(open map[string]bool, path string) bool {
-	if open[path] {
-		return true
-	}
-	prefix := path + string(filepath.Separator)
-	for p := range open {
-		if strings.HasPrefix(p, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// lsofOpenPaths takes ONE system-wide snapshot of open file paths.
-//
-// One snapshot rather than a probe per candidate: lsof costs seconds, and a
-// per-entry `lsof +D` would also race — an entry could be opened between its
-// own probe and its removal. A single snapshot is both cheaper and a
-// consistent point in time to decide against.
-//
-// lsof exits non-zero whenever ANY process's file list was inaccessible,
-// which on a developer machine is routine, so the exit code is not the
-// signal: output that parsed into at least one path is treated as a usable
-// snapshot, and anything else is an error the caller fails closed on.
-func lsofOpenPaths() (map[string]bool, error) {
-	if _, err := exec.LookPath("lsof"); err != nil {
-		return nil, fmt.Errorf("lsof not found: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	// -Fn: one field per line, names prefixed 'n'. -w: no warning lines.
-	cmd := exec.CommandContext(ctx, "lsof", "-Fn", "-w")
-	out, err := cmd.Output()
-	open := map[string]bool{}
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) < 2 || line[0] != 'n' {
-			continue
-		}
-		if name := line[1:]; strings.HasPrefix(name, "/") {
-			open[name] = true
-		}
-	}
-	if len(open) == 0 {
-		if err != nil {
-			return nil, fmt.Errorf("lsof: %w", err)
-		}
-		return nil, fmt.Errorf("lsof returned no open paths")
-	}
-	return open, nil
 }
 
 // removeWritable makes a tree writable, then removes it.

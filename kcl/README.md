@@ -52,13 +52,13 @@ public top-level var.
 
 ### What each runtime does with a workload
 
-| Runtime                      | forge does                                                                                                                | spec.image                              |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `OnHost {runner}`            | launches a process; the argv is derived from `build` + `args` (`go run <cmd> <args>`, `air`, `./bin/<out> <args>`, `dlv`) | `""`                                    |
-| `OnCompose {service}`        | `docker compose up` of the compose file's service; literal env feeds the compose process env                              | `""`                                    |
-| `OnCluster {target}`         | a `forge.dev/v1alpha1 Workload` record in `output.manifests`, expanded by `pkg/deploy.RenderWorkloads` (Full profile)     | `<registry>/<image>:<tag>` or `@digest` |
-| `OnHosted {}`                | publishes the spec to the control plane, which renders it (Restricted profile)                                            | the artifact / third-party image        |
-| `BuildOnly {build_variants}` | builds and ships, never runs                                                                                              | `""`                                    |
+| Runtime                      | forge does                                                                                                                                                                         | spec.image                              |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `OnHost {runner}`            | launches a process; the argv is derived from `build` + `args` (`go run <cmd> <args>`, `air`, `./bin/<out> <args>`, `dlv`)                                                          | `""`                                    |
+| `OnCompose {service}`        | `docker compose up` of the compose file's service; literal env feeds the compose process env. `shared = True` runs it from the repo's primary checkout, whichever worktree deploys | `""`                                    |
+| `OnCluster {target}`         | a `forge.dev/v1alpha1 Workload` record in `output.manifests`, expanded by `pkg/deploy.RenderWorkloads` (Full profile)                                                              | `<registry>/<image>:<tag>` or `@digest` |
+| `OnHosted {}`                | publishes the spec to the control plane, which renders it (Restricted profile)                                                                                                     | the artifact / third-party image        |
+| `BuildOnly {build_variants}` | builds and ships, never runs                                                                                                                                                       | `""`                                    |
 
 A workload whose runtime cannot honour a field is REFUSED at render, naming
 the workload, the field and the reason. That covers the hosted runtime's

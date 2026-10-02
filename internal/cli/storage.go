@@ -33,12 +33,35 @@ import (
 // "use the real machine-local default" in production and as "skip" under test.
 // os.UserCacheDir only fails on a host with no HOME, where there is also
 // nothing to reclaim.
-func maintenanceRunner(p storage.Policy, out io.Writer) storage.Runner {
+//
+// policyPath is where the policy was loaded from; maintenance state that must
+// survive an interrupted pass (a registry stopped for GC) is kept beside it.
+func maintenanceRunner(p storage.Policy, policyPath string, out io.Writer) storage.Runner {
 	sourceRoot, err := gitsource.DefaultCacheRoot()
 	if err != nil {
 		sourceRoot = ""
 	}
-	return storage.Runner{Policy: p, Out: out, TempRoot: os.TempDir(), SourceCacheRoot: sourceRoot}
+	return storage.Runner{Policy: p, Out: out, TempRoot: os.TempDir(), SourceCacheRoot: sourceRoot, PolicyPath: policyPath}
+}
+
+// fullGCFn is the full maintenance pass `storage gc` runs, seamed so the
+// recording around it is testable without Docker.
+var fullGCFn = func(ctx context.Context, r storage.Runner, apply bool) error { return r.GC(ctx, apply) }
+
+// runFullGC runs the full pass and, when it applied, records the outcome —
+// success, or which layers failed — beside the policy. That record is the only
+// evidence registry retention is running, so it is written for a failure too:
+// `forge doctor` and `forge env up` read it to say so. A preview changes
+// nothing and records nothing. The caller holds the maintenance lock.
+func runFullGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply bool) error {
+	err := fullGCFn(ctx, maintenanceRunner(p, path, out), apply)
+	if !apply {
+		return err
+	}
+	if recErr := storage.RecordFullGC(path, storage.NewGCResult(time.Now(), err)); recErr != nil && err == nil {
+		return fmt.Errorf("record storage GC result: %w", recErr)
+	}
+	return err
 }
 
 func newStorageCmd() *cobra.Command {
@@ -93,16 +116,7 @@ func newStorageCmd() *cobra.Command {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return storage.WithLock(path, func() error {
-			if err := maintenanceRunner(p, cmd.OutOrStdout()).GC(ctx, apply); err != nil {
-				return err
-			}
-			if !apply {
-				return nil
-			}
-			// Stamp the same marker `forge env up`'s opportunistic pass reads,
-			// so a machine with the schedule installed (or a developer who runs
-			// this by hand) never pays a redundant pass at the end of an up.
-			return storage.RecordGC(path, time.Now())
+			return runFullGC(ctx, p, path, cmd.OutOrStdout(), apply)
 		})
 	}}
 	gc.Flags().BoolVar(&apply, "apply", false, "execute the cleanup plan")
@@ -122,7 +136,7 @@ func newStorageCmd() *cobra.Command {
 			p, path, err := load()
 			if err == nil {
 				err = storage.WithLock(path, func() error {
-					return maintenanceRunner(p, cmd.OutOrStdout()).GC(ctx, true)
+					return runFullGC(ctx, p, path, cmd.OutOrStdout(), true)
 				})
 			}
 			if err != nil {
@@ -187,6 +201,7 @@ func newStorageCmd() *cobra.Command {
 	nodes.Flags().BoolVar(&restart, "apply", false, "install configuration and restart local k3d nodes sequentially")
 	group.AddCommand(nodes)
 	group.AddCommand(newStorageWorktreesCmd())
+	group.AddCommand(newStorageAutoGCCmd(&path))
 	return cmdutil.StrictGroup(group)
 }
 

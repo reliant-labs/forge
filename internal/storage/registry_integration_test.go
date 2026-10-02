@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func TestRegistryMaintenanceEndToEnd(t *testing.T) {
 	run("run", "-d", "--name", name, "-p", "127.0.0.1::5000", "-v", volume+":/var/lib/registry", "registry:2")
 	p := DefaultPolicy()
 	p.RegistryKeep = 2
-	r := Runner{Policy: p, Command: func(ctx context.Context, command string, args ...string) ([]byte, error) {
+	r := Runner{Policy: p, PolicyPath: filepath.Join(t.TempDir(), "storage.json"), Command: func(ctx context.Context, command string, args ...string) ([]byte, error) {
 		if command == "kubectl" {
 			// The scan asks which resources exist before listing them; an empty
 			// cluster still has to answer both questions.

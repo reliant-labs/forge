@@ -296,6 +296,7 @@
           "env_file": null,
           "file": "docker-compose.yml",
           "service": "nats",
+          "shared": false,
           "type": "compose",
           "wait": true,
           "wait_timeout": 0

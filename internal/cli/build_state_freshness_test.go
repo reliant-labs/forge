@@ -101,8 +101,15 @@ func TestResolveDeployImageTag_StaleCommitRefuses(t *testing.T) {
 
 // TestResolveDeployImageTag_FreshCommitAllows: build state commit ==
 // HEAD, clean tree — the image is current, deploy proceeds.
+//
+// It needs a REAL ledger (useTestLedger), because the guard now reports an
+// unopenable one as an error. It previously passed on a project with no
+// forge.yaml name, where the ledger could not be keyed at all — so the
+// "allow" it asserted came from the guard being silently disabled rather
+// than from the commit matching. That shape cannot occur in production,
+// where a nameless project is refused outright.
 func TestResolveDeployImageTag_FreshCommitAllows(t *testing.T) {
-	dir := newGitRepo(t)
+	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	head := gitHeadSHA(t, dir)
 
@@ -150,8 +157,12 @@ func TestResolveDeployImageTag_StaleButFlagOverrides(t *testing.T) {
 // can be "behind," so the staleness guard is skipped (the dirty-build
 // warning covers reproducibility). Even though the recorded commit
 // differs from HEAD, deploy proceeds.
+// It needs a real ledger for the reason TestResolveDeployImageTag_FreshCommitAllows
+// does: the stand-down under test is the DIRTY-TREE one, and on a nameless
+// project the guard would stand down for an unrelated reason it must now
+// report as an error instead.
 func TestResolveDeployImageTag_DirtyTrackedFileSkipsFreshnessCheck(t *testing.T) {
-	dir := newGitRepo(t)
+	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
 	gitCommitEmpty(t, dir, "advance head")

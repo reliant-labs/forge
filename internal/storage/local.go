@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,15 +34,28 @@ type Runner struct {
 	PolicyPath string
 }
 
-// Exec runs a command with a bounded lifetime.
+// Exec runs a command with a bounded lifetime and returns its STDOUT.
+//
+// Stderr is captured separately and only ever reported, in the error of a
+// command that failed. Callers parse what Exec returns — kubectl and docker
+// JSON — and a tool that succeeds while warning on stderr (kubectl's
+// "Warning: v1 ComponentStatus is deprecated") would otherwise put the
+// warning in front of the JSON. That made every protected-set scan fail to
+// parse, so registry GC refused on every pass.
 func Exec(ctx context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	b, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("%s %v: %w: %s", name, args, err, strings.TrimSpace(string(b)))
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		return nil, fmt.Errorf("%s %v: %w: %s", name, args, err, detail)
 	}
-	return b, nil
+	return stdout.Bytes(), nil
 }
 
 func (r Runner) command(ctx context.Context, name string, args ...string) ([]byte, error) {

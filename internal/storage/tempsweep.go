@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Temp sweep: reclaim abandoned scratch directories in the system temp dir.
@@ -28,6 +30,12 @@ import (
 //   - A FIXED ALLOWLIST of name prefixes, never a pattern or a blanket sweep.
 //     An entry forge does not recognize is left alone forever, even if it is
 //     ancient and enormous.
+//   - One FIXED SHAPE besides the allowlist: an orphaned Go `t.TempDir()`
+//     root — <TestName><random digits>/ whose children are all `001`, `002`…
+//     directories (orphanedGoTestTempDir). A test binary killed before its
+//     Cleanup runs leaves one behind forever; measured on one Mac, five such
+//     roots from a single test held 22 GB. The match is on the full shape Go
+//     produces, children included, never on a name alone.
 //   - TOP LEVEL ONLY, so a prefix match can never be inherited from a parent.
 //   - 24h of total quiescence, measured as the NEWEST mtime anywhere inside
 //     the entry — not the root's own mtime, which a directory keeps from its
@@ -139,12 +147,12 @@ func (s tempSweep) run(apply bool) error {
 	// is something it could protect.
 	var named []string
 	for _, entry := range entries {
-		if !tempSweepAllowed(entry.Name()) {
-			continue
-		}
 		// A symlink at the top level is never followed and never removed:
 		// its target is outside the root this sweep is scoped to.
 		if entry.Type()&fs.ModeSymlink != 0 {
+			continue
+		}
+		if !tempSweepAllowed(entry.Name()) && !orphanedGoTestTempDir(s.root, entry) {
 			continue
 		}
 		named = append(named, entry.Name())
@@ -265,6 +273,91 @@ func tempSweepAllowed(name string) bool {
 		}
 	}
 	return false
+}
+
+// goTestTempSymbols are the only non-alphanumeric characters testing.T.TempDir
+// keeps when it turns a test name into a directory name (removeSymbolsExcept in
+// the testing package); every other symbol, `/` included, is dropped.
+const goTestTempSymbols = "!#$%&()+,-.=@^_{}~ "
+
+// goTestTempRootMaxLen is the longest root name TempDir can produce: the test
+// name truncated to 64 bytes, then os.MkdirTemp's random suffix, a uint32 in
+// decimal (at most 10 digits).
+const goTestTempRootMaxLen = 64 + 10
+
+// goTestTempRootName reports whether name has the exact shape
+// testing.T.TempDir gives its root directory: os.MkdirTemp(<name>) where <name>
+// is a Go test, benchmark or fuzz function name with symbols stripped, so the
+// root is that name followed by MkdirTemp's random decimal suffix.
+func goTestTempRootName(name string) bool {
+	if len(name) > goTestTempRootMaxLen {
+		return false
+	}
+	var rest string
+	matched := false
+	for _, prefix := range []string{"Test", "Benchmark", "Fuzz"} {
+		if after, ok := strings.CutPrefix(name, prefix); ok {
+			rest, matched = after, true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	// `go test` only runs Test<X> where X is not a lower-case letter, so
+	// "Testdata123" or "Testing42" is never a test's TempDir.
+	if first, _ := utf8.DecodeRuneInString(rest); unicode.IsLower(first) {
+		return false
+	}
+	// MkdirTemp's random suffix: the name must END in at least one digit.
+	if strings.TrimRight(rest, "0123456789") == rest {
+		return false
+	}
+	for _, r := range rest {
+		if !unicode.IsLetter(r) && !unicode.IsNumber(r) && !strings.ContainsRune(goTestTempSymbols, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// goTestTempChildName reports whether name is one of TempDir's per-call
+// subdirectories, which it names fmt.Sprintf("%03d", seq): three or more
+// decimal digits.
+func goTestTempChildName(name string) bool {
+	if len(name) < 3 {
+		return false
+	}
+	for _, r := range name {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// orphanedGoTestTempDir reports whether entry is a whole testing.T.TempDir
+// root: a Go-test-shaped name whose children are ALL numbered directories, and
+// at least one of them. The children are what make this a shape rather than a
+// name match — a directory that merely starts with "Test" and ends in digits,
+// but holds anything Go would not have put there (a stray file, a `results/`
+// dir, nothing at all), is somebody else's and is left alone.
+func orphanedGoTestTempDir(root string, entry fs.DirEntry) bool {
+	if !entry.IsDir() || !goTestTempRootName(entry.Name()) {
+		return false
+	}
+	children, err := os.ReadDir(filepath.Join(root, entry.Name()))
+	if err != nil || len(children) == 0 {
+		return false
+	}
+	for _, child := range children {
+		// IsDir is false for a symlink (ReadDir reports Lstat types), so a
+		// numbered link to somewhere else disqualifies the root too.
+		if !child.IsDir() || !goTestTempChildName(child.Name()) {
+			return false
+		}
+	}
+	return true
 }
 
 // pathHeldOpen reports whether any open path IS the entry or lives under it.

@@ -17,7 +17,7 @@ an indication that a volume is safe to remove.
 | Forge dev logs (`forge env up` foreground tee) | Rotate at 50 MiB (`FORGE_LOG_ROTATE_BYTES`; `0` disables); the current stream keeps its path |
 | Rotated Forge logs | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment |
 | Cross-repo source cache (`<UserCacheDir>/forge/sources`) | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`) |
-| Temp scratch (`$TMPDIR`) | Remove allowlisted toolchain/test scratch idle 24h and open by no process; never a git worktree |
+| Temp scratch (`$TMPDIR`) | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata |
 | Worktrees | Explicit command only; clean, merged, directory and commit older than 30 days |
 | Database/PVC/workspace volumes | Never removed by storage GC |
 

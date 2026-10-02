@@ -340,6 +340,218 @@ func TestTempSweepHonorsAnExplicitRoot(t *testing.T) {
 	}
 }
 
+// writeGoTestTempRoot creates the exact shape `testing.T.TempDir` leaves when a
+// test binary is killed before its Cleanup runs: root/<name>/<NNN>/... with
+// every path aged by age.
+func writeGoTestTempRoot(t *testing.T, root, name string, age time.Duration, children ...string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	for _, child := range children {
+		p := filepath.Join(dir, child, "fixture", "main.go")
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("package main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ageTree(t, dir, age)
+	return dir
+}
+
+// ageTree sets every mtime under dir (and dir itself) to now-age. The sweep
+// takes the NEWEST mtime anywhere inside an entry, so one fresh intermediate
+// directory would make the whole entry look active.
+func ageTree(t *testing.T, dir string, age time.Duration) {
+	t.Helper()
+	stamp := time.Now().Add(-age)
+	_ = filepath.Walk(dir, func(p string, _ os.FileInfo, err error) error {
+		if err == nil {
+			_ = os.Chtimes(p, stamp, stamp)
+		}
+		return nil
+	})
+	if err := os.Chtimes(dir, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTempSweepReclaimsOrphanedGoTestTempDirs pins the Go `t.TempDir()` rule.
+// A test binary killed before its Cleanup runs (a CI timeout, an agent's
+// interrupted `go test`, a SIGKILL from a supervisor) leaves its TempDir root
+// behind forever. Measured on one Mac: five
+// TestEveryDaemonPriorityClassRendersOnEveryDaemonCluster* roots held 22 GB,
+// and 193 TestUpDeployResolveIdenticalPort* roots sat beside them.
+//
+// The rule is a fixed SHAPE, not a glob: Go names the root with os.MkdirTemp
+// (test name, symbols stripped, then random digits) and names every child with
+// %03d. Each case below is one way a directory can resemble that shape and
+// still not be one, plus the existing safety model applied to the new shape.
+func TestTempSweepReclaimsOrphanedGoTestTempDirs(t *testing.T) {
+	old := 48 * time.Hour
+	recent := 1 * time.Hour
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, root string) string
+		open       func(path string) map[string]bool
+		wantRemove bool
+		wantReason string
+	}{
+		{
+			name: "idle Go test TempDir root is reclaimed",
+			setup: func(t *testing.T, root string) string {
+				return writeGoTestTempRoot(t, root, "TestEveryDaemonPriorityClassRendersOnEveryDaemonCluster2743100264", old, "001", "002")
+			},
+			wantRemove: true,
+		},
+		{
+			name: "subtest root (slash stripped) with one child is reclaimed",
+			setup: func(t *testing.T, root string) string {
+				return writeGoTestTempRoot(t, root, "TestUpDeployResolveIdenticalPortsame_port1015013715", old, "001")
+			},
+			wantRemove: true,
+		},
+		{
+			name: "recently touched Go test root is retained",
+			setup: func(t *testing.T, root string) string {
+				return writeGoTestTempRoot(t, root, "TestUpDeployResolveIdenticalPort1016300401", recent, "001")
+			},
+			wantReason: "recent",
+		},
+		{
+			name: "Go test root held open by a running test is retained",
+			setup: func(t *testing.T, root string) string {
+				return writeGoTestTempRoot(t, root, "TestLongRunning123456", old, "001")
+			},
+			open: func(path string) map[string]bool {
+				return map[string]bool{filepath.Join(path, "001", "fixture", "main.go"): true}
+			},
+			wantReason: "in use",
+		},
+		{
+			name: "Go test root containing a git repository is retained",
+			setup: func(t *testing.T, root string) string {
+				dir := writeGoTestTempRoot(t, root, "TestScaffoldsARepo99", old, "001")
+				if err := os.MkdirAll(filepath.Join(dir, "001", "app", ".git"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				ageTree(t, dir, old)
+				return dir
+			},
+			wantReason: "git metadata",
+		},
+		{
+			name: "Test-named dir with no numbered child is retained",
+			setup: func(t *testing.T, root string) string {
+				dir := writeGoTestTempRoot(t, root, "TestFoo123", old)
+				if err := os.MkdirAll(filepath.Join(dir, "results"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				ageTree(t, dir, old)
+				return dir
+			},
+		},
+		{
+			name:  "empty Test-named dir is retained",
+			setup: func(t *testing.T, root string) string { return writeGoTestTempRoot(t, root, "TestFoo456", old) },
+		},
+		{
+			name: "numbered child beside a non-numbered one is retained",
+			setup: func(t *testing.T, root string) string {
+				dir := writeGoTestTempRoot(t, root, "TestMixed789", old, "001")
+				if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("mine"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				ageTree(t, dir, old)
+				return dir
+			},
+		},
+		{
+			name: "a numbered FILE is not Go's numbered directory: retained",
+			setup: func(t *testing.T, root string) string {
+				dir := writeGoTestTempRoot(t, root, "TestFiles321", old)
+				if err := os.WriteFile(filepath.Join(dir, "001"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				ageTree(t, dir, old)
+				return dir
+			},
+		},
+		{
+			name: "two-digit child is not Go's %03d: retained",
+			setup: func(t *testing.T, root string) string {
+				return writeGoTestTempRoot(t, root, "TestShort654", old, "01")
+			},
+		},
+		{
+			name: "Test name with no random suffix is retained",
+			setup: func(t *testing.T, root string) string {
+				return writeGoTestTempRoot(t, root, "TestFoo", old, "001")
+			},
+		},
+		{
+			name: "a user's own directory is never touched",
+			setup: func(t *testing.T, root string) string {
+				return writeGoTestTempRoot(t, root, "my-test-results-2026", old, "001")
+			},
+		},
+		{
+			// `go test` never runs Test<lower-case>, so this is not a test name.
+			name: "Test followed by a lower-case letter is not a test: retained",
+			setup: func(t *testing.T, root string) string {
+				return writeGoTestTempRoot(t, root, "Testdata123", old, "001")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := tc.setup(t, root)
+			open := map[string]bool{}
+			if tc.open != nil {
+				open = tc.open(path)
+			}
+			var out strings.Builder
+			s := newTempSweep(t, root, open, nil, &out)
+			if err := s.run(true); err != nil {
+				t.Fatalf("TempSweep: %v", err)
+			}
+			_, statErr := os.Stat(path)
+			gone := os.IsNotExist(statErr)
+			if gone != tc.wantRemove {
+				t.Fatalf("entry removed = %v, want %v\nsweep output:\n%s", gone, tc.wantRemove, out.String())
+			}
+			if tc.wantReason != "" && !strings.Contains(out.String(), tc.wantReason) {
+				t.Errorf("sweep did not report retaining the entry as %q:\n%s", tc.wantReason, out.String())
+			}
+		})
+	}
+}
+
+// TestGoTestTempDirNameMatchesWhatGoCreates derives the root name from the real
+// testing package rather than trusting a hand-written example: if Go ever
+// changes how TempDir names its root, the sweep's shape must follow, and this
+// is where that shows up.
+func TestGoTestTempDirNameMatchesWhatGoCreates(t *testing.T) {
+	for _, sub := range []string{"plain", "with spaces/and slashes", strings.Repeat("long", 30)} {
+		t.Run(sub, func(t *testing.T) {
+			dir := t.TempDir() // <tmp>/<root>/001
+			root := filepath.Base(filepath.Dir(dir))
+			if !goTestTempRootName(root) {
+				t.Fatalf("goTestTempRootName(%q) = false for a root Go itself created", root)
+			}
+			if !goTestTempChildName(filepath.Base(dir)) {
+				t.Fatalf("goTestTempChildName(%q) = false for a child Go itself created", filepath.Base(dir))
+			}
+		})
+	}
+}
+
 // TestTempSweepPrefixAllowlistIsClosed documents the allowlist as a decision
 // rather than an accident: a name that is merely temp-looking is not swept.
 func TestTempSweepPrefixAllowlistIsClosed(t *testing.T) {

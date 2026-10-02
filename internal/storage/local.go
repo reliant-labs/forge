@@ -110,24 +110,36 @@ func (r Runner) Status(ctx context.Context) error {
 		}
 		r.print("builder %s (budget %d GiB):\n%s\n", builder, r.Policy.BuildCacheGiB, b)
 	}
+	// One unreachable cluster is reported and skipped, not fatal: this is a
+	// read-only report, and Policy.Clusters only accumulates (a cluster that
+	// was deleted and recreated under a new name stays listed), so aborting
+	// here hid every healthy cluster after a stale one. Nothing destructive
+	// reads this list; ConfigureNodes, which restarts nodes, still aborts.
 	for _, cluster := range r.Policy.Clusters {
-		b, err = r.command(ctx, "kubectl", "--context", cluster, "--request-timeout=15s", "get", "nodes", "-o", "json")
+		if err := r.clusterStatus(ctx, cluster); err != nil {
+			r.print("cluster %s: unavailable (%v)\n", cluster, err)
+		}
+	}
+	return nil
+}
+
+func (r Runner) clusterStatus(ctx context.Context, cluster string) error {
+	b, err := r.command(ctx, "kubectl", "--context", cluster, "--request-timeout=15s", "get", "nodes", "-o", "json")
+	if err != nil {
+		return err
+	}
+	var nodes struct {
+		Items []struct{ Metadata struct{ Name string } }
+	}
+	if err := json.Unmarshal(b, &nodes); err != nil {
+		return err
+	}
+	for _, node := range nodes.Items {
+		b, err = r.command(ctx, "kubectl", "--context", cluster, "--request-timeout=15s", "get", "--raw", "/api/v1/nodes/"+node.Metadata.Name+"/proxy/configz")
 		if err != nil {
 			return err
 		}
-		var nodes struct {
-			Items []struct{ Metadata struct{ Name string } }
-		}
-		if err := json.Unmarshal(b, &nodes); err != nil {
-			return err
-		}
-		for _, node := range nodes.Items {
-			b, err = r.command(ctx, "kubectl", "--context", cluster, "--request-timeout=15s", "get", "--raw", "/api/v1/nodes/"+node.Metadata.Name+"/proxy/configz")
-			if err != nil {
-				return err
-			}
-			r.print("node %s GC configuration: %s\n", node.Metadata.Name, b)
-		}
+		r.print("node %s GC configuration: %s\n", node.Metadata.Name, b)
 	}
 	return nil
 }

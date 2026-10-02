@@ -267,6 +267,48 @@ func TestStatusReportsEveryBuilderAgainstRealBuildx(t *testing.T) {
 	}
 }
 
+// TestStatusReportsAStaleClusterAndContinues: status is a read-only report,
+// and Policy.Clusters only ever accumulates — on the machine this was found on
+// it still listed k3d-cp-daemon after the cluster had been recreated as
+// k3d-cp-daemon-v2. One deleted context aborted the whole report, hiding every
+// healthy cluster's kubelet GC configuration after it. (GC safety does not
+// depend on this list: the registry protected set reads Registry.Contexts and
+// still fails closed, and ConfigureNodes — which restarts nodes — still aborts.)
+func TestStatusReportsAStaleClusterAndContinues(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "")
+	fake := dockerDesktopBuildx()
+	p := DefaultPolicy()
+	p.Builders = nil
+	p.Clusters = []string{"k3d-gone", "k3d-live"}
+	var out strings.Builder
+	r := Runner{Policy: p, Out: &out, Command: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name != "kubectl" {
+			return fake.command(ctx, name, args...)
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "--context k3d-gone "):
+			return nil, fmt.Errorf("exit status 1: Error in configuration: context was not found for specified context: k3d-gone")
+		case strings.HasSuffix(joined, "get nodes -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"k3d-live-server-0"}}]}`), nil
+		case strings.Contains(joined, "/proxy/configz"):
+			return []byte(`{"kubeletconfig":{"imageMaximumGCAge":"168h0m0s"}}`), nil
+		}
+		return nil, fmt.Errorf("unexpected kubectl %v", args)
+	}}
+	err := r.Status(context.Background())
+	if !strings.Contains(out.String(), "node k3d-live-server-0 GC configuration") {
+		t.Fatalf("a stale cluster hid the healthy one's report (err=%v):\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "cluster k3d-gone: unavailable") {
+		t.Errorf("the stale cluster was not reported:\n%s", out.String())
+	}
+	if err != nil {
+		t.Errorf("status of a reachable machine with one stale cluster failed: %v", err)
+	}
+}
+
 func TestBuildSpaceChecksScratchAndNewOutputDirectories(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"GOTMPDIR", "GOCACHE", "GOMODCACHE"} {

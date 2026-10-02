@@ -82,6 +82,35 @@ const (
 	// no longer the source environment's current one. A conflict — someone
 	// else moved the source — so it shares exitConflict.
 	reasonSourceMoved = "source_moved"
+
+	// reasonPlanStale (O-13, F-19): the server recomputed the deploy plan
+	// under the environment's row lock and it no longer matches the digest
+	// the approval named. Live moved between plan and approve — someone
+	// else promoted, a new bundle was applied, drift appeared.
+	//
+	// It shares exitConflict with promotion_conflict DELIBERATELY. To the
+	// operator, "someone promoted under me" and "the world changed under
+	// me" are one situation with one response: re-plan, look at what
+	// changed, decide again. A separate code would ask every pipeline to
+	// re-derive a distinction it does not act on.
+	reasonPlanStale = "plan_stale"
+	// reasonPlanUnacknowledged (O-13): the recomputed plan holds a
+	// stop-class finding — a stateful deletion, a load balancer losing its
+	// address — that the request did not name in acknowledgedFindings.
+	//
+	// exitRefused, not exitConflict: nothing moved and nothing was lost.
+	// The write was declined pending a decision, and re-running it with the
+	// finding acknowledged is the legitimate next step. A blanket --yes
+	// does not satisfy it, which is the whole point.
+	reasonPlanUnacknowledged = "plan_unacknowledged"
+	// reasonBundleMissing (F-4): the bundle's blob is no longer in the
+	// registry, so an apply would be applying bytes it cannot prove it has.
+	//
+	// exitWrong: we looked, and the thing named is not there. Not
+	// undetermined — the registry answered — and not a retryable refusal,
+	// since nothing about waiting makes a deleted blob reappear. The remedy
+	// is to re-build and re-record.
+	reasonBundleMissing = "bundle_missing"
 )
 
 // exitCodeForRefusal maps a refusal REASON to its exit code — the one table
@@ -102,10 +131,12 @@ const (
 // tell CI to retry a write that will be refused identically.
 func exitCodeForRefusal(reason string) int {
 	switch reason {
-	case reasonPromotionConflict, reasonSourceMoved:
+	case reasonPromotionConflict, reasonSourceMoved, reasonPlanStale:
 		return exitConflict
-	case reasonRolloutInFlight, reasonEnvironmentPinned:
+	case reasonRolloutInFlight, reasonEnvironmentPinned, reasonPlanUnacknowledged:
 		return exitRefused
+	case reasonBundleMissing:
+		return exitWrong
 	default:
 		return exitWrong
 	}

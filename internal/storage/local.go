@@ -185,23 +185,22 @@ func WithLock(policyPath string, fn func() error) error {
 }
 
 // GC previews or applies the registered cache and registry policy.
+//
+// Every layer runs even when an earlier one failed: a layer's error is
+// recorded and the combined error is returned at the end. One unreadable
+// registered project used to end the pass at the first layer, so the temp
+// sweep, source eviction, BuildKit and registry retention silently never ran.
+// Two checks still stop everything, because nothing after them is safe
+// without them: an invalid policy, and a Docker endpoint that is not local
+// (which ends the Docker layers, not the host ones already done).
 func (r Runner) GC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
-	if err := r.Logs(apply); err != nil {
-		return err
-	}
-	if err := r.TempSweep(apply); err != nil {
-		return err
-	}
-	if err := r.Sources(apply); err != nil {
-		return err
-	}
+	failures := r.hostLayers(apply)
 	if err := r.Local(ctx); err != nil {
-		return err
+		return errors.Join(append(failures, err)...)
 	}
-	var failures []error
 	for _, builder := range r.Policy.Builders {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
@@ -220,6 +219,23 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 	}
 	r.print("persistent volumes, worktrees, running containers and application data are retained\n")
 	return errors.Join(failures...)
+}
+
+// hostLayers runs the layers that reclaim from the host filesystem — rotated
+// logs, the temp sweep, the source cache — each independently, returning one
+// error per failed layer.
+func (r Runner) hostLayers(apply bool) []error {
+	var failures []error
+	if err := r.Logs(apply); err != nil {
+		failures = append(failures, fmt.Errorf("logs: %w", err))
+	}
+	if err := r.TempSweep(apply); err != nil {
+		failures = append(failures, fmt.Errorf("temp sweep: %w", err))
+	}
+	if err := r.Sources(apply); err != nil {
+		failures = append(failures, err)
+	}
+	return failures
 }
 
 // NodeConfigPath is stable across command exits; k3d bind mounts must never

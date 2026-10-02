@@ -50,6 +50,7 @@ import (
 //     worktree has, so it means stop. A `.git` DIR is allowed only under
 //     `tierguard-`, whose fixtures `git init` a scaffolded project on purpose.
 type tempSweep struct {
+	ctx    context.Context
 	root   string
 	now    time.Time
 	maxAge time.Duration
@@ -133,11 +134,13 @@ func (r Runner) TempSweep(apply bool) error {
 		}
 		return nil
 	}
+	ctx := r.hostCtx()
 	s := tempSweep{
+		ctx:       ctx,
 		root:      resolved,
 		now:       time.Now(),
 		maxAge:    tempSweepAge,
-		openPaths: func() (openfiles.Snapshot, error) { return openfiles.Take(context.Background()) },
+		openPaths: func() (openfiles.Snapshot, error) { return openfiles.Take(ctx) },
 		print:     r.print,
 	}
 	return s.run(apply)
@@ -147,6 +150,16 @@ type tempCandidate struct {
 	path   string
 	size   int64
 	newest time.Time
+}
+
+// done reports the sweep's deadline or cancellation, if it has passed. A
+// sweep cut off by it stops where it is: everything not yet removed is
+// retained, and the caller learns the pass did not finish.
+func (s tempSweep) done() error {
+	if s.ctx == nil {
+		return nil
+	}
+	return s.ctx.Err()
 }
 
 func (s tempSweep) run(apply bool) error {
@@ -175,6 +188,9 @@ func (s tempSweep) run(apply bool) error {
 	}
 
 	open, err := s.openPaths()
+	if ctxErr := s.done(); ctxErr != nil {
+		return fmt.Errorf("temp sweep stopped before removing anything: %w", ctxErr)
+	}
 	if err != nil {
 		// Fail closed. Age alone cannot tell an abandoned entry from one a
 		// live process is still writing to, and deleting the latter breaks a
@@ -186,6 +202,9 @@ func (s tempSweep) run(apply bool) error {
 	var candidates []tempCandidate
 	var skippedOpen, skippedYoung, skippedGit int
 	for _, name := range named {
+		if err := s.done(); err != nil {
+			return fmt.Errorf("temp sweep stopped before removing anything: %w", err)
+		}
 		path := filepath.Join(s.root, name)
 		if open.Holds(path) {
 			skippedOpen++
@@ -209,6 +228,9 @@ func (s tempSweep) run(apply bool) error {
 	var total int64
 	var removed int
 	for _, c := range candidates {
+		if err := s.done(); err != nil {
+			return fmt.Errorf("temp sweep stopped after %d of %d entries: %w", removed, len(candidates), err)
+		}
 		s.print("temp sweep: %s (%d bytes, idle %s)\n", c.path, c.size, s.now.Sub(c.newest).Round(time.Hour))
 		if !apply {
 			total += c.size

@@ -22,6 +22,9 @@ var rotatedLog = regexp.MustCompile(`^(.+)\.[0-9]{4}-[0-9]{2}-[0-9]{2}T[^/]+\.lo
 func (r Runner) Logs(apply bool) error {
 	var failures []error
 	for _, project := range r.Policy.Projects {
+		if err := r.hostCtx().Err(); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
 		if err := r.projectLogs(project, apply); err != nil {
 			failures = append(failures, fmt.Errorf("project %s: %w", project, err))
 		}
@@ -90,6 +93,9 @@ func (r Runner) projectLogs(project string, apply bool) error {
 			}
 			path := filepath.Join(root, f.name)
 			r.print("expire rotated log %s (%d bytes)\n", path, f.size)
+			if err := r.hostCtx().Err(); err != nil {
+				return errors.Join(append(failures, err)...)
+			}
 			if apply {
 				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 					failures = append(failures, fmt.Errorf("remove rotated log: %w", err))
@@ -109,6 +115,9 @@ func RegisterProject(path, project string) error {
 		return err
 	}
 	return WithLock(path, func() error {
+		if underTempDir(absolute) {
+			return fmt.Errorf("refusing to register %s: it is under the temp directory, so it is a fixture or scratch project, not one whose logs forge should maintain", absolute)
+		}
 		p, err := Load(path)
 		if err != nil {
 			return err

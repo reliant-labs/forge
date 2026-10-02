@@ -32,6 +32,20 @@ type Runner struct {
 	// registry was stopped for GC — is kept beside it, so a later pass can
 	// find and repair what an interrupted one left behind.
 	PolicyPath string
+	// Ctx bounds the host-filesystem layers (logs, temp sweep, source cache),
+	// which take no context of their own. GC and NonDisruptiveGC set it from
+	// theirs, so a pass's deadline bounds the whole pass — its lsof snapshot
+	// and its walk over entries, not only its docker calls. Nil means
+	// unbounded.
+	Ctx context.Context
+}
+
+// hostCtx is the context the host layers run under.
+func (r Runner) hostCtx() context.Context {
+	if r.Ctx != nil {
+		return r.Ctx
+	}
+	return context.Background()
 }
 
 // Exec runs a command with a bounded lifetime and returns its STDOUT.
@@ -197,24 +211,38 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
-	failures := r.hostLayers(apply)
+	var failures []error
+	// Stale clusters and projects are pruned first: a registered cluster
+	// that no longer exists makes the registry layer's protected-set scan
+	// fail on every pass (see prune.go). A preview prunes in memory only,
+	// so it shows what an apply would do without writing anything.
+	if next, changed := r.pruned(ctx); changed {
+		r.Policy = next
+		if apply && r.PolicyPath != "" {
+			if err := Save(r.PolicyPath, next); err != nil {
+				failures = append(failures, layerErr("policy prune", err))
+			}
+		}
+	}
+	r.Ctx = ctx
+	failures = append(failures, r.hostLayers(apply)...)
 	if err := r.Local(ctx); err != nil {
-		return errors.Join(append(failures, err)...)
+		return errors.Join(append(failures, layerErr("docker", err))...)
 	}
 	for _, builder := range r.Policy.Builders {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(append(failures, err)...)
+			return errors.Join(append(failures, layerErr("builder "+builder, err))...)
 		}
 		if err := r.builderGC(ctx, builder, apply); err != nil {
-			failures = append(failures, fmt.Errorf("builder %s: %w", builder, err))
+			failures = append(failures, layerErr("builder "+builder, err))
 		}
 	}
 	for _, registry := range r.Policy.Registries {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(append(failures, err)...)
+			return errors.Join(append(failures, layerErr("registry "+registry.Container, err))...)
 		}
 		if err := r.RegistryGC(ctx, registry, apply); err != nil {
-			failures = append(failures, fmt.Errorf("registry %s: %w", registry.Container, err))
+			failures = append(failures, layerErr("registry "+registry.Container, err))
 		}
 	}
 	r.print("persistent volumes, worktrees, running containers and application data are retained\n")
@@ -227,13 +255,13 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 func (r Runner) hostLayers(apply bool) []error {
 	var failures []error
 	if err := r.Logs(apply); err != nil {
-		failures = append(failures, fmt.Errorf("logs: %w", err))
+		failures = append(failures, layerErr("logs", err))
 	}
 	if err := r.TempSweep(apply); err != nil {
-		failures = append(failures, fmt.Errorf("temp sweep: %w", err))
+		failures = append(failures, layerErr("temp sweep", err))
 	}
 	if err := r.Sources(apply); err != nil {
-		failures = append(failures, err)
+		failures = append(failures, layerErr("source cache", err))
 	}
 	return failures
 }

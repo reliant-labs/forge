@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 // Facts are what a forge command ALREADY knows about the local caches it just
@@ -54,9 +52,12 @@ type Facts struct {
 //
 //   - IDEMPOTENT. Converging the same facts twice leaves the file untouched
 //     (it is not even rewritten), so warm runs cost one read.
-//   - ADDITIVE ONLY. Nothing is ever removed. Several projects on one machine
-//     converge into the same policy, and a project that stops using a context
-//     must not silently un-protect it for everybody else.
+//   - ADDITIVE ONLY. Nothing is ever removed here. Several projects on one
+//     machine converge into the same policy, and a project that stops using a
+//     context must not silently un-protect it for everybody else. Entries that
+//     are GONE — a cluster no longer in kubeconfig or docker, a deleted
+//     project directory — are removed by Prune at the start of GC, never here.
+//     A project under the temp dir is never added at all.
 //   - COMPLETE-OR-NOTHING for a registry. A registry becomes a cleanup target
 //     only once the container, its aliases, the protecting contexts and at
 //     least one repository are all known. Recording a registry whose
@@ -87,8 +88,10 @@ func Converge(policyPath string, f Facts) error {
 func upsertFacts(p Policy, f Facts) (Policy, bool) {
 	before := p.fingerprint()
 
+	// A project under the temp dir is a test fixture or a scratch scaffold,
+	// never one whose logs should be maintained (see underTempDir).
 	if f.Project != "" {
-		if absolute, err := filepath.Abs(f.Project); err == nil && !contains(p.Projects, absolute) {
+		if absolute, err := filepath.Abs(f.Project); err == nil && !underTempDir(absolute) && !contains(p.Projects, absolute) {
 			p.Projects = append(p.Projects, absolute)
 		}
 	}
@@ -207,64 +210,6 @@ func sorted(xs []string) []string {
 	return out
 }
 
-// gcStamp records when a maintenance pass last ran to completion. It lives
-// beside the policy rather than inside it so recording a run never rewrites
-// (or risks invalidating) the policy document itself.
-type gcStamp struct {
-	CompletedAt time.Time `json:"completed_at"`
-}
-
-// GCStampPath is the completion marker's location, next to the policy file.
-func GCStampPath(policyPath string) string {
-	return filepath.Join(filepath.Dir(policyPath), "last-gc.json")
-}
-
-// LastGC reports when maintenance last completed. A missing or unreadable
-// stamp is the zero time with no error: "we do not know" and "it was never
-// run" lead to the same decision, and a corrupt marker must not be able to
-// fail a user's command.
-func LastGC(policyPath string) time.Time {
-	b, err := os.ReadFile(GCStampPath(policyPath))
-	if err != nil {
-		return time.Time{}
-	}
-	var stamp gcStamp
-	if json.Unmarshal(b, &stamp) != nil {
-		return time.Time{}
-	}
-	return stamp.CompletedAt
-}
-
-// RecordGC writes the completion marker atomically.
-func RecordGC(policyPath string, at time.Time) error {
-	if err := guardMachinePolicy(policyPath); err != nil {
-		return err
-	}
-	path := GCStampPath(policyPath)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	b, err := json.Marshal(gcStamp{CompletedAt: at})
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".last-gc-*.json")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(f.Name()) }()
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(append(b, '\n'))
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
-}
-
 // NonDisruptiveGC runs only the layers that cannot interrupt anything a
 // developer is currently using: expiring rotated logs, evicting unused builder
 // cache, and the temp sweep.
@@ -280,15 +225,16 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
+	r.Ctx = ctx
 	var failures []error
 	if err := r.Logs(apply); err != nil {
-		failures = append(failures, fmt.Errorf("logs: %w", err))
+		failures = append(failures, layerErr("logs", err))
 	}
 	// A nonlocal Docker endpoint ends only the Docker layer; the temp sweep
 	// and source eviction below never touch Docker.
 	dockerErr := r.Local(ctx)
 	if dockerErr != nil {
-		failures = append(failures, dockerErr)
+		failures = append(failures, layerErr("docker", dockerErr))
 	}
 	for _, builder := range r.Policy.Builders {
 		if dockerErr != nil {
@@ -298,7 +244,7 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 			return errors.Join(append(failures, err)...)
 		}
 		if err := r.builderGC(ctx, builder, apply); err != nil {
-			failures = append(failures, fmt.Errorf("builder %s: %w", builder, err))
+			failures = append(failures, layerErr("builder "+builder, err))
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -307,7 +253,7 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	// The temp sweep touches only $TMPDIR scratch under a fixed allowlist of
 	// known-dead prefixes, so it is safe alongside a running stack.
 	if err := r.TempSweep(apply); err != nil {
-		failures = append(failures, fmt.Errorf("temp sweep: %w", err))
+		failures = append(failures, layerErr("temp sweep", err))
 	}
 	if err := ctx.Err(); err != nil {
 		return errors.Join(append(failures, err)...)
@@ -324,7 +270,7 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	// re-fetchable pin, which is the same cost shape as a pruned build cache
 	// — not the offline registry or the restarted kubelet this pass excludes.
 	if err := r.Sources(apply); err != nil {
-		failures = append(failures, err)
+		failures = append(failures, layerErr("source cache", err))
 	}
 	return errors.Join(failures...)
 }

@@ -95,7 +95,7 @@ type DeployShaper func(env string, render []byte) (DeployShape, error)
 // is what a render that carries no `output` deploy contract gets.
 type DeployShape struct {
 	// Destinations are the destination kinds the environment deploys to, in
-	// the vocabulary of `forge env topology` (hosted, cluster, compose, host,
+	// the vocabulary of `forge env status` (hosted, cluster, compose, host,
 	// external, static), sorted. Nil when the render carries no deploy
 	// contract to read them from. Only an env with "cluster" among them
 	// needs its `output.manifests` stream to carry anything: an env that runs on
@@ -208,6 +208,15 @@ func projectChecks() []namedCheck {
 		// not know the declared contexts it SKIPs, so a CI runner with no
 		// cluster stays quiet rather than yellow.
 		{orphanedClusterCheckName, CheckOrphanedClusterObjects},
+		// Also deliberately NOT in deployabilityChecks: it reads this
+		// MACHINE, not the project's artefacts, so it has no business in
+		// the CI gate. It belongs to `forge doctor` because nothing in
+		// forge reported disk at all — the machine this was written on
+		// went from 70 GiB free to a failed build with no warning at any
+		// point, while the storage policy that would have reclaimed the
+		// space sat unregistered and unscheduled. It makes no network or
+		// Docker call, so it cannot hang a doctor run.
+		{diskCheckName, CheckDisk},
 	}
 	return append(base, deployabilityChecks()...)
 }

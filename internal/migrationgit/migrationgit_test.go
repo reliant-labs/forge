@@ -227,3 +227,48 @@ func TestMoveRenamesAnUntrackedFile(t *testing.T) {
 		t.Errorf("untracked file was not moved: %v", err)
 	}
 }
+
+// A GIT HOOK's environment must not change the answer, and this is the test
+// that would have caught a real false positive.
+//
+// git exports GIT_DIR (and often GIT_WORK_TREE) to every hook it runs. Those
+// variables take precedence over a child process's working directory, so a
+// `git` invocation that only sets cmd.Dir resolves against the HOOK's
+// repository instead of the directory it was handed. Inside a pre-push hook
+// that made `merge-base`/`ls-tree` fail, MergeBaseMax report "cannot know",
+// and the version lint fall back to its no-git rule — which flagged a
+// project's long-merged `00001_*.up.sql` as "new but not a UTC timestamp".
+//
+// The failure mode is the worst shape available: `forge lint` passed from the
+// shell and failed on `git push`, with a finding about a file the author had
+// not touched. So the lookups scrub the inherited git env.
+func TestLookupsIgnoreAnInheritedGitEnvironment(t *testing.T) {
+	repoRoot, migDir := repo(t,
+		[]string{"20260101120000_add_users.up.sql"},
+		[]string{"20260501000000_add_sessions.up.sql"},
+	)
+
+	// A SECOND, unrelated repository, standing in for the one whose hook is
+	// running. Pointing GIT_DIR at it is exactly what git does to a hook.
+	other := t.TempDir()
+	cmd := exec.Command("git", "init", "-q", "-b", "main")
+	cmd.Dir = other
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init the hook's repository: %v\n%s", err, out)
+	}
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+
+	if root := RepoRoot(repoRoot); resolvePath(root) != resolvePath(repoRoot) {
+		t.Errorf("RepoRoot = %q under an inherited GIT_DIR, want %q — "+
+			"the inherited env must not redirect the lookup to the hook's repository", root, repoRoot)
+	}
+	max, ok := MergeBaseMax(RepoRoot(repoRoot), migDir)
+	if !ok {
+		t.Fatal("MergeBaseMax reported `cannot know` under an inherited GIT_DIR; " +
+			"the version lint then falls back to its no-git rule and flags merged history")
+	}
+	if max != 20260101120000 {
+		t.Errorf("MergeBaseMax = %d, want 20260101120000", max)
+	}
+}

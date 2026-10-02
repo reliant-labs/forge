@@ -132,7 +132,7 @@ type workloadItemJSON struct {
 //
 // WHY THIS EXISTS. A Job is not replaced on redeploy the way a Deployment is —
 // each release creates a new one and the old, completed Jobs remain as a
-// record. Reading their images made `forge env verify` report a fully and
+// record. Reading their images made `forge env status` report a fully and
 // correctly deployed production namespace as drifted across five digests,
 // because ten finished `control-plane-migrate` / `-idp-provision` Jobs still
 // carried the digests of the releases that created them. That drift could

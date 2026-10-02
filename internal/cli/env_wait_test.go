@@ -15,7 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 )
 
-// Tests for `forge env wait` (control-plane
+// Tests for `forge env status --wait` (control-plane
 // docs/design/hosted-deploy-primitives.md §3.2, task F3).
 //
 // Every case SCRIPTS A PHASE SEQUENCE and asserts the exit code, because the
@@ -254,21 +254,15 @@ func TestEnvWait_NonConvergingEnvRefusesFast(t *testing.T) {
 	}
 }
 
-// --deploy's wait has just applied the pins from this machine, so the
-// non-converging refusal must NOT fire: the thing it protects against cannot
-// happen when the client did the converging itself.
-func TestEnvWait_AllowNonConvergingAdmitsTheDeployBridge(t *testing.T) {
-	fake := newFakeRollout(wireRolloutPhaseProgressing, wireRolloutPhaseSucceeded)
-	fake.converges = false
-	opts := waitOpts(fake)
-	opts.AllowNonConverging = true
-	opts.Timeout = time.Minute
-	var err error
-	captureStdout(t, func() { err = runEnvWait(context.Background(), "prod", opts) })
-	if err != nil {
-		t.Fatalf("with AllowNonConverging the wait must proceed, got %v", err)
-	}
-}
+// TestEnvWait_AllowNonConvergingAdmitsTheDeployBridge lived here. It covered
+// envWaitOptions.AllowNonConverging, the bypass that let a caller which had
+// ALREADY applied the pins itself skip the non-converging refusal. Its only
+// setter was the retired promote verb's apply-then-wait pair, and when
+// `forge env deploy` absorbed that (docs/adr/env-verbs.md, V3) the client-side
+// apply stopped coming through this wait at all — a self-managed env is gated
+// by its own per-resource rollout wait. The field and the bypass are deleted
+// rather than left as a seam nothing reaches: a flag no production path sets
+// makes every read of it observe a value only a test wrote.
 
 // TestEnvWait_ReleaseMismatchIsSupersededNotATimeout: `--release v6` against
 // an env that has moved on to v7 must say so AT ONCE. Without this check it
@@ -433,7 +427,7 @@ func TestEnvWait_UnimplementedIsAFastExitTwo(t *testing.T) {
 	if n := fake.callCount(); n != 1 {
 		t.Errorf("polled %d times; unimplemented will not become implemented within the budget", n)
 	}
-	if !strings.Contains(err.Error(), "forge env verify") {
+	if !strings.Contains(err.Error(), "forge env status") {
 		t.Errorf("the message must name the fallback verb, got: %v", err)
 	}
 }
@@ -488,7 +482,7 @@ func TestEnvWait_StableForRequiresAnUnbrokenRun(t *testing.T) {
 }
 
 // TestEnvWait_OnceReadsExactlyOnceAndNeverBlocks is the single-read mode
-// `forge env rollout` is built on (§3.5: "env wait --timeout 0: one read,
+// `forge env status <env> --wait --timeout 0` is (§3.5: "one read,
 // never blocks").
 //
 // Both halves matter. ONE read — a snapshot verb that polled would be a wait
@@ -556,61 +550,6 @@ func TestEnvWait_OnceReadsExactlyOnceAndNeverBlocks(t *testing.T) {
 	}
 }
 
-// TestEnvWaitCmd_ExplicitZeroTimeoutIsASingleRead pins the distinction a zero
-// value cannot express: an UNSET --timeout keeps the 15m budget, an EXPLICIT
-// `--timeout 0` is a single read.
-//
-// Both directions are bugs. An unset flag becoming a single read would turn
-// every plain `env wait` into a non-blocking poll that reports 5 the moment a
-// rollout is mid-flight. An explicit 0 becoming 15m would make `env rollout`
-// block for a quarter of an hour.
-//
-// The flag's 15m DEFAULT is what makes the unset case safe today, and that
-// is exactly why this test asserts the resolved Timeout as well as Once:
-// someone changing the default to 0 — which looks harmless, "zero means use
-// the default" — would silently turn every plain `env wait` into a single
-// read, and only the Timeout assertion catches it.
-func TestEnvWaitCmd_ExplicitZeroTimeoutIsASingleRead(t *testing.T) {
-	cases := []struct {
-		name     string
-		args     []string
-		wantOnce bool
-	}{
-		{"unset keeps the default budget", []string{"prod"}, false},
-		{"explicit zero is a single read", []string{"prod", "--timeout", "0"}, true},
-		{"explicit zero, long form", []string{"prod", "--timeout=0s"}, true},
-		{"an explicit non-zero budget blocks", []string{"prod", "--timeout", "30s"}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			// What is under test is the OPTIONS the flag layer
-			// resolved, so the wait itself is replaced rather than
-			// pointed at a control plane.
-			var seen envWaitOptions
-			prev := runEnvWaitForCmd
-			runEnvWaitForCmd = func(_ context.Context, _ string, opts envWaitOptions) error {
-				seen = opts
-				return nil
-			}
-			t.Cleanup(func() { runEnvWaitForCmd = prev })
-
-			cmd := newEnvWaitCmd()
-			cmd.SetArgs(tc.args)
-			cmd.SetOut(&strings.Builder{})
-			cmd.SetErr(&strings.Builder{})
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("execute: %v", err)
-			}
-			if seen.Once != tc.wantOnce {
-				t.Fatalf("Once = %v, want %v (args %v)", seen.Once, tc.wantOnce, tc.args)
-			}
-			if !tc.wantOnce && seen.Timeout <= 0 {
-				t.Errorf("a blocking wait must carry a positive budget, got %s", seen.Timeout)
-			}
-		})
-	}
-}
-
 // --stable-for is a claim about a span of time, and a single read observes no
 // span. Refused rather than ignored: silently dropping it would report a
 // rollout as stable on the strength of one observation.
@@ -655,35 +594,10 @@ func TestEnvWait_SelfManagedEnvCannotBeWaitedOn(t *testing.T) {
 	if got := exitCodeForError(err); got != exitUndetermined {
 		t.Fatalf("a self-managed env must exit %d, got %d (%v)", exitUndetermined, got, err)
 	}
-	for _, want := range []string{"declares no hosted control plane", "forge env verify prod"} {
+	for _, want := range []string{"declares no hosted control plane", "forge env status prod"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the message must say %q, got:\n%v", want, err)
 		}
-	}
-}
-
-// Every flag §3.2 names is declared, so a pipeline written against the design
-// doc runs.
-func TestEnvWaitCmd_DeclaresEveryPlannedFlag(t *testing.T) {
-	cmd := newEnvWaitCmd()
-	for _, name := range []string{"promotion", "release", "timeout", "stable-for", "fail-fast", "include-unpinned", "interval", "json", "watch-json"} {
-		if cmd.Flags().Lookup(name) == nil {
-			t.Errorf("--%s is not declared on `forge env wait`", name)
-		}
-	}
-	// The Q4 defaults, read off the command rather than asserted in prose.
-	if got := cmd.Flags().Lookup("timeout").DefValue; got != envWaitDefaultTimeout.String() {
-		t.Errorf("--timeout default = %s, want %s", got, envWaitDefaultTimeout)
-	}
-	if got := cmd.Flags().Lookup("fail-fast").DefValue; got != "false" {
-		t.Errorf("--fail-fast default = %s, want false (a transient crash loop must not fail the gate)", got)
-	}
-	// --promotion and --release name the promotion two different ways.
-	cmd.SetArgs([]string{"prod", "--promotion", "p-1", "--release", "v1"})
-	cmd.SetOut(&strings.Builder{})
-	cmd.SetErr(&strings.Builder{})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "promotion") {
-		t.Fatalf("--promotion with --release must be refused, got %v", err)
 	}
 }
 

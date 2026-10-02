@@ -323,7 +323,7 @@ var refusedSchemaKeys = map[string]string{
 	// flag, no forge-owned `-D`, no environment variable, no forge.yaml key.
 	"docker.registry": "delete the key and declare the registry in each env's KCL — " +
 		"`registry = \"<registry>\"` on the env's forge.ClusterTarget (or forge.ControlPlane for a " +
-		"hosted env) in deploy/kcl/<env>/main.k. `forge build <env> --push` pushes there.",
+		"hosted env) in deploy/kcl/<env>/main.k. `forge env build <env> --push` pushes there.",
 	"deploy.registry": "delete the key: the generated CI workflows name no registry. Declare it in " +
 		"each env's KCL — `registry = \"<registry>\"` on the env's forge.ClusterTarget (or " +
 		"forge.ControlPlane for a hosted env) in deploy/kcl/<env>/main.k.",

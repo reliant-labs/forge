@@ -22,7 +22,7 @@ func TestVerifyOCI_PreRegistryLedgerKeyExplainsTheReKey(t *testing.T) {
 		Mode:    release.ModeShared,
 		Digests: map[string]string{release.SharedVariant: sha("a")},
 	}
-	// "hounders" — the bare key a pre-#322 `forge build --release --push`
+	// "hounders" — the bare key a pre-#322 `forge env build --release --push`
 	// wrote, with no registry host in it.
 	got := verifyOCIArtifact(context.Background(), nil, "hounders", art)
 

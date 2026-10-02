@@ -19,9 +19,9 @@ func domainGroup() ServiceGroup {
 	return ServiceGroup{
 		Env: "prod", ProviderID: HostedProviderID,
 		Hosted: &HostedTarget{Endpoint: "https://cp.example", Release: "v1",
-			Digests: map[string]string{"web": digestA, "membership": digestB}},
+			Digests: map[string]string{staticSiteArtifact: digestA, "membership": digestB}},
 		Services: []ResolvedService{
-			{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Artifact: "web", Static: &v1alpha1.StaticSiteSpec{
+			{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Artifact: staticSiteArtifact, Static: &v1alpha1.StaticSiteSpec{
 				KeepReleases: &keep, Domains: []string{"hounders.club", "www.hounders.club"},
 			}}},
 			{Name: "membership", Hosted: &HostedWorkload{Tier: HostedTierWorkload, Artifact: "membership", Workload: &v1alpha1.WorkloadSpec{

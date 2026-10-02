@@ -136,12 +136,12 @@ func NewProjectGenerator(name, path, modulePath string) *ProjectGenerator {
 		// (components ship `ports: []`) and the dev backend binds the
 		// architectural default (config_schema.k `port: int = 8080` /
 		// defaultDevAPIPort). De-colliding the dev backend is therefore a
-		// RUNTIME concern — `forge run` / `forge env up` allocate a
+		// RUNTIME concern — `forge env up` allocate a
 		// free port per project (see resolveEphemeralHostPorts in run.go) —
 		// not a scaffold constant.
 		ServicePort: 8080,
 		// Frontend: 0 = ephemeral. The scaffolded forge.yaml omits the
-		// frontend port (FrontendConfig.Port is omitempty); `forge run` /
+		// frontend port (FrontendConfig.Port is omitempty); `forge env up` /
 		// `forge env up` allocate a free OS port at launch and print it in
 		// the summary. Teaches the "discover the dev port from forge's output,
 		// don't hardcode 3000" pattern and removes the frontend port-collision

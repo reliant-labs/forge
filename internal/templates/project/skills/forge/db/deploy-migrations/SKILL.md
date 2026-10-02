@@ -139,7 +139,7 @@ There is no stepping a schema back, and no rollback of a release either — see
 ## Where AUTO_MIGRATE still fits
 
 `AUTO_MIGRATE=true` migrates **in-process at startup**. It is not a duplicate
-of the init container — it serves the HOST loop (`forge run`), where there is
+of the init container — it serves the HOST loop (`forge env up`), where there is
 no pod and therefore no init container. The scaffold sets it true in `dev`'s
 `config.k` and leaves it false everywhere else.
 
@@ -179,7 +179,7 @@ What to do instead:
   new schema.
 - **Roll the app forward too.** There is no release rollback: a bad release is
   fixed by a new one, cut and promoted like any other. Binding an env to an
-  OLDER release is possible (an ordinary `forge env promote`, labelled
+  OLDER release is possible (an ordinary `forge env deploy`, labelled
   `direction BEHIND`), but it undoes nothing — the older code then runs on the
   newer schema, which is safe only if every migration since was
   expand-only and marked `-- forge:backward-compatible`.

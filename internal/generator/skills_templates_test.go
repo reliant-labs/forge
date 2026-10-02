@@ -28,7 +28,7 @@ import (
 //	"forge generate"              -> ["generate"]
 //	"forge db migrate up"         -> ["db", "migrate", "up"]
 //	"forge debug break file:42"   -> ["debug", "break"]
-//	"forge run --debug"           -> ["run"]
+//	"forge env up --background"   -> ["env", "up"]
 //	"forge package new <name>"    -> ["package", "new"]
 var forgeCommandRE = regexp.MustCompile(`(?:^|[^\w-])forge\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,2})`)
 

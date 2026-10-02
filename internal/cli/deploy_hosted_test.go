@@ -113,11 +113,11 @@ func runForge(t *testing.T, args ...string) (string, error) {
 // TestHostedCLIEndToEnd drives the real commands against an httptest control
 // plane speaking Connect JSON:
 //
-//	forge release cut v1 --env hosted
-//	forge env promote v1 --to hosted       (creates the env by name)
+//	forge env build hosted --release v1 --no-build
+//	forge env deploy hosted v1       (creates the env by name)
 //	forge env deploy hosted --json         (ensure → publish → readiness)
 //	forge env status hosted --json
-//	forge env topology --json
+//	forge env status --json
 //
 // Nothing but the HTTP endpoint is faked: KCL renders for real, the ledger is
 // the hosted ledger, the provider is the hosted provider.
@@ -137,14 +137,14 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 	t.Cleanup(func() { hostedPollInterval = prevPoll })
 	stubHostedRegistry(t)
 
-	if out, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
+	if out, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 		t.Fatalf("release cut: %v\n%s", err, out)
 	}
 	rel, ok := fake.releases["v1"]
 	if !ok || len(rel.Artifacts) != 1 || rel.Artifacts[0].Name != "api" || rel.Artifacts[0].Digest != hostedTestDigest {
 		t.Fatalf("cut release = %+v, want one artifact api@%s", rel, hostedTestDigest)
 	}
-	if out, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
 		t.Fatalf("promote: %v\n%s", err, out)
 	}
 	envID := fake.envs["hosted"]
@@ -218,31 +218,64 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 		t.Errorf("published image = %v", d.Spec["image"])
 	}
 
-	statusOut, err := runForge(t, "env", "status", "hosted", "--json")
-	if err != nil {
-		t.Fatalf("status: %v\n%s", err, statusOut)
+	// `forge env status <env> --json` is ONE document with both halves: the
+	// release half flat (gate record recognises it by `bound` + `images`)
+	// and the runtime half nested under `runtime`. ONE document matters —
+	// two would produce a stream no `jq` invocation can read.
+	//
+	// It exits 2 here, and that is the honest answer rather than a defect:
+	// this fake serves no GetRollout, so the control-plane observer — the
+	// only witness a hosted env has, because forge cannot read its cluster
+	// — cannot be consulted. "We could not look" is exit 2 by design, and
+	// never 0. What is asserted is the DOCUMENT; the exit code is asserted
+	// as undetermined explicitly, so a future fake that does serve
+	// GetRollout fails here and gets the stronger assertion it deserves.
+	statusOut, statusErr := runForge(t, "env", "status", "hosted", "--json")
+	if statusErr == nil {
+		t.Errorf("the fake serves no GetRollout, so the hosted observer is unreachable and status must exit non-zero")
 	}
 	var st struct {
-		Destination   string                              `json:"destination"`
-		Endpoint      string                              `json:"endpoint"`
-		EnvironmentID string                              `json:"environment_id"`
-		Verdict       string                              `json:"verdict"`
-		Workloads     []deploytarget.HostedWorkloadStatus `json:"hosted_workloads"`
+		OK       bool `json:"ok"`
+		ExitCode int  `json:"exit_code"`
+		Bound    bool `json:"bound"`
+		Release  string
+		Images   []json.RawMessage `json:"images"`
+		Runtime  *struct {
+			Env           string                              `json:"env"`
+			Destination   string                              `json:"destination"`
+			Endpoint      string                              `json:"endpoint"`
+			EnvironmentID string                              `json:"environment_id"`
+			Verdict       string                              `json:"verdict"`
+			Workloads     []deploytarget.HostedWorkloadStatus `json:"hosted_workloads"`
+		} `json:"runtime"`
 	}
 	if err := json.Unmarshal([]byte(statusOut), &st); err != nil {
-		t.Fatalf("status --json: %v\n%s", err, statusOut)
+		t.Fatalf("status --json must be ONE parseable document: %v\n%s", err, statusOut)
 	}
-	if st.Destination != "hosted" || st.Endpoint != srv.URL || st.EnvironmentID != envID || st.Verdict != "converging" {
-		t.Errorf("status env = %+v", st)
+	if st.OK || st.ExitCode != 2 {
+		t.Errorf("an unreachable observer is {ok:false exit_code:2}, got {ok:%v exit_code:%d}", st.OK, st.ExitCode)
 	}
-	if len(st.Workloads) != 1 || st.Workloads[0].Name != "api" || st.Workloads[0].ObservedState != "ready" ||
-		st.Workloads[0].Hostname != "api-acme.reliantapps.dev" || st.Workloads[0].ObservedDigest != hostedTestDigest {
-		t.Errorf("status workloads = %+v", st.Workloads)
+	// The release half, flat: this env IS bound, by the promote above.
+	if !st.Bound || st.Release != "v1" || len(st.Images) != 1 {
+		t.Errorf("release half = bound:%v release:%q images:%d, want true/v1/1", st.Bound, st.Release, len(st.Images))
+	}
+	// The runtime half, nested — the same facts the old `env status` carried.
+	if st.Runtime == nil {
+		t.Fatalf("the document has no `runtime` half:\n%s", statusOut)
+	}
+	rt := st.Runtime
+	if rt.Destination != "hosted" || rt.Endpoint != srv.URL || rt.EnvironmentID != envID || rt.Verdict != "converging" {
+		t.Errorf("runtime env = %+v", rt)
+	}
+	if len(rt.Workloads) != 1 || rt.Workloads[0].Name != "api" || rt.Workloads[0].ObservedState != "ready" ||
+		rt.Workloads[0].Hostname != "api-acme.reliantapps.dev" || rt.Workloads[0].ObservedDigest != hostedTestDigest {
+		t.Errorf("runtime workloads = %+v", rt.Workloads)
 	}
 
-	topoOut, err := runForge(t, "env", "topology", "--json")
+	// No environment: the all-environments view (the retired `env topology`).
+	topoOut, err := runForge(t, "env", "status", "--json")
 	if err != nil {
-		t.Fatalf("topology: %v\n%s", err, topoOut)
+		t.Fatalf("all-envs status: %v\n%s", err, topoOut)
 	}
 	var topo struct {
 		Environments []topologyEnv `json:"environments"`
@@ -267,8 +300,8 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 // its pod never starts without the value:
 //
 //	forge secret set hosted GREETING   (ensures the env by name)
-//	forge release cut v1 --env hosted
-//	forge env promote v1 --to hosted
+//	forge env build hosted --release v1 --no-build
+//	forge env deploy hosted v1
 //	forge env deploy hosted
 //
 // All four land in ONE environment id. Mutation: making secret set resolve
@@ -308,8 +341,8 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 		t.Fatalf("secret landed in %q, env is %q", secretEnv, envID)
 	}
 	for _, args := range [][]string{
-		{"release", "cut", "v1", "--env", "hosted"},
-		{"env", "promote", "v1", "--to", "hosted"},
+		{"env", "build", "hosted", "--release", "v1", "--no-build"},
+		{"env", "deploy", "hosted", "v1", "--no-wait"},
 		{"env", "deploy", "hosted", "--rollout-timeout", "2s"},
 	} {
 		if out, err := runForge(t, args...); err != nil {
@@ -355,7 +388,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 	t.Run("unbound", func(t *testing.T) {
 		fake, _ := setup(t, hostedOnBandSpec)
 		_, err := runForge(t, "env", "deploy", "hosted")
-		if err == nil || !strings.Contains(err.Error(), "forge env promote") {
+		if err == nil || !strings.Contains(err.Error(), "forge env deploy") {
 			t.Fatalf("err = %v, want the promote fix", err)
 		}
 		if n := writes(fake); n != 0 {
@@ -367,10 +400,10 @@ func TestHostedDeployRefusals(t *testing.T) {
 		fake, _ := setup(t, `        image = "localhost:5051/acme/api:v1"
         ports = [fw.Port {name = "http", port = 8080, expose = True}]
         resources = fw.Resources {cpuRequestMillicores = 500, memoryRequestBytes = 1073741824}`)
-		if _, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
+		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
+		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
 			t.Fatal(err)
 		}
 		fake.bodies = nil
@@ -390,10 +423,10 @@ func TestHostedDeployRefusals(t *testing.T) {
 	t.Run("foreign registry", func(t *testing.T) {
 		fake, _ := setup(t, hostedOnBandSpec)
 		fake.imagePushBase = "registry.reliant.dev/org-1"
-		if _, err := runForge(t, "release", "cut", "v1", "--env", "hosted"); err != nil {
+		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := runForge(t, "env", "promote", "v1", "--to", "hosted"); err != nil {
+		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
 			t.Fatal(err)
 		}
 		fake.bodies = nil

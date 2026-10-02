@@ -79,7 +79,13 @@ func exitCodeForError(err error) int {
 // stdout would produce a stream no `jq` invocation can read, and the failure
 // looks like malformed JSON rather than like misrouted logging.
 func emitJSONDocument(doc any) error {
-	enc := json.NewEncoder(os.Stdout)
+	return writeJSONDocument(os.Stdout, doc)
+}
+
+// writeJSONDocument is emitJSONDocument to a caller-chosen writer, for a verb
+// that renders to cmd.OutOrStdout() so a test can read what it printed.
+func writeJSONDocument(w io.Writer, doc any) error {
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(doc); err != nil {
 		return fmt.Errorf("write json document: %w", err)

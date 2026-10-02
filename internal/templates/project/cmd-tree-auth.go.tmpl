@@ -190,7 +190,7 @@ identity and changes nothing. That is what lets this run on every deploy.`,
 // envOrIDP reads this command's flag default from the environment before
 // falling back to a literal — the same convention `db migrate` flags use,
 // so a value can be set either way depending on whether this runs as a
-// host process (`forge run`) or inside a Job (env only).
+// host process (`forge env up`) or inside a Job (env only).
 func envOrIDP(key, fallback string) string {
 	if v := os.Getenv(key); v != "" { //nolint:forbidigo // one-shot CLI flag default; not runtime component config.
 		return v

@@ -42,7 +42,7 @@ forge db seed status   # per-table seeded-row counts vs the seed model
 forge db seed reset    # wipe seeded tables and re-seed (dev only)
 ```
 
-`forge run` / `forge env up` auto-seed a fresh dev database on first boot
+`forge env up` auto-seed a fresh dev database on first boot
 (every in-scope table empty). `apply`/`reset` refuse any non-dev environment,
 and the applier is never compiled into your server binary.
 

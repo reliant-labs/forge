@@ -16,7 +16,7 @@ import (
 // TestLoadProjectConfigEnvMap_SensitiveRoutesToSecret is the end-to-end mission
 // check for the two-channel config projection: a scaffolded project's dev
 // config renders each field through config_gen.appConfigEnvMap — the
-// EXACT source `forge run` injects into the host env and a deploy projects into
+// EXACT source `forge env up` injects into the host env and a deploy projects into
 // every workload's manifest — and each field lands on the RIGHT channel.
 //
 //   - DATABASE_URL is `sensitive`, so it projects a SECRET REFERENCE

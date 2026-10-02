@@ -13,8 +13,6 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"github.com/spf13/cobra"
-
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/statefile"
@@ -22,7 +20,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// `forge env topology` — the whole release/environment picture in ONE read.
+// `forge env status` — the whole release/environment picture in ONE read.
 //
 // WHY A WHOLE-PROJECT COMMAND EXISTS AT ALL. Every other release verb is
 // scoped to one env or one version, because every other release verb ACTS on
@@ -40,7 +38,7 @@ import (
 // which almost nobody has locally, and costs a round-trip per workload even
 // when they do. So the default reads the LEDGER only: fast, offline, and
 // correct about what was DECLARED. `--verify` additionally reads each env's
-// cluster through the same path `forge env verify` uses.
+// cluster through the same path `forge env status` uses.
 //
 // The consequence for the output contract is the part that must not be gotten
 // wrong: in the default mode every image's state is "not_verified", which is
@@ -56,7 +54,7 @@ import (
 // in: not_verified. It is a separate type rather than a reuse of imageState
 // because the sixth state is not a verification verdict at all — it is the
 // absence of one — and widening imageState to hold it would let "nobody
-// looked" leak into `forge env verify`, whose entire contract is that every
+// looked" leak into `forge env status`, whose entire contract is that every
 // value it emits is something it actually checked.
 //
 // THE ZERO VALUE IS not_verified, DELIBERATELY. In imageState the zero value
@@ -241,7 +239,7 @@ type topologyEnv struct {
 	// PromotedAt is RFC3339 for when the env was PROMOTED — not when it
 	// was deployed. Promotion writes a pointer; deployment moves bytes.
 	// A consumer rendering this as "shipped at" has reintroduced the bug
-	// `forge env verify` exists to catch.
+	// `forge env status` exists to catch.
 	PromotedAt string `json:"promoted_at,omitempty"`
 	// ReleaseKnown is true when the release ledger file for Release exists
 	// in this checkout. FALSE IS NOT AN ERROR: a release cut on another
@@ -303,7 +301,7 @@ type topologyEnv struct {
 	// carries none.
 	GatesSummary *gatesSummary `json:"gates_summary,omitempty"`
 	// RolloutPhase is the current promotion's rollout phase as the control
-	// plane computes it (`forge env rollout`'s answer): "succeeded",
+	// plane computes it (`forge env status --wait --timeout 0`'s answer): "succeeded",
 	// "progressing", "degraded", "unknown" … Hosted envs only; absent when
 	// the env keeps a file ledger or the read failed (Note says which).
 	RolloutPhase string `json:"rollout_phase,omitempty"`
@@ -370,84 +368,6 @@ type envTopologyReport struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// newEnvTopologyCmd is `forge env topology [environment...]`.
-func newEnvTopologyCmd() *cobra.Command {
-	var (
-		asJSON  bool
-		verify  bool
-		timeout time.Duration
-	)
-
-	cmd := &cobra.Command{
-		Use:   "topology [environment...]",
-		Short: "Show every environment, the release it runs, and how far behind it is",
-		Long: `Print the whole release topology of this project in ONE read: every
-environment, the release bound to it, the per-image digests that release
-froze, where the environment runs, and how far behind the newest release it
-is.
-
-WHY ONE COMMAND. ` + "`forge env verify`" + ` answers one env, ` + "`forge release verify`" + `
-answers one version. Neither can say how the environments RELATE — that prod
-is fifteen releases and ten weeks ahead of staging, and carries an image
-staging does not have at all. Assembling that from N single-env calls means
-the caller has re-implemented forge's release model, so forge answers it
-directly instead.
-
-LEDGER BY DEFAULT, CLUSTER ON REQUEST. With no flags this reads only the
-local ledgers: fast, offline, and needing no credentials for any environment.
-Every image's state is then ` + "`not_verified`" + `, which means UNKNOWN — nothing was
-compared against any cluster. Pass --verify to additionally read each
-environment's live workloads through the same path ` + "`forge env verify`" + ` uses,
-which turns those cells into match / drift / missing / untagged / unreachable.
-
-` + "`not_verified`" + ` IS NOT ` + "`match`" + `. A consumer that renders them alike shows a green
-screen over environments nobody looked at.
-
-WHICH ENVIRONMENTS. With no arguments, the environments declared in this
-checkout (deploy/kcl/<env>/main.k). Name environments explicitly to include
-one that is bound in the ledger but not declared here — a release promoted on
-a branch that has the env, inspected from one that does not. That is a real
-state and is reported as ` + "`declared: false`" + `, not as an error.
-
-EXIT CODES:
-
-  0  the topology was read (the default mode always exits 0 — reading a
-     ledger cannot prove anything wrong)
-  1  --verify found at least one image DRIFTED or MISSING
-  2  --verify could not read a cluster, and nothing outright drifted
-
-Examples:
-  forge env topology                       # the whole screen, offline
-  forge env topology --json                # the same, machine-readable
-  forge env topology --verify              # also reconcile against clusters
-  forge env topology staging preprod       # envs not declared in this checkout
-  forge env topology --json | jq -r '.environments[] | "\(.env) \(.release)"'`,
-		// The command's findings ARE its output; a cobra usage dump on a
-		// drift failure would bury them under the flag list.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// One projectDir for both seams: the ledger store and the
-			// declared-env scan must agree about which checkout they
-			// are describing.
-			projectDir := projectDirForKCL()
-			return runEnvTopology(cmd.Context(), args, envTopologyOptions{
-				JSON:       asJSON,
-				Verify:     verify,
-				Timeout:    timeout,
-				ProjectDir: projectDir,
-				Lister:     kubectlImageLister{},
-				Resolver:   kclTargetResolver{},
-			})
-		},
-	}
-
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit machine-readable JSON (same exit codes as text mode)")
-	cmd.Flags().BoolVar(&verify, "verify", false, "Also read each environment's cluster and reconcile it against the ledger (slow, needs credentials)")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultEnvVerifyTimeout, "Maximum time to spend reading each cluster (--verify only)")
-
-	return cmd
-}
-
 // envTopologyOptions carries the flags and the injected seams into the run
 // function. The three seams are the same ones env verify injects, for the
 // same reason: a test of this command's assembly should be able to state the
@@ -488,7 +408,7 @@ func runEnvTopology(ctx context.Context, envArgs []string, opts envTopologyOptio
 		ctx = context.Background()
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = defaultEnvVerifyTimeout
+		opts.Timeout = defaultEnvStatusReleaseTimeout
 	}
 	if opts.Resolver == nil {
 		opts.Resolver = kclTargetResolver{}
@@ -790,7 +710,7 @@ func buildTopologyEnvRow(
 // It delegates to verifyEnvImages rather than re-deriving the comparison: the
 // five-state model has subtleties (a digest that matches where pinned while
 // some workload still runs a mutable tag is UNTAGGED, not MATCH) and a second
-// implementation would eventually disagree with `forge env verify` about the
+// implementation would eventually disagree with `forge env status` about the
 // same environment, which is worse than having no second view at all.
 func applyTopologyVerification(ctx context.Context, row *topologyEnv, opts envTopologyOptions) {
 	declared := map[string]string{}
@@ -1009,7 +929,7 @@ func renderEnvTopologyText(report envTopologyReport) {
 
 	if len(report.Environments) == 0 {
 		fmt.Println("No environments found. Declare one under deploy/kcl/<env>/main.k, or name one explicitly:")
-		fmt.Println("  forge env topology staging")
+		fmt.Println("  forge env status staging")
 		return
 	}
 

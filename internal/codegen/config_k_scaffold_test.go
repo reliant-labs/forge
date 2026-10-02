@@ -21,7 +21,7 @@ func defaultConfigFields() []ConfigField {
 
 // TestGenerateConfigKScaffold_DevSeedsMode: the dev env's config.k is
 // scaffolded turnkey — the MODE marker (environment = "development") plus the
-// boots-alive auto_migrate seed — so `forge run` boots the dev backend in a
+// boots-alive auto_migrate seed — so `forge env up` boots the dev backend in a
 // positively-development mode against a migrated database.
 func TestGenerateConfigKScaffold_DevSeedsMode(t *testing.T) {
 	dir := t.TempDir()
@@ -40,7 +40,7 @@ func TestGenerateConfigKScaffold_DevSeedsMode(t *testing.T) {
 		t.Errorf("dev config.k missing MODE marker environment = \"development\":\n%s", got)
 	}
 	// Dev boots alive: auto_migrate is seeded True so the app applies its
-	// migrations on the first `forge run` boot (the projection lowercases it to
+	// migrations on the first `forge env up` boot (the projection lowercases it to
 	// AUTO_MIGRATE=true). Without this the projected schema default (false)
 	// would override the dev-run default and the app would boot tableless.
 	if !strings.Contains(got, `auto_migrate = True`) {

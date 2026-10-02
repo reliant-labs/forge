@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/statefile"
 )
 
-// BuildState records what `forge build --push` actually pushed to a
+// BuildState records what `forge env build --push` actually pushed to a
 // registry, so a subsequent `forge env deploy <env>` can reference the
 // same tag even when the working tree has changed between phases.
 //
@@ -202,8 +202,8 @@ func gitBuildProvenance(ctx context.Context) (commit, gitTag string, dirty bool)
 }
 
 // buildStatePath returns the absolute path to the per-env build-state
-// file. One file per environment so `forge build --push --env=dev`
-// and `forge build --push --env=staging` don't clobber each other,
+// file. One file per environment so `forge env build --push --env=dev`
+// and `forge env build --push --env=staging` don't clobber each other,
 // and so `forge env deploy <env>` can read the right one without a
 // separate lookup. When env is empty we use the literal "default"
 // segment to keep the path stable.
@@ -214,7 +214,7 @@ func buildStatePath(projectDir, env string) string {
 	return statefile.Path(projectDir, "build-"+env+".json")
 }
 
-// WriteBuildState persists a successful `forge build --push` to disk.
+// WriteBuildState persists a successful `forge env build --push` to disk.
 // Called by runBuild after every per-image push succeeds, so the most
 // recent push is always the source of truth a subsequent
 // `forge env deploy <env>` consumes.

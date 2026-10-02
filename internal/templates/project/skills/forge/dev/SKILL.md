@@ -98,7 +98,7 @@ in the steady state):
   (`--no-install` to skip).
 
 After a batch of proto edits, `forge scaffold` catches the tree up (see
-`forge` and `db`). `forge run` and `forge env up` also auto-seed a
+`forge` and `db`). `forge env up` also auto-seed a
 fresh dev DB from the applied schema on first boot, so a clean checkout comes up
 with FK-coherent demo data — dev only; `--no-seed` opts out, `forge db seed
 status` inspects.
@@ -304,7 +304,7 @@ forge generate --check
 # build + push each image to the reference its own workload declares in
 # deploy/kcl/workloads.k — the same reference `forge env deploy staging` pulls.
 # --push takes no value: to push elsewhere, change the workload's image.
-forge build staging --push
+forge env build staging --push
 
 # deploy with context guard
 forge env deploy staging

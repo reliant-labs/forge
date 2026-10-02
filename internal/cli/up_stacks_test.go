@@ -88,7 +88,7 @@ func spawnMarked(t *testing.T, projectID, env, service string) *blockedProc {
 	}()
 	t.Cleanup(func() {
 		if bp.alive() {
-			killProcessTree(bp.pid(), syscall.SIGKILL)
+			_ = killProcessTree(bp.pid(), syscall.SIGKILL)
 			bp.waitExit(5 * time.Second)
 		}
 	})
@@ -146,7 +146,7 @@ func entitiesOnPort(port int) *KCLEntities {
 // kernel-assigned, and which is precisely why nothing conflicts. The pre-flight
 // must stop the predecessor anyway: "is my stack already running" is a question
 // about ownership, not about ports, and answering it inside a port-conflict
-// branch made the reclaim unreachable on every `forge run`. Eight rounds left
+// branch made the reclaim unreachable on every `forge env up`. Eight rounds left
 // 38 orphaned processes, 7.5 GB resident, on 15 ports nothing could name.
 func TestUpPreflight_StopsThePredecessorOnFreePorts(t *testing.T) {
 	requireProcInspection(t)
@@ -236,13 +236,13 @@ func TestEnvDown_RefusesWhenItCannotTellWhichProject(t *testing.T) {
 		}
 	}
 
-	// Inside a project with nothing running, it is still a clean no-op — the
-	// guard must fire on "which project?", not on "is anything running?".
+	// Identifying the project is insufficient when its environment cannot be
+	// rendered: shutdown of declared host infrastructure remains unverified.
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, "name: demo\nmodule_path: github.com/example/demo\nversion: \"0.1.0\"\n")
 	t.Chdir(dir)
-	if err := runUpStop("dev"); err != nil {
-		t.Fatalf("`forge env down dev` in a project with no stack: want a clean no-op, got %v", err)
+	if err := runUpStop("dev"); err == nil {
+		t.Fatal("an environment with no renderable KCL reported complete shutdown")
 	}
 }
 
@@ -306,7 +306,7 @@ func TestStackOutlivingItsProjectDirIsStillReachable(t *testing.T) {
 	}
 
 	// And the teardown `forge env down --all` runs reaches it.
-	if n := stopDiscoveredStacks([]runningStack{*found}); n != 1 {
+	if n, err := stopDiscoveredStacks([]runningStack{*found}); n != 1 || err != nil {
 		t.Errorf("stopped %d stacks, want 1", n)
 	}
 	if !orphan.waitExit(15 * time.Second) {
@@ -424,7 +424,7 @@ func TestProcRegistry_LedgerExistsAsSoonAsAChildStarts(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	pid := reg.processes[0].pid
-	t.Cleanup(func() { killProcessTree(pid, syscall.SIGKILL) })
+	t.Cleanup(func() { _ = killProcessTree(pid, syscall.SIGKILL) })
 
 	// No persist() call here on purpose: this is the state a failed readiness
 	// gate returns in.

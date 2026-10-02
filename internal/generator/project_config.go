@@ -71,7 +71,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 				Type: "nextjs",
 				// g.FrontendPort is 0 for a fresh scaffold (ephemeral): with
 				// FrontendConfig.Port omitempty this writes NO `port:` line, so
-				// `forge run`/`up` allocate a free port at launch and report it
+				// `forge env up`/`up` allocate a free port at launch and report it
 				// — two dev stacks never fight for the frontend port. An
 				// explicit override (>0) is serialized verbatim.
 				Port: g.FrontendPort,

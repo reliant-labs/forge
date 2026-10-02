@@ -39,7 +39,7 @@ func TestCountTagsHelper(t *testing.T) {
 
 // TestBuildPushFlagRegistered confirms the --push flag is wired into
 // the build command and implies --docker at parse time.
-// TestValidateReleaseFlags_RequiresEnv pins Fix 2: `forge build --release
+// TestValidateReleaseFlags_RequiresEnv pins Fix 2: `forge env build --release
 // <ver>` WITHOUT --env is rejected up front with an actionable message,
 // because the release image SET (project images + per-env external
 // build_cmd images like reliant/workspace-base) is only discoverable from

@@ -255,7 +255,7 @@ func TestRunOptions_ResolveRunReadsTheRealEnvironment(t *testing.T) {
 }
 
 // TestRegisterRunFlags_DeclaresTheWritingVerbSurface: §3.A says every verb
-// that WRITES accepts --run-id and --run-url, and `release cut` is one. The
+// that WRITES accepts --run-id and --run-url, and `env build --release` is one. The
 // flags must actually reach runOptions, or the defaults are decoration.
 func TestRegisterRunFlags_DeclaresTheWritingVerbSurface(t *testing.T) {
 	t.Parallel()
@@ -279,15 +279,20 @@ func TestRegisterRunFlags_DeclaresTheWritingVerbSurface(t *testing.T) {
 	}
 }
 
-// TestReleaseCutCmd_AcceptsTheRunFlags pins the wiring end to end: the real
+// TestEnvBuildCmd_AcceptsTheRunFlags pins the wiring end to end: the real
 // command declares them, so the run identity a release records is reachable
 // from the CLI rather than only from a struct literal in a test.
-func TestReleaseCutCmd_AcceptsTheRunFlags(t *testing.T) {
+//
+// This was `forge release cut`'s test. That command folded into
+// `forge env build <env> --release <v> [--no-build]`, which is now the one
+// verb that records a release — so it is the verb that must carry the run
+// identity.
+func TestEnvBuildCmd_AcceptsTheRunFlags(t *testing.T) {
 	t.Parallel()
-	cmd := newReleaseCutCmd()
+	cmd := newEnvBuildCmd()
 	for _, name := range []string{"run-id", "run-url", "no-run"} {
 		if cmd.Flags().Lookup(name) == nil {
-			t.Errorf("`forge release cut` must accept --%s (§3.A: every writing verb does)", name)
+			t.Errorf("`forge env build` must accept --%s (§3.A: every writing verb does)", name)
 		}
 	}
 }

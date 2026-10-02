@@ -52,7 +52,7 @@ func TestDevSecretStoreCarriesNoDSN(t *testing.T) {
 }
 
 // TestEnvDevScaffoldWritesEmptyDBSlot covers the whole store writer, not just
-// the value helper — this is the file `forge run` layers onto host processes
+// the value helper — this is the file `forge env up` layers onto host processes
 // (below the KCL declaration) and that shadowdb scans for a DSN candidate.
 //
 // The KEY must still be present: the store's job is to list every declared

@@ -56,7 +56,7 @@ incident — not because a style guide recommended them:
 forge project new my-app && cd my-app
 forge scaffold service billing
 forge generate
-forge run
+forge env up dev
 ```
 
 That last command brings up your services and frontends, and — on a fresh
@@ -128,8 +128,8 @@ KCL under `deploy/kcl/<env>/`, and the same source renders dev, staging, and
 prod. Our own control plane runs `dev`, `dev-k8s`, `e2e`, `staging`, `preprod`,
 and `prod` across k3d, Vultr, and two GKE clusters, from one definition.
 
-- **Build once, promote by digest.** `forge build --release v1.4.0` captures
-  content-addressed digests; `forge env promote v1.4.0 --to prod` ships the
+- **Build once, promote by digest.** `forge env build staging --release v1.4.0` captures
+  content-addressed digests; `forge env deploy prod v1.4.0` ships the
   exact bytes that passed staging.
 - **Preflight before apply.** On remote clusters, Forge verifies every
   referenced Secret key and every image against the live target and reports
@@ -152,7 +152,7 @@ wrong in two places. Forge's answer is that there isn't one: the environment is
 declared in the same KCL that renders staging and prod, so "how do I run this"
 has a command instead of a wiki page.
 
-- **One command, whole stack.** `forge run` starts every host service and
+- **One command, whole stack.** `forge env up` starts every host service and
   frontend with no cluster involved. `forge env up dev` does the full loop —
   build, deploy, host, frontend.
 - **The database is not empty.** On first boot against a dev env, Forge seeds
@@ -467,8 +467,7 @@ forge generate
 forge generate && forge lint && go build ./... && go test ./...
 
 # Run the inner loop (host services + frontends, no cluster)
-forge run
-
+forge env up dev
 # Or bring the whole stack up (build + deploy + host + frontend)
 forge env up dev
 ```

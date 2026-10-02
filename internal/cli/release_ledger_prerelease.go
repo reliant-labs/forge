@@ -63,7 +63,7 @@ func bareRepositoryDetail(name, digest string) string {
 			"      forge does NOT rewrite the old key: prefixing a registry onto it would assert, unchecked, that\n"+
 			"      this digest is in that repository, and a ledger that verifies green on an unchecked claim is\n"+
 			"      worth less than one that admits it cannot check.\n"+
-			"      Re-cut this release against the current declarations: forge build <env> --release <version> --push\n"+
+			"      Re-cut this release against the current declarations: forge env build <env> --release <version> --push\n"+
 			"      (If instead this artifact was never pushed anywhere — a local or compose build — there is\n"+
 			"      nothing to verify and nothing to fix.)",
 		digest, name, name)

@@ -11,7 +11,7 @@
 # job summary. There is nothing to keep alive, and when it breaks it breaks
 # where you already look.
 #
-# WHAT DRIFT IS. `forge reconcile` asks each deploy target what it currently
+# WHAT DRIFT IS. `forge env status` asks each deploy target what it currently
 # has, compares that against what the environment DECLARES, and reports the
 # difference. The usual finding is a digest: something re-pointed a tag, or a
 # hand-run kubectl put a build in prod that no release ever named.
@@ -63,7 +63,7 @@ concurrency:
 
 jobs:
   reconcile:
-    name: Reconcile {{"{{"}} matrix.environment {{"}}"}}
+    name: Reconcile ${{"{{"}} matrix.environment {{"}}"}}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -105,15 +105,13 @@ jobs:
         if: >-
           github.event_name != 'workflow_dispatch' ||
           github.event.inputs.environment == matrix.environment
-        run: forge reconcile {{"{{"}} matrix.environment {{"}}"}} | tee /tmp/reconcile.txt
+        # `forge env status` is what this workflow's comment above describes:
+        # it compares what the environment RUNS against what its ledger
+        # binds, and its exit code is the drift signal (0 match, 1 drift or
+        # missing, 2 could not determine). A hosted env is read through the
+        # control plane's observer. The --json document feeds the summary.
+        run: forge env status "${{"{{"}} matrix.environment {{"}}"}}" --json > /tmp/status.json
 
       - name: Report
         if: always() && steps.reconcile.outcome != 'skipped'
-        run: |
-          {
-            echo "## Reconcile — {{"{{"}} matrix.environment {{"}}"}}"
-            echo
-            echo '```'
-            cat /tmp/reconcile.txt 2>/dev/null || echo "(no output — the reconcile step did not run to completion)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: forge ci summarize /tmp/status.json >> "$GITHUB_STEP_SUMMARY"

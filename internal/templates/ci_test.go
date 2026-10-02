@@ -173,7 +173,7 @@ func TestCIWorkflowTemplate_K3dE2E(t *testing.T) {
 	// cluster or a label-selected kubectl wait each re-state a fact the
 	// e2e env declares, and the old `-l app=<project>` wait matched no pod.
 	job, _ := yaml.Marshal(e2e)
-	for _, want := range []string{"forge cluster up e2e", "forge build e2e --push", "forge env deploy e2e"} {
+	for _, want := range []string{"forge cluster up e2e", "forge env build e2e --push", "forge env deploy e2e"} {
 		if !strings.Contains(string(job), want) {
 			t.Errorf("k3d e2e job does not run %q:\n%s", want, job)
 		}

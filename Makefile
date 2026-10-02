@@ -26,7 +26,7 @@ help:
 # namespace every rendered environment imports — is `//go:build cgo`; the
 # !cgo build gets a no-op stub. A CGO-free forge installs cleanly, reports
 # a correct --version and passes generate/lint/build, then fails EVERY
-# `forge run` / `env up` / `env render`. (Plain `go build ./...` / `go vet`
+# `forge env up` / `env render`. (Plain `go build ./...` / `go vet`
 # without CGO still work and are deliberately left alone — that is what the
 # nocgo stub exists for.)
 build:

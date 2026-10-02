@@ -20,7 +20,7 @@ import (
 )
 
 // ensureDevDatabase creates the dev database the host services are about to
-// dial when it does not already exist — so a `forge run` against a freshly
+// dial when it does not already exist — so a `forge env up` against a freshly
 // scaffolded project boots alive. It is the runtime counterpart to forge's
 // generate-time shadow DB, which pgtest already ensure-creates on the fly:
 // the scaffolded dev DSN (postgres://…:5434/<project>) names a database
@@ -31,7 +31,7 @@ import (
 // Dev-only (seedTargetIsDev — the same fail-closed classifier the auto-seed
 // gate reads) and only when a DSN is actually resolved. The maintenance
 // connection failing is a HARD error: the app cannot boot without the DB
-// server, so `forge run` says so loudly here rather than let the app fail
+// server, so `forge env up` says so loudly here rather than let the app fail
 // later with an opaque connect error.
 func ensureDevDatabase(cfg *config.ProjectConfig, entities *KCLEntities, env string) error {
 	dev, err := seedTargetIsDev(env)
@@ -53,7 +53,7 @@ func ensureDevDatabase(cfg *config.ProjectConfig, entities *KCLEntities, env str
 	// Run the same project later under a different POSTGRES_PORT and
 	// compose moves postgres while the committed DSN stays put — the exact
 	// divergence that had projects creating their schema inside another
-	// stack's database while their own postgres sat empty, with `forge run`
+	// stack's database while their own postgres sat empty, with `forge env up`
 	// reporting success throughout. Refuse loudly instead.
 	//
 	// Only the PRIMARY DSN is reconciled. It is the one the seed hook and
@@ -284,7 +284,7 @@ func postgresComposeEnvFiles(entities *KCLEntities) []string {
 	return nil
 }
 
-// maybeAutoSeed is the `forge run` / `forge env up` first-boot
+// maybeAutoSeed is the `forge env up` first-boot
 // auto-seed hook. It runs after the host-services readiness gate (so the
 // app's AUTO_MIGRATE has already applied migrations) and materializes the
 // deterministic dev dataset exactly once — when the target is dev, the DB is

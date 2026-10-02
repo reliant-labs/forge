@@ -69,6 +69,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Source is a declared cross-repo dependency: a repository, a ref to pin
@@ -360,6 +361,13 @@ func (r *Resolver) Resolve(ctx context.Context, src Source) (Resolution, error) 
 		}
 	} else {
 		r.logf("  source %s → %s (cached)", src, entry)
+		// Record the hit so machine-wide maintenance can tell a pin that
+		// is still in rotation from one abandoned two bumps ago. A fetch
+		// needs no touch: writeMetadata just set the mtime to now.
+		// Failure is logged, never returned — see touchUsed.
+		if err := touchUsed(entry, time.Now()); err != nil {
+			r.logf("  source %s: could not record cache use (%v) — entry may be evicted earlier than intended", src, err)
+		}
 	}
 
 	full := entry

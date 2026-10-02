@@ -440,7 +440,7 @@ func TestBindingStoreFor_RenderFailureIsNotAFallback(t *testing.T) {
 
 // ─── Consumers against a non-file backend ────────────────────────────────────
 
-// `forge env verify` runs end to end with its ledger served from memory, and
+// `forge env status` runs end to end with its ledger served from memory, and
 // reaches the real DRIFT verdict.
 func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 	dir := t.TempDir()
@@ -455,7 +455,7 @@ func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 		Image: "ghcr.io/acme/control-plane@" + sha("b"),
 	}}}
 
-	err := runEnvVerify(context.Background(), "prod", envVerifyOptions{
+	err := runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 		Lister:   lister,
 		Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 		Bindings: store,
@@ -470,7 +470,7 @@ func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 
 func TestRunEnvVerify_UnboundAgainstNonFileBackend(t *testing.T) {
 	t.Chdir(t.TempDir())
-	err := runEnvVerify(context.Background(), "prod", envVerifyOptions{
+	err := runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 		Lister:   &stubLister{},
 		Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 		Bindings: newMemBindingStore(nil),
@@ -509,7 +509,7 @@ func TestRunPromote_AppendsThroughTheDeclaredStore(t *testing.T) {
 		t.Fatalf("write release: %v", err)
 	}
 	captureStdout(t, func() {
-		if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{ProjectDir: dir, Git: allCommitsPresent()}); err != nil {
+		if err := runPromote(context.Background(), "v1.4.0", "staging", promoteOptions{ProjectDir: dir, Git: allCommitsPresent(), Ledger: declaredLedger(t, dir, "staging")}); err != nil {
 			t.Errorf("promote: %v", err)
 		}
 	})
@@ -534,7 +534,7 @@ func TestRunPromote_BackwardsIsAPlainPromote(t *testing.T) {
 	run := func(v string) (string, error) {
 		var err error
 		out := captureStdout(t, func() {
-			err = runPromote(context.Background(), v, "prod", promoteOptions{ProjectDir: dir, Note: "why", Git: allCommitsPresent()})
+			err = runPromote(context.Background(), v, "prod", promoteOptions{ProjectDir: dir, Note: "why", Git: allCommitsPresent(), Ledger: declaredLedger(t, dir, "prod")})
 		})
 		return out, err
 	}

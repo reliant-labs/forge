@@ -125,14 +125,26 @@ func TestUpDeployResolveIdenticalPort(t *testing.T) {
 	kdir := t.TempDir()
 	storePath := filepath.Join(proj, ".forge", "ports-dev.json")
 
+	// The resolver is process-GLOBAL, so arming it is state this test must
+	// hand back. Discarding the restores left a resolver pointed at this
+	// test's t.TempDir for the rest of the run: later tests' renders resolved
+	// through it, and the resolver re-created the deleted project directory to
+	// write ports-dev.json into — 136 leaked `001/.forge/ports-dev.json`
+	// trees on one machine, plus cross-test state pollution. t.Cleanup runs
+	// LIFO, so registering each restore right after its arming unwinds them in
+	// the reverse order, and the final reset guarantees an unbound resolver
+	// whatever the restores did.
+	t.Cleanup(kclplugin.ResetDefaultResolverForTest)
+
 	// `forge env up`: arm the store, render, allocation persists.
 	restore := kclplugin.UsePortStore(storePath)
+	t.Cleanup(restore)
 	upPort := renderResolvePort(t, kdir, "reliant-api", 3091, nil)
-	_ = restore // up commits the render; restore only used on rejection
 
 	// `forge env deploy`: arm the SAME store path (fresh resolver, reads the
 	// persisted file), render. Must land on the identical port.
-	kclplugin.UsePortStore(storePath)
+	restoreDeploy := kclplugin.UsePortStore(storePath)
+	t.Cleanup(restoreDeploy)
 	deployPort := renderResolvePort(t, kdir, "reliant-api", 3091, nil)
 
 	if upPort != deployPort {
@@ -150,6 +162,48 @@ func TestUpDeployResolveIdenticalPort(t *testing.T) {
 	}
 	if stored["reliant-api"] != upPort {
 		t.Errorf("store has reliant-api=%d, render resolved %d", stored["reliant-api"], upPort)
+	}
+}
+
+// TestArmingThePortStoreDoesNotOutliveTheTest is the regression-lock for the
+// leak TestUpDeployResolveIdenticalPort used to cause. Arming the port store
+// swaps a PROCESS-GLOBAL resolver, so a test that discards the restore funcs
+// leaves every later render in the binary writing through its own temp dir —
+// and because the resolver does MkdirAll before writing, it RESURRECTS the
+// directory t.TempDir cleanup already deleted. That is how 136 stray
+// `.../001/.forge/ports-dev.json` trees ended up in $TMPDIR.
+//
+// The assertion is on the observable consequence rather than on resolver
+// internals: once the arming test has finished and its directory is gone, a
+// later render must not recreate it.
+func TestArmingThePortStoreDoesNotOutliveTheTest(t *testing.T) {
+	// A directory this test owns, OUTSIDE any t.TempDir the subtest cleans up,
+	// so "was it recreated?" is a question we can still ask afterwards.
+	proj := filepath.Join(t.TempDir(), "armed-project")
+	storePath := filepath.Join(proj, ".forge", "ports-dev.json")
+
+	t.Run("arms the global store", func(t *testing.T) {
+		t.Cleanup(kclplugin.ResetDefaultResolverForTest)
+		restore := kclplugin.UsePortStore(storePath)
+		t.Cleanup(restore)
+		kdir := t.TempDir()
+		renderResolvePort(t, kdir, "leak-probe", 3457, nil)
+	})
+
+	// Stand in for t.TempDir cleanup: the armed project directory goes away.
+	if err := os.RemoveAll(proj); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later, unrelated render. With the restores discarded this wrote
+	// through the stale resolver and recreated proj; with them registered the
+	// resolver is unbound and this render keeps to itself.
+	renderResolvePort(t, t.TempDir(), "later-test", 3458, nil)
+
+	if _, err := os.Stat(proj); !os.IsNotExist(err) {
+		t.Fatalf("a later render recreated %s (stat err %v) — the global port "+
+			"resolver outlived the test that armed it, which leaks a directory "+
+			"per run and leaks port state into every later test", proj, err)
 	}
 }
 

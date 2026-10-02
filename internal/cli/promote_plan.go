@@ -15,7 +15,7 @@ import (
 
 // The promote CHANGE SET — computed once, rendered twice, applied optionally.
 //
-// WHY THIS FILE EXISTS. `forge env promote` is the one write verb in the
+// WHY THIS FILE EXISTS. `forge env deploy <env> <version>` is the one write verb in the
 // release model with genuinely reviewable semantics: forge builds once and
 // then binds digests, so promote moves a POINTER and rebuilds nothing. That
 // makes it cheap and, in principle, fully previewable — you can know the
@@ -47,7 +47,7 @@ import (
 //     can be unavailable is a first-class state rather than an error, because
 //     a plan that refuses to render because a release was cut on another
 //     branch is a plan nobody can use on the day they need it.
-//   - Promote SHIPS NOTHING. `forge env verify` exists because that gap was
+//   - Promote SHIPS NOTHING. `forge env status` exists because that gap was
 //     invisible; the plan states it rather than assuming the reader knows.
 
 // promoteCommitRangeLimit caps how many commit subjects the range carries.
@@ -467,7 +467,7 @@ type promotePlan struct {
 	Changed bool `json:"changed"`
 	// ShipsNothing is always TRUE, and it is in the contract on purpose.
 	// Promote writes a pointer; not one byte reaches any cluster until
-	// `forge env deploy` runs. `forge env verify` exists precisely because
+	// `forge env deploy` runs. `forge env status` exists precisely because
 	// that gap used to be invisible, so the plan states it rather than
 	// relying on the reader to know it.
 	ShipsNothing bool `json:"ships_nothing"`
@@ -668,7 +668,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		ShipsNothing: true,
 		NextStep:     fmt.Sprintf("forge env deploy %s", opts.Env),
 		Note: fmt.Sprintf("promote writes a POINTER and ships nothing — no image reaches %s until `forge env deploy %s` runs, "+
-			"and `forge env verify %s` proves it arrived", opts.Env, opts.Env, opts.Env),
+			"and `forge env status %s` proves it arrived", opts.Env, opts.Env, opts.Env),
 	}
 	plan.stamp(nil)
 
@@ -688,7 +688,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		}
 		if rel == nil {
 			return promotePlan{}, fmt.Errorf("release %q not found in %s.\n"+
-				"  Cut it first with: forge build %s --release %s --push",
+				"  Cut it first with: forge env build %s --release %s --push",
 				opts.Version, releaseStore.Location(), opts.Env, opts.Version)
 		}
 		target = *rel
@@ -920,7 +920,7 @@ func tallyPromoteImages(images []promoteImageChange) promoteImageTally {
 // the direction — not a semver comparison done here. That is deliberate:
 // sortReleasesNewestFirst already decided the order once, including the
 // fallbacks for labels semver cannot parse, and a second comparison in this
-// function would eventually disagree with `forge env topology` about which of
+// function would eventually disagree with `forge env status` about which of
 // two releases is newer. The direction of a promote is precisely the fact that
 // must not have two answers.
 func promoteDirectionFor(releases []release.Release, hadPrev bool, currentVersion, targetVersion string) (promoteDirection, int, string) {
@@ -1197,7 +1197,7 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	fmt.Fprintf(out, "  Binding:  %s\n", plan.Ledger)
 	// Stated on every invocation, applied or not. Promote's effect is a
 	// pointer move, and the gap between "promoted" and "running" is the
-	// thing `forge env verify` had to be written to expose.
+	// thing `forge env status` had to be written to expose.
 	switch {
 	case plan.Refusal != nil:
 		fmt.Fprintf(out, "  NOTHING WRITTEN: the ledger refused this promote (%s). %s\n", plan.Refusal.Reason, refusalHint(plan.Refusal.Reason))
@@ -1207,5 +1207,5 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 		fmt.Fprintf(out, "  NOTHING WRITTEN: re-run without --plan to record this binding. Even then, no image ships until the deploy below.\n")
 	}
 	fmt.Fprintf(out, "  Deploy:   forge env deploy %s\n", plan.Env)
-	fmt.Fprintf(out, "  Verify:   forge env verify %s\n", plan.Env)
+	fmt.Fprintf(out, "  Verify:   forge env status %s\n", plan.Env)
 }

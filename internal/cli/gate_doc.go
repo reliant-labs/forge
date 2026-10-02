@@ -106,7 +106,7 @@ type gateDocument struct {
 	LintSummary  *lintSummaryProbe  `json:"-"`
 	SmokeSummary *smokeSummaryProbe `json:"-"`
 
-	// `forge env verify --json` / `forge release verify --json`
+	// `forge env status --json` / `forge release verify --json`
 	Release   string            `json:"release,omitempty"`
 	Bound     *bool             `json:"bound,omitempty"`
 	Images    []json.RawMessage `json:"images,omitempty"`
@@ -115,7 +115,7 @@ type gateDocument struct {
 	// Diagnostic is release verify's one-line reason.
 	Diagnostic string `json:"diagnostic,omitempty"`
 
-	// `forge env wait --json` (§3.2, task F3): the rollout phase is the
+	// `forge env status --wait --json` (§3.2, task F3): the rollout phase is the
 	// verdict's reason, and the richest thing a wait has to say.
 	Phase  string `json:"phase,omitempty"`
 	Reason string `json:"reason,omitempty"`
@@ -416,7 +416,7 @@ var documentShapes = []documentShape{
 		},
 	},
 	{
-		// `forge env verify --json`: an images array, with `bound`
+		// `forge env status --json`: an images array, with `bound`
 		// distinguishing it from release verify.
 		name: "verify",
 		recognises: func(doc gateDocument) bool {
@@ -434,7 +434,7 @@ var documentShapes = []documentShape{
 		status: func(doc gateDocument) (release.GateStatus, bool) {
 			// An unbound env has declared nothing, so there is
 			// nothing to be wrong about — and nothing to vouch for
-			// either. `forge env verify` exits 0 for it; recording a
+			// either. `forge env status` exits 0 for it; recording a
 			// pass would attest to images nobody checked.
 			if doc.Bound != nil && !*doc.Bound {
 				return release.GateStatusSkipped, true
@@ -462,7 +462,7 @@ var documentShapes = []documentShape{
 		},
 	},
 	{
-		// `forge env wait --json` (§3.2): the rollout phase.
+		// `forge env status --wait --json` (§3.2): the rollout phase.
 		name: "wait",
 		recognises: func(doc gateDocument) bool {
 			return doc.Phase != ""

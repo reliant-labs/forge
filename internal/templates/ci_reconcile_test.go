@@ -34,7 +34,7 @@ func TestReconcile_RunsScheduledAndOnDemand(t *testing.T) {
 		"schedule:",
 		`- cron: "17 * * * *"`,
 		"workflow_dispatch:",
-		"forge reconcile",
+		"forge env status",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("reconcile.yml missing %q", want)

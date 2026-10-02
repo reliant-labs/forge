@@ -210,10 +210,13 @@ authored protos, in one call.`,
 	// the ONE surface an agent that has never seen forge already reads —
 	// the `forge --help` command list.
 	rootCmd.AddCommand(newStartCmd())
-	// `forge run` is the single-command dev runner (alias for
-	// `forge env up` + dev-server passthrough) — restored for the
-	// reliant one-shot's `reliant forge run -- --host 0.0.0.0` preview flow.
-	rootCmd.AddCommand(newRunCmd())
+	// `forge env up` was REMOVED. It was a thin alias over the same runUp that
+	// `forge env up <env>` calls, and its one distinct feature — forwarding
+	// tokens after `--` to the frontend dev servers — moved onto `env up`
+	// itself: `forge env up dev -- --host 0.0.0.0`. Two spellings of one
+	// lifecycle drifted (the alias took the env as an `--env` FLAG with a
+	// `dev` default, where `env up` takes it as a required positional), so
+	// "which env is running?" had two answers. Local is now one verb.
 	rootCmd.AddCommand(newGenerateCmd())
 	// (`forge unfork`, the legacy-fork migration tool, was removed after
 	// its one-release deprecation window — the legacy-manifest migration
@@ -222,6 +225,7 @@ authored protos, in one call.`,
 	rootCmd.AddCommand(newDBCmd())
 	rootCmd.AddCommand(newBuildCmd())
 	rootCmd.AddCommand(newRegistryCmd())
+	rootCmd.AddCommand(newStorageCmd())
 	// `forge test` was REMOVED. The suite a project runs is defined in its own
 	// Taskfile.yml (`task test`, `task test:integration`, `task test:e2e`), and
 	// that is what the generated CI workflow and the reliant one-shot gate now
@@ -265,7 +269,7 @@ authored protos, in one call.`,
 	// env is an optional modifier (e.g. `forge build [env]`) stay at root.
 	rootCmd.AddCommand(newEnvCmd())
 	// `release` is the release-ledger noun. Cutting a ledger stays on
-	// `forge build --release` and advancing one stays on `forge env
+	// `forge env build --release` and advancing one stays on `forge env
 	// promote` — both act on the thing that owns them. What lives here is
 	// the verb that acts on a LEDGER itself, with no environment involved:
 	// `forge release verify` proves every artifact the ledger names really

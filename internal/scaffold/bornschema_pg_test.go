@@ -6,7 +6,7 @@
 //
 // forge emits both halves of a new entity — the CREATE TABLE (this
 // package) and the rows that fill it (pkg/seedplan, via `forge db
-// seed` and `forge run`'s auto-seed). Nothing checked that the two agree.
+// seed` and `forge env up`'s auto-seed). Nothing checked that the two agree.
 // A measured real-workflow run spent roughly a third of its scaffold
 // budget repairing forge's own output before it could start work: born
 // fixtures that violated the CHECK constraint sitting in the migration
@@ -280,7 +280,7 @@ func TestBornSchemaAndSeedAgree(t *testing.T) {
 }
 
 // TestBornSchemaSeedIsIdempotentAndResettable pins the two operations
-// `forge run` actually performs against a born schema: auto-seed on an
+// `forge env up` actually performs against a born schema: auto-seed on an
 // empty database, and `forge db seed --reset`. Both must round-trip on the
 // SAME constraints — a reset that truncates and re-inserts re-runs every
 // constraint the first apply did.

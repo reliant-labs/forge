@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -214,12 +215,14 @@ func k3dRegistryExists(ctx context.Context, name string) (bool, error) {
 // before passing it (passing `k3d-foo` would yield `k3d-k3d-foo`). The
 // registry binds 0.0.0.0:<HostPort> so host pushes to `localhost:<HostPort>`
 // reach it; when HostPort is 0 we omit --port and k3d picks a free one.
+// A new registry is created with --delete-enabled (k3d v5.9): distribution
+// refuses DELETE by default, so without it retention cannot reclaim a manifest
+// through the registry API and has to restart the container behind a
+// delete-enabled config instead — a write outage during every GC pass. The
+// flag only enables the API verb; nothing deletes without forge asking.
+// Existing registries keep the restart path, since the flag is create-time only.
 func k3dRegistryCreate(ctx context.Context, ref k3dRegistryRef) error {
-	createName := strings.TrimPrefix(ref.Name, "k3d-")
-	args := []string{"registry", "create", createName}
-	if ref.HostPort > 0 {
-		args = append(args, "--port", fmt.Sprintf("0.0.0.0:%d", ref.HostPort))
-	}
+	args := k3dRegistryCreateArgs(ref)
 	cmd := exec.CommandContext(ctx, "k3d", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -227,4 +230,69 @@ func k3dRegistryCreate(ctx context.Context, ref k3dRegistryRef) error {
 		return fmt.Errorf("k3d registry create %q: %w", ref.Name, err)
 	}
 	return nil
+}
+
+// k3dRegistryCreateArgs is the argv, split out so the flags are assertable
+// without a k3d binary.
+func k3dRegistryCreateArgs(ref k3dRegistryRef) []string {
+	// k3d prefixes the supplied name with `k3d-`, so strip a leading `k3d-`
+	// from the desired final name (passing `k3d-foo` would yield `k3d-k3d-foo`).
+	args := []string{"registry", "create", strings.TrimPrefix(ref.Name, "k3d-"), "--delete-enabled"}
+	if ref.HostPort > 0 {
+		args = append(args, "--port", fmt.Sprintf("0.0.0.0:%d", ref.HostPort))
+	}
+	return args
+}
+
+// registryFactsFromConfig extracts the storage facts a cluster's k3d config
+// carries about its registry: the container name from `registries.use`, and
+// every host name the inline containerd mirror maps to it.
+//
+// The mirror keys ARE the alias set — they are exactly the names a host push
+// or an in-cluster pull resolves through, which is what retention must match a
+// repository's host against. Reading them from the config the project already
+// authors keeps the alias list single-sourced; a separate forge field would
+// drift from the mirror and silently make pushed images look unowned.
+//
+// Returns an empty name when the config declares no `registries.use` registry
+// (a cluster-owned `registries.create`, or none at all) — forge converges
+// nothing for a registry it does not own the lifecycle of.
+func registryFactsFromConfig(configYAML []byte) (container string, aliases []string, err error) {
+	refs, err := parseUseRegistries(configYAML)
+	if err != nil || len(refs) == 0 {
+		return "", nil, err
+	}
+	ref := refs[0]
+	return ref.Name, append(mirrorHostAliases(configYAML), ref.Name+":5000"), nil
+}
+
+// mirrorHostAliases returns every `<host>:<port>` key in the config's inline
+// containerd mirror block.
+func mirrorHostAliases(configYAML []byte) []string {
+	var doc struct {
+		Registries struct {
+			Config string `yaml:"config"`
+		} `yaml:"registries"`
+	}
+	if err := yaml.Unmarshal(configYAML, &doc); err != nil {
+		return nil
+	}
+	var cfg struct {
+		Mirrors map[string]any `yaml:"mirrors"`
+	}
+	if err := yaml.Unmarshal([]byte(doc.Registries.Config), &cfg); err != nil {
+		return nil
+	}
+	aliases := make([]string, 0, len(cfg.Mirrors))
+	for key := range cfg.Mirrors {
+		if i := strings.LastIndex(key, ":"); i > 0 {
+			if _, convErr := strconv.Atoi(key[i+1:]); convErr == nil {
+				aliases = append(aliases, key)
+			}
+		}
+	}
+	// Map iteration is unordered; sort so a converge is byte-identical run to
+	// run and the idempotency property holds.
+	sort.Strings(aliases)
+	return aliases
 }

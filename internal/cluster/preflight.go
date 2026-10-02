@@ -1845,9 +1845,16 @@ func FormatPreflightReport(r PreflightResult) string {
 		b.WriteString("      (forge build --target-arch <arch>, or set deploy.target_arch / the env's K8sCluster.platform).\n")
 	}
 	if len(r.MissingCRDs) > 0 {
-		b.WriteString("  - install the CRD for the kind(s) above on the target cluster, or the\n")
-		b.WriteString("      Gateway API channel that provides them\n")
-		b.WriteString("      (e.g. kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/.../experimental-install.yaml).\n")
+		b.WriteString("  - install the CRD for the kind(s) above on the target cluster.\n")
+		b.WriteString("      For Gateway API kinds, prefer the DECLARATIVE path: give the env's\n")
+		b.WriteString("      Gateway API controller chart `crds = \"gateway-api\"` (a forge.HelmChart\n")
+		b.WriteString("      in the Bundle's helm_charts) and forge installs the version it pins,\n")
+		b.WriteString("      Established-gated, before anything that uses it — no kubectl apply.\n")
+		b.WriteString("      Out-of-band, the STANDARD channel is the one to install\n")
+		b.WriteString("      (kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/<version>/standard-install.yaml):\n")
+		b.WriteString("      it carries GA Gateway, HTTPRoute, GRPCRoute and ListenerSet. Use the\n")
+		b.WriteString("      experimental channel ONLY for an x-k8s.io alpha kind, and never on a\n")
+		b.WriteString("      local cluster alone — it would diverge dev from the cloud.\n")
 	}
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("  - provision the DECLARED external Secret(s) above out-of-band in their\n")

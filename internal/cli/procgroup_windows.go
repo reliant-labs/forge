@@ -39,8 +39,8 @@ func processAlive(pid int) bool {
 
 // killProcessTree: no job-object tree walk on Windows; fall back to
 // signalling the single process. The Unix path does the real tree teardown.
-func killProcessTree(pid int, sig syscall.Signal) {
-	_ = signalProcessGroup(pid, sig)
+func killProcessTree(pid int, sig syscall.Signal) error {
+	return signalProcessGroup(pid, sig)
 }
 
 // ppidMap / portListenerPID: the marker-based ownership reclaim

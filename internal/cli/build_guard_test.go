@@ -82,7 +82,7 @@ func TestAssertLinuxELFBinary_AcceptsCorrectLinuxArch(t *testing.T) {
 }
 
 // TestReleasePathBuildsLinuxBinary is the regression test for the reported bug:
-// `forge build --release` (which forces opts.buildDocker=true) must build the
+// `forge env build --release` (which forces opts.buildDocker=true) must build the
 // project-image host binary as GOOS=linux GOARCH=<platform>, NOT a native
 // darwin/arm64 host build. It exercises the REAL buildSequential path with
 // buildDocker=true + a cluster platform, then asserts the produced binary is a

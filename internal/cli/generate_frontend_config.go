@@ -214,7 +214,7 @@ func dropHalfConfiguredOIDC(values map[string]any) map[string]any {
 	fmt.Printf("  ⚠️  frontend config: issuer %q has no client id (the dev IdP was "+
 		"unreachable and none is stored), so this render selects the NO-AUTH posture "+
 		"rather than a half-configured one the app cannot start with.\n"+
-		"      For a real sign-in: run `forge run`, which brings the dev IdP up and runs the "+
+		"      For a real sign-in: run `forge env up`, which brings the dev IdP up and runs the "+
 		"idp-provision job — that registers the app and commits the resolved id.\n", issuer)
 	return values
 }

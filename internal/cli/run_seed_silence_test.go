@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// `forge run` reports what it did. maybeAutoSeed is the one hook that can
+// `forge env up` reports what it did. maybeAutoSeed is the one hook that can
 // decide NOT to seed, and a dev database that was never seeded is
 // indistinguishable — from the terminal, from the browser, from the next
 // phase of a workflow — from one that was seeded and whose domain is empty.
@@ -84,7 +84,7 @@ func TestMaybeAutoSeedNeverReturnsSilently(t *testing.T) {
 			continue
 		}
 		t.Errorf("run_seed.go:%d: %s returns without a message and without a `// quiet:` justification. "+
-			"A `forge run` that does not seed must say so — an unseeded dev database looks exactly like a seeded empty one.",
+			"A `forge env up` that does not seed must say so — an unseeded dev database looks exactly like a seeded empty one.",
 			line, autoSeedFuncName)
 	}
 }

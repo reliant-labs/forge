@@ -282,7 +282,7 @@ var errPromoteFromCrossLedger = errors.New("--from requires both environments to
 // files to find out which one to change.
 func promoteFromGuardError(sourceEnv, targetEnv, detail string) error {
 	return fmt.Errorf("%w: %s and %s do not share a ledger — %s\n"+
-		"  promote by version instead: forge env promote <version> --to %s\n"+
+		"  deploy by version instead: forge env deploy %s <version>\n"+
 		"  a release label is assigned per ledger, so it does not name the same bytes in both, "+
 		"and the source_moved check needs the source promotion to be a row in the TARGET's control plane",
 		errPromoteFromCrossLedger, sourceEnv, targetEnv, detail, targetEnv)

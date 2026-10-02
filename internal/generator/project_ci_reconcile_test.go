@@ -92,23 +92,25 @@ func TestCIFiles_ReconcileWorkflowWhenEnabled(t *testing.T) {
 	}
 
 	reconcile := readCIFile(t, filepath.Join(dir, ".github", "workflows", "reconcile.yml"))
-	for _, want := range []string{"forge reconcile", "schedule:", "workflow_dispatch:"} {
+	for _, want := range []string{"forge env status", "schedule:", "workflow_dispatch:"} {
 		if !strings.Contains(reconcile, want) {
 			t.Errorf("reconcile.yml missing %q", want)
 		}
 	}
+	// `forge reconcile` never existed as a verb; the workflow that called
+	// it failed on every scheduled run.
+	if strings.Contains(reconcile, "forge reconcile") {
+		t.Error("reconcile.yml calls `forge reconcile`, which is not a forge verb")
+	}
 
-	// The same gate turns on the CI-to-promote hop. Both talk to a control
-	// plane, so one flag is the honest granularity — a project with the
-	// reconcile loop wired is a project with somewhere to cut releases.
+	// The flag no longer turns on a cut-release job: the raw-curl job it
+	// gated was broken against the server (no artifact kind/mode) and is
+	// gone. A hosted project gets release.yml instead, by topology, not by
+	// flag (TestCIWorkflows_HostedEnvsGetReleaseWorkflow).
 	images := readCIFile(t, filepath.Join(dir, ".github", "workflows", "build-images.yml"))
-	for _, want := range []string{
-		"cut-release:",
-		"/controlplane.v1.DeployService/CutRelease",
-		"/controlplane.v1.DeployService/Promote",
-	} {
-		if !strings.Contains(images, want) {
-			t.Errorf("build-images.yml missing %q with the feature on", want)
+	for _, banned := range []string{"cut-release:", "/controlplane.v1.DeployService/", "DEPLOY_TOKEN"} {
+		if strings.Contains(images, banned) {
+			t.Errorf("build-images.yml still carries %q", banned)
 		}
 	}
 }

@@ -77,6 +77,10 @@ func kclTestModuleCache(t *testing.T) {
 		}
 		kclCacheDir = dir
 		kclvendor.SetCacheDirForTest(dir)
+		// Removed by TestMain, not t.Cleanup: the directory is shared across
+		// every subtest via this sync.Once, so only the process can own its
+		// lifetime. See main_test.go.
+		RegisterSharedTempDir(dir)
 	})
 }
 

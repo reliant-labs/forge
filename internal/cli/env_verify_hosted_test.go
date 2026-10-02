@@ -34,7 +34,7 @@ func TestVerifyHostedRollout(t *testing.T) {
 			t.Errorf("drift must carry both digests, got %+v", v)
 		}
 	}
-	if tally := tallyEnvVerifications(got); tally.Unreachable != 1 || tally.Match != 1 || tally.Drift != 1 || tally.Missing != 1 {
+	if tally := tallyEnvStatusRelease(got); tally.Unreachable != 1 || tally.Match != 1 || tally.Drift != 1 || tally.Missing != 1 {
 		t.Errorf("tally = %+v", tally)
 	}
 }

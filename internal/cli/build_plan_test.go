@@ -13,7 +13,7 @@ import (
 )
 
 // The regression these tests pin: control-plane's v1.7.0 release cut
-// (`forge build prod --release v1.7.0 --push`, pushing to prod's GAR) spent eleven minutes
+// (`forge env build prod --release v1.7.0 --push`, pushing to prod's GAR) spent eleven minutes
 // building and PUSHING images, then failed on `go build
 // ./cmd/prod-daemon-cluster` — a package that never existed, synthesized for
 // an image-less infra service. The PRs that introduced that shape were green,

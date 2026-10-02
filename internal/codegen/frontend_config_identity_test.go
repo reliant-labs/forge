@@ -63,7 +63,7 @@ func TestFrontendConfigInstance_DevIdentityBlock(t *testing.T) {
 // THE UN-PINNING. A scaffolded dev environment must not name a frontend port
 // anywhere in its identity block: the whole point of the origin glob the
 // idp-provision job registers is that the frontend keeps the kernel-
-// assigned port `forge run` gives it, so a literal port here would
+// assigned port `forge env up` gives it, so a literal port here would
 // silently re-pin it and stop two dev stacks from signing in at once.
 func TestFrontendConfigInstance_DevIdentityPinsNoFrontendPort(t *testing.T) {
 	body := scaffoldInstance(t, oidcFrontendConfig(), "dev", true)
@@ -168,7 +168,7 @@ func TestFrontendConfigInstance_PartialFrontendIdentityFieldsNoFrontendBlock(t *
 // minted a real token and every authenticated RPC answered 401 with "no JWT
 // signing material configured". It presents as a broken token — the search
 // starts at the validator, which is being shown a token it was never told
-// how to check — and `forge run` reported a healthy stack throughout.
+// how to check — and `forge env up` reported a healthy stack throughout.
 func TestFrontendConfigInstance_DevIdentityWiresBackendToo(t *testing.T) {
 	body := scaffoldInstance(t, oidcFrontendConfig(), "dev", true)
 

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,8 +102,20 @@ func TestKubeletHasAgeGCIndependentOfPressure(t *testing.T) {
 func TestHostReserveChecked(t *testing.T) {
 	p := DefaultPolicy()
 	p.HostReserveGiB = 1 << 30
-	if _, err := CheckSpace(p, t.TempDir()); err == nil {
+	dir := t.TempDir()
+	_, err := CheckSpace(p, dir)
+	if err == nil {
 		t.Fatal("unavailable reserve accepted")
+	}
+	// A measured shortfall is the one outcome a caller (the CI admission
+	// path) may knowingly accept, so it must be distinguishable from a disk
+	// that could not be read at all.
+	var short *ReserveError
+	if !errors.As(err, &short) {
+		t.Fatalf("a shortfall is not a *ReserveError: %T %v", err, err)
+	}
+	if short.Path != dir || short.ReserveGiB != 1<<30 || short.Available == 0 {
+		t.Errorf("shortfall = %+v, want the checked path, the policy reserve and the measured free bytes", short)
 	}
 }
 

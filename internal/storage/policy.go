@@ -195,7 +195,24 @@ type Disk struct {
 	Capacity  uint64 `json:"capacity_bytes"`
 }
 
+// ReserveError is a MEASURED shortfall: the filesystem under Path was read and
+// holds less than the policy's host reserve. It is a distinct type because
+// it is the one CheckSpace outcome a caller may knowingly accept — an
+// ephemeral CI runner, whose disk is discarded with the job — while an
+// unreadable disk or path is an unknown that no caller should wave through.
+type ReserveError struct {
+	Path       string
+	Available  uint64
+	ReserveGiB uint64
+}
+
+func (e *ReserveError) Error() string {
+	return fmt.Sprintf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted)", e.Path, float64(e.Available)/float64(GiB), e.ReserveGiB)
+}
+
 // CheckSpace refuses builds that would start below the physical host reserve.
+// A shortfall is returned as a *ReserveError; any other error means a disk
+// could not be measured at all.
 func CheckSpace(p Policy, paths ...string) ([]Disk, error) {
 	paths = append(paths, p.HostPaths...)
 	home, err := os.UserHomeDir()
@@ -221,7 +238,7 @@ func CheckSpace(p Policy, paths ...string) ([]Disk, error) {
 		d.Path = path
 		disks = append(disks, d)
 		if d.Available < p.HostReserveGiB*GiB {
-			return disks, fmt.Errorf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted)", path, float64(d.Available)/float64(GiB), p.HostReserveGiB)
+			return disks, &ReserveError{Path: path, Available: d.Available, ReserveGiB: p.HostReserveGiB}
 		}
 	}
 	return disks, nil

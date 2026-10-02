@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/gitsource"
 	"github.com/reliant-labs/forge/internal/storage"
@@ -223,6 +224,35 @@ func newStorageWorktreesCmd() *cobra.Command {
 }
 
 var checkBuildStorageFn = func(project string) error {
+	return checkBuildStorage(project, os.Stderr)
+}
+
+// enforceReserveEnv turns the host reserve back into a refusal on a CI
+// runner. Any non-empty value enforces it.
+const enforceReserveEnv = "FORGE_STORAGE_ENFORCE_RESERVE"
+
+// checkBuildStorage is the admission check every build lane runs: refuse a
+// build that would start below the machine policy's host reserve.
+//
+// ON A CI RUNNER A SHORTFALL IS A WARNING, NOT A REFUSAL. The reserve exists
+// because a PERSISTENT machine accumulates caches until it fills — the
+// developer Mac that went from 70 GiB free to a failed build. Its remedy,
+// `forge storage gc`, reclaims exactly those caches. An ephemeral runner has
+// neither: its disk is discarded with the job, and a stock GitHub runner
+// starts with ~14 GiB free — under the 20 GiB default before a single step
+// runs. Refusing there turned every `forge env build` on a stock runner into
+// a failed job with a remedy that reclaims nothing — control-plane's test,
+// image-build and release workflows all build on stock runners — and could
+// not be satisfied by any action the job could take short of guessing which
+// toolchains to delete.
+//
+// Only a MEASURED shortfall (*storage.ReserveError) is relaxed. A policy
+// that will not load, or a disk that cannot be read, still fails: that is an
+// unknown, and being on a runner says nothing about it. The shortfall is
+// still printed, so a build that then dies of ENOSPC has its cause on the
+// line above. A persistent self-hosted runner IS a machine that fills, so
+// FORGE_STORAGE_ENFORCE_RESERVE=1 restores the refusal there.
+func checkBuildStorage(project string, warn io.Writer) error {
 	path, err := storage.DefaultPath()
 	if err != nil {
 		return err
@@ -232,7 +262,13 @@ var checkBuildStorageFn = func(project string) error {
 		return err
 	}
 	_, err = storage.CheckBuildSpace(p, project)
-	return err
+	var short *storage.ReserveError
+	if !errors.As(err, &short) || !buildinfo.IsCI() || os.Getenv(enforceReserveEnv) != "" {
+		return err
+	}
+	fmt.Fprintf(warn, "warning: %v\n  building anyway: this is an ephemeral CI runner, whose disk is discarded with the job; set %s=1 to refuse instead (persistent self-hosted runners)\n",
+		short, enforceReserveEnv)
+	return nil
 }
 
 // addClusterStorageArgsFn is the seam every k3d creation path routes its argv

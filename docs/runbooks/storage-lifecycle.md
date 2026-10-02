@@ -37,6 +37,13 @@ prefix to existing/custom Air configs to guard their internal rebuild loop.
 These are admission checks, not disk reservations: concurrent builds and one
 large in-progress build can still consume the reserve.
 
+On a CI runner (`CI` or `GITHUB_ACTIONS` set) a shortfall is printed as a
+warning and the build proceeds. The reserve guards a persistent machine against
+accumulated caches; an ephemeral runner's disk is discarded with the job, and a
+stock GitHub runner starts below the 20 GiB default. A disk that cannot be read
+still refuses. Set `FORGE_STORAGE_ENFORCE_RESERVE=1` on a persistent self-hosted
+runner to keep the refusal.
+
 ## Set up a machine
 
 There is nothing to register by hand. forge converges the machine policy from

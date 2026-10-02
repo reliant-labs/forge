@@ -106,8 +106,15 @@ func TestDeployNoVersion_BuildsCutsThenPromotes(t *testing.T) {
 		t.Fatalf("build ran %d times, want once", len(*calls))
 	}
 	got := (*calls)[0]
-	if !got.push {
+	// pushIfDeclared, not push: both publish every declared reference, and
+	// they differ only on an env that declares NONE — where --push is a
+	// usage error and this verb must still proceed to the cut (a hosted env
+	// whose images CI pushes is perfectly deployable).
+	if !got.pushIfDeclared {
 		t.Error("the build did not push: a release pins digests, which require a registry")
+	}
+	if got.push {
+		t.Error("the build used --push, which refuses an env with nothing of its own to push")
 	}
 	if got.release != cut.Version {
 		t.Errorf("build cut %q but the deploy returned %q", got.release, cut.Version)

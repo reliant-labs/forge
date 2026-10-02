@@ -79,7 +79,7 @@ func TestHostedStaticBareImageRecordsExactlyTheRefItPushed(t *testing.T) {
 		t.Fatalf("promote: %v\n%s", err, out)
 	}
 	envID := fake.envs["hosted"]
-	if out, err := runForge(t, "env", "deploy", "hosted", "--rollout-timeout", "2s"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "--yes", "--no-wait", "--rollout-timeout", "2s"); err != nil {
 		t.Fatalf("deploy: %v\n%s", err, out)
 	}
 

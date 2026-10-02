@@ -130,6 +130,14 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		if err := validatePromoteFollow(*opts.Follow); err != nil {
 			return err
 		}
+		// One --json for the whole command. The follow stage decides where
+		// its progress lines go from its own jsonOut, and a caller that set
+		// JSON here but left that false would put the apply's human output
+		// on the stdout the document owns. Every production caller states
+		// both; folding them here means none of them can state only one.
+		if opts.JSON {
+			opts.Follow.jsonOut = true
+		}
 	}
 	gates, err := resolvePromoteGates(opts.Gates)
 	if err != nil {
@@ -258,7 +266,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		}
 		return writeErr
 	}
-	renderPromotePlanText(progressWriter(false), plan)
+	renderPromotePlanText(progressWriter(opts.JSON), plan)
 	return writeErr
 }
 

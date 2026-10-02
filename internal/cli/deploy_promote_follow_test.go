@@ -50,9 +50,17 @@ type capturedClientDeploy struct {
 	err   error
 }
 
+// promoteClientDeployStubbed records that SOME stub owns the client-side
+// apply, so runHostedPromote does not install a second one over it. Tests in
+// this package run sequentially within a file and never in parallel, which is
+// what makes a package-level flag sound here.
+var promoteClientDeployStubbed bool
+
 func (c *capturedClientDeploy) install(t *testing.T) {
 	t.Helper()
 	prev := runPromoteClientDeploy
+	promoteClientDeployStubbed = true
+	t.Cleanup(func() { promoteClientDeployStubbed = false })
 	runPromoteClientDeploy = func(_ context.Context, env string, opts deployOptions) error {
 		c.env = append(c.env, env)
 		c.calls = append(c.calls, opts)

@@ -79,14 +79,14 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 	}
 	envID := fake.envs["hosted"]
 	fake.bodies = nil
-	if out, err := runForge(t, "env", "deploy", "hosted", "--rollout-timeout", "2s"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "--yes", "--no-wait", "--rollout-timeout", "2s"); err != nil {
 		t.Fatalf("deploy: %v\n%s", err, out)
 	}
 	var paths []string
 	for _, b := range fake.bodies {
 		paths = append(paths, b.Path[strings.LastIndex(b.Path, "/")+1:])
 	}
-	if joined := strings.Join(paths, ","); !strings.Contains(joined, "EnsureEnvironment,EnsureDeployment,PublishDeploymentConfig,GetStatus") {
+	if joined := strings.Join(paths, ","); !strings.Contains(joined, "EnsureEnvironment,EnsureDeployment,PublishDeploymentConfig") {
 		t.Fatalf("deploy call sequence = %s", joined)
 	}
 	d := fake.deployments[envID]["web"]

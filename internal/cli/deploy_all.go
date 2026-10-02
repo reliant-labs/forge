@@ -38,6 +38,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -68,14 +69,39 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 	// Step 1 and 2. The version is decided from the checkout's provenance
 	// BEFORE the build, so the build can push under it and the cut can
 	// record what the push produced.
-	cut, err := buildAndCutForDeploy(ctx, projectDir, envName, f, ledger)
+	//
+	// UNDER --json THE BUILD'S OUTPUT GOES TO STDERR. `--json` promises
+	// stdout carries exactly ONE document, and the build phase is a few
+	// hundred lines of `[build] …` written with fmt.Printf — which would
+	// land above the document and make it unparseable. Diverting
+	// os.Stdout for the duration is the same mechanism runEnvRender uses
+	// for the same reason; the build log stays fully readable on stderr.
+	cut, err := func() (deployCutResult, error) {
+		if f.jsonOut {
+			real := os.Stdout
+			os.Stdout = os.Stderr
+			defer func() { os.Stdout = real }()
+			return buildAndCutForDeploy(ctx, projectDir, envName, f, ledger)
+		}
+		return buildAndCutForDeploy(ctx, projectDir, envName, f, ledger)
+	}()
 	if err != nil {
 		return err
 	}
 
-	// Steps 3–5 are the versioned deploy, verbatim. That is the point: the
-	// no-version form decides WHICH bytes and then hands over, so the two
-	// forms cannot diverge in how they plan, confirm, promote or wait.
+	// Steps 3-5 are the versioned deploy, verbatim: plan, confirm, promote,
+	// apply, wait. That is the point — the no-version form decides WHICH
+	// bytes and then hands over, so the two forms cannot diverge in how they
+	// plan, confirm, compare-and-set, publish or gate.
+	//
+	// The apply rides the follow-through, INCLUDING a pure hosted env's
+	// client-side publish, which followPromote now performs
+	// (applyHostedPublish). Before O-15 that publish was reachable only from
+	// the no-version form, so shipping a hosted env took two commands —
+	// `deploy <env> <v> --no-wait` to record, then `deploy <env>` to
+	// publish. Moving it into the follow-through is what lets ONE command do
+	// it, and keeps the versioned form able to do it too rather than
+	// stranding the publish on a spelling this change removes.
 	p := f.promote
 	p.version = cut.Version
 	return runPromote(ctx, cut.Version, envName, promoteOptions{
@@ -100,7 +126,6 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 			FailFast: p.failFast,
 			clientDeploy: deployOptions{
 				imageTag:      f.tag,
-				dryRun:        f.dryRun,
 				namespace:     f.namespace,
 				targetArch:    f.targetArch,
 				prune:         f.prune,
@@ -163,11 +188,29 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		buildTarget: "all",
 		parallel:    true,
 		buildDocker: true,
-		push:        true,
-		release:     version,
-		targetArch:  f.targetArch,
-		targets:     f.targets,
-		run:         f.promote.run,
+		// pushIfDeclared, NOT push. Both push every image whose workload
+		// declares a pushable reference; they differ on an env that declares
+		// NONE, and that difference decides whether this verb works at all
+		// for a whole class of project.
+		//
+		// --push treats "nothing to push" as a usage error, which is right
+		// for `forge env build --push`: the author asked to publish and
+		// there is nothing to publish. It is wrong here. A hosted env whose
+		// images CI pushes — a third-party image, a workload built in
+		// another pipeline — declares no reference forge builds, and such an
+		// env is perfectly deployable: its release records the declared
+		// images' digests (harvestHostedBackendArtifacts) and the deploy
+		// pins them. Refusing it would mean `forge env deploy <env>` could
+		// not ship an env that `forge env deploy <env> <v>` ships fine.
+		//
+		// So: push what is declared, and let an env with nothing to push
+		// proceed to the cut. This is the mode `forge env up` already uses,
+		// for the same reason.
+		pushIfDeclared: true,
+		release:        version,
+		targetArch:     f.targetArch,
+		targets:        f.targets,
+		run:            f.promote.run,
 	}
 	if reused {
 		// A reused version must not be RE-CUT with a different artifact
@@ -175,7 +218,6 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		// but reads as a failure of the deploy rather than of the re-cut.
 		// The build still runs and still pushes; only the cut is skipped.
 		opts.release = ""
-		opts.push = true
 	}
 	if err := runDeployBuild(ctx, opts); err != nil {
 		return deployCutResult{}, fmt.Errorf("build env %s for deploy: %w", envName, err)

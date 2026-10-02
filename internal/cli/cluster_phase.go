@@ -255,6 +255,16 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []Clus
 	if err != nil {
 		return err
 	}
+	// Converge the machine storage policy with what this cluster's declaration
+	// says about local caches — the kubectl contexts whose workloads protect
+	// images, and the registry container + host aliases its k3d config
+	// references. BEFORE the create/reconcile branch and on BOTH of them: a
+	// warm cluster's facts are just as true as a fresh one's, and activation
+	// that only happened on a cold create would never fire on the machines
+	// that have been running the same cluster for weeks — exactly the ones
+	// with the disk problem. Idempotent and never fatal; see
+	// storage_converge.go.
+	convergeClusterStorage(c, declared, projectDir)
 	if state.Exists {
 		return reconcileExistingCluster(ctx, c, state, declared, projectDir, env)
 	}

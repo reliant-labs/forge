@@ -3,6 +3,8 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -286,34 +288,61 @@ func hasMarkedAncestor(pid int, marked map[int]bool, f procFacts) bool {
 // bounded grace, then SIGKILLs any straggler. It WAITS, so the `up`/`run`
 // pre-flight that calls it knows the predecessor's ports are released before it
 // launches the replacement. No-op on an empty list.
-func killTreesAndWait(pids []int) {
+func killTreesAndWait(pids []int) error {
+	return killTreesAndWaitWith(pids, killProcessTree, processAlive)
+}
+
+func killTreesAndWaitWith(pids []int, signal func(int, syscall.Signal) error, alive func(int) bool) error {
 	if len(pids) == 0 {
-		return
+		return nil
 	}
+	var failures []error
 	for _, pid := range pids {
 		if pid > 1 {
-			killProcessTree(pid, syscall.SIGTERM)
-		}
-	}
-	deadline := time.Now().Add(8 * time.Second)
-	for {
-		anyAlive := false
-		for _, pid := range pids {
-			if pid > 1 && processAlive(pid) {
-				anyAlive = true
-				break
+			if err := signal(pid, syscall.SIGTERM); err != nil {
+				failures = append(failures, err)
 			}
 		}
-		if !anyAlive || time.Now().After(deadline) {
-			break
+	}
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	wait := func(grace time.Duration) bool {
+		deadline := time.Now().Add(grace)
+		for {
+			anyAlive := false
+			for _, pid := range pids {
+				if pid > 1 && alive(pid) {
+					anyAlive = true
+					break
+				}
+			}
+			if !anyAlive {
+				return true
+			}
+			if time.Now().After(deadline) {
+				return false
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
-		time.Sleep(100 * time.Millisecond)
+	}
+	if wait(8 * time.Second) {
+		return nil
 	}
 	for _, pid := range pids {
-		if pid > 1 && processAlive(pid) {
-			killProcessTree(pid, syscall.SIGKILL)
+		if pid > 1 && alive(pid) {
+			if err := signal(pid, syscall.SIGKILL); err != nil {
+				failures = append(failures, err)
+			}
 		}
 	}
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	if !wait(2 * time.Second) {
+		return fmt.Errorf("host processes remain alive after shutdown signals")
+	}
+	return nil
 }
 
 // stampForgeOwnership marks cmd's child (and, via env inheritance, every

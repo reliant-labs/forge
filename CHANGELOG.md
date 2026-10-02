@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `--json` emits one document carrying the standard envelope. Its release
   fields stay FLAT (`bound`, `images`, `release`) because `forge gate record
-  --from` recognises the document by them.
+--from` recognises the document by them.
 
 ### Removed
 
@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment. A removalguard entry pins all five spellings on every surface.
 
 - **BREAKING: `forge env promote` is gone — `forge env deploy <env> [vX | --from
-  <src-env>]` does the whole job.** No alias and no hidden name; the old
+<src-env>]` does the whole job.** No alias and no hidden name; the old
   spelling dies on "unknown command".
 
   ```bash
@@ -300,7 +300,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image is still reported, but the command exits **2** (could not determine)
   with the fix. `ahead` (recorded here, not yet merged) is shown, not failed.
   `--json` carries `ledger: {state, ref, local_entries, upstream_entries,
-  detail}`. A control-plane ledger has no copy to be behind and is unaffected.
+detail}`. A control-plane ledger has no copy to be behind and is unaffected.
 - **`forge env promote` always compare-and-sets.** The write asserts that the
   env is still on the promotion the plan read, and is refused if someone else
   moved it since. A hotfix that lands while a pipeline waits for approval now

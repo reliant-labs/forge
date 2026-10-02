@@ -15,6 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/codegen"
 	dbgsvc "github.com/reliant-labs/forge/internal/debug"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 func newStartCmd(f *factory.Factory) *cobra.Command {
@@ -141,7 +142,7 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 	}
 
 	fmt.Printf("Building %s with debug flags...\n", buildPath)
-	buildCmd := exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-o", outputBinary, buildPath)
+	buildCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-o", outputBinary, buildPath))
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {

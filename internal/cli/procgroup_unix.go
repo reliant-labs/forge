@@ -4,6 +4,8 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -50,7 +52,8 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	return syscall.Kill(pid, 0) == nil
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // killProcessTree signals pid, its process group, AND every transitive
@@ -61,16 +64,20 @@ func processAlive(pid int) bool {
 // parent/child relationship is the one stable handle. Descendants are
 // collected BEFORE signalling so a dying tree's shifting ppids can't hide
 // a child.
-func killProcessTree(pid int, sig syscall.Signal) {
+func killProcessTree(pid int, sig syscall.Signal) error {
 	if pid <= 0 {
-		return
+		return nil
 	}
 	descendants := descendantPIDs(pid)
-	_ = syscall.Kill(-pid, sig) // the group (cheap; catches in-group children)
-	_ = syscall.Kill(pid, sig)  // the leader
-	for _, d := range descendants {
-		_ = syscall.Kill(d, sig)
+	var failures []error
+	// A missing group is normal after its leader exits. Permission failures
+	// are not proof of shutdown, including when a direct leader signal works.
+	for _, target := range append([]int{-pid, pid}, descendants...) {
+		if err := syscall.Kill(target, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+			failures = append(failures, fmt.Errorf("signal %s to pid/group %d: %w", sig, target, err))
+		}
 	}
+	return errors.Join(failures...)
 }
 
 // ppidMap returns a pid→ppid snapshot of the whole process table, read

@@ -430,6 +430,10 @@ func buildforgeBinary(t *testing.T) string {
 			forgeBinaryErr = err
 			return
 		}
+		// Removed by TestMain (main_test.go), not t.Cleanup: the binary is
+		// shared across every fixture through this sync.Once, so the first
+		// test to finish must not delete what the rest still execute.
+		registerSharedTempDir(dir)
 		bin := filepath.Join(dir, "forge")
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/forge")
 		cmd.Dir = repoRoot

@@ -2974,34 +2974,12 @@ func ensureDevCluster(ctx context.Context) error {
 	// If no clusters exist or our cluster isn't found, the user needs to create one.
 	if len(out) == 0 || string(out) == "[]" || string(out) == "[]\n" {
 		fmt.Println("No k3d clusters found. Creating dev cluster...")
-		k3dConfig := filepath.Join("deploy", "k3d.yaml")
-		var createCmd *exec.Cmd
-		if _, err := os.Stat(k3dConfig); err == nil {
-			createCmd = exec.CommandContext(ctx, "k3d", "cluster", "create", "--config", k3dConfig)
-		} else {
-			// Fallback create path (no project-level deploy/k3d.yaml).
-			// Write a temp registries.yaml that mirrors the canonical
-			// `localhost:5050 → registry.localhost:5000` mapping, so
-			// in-cluster pulls succeed for images pushed to the
-			// host-visible `localhost:5050`. Without this, `docker push
-			// localhost:5050/<image>` lands in the registry but pods
-			// ImagePullBackOff because `localhost:5050` doesn't resolve
-			// from inside the node container. The project-templated
-			// `deploy/k3d.yaml` carries the same mirrors inline via the
-			// k3d Simple config's `registries.config` block — see
-			// internal/templates/deploy/k3d.yaml.tmpl.
-			regsPath, regsErr := writeFallbackRegistriesYAML()
-			if regsErr != nil {
-				return fmt.Errorf("write fallback registries.yaml: %w", regsErr)
-			}
-			defer func() { _ = os.Remove(regsPath) }()
-			createCmd = exec.CommandContext(ctx, "k3d", "cluster", "create", "dev",
-				"--registry-create", "dev-registry:0.0.0.0:5050",
-				"--registry-config", regsPath,
-				"--servers", "1",
-				"--no-lb",
-			)
+		args, cleanup, err := devClusterCreateArgs()
+		if err != nil {
+			return err
 		}
+		defer cleanup()
+		createCmd := exec.CommandContext(ctx, "k3d", args...)
 		createCmd.Stdout = os.Stdout
 		createCmd.Stderr = os.Stderr
 		if err := createCmd.Run(); err != nil {
@@ -3014,6 +2992,53 @@ func ensureDevCluster(ctx context.Context) error {
 		fmt.Println("       the deploy skill ('Pre-existing k3d cluster mirror fix').")
 	}
 	return nil
+}
+
+// devClusterCreateArgs builds the `k3d cluster create` argv for
+// ensureDevCluster's bootstrap, and returns a cleanup for the temp
+// registries.yaml the no-config path writes.
+//
+// Both branches end at addClusterStorageArgsFn. That is the point of this
+// function existing: this bootstrap used to assemble its own exec.Cmd and was
+// therefore the ONE forge cluster-creation path that did not mount the kubelet
+// image-GC drop-in, so the clusters it made grew containerd images without
+// bound. It is also the path a project with no deploy/k3d.yaml takes on its
+// first deploy, which is why the omission cost as much disk as it did.
+func devClusterCreateArgs() (args []string, cleanup func(), err error) {
+	cleanup = func() {}
+	k3dConfig := filepath.Join("deploy", "k3d.yaml")
+	if _, statErr := os.Stat(k3dConfig); statErr == nil {
+		args = []string{"cluster", "create", "--config", k3dConfig}
+	} else {
+		// Fallback create path (no project-level deploy/k3d.yaml).
+		// Write a temp registries.yaml that mirrors the canonical
+		// `localhost:5050 → registry.localhost:5000` mapping, so
+		// in-cluster pulls succeed for images pushed to the
+		// host-visible `localhost:5050`. Without this, `docker push
+		// localhost:5050/<image>` lands in the registry but pods
+		// ImagePullBackOff because `localhost:5050` doesn't resolve
+		// from inside the node container. The project-templated
+		// `deploy/k3d.yaml` carries the same mirrors inline via the
+		// k3d Simple config's `registries.config` block — see
+		// internal/templates/deploy/k3d.yaml.tmpl.
+		regsPath, regsErr := writeFallbackRegistriesYAML()
+		if regsErr != nil {
+			return nil, cleanup, fmt.Errorf("write fallback registries.yaml: %w", regsErr)
+		}
+		cleanup = func() { _ = os.Remove(regsPath) }
+		args = []string{"cluster", "create", "dev",
+			"--registry-create", "dev-registry:0.0.0.0:5050",
+			"--registry-config", regsPath,
+			"--servers", "1",
+			"--no-lb",
+		}
+	}
+	args, err = addClusterStorageArgsFn(args)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	return args, cleanup, nil
 }
 
 // fallbackRegistriesYAML is the canonical containerd mirror config
@@ -3100,6 +3125,9 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 	// `forge env deploy`.
 	buildArgs = appendBuildContexts(buildArgs, cfg, "")
 	buildArgs = append(buildArgs, "-f", dockerfile, ".")
+	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
+		return err
+	}
 	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr

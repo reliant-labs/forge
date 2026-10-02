@@ -13,6 +13,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/goexec"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -221,7 +222,7 @@ func goListPackageName(ctx context.Context, t goBuildTarget) (string, error) {
 		args = append(args, "-tags", strings.Join(t.tags, ","))
 	}
 	args = append(args, t.cmd)
-	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if t.goos != "" {
 		cmd.Env = append(cmd.Env, "GOOS="+t.goos)

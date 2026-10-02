@@ -27,15 +27,15 @@ what the command does.
 ## Who applies it is read off the ledger, not a flag
 
 This is the hosted/self-managed parity the ADR asks for, and it comes from the
-*same declarative fact* as where the promotion is recorded — so the two cannot
+_same declarative fact_ as where the promotion is recorded — so the two cannot
 disagree:
 
-| Env | Applied by | Health gate |
-|---|---|---|
-| hosted (KCL declares `forge.ControlPlane`) | the control-plane converger | forge waits on the server-computed rollout, **pinned to the promotion this command wrote** |
-| self-managed (`.forge/promotions/<env>.jsonl`) | this command, client-side render+apply | that apply's own per-resource rollout wait |
+| Env                                            | Applied by                             | Health gate                                                                                |
+| ---------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------ |
+| hosted (KCL declares `forge.ControlPlane`)     | the control-plane converger            | forge waits on the server-computed rollout, **pinned to the promotion this command wrote** |
+| self-managed (`.forge/promotions/<env>.jsonl`) | this command, client-side render+apply | that apply's own per-resource rollout wait                                                 |
 
-The pinning is the point of the hosted wait. If it re-read the env's *current*
+The pinning is the point of the hosted wait. If it re-read the env's _current_
 promotion, a hotfix landing in the seconds after this deploy would silently
 become the thing being waited on, and the pipeline would report its own release
 healthy on the strength of somebody else's. An overtaking promote is reported
@@ -99,7 +99,7 @@ opt-in waiting fails 7 tests; disabling the self-managed branch fails 4.
 
 `promoteOptions.Follow` is a **pointer**, and nil means ledger-write only. That
 is what keeps the plan/CAS/gates/provenance tests — and `forge release`'s
-fixtures — asserting what was *written* without needing a cluster.
+fixtures — asserting what was _written_ without needing a cluster.
 
 The removalguard entry was worth its keep immediately: it found **12
 stragglers** the grep pass missed, including five live

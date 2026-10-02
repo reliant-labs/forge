@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -247,6 +248,16 @@ func StartEmbedded(cfg embeddedpostgres.Config) (*embeddedpostgres.EmbeddedPostg
 		return nil, err
 	}
 	defer relay.close()
+
+	// The library leaks one temp log file per Start, with no option to prevent
+	// it. Snapshot what exists, then remove whatever this Start adds — and
+	// sweep anything stale a killed process left behind. See embeddedlog.go.
+	tempRoot := os.TempDir()
+	logsBefore := embeddedLogSnapshot(tempRoot)
+	defer func() {
+		removeNewEmbeddedLogs(tempRoot, logsBefore)
+		sweepStaleEmbeddedLogs(tempRoot, time.Now(), staleEmbeddedLogAge)
+	}()
 
 	ep := embeddedpostgres.NewDatabase(cfg.BinaryRepositoryURL(relay.baseURL()))
 	if err := ep.Start(); err != nil {

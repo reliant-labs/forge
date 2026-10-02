@@ -120,11 +120,13 @@ message ArchiveOrderResponse {
 	writeFileE2E(t, protoPath, proto)
 	runCmd(t, projectDir, forgeBin, "scaffold")
 
-	// Operators are experimental and opt-in; the CRD templates are only
-	// reachable once the feature is on.
+	// Operators are opt-in; the CRD templates are only reachable once the
+	// feature is on. The key is `features.operators` — operators graduated out
+	// of experimental, and the old `features.experimental.operators` spelling
+	// is refused, which left the feature off and `scaffold operator` failing.
 	forgeYAML := filepath.Join(projectDir, "forge.yaml")
 	writeFileE2E(t, forgeYAML, readFileE2E(t, forgeYAML)+
-		"features:\n    experimental:\n        operators: true\n")
+		"features:\n    operators: true\n")
 
 	for _, nouns := range [][]string{
 		{"package", "pricing"},

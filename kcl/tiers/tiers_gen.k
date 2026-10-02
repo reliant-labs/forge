@@ -138,6 +138,7 @@ schema StaticSite:
     keepReleases?: int
     liveDigest?: str
     previousDigest?: str
+    releaseRepository?: str
     retainedDigests?: [str]
     runtimeConfig?: {str:RuntimeConfigValue}
 
@@ -148,6 +149,7 @@ schema StaticSite:
         keepReleases == Undefined or keepReleases >= 0, "StaticSite.keepReleases must be at least 0"
         liveDigest == Undefined or regex.match(liveDigest, "^sha256:[a-f0-9]{64}$"), "StaticSite.liveDigest must match ^sha256:[a-f0-9]{64}$"
         previousDigest == Undefined or regex.match(previousDigest, "^sha256:[a-f0-9]{64}$"), "StaticSite.previousDigest must match ^sha256:[a-f0-9]{64}$"
+        releaseRepository == Undefined or len(releaseRepository) <= 512, "StaticSite.releaseRepository must be at most 512 characters"
         runtimeConfig == Undefined or len(runtimeConfig) <= 128, "StaticSite.runtimeConfig allows at most 128 entries"
 
 static_site_json = lambda v: StaticSite -> {str:} {
@@ -160,6 +162,7 @@ static_site_json = lambda v: StaticSite -> {str:} {
         "keepReleases": v.keepReleases
         "liveDigest": v.liveDigest
         "previousDigest": v.previousDigest
+        "releaseRepository": v.releaseRepository
         "retainedDigests": v.retainedDigests
         "runtimeConfig": {_k: runtime_config_value_json(_i) for _k, _i in v.runtimeConfig} if v.runtimeConfig else Undefined
     }

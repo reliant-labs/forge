@@ -224,10 +224,11 @@ func TestBuildPlan_SecretsAndDrift(t *testing.T) {
 	live := Shape{Kind: EnvPersistent, Secrets: []ShapeSecret{{Name: "OLD", Provider: "hosted"}}}
 	cand := Shape{Kind: EnvPersistent, Secrets: []ShapeSecret{
 		{Name: "OLD", Provider: "hosted"}, {Name: "SET", Provider: "hosted"}, {Name: "MISSING", Provider: "hosted"},
+		{Name: "EXTERNAL", Provider: "external"},
 	}}
 	p, err := BuildPlan(PlanInput{
 		EnvironmentID: "e", BundleID: "b", Candidate: cand, Live: &live,
-		SecretPresence: map[string]bool{"SET": true},
+		SecretPresence: map[string]bool{"SET": true, "MISSING": false},
 		Drift:          &DriftObservation{Drifted: []ObjectKey{{Cluster: "c1", Kind: "Deployment", Namespace: "ns", Name: "api"}}},
 	})
 	if err != nil {
@@ -236,6 +237,14 @@ func TestBuildPlan_SecretsAndDrift(t *testing.T) {
 	classes := codesOf(p)
 	if classes[FindingSecretNeeded+"@SET"] != ClassInfo || classes[FindingSecretNeeded+"@MISSING"] != ClassWarn {
 		t.Fatalf("secret classes wrong: %v", classes)
+	}
+	// A secret whose presence was never read is unverifiable, not missing:
+	// an env mixing a managed store and an external provider must not read
+	// every external secret as MISSING.
+	for _, f := range p.Findings {
+		if f.Subject == "EXTERNAL" && strings.Contains(f.Detail, "MISSING") {
+			t.Fatalf("an unread secret was reported missing: %+v", f)
+		}
 	}
 	if _, ok := classes[FindingSecretNeeded+"@OLD"]; ok {
 		t.Fatal("an already-declared secret is not newly needed")

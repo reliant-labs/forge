@@ -114,6 +114,18 @@ type EvictPolicy struct {
 	// candidates, and retaining everything when it cannot be taken). Tests
 	// inject a stub so they never shell out.
 	InUse func(entry string) bool
+
+	// Ctx bounds the eviction: the open-file snapshot, and the removals,
+	// which stop at the deadline with everything not yet removed retained.
+	// Nil means unbounded.
+	Ctx context.Context
+}
+
+func (p EvictPolicy) ctx() context.Context {
+	if p.Ctx != nil {
+		return p.Ctx
+	}
+	return context.Background()
 }
 
 func (p EvictPolicy) maxAge() time.Duration {
@@ -226,7 +238,11 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 
 	inUse := policy.InUse
 	if inUse == nil && len(doomed) > 0 {
-		snap, err := openfiles.Take(context.Background())
+		snap, err := openfiles.Take(policy.ctx())
+		if ctxErr := policy.ctx().Err(); ctxErr != nil {
+			result.Kept += len(doomed)
+			return result, fmt.Errorf("source cache eviction stopped before removing anything: %w", ctxErr)
+		}
 		if err != nil {
 			// Fail closed: see the package comment.
 			result.Kept += len(doomed)
@@ -236,7 +252,11 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		inUse = snap.Holds
 	}
 
-	for _, c := range doomed {
+	for i, c := range doomed {
+		if err := policy.ctx().Err(); err != nil {
+			result.Kept += len(doomed) - i
+			return result, fmt.Errorf("source cache eviction stopped after %d of %d entries: %w", len(result.Removed), len(doomed), err)
+		}
 		entry := filepath.Join(root, c.name)
 		if inUse(entry) {
 			result.Kept++

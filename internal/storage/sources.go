@@ -67,7 +67,7 @@ func (r Runner) Sources(apply bool) error {
 	if parseErr != nil {
 		maxAge = 0
 	}
-	policy := gitsource.EvictPolicy{MaxAge: maxAge, KeepPerSlug: r.Policy.SourceCacheKeep}
+	policy := gitsource.EvictPolicy{MaxAge: maxAge, KeepPerSlug: r.Policy.SourceCacheKeep, Ctx: r.hostCtx()}
 	got, err := gitsource.Evict(root, time.Now(), policy, apply, r.Out)
 	if err != nil {
 		return err

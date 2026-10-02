@@ -201,6 +201,7 @@ func newStorageCmd() *cobra.Command {
 	nodes.Flags().BoolVar(&restart, "apply", false, "install configuration and restart local k3d nodes sequentially")
 	group.AddCommand(nodes)
 	group.AddCommand(newStorageWorktreesCmd())
+	group.AddCommand(newStorageAutoGCCmd(&path))
 	return cmdutil.StrictGroup(group)
 }
 

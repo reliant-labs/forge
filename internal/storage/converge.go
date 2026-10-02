@@ -225,6 +225,7 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
+	r.Ctx = ctx
 	var failures []error
 	if err := r.Logs(apply); err != nil {
 		failures = append(failures, layerErr("logs", err))

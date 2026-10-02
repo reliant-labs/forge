@@ -32,6 +32,20 @@ type Runner struct {
 	// registry was stopped for GC — is kept beside it, so a later pass can
 	// find and repair what an interrupted one left behind.
 	PolicyPath string
+	// Ctx bounds the host-filesystem layers (logs, temp sweep, source cache),
+	// which take no context of their own. GC and NonDisruptiveGC set it from
+	// theirs, so a pass's deadline bounds the whole pass — its lsof snapshot
+	// and its walk over entries, not only its docker calls. Nil means
+	// unbounded.
+	Ctx context.Context
+}
+
+// hostCtx is the context the host layers run under.
+func (r Runner) hostCtx() context.Context {
+	if r.Ctx != nil {
+		return r.Ctx
+	}
+	return context.Background()
 }
 
 // Exec runs a command with a bounded lifetime and returns its STDOUT.
@@ -210,6 +224,7 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 			}
 		}
 	}
+	r.Ctx = ctx
 	failures = append(failures, r.hostLayers(apply)...)
 	if err := r.Local(ctx); err != nil {
 		return errors.Join(append(failures, layerErr("docker", err))...)

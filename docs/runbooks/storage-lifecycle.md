@@ -64,12 +64,17 @@ registry cleanup keeps refusing on it. If either source cannot be read, nothing
 is pruned. A preview reports the pruning but does not write it.
 
 At the end of a successful `forge env up`, if the opportunistic pass has not
-been attempted in 24 hours, forge runs the non-disruptive layers inline under a
-2-minute budget: rotated logs, builder cache, the temp sweep and the source
-cache. It never runs registry GC or restarts nodes from that path. It records
-each attempt, failures included, in `last-auto-gc.json` next to the policy. That
-record is only a rate limit: a machine where the pass cannot succeed is not
-retried on every `up`.
+been attempted in 24 hours, forge starts the non-disruptive layers in the
+background and returns immediately: rotated logs, builder cache, the temp sweep
+and the source cache. The pass runs as a detached `forge storage auto-gc`
+process. Its log is `logs/auto-gc.log`, next to the policy. The whole pass,
+including each layer's `lsof` snapshot and its walk over entries, is bounded at
+2 minutes. A layer cut off by that limit removes nothing further, and the rest is
+picked up by the next pass. It never runs registry GC or restarts nodes from
+that path. Set `FORGE_STORAGE_AUTO=0` to turn it off. It records each attempt,
+failures included, in `last-auto-gc.json` next to the policy. That record is only
+a rate limit: a machine where the pass cannot succeed is not retried on every
+`up`.
 
 Every applied full pass (`forge storage gc --apply`, and the scheduled job)
 records its outcome in `last-full-gc.json`: when it ran, whether it succeeded,

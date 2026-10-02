@@ -23,8 +23,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/storage"
 )
@@ -105,6 +111,18 @@ func localClusterContexts(declared []ClusterEntity) []string {
 // schedule's period.
 const opportunisticGCInterval = 24 * time.Hour
 
+// opportunisticGCBudget is the WHOLE pass's wall time: its context bounds the
+// docker calls, each layer's lsof snapshot and each layer's walk over entries,
+// and a layer cut off by it removes nothing more (Runner.Ctx). Generous enough
+// for a builder prune and a log expiry; what does not fit is reclaimed by the
+// next pass or the scheduled job.
+const opportunisticGCBudget = 2 * time.Minute
+
+// storageAutoOptOut is the environment variable that turns the opportunistic
+// pass off: FORGE_STORAGE_AUTO=0. The pass runs behind the user's back, so it
+// must be possible to say no without editing a policy file.
+const storageAutoOptOut = "FORGE_STORAGE_AUTO"
+
 // nonDisruptiveGCFn is the pass itself, seamed so the GATING decisions (is it
 // stale, what is recorded, what is printed) are testable without a Docker
 // daemon — the real pass shells out to docker and takes tens of seconds.
@@ -112,21 +130,30 @@ var nonDisruptiveGCFn = func(ctx context.Context, r storage.Runner) error {
 	return r.NonDisruptiveGC(ctx, true)
 }
 
-// opportunisticGCBudget caps the pass. It is generous enough for a builder
-// prune and a log expiry and short enough that nothing waits on it long.
-const opportunisticGCBudget = 2 * time.Minute
+// startAutoGCFn starts the opportunistic pass in the background and returns
+// where its output goes. Seamed so a test never spawns a process.
+var startAutoGCFn = startAutoGC
 
 // maybeOpportunisticGC is the other half of zero-touch: on a machine where
 // nobody ran `forge storage install`, nothing ever reclaims anything. At the end
 // of a successful `forge env up`, if this pass has not been attempted within
-// opportunisticGCInterval, run the NON-DISRUPTIVE layers — rotated-log expiry,
-// builder-cache prune, temp sweep, source eviction.
+// opportunisticGCInterval, start the NON-DISRUPTIVE layers — rotated-log
+// expiry, builder-cache prune, temp sweep, source eviction — in the
+// background, and return.
 //
 // Explicitly NOT run here: registry GC (it takes the registry offline, and `up`
 // is typically the command that just pushed to it) and node reconfiguration
 // (it restarts kubelet). Those stay with the scheduled pass and the explicit
 // commands. That restriction, not the time budget, is what makes this safe to
 // do behind the user's back.
+//
+// BACKGROUND, not inline. The pass used to run synchronously, so `env up` did
+// not return until it finished — and its budget did not even bound the host
+// layers, so a first run could delete a hundred-odd GB of temp scratch before
+// `up` came back. A goroutine is not the answer either: in its detaching
+// shape `up` exits within milliseconds, killing it mid-prune. So the pass is a
+// separate, detached `forge storage auto-gc` process with its own lock, its
+// own bounded context, and its own log.
 //
 // Because it never runs the registry layer, this pass records only its own
 // ATTEMPT (last-auto-gc.json), which is its rate limit. It never writes the
@@ -136,7 +163,7 @@ const opportunisticGCBudget = 2 * time.Minute
 //
 // It also prints at most ONE line about storage health: that no schedule is
 // installed, or else that the last full GC failed, is stale, or never ran.
-func maybeOpportunisticGC(ctx context.Context, out io.Writer) {
+func maybeOpportunisticGC(_ context.Context, out io.Writer) {
 	path, err := storage.DefaultPath()
 	if err != nil {
 		return
@@ -153,29 +180,104 @@ func maybeOpportunisticGC(ctx context.Context, out io.Writer) {
 			fmt.Fprintf(out, "[up] storage: %s, so registry images are not being reclaimed — run `forge storage gc --dry-run` to see why.\n", problem)
 		}
 	}
+	if os.Getenv(storageAutoOptOut) == "0" {
+		return
+	}
 	if attempt, ok := storage.LastAutoGC(path); ok && time.Since(attempt.At) < opportunisticGCInterval {
 		return
 	}
-	fmt.Fprintf(out, "[up] storage: last cleanup is over %s old — pruning build cache and rotated logs (registry cleanup is left to `forge storage gc`)...\n", opportunisticGCInterval)
+	logPath, err := startAutoGCFn(path)
+	if err != nil {
+		fmt.Fprintf(out, "[up] storage: could not start background cleanup (%v); `forge storage gc --apply` runs it by hand.\n", err)
+		return
+	}
+	fmt.Fprintf(out, "[up] storage: pruning build cache, temp scratch and rotated logs in the background (log: %s; %s=0 disables)\n", logPath, storageAutoOptOut)
+}
 
+// runAutoGC is the body of `forge storage auto-gc`: one bounded,
+// non-disruptive pass under the maintenance lock, recorded as an attempt.
+// A busy lock means another pass is already doing this work, which is not a
+// failure and not an attempt.
+func runAutoGC(ctx context.Context, path string, out io.Writer) error {
+	policy, err := storage.Load(path)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, opportunisticGCBudget)
 	defer cancel()
-	// The lock is held for the pass, so this never races the scheduled
-	// daemon or a concurrent `forge storage gc`.
-	runErr := storage.WithLock(path, func() error {
+	return storage.WithLock(path, func() error {
 		gcErr := nonDisruptiveGCFn(ctx, maintenanceRunner(policy, path, out))
-		// The attempt is recorded whether or not it succeeded: the interval
-		// rate-limits ATTEMPTS, so a machine where this reliably fails (no
-		// Docker daemon, a vanished builder) does not retry and re-print on
-		// every `forge env up`. It is recorded as what it was, a failure, in
-		// the opportunistic pass's own record and nowhere else.
+		// Recorded whether or not it succeeded: the interval rate-limits
+		// ATTEMPTS, so a machine where this reliably fails (no Docker
+		// daemon, a vanished builder) does not retry on every `forge env
+		// up`. It is recorded as what it was, in this pass's own record and
+		// nowhere else.
 		if err := storage.RecordAutoGC(path, storage.NewGCResult(time.Now(), gcErr)); err != nil && gcErr == nil {
 			return err
 		}
 		return gcErr
 	})
-	if runErr != nil {
-		fmt.Fprintf(out, "[up] storage: cleanup pass incomplete (retrying in %s; run `forge storage gc` to see why): %v\n",
-			opportunisticGCInterval, runErr)
+}
+
+// newStorageAutoGCCmd is the hidden `forge storage auto-gc`, the process
+// `forge env up` starts in the background. It is a command, not a flag on
+// `gc`, because it is a different pass: non-disruptive layers only, bounded,
+// and recorded as an opportunistic attempt rather than a full GC.
+func newStorageAutoGCCmd(policyPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:    "auto-gc",
+		Short:  "Run the bounded, non-disruptive maintenance pass forge env up starts in the background",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if *policyPath == "" {
+				return fmt.Errorf("auto-gc requires --policy")
+			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return runAutoGC(ctx, *policyPath, cmd.OutOrStdout())
+		},
 	}
+}
+
+// errAutoGCUnderTest refuses the background launch from a test binary.
+var errAutoGCUnderTest = errors.New("refusing to start background storage maintenance under `go test` " +
+	"(os.Executable is the test binary; stub startAutoGCFn)")
+
+// startAutoGC starts `forge storage auto-gc` detached from this process, with
+// its output in a log beside the policy, and does not wait for it.
+//
+// Under `go test` it refuses. It re-executes os.Executable(), which in a test
+// is the test binary, so a test that reached it without stubbing
+// startAutoGCFn would start a detached copy of the whole suite that outlives
+// the run. This is the same guard TempRoot, SourceCacheRoot and the machine
+// policy use: a hole that must be remembered to close stays open.
+func startAutoGC(policyPath string) (string, error) {
+	if testing.Testing() {
+		return "", errAutoGCUnderTest
+	}
+	tokens, err := forgeExecCommand()
+	if err != nil {
+		return "", err
+	}
+	logDir := filepath.Join(filepath.Dir(policyPath), "logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return "", err
+	}
+	logPath := filepath.Join(logDir, "auto-gc.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = logFile.Close() }()
+	args := append(append([]string{}, tokens[1:]...), "storage", "auto-gc", "--policy", policyPath)
+	cmd := exec.Command(tokens[0], args...)
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	detachFromParent(cmd)
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	// Not waited for: the child outlives this command by design.
+	_ = cmd.Process.Release()
+	return logPath, nil
 }

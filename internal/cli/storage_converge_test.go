@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,6 +283,14 @@ func storagePolicyForOpportunisticGC(t *testing.T) string {
 	origGC := nonDisruptiveGCFn
 	nonDisruptiveGCFn = func(context.Context, storage.Runner) error { return nil }
 	t.Cleanup(func() { nonDisruptiveGCFn = origGC })
+	// The background launch runs the pass in-process here, so the gate and
+	// the pass body are exercised together without spawning anything.
+	origStart := startAutoGCFn
+	startAutoGCFn = func(path string) (string, error) {
+		_ = runAutoGC(context.Background(), path, io.Discard)
+		return "/fake/auto-gc.log", nil
+	}
+	t.Cleanup(func() { startAutoGCFn = origStart })
 	path := filepath.Join(t.TempDir(), "storage.json")
 	policy := storage.DefaultPolicy()
 	policy.Registries = []storage.Registry{{
@@ -335,8 +345,8 @@ func TestOpportunisticGC_RunsWhenStale(t *testing.T) {
 	var out bytes.Buffer
 	maybeOpportunisticGC(t.Context(), &out)
 	text := out.String()
-	if !bytes.Contains(out.Bytes(), []byte("last cleanup is over")) {
-		t.Fatalf("a stale pass did not run:\n%s", text)
+	if !bytes.Contains(out.Bytes(), []byte("in the background")) {
+		t.Fatalf("a stale pass did not start:\n%s", text)
 	}
 	// The pass must never mention registry work: that is the layer that takes
 	// the registry offline, and it is explicitly excluded.
@@ -397,8 +407,8 @@ func TestOpportunisticGC_AdvancesStampOnFailure(t *testing.T) {
 	}
 	var out bytes.Buffer
 	maybeOpportunisticGC(t.Context(), &out)
-	if !bytes.Contains(out.Bytes(), []byte("cleanup pass incomplete")) {
-		t.Fatalf("a failing pass did not report:\n%s", out.String())
+	if attempt, _ := storage.LastAutoGC(path); attempt.OK || !strings.Contains(attempt.Error, "docker daemon is not reachable") {
+		t.Fatalf("the failing pass was not recorded as a failure: %+v", attempt)
 	}
 	if got, _ := storage.LastAutoGC(path); !got.At.After(stale) {
 		t.Fatalf("last attempt = %v; a failed pass must still rate-limit the next attempt", got.At)

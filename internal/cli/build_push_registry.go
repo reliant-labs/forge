@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
 // An image registry is DECLARED on a WORKLOAD, as part of its image, and
@@ -88,6 +89,46 @@ func (p pushPlan) repositoryFor(name string) string {
 		}
 	}
 	return name
+}
+
+// hostedStaticDestination is the ONE rule for where a hosted frontend's site
+// release is pushed: the declared reference resolved against the platform's
+// push base, with the platform's layout segment appended to the RESULT.
+//
+// Both halves call it — declaredImageDestinations, so the push plan and
+// `forge registry login` name it, and buildHostedStaticSites, so the push goes
+// there. That is deliberate and it is not a lookup: a bare image needs the
+// base composed on, and recomposing it independently in the build is the
+// "two derivations of one address" defect the release-ref rule exists to
+// prevent. It pushed `web/static.v1`, with no registry at all, while the
+// release and the published spec named the resolved address.
+//
+// Order matters: the base is composed BEFORE the layout segment, or a bare
+// `web` yields `<base>/web/static.v1` versus `web/static.v1` — and only the
+// first is pullable.
+func hostedStaticDestination(pushBase, image string) string {
+	return deploytarget.HostedStaticRepository(imageRepository(resolveHostedImageBase(pushBase, image)))
+}
+
+// hostedStaticDestinationForEnv is hostedStaticDestination for the callers
+// that hold an env name rather than a resolved plan: the release-coverage
+// gate, the hosted deploy group, and the build plan's preview.
+//
+// They must agree with the build's push to the byte, because the address is
+// the ledger's KEY: the coverage gate looks the artifact up under it, the
+// deploy pins `<it>@<digest>`, and cp's operator pulls exactly what the spec
+// records. Before ADR-0003 F1 each derived it from the declared reference and
+// they agreed by accident; once a bare image needs the platform's base
+// composed on, agreeing by accident stops working — which is what this
+// function exists to prevent.
+func hostedStaticDestinationForEnv(env, image string) string {
+	return hostedStaticDestination(cachedHostedPushBase(projectDirForKCL(), env), image)
+}
+
+// hostedImageForEnv resolves any hosted item's image against the env's cached
+// push base. The workload twin of hostedStaticDestinationForEnv.
+func hostedImageForEnv(env, image string) string {
+	return resolveHostedImageBase(cachedHostedPushBase(projectDirForKCL(), env), image)
 }
 
 // repositoryName is a repository's last path segment — the artifact name
@@ -191,14 +232,7 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 // Non-hosted runtimes are untouched. A bare image on a cluster workload is
 // still refused at render, by KCL, because no platform owns that registry.
 func resolveHostedImageBase(base, image string) string {
-	if registryHost(image) != "" {
-		return image
-	}
-	base = normalizePushBase(base)
-	if base == "" || image == "" {
-		return image
-	}
-	return base + "/" + image
+	return hostedimage.ResolveBase(base, image)
 }
 
 // declaredImageDestinations is every distinct repository the env's workloads
@@ -270,11 +304,10 @@ func declaredImageDestinationsWithBase(e *KCLEntities, pushBase string) []imageD
 		if f.Image == "" || f.Runtime.Type != RuntimeHosted {
 			continue
 		}
-		// The static layout segment is appended to the RESOLVED reference,
-		// so a bare hosted frontend lands at
-		// `<push_base>/<name>/static.v1` — the same shape a host-bearing
-		// one reaches, and the same key the release ledger records.
-		add(deploytarget.HostedStaticRepository(resolveHostedImageBase(pushBase, imageRepository(f.Image))), f.Name)
+		// One rule, shared with the build's own push
+		// (hostedStaticDestination), so the plan and the push cannot name
+		// two different addresses.
+		add(hostedStaticDestination(pushBase, imageRepository(f.Image)), f.Name)
 	}
 	out := make([]imageDestination, 0, len(seen))
 	for repo, workload := range seen {

@@ -1,96 +1,61 @@
 package cli
 
-// The org's image push base, learned from the control plane and remembered.
+// Writing the push-base cache internal/hostedimage defines.
 //
-// `<registry_base>/<org>` is the ONE registry subtree a control plane admits
-// an org's images from (ADR-0003). It is a fact about the PLATFORM, not about
-// the project, so it is not declared anywhere in the checkout — the server
-// returns it on every environment read, and forge resolves a bare hosted
-// image under it (resolveHostedImageBases).
+// The format, the read side, and WHY the base is cached at all live in
+// internal/hostedimage/cache.go — `forge lint` reads the same records and
+// cannot import this package, so a second definition of the filename would be
+// a cache one side silently never finds.
 //
-// WHY IT IS CACHED, AND WHY THAT IS NOT A SECOND SOURCE OF TRUTH. Two
-// consumers need the base where no call is possible or wanted:
-//
-//   - `forge env render <env>` and `forge lint` must judge a hosted image
-//     against it, and neither may touch the network — a render that needed a
-//     credential would stop being the offline, reproducible projection every
-//     other surface diffs against.
-//   - the deploy resolves the same bare image the build pushed, and must
-//     reach the same answer without re-deriving it from a different place.
-//
-// So the base is written down every time the control plane states it, on the
-// EnsureEnvironment forge was already making, and read back by name. The
-// server is always authoritative: a cached value is only ever used where
-// asking is impossible, and every ensure overwrites it.
+// What lives here is the WRITE, which only this package performs: it happens
+// on the EnsureEnvironment forge was already making
+// (ensureHostedEnvRecordingPushBase), so the base is learned with no extra
+// call and refreshed by every command that could care.
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/statefile"
 )
 
-// hostedPushBaseRecord is one env's last-known push base.
+// rememberHostedPushBase records what the control plane just said.
 //
-// Keyed by ENV and not by project, because the record lives inside one
-// project's .forge/state already and an org could in principle move an env
-// between registries. Carries when it was learned so a stale value is
-// legible to a human reading the file.
-type hostedPushBaseRecord struct {
-	Env        string `json:"env"`
-	PushBase   string `json:"image_push_base"`
-	RecordedAt string `json:"recorded_at"`
-}
-
-func hostedPushBasePath(projectDir, env string) string {
-	return statefile.Path(projectDir, "push-base-"+statefile.SafeSegment(env)+".json")
-}
-
-// rememberHostedPushBase records what the control plane just said. An empty
-// base writes nothing: "the server did not tell us" must not be stored as
-// "the server said there is none", because the two produce different
-// messages and only one of them is true.
+// An EMPTY base writes nothing, and that is the load-bearing case: "the
+// server did not tell us" must not be stored as "the server says there is
+// none". The two produce different messages — one notes that a host was
+// declared at all, the other asserts it is outside the admitted subtree — and
+// only one of them would be true.
 func rememberHostedPushBase(projectDir, env, base string) error {
-	base = normalizePushBase(base)
+	base = hostedimage.NormalizeBase(base)
 	if base == "" {
 		return nil
 	}
 	if cachedHostedPushBase(projectDir, env) == base {
-		// Unchanged: skip the write so a deploy does not touch a file
-		// (and an mtime) for no reason.
+		// Unchanged: skip the write so a deploy does not touch a file —
+		// and an mtime the render's write scan reads — for no reason.
 		return nil
 	}
-	return statefile.Write(hostedPushBasePath(projectDir, env), "image push base", hostedPushBaseRecord{
+	return statefile.Write(hostedimage.CachePath(projectDir, env), "image push base", hostedimage.CacheRecord{
 		Env: env, PushBase: base, RecordedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
 // cachedHostedPushBase is the last base recorded for this env, or "" when
-// none ever was. An unreadable record is "" as well: a corrupt cache must
-// degrade to "unknown" (which has its own, weaker message) rather than fail
-// a render.
+// none ever was — including when the record is unreadable, because a corrupt
+// cache must degrade to "unknown" (which has its own, weaker message) rather
+// than fail a render over a file that exists only to sharpen one.
 func cachedHostedPushBase(projectDir, env string) string {
-	rec, err := statefile.Read[hostedPushBaseRecord](hostedPushBasePath(projectDir, env), "image push base")
-	if err != nil || rec == nil {
-		return ""
-	}
-	return normalizePushBase(rec.PushBase)
-}
-
-// normalizePushBase trims the one difference that is not a difference: a
-// trailing slash. Everything joins with "/" explicitly.
-func normalizePushBase(base string) string {
-	return strings.TrimSuffix(strings.TrimSpace(base), "/")
+	return hostedimage.CachedBase(projectDir, env)
 }
 
 // errHostedImageNeedsPushBase is a bare hosted image with no base to resolve
-// it under: an older control plane that does not report one (or none
-// configured at all).
+// it under: an older control plane that reports none, or none configured.
 //
 // The remedy is the pre-ADR-0003 behaviour — declare the full reference —
 // because that is the only thing the author can do from here. It names the
-// workload rather than the rule, since a project may have several and only
+// workload rather than the rule, since a project may declare several and only
 // one of them is bare.
 func errHostedImageNeedsPushBase(env, owner, image string) error {
 	return fmt.Errorf("workload %q declares image %q, which names no registry host, and it is bound to forge.OnHosted.\n"+

@@ -48,6 +48,7 @@ func TestDeclaredImageDestinations_BareHostedResolvesBareClusterDoesNot(t *testi
 	ents := &KCLEntities{Workloads: []WorkloadEntity{
 		hostedWL("api", func(w *WorkloadEntity) {
 			w.Image = "api"
+			w.Spec.Image = "api"
 			w.Build.Type = "go"
 		}),
 		clusterWL("worker", "c", "n", func(w *WorkloadEntity) {
@@ -92,9 +93,15 @@ func TestDeclaredImageDestinations_BareHostedFrontendGetsBaseThenStaticLayout(t 
 // pre-ADR-0003 remedy, because declaring the reference is the only thing the
 // author can do from here.
 func TestCheckHostedImagesResolve_NoPushBaseNamesTheFullReferenceRemedy(t *testing.T) {
+	// Spec.Image is set as well as Image, because that is what the render
+	// produces: the resolved reference a runtime pulls lands on the spec,
+	// and for a BARE hosted image the render keeps it bare rather than
+	// inventing a host (positive_hosted_image_bare_name.k). Setting only
+	// Image would describe a workload no render emits.
 	ents := &KCLEntities{Workloads: []WorkloadEntity{
 		hostedWL("api", func(w *WorkloadEntity) {
 			w.Image = "api"
+			w.Spec.Image = "api"
 			w.Build.Type = "go"
 		}),
 	}}

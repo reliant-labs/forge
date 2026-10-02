@@ -677,7 +677,7 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		services = append(services, deploytarget.ResolvedService{
 			Name: w.Name,
 			Hosted: &deploytarget.HostedWorkload{
-				Tier: deploytarget.HostedTierWorkload, Workload: &spec, Artifact: hostedArtifactKey(w),
+				Tier: deploytarget.HostedTierWorkload, Workload: &spec, Artifact: hostedArtifactKey(envName, w),
 			},
 		})
 		names = append(names, w.Name)
@@ -689,10 +689,11 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		services = append(services, deploytarget.ResolvedService{
 			Name: f.Name,
 			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f),
-				// The ledger keys a site by the repository it was pushed to —
-				// the frontend's declared reference plus the platform's layout
-				// segment — so the deploy must look it up under the same key.
-				Artifact: deploytarget.HostedStaticRepository(imageRepository(f.Image))},
+				// The ledger keys a site by the repository it was pushed to,
+				// so the deploy must look it up under the same key — through
+				// the one rule the build pushed by, which resolves a bare
+				// hosted image against the platform's base.
+				Artifact: hostedStaticDestinationForEnv(envName, imageRepository(f.Image))},
 		})
 		names = append(names, f.Name)
 	}
@@ -758,13 +759,15 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 // records it) and the hosted deploy (which pins by it):
 //
 //   - the workload's own artifact name (`image`), when forge builds it —
-//     that is the key forge's build state records a pushed image under;
+//     that is the key forge's build state records a pushed image under,
+//     RESOLVED against the platform's push base so a bare hosted image is
+//     keyed by the address it was actually pushed to (ADR-0003 F1);
 //   - otherwise the spec image's last path segment
 //     (deploytarget.HostedArtifactName), for an image built elsewhere.
-func hostedArtifactKey(w WorkloadEntity) string {
+func hostedArtifactKey(envName string, w WorkloadEntity) string {
 	if w.Image != "" {
 		// The declared REPOSITORY, host included: the release ledger's key.
-		return imageRepository(w.Image)
+		return hostedImageForEnv(envName, imageRepository(w.Image))
 	}
 	return deploytarget.HostedArtifactName(w.Spec.Image)
 }

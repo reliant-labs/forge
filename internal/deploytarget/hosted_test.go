@@ -231,10 +231,14 @@ func TestHostedImagePushBase(t *testing.T) {
 			t.Fatal("an image outside the push base was published")
 		}
 		for _, want := range []string{
-			"ghcr.io/acme/api@" + digestA,                      // the image
-			"registry.reliant.dev/org-1",                       // the base
-			"push the image to registry.reliant.dev/org-1/api", // the fix
-			"forge env build", "forge env deploy",
+			"ghcr.io/acme/api@" + digestA, // the image
+			"registry.reliant.dev/org-1",  // the base
+			// The fix, as of ADR-0003 F1: the author does not push this
+			// image anywhere themselves and does not name the registry —
+			// they drop the host and forge composes the platform's base.
+			"drop the registry host",
+			"registry.reliant.dev/org-1/api",
+			"forge env deploy",
 		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("refusal does not name %q:\n%v", want, err)
@@ -303,8 +307,12 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 	t.Run("no recorded registry is refused with the fix", func(t *testing.T) {
 		cp := &fakeCP{status: readyStatus(digestA), pushBase: "localhost:5051/org-1"}
 		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(), group(nil))
-		if err == nil || !strings.Contains(err.Error(), "--push") {
-			t.Fatalf("err = %v, want a refusal naming forge env build --push", err)
+		// The fix is `forge env deploy <env>`, not `--push` and not
+		// `--no-build`: this release recorded no registry for the artifact,
+		// so there are no pushed bytes to cut a release over, and the only
+		// honest remedy is the one verb that builds, pushes and cuts.
+		if err == nil || !strings.Contains(err.Error(), "forge env deploy prod") {
+			t.Fatalf("err = %v, want a refusal naming forge env deploy prod", err)
 		}
 		if len(cp.procs()) != 0 {
 			t.Fatalf("RPCs made: %v", cp.procs())

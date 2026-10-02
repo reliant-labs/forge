@@ -144,7 +144,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 	if !ok || len(rel.Artifacts) != 1 || rel.Artifacts[0].Name != "api" || rel.Artifacts[0].Digest != hostedTestDigest {
 		t.Fatalf("cut release = %+v, want one artifact api@%s", rel, hostedTestDigest)
 	}
-	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait"); err != nil {
 		t.Fatalf("promote: %v\n%s", err, out)
 	}
 	envID := fake.envs["hosted"]
@@ -342,7 +342,7 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"env", "build", "hosted", "--release", "v1", "--no-build"},
-		{"env", "deploy", "hosted", "v1", "--no-wait"},
+		{"env", "deploy", "hosted", "v1", "--yes", "--no-wait"},
 		{"env", "deploy", "hosted", "--rollout-timeout", "2s"},
 	} {
 		if out, err := runForge(t, args...); err != nil {
@@ -403,7 +403,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
+		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait"); err != nil {
 			t.Fatal(err)
 		}
 		fake.bodies = nil
@@ -426,13 +426,17 @@ func TestHostedDeployRefusals(t *testing.T) {
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
+		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait"); err != nil {
 			t.Fatal(err)
 		}
 		fake.bodies = nil
 		_, err := runForge(t, "env", "deploy", "hosted")
-		if err == nil || !strings.Contains(err.Error(), "push the image to registry.reliant.dev/org-1/api") {
-			t.Fatalf("err = %v, want the push-base refusal naming the fix", err)
+		// The fix, as of ADR-0003 F1: the author drops the registry host
+		// and forge composes the platform's base onto the bare name. They
+		// do not push this image anywhere themselves.
+		if err == nil || !strings.Contains(err.Error(), "drop the registry host") ||
+			!strings.Contains(err.Error(), "registry.reliant.dev/org-1/api") {
+			t.Fatalf("err = %v, want the push-base refusal naming the drop-the-host fix", err)
 		}
 		for _, b := range fake.bodies {
 			switch b.Path[strings.LastIndex(b.Path, "/")+1:] {
@@ -539,7 +543,7 @@ func TestHostedArtifactKey(t *testing.T) {
 		w.Image = "e2eh/abc/echo"
 		w.Spec.Image = "localhost:5051/e2eh/abc/echo:t1"
 	})
-	if got := hostedArtifactKey(w); got != "e2eh/abc/echo" {
+	if got := hostedArtifactKey("prod", w); got != "e2eh/abc/echo" {
 		t.Fatalf("key = %q, want the workload's artifact name", got)
 	}
 	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Workloads: []WorkloadEntity{w}}
@@ -551,7 +555,7 @@ func TestHostedArtifactKey(t *testing.T) {
 		t.Errorf("published image = %q, want the artifact name the release pins", img)
 	}
 	w.Image = ""
-	if got := hostedArtifactKey(w); got != "echo" {
+	if got := hostedArtifactKey("prod", w); got != "echo" {
 		t.Fatalf("fallback key = %q, want echo", got)
 	}
 }

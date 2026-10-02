@@ -340,6 +340,33 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 			return perr
 		}
 	}
+	// A hosted image the control plane would refuse to publish, reported HERE
+	// rather than at publish time.
+	//
+	// It is an ERROR on a hosted env for the same reason the pinning check
+	// above is: this render is what the deploy applies, so printing manifests
+	// the platform will reject makes the render a document nobody can act on.
+	// `forge lint` reports the same findings as findings, because it judges
+	// envs nobody is deploying right now.
+	//
+	// Offline: the push base comes from the last ensure's cache, and when
+	// none is known the finding claims strictly less (see
+	// hostedOffBaseImageFinding.Message) rather than asserting something
+	// forge did not verify.
+	//
+	// VERIFIED off-base is an error; UNVERIFIED is a warning. forge knows the
+	// base only when an ensure has stated it, and failing a render over an
+	// image it could not compare would be asserting something it never
+	// checked — on a project whose registry IS the platform's, that assertion
+	// would be false. So the half forge can prove stops the render, and the
+	// half it cannot prove says so and gets out of the way.
+	offBase := hostedOffBaseImageFindings(entities, cachedHostedPushBase(projectDir, envName))
+	if verified := verifiedOffBaseImages(offBase); len(verified) > 0 {
+		return errHostedImagesOffBase(envName, verified)
+	}
+	for _, f := range offBase {
+		fmt.Fprintf(errOut, "warning: %s\n", f.Message())
+	}
 	if derr != nil {
 		// Digest pinning is an optimisation of WHICH bytes deploy ships, not
 		// of what the environment declares. A caller reading the object graph

@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -716,4 +717,46 @@ func procNames(calls []fakeCPCall) []string {
 		out[i] = c.Proc
 	}
 	return out
+}
+
+// A BUILD NEVER NEEDS A REACHABLE CONTROL PLANE: `forge env build` warns and
+// carries on when the declaration cannot be DELIVERED (no credential, the
+// control plane unreachable or unavailable), and fails only when the control
+// plane ANSWERED and refused it. control-plane's own hosted_deploy fixtures
+// build offline against an unreachable endpoint on purpose
+// (TestFixtureBuildPushesAndRecordsADigest), which is how this was found.
+func TestEnvBuildDeclaration_UndeliverableWarnsRefusedFails(t *testing.T) {
+	entities := &KCLEntities{ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "http://127.0.0.1:9"}}
+	prevRender := renderKCLForDeclaration
+	renderKCLForDeclaration = func(context.Context, string, string) (*KCLEntities, error) { return entities, nil }
+	t.Cleanup(func() { renderKCLForDeclaration = prevRender })
+
+	cases := []struct {
+		name      string
+		clientErr error // from resolving the client (credential)
+		ensureErr error // from the EnsureEnvironment call
+		wantErr   bool
+	}{
+		{"no credential", fmt.Errorf("env %q records its declaration on the control plane at %s: %w", "prod", "http://127.0.0.1:9", cloud.ErrNoCredential), nil, false},
+		{"connection refused", nil, errors.New("dial tcp 127.0.0.1:9: connect: connection refused"), false},
+		{"unavailable", nil, &cloud.Error{HTTPStatus: 503, Code: cloud.CodeUnavailable, Message: "down"}, false},
+		{"refused shape", nil, &cloud.Error{HTTPStatus: 400, Code: cloud.CodeInvalidArgument, Message: "declared shape: unknown identity key"}, true},
+		{"kind change", nil, &cloud.Error{HTTPStatus: 400, Code: cloud.CodeFailedPrecondition, Message: "kind is immutable"}, true},
+		{"credential rejected", nil, &cloud.Error{HTTPStatus: 403, Code: cloud.CodePermissionDenied, Message: "no deploy:write"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := withDeclarationRecorder(t, declarationFixtureShape())
+			fake.ensureErr = tc.ensureErr
+			if tc.clientErr != nil {
+				prev := envDeclarationClient
+				envDeclarationClient = func(string, *KCLEntities) (cloudCaller, string, error) { return nil, "", tc.clientErr }
+				t.Cleanup(func() { envDeclarationClient = prev })
+			}
+			err := recordEnvBuildDeclaration(context.Background(), "prod")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("recordEnvBuildDeclaration err = %v, want error: %v", err, tc.wantErr)
+			}
+		})
+	}
 }

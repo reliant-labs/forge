@@ -630,23 +630,23 @@ func TestRunPromotePlan_WritesNothing(t *testing.T) {
 
 	// A REAL file store, not the in-memory fake: the thing being protected
 	// is a file on disk, so the test has to exercise the file backend.
-	if err := WriteRelease(dir, rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false,
+	if err := testCutRelease(t, dir, rel("v1.3.0", "2026-01-01T00:00:00Z", "aaaaaaaaaaaa", false,
 		map[string]string{"reliant": sha("old")})); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
-	if err := WriteRelease(dir, rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false,
+	if err := testCutRelease(t, dir, rel("v1.5.15", "2026-03-01T00:00:00Z", "cccccccccccc", false,
 		map[string]string{"reliant": sha("new"), "internal-console": sha("added")})); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
 	// Seed a real binding so there is something a write would append to.
-	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
 		Env: "staging", Release: "v1.3.0", Kind: release.KindPromote,
 		Resolved: map[string]string{"reliant": sha("old")},
 	}, appendGuard{}); err != nil {
 		t.Fatalf("seed binding: %v", err)
 	}
 
-	ledger := promotionLogPath(dir, "staging")
+	ledger := testPromotionLogPath(t, dir, "staging")
 	before, err := os.ReadFile(ledger)
 	if err != nil {
 		t.Fatalf("read ledger: %v", err)
@@ -690,7 +690,7 @@ func TestRunPromote_AppliesAndSaysSo(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	if err := WriteRelease(dir, rel("v1.4.0", "2026-02-01T00:00:00Z", "bbbbbbbbbbbb", false,
+	if err := testCutRelease(t, dir, rel("v1.4.0", "2026-02-01T00:00:00Z", "bbbbbbbbbbbb", false,
 		map[string]string{"reliant": sha("a")})); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
@@ -704,7 +704,7 @@ func TestRunPromote_AppliesAndSaysSo(t *testing.T) {
 		}
 	})
 
-	binding, bound, err := newFileBindingStore(dir).Current(context.Background(), "staging")
+	binding, bound, err := testBindings(t, dir).Current(context.Background(), "staging")
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}

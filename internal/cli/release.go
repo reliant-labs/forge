@@ -36,18 +36,18 @@ import (
 // "source" frontends (a pinned commit). release.ModeVariant is representable
 // and validated, but nothing here produces or deploys one yet.
 
-// releasesDirRel is where release ledgers live, relative to the project root.
-// Distinct from .forge/state (ephemeral build/deploy handoff): a release is a
-// durable, human-legible artifact a team may choose to commit so the digest
-// set that shipped `v1.4.0` is recoverable. One file per release version.
-const releasesDirRel = ".forge/releases"
+// releasesDirRel was ".forge/releases", one file per version INSIDE the
+// checkout. It is gone: see retiredReleasesDirRel in ledger_unimported.go,
+// which is the only remaining reference to that location and treats it as
+// history to be imported rather than as a ledger.
 
-// The release TYPES live in forge/pkg/release, not here. This file is the
-// FILE backend's encoding of them (where a release lives on disk, how it is
-// read and written) plus the build-time harvest that produces one. The
-// hosted backend (hosted_ledger.go) reads and writes the same types over the
-// control plane's DeployService, so "what forge cut" and "what the control
-// plane stores" are one vocabulary rather than two structs kept in step by
+// The release TYPES live in forge/pkg/release, not here. What remains in this
+// file is the build-time HARVEST that produces a release (reading the
+// per-image digests the build captured) — not its storage, which belongs to
+// whichever ledger the env selected. The two stores
+// (internal/ledgerfile and hosted_ledger.go) read and write the same types,
+// so "what forge cut" and "what the control plane stores" are one vocabulary
+// rather than two structs kept in step by
 // comments.
 
 // releaseFileStem maps a release version label to its on-disk ledger
@@ -95,55 +95,20 @@ func releaseFileStem(version string) string {
 	return string(out)
 }
 
-// releasePath returns the absolute path to a release ledger file. Build,
-// promote, and deploy all resolve the version→file mapping HERE so they
-// never disagree on a release's filename.
-func releasePath(projectDir, version string) string {
-	return filepath.Join(projectDir, releasesDirRel, releaseFileStem(version)+".json")
-}
-
-// WriteRelease persists a Release ledger. The directory is created lazily.
+// releasePath, WriteRelease and ReadRelease ARE DELETED. They were the
+// in-checkout file backend: one .forge/releases/<stem>.json per version,
+// written and read directly by build, promote and deploy.
 //
-// A RELEASE IS IMMUTABLE, and this is where the file backend enforces it —
-// the same rule the hosted ledger enforces with a unique index and an
-// append-only trigger. Re-cutting a version that already names the SAME
-// artifact set is an idempotent retry and rewrites nothing; re-cutting it
-// with a DIFFERENT set is release.ErrReleaseConflict, because one version
-// label meaning two digest sets would void every guarantee promotion rests
-// on. release.CheckRecut is the one implementation of that rule both
-// backends call.
-func WriteRelease(projectDir string, r release.Release) error {
-	if err := r.Validate(); err != nil {
-		return err
-	}
-	existing, err := ReadRelease(projectDir, r.Version)
-	if err != nil {
-		return err
-	}
-	if existing != nil {
-		return release.CheckRecut(*existing, r)
-	}
-	return statefile.Write(releasePath(projectDir, r.Version), "release", r)
-}
-
-// ReadRelease loads a Release ledger by version. Returns (nil, nil) when the
-// file is missing — the caller decides whether that's an error (a deploy
-// referencing an absent release) or a fall-through.
+// Releases now live in the ledger the env selected — the control plane, or
+// the machine store under $FORGE_LEDGER_HOME (internal/ledgerfile) — and are
+// reached through the releaseLedger seam (Cut, Get, List), so no caller
+// resolves a version to a path any more. The immutability rule those two
+// functions enforced did not move: release.CheckRecut is still the one
+// implementation, called by both stores.
 //
-// A ledger that does not satisfy release.Validate is an ERROR, not a
-// best-effort read: the closed Kind/Mode enums exist so that an artifact
-// nobody can classify is never read as an image.
-func ReadRelease(projectDir, version string) (*release.Release, error) {
-	path := releasePath(projectDir, version)
-	rel, err := statefile.Read[release.Release](path, "release")
-	if err != nil || rel == nil {
-		return rel, err
-	}
-	if err := rel.Validate(); err != nil {
-		return nil, fmt.Errorf("release ledger %s: %w", path, err)
-	}
-	return rel, nil
-}
+// releaseFileStem survives above because reading the RETIRED location is
+// still necessary — not as a ledger, but to detect a checkout whose
+// committed promotions have never been imported (ledger_unimported.go).
 
 // harvestReleaseArtifacts collects the per-image digests captured by the build
 // that just ran, from the SAME build-state sources resolveDeployImageDigests

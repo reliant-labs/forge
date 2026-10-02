@@ -47,7 +47,7 @@ func pageAll(t *testing.T, r bindingHistoryReader, env string, q historyQuery) [
 func TestHistoryPage_BothBackendsPageIdentically(t *testing.T) {
 	// File: prod v1 → v2 → v3 → v1 → v4.
 	dir := t.TempDir()
-	file := newFileBindingStore(dir)
+	file := testBindings(t, dir)
 	for _, v := range []string{"v1", "v2", "v3", "v1", "v4"} {
 		writeBinding(t, dir, "prod", v, map[string]string{"api": sha("a")})
 	}
@@ -97,7 +97,7 @@ func equalPages(a, b [][]string) bool {
 func TestEnvHistory_BadRequestIsExit1(t *testing.T) {
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1", map[string]string{"api": sha("a")})
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	for name, q := range map[string]historyQuery{
 		"unknown cursor": {Before: "no-such-id"},
 		"limit too big":  {Limit: maxHistoryLimit + 1},
@@ -114,7 +114,7 @@ func TestEnvHistory_BadRequestIsExit1(t *testing.T) {
 // cursor, and the envelope. The capture recipe the CI template uses works.
 func TestEnvHistory_JSON(t *testing.T) {
 	dir := t.TempDir()
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	writeBinding(t, dir, "prod", "v1", map[string]string{"api": sha("a")})
 	if _, err := store.Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v2", Kind: release.KindPromote, FromEnv: "staging", Note: "hotfix",

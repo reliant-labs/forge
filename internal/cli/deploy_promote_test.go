@@ -342,7 +342,7 @@ func TestPromote_RetryOfALandedPromoteIsANoOp(t *testing.T) {
 // against the history it reads at write time.
 func TestFileLedger_CompareAndSet(t *testing.T) {
 	dir := t.TempDir()
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	ctx := context.Background()
 	p := func(v string) release.Promotion {
 		return release.Promotion{Env: "prod", Release: v, Kind: release.KindPromote, Resolved: map[string]string{"api": sha("a")}}
@@ -368,11 +368,11 @@ func TestFileLedger_CompareAndSet(t *testing.T) {
 	if _, err := store.Append(ctx, p("v2"), appendGuard{ExpectedCurrentID: first.ID}); err != nil {
 		t.Fatalf("a retry of the landed promote must be a no-op: %v", err)
 	}
-	history, _ := store.History("prod")
+	history, _ := storeHistory(t, store, "prod")
 	if len(history) != 2 {
 		t.Fatalf("log has %d lines, want 2", len(history))
 	}
-	data, _ := os.ReadFile(promotionLogPath(dir, "prod"))
+	data, _ := os.ReadFile(testPromotionLogPath(t, dir, "prod"))
 	if strings.Count(string(data), "\n") != 2 {
 		t.Fatalf("a refused append wrote a line:\n%s", data)
 	}

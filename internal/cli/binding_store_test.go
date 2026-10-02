@@ -142,7 +142,7 @@ func (m *memReleaseLedger) Location() string { return "memory://releases" }
 // A project that has never been promoted has no log, and asking about an env
 // there is a normal "not bound", not an error.
 func TestFileBindingStore_MissingIsUnbound(t *testing.T) {
-	store := newFileBindingStore(t.TempDir())
+	store := testBindings(t, newLedgerTestProject(t, "scratch"))
 	p, bound, err := store.Current(context.Background(), "prod")
 	if err != nil {
 		t.Fatalf("missing ledger must not error: %v", err)
@@ -157,7 +157,7 @@ func TestFileBindingStore_MissingIsUnbound(t *testing.T) {
 // retired env-releases.json behaviour) fails the byte-prefix assertion.
 func TestFileBindingStore_AppendsOneLinePerPromotion(t *testing.T) {
 	dir := t.TempDir()
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	ctx := context.Background()
 
 	first, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote,
@@ -168,7 +168,7 @@ func TestFileBindingStore_AppendsOneLinePerPromotion(t *testing.T) {
 	if first.ID == "" || first.PromotedAt.IsZero() {
 		t.Errorf("the backend must stamp ID and PromotedAt, got %+v", first)
 	}
-	path := promotionLogPath(dir, "prod")
+	path := testPromotionLogPath(t, dir, "prod")
 	afterFirst, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("the log must live at .forge/promotions/prod.jsonl: %v", err)
@@ -199,7 +199,7 @@ func TestFileBindingStore_AppendsOneLinePerPromotion(t *testing.T) {
 // entry — the CI-retry rule. v1→v2→v1 is still three real moves.
 func TestFileBindingStore_RetryIsNoOp(t *testing.T) {
 	dir := t.TempDir()
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	ctx := context.Background()
 	p := func(v string) release.Promotion {
 		return release.Promotion{Env: "prod", Release: v, Kind: release.KindPromote, Resolved: map[string]string{"api": sha("a")}}
@@ -215,7 +215,7 @@ func TestFileBindingStore_RetryIsNoOp(t *testing.T) {
 	}
 	_, _ = store.Append(ctx, p("v2"), appendGuard{})
 	_, _ = store.Append(ctx, p("v1"), appendGuard{})
-	history, _ := store.History("prod")
+	history, _ := storeHistory(t, store, "prod")
 	if len(history) != 3 {
 		t.Fatalf("v1, v1(retry), v2, v1 must record 3 entries, got %d", len(history))
 	}
@@ -227,19 +227,19 @@ func TestFileBindingStore_RetryIsNoOp(t *testing.T) {
 // current binding is unchanged by the upgrade, and a new promote appends
 // after them.
 func TestFileBindingStore_LegacyRollbackLinesStillParse(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".forge", "promotions", "prod.jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := newLedgerTestProject(t, "rollback-project")
+	path := testPromotionLogPath(t, dir, "prod")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	legacy := `{"id":"a","env":"prod","release":"v1","kind":"promote","resolved":{"api":"` + sha("1") + `"},"promoted_at":"2026-09-01T00:00:00Z"}
 {"id":"b","env":"prod","release":"v2","kind":"promote","resolved":{"api":"` + sha("2") + `"},"promoted_at":"2026-09-02T00:00:00Z"}
 {"id":"c","env":"prod","release":"v1","kind":"rollback","resolved":{"api":"` + sha("1") + `"},"note":"5xx spike","promoted_at":"2026-09-03T00:00:00Z"}
 `
-	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	ctx := context.Background()
 	cur, bound, err := store.Current(ctx, "prod")
 	if err != nil || !bound {
@@ -257,7 +257,7 @@ func TestFileBindingStore_LegacyRollbackLinesStillParse(t *testing.T) {
 		Resolved: map[string]string{"api": sha("3")}}, appendGuard{}); err != nil {
 		t.Fatal(err)
 	}
-	history, _ := store.History("prod")
+	history, _ := storeHistory(t, store, "prod")
 	if len(history) != 4 || history[3].Release != "v3" {
 		t.Fatalf("want v1, v2, v1(legacy), v3 — got %d entries: %+v", len(history), history)
 	}
@@ -271,77 +271,43 @@ func TestFileBindingStore_LegacyRollbackLinesStillParse(t *testing.T) {
 // trusted as current if an earlier one is unreadable.
 func TestFileBindingStore_CorruptLineIsAnError(t *testing.T) {
 	dir := t.TempDir()
-	path := promotionLogPath(dir, "prod")
+	path := testPromotionLogPath(t, dir, "prod")
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	_ = os.WriteFile(path, []byte(`{"env":"prod","release":"v1","kind":"sideways","resolved":{}}`+"\n"), 0o644)
-	if _, _, err := newFileBindingStore(dir).Current(context.Background(), "prod"); err == nil {
+	if _, _, err := testBindings(t, dir).Current(context.Background(), "prod"); err == nil {
 		t.Fatal("an unknown promotion kind must be refused, not read as a promote")
 	}
 }
 
-// The retired env-releases.json is never read as a ledger, and its presence
-// is an ERROR — silently reading "never promoted" would make the next deploy
-// ship mutable tags.
-func TestFileBindingStore_LegacyFileIsRefused(t *testing.T) {
-	dir := t.TempDir()
-	_ = os.MkdirAll(filepath.Join(dir, ".forge"), 0o755)
-	_ = os.WriteFile(filepath.Join(dir, legacyEnvReleasesRel), []byte(`{"bindings":{}}`), 0o644)
-	_, _, err := newFileBindingStore(dir).Current(context.Background(), "prod")
-	if err == nil || !strings.Contains(err.Error(), "forge release convert-ledger") {
-		t.Fatalf("want an error naming the conversion, got %v", err)
-	}
-}
+// The retired formats' tests are GONE with the code they tested.
+//
+// TestFileBindingStore_LegacyFileIsRefused covered .forge/env-releases.json,
+// and TestConvertLegacyLedger covered `forge release convert-ledger`, which
+// rewrote it into .forge/promotions/<env>.jsonl. Both of those locations are
+// now retired: the ledger is the control plane or the machine store, and the
+// path from a committed in-checkout ledger to either one is
+// `forge ledger import --from-git`, which imports history rather than
+// rewriting files in the tree.
+//
+// The safety property those tests protected — a checkout whose committed
+// ledger is not in the selected store must FAIL LOUD rather than read as
+// "never promoted" and deploy mutable tags — did not go away with them. It
+// moved, and it is now pinned by TestRefusesWhenCheckoutHoldsAnUnimportedLedger
+// and its neighbours in ledger_unimported_test.go, which assert it for BOTH
+// backends rather than only the file one.
 
-// The one-time conversion carries each env's digests over unchanged, stamps
-// the now-required artifact kinds, and removes the legacy file.
-func TestConvertLegacyLedger(t *testing.T) {
-	dir := t.TempDir()
-	rels := filepath.Join(dir, releasesDirRel)
-	_ = os.MkdirAll(rels, 0o755)
-	_ = os.WriteFile(filepath.Join(rels, "v1.5.18.json"), []byte(`{
-  "release": "v1.5.18", "git": {"commit": "3dc9b81", "dirty": true}, "created_at": "2026-09-19T01:27:23Z",
-  "artifacts": {
-    "control-plane": {"mode": "shared", "digests": {"*": "`+sha("a")+`"}},
-    "reliant-web": {"mode": "source", "source": {"repo": "github.com/reliant-labs/reliant", "ref": "v1.7.15", "subdir": "web", "commit": "d5f6184"}}
-  }
-}`), 0o644)
-	_ = os.WriteFile(filepath.Join(dir, legacyEnvReleasesRel), []byte(`{"bindings": {
-  "prod": {"release": "v1.5.18", "resolved": {"control-plane": "`+sha("a")+`"},
-           "sources": {"reliant-web": {"repo": "github.com/reliant-labs/reliant", "ref": "v1.7.15", "subdir": "web", "commit": "d5f6184"}},
-           "promoted_at": "2026-09-19T01:27:23Z"}
-}}`), 0o644)
-
-	if _, err := convertLegacyLedger(dir); err != nil {
-		t.Fatalf("convert: %v", err)
+// Location names the MACHINE ledger, which is outside the checkout. That it
+// is outside is the property worth pinning: a Location under the project
+// directory would mean the ledger had slid back into the tree that produces
+// the artifact it records.
+func TestMachineBindingStore_LocationIsOutsideTheCheckout(t *testing.T) {
+	dir := newLedgerTestProject(t, "location-project")
+	got := testBindings(t, dir).Location()
+	if got == "" {
+		t.Fatal("Location() must name where promotions are recorded")
 	}
-	if _, err := os.Stat(filepath.Join(dir, legacyEnvReleasesRel)); !os.IsNotExist(err) {
-		t.Error("the legacy file must be removed after conversion")
-	}
-	rel, err := ReadRelease(dir, "v1.5.18")
-	if err != nil || rel == nil {
-		t.Fatalf("the converted release must validate: %v", err)
-	}
-	if rel.Artifacts["control-plane"].Kind != release.KindOCI || rel.Artifacts["reliant-web"].Kind != release.KindGit {
-		t.Errorf("kinds not stamped: %+v", rel.Artifacts)
-	}
-	cur, bound, err := newFileBindingStore(dir).Current(context.Background(), "prod")
-	if err != nil || !bound {
-		t.Fatalf("prod must be bound after conversion: bound=%v err=%v", bound, err)
-	}
-	if cur.Release != "v1.5.18" || cur.Resolved["control-plane"] != sha("a") ||
-		cur.Sources["reliant-web"].Commit != "d5f6184" || !cur.PromotedAt.Equal(mustTime(t, "2026-09-19T01:27:23Z")) {
-		t.Errorf("the binding must carry over unchanged, got %+v", cur)
-	}
-	// Idempotent: a second run finds nothing to do.
-	if done, err := convertLegacyLedger(dir); err != nil || len(done) != 0 {
-		t.Errorf("second conversion must be a no-op, got %v %v", done, err)
-	}
-}
-
-func TestFileBindingStore_LocationIsThePromotionsDir(t *testing.T) {
-	dir := t.TempDir()
-	if got, want := newFileBindingStore(dir).Location(), filepath.Join(dir, ".forge", "promotions"); got != want {
-		t.Errorf("Location() = %q, want %q", got, want)
+	if strings.HasPrefix(got, dir) {
+		t.Errorf("Location() = %q, which is inside the checkout %q", got, dir)
 	}
 }
 
@@ -349,16 +315,16 @@ func TestFileBindingStore_LocationIsThePromotionsDir(t *testing.T) {
 func TestWriteRelease_Immutable(t *testing.T) {
 	dir := t.TempDir()
 	r := ociRelease("v1", map[string]string{"api": sha("a")})
-	if err := WriteRelease(dir, r); err != nil {
+	if err := testCutRelease(t, dir, r); err != nil {
 		t.Fatalf("cut: %v", err)
 	}
-	if err := WriteRelease(dir, r); err != nil {
+	if err := testCutRelease(t, dir, r); err != nil {
 		t.Fatalf("an identical re-cut is a retry, not an error: %v", err)
 	}
-	if err := WriteRelease(dir, ociRelease("v1", map[string]string{"api": sha("b")})); !errors.Is(err, release.ErrReleaseConflict) {
+	if err := testCutRelease(t, dir, ociRelease("v1", map[string]string{"api": sha("b")})); !errors.Is(err, release.ErrReleaseConflict) {
 		t.Fatalf("a different artifact set under v1 must be ErrReleaseConflict, got %v", err)
 	}
-	got, _ := ReadRelease(dir, "v1")
+	got, _ := testGetRelease(t, dir, "v1")
 	if got.Artifacts["api"].Digests[release.SharedVariant] != sha("a") {
 		t.Error("a refused re-cut must not have overwritten the release")
 	}
@@ -366,29 +332,38 @@ func TestWriteRelease_Immutable(t *testing.T) {
 
 // ─── Selection ───────────────────────────────────────────────────────────────
 
-// An env declaring forge.ControlPlane gets the HOSTED ledger, labelled with the
-// endpoint URL; an env declaring none gets the project's files. Mutation: make
-// ledgerForEntities always return fileLedger and the first half fails.
-func TestLedgerForEntities_SelectsHostedWhenControlPlaneDeclared(t *testing.T) {
-	dir := t.TempDir()
+// THE SELECTION RULE: the DECLARATION decides the store, and the env's KIND
+// does not enter into it.
+//
+// A LOCAL env that declares a control plane now records THERE. It previously
+// fell back to the checkout, on the reasoning that the platform runs nothing
+// of a LOCAL env so there is no hosted release to bind — reasoning about
+// PLACEMENT, applied to RECORDING. It split one project's history across two
+// stores by kind, which made "where is this env's history" a question with
+// two answers.
+//
+// Mutation: restore the old `|| isLocalControlPlaneEnv(entities)` clause and
+// the LOCAL case below fails.
+func TestLedgerForEntities_DeclarationSelectsTheStoreWhateverTheKind(t *testing.T) {
+	dir := newLedgerTestProject(t, "selection-project")
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
 
-	// A hosted tier (the database) makes the env PERSISTENT; a control plane
-	// with no tier is LOCAL and keeps the project's own ledger (below).
-	hosted, err := ledgerForEntities("prod", &KCLEntities{ControlPlane: &ControlPlaneEntity{
-		Type: "control_plane", Endpoint: "https://cp.example.com/", TokenEnv: "FORGE_TEST_CP_TOKEN",
-	}, Databases: []DatabaseEntity{{Name: "orders", Runtime: RuntimeHosted}}}, dir)
+	cp := func() *ControlPlaneEntity {
+		return &ControlPlaneEntity{
+			Type: "control_plane", Endpoint: "https://cp.example.com/", TokenEnv: "FORGE_TEST_CP_TOKEN",
+		}
+	}
+
+	// A hosted tier (the database) makes the env PERSISTENT.
+	hosted, err := ledgerForEntities("prod", &KCLEntities{
+		ControlPlane: cp(),
+		Databases:    []DatabaseEntity{{Name: "orders", Runtime: RuntimeHosted}},
+	}, dir)
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
 	if !hosted.Hosted {
 		t.Fatal("an env declaring forge.ControlPlane must use the hosted ledger")
-	}
-	local, err := ledgerForEntities("dev", &KCLEntities{ControlPlane: &ControlPlaneEntity{
-		Type: "control_plane", Endpoint: "https://cp.example.com/", TokenEnv: "FORGE_TEST_CP_TOKEN",
-	}}, dir)
-	if err != nil || local.Hosted {
-		t.Fatalf("a LOCAL env (control plane, no hosted tier) keeps the project's ledger: hosted=%v err=%v", local.Hosted, err)
 	}
 	if _, isHosted := hosted.Bindings.(*hostedStore); !isHosted {
 		t.Errorf("bindings = %T, want *hostedStore", hosted.Bindings)
@@ -397,15 +372,34 @@ func TestLedgerForEntities_SelectsHostedWhenControlPlaneDeclared(t *testing.T) {
 		t.Errorf("a hosted ledger's label must be the endpoint URL, got %q", got)
 	}
 
-	local, err = ledgerForEntities("dev", &KCLEntities{}, dir)
+	// A control plane with NO hosted tier is a LOCAL env — and it keeps its
+	// ledger on that control plane all the same. This is the changed case.
+	local, err := ledgerForEntities("dev", &KCLEntities{ControlPlane: cp()}, dir)
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
-	if local.Hosted {
-		t.Fatal("an env declaring no control plane must use the file ledger")
+	if !local.Hosted {
+		t.Fatal("a LOCAL env that declares a control plane keeps its ledger THERE: " +
+			"the declaration selects the store, the kind does not")
 	}
-	if _, isFile := local.Bindings.(fileBindingStore); !isFile {
-		t.Errorf("bindings = %T, want fileBindingStore", local.Bindings)
+	if _, isHosted := local.Bindings.(*hostedStore); !isHosted {
+		t.Errorf("a LOCAL control-plane env's bindings = %T, want *hostedStore", local.Bindings)
+	}
+
+	// No declaration at all: this machine's ledger.
+	machine, err := ledgerForEntities("dev", &KCLEntities{}, dir)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if machine.Hosted {
+		t.Fatal("an env declaring no control plane must use the machine ledger")
+	}
+	if _, isMachine := machine.Bindings.(machineBindingStore); !isMachine {
+		t.Errorf("bindings = %T, want machineBindingStore", machine.Bindings)
+	}
+	// And that ledger is NOT in the checkout — the whole point of the move.
+	if loc := machine.Bindings.Location(); strings.HasPrefix(loc, dir) {
+		t.Errorf("the machine ledger must live outside the checkout, got %q inside %q", loc, dir)
 	}
 }
 
@@ -463,7 +457,7 @@ func TestRunEnvVerify_AgainstNonFileBackend(t *testing.T) {
 	if got := exitCodeOf(t, err); got != 1 {
 		t.Fatalf("drift against a memory-backed ledger must exit 1, got %d (err: %v)", got, err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, promotionsDirRel)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, ".forge", "promotions")); !os.IsNotExist(err) {
 		t.Errorf("no promotion log should exist; the binding came from memory (stat err: %v)", err)
 	}
 }
@@ -491,7 +485,7 @@ func TestResolveDeployDigests_AgainstNonFileBackend(t *testing.T) {
 	store := newMemBindingStore(map[string]release.Promotion{
 		"prod": {Release: "v1.4.0", Resolved: map[string]string{"control-plane": sha("a")}},
 	})
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, store, fileReleaseLedger{projectDir: dir})
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, store, testReleases(t, dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -505,7 +499,7 @@ func TestResolveDeployDigests_AgainstNonFileBackend(t *testing.T) {
 func TestRunPromote_AppendsThroughTheDeclaredStore(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	if err := WriteRelease(dir, ociRelease("v1.4.0", map[string]string{"control-plane": sha("a")})); err != nil {
+	if err := testCutRelease(t, dir, ociRelease("v1.4.0", map[string]string{"control-plane": sha("a")})); err != nil {
 		t.Fatalf("write release: %v", err)
 	}
 	captureStdout(t, func() {
@@ -513,7 +507,7 @@ func TestRunPromote_AppendsThroughTheDeclaredStore(t *testing.T) {
 			t.Errorf("promote: %v", err)
 		}
 	})
-	cur, bound, err := newFileBindingStore(dir).Current(context.Background(), "staging")
+	cur, bound, err := testBindings(t, dir).Current(context.Background(), "staging")
 	if err != nil || !bound || cur.Release != "v1.4.0" || cur.Kind != release.KindPromote {
 		t.Fatalf("promote must append through the store, got bound=%v %+v err=%v", bound, cur, err)
 	}
@@ -527,7 +521,7 @@ func TestRunPromote_BackwardsIsAPlainPromote(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	for _, v := range []string{"v1", "v2", "v3"} {
-		if err := WriteRelease(dir, ociRelease(v, map[string]string{"api": sha(v[1:])})); err != nil {
+		if err := testCutRelease(t, dir, ociRelease(v, map[string]string{"api": sha(v[1:])})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -551,7 +545,7 @@ func TestRunPromote_BackwardsIsAPlainPromote(t *testing.T) {
 	if !strings.Contains(out, "direction BEHIND") || !strings.Contains(out, "moves BACKWARDS") {
 		t.Errorf("a backwards promote must be labelled loudly, got:\n%s", out)
 	}
-	history, _ := newFileBindingStore(dir).History("prod")
+	history, _ := storeHistory(t, testBindings(t, dir), "prod")
 	got := make([]string, 0, len(history))
 	for _, p := range history {
 		got = append(got, p.Release+":"+string(p.Kind))

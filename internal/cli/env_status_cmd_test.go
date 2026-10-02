@@ -239,7 +239,7 @@ func TestEnvStatusWait_ExitCodesAreUnchanged(t *testing.T) {
 // both backends implement.
 func TestEnvStatusHistory_PagesTheLedger(t *testing.T) {
 	dir := t.TempDir()
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	for _, v := range []string{"v1", "v2", "v3"} {
 		writeBinding(t, dir, "prod", v, map[string]string{"api": sha("a")})
 	}
@@ -322,7 +322,7 @@ func TestEnvStatusHistory_DeclaresEveryHistoryFlag(t *testing.T) {
 func TestEnvStatus_CarriesTheReleaseHalf(t *testing.T) {
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1", map[string]string{"ghcr.io/acme/api": sha("a")})
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 
 	var err error
 	out := captureStdout(t, func() {
@@ -365,7 +365,7 @@ func TestEnvStatus_ReleaseHalfKeepsVerifyExitCodes(t *testing.T) {
 			var err error
 			captureStdout(t, func() {
 				err = runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
-					Bindings: newFileBindingStore(dir),
+					Bindings: testBindings(t, dir),
 					Lister:   &stubLister{images: tc.running, err: tc.listErr},
 					Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 				})
@@ -463,7 +463,7 @@ func TestEnvStatusJSON_CarriesTheF0Envelope(t *testing.T) {
 		out := captureStdout(t, func() {
 			err = runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
 				JSON:     true,
-				Bindings: newFileBindingStore(dir),
+				Bindings: testBindings(t, dir),
 				Lister:   &stubLister{images: running},
 				Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 			})
@@ -531,7 +531,7 @@ func TestEnvStatusJSON_EmitsExactlyOneDocument(t *testing.T) {
 	out := captureStdout(t, func() {
 		_ = runEnvStatus(context.Background(), "dev", envStatusOptions{
 			JSON:     true,
-			Bindings: newFileBindingStore(dir),
+			Bindings: testBindings(t, dir),
 			Lister:   &stubLister{images: []cluster.WorkloadImage{runningImage("ghcr.io/acme/api", sha("a"))}},
 			Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
 		})
@@ -596,7 +596,7 @@ func TestEnvStatus_AllEnvsIsLedgerOnlyByDefault(t *testing.T) {
 // which is what lets a reader badge a row without walking its gates.
 func TestEnvStatus_AllEnvsCarriesF7Fields(t *testing.T) {
 	dir := t.TempDir()
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	got, err := store.Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1", Kind: release.KindPromote, FromEnv: "staging",
 		Resolved: map[string]string{"api": sha("a")},
@@ -606,7 +606,7 @@ func TestEnvStatus_AllEnvsCarriesF7Fields(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledgers := func(context.Context, string) (envLedger, error) {
-		return envLedger{Bindings: store, Releases: fileReleaseLedger{projectDir: dir}}, nil
+		return envLedger{Bindings: store, Releases: testReleases(t, dir)}, nil
 	}
 	row := buildTopologyEnvRow(context.Background(), dir, "prod", false, map[string]release.Release{}, nil,
 		envTopologyOptions{Ledgers: ledgers})

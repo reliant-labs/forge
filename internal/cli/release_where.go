@@ -111,7 +111,16 @@ func releaseWhereSources(ctx context.Context, projectDir, env, token string) ([]
 	}
 	var out []whereSource
 	if len(files) > 0 {
-		out = append(out, whereSource{Location: fileLedger(projectDir).Bindings.Location(), Files: files})
+		// Every non-hosted env of one project shares ONE machine ledger,
+		// so any of the stores just collected names it. Taken from the
+		// map rather than re-derived, so the location printed is the
+		// location actually read.
+		location := ""
+		for _, store := range files {
+			location = store.Location()
+			break
+		}
+		out = append(out, whereSource{Location: location, Files: files})
 	}
 	locs := make([]string, 0, len(hosted))
 	for loc := range hosted {

@@ -53,7 +53,7 @@ func TestReleaseWhere_File(t *testing.T) {
 	writeBinding(t, dir, "staging", "v2", map[string]string{"api": sha("b")})
 	writeBinding(t, dir, "prod", "v1", map[string]string{"api": sha("a")})
 	writeBinding(t, dir, "prod", "v2", map[string]string{"api": sha("b")})
-	store := newFileBindingStore(dir)
+	store := testBindings(t, dir)
 	src := whereSource{Location: dir, Files: map[string]bindingStore{"staging": store, "prod": store, "dev": store}}
 
 	var buf bytes.Buffer

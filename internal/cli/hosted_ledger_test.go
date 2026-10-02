@@ -770,7 +770,10 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	if len(list) != 1 || list[0].ReleaseVersion != "v1" || list[0].ResolvedArtifacts["api"] != sha("1") || list[0].PromotedByActor != "ci" {
 		t.Fatalf("the control plane must hold prod→v1 pinned to the pushed digest, got %+v", list)
 	}
-	for _, p := range []string{releasesDirRel, promotionsDirRel} {
+	// Nothing lands in the checkout. The retired locations are named
+	// literally rather than through constants, because the constants are
+	// gone and this assertion is precisely that those PATHS stay empty.
+	for _, p := range []string{".forge/releases", ".forge/promotions"} {
 		if _, err := os.Stat(filepath.Join(dir, p)); !os.IsNotExist(err) {
 			t.Errorf("%s must not exist — a hosted env's ledger is the control plane (stat err %v)", p, err)
 		}
@@ -781,7 +784,7 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digests, bound, err := resolveDeployDigests(context.Background(), dir, "prod", false, bindings, fileReleaseLedger{projectDir: dir})
+	digests, bound, err := resolveDeployDigests(context.Background(), dir, "prod", false, bindings, testReleases(t, dir))
 	if err != nil || bound != "v1" || digests["api"] != sha("1") {
 		t.Fatalf("deploy must pin from the hosted ledger: rel=%q digests=%v err=%v", bound, digests, err)
 	}

@@ -5,37 +5,37 @@ package cli
 // WHY A SEAM AT ALL. Promotion state answers "which release does prod run",
 // and a file inside the repo that PRODUCED the artifact is circular by
 // construction: the commit recording "prod runs v1.5.13" cannot be in
-// v1.5.13, because it is written after v1.5.13 was cut. The way out is for
-// the ledger to be able to live somewhere that is not the artifact's own
-// source tree — the hosted control plane — which means the callers must not
-// know that a ledger is a file.
+// v1.5.13, because it is written after v1.5.13 was cut. So the ledger must be
+// able to live somewhere that is not the artifact's own source tree, which
+// means the callers must not know where a ledger is.
 //
-// THE FILE BACKEND IS THE DEFAULT, FOREVER. Not a stepping stone. forge with
-// no account, on a plane, must stay fully functional: `forge env deploy <env> <version>` and
-// `forge env deploy` are core verbs, and a core verb that degrades without a
-// login is a product that lied about being local-first.
+// THE LOCAL BACKEND IS THE DEFAULT, FOREVER. Not a stepping stone. forge with
+// no account, on a plane, must stay fully functional: `forge env deploy <env>
+// <version>` and `forge env deploy` are core verbs, and a core verb that
+// degrades without a login is a product that lied about being local-first.
+// What changed is WHERE that backend writes: a machine-scoped, locked store
+// under $FORGE_LEDGER_HOME (internal/ledgerfile) rather than
+// .forge/promotions inside the checkout. That move closes three defects at
+// once — the circularity above, the branch-dependence that made two worktrees
+// see two histories, and the append race the old backend documented rather
+// than fixed.
 //
-// ONE MODEL, TWO BACKENDS. Both read and write forge/pkg/release types and
-// both apply release.Decide, so "is this a no-op retry" and "what does the env
-// run now" have one answer whichever backend
-// holds the ledger. See pkg/release's package doc.
+// ONE MODEL, TWO STORES. Both read and write forge/pkg/release types, both
+// serialize them as the same canonical JSON, and both apply release.Decide,
+// so "is this a no-op retry" and "what does the env run now" have one answer
+// whichever store holds the ledger. See pkg/release's package doc.
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
-	"github.com/reliant-labs/forge/internal/statefile"
+	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -52,8 +52,9 @@ import (
 // is a NEW promote entry, never an edit of an old one.
 //
 // NO projectDir ANYWHERE IN THIS INTERFACE. A project directory is a FILE
-// concept; the hosted backend has none. The backing is bound ONCE at
-// construction and the methods speak only in domain terms.
+// concept; neither the hosted backend nor the machine ledger has one. The
+// backing is bound ONCE at construction and the methods speak only in domain
+// terms.
 type bindingStore interface {
 	// Current returns env's most recent promotion, and whether it has one.
 	// "Never promoted" is a normal state, so it is a bool rather than an
@@ -73,7 +74,7 @@ type bindingStore interface {
 	Append(ctx context.Context, p release.Promotion, guard appendGuard) (release.Promotion, error)
 
 	// Location names where promotions are recorded, for human-facing
-	// output — a directory for the file backend, the endpoint URL for a
+	// output — a directory for the machine ledger, the endpoint URL for a
 	// hosted one. Opaque: callers must only PRINT it.
 	Location() string
 }
@@ -93,6 +94,51 @@ type releaseLedger interface {
 	// List returns releases NEWEST FIRST.
 	List(ctx context.Context) ([]release.Release, error)
 	Location() string
+}
+
+// ─── The new record seams ────────────────────────────────────────────────────
+//
+// Three thin capabilities for the records the bundle/apply/session half of
+// the design adds. Each is one or two methods, declared HERE at the consumer
+// and implemented by whichever store the env selected — the same shape as
+// bindingStore, for the same reason: the command layer must not know whether
+// an apply was recorded in a file or over an RPC.
+//
+// They are separate interfaces rather than fields on a widened bindingStore
+// because their consumers are disjoint: `forge env build` records bundles,
+// `forge env deploy` records applies, `forge env up` reports sessions. A
+// store that cannot do one of these simply does not implement it, and the
+// caller type-asserts — the pattern ledgerFreshnessChecker and
+// bindingHistoryReader already use.
+
+// bundleRecorder records a built bundle and reads one back. A bundle IS its
+// content, so recording is idempotent on (env, digest) and a retry after a
+// failed record is free.
+type bundleRecorder interface {
+	RecordBundle(ctx context.Context, b release.BundleRecord) (record release.BundleRecord, created bool, err error)
+	Bundle(ctx context.Context, id string) (*release.BundleRecord, error)
+}
+
+// applyRecorder brackets an apply: one call before the bytes move, one after.
+//
+// TWO METHODS, NOT ONE, and that is the point of the record. An apply that
+// began and never reported is a DIFFERENT fact from one that failed — past
+// its deadline it reads as abandoned, and "we could not look" is its own
+// answer. A single Record("it worked") call after the fact could not express
+// that, and would have nothing to say when the applier crashed mid-apply.
+type applyRecorder interface {
+	BeginApply(ctx context.Context, a release.Apply, supersede bool) (release.Apply, error)
+	FinishApply(ctx context.Context, env string, o release.ApplyOutcome) error
+}
+
+// sessionReporter records that a local stack is running here.
+//
+// Presence only (owner decision O-8): a session is an observation, never a
+// promotion, never a deploy target, and it feeds no policy or billing. The
+// single method is a report, and repeated reports for one
+// (env, host, worktree) replace rather than accumulate.
+type sessionReporter interface {
+	ReportSession(ctx context.Context, s release.LocalSession) error
 }
 
 // envLedger is one environment's backend, both halves. A concrete struct —
@@ -130,21 +176,40 @@ func (l envLedger) appliesLocally() bool { return !l.Hosted || l.Mixed }
 // ledgerFor returns the ledger an environment uses. This is the SINGLE place
 // the backend is chosen, and the choice is DECLARATIVE: an env whose KCL
 // declares `forge.ControlPlane` uses that control plane's ledger; every other
-// env uses the project's files. No flag, no context, no machine-local state —
-// the same checkout resolves the same backend on every machine.
+// env uses this machine's ledger. No flag, no context — the same checkout
+// resolves the same backend on every machine.
 //
-// A render FAILURE is an error, never a fallback to the file backend. For a
+// A render FAILURE is an error, never a fallback to the machine ledger. For a
 // hosted env that fallback would silently answer "never promoted", and a
 // deploy would then ship mutable tags instead of the promoted digests — the
 // exact failure the ledger exists to prevent.
+// It is also where the UNIMPORTED-CHECKOUT refusal fires. Selection is the
+// one place every ledger read and write passes through, so checking here
+// means no command can reach a ledger that is missing history the checkout
+// still holds — rather than each verb having to remember to ask. See
+// ledger_unimported.go for why that refusal exists at all.
 func ledgerFor(ctx context.Context, projectDir, env string) (envLedger, error) {
+	l, err := selectLedger(ctx, projectDir, env)
+	if err != nil {
+		return envLedger{}, err
+	}
+	if err := checkLedgerImported(ctx, projectDir, env, l); err != nil {
+		return envLedger{}, err
+	}
+	return l, nil
+}
+
+// selectLedger is the selection alone, without the import check — the seam
+// `forge ledger import` itself needs, because the import must be able to
+// open the very ledger the refusal is about in order to fill it.
+func selectLedger(ctx context.Context, projectDir, env string) (envLedger, error) {
 	mainK := filepath.Join(projectDir, "deploy", "kcl", env, "main.k")
 	if _, err := os.Stat(mainK); err != nil {
 		// No KCL for this env in this checkout — nothing can declare a
-		// control plane, so the answer is the project's own files. This
+		// control plane, so the answer is this machine's ledger. This
 		// is how a test project, and an env named only on the command
 		// line, keep working.
-		return fileLedger(projectDir), nil
+		return machineLedger(projectDir)
 	}
 	entities, err := RenderKCL(ctx, projectDir, env)
 	if err != nil {
@@ -155,13 +220,20 @@ func ledgerFor(ctx context.Context, projectDir, env string) (envLedger, error) {
 
 // ledgerForEntities is the render-free half of ledgerFor, split out so the
 // selection rule is testable from a literal entity.
+//
+// AN ENV THAT DECLARES A CONTROL PLANE KEEPS ITS LEDGER THERE, WHATEVER ITS
+// KIND — including LOCAL. That is the one change from the previous rule,
+// which sent a LOCAL control-plane env back to the checkout on the reasoning
+// that "the platform runs nothing of it, so there is no hosted release to
+// bind". The reasoning was about PLACEMENT, and it was applied to RECORDING.
+// A LOCAL env still has presence to report and sessions to show, Live must
+// render them without a daemon, and splitting one project's records across
+// two stores by kind made "where is this env's history" a question with two
+// answers. Declaration decides the store; kind decides what gets placed.
 func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (envLedger, error) {
 	decl := declarationFromEntities(entities)
-	// A LOCAL env's control plane is only its secret store: the platform
-	// runs nothing of it, so there is no hosted release to bind and its
-	// ledger stays the project's own.
-	if decl == nil || isLocalControlPlaneEnv(entities) {
-		return fileLedger(projectDir), nil
+	if decl == nil {
+		return machineLedger(projectDir)
 	}
 	ep, err := cloud.ResolveEndpoint(env, decl)
 	if err != nil {
@@ -191,145 +263,138 @@ func bindingStoreFor(ctx context.Context, projectDir, env string) (bindingStore,
 	return l.Bindings, nil
 }
 
-// fileLedger is a SELF-MANAGED env's ledger: Hosted false, so it applies from
-// this machine by definition (envLedger.appliesLocally).
-func fileLedger(projectDir string) envLedger {
+// machineLedger is a SELF-MANAGED env's ledger: Hosted false, so it applies
+// from this machine by definition (envLedger.appliesLocally).
+//
+// The project id is derived from forge.yaml's name plus the canonical origin
+// URL, so every worktree of one project shares one ledger and a fork with
+// the same name does not.
+func machineLedger(projectDir string) (envLedger, error) {
+	store, err := openMachineLedger(projectDir)
+	if err != nil {
+		return envLedger{}, err
+	}
 	return envLedger{
-		Bindings: newFileBindingStore(projectDir),
-		Releases: fileReleaseLedger{projectDir: projectDir},
-	}
+		Bindings: machineBindingStore{store: store},
+		Releases: machineReleaseLedger{store: store},
+	}, nil
 }
 
-// ─── The file backend: promotions ────────────────────────────────────────────
+// ledgerHome resolves the machine ledger's root. A seam, like
+// hostedProjectName above it, so a test can point the whole CLI at a
+// t.TempDir() WITHOUT t.Setenv — which Go forbids in a parallel test and
+// which would leak between tests that share a process.
+var ledgerHome = ledgerfile.Home
 
-// promotionsDirRel holds one append-only log per environment.
-const promotionsDirRel = ".forge/promotions"
-
-// legacyEnvReleasesRel is the retired single-file binding map. It is never
-// READ as a ledger — there is no dual-read — but its presence is detected so
-// a project that has not been converted fails loudly instead of reading as
-// "never promoted" and deploying mutable tags.
-const legacyEnvReleasesRel = ".forge/env-releases.json"
-
-// fileBindingStore is the default backend: .forge/promotions/<env>.jsonl, one
-// release.Promotion per line, appended with O_APPEND. The current binding is
-// the last line.
-//
-// WHY A LOG AND NOT A MAP. The previous format was one JSON object holding
-// every env's CURRENT binding, rewritten whole on every promote: history
-// lived only in git, a move could not be told from a no-op, and two
-// promotes of different envs raced a read-modify-write of one file. A log per
-// env has no pointer that can disagree with its history, and an append never
-// rewrites a neighbour's line.
-//
-// CONCURRENCY, STATED RATHER THAN PATCHED. One writer per env log is the
-// supported case. A single write(2) of one line under O_APPEND is atomic on
-// local filesystems for the line sizes a promotion produces, so two writers
-// cannot interleave BYTES — but two writers can both decide from the same
-// history and both append. That is documented, not locked around: a team with
-// several concurrent promoters is exactly who the hosted backend's row lock
-// is for.
-type fileBindingStore struct {
-	projectDir string
-}
-
-// newFileBindingStore binds a store to a project directory. Returns the
-// concrete type: accept interfaces, return structs.
-func newFileBindingStore(projectDir string) fileBindingStore {
-	return fileBindingStore{projectDir: projectDir}
-}
-
-// promotionLogPath is the one env → file mapping. Uses the release stem rule
-// so an env name can never escape the promotions directory.
-func promotionLogPath(projectDir, env string) string {
-	return filepath.Join(projectDir, promotionsDirRel, releaseFileStem(env)+".jsonl")
-}
-
-// errLegacyLedger reports a project still carrying env-releases.json.
-func errLegacyLedger(projectDir string) error {
-	return fmt.Errorf("%s is the retired binding format and is no longer read.\n"+
-		"  Promotions now live in one append-only log per environment (%s/<env>.jsonl).\n"+
-		"  Convert once with: forge release convert-ledger\n"+
-		"  (reading it as \"never promoted\" instead would make the next deploy ship mutable tags "+
-		"rather than the promoted digests)",
-		filepath.Join(projectDir, legacyEnvReleasesRel), promotionsDirRel)
-}
-
-func (s fileBindingStore) checkNotLegacy() error {
-	if _, err := os.Stat(filepath.Join(s.projectDir, legacyEnvReleasesRel)); err == nil {
-		return errLegacyLedger(s.projectDir)
-	}
-	return nil
-}
-
-// History returns env's promotions OLDEST FIRST. A missing log is an empty
-// history. Every line must decode and validate: a ledger with a line nobody
-// can read is not a ledger whose last line can be trusted as "current".
-func (s fileBindingStore) History(env string) ([]release.Promotion, error) {
-	if err := s.checkNotLegacy(); err != nil {
+// openMachineLedger resolves the home and project id and opens the store.
+func openMachineLedger(projectDir string) (*ledgerfile.Store, error) {
+	home, err := ledgerHome()
+	if err != nil {
 		return nil, err
 	}
-	path := promotionLogPath(s.projectDir, env)
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read promotion log %s: %w", path, err)
-	}
-	var history []release.Promotion
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := bytes.TrimSpace(scanner.Bytes())
-		if len(raw) == 0 {
-			continue
-		}
-		var p release.Promotion
-		if err := json.Unmarshal(raw, &p); err != nil {
-			return nil, fmt.Errorf("promotion log %s line %d: %w", path, line, err)
-		}
-		if err := p.Validate(); err != nil {
-			return nil, fmt.Errorf("promotion log %s line %d: %w", path, line, err)
-		}
-		if p.Env != env {
-			return nil, fmt.Errorf("promotion log %s line %d records env %q, not %q", path, line, p.Env, env)
-		}
-		history = append(history, p)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read promotion log %s: %w", path, err)
-	}
-	return history, nil
+	return openMachineLedgerIn(home, projectDir)
 }
 
-// Current is the last line of env's log.
-func (s fileBindingStore) Current(_ context.Context, env string) (release.Promotion, bool, error) {
-	history, err := s.History(env)
-	if err != nil || len(history) == 0 {
-		return release.Promotion{}, false, err
-	}
-	return history[len(history)-1], true, nil
-}
-
-// Append applies release.Decide and the guard to the env's history and, when
-// the entry is a real move the guard admits, appends ONE line with a single
-// O_APPEND write.
+// ledgerProjectName is the project a directory belongs to, for keying its
+// ledger. A seam beside ledgerHome, for the same reason: a test must be able
+// to name the project WITHOUT writing a forge.yaml into the checkout.
 //
-// The compare-and-set is checked against the history read HERE, so it closes
-// the stale-plan stomp (a plan read minutes ago, an approval in between) but
-// not the two-concurrent-writers race documented on fileBindingStore — that
-// needs a lock this backend deliberately does not take.
-func (s fileBindingStore) Append(_ context.Context, p release.Promotion, guard appendGuard) (release.Promotion, error) {
-	history, err := s.History(p.Env)
+// That is not a convenience. Writing a file into a project directory changes
+// what the project IS — it makes a git tree dirty, which silently disables
+// the build-staleness guard — so a helper that created one to satisfy the
+// ledger would quietly change the behaviour of every test that also cares
+// about git state. Found exactly that way.
+var ledgerProjectName = func(projectDir string) string {
+	cfg, err := config.LoadProjectDir(projectDir)
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return cfg.Name
+}
+
+// openMachineLedgerIn is openMachineLedger with the home supplied — the seam
+// a test drives from a t.TempDir() without t.Setenv, which cannot be used in
+// a parallel test.
+func openMachineLedgerIn(home, projectDir string) (*ledgerfile.Store, error) {
+	name := ledgerProjectName(projectDir)
+	if name == "" {
+		// A project with no forge.yaml name cannot be keyed, and
+		// falling back to the directory name would re-introduce exactly
+		// the per-worktree split the machine ledger exists to remove:
+		// two worktrees of one project have two directory names.
+		return nil, fmt.Errorf("this project has no name in forge.yaml, so its release ledger cannot be keyed.\n" +
+			"  The ledger is shared by every worktree of a project, which needs a stable project identity.\n" +
+			"  Add `name: <project>` to forge.yaml")
+	}
+	id, err := ledgerfile.ProjectID(name, originURL(projectDir))
 	if err != nil {
-		return release.Promotion{}, err
+		return nil, err
 	}
-	if err := p.Validate(); err != nil {
-		return release.Promotion{}, err
+	return ledgerfile.Open(home, id)
+}
+
+// machineLedgerLocation is the machine ledger's directory for a project, for
+// human-facing output. A project whose ledger cannot be resolved reports the
+// reason instead of an empty string, so a report never shows a blank where a
+// path belongs.
+func machineLedgerLocation(projectDir string) string {
+	store, err := openMachineLedger(projectDir)
+	if err != nil {
+		return "(unavailable: " + err.Error() + ")"
 	}
+	return store.Dir()
+}
+
+// originURL is the project's origin remote, or "" when it has none.
+//
+// A project with no remote is keyed by name alone, which is correct rather
+// than degraded: a never-pushed project has no identity beyond its name on
+// this machine. ledgerfile.ProjectID canonicalizes whatever this returns, so
+// the raw URL is fine here.
+//
+// Read with git rather than through pkg/release, whose equivalent is
+// deliberately unexported (it is one step of provenance capture, not a
+// utility). Duplicating three lines at the consumer is the boundary rule the
+// repo follows — WET over DRY beats exporting an implementation detail.
+func originURL(projectDir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), ledgerGitReadTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd.Dir = projectDir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ─── The machine ledger: promotions ──────────────────────────────────────────
+
+// machineBindingStore adapts internal/ledgerfile to the bindingStore seam.
+//
+// It is a thin adapter on purpose. The LOCKING and the record rules live in
+// ledgerfile, where they are testable without a project or a render; the
+// translation of "a promote with a CAS guard" into "a decision function" is
+// what belongs at this boundary, because appendGuard and the refusal type it
+// produces are the command layer's vocabulary, not the store's.
+type machineBindingStore struct {
+	store *ledgerfile.Store
+}
+
+// Current is env's newest promotion.
+func (s machineBindingStore) Current(_ context.Context, env string) (release.Promotion, bool, error) {
+	return s.store.CurrentPromotion(env)
+}
+
+// Append records the promotion under release.Decide and the guard, with the
+// store's lock held across the read, the decision and the write.
+//
+// THAT LOCK IS THE DIFFERENCE from the retired in-checkout backend, which
+// documented this exact race and declined to close it: two writers could
+// both decide from the same history and both append. Here the CAS is checked
+// against the history on disk at the instant of the write, so a stale plan
+// is refused and two concurrent promotes of one move produce one line.
+func (s machineBindingStore) Append(_ context.Context, p release.Promotion, guard appendGuard) (release.Promotion, error) {
 	if guard.ResolveVersionFromSource {
 		// A file ledger has no server to resolve a release under a lock,
 		// so it cannot honour this and must not pretend to by writing
@@ -340,238 +405,149 @@ func (s fileBindingStore) Append(_ context.Context, p release.Promotion, guard a
 			"%s records promotions in %s, which cannot resolve a release from a source promotion: promote by version",
 			p.Env, s.Location())
 	}
-	existing, err := admitPromotion(history, p, guard)
+	return s.store.AppendPromotion(p, func(history []release.Promotion, req release.Promotion) (*release.Promotion, error) {
+		return admitPromotion(history, req, guard)
+	})
+}
+
+// Location is the ledger directory.
+func (s machineBindingStore) Location() string { return s.store.Dir() }
+
+// HistoryPage serves the machine ledger's history, with the SAME semantics
+// the server applies: newest first, strictly before the cursor, optionally
+// one release. The log is small, so the page is cut in memory.
+func (s machineBindingStore) HistoryPage(_ context.Context, env string, q historyQuery) (historyPage, error) {
+	limit, err := q.limit()
 	if err != nil {
-		return release.Promotion{}, err
+		return historyPage{}, err
 	}
-	if existing != nil {
-		return *existing, nil
-	}
-	p.ID = newPromotionID()
-	p.PromotedAt = time.Now().UTC().Truncate(time.Second)
-	line, err := json.Marshal(p)
+	all, err := s.store.Promotions(env)
 	if err != nil {
-		return release.Promotion{}, fmt.Errorf("encode promotion: %w", err)
+		return historyPage{}, err
 	}
-	return p, appendLine(promotionLogPath(s.projectDir, p.Env), line)
-}
-
-// Location is the promotions directory.
-func (s fileBindingStore) Location() string {
-	return filepath.Join(s.projectDir, promotionsDirRel)
-}
-
-// appendLine writes line+"\n" in ONE write under O_APPEND, so a concurrent
-// appender can never split it.
-func appendLine(path string, line []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	newestFirst := make([]release.Promotion, len(all))
+	for i := range all {
+		newestFirst[len(all)-1-i] = all[i]
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644) //nolint:gosec // path is built from the project dir and a sanitized env stem
-	if err != nil {
-		return fmt.Errorf("open promotion log %s: %w", path, err)
+	start := 0
+	if q.Before != "" {
+		start = -1
+		for i, p := range newestFirst {
+			if p.ID == q.Before {
+				start = i + 1
+				break
+			}
+		}
+		if start < 0 {
+			return historyPage{}, fmt.Errorf("%w: --before %q names no promotion of %s", errHistoryQueryInvalid, q.Before, env)
+		}
 	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("append to promotion log %s: %w", path, err)
+	var page historyPage
+	for i := start; i < len(newestFirst); i++ {
+		p := newestFirst[i]
+		if q.Release != "" && p.Release != q.Release {
+			continue
+		}
+		if len(page.Promotions) == limit {
+			// There is at least one more matching entry, so this page
+			// is not the last: the cursor is the last entry SERVED.
+			page.Next = page.Promotions[len(page.Promotions)-1].ID
+			break
+		}
+		page.Promotions = append(page.Promotions, p)
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close promotion log %s: %w", path, err)
-	}
-	return nil
+	return page, nil
 }
 
-// newPromotionID is a random, sortable-enough identifier for a file-ledger
-// entry. The hosted ledger assigns its own; this only has to be unique
-// within one project's logs.
-func newPromotionID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b[:])
+// ─── The machine ledger: releases ────────────────────────────────────────────
+
+// machineReleaseLedger adapts internal/ledgerfile to the releaseLedger seam.
+type machineReleaseLedger struct {
+	store *ledgerfile.Store
 }
 
-// ─── The file backend: releases ──────────────────────────────────────────────
-
-// fileReleaseLedger is .forge/releases/<version>.json.
-type fileReleaseLedger struct {
-	projectDir string
+func (l machineReleaseLedger) Cut(_ context.Context, r release.Release) (bool, error) {
+	return l.store.CutRelease(r)
 }
 
-func (l fileReleaseLedger) Cut(_ context.Context, r release.Release) (bool, error) {
-	existing, err := ReadRelease(l.projectDir, r.Version)
-	if err != nil {
-		return false, err
-	}
-	if err := WriteRelease(l.projectDir, r); err != nil {
-		return false, err
-	}
-	return existing == nil, nil
+func (l machineReleaseLedger) Get(_ context.Context, version string) (*release.Release, error) {
+	return l.store.Release(version)
 }
 
-func (l fileReleaseLedger) Get(_ context.Context, version string) (*release.Release, error) {
-	return ReadRelease(l.projectDir, version)
-}
-
-func (l fileReleaseLedger) List(_ context.Context) ([]release.Release, error) {
-	return readReleaseLedgers(l.projectDir), nil
-}
-
-func (l fileReleaseLedger) Location() string {
-	return filepath.Join(l.projectDir, releasesDirRel)
-}
-
-// ─── One-time conversion from the retired format ─────────────────────────────
-
-// convertLegacyLedger rewrites a project from the retired ledger format to the
-// current one, once:
-//
-//   - every .forge/releases/*.json gains the now-required artifact `kind`
-//     (oci for a shared image, git for a source-pinned frontend — the only
-//     two things the old format could hold without a kind), and must then
-//     satisfy release.Validate;
-//   - .forge/env-releases.json becomes one promotion log per env, each
-//     holding that env's binding as its first entry (kind promote, the
-//     original promoted_at), and is then DELETED.
-//
-// History before the single binding each env held was never in the file —
-// it lived in git — so it is not reconstructed. Returns a human summary.
-func convertLegacyLedger(projectDir string) ([]string, error) {
-	var done []string
-
-	matches, err := filepath.Glob(filepath.Join(projectDir, releasesDirRel, "*.json"))
+// List returns releases NEWEST FIRST. The store returns them in the order
+// they were cut and the ordering is applied HERE, through the one comparator
+// both backends share, so "latest" cannot mean two things.
+func (l machineReleaseLedger) List(_ context.Context) ([]release.Release, error) {
+	all, err := l.store.Releases()
 	if err != nil {
 		return nil, err
 	}
-	for _, path := range matches {
-		changed, err := convertLegacyReleaseFile(path)
-		if err != nil {
-			return done, err
-		}
-		if changed {
-			done = append(done, "stamped artifact kinds in "+relOrAbs(projectDir, path))
-		}
-	}
-
-	legacy := filepath.Join(projectDir, legacyEnvReleasesRel)
-	data, err := os.ReadFile(legacy)
-	if errors.Is(err, os.ErrNotExist) {
-		return done, nil
-	}
-	if err != nil {
-		return done, err
-	}
-	var old struct {
-		Bindings map[string]struct {
-			Release    string                    `json:"release"`
-			Resolved   map[string]string         `json:"resolved"`
-			Sources    map[string]release.Source `json:"sources,omitempty"`
-			PromotedAt string                    `json:"promoted_at"`
-		} `json:"bindings"`
-	}
-	if err := json.Unmarshal(data, &old); err != nil {
-		return done, fmt.Errorf("parse %s: %w", legacy, err)
-	}
-	for env, b := range old.Bindings {
-		logPath := promotionLogPath(projectDir, env)
-		if _, err := os.Stat(logPath); err == nil {
-			return done, fmt.Errorf("both %s and %s exist; refusing to guess which is current", legacy, logPath)
-		}
-		at, err := time.Parse(time.RFC3339, b.PromotedAt)
-		if err != nil {
-			return done, fmt.Errorf("%s: env %q promoted_at %q: %w", legacy, env, b.PromotedAt, err)
-		}
-		p := release.Promotion{
-			ID:         at.UTC().Format("20060102T150405Z") + "-converted",
-			Env:        env,
-			Release:    b.Release,
-			Kind:       release.KindPromote,
-			Resolved:   b.Resolved,
-			Sources:    b.Sources,
-			PromotedBy: release.Actor{Actor: "forge-convert-ledger"},
-			Note:       "converted from " + legacyEnvReleasesRel + "; earlier history is in git",
-			PromotedAt: at.UTC(),
-		}
-		if p.Resolved == nil {
-			p.Resolved = map[string]string{}
-		}
-		if err := p.Validate(); err != nil {
-			return done, fmt.Errorf("%s: env %q: %w", legacy, env, err)
-		}
-		line, err := json.Marshal(p)
-		if err != nil {
-			return done, err
-		}
-		if err := appendLine(logPath, line); err != nil {
-			return done, err
-		}
-		done = append(done, fmt.Sprintf("%s → %s (release %s)", env, relOrAbs(projectDir, logPath), b.Release))
-	}
-	if err := os.Remove(legacy); err != nil {
-		return done, fmt.Errorf("remove %s: %w", legacy, err)
-	}
-	done = append(done, "removed "+legacyEnvReleasesRel)
-	return done, nil
+	sortReleasesNewestFirst(all)
+	return all, nil
 }
 
-// convertLegacyReleaseFile stamps the kind every artifact now must carry.
-// Reports whether the file changed. A file already in the current shape is
-// left byte-for-byte alone.
-func convertLegacyReleaseFile(path string) (bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false, err
-	}
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return false, fmt.Errorf("parse %s: %w", path, err)
-	}
-	var artifacts map[string]map[string]any
-	if err := json.Unmarshal(doc["artifacts"], &artifacts); err != nil {
-		return false, fmt.Errorf("parse %s artifacts: %w", path, err)
-	}
-	changed := false
-	for name, a := range artifacts {
-		if k, _ := a["kind"].(string); k != "" {
-			continue
-		}
-		switch mode, _ := a["mode"].(string); mode {
-		case "shared", "variant":
-			a["kind"] = string(release.KindOCI)
-		case "source":
-			a["kind"] = string(release.KindGit)
-		default:
-			return false, fmt.Errorf("%s: artifact %q has no kind and mode %q — cannot infer one", path, name, mode)
-		}
-		changed = true
-	}
-	if !changed {
-		return false, nil
-	}
-	raw, err := json.Marshal(artifacts)
-	if err != nil {
-		return false, err
-	}
-	doc["artifacts"] = raw
-	out, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return false, err
-	}
-	var rel release.Release
-	if err := json.Unmarshal(out, &rel); err != nil {
-		return false, fmt.Errorf("%s after conversion: %w", path, err)
-	}
-	if err := rel.Validate(); err != nil {
-		return false, fmt.Errorf("%s after conversion: %w", path, err)
-	}
-	// Written through the type, so the file lands in the same canonical
-	// field order a freshly cut release has — the diff a reviewer sees is
-	// the added kinds, not a reshuffle.
-	return true, statefile.Write(path, "release", rel)
+func (l machineReleaseLedger) Location() string { return l.store.Dir() }
+
+// ─── The machine ledger: the new records ─────────────────────────────────────
+
+// machineRecordStore implements bundleRecorder, applyRecorder and
+// sessionReporter against the machine ledger. The hosted half arrives with
+// the RPC wiring.
+//
+// A separate type from machineBindingStore rather than more methods on it:
+// the two have disjoint consumers, and a store that is handed to `forge env
+// up` to report a session has no business also exposing Append.
+type machineRecordStore struct {
+	store *ledgerfile.Store
 }
 
-func relOrAbs(base, path string) string {
-	if rel, err := filepath.Rel(base, path); err == nil && !strings.HasPrefix(rel, "..") {
-		return rel
+// recordStoreFor returns the records half of a project's machine ledger.
+//
+// This is the entry point F6a (bundles) and F6b (applies, sessions) call. It
+// takes a project directory rather than an env, because the machine ledger is
+// keyed by PROJECT: every env of one project records into the same store, and
+// the per-env split is a file inside it.
+//
+// There is no hosted twin yet. When one exists the selection belongs beside
+// ledgerForEntities, reading the same declaration — a records store chosen by
+// a different rule than the ledger it records into would be able to put an
+// env's bundles and its promotions in two different places.
+func recordStoreFor(projectDir string) (machineRecordStore, error) {
+	store, err := openMachineLedger(projectDir)
+	if err != nil {
+		return machineRecordStore{}, err
 	}
-	return path
+	return machineRecordStore{store: store}, nil
 }
+
+func (s machineRecordStore) RecordBundle(_ context.Context, b release.BundleRecord) (release.BundleRecord, bool, error) {
+	return s.store.RecordBundle(b)
+}
+
+func (s machineRecordStore) Bundle(_ context.Context, id string) (*release.BundleRecord, error) {
+	return s.store.Bundle(id)
+}
+
+func (s machineRecordStore) BeginApply(_ context.Context, a release.Apply, supersede bool) (release.Apply, error) {
+	return s.store.BeginApply(a, supersede)
+}
+
+func (s machineRecordStore) FinishApply(_ context.Context, env string, o release.ApplyOutcome) error {
+	return s.store.FinishApply(env, o)
+}
+
+func (s machineRecordStore) ReportSession(_ context.Context, sess release.LocalSession) error {
+	return s.store.ReportSession(sess)
+}
+
+// Compile-time proof that the machine backend satisfies every seam it claims.
+// The assertions are what keep a method rename from silently dropping a
+// store out of a capability its consumers type-assert for.
+var (
+	_ bindingStore         = machineBindingStore{}
+	_ bindingHistoryReader = machineBindingStore{}
+	_ releaseLedger        = machineReleaseLedger{}
+	_ bundleRecorder       = machineRecordStore{}
+	_ applyRecorder        = machineRecordStore{}
+	_ sessionReporter      = machineRecordStore{}
+)

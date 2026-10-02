@@ -10,7 +10,7 @@ import (
 // exit 0 with Created false — a different FACT from a fresh cut, the same
 // verdict. A pipeline re-run of the release job must not be an error.
 func TestReleaseCutOutcome_CreatedThenIdempotent(t *testing.T) {
-	dir := t.TempDir()
+	dir := useTestLedger(t, t.TempDir())
 	t.Chdir(dir)
 	if err := WriteBuildState(dir, "staging", BuildState{
 		Image: "demo", Tag: "v1.0.0", Pushed: true, PushedAt: nowRFC3339(), Digest: sha("a"),

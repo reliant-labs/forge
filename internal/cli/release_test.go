@@ -42,13 +42,19 @@ func TestReleaseFileStem_PreservesDots(t *testing.T) {
 	}
 }
 
-// TestReleasePath_VersionMappingRoundTrips is the cross-command consistency
-// guard for Fix 3: build (WriteRelease), promote/deploy (ReadRelease), and
-// the path the CLI prints all resolve a version label to the SAME file via
-// releasePath. A release written under "v1.0.0" must read back under
-// "v1.0.0", and the file on disk must be the non-surprising "v1.0.0.json".
-func TestReleasePath_VersionMappingRoundTrips(t *testing.T) {
-	dir := t.TempDir()
+// TestReleaseVersionRoundTrips is the cross-command consistency guard: build
+// (Cut) and promote/deploy (Get) resolve a version label to the SAME record.
+//
+// It no longer asserts a FILENAME. The retired backend stored one
+// .forge/releases/<stem>.json per version, which needed a lossy
+// version→filename mapping and a test that the mapping round-tripped
+// ("v1.0.0" had to land at v1.0.0.json, not the surprising v1_0_0.json). The
+// machine ledger is an append-only log keyed by the version INSIDE each
+// record, so there is no filename to get wrong and nothing to round-trip
+// through. What still matters — and is what this now pins — is that a
+// release written under a label reads back under that same label.
+func TestReleaseVersionRoundTrips(t *testing.T) {
+	dir := newLedgerTestProject(t, "roundtrip-project")
 	const version = "v1.0.0"
 
 	rel := release.Release{
@@ -57,25 +63,19 @@ func TestReleasePath_VersionMappingRoundTrips(t *testing.T) {
 			"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}},
 		},
 	}
-	// build writes...
-	if err := WriteRelease(dir, rel); err != nil {
-		t.Fatalf("WriteRelease: %v", err)
+	if err := testCutRelease(t, dir, rel); err != nil {
+		t.Fatalf("cut: %v", err)
 	}
-	// ...the on-disk file is the LITERAL version (dots preserved), not v1_0_0.
-	wantPath := filepath.Join(dir, ".forge/releases", "v1.0.0.json")
-	if got := releasePath(dir, version); got != wantPath {
-		t.Errorf("releasePath = %q, want %q", got, wantPath)
-	}
-	if _, err := os.Stat(wantPath); err != nil {
-		t.Errorf("expected ledger at %q (literal version): %v", wantPath, err)
-	}
-	// promote/deploy read the SAME version back through the SAME mapping.
-	got, err := ReadRelease(dir, version)
+	got, err := testGetRelease(t, dir, version)
 	if err != nil || got == nil {
-		t.Fatalf("ReadRelease(%q) = (%v, %v), want a ledger", version, got, err)
+		t.Fatalf("testGetRelease(%q) = (%v, %v), want a record", version, got, err)
 	}
 	if got.Version != version {
 		t.Errorf("round-tripped version = %q, want %q", got.Version, version)
+	}
+	// Nothing was written into the checkout.
+	if _, err := os.Stat(filepath.Join(dir, ".forge", "releases")); !os.IsNotExist(err) {
+		t.Errorf("releases must not land in the checkout (stat err: %v)", err)
 	}
 }
 
@@ -103,10 +103,10 @@ func TestRelease_LedgerRoundTrip(t *testing.T) {
 			"reliant":       {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("b")}},
 		},
 	}
-	if err := WriteRelease(dir, want); err != nil {
+	if err := testCutRelease(t, dir, want); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := ReadRelease(dir, "v1.4.0")
+	got, err := testGetRelease(t, dir, "v1.4.0")
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestRelease_LedgerRoundTrip(t *testing.T) {
 // TestReadRelease_MissingIsNilNil keeps "no such release" distinct from an
 // error so promote can produce a friendly not-found message.
 func TestReadRelease_MissingIsNilNil(t *testing.T) {
-	got, err := ReadRelease(t.TempDir(), "v9.9.9")
+	got, err := testGetRelease(t, t.TempDir(), "v9.9.9")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestResolveReleaseDigests_VariantOnlyError(t *testing.T) {
 func TestRunPromote_NoImagesReleaseSurfacesActionableError(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	if err := WriteRelease(dir, release.Release{
+	if err := testCutRelease(t, dir, release.Release{
 		Version: "v3.1.0",
 		Artifacts: map[string]release.Artifact{
 			"@acme/ui": {Kind: release.KindNPM, Mode: release.ModeShared, Version: "1.0.0"},
@@ -351,7 +351,7 @@ func TestRunPromote_NoImagesReleaseSurfacesActionableError(t *testing.T) {
 	if !strings.Contains(err.Error(), "no container images") {
 		t.Errorf("promote error should say the release has no images\n  got: %s", err.Error())
 	}
-	if _, bound, berr := newFileBindingStore(dir).Current(context.Background(), "staging"); berr != nil {
+	if _, bound, berr := testBindings(t, dir).Current(context.Background(), "staging"); berr != nil {
 		t.Fatalf("read binding: %v", berr)
 	} else if bound {
 		t.Error("staging must NOT be bound when the release pins no digests")
@@ -360,7 +360,7 @@ func TestRunPromote_NoImagesReleaseSurfacesActionableError(t *testing.T) {
 
 // TestWriteRelease_EmptyIsRefused: a release naming nothing cannot be cut.
 func TestWriteRelease_EmptyIsRefused(t *testing.T) {
-	err := WriteRelease(t.TempDir(), release.Release{Version: "v3.1.0", Artifacts: map[string]release.Artifact{}})
+	err := testCutRelease(t, t.TempDir(), release.Release{Version: "v3.1.0", Artifacts: map[string]release.Artifact{}})
 	if !errors.Is(err, release.ErrInvalid) {
 		t.Fatalf("an empty release must be refused as invalid, got %v", err)
 	}
@@ -380,14 +380,14 @@ func TestResolveDeployDigests_BoundEnvUsesRelease(t *testing.T) {
 		t.Fatalf("write build state: %v", err)
 	}
 	// prod is promoted to v1.4.0, whose control-plane digest is sha(a).
-	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote,
 		Resolved: map[string]string{"control-plane": sha("a"), "reliant": sha("b")},
 	}, appendGuard{}); err != nil {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, newFileBindingStore(dir), fileReleaseLedger{projectDir: dir})
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, testBindings(t, dir), testReleases(t, dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -420,14 +420,14 @@ func TestResolveDeployDigests_ReleaseOverridesTaggedKeys(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write build state: %v", err)
 	}
-	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote,
 		Resolved: map[string]string{"reliant": sha("a")},
 	}, appendGuard{}); err != nil {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, newFileBindingStore(dir), fileReleaseLedger{projectDir: dir})
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", false, testBindings(t, dir), testReleases(t, dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestResolveDeployDigests_UnboundEnvFallsBack(t *testing.T) {
 		t.Fatalf("write build state: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "staging", false, newFileBindingStore(dir), fileReleaseLedger{projectDir: dir})
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "staging", false, testBindings(t, dir), testReleases(t, dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -468,13 +468,13 @@ func TestResolveDeployDigests_UnboundEnvFallsBack(t *testing.T) {
 // the release lookup too (the tag-only escape hatch overrides everything).
 func TestResolveDeployDigests_NoDigestSkipsRelease(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := newFileBindingStore(dir).Append(context.Background(), release.Promotion{
+	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote, Resolved: map[string]string{"control-plane": sha("a")},
 	}, appendGuard{}); err != nil {
 		t.Fatalf("write bindings: %v", err)
 	}
 
-	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", true /* noDigest */, newFileBindingStore(dir), fileReleaseLedger{projectDir: dir})
+	digests, boundRel, err := resolveDeployDigests(context.Background(), dir, "prod", true /* noDigest */, testBindings(t, dir), testReleases(t, dir))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 	t.Chdir(dir)
 
 	// A release ledger exists (as `forge env build --release` would have written).
-	if err := WriteRelease(dir, release.Release{
+	if err := testCutRelease(t, dir, release.Release{
 		Version: "v1.4.0",
 		Artifacts: map[string]release.Artifact{
 			"control-plane": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{"*": sha("a")}},
@@ -505,7 +505,7 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 		t.Fatalf("promote: %v", err)
 	}
 
-	binding, bound, err := newFileBindingStore(dir).Current(context.Background(), "staging")
+	binding, bound, err := testBindings(t, dir).Current(context.Background(), "staging")
 	if err != nil {
 		t.Fatalf("read binding: %v", err)
 	}
@@ -524,24 +524,31 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 // TestRunPromote_UnknownReleaseErrors confirms promoting a release that was
 // never cut fails with a clear not-found rather than writing a bad binding.
 func TestRunPromote_UnknownReleaseErrors(t *testing.T) {
-	dir := t.TempDir()
+	dir := useTestLedger(t, t.TempDir())
 	t.Chdir(dir)
 	if err := runPromote(context.Background(), "v9.9.9", "staging", promoteOptions{Ledger: declaredLedger(t, dir, "staging")}); err == nil {
 		t.Fatal("want error promoting a non-existent release, got nil")
 	}
 }
 
-// TestReleaseLedger_KindlessArtifactIsRefused: an artifact with no kind is no
-// longer read as an image. The retired "empty kind means OCI" default is how a
-// ledger nobody can classify could have been deployed; now it fails to read,
-// and `forge release convert-ledger` is the one-time fix.
+// TestReleaseLedger_KindlessArtifactIsRefused: an artifact with no kind is
+// not read as an image. The retired "empty kind means OCI" default is how a
+// record nobody can classify could have been deployed.
+//
+// The malformed record is planted as a LINE in the machine ledger, which is
+// where releases live now; the rule being tested (a record that does not
+// satisfy release.Validate fails to READ, rather than being silently
+// skipped) is unchanged.
 func TestReleaseLedger_KindlessArtifactIsRefused(t *testing.T) {
-	dir := t.TempDir()
-	path := releasePath(dir, "v1.0.0")
-	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	_ = os.WriteFile(path, []byte(`{"release":"v1.0.0","created_at":"2026-01-01T00:00:00Z",
-		"artifacts":{"control-plane":{"mode":"shared","digests":{"*":"`+sha("a")+`"}}}}`), 0o644)
-	if _, err := ReadRelease(dir, "v1.0.0"); !errors.Is(err, release.ErrInvalid) {
+	dir := newLedgerTestProject(t, "kindless-project")
+	path := filepath.Join(testStore(t, dir).Dir(), "releases.jsonl")
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	line := `{"release":"v1.0.0","git":{},"created_at":"2026-01-01T00:00:00Z",` +
+		`"artifacts":{"control-plane":{"mode":"shared","digests":{"*":"` + sha("a") + `"}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatalf("plant the record: %v", err)
+	}
+	if _, err := testGetRelease(t, dir, "v1.0.0"); !errors.Is(err, release.ErrInvalid) {
 		t.Fatalf("a kindless artifact must fail to read with ErrInvalid, got %v", err)
 	}
 }

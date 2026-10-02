@@ -165,7 +165,7 @@ func maybeOpportunisticGC(ctx context.Context, out io.Writer) {
 	// daemon or a concurrent `forge storage gc`. A busy lock is not an error
 	// worth reporting: somebody else is already doing this work.
 	runErr := storage.WithLock(path, func() error {
-		gcErr := nonDisruptiveGCFn(ctx, maintenanceRunner(policy, out))
+		gcErr := nonDisruptiveGCFn(ctx, maintenanceRunner(policy, path, out))
 		// The stamp advances even when the pass failed, which is deliberate: an
 		// ATTEMPT is what the interval rate-limits. A stamp written only on
 		// success would mean a machine where this reliably fails — no Docker

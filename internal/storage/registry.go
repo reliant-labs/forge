@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -578,15 +581,176 @@ func fetchManifest(fetch func(Version) ([]byte, error), v Version) (manifestBody
 	return body, nil
 }
 
+// Bringing a registry back after maintenance is retried: one failed docker
+// call must not leave the registry every cluster pulls from offline. The
+// attempts double as a readiness poll — a restarted registry takes a moment
+// to answer — and are bounded by restoreBudget. restoreRetryDelay is a
+// variable so tests do not sleep.
+const (
+	defaultRestoreRetryDelay = 2 * time.Second
+	restoreAttempts          = 15
+	restoreBudget            = 2 * time.Minute
+)
+
+var restoreRetryDelay = defaultRestoreRetryDelay
+
+// registryStopMarker is where a pass records that it is about to stop a
+// registry, beside the policy so it outlives the process. A pass that dies
+// between the stop and the restart (SIGKILL, logout, Docker Desktop quitting)
+// leaves the registry stopped, and an explicit stop disables its
+// unless-stopped restart policy, so nothing else will bring it back. The
+// marker is how the next pass tells "forge stopped this and never finished"
+// from "someone stopped this on purpose".
+func registryStopMarker(policyPath, container string) string {
+	return filepath.Join(filepath.Dir(policyPath), "registry-maintenance", container+".stopped")
+}
+
+// markRegistryStopped records the intent to stop container. It is written
+// BEFORE the stop: a registry forge cannot account for is never stopped.
+func (r Runner) markRegistryStopped(container string) error {
+	if r.PolicyPath == "" {
+		return fmt.Errorf("refusing to stop registry %s: no policy path to record the stop beside, so an interrupted pass could not restart it", container)
+	}
+	if err := guardMachinePolicy(r.PolicyPath); err != nil {
+		return err
+	}
+	path := registryStopMarker(r.PolicyPath, container)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(struct {
+		Container string    `json:"container"`
+		StoppedAt time.Time `json:"stopped_at"`
+		PID       int       `json:"pid"`
+	}{container, time.Now(), os.Getpid()})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o600)
+}
+
+func (r Runner) registryMarkedStopped(container string) bool {
+	if r.PolicyPath == "" {
+		return false
+	}
+	_, err := os.Stat(registryStopMarker(r.PolicyPath, container))
+	return err == nil
+}
+
+func (r Runner) clearRegistryStopped(container string) error {
+	if r.PolicyPath == "" {
+		return nil
+	}
+	err := os.Remove(registryStopMarker(r.PolicyPath, container))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// restoreRegistry brings a registry forge stopped back into service, and only
+// reports success once it is running and answering. Before the registry is
+// started, every maintenance writer must be confirmed gone: a garbage-collect
+// sweep running against the store while the registry accepts pushes can
+// delete the blobs of an image pushed during the sweep. So a writer that
+// cannot be confirmed gone keeps the registry stopped — with the marker in
+// place, so the next pass tries again — and that is reported as an error.
+//
+// It runs on its own context: the caller's may already be cancelled, which
+// is exactly the case (SIGTERM mid-pass) this has to survive.
+func (r Runner) restoreRegistry(container string, writers ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), restoreBudget)
+	defer cancel()
+	var last error
+	for attempt := 0; attempt < restoreAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				last = errors.Join(last, ctx.Err())
+				attempt = restoreAttempts
+				continue
+			case <-time.After(restoreRetryDelay):
+			}
+		}
+		if last = r.stopMaintenanceWriters(ctx, writers); last != nil {
+			continue
+		}
+		if _, last = r.docker(ctx, "start", container); last != nil {
+			continue
+		}
+		if last = r.registryServing(ctx, container); last != nil {
+			continue
+		}
+		if err := r.clearRegistryStopped(container); err != nil {
+			r.print("registry %s restarted, but its maintenance marker could not be cleared: %v\n", container, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("registry %s is STOPPED and could not be restarted after maintenance: %w; "+
+		"the next `forge storage gc` retries, or run `docker start %s` once no %s-forge-* container is running",
+		container, last, container, container)
+}
+
+// stopMaintenanceWriters stops every named maintenance container that exists.
+func (r Runner) stopMaintenanceWriters(ctx context.Context, writers []string) error {
+	for _, name := range writers {
+		b, err := r.docker(ctx, "ps", "-aq", "--filter", "name=^/"+name+"$")
+		if err != nil {
+			return fmt.Errorf("confirm maintenance writer %s is gone: %w", name, err)
+		}
+		if strings.TrimSpace(string(b)) != "" {
+			if _, err := r.docker(ctx, "stop", name); err != nil {
+				return fmt.Errorf("stop maintenance writer %s: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// registryServing verifies a started registry is actually up: `docker start`
+// exiting 0 says nothing about a registry that crashes a moment later.
+func (r Runner) registryServing(ctx context.Context, container string) error {
+	info, err := r.inspect(ctx, container)
+	if err != nil {
+		return err
+	}
+	if !info.State.Running {
+		return fmt.Errorf("registry %s is not running after start", container)
+	}
+	base, err := r.endpoint(ctx, container)
+	if err != nil {
+		return err
+	}
+	_, err = registryRequest(ctx, base, "/v2/", http.MethodGet)
+	return err
+}
+
 // RegistryGC deletes eligible manifests and collects blobs with all writers stopped.
 func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err error) {
 	info, err := r.inspect(ctx, reg.Container)
 	if err != nil {
 		return err
 	}
+	helper, gc := reg.Container+"-forge-retention", reg.Container+"-forge-gc"
 	if !info.State.Running {
-		r.print("registry %s stopped; skipping\n", reg.Container)
+		if !r.registryMarkedStopped(reg.Container) {
+			r.print("registry %s stopped; skipping\n", reg.Container)
+			return nil
+		}
+		// An earlier pass stopped it and never brought it back. That is a
+		// repair, not a cleanup, so it happens on a preview too.
+		r.print("registry %s was left stopped by an interrupted maintenance pass; restarting it\n", reg.Container)
+		if err := r.restoreRegistry(reg.Container, gc, helper); err != nil {
+			return err
+		}
+		r.print("registry %s restarted; retention runs on the next pass\n", reg.Container)
 		return nil
+	}
+	// Running, so any marker is stale (restarted by hand, or by a pass that
+	// could not clear it). Left in place it would make forge restart this
+	// registry the next time someone stops it on purpose.
+	if err := r.clearRegistryStopped(reg.Container); err != nil {
+		return err
 	}
 	volume := false
 	for _, m := range info.Mounts {
@@ -614,7 +778,6 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	if err != nil || !apply || len(plan) == 0 {
 		return err
 	}
-	helper, gc := reg.Container+"-forge-retention", reg.Container+"-forge-gc"
 	for _, name := range []string{helper, gc} {
 		b, err = r.docker(ctx, "ps", "-aq", "--filter", "name=^/"+name+"$")
 		if err != nil {
@@ -624,26 +787,15 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 			return fmt.Errorf("stale maintenance container %s: inspect before retrying", name)
 		}
 	}
-	// Cleanup has its own context: cancellation of the caller must not leave a
-	// live GC writer overlapping a restarted public registry.
+	if err := r.markRegistryStopped(reg.Container); err != nil {
+		return err
+	}
+	// Registered before the stop, so it runs whatever happens next — a failed
+	// stop, a failed helper, a cancelled context. Only a dead process skips
+	// it, and the marker written above covers that.
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		for _, name := range []string{gc, helper} {
-			b, e := r.docker(cleanup, "ps", "-aq", "--filter", "name=^/"+name+"$")
-			if e != nil {
-				err = fmt.Errorf("maintenance cleanup failed; registry remains stopped: %w", e)
-				return
-			}
-			if strings.TrimSpace(string(b)) != "" {
-				if _, e = r.docker(cleanup, "stop", name); e != nil {
-					err = fmt.Errorf("stop maintenance writer before restarting registry: %w", e)
-					return
-				}
-			}
-		}
-		if _, e := r.docker(cleanup, "start", reg.Container); e != nil {
-			err = fmt.Errorf("restart registry: %w", e)
+		if restoreErr := r.restoreRegistry(reg.Container, gc, helper); restoreErr != nil {
+			err = errors.Join(err, restoreErr)
 		}
 	}()
 	if _, err = r.docker(ctx, "stop", "--time", "30", reg.Container); err != nil {

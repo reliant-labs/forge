@@ -26,6 +26,11 @@ type Runner struct {
 	// reclaims from. Empty means os.TempDir() in production, and is
 	// REFUSED under `go test` — see tempsweep.go.
 	TempRoot string
+	// PolicyPath is the policy file this pass was loaded from. Maintenance
+	// state that must outlive the process — the marker recording that a
+	// registry was stopped for GC — is kept beside it, so a later pass can
+	// find and repair what an interrupted one left behind.
+	PolicyPath string
 }
 
 // Exec runs a command with a bounded lifetime.

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -34,9 +35,10 @@ type fakeRegistryHost struct {
 	mu      sync.Mutex
 	running map[string]bool
 	calls   [][]string
-	// fail makes the Nth matching call fail: key is a call prefix (joined
-	// args), value is how many matching calls fail before it succeeds.
-	fail map[string]int
+	// failNth makes chosen calls fail: key is a call prefix (joined args),
+	// value is the set of 1-based occurrences of that call that fail.
+	failNth map[string]map[int]bool
+	seen    map[string]int
 	// failAlways makes every matching call fail.
 	failAlways map[string]bool
 	// startDoesNotRun makes `docker start` exit 0 while the container stays
@@ -74,7 +76,7 @@ func newFakeRegistryHost(t *testing.T) *fakeRegistryHost {
 	f := &fakeRegistryHost{
 		t: t, registry: "k3d-test-registry", port: port,
 		running: map[string]bool{"k3d-test-registry": true},
-		fail:    map[string]int{}, failAlways: map[string]bool{},
+		failNth: map[string]map[int]bool{}, seen: map[string]int{}, failAlways: map[string]bool{},
 	}
 	const prefix = "/var/lib/registry/docker/registry/v2/repositories/app/_manifests/"
 	f.tags = fmt.Sprintf("%d\t%stags/dev/current/link\t%s\n", now.Unix(), prefix, live)
@@ -106,10 +108,12 @@ func (f *fakeRegistryHost) command(_ context.Context, name string, args ...strin
 			return nil, fmt.Errorf("injected failure: docker %s", joined)
 		}
 	}
-	for prefix, n := range f.fail {
-		if n > 0 && strings.HasPrefix(joined, prefix) {
-			f.fail[prefix] = n - 1
-			return nil, fmt.Errorf("injected failure: docker %s", joined)
+	for prefix, nth := range f.failNth {
+		if strings.HasPrefix(joined, prefix) {
+			f.seen[prefix]++
+			if nth[f.seen[prefix]] {
+				return nil, fmt.Errorf("injected failure: docker %s", joined)
+			}
 		}
 	}
 	switch {
@@ -224,7 +228,7 @@ func hasArg(args []string, want string) bool {
 // --rm, so that is the only form a maintenance container may use.
 func TestRegistryGCNeverAsksDockerToRemoveTheRegistryVolume(t *testing.T) {
 	f := newFakeRegistryHost(t)
-	r := Runner{Policy: DefaultPolicy(), Command: f.command}
+	r := Runner{Policy: DefaultPolicy(), Command: f.command, PolicyPath: filepath.Join(t.TempDir(), "storage.json")}
 	if err := r.RegistryGC(context.Background(), f.reg(), true); err != nil {
 		t.Fatalf("RegistryGC: %v", err)
 	}
@@ -275,5 +279,101 @@ func TestMaintenanceMountsReproduceEveryMountByName(t *testing.T) {
 		if _, err := maintenanceMounts(containerInfo{Mounts: []containerMount{bad}}); err == nil {
 			t.Errorf("mount %+v cannot be reproduced by name and must be refused", bad)
 		}
+	}
+}
+
+// gcRunner is a Runner over the fake host whose maintenance state lives in a
+// test-owned directory.
+func gcRunner(t *testing.T, f *fakeRegistryHost) Runner {
+	t.Helper()
+	restoreRetryDelay = time.Millisecond
+	t.Cleanup(func() { restoreRetryDelay = defaultRestoreRetryDelay })
+	return Runner{Policy: DefaultPolicy(), Command: f.command, PolicyPath: filepath.Join(t.TempDir(), "storage.json")}
+}
+
+// TestRegistryGCReportsARegistryThatDidNotComeBack is B4's verification half.
+// `docker start` exiting 0 says nothing about whether the registry is still
+// running a moment later; a registry that crashes on start used to be
+// reported as a successful pass and left down.
+func TestRegistryGCReportsARegistryThatDidNotComeBack(t *testing.T) {
+	f := newFakeRegistryHost(t)
+	f.startDoesNotRun = true
+	err := gcRunner(t, f).RegistryGC(context.Background(), f.reg(), true)
+	if err == nil {
+		t.Fatal("RegistryGC reported success with the registry stopped")
+	}
+	if !strings.Contains(err.Error(), f.registry) {
+		t.Fatalf("the error must name the registry that is down: %v", err)
+	}
+}
+
+// TestRegistryGCRetriesATransientCleanupFailure: one failed `docker ps` while
+// confirming the GC writer is gone used to end the pass with the registry
+// deliberately left stopped. The writer check is retried, and the registry
+// comes back once it succeeds.
+func TestRegistryGCRetriesATransientCleanupFailure(t *testing.T) {
+	f := newFakeRegistryHost(t)
+	// The first `ps` for the gc writer is the pre-flight check; the second
+	// is the cleanup's.
+	f.failNth["ps -aq --filter name=^/"+f.gcName()+"$"] = map[int]bool{2: true}
+	if err := gcRunner(t, f).RegistryGC(context.Background(), f.reg(), true); err != nil {
+		t.Fatalf("RegistryGC: %v", err)
+	}
+	if !f.isRunning(f.registry) {
+		t.Fatal("one transient docker failure left the registry stopped")
+	}
+}
+
+// TestRegistryLeftStoppedIsRestartedByTheNextPass is B4's recovery half. A
+// pass that cannot restart the registry (Docker Desktop quitting mid-pass,
+// forge SIGKILLed between stop and start) leaves it stopped, and an explicit
+// stop disables the unless-stopped restart policy, so nothing brings it back.
+// The next pass used to print "registry stopped; skipping" forever. It must
+// recognise a registry FORGE stopped and restart it.
+func TestRegistryLeftStoppedIsRestartedByTheNextPass(t *testing.T) {
+	f := newFakeRegistryHost(t)
+	r := gcRunner(t, f)
+	// Docker stops cooperating right after the registry is stopped: the
+	// helper cannot start, and neither can the registry again.
+	f.failAlways["run "] = true
+	f.failAlways["start "] = true
+	if err := r.RegistryGC(context.Background(), f.reg(), true); err == nil {
+		t.Fatal("a pass that could not restart the registry reported success")
+	}
+	if f.isRunning(f.registry) {
+		t.Fatal("precondition: the interrupted pass should have left the registry stopped")
+	}
+
+	// Docker is back. The next pass — a preview, even — restores service.
+	f.mu.Lock()
+	f.failAlways = map[string]bool{}
+	f.failNth = map[string]map[int]bool{}
+	f.mu.Unlock()
+	var out strings.Builder
+	r.Out = &out
+	if err := r.RegistryGC(context.Background(), f.reg(), false); err != nil {
+		t.Fatalf("next pass: %v\n%s", err, out.String())
+	}
+	if !f.isRunning(f.registry) {
+		t.Fatalf("the next pass skipped a registry forge itself left stopped:\n%s", out.String())
+	}
+	if f.called("start "+f.registry) < 1 {
+		t.Fatal("registry was never started")
+	}
+}
+
+// TestRegistryStoppedByAHumanIsLeftAlone: only a registry forge stopped is
+// restarted. One someone stopped on purpose is still skipped.
+func TestRegistryStoppedByAHumanIsLeftAlone(t *testing.T) {
+	f := newFakeRegistryHost(t)
+	f.running[f.registry] = false
+	var out strings.Builder
+	r := gcRunner(t, f)
+	r.Out = &out
+	if err := r.RegistryGC(context.Background(), f.reg(), true); err != nil {
+		t.Fatal(err)
+	}
+	if f.isRunning(f.registry) || f.called("start ") != 0 {
+		t.Fatalf("restarted a registry forge did not stop:\n%s", out.String())
 	}
 }

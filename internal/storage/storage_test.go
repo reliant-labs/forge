@@ -241,6 +241,7 @@ func TestWorktreesOnlyRemoveOldCleanMergedCheckouts(t *testing.T) {
 		}
 		listing.WriteString("\n")
 	}
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
 	var removed []string
 	r := Runner{Command: func(_ context.Context, command string, args ...string) ([]byte, error) {
 		if command != "git" {
@@ -252,6 +253,11 @@ func TestWorktreesOnlyRemoveOldCleanMergedCheckouts(t *testing.T) {
 		case "worktree":
 			if args[3] == "list" {
 				return []byte(listing.String()), nil
+			}
+			for _, a := range args {
+				if a == "--force" || a == "-f" {
+					t.Fatalf("worktree removal forced: %v", args)
+				}
 			}
 			removed = append(removed, args[4])
 			return nil, nil

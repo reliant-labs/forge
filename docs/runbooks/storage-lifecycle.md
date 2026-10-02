@@ -143,17 +143,30 @@ forge storage worktrees --repo /path/to/repo --base origin/main --apply
 ```
 
 This preserves the primary/current worktree, locked trees, unmerged commits,
-dirty trees and untracked source files. Git performs removal without `--force`;
-branches remain. Ignored build outputs in a removed tree are rebuildable. Review
-the preview and avoid running this while someone is using an old clean tree.
+dirty trees, and any tree holding an untracked or **ignored** file. Git's own
+removal deletes ignored files, and that is where a worktree keeps application
+data (`./data/` databases, `.env`, `.forge/hostinfra/` Postgres). A tree that any
+running process uses, through an open file or a working directory inside it, is
+also preserved. If `lsof` cannot produce a complete snapshot, the command refuses
+to remove anything. Git performs removal without `--force`; branches remain.
 Worktree removal is intentionally excluded from the daily cache job.
 
 ## Recovery and rollout
 
+Before forge stops a registry for GC, it records a marker beside the policy
+(`registry-maintenance/<container>.stopped`). After the pass, forge restarts the
+registry and checks that it is running and answering, retrying for up to two
+minutes. If it still is not serving, the pass fails and names the registry. A
+pass that was killed partway leaves the marker, and the next `forge storage gc`
+(a preview is enough) restarts the registry. A registry that someone stopped by
+hand has no marker, so forge leaves it alone.
+
 A hard kill or Docker outage can leave a `-forge-retention`/`-forge-gc` container.
-Inspect and stop it before restarting the public registry; never run filesystem
+The registry is never restarted while one is still running; never run filesystem
 GC concurrently with a registry writer. Normal cancellation gets a separate
 cleanup timeout. A stale helper blocks the next pass instead of overlapping GC.
+Maintenance containers mount the registry's data volume by name, so removing one
+can never remove the volume.
 
 Disable any older ad hoc registry-retention launch agent before installing the
 Forge job, and migrate its repository/context allowlist and pins. Two independent

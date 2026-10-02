@@ -274,18 +274,26 @@ func RecordGC(policyPath string, at time.Time) error {
 // and node reconfiguration restarts kubelet — both are fine for a scheduled
 // 03:30 pass and unacceptable as a side effect of `forge env up`, which is
 // typically the command that is about to push to that registry.
+//
+// As in GC, each layer's failure is recorded and the rest still run.
 func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
-	if err := r.Logs(apply); err != nil {
-		return err
-	}
-	if err := r.Local(ctx); err != nil {
-		return err
-	}
 	var failures []error
+	if err := r.Logs(apply); err != nil {
+		failures = append(failures, fmt.Errorf("logs: %w", err))
+	}
+	// A nonlocal Docker endpoint ends only the Docker layer; the temp sweep
+	// and source eviction below never touch Docker.
+	dockerErr := r.Local(ctx)
+	if dockerErr != nil {
+		failures = append(failures, dockerErr)
+	}
 	for _, builder := range r.Policy.Builders {
+		if dockerErr != nil {
+			break
+		}
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
@@ -316,7 +324,7 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	// re-fetchable pin, which is the same cost shape as a pruned build cache
 	// — not the offline registry or the restarted kubelet this pass excludes.
 	if err := r.Sources(apply); err != nil {
-		failures = append(failures, fmt.Errorf("source cache: %w", err))
+		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
 }

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,17 +27,35 @@ type Runner struct {
 	// reclaims from. Empty means os.TempDir() in production, and is
 	// REFUSED under `go test` — see tempsweep.go.
 	TempRoot string
+	// PolicyPath is the policy file this pass was loaded from. Maintenance
+	// state that must outlive the process — the marker recording that a
+	// registry was stopped for GC — is kept beside it, so a later pass can
+	// find and repair what an interrupted one left behind.
+	PolicyPath string
 }
 
-// Exec runs a command with a bounded lifetime.
+// Exec runs a command with a bounded lifetime and returns its STDOUT.
+//
+// Stderr is captured separately and only ever reported, in the error of a
+// command that failed. Callers parse what Exec returns — kubectl and docker
+// JSON — and a tool that succeeds while warning on stderr (kubectl's
+// "Warning: v1 ComponentStatus is deprecated") would otherwise put the
+// warning in front of the JSON. That made every protected-set scan fail to
+// parse, so registry GC refused on every pass.
 func Exec(ctx context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	b, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("%s %v: %w: %s", name, args, err, strings.TrimSpace(string(b)))
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		return nil, fmt.Errorf("%s %v: %w: %s", name, args, err, detail)
 	}
-	return b, nil
+	return stdout.Bytes(), nil
 }
 
 func (r Runner) command(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -166,23 +185,22 @@ func WithLock(policyPath string, fn func() error) error {
 }
 
 // GC previews or applies the registered cache and registry policy.
+//
+// Every layer runs even when an earlier one failed: a layer's error is
+// recorded and the combined error is returned at the end. One unreadable
+// registered project used to end the pass at the first layer, so the temp
+// sweep, source eviction, BuildKit and registry retention silently never ran.
+// Two checks still stop everything, because nothing after them is safe
+// without them: an invalid policy, and a Docker endpoint that is not local
+// (which ends the Docker layers, not the host ones already done).
 func (r Runner) GC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
-	if err := r.Logs(apply); err != nil {
-		return err
-	}
-	if err := r.TempSweep(apply); err != nil {
-		return err
-	}
-	if err := r.Sources(apply); err != nil {
-		return err
-	}
+	failures := r.hostLayers(apply)
 	if err := r.Local(ctx); err != nil {
-		return err
+		return errors.Join(append(failures, err)...)
 	}
-	var failures []error
 	for _, builder := range r.Policy.Builders {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
@@ -201,6 +219,23 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 	}
 	r.print("persistent volumes, worktrees, running containers and application data are retained\n")
 	return errors.Join(failures...)
+}
+
+// hostLayers runs the layers that reclaim from the host filesystem — rotated
+// logs, the temp sweep, the source cache — each independently, returning one
+// error per failed layer.
+func (r Runner) hostLayers(apply bool) []error {
+	var failures []error
+	if err := r.Logs(apply); err != nil {
+		failures = append(failures, fmt.Errorf("logs: %w", err))
+	}
+	if err := r.TempSweep(apply); err != nil {
+		failures = append(failures, fmt.Errorf("temp sweep: %w", err))
+	}
+	if err := r.Sources(apply); err != nil {
+		failures = append(failures, err)
+	}
+	return failures
 }
 
 // NodeConfigPath is stable across command exits; k3d bind mounts must never

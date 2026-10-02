@@ -7,12 +7,15 @@ import (
 
 // Resources we refuse to read rather than merely ignore. Secrets are never read
 // at all; Events are high-volume churn that can only ever echo a reference some
-// other resource already carries. Everything else is scanned, because a kind
-// allowlist is exactly how workspaces.reliant.dev images went unprotected.
+// other resource already carries; ComponentStatus is a deprecated health probe
+// with no spec, which cannot hold an image reference and makes kubectl warn on
+// every listing. Everything else is scanned, because a kind allowlist is
+// exactly how workspaces.reliant.dev images went unprotected.
 var unscannedResources = map[string]bool{
 	"secrets":              true,
 	"events":               true,
 	"events.events.k8s.io": true,
+	"componentstatuses":    true,
 }
 
 // listableResources parses `kubectl api-resources --verbs=list -o name` into the

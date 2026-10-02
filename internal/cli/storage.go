@@ -33,12 +33,15 @@ import (
 // "use the real machine-local default" in production and as "skip" under test.
 // os.UserCacheDir only fails on a host with no HOME, where there is also
 // nothing to reclaim.
-func maintenanceRunner(p storage.Policy, out io.Writer) storage.Runner {
+//
+// policyPath is where the policy was loaded from; maintenance state that must
+// survive an interrupted pass (a registry stopped for GC) is kept beside it.
+func maintenanceRunner(p storage.Policy, policyPath string, out io.Writer) storage.Runner {
 	sourceRoot, err := gitsource.DefaultCacheRoot()
 	if err != nil {
 		sourceRoot = ""
 	}
-	return storage.Runner{Policy: p, Out: out, TempRoot: os.TempDir(), SourceCacheRoot: sourceRoot}
+	return storage.Runner{Policy: p, Out: out, TempRoot: os.TempDir(), SourceCacheRoot: sourceRoot, PolicyPath: policyPath}
 }
 
 func newStorageCmd() *cobra.Command {
@@ -93,7 +96,7 @@ func newStorageCmd() *cobra.Command {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return storage.WithLock(path, func() error {
-			if err := maintenanceRunner(p, cmd.OutOrStdout()).GC(ctx, apply); err != nil {
+			if err := maintenanceRunner(p, path, cmd.OutOrStdout()).GC(ctx, apply); err != nil {
 				return err
 			}
 			if !apply {
@@ -122,7 +125,7 @@ func newStorageCmd() *cobra.Command {
 			p, path, err := load()
 			if err == nil {
 				err = storage.WithLock(path, func() error {
-					return maintenanceRunner(p, cmd.OutOrStdout()).GC(ctx, true)
+					return maintenanceRunner(p, path, cmd.OutOrStdout()).GC(ctx, true)
 				})
 			}
 			if err != nil {

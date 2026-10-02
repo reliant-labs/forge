@@ -60,6 +60,12 @@ const (
 	// StalePin means the project's forge is older than the binary
 	// generating into it.
 	StalePin
+	// BehindPin means the running binary is OLDER than the project's pin.
+	// Unlike StalePin this is not about the Go library half — forge's KCL
+	// schema module is embedded in the binary, so an older binary renders
+	// the project's KCL against an older schema and reports the missing
+	// field against the PROJECT's line number. See skew.go.
+	BehindPin
 )
 
 // Assessment is the verdict plus the two versions it was computed from, so
@@ -137,6 +143,15 @@ func Decide(binaryVersion, rawBuildVersion, projectVersion string, local bool) V
 	}
 	if semver.Compare(projectVersion, binaryVersion) < 0 {
 		return StalePin
+	}
+	// The project is NEWER than the binary. For the Go half that is the
+	// ordinary upgrade order (see the package header), but forge's KCL
+	// schema module is embedded in THIS binary, so the render would
+	// evaluate the project's KCL against an older schema and blame the
+	// project's own line number for a field it is entitled to use. That is
+	// the skew this verdict exists to name — see skew.go.
+	if BinaryBehindPin(projectVersion, binaryVersion) && !SkewOverridden() {
+		return BehindPin
 	}
 	return OK
 }

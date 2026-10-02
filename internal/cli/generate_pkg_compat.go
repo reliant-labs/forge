@@ -83,8 +83,27 @@ func checkPkgCompat(projectDir string) error {
 		return unreleasableBuildErr(projectDir, assessment.ProjectVersion)
 	case forgecompat.StalePin:
 		return staleForgePinErr(projectDir, assessment.ProjectVersion, assessment.BinaryVersion)
+	case forgecompat.BehindPin:
+		return binaryBehindPinErr(projectDir, assessment.ProjectVersion, assessment.BinaryVersion)
 	}
 	return nil
+}
+
+// binaryBehindPinErr is the refusal for a binary OLDER than the project's
+// pin. It is a refusal rather than a warning because forge's KCL schema
+// module is embedded in the binary: generate renders the project's
+// deploy/kcl, so an older binary evaluates it against an older schema and
+// reports a field the project is entitled to use as an error on the
+// PROJECT's line number. See internal/forgecompat/skew.go.
+func binaryBehindPinErr(projectDir, projectVersion, binaryVersion string) error {
+	base := cliutil.UserErr("forge generate (forge version compatibility)",
+		forgecompat.SkewDiagnosis(projectVersion, binaryVersion),
+		"",
+		fmt.Sprintf("install the pinned forge (the command above), or if the PIN is what is "+
+			"wrong, move it deliberately with `%s project upgrade`. To proceed anyway: %s=1",
+			Name(), forgecompat.SkewOverrideEnv))
+
+	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }
 
 // directRetiredPkgRequire returns the version of the retired forge/pkg module

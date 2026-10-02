@@ -21,6 +21,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/devstack"
+	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/internal/kubeconfig"
@@ -262,6 +263,15 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 		return nil, err
 	}
 
+	// The project's pin vs this binary. Read once: it feeds the up-front
+	// refusal AND the annotation on a render that fails anyway. Resolved
+	// from workDir, which may be a directory beneath the project root —
+	// PinnedForgeVersion walks up to find forge.yaml.
+	pinnedVersion := forgecompat.PinnedForgeVersion(workDir)
+	if err := skewPreflight(pinnedVersion, buildinfo.Version()); err != nil {
+		return nil, err
+	}
+
 	forgeArg, err := forgeModuleArg(workDir)
 	if err != nil {
 		return nil, err
@@ -295,7 +305,11 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 		)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("kpm run %s: %w", source, err)
+		// Lead with the skew when there is one — see annotateRenderErr.
+		// The preflight above already refused every COMPARABLE skew, so
+		// this is the backstop for the pairings it stayed quiet about.
+		return nil, annotateRenderErr(fmt.Errorf("kpm run %s: %w", source, err),
+			pinnedVersion, buildinfo.Version())
 	}
 	return []byte(res.GetRawJsonResult()), nil
 }

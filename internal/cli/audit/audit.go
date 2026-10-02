@@ -54,6 +54,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
@@ -393,6 +394,24 @@ func auditVersion(cfg *config.ProjectConfig, projectDir string) audittype.Catego
 			fmt.Sprintf("forge_version pinned to 0.0.0 (deliberate first-user sentinel; binary is %s) — not a stale pin", binv))
 	case pinned == binv:
 		summaries = append(summaries, fmt.Sprintf("forge_version %s matches binary", pinned))
+	case forgecompat.BinaryBehindPin(pinned, binv):
+		// ERROR, not warn, and the only direction that gets escalated.
+		//
+		// A binary NEWER than the pin has every schema field the pin
+		// declared, so the project merely has an upgrade pending — the
+		// ordinary state between a forge release and `forge project
+		// upgrade`. A binary OLDER than the pin is missing fields the
+		// project is entitled to use, and since forge's KCL schema module
+		// is embedded in the binary, its render fails blaming the
+		// project's own line number. That is a broken install, and burying
+		// it among warnings is how the original report got read as
+		// "probably fine". See internal/forgecompat/skew.go.
+		status = audittype.StatusError
+		summaries = append(summaries,
+			fmt.Sprintf("forge_version %s is pinned but the binary is %s — older than the pin, "+
+				"so renders will fail against this binary's embedded KCL schemas", pinned, binv))
+		details["hint"] = "install the pinned forge:\n    " +
+			forgecompat.InstallCommand(pinned)
 	default:
 		status = audittype.StatusWarn
 		summaries = append(summaries,

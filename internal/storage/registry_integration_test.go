@@ -103,14 +103,31 @@ func TestRegistryMaintenanceEndToEnd(t *testing.T) {
 	if err = r.RegistryGC(ctx, reg, true); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 30; i++ {
+	// RegistryGC stops and restarts the registry. This test publishes it on an
+	// EPHEMERAL host port (127.0.0.1::5000), and Docker assigns a new one on
+	// `docker start`, so the pre-GC URL is dead: re-read the published port.
+	// (k3d registries are created with a fixed host port, which survives the
+	// restart — this re-resolution is the test's, not the product's.)
+	if base, err = r.endpoint(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
 		if _, err = registryRequest(ctx, base, "/v2/", http.MethodGet); err == nil {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if _, err = registryRequest(ctx, base, "/v2/app/manifests/"+digests["old"], http.MethodGet); err == nil {
+	if err != nil {
+		t.Fatalf("registry did not come back after GC: %v", err)
+	}
+	// Deleted means a 404 from a live registry — not merely "the request
+	// failed", which an unreachable registry would also satisfy.
+	_, err = registryRequest(ctx, base, "/v2/app/manifests/"+digests["old"], http.MethodGet)
+	if err == nil {
 		t.Fatal("expired manifest survived")
+	}
+	if !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("expired manifest check did not get a 404 from the registry: %v", err)
 	}
 	for _, tag := range []string{"kept", "latest"} {
 		if _, err = registryRequest(ctx, base, "/v2/app/manifests/"+digests[tag], http.MethodGet); err != nil {

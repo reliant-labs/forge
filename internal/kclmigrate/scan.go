@@ -596,11 +596,14 @@ func stripRegistry(src string) string {
 var controlPlaneOpenRe = regexp.MustCompile(`(?m)^([ \t]*)(\w+[ \t]*=[ \t]*)?forge\.ControlPlane[ \t]*\{`)
 
 // organizationDeclaredRe is an `organization = "…"` already present, in
-// either the inline or the own-line form. A `#` before it on the same line
-// makes it a comment and not a declaration — the pre-migration trees carry
-// commented examples, and re-seeding on top of one would be harmless but the
-// check is cheap.
-var organizationDeclaredRe = regexp.MustCompile(`(?m)^[^#\n]*(?:^|[{,\s])organization[ \t]*=[ \t]*"`)
+// either the inline or the own-line form.
+//
+// The leading `[^#\n]*` is what keeps a COMMENTED example from reading as a
+// declaration: the pre-migration trees carry several, and seeding on top of
+// one would write a second real declaration — a KCL duplicate key, which
+// fails at load. Anchored per line, so a `#` anywhere earlier on the same
+// line disqualifies it.
+var organizationDeclaredRe = regexp.MustCompile(`(?m)^[^#\n]*[{,\s]organization[ \t]*=[ \t]*"`)
 
 // seedOrganization adds `organization = "<placeholder>"` to a ControlPlane
 // that declares none.

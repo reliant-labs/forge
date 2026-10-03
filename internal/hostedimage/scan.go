@@ -164,7 +164,7 @@ func ScanOrgPlaceholder(dir string) bool {
 		if rerr != nil {
 			return nil
 		}
-		if m := organizationField.FindStringSubmatch(stripComments(string(src))); m != nil && IsOrgPlaceholder(m[1]) {
+		if m := organizationField.FindStringSubmatch(stripComments(string(src))); len(m) > 1 && IsOrgPlaceholder(m[1]) {
 			found = true
 		}
 		return nil

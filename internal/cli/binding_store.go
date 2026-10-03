@@ -154,30 +154,22 @@ type bundleRecorder interface {
 	Bundle(ctx context.Context, id string) (*release.BundleRecord, error)
 }
 
-// applyRecorder brackets an apply: one call before the bytes move, one after.
+// THERE IS NO applyRecorder SEAM, and its absence is the model.
 //
-// TWO METHODS, NOT ONE, and that is the point of the record. An apply that
-// began and never reported is a DIFFERENT fact from one that failed — past
-// its deadline it reads as abandoned, and "we could not look" is its own
-// answer. A single Record("it worked") call after the fact could not express
-// that, and would have nothing to say when the applier crashed mid-apply.
+// F3 declared one — BeginApply before the bytes moved, FinishApply after —
+// and F4 asked to widen it with a compare-and-set so a forge-driven apply
+// could assert the env had not moved under it. Both assumed forge was the
+// actuator. It is not: a promotion is declarative intent and a reconciler
+// converges the env to it, so an "I am applying now" call has no caller, and a
+// seam for one would be a second source of truth for the reconciler to
+// contradict.
 //
-// NOT WIDENED TO CARRY A COMPARE-AND-SET, and that is now a decision rather
-// than an omission. F4 asked for a guard parameter here so a forge-driven
-// apply could assert "the env's current promotion is still the one my plan
-// read" — necessary when forge was the actuator. Forge is not: the reconciler
-// converges every env, and nothing imperative is a source of truth. An
-// "I am applying now" API has no caller to guard.
-//
-// It is left exactly as F3 declared it rather than deleted, because this
-// package still SATISFIES it from the machine ledger and the hosted client,
-// and the records themselves are being repurposed as the observer's
-// "converged to B at T". Deleting the seam is F-BUNDLE-FLUX's call, with the
-// imperative apply path it removes wholesale.
-type applyRecorder interface {
-	BeginApply(ctx context.Context, a release.Apply, supersede bool) (release.Apply, error)
-	FinishApply(ctx context.Context, env string, o release.ApplyOutcome) error
-}
+// The RECORDS survive, repurposed: "converged to B at T" is a secondary
+// observation written by the control plane's own observer, read through
+// GetLiveView (hosted_apply.go decodes it). Nothing in forge writes one.
+// internal/ledgerfile still holds the reader for a machine ledger's existing
+// apply lines, which `forge ledger show` and `forge ledger export` render as
+// history.
 
 // sessionReporter records that a local stack is running here.
 //
@@ -538,9 +530,9 @@ func (l machineReleaseLedger) Location() string { return l.store.Dir() }
 
 // ─── The machine ledger: the new records ─────────────────────────────────────
 
-// machineRecordStore implements bundleRecorder, applyRecorder and
-// sessionReporter against the machine ledger. The hosted half arrives with
-// the RPC wiring.
+// machineRecordStore implements bundleRecorder and sessionReporter against
+// the machine ledger. It writes no apply record: forge does not apply, so
+// there is no apply of forge's for it to bracket.
 //
 // A separate type from machineBindingStore rather than more methods on it:
 // the two have disjoint consumers, and a store that is handed to `forge env
@@ -589,14 +581,6 @@ func (s machineRecordStore) Bundle(_ context.Context, id string) (*release.Bundl
 	return s.store.Bundle(id)
 }
 
-func (s machineRecordStore) BeginApply(_ context.Context, a release.Apply, supersede bool) (release.Apply, error) {
-	return s.store.BeginApply(a, supersede)
-}
-
-func (s machineRecordStore) FinishApply(_ context.Context, env string, o release.ApplyOutcome) error {
-	return s.store.FinishApply(env, o)
-}
-
 func (s machineRecordStore) ReportSession(_ context.Context, sess release.LocalSession) error {
 	return s.store.ReportSession(sess)
 }
@@ -609,6 +593,5 @@ var (
 	_ bindingHistoryReader = machineBindingStore{}
 	_ releaseLedger        = machineReleaseLedger{}
 	_ bundleRecorder       = machineRecordStore{}
-	_ applyRecorder        = machineRecordStore{}
 	_ sessionReporter      = machineRecordStore{}
 )

@@ -251,7 +251,7 @@ func TestPromoteRefusal_PlanStaleCarriesTheRecomputedPlan(t *testing.T) {
 		Details: []cloud.ErrorDetail{{Type: promoteRefusalType, Debug: detail}},
 	}
 
-	refused := applyRefusalFromWire(wireErr)
+	refused := (&hostedStore{}).refusalFromWire("prod", wireErr)
 	if refused == nil {
 		t.Fatal("a reason-carrying failure is a refusal")
 	}
@@ -272,12 +272,6 @@ func TestPromoteRefusal_PlanStaleCarriesTheRecomputedPlan(t *testing.T) {
 	if got := refused.toJSON(); got.CurrentPlan == nil || got.CurrentPlan.Digest != plan.Digest {
 		t.Error("--json must carry the recomputed plan too")
 	}
-	// The same refusal through the PROMOTE path, which is the other write
-	// that recomputes the plan. One type, one mapping, both writes.
-	store := &hostedStore{}
-	if p := store.refusalFromWire("prod", wireErr); p == nil || p.CurrentPlan == nil {
-		t.Error("the promote path must adopt the recomputed plan as well")
-	}
 }
 
 // TestPromoteRefusal_PlanUnacknowledgedNamesTheCodes: the operator needs the
@@ -291,7 +285,7 @@ func TestPromoteRefusal_PlanUnacknowledgedNamesTheCodes(t *testing.T) {
 		"detail":      "1 stop-class finding was not acknowledged",
 		"currentPlan": planToWireFixture(plan),
 	})
-	refused := applyRefusalFromWire(&cloud.Error{
+	refused := (&hostedStore{}).refusalFromWire("prod", &cloud.Error{
 		Code: cloud.CodeFailedPrecondition, Reason: reasonPlanUnacknowledged,
 		Details: []cloud.ErrorDetail{{Type: promoteRefusalType, Debug: detail}},
 	})
@@ -330,7 +324,7 @@ func TestPromoteRefusal_AnUnreadablePlanDoesNotHideTheRefusal(t *testing.T) {
 			"digest": "sha256:" + rep64('0'), "environmentId": "env_prod", "bundleId": "bnd_1",
 		},
 	})
-	refused := applyRefusalFromWire(&cloud.Error{
+	refused := (&hostedStore{}).refusalFromWire("prod", &cloud.Error{
 		Code: cloud.CodeFailedPrecondition, Reason: reasonPlanStale,
 		Details: []cloud.ErrorDetail{{Type: promoteRefusalType, Debug: detail}},
 	})
@@ -348,32 +342,10 @@ func TestPromoteRefusal_AnUnreadablePlanDoesNotHideTheRefusal(t *testing.T) {
 	}
 }
 
-// TestBeginApply_RefusalIsTheSameTypeAsAPromoteRefusal: BeginApply applies the
-// same CAS, the same plan recompute and the same stop-class check under the
-// same row lock, so a second error type would mean a second exit-code mapping
-// that could disagree about what 3 means.
-func TestBeginApply_RefusalIsTheSameTypeAsAPromoteRefusal(t *testing.T) {
-	t.Parallel()
-	f := &fakeDSOTCaller{errs: map[string]error{
-		procBeginApply: &cloud.Error{
-			Code: cloud.CodeFailedPrecondition, Reason: reasonPlanStale, Message: "refused",
-		},
-	}}
-	_, err := hostedApplyClient{client: f}.BeginApply(context.Background(), "env_prod",
-		testApplyRecord(), appendGuard{ExpectedCurrentID: "pr_0"})
-	var refused *promoteRefusedError
-	if !errors.As(err, &refused) {
-		t.Fatalf("want a *promoteRefusedError, got %T: %v", err, err)
-	}
-	if refused.ExitCode() != exitConflict {
-		t.Errorf("exit = %d, want %d", refused.ExitCode(), exitConflict)
-	}
-}
-
 // ─── F-15 ────────────────────────────────────────────────────────────────────
 
 // TestF15_UnimplementedIsATypedError: a server older than this forge answers
-// UNIMPLEMENTED on RecordBundle and BeginApply. forge types that rather than
+// UNIMPLEMENTED on RecordBundle. forge types that rather than
 // deciding what to do about it — F6a chooses the fallback, and once protected
 // envs exist (#516, L6) a protected env refuses instead. Baking either
 // behaviour in here would put the weaker of the two in the wire layer, where
@@ -392,13 +364,6 @@ func TestF15_UnimplementedIsATypedError(t *testing.T) {
 		f := &fakeDSOTCaller{errs: map[string]error{procRecordBundle: unimplemented}}
 		_, _, err := hostedBundleClient{client: f}.RecordBundle(context.Background(), "prod", "env_prod",
 			"r", []byte("{}"), []byte("{}"), release.Run{})
-		assertPredatesBundles(t, err)
-	})
-
-	t.Run("BeginApply", func(t *testing.T) {
-		f := &fakeDSOTCaller{errs: map[string]error{procBeginApply: unimplemented}}
-		_, err := hostedApplyClient{client: f}.BeginApply(context.Background(), "env_prod",
-			testApplyRecord(), appendGuard{ExpectUnbound: true})
 		assertPredatesBundles(t, err)
 	})
 }

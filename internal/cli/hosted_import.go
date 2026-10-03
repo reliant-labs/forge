@@ -386,6 +386,28 @@ func importBundleRows(in []importBundle) ([]map[string]any, error) {
 	return rows, nil
 }
 
+// applyWorkloadsStruct renders an imported outcome's per-resource results as
+// the generic object a google.protobuf.Struct holds. It goes through release's
+// own JSON so there is exactly one spelling of ApplyWorkload on the wire.
+//
+// It lives beside its one caller, the IMPORT. Nothing else in forge encodes an
+// apply outcome, because nothing else writes one: forge does not apply, so it
+// never has an outcome of its own to report. An import is the exception that
+// proves the rule — it carries records a PREVIOUS forge wrote, as history, and
+// the server labels them with the importing credential precisely because
+// nobody can attest to who observed a deploy from last year.
+func applyWorkloadsStruct(in []release.ApplyWorkload) (map[string]any, error) {
+	raw, err := json.Marshal(map[string]any{"workloads": in})
+	if err != nil {
+		return nil, fmt.Errorf("apply outcome workloads: %w", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("apply outcome workloads: %w", err)
+	}
+	return out, nil
+}
+
 func importApplyRows(in []importApply) []map[string]any {
 	rows := make([]map[string]any, 0, len(in))
 	for _, a := range in {

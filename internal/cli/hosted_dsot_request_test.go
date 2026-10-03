@@ -214,202 +214,59 @@ func TestGetBundle_NotFoundIsAnAnswer(t *testing.T) {
 	})
 }
 
-// ─── BeginApply ──────────────────────────────────────────────────────────────
+// ─── Reading a convergence record ────────────────────────────────────────────
 
-// TestBeginApply_SendsCASPlanAndDeadline pins BeginDeployApplyRequest's full
-// field set, including the three O-13 additions (planDigest = 8,
-// acknowledgedFindings = 9, deadlineSeconds = 10) and the CAS spelling.
-func TestBeginApply_SendsCASPlanAndDeadline(t *testing.T) {
-	t.Parallel()
-	f := &fakeDSOTCaller{replies: map[string]any{
-		procBeginApply: map[string]any{"apply": json.RawMessage(cpApplyFixture)},
-	}}
-	c := hostedApplyClient{client: f}
-	begun := time.Date(2026, 10, 2, 10, 1, 0, 0, time.UTC)
-	a, err := c.BeginApply(context.Background(), "env_prod", release.Apply{
-		Env: "prod", BundleID: "bnd_1", PromotionID: "pr_1",
-		Run:                  release.Run{ID: "github:acme/app/999/1"},
-		PlanDigest:           "sha256:" + rep64('f'),
-		AcknowledgedFindings: []string{release.FindingStatefulDeletion},
-		CreatedAt:            begun,
-		// 1800s: the budget travels as the DEADLINE the caller recorded,
-		// so the apply row and the server's enforcement cannot disagree.
-		DeadlineAt: begun.Add(30 * time.Minute),
-	}, appendGuard{ExpectedCurrentID: "pr_0", SupersedeInFlight: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.ID != "apl_1" {
-		t.Errorf("apply id = %q", a.ID)
-	}
-	wantFields(t, f.body(t, procBeginApply), map[string]any{
-		"environmentId": "env_prod",
-		"bundleId":      "bnd_1",
-		"promotionId":   "pr_1",
-		// BeginDeployApplyRequest spells the CAS as two plain fields,
-		// not PromoteReleaseRequest's oneof — and with a DIFFERENT name
-		// for the unbound case; see the next test.
-		"expectedCurrentPromotionId": "pr_0",
-		"supersedeInFlight":          true,
-		"run":                        map[string]any{"id": "github:acme/app/999/1"},
-		"planDigest":                 "sha256:" + rep64('f'),
-		"acknowledgedFindings":       []any{release.FindingStatefulDeletion},
-		"deadlineSeconds":            float64(1800),
-	})
-}
-
-// TestBeginApply_ExpectUnboundUsesItsOwnSpelling is the subtlest thing these
-// fixtures caught, and it is a PROTO fact rather than a forge choice.
+// The BeginApply / FinishApply / ListApplies request tests are gone with the
+// requests: forge does not apply, so it issues none of them. What survives is
+// the half that still runs — DECODING a record the control plane's observer
+// wrote, which arrives on GetLiveView.
 //
-// The two requests express the identical compare-and-set and disagree on one
-// field name: PromoteReleaseRequest's oneof member is `expect_unbound`
-// (tag 8), BeginDeployApplyRequest's plain bool is `expected_unbound`
-// (tag 5). Sharing one encoder sent `expectUnbound` to BeginApply, which
-// connect-go discards as unknown — so a first apply asserting "this env has
-// no promotion" would have reached the server asserting NOTHING, and the CAS
-// that exists to stop a stomp would silently not have run. No error, no log
-// line, just an anti-stomp guard that is not there.
-func TestBeginApply_ExpectUnboundUsesItsOwnSpelling(t *testing.T) {
+// TestApplyFromWire_DerivesAbandonedRatherThanSuccess keeps the one property
+// those tests were really protecting. An apply with no outcome means two
+// different things, and only the deadline separates them: before it the work
+// is running, after it nobody is ever going to report. Reading the absence as
+// success would turn "we could not look" into "it worked", which is failure
+// mode F-2 and the reason the derivation is in one place.
+func TestApplyFromWire_DerivesAbandonedRatherThanSuccess(t *testing.T) {
 	t.Parallel()
-	f := &fakeDSOTCaller{replies: map[string]any{
-		procBeginApply: map[string]any{"apply": json.RawMessage(cpApplyFixture)},
-	}}
-	c := hostedApplyClient{client: f}
-	begun := time.Date(2026, 10, 2, 10, 1, 0, 0, time.UTC)
-	if _, err := c.BeginApply(context.Background(), "env_prod", release.Apply{
-		Env: "prod", BundleID: "bnd_1",
-		CreatedAt: begun, DeadlineAt: begun.Add(30 * time.Minute),
-	}, appendGuard{ExpectUnbound: true}); err != nil {
-		t.Fatal(err)
-	}
-	body := f.body(t, procBeginApply)
-	wantFields(t, body, map[string]any{"expectedUnbound": true})
-	if _, present := body["expectUnbound"]; present {
-		t.Error("`expectUnbound` is PROMOTE's spelling; BeginApply discards it, leaving the apply with no expectation at all")
-	}
-	if _, present := body["expectedCurrentPromotionId"]; present {
-		t.Error("the two expectation members are exclusive; both were sent")
-	}
-
-	// And PROMOTE still uses its own, so the fix did not swap the bug to
-	// the other side.
-	promoteReq := map[string]any{}
-	guardWireFields(appendGuard{ExpectUnbound: true}, promoteReq)
-	if _, present := promoteReq["expectUnbound"]; !present {
-		t.Errorf("promote's oneof member is expectUnbound; got %v", promoteReq)
-	}
-}
-
-// ─── FinishApply ─────────────────────────────────────────────────────────────
-
-// TestFinishApply_SendsTheReportAndNeverItsAuthor pins
-// FinishDeployApplyRequest, including observedObjects as DeployObjectHash
-// (camelCase apiVersion), and the one field forge must NOT send.
-func TestFinishApply_SendsTheReportAndNeverItsAuthor(t *testing.T) {
-	t.Parallel()
-	f := &fakeDSOTCaller{replies: map[string]any{
-		procFinishApply: map[string]any{"apply": json.RawMessage(cpApplyFixture), "created": true},
-	}}
-	c := hostedApplyClient{client: f}
-	finished := time.Date(2026, 10, 2, 10, 5, 0, 0, time.UTC)
-	_, created, err := c.FinishApplyWithObserved(context.Background(), "prod",
-		release.ApplyOutcome{
-			ApplyID: "apl_1", Status: release.ApplySucceeded, Summary: "ok",
-			Workloads: []release.ApplyWorkload{{Name: "api", Cluster: "prod-ctx", State: "ready"}},
-			// A client-supplied attribution, which must be dropped: the
-			// reporting party cannot vouch for itself.
-			ReportedBy: "whoever-I-say",
-			FinishedAt: finished,
-		},
-		[]release.ShapeObject{{
-			Cluster: "prod-ctx", APIVersion: "apps/v1", Kind: "Deployment",
-			Namespace: "app", Name: "api", Hash: "sha256:" + rep64('a'),
-		}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !created {
-		t.Error("created = false on a first report")
-	}
-	body := f.body(t, procFinishApply)
-	wantFields(t, body, map[string]any{
-		"applyId":    "apl_1",
-		"status":     "succeeded",
-		"summary":    "ok",
-		"finishedAt": "2026-10-02T10:05:00Z",
-		// A google.protobuf.Struct carrying forge's own ApplyWorkload
-		// list verbatim — snake_case-free here only because these field
-		// names happen to be single words. The nesting under "workloads"
-		// is what matters: a Struct is an OBJECT, so a bare list could
-		// not be sent.
-		"workloads": map[string]any{"workloads": []any{
-			map[string]any{"name": "api", "cluster": "prod-ctx", "state": "ready"},
-		}},
-		"observedObjects": []any{map[string]any{
-			"cluster": "prod-ctx", "apiVersion": "apps/v1", "kind": "Deployment",
-			"namespace": "app", "name": "api", "hash": "sha256:" + rep64('a'),
-		}},
-	})
-	if _, present := body["reportedBy"]; present {
-		t.Error("reportedBy is SERVER-SET; forge must never send it — a report whose author the author chose is not attributable")
-	}
-}
-
-// TestFinishApply_RefusesAnInvalidOutcome: an outcome with no status or no
-// finish time is refused before a round trip. It is written at most once and
-// is immutable afterwards, so there is no fixing it later.
-func TestFinishApply_RefusesAnInvalidOutcome(t *testing.T) {
-	t.Parallel()
-	f := &fakeDSOTCaller{}
-	c := hostedApplyClient{client: f}
-	if _, _, err := c.FinishApply(context.Background(), "prod",
-		release.ApplyOutcome{ApplyID: "apl_1", Status: "maybe", FinishedAt: time.Now()}); err == nil {
-		t.Fatal("want a refusal for a status outside the closed set")
-	}
-	if len(f.calls) != 0 {
-		t.Errorf("nothing should have been sent; calls = %+v", f.calls)
-	}
-}
-
-// ─── ListApplies ─────────────────────────────────────────────────────────────
-
-// TestListApplies_KeysetAndDerivedState: the page cursor is sent as
-// beforeApplyId, and each row's state is derived once, here, so no caller
-// draws the abandoned line in its own place.
-func TestListApplies_KeysetAndDerivedState(t *testing.T) {
-	t.Parallel()
-	// Two applies: one with a terminal outcome, one with none whose
-	// deadline has passed.
-	running := `{"id":"apl_2","environmentId":"env_prod","bundleId":"bnd_2",
+	const noOutcome = `{"id":"apl_2","environmentId":"env_prod","bundleId":"bnd_2",
 	  "createdAt":"2026-10-02T11:00:00Z","deadlineAt":"2026-10-02T11:30:00Z"}`
-	f := &fakeDSOTCaller{replies: map[string]any{
-		procListApplies: map[string]any{"applies": []any{
-			json.RawMessage(running), json.RawMessage(cpApplyFixture),
-		}},
-	}}
-	c := hostedApplyClient{client: f}
-	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC) // past apl_2's deadline
-	rows, err := c.ListApplies(context.Background(), "prod", "env_prod", "apl_9", 25, now)
+
+	var w wireApply
+	if err := json.Unmarshal([]byte(noOutcome), &w); err != nil {
+		t.Fatal(err)
+	}
+	a, outcome, err := applyFromWire("prod", w)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d", len(rows))
+	if outcome != nil {
+		t.Error("a record with no outcome decodes to no outcome; the absence IS the fact")
 	}
-	if rows[0].State != release.ApplyAbandoned {
-		t.Errorf("an apply with no outcome past its deadline = %q, want abandoned (never success)", rows[0].State)
+	past := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC) // past the deadline
+	if got := release.DeriveApplyState(a, outcome, past); got != release.ApplyAbandoned {
+		t.Errorf("past its deadline with no outcome = %q, want abandoned (never success)", got)
 	}
-	if rows[0].Outcome != nil {
-		t.Error("an abandoned apply has no outcome; the absence IS the fact")
+	within := time.Date(2026, 10, 2, 11, 15, 0, 0, time.UTC)
+	if got := release.DeriveApplyState(a, outcome, within); got != release.ApplyRunning {
+		t.Errorf("before its deadline with no outcome = %q, want running", got)
 	}
-	if rows[1].State != release.ApplyStateOK {
-		t.Errorf("row 1 state = %q", rows[1].State)
+
+	// And a terminal outcome decodes as itself.
+	var done wireApply
+	if err := json.Unmarshal([]byte(cpApplyFixture), &done); err != nil {
+		t.Fatal(err)
 	}
-	wantFields(t, f.body(t, procListApplies), map[string]any{
-		"environmentId": "env_prod",
-		"limit":         float64(25),
-		"beforeApplyId": "apl_9",
-	})
+	da, doutcome, err := applyFromWire("prod", done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doutcome == nil {
+		t.Fatal("the fixture carries an outcome")
+	}
+	if got := release.DeriveApplyState(da, doutcome, past); got != release.ApplyStateOK {
+		t.Errorf("a succeeded record = %q, want %q", got, release.ApplyStateOK)
+	}
 }
 
 // ─── PlanDeploy ──────────────────────────────────────────────────────────────

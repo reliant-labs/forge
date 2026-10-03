@@ -119,6 +119,14 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		// rebuild" — without it a CI author reads "pass --yes" and re-runs
 		// the no-version form, paying for the build twice.
 		Confirm: newDeployConfirm(p, cut.Version),
+		// The SERVER-BINDING half (O-13). The bundle this plan is
+		// computed against was written by step 1's build, which is why
+		// the plan is resolved HERE and not before it.
+		DeployPlan: planForDeploy(ctx, projectDir, envName, cut.Version, ledger, progressWriter(f.jsonOut)),
+		Approval: deployApproval{
+			Digest:               p.approve,
+			AcknowledgedFindings: p.acknowledgeDestructive,
+		},
 		Follow: &promoteFollowOptions{
 			NoWait:   p.noWait,
 			jsonOut:  f.jsonOut,

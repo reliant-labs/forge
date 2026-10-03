@@ -194,7 +194,40 @@ func (e *promoteRefusedError) Error() string {
 	if hint := refusalHint(e.Reason); hint != "" {
 		msg += "\n  " + hint
 	}
+	// F-19: a stale plan carries the FRESHLY RECOMPUTED one, and showing it
+	// here is the difference between an operator knowing what changed and
+	// running a second command to find out. The refusal is the moment the
+	// question is asked, so it is the moment to answer it.
+	//
+	// Only the sections and the new digest, not the whole document: the
+	// operator's next act is to compare this against what they approved,
+	// and a full re-render would bury that under the parts that did not
+	// change.
+	if e.CurrentPlan != nil {
+		msg += "\n" + summarizeRecomputedPlan(*e.CurrentPlan)
+	}
 	return msg
+}
+
+// summarizeRecomputedPlan renders the plan a refusal carried: its digest, so
+// an approval can name it, and its findings by class.
+func summarizeRecomputedPlan(p release.Plan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  the plan as it is NOW (digest %s):\n", p.Digest)
+	if len(p.Findings) == 0 {
+		fmt.Fprintf(&b, "    no changes found\n")
+	}
+	for _, f := range p.Findings {
+		fmt.Fprintf(&b, "    [%s] %s %s", f.Class, f.Code, f.Subject)
+		if f.Detail != "" {
+			fmt.Fprintf(&b, " — %s", f.Detail)
+		}
+		fmt.Fprintf(&b, "\n")
+	}
+	if stops := p.StopCodes(); len(stops) > 0 {
+		fmt.Fprintf(&b, "    DESTRUCTIVE: %s\n", strings.Join(stops, ", "))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // ExitCode is §3.A's table, through the one mapping every verb reads.

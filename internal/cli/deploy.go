@@ -324,6 +324,11 @@ type promoteCmdFlags struct {
 	// default, which is the whole of O-13 — see deploy_confirm.go.
 	yes      bool
 	planOnly bool
+	// The SERVER-BINDING half (deploy_plan_gate.go). approve names the
+	// exact plan reviewed; acknowledgeDestructive names the stop-class
+	// findings accepted, which --yes deliberately does not cover.
+	approve                string
+	acknowledgeDestructive []string
 
 	// --from / --from-promotion, held FLAT rather than as a nested
 	// promoteFromOptions so each is a plain flag target like every field
@@ -362,6 +367,10 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Proceed without the interactive confirmation: \"I read the plan\". The paved CI path. The plan is still computed and printed")
 	flags.BoolVar(&f.planOnly, "plan-only", false,
 		"Build, push and cut as usual, print the plan, and STOP without writing the promotion (exit 0). The first stage of a two-stage pipeline")
+	flags.StringVar(&f.approve, "approve", "",
+		"Proceed only if the plan is EXACTLY this digest (from an earlier --plan-only). The stronger form of --yes, for a two-stage pipeline where a human reviews stage one's plan: a plan that changed between the stages is refused (exit 3, plan_stale) rather than re-approved blind. The digest also travels on the write, and the server recomputes the plan under the environment's row lock before admitting it")
+	flags.StringSliceVar(&f.acknowledgeDestructive, "acknowledge-destructive", nil,
+		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 
 	// Anti-stomp. Every release deploy compare-and-sets against the plan's
@@ -559,6 +568,13 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		// The O-13 gate. Always stated by the command, so the verb always
 		// shows the plan and asks before writing a promotion.
 		Confirm: newDeployConfirm(p, ""),
+		// The SERVER-BINDING half (O-13): the §8.6 plan this deploy is
+		// judged against, plus what the caller approved.
+		DeployPlan: planForDeploy(ctx, projectDir, envName, p.version, ledger, progressWriter(f.jsonOut)),
+		Approval: deployApproval{
+			Digest:               p.approve,
+			AcknowledgedFindings: p.acknowledgeDestructive,
+		},
 		Follow: &promoteFollowOptions{
 			NoWait:   p.noWait,
 			jsonOut:  f.jsonOut,

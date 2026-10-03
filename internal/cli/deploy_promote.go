@@ -100,6 +100,26 @@ type promoteOptions struct {
 	// pass a nil Follow. `forge env deploy` always states it, so the verb
 	// always shows the plan and asks before writing.
 	Confirm *deployConfirm
+
+	// Approval is the SERVER-BINDING half of the gate
+	// (deploy_plan_gate.go): --approve's digest and the stop-class findings
+	// --acknowledge-destructive named. Zero means neither was passed, which
+	// is the interactive case — an operator approves the plan in front of
+	// them.
+	Approval deployApproval
+
+	// DeployPlan is the §8.6 plan this deploy is judged against: PlanDeploy's
+	// answer on a control-plane env, release.BuildPlan's locally on a file
+	// ledger. Nil means no bundle-backed plan could be computed, which is a
+	// real state rather than a failure — a never-built env, a control plane
+	// that predates bundles (F-15), a registry that could not be reached.
+	//
+	// NIL DOES NOT MEAN "APPROVED". It means the plan's findings are
+	// unavailable, so the digest and the destructive checks have nothing to
+	// judge; the promote plan above is still shown and still confirmed. What
+	// it must never do is let a stop-class finding through silently, which is
+	// why --approve against a nil plan is refused rather than ignored.
+	DeployPlan *release.Plan
 }
 
 // runPromote computes the change set and — unless --plan was passed — applies
@@ -179,6 +199,10 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 	plan.DryRun = opts.DryRun
 	plan.SourceNote = source.Note
+	// The §8.6 plan rides the document, so --json carries the digest a
+	// two-stage pipeline passes to --approve and the codes it passes to
+	// --acknowledge-destructive.
+	plan.DeployPlan = opts.DeployPlan
 	guard := guardFor(plan, opts.ExpectCurrent, opts.Supersede)
 	if guard.ExpectUnbound {
 		plan.Expected = expectUnboundLiteral
@@ -198,6 +222,19 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// ones whose subject IS the ledger — the plan/CAS/gates/provenance tests
 	// and `forge release`'s fixtures, the same callers that pass a nil Follow.
 	// Production always states it.
+	// The SERVER-BINDING half of the gate (O-13), BEFORE the confirmation.
+	//
+	// The order matters: a plan the caller did not approve, or one carrying
+	// an unacknowledged destructive change, must be refused without ever
+	// prompting. Prompting first would ask a human to approve a deploy that
+	// was going to be refused anyway, and — worse — would train them to
+	// answer yes to a question whose answer does not decide anything.
+	if !opts.DryRun {
+		if err := gateDeployOnPlan(env, opts.DeployPlan, opts.Approval, opts.Confirm, opts.JSON); err != nil {
+			return err
+		}
+	}
+
 	if !opts.DryRun && opts.Confirm != nil {
 		plan.renderForConfirmation(opts.JSON)
 		outcome := confirmDeployPlan(env, plan, *opts.Confirm)
@@ -233,6 +270,14 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			FromEnv:           source.FromEnv,
 			FromPromotionID:   source.FromPromotionID,
 			VersionFromSource: source.VersionFromSource,
+			// The approved plan travels ON THE WRITE, so the server can
+			// recompute it under the env row lock and refuse a mismatch
+			// (F-19, exit 3). Without this the digest would be something
+			// forge checked and the server took on trust, which is the
+			// opposite of the guarantee — a client could approve a plan it
+			// fabricated.
+			PlanDigest:           deployPlanDigest(opts.DeployPlan),
+			AcknowledgedFindings: opts.Approval.AcknowledgedFindings,
 		})
 		if writeErr == nil && opts.Follow != nil {
 			writeErr = followPromote(ctx, env, plan, ledger, *opts.Follow)

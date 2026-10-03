@@ -514,6 +514,19 @@ type promotePlan struct {
 	// actually there, and (for rollout_in_flight) the phase that made it
 	// in flight.
 	Refusal *promoteRefusalJSON `json:"refusal,omitempty"`
+	// DeployPlan is the §8.6 plan this deploy was judged against (O-13):
+	// the control plane's PlanDeploy answer, or the one built locally for a
+	// file-ledger env. Carried in --json so a pipeline reads the same
+	// evidence a human reading the rendered plan does — in particular the
+	// DIGEST, which is what a two-stage pipeline passes to --approve, and
+	// the stop-class codes, which are what it passes to
+	// --acknowledge-destructive.
+	//
+	// Nil when no plan could be computed: a never-built env, or a control
+	// plane that predates bundles (F-15). A consumer must read nil as
+	// "unavailable", never as "no changes" — the two are the distinction
+	// F-20 exists to preserve.
+	DeployPlan *release.Plan `json:"deploy_plan,omitempty"`
 
 	// targetSources is the source-built frontend snapshot the binding will be
 	// written with, the non-container half of targetResolved. Carried on the
@@ -798,6 +811,9 @@ func applyPromotePlan(ctx context.Context, bindings bindingStore, plan *promoteP
 		// beside it; the server resolves and re-checks both.
 		FromEnv:         w.FromEnv,
 		FromPromotionID: w.FromPromotionID,
+		// O-13: what this promote was approved against.
+		PlanDigest:           w.PlanDigest,
+		AcknowledgedFindings: w.AcknowledgedFindings,
 	}
 	guard := w.Guard
 	guard.ResolveVersionFromSource = w.VersionFromSource
@@ -833,6 +849,14 @@ type promoteWrite struct {
 	// past it — while FromEnv alone is unverified provenance.
 	FromEnv         string
 	FromPromotionID string
+	// PlanDigest is the §8.6 deploy plan this write was approved against,
+	// and AcknowledgedFindings the stop-class codes the caller named (O-13).
+	// Both are sent to the control plane, which RECOMPUTES the plan under
+	// the env row lock and refuses the write unless the digest matches and
+	// every stop finding is acknowledged. Empty on a file-ledger env, which
+	// has no server to recompute anything.
+	PlanDigest           string
+	AcknowledgedFindings []string
 	// VersionFromSource says the plan's release was PREVIEWED from the
 	// source environment, not named by the caller, so the write must send
 	// no version and let the server resolve it from FromPromotionID

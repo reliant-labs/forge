@@ -47,44 +47,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newEnvStatusCmd is `forge env status [environment...]`.
+// envStatusLongHelp is `forge env status`'s help text.
 //
-// The env is OPTIONAL — that is the one arity change the merge makes, and it
-// is what absorbs the old `env topology`: with no env there is nothing to
-// scope to, so the answer is every env. Several envs are accepted for the
-// same reason topology accepted them, to include one that is bound in the
-// ledger but not declared in this checkout.
-func newEnvStatusCmd() *cobra.Command {
-	var (
-		jsonOut bool
-		signal  string
-		verbose bool
-
-		// timeout serves two modes with DIFFERENT budgets, which is
-		// why its default is the zero sentinel rather than either
-		// one: a cluster read gets 60s (an unreachable cluster must
-		// fail a CI job, not hang it) and a wait gets 15m (a cold
-		// cloud rollout legitimately takes minutes). One flag cannot
-		// declare two defaults, so unset resolves per mode below.
-		timeout time.Duration
-
-		// --wait: the old `env wait`, whose options this fills.
-		wait     bool
-		waitOpts envWaitOptions
-
-		// --history: the old `env history`.
-		history bool
-		histQ   historyQuery
-
-		// The all-envs view's cluster reconciliation.
-		verifyClusters bool
-	)
-
-	cmd := &cobra.Command{
-		Use:   "status [environment...]",
-		Short: "The one read view of an environment: bound release, rollout, health, verify, gates, ledger",
-		Args:  cobra.ArbitraryArgs,
-		Long: `Report everything about an environment in one read.
+// A const rather than an inline literal because the text runs to ninety lines
+// and the constructor around it is otherwise a flag table: inline, a reader
+// looking for where --wait is declared scrolls past the whole manual first,
+// and each addition to the help pushed the constructor further over the
+// length budget for reasons that had nothing to do with its logic.
+const envStatusLongHelp = `Report everything about an environment in one read.
 
   forge env status                 every environment, and how far behind each is
   forge env status prod            prod right now: runtime AND release
@@ -106,7 +76,24 @@ WHAT ONE ENV'S REPORT CARRIES:
     the app's /healthz + /readyz, pprof and the telemetry backends;
   * GATES — the evidence recorded for the current promotion;
   * LEDGER FRESHNESS — whether this checkout's copy of the promotion log is
-    the newest one.
+    the newest one;
+  * RECORDS — the PROVENANCE of the bound release (tree, commit, branch,
+    dirty) and how the binding was made; the LATEST APPLY of it (in flight /
+    succeeded / failed / abandoned past its deadline, who reported it, which
+    bundle, when); and the LOCAL SESSIONS running it.
+
+RECORDS DESCRIBE, THEY DO NOT JUDGE. An abandoned apply or an unreadable
+records store never changes the exit code — the cluster comparison above
+already has an opinion about whether the bytes landed. An environment with no
+records shows "no apply recorded", which is an answer, never an error.
+
+LOCAL SESSIONS are PRESENCE ONLY: one row per worktree per machine, recorded
+best-effort by ` + "`forge env up`" + `, and never a promotion, a deploy target or an
+input to policy or billing. A record nothing refreshes is discarded after 24h,
+so a crashed stack simply goes quiet — shown as "quiet", not as failed, because
+forge cannot tell a crash from a closed laptop. Only LOCAL environments have
+sessions; for any other kind the report says so rather than showing an empty
+list, since "no sessions" and "sessions do not apply here" are different facts.
 
 THE TWO HALVES ARE NOT SYMMETRIC ABOUT FAILURE, on purpose. Runtime health
 REPORTS: "the app is down" is a state this command must be able to print, so
@@ -156,7 +143,46 @@ Examples:
   forge env status prod --wait                      # gate a release on the rollout
   forge env status prod --wait --timeout 0 --json   # where is it NOW? one read
   forge env status prod --history --limit 1 --json | jq -r '.promotions[0].id'
-  forge env status prod --json | jq -r '.images[] | select(.state == "drift")'`,
+  forge env status prod --json | jq -r '.images[] | select(.state == "drift")'`
+
+// newEnvStatusCmd is `forge env status [environment...]`.
+//
+// The env is OPTIONAL — that is the one arity change the merge makes, and it
+// is what absorbs the old `env topology`: with no env there is nothing to
+// scope to, so the answer is every env. Several envs are accepted for the
+// same reason topology accepted them, to include one that is bound in the
+// ledger but not declared in this checkout.
+func newEnvStatusCmd() *cobra.Command {
+	var (
+		jsonOut bool
+		signal  string
+		verbose bool
+
+		// timeout serves two modes with DIFFERENT budgets, which is
+		// why its default is the zero sentinel rather than either
+		// one: a cluster read gets 60s (an unreachable cluster must
+		// fail a CI job, not hang it) and a wait gets 15m (a cold
+		// cloud rollout legitimately takes minutes). One flag cannot
+		// declare two defaults, so unset resolves per mode below.
+		timeout time.Duration
+
+		// --wait: the old `env wait`, whose options this fills.
+		wait     bool
+		waitOpts envWaitOptions
+
+		// --history: the old `env history`.
+		history bool
+		histQ   historyQuery
+
+		// The all-envs view's cluster reconciliation.
+		verifyClusters bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "status [environment...]",
+		Short: "The one read view of an environment: bound release, rollout, health, verify, gates, ledger",
+		Args:  cobra.ArbitraryArgs,
+		Long:  envStatusLongHelp,
 		// The command's findings ARE its output; a cobra usage dump on a
 		// drift failure would bury them under the flag list.
 		SilenceUsage: true,

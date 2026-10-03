@@ -120,6 +120,20 @@ type envStatusDocument struct {
 	// verdict undetermined: the cluster was compared against a release
 	// that may not be the one this env is bound to.
 	Ledger *ledgerFreshnessReport `json:"ledger,omitempty"`
+	// Records is the deploy-source-of-truth half: the bound release's
+	// PROVENANCE, the LATEST APPLY of it, and the LOCAL SESSIONS running
+	// it (doc §6.3, §7.4). Nested for the same reason Runtime is — a
+	// different question with its own vocabulary — and ADDITIVE: nothing
+	// above it is renamed or repurposed, so `forge gate record --from`
+	// keeps recognising this document by top-level `bound` and `images`,
+	// and reliant's daemon keeps parsing the fields it already reads.
+	//
+	// It NEVER affects the verdict. An unreadable records store sets
+	// Detail inside here and leaves ok/exit_code alone; see
+	// env_status_records.go's header.
+	//
+	// Nil when the records were not read.
+	Records *envStatusRecords `json:"records,omitempty"`
 }
 
 // envTarget is WHERE an environment runs: the kubectl context and the
@@ -193,6 +207,12 @@ type envStatusOptions struct {
 	// looks like malformed JSON rather than like two halves sharing an
 	// output.
 	Runtime *upServicesReport
+	// Records reads the env's provenance / apply / session records. Nil
+	// uses readEnvRecords, which selects the store from the same
+	// declaration that selects the ledger. The fourth injected seam, for
+	// the reason the other three exist: a test of the RENDERING should be
+	// able to state the records without a ledger home or a control plane.
+	Records envRecordsReader
 	// HostedRollout reads a HOSTED env's rollout for a promotion. Nil uses
 	// the env's declared control plane (readDeclaredRollout). Setting it
 	// also selects the hosted path, so a test can state the observer's
@@ -234,8 +254,16 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	ledger := ledgerFreshnessOf(ctx, opts.Bindings, envName)
 	staleErr := staleLedgerError(envName, ledger)
 
+	// Read BEFORE the unbound branch, because an UNBOUND env still has
+	// records worth showing — a local stack is running right now, or an
+	// apply of an unreleased bundle was abandoned — and those are exactly
+	// the facts that explain why nothing is bound yet. Folding the failure
+	// into the document (collectEnvRecords) is what keeps this read off the
+	// verdict path.
+	records := collectEnvRecords(ctx, opts.Records, projectDir, envName, time.Now().UTC())
+
 	if !bound {
-		return reportUnboundEnv(envName, opts.JSON, opts.Runtime, ledger, staleErr)
+		return reportUnboundEnv(envName, opts.JSON, opts.Runtime, ledger, staleErr, records)
 	}
 	if len(binding.Resolved) == 0 {
 		// A binding with no resolved digests is a defective binding: it
@@ -297,6 +325,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			Tally:       tally,
 			Runtime:     opts.Runtime,
 			Ledger:      ledger,
+			Records:     &records,
 		}
 		if failure != nil {
 			report.Detail = failure.Error()
@@ -319,6 +348,12 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 
 	fmt.Printf("\n%d match, %d drifted, %d missing, %d untagged, %d unreachable\n",
 		tally.Match, tally.Drift, tally.Missing, tally.Untagged, tally.Unreachable)
+
+	// BEFORE the failure return, not after. A DRIFT whose cause is an apply
+	// that never finished is a different problem from one whose cause is a
+	// bad release, and printing the records only on success would withhold
+	// that distinction in precisely the case a reader needs it.
+	writeEnvStatusRecords(os.Stdout, records)
 
 	if failure != nil {
 		return failure
@@ -440,7 +475,7 @@ func verifyCluster(ctx context.Context, projectDir, envName string, resolved map
 // not use releases, and a permanently-red gate is a deleted gate. Say plainly
 // what the state is and exit 0 — unless this checkout's copy of the ledger is
 // stale (staleErr), in which case "never promoted" is not known either.
-func reportUnboundEnv(envName string, jsonOut bool, runtime *upServicesReport, ledger *ledgerFreshnessReport, staleErr error) error {
+func reportUnboundEnv(envName string, jsonOut bool, runtime *upServicesReport, ledger *ledgerFreshnessReport, staleErr error, records envStatusRecords) error {
 	const unboundDetail = "no release binding — the environment has never been promoted, so nothing is declared and there is nothing to verify"
 	if jsonOut {
 		// Still a complete, valid report. `bound: false` is the
@@ -454,6 +489,7 @@ func reportUnboundEnv(envName string, jsonOut bool, runtime *upServicesReport, l
 			Detail:  unboundDetail,
 			Runtime: runtime,
 			Ledger:  ledger,
+			Records: &records,
 		}
 		if staleErr != nil {
 			report.Detail = staleErr.Error()
@@ -469,6 +505,11 @@ func reportUnboundEnv(envName string, jsonOut bool, runtime *upServicesReport, l
 	}
 	fmt.Printf("Environment %s has no release binding — nothing is declared, so there is nothing to verify.\n", envName)
 	fmt.Printf("  Bind one with: forge env deploy %s <version>\n", envName)
+	// An unbound env can still be running a local stack, which is often
+	// the whole story: "nothing is promoted AND two worktrees are up" is
+	// the normal state of a dev env, and reading it as "nothing is
+	// happening" is what the records block prevents.
+	writeEnvStatusRecords(os.Stdout, records)
 	return nil
 }
 

@@ -100,18 +100,13 @@ func inTargetSet(targets []string, name string) bool {
 	return false
 }
 
-func newEnvUpCmd() *cobra.Command {
-	var opts upOptions
-
-	cmd := &cobra.Command{
-		Use:   "up <environment> [-- <dev-server flags>]",
-		Short: "Bring the whole dev loop up on this machine: build + deploy + host + frontend",
-		// The env is required; anything after `--` is dev-server
-		// passthrough. upPassthroughArgs enforces the shape (exactly one
-		// positional before the terminator) with a message that names the
-		// mistake, which ExactArgs(1) cannot do once `--` is in play.
-		Args: cobra.MinimumNArgs(1),
-		Long: `Bring the whole dev loop up for an environment, on this machine.
+// envUpLongHelp is `forge env up`'s help text.
+//
+// A const rather than an inline literal, for the reason envStatusLongHelp is:
+// the text is the longest in the CLI and it sat in the middle of the
+// constructor, so the flag declarations were a hundred and twenty lines below
+// the function they belong to.
+const envUpLongHelp = `Bring the whole dev loop up for an environment, on this machine.
 
 Reads deploy/kcl/<env>/ to figure out which services run in-cluster vs
 on the host and which frontends to start.
@@ -206,7 +201,42 @@ Render options (-D):
 
   Options forge derives itself (env, namespace, image_tag, image_digests,
   worktree, branch) are not yours to set and are rejected. -D is accepted on
-  ` + "`env up`" + ` only — a cluster apply must stay reproducible from the repo alone.`,
+  ` + "`env up`" + ` only — a cluster apply must stay reproducible from the repo alone.
+
+LOCAL SESSIONS (what this reports about itself)
+
+  Once the stack is up, forge records a PRESENCE row for it — one per
+  worktree per machine, naming the environment, the branch and whether the
+  tree is dirty — so ` + "`forge env status`" + ` and the Live view can show what is
+  running where. It is presence ONLY: never a promotion, never a release,
+  never a deploy target, and nothing reads it for policy or billing.
+
+  It is BEST-EFFORT and never blocks this command. If the record cannot be
+  written — no control plane, no network, no credential — forge says so once
+  and the stack runs normally. A supervising run refreshes the record while
+  it holds the foreground, and marks it stopped on Ctrl-C.
+
+  ` + "`--background`" + ` reports once at start and has no process left to refresh
+  it, so the record goes quiet until ` + "`forge env down`" + ` marks it stopped. A
+  record nothing refreshes is discarded after 24h, which is also what
+  happens when a stack crashes — forge does not try to tell those apart.
+
+  Only LOCAL environments report. An environment whose workloads run on the
+  platform or on a cluster has no local presence to describe, and forge says
+  which when it declines.`
+
+func newEnvUpCmd() *cobra.Command {
+	var opts upOptions
+
+	cmd := &cobra.Command{
+		Use:   "up <environment> [-- <dev-server flags>]",
+		Short: "Bring the whole dev loop up on this machine: build + deploy + host + frontend",
+		// The env is required; anything after `--` is dev-server
+		// passthrough. upPassthroughArgs enforces the shape (exactly one
+		// positional before the terminator) with a message that names the
+		// mistake, which ExactArgs(1) cannot do once `--` is in play.
+		Args: cobra.MinimumNArgs(1),
+		Long: envUpLongHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			frontendArgs, err := upPassthroughArgs(args, cmd.ArgsLenAtDash())
 			if err != nil {
@@ -464,7 +494,13 @@ host infrastructure servers while preserving their data.
 
 Use --all when a stack outlived its project directory: without a forge.yaml
 there is no project to scope to, and the per-environment form cannot reach
-it. ` + "`forge env ps`" + ` lists what is running first.`,
+it. ` + "`forge env ps`" + ` lists what is running first.
+
+The per-environment form also marks the stack's LOCAL SESSION — the presence
+row ` + "`forge env up`" + ` records so ` + "`forge env status`" + ` can show what is running
+where — as stopped. That is presence only, and it is best-effort: a record
+that cannot be updated never fails the teardown, and any record nothing
+refreshes is discarded after 24h regardless.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if all {
 				if len(args) > 0 {
@@ -1021,7 +1057,24 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		maybeOpportunisticGC(ctx, os.Stdout)
 	}
 
+	// PRESENCE, reported after the stack is actually up (§7.4). Here and
+	// not earlier because the row says "this stack is running", and a row
+	// written before the readiness gate would say it of a stack that had
+	// not bound its ports yet. Best-effort throughout: a nil session, an
+	// unreachable control plane and a non-local env all cost nothing but a
+	// note — see up_session.go.
+	session := newUpSession(ctx, projectDir, opts.env, os.Stdout, time.Now().UTC())
+	session.start(time.Now().UTC())
+
 	if detach {
+		// A DETACHED STACK HAS NO HEARTBEAT, and that is acceptable
+		// rather than a gap to close: this process is about to return,
+		// so there is nobody left to beat, and spawning a daemon whose
+		// only job is to refresh a cosmetic row would be a second
+		// lifecycle to supervise, reclaim and reap for no gain. The
+		// server GCs the row after 24 h and a reader greys it out long
+		// before that; `forge env down` reports it stopped. The help
+		// text says so.
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
 		return clusterErr
@@ -1041,10 +1094,23 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		return nil
 	}
 
+	// Heartbeat for as long as this run holds the foreground. Cancelled by
+	// the defer below, which is what makes "the heartbeat stops when the
+	// stack stops" true on every exit path out of the hold rather than
+	// only on the Ctrl-C one.
+	beatCtx, stopBeat := context.WithCancel(ctx)
+	defer stopBeat()
+	go session.heartbeatUntil(beatCtx)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	fmt.Println("\n[up] shutting down...")
+	// Stop the heartbeat BEFORE the teardown report, so a beat in flight
+	// cannot land after the stopped row and resurrect the session as
+	// running.
+	stopBeat()
+	session.stop(time.Now().UTC())
 	procs.shutdown()
 	return nil
 }
@@ -3664,6 +3730,13 @@ func runUpStop(env string) error {
 	if err != nil {
 		return err
 	}
+
+	// Mark the presence row stopped. This is the teardown report for a
+	// DETACHED stack (`forge env up --background`), which has no
+	// supervising process of its own to report it — see up_session.go.
+	// Best-effort: the stack is already stopped above, and a cosmetic row
+	// must not turn a successful teardown into a failure.
+	reportStoppedSession(context.Background(), projectDir, env, os.Stdout, time.Now().UTC())
 
 	// Host infrastructure is stopped SEPARATELY, because it is not one of
 	// the child processes the ledger tracks. A host-run postgres is started

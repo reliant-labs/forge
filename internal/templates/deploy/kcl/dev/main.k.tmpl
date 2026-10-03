@@ -202,6 +202,20 @@ _workloads = [
 
 _bundle = forge.Bundle {
     project = "{{.ProjectName}}"
+    # WHO APPLIES this env: forge, directly. This is YOUR machine's cluster
+    # (`k3d-{{.ProjectName}}`, created by `forge cluster up`), so the inner
+    # loop applies straight to it.
+    #
+    # A REAL environment declares NOTHING here. It is reconciled from a
+    # bundle instead (`forge env build` → Flux), which is why the field is
+    # optional and why unset means "a real env": an environment whose author
+    # forgot to declare it is treated as production, not as scratch. The
+    # other value is "ephemeral", for a throwaway per-run CI cluster.
+    #
+    # forge checks the claim rather than trusting it: a declared lifecycle
+    # may only target clusters forge creates, so a cloud env cannot keep
+    # direct apply by adding this line.
+    lifecycle = "local"
     # Where the env's support objects (Namespace, gateways, routes) land.
     cluster_target = _k3d
     workloads = _workloads

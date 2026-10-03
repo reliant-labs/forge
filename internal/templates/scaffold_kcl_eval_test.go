@@ -146,4 +146,22 @@ app_config: config_gen.AppConfig = {
 	if !strings.Contains(string(mainK), "import .ingress as ing") {
 		t.Errorf("dev/main.k missing ingress import after Generate:\n%s", mainK)
 	}
+
+	// THE SCAFFOLDED DEV ENV DECLARES ITSELF LOCAL. dev is a developer's
+	// own k3d cluster, so forge applies to it directly; a real env declares
+	// nothing and is reconciled from a bundle instead.
+	//
+	// Asserted on the RENDER, not on the template text, because that is
+	// what every forge command actually reads — and because it proves the
+	// declaration SURVIVES the Bundle check. The scaffolded dev env targets
+	// `k3d-<project>` without a Bundle.clusters entry (its cluster comes
+	// from deploy/k3d.yaml via `forge cluster up`), which is exactly the
+	// shape a stricter reading of that check would have refused. A grep of
+	// main.k would have passed while the scaffold failed to render at all.
+	if got := parsed["lifecycle"]; got != "local" {
+		t.Errorf("scaffolded dev env renders lifecycle = %#v, want \"local\" — dev is a developer's own cluster and forge applies to it directly\n%s", got, out)
+	}
+	if !strings.Contains(string(mainK), `lifecycle = "local"`) {
+		t.Errorf("dev/main.k does not declare lifecycle = \"local\":\n%s", mainK)
+	}
 }

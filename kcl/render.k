@@ -11,6 +11,9 @@ that bypasses forge could never be correct.
 THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
 
     project, env, image_tag
+    lifecycle                 WHO APPLIES this env: "local" | "ephemeral",
+                              or null for a real env reconciled from a
+                              bundle. Never a refusal here — see Bundle
     clusters, cluster_target, kubeconfig_secrets
     network_policy            the env NetworkPolicy bundle's inputs, or null
     workloads[]               EVERY workload, of every runtime:
@@ -135,6 +138,81 @@ _cloud_build_without_platform = lambda w: any -> bool {
     _host = img_lib.registry_host(w.image if w.image else "")
     bool(_rt and _rt.type == "cluster" and not _rt.target.platform \
         and _host and not is_local_registry(_host) and builds_an_image(w))
+}
+
+# ---------------------------------------------------------------------------
+# WHO APPLIES: the Bundle.lifecycle declaration's support.
+#
+# A declared lifecycle ("local" / "ephemeral") claims forge may apply to this
+# env DIRECTLY. That claim is only honest for a cluster forge itself creates
+# and can throw away, so the Bundle check below tests it against every
+# kubectl context the env's objects actually land on.
+# ---------------------------------------------------------------------------
+
+# Every kubectl context this env's objects target, deduplicated and sorted.
+#
+# EVERY placement, not just the workloads': a declaration is only as strong
+# as its weakest target, and an env that runs one `forge.Manifests` group or
+# one Gateway on a cloud cluster is applying to that cloud cluster. Reading
+# only `cluster_target` would let such an env claim local while deploying to
+# GKE, which is exactly the hole this check exists to close.
+# Every field is passed explicitly rather than taking the Bundle, because a
+# schema `check:` block has no `self` — it reads its own fields by bare name,
+# so a helper it calls must be given them.
+_targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: any, \
+                            gateways: [any], http_routes: [any], grpc_routes: [any], \
+                            helm_charts: [any], manifests: [any], rendered_secrets: [any] -> [str] {
+    _from_workloads = [w.runtime.target.cluster for w in workloads \
+        if w.runtime and w.runtime.type == "cluster" and w.runtime.target]
+    _from_databases = [db.runtime.target.cluster for db in databases \
+        if db.runtime and db.runtime.type == "cluster" and db.runtime.target]
+    _from_primary = [cluster_target.cluster] if cluster_target else []
+    # A Cluster REFERENCE denormalizes to its derived `.context`; a raw
+    # forge.Manifests states the context as a string.
+    _from_gateways = [g.cluster.context for g in gateways if g.cluster]
+    _from_http = [r.cluster.context for r in http_routes if r.cluster]
+    _from_grpc = [r.cluster.context for r in grpc_routes if r.cluster]
+    _from_charts = [h.cluster.context for h in helm_charts if h.cluster]
+    _from_manifests = [m.cluster for m in manifests if m.cluster]
+    _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
+    _all = _from_workloads + _from_databases + _from_primary + _from_gateways \
+        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_secrets
+    sorted([c for c in {x: 0 for x in _all if x}])
+}
+
+# A context forge CREATES and can delete: a k3d cluster.
+#
+# Two ways to qualify, because forge has two ways to own a local cluster and
+# both are legitimate:
+#
+#   1. it is declared in `Bundle.clusters` with `provider = "k3d"` — the
+#      declarative path, where `forge env up` reconciles the cluster at the
+#      head of the run;
+#   2. its context follows k3d's own `k3d-<name>` convention — the
+#      `deploy/k3d.yaml` path the scaffolded dev env uses, where the cluster
+#      is created by `forge cluster up` and so is never a Bundle.clusters
+#      entry. kcl/lib/gateway.k's _is_local_cluster already treats this
+#      prefix as the local-cluster signal; using a second, stricter rule
+#      here would refuse the env forge itself scaffolds.
+#
+# A GKE / VKE / EKS context satisfies neither, which is the load-bearing
+# half: a cloud env can never declare itself local to keep direct apply.
+_is_forge_managed_context = lambda ctx: str, clusters: [any] -> bool {
+    _declared = any c in clusters {
+        c.provider == "k3d" and c.context == ctx
+    }
+    bool(_declared or ctx.startswith("k3d-"))
+}
+
+# The targeted contexts a declared lifecycle cannot account for. Empty => the
+# declaration is true of every cluster this env applies to.
+_unmanaged_contexts = lambda clusters: [any], workloads: [any], databases: [any], \
+                             cluster_target: any, gateways: [any], http_routes: [any], \
+                             grpc_routes: [any], helm_charts: [any], manifests: [any], \
+                             rendered_secrets: [any] -> [str] {
+    [c for c in _targeted_contexts(workloads, databases, cluster_target, gateways, \
+            http_routes, grpc_routes, helm_charts, manifests, rendered_secrets) \
+        if not _is_forge_managed_context(c, clusters)]
 }
 
 # The env's primary cluster target: declared, else the target of the first
@@ -725,6 +803,11 @@ render = lambda bundle: Bundle -> any {
         "project": bundle.project
         "env": bundle.env
         "image_tag": bundle.image_tag
+        # WHO APPLIES: "local" | "ephemeral" | null (a real env, reconciled
+        # from a bundle). Projected unconditionally so the Go consumer reads
+        # a stable key, and null is the meaningful default rather than a
+        # missing one.
+        "lifecycle": bundle.lifecycle if bundle.lifecycle else None
         "clusters": [_render_cluster(c) for c in bundle.clusters]
         if _pt:
             "cluster_target": _render_cluster_target(_pt)

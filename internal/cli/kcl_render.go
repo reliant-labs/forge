@@ -67,6 +67,18 @@ type KCLEntities struct {
 	Env      string `json:"env,omitempty"`
 	ImageTag string `json:"image_tag,omitempty"`
 
+	// Lifecycle is the env's DECLARED apply path (kcl/schema.k
+	// Bundle.lifecycle): "local" (a developer's own cluster),
+	// "ephemeral" (a throwaway per-run cluster), or EMPTY for a real
+	// environment — one reconciled from a bundle rather than applied to
+	// directly.
+	//
+	// Empty is the meaningful default, not a gap: an env that declares
+	// nothing is treated as a real one. Read it through
+	// DirectApplyAllowed rather than comparing strings, so the
+	// no-cluster case stays in one place.
+	Lifecycle string `json:"lifecycle,omitempty"`
+
 	// Clusters are the k3d clusters forge ensures exist at the head of
 	// `forge env up` before any workload deploys. Empty for an env that
 	// declares no clusters. Ownership is implicit via Cluster.Network /
@@ -1023,6 +1035,7 @@ type kclRenderRaw struct {
 	Project           string                   `json:"project,omitempty"`
 	Env               string                   `json:"env,omitempty"`
 	ImageTag          string                   `json:"image_tag,omitempty"`
+	Lifecycle         string                   `json:"lifecycle,omitempty"`
 	Clusters          []ClusterEntity          `json:"clusters,omitempty"`
 	ClusterTarget     *ClusterTargetEntity     `json:"cluster_target,omitempty"`
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
@@ -1250,6 +1263,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Project:              raw.Project,
 		Env:                  raw.Env,
 		ImageTag:             raw.ImageTag,
+		Lifecycle:            raw.Lifecycle,
 		Clusters:             raw.Clusters,
 		ClusterTarget:        raw.ClusterTarget,
 		KubeconfigSecrets:    raw.KubeconfigSecrets,

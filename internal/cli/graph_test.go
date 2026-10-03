@@ -44,7 +44,6 @@ k8s: {}
 lint: {}
 contracts: {}
 auth: {}
-docs: {}
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)

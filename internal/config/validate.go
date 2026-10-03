@@ -522,6 +522,13 @@ var removedSchemaKeys = map[string]string{
 	// reduced to an inert key nothing consulted (fr-da9a6614fb).
 	"features.experimental.external_builds": "delete the key — `build_cmd` builds unconditionally, the same way " +
 		"`External.deploy_cmd` deploys unconditionally. `forge generate` removes this for you.",
+	// forge does not manage documentation. `forge docs generate` and the
+	// ADR scaffolding `forge new` wrote are gone, so both switches gate
+	// nothing; a project's docs/ directory is entirely its own.
+	"docs": "delete the block — forge no longer generates documentation (`forge docs` was removed). " +
+		"Anything already under docs/ is yours and is left alone.",
+	"features.docs": "delete the key — forge no longer generates documentation or scaffolds docs/adr, " +
+		"so there is nothing for it to switch.",
 }
 
 // sliceIndexRe matches "[<digits>]" path segments so removed-key lookup

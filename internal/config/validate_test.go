@@ -30,7 +30,6 @@ lint:
     css_health: true
 contracts:
   exclude: []
-docs: {}
 `
 
 func TestLoadProject_ValidConfig(t *testing.T) {
@@ -44,10 +43,10 @@ func TestLoadProject_ValidConfig(t *testing.T) {
 }
 
 func TestLoadProject_UnknownKey_WithCloseMatch(t *testing.T) {
-	in := strings.Replace(validBaseYAML, "docs:", "dcos:", 1)
+	in := strings.Replace(validBaseYAML, "contracts:", "contarcts:", 1)
 	_, err := LoadProject([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "unknown key", "dcos", "did you mean", "docs") {
+	if !containsAll(ve.Error(), "unknown key", "contarcts", "did you mean", "contracts") {
 		t.Errorf("expected typo suggestion in error, got:\n%s", ve.Error())
 	}
 }
@@ -66,15 +65,15 @@ func TestLoadProject_UnknownKey_NoCloseMatch(t *testing.T) {
 
 func TestLoadProject_MultipleUnknownKeys(t *testing.T) {
 	// Two typo'd top-level keys, each near a still-present forge.yaml key:
-	// `dcos`→`docs` and `databse`→`database`.
-	in := validBaseYAML + "dcos: x\ndatabse: y\n" //nolint:misspell // intentional typo for suggestion test
-	// Drop the real docs:/database: blocks first so we don't get a duplicate
+	// `contarcts`→`contracts` and `databse`→`database`.
+	in := validBaseYAML + "contarcts: x\ndatabse: y\n" //nolint:misspell // intentional typo for suggestion test
+	// Drop the real contracts:/database: blocks first so we don't get a duplicate
 	// issue from the still-valid originals while testing the typos.
-	in = strings.Replace(in, "docs: {}\n", "", 1)
+	in = strings.Replace(in, "contracts:\n  exclude: []\n", "", 1)
 	in = strings.Replace(in, "database:\n  driver: postgres\n  migrations_dir: db/migrations\n", "", 1)
 	_, err := LoadProject([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "dcos", "docs", "databse", "database") { //nolint:misspell // checks suggestion output
+	if !containsAll(ve.Error(), "contarcts", "contracts", "databse", "database") { //nolint:misspell // checks suggestion output
 		t.Errorf("expected both typos with suggestions, got:\n%s", ve.Error())
 	}
 }
@@ -183,8 +182,8 @@ func TestLoadProject_MissingRequired_Multiple(t *testing.T) {
 }
 
 func TestLoadProject_TypeMismatch(t *testing.T) {
-	// docs.enabled is a bool; pass a string to surface a yaml type error.
-	in := strings.Replace(validBaseYAML, "docs: {}", "docs:\n  enabled: \"not-a-bool\"", 1)
+	// lint.frontend.css_health is a bool; pass a string to surface a yaml type error.
+	in := strings.Replace(validBaseYAML, "css_health: true", "css_health: \"not-a-bool\"", 1)
 	_, err := LoadProject([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	if !strings.Contains(ve.Error(), "cannot unmarshal") {
@@ -296,7 +295,7 @@ func TestLoadProject_InvalidModulePath(t *testing.T) {
 func TestLoadProject_FourIssuesAtOnce(t *testing.T) {
 	// Smoke test mirroring the CLI smoke: 3 typos + 1 missing required
 	// field should all surface in a single error.
-	in := strings.Replace(validBaseYAML, "docs:", "dcos:", 1)
+	in := strings.Replace(validBaseYAML, "contracts:", "contarcts:", 1)
 	// `components` is no longer a forge.yaml key, so the third typo targets
 	// another still-present top-level key: `docker`→`dockr`.
 	in = strings.Replace(in, "docker:", "dockr:", 1)
@@ -306,12 +305,12 @@ func TestLoadProject_FourIssuesAtOnce(t *testing.T) {
 	_, err := LoadProject([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
-	for _, want := range []string{"dcos", "dockr", "databse", "module_path"} {
+	for _, want := range []string{"contarcts", "dockr", "databse", "module_path"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in error, got:\n%s", want, got)
 		}
 	}
-	for _, suggestion := range []string{"docs", "docker", "database"} {
+	for _, suggestion := range []string{"contracts", "docker", "database"} {
 		if !strings.Contains(got, suggestion) {
 			t.Errorf("expected suggestion %q, got:\n%s", suggestion, got)
 		}
@@ -469,6 +468,26 @@ func TestLoadProject_RemovedSchemaKey_K8sProvider(t *testing.T) {
 // An old forge.yaml carrying it must still LOAD (removed keys are non-fatal
 // migration WARNINGS, not errors), so mid-migration projects aren't
 // stranded — the next forge.yaml rewrite drops the dead block.
+// TestLoadProject_DocsKeysRemovedWarn: forge does not manage documentation,
+// so `docs:` and `features.docs` gate nothing. A project that still sets them
+// must LOAD (a forge.yaml written by an older forge is not stranded) and be
+// told to delete them — never silently accepted, never a hard failure.
+func TestLoadProject_DocsKeysRemovedWarn(t *testing.T) {
+	var sink strings.Builder
+	prev := SetConfigWarningSink(&sink)
+	defer SetConfigWarningSink(prev)
+
+	in := validBaseYAML + "docs:\n  output_dir: docs/generated\nfeatures:\n  docs: true\n"
+	if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
+		t.Fatalf("a removed docs key must warn, not fail; err=%v", err)
+	}
+	got := sink.String()
+	if !containsAll(got, `"docs" is no longer a forge.yaml key`, `"features.docs" is no longer a forge.yaml key`,
+		"forge no longer generates documentation") {
+		t.Errorf("expected both docs keys reported as removed, got:\n%s", got)
+	}
+}
+
 func TestLoadProject_StackDeploy_RemovedKeyWarns(t *testing.T) {
 	var sink strings.Builder
 	prev := SetConfigWarningSink(&sink)
@@ -577,10 +596,10 @@ func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 		{
 			name: "typo'd key gets a fatal did-you-mean suggestion",
 			mutate: func(in string) string {
-				return strings.Replace(in, "docs:", "dcos:", 1)
+				return strings.Replace(in, "contracts:", "contarcts:", 1)
 			},
 			wantWarn:   false,
-			wantSubstr: []string{"unknown key", "dcos", "did you mean", "docs"},
+			wantSubstr: []string{"unknown key", "contarcts", "did you mean", "contracts"},
 			notSubstr:  []string{"is no longer a forge.yaml key"},
 		},
 		{

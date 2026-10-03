@@ -105,7 +105,6 @@ var featureChecks = map[string]featureCheck{
 	config.FeatureCI:            func(f config.FeaturesConfig) bool { return f.CIEnabled() },
 	config.FeatureBuild:         func(f config.FeaturesConfig) bool { return f.BuildEnabled() },
 	config.FeatureContracts:     func(f config.FeaturesConfig) bool { return f.ContractsEnabled() },
-	config.FeatureDocs:          func(f config.FeaturesConfig) bool { return f.DocsEnabled() },
 	config.FeatureFrontend:      func(f config.FeaturesConfig) bool { return f.FrontendEnabled() },
 	config.FeatureObservability: func(f config.FeaturesConfig) bool { return f.ObservabilityEnabled() },
 	config.FeatureHotReload:     func(f config.FeaturesConfig) bool { return f.HotReloadEnabled() },

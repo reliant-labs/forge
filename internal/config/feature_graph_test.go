@@ -126,7 +126,6 @@ features:
   observability: false
   hot_reload: false
   contracts: false
-  docs: false
 `
 	cfg, err := LoadProject([]byte(in), serviceProjectPath(t, in))
 	if err != nil {

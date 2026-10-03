@@ -30,7 +30,7 @@ func TestIsFeatureEnabled_DefaultsTrue(t *testing.T) {
 	for _, name := range []string{
 		config.FeatureBuild, config.FeatureFrontend,
 		config.FeatureCI,
-		config.FeatureDocs, config.FeatureObservability,
+		config.FeatureObservability,
 	} {
 		if !isFeatureEnabled(projectstore.New(cfg), name) {
 			t.Errorf("isFeatureEnabled(<no-features>, %q) = false, want true", name)
@@ -120,7 +120,7 @@ func TestDisabledFeatureError_Wording(t *testing.T) {
 	for _, name := range []string{
 		config.FeatureBuild,
 		config.FeatureFrontend, config.FeatureCI,
-		config.FeatureDocs, config.FeatureObservability,
+		config.FeatureObservability,
 	} {
 		err := config.DisabledFeatureError(name)
 		if err == nil {

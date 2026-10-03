@@ -191,7 +191,6 @@ type ProjectConfig struct {
 	// issuer/audience/JWKS are per-deployment values that live in env vars
 	// routed through KCL. An `auth:` key is reported with a migration hint
 	// (see removedSchemaKeys).
-	Docs     DocsConfig     `yaml:"docs,omitempty"`
 	Features FeaturesConfig `yaml:"features,omitempty"`
 	Stack    StackConfig    `yaml:"stack,omitempty"`
 	// Observability seeds the OWNED per-package observe_chain.go seam that a
@@ -1759,7 +1758,6 @@ type FeaturesConfig struct {
 	CI            *bool `yaml:"ci,omitempty"`            // generate CI/CD workflows
 	Build         *bool `yaml:"build,omitempty"`         // `forge build` Go binary + docker image pipeline
 	Contracts     *bool `yaml:"contracts,omitempty"`     // contract linter enforcement
-	Docs          *bool `yaml:"docs,omitempty"`          // documentation generation
 	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
 	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
@@ -1821,7 +1819,6 @@ func (f *FeaturesConfig) stablePtrs() map[FeatureName]**bool {
 		FeatureCI:            &f.CI,
 		FeatureBuild:         &f.Build,
 		FeatureContracts:     &f.Contracts,
-		FeatureDocs:          &f.Docs,
 		FeatureFrontend:      &f.Frontend,
 		FeatureObservability: &f.Observability,
 		FeatureHotReload:     &f.HotReload,
@@ -1839,7 +1836,7 @@ func (f *FeaturesConfig) stablePtrs() map[FeatureName]**bool {
 func (f FeaturesConfig) IsZero() bool {
 	return f.ORM == nil && f.Codegen == nil && f.Migrations == nil &&
 		f.CI == nil && f.Build == nil && f.Contracts == nil &&
-		f.Docs == nil && f.Frontend == nil && f.Observability == nil &&
+		f.Frontend == nil && f.Observability == nil &&
 		f.HotReload == nil &&
 		f.Deploy == nil && f.Ingress == nil && f.Operators == nil &&
 		f.Diagnostics == nil && f.Experimental.IsZero()
@@ -1976,9 +1973,6 @@ func (f FeaturesConfig) DeployEnabled() bool { return f.resolve(FeatureDeploy) }
 // ContractsEnabled reports whether contract enforcement is on (default: on).
 func (f FeaturesConfig) ContractsEnabled() bool { return f.resolve(FeatureContracts) }
 
-// DocsEnabled reports whether the docs feature is on (default: on).
-func (f FeaturesConfig) DocsEnabled() bool { return f.resolve(FeatureDocs) }
-
 // FrontendEnabled reports whether the frontend feature is on (default: on).
 func (f FeaturesConfig) FrontendEnabled() bool { return f.resolve(FeatureFrontend) }
 
@@ -2051,7 +2045,6 @@ const (
 	FeatureCI            FeatureName = "ci"
 	FeatureBuild         FeatureName = "build"
 	FeatureContracts     FeatureName = "contracts"
-	FeatureDocs          FeatureName = "docs"
 	FeatureFrontend      FeatureName = "frontend"
 	FeatureObservability FeatureName = "observability"
 	FeatureHotReload     FeatureName = "hot_reload"
@@ -2122,7 +2115,6 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 		FeatureCI:            f.CIEnabled(),
 		FeatureBuild:         f.BuildEnabled(),
 		FeatureContracts:     f.ContractsEnabled(),
-		FeatureDocs:          f.DocsEnabled(),
 		FeatureFrontend:      f.FrontendEnabled(),
 		FeatureObservability: f.ObservabilityEnabled(),
 		FeatureHotReload:     f.HotReloadEnabled(),
@@ -2207,7 +2199,6 @@ type K8sConfig struct {
 	KCLDir string `yaml:"kcl_dir"`
 }
 
-// DocsConfig holds documentation generation settings.
 // ObservabilityConfig seeds the OWNED per-package observe_chain.go seam (the
 // in-process component middleware chain the generated decorator routes
 // through). It is a SCAFFOLD-TIME default: `forge scaffold` reads it to
@@ -2237,36 +2228,4 @@ func (o ObservabilityConfig) SlogLevelExpr() string {
 	default:
 		return "slog.LevelDebug"
 	}
-}
-
-type DocsConfig struct {
-	Enabled            *bool    `yaml:"enabled,omitempty"`              // nil = true (enabled by default)
-	OutputDir          string   `yaml:"output_dir,omitempty"`           // default: "docs/generated"
-	Format             string   `yaml:"format,omitempty"`               // "markdown" (default) or "hugo"
-	Generators         []string `yaml:"generators,omitempty"`           // e.g. ["api", "architecture", "config", "contracts"]
-	CustomTemplatesDir string   `yaml:"custom_templates_dir,omitempty"` // user template overrides
-}
-
-// IsEnabled returns whether docs generation is enabled (default: true).
-func (d DocsConfig) IsEnabled() bool {
-	if d.Enabled == nil {
-		return true
-	}
-	return *d.Enabled
-}
-
-// EffectiveOutputDir returns the output directory, defaulting to "docs/generated".
-func (d DocsConfig) EffectiveOutputDir() string {
-	if d.OutputDir == "" {
-		return "docs/generated"
-	}
-	return d.OutputDir
-}
-
-// EffectiveFormat returns the output format, defaulting to "markdown".
-func (d DocsConfig) EffectiveFormat() string {
-	if d.Format == "" {
-		return "markdown"
-	}
-	return d.Format
 }

@@ -397,6 +397,16 @@ frontend's `runtime_config` is resolved by forge (host, cluster) or by the
 control plane (hosted), so a URL is never written twice. A port mismatch is
 invisible at render and fatal at runtime — make it impossible.
 
+## Routes and per-route traffic policy
+
+A route names its backend as a `service` OR as a `workload` — and a
+`workload` is resolved per env to that workload's Service, or to the host
+process when that env runs it on the host, so ONE declaration follows it
+everywhere. `traffic` carries the typed retry / timeout / health-check /
+outlier-detection policy (the dead `raw_policy` string is gone). For the
+resolution table, the port-inference rules and the registry-flavoured
+worked example: load `deploy/routes`.
+
 ## Extra Kubernetes objects
 
 Anything that is not a workload — a CRD, a ClusterIssuer, a vendored chart's

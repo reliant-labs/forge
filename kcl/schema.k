@@ -473,10 +473,9 @@ schema Gateway:
     gateway host is the fallback default.
 
     `host` is the default hostname for routes on this gateway. Per-
-    route `host:` overrides win. `raw_policy` is the v1 escape hatch
-    for provider-specific policy CRDs (Envoy Gateway
-    BackendTrafficPolicy / ClientTrafficPolicy, etc.) — emitted
-    verbatim alongside the route.
+    route `host:` overrides win. Per-route traffic policy (retries,
+    outlier detection, active health checking, request timeout) is
+    declared TYPED on the route itself — see HTTPRoute.traffic.
 
     `addresses` pins the Gateway to specific load-balancer addresses so
     it keeps its IP across delete/recreate (otherwise a recreated
@@ -507,7 +506,6 @@ schema Gateway:
     gateway_class_name: str = "eg"
     host: str = ""
     tls?: GatewayTLS
-    raw_policy: str = ""
     addresses: [GatewayAddress] = []
     cluster?: Cluster
     allowed_listeners?: GatewayAllowedListeners
@@ -560,14 +558,224 @@ schema Gateway:
         len([l for l in listeners if l.protocol == "HTTPS" and not l.hostname and not host and not (not l.tls and tls and tls.mode == "gke_certmap")]) == 0, \
             "Gateway '${name}': HTTPS listener(s) ${[l.name for l in listeners if l.protocol == 'HTTPS' and not l.hostname and not host and not (not l.tls and tls and tls.mode == 'gke_certmap')]} resolve to no hostname — set the listener's own `hostname`, or a gateway-level `host`. An HTTPS listener with no hostname has no SNI key for cert selection"
 
+# ---------------------------------------------------------------------------
+# Per-route traffic policy. One RouteTraffic renders ONE Envoy Gateway
+# BackendTrafficPolicy targeting the route (see kcl/lib/gateway.k).
+# ---------------------------------------------------------------------------
+
+# Envoy Gateway's retry TRIGGER enum, verbatim. These are the values
+# BackendTrafficPolicy.spec.retry.retryOn.triggers accepts in v1.9.2; a
+# value outside the set is refused by the CRD at apply time, which is far
+# too late, so the set is closed HERE.
+_RETRY_TRIGGERS: [str] = [
+    "5xx", "gateway-error", "reset", "connect-failure", "refused-stream",
+    "retriable-4xx",
+]
+
+# A Go/Envoy duration: "30s", "1h", "500ms", "1h30m". Envoy rejects a
+# bare number, so a unit is REQUIRED — that mistake renders cleanly and
+# fails at apply time, naming the CRD rather than the field you wrote.
+_DURATION_RE = r"^([0-9]+(\.[0-9]+)?(h|m|s|ms|us|ns))+$"
+
+schema RouteRetries:
+    """How a route retries a failed attempt at its backend.
+
+    This is on the pod-start path for anything an image is pulled
+    through, and the reason the whole schema exists. Measured (ADR-0003
+    S1 §5): killing one of three registry replicas mid-load produced
+    784 of 6000 requests failing (13.1%) with plain round-robin, and 22
+    of 6000 (0.37%) with these retries plus outlier detection. A 13%
+    pod-start failure rate during any rollout or node loss is the
+    difference.
+
+    `on` is the closed set of Envoy trigger conditions. The S1
+    configuration is `["5xx", "reset", "connect-failure",
+    "refused-stream"]`.
+
+    LIMITATION — Envoy Gateway v1.9.2 cannot express S1's
+    `previous_hosts` retry-host predicate. BackendTrafficPolicy has no
+    field for `retry_host_predicate` or
+    `host_selection_retry_max_attempts` (verified against the v1.9.2
+    CRD), so a retry may re-select the endpoint that just failed.
+    forge deliberately does NOT hand-roll an EnvoyPatchPolicy to add it:
+    an escape-hatch patch pinned to Envoy's internal xDS shape breaks
+    silently on upgrade. `outlier_detection` is the mitigation that IS
+    expressible — a failing endpoint is ejected after
+    `consecutive_5xx`, and once ejected no retry can select it.
+    """
+    on: [str]
+    attempts: int
+    # Ceiling on ONE attempt, not on the whole request. Unset: Envoy's
+    # own per-try default (the route's request timeout).
+    per_try_timeout?: str
+
+    check:
+        len(on) > 0, "RouteRetries.on must name at least one trigger — ${_RETRY_TRIGGERS}"
+        all t in on { t in _RETRY_TRIGGERS }, \
+            "RouteRetries.on entries must each be one of ${_RETRY_TRIGGERS} — got ${on}"
+        len({t: None for t in on}) == len(on), \
+            "RouteRetries.on lists a trigger twice: ${on}"
+        attempts >= 1 and attempts <= 10, \
+            "RouteRetries.attempts must be 1..10 — got ${attempts}. More than ten retries of a failing backend is a retry storm, not resilience"
+        per_try_timeout == Undefined or regex.match(per_try_timeout, _DURATION_RE), \
+            "RouteRetries.per_try_timeout '${per_try_timeout}' is not a duration — it needs a unit, e.g. '5s' or '500ms'"
+
+schema RouteHealthCheck:
+    """ACTIVE health checking: the gateway probes each endpoint itself
+    and stops routing to one that stops answering, instead of finding
+    out from a user's failed request.
+
+    `expected_statuses` is the field that matters and the one that is
+    not obvious. A registry with token auth answers `/v2/` with **401**
+    when it is perfectly healthy, so a default health check (which
+    expects 2xx) marks every replica unhealthy and the route serves
+    nothing. Declare `expected_statuses = [401]` for that case — S1
+    verified all three replicas healthy under exactly that check.
+
+    Verified in the F2 probe against Envoy's own counters: a backend
+    answering 401 under `expected_statuses = [401]` reports
+    `health_check.success` / `health_check.healthy`, while one
+    answering 404 reports `health_check.failure` on every attempt.
+    """
+    path: str
+    # The statuses that mean HEALTHY. Unset: Envoy's default (2xx).
+    expected_statuses?: [int]
+    interval: str = "1s"
+    timeout: str = "1s"
+    unhealthy_threshold: int = 3
+    healthy_threshold: int = 1
+
+    check:
+        path.startswith("/"), "RouteHealthCheck.path must start with '/' — got '${path}'"
+        expected_statuses == Undefined or len(expected_statuses) > 0, \
+            "RouteHealthCheck.expected_statuses must name at least one status when set (unset means Envoy's 2xx default)"
+        expected_statuses == Undefined or all s in expected_statuses { s >= 100 and s <= 599 }, \
+            "RouteHealthCheck.expected_statuses entries must be 100..599 — got ${expected_statuses}"
+        regex.match(interval, _DURATION_RE), \
+            "RouteHealthCheck.interval '${interval}' is not a duration — it needs a unit, e.g. '1s'"
+        regex.match(timeout, _DURATION_RE), \
+            "RouteHealthCheck.timeout '${timeout}' is not a duration — it needs a unit, e.g. '1s'"
+        unhealthy_threshold >= 1, "RouteHealthCheck.unhealthy_threshold must be >= 1"
+        healthy_threshold >= 1, "RouteHealthCheck.healthy_threshold must be >= 1"
+
+schema RouteOutlierDetection:
+    """PASSIVE health checking: eject an endpoint that is failing REAL
+    requests, inferred from their outcomes rather than from a probe.
+
+    This is also what partially covers for the `previous_hosts` retry
+    predicate Envoy Gateway cannot express (see RouteRetries): an
+    ejected endpoint cannot be re-selected by a retry.
+
+    The S1 §5 values are the defaults here.
+    """
+    consecutive_5xx: int = 3
+    consecutive_gateway_errors: int = 3
+    interval: str = "1s"
+    base_ejection_time: str = "10s"
+    # Capped so ejection cannot empty the pool. 67 keeps one of three
+    # replicas serving (S1 §5).
+    max_ejection_percent: int = 67
+
+    check:
+        consecutive_5xx >= 1, "RouteOutlierDetection.consecutive_5xx must be >= 1"
+        consecutive_gateway_errors >= 1, "RouteOutlierDetection.consecutive_gateway_errors must be >= 1"
+        regex.match(interval, _DURATION_RE), \
+            "RouteOutlierDetection.interval '${interval}' is not a duration — it needs a unit, e.g. '1s'"
+        regex.match(base_ejection_time, _DURATION_RE), \
+            "RouteOutlierDetection.base_ejection_time '${base_ejection_time}' is not a duration — it needs a unit, e.g. '10s'"
+        max_ejection_percent >= 1 and max_ejection_percent <= 100, \
+            "RouteOutlierDetection.max_ejection_percent must be 1..100 — got ${max_ejection_percent}"
+
+schema RouteTraffic:
+    """Per-route traffic policy: retries, timeout, and the two kinds of
+    health checking. Renders ONE Envoy Gateway BackendTrafficPolicy
+    targeting the route.
+
+    Every field is optional, but an EMPTY RouteTraffic is refused —
+    declaring a policy that configures nothing renders a
+    BackendTrafficPolicy with no behaviour, which reads like protection
+    the route does not have.
+
+    `timeout` is the whole-REQUEST timeout, and it is why this exists
+    beyond resilience: a multi-GB image blob upload runs far past
+    Envoy's 15s default, which surfaces as a push that dies partway
+    with no server-side error. Set it generously (`"1h"`) on a route
+    that carries uploads.
+
+    REQUEST BUFFERING: Envoy STREAMS request bodies by default, and
+    forge enables no buffering anywhere — no `buffer` filter, no
+    EnvoyPatchPolicy, no default on any route (verified across the
+    render). Large blob uploads depend on that: a buffering proxy would
+    have to hold the whole multi-GB body in memory before forwarding a
+    byte. If you add buffering, you take that on deliberately.
+    """
+    retries?: RouteRetries
+    timeout?: str
+    health_check?: RouteHealthCheck
+    outlier_detection?: RouteOutlierDetection
+
+    check:
+        retries != Undefined or timeout != Undefined or health_check != Undefined \
+            or outlier_detection != Undefined, \
+            "RouteTraffic declares nothing: set at least one of `retries`, `timeout`, `health_check`, `outlier_detection`. An empty policy renders a BackendTrafficPolicy with no behaviour, which looks like protection the route does not have"
+        timeout == Undefined or regex.match(timeout, _DURATION_RE), \
+            "RouteTraffic.timeout '${timeout}' is not a duration — it needs a unit, e.g. '1h' or '30s'"
+
 schema HTTPRoute:
-    """An HTTPRoute attached to a Gateway+listener. Forwards HTTP
-    traffic to a backend Service (referenced by name; matches a
-    forge.Service.name in the same env).
+    """An HTTPRoute attached to a Gateway+listener, forwarding HTTP
+    traffic to a backend.
+
+    THE BACKEND IS EITHER A SERVICE NAME OR A WORKLOAD. Exactly one of
+    `service` / `workload`:
+
+      * `service` — a backend Service by NAME, in the route's own
+        namespace. What you reach for when the backend is not a forge
+        workload (a third-party chart's Service, something applied out
+        of band).
+      * `workload` — the NAME of a `forge.Workload` in the same Bundle.
+        forge resolves it PER ENV, from the runtime that env binds it
+        to, so one declaration follows the workload wherever it runs:
+
+          - bound to `forge.OnCluster` → a backendRef to its Service,
+            exactly as `service` would have rendered;
+          - bound to `forge.OnHost`, on a LOCAL k3d cluster → an Envoy
+            Gateway `Backend` whose FQDN endpoint is the cluster's
+            `host_gateway` (host.k3d.internal) at the workload's own
+            `listen_ports` entry, so the gateway reaches the host
+            PROCESS;
+          - anything else (OnHost on a non-local cluster, OnCompose,
+            OnHosted, BuildOnly, or a name no workload has) → a render
+            ERROR naming the route, the workload and its runtime.
+
+    `workload` is the primitive that makes one base ingress declaration
+    correct in every env. control-plane declares `/auth/token →
+    admin-server` ONCE: in dev, where admin-server is a host process,
+    it renders the host Backend; in prod, where it is cluster-bound, it
+    renders the Service. The alternative — an env-conditional route, or
+    a mode flag — is three products with two dead branches each.
+
+    WHY A `Backend` CRD AND NOT AN ExternalName SERVICE. Envoy Gateway
+    refuses an ExternalName Service as a backendRef outright
+    ("Service … is of type ExternalName, which is not supported as a
+    backend; use an Envoy Gateway Backend resource with an FQDN endpoint
+    instead" — verified, ADR-0003 F2 step 1). The `Backend` CRD needs
+    the Backend API ENABLED on the controller
+    (`config.envoyGateway.extensionApis.enableBackend=true`), and
+    forge reports a route that needs it so the prerequisite is explicit
+    rather than a confusing ResolvedRefs=False at apply time.
+
+    `port` is the backend port. REQUIRED with `service` (a name says
+    nothing about ports) and when a `workload` target exposes more than
+    one. Otherwise it is INFERRED: a cluster workload's single port, or
+    a host workload's single `listen_ports` entry.
 
     The full request path is `<listener.path_prefix>/<path>`. Empty
     `path` means the listener's prefix is the only match — useful for
     a service that owns the listener's path namespace entirely.
+
+    `traffic` is the typed per-route policy (retries, request timeout,
+    active health check, outlier detection) — see RouteTraffic. It
+    renders one Envoy Gateway BackendTrafficPolicy targeting this route.
 
     `cluster` pins this route to ONE cluster in a multi-cluster env (see
     Gateway.cluster). Like Gateway.cluster it is a REFERENCE to the
@@ -578,26 +786,40 @@ schema HTTPRoute:
     name: str
     gateway: str
     listener: str
-    service: str
-    port: int
+    service?: str
+    workload?: str
+    port?: int
     host: str = ""
     path: str = ""
-    raw_policy: str = ""
+    traffic?: RouteTraffic
     cluster?: Cluster
 
     check:
         name, "HTTPRoute.name is required"
         gateway, "HTTPRoute.gateway is required (target Gateway.name)"
         listener, "HTTPRoute.listener is required (target GatewayListener.name)"
-        service, "HTTPRoute.service is required (backend Service.name)"
-        port > 0 and port < 65536, "HTTPRoute.port must be 1..65535"
+        not (service and workload), \
+            "HTTPRoute '${name}' sets BOTH `service` ('${service}') and `workload` ('${workload}'): a route has ONE backend. Use `workload` to follow a forge.Workload wherever the env runs it, or `service` to name a Service directly"
+        service or workload, \
+            "HTTPRoute '${name}' declares no backend: set `workload = \"<forge.Workload name>\"` (resolved per env to its Service, or to the host process when it runs on the host), or `service = \"<Service name>\"` for a backend forge does not own"
+        not service or port != Undefined, \
+            "HTTPRoute '${name}': `port` is required with `service` — a Service name says nothing about which port to reach. With `workload` it is inferred from the workload's single port"
+        port == Undefined or (port > 0 and port < 65536), "HTTPRoute.port must be 1..65535"
         path == "" or path.startswith("/"), \
             "HTTPRoute.path must start with '/' when set"
 
 schema GRPCRoute:
     """A GRPCRoute attached to a Gateway+listener. Forwards gRPC
-    traffic to a backend Service. The target listener must be H2C or
-    HTTPS — gRPC over HTTP/1.1 isn't a thing.
+    traffic to a backend. The target listener must be H2C or HTTPS —
+    gRPC over HTTP/1.1 isn't a thing.
+
+    Backend selection is HTTPRoute's, exactly: `service` names a Service
+    directly, `workload` names a `forge.Workload` and resolves per env
+    to its Service or to the host process. Read HTTPRoute for the full
+    rules — they are the same rules, deliberately, so a route does not
+    behave differently because it carries gRPC.
+
+    `traffic` is the same typed per-route policy (see RouteTraffic).
 
     `cluster` pins this route to ONE cluster in a multi-cluster env (see
     Gateway.cluster). Like Gateway.cluster it is a REFERENCE to the
@@ -608,19 +830,25 @@ schema GRPCRoute:
     name: str
     gateway: str
     listener: str
-    service: str
-    port: int
+    service?: str
+    workload?: str
+    port?: int
     host: str = ""
     path: str = ""
-    raw_policy: str = ""
+    traffic?: RouteTraffic
     cluster?: Cluster
 
     check:
         name, "GRPCRoute.name is required"
         gateway, "GRPCRoute.gateway is required (target Gateway.name)"
         listener, "GRPCRoute.listener is required (target GatewayListener.name)"
-        service, "GRPCRoute.service is required (backend Service.name)"
-        port > 0 and port < 65536, "GRPCRoute.port must be 1..65535"
+        not (service and workload), \
+            "GRPCRoute '${name}' sets BOTH `service` ('${service}') and `workload` ('${workload}'): a route has ONE backend. Use `workload` to follow a forge.Workload wherever the env runs it, or `service` to name a Service directly"
+        service or workload, \
+            "GRPCRoute '${name}' declares no backend: set `workload = \"<forge.Workload name>\"` (resolved per env to its Service, or to the host process when it runs on the host), or `service = \"<Service name>\"` for a backend forge does not own"
+        not service or port != Undefined, \
+            "GRPCRoute '${name}': `port` is required with `service` — a Service name says nothing about which port to reach. With `workload` it is inferred from the workload's single port"
+        port == Undefined or (port > 0 and port < 65536), "GRPCRoute.port must be 1..65535"
         path == "" or path.startswith("/"), \
             "GRPCRoute.path must start with '/' when set"
 

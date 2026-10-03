@@ -1,6 +1,8 @@
 package contract
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -319,5 +321,88 @@ type Service interface {
 	}
 	if !strings.Contains(got, "return o.inner.Compute(x)") || !strings.Contains(got, "return o.inner.Name()") {
 		t.Fatalf("both methods should delegate directly:\n%s", got)
+	}
+}
+
+// TestObservedDecorator_NamedResultsStillCompile is a REGRESSION TEST for a
+// decorator that parsed, rendered and gofmt'd cleanly and then failed to
+// build.
+//
+// An interface method may name its results — `(mediaType string, body []byte,
+// err error)` is ordinary Go and reads better than three bare types. The
+// decorator's template re-emits that result list verbatim on the wrapper
+// method, so `err` becomes a NAMED RESULT of the wrapper, already declared in
+// its scope. The body then opened with `err := o.chain.Run(...)`, which is a
+// redeclaration: "no new variables on left side of :=".
+//
+// Nothing upstream catches it. gofmt is happy, the template is happy, and the
+// generator reports success — the failure surfaces as a build error in the
+// USER's package, naming a forge-generated file they are told never to edit.
+// Found in control-plane's internal/registryclient (ADR-0003 C7), whose fix
+// was to un-name the results; this is the real repair.
+//
+// The assertion is COMPILABILITY, not a string match, because the defect was
+// a scoping mistake rather than a formatting one: a test asserting on `=`
+// instead of `:=` would pass for any number of other broken renders.
+func TestObservedDecorator_NamedResultsStillCompile(t *testing.T) {
+	dir := writeContract(t, `package reader
+
+import "context"
+
+type Service interface {
+	// Named results, including the error: ordinary Go, and the shape that
+	// used to produce an uncompilable decorator.
+	GetManifest(ctx context.Context, repo string) (mediaType string, body []byte, err error)
+	// Named non-error results with no error at all.
+	Describe(ctx context.Context) (name string, size int64)
+	// One named result plus an error (the Around shape).
+	Head(ctx context.Context, repo string) (descriptor string, err error)
+	// A named error on its own.
+	Ping(ctx context.Context) (err error)
+}
+`)
+	got := genDecorator(t, dir, "Service", "reader")
+
+	// THE REAL ASSERTION: the rendered file must be valid Go. parser.ParseFile
+	// is what the compiler's front end does, and it is what the generator
+	// never did to its own output.
+	if _, err := parser.ParseFile(token.NewFileSet(), "middleware_gen.go", got, parser.AllErrors); err != nil {
+		t.Fatalf("the generated decorator does not parse as Go: %v\n\n%s", err, got)
+	}
+
+	// And the specific repair: the error must be ASSIGNED into the named
+	// result, never redeclared beside it.
+	if strings.Contains(got, "err := o.chain.Run") {
+		t.Errorf("the decorator redeclares a named `err` result with `:=`, which does "+
+			"not compile:\n%s", got)
+	}
+}
+
+// TestObservedDecorator_UnnamedResultsStillCompile pins the far more common
+// shape against the same standard. An unnamed result list declares nothing in
+// the wrapper's scope, so the decorator has to introduce `err` itself — the
+// fix declares it with `var` rather than `:=` so that ONE code path serves
+// both shapes, and this is the half that proves the unnamed case did not
+// regress.
+func TestObservedDecorator_UnnamedResultsStillCompile(t *testing.T) {
+	dir := writeContract(t, `package reader
+
+import "context"
+
+type Service interface {
+	GetManifest(ctx context.Context, repo string) (string, []byte, error)
+}
+`)
+	got := genDecorator(t, dir, "Service", "reader")
+
+	if _, err := parser.ParseFile(token.NewFileSet(), "middleware_gen.go", got, parser.AllErrors); err != nil {
+		t.Fatalf("the generated decorator does not parse as Go: %v\n\n%s", err, got)
+	}
+	// An unnamed result list declares no `err` in scope, so `:=` is both
+	// correct and idiomatic there — and is what every pre-existing decorator
+	// renders. The named-error fix must not have disturbed it.
+	if !strings.Contains(got, "err := o.chain.Run") {
+		t.Errorf("an UNNAMED result list declares no `err` in scope, so the body must "+
+			"still open with `err :=`:\n%s", got)
 	}
 }

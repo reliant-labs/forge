@@ -274,11 +274,29 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	}
 
 	if lastIsErr {
-		fmt.Fprintf(&b, "err := o.chain.Run(%s, %s, func(%s) error {\n", outerCtx, op, closureParam)
+		// `var err error` + `=`, NEVER `err :=`, when the interface method
+		// NAMED its error result.
+		//
+		// The template re-emits the method's result list verbatim, so a
+		// named `err` is already declared in the wrapper's scope and `:=`
+		// is a redeclaration: "no new variables on left side of :=". The
+		// generator reported success, gofmt was happy, and the build broke
+		// in the USER's package, in a file they are told never to edit.
+		//
+		// An UNNAMED result list keeps `err :=`, which is the idiomatic
+		// spelling and what every existing decorator renders. Only a named
+		// error switches to plain assignment, so this fix is invisible to
+		// the shape that was already correct.
+		errName, assign := "err", ":="
+		if named := nonEmptyResultName(results[len(results)-1]); named != "" {
+			errName, assign = named, "="
+		}
+		fmt.Fprintf(&b, "%s %s o.chain.Run(%s, %s, func(%s) error {\n",
+			errName, assign, outerCtx, op, closureParam)
 		b.WriteString("\tvar e error\n")
 		fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(append(append([]string{}, names...), "e"), ", "), inner)
 		b.WriteString("\treturn e\n})\n")
-		fmt.Fprintf(&b, "return %s, err", strings.Join(names, ", "))
+		fmt.Fprintf(&b, "return %s, %s", strings.Join(names, ", "), errName)
 		return b.String()
 	}
 
@@ -288,6 +306,19 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	b.WriteString("\treturn nil\n})\n")
 	fmt.Fprintf(&b, "return %s", strings.Join(names, ", "))
 	return b.String()
+}
+
+// nonEmptyResultName returns a result's declared name, or "" when the result
+// is unnamed or named with the blank identifier.
+//
+// `_` is treated as unnamed deliberately: a blank result declares nothing
+// assignable, so the decorator must introduce its own variable exactly as it
+// does for a bare type.
+func nonEmptyResultName(r ParamDef) string {
+	if r.Name == "_" {
+		return ""
+	}
+	return r.Name
 }
 
 // observedImports assembles the decorator's import block: every package the

@@ -86,7 +86,6 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 		FeatureCI:            !isLibrary,
 		FeatureBuild:         !isLibrary,
 		FeatureContracts:     true,
-		FeatureDocs:          true,
 		FeatureFrontend:      frontend,
 		FeatureObservability: isService,
 		FeatureHotReload:     isService,

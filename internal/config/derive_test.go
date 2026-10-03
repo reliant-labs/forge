@@ -180,7 +180,7 @@ func TestDerivedDefaults_RealProjectShapesMatchExplicit(t *testing.T) {
 	derived := DeriveFeatureDefaults(shape)
 	for _, name := range []FeatureName{
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
-		FeatureBuild, FeatureContracts, FeatureDocs, FeatureFrontend,
+		FeatureBuild, FeatureContracts, FeatureFrontend,
 		FeatureObservability, FeatureHotReload,
 	} {
 		if !derived[name] {
@@ -301,7 +301,7 @@ func TestDeriveFeatureDefaults_PerKindMatrix(t *testing.T) {
 			want: map[FeatureName]bool{
 				FeatureORM: true, FeatureCodegen: true, FeatureMigrations: true,
 				FeatureCI: true, FeatureBuild: true, FeatureContracts: true,
-				FeatureDocs: true, FeatureFrontend: false, FeatureObservability: true,
+				FeatureFrontend: false, FeatureObservability: true,
 				FeatureHotReload: true,
 			},
 		},
@@ -321,7 +321,7 @@ func TestDeriveFeatureDefaults_PerKindMatrix(t *testing.T) {
 			want: map[FeatureName]bool{
 				FeatureORM: false, FeatureCodegen: false, FeatureMigrations: false,
 				FeatureCI: true, FeatureBuild: true, FeatureContracts: true,
-				FeatureDocs: true, FeatureFrontend: false, FeatureObservability: false,
+				FeatureFrontend: false, FeatureObservability: false,
 				FeatureHotReload: false,
 			},
 		},
@@ -330,7 +330,7 @@ func TestDeriveFeatureDefaults_PerKindMatrix(t *testing.T) {
 			cfg:  &ProjectConfig{Kind: ProjectKindLibrary},
 			want: map[FeatureName]bool{
 				FeatureCI: false, FeatureBuild: false, FeatureContracts: true,
-				FeatureDocs: true, FeatureCodegen: false,
+				FeatureCodegen: false,
 			},
 		},
 	}

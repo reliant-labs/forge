@@ -141,7 +141,6 @@ func TestApplyKindFeatureDefaults_CLI(t *testing.T) {
 	want := map[string]bool{
 		config.FeatureBuild:         true,
 		config.FeatureCI:            true,
-		config.FeatureDocs:          true,
 		config.FeatureContracts:     true,
 		config.FeatureDeploy:        false,
 		config.FeatureFrontend:      false,
@@ -160,8 +159,8 @@ func TestApplyKindFeatureDefaults_CLI(t *testing.T) {
 }
 
 // TestApplyKindFeatureDefaults_Library verifies the library matrix.
-// The feature-block prompt's documented matrix is "library: ci/docs
-// true, everything else false." We honor the prompt for docs/build/
+// The feature-block prompt's documented matrix is "library: ci
+// true, everything else false." We honor the prompt for build/
 // deploy/frontend/observability/orm/codegen/migrations/
 // hot_reload but preserve the existing forge convention of CI=false
 // for library — TestProjectGeneratorKindLibraryScaffold asserts no
@@ -175,7 +174,6 @@ func TestApplyKindFeatureDefaults_Library(t *testing.T) {
 	effective := g.Features.EffectiveFeatures()
 
 	want := map[string]bool{
-		config.FeatureDocs:          true,
 		config.FeatureContracts:     true,
 		config.FeatureCI:            false, // existing forge convention
 		config.FeatureBuild:         false,

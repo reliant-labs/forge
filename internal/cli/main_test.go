@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/ledgerfile"
 )
 
 // TestMain lets the compiled test binary serve as the protoc-gen-forge plugin
@@ -28,6 +30,10 @@ import (
 // the real root command, so the plugin under test is the production one rather
 // than a stand-in that could drift from it.
 func TestMain(m *testing.M) {
+	if err := isolateLedgerHome(); err != nil {
+		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
+		os.Exit(1)
+	}
 	if args, ok := pluginInvocation(os.Args[1:]); ok {
 		// Re-point os.Args at the plugin subcommand: cobra reads os.Args[1:],
 		// and the leading "forge" token is the mount route, not a subcommand.
@@ -69,8 +75,6 @@ var sharedTemp struct {
 // one TestMain, and this package's is untagged — so an e2e-tagged TestMain
 // would not compile alongside it. Registering into a var the single TestMain
 // can see is how the tagged lane gets cleanup without a second entry point.
-//
-//nolint:unused // called only from the //go:build e2e scaffold_e2e_test.go; see above
 func registerSharedTempDir(dir string) {
 	if dir == "" {
 		return
@@ -142,4 +146,41 @@ func pluginInvocation(args []string) ([]string, bool) {
 		return args[1:], true
 	}
 	return nil, false
+}
+
+// isolateLedgerHome points $FORGE_LEDGER_HOME at a temp dir for the whole test
+// binary, so NOTHING this package's tests run can reach the developer's real
+// ~/.forge/ledger.
+//
+// WHY IT HAS TO BE HERE, AND WHY IT IS AN ENV VAR. The in-process tests already
+// redirect the `ledgerHome` seam (ledger_testhelp_test.go), which is enough for
+// them and deliberately avoids t.Setenv so they can run in parallel. The e2e
+// lane cannot use that seam at all: it SPAWNS A REAL forge BINARY, which
+// resolves its own home in its own process, and the only channel into it is the
+// environment it inherits.
+//
+// This was not hypothetical. `forge env build` writing a bundle (F6a) made the
+// e2e lane write OCI blobs into ~/.forge/ledger/acme/oci — measured, after a
+// run — because no e2e test had ever needed the ledger before and none of the
+// 20 `cmd.Env = append(os.Environ(), …)` sites set this. Two tests then failed
+// in ways that looked like my change breaking a server boot, while the real
+// fault was shared mutable state outside the test tree. Setting it once, before
+// m.Run, fixes every spawn at the source instead of asking 20 call sites to
+// remember.
+//
+// Set with os.Setenv rather than t.Setenv because there is no *testing.T here
+// and it must apply to the whole process, including the plugin re-exec above.
+// An EXISTING value is respected: a CI runner or an operator debugging a run
+// may have pointed the home somewhere deliberately, and overriding that would
+// make this the thing that ignored their choice.
+func isolateLedgerHome() error {
+	if os.Getenv(ledgerfile.DefaultHomeEnv) != "" {
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "forge-test-ledger-")
+	if err != nil {
+		return err
+	}
+	registerSharedTempDir(dir)
+	return os.Setenv(ledgerfile.DefaultHomeEnv, dir)
 }

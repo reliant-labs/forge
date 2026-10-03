@@ -173,6 +173,8 @@ Examples:
 	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
 	cmd.Flags().StringVar(&opts.release, "release", "", "Record an immutable release with this version label (e.g. v1.4.0). IMPLIES --push. The release's artifact SET (project images plus per-env external build_cmd images) is discovered from deploy/kcl/<env>/main.k; the built images stay env-agnostic, so promote the release to every env with `forge env deploy <env> <version>`. Captures each artifact's digest into a release ledger, which every later deploy pins.")
 	cmd.Flags().BoolVar(&noBuild, "no-build", false, "With --release: record the release over the digests an earlier `--push` already captured in .forge/state, without rebuilding. This is the cut-only half of a pipeline whose build and release are separate jobs.")
+	cmd.Flags().BoolVar(&opts.noCharts, "no-charts", false, "Omit the bundle's charts layer: do not `helm template` the env's declared forge.HelmChart platform deps. The bundle's manifests and its shape are unaffected. Implied when helm is not on PATH, which is reported rather than failing the build.")
+	cmd.Flags().StringVar(&opts.bundleEnvs, "bundle-envs", "", "Write a bundle for each of these envs (comma-separated) from this one build, instead of only for the env argument. A release is env-agnostic and a bundle is not, so this is how one cut produces the manifests for every env it will ship to — each pinned to the same release and the same source. Each env is rendered; each bundle is pushed beside its images for a control-plane env, or written to this machine's ledger otherwise.")
 	registerRunFlags(cmd.Flags(), &opts.run)
 
 	return cmd
@@ -258,8 +260,17 @@ func runEnvBuildCutOnly(ctx context.Context, opts buildOptions) error {
 	if err != nil {
 		return fmt.Errorf("render deploy/kcl/%s: %w", opts.env, err)
 	}
-	_, err = cutReleaseFromBuildState(ctx, projectDir, opts.env, opts.release, opts.outputDir, entities, opts)
-	return err
+	if _, err := cutReleaseFromBuildState(ctx, projectDir, opts.env, opts.release, opts.outputDir, entities, opts); err != nil {
+		return err
+	}
+	// The cut-only job writes the bundle too. It is the half of a split
+	// pipeline that RECORDS, and the bundle is a record — leaving it to the
+	// deploy would mean `forge env deploy <env> <v>` had to render it on
+	// demand, from whatever checkout the deploy job happens to hold. The
+	// earlier --push job pushed the images, so this build's pins resolve
+	// and the bundle can name the registry it pushed to.
+	opts.push = true
+	return writeBuildBundle(ctx, opts)
 }
 
 // refuseBuildPublishFlag is top-level `forge env build`'s refusal for --push and

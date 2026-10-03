@@ -38,52 +38,11 @@ type quarantined struct {
 }
 
 var quarantine = []quarantined{
-	// ── internal/bundle.BuildInput: the bundle builder has no production caller YET ──
-	// F2 (forge #406) ships bundle.Build ahead of its caller by scope: wiring it into
-	// `forge env build` / the no-version `forge env deploy` is F-DEPLOY-ALL's task, and
-	// that change DELETES these seven entries (TestQuarantineIsTight forces it).
-	{
-		Rule: RulePhantomField,
-		Key:  "internal/bundle.BuildInput.Charts",
-		Cost: "bundle.Build reads BuildInput.Charts, and no production code calls Build yet, so no " +
-			"bundle is written by any command today. Owner: F-DEPLOY-ALL (env build / deploy write the bundle).",
-	},
-	{
-		Rule: RulePhantomField,
-		Key:  "internal/bundle.BuildInput.CreatedAt",
-		Cost: "bundle.Build reads BuildInput.CreatedAt, and no production code calls Build yet, so no " +
-			"bundle is written by any command today. Owner: F-DEPLOY-ALL (env build / deploy write the bundle).",
-	},
-	{
-		Rule: RulePhantomField,
-		Key:  "internal/bundle.BuildInput.Env",
-		Cost: "bundle.Build reads BuildInput.Env, and no production code calls Build yet, so no " +
-			"bundle is written by any command today. Owner: F-DEPLOY-ALL (env build / deploy write the bundle).",
-	},
-	{
-		Rule: RulePhantomField,
-		Key:  "internal/bundle.BuildInput.Pins",
-		Cost: "bundle.Build reads BuildInput.Pins, and no production code calls Build yet, so no " +
-			"bundle is written by any command today. Owner: F-DEPLOY-ALL (env build / deploy write the bundle).",
-	},
-	{
-		Rule: RulePhantomField,
-		Key:  "internal/bundle.BuildInput.Project",
-		Cost: "bundle.Build reads BuildInput.Project, and no production code calls Build yet, so no " +
-			"bundle is written by any command today. Owner: F-DEPLOY-ALL (env build / deploy write the bundle).",
-	},
-	{
-		Rule: RulePhantomField,
-		Key:  "internal/bundle.BuildInput.Provenance",
-		Cost: "bundle.Build reads BuildInput.Provenance, and no production code calls Build yet, so no " +
-			"bundle is written by any command today. Owner: F-DEPLOY-ALL (env build / deploy write the bundle).",
-	},
-	{
-		Rule: RulePhantomField,
-		Key:  "internal/bundle.BuildInput.Release",
-		Cost: "bundle.Build reads BuildInput.Release, and no production code calls Build yet, so no " +
-			"bundle is written by any command today. Owner: F-DEPLOY-ALL (env build / deploy write the bundle).",
-	},
+	// NOTE: the seven internal/bundle.BuildInput entries were REMOVED, not fixed
+	// away by accident. F2 shipped bundle.Build ahead of its caller by scope;
+	// F6a wired it in, so `forge env build` and the no-version `forge env
+	// deploy` now write a bundle on every build and every field has a
+	// production writer. See internal/cli/env_build_bundle.go.
 
 	// NOTE: the four per-service-port entries (config.ComponentConfig.Ports and
 	// PortSpec.Port/.Protocol/.Expose) were REMOVED, not fixed away by accident:

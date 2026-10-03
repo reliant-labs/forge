@@ -324,6 +324,11 @@ type promoteCmdFlags struct {
 	// default, which is the whole of O-13 — see deploy_confirm.go.
 	yes      bool
 	planOnly bool
+	// The SERVER-BINDING half (deploy_plan_gate.go). approve names the
+	// exact plan reviewed; acknowledgeDestructive names the stop-class
+	// findings accepted, which --yes deliberately does not cover.
+	approve                string
+	acknowledgeDestructive []string
 
 	// --from / --from-promotion, held FLAT rather than as a nested
 	// promoteFromOptions so each is a plain flag target like every field
@@ -362,6 +367,10 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Proceed without the interactive confirmation: \"I read the plan\". The paved CI path. The plan is still computed and printed")
 	flags.BoolVar(&f.planOnly, "plan-only", false,
 		"Build, push and cut as usual, print the plan, and STOP without writing the promotion (exit 0). The first stage of a two-stage pipeline")
+	flags.StringVar(&f.approve, "approve", "",
+		"Proceed only if the plan is EXACTLY this digest (from an earlier --plan-only). The stronger form of --yes, for a two-stage pipeline where a human reviews stage one's plan: a plan that changed between the stages is refused (exit 3, plan_stale) rather than re-approved blind. The digest also travels on the write, and the server recomputes the plan under the environment's row lock before admitting it")
+	flags.StringSliceVar(&f.acknowledgeDestructive, "acknowledge-destructive", nil,
+		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 
 	// Anti-stomp. Every release deploy compare-and-sets against the plan's
@@ -559,6 +568,13 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		// The O-13 gate. Always stated by the command, so the verb always
 		// shows the plan and asks before writing a promotion.
 		Confirm: newDeployConfirm(p, ""),
+		// The SERVER-BINDING half (O-13): the §8.6 plan this deploy is
+		// judged against, plus what the caller approved.
+		DeployPlan: planForDeploy(ctx, projectDir, envName, p.version, ledger, progressWriter(f.jsonOut)),
+		Approval: deployApproval{
+			Digest:               p.approve,
+			AcknowledgedFindings: p.acknowledgeDestructive,
+		},
 		Follow: &promoteFollowOptions{
 			NoWait:   p.noWait,
 			jsonOut:  f.jsonOut,
@@ -2866,29 +2882,57 @@ func (a freshnessAnchor) remedy(envName string) string {
 //
 // A release-anchored comparison needs no git at all: it is ledger-vs-ledger,
 // so it stays correct in a dirty tree, in CI, and on a detached checkout.
-func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (freshnessAnchor, bool) {
+//
+// AN UNREADABLE LEDGER IS AN ERROR, NEVER "no anchor". There are two reasons
+// this function can decline to enforce, and they are not the same fact:
+//
+//   - "There is nothing to compare against" — the env is unbound and the tree
+//     is dirty, or a release records no commit. Nothing is wrong; the guard
+//     has no subject, so it stands down. That is enforce=false, nil error.
+//   - "The subject could not be read" — the ledger would not open, its
+//     promotion log does not decode, the project has no name to key it by.
+//     The guard's own input is missing, and the only thing that must not
+//     follow is a deploy proceeding as though it had been checked.
+//
+// Collapsing them is what the defect did: a corrupt promotions line, a ledger
+// whose permissions changed, a missing forge.yaml name — each one silently
+// disarmed the stale-image guard on the real-money path, and the deploy said
+// nothing about it. That is strictly worse than the false refusal the release
+// anchor exists to remove, because a refusal is read and acted on where this
+// is invisible.
+func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (freshnessAnchor, bool, error) {
 	ledger, err := ledgerFor(ctx, projectDir, envName)
 	if err != nil {
-		// Unresolvable ledger — can't prove anything. The real error
-		// surfaces from resolveDeployDigests with a better message.
-		return freshnessAnchor{}, false
+		return freshnessAnchor{}, false, fmt.Errorf(
+			"cannot check whether this build is stale for env %q: its release ledger could not be opened: %w", envName, err)
 	}
 	binding, bound, err := ledger.Bindings.Current(ctx, envName)
 	if err != nil {
-		return freshnessAnchor{}, false
+		return freshnessAnchor{}, false, fmt.Errorf(
+			"cannot check whether this build is stale for env %q: reading its promotions from %s failed: %w",
+			envName, ledger.Bindings.Location(), err)
 	}
 	if bound && binding.Release != "" {
 		rel, rerr := ledger.Releases.Get(ctx, binding.Release)
-		if rerr != nil || rel == nil || rel.Git.Commit == "" {
-			return freshnessAnchor{}, false
+		if rerr != nil {
+			return freshnessAnchor{}, false, fmt.Errorf(
+				"cannot check whether this build is stale for env %q: reading release %s from %s failed: %w",
+				envName, binding.Release, ledger.Releases.Location(), rerr)
 		}
-		return freshnessAnchor{Commit: rel.Git.Commit, Release: binding.Release}, true
+		// A release this ledger does not hold, or one carrying no commit,
+		// is an honest stand-down rather than a failure: the read
+		// SUCCEEDED and the answer is that there is no anchor. Falling
+		// back to HEAD here is precisely the false refusal above.
+		if rel == nil || rel.Git.Commit == "" {
+			return freshnessAnchor{}, false, nil
+		}
+		return freshnessAnchor{Commit: rel.Git.Commit, Release: binding.Release}, true, nil
 	}
 	head, clean, ok := gitHEADAndClean(ctx, projectDir)
 	if !ok || !clean {
-		return freshnessAnchor{}, false
+		return freshnessAnchor{}, false, nil
 	}
-	return freshnessAnchor{Commit: head}, true
+	return freshnessAnchor{Commit: head}, true, nil
 }
 
 // checkBuildStateFreshness refuses to deploy a build whose recorded source
@@ -2904,8 +2948,10 @@ func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (fr
 //
 //   - The build recorded a source commit (st.Commit non-empty). Older state
 //     files predating commit-stamping skip the check.
-//   - An anchor is resolvable (see resolveFreshnessAnchor). "Can't prove
-//     staleness" always resolves to allow.
+//   - An anchor is resolvable (see resolveFreshnessAnchor). "There is nothing
+//     to compare against" resolves to allow; "the ledger could not be read"
+//     is returned as an error, because a guard whose input is missing must
+//     not report a pass.
 //
 // Escape hatch: pass `--tag <tag>` to deploy a specific tag directly — that
 // path bypasses build-state (and therefore this check) entirely.
@@ -2913,7 +2959,10 @@ func checkBuildStateFreshness(ctx context.Context, projectDir, envName, stateKey
 	if st == nil || st.Commit == "" {
 		return nil
 	}
-	anchor, enforce := resolveFreshnessAnchor(ctx, projectDir, envName)
+	anchor, enforce, err := resolveFreshnessAnchor(ctx, projectDir, envName)
+	if err != nil {
+		return err
+	}
 	if !enforce || anchor.Commit == st.Commit {
 		return nil
 	}

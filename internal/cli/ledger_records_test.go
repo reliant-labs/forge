@@ -27,6 +27,19 @@ func testRecordStore(t *testing.T, dir string) machineRecordStore {
 	return store
 }
 
+// testBundleBlobs is a stand-in for a built bundle's bytes. The MACHINE
+// backend ignores them — its blobs are already in an OCI layout it owns — so
+// their content is irrelevant to these tests and only their presence in the
+// seam is. The hosted backend, where the bytes ARE the contract, is tested
+// against control-plane's own protojson in the hosted_dsot_* files.
+func testBundleBlobs() bundleBlobs {
+	return bundleBlobs{
+		Repository: "ghcr.io/acme/bundles",
+		Manifest:   []byte(`{"schemaVersion":2}`),
+		Config:     []byte(`{"schema":"forge.dev/bundle/v1"}`),
+	}
+}
+
 func testShape() release.Shape {
 	return release.Shape{
 		Kind: release.EnvSelfManaged,
@@ -54,7 +67,8 @@ func TestBundleRecorder_IsIdempotentOnDigest(t *testing.T) {
 		Shape:        testShape(),
 	}
 
-	first, created, err := recorder.RecordBundle(ctx, b)
+	blobs := testBundleBlobs()
+	first, created, err := recorder.RecordBundle(ctx, b, blobs)
 	if err != nil || !created {
 		t.Fatalf("first record = (created=%v, %v), want created", created, err)
 	}
@@ -62,7 +76,7 @@ func TestBundleRecorder_IsIdempotentOnDigest(t *testing.T) {
 		t.Errorf("the backend must stamp an id and a time, got %+v", first)
 	}
 
-	again, created, err := recorder.RecordBundle(ctx, b)
+	again, created, err := recorder.RecordBundle(ctx, b, blobs)
 	if err != nil {
 		t.Fatalf("re-record: %v", err)
 	}

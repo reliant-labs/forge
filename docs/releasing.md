@@ -125,7 +125,7 @@ doing the render, so a release publishes it automatically by shipping the
 binary — a project pinned to the release renders against exactly its module.
 Forge once scaffolded a published KCL git tag on release builds; the tag was
 never pushed, and every project a released forge created could not resolve its
-deploy manifests. See `docs/adr/0003-kcl-module-from-the-binary.md`.
+deploy manifests.
 
 ## 4. Forge's own CI needs no pin
 

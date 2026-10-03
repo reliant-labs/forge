@@ -355,15 +355,6 @@ var removals = []removal{
 					"internal/templates/project/middleware_test.go",
 				},
 			},
-			{
-				Name: "the historical survey in the operator design investigation",
-				Reason: "docs/design/OPERATOR_AGNOSTIC.md §1 and FORGE_COMPOSITION.md quote an " +
-					"external repository's manifests as they stood, file:line, as the evidence for a " +
-					"design call. Rewriting a quoted survey falsifies the record. Both docs' " +
-					"RECOMMENDATIONS were corrected, and OPERATOR_AGNOSTIC.md carries a note at the " +
-					"top saying the mechanism changed.",
-				Paths: []string{"docs/design/"},
-			},
 		},
 	},
 	{
@@ -639,13 +630,6 @@ var removals = []removal{
 		Patterns: []*regexp.Regexp{
 			regexp.MustCompile(`--allow-kcl-downgrade\b`),
 			regexp.MustCompile(`\bAllowKCLDowngrade\b|\bDowngradeError\b`),
-		},
-		Allowances: []allowance{
-			{
-				Name:   "the ADR that records the removal",
-				Reason: "ADR 0003 explains why the refusal and its flag were deleted; naming them is the record, not a reference.",
-				Paths:  []string{"docs/adr/0003-kcl-module-from-the-binary.md"},
-			},
 		},
 	},
 	{
@@ -1110,12 +1094,6 @@ var removals = []removal{
 		},
 		Allowances: []allowance{
 			{
-				Name:   "the ADR that decided the env verbs",
-				Reason: "docs/adr/env-verbs.md states the problem it solves by LISTING the overlapping entry points it removed, `forge run` among them, and records in its Decision table which commands each new verb absorbed. Naming a deleted command in order to say it is deleted is the removal, not a reference — and this is the text that explains why the guard entry exists. Scoped to the one file, so a doc that TELLS someone to run it still fails.",
-				Token:  regexp.MustCompile("`forge run`"),
-				Paths:  []string{"docs/adr/env-verbs.md"},
-			},
-			{
 				Name: "the record of the collision that named `forge ci run`",
 				Reason: "An earlier design spec called the run timeline `forge run show`, and that name was " +
 					"rejected because it collided with the then-live dev-server `forge run`. Both the " +
@@ -1178,25 +1156,6 @@ var removals = []removal{
 			regexp.MustCompile(`\bnewReleaseCutCmd\b`),
 		},
 		Allowances: []allowance{
-			{
-				Name: "the ADR that decided the env verbs",
-				Reason: "docs/adr/env-verbs.md states the problem it solves by LISTING the overlapping " +
-					"entry points it removed — `forge build [--push] [--release]` and " +
-					"`forge release cut` among them — and records in its Decision table which " +
-					"commands each new verb absorbed, including the observation that `release cut` " +
-					"was literally the tail of `build --release`. Naming a deleted spelling in order " +
-					"to say it is deleted is the removal, not a reference, and this is the text that " +
-					"explains why this guard entry exists. Scoped to the one file, so a doc that " +
-					"TELLS someone to run it still fails.",
-				// The ADR writes these as inline code spans inside a markdown
-				// table cell and a task bullet, so the matched text runs
-				// across backticks and punctuation ("forge build --push`,
-				// `forge build --release", "forge build` becomes compile-only
-				// (refuses `--push/--release"). Allow `forge build` followed
-				// by either flag anywhere on the line, in this ONE file.
-				Token: regexp.MustCompile("`forge release cut`|`release cut`|forge build[^\n]*--(?:push|release)"),
-				Paths: []string{"docs/adr/env-verbs.md"},
-			},
 			{
 				Name: "the text that documents where `release cut` went",
 				Reason: "Three places name the deleted command in order to say it is deleted and where it " +
@@ -1554,15 +1513,6 @@ var removals = []removal{
 		},
 		Allowances: []allowance{
 			{
-				Name: "the ADR that decided the removal",
-				Reason: "docs/adr/env-verbs.md is the approved decision record: its table names " +
-					"`forge env promote` in the \"Absorbs (deleted)\" column, and task V3's own " +
-					"description names `promote --wait/--deploy`. That text IS the removal — " +
-					"deleting it to satisfy the guard would delete the reason the guard exists.",
-				Token: regexp.MustCompile("`forge env promote`|`promote --wait/--deploy`|`forge env promote`,"),
-				Paths: []string{"docs/adr/env-verbs.md"},
-			},
-			{
 				Name: "the changelog entry announcing the removal",
 				Reason: "A Keep-a-Changelog `### Removed` entry has to name what was removed, or " +
 					"readers cannot tell which of their invocations broke. The older entries that " +
@@ -1855,22 +1805,16 @@ var removals = []removal{
 				Paths: []string{"CHANGELOG.md"},
 			},
 			{
-				Name: "the ADR that decided the merge, and the test that proves it happened",
-				Reason: "docs/adr/env-verbs.md names all six verbs in its \"Absorbs (deleted)\" column — " +
-					"that table IS the decision, and a reader who trips this guard needs it to tell a " +
-					"straggler from the record. env_status_cmd_test.go names them twice for the same " +
-					"reason: once to assert each no longer RESOLVES under `forge env`, and once to " +
-					"assert the merged help does not still point at them.\n" +
-					"Both are documentation OF the removal, and they are the text most likely to stop " +
-					"someone reintroducing a verb. Deleting them to satisfy the guard would delete the " +
-					"proof the removal is complete. Scoped to the two files, so a line in either that " +
-					"actually registered one of these commands still fails — the constructor pattern " +
-					"is not allowed here.",
+				Name: "the test that proves the merge happened",
+				Reason: "env_status_cmd_test.go names the six verbs twice: once to assert each no " +
+					"longer RESOLVES under `forge env`, and once to assert the merged help does not " +
+					"still point at them. That is documentation OF the removal, and the check most " +
+					"likely to stop someone reintroducing a verb. Deleting it to satisfy the guard " +
+					"would delete the proof the removal is complete. Scoped to the one file, so a " +
+					"line in it that actually registered one of these commands still fails — the " +
+					"constructor pattern is not allowed here.",
 				Token: regexp.MustCompile(`\bforge\s+env\s+(?:verify|wait|rollout|topology|history)\b`),
-				Paths: []string{
-					"docs/adr/env-verbs.md",
-					"internal/cli/env_status_cmd_test.go",
-				},
+				Paths: []string{"internal/cli/env_status_cmd_test.go"},
 			},
 		},
 	},

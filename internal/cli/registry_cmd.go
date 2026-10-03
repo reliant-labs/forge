@@ -106,8 +106,8 @@ The registry HOSTS come from the workload declarations and nowhere else — ther
 is no host argument and no flag that takes one. An env whose workloads push to
 two registries logs in to both, in one command.
 
-THE PLATFORM REGISTRY NEEDS NO CREDENTIAL FROM YOU. For the host an env
-declares on forge.ControlPlane (registry_host, Reliant's registry by default),
+THE PLATFORM REGISTRY NEEDS NO CREDENTIAL FROM YOU. For the host named by an
+env's forge.ControlPlane registry_host (Reliant's registry by default),
 forge presents the SAME control-plane credential it reaches the control plane
 with — ` + "`--token`" + `, then the env's declared token_env, then what ` + "`forge login`" + `
 stored. One token, so there is nothing to mint and nothing to rotate:

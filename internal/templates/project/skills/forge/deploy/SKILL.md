@@ -167,8 +167,7 @@ forge doctor --signal deploy   # probes, resources, Secrets, migrations
 ```
 forge build <env>                 # what <env> declares (host workloads need no image)
 forge env build <env> --push          # and push each image to the reference its workload declares
-forge registry login <env>        # hosted: your control-plane credential, nothing to pass
-forge registry login <env> -u <user> --password-stdin   # a registry of your own
+forge registry login <env>        # hosted: nothing to pass; -u/--password-stdin for your own
 forge registry ref <env>          # <image>@<digest> per image the last build pushed
 forge build <env> --plan          # resolve + preflight the build set; build nothing
 forge build --tag=<tag>           # override image tag (default: commit SHA)
@@ -179,50 +178,18 @@ One project image carries every binary. Its ENTRYPOINT is the binary and
 its CMD the default subcommand (`server`), so a workload's `args` select
 what the pod runs, the same subcommand the host runtime runs.
 
-### The hosted registry: ONE TOKEN, and no manual `docker login`
+### The hosted registry takes your control-plane credential
 
-A hosted env's images go to the PLATFORM registry, and you authenticate it with
-the credential you already have. There is no registry password to mint, no
-second CI secret, and nothing to rotate:
+A hosted env's images go to the PLATFORM registry, authenticated with the same
+`rlat_` forge reaches the control plane with — no registry password, and
+`--push` / `forge env deploy` log themselves in before their first push.
+`forge registry login <env>` REFUSES `--username`/`--password-*` for that host.
+A bare `image = "api"` resolves under `<registry_host>/<organization>/<project>/`.
 
-```
-forge registry login <env>        # no --username, no --password-*
-```
+Load `deploy/hosted-registry` for the credential sources, the CI shape, and
+denied-push triage (a realm 401 is nearly always a mis-declared `organization`).
 
-forge resolves the same `rlat_` it reaches the control plane with — `--token`,
-then the env's declared `token_env` (default `$FORGE_CONTROL_PLANE_TOKEN`), then
-what `forge login` stored. It presents that on **stdin** as username `forge`;
-our realm authenticates on the credential alone, so the username is a label in
-a log. Passing `--username`/`--password-*` for our host is REFUSED, because a
-hand-passed credential that happened to work would teach you that this registry
-has a password of its own.
-
-**You usually run no login at all.** `forge env build <env> --push`,
-`forge env deploy <env>` and `forge env up` log themselves in before their first
-push, once per host per process — so the scaffolded `release.yml` has no login
-step, and `build-images.yml` has one only for a non-hosted env. That is also what
-lets the in-app Deploy button push from a cloud daemon: its token is deposited
-where forge already looks.
-
-A BARE image is the normal hosted shape (`image = "api"`): it resolves to
-`<registry_host>/<organization>/<project>/api`. An env that ALSO pushes to a
-registry of your own logs in to both in one run — ours from the control-plane
-credential, yours from the flags.
-
-**A denied push (realm 401 / `DENIED`)** is almost never a credential problem,
-and forge appends the hint naming your declared org. In order:
-
-1. `organization` on `forge.ControlPlane` is not the org your token belongs to —
-   the realm scopes every token to its own org's subtree and refuses the rest.
-   Fix the declaration; forge cannot guess it, and a wrong one fails here rather
-   than silently.
-2. Still the scaffolded `REPLACE_ME_ORG_ID`. `forge lint` gates on this.
-3. The credential expired or was revoked. `forge login` again, or refresh the
-   CI secret.
-
-Re-running a manual `docker login` is NOT the fix for any of those.
-
-A non-hosted env declares no registry either: each workload — and each hosted
+A non-hosted env declares no registry: each workload — and each hosted
 frontend, via `forge.Frontend.image` — names its own.
 
 ### Docker build contexts
@@ -420,9 +387,8 @@ release is an ordinary promote labelled `direction BEHIND`; see
 - EVERY image on a CLUSTER or COMPOSE workload names its registry host
   (`ghcr.io/acme/api`). A hostless one is refused at render, naming the
   workload: no env registry exists to complete it. A `forge.OnHosted` workload
-  is the exception and may name a bare image — the platform admits exactly one
-  subtree, so forge composes the address from the env's declaration rather than
-  asking you to transcribe it.
+  may name a bare image — the platform admits exactly one subtree, so forge
+  composes the address from the env's declaration.
 
 ## Per-env config — KCL is the surface
 

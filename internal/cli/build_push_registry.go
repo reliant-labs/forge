@@ -171,9 +171,9 @@ func (p pushPlan) hosts() []string {
 // placement is the point: the plan is resolved, so forge knows whether this
 // invocation pushes and to which hosts, and nothing has been compiled yet, so
 // a missing credential costs a second rather than a whole build. Every pushing
-// verb comes through here — `forge build --push`, `forge env build --push`,
-// `forge env up`, and `forge env deploy`, which builds through runBuild — so
-// there is one hook rather than one per push path.
+// verb comes through here — `forge env build <env> --push`, `forge env up`,
+// and `forge env deploy`, which builds through runBuild — so there is one
+// hook rather than one per push path.
 func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *buildOptions) (*KCLEntities, pushPlan, error) {
 	declared, entities, err := renderBuildEntities(ctx, cfg, *opts)
 	if err != nil {

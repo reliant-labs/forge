@@ -133,8 +133,8 @@ func loginToPlatformRegistry(ctx context.Context, env, host, flagToken string, d
 //
 // Called from renderBuildInputs — after the push plan is resolved, before any
 // build step runs — which is the one place every pushing invocation passes
-// through: `forge build --push`, `forge env build --push`, `forge env up`, and
-// `forge env deploy`, which builds through runBuild. Hooking the push itself
+// through: `forge env build <env> --push`, `forge env up`, and `forge env
+// deploy`, which builds through runBuild. Hooking the push itself
 // would be later and worse: `docker push` is one of THREE push paths, and the
 // other two would each need their own copy of this.
 //
@@ -168,7 +168,7 @@ func autoLoginForPush(ctx context.Context, env string, declared *KCLEntities, pl
 // had two secrets.
 func errPlatformRegistryTakesNoFlags(env, host, tokenEnv string) error {
 	return cliutil.UserErr("forge registry login "+env,
-		fmt.Sprintf("%s is the registry env %q declares on forge.ControlPlane, and it takes your control-plane credential — not a --username and --password", host, env),
+		fmt.Sprintf("%s is the platform registry for env %q (forge.ControlPlane's registry_host), and it takes your control-plane credential — not a --username and --password", host, env),
 		fmt.Sprintf("deploy/kcl/%s/main.k", env),
 		fmt.Sprintf("drop the flags: forge registry login %s\n"+
 			"  forge resolves the same rlat_ it reaches the control plane with (--token, then $%s, then `forge login`) "+

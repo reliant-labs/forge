@@ -27,7 +27,8 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge env down <env> [--all]` | Stop this project's stack for that env, tracked or orphaned. `--all`: all of them, machine-wide. |
 | `forge env ps` | Every stack running here: project dir, env, process count. |
 | `forge env up <env> [--no-build] [--no-deploy] [--target <name>] [-D name=value] [--background]` | The whole-loop orchestrator: build (host-bound workloads need no image) → cluster apply → host launch → frontend dev-serve. Reads each workload's runtime from `deploy/kcl/<env>/`. `--target` narrows WHICH entities each phase acts on; it never turns phases off. |
-| `forge env deploy dev [--prune] [--target <app>]` | Apply `deploy/kcl/dev/`'s cluster-bound workloads. `--prune` deletes orphan forge-managed Deployments. `--target <app>` (repeatable, by workload/frontend name) deploys ONLY that app, keeping shared resources (Namespace, ConfigMap/Secret, RBAC). |
+| `forge env deploy dev [--prune]` | Apply `deploy/kcl/dev/`'s cluster-bound workloads. `--prune` deletes orphan forge-managed Deployments. |
+| `forge env deploy dev <version> --target <app>` | The same, scoped: applies ONLY that app's Deployment (repeatable, by workload/frontend name), keeping shared resources (Namespace, ConfigMap/Secret, RBAC). A scope flag needs a version — with none, the deploy would build and push everything to ship one app, so forge refuses and says this. `forge env up dev --target <app>` is the dev-loop spelling that needs no release. |
 
 ## Host vs cluster: where does each workload run in dev?
 

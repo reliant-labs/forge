@@ -199,9 +199,10 @@ Environment is a positional arg — `forge env deploy dev`, not `forge env deplo
 forge env render prod             # every object, and the cluster it lands on — changes nothing
 forge env shape prod              # what the env IS, not its objects — see deploy/shape
 forge env deploy prod             # SHIP THIS CHECKOUT: build → push → cut → plan → confirm → apply → wait
+forge env deploy prod --yes       # the same, in CI: "I read the plan" (no TTY to prompt on)
 forge env deploy prod v1.7.1      # deploy a release that already exists; builds nothing
 forge env deploy prod --dry-run   # render/print without applying
-forge env deploy prod --target item   # one workload
+forge env deploy prod v1.7.1 --target item   # one workload of a release that exists
 ```
 
 **Two forms, and the difference is whether you name a version.** With NO
@@ -216,10 +217,25 @@ cut errors with `forge env deploy <env>` as the fix, never `--no-build`.
 
 **Nothing is written until you confirm.** A promotion IS the deploy — the
 converger picks it up within minutes — so the plan is printed and approved
-BEFORE the write. On a terminal you are prompted (default no); in CI pass
-`--yes`. With no terminal and no `--yes` the command refuses with exit **5**,
-having built, pushed and cut but written no promotion, so approving it
-afterwards needs no rebuild. `--plan-only` stops after the plan.
+BEFORE the write. There are three ways through the gate, one per caller:
+**interactively**, where you are prompted and the default is no; **`--yes` in
+CI**, which means "I read the plan" and is what every scaffolded workflow
+passes (the plan is still computed and printed into the job log above the
+write); and **`--plan-only`**, which stops after the plan and is the first
+stage of a two-stage pipeline. With no terminal and no `--yes` the command
+refuses with exit **5** (`plan_unconfirmed`), having built, pushed and cut but
+written no promotion — so approving it afterwards needs no rebuild. A CI deploy
+missing `--yes` is red by construction, which is the single most common cause
+of exit 5.
+
+**A scoped deploy needs a release.** `--frontends-only` and `--target` ship
+part of the env, so forge refuses them when no version is named: a no-version
+deploy builds and pushes every artifact and cuts a release over all of them,
+and cutting one that ships only some would record a release that does not
+describe what is running. Name the version
+(`forge env deploy prod v1.7.1 --frontends-only`) or deploy everything
+(`forge env deploy prod`). `--dry-run` / `--explain` cut nothing and are
+unaffected.
 
 `build` and `deploy` also record that shape on the control plane, so a console
 can read an env with no daemon online.
@@ -267,8 +283,9 @@ frontends = [_web | {runtime = forge.OnBucket {bucket = "acme-prod-web"}}]
 
 `forge env new cloud --from prod --bind web=hosted` rebinds a scaffolded
 frontend's line (`_on_bucket(_web_frontend)` → `_hosted_frontend(...)`).
-`forge env deploy <env> --frontends-only` ships only the bucket / Firebase
-frontends.
+`forge env deploy <env> <version> --frontends-only` ships only the bucket /
+Firebase frontends of a release that exists (a scope flag needs a version —
+see "A scoped deploy needs a release" above).
 
 ### Hosted static sites
 

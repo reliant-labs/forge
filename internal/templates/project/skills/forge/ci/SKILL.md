@@ -19,7 +19,7 @@ without forge ever touching your additions.
 | `.github/workflows/ci.yml` | Tier-1 | Lint (golangci-lint, buf lint, frontend lint+typecheck, migration safety), test (`go test -race -count=1 ./...`, frontend vitest), build (Go binaries with `-trimpath -buildvcs=true`, frontend `next build`), `forge ci verify-generated`, KCL validation, vuln scan (govulncheck, npm audit, Trivy), license check (go-licenses), Docker build, optional E2E |
 | `.github/workflows/proto-breaking.yml` | Tier-1 | `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow. |
 | `.github/workflows/build-images.yml` | Tier-1 | The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml` |
-| `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge env build <env> --push` + `forge env deploy <env>`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
+| `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge env build <env> --push` + `forge env deploy <env> --yes`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
 | `.github/workflows/e2e.yml` | Tier-1 | E2E suite, label-gated on PRs (`run-e2e`) — emitted when there is a suite to run: the generated `e2e/` harness exists, or `ci.e2e.enabled: true`. docker-compose or k3d runtime |
 | `.github/workflows/pre-commit.yml` | Tier-2 | Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after) |
 | `.github/dependabot.yml` | Tier-1 | Weekly bumps for `gomod` (root + `/gen` + each frontend), `npm` (frontend), `docker`, and `github-actions` |
@@ -136,9 +136,19 @@ key with `--username _json_key`, an ECR token with `--username AWS`).
 
 `deploy.yml` runs, per env, `forge registry login <env>`, `forge build <env>
 --push` (each image to the reference its workload declares), then
-`forge env deploy <env>` — never `kcl run | kubectl apply`, which cannot
+`forge env deploy <env> --yes` — never `kcl run | kubectl apply`, which cannot
 resolve `kcl_plugin.forge` and skips the declared-context binding, the
 per-env frontend `config.js` render, digest pinning and the live preflight.
+
+**`--yes` is not optional in CI, and it is not a bypass.** `forge env deploy`
+prints the deploy plan and will not write a promotion until somebody approves
+it. A GitHub runner has no TTY to prompt on, so without `--yes` the command
+exits **5** (`plan_unconfirmed`) having built, pushed and cut but deployed
+nothing. `--yes` means "I read the plan" — the plan is still computed and
+printed into the job log immediately above the write, so the record of what
+shipped is in the run. For a pipeline that wants a human in the loop, run
+`--plan-only` in one job and put the approving job behind a GitHub Environment
+with required reviewers; `release.yml` already has that shape.
 The env list is the project's `deploy/kcl/<env>/main.k` set (dev excluded),
 read when the workflow is scaffolded; with several, the first auto-deploys
 after a green image build on main and the last is protected. A lone env is

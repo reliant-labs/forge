@@ -119,7 +119,9 @@ jobs:
       - name: Deploy to the cluster
         # Applies to the context the e2e env declares and waits for every
         # workload to become ready.
-        run: forge env deploy e2e
+        # CI has no TTY; --yes is "I read the plan", and the plan is printed
+        # above. Without it forge exits 5, plan_unconfirmed.
+        run: forge env deploy e2e --yes
 
       - name: Run E2E tests
         run: task test:e2e

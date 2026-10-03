@@ -443,8 +443,10 @@ jobs:
         run: forge env build e2e --push
       - name: Deploy and test
         # `forge env deploy` waits for every workload to become ready.
+        # CI has no TTY; --yes is "I read the plan", and the plan is printed
+        # above. Without it forge exits 5, plan_unconfirmed.
         run: |
-          forge env deploy e2e
+          forge env deploy e2e --yes
           task test:e2e
       - name: Upload test artifacts
         if: failure()

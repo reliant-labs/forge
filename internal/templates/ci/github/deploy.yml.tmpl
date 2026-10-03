@@ -183,6 +183,8 @@ jobs:
         # workload to become ready (--rollout wait, the default). A cluster
         # env gets the live preflight first: every referenced Secret key and
         # image must exist on the target, or nothing is applied.
+        # CI has no TTY; --yes is "I read the plan", and the plan is printed
+        # above. Without it forge exits 5, plan_unconfirmed.
         if: steps.select.outputs.run == 'true'
-        run: forge env deploy "${{"{{"}} matrix.env {{"}}"}}"
+        run: forge env deploy "${{"{{"}} matrix.env {{"}}"}}" --yes
 {{- end}}

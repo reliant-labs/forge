@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"oras.land/oras-go/v2/content/memory"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -315,6 +317,82 @@ func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
 		if _, present := body[described]; present {
 			t.Errorf("RecordBundle must not describe the bundle (%q): the server derives it from the bytes", described)
 		}
+	}
+}
+
+// TestEnvBuildBundle_AnUnreachableControlPlaneDoesNotFailTheBuild is #404's
+// rule applied to the bundle: `forge env build` never needs a reachable
+// control plane. Opening a hosted env's ledger (or its records half) needs a
+// credential and a reachable server; when the control plane is UNDELIVERABLE —
+// no credential, a transport error, Unavailable — the build warns and
+// continues, exactly as the declaration step does. An ANSWERED refusal still
+// fails the build.
+//
+// This is control-plane's hosted_deploy fixtures (TestFixtureBuildPushes…),
+// which build against an unreachable endpoint on purpose: with F6a's bundle
+// write they went red again on "no control-plane credential", the same two
+// tests #404 fixed for the declaration.
+//
+// Mutation: return the seam's error unclassified and the first two cases fail.
+func TestEnvBuildBundle_AnUnreachableControlPlaneDoesNotFailTheBuild(t *testing.T) {
+	noCred := fmt.Errorf("env %q keeps its release ledger on the control plane at %s: %w",
+		"prod", "http://127.0.0.1:9", cloud.ErrNoCredential)
+	refused := &cloud.Error{HTTPStatus: 401, Code: cloud.CodeUnauthenticated, Message: "token rejected"}
+
+	for _, tc := range []struct {
+		name              string
+		ledgerErr, recErr error
+		wantErr           bool
+		wantSkipped       bool
+	}{
+		{name: "ledger: no credential", ledgerErr: noCred, wantSkipped: true},
+		{name: "records half: no credential", recErr: noCred},
+		{name: "ledger: credential refused", ledgerErr: refused, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newLedgerTestProject(t, "bundle-offline-project")
+			stubEnvShape(t, "bundle-offline-project")
+
+			prevLedger := bundleLedgerFor
+			bundleLedgerFor = func(ctx context.Context, projectDir, env string) (envLedger, error) {
+				if tc.ledgerErr != nil {
+					return envLedger{}, tc.ledgerErr
+				}
+				return prevLedger(ctx, projectDir, env)
+			}
+			t.Cleanup(func() { bundleLedgerFor = prevLedger })
+			prevRecorder := bundleRecorderForEnv
+			bundleRecorderForEnv = func(ctx context.Context, projectDir, env string, l envLedger) (bundleRecorder, error) {
+				if tc.recErr != nil {
+					return nil, tc.recErr
+				}
+				return prevRecorder(ctx, projectDir, env, l)
+			}
+			t.Cleanup(func() { bundleRecorderForEnv = prevRecorder })
+
+			var warn strings.Builder
+			written, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, bundleBuildInputs{
+				Now: bundleTestNow, NoCharts: true, errOut: &warn,
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("a control plane that ANSWERS and refuses must fail the build")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("an undeliverable control plane must not fail the build (#404), got: %v", err)
+			}
+			if len(written) != 1 || written[0].Recorded {
+				t.Fatalf("the bundle must be reported as NOT recorded, got %+v", written)
+			}
+			if written[0].Skipped != tc.wantSkipped {
+				t.Errorf("skipped = %v, want %v", written[0].Skipped, tc.wantSkipped)
+			}
+			if !strings.Contains(warn.String(), "The build continues") {
+				t.Errorf("the undeliverable case must warn and say the build continues, got:\n%s", warn.String())
+			}
+		})
 	}
 }
 

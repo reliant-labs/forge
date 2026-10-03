@@ -217,9 +217,9 @@ func TestGetBundle_NotFoundIsAnAnswer(t *testing.T) {
 // ─── Reading a convergence record ────────────────────────────────────────────
 
 // The BeginApply / FinishApply / ListApplies request tests are gone with the
-// requests: forge does not apply, so it issues none of them. What survives is
-// the half that still runs — DECODING a record the control plane's observer
-// wrote, which arrives on GetLiveView.
+// requests, which were deleted as dead code — nothing in forge ever issued
+// one. What survives is the half with a real consumer: DECODING a record the
+// control plane's observer wrote, which arrives on GetLiveView.
 //
 // TestApplyFromWire_DerivesAbandonedRatherThanSuccess keeps the one property
 // those tests were really protecting. An apply with no outcome means two

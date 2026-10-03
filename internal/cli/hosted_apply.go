@@ -2,33 +2,29 @@ package cli
 
 // Reading the control plane's apply records. THERE IS NO WRITE HALF.
 //
-// WHAT WENT, AND WHY IT COULD NOT STAY. This file used to own BeginApply,
-// FinishApply, FinishApplyWithObserved and ListApplies — the bracket around a
-// forge-driven apply, with a compare-and-set on the way in and a reported
-// outcome on the way out. All four are gone, because forge does not apply to a
-// cluster: a promotion is declarative intent, and a reconciler converges the
-// env to it. Any API whose meaning is "I am applying now" has no caller, and
-// keeping one would leave a second, imperative source of truth that the
-// reconciler would then contradict.
+// WHAT WENT, AND WHY. This file used to own BeginApply, FinishApply,
+// FinishApplyWithObserved and ListApplies — the bracket around a forge-driven
+// apply, with a compare-and-set on the way in and a reported outcome on the
+// way out. All four are gone because NOTHING EVER CALLED THEM. Forge's own
+// cluster apply (cluster.Apply, through the deploy dispatch) reports its
+// outcome by succeeding or failing, and no verb in this package brackets it
+// with a durable record. The four RPCs, the guard encoder and the observed-
+// objects variant were a client for a protocol with no caller on either side.
 //
-// So the asymmetry here is the model, not an omission:
+// That is the whole justification: dead code, removed. It is deliberately NOT
+// the claim that forge does not apply — it does, and its direct cluster apply
+// is the supported path for every env today.
 //
-//   - A RECORD OF WHAT SUCCEEDED is a secondary OBSERVATION, derived from the
-//     reconciler (a Kustomization's lastAppliedRevision and Ready transitions)
-//     and written by the control plane's observer. forge reads it. It is
-//     append-only, never required for correctness, and safe to lose and
-//     rebuild from Flux's current status.
-//   - AN INSTRUCTION TO APPLY is not a record of anything, and is not
-//     expressible.
-//
-// What remains is the DECODE: the wire shape the server sends and the state
-// derivation every reader shares. hosted_live.go consumes it through
-// GetLiveView. Reading what another system reports is not applying, which is
-// why this stayed while everything that wrote did not.
+// What remains is the DECODE, which has a real consumer: hosted_live.go reads
+// these records through GetLiveView. They are OBSERVATIONS the control plane's
+// own observer wrote — append-only, never required for correctness — and
+// reading what another system reports was never the half that lacked a caller.
 //
 // The reported-by label survives in the wire shape and is still set by the
 // SERVER rather than sent, because the record remains a claim by whoever made
-// it and a reader has to see whose.
+// it and a reader has to see whose. If a verb ever does want to report an
+// apply of its own, the request shape should be designed for that verb rather
+// than restored from here.
 
 import (
 	"encoding/json"

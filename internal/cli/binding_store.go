@@ -154,22 +154,29 @@ type bundleRecorder interface {
 	Bundle(ctx context.Context, id string) (*release.BundleRecord, error)
 }
 
-// THERE IS NO applyRecorder SEAM, and its absence is the model.
+// THERE IS NO applyRecorder SEAM, because nothing ever called one.
 //
-// F3 declared one — BeginApply before the bytes moved, FinishApply after —
-// and F4 asked to widen it with a compare-and-set so a forge-driven apply
-// could assert the env had not moved under it. Both assumed forge was the
-// actuator. It is not: a promotion is declarative intent and a reconciler
-// converges the env to it, so an "I am applying now" call has no caller, and a
-// seam for one would be a second source of truth for the reconciler to
-// contradict.
+// F3 declared it — BeginApply before the bytes moved, FinishApply after — and
+// F4 asked to widen it with a compare-and-set. Neither half ever acquired a
+// production caller: the apply path (cluster.Apply, through the deploy
+// dispatch) reports its outcome by SUCCEEDING OR FAILING, and no verb in this
+// package brackets it with a record. So the seam, the two methods satisfying
+// it, and the hosted client's write half were an interface with no consumer on
+// either side.
 //
-// The RECORDS survive, repurposed: "converged to B at T" is a secondary
-// observation written by the control plane's own observer, read through
-// GetLiveView (hosted_apply.go decodes it). Nothing in forge writes one.
-// internal/ledgerfile still holds the reader for a machine ledger's existing
-// apply lines, which `forge ledger show` and `forge ledger export` render as
-// history.
+// It is deleted on that ground alone — dead code, removed — and NOT on the
+// stronger claim that forge does not apply. Forge does apply: its direct
+// cluster apply is the supported path for every env today, and the hosted
+// surface is the Workload CRD, ManagedDatabase and StaticSite rather than a
+// reconciler converging manifests. If a verb ever does want to bracket an
+// apply with a durable record, a seam for it should be designed against that
+// verb's needs rather than restored from this one.
+//
+// The READ side survives and is used: a convergence record is an observation
+// the control plane's own observer writes, which forge reads through
+// GetLiveView (hosted_apply.go decodes it). internal/ledgerfile keeps the
+// reader for a machine ledger's existing apply lines, which `forge ledger
+// show` and `forge ledger export` render as history.
 
 // sessionReporter records that a local stack is running here.
 //
@@ -531,8 +538,9 @@ func (l machineReleaseLedger) Location() string { return l.store.Dir() }
 // ─── The machine ledger: the new records ─────────────────────────────────────
 
 // machineRecordStore implements bundleRecorder and sessionReporter against
-// the machine ledger. It writes no apply record: forge does not apply, so
-// there is no apply of forge's for it to bracket.
+// the machine ledger. It writes no apply record, because no caller ever asked
+// it to — see the note on the absent applyRecorder seam above. The underlying
+// ledgerfile.Store still reads existing apply lines for `forge ledger show`.
 //
 // A separate type from machineBindingStore rather than more methods on it:
 // the two have disjoint consumers, and a store that is handed to `forge env

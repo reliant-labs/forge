@@ -8,10 +8,11 @@ package cli
 // drifts away from the seam fails here rather than in the task that comes to
 // use it.
 //
-// There is no apply seam to exercise: forge does not apply, so it reports no
-// apply. The machine ledger's apply records are HISTORY an older forge wrote,
-// and the storage semantics below are tested against the store directly —
-// what `forge ledger show` and `forge ledger export` read back.
+// There is no apply seam to exercise: the applyRecorder interface was deleted
+// as dead code (no caller ever bracketed an apply with it). The machine
+// ledger's apply records are HISTORY an older forge wrote, and the storage
+// semantics below are tested against the store directly — what
+// `forge ledger show` and `forge ledger export` read back.
 
 import (
 	"context"

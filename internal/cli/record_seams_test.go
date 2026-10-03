@@ -95,8 +95,8 @@ func TestRecordBundle_HostedSeamSendsBytesNotTheDescription(t *testing.T) {
 // crash, with no way through but a flag whose whole meaning is "override a
 // live apply".
 //
-// Exercised against the store rather than a seam, because there is no apply
-// seam: forge does not apply. The file semantics still matter — a stale
+// Exercised against the store rather than a seam, because the applyRecorder
+// seam was deleted as dead code. The file semantics still matter — a stale
 // in-flight row must not be able to wedge a reader or a future import.
 func TestMachineLedgerApply_AnAbandonedApplyDoesNotBlockTheNextOne(t *testing.T) {
 	dir := newLedgerTestProject(t, "abandoned-apply-project")

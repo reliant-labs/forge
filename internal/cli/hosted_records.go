@@ -8,9 +8,10 @@ package cli
 // records what it VERIFIES rather than what a client describes. The seam is
 // now wide enough — see binding_store.go.
 //
-// There is no apply recorder, here or anywhere: forge does not apply, so it
-// has nothing to report. The convergence records are written by the control
-// plane's own observer and READ through GetLiveView.
+// There is no apply recorder, here or anywhere, because no caller ever wanted
+// one — see binding_store.go on the absent seam. The convergence records that
+// DO exist are written by the control plane's own observer and READ through
+// GetLiveView.
 
 import (
 	"context"

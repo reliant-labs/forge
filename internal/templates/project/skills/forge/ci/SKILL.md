@@ -132,6 +132,38 @@ YAML literal. The login credential is `GITHUB_TOKEN` (GitHub's container
 registry); for another registry, pipe its credential from a secret (a GAR
 key with `--username _json_key`, an ECR token with `--username AWS`).
 
+### A hosted env needs NO registry credential — one token
+
+Where the env pushes to the PLATFORM registry, there is no registry login step
+and no registry secret. forge authenticates it with the same
+`FORGE_CONTROL_PLANE_TOKEN` the job already holds for the release ledger, and
+`forge env build --push` / `forge env deploy` log themselves in before their
+first push. So the scaffolded workflows differ by env, not by project:
+
+| Workflow | Login step | Credential |
+|---|---|---|
+| `release.yml` (hosted by construction) | none | `FORGE_CONTROL_PLANE_TOKEN` |
+| `build-images.yml`, hosted build env | none for the build; the trivy job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
+| `build-images.yml`, cluster build env | `forge registry login <env> --username … --password-stdin` | `GITHUB_TOKEN` or your own |
+| `deploy.yml` (non-hosted envs only) | same as above | `GITHUB_TOKEN` or your own |
+
+Two things follow, and both are worth knowing before editing a workflow:
+
+- **Do not add `--username`/`--password-*` for the platform registry.** forge
+  refuses them for our host, so the job fails on its first run. The flags are
+  for a registry you chose.
+- **One secret, not two.** A hosted pipeline needs `FORGE_CONTROL_PLANE_TOKEN`
+  and nothing else for images. Adding a registry secret gives you two things to
+  rotate and only one of them in anybody's memory.
+
+An env that pushes to the platform registry AND one of your own keeps the login
+step for yours alone; forge does its half in the same run.
+
+A job that gets a realm **401 / DENIED** on push is almost never missing a
+credential — check `organization` on `forge.ControlPlane` first (the realm
+scopes every token to its own org's subtree), then whether the token expired.
+forge prints the hint naming the declared org. Do not add a `docker login`.
+
 ### Deploys go through forge
 
 `deploy.yml` runs, per env, `forge registry login <env>`, `forge build <env>

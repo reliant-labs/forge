@@ -24,8 +24,13 @@ func TestExitCodes_AreTheSharedTable(t *testing.T) {
 		{"could not determine", exitUndetermined, 2},
 		{"conflict", exitConflict, 3},
 		{"refused", exitRefused, 4},
-		{"timed out", exitTimedOut, 5},
+		// 5 is the O-13 confirmation gate: the plan was printed and nobody
+		// approved it, so NOTHING was promoted. It took 5 from the timeout
+		// because it is the outcome that must be impossible to misread as
+		// success — see the header in exitcodes.go.
+		{"plan unconfirmed", exitPlanUnconfirmed, 5},
 		{"superseded", exitSuperseded, 6},
+		{"timed out", exitTimedOut, 8},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %d, want %d", tc.name, tc.got, tc.want)

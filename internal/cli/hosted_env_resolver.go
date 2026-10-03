@@ -76,6 +76,33 @@ func ensureHostedEnv(ctx context.Context, client cloudCaller, ref deploytarget.H
 	return id, err
 }
 
+// ensureHostedEnvRecordingPushBase is the ensure that F-DECL's declaration
+// step makes, plus one side effect: the org's image push base, as the control
+// plane just stated it, is written to .forge/state.
+//
+// WHY HERE. This is the ensure every build and every deploy of a
+// control-plane env already performs, so the base is learned with no extra
+// call and refreshed on every command that could care. `forge env render` and
+// `forge lint` then judge a hosted image against it with no network
+// (hosted_push_base.go explains why that matters), and a bare hosted image
+// resolves under the same value the build pushed to.
+//
+// A FAILED CACHE WRITE IS NOT AN ERROR. The declaration was recorded, which
+// is what the caller asked for; losing a cache that exists only to make an
+// offline check sharper must not fail a deploy. The check degrades to its
+// weaker message, which is the correct behaviour for "unknown" anyway.
+func ensureHostedEnvRecordingPushBase(ctx context.Context, client cloudCaller, ref deploytarget.HostedEnvRef) error {
+	ensured, err := deploytarget.EnsureHostedEnvironmentFull(ctx, client, ref)
+	if err != nil {
+		return err
+	}
+	if cerr := rememberHostedPushBase(projectDirForKCL(), ref.Name, ensured.PushBase); cerr != nil {
+		fmt.Printf("[declare] Note: env %s's image push base was not cached (%v); "+
+			"`forge env render`/`forge lint` will report host-bearing hosted images without comparing them.\n", ref.Name, cerr)
+	}
+	return nil
+}
+
 // hostedEnvRefFor is the ONE derivation of a control-plane environment's
 // address from its rendered KCL: the project name, the env name, and the
 // kind (hostedEnvKindOf).

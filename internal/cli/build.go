@@ -1509,7 +1509,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// A hosted env's backends name images the build state may not hold (CI
 	// pushed them). Record each declared image so the release covers what
 	// the hosted deploy ships.
-	if err := harvestHostedBackendArtifacts(ctx, entities, artifacts); err != nil {
+	if err := harvestHostedBackendArtifacts(ctx, env, entities, artifacts); err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
 	images := countOCIArtifacts(release.Release{Artifacts: artifacts})

@@ -735,6 +735,16 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// This test's subject is the LEDGER — cut, promote, list, through the
+	// real hosted store. A hosted deploy also publishes (applyHostedPublish),
+	// which loads the project config and renders; this fixture is a ledger
+	// fixture, not a deployable project, so the apply is stubbed. What the
+	// publish SENDS is covered by TestHostedCLIEndToEnd against a real
+	// project.
+	prevApply := runPromoteClientDeploy
+	runPromoteClientDeploy = func(context.Context, string, deployOptions) error { return nil }
+	t.Cleanup(func() { runPromoteClientDeploy = prevApply })
+
 	run := func(args ...string) (string, error) {
 		root := NewRootCmd()
 		var buf bytes.Buffer
@@ -749,7 +759,7 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	if out, err := run("env", "build", "prod", "--release", "v1", "--no-build"); err != nil {
 		t.Fatalf("forge env build --release: %v\n%s", err, out)
 	}
-	if out, err := run("env", "deploy", "prod", "v1", "--actor", "ci", "--no-wait"); err != nil {
+	if out, err := run("env", "deploy", "prod", "v1", "--yes", "--actor", "ci", "--no-wait"); err != nil {
 		t.Fatalf("forge env deploy: %v\n%s", err, out)
 	}
 	out, err := run("cloud", "releases", "prod", "--json")

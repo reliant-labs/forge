@@ -385,6 +385,36 @@ func EnsureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 	return env.ID, created, err
 }
 
+// EnsuredHostedEnvironment is what an ensure LEARNED about the environment,
+// beyond its id: the registry subtree the control plane admits this org's
+// images from.
+//
+// It exists so the push base can be remembered from the ensure forge was
+// already making (ADR-0003 F1) rather than from a read of its own. The base
+// is a fact about the platform that a render and a lint need offline, and an
+// extra RPC to learn it would be a second place for the answer to come from.
+//
+// PushBase is "" when the control plane did not state one — an older server,
+// or no registry configured. That is distinguishable from "it admits none",
+// which checkImagePushBase reports at publish time, and the two must not be
+// collapsed: one means "we do not know" and the other "we asked and the
+// answer is nothing".
+type EnsuredHostedEnvironment struct {
+	ID       string
+	Created  bool
+	PushBase string
+}
+
+// EnsureHostedEnvironmentFull is EnsureHostedEnvironment, reporting everything
+// the response carried. Same single call; a wider return.
+func EnsureHostedEnvironmentFull(ctx context.Context, c HostedCaller, ref HostedEnvRef) (EnsuredHostedEnvironment, error) {
+	env, created, err := ensureHostedEnvironment(ctx, c, ref)
+	if err != nil {
+		return EnsuredHostedEnvironment{}, err
+	}
+	return EnsuredHostedEnvironment{ID: env.ID, Created: created, PushBase: env.ImagePushBase}, nil
+}
+
 func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvRef) (wireEnvironment, bool, error) {
 	if ref.Kind == "" {
 		// Never defaulted: the kind is immutable server-side, so a guess
@@ -424,6 +454,23 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 	return ensured.Environment, ensured.Created, nil
 }
 
+// deployRebuildFix is the ONE remedy every "this release cannot ship" refusal
+// below names: re-run the deploy, which builds, pushes, cuts and ships in one
+// command, or name a release that already exists.
+//
+// It replaced five hand-written variants of `forge env build <env> --release
+// <version> --no-build`, and the reason is that that advice was WRONG, not
+// merely verbose. --no-build cuts a release over digests an earlier push left
+// in .forge/state, so every one of these refusals — no promoted release, an
+// artifact the release does not pin, an image nobody pushed — told the user to
+// produce a release with no images in it. The second cut then failed its own
+// completeness gate, or succeeded and deployed the same hole. O-15 makes the
+// honest remedy a single verb.
+func deployRebuildFix(env string) string {
+	return fmt.Sprintf("forge env deploy %s (builds, pushes, cuts and deploys), "+
+		"or forge env deploy %s <existing-version> to ship a release that is already cut", env, env)
+}
+
 // checkImagePushBase refuses every workload in the plan whose pinned image is
 // not under the org's image push base — the subtree the control plane's
 // publish-time boundary admits. It runs after the environment is known (the
@@ -459,9 +506,9 @@ func checkImagePushBase(envName, base string, plan []hostedPlanItem) error {
 		if !strings.HasPrefix(repo, base+"/") {
 			errs = append(errs, fmt.Errorf("%s: image %s is not under this org's image push base %s, and the control plane "+
 				"refuses to publish it.\n"+
-				"  fix: push the image to %s/%s, re-cut the release (forge env build %s --release <version> --no-build), "+
-				"then re-deploy it (forge env deploy %s <version>)",
-				item.Name, spec.Image, base, base, HostedArtifactName(spec.Image), envName, envName))
+				"  fix: drop the registry host from the workload's image (forge resolves a bare hosted image to %s/%s), "+
+				"then %s",
+				item.Name, spec.Image, base, base, HostedArtifactName(spec.Image), deployRebuildFix(envName)))
 		}
 	}
 	if len(errs) > 0 {
@@ -518,8 +565,8 @@ func hostedWorkloadRepository(image, artifact string, group ServiceGroup) (strin
 	}
 	if registry == "" {
 		return "", fmt.Errorf("image %q names no registry, and release %s recorded none for artifact %q — it was built without a push.\n"+
-			"  fix: forge env build %s --push, re-cut the release (forge env build %s --release <version> --no-build), then deploy it",
-			image, group.Hosted.Release, artifact, group.Env, group.Env)
+			"  fix: %s",
+			image, group.Hosted.Release, artifact, deployRebuildFix(group.Env))
 	}
 	return registry + "/" + artifact, nil
 }
@@ -584,8 +631,8 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 	if group.Hosted.Release == "" && hostedGroupHasPinnedArtifact(group) {
 		return nil, fmt.Errorf("hosted env %q has no promoted release, so there is no digest to deploy.\n"+
 			"A hosted deploy ships only the digests a promotion froze — never a tag, never a local build.\n"+
-			"fix: forge env build %s --release <version> --no-build && forge env deploy %s <version>",
-			group.Env, group.Env, group.Env)
+			"  fix: %s",
+			group.Env, deployRebuildFix(group.Env))
 	}
 	var (
 		out  []hostedPlanItem
@@ -615,8 +662,8 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no artifact %q (the workload's image %s).\n"+
-					"  fix: re-cut the release so it covers this workload (forge env build %s --release <version> --no-build), then deploy it",
-					svc.Name, group.Hosted.Release, artifact, spec.Image, group.Env))
+					"  fix: %s",
+					svc.Name, group.Hosted.Release, artifact, spec.Image, deployRebuildFix(group.Env)))
 				continue
 			}
 			repo, rerr := hostedWorkloadRepository(spec.Image, artifact, group)
@@ -665,9 +712,8 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			digest, ok := digests[artifact]
 			if !ok || digest == "" {
 				errs = append(errs, fmt.Errorf("%s: release %s pins no static site artifact %q.\n"+
-					"  fix: build and push the site (forge env build %s --push), re-cut the release "+
-					"(forge env build %s --release <version> --no-build), then deploy it",
-					svc.Name, group.Hosted.Release, artifact, group.Env, group.Env))
+					"  fix: %s",
+					svc.Name, group.Hosted.Release, artifact, deployRebuildFix(group.Env)))
 				continue
 			}
 			// A release is a REFERENCE plus a digest, and both are

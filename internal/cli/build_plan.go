@@ -12,7 +12,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/goexec"
 
 	"github.com/reliant-labs/forge/pkg/release"
@@ -373,7 +372,9 @@ func planHostedStaticSites(in planInputs) []buildPlanStep {
 		if !in.opts.pushPlan.push {
 			step.problem = errHostedSiteMustPush(in.opts.env, []string{f.Name}).Error()
 		} else {
-			step.pushes = []string{deploytarget.HostedStaticRepository(f.Image)}
+			// The resolved address, so `--plan` previews the place the real
+			// build would push rather than a reference the author wrote.
+			step.pushes = []string{hostedStaticDestination(in.opts.pushPlan.pushBase, f.Image)}
 		}
 		out = append(out, step)
 	}

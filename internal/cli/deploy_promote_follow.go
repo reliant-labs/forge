@@ -156,6 +156,26 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	if !ledger.Hosted {
 		return nil
 	}
+	// A PURE HOSTED env still needs its client-side PUBLISH — and ONLY a
+	// pure one. A MIXED env's publish already happened: appliesLocally is
+	// true for it, so the apply above ran the whole env's deploy, which
+	// routes its hosted workloads through the hosted provider in the same
+	// pass. Running this as well applied a mixed env twice.
+	//
+	// The pure case reached this point having written a promotion and
+	// published nothing. That was survivable before O-15 only because the
+	// publish was what a SECOND command did: `deploy <env> <v> --no-wait`
+	// recorded, then `deploy <env>` published. O-15 removes the second
+	// spelling, so the publish has to happen here or it becomes unreachable
+	// for the one env shape it exists for — which is hounders prod.
+	//
+	// It is the same apply (runPromoteClientDeploy) in both branches, so a
+	// pure and a mixed env publish identically.
+	if !ledger.appliesLocally() {
+		if err := applyHostedPublish(ctx, env, o); err != nil {
+			return err
+		}
+	}
 	if o.NoWait {
 		// The control plane converges the binding on its own. Saying so
 		// is the difference between "forge is done" and "the release is
@@ -236,6 +256,45 @@ func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFoll
 // observable in the options the follow-through hands over. Production is
 // runEnvWait, unchanged.
 var runPromoteWait = runEnvWait
+
+// applyHostedPublish is a PURE HOSTED env's client-side publish: the same
+// apply path, which routes the env's hosted workloads through the hosted
+// provider (EnsureDeployment → PublishDeploymentConfig → GetStatus).
+//
+// It is separate from applySelfManaged only in what it SAYS, because the two
+// mean different things to an operator: that one applies workloads from this
+// machine, this one hands the platform the specs it will run. The work is one
+// function (runPromoteClientDeploy → runDeploy), so neither can publish
+// something the other would not.
+//
+// --no-wait tunes the rollout policy here exactly as it does there; the
+// hosted rollout WAIT that follows is a separate gate on the server's own
+// view, and it reads the same flags.
+func applyHostedPublish(ctx context.Context, env string, o promoteFollowOptions) error {
+	opts := o.clientDeploy
+	if o.NoWait {
+		opts.rollout.Mode = cluster.RolloutSkip
+	}
+	if o.Timeout > 0 {
+		opts.rollout.Timeout = o.Timeout
+	}
+	if o.FailFast {
+		opts.rollout.FailFast = true
+	}
+	o.notice("\nPublishing %s's newly recorded release to its control plane\n", env)
+	// Under --json the promote owns the single document on stdout, and this
+	// apply is a phase inside it rather than a command of its own. It prints
+	// with fmt.Printf throughout (the group headers, the per-deployment
+	// lines), so os.Stdout is diverted for its duration — the same mechanism
+	// runEnvRender uses, and for the same reason: one document on stdout, the
+	// whole human log still readable on stderr.
+	if o.jsonOut {
+		real := os.Stdout
+		os.Stdout = os.Stderr
+		defer func() { os.Stdout = real }()
+	}
+	return runPromoteClientDeploy(ctx, env, opts)
+}
 
 // runPromoteClientDeploy is the self-managed apply. A var for the same reason:
 // a test asserts THAT the client-side apply ran (and with which options) for a

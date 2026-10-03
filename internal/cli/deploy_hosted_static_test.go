@@ -74,19 +74,19 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 		rel.Artifacts[0].Kind != "oci" || rel.Artifacts[0].URI != "" {
 		t.Fatalf("cut release = %+v, want one oci artifact %s@%s with no URI", rel, wantRepo, hostedStaticDigest)
 	}
-	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait"); err != nil {
 		t.Fatalf("promote: %v\n%s", err, out)
 	}
 	envID := fake.envs["hosted"]
 	fake.bodies = nil
-	if out, err := runForge(t, "env", "deploy", "hosted", "--rollout-timeout", "2s"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "--yes", "--no-wait", "--rollout-timeout", "2s"); err != nil {
 		t.Fatalf("deploy: %v\n%s", err, out)
 	}
 	var paths []string
 	for _, b := range fake.bodies {
 		paths = append(paths, b.Path[strings.LastIndex(b.Path, "/")+1:])
 	}
-	if joined := strings.Join(paths, ","); !strings.Contains(joined, "EnsureEnvironment,EnsureDeployment,PublishDeploymentConfig,GetStatus") {
+	if joined := strings.Join(paths, ","); !strings.Contains(joined, "EnsureEnvironment,EnsureDeployment,PublishDeploymentConfig") {
 		t.Fatalf("deploy call sequence = %s", joined)
 	}
 	d := fake.deployments[envID]["web"]

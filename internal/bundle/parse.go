@@ -117,5 +117,46 @@ func shapeObjects(docs []parsedDoc, images map[string]string, statefulWorkloads 
 			out = append(out, perCluster)
 		}
 	}
+	return collapseIdentical(out)
+}
+
+// collapseIdentical resolves two documents that land on ONE ObjectKey, which
+// is what a deploy does to them and therefore what the projection must say.
+//
+// This agrees with `kubectl apply`, which is the projection's whole contract.
+// Two IDENTICAL documents under one key are indistinguishable to a deploy:
+// applying the same bytes twice leaves the same object, so the shape names it
+// once. That case is legitimate — two independent declarations can each
+// require a namespace to exist, and forge's own render replicates an
+// unattributed env-level object to every cluster.
+//
+// Two DIFFERENT bodies under one key are REFUSED, because `kubectl apply` is
+// last-wins: the surviving object depends on document order, so the render
+// silently decides which writer won. That is the "two writers, one object"
+// conflict a shape exists to expose, and a shape that merged it would record
+// a deploy nobody declared.
+//
+// The error names the key AND what differs, because the question a reader has
+// next is which declaration to change, and a bare "duplicate" sends them to
+// re-derive it from the render.
+func collapseIdentical(objects []release.ShapeObject) ([]release.ShapeObject, error) {
+	seen := map[release.ObjectKey]release.ShapeObject{}
+	out := make([]release.ShapeObject, 0, len(objects))
+	for _, obj := range objects {
+		key := obj.Key()
+		prior, duplicate := seen[key]
+		if !duplicate {
+			seen[key] = obj
+			out = append(out, obj)
+			continue
+		}
+		if prior.Hash == obj.Hash {
+			// Same bytes: one apply, one object, named once.
+			continue
+		}
+		return nil, fmt.Errorf(
+			"%w: %s is declared twice with different content (%s vs %s) — a deploy applies both and the last one wins, so one declaration silently overwrites the other; make them identical or remove one",
+			release.ErrInvalid, key, prior.Hash, obj.Hash)
+	}
 	return out, nil
 }

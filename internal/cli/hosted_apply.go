@@ -12,8 +12,11 @@ package cli
 // objects variant were a client for a protocol with no caller on either side.
 //
 // That is the whole justification: dead code, removed. It is deliberately NOT
-// the claim that forge does not apply — it does, and its direct cluster apply
-// is the supported path for every env today.
+// the claim that forge does not apply — it does today. The direct apply
+// narrows to dev and ephemeral clusters only LATER, once every real env runs
+// through build -> OCI bundle -> version store -> Flux and control-plane is
+// itself on that path. This deletion neither performs nor depends on that
+// step.
 //
 // What remains is the DECODE, which has a real consumer: hosted_live.go reads
 // these records through GetLiveView. They are OBSERVATIONS the control plane's

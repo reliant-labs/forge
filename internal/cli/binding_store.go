@@ -165,12 +165,19 @@ type bundleRecorder interface {
 // either side.
 //
 // It is deleted on that ground alone — dead code, removed — and NOT on the
-// stronger claim that forge does not apply. Forge does apply: its direct
-// cluster apply is the supported path for every env today, and the hosted
-// surface is the Workload CRD, ManagedDatabase and StaticSite rather than a
-// reconciler converging manifests. If a verb ever does want to bracket an
-// apply with a durable record, a seam for it should be designed against that
-// verb's needs rather than restored from this one.
+// stronger claim that forge does not apply. Forge DOES apply today, and this
+// deletion does not change when it stops.
+//
+// Where that is heading, so the next reader is not misled either way: every
+// real env is moving to build -> OCI bundle -> version store -> Flux applies
+// to the target cluster, control-plane included, and forge's direct apply then
+// narrows to dev and ephemeral clusters. That removal is a LATER step, after
+// control-plane is on the Flux path; nothing here does it, and the client
+// apply is untouched by this branch.
+//
+// If a verb ever does want to bracket an apply with a durable record, a seam
+// for it should be designed against that verb's needs rather than restored
+// from this one.
 //
 // The READ side survives and is used: a convergence record is an observation
 // the control plane's own observer writes, which forge reads through

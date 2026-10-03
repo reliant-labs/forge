@@ -27,5 +27,8 @@
     "internal/templates/contract_test.go": {
       "scaffolded_at": "2026-08-07T04:00:00Z"
     }
-  }
+  },
+  "absent_reported": [
+    "internal/docs/contract_test.go"
+  ]
 }

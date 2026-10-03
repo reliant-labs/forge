@@ -87,4 +87,3 @@ Three things worth knowing before you rely on it:
   existing object without it rather than rewrite someone else's permissions.
 - **Review before granting.** `forge env deploy --dry-run` prints every
   object the mint would create, on which cluster, without contacting one.
-

@@ -326,6 +326,8 @@ func (l *LocalLayout) Resolve(ctx context.Context, reference string) (ocispec.De
 	return l.store.Resolve(ctx, reference)
 }
 
+// Fetch reads one blob out of the local layout. See [LocalLayout.Resolve] for
+// why both exist.
 func (l *LocalLayout) Fetch(ctx context.Context, target ocispec.Descriptor) (io.ReadCloser, error) {
 	return l.store.Fetch(ctx, target)
 }

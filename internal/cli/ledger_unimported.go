@@ -101,7 +101,7 @@ func checkLedgerImported(ctx context.Context, projectDir, env string, l envLedge
 		return err
 	}
 	return fmt.Errorf("%w: the checkout holds %d promotions (and %d releases) for %s that this ledger has never imported. "+
-		"Run `forge ledger import --from-git` (it reads them at a git rev and records them in %s).",
+		"Run `forge ledger import --from-git` (it reads them at a git rev and records them in %s)",
 		errLedgerNotImported, missing.Promotions, missing.Releases, env, l.Bindings.Location())
 }
 

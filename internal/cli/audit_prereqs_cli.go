@@ -238,10 +238,20 @@ func printPrerequisiteChecklist(entities *KCLEntities) {
 	if entities == nil {
 		return
 	}
-	if len(entities.RequiredSecrets) == 0 && len(entities.RequiredDNS) == 0 {
+	// A route to an OnHost workload renders an Envoy Gateway Backend, which the
+	// controller refuses to resolve unless its Backend extension API is enabled.
+	// That is an out-of-band fact about the controller's config, in the same
+	// category as the declared Secrets and DNS below, and it fails the same way:
+	// a clean apply followed by a silent runtime refusal.
+	backendPrereqs := routeBackendPrereqFindings(entities)
+
+	if len(entities.RequiredSecrets) == 0 && len(entities.RequiredDNS) == 0 && len(backendPrereqs) == 0 {
 		return
 	}
 	fmt.Println("External prerequisites this env depends on (provisioned out-of-band; forge does NOT create them):")
+	for _, f := range backendPrereqs {
+		fmt.Println("  - " + f)
+	}
 	for _, s := range entities.RequiredSecrets {
 		line := fmt.Sprintf("  - Secret %s/%s keys=%v", s.Namespace, s.Name, s.Keys)
 		if s.ValueGroup != "" {

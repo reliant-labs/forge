@@ -35,7 +35,6 @@ var featureDisplayOrder = []config.FeatureName{
 	config.FeatureORM,
 	config.FeatureMigrations,
 	config.FeatureContracts,
-	config.FeatureDocs,
 	config.FeatureFrontend,
 	config.FeatureObservability,
 	config.FeatureHotReload,
@@ -152,8 +151,6 @@ func featureExplicitlySet(f config.FeaturesConfig, name config.FeatureName) bool
 		return f.Build != nil
 	case config.FeatureContracts:
 		return f.Contracts != nil
-	case config.FeatureDocs:
-		return f.Docs != nil
 	case config.FeatureFrontend:
 		return f.Frontend != nil
 	case config.FeatureObservability:

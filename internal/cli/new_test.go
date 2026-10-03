@@ -23,7 +23,6 @@ func allFeaturesEnabled(gen *generator.ProjectGenerator) bool {
 		f.MigrationsEnabled() &&
 		f.CIEnabled() &&
 		f.ContractsEnabled() &&
-		f.DocsEnabled() &&
 		f.FrontendEnabled() &&
 		f.ObservabilityEnabled() &&
 		f.HotReloadEnabled()
@@ -95,7 +94,7 @@ func TestApplyDisableFlags_AllFeatures(t *testing.T) {
 	// All stable features. Experimental features are explicitly
 	// rejected by applyDisableFlags (they're default-OFF already) —
 	// covered by TestApplyDisableFlags_ExperimentalRejected below.
-	all := []string{"orm", "codegen", "migrations", "ci", "deploy", "contracts", "docs", "frontend", "observability", "hot_reload"}
+	all := []string{"orm", "codegen", "migrations", "ci", "deploy", "contracts", "frontend", "observability", "hot_reload"}
 	if err := applyDisableFlags(gen, all); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -117,9 +116,6 @@ func TestApplyDisableFlags_AllFeatures(t *testing.T) {
 	}
 	if f.ContractsEnabled() {
 		t.Error("contracts should be disabled")
-	}
-	if f.DocsEnabled() {
-		t.Error("docs should be disabled")
 	}
 	if f.FrontendEnabled() {
 		t.Error("frontend should be disabled")

@@ -247,7 +247,6 @@ authored protos, in one call.`,
 	rootCmd.AddCommand(newCloudCmd())
 	rootCmd.AddCommand(newDomainCmd())
 	rootCmd.AddCommand(newDoctorCmd())
-	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	// `component` migrated to the internal/cli/component group (registered

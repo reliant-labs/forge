@@ -128,7 +128,6 @@ k8s: {}
 lint: {}
 contracts: {}
 auth: {}
-docs: {}
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
@@ -425,7 +424,7 @@ func TestAuditFeatures_ZeroConfig(t *testing.T) {
 	for _, name := range []string{
 		config.FeatureBuild, config.FeatureFrontend,
 		config.FeatureCI,
-		config.FeatureDocs, config.FeatureObservability,
+		config.FeatureObservability,
 	} {
 		if !resolved[name] {
 			t.Errorf("resolved[%q] = false, want true (no features block → stable enabled)", name)

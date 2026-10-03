@@ -1338,8 +1338,6 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.Build = f
 		case "contracts":
 			gen.Features.Contracts = f
-		case "docs":
-			gen.Features.Docs = f
 		case "frontend":
 			gen.Features.Frontend = f
 		case "observability":

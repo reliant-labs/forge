@@ -640,7 +640,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 
 	// Developer experience + ops scaffolding: .vscode/, .devcontainer/,
 	// scripts/bootstrap.sh, SECURITY.md, .pre-commit-config.yaml,
-	// example migration + seeds, docs/adr/, benchmarks/. Kept behind a
+	// example migration + seeds, benchmarks/. Kept behind a
 	// single helper so the entry point in Generate stays readable.
 	if err := g.generateDXFiles(); err != nil {
 		return fmt.Errorf("failed to generate DX scaffolding: %w", err)

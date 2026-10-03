@@ -27,7 +27,6 @@ func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 		{"CIEnabled", f.CIEnabled},
 		{"BuildEnabled", f.BuildEnabled},
 		{"ContractsEnabled", f.ContractsEnabled},
-		{"DocsEnabled", f.DocsEnabled},
 		{"FrontendEnabled", f.FrontendEnabled},
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
@@ -73,7 +72,6 @@ func TestFeaturesConfig_ExplicitlyTrue(t *testing.T) {
 		Migrations:    boolPtr(true),
 		CI:            boolPtr(true),
 		Contracts:     boolPtr(true),
-		Docs:          boolPtr(true),
 		Frontend:      boolPtr(true),
 		Observability: boolPtr(true),
 		HotReload:     boolPtr(true),
@@ -90,7 +88,6 @@ func TestFeaturesConfig_ExplicitlyTrue(t *testing.T) {
 		{"CIEnabled", f.CIEnabled},
 		{"DeployEnabled", f.DeployEnabled},
 		{"ContractsEnabled", f.ContractsEnabled},
-		{"DocsEnabled", f.DocsEnabled},
 		{"FrontendEnabled", f.FrontendEnabled},
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
@@ -112,7 +109,6 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		CI:            boolPtr(false),
 		Build:         boolPtr(false),
 		Contracts:     boolPtr(false),
-		Docs:          boolPtr(false),
 		Frontend:      boolPtr(false),
 		Observability: boolPtr(false),
 		HotReload:     boolPtr(false),
@@ -132,7 +128,6 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		{"BuildEnabled", f.BuildEnabled},
 		{"DeployEnabled", f.DeployEnabled},
 		{"ContractsEnabled", f.ContractsEnabled},
-		{"DocsEnabled", f.DocsEnabled},
 		{"FrontendEnabled", f.FrontendEnabled},
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
@@ -154,7 +149,7 @@ func TestFeaturesConfig_Mixed(t *testing.T) {
 		Migrations: nil, // should default to true
 		CI:         boolPtr(false),
 		Deploy:     boolPtr(true), // stable: explicit true
-		// Contracts, Docs, Frontend, Observability, HotReload all nil
+		// Contracts, Frontend, Observability, HotReload all nil
 	}
 
 	tests := []struct {
@@ -168,7 +163,6 @@ func TestFeaturesConfig_Mixed(t *testing.T) {
 		{"CIEnabled (false)", f.CIEnabled, false},
 		{"DeployEnabled (true)", f.DeployEnabled, true},
 		{"ContractsEnabled (nil)", f.ContractsEnabled, true},
-		{"DocsEnabled (nil)", f.DocsEnabled, true},
 		{"FrontendEnabled (nil)", f.FrontendEnabled, true},
 		{"ObservabilityEnabled (nil)", f.ObservabilityEnabled, true},
 		{"HotReloadEnabled (nil)", f.HotReloadEnabled, true},
@@ -189,7 +183,6 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		Migrations:    nil,
 		CI:            boolPtr(true),
 		Contracts:     nil,
-		Docs:          boolPtr(true),
 		Frontend:      boolPtr(false),
 		Observability: boolPtr(true),
 		HotReload:     boolPtr(false),
@@ -218,7 +211,6 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		{"Migrations", got.Migrations, nil},
 		{"CI", got.CI, boolPtr(true)},
 		{"Contracts", got.Contracts, nil},
-		{"Docs", got.Docs, boolPtr(true)},
 		{"Frontend", got.Frontend, boolPtr(false)},
 		{"Observability", got.Observability, boolPtr(true)},
 		{"HotReload", got.HotReload, boolPtr(false)},
@@ -327,7 +319,7 @@ func TestDisabledFeatureError_Format(t *testing.T) {
 func TestEffectiveFeatures_MapShape(t *testing.T) {
 	stable := []string{
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
-		FeatureBuild, FeatureContracts, FeatureDocs,
+		FeatureBuild, FeatureContracts,
 		FeatureFrontend, FeatureObservability, FeatureHotReload,
 		FeatureDeploy,
 	}
@@ -399,7 +391,6 @@ version: "1.0"
 		{"CIEnabled", cfg.Features.CIEnabled},
 		{"BuildEnabled", cfg.Features.BuildEnabled},
 		{"ContractsEnabled", cfg.Features.ContractsEnabled},
-		{"DocsEnabled", cfg.Features.DocsEnabled},
 		{"FrontendEnabled", cfg.Features.FrontendEnabled},
 		{"ObservabilityEnabled", cfg.Features.ObservabilityEnabled},
 		{"HotReloadEnabled", cfg.Features.HotReloadEnabled},

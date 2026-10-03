@@ -152,6 +152,24 @@ func Next(dir string) (string, error) {
 // Each is a distinct second, because the version is the identity: a batch
 // that reused one instant would reintroduce, within a single command, the
 // exact duplicate-version collision this package exists to remove.
+//
+// EVERY ALLOCATION CLEARS THE DIRECTORY'S HIGHEST VERSION, not merely avoids
+// an exact match with it. Skipping collisions is not enough, and the gap was
+// silent: golang-migrate records ONE current version and applies only what is
+// above it, so a version allocated BELOW the highest one already merged is
+// never applied on any database that has run the newer migration. No error,
+// no refusal — `up` reports the schema current and the table is missing.
+//
+// A future-dated version on the default branch is what makes that reachable.
+// control-plane's main held a hand-zeroed 20261003120000, about four hours
+// ahead of the wall clock when it landed, so every migration created in that
+// window got a version under the head and looked entirely ordinary.
+//
+// This is NOT the max+1 counter the package opens by rejecting. The floor
+// only rises when the max is a FUTURE-dated timestamp; for every healthy
+// directory — where the highest version is in the past — the clock decides,
+// and two branches cut from the same commit still allocate independently.
+// See startAfter.
 func NextN(dir string, n int) ([]string, error) {
 	if n <= 0 {
 		return nil, nil
@@ -160,7 +178,7 @@ func NextN(dir string, n int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return allocate(taken, time.Now().UTC(), n), nil
+	return AllocateAfter(taken, n), nil
 }
 
 // AllocateAfter allocates n versions that avoid every version in taken,
@@ -173,6 +191,12 @@ func NextN(dir string, n int) ([]string, error) {
 // one being fixed. So rebase seeds taken with the default branch's versions
 // and the merge-base high-water mark as well as the directory's contents,
 // which Scan alone cannot know about.
+//
+// NextN calls this too, with the directory alone. Allocating a NEW migration
+// and rebasing a stale one need the same guarantee — a version above the
+// head, not merely different from it — because a version below the head is
+// silently never applied in both cases. NextN originally skipped only exact
+// collisions, which is the defect this consolidation removes.
 //
 // Every allocated version is strictly GREATER than every version in taken,
 // not merely different from it. Skipping collisions is not enough here: the

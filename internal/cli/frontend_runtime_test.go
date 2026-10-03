@@ -87,7 +87,7 @@ func TestFrontendRuntime_DecodeEveryRuntime(t *testing.T) {
             runtime = forge.OnFirebase {project = "p", site = "s", rewrites = [{source = "**", destination = "/index.html"}]}
         }
         forge.Frontend {name = "spa", path = "spa", type = "vite", runtime = forge.BuildOnly {}}
-    ]`, "    control_plane = forge.ControlPlane {}")
+    ]`, `    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}`)
 
 	by := map[string]FrontendEntity{}
 	for _, f := range e.Frontends {
@@ -226,7 +226,7 @@ func TestFrontendRuntime_HostedPublishesTheSameStaticSiteSpec(t *testing.T) {
         base_path = "/app"
         runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}, APP_NAME = "acme"}
         runtime = forge.OnHosted {}
-    }]`, `    control_plane = forge.ControlPlane {}
+    }]`, `    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api:v1", ports = [fw.Port {name = "http", port = 8080, expose = True}], runtime = forge.OnHosted {}}]`)
 
 	group, err := buildHostedGroup("staging", e)
@@ -259,7 +259,7 @@ func TestFrontendRuntime_HostedPublishesTheSameStaticSiteSpec(t *testing.T) {
 // env that ALSO has a control plane and hosted workloads stays the author's.
 func TestFrontendRuntime_BucketBesideHostedWorkloadsIsNotHosted(t *testing.T) {
 	e := renderFrontendEnv(t, `[forge.Frontend {name = "web", path = "web", type = "vite", runtime = forge.OnBucket {bucket = "acme-web"}}]`,
-		`    control_plane = forge.ControlPlane {}
+		`    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api:v1", ports = [fw.Port {name = "http", port = 8080, expose = True}], runtime = forge.OnHosted {}}]`)
 	group, err := buildHostedGroup("staging", e)
 	if err != nil {

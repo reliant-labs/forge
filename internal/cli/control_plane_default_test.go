@@ -64,7 +64,7 @@ func TestControlPlaneDefault_KCLMatchesGo(t *testing.T) {
 		name, block, wantURL string
 	}{
 		{"empty declaration is Reliant cloud", "forge.ControlPlane {}", cloud.DefaultEndpoint},
-		{"explicit endpoint wins", `forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}`, "http://127.0.0.1:8090"},
+		{"explicit endpoint wins", `forge.ControlPlane {endpoint = "http://127.0.0.1:8090", organization = "4f3c2b1a-0000-4000-8000-000000000001"}`, "http://127.0.0.1:8090"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decl := renderControlPlaneDecl(t, controlPlaneMainK(tc.block))
@@ -109,13 +109,13 @@ func TestNewEnv_DoesNotCopyTheTemplatesControlPlaneEndpoint(t *testing.T) {
 		},
 		{
 			name:         "one-line block",
-			block:        `forge.ControlPlane {endpoint = "http://127.0.0.1:8090", token_env = "ACME_DEPLOY_TOKEN"}`,
+			block:        `forge.ControlPlane {endpoint = "http://127.0.0.1:8090", token_env = "ACME_DEPLOY_TOKEN", organization = "4f3c2b1a-0000-4000-8000-000000000001"}`,
 			wantNote:     `names "http://127.0.0.1:8090"`,
 			wantTokenEnv: "ACME_DEPLOY_TOKEN",
 		},
 		{
 			name:         "template already spelled out Reliant cloud",
-			block:        `forge.ControlPlane {endpoint = "` + cloud.DefaultEndpoint + `"}`,
+			block:        `forge.ControlPlane {endpoint = "` + cloud.DefaultEndpoint + `", organization = "4f3c2b1a-0000-4000-8000-000000000001"}`,
 			wantNote:     "Reliant cloud is forge.ControlPlane's default",
 			wantTokenEnv: cloud.DefaultTokenEnv,
 		},

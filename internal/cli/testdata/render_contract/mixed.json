@@ -11,6 +11,8 @@
     "config_maps": [],
     "control_plane": {
       "endpoint": "http://127.0.0.1:8090",
+      "organization": "4f3c2b1a-0000-4000-8000-000000000001",
+      "registry_host": "registry.reliantapi.com",
       "token_env": "FORGE_CONTROL_PLANE_TOKEN",
       "type": "control_plane"
     },

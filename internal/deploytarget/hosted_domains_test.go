@@ -18,7 +18,7 @@ func domainGroup() ServiceGroup {
 	keep := int32(10)
 	return ServiceGroup{
 		Env: "prod", ProviderID: HostedProviderID,
-		Hosted: &HostedTarget{Endpoint: "https://cp.example", Release: "v1",
+		Hosted: &HostedTarget{Endpoint: "https://cp.example", Release: "v1", PushBase: "ghcr.io/acme",
 			Digests: map[string]string{staticSiteArtifact: digestA, "membership": digestB}},
 		Services: []ResolvedService{
 			{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Artifact: staticSiteArtifact, Static: &v1alpha1.StaticSiteSpec{

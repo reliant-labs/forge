@@ -579,10 +579,10 @@ func TestHostedArtifactKey(t *testing.T) {
 		w.Image = "e2eh/abc/echo"
 		w.Spec.Image = "localhost:5051/e2eh/abc/echo:t1"
 	})
-	if got := hostedArtifactKey("prod", w); got != "e2eh/abc/echo" {
+	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Workloads: []WorkloadEntity{w}}
+	if got := hostedArtifactKey(e, w); got != "e2eh/abc/echo" {
 		t.Fatalf("key = %q, want the workload's artifact name", got)
 	}
-	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Workloads: []WorkloadEntity{w}}
 	groups, err := buildDeployGroups("prod", e, "")
 	if err != nil || groups[0].Services[0].Hosted.Artifact != "e2eh/abc/echo" {
 		t.Fatalf("group artifact = %+v err=%v", groups, err)
@@ -591,7 +591,7 @@ func TestHostedArtifactKey(t *testing.T) {
 		t.Errorf("published image = %q, want the artifact name the release pins", img)
 	}
 	w.Image = ""
-	if got := hostedArtifactKey("prod", w); got != "echo" {
+	if got := hostedArtifactKey(e, w); got != "echo" {
 		t.Fatalf("fallback key = %q, want echo", got)
 	}
 }

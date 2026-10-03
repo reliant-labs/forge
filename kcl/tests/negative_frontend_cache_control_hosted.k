@@ -14,7 +14,7 @@ import forge
 
 output = forge.render(forge.Bundle {
     project = "fixture"
-    control_plane = forge.ControlPlane {}
+    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
     frontends = [forge.Frontend {
         name = "web"
         image = "ghcr.io/acme/web"

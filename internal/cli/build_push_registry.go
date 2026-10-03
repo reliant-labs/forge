@@ -54,6 +54,10 @@ type pushPlan struct {
 	// consumer can say WHERE a resolved reference came from rather than
 	// leaving the author to guess which half of it they wrote.
 	pushBase string
+	// organization is the env's declared org, carried so a REFUSED push can
+	// name it (deniedPushHint). "" when the env declares none, or still
+	// carries the scaffolded placeholder.
+	organization string
 }
 
 // printHeader prints where this build's images are tagged and pushed. One
@@ -196,7 +200,8 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 		return pushPlan{}, err
 	}
 	dests := declaredImageDestinationsWithBase(declared, pushBase)
-	plan := pushPlan{env: opts.env, destinations: dests, pushBase: pushBase}
+	plan := pushPlan{env: opts.env, destinations: dests, pushBase: pushBase,
+		organization: declaredOrganization(declared)}
 	if !opts.push {
 		plan.push = opts.pushIfDeclared && opts.env != "" && len(dests) > 0
 		return plan, nil

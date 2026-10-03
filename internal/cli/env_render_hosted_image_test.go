@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 )
 
@@ -16,17 +15,32 @@ import (
 // to publish makes the render a document nobody can act on. The same fact in
 // `forge lint` is a finding, because lint judges envs nobody is deploying.
 //
-// The split that carries the weight is verified vs unverified. Render has no
-// network, so it compares against the base the last ensure cached — and when
-// no base is known it must NOT fail, because failing would assert "outside
-// the registry" about an image forge never compared. On a project whose
-// registry IS the platform's that assertion would be false, and it would
-// break every existing hosted render at the moment of upgrade.
+// THE RENDER MAKES NO CALL, and these tests prove it: each one runs against a
+// bare temp directory with no credential that resolves and no control plane to
+// reach, and the comparison still happens — because both halves now come out
+// of the checkout. The base is composed from the env's own
+// `control_plane.organization` and `registry_host`.
+//
+// The split that carries the weight is verified vs unverified. An env that
+// declares no organization has no base, and the render must NOT fail there,
+// because failing would assert "outside the registry" about an image forge
+// never compared. KCL requires an organization of anything hosted, so that
+// state is reachable only for an env declaring a control plane and nothing
+// bound to it.
+
+// testRenderOrg is the organization these fixtures declare, and
+// testRenderPushBase is the base it composes with the project name and the
+// declared registry host.
+const (
+	testRenderRegistryHost = "registry.reliant.dev"
+	testRenderOrg          = "org-7"
+	testRenderPushBase     = testRenderRegistryHost + "/" + testRenderOrg + "/hostedrender"
+)
 
 // writeHostedRenderProject is a hosted env with one OnHosted workload whose
-// image is `image`, plus (when pushBase is non-empty) the push-base record an
-// EnsureEnvironment would have left behind.
-func writeHostedRenderProject(t *testing.T, image, pushBase string) string {
+// image is `image`. When org is non-empty the env declares it, which is what
+// gives the render a push base to compare against — no cache, no call.
+func writeHostedRenderProject(t *testing.T, image, org string) string {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(rel, content string) {
@@ -41,6 +55,10 @@ func writeHostedRenderProject(t *testing.T, image, pushBase string) string {
 	}
 	write("forge.yaml", "name: hostedrender\nmodule_path: github.com/example/hostedrender\nversion: \"0.1.0\"\n")
 	write("deploy/kcl/kcl.mod", "[package]\nname = \"hostedrender-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n")
+	orgDecl := ""
+	if org != "" {
+		orgDecl = "\n        registry_host = \"" + testRenderRegistryHost + "\"\n        organization = \"" + org + "\""
+	}
 	write("deploy/kcl/prod/main.k", `import forge
 import forge.workloads as fw
 
@@ -48,7 +66,7 @@ _bundle = forge.Bundle {
     project = "hostedrender"
     control_plane = forge.ControlPlane {
         endpoint = "https://cp.example"
-        token_env = "HOSTEDRENDER_CP_TOKEN"
+        token_env = "HOSTEDRENDER_CP_TOKEN"`+orgDecl+`
     }
     workloads = [fw.Workload {
         name = "api"
@@ -60,10 +78,6 @@ _bundle = forge.Bundle {
 
 output = forge.render(_bundle)
 `)
-	if pushBase != "" {
-		write(filepath.Join(hostedimage.CacheDirRel, "push-base-prod.json"),
-			`{"env":"prod","image_push_base":"`+pushBase+`","recorded_at":"2026-10-02T00:00:00Z"}`)
-	}
 	markServiceProject(t, dir)
 	return dir
 }
@@ -75,23 +89,23 @@ func TestEnvRender_RefusesAVerifiedOffBaseHostedImage(t *testing.T) {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	dir := writeHostedRenderProject(t, "ghcr.io/acme/api", "registry.reliant.dev/org-7")
+	dir := writeHostedRenderProject(t, "ghcr.io/acme/api", testRenderOrg)
 	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
 
 	stdout, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
 	if err == nil {
 		t.Fatalf("render must refuse an image outside the push base\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
-	for _, want := range []string{"would refuse to publish", "registry.reliant.dev/org-7", `image = "api"`} {
+	for _, want := range []string{"would refuse to publish", testRenderPushBase, `image = "api"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal missing %q:\n%v", want, err)
 		}
 	}
 }
 
-// With NO base cached, the same declaration renders and WARNS. This is the
-// upgrade case: a project that has not ensured since this forge landed must
-// not have its render broken by a comparison forge cannot make.
+// With NO organization declared, the same declaration renders and WARNS
+// rather than failing: forge has no base, so refusing would assert a
+// comparison it never made.
 func TestEnvRender_UnknownPushBaseWarnsAndStillRenders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
@@ -119,13 +133,13 @@ func TestEnvRender_UnknownPushBaseWarnsAndStillRenders(t *testing.T) {
 }
 
 // A BARE hosted image — the shape ADR-0003 F1 wants — renders clean, with no
-// warning and no refusal, even with a base known.
+// warning and no refusal, with a base declared.
 func TestEnvRender_BareHostedImageIsClean(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	dir := writeHostedRenderProject(t, "api", "registry.reliant.dev/org-7")
+	dir := writeHostedRenderProject(t, "api", testRenderOrg)
 	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
 
 	_, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
@@ -146,7 +160,7 @@ func TestEnvRender_ImageUnderThePushBaseIsClean(t *testing.T) {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	dir := writeHostedRenderProject(t, "registry.reliant.dev/org-7/api", "registry.reliant.dev/org-7")
+	dir := writeHostedRenderProject(t, testRenderPushBase+"/api", testRenderOrg)
 	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
 
 	_, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")

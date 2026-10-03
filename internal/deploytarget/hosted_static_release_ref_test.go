@@ -27,7 +27,7 @@ import (
 func staticGroupWithRepository(digests map[string]string) ServiceGroup {
 	return ServiceGroup{
 		Env: "prod", ProviderID: HostedProviderID,
-		Hosted: &HostedTarget{Endpoint: "https://cp.example", Release: "v2", Digests: digests},
+		Hosted: &HostedTarget{Endpoint: "https://cp.example", Release: "v2", Digests: digests, PushBase: "ghcr.io/acme"},
 		Services: []ResolvedService{{Name: "web", Hosted: &HostedWorkload{
 			Tier: HostedTierStatic, Artifact: staticSiteArtifact,
 			Static: &v1alpha1.StaticSiteSpec{BasePath: "/app"},

@@ -2211,15 +2211,12 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	// Push every push-registry tag if requested.
 	for _, t := range pushTags {
 		fmt.Printf("[build] %s: docker push %s\n", cfg.Name, t)
-		pushCmd := exec.CommandContext(ctx, "docker", "push", t)
-		pushCmd.Stdout = os.Stdout
-		pushCmd.Stderr = os.Stderr
-		if err := pushCmd.Run(); err != nil {
+		if err := dockerPush(ctx, t, tags.organization); err != nil {
 			return buildResult{
 				name:     cfg.Name + " (docker)",
 				kind:     "docker",
 				duration: time.Since(start),
-				err:      fmt.Errorf("docker push %s: %w", t, err),
+				err:      err,
 			}
 		}
 	}
@@ -2261,6 +2258,12 @@ type dockerImageTags struct {
 	// tag is the version tag the set carries (the non-`latest` one): the tag
 	// the image's build state records.
 	tag string
+	// organization is the env's declared org, carried here so a REFUSED push
+	// can name it (dockerPush → deniedPushHint). It rides the tag set because
+	// that is what every docker build path already receives; the alternative
+	// was a fourth parameter on three signatures, which is how three of the
+	// four push loops would end up without the hint.
+	organization string
 }
 
 // imageTagSet computes the tags one forge-built image gets, for all three
@@ -2317,8 +2320,10 @@ func imageTagSet(repository, resolvedTag string, push, releaseScoped bool) docke
 // declared, and release-scoped when --release is set. The one place a build's
 // options turn into an image's tags.
 func (opts buildOptions) imageTags(image, resolvedTag string) dockerImageTags {
-	return imageTagSet(opts.pushPlan.repositoryFor(image), resolvedTag,
+	tags := imageTagSet(opts.pushPlan.repositoryFor(image), resolvedTag,
 		opts.pushPlan.push, releaseImageTag(opts) != "")
+	tags.organization = opts.pushPlan.organization
+	return tags
 }
 
 // k3dMirrorRepositories is the additional LOCAL tag a `localhost:<port>`
@@ -2406,16 +2411,13 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 
 	for _, t := range pushTags {
 		fmt.Printf("[build] %s: docker push %s\n", name, t)
-		pushCmd := exec.CommandContext(ctx, "docker", "push", t)
-		pushCmd.Stdout = os.Stdout
-		pushCmd.Stderr = os.Stderr
-		if err := pushCmd.Run(); err != nil {
+		if err := dockerPush(ctx, t, tags.organization); err != nil {
 			return buildResult{
 				name:     name + " (docker)",
 				kind:     "docker",
 				image:    name,
 				duration: time.Since(start),
-				err:      fmt.Errorf("docker push %s: %w", t, err),
+				err:      err,
 			}
 		}
 	}
@@ -2970,11 +2972,8 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 	for _, t := range pushTags {
 		fmt.Printf("[build] %s: docker push %s\n", svcName, t)
-		pc := exec.CommandContext(ctx, "docker", "push", t)
-		pc.Stdout = os.Stdout
-		pc.Stderr = os.Stderr
-		if err := pc.Run(); err != nil {
-			return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: fmt.Errorf("docker push %s: %w", t, err)}
+		if err := dockerPush(ctx, t, opts.pushPlan.organization); err != nil {
+			return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 		}
 	}
 

@@ -18,7 +18,12 @@ package cli
 // release recorded the resolved address.
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 
 	"github.com/reliant-labs/forge/internal/hostedimage"
 )
@@ -36,6 +41,60 @@ func declaredPushBase(e *KCLEntities) string {
 		return ""
 	}
 	return hostedimage.PushBase(e.ControlPlane.RegistryHost, e.ControlPlane.Organization, hostedProjectName())
+}
+
+// declaredOrganization is the env's declared organization, or "" when it
+// declares no control plane or no organization. The placeholder reads as ""
+// here for the same reason PushBase composes nothing from it: it is not an
+// organization, so a message that named it as one would be misleading at the
+// exact moment someone is reading for a cause.
+func declaredOrganization(e *KCLEntities) string {
+	if e == nil || e.ControlPlane == nil || hostedimage.IsOrgPlaceholder(e.ControlPlane.Organization) {
+		return ""
+	}
+	return e.ControlPlane.Organization
+}
+
+// deniedPushHint is the realm-mismatch explanation to append to a failed
+// push, or "" when the failure was not a refusal.
+//
+// It returns a SUFFIX rather than wrapping, so each push path keeps its own
+// error shape and the hint is purely additive — a push that failed for any
+// other reason reads exactly as it did before. output is the subprocess
+// output for a `docker push` and "" for an in-process oras push, which
+// carries its status in the error itself.
+func deniedPushHint(err error, output, reference, organization string) string {
+	if !hostedimage.IsDenied(err, output) {
+		return ""
+	}
+	return "\n\n" + hostedimage.DeniedHint(reference, organization)
+}
+
+// dockerPush runs `docker push <reference>`, streaming the daemon's output
+// through as it always did, and appends the realm-mismatch hint when the
+// registry refused it.
+//
+// ONE helper for every `docker push` forge makes, which is the only way the
+// hint can be reliable: there were four copies of this loop, and a hint added
+// to three of them would be a hint that appears or not depending on which
+// artifact failed — the least debuggable possible behaviour. organization is
+// the env's declared org ("" when it declares none).
+//
+// The output is TEE'd rather than captured: the author must still see
+// docker's own progress and message in real time, and the copy exists only so
+// IsDenied can read the distribution error code off it. A subprocess's exit
+// status is just "failed", so that text is the only signal available.
+func dockerPush(ctx context.Context, reference, organization string) error {
+	var captured bytes.Buffer
+	cmd := exec.CommandContext(ctx, "docker", "push", reference)
+	cmd.Stdout = io.MultiWriter(os.Stdout, &captured)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &captured)
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("docker push %s: %w%s", reference, err,
+		deniedPushHint(err, captured.String(), reference, organization))
 }
 
 // errHostedImageNeedsPushBase is a bare hosted image in an env that resolves

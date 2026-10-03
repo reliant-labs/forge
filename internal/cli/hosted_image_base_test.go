@@ -1,9 +1,11 @@
 package cli
 
 import (
-	"path/filepath"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
 // ADR-0003 F1. A bare image on a hosted item resolves to the env's image push
@@ -109,7 +111,11 @@ func TestCheckHostedImagesResolve_NoPushBaseNamesTheFullReferenceRemedy(t *testi
 	if err == nil {
 		t.Fatal("a bare hosted image with no push base must be refused")
 	}
-	for _, want := range []string{"names no registry host", "no image push base", "declare the full reference", `"api"`} {
+	// The remedy is to DECLARE THE ORG, not to write a full reference: a
+	// hosted author's registry is the platform's, so telling them to
+	// transcribe a host would be telling them to restate a value forge
+	// already knows the shape of — the defect ADR-0003 F1 closed.
+	for _, want := range []string{"names no registry host", "declares no organization", "organization = ", `"api"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal is missing %q:\n%v", want, err)
 		}
@@ -132,35 +138,79 @@ func TestCheckHostedImagesResolve_NoPushBaseNamesTheFullReferenceRemedy(t *testi
 	}
 }
 
-// The push base is learned from the ensure forge already makes, cached, and
-// read back offline. The round trip is what lets `forge env render` and
-// `forge lint` compare an image without a credential.
-func TestHostedPushBaseCacheRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	if got := cachedHostedPushBase(dir, "prod"); got != "" {
-		t.Fatalf("a project that never ensured anything must report no base, got %q", got)
+// The push base is COMPOSED FROM THE DECLARATION, with no call and no cache.
+// This is the property every offline consumer rests on: `forge env render`
+// and `forge lint` compare an image against it without a credential.
+func TestDeclaredPushBase(t *testing.T) {
+	const org = "4f3c2b1a-0000-4000-8000-000000000001"
+	restore := hostedProjectName
+	hostedProjectName = func() string { return "shop" }
+	t.Cleanup(func() { hostedProjectName = restore })
+
+	// No control plane at all: no base, and that is not an error — an env
+	// with nothing hosted never needs one.
+	if got := declaredPushBase(&KCLEntities{}); got != "" {
+		t.Errorf("an env with no control plane composed %q", got)
 	}
-	if err := rememberHostedPushBase(dir, "prod", "registry.reliant.dev/org-7/"); err != nil {
-		t.Fatalf("rememberHostedPushBase: %v", err)
+	// A control plane with no organization: still no base. KCL refuses this
+	// combination for anything hosted, which is earlier and names the field.
+	if got := declaredPushBase(&KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp"}}); got != "" {
+		t.Errorf("an env with no organization composed %q", got)
 	}
-	if got := cachedHostedPushBase(dir, "prod"); got != "registry.reliant.dev/org-7" {
-		t.Errorf("cached base = %q, want the trailing slash normalized away", got)
+	// Declared: the host defaults to Reliant's registry.
+	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp", Organization: org}}
+	if got, want := declaredPushBase(e), hostedimage.DefaultRegistryHost+"/"+org+"/shop"; got != want {
+		t.Errorf("declaredPushBase = %q, want %q", got, want)
 	}
-	// Per env, so an org that moves one env's registry does not silently
-	// re-point another's.
-	if got := cachedHostedPushBase(dir, "staging"); got != "" {
-		t.Errorf("staging read prod's base: %q", got)
+	// A declared host wins over the default.
+	e.ControlPlane.RegistryHost = "registry.example.com"
+	if got, want := declaredPushBase(e), "registry.example.com/"+org+"/shop"; got != want {
+		t.Errorf("declaredPushBase with a declared host = %q, want %q", got, want)
 	}
-	// An empty answer must not be stored: "the server did not say" and "the
-	// server says there is none" produce different messages, and only one of
-	// them is true.
-	if err := rememberHostedPushBase(dir, "other", ""); err != nil {
-		t.Fatalf("rememberHostedPushBase(\"\"): %v", err)
+	// The scaffolded placeholder is not an organization, so it composes
+	// nothing rather than an address that 403s.
+	e.ControlPlane.Organization = hostedimage.OrgPlaceholder
+	if got := declaredPushBase(e); got != "" {
+		t.Errorf("the scaffolded placeholder composed %q", got)
 	}
-	if _, err := filepath.Glob(filepath.Join(dir, ".forge", "state", "push-base-other.json")); err != nil {
-		t.Fatal(err)
+	if got := declaredOrganization(e); got != "" {
+		t.Errorf("declaredOrganization reported the placeholder as an org: %q", got)
 	}
-	if got := cachedHostedPushBase(dir, "other"); got != "" {
-		t.Errorf("an empty base was stored as %q", got)
+}
+
+// A REFUSED push names the declared org and both of the things that can cause
+// it. The registry answers 401 without naming the org it expected, so forge —
+// the only party that knows what was declared — is what connects the refusal
+// to the line the author can edit.
+func TestDeniedPushHint(t *testing.T) {
+	const org = "4f3c2b1a-0000-4000-8000-000000000001"
+	const ref = "registry.reliantapi.com/" + org + "/shop/api"
+
+	// Not a refusal: no hint, so an unrelated failure reads exactly as it
+	// did before.
+	if got := deniedPushHint(errors.New("connection reset by peer"), "", ref, org); got != "" {
+		t.Errorf("a network error produced a realm hint: %q", got)
+	}
+
+	// A docker push carries the distribution error code on its output,
+	// since a subprocess's exit status is only "failed".
+	hint := deniedPushHint(errors.New("exit status 1"),
+		"denied: requested access to the resource is denied", ref, org)
+	for _, want := range []string{org, "organization", "registry login"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint missing %q:\n%s", want, hint)
+		}
+	}
+	// It must NOT assert which cause holds: forge does not know the token's
+	// org, deliberately, so a message that guessed would be wrong exactly
+	// when the credential really had expired.
+	if !strings.Contains(hint, "either") {
+		t.Errorf("the hint asserts a single cause:\n%s", hint)
+	}
+
+	// With no org declared the cause is different and so is the fix.
+	noOrg := deniedPushHint(errors.New("exit status 1"), "unauthorized", ref, "")
+	if !strings.Contains(noOrg, "declares no organization") {
+		t.Errorf("hint for an undeclared org:\n%s", noOrg)
 	}
 }

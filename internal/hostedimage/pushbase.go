@@ -48,6 +48,28 @@ import "strings"
 // into an image reference.
 const DefaultRegistryHost = "registry.reliantapi.com"
 
+// OrgPlaceholder is what `forge env new --bind <x>=hosted` scaffolds for
+// `organization`, and what IsOrgPlaceholder reports on.
+//
+// A PLACEHOLDER RATHER THAN AN EMPTY FIELD, because the two fail differently
+// and only one of them teaches. KCL's own check refuses a hosted env with no
+// organization — but a scaffold that left the field out would send the author
+// to a schema error about a field they have never seen, with no comment
+// beside it saying what to put there. Scaffolding a value that is visibly not
+// an org id puts the explanation in the file, at the line that needs editing,
+// and keeps `forge lint` failing until it is replaced.
+//
+// It is deliberately not a plausible id: no org is named REPLACE_ME, so
+// nothing can mistake it for a real declaration, and a push attempted with it
+// could never collide with a real subtree.
+const OrgPlaceholder = "REPLACE_ME_ORG_ID"
+
+// IsOrgPlaceholder reports whether an organization is still the scaffolded
+// placeholder — i.e. declared but not yet chosen.
+func IsOrgPlaceholder(organization string) bool {
+	return strings.TrimSpace(organization) == OrgPlaceholder
+}
+
 // PushBase composes `<registryHost>/<organization>/<project>`.
 //
 // It returns "" when any segment is missing, and that is deliberately not an
@@ -67,7 +89,12 @@ func PushBase(registryHost, organization, project string) string {
 	}
 	org := strings.TrimSpace(organization)
 	proj := strings.TrimSpace(project)
-	if org == "" || proj == "" {
+	// The scaffolded placeholder composes NOTHING. It is syntactically a
+	// value, so KCL's "organization is required" check passes on it — but it
+	// is not an address, and resolving a bare image under it would hand the
+	// author a reference that looks resolved and 403s. Treating it as absent
+	// keeps the one honest answer: there is no base yet.
+	if org == "" || proj == "" || IsOrgPlaceholder(org) {
 		return ""
 	}
 	return NormalizeBase(host) + "/" + org + "/" + proj

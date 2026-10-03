@@ -28,11 +28,20 @@ import (
 
 var (
 	// organizationField and registryHostField are the control-plane
-	// declaration ScanPushBase reads. Anchored on the field, like the two
-	// below, so the word inside a comment or a docstring is not a
-	// declaration.
-	organizationField = regexp.MustCompile(`(?m)^\s*organization\s*=\s*"([^"]+)"\s*$`)
-	registryHostField = regexp.MustCompile(`(?m)^\s*registry_host\s*=\s*"([^"]+)"\s*$`)
+	// declaration ScanPushBase reads.
+	//
+	// Anchored on a LINE START or an opening brace rather than on a whole
+	// line, unlike the two below, because a ControlPlane is routinely
+	// written inline — `control_plane = forge.ControlPlane {organization =
+	// "..."}` is the one-line form the docstring teaches and the form most
+	// existing envs use. Requiring its own line silently read every such
+	// declaration as absent, which is the worst failure available here: the
+	// lint would compare against no base and say so, on a project that
+	// declares one perfectly well.
+	//
+	// Prose is still excluded, by stripComments running first.
+	organizationField = regexp.MustCompile(`(?:^|[{,\s])organization\s*=\s*"([^"]+)"`)
+	registryHostField = regexp.MustCompile(`(?:^|[{,\s])registry_host\s*=\s*"([^"]+)"`)
 	// nameField and imageField are the two declarations this scan joins.
 	// Anchored on the field so a name inside a command path or a comment
 	// does not read as a declaration.
@@ -134,6 +143,33 @@ func ScanPushBase(dir, project string) string {
 		}
 	}
 	return PushBase(host, org, project)
+}
+
+// ScanOrgPlaceholder reports whether any `.k` file in the tree at dir still
+// declares the scaffolded organization placeholder.
+//
+// Separate from ScanPushBase because the two answer different questions and
+// one of them gates. ScanPushBase folds the placeholder into "" — there is no
+// address — which is indistinguishable from an env that declares no
+// organization at all. That distinction is exactly what a lint needs: nothing
+// declared is a state an env with nothing hosted is allowed to be in, while a
+// placeholder is an instruction the author has not carried out.
+func ScanOrgPlaceholder(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".k") || found {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		if m := organizationField.FindStringSubmatch(stripComments(string(src))); m != nil && IsOrgPlaceholder(m[1]) {
+			found = true
+		}
+		return nil
+	})
+	return found
 }
 
 // scanSource folds one file's declarations into the two maps: name→image, and

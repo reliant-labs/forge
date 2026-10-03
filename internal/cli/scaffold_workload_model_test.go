@@ -11,6 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
@@ -68,7 +69,7 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"_hosted(wl.item)", "_on_cluster(wl.migrate)", "_hosted_frontend(_web_frontend)", "control_plane = forge.ControlPlane {}"} {
+	for _, want := range []string{"_hosted(wl.item)", "_on_cluster(wl.migrate)", "_hosted_frontend(_web_frontend)", "control_plane = forge.ControlPlane {", `organization = "` + hostedimage.OrgPlaceholder + `"`} {
 		if !strings.Contains(string(cloud), want) {
 			t.Fatalf("derived cloud/main.k lacks %q:\n%s", want, cloud)
 		}

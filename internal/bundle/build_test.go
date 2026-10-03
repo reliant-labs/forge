@@ -453,25 +453,6 @@ func mustHash(t *testing.T, data []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// renderIndicesByCluster reads the NNN out of each entry name, grouped by
-// cluster and kept in the directory order the names already carry.
-func renderIndicesByCluster(t *testing.T, names []string) map[string][]int {
-	t.Helper()
-	out := map[string][]int{}
-	for _, name := range names {
-		parts := strings.Split(name, "/")
-		if len(parts) != 3 {
-			continue
-		}
-		idx, err := strconv.Atoi(strings.SplitN(parts[2], "-", 2)[0])
-		if err != nil {
-			t.Fatalf("%s: entry name carries no render index: %v", name, err)
-		}
-		out[parts[1]] = append(out[parts[1]], idx)
-	}
-	return out
-}
-
 // TestBuildManifestOrderSurvivesTenDocuments pins the apply order.
 //
 // A cluster's entries are applied in directory order, which is

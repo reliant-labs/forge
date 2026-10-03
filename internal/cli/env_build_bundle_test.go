@@ -371,7 +371,7 @@ func TestEnvBuildBundle_AnUnreachableControlPlaneDoesNotFailTheBuild(t *testing.
 
 			var warn strings.Builder
 			written, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, bundleBuildInputs{
-				Now: bundleTestNow, NoCharts: true, errOut: &warn,
+				Now: bundleTestNow, errOut: &warn,
 			})
 			if tc.wantErr {
 				if err == nil {

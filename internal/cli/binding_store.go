@@ -205,11 +205,15 @@ type envLedger struct {
 	Mixed bool
 }
 
-// appliesLocally reports whether any part of the env is applied FROM THIS
-// MACHINE. A self-managed env always is: nothing watches a jsonl file, so if
-// this command does not apply the binding it just wrote, nothing ever will. A
-// hosted env is only when it is Mixed.
-func (l envLedger) appliesLocally() bool { return !l.Hosted || l.Mixed }
+// There is no appliesLocally predicate any more, and it could not be made
+// honest. It answered "is any part of this env applied from this machine" with
+// `!Hosted || Mixed`, which conflated three questions that now have different
+// answers: who applies the CLUSTER objects (a reconciler, for any env with a
+// control plane), who deploys the compose/host/frontend parts (still forge,
+// always), and who publishes the hosted workloads (forge, to the control
+// plane). The follow-through asks them separately — see
+// deploy_promote_follow.go — and the cluster half is decided per GROUP by
+// provider, not per env.
 
 // ─── Selection ───────────────────────────────────────────────────────────────
 

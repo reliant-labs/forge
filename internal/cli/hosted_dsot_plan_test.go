@@ -14,17 +14,6 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// testApplyRecord is a minimal VALID apply: BeginApply runs Validate before
-// sending, so a fixture missing a deadline would be refused client-side and
-// the test would never reach the wire behaviour it is about.
-func testApplyRecord() release.Apply {
-	begun := time.Date(2026, 10, 2, 10, 1, 0, 0, time.UTC)
-	return release.Apply{
-		Env: "prod", BundleID: "bnd_1",
-		CreatedAt: begun, DeadlineAt: begun.Add(30 * time.Minute),
-	}
-}
-
 // buildTestPlan builds a real plan through release.BuildPlan, so its digest is
 // one the server would compute rather than a literal somebody typed.
 func buildTestPlan(t *testing.T) release.Plan {

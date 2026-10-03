@@ -149,7 +149,14 @@ func ledgerWhereFor(ctx context.Context, projectDir, env string) (ledgerWhereDoc
 		}
 	}
 	if l.Mixed {
-		doc.Because += ". It also declares workloads that control plane does not run, so forge applies that part itself"
+		// Narrower than it used to read. This said "so forge applies
+		// that part itself", which now overstates it: the env's CLUSTER
+		// objects ride its promoted bundle and a reconciler converges
+		// them. What forge still deploys from here is the part no
+		// Kustomization carries — a compose workload, host infra, a
+		// shipped frontend.
+		doc.Because += ". It also declares workloads that control plane does not run; its cluster objects " +
+			"converge from its promoted bundle, and forge deploys the rest from here"
 	}
 	return doc, nil
 }

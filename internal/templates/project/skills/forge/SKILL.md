@@ -1,6 +1,6 @@
 ---
 name: forge
-description: Start here, and this is enough. The end-to-end greenfield sequence, the entity-authoring rules, what scaffold births, the four commands that print forge's whole surface, and the pre-flight checklist that stops you hand-writing what forge already scaffolds.
+description: Start here, and this is enough. The end-to-end greenfield sequence (apps, and where static sites branch off), the entity-authoring rules, what scaffold births, the four commands that print forge's whole surface, and the pre-flight checklist that stops you hand-writing what forge already scaffolds.
 ---
 
 # Forge — start here
@@ -8,6 +8,12 @@ description: Start here, and this is enough. The end-to-end greenfield sequence,
 Self-sufficient for greenfield work: empty directory to a running app without
 loading another skill. Depth is named at the point you would need it — load it
 then, not before.
+
+**Building a landing page, marketing site, docs site or SPA with no backend of
+its own?** That is a static site, and forge ships it too: a static export bound
+to hosted static hosting (the platform owns the bucket and the CDN), with envs,
+build-once releases and promotion from day 0. Load `deploy/static-site`
+instead of reading on: the service sequence below is for apps with an API.
 
 ## Greenfield, end to end
 

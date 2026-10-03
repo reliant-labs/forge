@@ -1214,9 +1214,8 @@ schema ControlPlane:
     changes behaviour, and no credential is ever looked for.
 
     forge is NOT coupled to any particular hosted service by this. The
-    endpoint is an arbitrary URL, the credential an opaque bearer string —
-    the same relationship `External` has with flyctl, which needs
-    FLY_API_TOKEN without forge linking Fly's SDK."""
+    endpoint is an arbitrary URL, the credential an opaque bearer string, and
+    forge links no client SDK of the platform it talks to."""
     type: str = "control_plane"
     # Base URL of the control plane. Defaults to Reliant cloud; set it only
     # to target a different one.

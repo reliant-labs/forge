@@ -1,6 +1,6 @@
 ---
 name: deploy
-description: Ship code — declare workloads once, bind each one to a runtime per env (host, cluster, hosted), build, deploy, verify, roll forward.
+description: Ship code — declare workloads once, bind each one to a runtime per env (host, cluster, hosted), build, deploy, verify, roll forward. Static sites ship through the same model (deploy/static-site).
 ---
 
 # Ship It
@@ -313,6 +313,8 @@ runtimeConfig:
 
 After every sync the control plane writes `config.js`, resolving references
 against workloads in the same environment.
+
+A site with no backend is a whole project: `deploy/static-site`.
 
 ### Custom domains
 

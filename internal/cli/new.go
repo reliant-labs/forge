@@ -827,6 +827,25 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 		out = append(out,
 			"  go build ./...        # the pkg/ skeleton compiles out of the box",
 			"  add exported types under pkg/ and tests alongside them")
+	case len(serviceNames) == 0 && hasFrontend:
+		// Frontend-first: a landing page, a marketing or docs site, or a SPA
+		// over an API that lives elsewhere. Its first step is its frontend —
+		// leading with `scaffold service item` is how a static site ends up
+		// with a CRUD backend nobody asked for. The service step stays one
+		// line away for the project that does grow an API.
+		//
+		// No bare `env up dev` here: a frontend-only scaffold still binds a
+		// migrate job and a k3d cluster (forge#401), so the skill — which
+		// carries the dev-loop and env-file steps that work today — is the
+		// first command, not a dev loop that would fail.
+		out = append(out,
+			"  build the site in frontends/ — it is starter code, yours to rewrite",
+			fmt.Sprintf("  %s skill load deploy/static-site", n),
+			"      ↳ the dev loop, the static export, hosted static hosting, and deploying it",
+			"",
+			"  Need an API or a database too?",
+			fmt.Sprintf("  %s scaffold service item", n),
+			"      ↳ name it after a DOMAIN ENTITY (item, order, user) — not after the binary")
 	case len(serviceNames) == 0:
 		out = append(out,
 			fmt.Sprintf("  %s scaffold service item", n),

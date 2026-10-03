@@ -12,9 +12,18 @@ and it deploys anything — including code it never compiled.
 
 That second half matters more than it sounds, so it's worth saying plainly up
 front: Forge has opinions, and none of them are walls. It ships an ORM you can
-drop out of, a middleware chain in a file you own, and a Kubernetes deploy path
-that will just as happily run your `fly deploy`. Our own control plane builds
-three services out of a **separate repository** that Forge never compiles.
+drop out of, a middleware chain in a file you own, and one deploy model that
+binds each workload to wherever it should run: a host process, a cluster you
+operate, or hosted infrastructure we operate for you. Our own control plane
+builds three services out of a **separate repository** that Forge never
+compiles.
+
+It is not only for apps with a backend. A landing page, a marketing site or a
+docs site is a forge project with one static frontend and no services. It gets
+the same environments, build-once releases and promotion, and ships to hosted
+static hosting that owns the bucket and the CDN
+(`forge skill load deploy/static-site`). When the site grows a waitlist or a
+checkout, the API goes in the same project.
 
 ## Why teams pick it up
 
@@ -360,8 +369,11 @@ know how to leave it:
 - We give you **a middleware chain** — in a `serve.go` you own and can reorder.
 - We give you **`pkg/`** — as a library you import, not a framework you're
   trapped inside.
-- We give you **Kubernetes deploys** — and `External` will just as happily run
-  your Fly.io, Cloud Run, ECS, Vercel, Railway, or systemd-on-a-VM command.
+- We give you **Kubernetes deploys** — and every workload binds its own
+  runtime, so the same declaration runs as a host process in dev, on a cluster
+  you operate, or on hosted infrastructure we run. A runtime that hands a
+  workload to your platform's own CLI (Fly.io, Cloud Run, ECS, Vercel) is
+  [planned](https://github.com/reliant-labs/forge/issues/400), not shipped.
 - **And you don't have to write Go.** KCL declares the workloads; `ShellBuild`
   builds anything Forge doesn't compile.
 
@@ -373,10 +385,11 @@ toolchain steps can't be cross-compiled on a laptop.
 
 The details:
 
-- **Deploy is target-agnostic.** Workloads are authored once as a KCL
-  `forge.Service`; adapters project them onto Kubernetes and host processes.
-  Target selection is structural — a `host` block routes to the host adapter,
-  no mode flag.
+- **Deploy is target-agnostic.** Workloads are declared once as a KCL
+  `fw.Workload`, and each env binds every one to its own runtime —
+  `forge.OnHost`, `OnCompose`, `OnCluster` or `OnHosted`. Frontends bind the
+  same way, to a dev server or a static runtime (`OnHosted`, `OnBucket`,
+  `OnFirebase`). There is no env-wide mode flag.
 - **`ShellBuild` is the shell escape hatch** for a workload forge does not
   build itself: a sibling repo, a third-party binary, a language runtime.
   `cmd` is a plain KCL string and forge runs it byte-for-byte via `sh -c`, from
@@ -431,8 +444,10 @@ week three:
 - **Postgres isn't your database.** Schema projection introspects a real
   ephemeral Postgres. MySQL, SQLite, and non-relational stores aren't
   supported.
-- **You aren't deploying containers.** The deploy model assumes an image, even
-  when the target isn't Kubernetes.
+- **Your backend isn't a container.** A service deploys as an image, even
+  when the target isn't Kubernetes. (Static sites are the exception: a static
+  frontend ships as files to hosted static hosting, your own bucket or
+  Firebase, with no image to run.)
 - **You want a framework you'll outgrow and replace.** Forge is designed to
   hold structure for the life of the project. If you want a one-time scaffold
   and then never to see the tool again, use a template repo — that's a

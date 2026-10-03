@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`deploy/static-site` skill: forge is for static sites too.** Agents
+  reaching for forge only when there is a backend routed every landing page,
+  marketing site and docs site around it, even though forge already ships one
+  end to end: a static export bound to `forge.OnHosted {}` is published to the
+  control plane's static hosting (bucket, CDN and hostname owned by the
+  platform), with envs, build-once releases and promotion. The skill covers when
+  forge is the right call for a site, the static frontend scaffold, a complete
+  frontends-only hosted `prod`, `runtime_config`, and the release flow, all
+  verified against a real project. The root `forge` skill, `deploy`,
+  `frontend` and the README now route to it. The scaffold gaps it works around
+  are tracked in #401.
+
 ### Changed
+
+- **`forge project new` with frontends and no services leads with the
+  frontend.** The next-steps block told a frontend-only project to
+  `forge scaffold service item`, which is how a static site ends up with a CRUD
+  backend nobody asked for. It now points at the frontend and
+  `deploy/static-site`, and keeps `scaffold service` as the line for a project
+  that does need an API. It does not print a bare `forge env up dev`, because a
+  frontend-only scaffold's dev env still fails that way until #401 lands.
+- **The README stopped advertising `forge.External`.** It was removed with the
+  one workload model (#284), but the README still offered it for Fly.io, Cloud
+  Run, ECS, Vercel and Railway, and described deploy as `forge.Service` plus a
+  `host` block. Both now describe the per-workload runtimes, and a
+  platform-CLI runtime is tracked in #400.
 
 - **`forge env status` is the ONE read view of an environment.** Reading an env
   used to take six verbs — `env status`, `env verify`, `env wait`,

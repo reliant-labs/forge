@@ -148,8 +148,9 @@ func hasRetiredLedger(ctx context.Context, projectDir string) bool {
 	return present
 }
 
-// checkoutLedger is the retired ledger as the checkout holds it: the actual
-// records, so containment can be judged rather than guessed from counts.
+// checkoutLedger is one env's slice of the retired ledger as the checkout
+// holds it — its promotions and the releases they bind: the actual records,
+// so containment can be judged rather than guessed from counts.
 type checkoutLedger struct {
 	Promotions []release.Promotion
 	Releases   []release.Release
@@ -157,7 +158,19 @@ type checkoutLedger struct {
 
 func (c checkoutLedger) any() bool { return len(c.Promotions) > 0 || len(c.Releases) > 0 }
 
-// checkoutLedgerFor reads the retired in-checkout ledger for one env.
+// checkoutLedgerFor reads the retired in-checkout ledger for one env: its
+// promotions, and the releases THOSE promotions bind.
+//
+// SCOPED TO THE ENV, RELEASES INCLUDED. The hazard is one env reading as
+// "never promoted" when the checkout says otherwise, so the history at stake
+// is that env's promotions and the releases they froze — nothing else. A
+// release no promotion of env references is not env's history: an env the
+// checkout never promoted loses nothing by reading an empty ledger. Counting
+// the checkout's releases project-wide made exactly those envs refuse —
+// control-plane's dev-k8s and e2e, deployed from CI runners whose machine
+// ledger starts empty on every run, where no import could ever clear it.
+// The import still brings every release (it is project-wide by design); this
+// is only what one env's refusal is about.
 func checkoutLedgerFor(ctx context.Context, projectDir, env string) (checkoutLedger, error) {
 	var out checkoutLedger
 	promotions, err := readCheckoutFile(ctx, projectDir,
@@ -177,11 +190,24 @@ func checkoutLedgerFor(ctx context.Context, projectDir, env string) (checkoutLed
 			out.Promotions = append(out.Promotions, p)
 		}
 	}
+	if len(out.Promotions) == 0 {
+		// Never promoted here: there are no bound releases to read, and
+		// skipping the read keeps the common case to one file lookup.
+		return out, nil
+	}
+	bound := make(map[string]struct{}, len(out.Promotions))
+	for _, p := range out.Promotions {
+		bound[p.Release] = struct{}{}
+	}
 	releases, err := readCheckoutReleases(ctx, projectDir)
 	if err != nil {
 		return out, err
 	}
-	out.Releases = releases
+	for _, r := range releases {
+		if _, ok := bound[r.Version]; ok {
+			out.Releases = append(out.Releases, r)
+		}
+	}
 	return out, nil
 }
 

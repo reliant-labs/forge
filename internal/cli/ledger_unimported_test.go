@@ -125,8 +125,10 @@ func TestRefusesWhenCheckoutHoldsAnUnimportedLedger(t *testing.T) {
 	if !strings.Contains(msg, "3 promotions") {
 		t.Errorf("the refusal must name N promotions, got: %s", msg)
 	}
-	if !strings.Contains(msg, "4 releases") {
-		t.Errorf("the refusal must name M releases, got: %s", msg)
+	// 3, not 4: v1.0.0 is in the checkout but no prod promotion binds it,
+	// so it is not prod's history (TestRefusalIsScopedToTheEnvsOwnHistory).
+	if !strings.Contains(msg, "3 releases") {
+		t.Errorf("the refusal must name the M releases prod's promotions bind, got: %s", msg)
 	}
 	if !strings.Contains(msg, "forge ledger import --from-git") {
 		t.Errorf("the refusal must name the remedy, got: %s", msg)
@@ -218,6 +220,67 @@ func TestPartialImportReportsOnlyTheRemainder(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "2 promotions") {
 		t.Errorf("a partial import must report only the REMAINDER, got: %s", err)
+	}
+}
+
+// TestRefusalIsScopedToTheEnvsOwnHistory: the refusal guards ONE env's
+// history, so an env the checkout never promoted must not refuse over
+// releases cut for another env.
+//
+// This is control-plane's CI exactly. Its checkout holds prod's promotions
+// and 40 releases; every push runs `forge env deploy dev-k8s` (and e2e) on a
+// fresh runner whose machine ledger is empty. dev-k8s was never promoted
+// through the retired ledger, so reading the empty ledger loses nothing —
+// there is no frozen pin set for it to forget. Counting the checkout's
+// releases project-wide made those envs refuse anyway, and no import could
+// clear it: the import runs on the owner's machine, the runner starts empty.
+//
+// The env that DOES own history still refuses, and its count names only the
+// releases its own promotions bind.
+//
+// Mutation: count every checkout release (not just the ones this env's
+// promotions bind) and the dev-k8s half fails.
+func TestRefusalIsScopedToTheEnvsOwnHistory(t *testing.T) {
+	dir := newLedgerTestProject(t, "cp-ci-like")
+	writeRetiredLedger(t, dir, "prod", []release.Promotion{
+		retiredPromotion("prod", "v1.6.0", "p-1"),
+		retiredPromotion("prod", "v1.7.12", "p-2"),
+	}, []string{"v1.0.0", "v1.6.0", "v1.7.12", "v1.7.13"})
+	gitInit(t, dir)
+
+	if _, err := ledgerFor(context.Background(), dir, "dev-k8s"); err != nil {
+		t.Fatalf("an env the checkout never promoted has no history to lose, so it must not refuse; got %v", err)
+	}
+
+	_, err := ledgerFor(context.Background(), dir, "prod")
+	if !errors.Is(err, errLedgerNotImported) {
+		t.Fatalf("prod's promotions are unimported, so prod must still refuse; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "2 promotions") || !strings.Contains(err.Error(), "2 releases") {
+		t.Errorf("prod's refusal must count its own promotions and the releases they bind, got: %s", err)
+	}
+}
+
+// TestRefusalCountsAReleaseItsPromotionsBindButTheLedgerLacks: the promotions
+// alone are not the whole history. A ledger that holds prod's promotions but
+// not the release they bind would resolve `forge env deploy prod v1.7.12`
+// to "no such release", so a missing BOUND release still refuses.
+func TestRefusalCountsAReleaseItsPromotionsBindButTheLedgerLacks(t *testing.T) {
+	dir := newLedgerTestProject(t, "half-imported")
+	promotions := []release.Promotion{retiredPromotion("prod", "v1.7.12", "p-1")}
+	writeRetiredLedger(t, dir, "prod", promotions, []string{"v1.7.12"})
+	gitInit(t, dir)
+
+	if err := testStore(t, dir).ImportPromotion(promotions[0]); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	_, err := ledgerFor(context.Background(), dir, "prod")
+	if !errors.Is(err, errLedgerNotImported) {
+		t.Fatalf("the promotion is in but the release it binds is not, so it must still refuse; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "0 promotions") || !strings.Contains(err.Error(), "1 releases") {
+		t.Errorf("the refusal must name the missing bound release, got: %s", err)
 	}
 }
 

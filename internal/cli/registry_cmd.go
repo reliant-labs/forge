@@ -45,17 +45,47 @@ forge needing a concept for it.`,
 	return cmdutil.StrictGroup(cmd)
 }
 
-// dockerLogin runs `docker login <host> -u <username> --password-stdin` with
-// password on stdin. A var so tests observe the login instead of running it.
-var dockerLogin = func(ctx context.Context, host, username string, password io.Reader) error {
-	c := exec.CommandContext(ctx, "docker", "login", host, "--username", username, "--password-stdin")
+// dockerLoginArgs is the exact argv forge runs docker with, and the ONE place
+// that decides it.
+//
+// THE CREDENTIAL IS NOT IN IT, and that is the property this function exists
+// to make checkable. `--password <value>` would work — docker accepts it, with
+// a deprecation warning — and it would also put the secret in this process's
+// argv, where it is world-readable through `ps` for the life of the call, and
+// in any shell history or CI trace that echoed the command. `--password-stdin`
+// is the only form that cannot leak that way, so the argv is built here, by a
+// pure function a test asserts over, rather than inline at the call site where
+// a later edit could append one more flag.
+func dockerLoginArgs(host, username string) []string {
+	return []string{"login", host, "--username", username, "--password-stdin"}
+}
+
+// dockerLogin runs `docker <args...>` with the credential on stdin. A var so
+// tests observe the login — argv included — instead of running it.
+//
+// It takes the ARGV rather than a host and a username so that what a test sees
+// is what the subprocess would get. A seam that re-derived the argv inside the
+// real implementation would let the credential reach the command line without
+// any test being able to notice.
+var dockerLogin = func(ctx context.Context, args []string, password io.Reader) error {
+	c := exec.CommandContext(ctx, "docker", args...)
 	c.Stdin = password
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		return fmt.Errorf("docker login %s: %w", host, err)
+		return fmt.Errorf("docker %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+// runDockerLogin logs in to one host with one credential.
+//
+// The credential is a string here and a Reader at the seam because it must be
+// read exactly once per login and `docker login` consumes stdin to EOF: a
+// shared Reader across two hosts leaves the second one authenticating with
+// nothing.
+func runDockerLogin(ctx context.Context, host, username, credential string) error {
+	return dockerLogin(ctx, dockerLoginArgs(host, username), strings.NewReader(credential))
 }
 
 func newRegistryLoginCmd() *cobra.Command {
@@ -64,8 +94,9 @@ func newRegistryLoginCmd() *cobra.Command {
 		passwordStdin bool
 		passwordEnv   string
 	)
+	var token string
 	cmd := &cobra.Command{
-		Use:   "login <environment> --username <user> --password-stdin",
+		Use:   "login <environment>",
 		Short: "docker login to every registry the env's workloads declare",
 		Long: `Log docker in to each registry host named by the images the env's workloads
 declare, so that ` + "`forge env build <env> --push`" + ` and any signing / SBOM / scanning step
@@ -75,7 +106,20 @@ The registry HOSTS come from the workload declarations and nowhere else — ther
 is no host argument and no flag that takes one. An env whose workloads push to
 two registries logs in to both, in one command.
 
-THE CREDENTIAL is the only thing you pass, and it is not a registry pointer:
+THE PLATFORM REGISTRY NEEDS NO CREDENTIAL FROM YOU. For the host an env
+declares on forge.ControlPlane (registry_host, Reliant's registry by default),
+forge presents the SAME control-plane credential it reaches the control plane
+with — ` + "`--token`" + `, then the env's declared token_env, then what ` + "`forge login`" + `
+stored. One token, so there is nothing to mint and nothing to rotate:
+
+  forge registry login prod
+
+` + "`forge env build <env> --push`" + ` and ` + "`forge env deploy <env>`" + ` do this for
+themselves before their first push, so a hosted pipeline usually needs no login
+step at all.
+
+FOR ANYBODY ELSE'S REGISTRY the credential is the only thing you pass, and it is
+not a registry pointer:
 
   echo "$GITHUB_TOKEN" | forge registry login prod --username "$GITHUB_ACTOR" --password-stdin
 
@@ -85,11 +129,15 @@ git) rather than piping a secret through a shell:
 
   forge registry login prod --username "$GITHUB_ACTOR" --password-env GITHUB_TOKEN
 
-One credential is used for every host. That is correct for the overwhelmingly
-common case (one org, one registry, one token) and honest about the rest: for
-two registries needing two credentials, run the command twice with --host-filter,
-or log the second one in with plain ` + "`docker login`" + ` — forge holds no credential
-store and inventing one here would be a secrets manager, not a build tool.
+One credential is used for every foreign host. That is correct for the
+overwhelmingly common case (one org, one registry, one token) and honest about
+the rest: for two foreign registries needing two credentials, run the command
+twice, or log the second one in with plain ` + "`docker login`" + ` — forge holds no
+credential store and inventing one here would be a secrets manager, not a build
+tool.
+
+An env that pushes to the platform registry AND a foreign one logs in to both in
+one run: ours from the control-plane credential, theirs from the flags.
 
 A k3d-local registry (localhost / *.localhost) takes no credentials, so it is
 skipped.`,
@@ -99,54 +147,71 @@ skipped.`,
 			if err := validateBuildEnvArg(env); err != nil {
 				return err
 			}
-			if !passwordStdin && passwordEnv == "" {
-				return cliutil.UserErr("forge registry login", "no credential was given", "",
-					fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge registry login %s --username <user> --password-stdin\n"+
-						"  or name the variable holding it: forge registry login %s --username <user> --password-env TOKEN", env, env))
-			}
 			if passwordStdin && passwordEnv != "" {
 				return cliutil.UserErr("forge registry login", "--password-stdin and --password-env both given", "",
 					"pass the credential exactly one way")
 			}
-			if username == "" {
-				return cliutil.UserErr("forge registry login", "--username is required", "",
-					"pass the registry user the credential belongs to")
-			}
 
+			declared, err := renderBuildKCL(cmd.Context(), projectDirForKCL(), env)
+			if err != nil {
+				return err
+			}
 			hosts, err := declaredRegistryHostsOf(cmd.Context(), "forge registry login "+env, env)
 			if err != nil {
 				return err
 			}
 
-			// Read the credential ONCE: stdin is not re-readable, and every
-			// host is authenticated with the same one.
-			var credential []byte
-			if passwordStdin {
-				credential, err = io.ReadAll(cmd.InOrStdin())
-				if err != nil {
-					return fmt.Errorf("read credential from stdin: %w", err)
+			// Split the hosts by WHO owns the credential, because that is
+			// what decides where it comes from. Ours resolves from the
+			// declaration; everything else needs the flags, and a run that
+			// mixes them needs both halves rather than one rule applied to
+			// both.
+			platform := platformRegistryHost(declared)
+			var foreign []string
+			ours := false
+			for _, h := range hosts {
+				switch {
+				case h == platform:
+					ours = true
+				case isLocalRegistryHost(h):
+					fmt.Printf("[registry] %s is a local registry (declared by a workload's image): no login needed\n", h)
+				default:
+					foreign = append(foreign, h)
 				}
-			} else {
-				v := os.Getenv(passwordEnv)
-				if v == "" {
-					return cliutil.UserErr("forge registry login",
-						fmt.Sprintf("$%s is empty or unset, so there is no credential to log in with", passwordEnv), "",
-						fmt.Sprintf("set %s in the environment (a CI secret), or pipe the credential in with --password-stdin", passwordEnv))
+			}
+
+			gaveFlags := username != "" || passwordStdin || passwordEnv != ""
+			if ours && len(foreign) == 0 && gaveFlags {
+				return errPlatformRegistryTakesNoFlags(env, platform, declaredTokenEnv(declared))
+			}
+			if len(foreign) > 0 && !gaveFlags {
+				if ours {
+					return errForeignRegistryNeedsFlags(env, foreign)
 				}
-				credential = []byte(v)
+				return cliutil.UserErr("forge registry login", "no credential was given", "",
+					fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge registry login %s --username <user> --password-stdin\n"+
+						"  or name the variable holding it: forge registry login %s --username <user> --password-env TOKEN", env, env))
 			}
 
 			loggedIn := 0
-			for _, h := range hosts {
-				if isLocalRegistryHost(h) {
-					fmt.Printf("[registry] %s is a local registry (declared by a workload's image): no login needed\n", h)
-					continue
-				}
-				fmt.Printf("[registry] logging in to %s (declared by a workload's image in env %s)\n", h, env)
-				if err := dockerLogin(cmd.Context(), h, username, strings.NewReader(string(credential))); err != nil {
+			if ours {
+				if err := loginToPlatformRegistry(cmd.Context(), env, platform, token, declarationFromEntities(declared)); err != nil {
 					return err
 				}
 				loggedIn++
+			}
+			if len(foreign) > 0 {
+				credential, err := foreignRegistryCredential(cmd, env, username, passwordStdin, passwordEnv)
+				if err != nil {
+					return err
+				}
+				for _, h := range foreign {
+					fmt.Printf("[registry] logging in to %s (declared by a workload's image in env %s)\n", h, env)
+					if err := runDockerLogin(cmd.Context(), h, username, credential); err != nil {
+						return err
+					}
+					loggedIn++
+				}
 			}
 			if loggedIn == 0 {
 				fmt.Printf("[registry] nothing to log in to: every registry env %s declares is host-local\n", env)
@@ -154,10 +219,42 @@ skipped.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&username, "username", "u", "", "Registry user the credential belongs to (e.g. $GITHUB_ACTOR, _json_key, oauth2accesstoken, AWS)")
-	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read the credential from stdin (a credential never belongs on the command line)")
-	cmd.Flags().StringVar(&passwordEnv, "password-env", "", "Name of the environment variable holding the credential (the forge.ControlPlane token_env convention: the NAME is in git, the VALUE never is)")
+	cmd.Flags().StringVarP(&username, "username", "u", "", "Registry user the credential belongs to, for a registry that is NOT the platform's (e.g. $GITHUB_ACTOR, _json_key, oauth2accesstoken, AWS)")
+	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read a foreign registry's credential from stdin (a credential never belongs on the command line)")
+	cmd.Flags().StringVar(&passwordEnv, "password-env", "", "Name of the environment variable holding a foreign registry's credential (the forge.ControlPlane token_env convention: the NAME is in git, the VALUE never is)")
+	cmd.Flags().StringVar(&token, "token", "", "Control-plane credential to present to the PLATFORM registry, overriding the env's token_env and the stored `forge login` (one-off / debugging)")
 	return cmd
+}
+
+// foreignRegistryCredential reads the credential for a registry that is not
+// the platform's, from exactly one of the two places a caller may put it.
+//
+// Read ONCE and returned as a string: stdin is not re-readable, and an env
+// whose workloads name two foreign registries authenticates both with it.
+func foreignRegistryCredential(cmd *cobra.Command, env, username string, passwordStdin bool, passwordEnv string) (string, error) {
+	if username == "" {
+		return "", cliutil.UserErr("forge registry login", "--username is required for a registry that is not the platform's", "",
+			"pass the registry user the credential belongs to")
+	}
+	if passwordStdin {
+		b, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return "", fmt.Errorf("read credential from stdin: %w", err)
+		}
+		return string(b), nil
+	}
+	if passwordEnv == "" {
+		return "", cliutil.UserErr("forge registry login", "no credential was given", "",
+			fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge registry login %s --username <user> --password-stdin\n"+
+				"  or name the variable holding it: forge registry login %s --username <user> --password-env TOKEN", env, env))
+	}
+	v := os.Getenv(passwordEnv)
+	if v == "" {
+		return "", cliutil.UserErr("forge registry login",
+			fmt.Sprintf("$%s is empty or unset, so there is no credential to log in with", passwordEnv), "",
+			fmt.Sprintf("set %s in the environment (a CI secret), or pipe the credential in with --password-stdin", passwordEnv))
+	}
+	return v, nil
 }
 
 func newRegistryRefCmd() *cobra.Command {
@@ -211,12 +308,21 @@ prefixed form as well, so a later step can address a specific one.`,
 // declaredRegistryHostsOf renders env and returns the distinct registry hosts
 // its workloads' images name, or the runbook naming what to declare. context is
 // the command that needed them.
+//
+// RESOLVED AGAINST THE ENV'S PUSH BASE, exactly as the build resolves it
+// (resolvePushPlan). A BARE hosted image is legitimate since ADR-0003 F1 — it
+// resolves to `<registry_host>/<organization>/<project>/<name>` — and
+// enumerating destinations with no base leaves every such image hostless,
+// which this function then reads as "nothing to push". So `forge registry
+// login prod` on a fully correct hosted project reported that no workload
+// declared a pushable image, which is the exact shape ADR-0003 makes the
+// DEFAULT for a hosted env.
 func declaredRegistryHostsOf(ctx context.Context, context, env string) ([]string, error) {
 	ents, err := renderBuildKCL(ctx, projectDirForKCL(), env)
 	if err != nil {
 		return nil, err
 	}
-	plan := pushPlan{env: env, destinations: declaredImageDestinations(ents)}
+	plan := pushPlan{env: env, destinations: declaredImageDestinationsWithBase(ents, declaredPushBase(ents))}
 	if hosts := plan.hosts(); len(hosts) > 0 {
 		return hosts, nil
 	}

@@ -166,6 +166,14 @@ func (p pushPlan) hosts() []string {
 // workload whose image the header should name. The resolved plan is written
 // back into opts.pushPlan so every downstream push reads one resolution.
 // Returns the narrowed entity set the build acts on.
+//
+// It is also where a hosted build AUTHENTICATES (ADR-0003 F3), and that
+// placement is the point: the plan is resolved, so forge knows whether this
+// invocation pushes and to which hosts, and nothing has been compiled yet, so
+// a missing credential costs a second rather than a whole build. Every pushing
+// verb comes through here — `forge build --push`, `forge env build --push`,
+// `forge env up`, and `forge env deploy`, which builds through runBuild — so
+// there is one hook rather than one per push path.
 func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *buildOptions) (*KCLEntities, pushPlan, error) {
 	declared, entities, err := renderBuildEntities(ctx, cfg, *opts)
 	if err != nil {
@@ -174,6 +182,14 @@ func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *bui
 	plan, err := resolvePushPlan(*opts, declared)
 	if err != nil {
 		return nil, pushPlan{}, err
+	}
+	// --plan preflights and writes nothing, so it must not authenticate:
+	// a dry run that fails for want of a credential is a dry run that
+	// cannot be used on a laptop with no login.
+	if !opts.plan {
+		if err := autoLoginForPush(ctx, opts.env, declared, plan); err != nil {
+			return nil, pushPlan{}, err
+		}
 	}
 	opts.pushPlan = plan
 	return entities, plan, nil

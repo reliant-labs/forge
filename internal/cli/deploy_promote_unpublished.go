@@ -45,14 +45,30 @@ import (
 // rollout names no pinned workload, which means the env's tiers were never
 // published and no converger will ever move them.
 //
-// It is deliberately NOT fatal on a read failure. This guard exists to replace
-// a silent 15-minute wait with one sentence; if the pre-check itself cannot
-// read the rollout, the right outcome is to let the real wait run and report
-// its own verdict, not to invent a refusal from a transport error.
+// IT ONLY APPLIES TO AN ENV THAT DECLARES HOSTED WORKLOADS, and that scoping
+// is load-bearing now that forge does not apply. "The rollout names no
+// workload" used to be unambiguous, because a control-plane env's reason to
+// exist was its hosted tiers. It is not any more: a CLUSTER-ONLY env on a
+// control plane — the shape every env takes once its clusters are reconciled
+// from their bundle — has no hosted workload by construction, so its rollout
+// legitimately names none and this guard would refuse every deploy of it,
+// advising a publish of workloads it does not have.
+//
+// So the question is asked of the DECLARATION first: only an env that should
+// have published something can have failed to.
+//
+// Neither read is fatal. This guard exists to replace a silent 15-minute wait
+// with one sentence; if the pre-check cannot render the env or read the
+// rollout, the right outcome is to let the real wait run and report its own
+// verdict, not to invent a refusal from a transport error.
 func refuseUnpublishedHostedDeploy(ctx context.Context, env, promotionID string) error {
+	entities, err := RenderKCL(ctx, projectDirForKCL(), env)
+	if err != nil || entities == nil || !entities.HasHosted() {
+		return nil // nothing was supposed to be published — see the docstring
+	}
 	target, err := resolveDeclaredWaitTarget(ctx, env)
 	if err != nil {
-		return nil // not our verdict to give — see the docstring
+		return nil // not our verdict to give
 	}
 	rollout, err := readRollout(ctx, target.Client, target.EnvironmentID, promotionID)
 	if err != nil {

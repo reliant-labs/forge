@@ -400,14 +400,33 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 			}
 			opts.Release = ""
 		}
-		// The fast refusal: nothing on this control plane will apply
+		// The fast refusal: nothing on this control plane will converge
 		// the promotion, so waiting can only ever time out, and a
-		// timeout would blame the release for a missing converger.
+		// timeout would blame the release for a missing reconciler.
+		//
+		// WHAT IT MUST NOT SAY is "run forge env deploy", which is what
+		// it said when forge was the actuator. A deploy no longer
+		// applies this env's cluster objects — it records the promotion
+		// and waits, exactly as this did — so that advice sends the
+		// caller around a loop that cannot terminate, and the second
+		// pass looks identical to the first. The promotion is already
+		// recorded; re-recording it changes nothing.
+		//
+		// So the refusal names the real gap, which is on the platform
+		// side: this env has no reconciler bound to it yet. That is an
+		// operator or a control-plane configuration fact, and the honest
+		// code is 2 — we could not look, because nothing is watching —
+		// never 1, because there is nothing wrong with the release.
 		if !rollout.ConvergesPromotions {
 			report.WaitedMS = time.Since(start).Milliseconds()
 			return report, undeterminedf(
-				"env %q does not converge promotions on this control plane, so this promotion will not roll out on its own.\n"+
-					"  Run `forge env deploy %s <version>`, which applies it and waits.", env, env)
+				"env %q has no reconciler converging it on this control plane, so the promotion this "+
+					"deploy recorded will not roll out.\n"+
+					"  The promotion IS recorded — nothing was lost — and it converges as soon as the env "+
+					"has a reconciler; re-running the deploy records the same promotion and waits again.\n"+
+					"  This is a platform-side gap, not a problem with the release: the env needs a "+
+					"destination bound to it on its control plane.\n"+
+					"  Inspect what the control plane holds for it with: forge env status %s", env, env)
 		}
 
 		switch phase {

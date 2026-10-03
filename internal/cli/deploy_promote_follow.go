@@ -14,22 +14,36 @@ package cli
 // means record + apply + wait, and the only flag left is the one that opts
 // OUT (--no-wait).
 //
-// WHO APPLIES IS DECIDED BY THE LEDGER, NOT A FLAG. That is the whole of the
-// hosted/self-managed parity the ADR asks for:
+// FORGE DOES NOT APPLY TO A CLUSTER. The promotion this command records IS
+// the deploy: it is declarative intent — "env X should run bundle B" — and a
+// reconciler (Flux, from the bundle's manifest layer) converges the cluster to
+// it. So the follow-through's job is no longer "apply, then wait"; it is
+// "finish what forge still owns, then WAIT ON THE CONVERGENCE the reconciler
+// performs".
 //
-//   - A HOSTED env (its KCL declares forge.ControlPlane, so its promotions
-//     live on that control plane) is converged server-side. forge applies
-//     nothing; it waits on the rollout the control plane computes.
-//   - A SELF-MANAGED env (promotions in .forge/promotions/<env>.jsonl) has
-//     nothing watching its ledger, so this same command performs the ordinary
-//     client-side render+apply against the binding it just wrote. There, the
-//     apply's own per-resource rollout wait IS the health wait — there is no
-//     server-computed rollout to poll, and `forge env status --wait` says so
-//     rather than timing out.
+// WHAT FORGE STILL OWNS, and why it is not nothing. An env is a set of
+// GROUPS, not a mode, and only the cluster ones are converged from a bundle:
 //
-// Both reach "the release is live or this command is red", which is the
-// property a caller can rely on. Which machinery got there is an
-// implementation detail of where the env is run.
+//	cluster objects   converged by the reconciler from the promoted bundle.
+//	                  forge applies none of them, resolves no kubectl context,
+//	                  and needs no kubeconfig.
+//	hosted workloads  PUBLISHED to the control plane (specs it will run).
+//	                  Publishing is not applying — there is no cluster at the
+//	                  other end of it, and nothing else would do it.
+//	compose, host
+//	infra, shipped
+//	frontends         still deployed from this machine. They are not
+//	                  Kubernetes objects, no Kustomization carries them, and
+//	                  if forge stopped nothing would deploy them at all.
+//
+// A MACHINE-LEDGER env (promotions in .forge/promotions/<env>.jsonl, no
+// control plane) has no reconciler yet — nothing installs Flux into its
+// cluster or writes the in-cluster OCIRepository pointer. Until F-FLUX-LOCAL
+// does, it keeps the client-side apply, through exactly one function that
+// names its own deletion: applyClusterPendingLocalFlux.
+//
+// THE PROPERTY A CALLER RELIES ON IS UNCHANGED: "the release is live or this
+// command is red". What changed is who made it live.
 //
 // THE HOSTED WAIT IS PINNED TO THE PROMOTION THIS COMMAND WROTE, not to
 // "whatever is current". The distinction is the whole value. If the wait
@@ -124,64 +138,60 @@ func validatePromoteFollow(o promoteFollowOptions) error {
 	return nil
 }
 
-// followPromote applies the promotion the write just recorded and gates on its
-// health. plan.Recorded is the promotion the env now resolves to — the new
-// entry, or the existing one for an idempotent retry.
+// followPromote finishes what forge still owns after the promotion is
+// recorded, then gates on the convergence. plan.Recorded is the promotion the
+// env now resolves to — the new entry, or the existing one for an idempotent
+// retry.
 //
-// WHICH HALVES RUN COMES FROM THE LEDGER, and there are THREE shapes, not two:
+// TWO SHAPES, decided by the LEDGER and nothing else:
 //
-//	SELF-MANAGED (!Hosted)      apply from here; that apply's own per-resource
-//	                            rollout wait IS the health gate.
-//	HOSTED-ONLY  (Hosted)       apply nothing; wait on the rollout the control
-//	                            plane computes.
-//	MIXED        (Hosted+Mixed) BOTH. Apply the cluster/compose/infra half from
-//	                            here, then wait on the hosted half.
+//	CONTROL-PLANE ledger   forge applies NO cluster object. It deploys the
+//	                       halves nothing converges (compose, host infra,
+//	                       frontends), publishes any hosted workloads, and
+//	                       waits on the control plane's convergence read.
+//	MACHINE ledger         no reconciler exists for it yet, so the cluster
+//	                       apply still runs from here, through the one named
+//	                       transitional function. F-FLUX-LOCAL deletes it.
 //
-// The mixed row is why "hosted" alone cannot decide this. A control plane
-// converges only what it hosts, so an env with cluster workloads beside its
-// hosted ones ships nothing from those workloads unless this command applies
-// them — and a deploy that recorded, waited on the hosted rollout, and reported
-// the release live while the cluster half still ran the previous one is exactly
-// the gap this verb exists to close.
+// The old third shape — MIXED, "apply the cluster half here and wait on the
+// hosted half" — is gone, and that is the substance of this change. A mixed
+// env's cluster objects are in the bundle like any other env's, so the
+// reconciler converges them; what made mixed special was forge applying them,
+// and it no longer does. The non-cluster halves it ALSO has are still deployed
+// from here, which is why `reconcilerOwnsClusters` suppresses the clusters
+// rather than the whole deploy.
 //
-// ORDER: apply, then wait. The apply is the half this command can fail fast
-// on, and spending the hosted wait's budget after it has already failed buys
-// nothing.
+// ORDER: the local work, then the wait. The local half is what this command
+// can fail fast on, and spending the convergence budget after it has already
+// failed buys nothing.
 func followPromote(ctx context.Context, env string, plan promotePlan, ledger envLedger, o promoteFollowOptions) error {
-	if ledger.appliesLocally() {
-		if err := applySelfManaged(ctx, env, ledger.Hosted, o); err != nil {
-			return err
-		}
-	}
 	if !ledger.Hosted {
-		return nil
+		// No control plane, so no reconciler: the client-side apply is
+		// the only thing that will ever ship this env. Transitional —
+		// see applyClusterPendingLocalFlux.
+		return applyClusterPendingLocalFlux(ctx, env, plan, o)
 	}
-	// A PURE HOSTED env still needs its client-side PUBLISH — and ONLY a
-	// pure one. A MIXED env's publish already happened: appliesLocally is
-	// true for it, so the apply above ran the whole env's deploy, which
-	// routes its hosted workloads through the hosted provider in the same
-	// pass. Running this as well applied a mixed env twice.
+
+	// Everything the reconciler does NOT converge, from this machine: a
+	// compose or host-infra workload, a shipped frontend, and the PUBLISH
+	// of any hosted workload. Cluster objects are excluded inside
+	// runDeploy, by reconcilerOwnsClusters.
 	//
-	// The pure case reached this point having written a promotion and
-	// published nothing. That was survivable before O-15 only because the
-	// publish was what a SECOND command did: `deploy <env> <v> --no-wait`
-	// recorded, then `deploy <env>` published. O-15 removes the second
-	// spelling, so the publish has to happen here or it becomes unreachable
-	// for the one env shape it exists for — which is hounders prod.
-	//
-	// It is the same apply (runPromoteClientDeploy) in both branches, so a
-	// pure and a mixed env publish identically.
-	if !ledger.appliesLocally() {
-		if err := applyHostedPublish(ctx, env, o); err != nil {
-			return err
-		}
+	// It runs for EVERY control-plane env, not only a mixed one. The pure
+	// hosted env needs it for its publish — before O-15 that was a second
+	// command's job, and with one command it has to happen here or it never
+	// happens (hounders prod is that env). An env with neither a hosted
+	// workload nor a local half dispatches no groups and the call is a
+	// no-op, which is cheaper than deciding in advance whether to make it.
+	if err := deployWhatTheReconcilerDoesNot(ctx, env, o); err != nil {
+		return err
 	}
 	if o.NoWait {
-		// The control plane converges the binding on its own. Saying so
+		// The reconciler converges the promotion on its own. Saying so
 		// is the difference between "forge is done" and "the release is
 		// live", and a caller who opted out of the gate is exactly the
 		// one who needs to know which they got.
-		o.notice("\nRecorded. %s is converged by its control plane; gate on it with: forge env status %s --wait\n", env, env)
+		o.notice("\nRecorded. %s converges to it on its own; gate on it with: forge env status %s --wait\n", env, env)
 		return nil
 	}
 	promotionID := ""
@@ -207,30 +217,85 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	})
 }
 
-// applySelfManaged is the client-side half: render the binding this command
-// just wrote and apply it from this machine.
+// deployWhatTheReconcilerDoesNot is the local half of a control-plane env's
+// deploy: everything in it that no Kustomization carries.
 //
-// It reuses the real deploy path rather than reimplementing a publish, which
-// is what keeps "deploy prod v1.4.0" and "promote then deploy" the same thing.
+// It is the ORDINARY deploy path with the clusters taken out
+// (reconcilerOwnsClusters), not a second, smaller publish. That matters for
+// the same reason the old applySelfManaged reused it: a separate
+// implementation would be a second opinion about what a deploy of this env
+// means, and the two would diverge the first time either changed. So compose
+// workloads, host infra, shipped frontends and the hosted PUBLISH all go
+// through the one function, and the cluster groups are dropped from the
+// dispatch set rather than from the code path.
+//
+// WHAT IT NEVER TOUCHES: a cluster. No kubectl context is resolved, no
+// preflight runs against a live apiserver, no Secret is projected, no
+// kubeconfig is minted — because forge may hold no credential for the cluster
+// at all, and a deploy that failed on a kubeconfig it should never have needed
+// is how "forge does not apply" becomes "forge cannot deploy".
 //
 // The deploy re-reads the digests from the env's own ledger rather than being
-// handed them, and that is sound: it re-reads the jsonl line this same process
-// appended a moment ago, so the newest entry is the promotion this command
-// wrote and the apply pins exactly the bytes that were just promoted.
+// handed them, and that is sound: it reads the promotion this same process
+// just recorded, so it pins exactly the bytes that were promoted.
 //
-// THE APPLY'S OWN ROLLOUT WAIT IS THE HEALTH GATE, for a wholly self-managed
-// env: there is no server-computed rollout to poll, so there is no second gate
-// to run after this one — cluster.RolloutPolicy already waits for every
-// Deployment and one-shot Job and fails the deploy if any does not become
-// ready. --no-wait and --timeout therefore tune THAT policy, which is why they
-// are mapped onto it here instead of being passed to a wait that would have
-// nothing to read.
+// --no-wait / --timeout / --fail-fast tune the rollout policy here as well as
+// the convergence wait that follows. The policy governs real resources (a
+// compose service, a one-shot Job), so it is a real wait; passing the flags to
+// both is deliberate, so one --timeout does not silently come to mean "per
+// half".
+func deployWhatTheReconcilerDoesNot(ctx context.Context, env string, o promoteFollowOptions) error {
+	opts := rolloutTunedDeploy(o)
+	opts.reconcilerOwnsClusters = true
+	o.notice("\nDeploying the parts of %s nothing converges (its cluster objects ride its promoted bundle)\n", env)
+	// Under --json the promote owns the single document on stdout, and this
+	// deploy is a phase inside it rather than a command of its own. It
+	// prints with fmt.Printf throughout (group headers, per-deployment
+	// lines), so os.Stdout is diverted for its duration — the same
+	// mechanism runEnvRender uses, and for the same reason: one document on
+	// stdout, the whole human log still readable on stderr.
+	if o.jsonOut {
+		real := os.Stdout
+		os.Stdout = os.Stderr
+		defer func() { os.Stdout = real }()
+	}
+	return runPromoteClientDeploy(ctx, env, opts)
+}
+
+// applyClusterPendingLocalFlux is THE ONE TRANSITIONAL CLIENT-SIDE CLUSTER
+// APPLY, and F-FLUX-LOCAL DELETES IT.
 //
-// On a MIXED env (mixed=true) this apply covers only the half forge owns, and
-// followPromote goes on to wait on the hosted half. The flags still tune this
-// policy — it is a real rollout wait over real resources — and the hosted wait
-// receives them too, so one --timeout does not silently mean "per half".
-func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFollowOptions) error {
+// An env with no control plane has no reconciler: nothing installs Flux into
+// its cluster and nothing writes the in-cluster OCIRepository that would point
+// at its bundle. So if this command does not apply the promotion it just
+// recorded, nothing ever will — a local k3d env would record promotions
+// forever and never run any of them.
+//
+// WHEN F-FLUX-LOCAL LANDS, `forge cluster up` installs the pinned Flux into
+// the local cluster and forge writes that pointer itself. At that moment this
+// function has no reason to exist and must be deleted outright, not left as a
+// fallback: a fallback apply beside a working reconciler is two writers for one
+// cluster, which is the exact condition the unified model removes.
+//
+// IT IS DELIBERATELY ONE FUNCTION WITH ONE CALLER, and a guard test pins that
+// (deploy_promote_follow_test.go). The hazard is not that it exists — it has
+// to, today — but that something else grows a dependency on it, because then
+// deleting it stops being a deletion and becomes a refactor nobody schedules.
+//
+// Its own rollout wait IS the health gate here: there is no reconciler to
+// observe, so there is no convergence read to follow it with, and
+// `forge env status --wait` says so rather than timing out. --no-wait and
+// --timeout therefore tune THAT policy.
+func applyClusterPendingLocalFlux(ctx context.Context, env string, _ promotePlan, o promoteFollowOptions) error {
+	o.notice("\nApplying %s's newly recorded release from this machine "+
+		"(it declares no control plane, so no reconciler converges it)\n", env)
+	return runPromoteClientDeploy(ctx, env, rolloutTunedDeploy(o))
+}
+
+// rolloutTunedDeploy maps the follow-through's gate flags onto the deploy's
+// rollout policy. One place, so the local half and the transitional apply
+// cannot come to disagree about what --timeout means.
+func rolloutTunedDeploy(o promoteFollowOptions) deployOptions {
 	opts := o.clientDeploy
 	if o.NoWait {
 		opts.rollout.Mode = cluster.RolloutSkip
@@ -241,13 +306,7 @@ func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFoll
 	if o.FailFast {
 		opts.rollout.FailFast = true
 	}
-	if mixed {
-		o.notice("\nApplying %s's locally-managed workloads at its newly recorded release "+
-			"(its control plane converges only the hosted ones)\n", env)
-	} else {
-		o.notice("\nApplying %s's newly recorded release (self-managed: no control plane converges it)\n", env)
-	}
-	return runPromoteClientDeploy(ctx, env, opts)
+	return opts
 }
 
 // runPromoteWait is the hosted health gate. A var for ONE reason: a test must
@@ -257,47 +316,9 @@ func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFoll
 // runEnvWait, unchanged.
 var runPromoteWait = runEnvWait
 
-// applyHostedPublish is a PURE HOSTED env's client-side publish: the same
-// apply path, which routes the env's hosted workloads through the hosted
-// provider (EnsureDeployment → PublishDeploymentConfig → GetStatus).
-//
-// It is separate from applySelfManaged only in what it SAYS, because the two
-// mean different things to an operator: that one applies workloads from this
-// machine, this one hands the platform the specs it will run. The work is one
-// function (runPromoteClientDeploy → runDeploy), so neither can publish
-// something the other would not.
-//
-// --no-wait tunes the rollout policy here exactly as it does there; the
-// hosted rollout WAIT that follows is a separate gate on the server's own
-// view, and it reads the same flags.
-func applyHostedPublish(ctx context.Context, env string, o promoteFollowOptions) error {
-	opts := o.clientDeploy
-	if o.NoWait {
-		opts.rollout.Mode = cluster.RolloutSkip
-	}
-	if o.Timeout > 0 {
-		opts.rollout.Timeout = o.Timeout
-	}
-	if o.FailFast {
-		opts.rollout.FailFast = true
-	}
-	o.notice("\nPublishing %s's newly recorded release to its control plane\n", env)
-	// Under --json the promote owns the single document on stdout, and this
-	// apply is a phase inside it rather than a command of its own. It prints
-	// with fmt.Printf throughout (the group headers, the per-deployment
-	// lines), so os.Stdout is diverted for its duration — the same mechanism
-	// runEnvRender uses, and for the same reason: one document on stdout, the
-	// whole human log still readable on stderr.
-	if o.jsonOut {
-		real := os.Stdout
-		os.Stdout = os.Stderr
-		defer func() { os.Stdout = real }()
-	}
-	return runPromoteClientDeploy(ctx, env, opts)
-}
-
-// runPromoteClientDeploy is the self-managed apply. A var for the same reason:
-// a test asserts THAT the client-side apply ran (and with which options) for a
-// file-ledger env, which is only observable here — the real apply needs a
-// cluster. Production is runDeploy, unchanged.
+// runPromoteClientDeploy is the deploy both of the above run. A var so a test
+// can assert THAT it ran and with WHICH options — in particular whether
+// reconcilerOwnsClusters was set, which is the whole of "forge did not apply
+// to the cluster" and is only observable here. Production is runDeploy,
+// unchanged.
 var runPromoteClientDeploy = runDeploy

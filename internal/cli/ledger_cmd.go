@@ -55,6 +55,9 @@ files are no longer read, and a command refuses while the checkout holds
 records the selected ledger has never imported.`,
 	}
 	cmd.AddCommand(newLedgerImportCmd())
+	cmd.AddCommand(newLedgerExportCmd())
+	cmd.AddCommand(newLedgerWhereCmd())
+	cmd.AddCommand(newLedgerShowCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 

@@ -390,6 +390,68 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "the server-advertised image push base and its on-disk cache",
+		Why: "forge used to LEARN where to push hosted artifacts: EnsureEnvironment returned an " +
+			"`imagePushBase`, forge wrote it to .forge/state/push-base-<env>.json, and the offline " +
+			"consumers (`forge env render`, `forge lint`, the deploy's resolution) read it back. The " +
+			"base is now COMPOSED from the env's own declaration — " +
+			"`<registry_host>/<organization>/<project>`, internal/hostedimage.PushBase — so the whole " +
+			"mechanism is gone: rememberHostedPushBase, cachedHostedPushBase, hostedimage.CachedBase/" +
+			"AnyCachedBase/CachePath/CacheRecord/CacheDirRel, the per-env record, " +
+			"EnsureHostedEnvironmentFull/EnsuredHostedEnvironment, and wireEnvironment.ImagePushBase.\n" +
+			"Three structural costs, which is why this must not come back as a convenience. The base " +
+			"was unknowable before the first successful AUTHENTICATED call, so a fresh checkout could " +
+			"not render. A stale or absent record silently WEAKENED the off-base check rather than " +
+			"failing it, so the rule was quietly inert on exactly the projects that had never deployed. " +
+			"And \"the server told us\" plus \"we wrote it down\" are two sources of one fact, which " +
+			"drift by construction.\n" +
+			"The server did not lose a job here, and that distinction is the one to preserve: it " +
+			"ENFORCES the subtree, at publish (ociregistry.Admit) and at the registry realm, which " +
+			"mints a token scoped to the authenticated row's org and refuses anything outside it. A " +
+			"mis-declared org therefore fails loudly at the first push. Re-adding an advertised base " +
+			"would mean forge trusting a value for an address it can compose, which is strictly worse " +
+			"than composing it.",
+		Patterns: []*regexp.Regexp{
+			// The cache's read and write sides, and the Go API that held
+			// them. All case-SENSITIVE identifiers with no live homonym.
+			regexp.MustCompile(`\brememberHostedPushBase\b|\bcachedHostedPushBase\b`),
+			// The cache's own API. NOT CacheDirRel or CacheRecord alone:
+			// internal/bundle has an unrelated bundle cache that uses both
+			// spellings legitimately, so these are anchored to the package
+			// that held the push-base cache.
+			regexp.MustCompile(`\bAnyCachedBase\b|hostedimage\.Cache(?:dBase|Path|Record|DirRel)\b`),
+			// The wider-return ensure that existed ONLY to carry the base.
+			regexp.MustCompile(`\bEnsureHostedEnvironmentFull\b|\bEnsuredHostedEnvironment\b`),
+			// The WIRE field, in Go and in a JSON fixture — a fake that
+			// served it would let a test pass against a field the real
+			// server does not send. Scoped to the field spelling (a
+			// selector, a struct field, or a JSON key), so
+			// bundle.Repository's `imagePushBase` PARAMETER — a local name
+			// for a base the caller composed — stays clear.
+			regexp.MustCompile(`\.ImagePushBase\b|ImagePushBase\s+string|"imagePushBase"`),
+			// The state file itself, by name.
+			regexp.MustCompile(`push-base-[a-z<]`),
+			// PROSE that sends a reader to the server for the base. Each of
+			// these was a real message or docstring; a stale message is a
+			// worse failure than a stale field, because the field fails at
+			// load and the message is believed.
+			regexp.MustCompile(`(?i)the control plane reports no image push base`),
+			regexp.MustCompile(`(?i)the base the (?:platform|control plane) reports`),
+			regexp.MustCompile(`(?i)image push base, as (?:last )?stated by the control plane`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the control-plane proto field this replaced, named in the follow-on that deletes it",
+				Reason: "control-plane's DeployEnvironment carried `image_push_base` as tag 14, and the cp " +
+					"PR that removes it must reserve the number and say what it was. That is the record of " +
+					"the removal, not a resurrection of it — and forge does not vendor cp's protos, so " +
+					"nothing here can read it either way.",
+				Token: regexp.MustCompile(`image_push_base`),
+				Paths: []string{"CHANGELOG.md"},
+			},
+		},
+	},
+	{
 		Name: "the env-level image registry",
 		Why: "An environment does not have a registry; a WORKLOAD does, as part of its image. " +
 			"ClusterTarget.registry, ControlPlane.registry and DockerBuild.registry are gone, along " +
@@ -416,7 +478,15 @@ var removals = []removal{
 			// `registry_inherit` / `registry_mirror` (k3d plumbing, unrelated),
 			// stay clear.
 			regexp.MustCompile(`(?m)^\s*registry\s*=\s*"`),
-			regexp.MustCompile(`ClusterTarget\.registry|ControlPlane\.registry|DockerBuild\.registry`),
+			// The removed field, by qualified name. The trailing boundary is
+			// load-bearing: `ControlPlane.registry_host` is a DIFFERENT
+			// field and a different concept — the platform subtree forge
+			// composes a bare hosted image under, which no author chooses —
+			// whereas the field removed here was the env-wide registry for
+			// every workload's image, which each workload now declares
+			// itself. Without the boundary this entry forbids the
+			// replacement it was never about.
+			regexp.MustCompile(`(?:ClusterTarget|ControlPlane|DockerBuild)\.registry\b`),
 			// USER-FACING PROSE that sends someone to an env for a registry.
 			// Each of these was a real message or scaffold comment after the
 			// field was deleted. They are phrases rather than identifiers

@@ -41,7 +41,7 @@ func harvestHostedBackendArtifacts(ctx context.Context, envName string, entities
 	}
 	var errs []string
 	for _, svc := range entities.WorkloadsOn(RuntimeHosted) {
-		name := hostedArtifactKey(envName, svc)
+		name := hostedArtifactKey(entities, svc)
 		if _, have := out[name]; have || svc.Image != "" {
 			// forge built and pushed it (the build state's digest wins), or
 			// forge builds it and this cut simply did not — the release

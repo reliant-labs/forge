@@ -175,12 +175,21 @@ type SecretProviderEntity struct {
 // Go-side by internal/cloud from the flag / env var / login file, exactly
 // as secret VALUES are resolved by internal/secrets rather than KCL.
 type ControlPlaneEntity struct {
-	Type         string `json:"type"`
-	Endpoint     string `json:"endpoint"`
-	TokenEnv     string `json:"token_env,omitempty"`
+	Type     string `json:"type"`
+	Endpoint string `json:"endpoint"`
+	TokenEnv string `json:"token_env,omitempty"`
+	// Organization is the org these hosted artifacts belong to, and it is
+	// LOAD-BEARING rather than a hint: it is the `<org>` segment of the push
+	// base forge composes. KCL refuses a hosted env that declares none.
 	Organization string `json:"organization,omitempty"`
-	// NO Registry field. A hosted env declares no registry any more than a
-	// cluster env does — each workload declares its own, as part of its image.
+	// RegistryHost is the platform registry this org's artifacts live on,
+	// defaulted in KCL to forge.RELIANT_REGISTRY_HOST.
+	//
+	// This is NOT the registry a workload's image names — that one is still
+	// the author's, still on the workload, and used verbatim. This is the
+	// subtree a BARE hosted image is composed under, which is the one case
+	// the author does not choose because the platform admits exactly one.
+	RegistryHost string `json:"registry_host,omitempty"`
 }
 
 // RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s

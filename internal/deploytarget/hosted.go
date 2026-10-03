@@ -132,9 +132,22 @@ type HostedTarget struct {
 	// Registries is the bound release's artifact → registry map: where each
 	// image was pushed (the release artifact's URI). It locates the bytes of
 	// a workload whose image THIS project builds, which is declared
-	// registry-less (`image = "api"`): the registry is declared once, on the
-	// env's forge.ControlPlane, and recorded here by `forge env build <env> --push`.
+	// registry-less (`image = "api"`): forge composed the address from the
+	// env's declared push base, and recorded it here by
+	// `forge env build <env> --push`.
 	Registries map[string]string
+	// PushBase is the registry subtree this env's hosted artifacts live
+	// under, composed by forge from the env's declaration
+	// (`<registry_host>/<organization>/<project>`) and carried here so the
+	// pre-publish check judges a pinned image against the same base the
+	// build pushed to.
+	//
+	// It is the CLIENT's composition, deliberately: the server does not
+	// advertise a base, it ENFORCES one — at publish (ociregistry.Admit) and
+	// at the registry realm, which refuses a token outside its own org's
+	// subtree. So a mis-declared org is caught by the thing that knows,
+	// rather than by forge believing an answer it was handed.
+	PushBase string
 	// Shape and DeclaredBy are the env's rendered DECLARATION, recorded by
 	// the EnsureEnvironment this deploy already performs rather than by a
 	// write of their own.
@@ -171,10 +184,12 @@ type wireEnvironment struct {
 	Project   string `json:"project,omitempty"`
 	Kind      string `json:"kind,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
-	// ImagePushBase is `<registry_base>/<org>`: the one registry subtree the
-	// control plane admits this org's images from. Empty means it admits
-	// none (no registry base is configured), so every workload publish fails.
-	ImagePushBase string `json:"imagePushBase,omitempty"`
+	// NO ImagePushBase. The push base is forge's to COMPOSE from the env's
+	// declaration — `<registry_host>/<organization>/<project>`, see
+	// internal/hostedimage.PushBase — not the server's to advertise. Reading
+	// it off the wire made the address unknowable offline and put a cached
+	// second copy on disk; the server's role is to ENFORCE the subtree at
+	// publish and at the registry realm, which it still does.
 
 	// ConvergesPromotions reports whether a promotion to this environment
 	// will be APPLIED server-side (DeployEnvironment.converges_promotions,
@@ -385,36 +400,6 @@ func EnsureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 	return env.ID, created, err
 }
 
-// EnsuredHostedEnvironment is what an ensure LEARNED about the environment,
-// beyond its id: the registry subtree the control plane admits this org's
-// images from.
-//
-// It exists so the push base can be remembered from the ensure forge was
-// already making (ADR-0003 F1) rather than from a read of its own. The base
-// is a fact about the platform that a render and a lint need offline, and an
-// extra RPC to learn it would be a second place for the answer to come from.
-//
-// PushBase is "" when the control plane did not state one — an older server,
-// or no registry configured. That is distinguishable from "it admits none",
-// which checkImagePushBase reports at publish time, and the two must not be
-// collapsed: one means "we do not know" and the other "we asked and the
-// answer is nothing".
-type EnsuredHostedEnvironment struct {
-	ID       string
-	Created  bool
-	PushBase string
-}
-
-// EnsureHostedEnvironmentFull is EnsureHostedEnvironment, reporting everything
-// the response carried. Same single call; a wider return.
-func EnsureHostedEnvironmentFull(ctx context.Context, c HostedCaller, ref HostedEnvRef) (EnsuredHostedEnvironment, error) {
-	env, created, err := ensureHostedEnvironment(ctx, c, ref)
-	if err != nil {
-		return EnsuredHostedEnvironment{}, err
-	}
-	return EnsuredHostedEnvironment{ID: env.ID, Created: created, PushBase: env.ImagePushBase}, nil
-}
-
 func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvRef) (wireEnvironment, bool, error) {
 	if ref.Kind == "" {
 		// Never defaulted: the kind is immutable server-side, so a guess
@@ -471,15 +456,30 @@ func deployRebuildFix(env string) string {
 		"or forge env deploy %s <existing-version> to ship a release that is already cut", env, env)
 }
 
+// hostedPushBase is the group's declared push base, or "" when the group
+// carries no hosted target.
+func hostedPushBase(group ServiceGroup) string {
+	if group.Hosted == nil {
+		return ""
+	}
+	return group.Hosted.PushBase
+}
+
 // checkImagePushBase refuses every workload in the plan whose pinned image is
-// not under the org's image push base — the subtree the control plane's
-// publish-time boundary admits. It runs after the environment is known (the
-// base comes back on it) and BEFORE any EnsureDeployment or publish, so an
-// image the platform will refuse costs no deployment write and no ledger
-// entry. Every offending workload is reported together.
+// not under the org's image push base — the subtree the platform's
+// publish-time boundary admits. It runs BEFORE any EnsureDeployment or
+// publish, so an image the platform will refuse costs no deployment write and
+// no ledger entry. Every offending workload is reported together.
 //
-// An EMPTY base means the control plane has no registry configured and admits
-// no image at all; that is refused too, unless the plan carries no workload.
+// The base is forge's own composition from the env's declaration, so this
+// check runs with no dependence on what the server said. It is a PRE-FLIGHT
+// for the real boundary rather than the boundary itself: ociregistry.Admit
+// and the registry realm are what actually enforce the subtree, and they are
+// the things that detect a mis-declared organization.
+//
+// An EMPTY base means the env declared no organization, so no base composes
+// and there is no address any image could be under; that is refused too,
+// unless the plan carries no workload.
 //
 // This is deliberately stricter than the server's own Contains, which lets an
 // image OUTSIDE the platform registry through to the tier's registry
@@ -497,10 +497,10 @@ func checkImagePushBase(envName, base string, plan []hostedPlanItem) error {
 			continue
 		}
 		if base == "" {
-			return fmt.Errorf("hosted env %q: the control plane reports no image push base, so it admits no registry "+
-				"and would refuse every workload image (first: %s for %s).\n"+
-				"  fix: the control plane must be configured with a registry base (ImageBuildConfig.registry_base); "+
-				"nothing a deploy can change will make it publish", envName, spec.Image, item.Name)
+			return fmt.Errorf("hosted env %q declares no organization, so forge can compose no image push base "+
+				"and the platform would refuse every workload image (first: %s for %s).\n"+
+				"  fix: set `organization = \"<your org id>\"` on control_plane in deploy/kcl/%s/main.k",
+				envName, spec.Image, item.Name, envName)
 		}
 		repo := HostedImageRepository(spec.Image)
 		if !strings.HasPrefix(repo, base+"/") {
@@ -1066,7 +1066,7 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 		verb = "created"
 	}
 	fmt.Printf("  environment %s %s (id %s)\n", group.Env, verb, envID)
-	if err := checkImagePushBase(group.Env, env.ImagePushBase, plan); err != nil {
+	if err := checkImagePushBase(group.Env, hostedPushBase(group), plan); err != nil {
 		return err
 	}
 	// Before the first EnsureDeployment: on hosted a domain is a bound

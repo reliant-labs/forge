@@ -25,7 +25,7 @@ import forge.workloads as fw
 
 output = forge.render(forge.Bundle {
     project = "app"
-    control_plane = forge.ControlPlane {endpoint = "https://cp.example.com"}
+    control_plane = forge.ControlPlane {endpoint = "https://cp.example.com", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
     workloads = [fw.Workload {
         name = "api"
         image = "api"

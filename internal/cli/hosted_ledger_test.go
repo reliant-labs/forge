@@ -49,10 +49,6 @@ type fakeDeployService struct {
 	bodies      []fakeBody
 	// onSecret, when set, sees every SecretStoreService/SetSecret body.
 	onSecret func(body map[string]any)
-	// imagePushBase overrides the environment reads' imagePushBase; see
-	// pushBase.
-	imagePushBase string
-
 	// Promote's refusals, in the SERVER's order (control-plane C3/C3b):
 	// pinned refuses before anything else; then the idempotent no-op; then
 	// the compare-and-set (always modelled); then, when inFlightPhase is
@@ -127,19 +123,10 @@ type fakeBody struct {
 	Body map[string]any
 }
 
-// pushBase is the imagePushBase every environment read reports: the org's
-// admitted registry subtree. The default covers writeHostedProject's
-// localhost:5051/acme images; "-" reports none. Called under f.mu.
-func (f *fakeDeployService) pushBase() string {
-	switch f.imagePushBase {
-	case "":
-		return "localhost:5051/acme"
-	case "-":
-		return ""
-	default:
-		return f.imagePushBase
-	}
-}
+// NO pushBase HERE, deliberately. The real EnsureEnvironment / ListEnvironments
+// advertise no image push base — forge composes it from the env's own
+// declaration — so a fake that served one would let a test pass against a
+// field the server does not send.
 
 func newFakeDeployService(envs map[string]string) *fakeDeployService {
 	return &fakeDeployService{envs: envs, releases: map[string]wireRelease{}, promotions: map[string][]wirePromotion{}}
@@ -179,7 +166,7 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var out []map[string]string
 		for n, id := range f.envs {
 			if strings.Contains(n, str("search")) {
-				out = append(out, map[string]string{"id": id, "name": n, "imagePushBase": f.pushBase()})
+				out = append(out, map[string]string{"id": id, "name": n})
 			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"environments": out})
@@ -203,7 +190,7 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.envs[name] = id
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"environment": map[string]string{"id": id, "name": name, "namespace": "env-" + id, "imagePushBase": f.pushBase()},
+			"environment": map[string]string{"id": id, "name": name, "namespace": "env-" + id},
 			"created":     !ok,
 		})
 

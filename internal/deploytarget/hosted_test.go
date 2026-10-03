@@ -30,10 +30,6 @@ type fakeCP struct {
 	envs   string
 	proms  string
 	nStat  int
-	// pushBase is EnsureEnvironment's imagePushBase. Empty means the
-	// default "ghcr.io/acme" (hostedGroup's images); "-" means the control
-	// plane reports none.
-	pushBase string
 }
 
 type fakeCall struct {
@@ -52,16 +48,10 @@ func (f *fakeCP) Call(_ context.Context, proc string, req, out any) error {
 	var reply string
 	switch short {
 	case "EnsureEnvironment":
-		f.mu.Lock()
-		base := f.pushBase
-		f.mu.Unlock()
-		if base == "" {
-			base = "ghcr.io/acme"
-		}
-		if base == "-" {
-			base = ""
-		}
-		reply = fmt.Sprintf(`{"environment":{"id":"env-1","name":"prod","namespace":"env-env-1","imagePushBase":%q},"created":true}`, base)
+		// NO push base in the reply. The server does not advertise one;
+		// forge composes it from the env's declaration and carries it on
+		// the group (HostedTarget.PushBase).
+		reply = `{"environment":{"id":"env-1","name":"prod","namespace":"env-env-1"},"created":true}`
 	case "EnsureDeployment":
 		reply = fmt.Sprintf(`{"deployment":{"id":"dep-%s","name":%q},"created":true}`, body["name"], body["name"])
 	case "PublishDeploymentConfig":
@@ -120,11 +110,22 @@ func readyStatus(digest string) func(int) string {
 	}
 }
 
+// hostedGroup's declared push base. The group's images sit under it, so a
+// test that does not care about the boundary check gets a passing one.
+const testDeclaredPushBase = "ghcr.io/acme"
+
 func hostedGroup(release string, digests map[string]string, resources v1alpha1.Resources) ServiceGroup {
+	return hostedGroupWithPushBase(release, digests, resources, testDeclaredPushBase)
+}
+
+// hostedGroupWithPushBase is hostedGroup with the DECLARED base stated, for
+// the tests that exercise checkImagePushBase. "" is an env that declared no
+// organization.
+func hostedGroupWithPushBase(release string, digests map[string]string, resources v1alpha1.Resources, pushBase string) ServiceGroup {
 	return ServiceGroup{
 		Env:        "prod",
 		ProviderID: HostedProviderID,
-		Hosted:     &HostedTarget{Endpoint: "https://cp.example", Release: release, Digests: digests},
+		Hosted:     &HostedTarget{Endpoint: "https://cp.example", Release: release, Digests: digests, PushBase: pushBase},
 		Services: []ResolvedService{
 			{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierWorkload, Workload: &v1alpha1.WorkloadSpec{
 				Kind: v1alpha1.KindService, Image: "ghcr.io/acme/api:v1", Args: []string{"api"},
@@ -197,9 +198,14 @@ func TestHostedOffBandRefusedWithZeroRPCs(t *testing.T) {
 	}
 }
 
-// TestHostedImagePushBase: the control plane's imagePushBase (read off
-// EnsureEnvironment) decides, BEFORE any EnsureDeployment or publish, whether
-// a bound backend image is one the platform will publish.
+// TestHostedImagePushBase: the env's DECLARED push base decides, BEFORE any
+// EnsureDeployment or publish, whether a bound backend image is one the
+// platform will publish.
+//
+// The base is forge's own composition from the declaration, carried on the
+// group — the server advertises none. This check is a PRE-FLIGHT for the real
+// boundary (ociregistry.Admit and the registry realm), and it earns its keep
+// by costing zero writes when it refuses.
 //
 // MUTATIONS VERIFIED RED:
 //   - deleting the checkImagePushBase call from Deploy → "foreign" and
@@ -219,9 +225,9 @@ func TestHostedImagePushBase(t *testing.T) {
 		return out
 	}
 	deploy := func(base string) (*fakeCP, error) {
-		cp := &fakeCP{status: readyStatus(digestA), pushBase: base}
+		cp := &fakeCP{status: readyStatus(digestA)}
 		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(),
-			hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}))
+			hostedGroupWithPushBase("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}, base))
 		return cp, err
 	}
 
@@ -256,10 +262,16 @@ func TestHostedImagePushBase(t *testing.T) {
 		}
 	})
 
-	t.Run("no base refused", func(t *testing.T) {
-		cp, err := deploy("-")
-		if err == nil || !strings.Contains(err.Error(), "no image push base") {
-			t.Fatalf("err = %v, want the no-push-base refusal", err)
+	// An env that declared no organization composes no base, so there is no
+	// address any image could be under. Refused, and the refusal names the
+	// field to declare rather than a server setting the author cannot reach.
+	t.Run("no declared organization refused", func(t *testing.T) {
+		cp, err := deploy("")
+		if err == nil || !strings.Contains(err.Error(), "declares no organization") {
+			t.Fatalf("err = %v, want the no-organization refusal", err)
+		}
+		if !strings.Contains(err.Error(), "deploy/kcl/prod/main.k") {
+			t.Errorf("the refusal must name the file to edit:\n%v", err)
 		}
 		if w := writes(cp); len(w) != 0 {
 			t.Fatalf("writes with no push base: %v", w)
@@ -284,15 +296,17 @@ func TestHostedImagePushBase(t *testing.T) {
 // Before, the pin re-derived the repository from the bare spec image and the
 // deploy refused "hounders@sha256:… must name its registry host explicitly".
 func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
+	// The declared base is where the recorded registry points, since that is
+	// the address the build pushed to and the one the pre-flight judges.
 	group := func(registries map[string]string) ServiceGroup {
-		g := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
+		g := hostedGroupWithPushBase("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}, "localhost:5051/org-1")
 		g.Hosted.Registries = registries
 		g.Services[0].Hosted.Workload.Image = "api"
 		return g
 	}
 
 	t.Run("pinned under the release's registry", func(t *testing.T) {
-		cp := &fakeCP{status: readyStatus(digestA), pushBase: "localhost:5051/org-1"}
+		cp := &fakeCP{status: readyStatus(digestA)}
 		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(),
 			group(map[string]string{"api": "localhost:5051/org-1"}))
 		if err != nil {
@@ -305,7 +319,7 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 	})
 
 	t.Run("no recorded registry is refused with the fix", func(t *testing.T) {
-		cp := &fakeCP{status: readyStatus(digestA), pushBase: "localhost:5051/org-1"}
+		cp := &fakeCP{status: readyStatus(digestA)}
 		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(), group(nil))
 		// The fix is `forge env deploy <env>`, not `--push` and not
 		// `--no-build`: this release recorded no registry for the artifact,
@@ -322,7 +336,10 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 	t.Run("an explicit registry in the spec wins", func(t *testing.T) {
 		g := group(map[string]string{"api": "localhost:5051/org-1"})
 		g.Services[0].Hosted.Workload.Image = "ghcr.io/acme/api:v1"
-		cp := &fakeCP{status: readyStatus(digestA), pushBase: "ghcr.io/acme"}
+		// An explicit host is used verbatim, so the declared base must be
+		// the one that host sits under or the pre-flight refuses it.
+		g.Hosted.PushBase = testDeclaredPushBase
+		cp := &fakeCP{status: readyStatus(digestA)}
 		if err := (HostedProvider{Client: cp, PollInterval: time.Millisecond}).Deploy(context.Background(), g); err != nil {
 			t.Fatalf("deploy: %v", err)
 		}

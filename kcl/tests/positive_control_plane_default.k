@@ -1,5 +1,5 @@
 """
-Positive test — `forge.ControlPlane {}` IS Reliant cloud.
+Positive test — `forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}` IS Reliant cloud.
 
 The endpoint defaults to forge.RELIANT_CLOUD_ENDPOINT, Reliant's production
 control plane, so a plain `go install`'d forge targets prod with nothing but
@@ -17,7 +17,7 @@ import forge
 _reliant_cloud = forge.Bundle {
     project = "acme"
     env = "prod"
-    control_plane = forge.ControlPlane {}
+    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
     secret_provider = forge.HostedSecrets {}
     workloads = []
 }
@@ -25,7 +25,7 @@ _reliant_cloud = forge.Bundle {
 _self_run = forge.Bundle {
     project = "acme"
     env = "dev"
-    control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}
+    control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
     workloads = []
 }
 

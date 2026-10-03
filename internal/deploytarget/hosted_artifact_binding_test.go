@@ -112,7 +112,7 @@ func TestHostedStaticPlanRefusesAnUnaddressableArtifact(t *testing.T) {
 	cp := &fakeCP{status: staticReadyStatus(digestB)}
 	group := ServiceGroup{
 		Env: "prod", ProviderID: HostedProviderID,
-		Hosted:   &HostedTarget{Endpoint: "https://cp.example", Release: "v2", Digests: map[string]string{"web": digestB}},
+		Hosted:   &HostedTarget{Endpoint: "https://cp.example", Release: "v2", Digests: map[string]string{"web": digestB}, PushBase: "ghcr.io/acme"},
 		Services: []ResolvedService{{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Static: &v1alpha1.StaticSiteSpec{}}}},
 	}
 	err := HostedProvider{Client: cp}.Deploy(context.Background(), group)

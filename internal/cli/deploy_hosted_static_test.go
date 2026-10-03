@@ -117,6 +117,7 @@ _bundle = forge.Bundle {
     control_plane = forge.ControlPlane {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
+        organization = "4f3c2b1a-0000-4000-8000-000000000001"
     }
     frontends = [forge.Frontend {
         name = "web"

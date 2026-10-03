@@ -22,7 +22,7 @@ _img = "ghcr.io/acme/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 _out = forge.render(forge.Bundle {
     project = "acme"
     env = "prod"
-    control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
+    control_plane = forge.ControlPlane {endpoint = "https://api.example.com", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
     workloads = [fw.Workload {
         name = "api"
         image = _img

@@ -111,7 +111,7 @@ func auditGroupFor(id string) (ServiceGroup, bool) {
 		// with a reason rather than inventing a verdict.
 		return ServiceGroup{
 			Env:      "prod",
-			Hosted:   &HostedTarget{Endpoint: "https://cp.example"},
+			Hosted:   &HostedTarget{Endpoint: "https://cp.example", PushBase: "ghcr.io/acme"},
 			Services: []ResolvedService{{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierWorkload}}},
 		}, true
 	default:

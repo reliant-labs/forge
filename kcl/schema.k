@@ -1144,6 +1144,24 @@ schema HostedSecrets:
 # (TestControlPlaneDefault_KCLMatchesGo).
 RELIANT_CLOUD_ENDPOINT: str = "https://admin.reliantapi.com"
 
+# RELIANT_REGISTRY_HOST is Reliant's hosted container registry — the host
+# `forge.ControlPlane {}` means when it names none. It is a SEPARATE origin
+# from RELIANT_CLOUD_ENDPOINT: the control plane serves RPCs, the registry
+# serves the OCI distribution API, and they are different services on
+# different hosts (ADR-0003 C3 declares this one).
+#
+# forge holds it as a DEFAULT rather than asking the control plane for it.
+# The alternative — a "where do I push?" RPC — made the push destination
+# unknowable offline, so `forge env render` and `forge lint` could only judge
+# a hosted image after a round trip with a credential, and the answer had to
+# be cached on disk to be usable at all. A default plus a declared org is the
+# same fact with no call, no cache and no staleness.
+#
+# One fact, twice: internal/hostedimage.DefaultRegistryHost is the Go copy,
+# for the surfaces that have no KCL to read. A test renders this schema and
+# fails if the two disagree (TestRegistryDefault_KCLMatchesGo).
+RELIANT_REGISTRY_HOST: str = "registry.reliantapi.com"
+
 schema ControlPlane:
     """The hosted control plane THIS environment talks to: an endpoint URL
     and how forge finds the bearer credential for it.
@@ -1206,33 +1224,47 @@ schema ControlPlane:
     # Env var forge reads the bearer credential from. The NAME is
     # non-sensitive and belongs in git; the VALUE never does.
     token_env: str = "FORGE_CONTROL_PLANE_TOKEN"
-    # Optional organization hint forwarded to the endpoint. Non-sensitive.
+    # The organization these hosted artifacts belong to. Non-sensitive — it
+    # is an id, not a credential — and it belongs in git.
     #
-    # It is a HINT, not a scoping mechanism: forge does not interpret it and
-    # holds no notion of one. Which organization a credential acts for is
-    # decided by the endpoint, from the credential itself — see
-    # internal/removalguard, which is why the word that used to be here is
-    # not.
+    # REQUIRED FOR ANYTHING HOSTED, and it is the org's ID (a lowercase
+    # UUID), because that is the path segment the platform registry's own
+    # grammar uses (ADR-0003: `<org>/<project>/<image>`). forge composes the
+    # push base `<registry_host>/<organization>/<project>` from it, so a
+    # hosted `image = "api"` resolves to a complete, pushable address with no
+    # call to anything. The Bundle check below refuses a hosted env without
+    # it, naming this field.
+    #
+    # DECLARED, NOT DISCOVERED, AND A WRONG VALUE FAILS LOUDLY. forge does
+    # not decide which organization a credential acts for and cannot: the
+    # registry's realm mints a token scoped to the org on the authenticated
+    # row, and REFUSES a push outside that subtree. So a mis-declared org is
+    # a denied push that names both orgs, at the first push — not anything
+    # silent, and not a value forge could have guessed better.
     organization?: str
-    # THERE IS NO `registry` HERE. A hosted environment does not have a
-    # registry any more than a cluster environment does — each WORKLOAD
-    # declares its own, as part of its image:
+    # The hosted container registry this organization's artifacts live on.
+    # Defaults to Reliant's (RELIANT_REGISTRY_HOST); set it only to name a
+    # different one — a registry you run, or a local dev stack's.
+    #
+    # THIS IS NOT THE REGISTRY A WORKLOAD'S IMAGE NAMES. That one is still
+    # the author's to choose, and still declared on the workload:
     #
     #     wl.api | {image = "ghcr.io/acme/api", runtime = forge.OnHosted {}}
     #
-    # `forge env build <env> --push` pushes each image to the reference it
-    # declares, and `forge registry login <env>` logs in to the hosts those
-    # images name.
-    #
-    # A forge.OnHosted item is the ONE exception, and it is a bare NAME rather
-    # than an env-level registry field: the control plane admits images from
-    # exactly one subtree, so forge resolves `image = "api"` against the base
-    # the platform reports (ADR-0003 F1). A host-bearing reference is still
-    # used verbatim, and one outside that subtree is reported at render and
-    # lint time rather than at publish time.
+    # A host-bearing reference like that is used VERBATIM, and one outside
+    # the admitted subtree is reported at render and lint time rather than at
+    # publish time. This field is the subtree forge composes a BARE hosted
+    # image under (ADR-0003 F1) — `image = "api"` becomes
+    # `<registry_host>/<organization>/<project>/api` — which is the one case
+    # where the author does not choose the registry, because the platform
+    # admits exactly one.
+    registry_host: str = RELIANT_REGISTRY_HOST
 
     check:
         type == "control_plane", "ControlPlane.type must be 'control_plane'"
+        registry_host, "ControlPlane.registry_host must not be empty — omit it for Reliant's registry (forge.RELIANT_REGISTRY_HOST), or name another registry's host"
+        not registry_host.startswith("http://") and not registry_host.startswith("https://"), \
+            "ControlPlane.registry_host is a registry HOST, not a URL: drop the scheme from '${registry_host}'. It is joined into an image reference (<registry_host>/<organization>/<project>/<image>), where a scheme cannot appear"
         endpoint, "ControlPlane.endpoint must not be empty — omit it for Reliant cloud (forge.RELIANT_CLOUD_ENDPOINT), or set the base URL of another control plane"
         endpoint.startswith("http://") or endpoint.startswith("https://"), \
             "ControlPlane.endpoint must be an absolute http(s) URL"
@@ -3488,6 +3520,14 @@ schema Bundle:
         # publish to.
         control_plane or not _hosted_names(workloads, databases, frontends), \
             "${_hosted_names(workloads, databases, frontends)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
+        # ANYTHING HOSTED NEEDS THE ORGANIZATION, because the push base is
+        # `<registry_host>/<organization>/<project>` and forge composes it
+        # with no call. Absent, there is no address to push a hosted image or
+        # a bundle to — so this is refused here, naming the field, rather
+        # than resolving to a base with an empty segment that the registry's
+        # realm would deny at the first push.
+        not _hosted_names(workloads, databases, frontends) or (control_plane and control_plane.organization), \
+            "${_hosted_names(workloads, databases, frontends)} run on the hosted runtime (forge.OnHosted), so the Bundle's control_plane must declare `organization = \"<your org id>\"`: forge pushes their images and this env's config bundle to <registry_host>/<organization>/${project}, and without the organization there is no address to push to"
         # A database binds a runtime, or lands on the env's cluster_target.
         all db in databases { _db_runtime(db) or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
             "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"

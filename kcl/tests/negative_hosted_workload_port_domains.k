@@ -23,7 +23,7 @@ import forge.workloads as fw
 
 output = forge.render(forge.Bundle {
     project = "hounders"
-    control_plane = forge.ControlPlane {}
+    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
     workloads = [fw.Workload {
         name = "membership"
         image = "ghcr.io/hounders/membership:v1"

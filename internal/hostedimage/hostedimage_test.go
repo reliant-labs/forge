@@ -201,35 +201,96 @@ func TestScanTreeMissingTreeIsEmpty(t *testing.T) {
 	}
 }
 
-// The cache is written by internal/cli and read here, so the format is pinned
-// from this side too. AnyCachedBase is what the lint uses, since a text scan
-// cannot attribute a workload to an env.
-func TestCachedBaseAndAnyCachedBase(t *testing.T) {
+// PushBase is the whole resolution rule, so the grammar it produces is
+// pinned here: it must match the registry's own `<org>/<project>/...` layout
+// (cp's internal/ociregistry), because the address forge pushes to and the
+// address the platform admits are the same string or the push is refused.
+func TestPushBase(t *testing.T) {
+	const org = "4f3c2b1a-0000-4000-8000-000000000001"
+	for _, tc := range []struct {
+		name, host, org, project, want string
+	}{
+		{"the default host when none is declared", "", org, "shop",
+			DefaultRegistryHost + "/" + org + "/shop"},
+		{"a declared host wins", "registry.example.com", org, "shop",
+			"registry.example.com/" + org + "/shop"},
+		{"a trailing slash is not a difference", "registry.example.com/", org, "shop",
+			"registry.example.com/" + org + "/shop"},
+		// Each missing segment composes NOTHING rather than an address with
+		// a hole in it. `<host>//shop` is a reference that looks resolved
+		// and cannot be pushed.
+		{"no organization composes nothing", "registry.example.com", "", "shop", ""},
+		{"no project composes nothing", "registry.example.com", org, "", ""},
+		// The scaffolded placeholder is syntactically a value, so KCL's
+		// "organization is required" check passes on it. It is still not an
+		// address.
+		{"the scaffolded placeholder composes nothing", "", OrgPlaceholder, "shop", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PushBase(tc.host, tc.org, tc.project); got != tc.want {
+				t.Errorf("PushBase(%q, %q, %q) = %q, want %q", tc.host, tc.org, tc.project, got, tc.want)
+			}
+		})
+	}
+}
+
+// ScanPushBase is the lint's offline reader of the same declaration. It joins
+// two files, because `organization` lives in the env's main.k while the
+// images it judges are declared in workloads.k.
+func TestScanPushBase(t *testing.T) {
+	const org = "4f3c2b1a-0000-4000-8000-000000000001"
 	dir := t.TempDir()
-	if got := CachedBase(dir, "prod"); got != "" {
-		t.Fatalf("an empty project must report no base, got %q", got)
+	if got := ScanPushBase(dir, "shop"); got != "" {
+		t.Fatalf("an empty tree declares no base, got %q", got)
 	}
-	if got := AnyCachedBase(dir); got != "" {
-		t.Fatalf("AnyCachedBase(empty) = %q", got)
+	write(t, dir, "prod/main.k", `
+_bundle = forge.Bundle {
+    project = "shop"
+    control_plane = forge.ControlPlane {organization = "`+org+`"}
+}
+`)
+	if got, want := ScanPushBase(dir, "shop"), DefaultRegistryHost+"/"+org+"/shop"; got != want {
+		t.Errorf("ScanPushBase = %q, want %q", got, want)
 	}
-	writeCache(t, dir, "prod", base)
-	if got := CachedBase(dir, "prod"); got != base {
-		t.Errorf("CachedBase = %q, want %q", got, base)
+	// A declared host is read too, from whichever file carries it.
+	write(t, dir, "staging/main.k", "_bundle = forge.Bundle {\n    control_plane = forge.ControlPlane {registry_host = \"registry.example.com\"}\n}\n")
+	if got, want := ScanPushBase(dir, "shop"), "registry.example.com/"+org+"/shop"; got != want {
+		t.Errorf("ScanPushBase with a declared host = %q, want %q", got, want)
 	}
-	if got := CachedBase(dir, "staging"); got != "" {
-		t.Errorf("staging read prod's base: %q", got)
+}
+
+// A commented-out example is not a declaration — the same rule the image scan
+// follows, and the scaffolded files carry several.
+func TestScanPushBaseIgnoresProse(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "prod/main.k", `
+# organization = "4f3c2b1a-0000-4000-8000-000000000001"
+_bundle = forge.Bundle {project = "shop"}
+`)
+	if got := ScanPushBase(dir, "shop"); got != "" {
+		t.Errorf("a commented organization composed %q", got)
 	}
-	if got := AnyCachedBase(dir); got != base {
-		t.Errorf("AnyCachedBase = %q, want %q", got, base)
+}
+
+// The placeholder is reported SEPARATELY from "no base", because the two are
+// different states with different fixes: an env with nothing hosted is
+// allowed to declare no organization, while a placeholder is an instruction
+// the author has not carried out, and only the second one gates the lint.
+func TestScanOrgPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	if ScanOrgPlaceholder(dir) {
+		t.Error("an empty tree carries no placeholder")
 	}
-	// A malformed record degrades to "unknown" rather than failing: the
-	// cache exists only to sharpen a message.
-	bad := filepath.Join(dir, CacheDirRel, "push-base-broken.json")
-	if err := os.WriteFile(bad, []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
+	write(t, dir, "prod/main.k", `
+_bundle = forge.Bundle {
+    control_plane = forge.ControlPlane {organization = "`+OrgPlaceholder+`"}
+}
+`)
+	if !ScanOrgPlaceholder(dir) {
+		t.Error("the scaffolded placeholder was not found")
 	}
-	if got := CachedBase(dir, "broken"); got != "" {
-		t.Errorf("a corrupt record returned %q, want \"\"", got)
+	if got := ScanPushBase(dir, "shop"); got != "" {
+		t.Errorf("the placeholder composed a base %q", got)
 	}
 }
 
@@ -242,10 +303,4 @@ func write(t *testing.T, dir, rel, body string) {
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func writeCache(t *testing.T, dir, env, pushBase string) {
-	t.Helper()
-	write(t, dir, filepath.Join(CacheDirRel, "push-base-"+env+".json"),
-		`{"env":"`+env+`","image_push_base":"`+pushBase+`","recorded_at":"2026-10-02T00:00:00Z"}`)
 }

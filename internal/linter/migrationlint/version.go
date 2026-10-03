@@ -38,6 +38,40 @@ const RuleNonTimestampVersion = "non-timestamp-migration-version"
 // NonTimestampVersionRemediation is the fix text for a non-timestamp finding.
 const NonTimestampVersionRemediation = `new migrations must be versioned with a UTC timestamp (<YYYYMMDDHHMMSS>_<name>.up.sql) so parallel branches cannot claim the same version — re-version this file with ` + "`" + RebaseCommand + ` <file>` + "`" + `, or create the next one with ` + "`forge db migration new <name>`" + `. Existing sequential migrations are left alone: a timestamp sorts after any of them, so nothing needs renumbering`
 
+// RuleVersionBelowMergedHead is the rule ID for a NEW migration whose version
+// is at or below the highest version already on the default branch.
+//
+// THIS IS THE ONE FAILURE IN THIS RULE SET THAT RAISES NO ERROR ANYWHERE.
+// golang-migrate records a single current version and applies only what is
+// above it, so a new migration numbered below the head is not pending — it is
+// invisible. On every database that has already run the newer migration it is
+// silently never applied: `up` reports the schema current, CI passes (a fresh
+// test database applies everything in version order, where being low is
+// harmless), and the first symptom is a production query against a table that
+// was never created.
+//
+// Neither of the other version rules sees it. The versions are distinct, so
+// duplicate-migration-version does not fire; the version is a well-formed UTC
+// timestamp, so the timestamp rule does not either. It is only visible by
+// comparing against the branch point — which is what makes it a lint and not
+// something a reviewer can catch by reading the diff.
+//
+// Reachable whenever a merged migration is future-dated. control-plane's main
+// held a hand-zeroed 20261003120000, roughly four hours ahead of the wall
+// clock when it landed, so every migration allocated in that window got a
+// version underneath it. The allocator now refuses to produce such a version
+// (migrationver.NextN clears the directory max), but a hand-typed version, a
+// skewed clock, or a file that predates that fix still can — and this rule is
+// what catches them at review time rather than in production.
+const RuleVersionBelowMergedHead = "migration-version-below-merged-head"
+
+// VersionBelowMergedHeadRemediation is the fix text for a
+// version-below-merged-head finding.
+//
+// The file has not been applied anywhere — that is what makes it fixable —
+// so re-versioning it is both safe and the whole fix.
+const VersionBelowMergedHeadRemediation = `this migration's version is at or below the highest version already on the default branch, so golang-migrate — which applies only versions ABOVE the one it has recorded — will silently never run it on any database that has applied the newer migration: no error, and the schema reports current. The file has not been applied anywhere yet, so re-version it to a fresh UTC timestamp with ` + "`" + RebaseCommand + ` <file>` + "`" + ` (or ` + "`" + RebaseCommand + ` --all-pending` + "`" + ` for every migration added on this branch)`
+
 // RebaseCommand is the command that re-versions a migration, named by every
 // message that tells a user to do so.
 //
@@ -50,10 +84,20 @@ const NonTimestampVersionRemediation = `new migrations must be versioned with a 
 const RebaseCommand = "forge db migration rebase"
 
 // lintVersions reports every duplicate version among the migration files of
-// one directory, and every NEW migration that is not timestamp-versioned.
+// one directory, every NEW migration that is not timestamp-versioned, and
+// every NEW migration whose version sits at or below the default branch's
+// head.
 //
 // files are the *.up.sql paths of a migrations directory.
-func lintVersions(files []string, mergeBaseMax uint64, haveMergeBase bool) []Finding {
+//
+// TWO DIFFERENT GIT MARKS, AND THEY ARE NOT INTERCHANGEABLE. mergeBaseMax is
+// the state this branch was CUT FROM, which is what the timestamp rule uses
+// to mean "new on this branch". defaultBranch is the set of migrations on the
+// default branch's TIP, keyed by version — what every deployed database has
+// already recorded. A migration that landed on main after this branch was cut
+// is in the second and not the first, and that is precisely the case that
+// makes a new version unapplyable, so one mark cannot serve both rules.
+func lintVersions(files []string, mergeBaseMax uint64, haveMergeBase bool, defaultBranch map[uint64]string, haveDefaultBranch bool) []Finding {
 	var findings []Finding
 
 	byVersion := map[uint64][]string{}
@@ -127,6 +171,62 @@ func lintVersions(files []string, mergeBaseMax uint64, haveMergeBase bool) []Fin
 			Severity: SeverityError,
 			Message:  fmt.Sprintf("migration version %q is new but not a UTC timestamp — parallel branches allocating sequential numbers claim the same version", versionText),
 		})
+	}
+
+	// THE SILENT SKIP. A migration added on this branch whose version is at
+	// or below the default branch's head can never be applied on a database
+	// that has run that head — and nothing reports it. See
+	// RuleVersionBelowMergedHead.
+	//
+	// NEWNESS HERE IS FILE PRESENCE, NOT A VERSION COMPARISON, and that is
+	// the whole subtlety of this rule. The timestamp rule can define new as
+	// "version above the merge-base max" because a sequential version is
+	// always below every timestamp. This rule cannot: the file it is looking
+	// for is BY DEFINITION below the head, and when that head is already in
+	// the merge-base, a version test puts the new file on the wrong side of
+	// the line and the rule never fires. Asking whether the default branch
+	// has a file at this version is the question that actually distinguishes
+	// "I added this" from "this is history".
+	//
+	// Same insight as rebase's refusal: a version is not an identity, a
+	// filename is. A version present on the default branch under a DIFFERENT
+	// name is a duplicate-version collision, reported by that rule, and not
+	// this one's business.
+	if haveDefaultBranch {
+		// The head every deployed database has recorded.
+		var head uint64
+		for v := range defaultBranch {
+			if v > head {
+				head = v
+			}
+		}
+		for _, file := range files {
+			base := filepath.Base(file)
+			v, ok := migrationver.ParseVersion(base)
+			if !ok {
+				continue
+			}
+			// Above the head: applies normally. The healthy shape, and
+			// most files.
+			if v > head {
+				continue
+			}
+			// On the default branch under this name: merged history. It
+			// cannot be renamed and must never be flagged.
+			if merged, found := defaultBranch[v]; found && filepath.Base(merged) == base {
+				continue
+			}
+			findings = append(findings, Finding{
+				File:     file,
+				Line:     1,
+				Rule:     RuleVersionBelowMergedHead,
+				Severity: SeverityError,
+				Message: fmt.Sprintf("migration version %d is at or below the default branch's highest version %d — "+
+					"golang-migrate applies only versions above the one it has recorded, so this migration is silently "+
+					"never applied on any database that has already run %d",
+					v, head, head),
+			})
+		}
 	}
 
 	return findings

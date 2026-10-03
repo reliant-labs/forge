@@ -214,6 +214,191 @@ func TestMergeBaseMakesNewMeanAddedOnThisBranch(t *testing.T) {
 	}
 }
 
+// TestNewMigrationBelowTheMergedHeadIsFlagged is the silent-skip hazard, and
+// it is the one failure mode in this rule set that produces NO error anywhere.
+//
+// golang-migrate records one current version and applies only what is above
+// it. A migration added on this branch whose version is at or below the
+// highest version already on the default branch is therefore invisible on
+// every database that has run the newer one: `up` reports the schema current,
+// the test suite passes against a fresh database (where ordering never
+// matters), and the first symptom in production is a query against a table
+// that was never created.
+//
+// Duplicate-version does not catch it — the versions are distinct. The
+// timestamp rule does not catch it — the version is a perfectly well-formed
+// UTC timestamp. It is only visible by comparing against the branch point,
+// which is exactly what this rule does and what a reviewer cannot do by eye.
+//
+// Reachable whenever a merged migration is future-dated: control-plane's main
+// held a hand-zeroed 20261003120000, hours ahead of real time, so everything
+// allocated in that window landed underneath it.
+func TestNewMigrationBelowTheMergedHeadIsFlagged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git; skipped under -short")
+	}
+	repo := t.TempDir()
+	migrations := filepath.Join(repo, "db", "migrations")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "--initial-branch=main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "t")
+
+	// On main: a future-dated migration. This is the head every deployed
+	// database has already recorded.
+	writeMigrationIn(t, migrations, "21000101000000_add_accounts.up.sql", "CREATE TABLE accounts (id INT);")
+	git("add", "-A")
+	git("commit", "-qm", "main migrations")
+
+	// On a feature branch: a well-formed timestamp that lands BELOW it.
+	git("checkout", "-q", "-b", "feature")
+	writeMigrationIn(t, migrations, "20260101120000_add_users.up.sql", "CREATE TABLE users (id INT);")
+	git("add", "-A")
+	git("commit", "-qm", "branch migration")
+
+	result, err := LintMigrationsDir(migrations, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := findingsForRule(result, RuleVersionBelowMergedHead)
+	if len(got) != 1 {
+		t.Fatalf("findings = %+v (all: %+v); want the branch migration flagged for sitting below the merged head",
+			got, result.Findings)
+	}
+	if !strings.Contains(got[0].File, "20260101120000_add_users") {
+		t.Errorf("finding names %q; want the branch's migration", got[0].File)
+	}
+	if got[0].Severity != SeverityError {
+		t.Errorf("severity = %v; want error — a migration that can never apply is not a style note", got[0].Severity)
+	}
+	// The message must name BOTH versions: the author cannot act on "this is
+	// too low" without knowing what it has to clear.
+	for _, want := range []string{"20260101120000", "21000101000000"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Errorf("message %q does not name version %s", got[0].Message, want)
+		}
+	}
+	if rem := RemediationFor(RuleVersionBelowMergedHead); !strings.Contains(rem, RebaseCommand) {
+		t.Errorf("remediation must name the command that fixes it (%s); got %q", RebaseCommand, rem)
+	}
+	if !result.HasErrors() {
+		t.Error("a migration that can never be applied must fail the lint")
+	}
+}
+
+// TestMigrationAboveTheMergedHeadIsClean is the negative, and it is most of
+// the cases this rule sees. A branch migration allocated normally sits above
+// everything on main, which is the healthy shape — flagging it would fire on
+// every pull request and get the rule switched off.
+func TestMigrationAboveTheMergedHeadIsClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git; skipped under -short")
+	}
+	repo := t.TempDir()
+	migrations := filepath.Join(repo, "db", "migrations")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "--initial-branch=main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "t")
+
+	writeMigrationIn(t, migrations, "20260101120000_add_accounts.up.sql", "CREATE TABLE accounts (id INT);")
+	git("add", "-A")
+	git("commit", "-qm", "main migrations")
+
+	git("checkout", "-q", "-b", "feature")
+	writeMigrationIn(t, migrations, "20260501000000_add_users.up.sql", "CREATE TABLE users (id INT);")
+	git("add", "-A")
+	git("commit", "-qm", "branch migration")
+
+	result, err := LintMigrationsDir(migrations, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findingsForRule(result, RuleVersionBelowMergedHead); len(got) != 0 {
+		t.Errorf("findings = %+v; want none — a branch migration above the head is the healthy shape", got)
+	}
+}
+
+// TestMergedHistoryIsNeverFlaggedBelowTheHead is the adoption guarantee for
+// this rule. Pre-existing migrations are all at or below the head by
+// definition — that is what "merged" means — so a rule that judged every file
+// would indict a project's entire history on the first run.
+//
+// Only migrations added on THIS branch are candidates, because only those can
+// still be renamed.
+func TestMergedHistoryIsNeverFlaggedBelowTheHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git; skipped under -short")
+	}
+	repo := t.TempDir()
+	migrations := filepath.Join(repo, "db", "migrations")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "--initial-branch=main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "t")
+
+	// A whole history on main, including sequential files and an
+	// out-of-order pair that is now immutable.
+	for _, name := range []string{
+		"00001_init.up.sql",
+		"21000101000000_future_dated.up.sql",
+		"20260101120000_landed_after_it.up.sql",
+	} {
+		writeMigrationIn(t, migrations, name, "CREATE TABLE t (id INT);")
+	}
+	git("add", "-A")
+	git("commit", "-qm", "history")
+	git("checkout", "-q", "-b", "feature")
+
+	result, err := LintMigrationsDir(migrations, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findingsForRule(result, RuleVersionBelowMergedHead); len(got) != 0 {
+		t.Errorf("findings on wholly merged history = %+v; want none — "+
+			"history cannot be renamed, so flagging it is a false positive on every file", got)
+	}
+}
+
+// TestVersionBelowHeadNeedsGit pins the degradation. Without a merge-base,
+// "added on this branch" is unknowable and so is "the merged head" — every
+// file in the directory looks identical. Guessing would flag history, so the
+// rule goes silent, exactly as the timestamp rule does.
+func TestVersionBelowHeadNeedsGit(t *testing.T) {
+	dir := t.TempDir()
+	writeMigrationIn(t, dir, "21000101000000_future.up.sql", "CREATE TABLE a (id INT);")
+	writeMigrationIn(t, dir, "20260101120000_below_it.up.sql", "CREATE TABLE b (id INT);")
+
+	result, err := LintMigrationsDir(dir, DefaultConfig())
+	if err != nil {
+		t.Fatalf("lint must not error without git: %v", err)
+	}
+	if got := findingsForRule(result, RuleVersionBelowMergedHead); len(got) != 0 {
+		t.Errorf("findings without git = %+v; want none — newness is unknowable, so this would indict history", got)
+	}
+}
+
 // TestLintOutsideAGitRepoStillWorks pins the degradation. The linter runs in
 // checkouts it does not control — shallow CI clones, tarballs, directories
 // with no git at all — and a version rule that errored there is a rule people

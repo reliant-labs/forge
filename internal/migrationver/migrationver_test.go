@@ -135,6 +135,116 @@ func TestNextOnAMissingDirectory(t *testing.T) {
 	}
 }
 
+// TestNextStaysAboveAFutureDatedMaxVersion is the silent-skip hazard.
+//
+// golang-migrate tracks ONE current version and applies only what is above
+// it. So a newly allocated version that lands BELOW a version already in the
+// directory is not a style problem — on every database that has already run
+// the newer migration, the new one is never applied, and nothing reports it.
+// Tests pass, `up` says the schema is current, and the table is missing.
+//
+// A future-dated max is what makes that reachable, and it is not
+// hypothetical: control-plane's main held 20261003120000, hand-zeroed to a
+// time about four hours ahead of the wall clock when it landed. Every
+// migration allocated in that window got a version under the head.
+//
+// The allocator only ever skipped EXACT collisions, so `now` was returned
+// unchanged — a version four hours below the head, which looks completely
+// ordinary.
+func TestNextStaysAboveAFutureDatedMaxVersion(t *testing.T) {
+	dir := t.TempDir()
+	// A year in the future: large enough that no plausible clock skew on the
+	// machine running this test can reach it.
+	const futureDated = "21000101000000_add_accounts.up.sql"
+	if err := os.WriteFile(filepath.Join(dir, futureDated), []byte("SELECT 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Next(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsTimestamp(got) {
+		t.Errorf("Next = %q, which is not a 14-digit UTC calendar timestamp — the version lint would flag it", got)
+	}
+	v, err := strconv.ParseUint(got, 10, 64)
+	if err != nil {
+		t.Fatalf("allocated version %q is not numeric: %v", got, err)
+	}
+	if v <= 21000101000000 {
+		t.Errorf("Next = %d, which is at or below the directory's max 21000101000000 — "+
+			"golang-migrate applies only versions ABOVE the recorded one, so this migration "+
+			"would be silently skipped on every database that already ran the newer file", v)
+	}
+}
+
+// TestNextNKeepsAWholeBatchAboveAFutureDatedMax is the same guarantee for the
+// importer, which allocates every version in one call. A batch that cleared
+// the head with its first version and not its last would apply partially,
+// which is harder to diagnose than not applying at all.
+func TestNextNKeepsAWholeBatchAboveAFutureDatedMax(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "21000101000000_head.up.sql"), []byte("SELECT 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NextN(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("NextN = %v, want 3 versions", got)
+	}
+	var previous uint64
+	for i, version := range got {
+		if !IsTimestamp(version) {
+			t.Errorf("NextN[%d] = %q, not a UTC calendar timestamp", i, version)
+		}
+		v, err := strconv.ParseUint(version, 10, 64)
+		if err != nil {
+			t.Fatalf("NextN[%d] = %q is not numeric: %v", i, version, err)
+		}
+		if v <= 21000101000000 {
+			t.Errorf("NextN[%d] = %d, at or below the directory max 21000101000000 — silently unapplyable", i, v)
+		}
+		if v <= previous {
+			t.Errorf("NextN[%d] = %d does not advance past %d; a batch must stay in order", i, v, previous)
+		}
+		previous = v
+	}
+}
+
+// TestNextIsStillWallClockWithoutAFutureDatedMax is the negative, and it is
+// the one that keeps the fix honest. Raising the floor to clear the head must
+// not turn every allocation into "max+1": that is the shared counter the
+// timestamp scheme exists to remove, and reintroducing it would make two
+// branches cut from the same commit pick the same version again.
+//
+// With a max in the PAST — which is every healthy directory — the allocated
+// version must come from the clock, not from the max.
+func TestNextIsStillWallClockWithoutAFutureDatedMax(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "20000101000000_old.up.sql"), []byte("SELECT 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Next(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Allocated from the clock means "within a minute of now", not "one
+	// second after the year-2000 max".
+	now := time.Now().UTC()
+	allocated, err := time.Parse(Layout, got)
+	if err != nil {
+		t.Fatalf("Next = %q, not parseable as %s: %v", got, Layout, err)
+	}
+	if skew := now.Sub(allocated); skew < -time.Minute || skew > time.Minute {
+		t.Errorf("Next = %q, which is %v from now — a past max must leave the clock in charge, "+
+			"or the allocator has become the max+1 counter that collides across branches", got, skew)
+	}
+}
+
 func TestMaxVersion(t *testing.T) {
 	dir := t.TempDir()
 	if _, any, err := MaxVersion(dir); err != nil || any {

@@ -181,10 +181,16 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 
 	// Version rules are about the SET of migrations, not any one file, so
 	// they run over the whole list rather than inside lintMigrationFile.
-	// The merge-base is resolved once: it is a git call, and it answers
-	// "which of these files are new on this branch".
-	mergeBaseMax, haveMergeBase := migrationgit.MergeBaseMax(migrationgit.RepoRoot(dir), dir)
-	findings = append(findings, lintVersions(files, mergeBaseMax, haveMergeBase)...)
+	// Both git facts are resolved once, here, because each is a subprocess:
+	// the merge-base answers "which of these files are new on this branch",
+	// and the default branch's TIP answers "what has every database already
+	// recorded". The tip, not the merge-base, is the head a new migration
+	// has to clear — a migration that landed on main after this branch was
+	// cut has still been applied. See lintVersions.
+	repoRoot := migrationgit.RepoRoot(dir)
+	mergeBaseMax, haveMergeBase := migrationgit.MergeBaseMax(repoRoot, dir)
+	defaultBranch, haveDefaultBranch := migrationgit.DefaultBranchVersions(repoRoot, dir)
+	findings = append(findings, lintVersions(files, mergeBaseMax, haveMergeBase, defaultBranch, haveDefaultBranch)...)
 	if len(files) == 0 {
 		if len(findings) > 0 {
 			return Result{Findings: findings, Dir: dir}, nil
@@ -498,6 +504,8 @@ func RemediationFor(rule string) string {
 		return DuplicateVersionRemediation
 	case RuleNonTimestampVersion:
 		return NonTimestampVersionRemediation
+	case RuleVersionBelowMergedHead:
+		return VersionBelowMergedHeadRemediation
 	default:
 		return DestructiveChangeRemediation
 	}

@@ -43,6 +43,22 @@ import (
 // is unrecoverable without hand-editing schema_migrations. So a file at or
 // below the merge-base max that is also present on the default branch is
 // refused, always, with no flag to override it.
+//
+// THE REFUSAL IS ABOUT A FILE, NOT A NUMBER. What a database recorded is one
+// specific migration, identified by the name it ran under — so the question
+// is whether THIS FILE is on the default branch, not whether its version is.
+// Those come apart in the most common collision there is: two branches
+// allocate in the same second, one merges, and the other now holds a
+// different migration under a version that is also on main. That file has
+// never been applied anywhere. It is exactly what `duplicate-migration-
+// version` tells the author to rebase, and renaming it is completely safe.
+//
+// Comparing versions alone conflated the two and refused it, with a message
+// explaining that a database had recorded it and advising a new forward
+// migration — advice that cannot resolve a duplicate version, about a file
+// nothing had applied. The lint named this command and this command said no.
+// So the match is on the filename; a same-version-different-file case is a
+// collision to fix.
 
 // RebaseResult is one file's rename: what it was called and what it is called
 // now. Returned rather than only printed so the CLI owns the output format
@@ -126,7 +142,12 @@ func RebaseMigrations(dir string, paths []string) ([]RebaseResult, error) {
 		if !haveMergeBase || c.version > mergeBaseMax {
 			continue
 		}
-		if _, merged := defaultBranch[c.version]; !merged {
+		// Compare the FILE, not the version. The default branch holding
+		// this version under a DIFFERENT name means two migrations collided
+		// on one number — this one was never applied, and rebasing it is
+		// the fix. Only the same file is immutable.
+		mergedName, merged := defaultBranch[c.version]
+		if !merged || filepath.Base(mergedName) != c.base {
 			continue
 		}
 		return nil, &AlreadyMergedError{File: c.base, Version: c.version, MergeBaseMax: mergeBaseMax}

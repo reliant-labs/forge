@@ -228,16 +228,13 @@ cut errors with `forge env deploy <env>` as the fix, never `--no-build`.
 
 **Nothing is written until you confirm.** A promotion IS the deploy — the
 converger picks it up within minutes — so the plan is printed and approved
-BEFORE the write. There are three ways through the gate, one per caller:
-**interactively**, where you are prompted and the default is no; **`--yes` in
-CI**, which means "I read the plan" and is what every scaffolded workflow
-passes (the plan is still computed and printed into the job log above the
-write); and **`--plan-only`**, which stops after the plan and is the first
+BEFORE the write. Three ways through the gate: **interactively**, where the
+default is no; **`--yes` in CI**, meaning "I read the plan" (the plan is still
+printed into the job log above the write); and **`--plan-only`**, the first
 stage of a two-stage pipeline. With no terminal and no `--yes` the command
 refuses with exit **5** (`plan_unconfirmed`), having built, pushed and cut but
 written no promotion — so approving it afterwards needs no rebuild. A CI deploy
-missing `--yes` is red by construction, which is the single most common cause
-of exit 5.
+missing `--yes` is the most common cause of exit 5.
 
 **A scoped deploy needs a release.** `--frontends-only` and `--target` ship
 part of the env, so forge refuses them when no version is named: a no-version
@@ -328,19 +325,17 @@ the commands and how to read a bound domain's state: load `deploy/domains`.
 
 `priorityClassName` names a cluster-scoped PriorityClass that ranks a
 workload's pods against every other pod competing for a node. Declare it
-wherever your pods share nodes with pods that already carry one: an
-unranked pod is priority 0, so a higher-priority pod preempts it, and a
-rollout's surge pod can be evicted repeatedly, stalling in `FailedScheduling`.
+wherever your pods share nodes with pods that already carry one: an unranked
+pod is priority 0, so a higher-priority pod preempts it, and a rollout's surge
+pod can be evicted repeatedly, stalling in `FailedScheduling`.
 
 ```kcl
 proxy = fw.Workload {name = "proxy", kind = "service", priorityClassName = "acme-platform"}
 ```
 
-Apply the PriorityClass to every cluster the workload lands on BEFORE the
-pods that name it — Kubernetes refuses a pod naming a class the cluster
-does not have. Unset means the cluster's default. `forge.OnCluster` only:
-the host and compose runtimes schedule nothing, and hosted ranks pods on
-its own ladder.
+Apply the PriorityClass to every cluster the workload lands on BEFORE the pods
+that name it — Kubernetes refuses a pod naming a class the cluster does not
+have. Unset means the cluster's default. `forge.OnCluster` only.
 
 ## forge env up — the local loop
 
@@ -372,10 +367,9 @@ moved meanwhile, nothing written — never retry blind. CI recipe:
 `forge env deploy --help`.
 
 A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
-migration before any workload changes, and a workload that never becomes
-ready leaves the previous ReplicaSet serving. Binding an env to an OLDER
-release is an ordinary promote labelled `direction BEHIND`; see
-`db/deploy-migrations`.
+migration before any workload changes, and a workload that never becomes ready
+leaves the previous ReplicaSet serving. Binding an env to an OLDER release is
+an ordinary promote labelled `direction BEHIND`; see `db/deploy-migrations`.
 
 ## Rules
 
@@ -389,8 +383,7 @@ release is an ordinary promote labelled `direction BEHIND`; see
 - EVERY image on a CLUSTER or COMPOSE workload names its registry host
   (`ghcr.io/acme/api`). A hostless one is refused at render, naming the
   workload: no env registry exists to complete it. A `forge.OnHosted` workload
-  may name a bare image — the platform admits exactly one subtree, so forge
-  composes the address from the env's declaration.
+  may name a bare image — forge composes the address from the env.
 
 ## Per-env config — KCL is the surface
 
@@ -406,22 +399,21 @@ wl.item | {env = {LOG_LEVEL = "debug"}}
 
 ## Cross-references — declare once, read twice
 
-When two fields must agree (a route's port and the service's, an issuer in
-two places), declare the value on the schema that OWNS it and reference it
-from the other. A `forge.WorkloadURL {workload = "item"}` in an env or a
-frontend's `runtime_config` is resolved by forge (host, cluster) or by the
-control plane (hosted), so a URL is never written twice. A port mismatch is
-invisible at render and fatal at runtime — make it impossible.
+When two fields must agree (a route's port and the service's, an issuer in two
+places), declare the value on the schema that OWNS it and reference it from the
+other. A `forge.WorkloadURL {workload = "item"}` in an env or a frontend's
+`runtime_config` is resolved by forge (host, cluster) or by the control plane
+(hosted), so a URL is never written twice. A port mismatch is invisible at
+render and fatal at runtime — make it impossible.
 
 ## Routes and per-route traffic policy
 
-A route names its backend as a `service` OR as a `workload` — and a
-`workload` is resolved per env to that workload's Service, or to the host
-process when that env runs it on the host, so ONE declaration follows it
-everywhere. `traffic` carries the typed retry / timeout / health-check /
-outlier-detection policy (the dead `raw_policy` string is gone). For the
-resolution table, the port-inference rules and the registry-flavoured
-worked example: load `deploy/routes`.
+A route names its backend as a `service` OR as a `workload`; a `workload` is
+resolved per env to that workload's Service, or to the host process when that
+env runs it on the host, so ONE declaration follows it everywhere. `traffic`
+carries the typed retry / timeout / health-check / outlier-detection policy.
+For the resolution table, the port-inference rules and a worked example: load
+`deploy/routes`.
 
 ## Extra Kubernetes objects
 
@@ -434,6 +426,12 @@ manifests = [forge.Manifests {name = "issuer", cluster = "gke_acme_prod", object
 
 A hosted env never accepts raw objects: the platform owns the render.
 
+To change one FIELD of an object forge already renders — replicas, a
+container's resources, a Namespace's PSA label — do not re-declare it here.
+Name it in `Bundle.overrides` and forge patches its own render:
+`overrides = {"Deployment/api" = {spec.replicas = 10}}`. Keys, patch semantics
+and every failure: load `deploy/overrides`.
+
 ## Reaching another cluster's API server
 
 A workload that needs a kubeconfig for ANOTHER cluster (a Flux controller, an
@@ -444,13 +442,12 @@ skill for the two credential models, the address modes, and rotation.
 ## `features:` block — disabling subsystems
 
 `forge.yaml`'s `features:` block gates `deploy`, `build`, `ci`, `codegen`,
-`orm`, `migrations`, `frontend`, `observability`, `hot_reload`,
-`contracts`, `docs`, `ingress`, `operators` — plus experimental
-`strict_wiring`, `reconcile` under `features.experimental:`. Each defaults
-from the derived shape; explicit `features.<name>` wins. `ingress` and
-`operators` derive false (opt-in).
+`orm`, `migrations`, `frontend`, `observability`, `hot_reload`, `contracts`,
+`docs`, `ingress`, `operators` — plus `strict_wiring` and `reconcile` under
+`features.experimental:`. Each defaults from the derived shape; an explicit
+`features.<name>` wins. `ingress` and `operators` are opt-in.
 
 ## k3d local-registry mirror
 
-Load the `deploy/k3d-registry` skill for the `localhost:5050` ↔
+Load `deploy/k3d-registry` for the `localhost:5050` ↔
 `registry.localhost:5000` containerd mirror.

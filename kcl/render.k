@@ -769,6 +769,14 @@ render = lambda bundle: Bundle -> any {
         # its credential is read from. Declaration only.
         if bundle.control_plane:
             "control_plane": bundle.control_plane
+        # TYPED OVERRIDES of forge's own rendered objects, carried OUT of KCL
+        # for the Go half to apply. They are not applied here and cannot be:
+        # the objects most worth overriding (Deployment, Service) do not exist
+        # in `manifests` yet — forge's Workload records expand into them in Go,
+        # after this render. So KCL's job is to type the surface, check the key
+        # grammar and hand the patches on; `internal/cluster` resolves each key
+        # against the EXPANDED stream and merges.
+        "overrides": bundle.overrides
         "manifests": _manifests(bundle, _entities)
     }
 }
